@@ -1,0 +1,31 @@
+<?php
+
+namespace App\Dto\Request;
+
+use Symfony\Component\Validator\Constraints as Assert;
+
+class InstrumentistRatingRequest
+{
+    #[Assert\NotNull]
+    #[Assert\Range(min: 1, max: 5)]
+    public ?int $sterilityRespect = null;
+
+    #[Assert\NotNull]
+    #[Assert\Range(min: 1, max: 5)]
+    public ?int $equipmentKnowledge = null;
+
+    #[Assert\NotNull]
+    #[Assert\Range(min: 1, max: 5)]
+    public ?int $attitude = null;
+
+    #[Assert\NotNull]
+    #[Assert\Range(min: 1, max: 5)]
+    public ?int $punctuality = null;
+
+    #[Assert\Length(max: 2000)]
+    public ?string $comment = null;
+
+    #[Assert\NotNull]
+    #[Assert\Type('boolean')]
+    public ?bool $isFirstCollaboration = null;
+}
