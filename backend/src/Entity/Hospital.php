@@ -6,6 +6,7 @@ use App\Entity\Traits\TimestampableTrait;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\HasLifecycleCallbacks]
@@ -13,18 +14,25 @@ class Hospital
 {
     use TimestampableTrait;
 
+    public const DEFAULT_TIMEZONE = 'Europe/Brussels';
+
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['hospital:read', 'mission:read', 'mission:read_manager', 'rating:read', 'export:read'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 255)]
+    #[Groups(['hospital:read', 'mission:read', 'mission:read_manager', 'rating:read', 'export:read'])]
     private ?string $name = null;
 
     #[ORM\Column(length: 255, nullable: true)]
+    #[Groups(['hospital:read', 'mission:read_manager'])]
     private ?string $address = null;
 
-    #[ORM\Column(length: 100)]
+    // IMPORTANT: nullable=true pour tolérer DB existante, mais getter garantit une valeur non vide
+    #[ORM\Column(length: 100, nullable: true)]
+    #[Groups(['hospital:read', 'mission:read', 'mission:read_manager', 'export:read'])]
     private ?string $timezone = null;
 
     /**
@@ -58,7 +66,6 @@ class Hospital
     public function setName(string $name): static
     {
         $this->name = $name;
-
         return $this;
     }
 
@@ -70,18 +77,25 @@ class Hospital
     public function setAddress(?string $address): static
     {
         $this->address = $address;
-
         return $this;
     }
 
-    public function getTimezone(): ?string
+    /**
+     * Toujours renvoyer une timezone exploitable (jamais "" / null).
+     */
+    public function getTimezone(): string
     {
-        return $this->timezone;
+        $tz = trim((string) ($this->timezone ?? ''));
+        return $tz !== '' ? $tz : self::DEFAULT_TIMEZONE;
     }
 
-    public function setTimezone(string $timezone): static
+    /**
+     * Setter tolérant: si vide => null (le getter fera le fallback).
+     */
+    public function setTimezone(?string $timezone): static
     {
-        $this->timezone = $timezone;
+        $tz = trim((string) ($timezone ?? ''));
+        $this->timezone = $tz !== '' ? $tz : null;
 
         return $this;
     }
@@ -100,7 +114,6 @@ class Hospital
             $this->memberships->add($membership);
             $membership->setSite($this);
         }
-
         return $this;
     }
 
@@ -111,7 +124,6 @@ class Hospital
                 $membership->setSite(null);
             }
         }
-
         return $this;
     }
 

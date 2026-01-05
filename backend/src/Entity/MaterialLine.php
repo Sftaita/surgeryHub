@@ -4,6 +4,7 @@ namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 // Consultation missions must not have material lines; enforce in service layer and add DB check if supported by the chosen platform.
 #[ORM\Entity]
@@ -16,33 +17,42 @@ class MaterialLine
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne(inversedBy: 'materialLines')]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?Mission $mission = null;
 
     #[ORM\ManyToOne(inversedBy: 'materialLines')]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?MissionIntervention $missionIntervention = null;
 
     #[ORM\ManyToOne(inversedBy: 'materialLines')]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?MissionInterventionFirm $missionInterventionFirm = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?MaterialItem $item = null;
 
     #[ORM\Column(type: 'decimal', precision: 10, scale: 2)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?string $quantity = '1.00';
 
     #[ORM\Column(type: 'text', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?string $comment = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['mission:read_manager'])]
     private ?User $createdBy = null;
 
     #[ORM\ManyToOne(inversedBy: 'materialLines')]
+    #[Groups(['mission:read_manager'])]
     private ?ImplantSubMission $implantSubMission = null;
 
     public function getId(): ?int

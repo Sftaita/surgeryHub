@@ -10,4 +10,5 @@ enum MissionStatus: string
     case SUBMITTED = 'SUBMITTED';
     case VALIDATED = 'VALIDATED';
     case CLOSED = 'CLOSED';
+    case IN_PROGRESS = 'IN_PROGRESS';
 }

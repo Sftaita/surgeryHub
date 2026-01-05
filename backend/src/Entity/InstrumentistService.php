@@ -8,6 +8,7 @@ use App\Enum\HoursSource;
 use App\Enum\ServiceStatus;
 use App\Enum\ServiceType;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\Table(indexes: [new ORM\Index(name: 'idx_service_mission', columns: ['mission_id'])])]
@@ -19,31 +20,40 @@ class InstrumentistService
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['service:read', 'service:read_manager', 'mission:read', 'mission:read_manager'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne(inversedBy: 'services')]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['service:read', 'service:read_manager'])]
     private ?Mission $mission = null;
 
     #[ORM\Column(enumType: ServiceType::class)]
+    #[Groups(['service:read', 'service:read_manager'])]
     private ?ServiceType $serviceType = null;
 
     #[ORM\Column(enumType: EmploymentType::class)]
+    #[Groups(['service:read', 'service:read_manager'])]
     private ?EmploymentType $employmentTypeSnapshot = null;
 
     #[ORM\Column(type: 'decimal', precision: 5, scale: 2, nullable: true)]
+    #[Groups(['service:read', 'service:read_manager'])]
     private ?string $hours = null;
 
     #[ORM\Column(type: 'decimal', precision: 10, scale: 2, nullable: true)]
+    #[Groups(['service:read_manager'])]
     private ?string $consultationFeeApplied = null;
 
     #[ORM\Column(enumType: HoursSource::class, nullable: true)]
+    #[Groups(['service:read', 'service:read_manager'])]
     private ?HoursSource $hoursSource = null;
 
     #[ORM\Column(enumType: ServiceStatus::class)]
+    #[Groups(['service:read', 'service:read_manager'])]
     private ?ServiceStatus $status = ServiceStatus::CALCULATED;
 
     #[ORM\Column(type: 'decimal', precision: 10, scale: 2, nullable: true)]
+    #[Groups(['service:read_manager'])]
     private ?string $computedAmount = null;
 
     public function getId(): ?int

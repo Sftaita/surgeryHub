@@ -4,6 +4,7 @@ namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\Table(indexes: [new ORM\Index(name: 'idx_export_log_user', columns: ['user_id'])])]
@@ -15,25 +16,32 @@ class ExportLog
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['export:read'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['export:read'])]
     private ?User $user = null;
 
     #[ORM\Column(length: 50)]
+    #[Groups(['export:read'])]
     private ?string $outputType = null;
 
     #[ORM\Column(type: 'json', nullable: true)]
+    #[Groups(['export:read'])]
     private ?array $filters = null;
 
     #[ORM\Column(length: 100)]
+    #[Groups(['export:read'])]
     private ?string $eventType = null;
 
     #[ORM\Column(options: ['default' => true])]
+    #[Groups(['export:read'])]
     private bool $success = true;
 
     #[ORM\Column(type: 'text', nullable: true)]
+    #[Groups(['export:read'])]
     private ?string $errorMessage = null;
 
     public function getId(): ?int

@@ -6,6 +6,7 @@ use App\Entity\Traits\TimestampableTrait;
 use App\Enum\PublicationChannel;
 use App\Enum\PublicationScope;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\Table(indexes: [new ORM\Index(name: 'idx_publication_mission', columns: ['mission_id'])])]
@@ -17,22 +18,28 @@ class MissionPublication
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['mission:read_manager'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne(inversedBy: 'publications')]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['mission:read_manager'])]
     private ?Mission $mission = null;
 
     #[ORM\Column(enumType: PublicationScope::class)]
+    #[Groups(['mission:read_manager'])]
     private ?PublicationScope $scope = null;
 
     #[ORM\Column(enumType: PublicationChannel::class)]
+    #[Groups(['mission:read_manager'])]
     private ?PublicationChannel $channel = null;
 
     #[ORM\ManyToOne]
+    #[Groups(['mission:read_manager'])]
     private ?User $targetInstrumentist = null;
 
     #[ORM\Column(type: 'datetime_immutable')]
+    #[Groups(['mission:read_manager'])]
     private ?\DateTimeImmutable $publishedAt = null;
 
     public function getId(): ?int

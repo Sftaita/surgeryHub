@@ -4,6 +4,7 @@ namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\Table(
@@ -19,33 +20,42 @@ class SurgeonRatingByInstrumentist
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['rating:read'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne(inversedBy: 'surgeonRatings')]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['rating:read'])]
     private ?Mission $mission = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false, name: 'surgeon_user_id')]
+    #[Groups(['rating:read'])]
     private ?User $surgeon = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false, name: 'instrumentist_user_id')]
+    #[Groups(['rating:read'])]
     private ?User $instrumentist = null;
 
     #[ORM\Column(type: 'smallint')]
+    #[Groups(['rating:read'])]
     private ?int $cordiality = null;
 
     #[ORM\Column(type: 'smallint')]
+    #[Groups(['rating:read'])]
     private ?int $punctuality = null;
 
     #[ORM\Column(type: 'smallint', name: 'mission_respect')]
+    #[Groups(['rating:read'])]
     private ?int $missionRespect = null;
 
     #[ORM\Column(type: 'text', nullable: true)]
+    #[Groups(['rating:read'])]
     private ?string $comment = null;
 
     #[ORM\Column]
+    #[Groups(['rating:read'])]
     private bool $isFirstCollaboration = false;
 
     public function getId(): ?int

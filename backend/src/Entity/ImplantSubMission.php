@@ -7,6 +7,7 @@ use App\Enum\ImplantSubMissionStatus;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\Table(indexes: [new ORM\Index(name: 'idx_implant_sub_mission', columns: ['mission_id'])])]
@@ -18,22 +19,27 @@ class ImplantSubMission
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['mission:read_manager'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne(inversedBy: 'implantSubMissions')]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['mission:read_manager'])]
     private ?Mission $mission = null;
 
     #[ORM\Column(length: 255)]
+    #[Groups(['mission:read_manager'])]
     private ?string $firmName = null;
 
     #[ORM\Column(enumType: ImplantSubMissionStatus::class)]
+    #[Groups(['mission:read_manager'])]
     private ?ImplantSubMissionStatus $status = ImplantSubMissionStatus::DRAFT;
 
     /**
      * @var Collection<int, MaterialLine>
      */
     #[ORM\OneToMany(mappedBy: 'implantSubMission', targetEntity: MaterialLine::class)]
+    #[Groups(['mission:read_manager'])]
     private Collection $materialLines;
 
     public function __construct()

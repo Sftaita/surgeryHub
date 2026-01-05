@@ -9,6 +9,7 @@ use App\Enum\SchedulePrecision;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\Table(indexes: [
@@ -23,81 +24,99 @@ class Mission
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne(inversedBy: 'missions')]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
     private ?Hospital $site = null;
 
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
     private ?\DateTimeImmutable $startAt = null;
 
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
     private ?\DateTimeImmutable $endAt = null;
 
     #[ORM\Column(enumType: SchedulePrecision::class, options: ['default' => SchedulePrecision::EXACT])]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?SchedulePrecision $schedulePrecision = SchedulePrecision::EXACT;
 
     #[ORM\Column(enumType: MissionType::class)]
+    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
     private ?MissionType $type = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['mission:read', 'mission:read_manager', 'rating:read', 'export:read'])]
     private ?User $surgeon = null;
 
     #[ORM\ManyToOne]
+    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
     private ?User $instrumentist = null;
 
     #[ORM\Column(enumType: MissionStatus::class, options: ['default' => MissionStatus::DRAFT])]
+    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
     private ?MissionStatus $status = MissionStatus::DRAFT;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['mission:read_manager'])]
     private ?User $createdBy = null;
 
     /**
      * @var Collection<int, MissionPublication>
      */
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionPublication::class, cascade: ['persist'], orphanRemoval: true)]
+    #[Groups(['mission:read_manager'])]
     private Collection $publications;
 
     #[ORM\OneToOne(mappedBy: 'mission', cascade: ['persist', 'remove'])]
+    #[Groups(['mission:read_manager'])]
     private ?MissionClaim $claim = null;
 
     /**
      * @var Collection<int, MissionIntervention>
      */
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionIntervention::class, cascade: ['persist', 'remove'])]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private Collection $interventions;
 
     /**
      * @var Collection<int, MaterialLine>
      */
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MaterialLine::class, cascade: ['remove'])]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private Collection $materialLines;
 
     /**
      * @var Collection<int, InstrumentistService>
      */
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: InstrumentistService::class, cascade: ['remove'])]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private Collection $services;
 
     /**
      * @var Collection<int, InstrumentistRating>
      */
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: InstrumentistRating::class)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private Collection $instrumentistRatings;
 
     /**
      * @var Collection<int, SurgeonRatingByInstrumentist>
      */
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: SurgeonRatingByInstrumentist::class)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private Collection $surgeonRatings;
 
     /**
      * @var Collection<int, ImplantSubMission>
      */
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: ImplantSubMission::class, cascade: ['persist', 'remove'])]
+    #[Groups(['mission:read_manager'])]
     private Collection $implantSubMissions;
 
     public function __construct()

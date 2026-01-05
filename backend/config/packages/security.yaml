@@ -46,6 +46,9 @@ security:
             provider: app_user_provider
 
     access_control:
+        # Autoriser le préflight CORS (OPTIONS) partout sur /api
+        - { path: ^/api, roles: PUBLIC_ACCESS, methods: [OPTIONS] }
+
         # Endpoints publics
         - { path: ^/api/auth/login, roles: PUBLIC_ACCESS }
         - { path: ^/api/auth/refresh, roles: PUBLIC_ACCESS }

@@ -6,6 +6,7 @@ use App\Entity\Traits\TimestampableTrait;
 use App\Enum\NotificationStatus;
 use App\Enum\PublicationChannel;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\Table(indexes: [
@@ -20,34 +21,44 @@ class NotificationEvent
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['notification:read'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['notification:read'])]
     private ?User $user = null;
 
     #[ORM\ManyToOne]
+    #[Groups(['notification:read'])]
     private ?Mission $mission = null;
 
     #[ORM\Column(length: 100)]
+    #[Groups(['notification:read'])]
     private ?string $eventType = null;
 
     #[ORM\Column(enumType: PublicationChannel::class)]
+    #[Groups(['notification:read'])]
     private ?PublicationChannel $channel = null;
 
     #[ORM\Column(enumType: NotificationStatus::class)]
+    #[Groups(['notification:read'])]
     private ?NotificationStatus $status = NotificationStatus::SENT;
 
     #[ORM\Column(type: 'json', nullable: true)]
+    #[Groups(['notification:read'])]
     private ?array $payload = null;
 
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['notification:read'])]
     private ?\DateTimeImmutable $sentAt = null;
 
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['notification:read'])]
     private ?\DateTimeImmutable $failedAt = null;
 
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['notification:read'])]
     private ?\DateTimeImmutable $seenAt = null;
 
     public function getId(): ?int

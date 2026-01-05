@@ -6,6 +6,7 @@ use App\Entity\Traits\TimestampableTrait;
 use App\Enum\MissionType;
 use App\Enum\SchedulePrecision;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\Table(indexes: [new ORM\Index(name: 'idx_weekly_template_site_day', columns: ['site_id', 'day_of_week'])])]
@@ -17,32 +18,41 @@ class WeeklyTemplate
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['template:read', 'mission:read_manager'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['template:read', 'mission:read_manager'])]
     private ?Hospital $site = null;
 
     #[ORM\Column(type: 'smallint')]
+    #[Groups(['template:read', 'mission:read_manager'])]
     private ?int $dayOfWeek = null;
 
     #[ORM\Column(type: 'time_immutable')]
+    #[Groups(['template:read', 'mission:read_manager'])]
     private ?\DateTimeImmutable $startTime = null;
 
     #[ORM\Column(type: 'time_immutable')]
+    #[Groups(['template:read', 'mission:read_manager'])]
     private ?\DateTimeImmutable $endTime = null;
 
     #[ORM\Column(enumType: MissionType::class)]
+    #[Groups(['template:read', 'mission:read_manager'])]
     private ?MissionType $missionType = null;
 
     #[ORM\Column(enumType: SchedulePrecision::class, options: ['default' => SchedulePrecision::EXACT])]
+    #[Groups(['template:read', 'mission:read_manager'])]
     private ?SchedulePrecision $schedulePrecision = SchedulePrecision::EXACT;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['template:read', 'mission:read_manager'])]
     private ?User $surgeon = null;
 
     #[ORM\ManyToOne]
+    #[Groups(['template:read', 'mission:read_manager'])]
     private ?User $defaultInstrumentist = null;
 
     public function getId(): ?int

@@ -22,9 +22,7 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 class MissionService
 {
-    public function __construct(private readonly EntityManagerInterface $em)
-    {
-    }
+    public function __construct(private readonly EntityManagerInterface $em) {}
 
     public function create(MissionCreateRequest $dto, User $creator): Mission
     {
@@ -66,9 +64,14 @@ class MissionService
             ->setChannel(PublicationChannel::IN_APP)
             ->setPublishedAt(new \DateTimeImmutable());
 
-        if ($dto->scope === PublicationScope::TARGETED && $dto->targetUserId) {
+        if ($dto->scope === PublicationScope::TARGETED) {
+            if (!$dto->targetUserId) {
+                throw new ConflictHttpException('TARGETED scope requires targetUserId');
+            }
             $target = $this->em->find(User::class, $dto->targetUserId) ?? throw new NotFoundHttpException('Target instrumentist not found');
             $publication->setTargetInstrumentist($target);
+        } else {
+            $publication->setTargetInstrumentist(null);
         }
 
         $this->em->persist($publication);
@@ -86,6 +89,7 @@ class MissionService
                 throw new ConflictHttpException('Mission not claimable');
             }
 
+            // filet sécurité logique (DB unique fortement recommandé dans MissionClaim)
             $existingClaim = $this->em->getRepository(MissionClaim::class)->findOneBy(['mission' => $mission]);
             if ($existingClaim) {
                 throw new ConflictHttpException('Mission already claimed');
@@ -101,8 +105,8 @@ class MissionService
             $mission->setStatus(MissionStatus::ASSIGNED);
             $mission->setClaim($claim);
 
-            $this->em->persist($mission);
             $this->em->persist($claim);
+            $this->em->persist($mission);
             $this->em->flush();
 
             return $mission;
@@ -112,9 +116,7 @@ class MissionService
     public function submit(Mission $mission, MissionSubmitRequest $dto): Mission
     {
         $mission->setStatus(MissionStatus::SUBMITTED);
-        // Persist submission metadata (comment/noMaterial) via audit/event if needed.
         $this->em->flush();
-
         return $mission;
     }
 
@@ -123,15 +125,14 @@ class MissionService
      */
     public function list(MissionFilter $filter, User $user): array
     {
-        $repo = $this->em->getRepository(Mission::class);
-        $qb = $repo->createQueryBuilder('m')
+        $qb = $this->em->getRepository(Mission::class)->createQueryBuilder('m')
             ->leftJoin('m.site', 's')->addSelect('s')
             ->leftJoin('m.surgeon', 'surgeon')->addSelect('surgeon')
             ->leftJoin('m.instrumentist', 'instr')->addSelect('instr')
             ->orderBy('m.startAt', 'DESC');
 
         if ($filter->siteId) {
-            $qb->andWhere('m.site = :siteId')->setParameter('siteId', $filter->siteId);
+            $qb->andWhere('s.id = :siteId')->setParameter('siteId', $filter->siteId);
         }
         if ($filter->status) {
             $qb->andWhere('m.status = :status')->setParameter('status', $filter->status);
@@ -149,11 +150,12 @@ class MissionService
             $qb->andWhere('m.instrumentist = :me')->setParameter('me', $user);
         }
 
-        $page = $filter->page ?? 1;
-        $limit = $filter->limit ?? 20;
+        $page = max(1, (int) ($filter->page ?? 1));
+        $limit = max(1, min(100, (int) ($filter->limit ?? 20)));
+
         $qb->setMaxResults($limit)->setFirstResult(($page - 1) * $limit);
 
-        $paginator = new Paginator($qb);
+        $paginator = new Paginator($qb, true);
 
         return [
             'items' => iterator_to_array($paginator->getIterator()),
@@ -165,6 +167,14 @@ class MissionService
 
     public function getOr404(int $id): Mission
     {
-        return $this->em->find(Mission::class, $id) ?? throw new NotFoundHttpException('Mission not found');
+        $m = $this->em->getRepository(Mission::class)->createQueryBuilder('m')
+            ->leftJoin('m.site', 's')->addSelect('s')
+            ->leftJoin('m.surgeon', 'surgeon')->addSelect('surgeon')
+            ->leftJoin('m.instrumentist', 'instr')->addSelect('instr')
+            ->andWhere('m.id = :id')->setParameter('id', $id)
+            ->getQuery()
+            ->getOneOrNullResult();
+
+        return $m ?? throw new NotFoundHttpException('Mission not found');
     }
 }

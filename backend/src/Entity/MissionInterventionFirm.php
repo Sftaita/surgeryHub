@@ -6,6 +6,7 @@ use App\Entity\Traits\TimestampableTrait;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\Table(indexes: [new ORM\Index(name: 'idx_intervention_firm_intervention', columns: ['mission_intervention_id'])])]
@@ -17,19 +18,23 @@ class MissionInterventionFirm
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne(inversedBy: 'firms')]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?MissionIntervention $missionIntervention = null;
 
     #[ORM\Column(length: 255)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?string $firmName = null;
 
     /**
      * @var Collection<int, MaterialLine>
      */
     #[ORM\OneToMany(mappedBy: 'missionInterventionFirm', targetEntity: MaterialLine::class)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private Collection $materialLines;
 
     public function __construct()

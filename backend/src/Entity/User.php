@@ -10,6 +10,7 @@ use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Security\Core\User\PasswordAuthenticatedUserInterface;
 use Symfony\Component\Security\Core\User\UserInterface;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity(repositoryClass: UserRepository::class)]
 #[ORM\UniqueConstraint(name: 'UNIQ_IDENTIFIER_EMAIL', fields: ['email'])]
@@ -21,15 +22,18 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 180)]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
     private ?string $email = null;
 
     /**
      * @var list<string> The user roles
      */
     #[ORM\Column]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
     private array $roles = [];
 
     /**
@@ -39,27 +43,34 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     private ?string $password = null;
 
     #[ORM\Column(length: 255, nullable: true)]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
     private ?string $firstname = null;
 
     #[ORM\Column(length: 255, nullable: true)]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
     private ?string $lastname = null;
 
     #[ORM\Column(length: 255, nullable: true)]
     private ?string $googleId = null;
 
     #[ORM\Column(options: ['default' => true])]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read'])]
     private bool $active = true;
 
     #[ORM\Column(enumType: EmploymentType::class, nullable: true)]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read'])]
     private ?EmploymentType $employmentType = null;
 
     #[ORM\Column(type: 'decimal', precision: 10, scale: 2, nullable: true)]
+    #[Groups(['mission:read_manager', 'service:read_manager'])]
     private ?string $hourlyRate = null;
 
     #[ORM\Column(type: 'decimal', precision: 10, scale: 2, nullable: true)]
+    #[Groups(['mission:read_manager', 'service:read_manager'])]
     private ?string $consultationFee = null;
 
     #[ORM\Column(length: 3, options: ['default' => 'EUR'])]
+    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager'])]
     private ?string $defaultCurrency = 'EUR';
 
     /**

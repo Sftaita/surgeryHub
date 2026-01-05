@@ -4,6 +4,7 @@ namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\HasLifecycleCallbacks]
@@ -14,24 +15,31 @@ class MaterialItem
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 255, nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?string $manufacturer = null;
 
     #[ORM\Column(length: 100)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?string $referenceCode = null;
 
     #[ORM\Column(length: 255)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?string $label = null;
 
     #[ORM\Column(length: 50)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?string $unit = null;
 
     #[ORM\Column]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private bool $isImplant = false;
 
     #[ORM\Column(options: ['default' => true])]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private bool $active = true;
 
     public function getId(): ?int

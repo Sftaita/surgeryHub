@@ -6,6 +6,7 @@ use App\Entity\Traits\TimestampableTrait;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\Table(indexes: [new ORM\Index(name: 'idx_intervention_mission', columns: ['mission_id'])])]
@@ -17,31 +18,38 @@ class MissionIntervention
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne(inversedBy: 'interventions')]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?Mission $mission = null;
 
     #[ORM\Column(length: 100)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?string $code = null;
 
     #[ORM\Column(length: 255)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?string $label = null;
 
     #[ORM\Column(type: 'smallint')]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private ?int $orderIndex = 0;
 
     /**
      * @var Collection<int, MissionInterventionFirm>
      */
     #[ORM\OneToMany(mappedBy: 'missionIntervention', targetEntity: MissionInterventionFirm::class, cascade: ['persist', 'remove'])]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private Collection $firms;
 
     /**
      * @var Collection<int, MaterialLine>
      */
     #[ORM\OneToMany(mappedBy: 'missionIntervention', targetEntity: MaterialLine::class)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
     private Collection $materialLines;
 
     public function __construct()

@@ -6,6 +6,7 @@ use App\Entity\Traits\TimestampableTrait;
 use App\Enum\DisputeReasonCode;
 use App\Enum\DisputeStatus;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 
 // Unique constraint combined with status ensures only one OPEN dispute exists per service; service layer should enforce status transition semantics.
 #[ORM\Entity]
@@ -25,30 +26,38 @@ class ServiceHoursDispute
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['dispute:read', 'dispute:read_manager'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['dispute:read', 'dispute:read_manager'])]
     private ?Mission $mission = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['dispute:read', 'dispute:read_manager'])]
     private ?InstrumentistService $service = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['dispute:read', 'dispute:read_manager'])]
     private ?User $raisedBy = null;
 
     #[ORM\Column(enumType: DisputeReasonCode::class)]
+    #[Groups(['dispute:read', 'dispute:read_manager'])]
     private ?DisputeReasonCode $reasonCode = null;
 
     #[ORM\Column(type: 'text', nullable: true)]
+    #[Groups(['dispute:read', 'dispute:read_manager'])]
     private ?string $comment = null;
 
     #[ORM\Column(enumType: DisputeStatus::class)]
+    #[Groups(['dispute:read', 'dispute:read_manager'])]
     private ?DisputeStatus $status = DisputeStatus::OPEN;
 
     #[ORM\Column(type: 'text', nullable: true)]
+    #[Groups(['dispute:read_manager'])]
     private ?string $resolutionComment = null;
 
     public function getId(): ?int
