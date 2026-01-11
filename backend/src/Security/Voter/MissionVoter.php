@@ -16,11 +16,24 @@ class MissionVoter extends Voter
     public const PUBLISH = 'MISSION_PUBLISH';
     public const CLAIM = 'MISSION_CLAIM';
     public const SUBMIT = 'MISSION_SUBMIT';
+
+    // PATCH "planning" (site / startAt / endAt / type / schedulePrecision)
+    public const EDIT = 'MISSION_EDIT';
+
+    // Encodage (ex: instrumentiste)
     public const EDIT_ENCODING = 'MISSION_EDIT_ENCODING';
 
     protected function supports(string $attribute, mixed $subject): bool
     {
-        if (!in_array($attribute, [self::VIEW, self::CREATE, self::PUBLISH, self::CLAIM, self::SUBMIT, self::EDIT_ENCODING], true)) {
+        if (!in_array($attribute, [
+            self::VIEW,
+            self::CREATE,
+            self::PUBLISH,
+            self::CLAIM,
+            self::SUBMIT,
+            self::EDIT,
+            self::EDIT_ENCODING,
+        ], true)) {
             return false;
         }
 
@@ -55,6 +68,7 @@ class MissionVoter extends Voter
             self::PUBLISH => $isManager,
             self::CLAIM => $this->canClaim($mission, $user),
             self::SUBMIT => $this->canSubmit($mission, $user, $isManager),
+            self::EDIT => $this->canEdit($mission, $user, $isManager),
             self::EDIT_ENCODING => $this->canEditEncoding($mission, $user, $isManager),
             default => false,
         };
@@ -108,6 +122,19 @@ class MissionVoter extends Voter
     private function canSubmit(Mission $mission, User $user, bool $managerContext): bool
     {
         return $managerContext || $mission->getInstrumentist()?->getId() === $user->getId();
+    }
+
+    private function canEdit(Mission $mission, User $user, bool $managerContext): bool
+    {
+        // Édition "planning" réservée aux managers/admin.
+        // Si tu veux autoriser le chirurgien à modifier ses propres missions en DRAFT, dis-le et je l’ajoute.
+        if (!$managerContext) {
+            return false;
+        }
+
+        // Optionnel (fortement recommandé) : ne pas autoriser l’édition planning après publication/assignation
+        // Adapte selon ton métier
+        return in_array($mission->getStatus(), [MissionStatus::DRAFT], true);
     }
 
     private function canEditEncoding(Mission $mission, User $user, bool $managerContext): bool

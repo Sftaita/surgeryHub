@@ -1,7 +1,7 @@
 <?php
 // src/Dto/Response/InstrumentistProfileResponse.php
 
-namespace App\Dto\Response;
+namespace App\Dto\Request\Response;
 
 final class InstrumentistProfileResponse
 {

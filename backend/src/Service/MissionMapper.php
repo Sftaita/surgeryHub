@@ -2,10 +2,10 @@
 
 namespace App\Service;
 
-use App\Dto\Response\HospitalSlimDto;
-use App\Dto\Response\MissionDetailDto;
-use App\Dto\Response\MissionListDto;
-use App\Dto\Response\UserSlimDto;
+use App\Dto\Request\Response\HospitalSlimDto;
+use App\Dto\Request\Response\MissionDetailDto;
+use App\Dto\Request\Response\MissionListDto;
+use App\Dto\Request\Response\UserSlimDto;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\User;

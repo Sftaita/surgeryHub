@@ -1,7 +1,7 @@
 <?php
 // src/Dto/Response/MeResponse.php
 
-namespace App\Dto\Response;
+namespace App\Dto\Request\Response;
 
 final class MeResponse
 {

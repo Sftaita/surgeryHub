@@ -3,8 +3,8 @@
 
 namespace App\Controller\Api;
 
-use App\Dto\Response\InstrumentistProfileResponse;
-use App\Dto\Response\MeResponse;
+use App\Dto\Request\Response\InstrumentistProfileResponse;
+use App\Dto\Request\Response\MeResponse;
 use App\Entity\SiteMembership;
 use App\Entity\User;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;

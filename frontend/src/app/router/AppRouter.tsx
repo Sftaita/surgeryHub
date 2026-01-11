@@ -1,25 +1,33 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import {
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
+import { useEffect } from "react";
+
 import { RequireAuth } from "./RequireAuth";
 import { RequireAppAccess } from "./RequireAppAccess";
+
 import { MobileLayout } from "../layouts/MobileLayout";
 import { DesktopLayout } from "../layouts/DesktopLayout";
-import { NoSitePage } from "../pages/NoSitePage";
+
 import { ForbiddenPage } from "../pages/ForbiddenPage";
 import { useAuth } from "../auth/AuthContext";
 import { isMobileRole, isDesktopRole } from "../auth/roles";
-import { useEffect } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+
+// Lot 1 — Manager/Admin — Missions
+import MissionsListPage from "../pages/manager/MissionsListPage";
+import MissionDetailPage from "../pages/manager/MissionDetailPage";
 
 function LoginPage() {
   const { state, login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-
-  // Si on vient d'une route protégée, on la récupère
   const from = (location.state as any)?.from ?? "/";
 
   useEffect(() => {
-    // Dès que l'utilisateur est authentifié, on quitte /login
     if (state.status === "authenticated") {
       navigate(from, { replace: true });
     }
@@ -28,8 +36,6 @@ function LoginPage() {
   return (
     <div style={{ padding: 16 }}>
       <h2>Login</h2>
-      <p>Status: {state.status}</p>
-
       <button onClick={() => login("test@test.com", "Password123!")}>
         Login (test)
       </button>
@@ -37,56 +43,65 @@ function LoginPage() {
   );
 }
 
-/**
- * Landing post-login : redirection selon rôle
- */
 function PostLoginRedirect() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
 
   const role = state.user.role;
-  if (isMobileRole(role)) return <Navigate to="/app/m" replace />;
-  if (isDesktopRole(role)) return <Navigate to="/app/d" replace />;
+
+  // Manager / Admin
+  if (isDesktopRole(role)) return <Navigate to="/app/m" replace />;
+
+  // Instrumentist / Surgeon
+  if (role === "SURGEON") return <Navigate to="/app/s" replace />;
+  if (isMobileRole(role)) return <Navigate to="/app/i" replace />;
 
   return <Navigate to="/app/forbidden" replace />;
 }
 
-// Pages “placeholder” (sans métier)
-function MobileHome() {
-  return <div>Mobile Home (socle)</div>;
+// Placeholders socle
+function InstrumentistHome() {
+  return <div>Instrumentist Home</div>;
 }
-function DesktopHome() {
-  return <div>Desktop Home (socle)</div>;
+function SurgeonHome() {
+  return <div>Surgeon Home</div>;
+}
+function ManagerHome() {
+  return <div>Manager / Admin Home</div>;
 }
 
 export function AppRouter() {
   return (
     <Routes>
-      {/* Public */}
       <Route path="/login" element={<LoginPage />} />
 
-      {/* Protected */}
       <Route element={<RequireAuth />}>
-        {/* Après login, on redirige selon rôle */}
         <Route path="/" element={<PostLoginRedirect />} />
 
-        {/* Toutes les routes /app sont protégées + contraintes socle */}
         <Route path="/app" element={<RequireAppAccess />}>
-          <Route path="no-site" element={<NoSitePage />} />
           <Route path="forbidden" element={<ForbiddenPage />} />
 
-          {/* Branches UI */}
+          {/* Instrumentist */}
           <Route element={<MobileLayout />}>
-            <Route path="m" element={<MobileHome />} />
+            <Route path="i" element={<InstrumentistHome />} />
           </Route>
 
+          {/* Surgeon */}
+          <Route element={<MobileLayout />}>
+            <Route path="s" element={<SurgeonHome />} />
+          </Route>
+
+          {/* Manager / Admin */}
           <Route element={<DesktopLayout />}>
-            <Route path="d" element={<DesktopHome />} />
+            <Route path="m" element={<ManagerHome />} />
+
+            {/* Lot 1 — Missions */}
+            <Route path="m/missions" element={<MissionsListPage />} />
+            <Route path="m/missions/:id" element={<MissionDetailPage />} />
           </Route>
         </Route>
       </Route>
 
-      {/* Fallback */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

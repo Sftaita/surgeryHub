@@ -4,6 +4,7 @@ namespace App\Controller\Api;
 
 use App\Dto\Request\MissionCreateRequest;
 use App\Dto\Request\MissionFilter;
+use App\Dto\Request\MissionPatchRequest;
 use App\Dto\Request\MissionPublishRequest;
 use App\Dto\Request\MissionSubmitRequest;
 use App\Entity\Mission;
@@ -42,6 +43,22 @@ class MissionController extends AbstractController
 
         // Retour minimal detail DTO
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_CREATED);
+    }
+
+    #[Route(path: '/{id}', name: 'api_missions_patch', methods: ['PATCH'])]
+    public function patch(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+
+        // Ajuste selon ton voter (EDIT/UPDATE/MANAGE)
+        $this->denyAccessUnlessGranted(MissionVoter::EDIT, $mission);
+
+        /** @var MissionPatchRequest $dto */
+        $dto = $this->deserializeAndValidate($request->getContent(), MissionPatchRequest::class);
+
+        $mission = $this->missionService->patch($mission, $dto, $user);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }
 
     #[Route(path: '/{id}/publish', name: 'api_missions_publish', methods: ['POST'])]

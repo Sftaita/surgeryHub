@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Dto\Response;
+namespace App\Dto\Request\Response;
 
 final class UserSlimDto
 {

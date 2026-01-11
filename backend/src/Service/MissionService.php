@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Dto\Request\MissionCreateRequest;
 use App\Dto\Request\MissionFilter;
+use App\Dto\Request\MissionPatchRequest;
 use App\Dto\Request\MissionPublishRequest;
 use App\Dto\Request\MissionSubmitRequest;
 use App\Entity\Hospital;
@@ -12,13 +13,16 @@ use App\Entity\MissionClaim;
 use App\Entity\MissionPublication;
 use App\Entity\User;
 use App\Enum\MissionStatus;
+use App\Enum\MissionType;
 use App\Enum\PublicationChannel;
 use App\Enum\PublicationScope;
+use App\Enum\SchedulePrecision;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Tools\Pagination\Paginator;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 class MissionService
 {
@@ -33,8 +37,8 @@ class MissionService
         $mission = new Mission();
         $mission
             ->setSite($site)
-            ->setType($dto->type)
-            ->setSchedulePrecision($dto->schedulePrecision)
+            ->setType($dto->type) // ton create marche déjà chez toi, je ne le change pas ici
+            ->setSchedulePrecision($dto->schedulePrecision) // idem
             ->setSurgeon($surgeon)
             ->setInstrumentist($instrumentist)
             ->setCreatedBy($creator)
@@ -50,6 +54,61 @@ class MissionService
         $this->em->persist($mission);
         $this->em->flush();
 
+        return $mission;
+    }
+
+    public function patch(Mission $mission, MissionPatchRequest $dto, User $actor): Mission
+    {
+        // Option métier : on bloque le patch si pas DRAFT (aligné au voter)
+        if ($mission->getStatus() !== MissionStatus::DRAFT) {
+            throw new ConflictHttpException('Mission not editable');
+        }
+
+        if ($dto->siteId !== null) {
+            $site = $this->em->find(Hospital::class, $dto->siteId) ?? throw new NotFoundHttpException('Site not found');
+            $mission->setSite($site);
+        }
+
+        if ($dto->type !== null) {
+            // Setter attend très probablement un enum
+            try {
+                $mission->setType(MissionType::from($dto->type));
+            } catch (\ValueError) {
+                throw new UnprocessableEntityHttpException('Invalid type');
+            }
+        }
+
+        if ($dto->schedulePrecision !== null) {
+            try {
+                $mission->setSchedulePrecision(SchedulePrecision::from($dto->schedulePrecision));
+            } catch (\ValueError) {
+                throw new UnprocessableEntityHttpException('Invalid schedulePrecision');
+            }
+        }
+
+        if ($dto->startAt !== null) {
+            try {
+                $mission->setStartAt(new \DateTimeImmutable($dto->startAt));
+            } catch (\Throwable) {
+                throw new UnprocessableEntityHttpException('Invalid startAt datetime format');
+            }
+        }
+
+        if ($dto->endAt !== null) {
+            try {
+                $mission->setEndAt(new \DateTimeImmutable($dto->endAt));
+            } catch (\Throwable) {
+                throw new UnprocessableEntityHttpException('Invalid endAt datetime format');
+            }
+        }
+
+        $startAt = $mission->getStartAt();
+        $endAt = $mission->getEndAt();
+        if ($startAt !== null && $endAt !== null && $endAt <= $startAt) {
+            throw new UnprocessableEntityHttpException('endAt must be after startAt');
+        }
+
+        $this->em->flush();
         return $mission;
     }
 
