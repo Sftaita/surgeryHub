@@ -70,10 +70,13 @@ class MissionController extends AbstractController
         /** @var MissionPublishRequest $dto */
         $dto = $this->deserializeAndValidate($request->getContent(), MissionPublishRequest::class);
 
-        $publication = $this->missionService->publish($mission, $dto, $user);
+        // Exécute la publication (effet de bord)
+        $this->missionService->publish($mission, $dto, $user);
 
-        // publication = manager/admin; on renvoie l'entité publication si tu veux, sinon 204
-        return $this->json($publication, JsonResponse::HTTP_OK, [], ['groups' => 'mission:read_manager']);
+        // IMPORTANT:
+        // Endpoint "commande" => on ne renvoie pas l'entité Doctrine (risque de circular reference).
+        // Le frontend re-fetch ensuite /api/missions/{id}.
+        return new JsonResponse(null, JsonResponse::HTTP_NO_CONTENT);
     }
 
     #[Route(path: '/{id}/claim', name: 'api_missions_claim', methods: ['POST'])]

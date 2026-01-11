@@ -19,20 +19,20 @@ class Hospital
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['hospital:read', 'mission:read', 'mission:read_manager', 'rating:read', 'export:read'])]
+    #[Groups(['hospital:read', 'mission:read', 'mission:read_manager', 'rating:read', 'export:read', 'site:list'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 255)]
-    #[Groups(['hospital:read', 'mission:read', 'mission:read_manager', 'rating:read', 'export:read'])]
+    #[Groups(['hospital:read', 'mission:read', 'mission:read_manager', 'rating:read', 'export:read', 'site:list'])]
     private ?string $name = null;
 
     #[ORM\Column(length: 255, nullable: true)]
-    #[Groups(['hospital:read', 'mission:read_manager'])]
+    #[Groups(['hospital:read', 'mission:read_manager', 'site:list'])]
     private ?string $address = null;
 
     // IMPORTANT: nullable=true pour tolérer DB existante, mais getter garantit une valeur non vide
     #[ORM\Column(length: 100, nullable: true)]
-    #[Groups(['hospital:read', 'mission:read', 'mission:read_manager', 'export:read'])]
+    #[Groups(['hospital:read', 'mission:read', 'mission:read_manager', 'export:read', 'site:list'])]
     private ?string $timezone = null;
 
     /**
