@@ -33,28 +33,63 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
         $this->getEntityManager()->flush();
     }
 
-    //    /**
-    //     * @return User[] Returns an array of User objects
-    //     */
-    //    public function findByExampleField($value): array
-    //    {
-    //        return $this->createQueryBuilder('u')
-    //            ->andWhere('u.exampleField = :val')
-    //            ->setParameter('val', $value)
-    //            ->orderBy('u.id', 'ASC')
-    //            ->setMaxResults(10)
-    //            ->getQuery()
-    //            ->getResult()
-    //        ;
-    //    }
+    /**
+     * @return list<User>
+     *
+     * NOTE: roles est stocké en JSON. Le LIKE fonctionne généralement sur MySQL car le JSON est comparé comme string.
+     * Si un jour ça pose problème, on passera à JSON_CONTAINS via requête native.
+     */
+    public function findSurgeons(?string $q = null, bool $activeOnly = true): array
+    {
+        $qb = $this->createQueryBuilder('u')
+            ->andWhere('u.roles LIKE :role')
+            ->setParameter('role', '%"ROLE_SURGEON"%')
+            ->orderBy('u.lastname', 'ASC')
+            ->addOrderBy('u.firstname', 'ASC')
+            ->addOrderBy('u.email', 'ASC');
 
-    //    public function findOneBySomeField($value): ?User
-    //    {
-    //        return $this->createQueryBuilder('u')
-    //            ->andWhere('u.exampleField = :val')
-    //            ->setParameter('val', $value)
-    //            ->getQuery()
-    //            ->getOneOrNullResult()
-    //        ;
-    //    }
+        if ($activeOnly) {
+            $qb->andWhere('u.active = :active')
+               ->setParameter('active', true);
+        }
+
+        if ($q !== null && trim($q) !== '') {
+            $q = trim($q);
+            $qb->andWhere('(LOWER(u.email) LIKE :q OR LOWER(u.firstname) LIKE :q OR LOWER(u.lastname) LIKE :q)')
+               ->setParameter('q', '%'.mb_strtolower($q).'%');
+        }
+
+        /** @var list<User> $res */
+        $res = $qb->getQuery()->getResult();
+        return $res;
+    }
+
+    /**
+     * @return list<User>
+     *
+     * Liste des instrumentistes, triée par nom/prénom/email.
+     * Filtre optionnel sur "active".
+     *
+     * NOTE: roles est stocké en JSON. Le LIKE fonctionne généralement sur MySQL car le JSON est comparé comme string.
+     * Si un jour ça pose problème, on passera à JSON_CONTAINS via requête native.
+     */
+    public function findInstrumentists(bool $activeOnly = true): array
+    {
+        $qb = $this->createQueryBuilder('u')
+            ->andWhere('u.roles LIKE :role')
+            ->setParameter('role', '%"ROLE_INSTRUMENTIST"%')
+            ->orderBy('u.lastname', 'ASC')
+            ->addOrderBy('u.firstname', 'ASC')
+            ->addOrderBy('u.email', 'ASC');
+
+        if ($activeOnly) {
+            $qb->andWhere('u.active = :active')
+               ->setParameter('active', true);
+        }
+
+        /** @var list<User> $res */
+        $res = $qb->getQuery()->getResult();
+
+        return $res;
+    }
 }
