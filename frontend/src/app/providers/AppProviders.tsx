@@ -5,6 +5,24 @@ import { queryClient } from "./queryClient";
 import { AppErrorBoundary } from "../errors/AppErrorBoundary";
 import { AuthProvider } from "../auth/AuthContext";
 
+// Toast (global)
+import { ToastProvider } from "../ui/toast/ToastProvider";
+
+// MUI X Date Pickers
+import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
+import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
+
+// Dayjs + timezone
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc";
+import timezone from "dayjs/plugin/timezone";
+import "dayjs/locale/fr";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
+dayjs.tz.setDefault("Europe/Brussels");
+dayjs.locale("fr");
+
 const theme = createTheme();
 
 export function AppProviders({ children }: PropsWithChildren) {
@@ -13,7 +31,11 @@ export function AppProviders({ children }: PropsWithChildren) {
       <QueryClientProvider client={queryClient}>
         <ThemeProvider theme={theme}>
           <CssBaseline />
-          <AuthProvider>{children}</AuthProvider>
+          <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale="fr">
+            <ToastProvider>
+              <AuthProvider>{children}</AuthProvider>
+            </ToastProvider>
+          </LocalizationProvider>
         </ThemeProvider>
       </QueryClientProvider>
     </AppErrorBoundary>

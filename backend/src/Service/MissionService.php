@@ -34,22 +34,25 @@ class MissionService
         $surgeon = $this->em->find(User::class, $dto->surgeonUserId) ?? throw new NotFoundHttpException('Surgeon not found');
         $instrumentist = $dto->instrumentistUserId ? $this->em->find(User::class, $dto->instrumentistUserId) : null;
 
+        // Validation métier (propre) : endAt strictement après startAt
+        if ($dto->startAt === null || $dto->endAt === null) {
+            throw new UnprocessableEntityHttpException('startAt and endAt are required');
+        }
+        if ($dto->endAt <= $dto->startAt) {
+            throw new UnprocessableEntityHttpException('endAt must be after startAt');
+        }
+
         $mission = new Mission();
         $mission
             ->setSite($site)
-            ->setType($dto->type) // ton create marche déjà chez toi, je ne le change pas ici
-            ->setSchedulePrecision($dto->schedulePrecision) // idem
+            ->setType($dto->type) // enum déjà
+            ->setSchedulePrecision($dto->schedulePrecision) // enum déjà
             ->setSurgeon($surgeon)
             ->setInstrumentist($instrumentist)
             ->setCreatedBy($creator)
-            ->setStatus(MissionStatus::DRAFT);
-
-        if ($dto->startAt) {
-            $mission->setStartAt(new \DateTimeImmutable($dto->startAt));
-        }
-        if ($dto->endAt) {
-            $mission->setEndAt(new \DateTimeImmutable($dto->endAt));
-        }
+            ->setStatus(MissionStatus::DRAFT)
+            ->setStartAt($dto->startAt)
+            ->setEndAt($dto->endAt);
 
         $this->em->persist($mission);
         $this->em->flush();

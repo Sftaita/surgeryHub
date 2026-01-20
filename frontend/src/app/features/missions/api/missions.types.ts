@@ -1,5 +1,3 @@
-// src/app/features/missions/api/missions.types.ts
-
 export type AllowedAction =
   | "view"
   | "edit"
@@ -11,16 +9,59 @@ export type AllowedAction =
 export type SchedulePrecision = "APPROXIMATE" | "EXACT";
 export type MissionType = "BLOCK" | "CONSULTATION";
 
-/**
- * Typage générique des réponses paginées API:
- * Utilisé par fetchMissions (Lot 1).
- */
+export type CreateMissionBody = {
+  siteId: number;
+  type: MissionType;
+  schedulePrecision: SchedulePrecision;
+  startAt: string;
+  endAt: string;
+  surgeonUserId: number;
+};
+
+export type CreateMissionResult = Mission;
+
 export type PaginatedResponse<T> = {
   items: T[];
   total: number;
   page?: number;
   limit?: number;
 };
+
+export type SiteListItem = {
+  id: number;
+  name: string;
+  address?: string;
+  timezone?: string;
+};
+
+export type UserListItem = {
+  id: number;
+  email: string;
+  firstname?: string | null;
+  lastname?: string | null;
+  active?: boolean;
+  employmentType?: string | null;
+  displayName?: string | null;
+  defaultCurrency?: string | null;
+};
+
+/**
+ * Lot 2b (correction finale) — /api/instrumentists
+ * displayName = libellé principal UI
+ * aucun lien instrumentiste↔site côté frontend
+ */
+export type InstrumentistListItem = {
+  id: number;
+  email: string;
+  firstname?: string | null;
+  lastname?: string | null;
+  active?: boolean;
+  employmentType?: string | null;
+  defaultCurrency?: string | null;
+  displayName?: string | null;
+};
+
+export type InstrumentistsResponse = PaginatedResponse<InstrumentistListItem>;
 
 export interface SiteRef {
   id: number;
@@ -47,7 +88,6 @@ export interface Mission {
   startAt: string;
   endAt: string;
 
-  // backend peut renvoyer soit site objet, soit siteId (selon endpoints/serializer)
   site?: SiteRef | null;
   siteId?: number;
 
@@ -56,9 +96,7 @@ export interface Mission {
   surgeon?: UserRef | null;
   instrumentist?: UserRef | null;
 
-  // IMPORTANT: actions autorisées côté API
   allowedActions?: AllowedAction[];
 
-  // Le reste peut exister mais on n’affiche pas patient/financier
   [key: string]: unknown;
 }

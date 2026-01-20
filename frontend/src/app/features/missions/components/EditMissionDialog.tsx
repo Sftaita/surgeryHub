@@ -1,203 +1,277 @@
-import { useEffect, useMemo, useState } from "react";
+import * as React from "react";
 import {
   Alert,
-  Box,
   Button,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
-  Divider,
+  FormControl,
+  FormHelperText,
+  IconButton,
+  InputLabel,
+  MenuItem,
+  Select,
   Stack,
   TextField,
-  Typography,
+  Tooltip,
 } from "@mui/material";
-import type { UpdateMissionRequest } from "../api/missions.requests";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { DateTimePicker } from "@mui/x-date-pickers/DateTimePicker";
+import dayjs, { Dayjs } from "dayjs";
+
 import type {
   Mission,
   MissionType,
   SchedulePrecision,
 } from "../api/missions.types";
+import { patchMission } from "../api/missions.api";
+import {
+  getMissionSiteId,
+  type MissionPatchBody,
+} from "../api/missions.requests";
 
 type Props = {
   open: boolean;
   onClose: () => void;
   mission: Mission;
-  onSubmit: (payload: UpdateMissionRequest) => void;
-  isSubmitting?: boolean;
-  errorMessage?: string | null;
 };
 
-function isIsoWithOffset(value: string): boolean {
-  // Validation "souple" (on ne fait pas de parsing strict côté FE)
-  // Exemples attendus: 2026-01-05T08:00:00+01:00, 2026-01-05T08:00:00Z
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
-    value
-  );
+function extractApiError(err: unknown): { status?: number; message: string } {
+  const status = (err as any)?.response?.status as number | undefined;
+  const data = (err as any)?.response?.data;
+
+  const message =
+    (typeof data === "string" && data) ||
+    data?.message ||
+    data?.detail ||
+    "Une erreur est survenue";
+
+  return { status, message };
 }
 
-export default function EditMissionDialog({
-  open,
-  onClose,
-  mission,
-  onSubmit,
-  isSubmitting = false,
-  errorMessage = null,
-}: Props) {
-  const initial = useMemo<UpdateMissionRequest>(
-    () => ({
-      startAt: mission.startAt,
-      endAt: mission.endAt,
-      schedulePrecision: mission.schedulePrecision as SchedulePrecision,
-      type: mission.type as MissionType,
-      siteId: mission.site?.id ?? mission.siteId ?? 0,
-    }),
-    [mission]
+function parseMissionIsoToDayjs(value?: string | null): Dayjs | null {
+  if (!value) return null;
+  const d = dayjs(value);
+  if (!d.isValid()) return null;
+  return d.tz("Europe/Brussels");
+}
+
+function toBrusselsIso(dt: Dayjs): string {
+  return dt.tz("Europe/Brussels").format("YYYY-MM-DDTHH:mm:ssZ");
+}
+
+function typeLabel(t: MissionType): string {
+  if (t === "BLOCK") return "Bloc opératoire";
+  if (t === "CONSULTATION") return "Consultation";
+  return t;
+}
+
+export default function EditMissionDialog({ open, onClose, mission }: Props) {
+  const queryClient = useQueryClient();
+
+  /**
+   * LOT 2a (verrouillé) :
+   * - Le site N’EST PAS éditable ici.
+   * - On affiche le nom du site, et on renvoie siteId inchangé au PATCH.
+   */
+  const siteName = mission.site?.name ?? "—";
+  const siteIdFromMission =
+    typeof mission.site?.id === "number"
+      ? mission.site.id
+      : getMissionSiteId(mission);
+
+  const [startAt, setStartAt] = React.useState<Dayjs | null>(
+    parseMissionIsoToDayjs(mission.startAt)
   );
+  const [endAt, setEndAt] = React.useState<Dayjs | null>(
+    parseMissionIsoToDayjs(mission.endAt)
+  );
+  const [schedulePrecision, setSchedulePrecision] =
+    React.useState<SchedulePrecision>(mission.schedulePrecision);
+  const [type, setType] = React.useState<MissionType>(mission.type);
 
-  const [form, setForm] = useState<UpdateMissionRequest>(initial);
-  const [localError, setLocalError] = useState<string | null>(null);
+  const [formError, setFormError] = React.useState<string | null>(null);
 
-  useEffect(() => {
-    if (open) {
-      setForm(initial);
-      setLocalError(null);
-    }
-  }, [open, initial]);
+  React.useEffect(() => {
+    if (!open) return;
 
-  const update = <K extends keyof UpdateMissionRequest>(
-    key: K,
-    value: UpdateMissionRequest[K]
-  ) => {
-    setForm((prev) => ({ ...prev, [key]: value }));
-  };
+    setStartAt(parseMissionIsoToDayjs(mission.startAt));
+    setEndAt(parseMissionIsoToDayjs(mission.endAt));
+    setSchedulePrecision(mission.schedulePrecision);
+    setType(mission.type);
+    setFormError(null);
+  }, [open, mission]);
 
-  const validate = (): boolean => {
-    if (!form.siteId || Number.isNaN(Number(form.siteId))) {
-      setLocalError("Le site est requis (siteId).");
-      return false;
-    }
-    if (!form.startAt || !isIsoWithOffset(form.startAt)) {
-      setLocalError(
-        "startAt doit être un ISO 8601 avec timezone (ex: 2026-01-05T08:00:00+01:00)."
-      );
-      return false;
-    }
-    if (!form.endAt || !isIsoWithOffset(form.endAt)) {
-      setLocalError(
-        "endAt doit être un ISO 8601 avec timezone (ex: 2026-01-05T13:00:00+01:00)."
-      );
-      return false;
-    }
-    if (!form.schedulePrecision) {
-      setLocalError("schedulePrecision est requis.");
-      return false;
-    }
-    if (!form.type) {
-      setLocalError("type est requis.");
-      return false;
-    }
-    setLocalError(null);
-    return true;
-  };
+  const mutation = useMutation({
+    mutationFn: async (body: MissionPatchBody) =>
+      patchMission(mission.id, body),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["mission", mission.id],
+      });
+      onClose();
+    },
+    onError: (err) => {
+      const { status, message } = extractApiError(err);
+      if (status === 401)
+        return setFormError("Session expirée. Veuillez vous reconnecter.");
+      if (status === 403) return setFormError("Accès interdit.");
+      if (status === 404) return setFormError("Mission introuvable.");
+      if (status === 409)
+        return setFormError("Conflit. Recharge puis réessaye.");
+      if (status === 422)
+        return setFormError(
+          message || "Données invalides. Corrige le formulaire."
+        );
+      setFormError(message || "Erreur serveur.");
+    },
+  });
 
-  const handleSubmit = () => {
-    if (!validate()) return;
-    onSubmit({
-      ...form,
-      siteId: Number(form.siteId),
+  function handleSubmit() {
+    setFormError(null);
+
+    if (!startAt || !startAt.isValid()) {
+      setFormError("Veuillez renseigner une date/heure de début valide.");
+      return;
+    }
+    if (!endAt || !endAt.isValid()) {
+      setFormError("Veuillez renseigner une date/heure de fin valide.");
+      return;
+    }
+    if (endAt.isBefore(startAt)) {
+      setFormError("La fin doit être après le début.");
+      return;
+    }
+
+    const parsedSiteId = Number(siteIdFromMission);
+    if (!Number.isFinite(parsedSiteId) || parsedSiteId <= 0) {
+      setFormError("Site invalide (siteId manquant dans la mission).");
+      return;
+    }
+
+    mutation.mutate({
+      startAt: toBrusselsIso(startAt),
+      endAt: toBrusselsIso(endAt),
+      schedulePrecision,
+      type,
+      siteId: parsedSiteId,
     });
-  };
+  }
 
   return (
     <Dialog
       open={open}
-      onClose={isSubmitting ? undefined : onClose}
+      onClose={mutation.isPending ? undefined : onClose}
       fullWidth
       maxWidth="sm"
     >
-      <DialogTitle>Éditer la mission</DialogTitle>
-      <Divider />
+      <DialogTitle>Éditer la mission #{mission.id}</DialogTitle>
+
       <DialogContent>
-        <Stack spacing={2} sx={{ mt: 2 }}>
-          <Typography variant="body2" color="text.secondary">
-            Saisir des dates au format ISO 8601 avec timezone (ex:
-            2026-01-05T08:00:00+01:00). Aucun champ patient ni financier n’est
-            géré ici.
-          </Typography>
-
-          {(localError || errorMessage) && (
-            <Alert severity="error">{localError ?? errorMessage}</Alert>
-          )}
+        <Stack spacing={2} mt={1}>
+          {formError ? <Alert severity="error">{formError}</Alert> : null}
 
           <TextField
-            label="startAt (ISO + timezone)"
-            value={form.startAt}
-            onChange={(e) => update("startAt", e.target.value)}
-            disabled={isSubmitting}
+            label="Site"
+            value={siteName}
             fullWidth
-            placeholder="2026-01-05T08:00:00+01:00"
+            disabled
+            helperText="Lecture seule (Lot 2a). Le changement de site fera l’objet d’un lot distinct si nécessaire."
           />
 
-          <TextField
-            label="endAt (ISO + timezone)"
-            value={form.endAt}
-            onChange={(e) => update("endAt", e.target.value)}
-            disabled={isSubmitting}
-            fullWidth
-            placeholder="2026-01-05T13:00:00+01:00"
+          <DateTimePicker
+            label="Début"
+            value={startAt}
+            onChange={(v) => setStartAt(v)}
+            disabled={mutation.isPending}
+            slotProps={{ textField: { fullWidth: true, required: true } }}
           />
 
-          <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2 }}>
-            <TextField
-              label="schedulePrecision"
-              value={form.schedulePrecision}
+          <DateTimePicker
+            label="Fin"
+            value={endAt}
+            onChange={(v) => setEndAt(v)}
+            disabled={mutation.isPending}
+            slotProps={{ textField: { fullWidth: true, required: true } }}
+          />
+
+          <FormControl fullWidth required disabled={mutation.isPending}>
+            <Stack
+              direction="row"
+              alignItems="center"
+              justifyContent="space-between"
+            >
+              <InputLabel id="schedulePrecision-label">Précision</InputLabel>
+
+              <Tooltip
+                title={
+                  <>
+                    <div>
+                      <strong>Horaire confirmé</strong> : créneau fixe (planning
+                      validé).
+                    </div>
+                    <div>
+                      <strong>Horaire estimé</strong> : peut encore bouger
+                      (organisation en cours).
+                    </div>
+                  </>
+                }
+              >
+                <IconButton size="small" sx={{ mt: 0.5 }}>
+                  <InfoOutlinedIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            </Stack>
+
+            <Select
+              labelId="schedulePrecision-label"
+              label="Précision"
+              value={schedulePrecision}
               onChange={(e) =>
-                update("schedulePrecision", e.target.value as SchedulePrecision)
+                setSchedulePrecision(e.target.value as SchedulePrecision)
               }
-              disabled={isSubmitting}
-              fullWidth
-              select
-              SelectProps={{ native: true }}
             >
-              <option value="APPROXIMATE">APPROXIMATE</option>
-              <option value="EXACT">EXACT</option>
-            </TextField>
+              <MenuItem value="EXACT">Horaire confirmé</MenuItem>
+              <MenuItem value="APPROXIMATE">Horaire estimé</MenuItem>
+            </Select>
 
-            <TextField
-              label="type"
-              value={form.type}
-              onChange={(e) => update("type", e.target.value as MissionType)}
-              disabled={isSubmitting}
-              fullWidth
-              select
-              SelectProps={{ native: true }}
+            <FormHelperText>
+              Utilise “Confirmé” quand les horaires sont définitifs.
+            </FormHelperText>
+          </FormControl>
+
+          <FormControl fullWidth required disabled={mutation.isPending}>
+            <InputLabel id="type-label">Type</InputLabel>
+            <Select
+              labelId="type-label"
+              label="Type"
+              value={type}
+              onChange={(e) => setType(e.target.value as MissionType)}
             >
-              <option value="BLOCK">BLOCK</option>
-              <option value="CONSULTATION">CONSULTATION</option>
-            </TextField>
-          </Box>
+              <MenuItem value="BLOCK">{typeLabel("BLOCK")}</MenuItem>
+              <MenuItem value="CONSULTATION">
+                {typeLabel("CONSULTATION")}
+              </MenuItem>
+            </Select>
 
-          <TextField
-            label="siteId"
-            value={form.siteId}
-            onChange={(e) => update("siteId", Number(e.target.value) as any)}
-            disabled={isSubmitting}
-            fullWidth
-            type="number"
-            inputProps={{ min: 1 }}
-          />
+            <FormHelperText>
+              “Bloc opératoire” = mission au bloc. “Consultation” = activité
+              clinique hors bloc.
+            </FormHelperText>
+          </FormControl>
         </Stack>
       </DialogContent>
 
-      <DialogActions sx={{ p: 2 }}>
-        <Button onClick={onClose} disabled={isSubmitting}>
+      <DialogActions sx={{ px: 3, pb: 2 }}>
+        <Button onClick={onClose} disabled={mutation.isPending}>
           Annuler
         </Button>
         <Button
           variant="contained"
           onClick={handleSubmit}
-          disabled={isSubmitting}
+          disabled={mutation.isPending}
         >
           Enregistrer
         </Button>

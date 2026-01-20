@@ -20,11 +20,17 @@ class MissionCreateRequest
     #[Assert\Choice(callback: [SchedulePrecision::class, 'cases'])]
     public ?SchedulePrecision $schedulePrecision = SchedulePrecision::EXACT;
 
-    #[Assert\DateTime]
-    public ?string $startAt = null;
+    /**
+     * ISO 8601 attendu dans le JSON (ex: 2026-01-27T08:00:00+01:00)
+     * Hydraté par Symfony Serializer en DateTimeImmutable.
+     */
+    #[Assert\NotNull]
+    #[Assert\Type(\DateTimeInterface::class)]
+    public ?\DateTimeImmutable $startAt = null;
 
-    #[Assert\DateTime]
-    public ?string $endAt = null;
+    #[Assert\NotNull]
+    #[Assert\Type(\DateTimeInterface::class)]
+    public ?\DateTimeImmutable $endAt = null;
 
     #[Assert\NotBlank]
     #[Assert\Positive]

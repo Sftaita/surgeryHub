@@ -87,6 +87,22 @@ export default function MissionsListPage() {
 
   return (
     <Box sx={{ p: 2 }}>
+      <Stack
+        direction="row"
+        justifyContent="space-between"
+        alignItems="center"
+        mb={1.5}
+        gap={2}
+      >
+        <div />
+        <Button
+          variant="contained"
+          onClick={() => navigate("/app/m/missions/new")}
+        >
+          Créer une mission
+        </Button>
+      </Stack>
+
       <MissionsFiltersBar
         status={filters.status}
         type={filters.type}

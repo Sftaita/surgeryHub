@@ -21,6 +21,9 @@ import { isMobileRole, isDesktopRole } from "../auth/roles";
 import MissionsListPage from "../pages/manager/MissionsListPage";
 import MissionDetailPage from "../pages/manager/MissionDetailPage";
 
+// Lot 2b — Manager/Admin — Create mission
+import MissionCreatePage from "../pages/manager/MissionCreatePage";
+
 function LoginPage() {
   const { state, login } = useAuth();
   const navigate = useNavigate();
@@ -97,6 +100,10 @@ export function AppRouter() {
 
             {/* Lot 1 — Missions */}
             <Route path="m/missions" element={<MissionsListPage />} />
+
+            {/* Lot 2b — Missions — Create */}
+            <Route path="m/missions/new" element={<MissionCreatePage />} />
+
             <Route path="m/missions/:id" element={<MissionDetailPage />} />
           </Route>
         </Route>

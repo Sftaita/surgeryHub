@@ -18,6 +18,7 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
+use Symfony\Component\Serializer\Normalizer\DateTimeNormalizer;
 use Symfony\Component\Serializer\SerializerInterface;
 use Symfony\Component\Validator\Validator\ValidatorInterface;
 
@@ -41,7 +42,6 @@ class MissionController extends AbstractController
 
         $mission = $this->missionService->create($dto, $user);
 
-        // Retour minimal detail DTO
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_CREATED);
     }
 
@@ -49,8 +49,6 @@ class MissionController extends AbstractController
     public function patch(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
     {
         $mission = $this->missionService->getOr404($id);
-
-        // Ajuste selon ton voter (EDIT/UPDATE/MANAGE)
         $this->denyAccessUnlessGranted(MissionVoter::EDIT, $mission);
 
         /** @var MissionPatchRequest $dto */
@@ -70,12 +68,8 @@ class MissionController extends AbstractController
         /** @var MissionPublishRequest $dto */
         $dto = $this->deserializeAndValidate($request->getContent(), MissionPublishRequest::class);
 
-        // Exécute la publication (effet de bord)
         $this->missionService->publish($mission, $dto, $user);
 
-        // IMPORTANT:
-        // Endpoint "commande" => on ne renvoie pas l'entité Doctrine (risque de circular reference).
-        // Le frontend re-fetch ensuite /api/missions/{id}.
         return new JsonResponse(null, JsonResponse::HTTP_NO_CONTENT);
     }
 
@@ -133,8 +127,18 @@ class MissionController extends AbstractController
 
     private function deserializeAndValidate(string $json, string $class): object
     {
-        $dto = $this->serializer->deserialize($json, $class, 'json');
+        $dto = $this->serializer->deserialize(
+            $json,
+            $class,
+            'json',
+            [
+                // ISO 8601 avec timezone, ex: 2026-01-27T08:00:00+01:00
+                DateTimeNormalizer::FORMAT_KEY => \DateTimeInterface::ATOM,
+            ]
+        );
+
         $this->validateObject($dto);
+
         return $dto;
     }
 

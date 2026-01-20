@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import * as React from "react";
 import {
   Alert,
   Button,
@@ -6,125 +6,183 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  Divider,
+  FormControl,
+  FormHelperText,
+  InputLabel,
+  MenuItem,
+  Select,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+
+import type { Mission } from "../api/missions.types";
+import { publishMission } from "../api/missions.api";
 import type {
-  PublishMissionRequest,
+  PublishMissionBody,
   PublishScope,
 } from "../api/missions.requests";
+
+function extractApiError(err: unknown): { status?: number; message: string } {
+  const status = (err as any)?.response?.status as number | undefined;
+  const data = (err as any)?.response?.data;
+
+  const message =
+    (typeof data === "string" && data) ||
+    data?.message ||
+    data?.detail ||
+    "Une erreur est survenue";
+
+  return { status, message };
+}
 
 type Props = {
   open: boolean;
   onClose: () => void;
-  onSubmit: (payload: PublishMissionRequest) => void;
-  isSubmitting?: boolean;
-  errorMessage?: string | null;
+  mission: Mission;
 };
+
+function scopeLabel(scope: PublishScope) {
+  if (scope === "POOL") return "Publier dans le pool (visible à tous)";
+  return "Publier ciblé (vers un utilisateur)";
+}
 
 export default function PublishMissionDialog({
   open,
   onClose,
-  onSubmit,
-  isSubmitting = false,
-  errorMessage = null,
+  mission,
 }: Props) {
-  const [scope, setScope] = useState<PublishScope>("POOL");
-  const [targetUserId, setTargetUserId] = useState<number | "">("");
-  const [localError, setLocalError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
-  const payload = useMemo<PublishMissionRequest | null>(() => {
-    if (scope === "POOL") return { scope: "POOL" };
-    if (targetUserId === "" || Number.isNaN(Number(targetUserId))) return null;
-    return { scope: "TARGETED", targetUserId: Number(targetUserId) };
-  }, [scope, targetUserId]);
+  const [scope, setScope] = React.useState<PublishScope>("POOL");
+  const [targetUserId, setTargetUserId] = React.useState<string>("");
+  const [formError, setFormError] = React.useState<string | null>(null);
 
-  useEffect(() => {
-    if (open) {
-      setScope("POOL");
-      setTargetUserId("");
-      setLocalError(null);
-    }
+  React.useEffect(() => {
+    if (!open) return;
+    setScope("POOL");
+    setTargetUserId("");
+    setFormError(null);
   }, [open]);
 
-  const handleSubmit = () => {
-    if (scope === "TARGETED") {
-      if (
-        targetUserId === "" ||
-        Number.isNaN(Number(targetUserId)) ||
-        Number(targetUserId) <= 0
-      ) {
-        setLocalError(
-          "targetUserId est requis et doit être un entier > 0 pour un publish TARGETED."
+  // Quand on change de scope, on reset le champ ciblage pour éviter un état incohérent
+  React.useEffect(() => {
+    setFormError(null);
+    if (scope === "POOL") setTargetUserId("");
+  }, [scope]);
+
+  const mutation = useMutation({
+    mutationFn: async (body: PublishMissionBody) =>
+      publishMission(mission.id, body),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["mission", mission.id],
+      });
+      onClose();
+    },
+    onError: (err) => {
+      const { status, message } = extractApiError(err);
+
+      if (status === 401)
+        return setFormError("Session expirée. Veuillez vous reconnecter.");
+      if (status === 403) return setFormError("Accès interdit.");
+      if (status === 404) return setFormError("Mission introuvable.");
+      if (status === 409)
+        return setFormError(
+          "Conflit : la mission a peut-être déjà été publiée, ou a été modifiée entre-temps."
         );
-        return;
-      }
+      if (status === 422) return setFormError(message || "Données invalides.");
+
+      setFormError(message || "Erreur serveur.");
+    },
+  });
+
+  const trimmedTarget = targetUserId.trim();
+  const parsedTargetUserId = Number(trimmedTarget);
+  const targetedIdValid =
+    scope === "TARGETED" &&
+    trimmedTarget.length > 0 &&
+    Number.isFinite(parsedTargetUserId) &&
+    parsedTargetUserId > 0;
+
+  function handleSubmit() {
+    setFormError(null);
+
+    if (scope === "POOL") {
+      mutation.mutate({ scope: "POOL" });
+      return;
     }
-    setLocalError(null);
-    onSubmit(payload ?? { scope: "POOL" });
-  };
+
+    if (!targetedIdValid) {
+      setFormError("Veuillez renseigner un Target User ID valide.");
+      return;
+    }
+
+    mutation.mutate({ scope: "TARGETED", targetUserId: parsedTargetUserId });
+  }
+
+  const submitDisabled =
+    mutation.isPending || (scope === "TARGETED" && !targetedIdValid);
 
   return (
     <Dialog
       open={open}
-      onClose={isSubmitting ? undefined : onClose}
+      onClose={mutation.isPending ? undefined : onClose}
       fullWidth
       maxWidth="sm"
     >
-      <DialogTitle>Publier la mission</DialogTitle>
-      <Divider />
+      <DialogTitle>Publier la mission #{mission.id}</DialogTitle>
+
       <DialogContent>
-        <Stack spacing={2} sx={{ mt: 2 }}>
+        <Stack spacing={2} mt={1}>
+          {formError ? <Alert severity="error">{formError}</Alert> : null}
+
           <Typography variant="body2" color="text.secondary">
-            Publication selon le scope: POOL (pool global) ou TARGETED (vers un
-            utilisateur). Aucun champ patient ni financier n’est impliqué.
+            La publication rend la mission disponible selon le scope choisi.
           </Typography>
 
-          {(localError || errorMessage) && (
-            <Alert severity="error">{localError ?? errorMessage}</Alert>
-          )}
+          <FormControl fullWidth disabled={mutation.isPending}>
+            <InputLabel id="scope-label">Scope</InputLabel>
+            <Select
+              labelId="scope-label"
+              label="Scope"
+              value={scope}
+              onChange={(e) => setScope(e.target.value as PublishScope)}
+            >
+              <MenuItem value="POOL">{scopeLabel("POOL")}</MenuItem>
+              <MenuItem value="TARGETED">{scopeLabel("TARGETED")}</MenuItem>
+            </Select>
+            <FormHelperText>
+              {scope === "POOL"
+                ? "La mission sera visible dans la liste globale."
+                : "La mission sera publiée pour un utilisateur spécifique."}
+            </FormHelperText>
+          </FormControl>
 
-          <TextField
-            label="scope"
-            value={scope}
-            onChange={(e) => setScope(e.target.value as PublishScope)}
-            disabled={isSubmitting}
-            fullWidth
-            select
-            SelectProps={{ native: true }}
-          >
-            <option value="POOL">POOL</option>
-            <option value="TARGETED">TARGETED</option>
-          </TextField>
-
-          {scope === "TARGETED" && (
+          {scope === "TARGETED" ? (
             <TextField
-              label="targetUserId"
+              label="Target User ID"
               value={targetUserId}
-              onChange={(e) =>
-                setTargetUserId(
-                  e.target.value === "" ? "" : Number(e.target.value)
-                )
-              }
-              disabled={isSubmitting}
+              onChange={(e) => setTargetUserId(e.target.value)}
               fullWidth
-              type="number"
-              inputProps={{ min: 1 }}
+              required
+              inputMode="numeric"
+              disabled={mutation.isPending}
+              helperText="Identifiant utilisateur (numérique) du destinataire."
             />
-          )}
+          ) : null}
         </Stack>
       </DialogContent>
 
-      <DialogActions sx={{ p: 2 }}>
-        <Button onClick={onClose} disabled={isSubmitting}>
+      <DialogActions sx={{ px: 3, pb: 2 }}>
+        <Button onClick={onClose} disabled={mutation.isPending}>
           Annuler
         </Button>
         <Button
           variant="contained"
           onClick={handleSubmit}
-          disabled={isSubmitting || (scope === "TARGETED" && !payload)}
+          disabled={submitDisabled}
         >
           Publier
         </Button>
