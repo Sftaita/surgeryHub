@@ -4,6 +4,7 @@ namespace App\Security\Voter;
 
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\PublicationScope;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
@@ -76,19 +77,21 @@ class MissionVoter extends Voter
 
     private function canView(Mission $mission, User $user, bool $managerContext): bool
     {
-        if ($managerContext) return true;
+        if ($managerContext) {
+            return true;
+        }
 
-        if ($mission->getSurgeon()?->getId() === $user->getId()) return true;
-        if ($mission->getInstrumentist()?->getId() === $user->getId()) return true;
+        if ($mission->getSurgeon()?->getId() === $user->getId()) {
+            return true;
+        }
 
-        // instrumentiste peut voir les missions OPEN publiées (POOL/TARGETED)
+        if ($mission->getInstrumentist()?->getId() === $user->getId()) {
+            return true;
+        }
+
+        // instrumentiste peut voir les missions OPEN publiées (POOL/TARGETED) selon règles EMPLOYEE/FREELANCER
         if (in_array('ROLE_INSTRUMENTIST', $user->getRoles(), true) && $mission->getStatus() === MissionStatus::OPEN) {
-            foreach ($mission->getPublications() as $pub) {
-                if ($pub->getScope() === PublicationScope::POOL) return true;
-                if ($pub->getScope() === PublicationScope::TARGETED && $pub->getTargetInstrumentist()?->getId() === $user->getId()) {
-                    return true;
-                }
-            }
+            return $this->isEligibleInstrumentistForOpenMission($mission, $user);
         }
 
         return false;
@@ -104,42 +107,119 @@ class MissionVoter extends Voter
             return false;
         }
 
+        // sécurité: pas claimable si déjà affectée
         if ($mission->getInstrumentist() !== null) {
             return false;
         }
 
-        // eligible by publication
+        return $this->isEligibleInstrumentistForOpenMission($mission, $user);
+    }
+
+    private function canSubmit(Mission $mission, User $user, bool $managerContext): bool
+    {
+        // manager/admin: autorisé (support / correction)
+        if ($managerContext) {
+            return true;
+        }
+
+        // SUBMIT = action instrumentiste
+        if (!in_array('ROLE_INSTRUMENTIST', $user->getRoles(), true)) {
+            return false;
+        }
+
+        if ($mission->getInstrumentist()?->getId() !== $user->getId()) {
+            return false;
+        }
+
+        // RÈGLE CLÉ : pas d'encodage / submit avant le début
+        if (!$this->hasMissionStarted($mission)) {
+            return false;
+        }
+
+        return in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true);
+    }
+
+    private function canEdit(Mission $mission, User $user, bool $managerContext): bool
+    {
+        // Édition "planning" réservée aux managers/admin.
+        if (!$managerContext) {
+            return false;
+        }
+
+        return in_array($mission->getStatus(), [MissionStatus::DRAFT], true);
+    }
+
+    private function canEditEncoding(Mission $mission, User $user, bool $managerContext): bool
+    {
+        // manager/admin: OK (support / correction)
+        if ($managerContext) {
+            return true;
+        }
+
+        // instrumentiste assigné seulement
+        if (!in_array('ROLE_INSTRUMENTIST', $user->getRoles(), true)) {
+            return false;
+        }
+
+        if ($mission->getInstrumentist()?->getId() !== $user->getId()) {
+            return false;
+        }
+
+        // RÈGLE CLÉ : pas d'encodage avant le début
+        if (!$this->hasMissionStarted($mission)) {
+            return false;
+        }
+
+        return in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true);
+    }
+
+    private function isEligibleInstrumentistForOpenMission(Mission $mission, User $instrumentist): bool
+    {
+        // TARGETED => ok si target = moi
+        // POOL => ok si FREELANCER, sinon EMPLOYEE nécessite membership sur le site
+
+        $isFreelancer = ($instrumentist->getEmploymentType() === EmploymentType::FREELANCER);
+
+        $hasMembershipForSite = false;
+        if (!$isFreelancer) {
+            $missionSiteId = $mission->getSite()?->getId();
+            if ($missionSiteId !== null) {
+                foreach ($instrumentist->getSiteMemberships() as $sm) {
+                    if ($sm->getSite()?->getId() === $missionSiteId) {
+                        $hasMembershipForSite = true;
+                        break;
+                    }
+                }
+            }
+        }
+
         foreach ($mission->getPublications() as $pub) {
-            if ($pub->getScope() === PublicationScope::POOL) return true;
-            if ($pub->getScope() === PublicationScope::TARGETED && $pub->getTargetInstrumentist()?->getId() === $user->getId()) {
-                return true;
+            if ($pub->getScope() === PublicationScope::TARGETED) {
+                if ($pub->getTargetInstrumentist()?->getId() === $instrumentist->getId()) {
+                    return true;
+                }
+                continue;
+            }
+
+            if ($pub->getScope() === PublicationScope::POOL) {
+                return $isFreelancer ? true : $hasMembershipForSite;
             }
         }
 
         return false;
     }
 
-    private function canSubmit(Mission $mission, User $user, bool $managerContext): bool
+    private function hasMissionStarted(Mission $mission): bool
     {
-        return $managerContext || $mission->getInstrumentist()?->getId() === $user->getId();
-    }
-
-    private function canEdit(Mission $mission, User $user, bool $managerContext): bool
-    {
-        // Édition "planning" réservée aux managers/admin.
-        // Si tu veux autoriser le chirurgien à modifier ses propres missions en DRAFT, dis-le et je l’ajoute.
-        if (!$managerContext) {
+        $startAt = $mission->getStartAt();
+        if ($startAt === null) {
+            // Si mission mal formée sans startAt, on refuse l'encodage (sécurité)
             return false;
         }
 
-        // Optionnel (fortement recommandé) : ne pas autoriser l’édition planning après publication/assignation
-        // Adapte selon ton métier
-        return in_array($mission->getStatus(), [MissionStatus::DRAFT], true);
-    }
+        // On compare en UTC pour éviter les surprises de timezone serveur.
+        $nowUtc = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
 
-    private function canEditEncoding(Mission $mission, User $user, bool $managerContext): bool
-    {
-        // chirurgien lecture seule : pas d'édition encodage
-        return $managerContext || $mission->getInstrumentist()?->getId() === $user->getId();
+        return $nowUtc >= $startAt;
     }
 }

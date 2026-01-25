@@ -24,6 +24,9 @@ class MissionFilter
     #[Assert\Type('boolean')]
     public ?bool $assignedToMe = null;
 
+    #[Assert\Type('boolean')]
+    public ?bool $eligibleToMe = null;
+
     #[Assert\Positive]
     public ?int $page = 1;
 
@@ -35,15 +38,27 @@ class MissionFilter
         $dto = new self();
 
         $dto->siteId = isset($q['siteId']) ? (int) $q['siteId'] : null;
-        $dto->status = isset($q['status']) ? (string) $q['status'] : null;
-        $dto->type = isset($q['type']) ? (string) $q['type'] : null;
+
+        // Important: on normalise les strings vides en null (robuste Postman / clients)
+        $status = isset($q['status']) ? trim((string) $q['status']) : null;
+        $dto->status = ($status === '') ? null : $status;
+
+        $type = isset($q['type']) ? trim((string) $q['type']) : null;
+        $dto->type = ($type === '') ? null : $type;
 
         if (isset($q['assignedToMe'])) {
             $dto->assignedToMe = filter_var($q['assignedToMe'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
         }
 
-        $dto->periodStart = isset($q['periodStart']) ? (string) $q['periodStart'] : null;
-        $dto->periodEnd = isset($q['periodEnd']) ? (string) $q['periodEnd'] : null;
+        if (isset($q['eligibleToMe'])) {
+            $dto->eligibleToMe = filter_var($q['eligibleToMe'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        }
+
+        $periodStart = isset($q['periodStart']) ? trim((string) $q['periodStart']) : null;
+        $dto->periodStart = ($periodStart === '') ? null : $periodStart;
+
+        $periodEnd = isset($q['periodEnd']) ? trim((string) $q['periodEnd']) : null;
+        $dto->periodEnd = ($periodEnd === '') ? null : $periodEnd;
 
         $dto->page = isset($q['page']) ? max(1, (int) $q['page']) : 1;
         $dto->limit = isset($q['limit']) ? min(100, max(1, (int) $q['limit'])) : 20;

@@ -4,7 +4,9 @@ namespace App\Service;
 
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
+use App\Enum\PublicationScope;
 
 final class MissionActionsService
 {
@@ -31,23 +33,77 @@ final class MissionActionsService
             };
         }
 
-        // Instrumentiste : claim si OPEN
-        if ($isInstr && $mission->getStatus() === MissionStatus::OPEN) {
+        // Instrumentiste : claim si OPEN + éligible (publication + règles EMPLOYEE/FREELANCER)
+        if ($isInstr && $this->canInstrumentistClaim($mission, $viewer)) {
             $actions[] = 'claim';
         }
 
-        // Instrumentiste assigné : submit / edit_encoding
-        if ($isInstr && $isAssignedInstr && in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true)) {
+        // Instrumentiste assigné : submit / edit_encoding uniquement si ASSIGNED ou IN_PROGRESS
+        if (
+            $isInstr
+            && $isAssignedInstr
+            && in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true)
+        ) {
             $actions[] = 'edit_encoding';
             $actions[] = 'submit';
         }
 
-        // Chirurgien : futur (rating, dispute hours) -> placeholders
+        // Chirurgien : placeholders (tu pourras durcir plus tard selon statuts/feature flags)
         if ($isSurgeon) {
             $actions[] = 'rate_instrumentist';
             $actions[] = 'dispute_hours';
         }
 
         return array_values(array_unique($actions));
+    }
+
+    private function canInstrumentistClaim(Mission $mission, User $instrumentist): bool
+    {
+        // Conditions de base
+        if (!in_array('ROLE_INSTRUMENTIST', $instrumentist->getRoles(), true)) {
+            return false;
+        }
+
+        if ($mission->getStatus() !== MissionStatus::OPEN) {
+            return false;
+        }
+
+        // Filet de sécurité: si un instrumentiste est déjà posé sur la mission, on n'affiche pas claim
+        if ($mission->getInstrumentist() !== null) {
+            return false;
+        }
+
+        // Vérifie l'éligibilité via publications:
+        // - TARGETED vers moi => OK
+        // - POOL => FREELANCER OK partout, EMPLOYEE nécessite membership sur le site de la mission
+        $isFreelancer = ($instrumentist->getEmploymentType() === EmploymentType::FREELANCER);
+
+        $hasMembershipForSite = false;
+        if (!$isFreelancer) {
+            $missionSiteId = $mission->getSite()?->getId();
+            if ($missionSiteId !== null) {
+                foreach ($instrumentist->getSiteMemberships() as $sm) {
+                    if ($sm->getSite()?->getId() === $missionSiteId) {
+                        $hasMembershipForSite = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        foreach ($mission->getPublications() as $pub) {
+            if ($pub->getScope() === PublicationScope::TARGETED) {
+                if ($pub->getTargetInstrumentist()?->getId() === $instrumentist->getId()) {
+                    return true;
+                }
+                continue;
+            }
+
+            if ($pub->getScope() === PublicationScope::POOL) {
+                return $isFreelancer ? true : $hasMembershipForSite;
+            }
+        }
+
+        return false;
     }
 }

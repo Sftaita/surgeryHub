@@ -92,6 +92,13 @@ class Mission
     private Collection $materialLines;
 
     /**
+     * @var Collection<int, MaterialItemRequest>
+     */
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MaterialItemRequest::class, cascade: ['remove'])]
+    #[Groups(['mission:read', 'mission:read_manager'])]
+    private Collection $materialItemRequests;
+
+    /**
      * @var Collection<int, InstrumentistService>
      */
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: InstrumentistService::class, cascade: ['remove'])]
@@ -124,6 +131,7 @@ class Mission
         $this->publications = new ArrayCollection();
         $this->interventions = new ArrayCollection();
         $this->materialLines = new ArrayCollection();
+        $this->materialItemRequests = new ArrayCollection();
         $this->services = new ArrayCollection();
         $this->instrumentistRatings = new ArrayCollection();
         $this->surgeonRatings = new ArrayCollection();
@@ -322,6 +330,14 @@ class Mission
     public function getMaterialLines(): Collection
     {
         return $this->materialLines;
+    }
+
+    /**
+     * @return Collection<int, MaterialItemRequest>
+     */
+    public function getMaterialItemRequests(): Collection
+    {
+        return $this->materialItemRequests;
     }
 
     /**

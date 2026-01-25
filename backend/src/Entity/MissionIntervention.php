@@ -68,7 +68,8 @@ class MissionIntervention
         return $this->mission;
     }
 
-    public function setMission(Mission $mission): static
+    // ✅ Fix: nullable pour permettre setMission(null) lors du remove côté Mission
+    public function setMission(?Mission $mission): static
     {
         $this->mission = $mission;
 

@@ -37,9 +37,17 @@ class MissionInterventionFirm
     #[Groups(['mission:read', 'mission:read_manager'])]
     private Collection $materialLines;
 
+    /**
+     * @var Collection<int, MaterialItemRequest>
+     */
+    #[ORM\OneToMany(mappedBy: 'missionInterventionFirm', targetEntity: MaterialItemRequest::class)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
+    private Collection $materialItemRequests;
+
     public function __construct()
     {
         $this->materialLines = new ArrayCollection();
+        $this->materialItemRequests = new ArrayCollection();
     }
 
     public function getId(): ?int
@@ -77,5 +85,13 @@ class MissionInterventionFirm
     public function getMaterialLines(): Collection
     {
         return $this->materialLines;
+    }
+
+    /**
+     * @return Collection<int, MaterialItemRequest>
+     */
+    public function getMaterialItemRequests(): Collection
+    {
+        return $this->materialItemRequests;
     }
 }

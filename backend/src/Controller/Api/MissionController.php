@@ -10,6 +10,8 @@ use App\Dto\Request\MissionSubmitRequest;
 use App\Entity\Mission;
 use App\Entity\User;
 use App\Security\Voter\MissionVoter;
+use App\Service\MissionEncodingGuard;
+use App\Service\MissionEncodingService;
 use App\Service\MissionMapper;
 use App\Service\MissionService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -28,6 +30,8 @@ class MissionController extends AbstractController
     public function __construct(
         private readonly MissionService $missionService,
         private readonly MissionMapper $mapper,
+        private readonly MissionEncodingService $encodingService,
+        private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
         private readonly ValidatorInterface $validator,
     ) {}
@@ -120,9 +124,22 @@ class MissionController extends AbstractController
         /** @var MissionSubmitRequest $dto */
         $dto = $this->deserializeAndValidate($request->getContent(), MissionSubmitRequest::class);
 
-        $mission = $this->missionService->submit($mission, $dto);
+        $mission = $this->missionService->submit($mission, $dto, $user);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    #[Route(path: '/{id}/encoding', name: 'api_missions_get_encoding', methods: ['GET'])]
+    public function getEncoding(int $id, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404ForEncoding($id);
+
+        $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
+        $this->encodingGuard->assertEncodingAllowed($mission, $user);
+
+        $encodingDto = $this->encodingService->buildEncodingDto($mission);
+
+        return $this->json($encodingDto, JsonResponse::HTTP_OK);
     }
 
     private function deserializeAndValidate(string $json, string $class): object
@@ -132,7 +149,6 @@ class MissionController extends AbstractController
             $class,
             'json',
             [
-                // ISO 8601 avec timezone, ex: 2026-01-27T08:00:00+01:00
                 DateTimeNormalizer::FORMAT_KEY => \DateTimeInterface::ATOM,
             ]
         );

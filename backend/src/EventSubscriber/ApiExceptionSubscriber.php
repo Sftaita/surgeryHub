@@ -2,6 +2,7 @@
 
 namespace App\EventSubscriber;
 
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -34,8 +35,17 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
         $message = 'Internal server error';
         $violations = [];
 
-        if ($e instanceof HttpExceptionInterface) {
+        // 1) Doctrine DB unique constraint -> 409 (ex: mission claim déjà pris)
+        if ($e instanceof UniqueConstraintViolationException) {
+            $status = 409;
+            $code = 'CONFLICT';
+            // Message brut, mais on garde un wording stable si besoin
+            $message = $e->getMessage() ?: 'Conflict';
+        }
+        // 2) Exceptions HTTP Symfony
+        elseif ($e instanceof HttpExceptionInterface) {
             $status = $e->getStatusCode();
+            // Message brut demandé par tes règles
             $message = $e->getMessage() ?: $message;
 
             $code = match ($status) {
@@ -47,15 +57,14 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
                 default => 'HTTP_ERROR',
             };
         }
-
-        if ($e instanceof UnprocessableEntityHttpException) {
+        // 3) Cas spécifique : validation 422 (on garde le message brut)
+        elseif ($e instanceof UnprocessableEntityHttpException) {
             $status = 422;
             $code = 'VALIDATION_FAILED';
-            $message = 'Validation failed';
+            $message = $e->getMessage() ?: 'Validation failed';
         }
 
-        // Log systématique (indispensable pour diagnostiquer les 500 masqués)
-        // - On loggue en error à partir de 500, sinon en warning.
+        // Log systématique
         $logContext = [
             'exception_class' => $e::class,
             'exception_message' => $e->getMessage(),
@@ -80,7 +89,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             ],
         ];
 
-        // En dev uniquement : on ajoute des infos de debug pour ne plus être aveugle
+        // Dev uniquement : debug
         if ($this->kernel->getEnvironment() === 'dev') {
             $payload['error']['debug'] = [
                 'exceptionClass' => $e::class,
