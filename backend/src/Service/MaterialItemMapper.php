@@ -2,7 +2,7 @@
 
 namespace App\Service;
 
-use App\Dto\Response\MaterialItemSlimDto;
+use App\Dto\Request\Response\MaterialItemSlimDto;
 use App\Entity\MaterialItem;
 
 final class MaterialItemMapper
@@ -15,8 +15,7 @@ final class MaterialItemMapper
             referenceCode: (string) $mi->getReferenceCode(),
             label: (string) $mi->getLabel(),
             unit: (string) $mi->getUnit(),
-            isImplant: $mi->isImplant(),
-            active: $mi->isActive(),
+            isImplant: (bool) $mi->isImplant(),
         );
     }
 }

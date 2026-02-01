@@ -6,8 +6,8 @@ use Symfony\Component\Validator\Constraints as Assert;
 
 final class MaterialItemFilter
 {
-    #[Assert\Type('boolean')]
-    public ?bool $active = true;
+    #[Assert\Length(max: 255)]
+    public ?string $search = null;
 
     #[Assert\Length(max: 255)]
     public ?string $manufacturer = null;
@@ -15,8 +15,11 @@ final class MaterialItemFilter
     #[Assert\Length(max: 100)]
     public ?string $referenceCode = null;
 
-    #[Assert\Length(max: 255)]
-    public ?string $search = null;
+    #[Assert\Type('bool')]
+    public ?bool $active = null;
+
+    #[Assert\Type('bool')]
+    public ?bool $implantOnly = null;
 
     #[Assert\Positive]
     public ?int $page = 1;
@@ -24,25 +27,39 @@ final class MaterialItemFilter
     #[Assert\Positive]
     public ?int $limit = 50;
 
+    /**
+     * @param array<string,mixed> $q
+     */
     public static function fromQuery(array $q): self
     {
         $dto = new self();
+
+        $dto->search = isset($q['search']) ? trim((string) $q['search']) : null;
+        $dto->manufacturer = isset($q['manufacturer']) ? trim((string) $q['manufacturer']) : null;
+        $dto->referenceCode = isset($q['referenceCode']) ? trim((string) $q['referenceCode']) : null;
 
         if (array_key_exists('active', $q)) {
             $dto->active = filter_var($q['active'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
         }
 
-        $dto->manufacturer = isset($q['manufacturer']) ? trim((string) $q['manufacturer']) : null;
-        $dto->referenceCode = isset($q['referenceCode']) ? trim((string) $q['referenceCode']) : null;
-        $dto->search = isset($q['search']) ? trim((string) $q['search']) : null;
+        if (array_key_exists('implantOnly', $q)) {
+            $dto->implantOnly = filter_var($q['implantOnly'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        }
 
-        $dto->page = isset($q['page']) ? max(1, (int) $q['page']) : 1;
-        $dto->limit = isset($q['limit']) ? min(100, max(1, (int) $q['limit'])) : 50;
+        if (isset($q['page'])) {
+            $dto->page = (int) $q['page'];
+        }
 
-        // normalisation
-        $dto->manufacturer = $dto->manufacturer === '' ? null : $dto->manufacturer;
-        $dto->referenceCode = $dto->referenceCode === '' ? null : $dto->referenceCode;
-        $dto->search = $dto->search === '' ? null : $dto->search;
+        if (isset($q['limit'])) {
+            $dto->limit = (int) $q['limit'];
+        }
+
+        // normalisation vide -> null
+        foreach (['search', 'manufacturer', 'referenceCode'] as $k) {
+            if ($dto->$k !== null && $dto->$k === '') {
+                $dto->$k = null;
+            }
+        }
 
         return $dto;
     }

@@ -24,8 +24,11 @@ final class MaterialCatalogService
             $qb->andWhere('mi.active = :active')->setParameter('active', $filter->active);
         }
 
+        if ($filter->implantOnly === true) {
+            $qb->andWhere('mi.isImplant = :imp')->setParameter('imp', true);
+        }
+
         if ($filter->manufacturer !== null) {
-            // exact match (dropdown firme). Pour un "contains", change en LIKE si tu préfères.
             $qb->andWhere('mi.manufacturer = :m')->setParameter('m', $filter->manufacturer);
         }
 
@@ -34,8 +37,9 @@ final class MaterialCatalogService
         }
 
         if ($filter->search !== null) {
-            $qb->andWhere('(LOWER(mi.label) LIKE :q OR LOWER(mi.referenceCode) LIKE :q OR LOWER(COALESCE(mi.manufacturer, \'\')) LIKE :q)')
-                ->setParameter('q', '%' . mb_strtolower($filter->search) . '%');
+            $qb->andWhere(
+                '(LOWER(mi.label) LIKE :q OR LOWER(mi.referenceCode) LIKE :q OR LOWER(COALESCE(mi.manufacturer, \'\')) LIKE :q)'
+            )->setParameter('q', '%' . mb_strtolower($filter->search) . '%');
         }
 
         $page = max(1, (int) ($filter->page ?? 1));

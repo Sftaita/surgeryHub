@@ -10,6 +10,10 @@ use App\Enum\PublicationScope;
 
 final class MissionActionsService
 {
+    public function __construct(
+        private readonly MissionEncodingGuard $encodingGuard,
+    ) {}
+
     /**
      * @return string[]
      */
@@ -39,10 +43,12 @@ final class MissionActionsService
         }
 
         // Instrumentiste assigné : submit / edit_encoding uniquement si ASSIGNED ou IN_PROGRESS
+        // ET seulement si l'encodage est autorisé (pas avant startAt).
         if (
             $isInstr
             && $isAssignedInstr
             && in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true)
+            && $this->isEncodingAllowedNow($mission, $viewer)
         ) {
             $actions[] = 'edit_encoding';
             $actions[] = 'submit';
@@ -55,6 +61,17 @@ final class MissionActionsService
         }
 
         return array_values(array_unique($actions));
+    }
+
+    private function isEncodingAllowedNow(Mission $mission, User $actor): bool
+    {
+        try {
+            $this->encodingGuard->assertEncodingAllowed($mission, $actor);
+            return true;
+        } catch (\Throwable) {
+            // On cache l'action si le garde-fou métier bloquerait de toute façon (ex: avant startAt).
+            return false;
+        }
     }
 
     private function canInstrumentistClaim(Mission $mission, User $instrumentist): bool

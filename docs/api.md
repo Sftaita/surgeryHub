@@ -1,110 +1,326 @@
-# API Missions v2.1 (Symfony 7 / JSON)
+API SurgicalHub — Backend (Symfony 7)
 
-Toutes les routes sont préfixées par `/api`, réponses JSON, erreurs standard HTTP (400 validation, 401, 403, 404, 409).
-Pagination : `page` (default 1), `limit` (default 20).
+Toutes les routes sont préfixées par /api.
+Format : JSON uniquement.
+Authentification : JWT (IS_AUTHENTICATED_FULLY).
+Gestion des erreurs : HTTP standard (400, 401, 403, 404, 409, 422, 500).
 
-## AuthZ
+Pagination standard
 
-- Voters : `MissionVoter` (view/create/publish/claim/submit/edit/edit_encoding), `ServiceVoter` (update/dispute), `RatingVoter`, `ExportVoter`, `InstrumentistVoter`.
-- Managers/Admin uniquement pour création/publication et vues manager (`*:read_manager`).
-- Aucun endpoint ne doit exposer des données financières aux rôles SURGEON ou INSTRUMENTIST.
+- page (défaut : 1)
+- limit (défaut : 20, max : 100)
 
-## Missions
+---
 
-- `POST /api/missions` (ROLE_MANAGER/ROLE_ADMIN via `MissionVoter::CREATE`) — body `MissionCreateRequest`.
-  - Response: `MissionDetailDto`.
-- `PATCH /api/missions/{id}` (ROLE_MANAGER/ROLE_ADMIN via `MissionVoter::EDIT`, mission en DRAFT) — body `MissionPatchRequest`.
-  - Response: `MissionDetailDto`.
-- `POST /api/missions/{id}/publish` (ROLE_MANAGER/ROLE_ADMIN via `MissionVoter::PUBLISH`) — body `MissionPublishRequest`.
-  - Response: 204 No Content.
-- `POST /api/missions/{id}/claim` (ROLE_INSTRUMENTIST via `MissionVoter::CLAIM`, mission OPEN + publication POOL/TARGETED) — body vide.
-  - Response: `MissionDetailDto`.
-- `GET /api/missions` (pas de voter explicite en controller) — query `MissionFilter`:
-  - `periodStart`, `periodEnd`, `siteId`, `status`, `type`, `assignedToMe`, `page`, `limit`.
-  - Response: `{ items: MissionListDto[], total, page, limit }`.
-- `GET /api/missions/{id}` (via `MissionVoter::VIEW`) — body vide.
-  - Response: `MissionDetailDto`.
-- `POST /api/missions/{id}/submit` (via `MissionVoter::SUBMIT`) — body `MissionSubmitRequest`.
-  - Response: `MissionDetailDto`.
+1. Sécurité & Autorisations (RBAC)
 
-## Encoding (Interventions / Firms / Material lines)
+1.1 Rôles
 
-- `POST /api/missions/{missionId}/interventions` (via `MissionVoter::EDIT_ENCODING`) — body `MissionInterventionCreateRequest`.
-  - Response: `MissionIntervention` sérialisé (group `mission:read`).
-- `PATCH /api/missions/{missionId}/interventions/{id}` (via `MissionVoter::EDIT_ENCODING`) — body `MissionInterventionUpdateRequest`.
-  - Response: `MissionIntervention` (group `mission:read`).
-- `DELETE /api/missions/{missionId}/interventions/{id}` (via `MissionVoter::EDIT_ENCODING`).
-  - Response: 204 No Content.
-- `POST /api/interventions/{interventionId}/firms` (via `MissionVoter::EDIT_ENCODING`) — body `MissionInterventionFirmCreateRequest`.
-  - Response: `MissionInterventionFirm` (group `mission:read`).
-- `PATCH /api/interventions/{interventionId}/firms/{id}` (via `MissionVoter::EDIT_ENCODING`) — body `MissionInterventionFirmUpdateRequest`.
-  - Response: `MissionInterventionFirm` (group `mission:read`).
-- `DELETE /api/interventions/{interventionId}/firms/{id}` (via `MissionVoter::EDIT_ENCODING`).
-  - Response: 204 No Content.
-- `POST /api/missions/{missionId}/material-lines` (via `MissionVoter::EDIT_ENCODING`) — body `MaterialLineCreateRequest`.
-  - Response: `MaterialLine` (group `mission:read`).
-- `PATCH /api/missions/{missionId}/material-lines/{id}` (via `MissionVoter::EDIT_ENCODING`) — body `MaterialLineUpdateRequest`.
-  - Response: `MaterialLine` (group `mission:read`).
-- `DELETE /api/missions/{missionId}/material-lines/{id}` (via `MissionVoter::EDIT_ENCODING`).
-  - Response: 204 No Content.
+- ROLE_ADMIN
+- ROLE_MANAGER
+- ROLE_SURGEON
+- ROLE_INSTRUMENTIST
 
-## Services & Disputes
+  1.2 Voters
 
-- `PATCH /api/missions/{missionId}/service` (via `ServiceVoter::UPDATE` : manager/admin ou instrumentist assigné) — body `ServiceUpdateRequest`.
-  - Response: `InstrumentistService` (group `service:read` ou `service:read_manager`).
-  - Note sécurité: aucune donnée financière ne doit être exposée aux rôles SURGEON/INSTRUMENTIST.
-- `POST /api/services/{serviceId}/disputes` (via `ServiceVoter::DISPUTE_CREATE` : chirurgien de la mission) — body `ServiceDisputeCreateRequest`.
-  - Response: `ServiceHoursDispute` (group `dispute:read`).
-- `GET /api/disputes` (via `ServiceVoter::DISPUTE_MANAGE` : manager/admin) — query `status`, `page`, `limit`.
-  - Response: `dispute:read_manager`.
-- `PATCH /api/disputes/{id}` (via `ServiceVoter::DISPUTE_MANAGE` : manager/admin) — body `ServiceDisputeUpdateRequest`.
-  - Response: `ServiceHoursDispute` (group `dispute:read_manager`).
+- MissionVoter : view, create, publish, claim, submit, edit, edit_encoding
+- ServiceVoter : update, dispute
+- RatingVoter
+- ExportVoter
+- InstrumentistVoter
 
-## Ratings
+  1.3 Règle métier critique
+  Aucune donnée financière ne doit être exposée aux rôles SURGEON ou INSTRUMENTIST.
 
-- `POST /api/missions/{id}/instrumentist-rating` (via `RatingVoter::RATE_INSTRUMENTIST` : chirurgien de la mission) — body `InstrumentistRatingRequest`.
-  - Response: `Rating` (group `rating:read`).
-- `POST /api/missions/{id}/surgeon-rating` (via `RatingVoter::RATE_SURGEON` : instrumentist de la mission) — body `SurgeonRatingRequest`.
-  - Response: `Rating` (group `rating:read`).
+---
 
-## Instrumentists
+2. Missions
 
-- `GET /api/instrumentists` (ROLE_MANAGER/ROLE_ADMIN via `InstrumentistVoter::LIST`) — body vide.
-  - Response: `{ items: InstrumentistListItemResponse[], total }`.
-  - Note sécurité: aucun champ financier.
-- `GET /api/instrumentists/with-rates` (ROLE_MANAGER/ROLE_ADMIN via `InstrumentistVoter::LIST_WITH_RATES`) — body vide.
-  - Response: `{ items: InstrumentistWithRatesListItemResponse[], total }`.
-  - Note sécurité: contient `hourlyRate` / `consultationFee` (strictement managers/admin).
+2.1 Créer une mission
+POST /missions
 
-## Surgeons
+- AuthZ : MissionVoter::CREATE
+- Body : MissionCreateRequest
+- Response : MissionDetailDto
 
-- `GET /api/surgeons` (ROLE_MANAGER/ROLE_ADMIN via security.yaml) — query `q`, `active` (default "1").
-  - Response: `{ items: [{ id, email, firstname, lastname, active, displayName }], total }`.
-  - Note sécurité: aucun champ financier.
+---
 
-## Sites
+2.2 Modifier une mission (DRAFT uniquement)
+PATCH /missions/{id}
 
-- `GET /api/sites` (authentifié via access_control global) — body vide.
-  - Response: `Hospital` sérialisé (group `site:list`).
+- AuthZ : MissionVoter::EDIT
+- Body : MissionPatchRequest
+- Response : MissionDetailDto
 
-## Me
+---
 
-- `GET /api/me` (IS_AUTHENTICATED_FULLY) — body vide.
-  - Response: `MeResponse` (avec `instrumentistProfile` uniquement si rôle INSTRUMENTIST, aucun champ financier).
+2.3 Publier une mission
+POST /missions/{id}/publish
 
-## Exports
+- AuthZ : MissionVoter::PUBLISH
+- Body : MissionPublishRequest
+- Response : 204 No Content
 
-- `POST /api/exports/surgeon-activity` (via `ExportVoter::SURGEON_ACTIVITY` : soi-même ou manager/admin) — body `ExportSurgeonActivityRequest`.
-  - Response: `ExportLog` (group `export:read`, sans montants).
+---
 
-## DTO Response (résumé)
+2.4 Claim d’une mission (instrumentiste)
+POST /missions/{id}/claim
 
-- `MissionListDto` / `MissionDetailDto` : `id`, `site` (`HospitalSlimDto`), `startAt`, `endAt`, `schedulePrecision`, `type`, `status`, `surgeon` (`UserSlimDto`), `instrumentist` (`UserSlimDto|null`), `allowedActions[]`.
-- `InstrumentistListItemResponse` : `id`, `email`, `firstname`, `lastname`, `active`, `employmentType`, `defaultCurrency`, `displayName`.
-- `InstrumentistWithRatesListItemResponse` : idem + `hourlyRate`, `consultationFee`.
-- `MeResponse` : `id`, `email`, `firstname`, `lastname`, `role`, `instrumentistProfile`, `sites[]`, `activeSiteId`.
-- `InstrumentistProfileResponse` : `employmentType`, `defaultCurrency`.
+- AuthZ : MissionVoter::CLAIM
+- Body : vide
+- Response : MissionDetailDto
 
-## Changelog API
+---
 
-- 18-01-26 — Ajout documentation complète des routes Instrumentists/Surgeons/Me/Sites, ajout PATCH mission, précisions RBAC par Voters, mise en avant des restrictions financières.
+2.5 Lister les missions
+GET /missions
+
+Query : MissionFilter
+
+- status
+- type
+- siteId
+- periodStart
+- periodEnd
+- eligibleToMe
+- assignedToMe
+- page
+- limit
+
+Response :
+{
+"items": ["MissionListDto"],
+"total": 42,
+"page": 1,
+"limit": 20
+}
+
+---
+
+2.6 Détail d’une mission
+GET /missions/{id}
+
+- AuthZ : MissionVoter::VIEW
+- Response : MissionDetailDto
+
+---
+
+2.7 Soumettre une mission (instrumentiste)
+POST /missions/{id}/submit
+
+- AuthZ : MissionVoter::SUBMIT
+- Body : MissionSubmitRequest
+- Response : MissionDetailDto
+
+---
+
+3. Encodage opératoire (Option B)
+
+3.1 Récupérer l’encodage complet d’une mission
+GET /missions/{id}/encoding
+
+- AuthZ : MissionVoter::EDIT_ENCODING
+- Response : MissionEncodingDto
+
+Inclut :
+
+- interventions
+- firms
+- materialLines
+- materialItemRequests
+
+---
+
+4. Interventions
+
+4.1 Créer une intervention
+POST /missions/{missionId}/interventions
+
+- AuthZ : MissionVoter::EDIT_ENCODING
+- Body : MissionInterventionCreateRequest
+- Response : MissionIntervention
+
+---
+
+4.2 Modifier une intervention
+PATCH /missions/{missionId}/interventions/{id}
+
+- AuthZ : MissionVoter::EDIT_ENCODING
+- Body : MissionInterventionUpdateRequest
+- Response : MissionIntervention
+
+---
+
+4.3 Supprimer une intervention
+DELETE /missions/{missionId}/interventions/{id}
+
+- AuthZ : MissionVoter::EDIT_ENCODING
+- Response : 204 No Content
+
+---
+
+5. Firms (par intervention)
+
+5.1 Ajouter une firme
+POST /interventions/{interventionId}/firms
+
+- AuthZ : MissionVoter::EDIT_ENCODING
+- Body : MissionInterventionFirmCreateRequest
+- Response : MissionInterventionFirm
+
+---
+
+5.2 Modifier une firme
+PATCH /interventions/{interventionId}/firms/{id}
+
+- AuthZ : MissionVoter::EDIT_ENCODING
+- Body : MissionInterventionFirmUpdateRequest
+- Response : MissionInterventionFirm
+
+---
+
+5.3 Supprimer une firme
+DELETE /interventions/{interventionId}/firms/{id}
+
+- AuthZ : MissionVoter::EDIT_ENCODING
+- Response : 204 No Content
+
+---
+
+6. Material Lines (matériel utilisé)
+
+6.1 Ajouter une ligne de matériel
+POST /missions/{missionId}/material-lines
+
+- AuthZ : MissionVoter::EDIT_ENCODING
+- Body : MaterialLineCreateRequest
+- Response : MaterialLine
+
+---
+
+6.2 Modifier une ligne de matériel
+PATCH /missions/{missionId}/material-lines/{id}
+
+- AuthZ : MissionVoter::EDIT_ENCODING
+- Body : MaterialLineUpdateRequest
+- Response : MaterialLine
+
+---
+
+6.3 Supprimer une ligne de matériel
+DELETE /missions/{missionId}/material-lines/{id}
+
+- AuthZ : MissionVoter::EDIT_ENCODING
+- Response : 204 No Content
+
+---
+
+7. Demandes de matériel manquant
+
+7.1 Signaler un matériel absent du catalogue
+POST /missions/{missionId}/material-item-requests
+
+- AuthZ : MissionVoter::EDIT_ENCODING
+- Body : MaterialItemRequestCreateRequest
+- Response : MaterialItemRequest
+
+---
+
+8. Catalogue matériel
+
+8.1 Lister le catalogue
+GET /material-items
+
+- Query : MaterialItemFilter
+- Response : MaterialItemSlimDto[]
+
+---
+
+9. Services & Litiges
+
+9.1 Modifier le service instrumentiste
+PATCH /missions/{missionId}/service
+
+- AuthZ : ServiceVoter::UPDATE
+- Body : ServiceUpdateRequest
+- Response : InstrumentistService
+
+---
+
+9.2 Créer un litige
+POST /services/{serviceId}/disputes
+
+- AuthZ : ServiceVoter::DISPUTE_CREATE
+- Body : ServiceDisputeCreateRequest
+- Response : ServiceHoursDispute
+
+---
+
+10. Ratings
+
+10.1 Noter l’instrumentiste
+POST /missions/{id}/instrumentist-rating
+
+- AuthZ : RatingVoter::RATE_INSTRUMENTIST
+- Body : InstrumentistRatingRequest
+
+---
+
+10.2 Noter le chirurgien
+POST /missions/{id}/surgeon-rating
+
+- AuthZ : RatingVoter::RATE_SURGEON
+- Body : SurgeonRatingRequest
+
+---
+
+11. Utilisateurs
+
+11.1 Lister les instrumentistes
+GET /instrumentists
+
+- AuthZ : InstrumentistVoter::LIST
+
+---
+
+11.2 Lister les chirurgiens
+GET /surgeons
+
+- AuthZ : manager/admin
+
+---
+
+11.3 Utilisateur courant
+GET /me
+
+- AuthZ : authentifié
+- Response : MeResponse
+
+---
+
+12. Sites
+
+12.1 Lister les hôpitaux
+GET /sites
+
+---
+
+13. Exports
+
+13.1 Exporter activité chirurgien
+POST /exports/surgeon-activity
+
+- AuthZ : ExportVoter::SURGEON_ACTIVITY
+- Body : ExportSurgeonActivityRequest
+- Response : ExportLog
+
+---
+
+14. Changelog
+
+18-01-2026
+
+- Ajout encodage opératoire via /missions/{id}/encoding
+- Ajout interventions / firms / material lines
+- Séparation claire mission vs encodage
+- Renforcement RBAC et sécurité données financières
