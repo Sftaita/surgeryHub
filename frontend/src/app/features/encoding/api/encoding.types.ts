@@ -93,3 +93,20 @@ export type CreateInterventionBody = {
 };
 
 export type PatchInterventionBody = Partial<CreateInterventionBody>;
+
+/**
+ * MATERIAL LINES — mutations (Lot 4)
+ * ⚠️ Le frontend n'envoie jamais firmId : l'API reçoit itemId uniquement.
+ */
+
+export type CreateMaterialLineBody = {
+  interventionId: number;
+  itemId: number;
+  quantity: number;
+  comment?: string;
+};
+
+export type PatchMaterialLineBody = {
+  quantity?: number;
+  comment?: string;
+};

@@ -4,6 +4,8 @@ import type {
   CreateInterventionBody,
   PatchInterventionBody,
   MissionInterventionDto,
+  CreateMaterialLineBody,
+  PatchMaterialLineBody,
 } from "./encoding.types";
 
 export async function fetchMissionEncoding(
@@ -55,4 +57,42 @@ export async function deleteMissionIntervention(
   await apiClient.delete(
     `/api/missions/${missionId}/interventions/${interventionId}`,
   );
+}
+
+/**
+ * Material lines CRUD (Lot 4)
+ * - POST   /api/missions/{missionId}/material-lines
+ * - PATCH  /api/missions/{missionId}/material-lines/{lineId}
+ * - DELETE /api/missions/{missionId}/material-lines/{lineId}
+ *
+ * ⚠️ Le frontend n'envoie jamais firmId : uniquement itemId (+ interventionId).
+ */
+export async function createMissionMaterialLine(
+  missionId: number,
+  body: CreateMaterialLineBody,
+): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/material-lines`, {
+    interventionId: body.interventionId,
+    itemId: body.itemId,
+    quantity: body.quantity,
+    comment: body.comment ?? "",
+  });
+}
+
+export async function patchMissionMaterialLine(
+  missionId: number,
+  lineId: number,
+  body: PatchMaterialLineBody,
+): Promise<void> {
+  await apiClient.patch(`/api/missions/${missionId}/material-lines/${lineId}`, {
+    ...(body.quantity !== undefined ? { quantity: body.quantity } : {}),
+    ...(body.comment !== undefined ? { comment: body.comment } : {}),
+  });
+}
+
+export async function deleteMissionMaterialLine(
+  missionId: number,
+  lineId: number,
+): Promise<void> {
+  await apiClient.delete(`/api/missions/${missionId}/material-lines/${lineId}`);
 }

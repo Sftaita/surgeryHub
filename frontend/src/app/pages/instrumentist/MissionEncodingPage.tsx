@@ -123,6 +123,10 @@ export default function MissionEncodingPage() {
     );
   }
 
+  // Source de vérité : allowedActions dans le payload encoding
+  const canEdit =
+    encoding.mission?.allowedActions?.includes("encoding") ?? false;
+
   return (
     <Stack spacing={2}>
       <Stack direction="row" spacing={1} alignItems="center">
@@ -139,11 +143,16 @@ export default function MissionEncodingPage() {
 
       <InterventionsSection
         missionId={mission.id}
-        canEdit={false}
+        canEdit={canEdit}
         interventions={encoding.interventions ?? []}
       />
 
-      <MaterialLinesSection interventions={encoding.interventions ?? []} />
+      <MaterialLinesSection
+        missionId={mission.id}
+        canEdit={canEdit}
+        interventions={encoding.interventions ?? []}
+        catalog={encoding.catalog}
+      />
     </Stack>
   );
 }
