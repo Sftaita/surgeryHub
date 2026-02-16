@@ -13,7 +13,6 @@ export default function MissionDetailPage() {
   const [open, setOpen] = React.useState(false);
 
   const missionId = Number(id);
-
   const isValidId = Number.isFinite(missionId) && missionId > 0;
 
   const { data: mission, isLoading } = useQuery({
@@ -29,10 +28,8 @@ export default function MissionDetailPage() {
   if (isLoading) return <CircularProgress />;
   if (!mission) return <Typography>Mission introuvable</Typography>;
 
-  const canEncoding =
-    mission.allowedActions?.includes("edit_encoding") ||
-    mission.allowedActions?.includes("encoding");
-
+  // Lot 4 — strictement piloté par allowedActions
+  const canEncoding = mission.allowedActions?.includes("encoding");
   const canSubmit = mission.allowedActions?.includes("submit");
 
   return (

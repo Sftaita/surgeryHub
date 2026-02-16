@@ -5,6 +5,7 @@ import { Button, CircularProgress, Stack, Typography } from "@mui/material";
 import { fetchMissionById } from "../../features/missions/api/missions.api";
 import { fetchMissionEncoding } from "../../features/encoding/api/encoding.api";
 import InterventionsSection from "../../features/encoding/components/InterventionsSection";
+import MaterialLinesSection from "../../features/encoding/components/MaterialLinesSection";
 
 function extractErrorMessage(err: any): string {
   return (
@@ -32,9 +33,8 @@ export default function MissionEncodingPage() {
     enabled: isValidId,
   });
 
-  const canEncoding =
-    mission?.allowedActions?.includes("edit_encoding") ||
-    mission?.allowedActions?.includes("encoding");
+  // Lot 4 — strictement piloté par allowedActions
+  const canEncoding = mission?.allowedActions?.includes("encoding");
 
   const {
     data: encoding,
@@ -84,7 +84,7 @@ export default function MissionEncodingPage() {
         </Button>
         <Typography variant="h6">Encodage — Mission #{mission.id}</Typography>
         <Typography color="text.secondary">
-          Accès non autorisé (allowedActions ne contient pas edit_encoding).
+          Accès non autorisé (allowedActions ne contient pas encoding).
         </Typography>
       </Stack>
     );
@@ -133,15 +133,17 @@ export default function MissionEncodingPage() {
       </Stack>
 
       <Typography color="text.secondary">
-        Type: {String(encoding.missionType)} — Statut:{" "}
-        {String(encoding.missionStatus)}
+        Type: {String(encoding.mission?.type ?? "—")} — Statut:{" "}
+        {String(encoding.mission?.status ?? "—")}
       </Typography>
 
       <InterventionsSection
         missionId={mission.id}
-        canEdit={true}
+        canEdit={false}
         interventions={encoding.interventions ?? []}
       />
+
+      <MaterialLinesSection interventions={encoding.interventions ?? []} />
     </Stack>
   );
 }

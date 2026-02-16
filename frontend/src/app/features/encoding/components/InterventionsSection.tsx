@@ -12,7 +12,6 @@ import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 
 import type { EncodingIntervention } from "../api/encoding.types";
-import FirmsSection from "./FirmsSection";
 import { useToast } from "../../../ui/toast/useToast";
 import {
   createMissionIntervention,
@@ -21,7 +20,7 @@ import {
 } from "../api/encoding.api";
 import AddInterventionDialog from "./AddInterventionDialog";
 import EditInterventionDialog from "./EditInterventionDialog";
-import ConfirmDeleteDialog from ".//ConfirmDeleteDialog";
+import ConfirmDeleteDialog from "./ConfirmDeleteDialog";
 
 type Props = {
   missionId: number;
@@ -160,8 +159,6 @@ export default function InterventionsSection({
                   </Stack>
                 )}
               </Stack>
-
-              <FirmsSection firms={itv.firms ?? []} />
 
               {idx < sorted.length - 1 && <Divider />}
             </Stack>

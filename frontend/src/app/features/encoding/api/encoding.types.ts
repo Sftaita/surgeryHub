@@ -1,10 +1,38 @@
+/**
+ * Lot 4 (nouveau modèle) :
+ * Intervention -> Material lines -> Item -> Firm
+ * Firm est un référentiel (Manager/Admin) et n'est jamais créé côté instrumentiste.
+ */
+
+export type CatalogFirm = {
+  id: number;
+  name: string;
+  active: boolean;
+};
+
+export type CatalogItem = {
+  id: number;
+  label: string;
+  referenceCode: string;
+  unit: string;
+  active: boolean;
+  isImplant: boolean;
+  firm: {
+    id: number;
+    name: string;
+  };
+};
+
 export type EncodingMaterialItem = {
   id: number;
-  manufacturer: string;
-  referenceCode: string;
   label: string;
+  referenceCode: string;
   unit: string;
   isImplant: boolean;
+  firm: {
+    id: number;
+    name: string;
+  };
 };
 
 export type EncodingMaterialLine = {
@@ -21,27 +49,27 @@ export type EncodingMaterialItemRequest = {
   comment: string; // backend: "Optionnel"
 };
 
-export type EncodingFirm = {
-  id: number;
-  firmName: string;
-  materialLines: EncodingMaterialLine[];
-  materialItemRequests: EncodingMaterialItemRequest[];
-};
-
 export type EncodingIntervention = {
   id: number;
   code: string;
   label: string;
   orderIndex: number;
-  firms: EncodingFirm[];
+  materialLines: EncodingMaterialLine[];
+  materialItemRequests?: EncodingMaterialItemRequest[];
 };
 
 export type MissionEncodingResponse = {
-  missionId: number;
-  missionType: "BLOCK" | "CONSULTATION" | string;
-  missionStatus: string;
-
+  mission: {
+    id: number;
+    type: "BLOCK" | "CONSULTATION" | string;
+    status: string;
+    allowedActions: string[];
+  };
   interventions: EncodingIntervention[];
+  catalog?: {
+    items: CatalogItem[];
+    firms: CatalogFirm[];
+  };
 };
 
 /**
@@ -55,7 +83,7 @@ export type MissionInterventionDto = {
   code: string;
   label: string;
   orderIndex: number;
-  firms: any[]; // backend renvoie firms: [] ; l'encodage complet vient de GET encoding
+  // le détail (materialLines) vient de GET /api/missions/{id}/encoding
 };
 
 export type CreateInterventionBody = {
