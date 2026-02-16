@@ -1,326 +1,127 @@
-API SurgicalHub — Backend (Symfony 7)
+# SurgicalHub --- API (Single Source of Truth)
 
-Toutes les routes sont préfixées par /api.
-Format : JSON uniquement.
-Authentification : JWT (IS_AUTHENTICATED_FULLY).
-Gestion des erreurs : HTTP standard (400, 401, 403, 404, 409, 422, 500).
-
-Pagination standard
-
-- page (défaut : 1)
-- limit (défaut : 20, max : 100)
+Last updated: 2026-02-12
 
 ---
 
-1. Sécurité & Autorisations (RBAC)
+# 1. Principes fondamentaux
 
-1.1 Rôles
-
-- ROLE_ADMIN
-- ROLE_MANAGER
-- ROLE_SURGEON
-- ROLE_INSTRUMENTIST
-
-  1.2 Voters
-
-- MissionVoter : view, create, publish, claim, submit, edit, edit_encoding
-- ServiceVoter : update, dispute
-- RatingVoter
-- ExportVoter
-- InstrumentistVoter
-
-  1.3 Règle métier critique
-  Aucune donnée financière ne doit être exposée aux rôles SURGEON ou INSTRUMENTIST.
+- Aucun fallback métier côté frontend
+- RBAC strict (Voters / Guards)
+- Les erreurs backend sont renvoyées telles quelles
+- Aucune donnée patient
+- FK strictes (cohérence item ↔ firm)
+- Encodage modifiable jusqu'au verrouillage comptable
 
 ---
 
-2. Missions
+# 2. Référentiel Firm (Manager/Admin uniquement)
 
-2.1 Créer une mission
-POST /missions
+Les firms (fabricants) sont des données de référence.
 
-- AuthZ : MissionVoter::CREATE
-- Body : MissionCreateRequest
-- Response : MissionDetailDto
+## GET /api/firms
 
----
+AuthZ: MANAGER / ADMIN\
+Response: \[ { "id": 1, "name": "Smith & Nephew", "active": true }\]
 
-2.2 Modifier une mission (DRAFT uniquement)
-PATCH /missions/{id}
+## POST /api/firms
 
-- AuthZ : MissionVoter::EDIT
-- Body : MissionPatchRequest
-- Response : MissionDetailDto
+AuthZ: MANAGER / ADMIN\
+Body: { "name": "Arthrex" }
 
----
+## PATCH /api/firms/{id}
 
-2.3 Publier une mission
-POST /missions/{id}/publish
+AuthZ: MANAGER / ADMIN\
+Body: { "name"?: "...", "active"?: true/false }
 
-- AuthZ : MissionVoter::PUBLISH
-- Body : MissionPublishRequest
-- Response : 204 No Content
+## DELETE /api/firms/{id}
+
+AuthZ: MANAGER / ADMIN\
+Soft delete recommandé (active=false)\
+Response: 204
 
 ---
 
-2.4 Claim d’une mission (instrumentiste)
-POST /missions/{id}/claim
+# 3. Encodage Mission
 
-- AuthZ : MissionVoter::CLAIM
-- Body : vide
-- Response : MissionDetailDto
+## GET /api/missions/{id}/encoding
 
----
+AuthZ: MissionVoter::EDIT_ENCODING
 
-2.5 Lister les missions
-GET /missions
+Inclut : - mission (id, type, status, allowedActions) - interventions -
+materialLines - catalog (items + firms)
 
-Query : MissionFilter
+### Structure JSON
 
-- status
-- type
-- siteId
-- periodStart
-- periodEnd
-- eligibleToMe
-- assignedToMe
-- page
-- limit
-
-Response :
-{
-"items": ["MissionListDto"],
-"total": 42,
-"page": 1,
-"limit": 20
+{ "mission": { "id": 17, "type": "BLOCK", "status": "ASSIGNED",
+"allowedActions": \["view","encoding","submit"\] }, "interventions": \[
+{ "id": 3, "code": "LCA", "label": "Ligament croisé antérieur",
+"orderIndex": 1, "materialLines": \[ { "id": 2, "item": { "id": 1,
+"label": "Fast-Fix", "referenceCode": "FF-123", "firm": { "id": 1,
+"name": "Smith & Nephew" } }, "quantity": "2", "comment": "Implant
+principal" } \] } \], "catalog": { "items": \[...\], "firms": \[...\] }
 }
 
----
-
-2.6 Détail d’une mission
-GET /missions/{id}
-
-- AuthZ : MissionVoter::VIEW
-- Response : MissionDetailDto
+Règle métier : - Une intervention ne possède PAS de firms. - Les firms
+apparaissent uniquement via MaterialLine.item.firm.
 
 ---
 
-2.7 Soumettre une mission (instrumentiste)
-POST /missions/{id}/submit
+# 4. Interventions
 
-- AuthZ : MissionVoter::SUBMIT
-- Body : MissionSubmitRequest
-- Response : MissionDetailDto
+## POST /api/missions/{id}/interventions
 
----
+## PATCH /api/missions/{id}/interventions/{interventionId}
 
-3. Encodage opératoire (Option B)
+## DELETE /api/missions/{id}/interventions/{interventionId}
 
-3.1 Récupérer l’encodage complet d’une mission
-GET /missions/{id}/encoding
-
-- AuthZ : MissionVoter::EDIT_ENCODING
-- Response : MissionEncodingDto
-
-Inclut :
-
-- interventions
-- firms
-- materialLines
-- materialItemRequests
+AuthZ: Instrumentiste assigné
 
 ---
 
-4. Interventions
+# 5. Material Lines
 
-4.1 Créer une intervention
-POST /missions/{missionId}/interventions
+## POST /api/missions/{id}/material-lines
 
-- AuthZ : MissionVoter::EDIT_ENCODING
-- Body : MissionInterventionCreateRequest
-- Response : MissionIntervention
+Body: { "missionInterventionId": 3, "itemId": 1, "quantity": "2",
+"comment": "Implant principal" }
 
----
+## PATCH /api/missions/{id}/material-lines/{lineId}
 
-4.2 Modifier une intervention
-PATCH /missions/{missionId}/interventions/{id}
+## DELETE /api/missions/{id}/material-lines/{lineId}
 
-- AuthZ : MissionVoter::EDIT_ENCODING
-- Body : MissionInterventionUpdateRequest
-- Response : MissionIntervention
+Contraintes : - mission.type ≠ CONSULTATION - itemId obligatoire - firm
+dérivée via MaterialItem - aucune surcharge firm côté frontend
 
 ---
 
-4.3 Supprimer une intervention
-DELETE /missions/{missionId}/interventions/{id}
+# 6. Verrouillage encodage
 
-- AuthZ : MissionVoter::EDIT_ENCODING
-- Response : 204 No Content
+submittedAt : - indique que l'instrumentiste s'est déclaré "fini" - ne
+verrouille PAS l'encodage
 
----
+Encodage modifiable tant que : - encodingLockedAt IS NULL -
+invoiceGeneratedAt IS NULL
 
-5. Firms (par intervention)
-
-5.1 Ajouter une firme
-POST /interventions/{interventionId}/firms
-
-- AuthZ : MissionVoter::EDIT_ENCODING
-- Body : MissionInterventionFirmCreateRequest
-- Response : MissionInterventionFirm
+Si l'un des deux est défini : → toute mutation encodage renvoie 403
 
 ---
 
-5.2 Modifier une firme
-PATCH /interventions/{interventionId}/firms/{id}
+# 7. MissionClaim
 
-- AuthZ : MissionVoter::EDIT_ENCODING
-- Body : MissionInterventionFirmUpdateRequest
-- Response : MissionInterventionFirm
-
----
-
-5.3 Supprimer une firme
-DELETE /interventions/{interventionId}/firms/{id}
-
-- AuthZ : MissionVoter::EDIT_ENCODING
-- Response : 204 No Content
+- Historique possible (OneToMany)
+- Anti-double géré côté service
+- Pas de contrainte unique DB
 
 ---
 
-6. Material Lines (matériel utilisé)
+# 8. Erreurs standard
 
-6.1 Ajouter une ligne de matériel
-POST /missions/{missionId}/material-lines
-
-- AuthZ : MissionVoter::EDIT_ENCODING
-- Body : MaterialLineCreateRequest
-- Response : MaterialLine
+400 --- violation règle métier\
+403 --- action interdite\
+404 --- ressource inexistante\
+409 --- conflit métier
 
 ---
 
-6.2 Modifier une ligne de matériel
-PATCH /missions/{missionId}/material-lines/{id}
-
-- AuthZ : MissionVoter::EDIT_ENCODING
-- Body : MaterialLineUpdateRequest
-- Response : MaterialLine
-
----
-
-6.3 Supprimer une ligne de matériel
-DELETE /missions/{missionId}/material-lines/{id}
-
-- AuthZ : MissionVoter::EDIT_ENCODING
-- Response : 204 No Content
-
----
-
-7. Demandes de matériel manquant
-
-7.1 Signaler un matériel absent du catalogue
-POST /missions/{missionId}/material-item-requests
-
-- AuthZ : MissionVoter::EDIT_ENCODING
-- Body : MaterialItemRequestCreateRequest
-- Response : MaterialItemRequest
-
----
-
-8. Catalogue matériel
-
-8.1 Lister le catalogue
-GET /material-items
-
-- Query : MaterialItemFilter
-- Response : MaterialItemSlimDto[]
-
----
-
-9. Services & Litiges
-
-9.1 Modifier le service instrumentiste
-PATCH /missions/{missionId}/service
-
-- AuthZ : ServiceVoter::UPDATE
-- Body : ServiceUpdateRequest
-- Response : InstrumentistService
-
----
-
-9.2 Créer un litige
-POST /services/{serviceId}/disputes
-
-- AuthZ : ServiceVoter::DISPUTE_CREATE
-- Body : ServiceDisputeCreateRequest
-- Response : ServiceHoursDispute
-
----
-
-10. Ratings
-
-10.1 Noter l’instrumentiste
-POST /missions/{id}/instrumentist-rating
-
-- AuthZ : RatingVoter::RATE_INSTRUMENTIST
-- Body : InstrumentistRatingRequest
-
----
-
-10.2 Noter le chirurgien
-POST /missions/{id}/surgeon-rating
-
-- AuthZ : RatingVoter::RATE_SURGEON
-- Body : SurgeonRatingRequest
-
----
-
-11. Utilisateurs
-
-11.1 Lister les instrumentistes
-GET /instrumentists
-
-- AuthZ : InstrumentistVoter::LIST
-
----
-
-11.2 Lister les chirurgiens
-GET /surgeons
-
-- AuthZ : manager/admin
-
----
-
-11.3 Utilisateur courant
-GET /me
-
-- AuthZ : authentifié
-- Response : MeResponse
-
----
-
-12. Sites
-
-12.1 Lister les hôpitaux
-GET /sites
-
----
-
-13. Exports
-
-13.1 Exporter activité chirurgien
-POST /exports/surgeon-activity
-
-- AuthZ : ExportVoter::SURGEON_ACTIVITY
-- Body : ExportSurgeonActivityRequest
-- Response : ExportLog
-
----
-
-14. Changelog
-
-18-01-2026
-
-- Ajout encodage opératoire via /missions/{id}/encoding
-- Ajout interventions / firms / material lines
-- Séparation claire mission vs encodage
-- Renforcement RBAC et sécurité données financières
+# Fin du document

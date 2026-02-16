@@ -136,7 +136,8 @@ class MissionVoter extends Voter
             return false;
         }
 
-        return in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true);
+        // ✅ SUBMITTED autorisé (idempotent + liberté instrumentiste)
+        return in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS, MissionStatus::SUBMITTED], true);
     }
 
     private function canEdit(Mission $mission, User $user, bool $managerContext): bool
@@ -170,7 +171,8 @@ class MissionVoter extends Voter
             return false;
         }
 
-        return in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true);
+        // ✅ SUBMITTED autorisé (liberté instrumentiste)
+        return in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS, MissionStatus::SUBMITTED], true);
     }
 
     private function isEligibleInstrumentistForOpenMission(Mission $mission, User $instrumentist): bool

@@ -1,10 +1,10 @@
-ARCHITECTURE — SurgicalHub Backend (Symfony) — Architecture & Modèle Métier
+# Architecture — SurgicalHub Backend (Symfony)
 
-Dernière mise à jour : 2026-01-25 (Europe/Brussels)
+Dernière mise à jour : 2026-02-01 (Europe/Brussels)
 
 ---
 
-1. Contexte et objectifs
+## 1) Contexte et objectifs
 
 SurgicalHub est une API Symfony orientée “missions” permettant :
 
@@ -14,121 +14,127 @@ SurgicalHub est une API Symfony orientée “missions” permettant :
 - aux chirurgiens d’évaluer l’instrumentiste et de gérer des litiges d’heures
   via services/disputes,
 - à l’équipe support (manager/admin) d’avoir une visibilité élargie
-  (vues \*:read_manager), sans exposer de données financières aux rôles non autorisés.
+  (vues `*:read_manager`), sans exposer de données financières aux rôles non autorisés.
 
 Contraintes clés :
 
-- Aucune donnée patient (conception v2.1)
-- RBAC strict via Voters
-- Flux mobile-first instrumentiste : rapide, peu de friction, endpoints dédiés
+- Aucune donnée patient (conception v2.1).
+- RBAC strict via Voters.
+- Flux mobile-first instrumentiste : rapide, peu de friction, endpoints dédiés.
 
 ---
 
-2. Architecture du code (dossiers)
+## 2) Architecture du code (dossiers)
 
-Racine :
-C:\WAMP64\WWW\SURGICALHUB\BACKEND\SRC
+Racine : `backend/src`
 
-2.1 Découpage
+- `Controller/` : endpoints HTTP (API JSON), validation input, appels services.
+- `Dto/Request/` : DTO d’entrée (validation Symfony Assert) + DTO de réponse.
+- `Entity/` : modèle Doctrine (entités + relations).
+- `Enum/` : enums métier (MissionStatus, MissionType, PublicationScope, etc.).
+- `Security/Voter/` : règles d’accès (MissionVoter, ServiceVoter, RatingVoter,
+  ExportVoter, InstrumentistVoter).
+- `Service/` : logique métier (orchestration, règles, mapping DTO).
+- `EventSubscriber/ApiExceptionSubscriber.php` : format d’erreur JSON homogène.
 
-- Controller/ :
-  Endpoints HTTP (API JSON), validation input, appels services
-
-- Dto/Request/ :
-  DTO d’entrée (validation Symfony Assert) + DTO de réponse
-
-- Entity/ :
-  Modèle Doctrine (entités + relations)
-
-- Enum/ :
-  Enums métier (MissionStatus, MissionType, PublicationScope, etc.)
-
-- Security/Voter/ :
-  Règles d’accès (MissionVoter, ServiceVoter, RatingVoter,
-  ExportVoter, InstrumentistVoter)
-
-- Service/ :
-  Logique métier (orchestration, règles, mapping DTO)
-
-- EventSubscriber/ApiExceptionSubscriber.php :
-  Format d’erreur JSON homogène
-
-  2.2 Règle d’implémentation
+### Règles d’implémentation
 
 - Contrôleurs “minces” :
-  - désérialisation + validation DTO
-  - denyAccessUnlessGranted(...)
-  - délégation vers un service métier
-  - retour JSON via DTO / groupes
-
-- Logique métier uniquement dans Service/\*
+  - désérialisation + validation DTO,
+  - `denyAccessUnlessGranted(...)`,
+  - délégation vers un service métier,
+  - retour JSON via DTO / groupes.
+- Logique métier exclusivement dans `Service/*`.
 
 ---
 
-3. Modèle Métier — Mission & Offres
+## 3) Sécurité & Auth
 
-3.1 Mission
+- JWT obligatoire sur `/api/*` (sauf login/refresh/google).
+- `POST /api/auth/login` : JSON login (intercepté par le firewall).
+- `POST /api/auth/refresh` : refresh token (bundle Gesdinet).
+- `POST /api/auth/google` : login via Google ID token.
+- `GET /healthz` : endpoint public de santé.
+
+---
+
+## 4) Modèle métier — Missions & offres
+
+### 4.1 Mission
 
 Une Mission représente un créneau (site + start/end + type) avec cycle de vie :
 
-- DRAFT : créée, éditable planning
-- OPEN : publiée, visible/offerte selon règles
-- ASSIGNED / IN_PROGRESS : instrumentiste affecté
-- SUBMITTED : encodage soumis
-- VALIDATED / CLOSED : post-traitement manager (à affiner)
+- `DRAFT` : créée, éditable planning.
+- `OPEN` : publiée, visible/offerte selon règles.
+- `ASSIGNED` / `IN_PROGRESS` : instrumentiste affecté.
+- `SUBMITTED` : encodage soumis.
+- `VALIDATED` / `CLOSED` : post-traitement manager (à affiner).
 
 Champs clés :
 
-- site (Hospital)
-- startAt, endAt
-- schedulePrecision (EXACT/APPROXIMATE)
-- type (BLOCK / CONSULTATION / …)
-- surgeon (User)
-- instrumentist (User|null)
-- status (MissionStatus)
-- createdBy (User manager/admin)
+- site (Hospital),
+- startAt, endAt,
+- schedulePrecision (EXACT/APPROXIMATE),
+- type (BLOCK / CONSULTATION / …),
+- surgeon (User),
+- instrumentist (User|null),
+- status (MissionStatus),
+- createdBy (User manager/admin).
 
-  3.2 Publications (Offres)
+### 4.2 Publications (offres)
 
-Une Mission OPEN doit avoir au moins une MissionPublication :
+Une Mission `OPEN` doit avoir au moins une MissionPublication :
 
-- scope = POOL :
-  visible aux instrumentistes éligibles
+- scope = `POOL` : visible aux instrumentistes éligibles,
+- scope = `TARGETED` : visible uniquement à un instrumentiste cible,
+- channel = `IN_APP`,
+- publishedAt.
 
-- scope = TARGETED :
-  visible uniquement à un instrumentiste cible
-
-- channel = IN_APP
-- publishedAt
-
-  3.3 Claim (anti-double)
+### 4.3 Claim (anti-double)
 
 Un claim :
 
-- matérialisé par MissionClaim (1:1 unique par mission)
+- matérialisé par MissionClaim (historique possible via OneToMany),
 - met à jour la mission :
-  - instrumentist = currentUser
-  - status = ASSIGNED
-- contrainte DB : unique sur mission_id
-- verrouillage transactionnel : PESSIMISTIC_WRITE
+  - instrumentist = currentUser,
+  - status = `ASSIGNED`,
+- anti-double géré côté service (transaction + verrouillage + statut mission),
+- verrouillage transactionnel : `PESSIMISTIC_WRITE`.
 
 ---
 
-4. Encoding — Interventions / Firms / Matériel
+## 5) Encodage opératoire (Option B)
 
-4.1 Problème métier
+### 5.1 Problème métier
 
 Une mission peut contenir plusieurs interventions
 (ex. mission 13–18 : 2 LCA + 1 PTG).
 
 L’instrumentiste doit :
 
-1. ajouter une intervention
-2. optionnel : ajouter une firm/fournisseur
-3. encoder des lignes de matériel
-4. si item absent du catalogue : le signaler
+1. ajouter une intervention,
+2. optionnel : ajouter une firm/fournisseur,
+3. encoder des lignes de matériel,
+4. si item absent du catalogue : le signaler.
 
-4.2 Entités d’encodage
+### 5.2 Entités d’encodage (modèle cible)
+
+**Principe :** une intervention ne possède **pas** de firms. Les firms apparaissent uniquement via les items consommés.
+
+Firm (référentiel — manager/admin)
+
+- id
+- name
+- active
+
+MaterialItem (catalogue)
+
+- manufacturer → Firm (FK)
+- referenceCode
+- label
+- unit
+- isImplant (bool)
+- active (bool)
 
 MissionIntervention
 
@@ -136,229 +142,268 @@ MissionIntervention
 - code (ex: ACL/LCA, TKA/PTG)
 - label
 - orderIndex
-- firms (OneToMany -> MissionInterventionFirm)
-- materialLines (OneToMany -> MaterialLine)
-
-MissionInterventionFirm
-
-- missionIntervention (ManyToOne)
-- firmName
 - materialLines (OneToMany -> MaterialLine)
 - materialItemRequests (OneToMany -> MaterialItemRequest)
 
-MaterialLine
-Ligne réellement consommée/utilisée
+MaterialLine (ligne consommée/utilisée)
 
 - mission (ManyToOne, obligatoire)
-- missionIntervention (nullable)
-- missionInterventionFirm (nullable)
+- intervention (ManyToOne -> MissionIntervention, nullable)
 - item (MaterialItem, obligatoire)
 - quantity (decimal string)
 - comment (nullable)
 - createdBy (User, obligatoire)
-- implantSubMission (nullable)
+- implantSubMission (nullable, manager/admin)
 
-Règle :
-Pas de material lines sur mission type CONSULTATION.
+**Firm exposée** : via `MaterialLine.item.manufacturer`.
 
-MaterialItemRequest
-Signalement item manquant/introuvable
+Règles :
+
+- pas de material lines sur mission type `CONSULTATION` (400)
+- encodage modifiable tant que `encodingLockedAt` ET `invoiceGeneratedAt` sont null
+
+MaterialItemRequest (signalement item manquant)
 
 - mission (ManyToOne)
-- missionIntervention (nullable)
-- missionInterventionFirm (nullable)
+- intervention (nullable)
 - label (obligatoire)
 - referenceCode (nullable)
 - comment (nullable)
 - createdBy (User)
 
-  4.3 Catalogue MaterialItem
+### 5.3 Catalogue MaterialItem
 
 MaterialItem :
 
-- manufacturer (nullable)
-- referenceCode
-- label
-- unit
-- isImplant (bool)
-- active (bool)
+- manufacturer (nullable),
+- referenceCode,
+- label,
+- unit,
+- isImplant (bool),
+- active (bool).
 
-Utilisé par MaterialLine.item
+Utilisé par MaterialLine.item.
 
-4.4 Regroupement implants (ImplantSubMission)
+### 5.4 Regroupement implants (ImplantSubMission)
 
-Quand MaterialItem.isImplant = true :
+Quand `MaterialItem.isImplant = true` :
 
-- association à ImplantSubMission (mission + firm)
-- résolution via firmName ou manufacturer
+- association à ImplantSubMission (mission + firm),
+- résolution via firmName ou manufacturer.
 
-Objectif :
-Reporting / validation / workflow implants
-
----
-
-5. Endpoints d’encodage
-
-Choix retenu : Option B (endpoint dédié encoding)
-
-GET /api/missions/{id}/encoding
-
-- renvoie la vue encodage structurée
-- évite d’alourdir GET /api/missions/{id}
-
-Routes CRUD associées :
-
-- Interventions :
-  POST/PATCH/DELETE /api/missions/{missionId}/interventions...
-
-- Firms :
-  POST/PATCH/DELETE /api/interventions/{interventionId}/firms...
-
-- Material lines :
-  POST/PATCH/DELETE /api/missions/{missionId}/material-lines...
-
-- Material item requests :
-  endpoints dédiés à compléter
+Objectif : reporting / validation / workflow implants.
 
 ---
 
-6. Services applicatifs (Responsabilités)
+## 6) Endpoints clés (résumé)
 
-6.1 MissionService
+### Missions
 
-- create/patch/publish/claim/submit
-- listing GET /api/missions
-- règles eligibleToMe
-- claim transactionnel anti-double
-- dates en ATOM via Mapper
+- `POST /api/missions`
+- `PATCH /api/missions/{id}`
+- `POST /api/missions/{id}/publish`
+- `POST /api/missions/{id}/claim`
+- `GET /api/missions`
+- `GET /api/missions/{id}`
+- `POST /api/missions/{id}/submit`
+- `GET /api/missions/{id}/encoding`
 
-  6.2 MissionActionsService
+### Encodage
 
-- calcule allowedActions[] selon rôle + statut + ownership
-- claim visible uniquement si éligible
+- `POST /api/missions/{missionId}/interventions`
+- `PATCH /api/missions/{missionId}/interventions/{id}`
+- `DELETE /api/missions/{missionId}/interventions/{id}`
+- `GET /api/firms` (manager/admin)
+- `POST /api/firms` (manager/admin)
+- `PATCH /api/firms/{id}` (manager/admin)
+- `DELETE /api/firms/{id}` (manager/admin)
+- `POST /api/missions/{missionId}/material-lines`
+- `PATCH /api/missions/{missionId}/material-lines/{id}`
+- `DELETE /api/missions/{missionId}/material-lines/{id}`
+- `POST /api/missions/{missionId}/material-item-requests`
 
-  6.3 MissionVoter
-  Source RBAC :
+### Catalogue matériel
 
-- VIEW, CREATE, PUBLISH, CLAIM, SUBMIT, EDIT, EDIT_ENCODING
+- `GET /api/material-items`
+- `GET /api/material-items/quick-search?q=...`
+- `GET /api/material-items/{id}`
 
-  6.4 InterventionService
+### Services & litiges
 
-- CRUD interventions/firms/material lines
-- interdit sur CONSULTATION
-- résolution implants
-- vérifications NotFound
+- `PATCH /api/missions/{missionId}/service`
+- `POST /api/services/{serviceId}/disputes`
+- `GET /api/disputes`
+- `PATCH /api/disputes/{id}`
 
-  6.5 MissionEncodingService (si présent)
+### Ratings
 
-- construit l’agrégat MissionEncodingDto
-- utilisé pour GET /api/missions/{id}/encoding
+- `POST /api/missions/{id}/instrumentist-rating`
+- `POST /api/missions/{id}/surgeon-rating`
 
-  6.6 MaterialCatalogService (si présent)
+### Utilisateurs
 
-- listing / filtres MaterialItem
+- `GET /api/instrumentists`
+- `GET /api/instrumentists/with-rates`
+- `GET /api/surgeons`
+- `GET /api/me`
 
-  6.7 MaterialItemRequestService (si présent)
+### Sites & exports
 
-- création signalements item manquant
-- workflow manager review futur
+- `GET /api/sites`
+- `POST /api/exports/surgeon-activity`
+
+### Auth & health
+
+- `POST /api/auth/login`
+- `POST /api/auth/refresh`
+- `POST /api/auth/google`
+- `GET /healthz`
 
 ---
 
-7. Mapping DTO (sorties)
+## 7) Services applicatifs (responsabilités)
 
-7.1 Missions standard
+### MissionService
+
+- create/patch/publish/claim/submit,
+- listing `GET /api/missions`,
+- règles `eligibleToMe`,
+- claim transactionnel anti-double,
+- dates en ATOM via Mapper.
+
+### MissionActionsService
+
+- calcule `allowedActions[]` selon rôle + statut + ownership,
+- claim visible uniquement si éligible.
+
+### MissionVoter
+
+- `VIEW`, `CREATE`, `PUBLISH`, `CLAIM`, `SUBMIT`, `EDIT`, `EDIT_ENCODING`.
+
+### InterventionService
+
+- CRUD interventions/firms/material lines,
+- interdit sur `CONSULTATION`,
+- résolution implants,
+- vérifications NotFound.
+
+### MissionEncodingService
+
+- construit l’agrégat `MissionEncodingDto`,
+- utilisé pour `GET /api/missions/{id}/encoding`.
+
+### MaterialCatalogService
+
+- listing / filtres MaterialItem,
+- quick-search pour mobile.
+
+### MaterialItemRequestService
+
+- création signalements item manquant,
+- workflow manager review futur.
+
+### InstrumentistServiceManager
+
+- update service instrumentiste,
+- création / listing / update des litiges.
+
+### RatingService
+
+- rating instrumentiste / chirurgien.
+
+### ExportService
+
+- export activité chirurgien.
+
+---
+
+## 8) Mapping DTO (sorties)
+
+### Missions standard
+
 MissionListDto / MissionDetailDto :
 
 - id, site, startAt, endAt, schedulePrecision, type, status,
-  surgeon, instrumentist, allowedActions[]
+  surgeon, instrumentist, allowedActions[].
 
 MissionMapper :
 
-- dates en DateTimeInterface::ATOM
-- DTO explicites (pas dépendant des groupes Doctrine)
+- dates en `DateTimeInterface::ATOM`,
+- DTO explicites (pas dépendants des groupes Doctrine).
 
-  7.2 Encoding DTO
+### Encoding DTO
 
-- MissionEncodingDto
-- MissionEncodingInterventionDto
-- MissionEncodingFirmDto
-- MissionEncodingMaterialLineDto
-- MissionEncodingMaterialItemRequestDto
+- MissionEncodingDto,
+- MissionEncodingInterventionDto,
+- MissionEncodingFirmDto,
+- MissionEncodingMaterialLineDto,
+- MissionEncodingMaterialItemRequestDto.
 
-Principe :
-Structure stable pour UI mobile :
-Intervention -> Firm -> Lines + Requests
+Principe : structure stable pour UI mobile :
+Intervention -> MaterialLines (item -> firm) + Requests, + `catalog` (items + firms).
 
 ---
 
-8. Sérialisation & groupes
+## 9) Sérialisation & groupes
 
-- mission:read :
-  vue non-financière instrumentiste/chirurgien
-
-- mission:read_manager :
-  ajoute champs internes manager-only
+- `mission:read` : vue non-financière instrumentiste/chirurgien.
+- `mission:read_manager` : ajoute champs internes manager-only.
+- `service:read` / `service:read_manager`.
+- `dispute:read` / `dispute:read_manager`.
+- `rating:read`, `export:read`, `site:list`.
 
 Règle :
-Aucun champ financier exposé hors managers/admins.
+aucun champ financier exposé hors managers/admins.
 
 ---
 
-9. Erreurs API (format)
+## 10) Erreurs API (format)
 
 Géré par ApiExceptionSubscriber :
 
+```json
 {
-"error": {
-"status": 422,
-"code": "VALIDATION_FAILED",
-"message": "Validation failed",
-"violations": [],
-"debug": {
-"exceptionClass": "...",
-"exceptionMessage": "..."
+  "error": {
+    "status": 422,
+    "code": "VALIDATION_FAILED",
+    "message": "Validation failed",
+    "violations": [],
+    "debug": {
+      "exceptionClass": "...",
+      "exceptionMessage": "..."
+    }
+  }
 }
-}
-}
+```
 
-- debug seulement en environnement dev
-- UniqueConstraintViolationException -> 409 CONFLICT (utile pour claim)
+- `debug` seulement en environnement dev.
+- `UniqueConstraintViolationException` -> `409 CONFLICT` (utile pour claim).
 
 ---
 
-10. Points d’attention techniques
+## 11) Points d’attention techniques
 
-10.1 Migrations Doctrine
+### 11.1 Migrations Doctrine
+
 TableNotFoundException indique :
 
-- entité créée mais migration non exécutée
+- entité créée mais migration non exécutée.
 
 Action :
 
-- générer + exécuter migrations avant tests encoding
+- générer + exécuter migrations avant tests encoding.
 
-  10.2 Intégrité des liens missionId
-  Pour endpoints nested :
+### 11.2 Intégrité des liens missionId
 
-- vérifier appartenance intervention/line à la mission
-- éviter modifications cross-mission par ID
+Pour endpoints nested :
 
-  10.3 Timezone / dates
+- vérifier appartenance intervention/line à la mission,
+- éviter modifications cross-mission par ID.
 
-- stockage datetime_immutable
-- sérialisation ATOM
-- filtres periodStart/periodEnd stables
-- tri eligibleToMe : ASC (prochaines missions d’abord)
-  sinon DESC
+### 11.3 Timezone / dates
 
----
-
-11. Prochaine étape (à intégrer)
-
-À documenter et implémenter :
-
-- MaterialCatalog endpoints : recherche, filtre active, pagination
-- MaterialItemRequest endpoints : création depuis UI encodage
-- Tests fonctionnels instrumentiste : OPEN -> CLAIM -> ENCODE -> SUBMIT
-- Contrôles d’intégrité : interventionId/firmId hors mission -> 404/422
+- stockage `datetime_immutable`,
+- sérialisation ATOM,
+- filtres `periodStart`/`periodEnd` stables,
+- tri `eligibleToMe` : ASC (prochaines missions d’abord),
+  sinon DESC.

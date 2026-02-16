@@ -173,7 +173,7 @@ Access decisions are based on:
 
 ### 6.5 Catalog
 
-- Firm (optional entity) OR firm stored as string where needed
+- Firm (entité de référence) : id, name, active (manager/admin)
 - MaterialItem:
   - manufacturer/firm
   - reference_code
@@ -182,27 +182,35 @@ Access decisions are based on:
   - is_implant boolean
   - active boolean
 
-### 6.6 Encoding structure: Intervention → Firm → Material
+### 6.6 Encoding structure: Intervention → Material (Firm via Item)
 
 - MissionIntervention:
   - mission_id
   - code, label
   - order_index
-- MissionInterventionFirm:
-  - mission_intervention_id
-  - firm_name (or firm_id if Firm entity used)
 - MaterialLine (consumption):
   - mission_id
   - mission_intervention_id (nullable)
-  - mission_intervention_firm_id (nullable)
-  - item_id
+  - item_id (MaterialItem)
   - quantity
-  - comment mandatory if added outside template
+  - comment
   - created_by_user_id
-- Constraint:
-  - forbidden if mission.type = CONSULTATION
+- Firm exposure:
+  - firm est **dérivée** via `MaterialItem.manufacturer` (FK stricte)
+  - le frontend ne peut pas surcharger une firm d’item
+
+Constraint:
+
+- forbidden if mission.type = CONSULTATION
+
+Verrouillage encodage:
+
+- `submittedAt` : indique “déclaré fini” (utile pour éviter des rappels), **sans verrouiller** l’encodage.
+- lock réel via `encodingLockedAt` (manual manager) ou `invoiceGeneratedAt` (facturation).
 
 ### 6.7 Manager-only: Implant Sub-Missions (billing grouping)
+
+(billing grouping)
 
 - ImplantSubMission groups implant lines by firm for invoicing.
 - Fields:

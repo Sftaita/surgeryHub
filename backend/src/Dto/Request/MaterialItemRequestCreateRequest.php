@@ -4,21 +4,18 @@ namespace App\Dto\Request;
 
 use Symfony\Component\Validator\Constraints as Assert;
 
-final class MaterialItemRequestCreateRequest
+class MaterialItemRequestCreateRequest
 {
-    #[Assert\Positive]
-    public ?int $missionInterventionId = null;
-
-    #[Assert\Positive]
-    public ?int $missionInterventionFirmId = null;
-
     #[Assert\NotBlank]
-    #[Assert\Length(max: 255)]
-    public ?string $label = null;
+    #[Assert\Type('string')]
+    public string $label;
 
-    #[Assert\Length(max: 255)]
+    #[Assert\Type('string')]
     public ?string $referenceCode = null;
 
-    #[Assert\Length(max: 2000)]
+    #[Assert\Type('string')]
     public ?string $comment = null;
+
+    #[Assert\Positive]
+    public ?int $missionInterventionId = null;
 }

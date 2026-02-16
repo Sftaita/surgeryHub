@@ -132,12 +132,14 @@ class MissionController extends AbstractController
     #[Route(path: '/{id}/encoding', name: 'api_missions_get_encoding', methods: ['GET'])]
     public function getEncoding(int $id, #[CurrentUser] User $user): JsonResponse
     {
-        $mission = $this->missionService->getOr404ForEncoding($id);
+        // IMPORTANT: ne pas utiliser getOr404ForEncoding() (ça déclenche l’hydratation proxy MissionIntervention -> warning 500)
+        $mission = $this->missionService->getOr404($id);
 
         $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
         $this->encodingGuard->assertEncodingAllowed($mission, $user);
 
-        $encodingDto = $this->encodingService->buildEncodingDto($mission);
+        // MissionEncodingService attend (Mission $mission, User $viewer)
+        $encodingDto = $this->encodingService->buildEncodingDto($mission, $user);
 
         return $this->json($encodingDto, JsonResponse::HTTP_OK);
     }

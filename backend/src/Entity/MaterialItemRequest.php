@@ -28,12 +28,9 @@ class MaterialItemRequest
     private ?Mission $mission = null;
 
     #[ORM\ManyToOne]
+    #[ORM\JoinColumn(nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager'])]
     private ?MissionIntervention $missionIntervention = null;
-
-    #[ORM\ManyToOne(inversedBy: 'materialItemRequests')]
-    #[Groups(['mission:read', 'mission:read_manager'])]
-    private ?MissionInterventionFirm $missionInterventionFirm = null;
 
     #[ORM\Column(length: 255)]
     #[Groups(['mission:read', 'mission:read_manager'])]
@@ -79,23 +76,12 @@ class MaterialItemRequest
         return $this;
     }
 
-    public function getMissionInterventionFirm(): ?MissionInterventionFirm
-    {
-        return $this->missionInterventionFirm;
-    }
-
-    public function setMissionInterventionFirm(?MissionInterventionFirm $missionInterventionFirm): static
-    {
-        $this->missionInterventionFirm = $missionInterventionFirm;
-        return $this;
-    }
-
     public function getLabel(): ?string
     {
         return $this->label;
     }
 
-    public function setLabel(string $label): static
+    public function setLabel(?string $label): static
     {
         $this->label = $label;
         return $this;

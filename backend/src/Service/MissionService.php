@@ -176,7 +176,6 @@ class MissionService
 
                 $mission->setInstrumentist($instrumentist);
                 $mission->setStatus(MissionStatus::ASSIGNED);
-                $mission->setClaim($claim);
 
                 $this->em->persist($claim);
                 $this->em->persist($mission);
@@ -411,12 +410,10 @@ class MissionService
             ->leftJoin('m.surgeon', 'surgeon')->addSelect('surgeon')
             ->leftJoin('m.instrumentist', 'instr')->addSelect('instr')
             ->leftJoin('m.interventions', 'i')->addSelect('i')
-            ->leftJoin('i.firms', 'f')->addSelect('f')
             ->leftJoin('m.materialLines', 'ml')->addSelect('ml')
             ->leftJoin('ml.item', 'item')->addSelect('item')
-            ->leftJoin('ml.missionIntervention', 'mli')->addSelect('mli')
-            ->leftJoin('ml.missionInterventionFirm', 'mlf')->addSelect('mlf')
-            ->leftJoin('f.materialItemRequests', 'mir')->addSelect('mir')
+            ->leftJoin('item.firm', 'firm')->addSelect('firm')
+            ->leftJoin('m.materialItemRequests', 'mir')->addSelect('mir')
             ->andWhere('m.id = :id')->setParameter('id', $id);
 
         $m = $qb->getQuery()->getOneOrNullResult();

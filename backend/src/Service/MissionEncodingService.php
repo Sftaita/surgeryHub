@@ -2,44 +2,89 @@
 
 namespace App\Service;
 
+use App\Dto\Request\Response\FirmSlimDto;
+use App\Dto\Request\Response\MissionEncodingCatalogDto;
 use App\Dto\Request\Response\MissionEncodingDto;
-use App\Dto\Request\Response\MissionEncodingFirmDto;
 use App\Dto\Request\Response\MissionEncodingInterventionDto;
 use App\Dto\Request\Response\MissionEncodingMaterialItemRequestDto;
 use App\Dto\Request\Response\MissionEncodingMaterialLineDto;
-use App\Dto\Request\Response\MaterialItemSlimDto;
+use App\Entity\Firm;
+use App\Entity\MaterialItem;
 use App\Entity\MaterialItemRequest;
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
-use App\Entity\MissionInterventionFirm;
+use App\Entity\User;
+use App\Service\MaterialCatalogService;
+use App\Service\MaterialItemMapper;
+use App\Service\MissionActionsService;
 use Doctrine\ORM\EntityManagerInterface;
 
 final class MissionEncodingService
 {
-    public function __construct(private readonly EntityManagerInterface $em) {}
+    public function __construct(
+        private readonly EntityManagerInterface $em,
+        private readonly MaterialCatalogService $catalogService,
+        private readonly MaterialItemMapper $itemMapper,
+        private readonly MissionActionsService $actionsService,
+    ) {}
 
-    public function buildEncodingDto(Mission $mission): MissionEncodingDto
+    public function buildEncodingDto(Mission $mission, User $viewer): MissionEncodingDto
     {
-        // Important : on force le chargement en une fois pour éviter N+1.
-        // On recharge la mission avec les associations nécessaires.
-        $mission = $this->reloadForEncoding($mission->getId() ?? 0);
+        $mission = $this->reloadForEncoding((int) ($mission->getId() ?? 0));
 
         $interventions = [];
         foreach ($mission->getInterventions() as $intervention) {
-            $interventions[] = $this->mapIntervention($intervention);
+            $interventions[] = $this->mapIntervention($mission, $intervention);
         }
 
-        // Tri stable: orderIndex ASC puis id ASC (utile UI)
-        usort($interventions, static function (MissionEncodingInterventionDto $a, MissionEncodingInterventionDto $b): int {
-            return [$a->orderIndex, $a->id] <=> [$b->orderIndex, $b->id];
-        });
+        usort(
+            $interventions,
+            static fn (MissionEncodingInterventionDto $a, MissionEncodingInterventionDto $b): int
+                => [$a->orderIndex, $a->id] <=> [$b->orderIndex, $b->id]
+        );
+
+        $catalog = $this->buildCatalogDto();
+
+        $allowedActions = $this->actionsService->allowedActions($mission, $viewer);
 
         return new MissionEncodingDto(
-            missionId: (int) $mission->getId(),
-            missionType: (string) $mission->getType()?->value,
-            missionStatus: (string) $mission->getStatus()?->value,
+            mission: [
+                'id' => (int) $mission->getId(),
+                'type' => (string) $mission->getType()->value,
+                'status' => (string) $mission->getStatus()->value,
+                'allowedActions' => $allowedActions,
+            ],
             interventions: $interventions,
+            catalog: $catalog,
+        );
+    }
+
+    private function buildCatalogDto(): MissionEncodingCatalogDto
+    {
+        $raw = $this->catalogService->getEncodingCatalog();
+
+        /** @var list<Firm> $firms */
+        $firms = $raw['firms'];
+        /** @var list<MaterialItem> $items */
+        $items = $raw['items'];
+
+        $firmDtos = [];
+        foreach ($firms as $f) {
+            $firmDtos[] = new FirmSlimDto(
+                id: (int) $f->getId(),
+                name: (string) $f->getName(),
+            );
+        }
+
+        $itemDtos = [];
+        foreach ($items as $it) {
+            $itemDtos[] = $this->itemMapper->toSlim($it);
+        }
+
+        return new MissionEncodingCatalogDto(
+            items: $itemDtos,
+            firms: $firmDtos,
         );
     }
 
@@ -47,12 +92,12 @@ final class MissionEncodingService
     {
         $qb = $this->em->getRepository(Mission::class)->createQueryBuilder('m')
             ->leftJoin('m.interventions', 'i')->addSelect('i')
-            ->leftJoin('i.firms', 'f')->addSelect('f')
             ->leftJoin('m.materialLines', 'ml')->addSelect('ml')
             ->leftJoin('ml.item', 'item')->addSelect('item')
+            ->leftJoin('item.firm', 'firm')->addSelect('firm')
+            // IMPORTANT: on ne fetch-join pas ml.missionIntervention / mir.missionIntervention
+            // (sinon MissionIntervention est hydratée via proxies -> warning dans ObjectHydrator)
             ->leftJoin('m.materialItemRequests', 'mir')->addSelect('mir')
-            ->leftJoin('mir.missionIntervention', 'miri')->addSelect('miri')
-            ->leftJoin('mir.missionInterventionFirm', 'mirf')->addSelect('mirf')
             ->andWhere('m.id = :id')->setParameter('id', $missionId);
 
         $mission = $qb->getQuery()->getOneOrNullResult();
@@ -64,69 +109,39 @@ final class MissionEncodingService
         return $mission;
     }
 
-    private function mapIntervention(MissionIntervention $i): MissionEncodingInterventionDto
+    private function mapIntervention(Mission $mission, MissionIntervention $i): MissionEncodingInterventionDto
     {
-        $firms = [];
-        foreach ($i->getFirms() as $firm) {
-            $firms[] = $this->mapFirm($firm);
+        $lines = [];
+        foreach ($mission->getMaterialLines() as $line) {
+            if ($line->getMissionIntervention()?->getId() !== $i->getId()) {
+                continue;
+            }
+            $lines[] = $this->mapMaterialLine($line);
         }
 
-        // Tri stable: firmName ASC puis id ASC
-        usort($firms, static function (MissionEncodingFirmDto $a, MissionEncodingFirmDto $b): int {
-            return [$a->firmName, $a->id] <=> [$b->firmName, $b->id];
-        });
+        usort(
+            $lines,
+            static fn (MissionEncodingMaterialLineDto $a, MissionEncodingMaterialLineDto $b): int => $a->id <=> $b->id
+        );
+
+        $requests = [];
+        foreach ($mission->getMaterialItemRequests() as $req) {
+            if ($req->getMissionIntervention()?->getId() !== $i->getId()) {
+                continue;
+            }
+            $requests[] = $this->mapMaterialItemRequest($req);
+        }
+
+        usort(
+            $requests,
+            static fn (MissionEncodingMaterialItemRequestDto $a, MissionEncodingMaterialItemRequestDto $b): int => $a->id <=> $b->id
+        );
 
         return new MissionEncodingInterventionDto(
             id: (int) $i->getId(),
             code: (string) $i->getCode(),
             label: (string) $i->getLabel(),
             orderIndex: (int) ($i->getOrderIndex() ?? 0),
-            firms: $firms,
-        );
-    }
-
-    private function mapFirm(MissionInterventionFirm $f): MissionEncodingFirmDto
-    {
-        $mission = $f->getMissionIntervention()?->getMission();
-
-        $lines = [];
-        if ($mission) {
-            foreach ($mission->getMaterialLines() as $line) {
-                // On garde uniquement les lignes rattachées à CETTE firm + CETTE intervention
-                if ($line->getMissionInterventionFirm()?->getId() !== $f->getId()) {
-                    continue;
-                }
-                if ($line->getMissionIntervention()?->getId() !== $f->getMissionIntervention()?->getId()) {
-                    continue;
-                }
-
-                $lines[] = $this->mapMaterialLine($line);
-            }
-        }
-
-        // Tri stable: id ASC (ordre de création)
-        usort($lines, static fn (MissionEncodingMaterialLineDto $a, MissionEncodingMaterialLineDto $b): int => $a->id <=> $b->id);
-
-        $requests = [];
-        if ($mission) {
-            foreach ($mission->getMaterialItemRequests() as $req) {
-                // Demandes rattachées à cette firm + cette intervention
-                if ($req->getMissionInterventionFirm()?->getId() !== $f->getId()) {
-                    continue;
-                }
-                if ($req->getMissionIntervention()?->getId() !== $f->getMissionIntervention()?->getId()) {
-                    continue;
-                }
-
-                $requests[] = $this->mapMaterialItemRequest($req);
-            }
-        }
-
-        usort($requests, static fn (MissionEncodingMaterialItemRequestDto $a, MissionEncodingMaterialItemRequestDto $b): int => $a->id <=> $b->id);
-
-        return new MissionEncodingFirmDto(
-            id: (int) $f->getId(),
-            firmName: (string) $f->getFirmName(),
             materialLines: $lines,
             materialItemRequests: $requests,
         );
@@ -134,16 +149,7 @@ final class MissionEncodingService
 
     private function mapMaterialLine(MaterialLine $l): MissionEncodingMaterialLineDto
     {
-        $item = $l->getItem();
-
-        $itemDto = new MaterialItemSlimDto(
-            id: (int) $item->getId(),
-            manufacturer: $item->getManufacturer(),
-            referenceCode: (string) $item->getReferenceCode(),
-            label: (string) $item->getLabel(),
-            unit: (string) $item->getUnit(),
-            isImplant: (bool) $item->isImplant(),
-        );
+        $itemDto = $this->itemMapper->toSlim($l->getItem());
 
         return new MissionEncodingMaterialLineDto(
             id: (int) $l->getId(),

@@ -6,20 +6,16 @@ use Symfony\Component\Validator\Constraints as Assert;
 
 class MaterialLineCreateRequest
 {
+    #[Assert\NotBlank]
+    #[Assert\Positive]
+    public int $itemId;
+
     #[Assert\Positive]
     public ?int $missionInterventionId = null;
 
-    #[Assert\Positive]
-    public ?int $missionInterventionFirmId = null;
+    #[Assert\Type('string')]
+    public ?string $quantity = null;
 
-    #[Assert\NotBlank]
-    #[Assert\Positive]
-    public ?int $itemId = null;
-
-    #[Assert\NotBlank]
-    #[Assert\Positive]
-    public ?float $quantity = 1.0;
-
-    #[Assert\Length(max: 1000)]
+    #[Assert\Type('string')]
     public ?string $comment = null;
 }

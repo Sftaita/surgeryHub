@@ -2,9 +2,13 @@ export type AllowedAction =
   | "view"
   | "edit"
   | "publish"
+  | "claim" // Lot 3 — Instrumentist
   | "submit"
   | "cancel"
-  | "delete";
+  | "delete"
+  | "edit_encoding"
+  // compat éventuelle si backend renvoie "encoding" (reste piloté par allowedActions)
+  | "encoding";
 
 export type SchedulePrecision = "APPROXIMATE" | "EXACT";
 export type MissionType = "BLOCK" | "CONSULTATION";
@@ -77,6 +81,7 @@ export interface UserRef {
   lastname?: string | null;
   active?: boolean;
   employmentType?: string | null;
+  displayName?: string | null;
 }
 
 export interface Mission {

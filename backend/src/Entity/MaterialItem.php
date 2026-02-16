@@ -18,9 +18,10 @@ class MaterialItem
     #[Groups(['mission:read', 'mission:read_manager'])]
     private ?int $id = null;
 
-    #[ORM\Column(length: 255, nullable: true)]
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager'])]
-    private ?string $manufacturer = null;
+    private ?Firm $firm = null;
 
     #[ORM\Column(length: 100)]
     #[Groups(['mission:read', 'mission:read_manager'])]
@@ -47,15 +48,14 @@ class MaterialItem
         return $this->id;
     }
 
-    public function getManufacturer(): ?string
+    public function getFirm(): ?Firm
     {
-        return $this->manufacturer;
+        return $this->firm;
     }
 
-    public function setManufacturer(?string $manufacturer): static
+    public function setFirm(?Firm $firm): static
     {
-        $this->manufacturer = $manufacturer;
-
+        $this->firm = $firm;
         return $this;
     }
 
@@ -67,7 +67,6 @@ class MaterialItem
     public function setReferenceCode(string $referenceCode): static
     {
         $this->referenceCode = $referenceCode;
-
         return $this;
     }
 
@@ -79,7 +78,6 @@ class MaterialItem
     public function setLabel(string $label): static
     {
         $this->label = $label;
-
         return $this;
     }
 
@@ -91,7 +89,6 @@ class MaterialItem
     public function setUnit(string $unit): static
     {
         $this->unit = $unit;
-
         return $this;
     }
 
@@ -103,7 +100,6 @@ class MaterialItem
     public function setIsImplant(bool $isImplant): static
     {
         $this->isImplant = $isImplant;
-
         return $this;
     }
 
@@ -115,7 +111,6 @@ class MaterialItem
     public function setActive(bool $active): static
     {
         $this->active = $active;
-
         return $this;
     }
 }

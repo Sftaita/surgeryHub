@@ -6,7 +6,7 @@ final class MaterialItemSlimDto
 {
     public function __construct(
         public readonly int $id,
-        public readonly ?string $manufacturer,
+        public readonly ?FirmSlimDto $firm,
         public readonly string $referenceCode,
         public readonly string $label,
         public readonly string $unit,

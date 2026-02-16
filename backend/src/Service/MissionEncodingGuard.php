@@ -5,12 +5,18 @@ namespace App\Service;
 
 use App\Entity\Mission;
 use App\Entity\User;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 
 final class MissionEncodingGuard
 {
     public function assertEncodingAllowed(Mission $mission, ?User $actor): void
     {
+        // 🔒 Hard lock: une fois verrouillé (manager) ou facture générée, personne ne peut modifier.
+        if ($mission->getEncodingLockedAt() !== null || $mission->getInvoiceGeneratedAt() !== null) {
+            throw new AccessDeniedHttpException('Encoding is locked for this mission.');
+        }
+
         if (!$actor instanceof User) {
             throw new ConflictHttpException('Encoding is not allowed before mission start');
         }
@@ -18,7 +24,7 @@ final class MissionEncodingGuard
         $roles = $actor->getRoles();
         $isManager = in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true);
 
-        // Managers/admins can encode/support anytime.
+        // Managers/admins can encode/support anytime (except hard lock above).
         if ($isManager) {
             return;
         }

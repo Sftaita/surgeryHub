@@ -24,11 +24,20 @@ import MissionDetailPage from "../pages/manager/MissionDetailPage";
 // Lot 2b — Manager/Admin — Create mission
 import MissionCreatePage from "../pages/manager/MissionCreatePage";
 
+// Lot 3 — Instrumentist (mobile-first)
+import OffersPage from "../pages/instrumentist/OffersPage";
+import MyMissionsPage from "../pages/instrumentist/MyMissionsPage";
+import MissionDetailPageInstrumentist from "../pages/instrumentist/MissionDetailPage";
+
+// Lot 4 — Instrumentist (mobile-first) — Encoding
+import MissionEncodingPage from "../pages/instrumentist/MissionEncodingPage";
+
 function LoginPage() {
   const { state, login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const from = (location.state as any)?.from ?? "/";
+
+  const from = (location.state as { from?: string } | null)?.from ?? "/";
 
   useEffect(() => {
     if (state.status === "authenticated") {
@@ -39,7 +48,7 @@ function LoginPage() {
   return (
     <div style={{ padding: 16 }}>
       <h2>Login</h2>
-      <button onClick={() => login("test@test.com", "Password123!")}>
+      <button onClick={() => login("instrumentiste1@test.be", "password")}>
         Login (test)
       </button>
     </div>
@@ -63,9 +72,6 @@ function PostLoginRedirect() {
 }
 
 // Placeholders socle
-function InstrumentistHome() {
-  return <div>Instrumentist Home</div>;
-}
 function SurgeonHome() {
   return <div>Surgeon Home</div>;
 }
@@ -86,7 +92,21 @@ export function AppRouter() {
 
           {/* Instrumentist */}
           <Route element={<MobileLayout />}>
-            <Route path="i" element={<InstrumentistHome />} />
+            {/* 🧭 Auto-redirect /app/i -> /app/i/offers */}
+            <Route path="i" element={<Navigate to="/app/i/offers" replace />} />
+
+            <Route path="i/offers" element={<OffersPage />} />
+            <Route path="i/my-missions" element={<MyMissionsPage />} />
+            <Route
+              path="i/missions/:id"
+              element={<MissionDetailPageInstrumentist />}
+            />
+
+            {/* Lot 4 — Encodage */}
+            <Route
+              path="i/missions/:id/encoding"
+              element={<MissionEncodingPage />}
+            />
           </Route>
 
           {/* Surgeon */}

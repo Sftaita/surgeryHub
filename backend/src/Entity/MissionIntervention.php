@@ -39,13 +39,6 @@ class MissionIntervention
     private ?int $orderIndex = 0;
 
     /**
-     * @var Collection<int, MissionInterventionFirm>
-     */
-    #[ORM\OneToMany(mappedBy: 'missionIntervention', targetEntity: MissionInterventionFirm::class, cascade: ['persist', 'remove'])]
-    #[Groups(['mission:read', 'mission:read_manager'])]
-    private Collection $firms;
-
-    /**
      * @var Collection<int, MaterialLine>
      */
     #[ORM\OneToMany(mappedBy: 'missionIntervention', targetEntity: MaterialLine::class)]
@@ -54,7 +47,6 @@ class MissionIntervention
 
     public function __construct()
     {
-        $this->firms = new ArrayCollection();
         $this->materialLines = new ArrayCollection();
     }
 
@@ -68,11 +60,9 @@ class MissionIntervention
         return $this->mission;
     }
 
-    // ✅ Fix: nullable pour permettre setMission(null) lors du remove côté Mission
     public function setMission(?Mission $mission): static
     {
         $this->mission = $mission;
-
         return $this;
     }
 
@@ -84,7 +74,6 @@ class MissionIntervention
     public function setCode(string $code): static
     {
         $this->code = $code;
-
         return $this;
     }
 
@@ -96,7 +85,6 @@ class MissionIntervention
     public function setLabel(string $label): static
     {
         $this->label = $label;
-
         return $this;
     }
 
@@ -108,16 +96,7 @@ class MissionIntervention
     public function setOrderIndex(int $orderIndex): static
     {
         $this->orderIndex = $orderIndex;
-
         return $this;
-    }
-
-    /**
-     * @return Collection<int, MissionInterventionFirm>
-     */
-    public function getFirms(): Collection
-    {
-        return $this->firms;
     }
 
     /**

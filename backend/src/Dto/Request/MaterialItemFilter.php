@@ -9,6 +9,10 @@ final class MaterialItemFilter
     #[Assert\Length(max: 255)]
     public ?string $search = null;
 
+    #[Assert\Positive]
+    public ?int $firmId = null;
+
+    // legacy (optionnel, exact match) – à supprimer quand le frontend est migré
     #[Assert\Length(max: 255)]
     public ?string $manufacturer = null;
 
@@ -35,7 +39,13 @@ final class MaterialItemFilter
         $dto = new self();
 
         $dto->search = isset($q['search']) ? trim((string) $q['search']) : null;
+
+        if (isset($q['firmId'])) {
+            $dto->firmId = (int) $q['firmId'];
+        }
+
         $dto->manufacturer = isset($q['manufacturer']) ? trim((string) $q['manufacturer']) : null;
+
         $dto->referenceCode = isset($q['referenceCode']) ? trim((string) $q['referenceCode']) : null;
 
         if (array_key_exists('active', $q)) {
@@ -54,7 +64,6 @@ final class MaterialItemFilter
             $dto->limit = (int) $q['limit'];
         }
 
-        // normalisation vide -> null
         foreach (['search', 'manufacturer', 'referenceCode'] as $k) {
             if ($dto->$k !== null && $dto->$k === '') {
                 $dto->$k = null;

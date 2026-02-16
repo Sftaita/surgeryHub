@@ -6,9 +6,10 @@ use App\Entity\Traits\TimestampableTrait;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
 
-// Consultation missions must not have material lines; enforce in service layer and add DB check if supported by the chosen platform.
 #[ORM\Entity]
-#[ORM\Table(indexes: [new ORM\Index(name: 'idx_material_line_mission', columns: ['mission_id'])])]
+#[ORM\Table(indexes: [
+    new ORM\Index(name: 'idx_material_line_mission', columns: ['mission_id']),
+])]
 #[ORM\HasLifecycleCallbacks]
 class MaterialLine
 {
@@ -26,12 +27,9 @@ class MaterialLine
     private ?Mission $mission = null;
 
     #[ORM\ManyToOne(inversedBy: 'materialLines')]
+    #[ORM\JoinColumn(nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager'])]
     private ?MissionIntervention $missionIntervention = null;
-
-    #[ORM\ManyToOne(inversedBy: 'materialLines')]
-    #[Groups(['mission:read', 'mission:read_manager'])]
-    private ?MissionInterventionFirm $missionInterventionFirm = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
@@ -52,6 +50,7 @@ class MaterialLine
     private ?User $createdBy = null;
 
     #[ORM\ManyToOne(inversedBy: 'materialLines')]
+    #[ORM\JoinColumn(nullable: true)]
     #[Groups(['mission:read_manager'])]
     private ?ImplantSubMission $implantSubMission = null;
 
@@ -68,7 +67,6 @@ class MaterialLine
     public function setMission(Mission $mission): static
     {
         $this->mission = $mission;
-
         return $this;
     }
 
@@ -80,19 +78,6 @@ class MaterialLine
     public function setMissionIntervention(?MissionIntervention $missionIntervention): static
     {
         $this->missionIntervention = $missionIntervention;
-
-        return $this;
-    }
-
-    public function getMissionInterventionFirm(): ?MissionInterventionFirm
-    {
-        return $this->missionInterventionFirm;
-    }
-
-    public function setMissionInterventionFirm(?MissionInterventionFirm $missionInterventionFirm): static
-    {
-        $this->missionInterventionFirm = $missionInterventionFirm;
-
         return $this;
     }
 
@@ -104,7 +89,6 @@ class MaterialLine
     public function setItem(MaterialItem $item): static
     {
         $this->item = $item;
-
         return $this;
     }
 
@@ -113,10 +97,11 @@ class MaterialLine
         return $this->quantity;
     }
 
-    public function setQuantity(string $quantity): static
+    public function setQuantity(?string $quantity): static
     {
-        $this->quantity = $quantity;
-
+        if ($quantity !== null) {
+            $this->quantity = $quantity;
+        }
         return $this;
     }
 
@@ -128,7 +113,6 @@ class MaterialLine
     public function setComment(?string $comment): static
     {
         $this->comment = $comment;
-
         return $this;
     }
 
@@ -140,7 +124,6 @@ class MaterialLine
     public function setCreatedBy(User $createdBy): static
     {
         $this->createdBy = $createdBy;
-
         return $this;
     }
 
@@ -152,7 +135,6 @@ class MaterialLine
     public function setImplantSubMission(?ImplantSubMission $implantSubMission): static
     {
         $this->implantSubMission = $implantSubMission;
-
         return $this;
     }
 }

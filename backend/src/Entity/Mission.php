@@ -2,6 +2,15 @@
 
 namespace App\Entity;
 
+use App\Entity\Hospital;
+use App\Entity\ImplantSubMission;
+use App\Entity\InstrumentistRating;
+use App\Entity\InstrumentistService;
+use App\Entity\MaterialItemRequest;
+use App\Entity\MaterialLine;
+use App\Entity\MissionClaim;
+use App\Entity\MissionPublication;
+use App\Entity\SurgeonRatingByInstrumentist;
 use App\Entity\Traits\TimestampableTrait;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
@@ -9,13 +18,11 @@ use App\Enum\SchedulePrecision;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
+use Proxies\__CG__\App\Entity\MissionIntervention;
+use Proxies\__CG__\App\Entity\User;
 use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
-#[ORM\Table(indexes: [
-    new ORM\Index(name: 'idx_mission_site_start', columns: ['site_id', 'start_at']),
-    new ORM\Index(name: 'idx_mission_site_status', columns: ['site_id', 'status']),
-])]
 #[ORM\HasLifecycleCallbacks]
 class Mission
 {
@@ -24,25 +31,16 @@ class Mission
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
+    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
     private ?int $id = null;
 
-    #[ORM\ManyToOne(inversedBy: 'missions')]
-    #[ORM\JoinColumn(nullable: false)]
-    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
-    private ?Hospital $site = null;
-
-    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[ORM\Column(enumType: MissionStatus::class)]
     #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
-    private ?\DateTimeImmutable $startAt = null;
+    private MissionStatus $status = MissionStatus::DRAFT;
 
-    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[ORM\Column(enumType: SchedulePrecision::class)]
     #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
-    private ?\DateTimeImmutable $endAt = null;
-
-    #[ORM\Column(enumType: SchedulePrecision::class, options: ['default' => SchedulePrecision::EXACT])]
-    #[Groups(['mission:read', 'mission:read_manager'])]
-    private ?SchedulePrecision $schedulePrecision = SchedulePrecision::EXACT;
+    private SchedulePrecision $schedulePrecision = SchedulePrecision::EXACT;
 
     #[ORM\Column(enumType: MissionType::class)]
     #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
@@ -54,321 +52,147 @@ class Mission
     private ?User $surgeon = null;
 
     #[ORM\ManyToOne]
-    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
+    #[ORM\JoinColumn(nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
     private ?User $instrumentist = null;
-
-    #[ORM\Column(enumType: MissionStatus::class, options: ['default' => MissionStatus::DRAFT])]
-    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
-    private ?MissionStatus $status = MissionStatus::DRAFT;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
-    #[Groups(['mission:read_manager'])]
+    #[Groups(['mission:read_manager', 'export:read'])]
     private ?User $createdBy = null;
 
-    /**
-     * @var Collection<int, MissionPublication>
-     */
-    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionPublication::class, cascade: ['persist'], orphanRemoval: true)]
-    #[Groups(['mission:read_manager'])]
+    #[ORM\ManyToOne(inversedBy: 'missions')]
+    #[ORM\JoinColumn(nullable: false)]
+    #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
+    private ?Hospital $site = null;
+
+    #[ORM\Column(type: 'datetime_immutable')]
+    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
+    private ?\DateTimeImmutable $startAt = null;
+
+    #[ORM\Column(type: 'datetime_immutable')]
+    #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
+    private ?\DateTimeImmutable $endAt = null;
+
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
+    private ?\DateTimeImmutable $submittedAt = null;
+
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
+    private ?\DateTimeImmutable $encodingLockedAt = null;
+
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
+    private ?\DateTimeImmutable $invoiceGeneratedAt = null;
+
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionClaim::class, orphanRemoval: true)]
+    private Collection $claims;
+
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionPublication::class, orphanRemoval: true)]
     private Collection $publications;
 
-    #[ORM\OneToOne(mappedBy: 'mission', cascade: ['persist', 'remove'])]
-    #[Groups(['mission:read_manager'])]
-    private ?MissionClaim $claim = null;
-
-    /**
-     * @var Collection<int, MissionIntervention>
-     */
-    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionIntervention::class, cascade: ['persist', 'remove'])]
-    #[Groups(['mission:read', 'mission:read_manager'])]
-    private Collection $interventions;
-
-    /**
-     * @var Collection<int, MaterialLine>
-     */
-    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MaterialLine::class, cascade: ['remove'])]
-    #[Groups(['mission:read', 'mission:read_manager'])]
-    private Collection $materialLines;
-
-    /**
-     * @var Collection<int, MaterialItemRequest>
-     */
-    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MaterialItemRequest::class, cascade: ['remove'])]
-    #[Groups(['mission:read', 'mission:read_manager'])]
-    private Collection $materialItemRequests;
-
-    /**
-     * @var Collection<int, InstrumentistService>
-     */
-    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: InstrumentistService::class, cascade: ['remove'])]
-    #[Groups(['mission:read', 'mission:read_manager'])]
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: InstrumentistService::class, orphanRemoval: true)]
     private Collection $services;
 
-    /**
-     * @var Collection<int, InstrumentistRating>
-     */
-    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: InstrumentistRating::class)]
-    #[Groups(['mission:read', 'mission:read_manager'])]
-    private Collection $instrumentistRatings;
-
-    /**
-     * @var Collection<int, SurgeonRatingByInstrumentist>
-     */
-    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: SurgeonRatingByInstrumentist::class)]
-    #[Groups(['mission:read', 'mission:read_manager'])]
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: SurgeonRatingByInstrumentist::class, orphanRemoval: true)]
     private Collection $surgeonRatings;
 
-    /**
-     * @var Collection<int, ImplantSubMission>
-     */
-    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: ImplantSubMission::class, cascade: ['persist', 'remove'])]
-    #[Groups(['mission:read_manager'])]
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: InstrumentistRating::class, orphanRemoval: true)]
+    private Collection $instrumentistRatings;
+
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: ImplantSubMission::class, orphanRemoval: true)]
     private Collection $implantSubMissions;
+
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionIntervention::class, orphanRemoval: true)]
+    private Collection $interventions;
+
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MaterialLine::class, orphanRemoval: true)]
+    private Collection $materialLines;
+
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MaterialItemRequest::class, orphanRemoval: true)]
+    private Collection $materialItemRequests;
 
     public function __construct()
     {
+        $this->claims = new ArrayCollection();
         $this->publications = new ArrayCollection();
+        $this->services = new ArrayCollection();
+        $this->surgeonRatings = new ArrayCollection();
+        $this->instrumentistRatings = new ArrayCollection();
+        $this->implantSubMissions = new ArrayCollection();
         $this->interventions = new ArrayCollection();
         $this->materialLines = new ArrayCollection();
         $this->materialItemRequests = new ArrayCollection();
-        $this->services = new ArrayCollection();
-        $this->instrumentistRatings = new ArrayCollection();
-        $this->surgeonRatings = new ArrayCollection();
-        $this->implantSubMissions = new ArrayCollection();
     }
 
-    public function getId(): ?int
+    public function getId(): ?int { return $this->id; }
+
+    public function getStatus(): MissionStatus { return $this->status; }
+    public function setStatus(MissionStatus $status): static { $this->status = $status; return $this; }
+
+    public function getSchedulePrecision(): SchedulePrecision { return $this->schedulePrecision; }
+    public function setSchedulePrecision(SchedulePrecision $schedulePrecision): static { $this->schedulePrecision = $schedulePrecision; return $this; }
+
+    public function getType(): ?MissionType { return $this->type; }
+    public function setType(MissionType $type): static { $this->type = $type; return $this; }
+
+    public function getSurgeon(): ?User { return $this->surgeon; }
+    public function setSurgeon(User $surgeon): static { $this->surgeon = $surgeon; return $this; }
+
+    public function getInstrumentist(): ?User { return $this->instrumentist; }
+    public function setInstrumentist(?User $instrumentist): static { $this->instrumentist = $instrumentist; return $this; }
+
+    public function getCreatedBy(): ?User { return $this->createdBy; }
+    public function setCreatedBy(User $createdBy): static { $this->createdBy = $createdBy; return $this; }
+
+    public function getSite(): ?Hospital { return $this->site; }
+    public function setSite(Hospital $site): static { $this->site = $site; return $this; }
+
+    public function getStartAt(): ?\DateTimeImmutable { return $this->startAt; }
+    public function setStartAt(\DateTimeImmutable $startAt): static { $this->startAt = $startAt; return $this; }
+
+    public function getEndAt(): ?\DateTimeImmutable { return $this->endAt; }
+    public function setEndAt(\DateTimeImmutable $endAt): static { $this->endAt = $endAt; return $this; }
+
+    public function getSubmittedAt(): ?\DateTimeImmutable { return $this->submittedAt; }
+    public function setSubmittedAt(?\DateTimeImmutable $submittedAt): static { $this->submittedAt = $submittedAt; return $this; }
+
+    public function getEncodingLockedAt(): ?\DateTimeImmutable { return $this->encodingLockedAt; }
+    public function setEncodingLockedAt(?\DateTimeImmutable $encodingLockedAt): static { $this->encodingLockedAt = $encodingLockedAt; return $this; }
+
+    public function getInvoiceGeneratedAt(): ?\DateTimeImmutable { return $this->invoiceGeneratedAt; }
+    public function setInvoiceGeneratedAt(?\DateTimeImmutable $invoiceGeneratedAt): static { $this->invoiceGeneratedAt = $invoiceGeneratedAt; return $this; }
+
+    public function isEncodingLocked(): bool
     {
-        return $this->id;
+        return $this->encodingLockedAt !== null || $this->invoiceGeneratedAt !== null;
     }
 
-    public function getSite(): ?Hospital
-    {
-        return $this->site;
-    }
+    /** @return Collection<int, MissionIntervention> */
+    public function getInterventions(): Collection { return $this->interventions; }
 
-    public function setSite(Hospital $site): static
-    {
-        $this->site = $site;
+    /** @return Collection<int, MaterialLine> */
+    public function getMaterialLines(): Collection { return $this->materialLines; }
 
-        return $this;
-    }
+    /** @return Collection<int, MaterialItemRequest> */
+    public function getMaterialItemRequests(): Collection { return $this->materialItemRequests; }
 
-    public function getStartAt(): ?\DateTimeImmutable
-    {
-        return $this->startAt;
-    }
+    /** @return Collection<int, ImplantSubMission> */
+    public function getImplantSubMissions(): Collection { return $this->implantSubMissions; }
 
-    public function setStartAt(?\DateTimeImmutable $startAt): static
-    {
-        $this->startAt = $startAt;
+    /** @return Collection<int, MissionClaim> */
+    public function getClaims(): Collection { return $this->claims; }
 
-        return $this;
-    }
+    /** @return Collection<int, MissionPublication> */
+    public function getPublications(): Collection { return $this->publications; }
 
-    public function getEndAt(): ?\DateTimeImmutable
-    {
-        return $this->endAt;
-    }
+    /** @return Collection<int, InstrumentistService> */
+    public function getServices(): Collection { return $this->services; }
 
-    public function setEndAt(?\DateTimeImmutable $endAt): static
-    {
-        $this->endAt = $endAt;
+    /** @return Collection<int, SurgeonRatingByInstrumentist> */
+    public function getSurgeonRatings(): Collection { return $this->surgeonRatings; }
 
-        return $this;
-    }
-
-    public function getSchedulePrecision(): ?SchedulePrecision
-    {
-        return $this->schedulePrecision;
-    }
-
-    public function setSchedulePrecision(SchedulePrecision $schedulePrecision): static
-    {
-        $this->schedulePrecision = $schedulePrecision;
-
-        return $this;
-    }
-
-    public function getType(): ?MissionType
-    {
-        return $this->type;
-    }
-
-    public function setType(MissionType $type): static
-    {
-        $this->type = $type;
-
-        return $this;
-    }
-
-    public function getSurgeon(): ?User
-    {
-        return $this->surgeon;
-    }
-
-    public function setSurgeon(User $surgeon): static
-    {
-        $this->surgeon = $surgeon;
-
-        return $this;
-    }
-
-    public function getInstrumentist(): ?User
-    {
-        return $this->instrumentist;
-    }
-
-    public function setInstrumentist(?User $instrumentist): static
-    {
-        $this->instrumentist = $instrumentist;
-
-        return $this;
-    }
-
-    public function getStatus(): ?MissionStatus
-    {
-        return $this->status;
-    }
-
-    public function setStatus(MissionStatus $status): static
-    {
-        $this->status = $status;
-
-        return $this;
-    }
-
-    public function getCreatedBy(): ?User
-    {
-        return $this->createdBy;
-    }
-
-    public function setCreatedBy(User $createdBy): static
-    {
-        $this->createdBy = $createdBy;
-
-        return $this;
-    }
-
-    /**
-     * @return Collection<int, MissionPublication>
-     */
-    public function getPublications(): Collection
-    {
-        return $this->publications;
-    }
-
-    public function addPublication(MissionPublication $publication): static
-    {
-        if (!$this->publications->contains($publication)) {
-            $this->publications->add($publication);
-            $publication->setMission($this);
-        }
-
-        return $this;
-    }
-
-    public function removePublication(MissionPublication $publication): static
-    {
-        if ($this->publications->removeElement($publication)) {
-            if ($publication->getMission() === $this) {
-                $publication->setMission(null);
-            }
-        }
-
-        return $this;
-    }
-
-    public function getClaim(): ?MissionClaim
-    {
-        return $this->claim;
-    }
-
-    public function setClaim(?MissionClaim $claim): static
-    {
-        $this->claim = $claim;
-        if ($claim && $claim->getMission() !== $this) {
-            $claim->setMission($this);
-        }
-
-        return $this;
-    }
-
-    /**
-     * @return Collection<int, MissionIntervention>
-     */
-    public function getInterventions(): Collection
-    {
-        return $this->interventions;
-    }
-
-    public function addIntervention(MissionIntervention $intervention): static
-    {
-        if (!$this->interventions->contains($intervention)) {
-            $this->interventions->add($intervention);
-            $intervention->setMission($this);
-        }
-
-        return $this;
-    }
-
-    public function removeIntervention(MissionIntervention $intervention): static
-    {
-        if ($this->interventions->removeElement($intervention)) {
-            if ($intervention->getMission() === $this) {
-                $intervention->setMission(null);
-            }
-        }
-
-        return $this;
-    }
-
-    /**
-     * @return Collection<int, MaterialLine>
-     */
-    public function getMaterialLines(): Collection
-    {
-        return $this->materialLines;
-    }
-
-    /**
-     * @return Collection<int, MaterialItemRequest>
-     */
-    public function getMaterialItemRequests(): Collection
-    {
-        return $this->materialItemRequests;
-    }
-
-    /**
-     * @return Collection<int, InstrumentistService>
-     */
-    public function getServices(): Collection
-    {
-        return $this->services;
-    }
-
-    /**
-     * @return Collection<int, InstrumentistRating>
-     */
-    public function getInstrumentistRatings(): Collection
-    {
-        return $this->instrumentistRatings;
-    }
-
-    /**
-     * @return Collection<int, SurgeonRatingByInstrumentist>
-     */
-    public function getSurgeonRatings(): Collection
-    {
-        return $this->surgeonRatings;
-    }
-
-    /**
-     * @return Collection<int, ImplantSubMission>
-     */
-    public function getImplantSubMissions(): Collection
-    {
-        return $this->implantSubMissions;
-    }
+    /** @return Collection<int, InstrumentistRating> */
+    public function getInstrumentistRatings(): Collection { return $this->instrumentistRatings; }
 }

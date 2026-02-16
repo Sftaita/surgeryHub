@@ -2,6 +2,10 @@
 
 namespace App\Dto\Request\Response;
 
+/**
+ * @deprecated Firm is now a reference entity; encoding is no longer grouped by firm.
+ * This DTO is kept temporarily to avoid breaking autoload if referenced elsewhere.
+ */
 final class MissionEncodingFirmDto
 {
     /**

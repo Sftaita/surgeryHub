@@ -9,15 +9,9 @@ class MaterialLineUpdateRequest
     #[Assert\Positive]
     public ?int $missionInterventionId = null;
 
-    #[Assert\Positive]
-    public ?int $missionInterventionFirmId = null;
+    #[Assert\Type('string')]
+    public ?string $quantity = null;
 
-    #[Assert\Positive]
-    public ?int $itemId = null;
-
-    #[Assert\Positive]
-    public ?float $quantity = null;
-
-    #[Assert\Length(max: 1000)]
+    #[Assert\Type('string')]
     public ?string $comment = null;
 }
