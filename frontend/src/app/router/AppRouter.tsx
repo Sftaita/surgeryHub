@@ -1,12 +1,4 @@
-import {
-  Navigate,
-  Route,
-  Routes,
-  useLocation,
-  useNavigate,
-  Outlet,
-} from "react-router-dom";
-import { useEffect } from "react";
+import { Navigate, Route, Routes, Outlet } from "react-router-dom";
 
 import { RequireAuth } from "./RequireAuth";
 import { RequireAppAccess } from "./RequireAppAccess";
@@ -15,6 +7,7 @@ import { MobileLayout } from "../layouts/MobileLayout";
 import { DesktopLayout } from "../layouts/DesktopLayout";
 
 import { ForbiddenPage } from "../pages/ForbiddenPage";
+import LoginPage from "../pages/LoginPage";
 import { useAuth } from "../auth/AuthContext";
 import { isMobileRole, isDesktopRole } from "../auth/roles";
 
@@ -32,29 +25,6 @@ import MissionDetailPageInstrumentist from "../pages/instrumentist/MissionDetail
 
 // Lot 4 — Instrumentist (mobile-first) — Encoding
 import MissionEncodingPage from "../pages/instrumentist/MissionEncodingPage";
-
-function LoginPage() {
-  const { state, login } = useAuth();
-  const navigate = useNavigate();
-  const location = useLocation();
-
-  const from = (location.state as { from?: string } | null)?.from ?? "/";
-
-  useEffect(() => {
-    if (state.status === "authenticated") {
-      navigate(from, { replace: true });
-    }
-  }, [state.status, navigate, from]);
-
-  return (
-    <div style={{ padding: 16 }}>
-      <h2>Login</h2>
-      <button onClick={() => login("instrumentiste1@test.be", "password")}>
-        Login (test)
-      </button>
-    </div>
-  );
-}
 
 function PostLoginRedirect() {
   const { state } = useAuth();

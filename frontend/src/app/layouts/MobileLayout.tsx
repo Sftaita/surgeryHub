@@ -12,6 +12,7 @@ import AssignmentIcon from "@mui/icons-material/Assignment";
 import { useQuery } from "@tanstack/react-query";
 
 import { fetchInstrumentistOffersWithFallback } from "../features/missions/api/missions.api";
+import { useAuth } from "../auth/AuthContext";
 
 type Tab = {
   label: string;
@@ -76,6 +77,9 @@ export function MobileLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const pathname = location.pathname;
+
+  const { state, logout } = useAuth();
+  const isAuthenticated = state.status === "authenticated";
 
   const isInstrumentist = pathname.startsWith("/app/i");
 
@@ -185,6 +189,26 @@ export function MobileLayout() {
           : 1.5,
       }}
     >
+      {/* Header minimal avec logout (sans impacter la logique métier) */}
+      {isAuthenticated && (
+        <Box
+          sx={{
+            display: "flex",
+            justifyContent: "flex-end",
+            mb: 1,
+          }}
+        >
+          <button
+            onClick={() => {
+              logout();
+              navigate("/login", { replace: true });
+            }}
+          >
+            Logout
+          </button>
+        </Box>
+      )}
+
       <Outlet />
 
       {isInstrumentist && (
