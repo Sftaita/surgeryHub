@@ -4,6 +4,7 @@ import {
   Routes,
   useLocation,
   useNavigate,
+  Outlet,
 } from "react-router-dom";
 import { useEffect } from "react";
 
@@ -61,14 +62,33 @@ function PostLoginRedirect() {
 
   const role = state.user.role;
 
-  // Manager / Admin
-  if (isDesktopRole(role)) return <Navigate to="/app/m" replace />;
+  // ✅ Manager / Admin → va directement sur la liste missions
+  if (isDesktopRole(role)) return <Navigate to="/app/m/missions" replace />;
 
   // Instrumentist / Surgeon
   if (role === "SURGEON") return <Navigate to="/app/s" replace />;
-  if (isMobileRole(role)) return <Navigate to="/app/i" replace />;
+  if (isMobileRole(role)) return <Navigate to="/app/i/offers" replace />;
 
   return <Navigate to="/app/forbidden" replace />;
+}
+
+// ✅ Guard routes instrumentiste
+function RequireInstrumentist() {
+  const { state } = useAuth();
+  if (state.status !== "authenticated") return <Navigate to="/login" replace />;
+  const role = state.user.role;
+  if (role !== "INSTRUMENTIST")
+    return <Navigate to="/app/m/missions" replace />;
+  return <Outlet />;
+}
+
+// ✅ Guard routes manager/admin
+function RequireManager() {
+  const { state } = useAuth();
+  if (state.status !== "authenticated") return <Navigate to="/login" replace />;
+  const role = state.user.role;
+  if (!isDesktopRole(role)) return <Navigate to="/app/i/offers" replace />;
+  return <Outlet />;
 }
 
 // Placeholders socle
@@ -91,22 +111,23 @@ export function AppRouter() {
           <Route path="forbidden" element={<ForbiddenPage />} />
 
           {/* Instrumentist */}
-          <Route element={<MobileLayout />}>
-            {/* 🧭 Auto-redirect /app/i -> /app/i/offers */}
-            <Route path="i" element={<Navigate to="/app/i/offers" replace />} />
-
-            <Route path="i/offers" element={<OffersPage />} />
-            <Route path="i/my-missions" element={<MyMissionsPage />} />
-            <Route
-              path="i/missions/:id"
-              element={<MissionDetailPageInstrumentist />}
-            />
-
-            {/* Lot 4 — Encodage */}
-            <Route
-              path="i/missions/:id/encoding"
-              element={<MissionEncodingPage />}
-            />
+          <Route element={<RequireInstrumentist />}>
+            <Route element={<MobileLayout />}>
+              <Route
+                path="i"
+                element={<Navigate to="/app/i/offers" replace />}
+              />
+              <Route path="i/offers" element={<OffersPage />} />
+              <Route path="i/my-missions" element={<MyMissionsPage />} />
+              <Route
+                path="i/missions/:id"
+                element={<MissionDetailPageInstrumentist />}
+              />
+              <Route
+                path="i/missions/:id/encoding"
+                element={<MissionEncodingPage />}
+              />
+            </Route>
           </Route>
 
           {/* Surgeon */}
@@ -115,16 +136,22 @@ export function AppRouter() {
           </Route>
 
           {/* Manager / Admin */}
-          <Route element={<DesktopLayout />}>
-            <Route path="m" element={<ManagerHome />} />
+          <Route element={<RequireManager />}>
+            <Route element={<DesktopLayout />}>
+              {/* ✅ /app/m redirige sur la liste */}
+              <Route
+                path="m"
+                element={<Navigate to="/app/m/missions" replace />}
+              />
 
-            {/* Lot 1 — Missions */}
-            <Route path="m/missions" element={<MissionsListPage />} />
+              {/* Lot 1 — Missions */}
+              <Route path="m/missions" element={<MissionsListPage />} />
 
-            {/* Lot 2b — Missions — Create */}
-            <Route path="m/missions/new" element={<MissionCreatePage />} />
+              {/* Lot 2b — Missions — Create */}
+              <Route path="m/missions/new" element={<MissionCreatePage />} />
 
-            <Route path="m/missions/:id" element={<MissionDetailPage />} />
+              <Route path="m/missions/:id" element={<MissionDetailPage />} />
+            </Route>
           </Route>
         </Route>
       </Route>

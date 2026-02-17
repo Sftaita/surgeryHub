@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircularProgress, Stack, Typography } from "@mui/material";
+import { Navigate, useNavigate } from "react-router-dom";
 
 import {
   fetchInstrumentistOffersWithFallback,
@@ -9,6 +10,8 @@ import {
 import type { Mission } from "../../features/missions/api/missions.types";
 import MissionCardMobile from "../../features/missions/components/MissionCardMobile";
 import { useToast } from "../../ui/toast/useToast";
+import { useAuth } from "../../auth/AuthContext";
+import { isMobileRole } from "../../auth/roles";
 
 function extractErrorMessage(err: any): string {
   return (
@@ -22,12 +25,23 @@ function extractErrorMessage(err: any): string {
 export default function OffersPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { state } = useAuth();
+
+  // ✅ Failsafe : cette page est instrumentiste only
+  if (state.status !== "authenticated") {
+    return <Navigate to="/login" replace />;
+  }
+  const role = state.user.role;
+  if (!isMobileRole(role) || role !== "INSTRUMENTIST") {
+    return <Navigate to="/app/m/missions" replace />;
+  }
 
   const [loadingClaimId, setLoadingClaimId] = React.useState<number | null>(
     null,
   );
 
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, isLoading, isFetching, error } = useQuery({
     queryKey: ["missions", "offers"],
     queryFn: () => fetchInstrumentistOffersWithFallback(1, 100),
   });
@@ -47,6 +61,10 @@ export default function OffersPage() {
 
       if (status === 409) {
         toast.warning(extractErrorMessage(err));
+      } else if (status === 403) {
+        // ✅ Si jamais ça arrive (token/rôle incohérent), on sort proprement
+        toast.error("Accès refusé");
+        navigate("/app/m/missions", { replace: true });
       } else {
         toast.error(extractErrorMessage(err));
       }

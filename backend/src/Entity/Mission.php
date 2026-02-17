@@ -2,15 +2,6 @@
 
 namespace App\Entity;
 
-use App\Entity\Hospital;
-use App\Entity\ImplantSubMission;
-use App\Entity\InstrumentistRating;
-use App\Entity\InstrumentistService;
-use App\Entity\MaterialItemRequest;
-use App\Entity\MaterialLine;
-use App\Entity\MissionClaim;
-use App\Entity\MissionPublication;
-use App\Entity\SurgeonRatingByInstrumentist;
 use App\Entity\Traits\TimestampableTrait;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
@@ -18,8 +9,6 @@ use App\Enum\SchedulePrecision;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
-use Proxies\__CG__\App\Entity\MissionIntervention;
-use Proxies\__CG__\App\Entity\User;
 use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]

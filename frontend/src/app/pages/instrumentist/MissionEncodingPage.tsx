@@ -1,11 +1,13 @@
+import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, CircularProgress, Stack, Typography } from "@mui/material";
 
 import { fetchMissionById } from "../../features/missions/api/missions.api";
 import { fetchMissionEncoding } from "../../features/encoding/api/encoding.api";
 import InterventionsSection from "../../features/encoding/components/InterventionsSection";
 import MaterialLinesSection from "../../features/encoding/components/MaterialLinesSection";
+import SubmitDialog from "../../features/missions/components/SubmitDialog";
 
 function extractErrorMessage(err: any): string {
   return (
@@ -19,6 +21,9 @@ function extractErrorMessage(err: any): string {
 export default function MissionEncodingPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  const [openSubmit, setOpenSubmit] = React.useState(false);
 
   const missionId = Number(id);
   const isValidId = Number.isFinite(missionId) && missionId > 0;
@@ -126,6 +131,8 @@ export default function MissionEncodingPage() {
   // Source de vérité : allowedActions dans le payload encoding
   const canEdit =
     encoding.mission?.allowedActions?.includes("encoding") ?? false;
+  const canSubmit =
+    encoding.mission?.allowedActions?.includes("submit") ?? false;
 
   return (
     <Stack spacing={2}>
@@ -134,6 +141,16 @@ export default function MissionEncodingPage() {
           Retour
         </Button>
         <Typography variant="h6">Encodage — Mission #{mission.id}</Typography>
+
+        {canSubmit && (
+          <Button
+            variant="contained"
+            onClick={() => setOpenSubmit(true)}
+            sx={{ marginLeft: "auto" }}
+          >
+            SUBMIT
+          </Button>
+        )}
       </Stack>
 
       <Typography color="text.secondary">
@@ -152,6 +169,26 @@ export default function MissionEncodingPage() {
         canEdit={canEdit}
         interventions={encoding.interventions ?? []}
         catalog={encoding.catalog}
+      />
+
+      <SubmitDialog
+        open={openSubmit}
+        missionId={mission.id}
+        onClose={() => setOpenSubmit(false)}
+        onSubmitted={() => {
+          // Invalidation ciblée après submit (status/allowedActions peuvent changer)
+          queryClient.invalidateQueries({ queryKey: ["mission", mission.id] });
+          queryClient.invalidateQueries({
+            queryKey: ["missionEncoding", mission.id],
+          });
+
+          // Listes globales (best-effort)
+          queryClient.invalidateQueries({ queryKey: ["missions"] });
+          queryClient.invalidateQueries({ queryKey: ["missions", "offers"] });
+          queryClient.invalidateQueries({
+            queryKey: ["missions", "my-missions"],
+          });
+        }}
       />
     </Stack>
   );
