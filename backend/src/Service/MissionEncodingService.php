@@ -15,9 +15,6 @@ use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
 use App\Entity\User;
-use App\Service\MaterialCatalogService;
-use App\Service\MaterialItemMapper;
-use App\Service\MissionActionsService;
 use Doctrine\ORM\EntityManagerInterface;
 
 final class MissionEncodingService
@@ -95,8 +92,6 @@ final class MissionEncodingService
             ->leftJoin('m.materialLines', 'ml')->addSelect('ml')
             ->leftJoin('ml.item', 'item')->addSelect('item')
             ->leftJoin('item.firm', 'firm')->addSelect('firm')
-            // IMPORTANT: on ne fetch-join pas ml.missionIntervention / mir.missionIntervention
-            // (sinon MissionIntervention est hydratée via proxies -> warning dans ObjectHydrator)
             ->leftJoin('m.materialItemRequests', 'mir')->addSelect('mir')
             ->andWhere('m.id = :id')->setParameter('id', $missionId);
 
@@ -151,10 +146,17 @@ final class MissionEncodingService
     {
         $itemDto = $this->itemMapper->toSlim($l->getItem());
 
+        $missionInterventionId = $l->getMissionIntervention()?->getId();
+        $missionInterventionId = $missionInterventionId !== null ? (int) $missionInterventionId : null;
+
+        $rawQty = $l->getQuantity();
+        $qty = $rawQty === null ? '1.00' : number_format((float) $rawQty, 2, '.', '');
+
         return new MissionEncodingMaterialLineDto(
             id: (int) $l->getId(),
+            missionInterventionId: $missionInterventionId,
             item: $itemDto,
-            quantity: (string) ($l->getQuantity() ?? '1.00'),
+            quantity: $qty,
             comment: $l->getComment(),
         );
     }

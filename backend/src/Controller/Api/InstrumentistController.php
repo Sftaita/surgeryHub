@@ -4,12 +4,14 @@ namespace App\Controller\Api;
 
 use App\Dto\Request\MaterialLineCreateRequest;
 use App\Dto\Request\MaterialLineUpdateRequest;
+use App\Dto\Request\Response\MissionEncodingMaterialLineDto;
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\MissionType;
 use App\Security\Voter\MissionVoter;
 use App\Service\InterventionService;
+use App\Service\MaterialItemMapper;
 use App\Service\MissionEncodingGuard;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -24,7 +26,7 @@ use Symfony\Component\Serializer\SerializerInterface;
 use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 #[Route('/api/missions/{missionId}/material-lines')]
-class InstrumentistController extends AbstractController
+final class InstrumentistController extends AbstractController
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
@@ -32,6 +34,7 @@ class InstrumentistController extends AbstractController
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
         private readonly ValidatorInterface $validator,
+        private readonly MaterialItemMapper $materialItemMapper,
     ) {}
 
     #[Route('', methods: ['POST'])]
@@ -54,7 +57,8 @@ class InstrumentistController extends AbstractController
 
         $line = $this->service->createMaterialLine($mission, $dto, $user);
 
-        return $this->json(['id' => $line->getId()], Response::HTTP_CREATED);
+        // ✅ Harmonisé: renvoyer le DTO complet (pas juste {id})
+        return $this->json($this->toMaterialLineResponseDto($line), Response::HTTP_CREATED);
     }
 
     #[Route('/{lineId}', methods: ['PATCH'])]
@@ -82,7 +86,8 @@ class InstrumentistController extends AbstractController
 
         $this->service->updateMaterialLine($line, $dto);
 
-        return new JsonResponse(null, Response::HTTP_NO_CONTENT);
+        // ✅ Harmonisé: renvoyer le DTO complet (au lieu de 204)
+        return $this->json($this->toMaterialLineResponseDto($line), Response::HTTP_OK);
     }
 
     #[Route('/{lineId}', methods: ['DELETE'])]
@@ -120,5 +125,26 @@ class InstrumentistController extends AbstractController
         }
 
         return $dto;
+    }
+
+    private function toMaterialLineResponseDto(MaterialLine $line): MissionEncodingMaterialLineDto
+    {
+        $itemDto = $this->materialItemMapper->toSlim($line->getItem());
+
+        // ✅ Sécurisé contre null (on ne crashe pas)
+        $missionInterventionId = $line->getMissionIntervention()?->getId();
+        $missionInterventionId = $missionInterventionId !== null ? (int) $missionInterventionId : null;
+
+        // ✅ Quantity toujours en string "x.xx"
+        $rawQty = $line->getQuantity();
+        $qty = $rawQty === null ? '1.00' : number_format((float) $rawQty, 2, '.', '');
+
+        return new MissionEncodingMaterialLineDto(
+            id: (int) $line->getId(),
+            missionInterventionId: $missionInterventionId,
+            item: $itemDto,
+            quantity: $qty,
+            comment: $line->getComment(),
+        );
     }
 }
