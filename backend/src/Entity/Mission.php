@@ -75,6 +75,15 @@ class Mission
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
     private ?\DateTimeImmutable $invoiceGeneratedAt = null;
 
+    // ✅ Lot B1 — mission_declared fields (modèle uniquement)
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
+    private ?\DateTimeImmutable $declaredAt = null;
+
+    #[ORM\Column(type: 'text', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
+    private ?string $declaredComment = null;
+
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionClaim::class, orphanRemoval: true)]
     private Collection $claims;
 
@@ -152,6 +161,12 @@ class Mission
 
     public function getInvoiceGeneratedAt(): ?\DateTimeImmutable { return $this->invoiceGeneratedAt; }
     public function setInvoiceGeneratedAt(?\DateTimeImmutable $invoiceGeneratedAt): static { $this->invoiceGeneratedAt = $invoiceGeneratedAt; return $this; }
+
+    public function getDeclaredAt(): ?\DateTimeImmutable { return $this->declaredAt; }
+    public function setDeclaredAt(?\DateTimeImmutable $declaredAt): static { $this->declaredAt = $declaredAt; return $this; }
+
+    public function getDeclaredComment(): ?string { return $this->declaredComment; }
+    public function setDeclaredComment(?string $declaredComment): static { $this->declaredComment = $declaredComment; return $this; }
 
     public function isEncodingLocked(): bool
     {
