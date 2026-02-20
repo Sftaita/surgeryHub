@@ -29,7 +29,11 @@ export default function MissionDetailPage() {
   if (!mission) return <Typography>Mission introuvable</Typography>;
 
   // Lot 4 — strictement piloté par allowedActions
-  const canEncoding = mission.allowedActions?.includes("encoding");
+  // Compat: backend renvoie encore "edit_encoding" au lieu de "encoding"
+  const canEncoding =
+    mission.allowedActions?.includes("encoding") ||
+    mission.allowedActions?.includes("edit_encoding");
+
   const canSubmit = mission.allowedActions?.includes("submit");
 
   return (
@@ -63,7 +67,6 @@ export default function MissionDetailPage() {
         missionId={mission.id}
         onClose={() => setOpen(false)}
         onSubmitted={() => {
-          // Invalidation "best effort" ciblée
           queryClient.invalidateQueries({ queryKey: ["mission", mission.id] });
           queryClient.invalidateQueries({ queryKey: ["missions"] });
           queryClient.invalidateQueries({ queryKey: ["missions", "offers"] });

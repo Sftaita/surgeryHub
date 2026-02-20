@@ -19,23 +19,21 @@ import type {
   CatalogFirm,
   CatalogItem,
   EncodingIntervention,
+  CreateMaterialLineBody,
 } from "../api/encoding.types";
 import FirmItemPicker from "./FirmItemPicker";
-
-type Values = {
-  interventionId: number;
-  itemId: number;
-  quantity: number;
-  comment?: string;
-};
 
 type Props = {
   open: boolean;
   loading: boolean;
   interventions: EncodingIntervention[];
   catalog?: { items: CatalogItem[]; firms: CatalogFirm[] };
+
+  // NEW: permet d’ouvrir “Encoder matériel” depuis une intervention précise
+  preferredInterventionId: number | null;
+
   onClose: () => void;
-  onSubmit: (values: Values) => void;
+  onSubmit: (values: CreateMaterialLineBody) => void;
 };
 
 export default function AddMaterialLineDialog({
@@ -43,25 +41,38 @@ export default function AddMaterialLineDialog({
   loading,
   interventions,
   catalog,
+  preferredInterventionId,
   onClose,
   onSubmit,
 }: Props) {
   const [interventionId, setInterventionId] = React.useState<number | "">("");
   const [firmId, setFirmId] = React.useState<number | "">("");
   const [itemId, setItemId] = React.useState<number | "">("");
-  const [quantity, setQuantity] = React.useState<number>(1);
+  const [quantity, setQuantity] = React.useState<string>("1");
   const [comment, setComment] = React.useState<string>("");
+
+  const sortedInterventions = React.useMemo(() => {
+    return (interventions ?? [])
+      .slice()
+      .sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
+  }, [interventions]);
 
   React.useEffect(() => {
     if (!open) return;
-    // defaults
-    const firstIntervention = (interventions ?? [])[0];
-    setInterventionId(firstIntervention?.id ?? "");
+
+    const firstIntervention = sortedInterventions[0];
+
+    // priorité à preferredInterventionId
+    const initialInterventionId =
+      preferredInterventionId ??
+      (firstIntervention ? firstIntervention.id : null);
+
+    setInterventionId(initialInterventionId ?? "");
     setFirmId("");
     setItemId("");
-    setQuantity(1);
+    setQuantity("1");
     setComment("");
-  }, [open, interventions]);
+  }, [open, sortedInterventions, preferredInterventionId]);
 
   const handleInterventionChange = (e: SelectChangeEvent<string>) => {
     const v = e.target.value;
@@ -70,29 +81,25 @@ export default function AddMaterialLineDialog({
 
   const firms = catalog?.firms ?? [];
   const items = catalog?.items ?? [];
+  const hasCatalog = firms.length > 0 && items.length > 0;
 
   const submit = () => {
     if (interventionId === "" || itemId === "") return;
 
     onSubmit({
-      interventionId: Number(interventionId),
+      missionInterventionId: Number(interventionId),
       itemId: Number(itemId),
-      quantity: Number(quantity),
+      quantity: String(quantity ?? "").trim(), // ✅ string
       comment: comment ?? "",
     });
   };
 
-  const canSubmit =
-    interventionId !== "" &&
-    itemId !== "" &&
-    Number.isFinite(Number(quantity)) &&
-    Number(quantity) > 0;
+  const qtyOk = (() => {
+    const v = Number(String(quantity).replace(",", "."));
+    return Number.isFinite(v) && v > 0;
+  })();
 
-  const sortedInterventions = (interventions ?? [])
-    .slice()
-    .sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
-
-  const hasCatalog = firms.length > 0 && items.length > 0;
+  const canSubmit = interventionId !== "" && itemId !== "" && qtyOk;
 
   return (
     <Dialog
@@ -141,12 +148,12 @@ export default function AddMaterialLineDialog({
 
           <TextField
             label="Quantité"
-            type="number"
             value={quantity}
-            onChange={(e) => setQuantity(Number(e.target.value))}
+            onChange={(e) => setQuantity(e.target.value)}
             disabled={loading}
             fullWidth
-            inputProps={{ min: 0, step: 1 }}
+            inputProps={{ inputMode: "decimal" }}
+            helperText='Envoyer une string (ex: "2", "0.5"). Le backend renvoie "2.00".'
           />
 
           <TextField

@@ -1,10 +1,8 @@
-# SurgicalHub --- API (Single Source of Truth)
+# SurgicalHub — API (Single Source of Truth)
 
-Last updated: 2026-02-12
+Last updated: 2026-02-20
 
----
-
-# 1. Principes fondamentaux
+## 1. Principes fondamentaux
 
 - Aucun fallback métier côté frontend
 - RBAC strict (Voters / Guards)
@@ -12,116 +10,271 @@ Last updated: 2026-02-12
 - Aucune donnée patient
 - FK strictes (cohérence item ↔ firm)
 - Encodage modifiable jusqu'au verrouillage comptable
+- Aucune mission déclarée (DECLARED) ne peut être facturée sans validation manager
+- Toute transition de statut passe par un endpoint dédié (pas de mutation libre via PATCH générique)
 
----
+## 2. Référentiel Firm (Manager/Admin uniquement)
 
-# 2. Référentiel Firm (Manager/Admin uniquement)
+(Inchangé)
 
-Les firms (fabricants) sont des données de référence.
+## 3. Missions — Cycle de vie
 
-## GET /api/firms
+Statuts
 
-AuthZ: MANAGER / ADMIN\
-Response: \[ { "id": 1, "name": "Smith & Nephew", "active": true }\]
+- DRAFT
+- OPEN
+- ASSIGNED
+- DECLARED
+- REJECTED
+- SUBMITTED
+- VALIDATED
+- CLOSED
 
-## POST /api/firms
+## 4. Missions standard
 
-AuthZ: MANAGER / ADMIN\
-Body: { "name": "Arthrex" }
+### POST /api/missions
 
-## PATCH /api/firms/{id}
+AuthZ: MANAGER / ADMIN
 
-AuthZ: MANAGER / ADMIN\
-Body: { "name"?: "...", "active"?: true/false }
+Crée une mission planning classique (DRAFT).
 
-## DELETE /api/firms/{id}
+### POST /api/missions/{id}/publish
 
-AuthZ: MANAGER / ADMIN\
-Soft delete recommandé (active=false)\
-Response: 204
+AuthZ: MANAGER / ADMIN
 
----
+Transition :
 
-# 3. Encodage Mission
+DRAFT → OPEN
 
-## GET /api/missions/{id}/encoding
+### POST /api/missions/{id}/claim
+
+AuthZ: INSTRUMENTIST
+
+Transition :
+
+OPEN → ASSIGNED
+
+Transactionnel
+
+Anti-double
+
+409 si déjà claimée
+
+### POST /api/missions/{id}/submit
+
+AuthZ: MissionVoter::SUBMIT
+
+Transition :
+
+ASSIGNED → SUBMITTED
+
+Règles :
+
+- Autorisé aussi si status = DECLARED
+- Ne verrouille pas l’encodage
+
+## 5. 🆕 Missions déclarées (Unforeseen activity)
+
+### POST /api/missions/declare
+
+AuthZ: INSTRUMENTIST uniquement
+
+Body
+
+```json
+{
+  "siteId": 1,
+  "surgeonId": 45,
+  "type": "BLOCK",
+  "startAt": "2026-02-20T14:00:00+01:00",
+  "endAt": "2026-02-20T18:30:00+01:00",
+  "comment": "Urgence fin de journée"
+}
+```
+
+Effet backend
+
+- status = DECLARED
+- instrumentist_user_id = currentUser
+- createdBy = currentUser
+- declaredAt = now()
+- publication interdite
+- audit MISSION_DECLARED
+
+Réponse
+
+MissionDetailDto standard avec :
+
+```json
+{
+  "id": 123,
+  "status": "DECLARED",
+  "allowedActions": ["view", "encoding", "submit"]
+}
+```
+
+Erreurs possibles
+
+- 403 si rôle ≠ INSTRUMENTIST
+- 400 si données invalides
+- 403 si instrumentiste non autorisé sur site
+
+### POST /api/missions/{id}/approve-declared
+
+AuthZ: MANAGER / ADMIN
+
+Précondition
+
+mission.status = DECLARED
+
+Transition
+
+DECLARED → ASSIGNED
+
+audit MISSION_DECLARED_APPROVED
+
+notification instrumentiste
+
+Erreurs
+
+- 400 si mission non DECLARED
+- 403 si non manager
+
+### POST /api/missions/{id}/reject-declared
+
+AuthZ: MANAGER / ADMIN
+
+Précondition
+
+mission.status = DECLARED
+
+Transition
+
+DECLARED → REJECTED
+
+audit MISSION_DECLARED_REJECTED
+
+mission non supprimée
+
+statut terminal
+
+Erreurs
+
+- 400 si mission non DECLARED
+- 403 si non manager
+
+## 6. Règles spécifiques DECLARED
+
+Une mission DECLARED :
+
+- ne peut pas être publiée
+- ne peut pas être claimée
+- ne peut pas être VALIDATED
+- ne peut pas être CLOSED
+- ne peut pas générer d’ImplantSubMission facturable
+- ne peut pas déclencher facturation
+
+Transitions autorisées uniquement :
+
+DECLARED → ASSIGNED
+DECLARED → REJECTED
+
+## 7. Encodage Mission
+
+### GET /api/missions/{id}/encoding
 
 AuthZ: MissionVoter::EDIT_ENCODING
 
-Inclut : - mission (id, type, status, allowedActions) - interventions -
-materialLines - catalog (items + firms)
+Inclut :
 
-### Structure JSON
+- mission (id, type, status, allowedActions)
+- interventions
+- materialLines
+- catalog
 
-{ "mission": { "id": 17, "type": "BLOCK", "status": "ASSIGNED",
-"allowedActions": \["view","encoding","submit"\] }, "interventions": \[
-{ "id": 3, "code": "LCA", "label": "Ligament croisé antérieur",
-"orderIndex": 1, "materialLines": \[ { "id": 2, "item": { "id": 1,
-"label": "Fast-Fix", "referenceCode": "FF-123", "firm": { "id": 1,
-"name": "Smith & Nephew" } }, "quantity": "2", "comment": "Implant
-principal" } \] } \], "catalog": { "items": \[...\], "firms": \[...\] }
-}
+Fonctionne aussi pour missions DECLARED.
 
-Règle métier : - Une intervention ne possède PAS de firms. - Les firms
-apparaissent uniquement via MaterialLine.item.firm.
+## 8. Interventions
 
----
-
-# 4. Interventions
-
-## POST /api/missions/{id}/interventions
-
-## PATCH /api/missions/{id}/interventions/{interventionId}
-
-## DELETE /api/missions/{id}/interventions/{interventionId}
+(Inchangé)
 
 AuthZ: Instrumentiste assigné
+Autorisé également si mission.status = DECLARED
+Interdit si mission.status = REJECTED
 
----
+## 9. Material Lines
 
-# 5. Material Lines
+(Inchangé)
 
-## POST /api/missions/{id}/material-lines
+Contraintes supplémentaires :
 
-Body: { "missionInterventionId": 3, "itemId": 1, "quantity": "2",
-"comment": "Implant principal" }
+- Interdit si mission.status = REJECTED
+- Interdit si mission.type = CONSULTATION
+- Interdit si encodingLockedAt ou invoiceGeneratedAt non null
 
-## PATCH /api/missions/{id}/material-lines/{lineId}
+## 10. Verrouillage encodage
 
-## DELETE /api/missions/{id}/material-lines/{lineId}
+submittedAt :
 
-Contraintes : - mission.type ≠ CONSULTATION - itemId obligatoire - firm
-dérivée via MaterialItem - aucune surcharge firm côté frontend
+- indique que l'instrumentiste s'est déclaré "fini"
+- ne verrouille PAS l'encodage
 
----
+Encodage modifiable tant que :
 
-# 6. Verrouillage encodage
+- encodingLockedAt IS NULL
+- invoiceGeneratedAt IS NULL
+- mission.status ≠ REJECTED
 
-submittedAt : - indique que l'instrumentiste s'est déclaré "fini" - ne
-verrouille PAS l'encodage
+## 11. MissionClaim
 
-Encodage modifiable tant que : - encodingLockedAt IS NULL -
-invoiceGeneratedAt IS NULL
+(Inchangé)
 
-Si l'un des deux est défini : → toute mutation encodage renvoie 403
+Non applicable aux missions DECLARED.
 
----
+## 12. allowedActions[] (contrat frontend)
 
-# 7. MissionClaim
+Calculé dynamiquement.
 
-- Historique possible (OneToMany)
-- Anti-double géré côté service
-- Pas de contrainte unique DB
+Si status = DECLARED :
 
----
+Instrumentiste (owner) :
 
-# 8. Erreurs standard
+- view
+- encoding
+- submit
+- edit_hours
 
-400 --- violation règle métier\
-403 --- action interdite\
-404 --- ressource inexistante\
-409 --- conflit métier
+Manager/Admin :
 
----
+- approve
+- reject
+- edit
 
-# Fin du document
+Surgeon :
+
+- view
+
+Le frontend ne déduit jamais les droits.
+
+## 13. Erreurs standard
+
+400 — violation règle métier
+403 — action interdite
+404 — ressource inexistante
+409 — conflit métier
+
+Cas supplémentaires :
+
+- 400 si transition invalide (ex: approve mission non DECLARED)
+- 403 si tentative publish mission DECLARED
+- 403 si tentative claim mission DECLARED
+
+## 14. Audit obligatoire
+
+Événements supplémentaires :
+
+- MISSION_DECLARED
+- MISSION_DECLARED_APPROVED
+- MISSION_DECLARED_REJECTED
+
+Fin du document

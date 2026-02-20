@@ -7,7 +7,7 @@
 export type CatalogFirm = {
   id: number;
   name: string;
-  active: boolean;
+  active?: boolean;
 };
 
 export type CatalogItem = {
@@ -15,7 +15,7 @@ export type CatalogItem = {
   label: string;
   referenceCode: string;
   unit: string;
-  active: boolean;
+  active?: boolean;
   isImplant: boolean;
   firm: {
     id: number;
@@ -37,6 +37,7 @@ export type EncodingMaterialItem = {
 
 export type EncodingMaterialLine = {
   id: number;
+  missionInterventionId: number;
   item: EncodingMaterialItem;
   quantity: string; // backend: "1.00"
   comment: string; // backend: "Optionnel"
@@ -95,18 +96,27 @@ export type CreateInterventionBody = {
 export type PatchInterventionBody = Partial<CreateInterventionBody>;
 
 /**
- * MATERIAL LINES — mutations (Lot 4)
- * ⚠️ Le frontend n'envoie jamais firmId : l'API reçoit itemId uniquement.
+ * Material lines
+ * - POST   /api/missions/{missionId}/material-lines
+ * - PATCH  /api/missions/{missionId}/material-lines/{lineId}
+ * - DELETE /api/missions/{missionId}/material-lines/{lineId}
  */
-
 export type CreateMaterialLineBody = {
-  interventionId: number;
+  missionInterventionId: number;
   itemId: number;
-  quantity: number;
+  quantity: string; // IMPORTANT: string (decimal doctrine)
   comment?: string;
 };
 
 export type PatchMaterialLineBody = {
-  quantity?: number;
+  quantity?: string; // IMPORTANT: string
   comment?: string;
+};
+
+export type MaterialLineDto = {
+  id: number;
+  missionInterventionId: number;
+  item: EncodingMaterialItem;
+  quantity: string;
+  comment: string;
 };

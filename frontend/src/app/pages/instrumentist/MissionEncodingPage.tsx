@@ -6,7 +6,6 @@ import { Button, CircularProgress, Stack, Typography } from "@mui/material";
 import { fetchMissionById } from "../../features/missions/api/missions.api";
 import { fetchMissionEncoding } from "../../features/encoding/api/encoding.api";
 import InterventionsSection from "../../features/encoding/components/InterventionsSection";
-import MaterialLinesSection from "../../features/encoding/components/MaterialLinesSection";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 
 function extractErrorMessage(err: any): string {
@@ -38,8 +37,10 @@ export default function MissionEncodingPage() {
     enabled: isValidId,
   });
 
-  // Lot 4 — strictement piloté par allowedActions
-  const canEncoding = mission?.allowedActions?.includes("encoding");
+  // Compat backend: "edit_encoding"
+  const canEncoding =
+    mission?.allowedActions?.includes("encoding") ||
+    mission?.allowedActions?.includes("edit_encoding");
 
   const {
     data: encoding,
@@ -51,10 +52,8 @@ export default function MissionEncodingPage() {
     enabled: isValidId && !!mission && !!canEncoding,
   });
 
-  if (!isValidId) {
+  if (!isValidId)
     return <Typography>Identifiant de mission invalide</Typography>;
-  }
-
   if (isMissionLoading) return <CircularProgress />;
 
   if (missionError) {
@@ -89,7 +88,8 @@ export default function MissionEncodingPage() {
         </Button>
         <Typography variant="h6">Encodage — Mission #{mission.id}</Typography>
         <Typography color="text.secondary">
-          Accès non autorisé (allowedActions ne contient pas encoding).
+          Accès non autorisé (allowedActions ne contient pas
+          encoding/edit_encoding).
         </Typography>
       </Stack>
     );
@@ -106,7 +106,6 @@ export default function MissionEncodingPage() {
           </Button>
           <Typography variant="h6">Encodage — Mission #{mission.id}</Typography>
         </Stack>
-
         <Typography color="error">
           {extractErrorMessage(encodingError)}
         </Typography>
@@ -128,9 +127,11 @@ export default function MissionEncodingPage() {
     );
   }
 
-  // Source de vérité : allowedActions dans le payload encoding
   const canEdit =
-    encoding.mission?.allowedActions?.includes("encoding") ?? false;
+    encoding.mission?.allowedActions?.includes("encoding") ||
+    encoding.mission?.allowedActions?.includes("edit_encoding") ||
+    false;
+
   const canSubmit =
     encoding.mission?.allowedActions?.includes("submit") ?? false;
 
@@ -140,6 +141,7 @@ export default function MissionEncodingPage() {
         <Button variant="outlined" onClick={() => navigate(-1)}>
           Retour
         </Button>
+
         <Typography variant="h6">Encodage — Mission #{mission.id}</Typography>
 
         {canSubmit && (
@@ -162,12 +164,6 @@ export default function MissionEncodingPage() {
         missionId={mission.id}
         canEdit={canEdit}
         interventions={encoding.interventions ?? []}
-      />
-
-      <MaterialLinesSection
-        missionId={mission.id}
-        canEdit={canEdit}
-        interventions={encoding.interventions ?? []}
         catalog={encoding.catalog}
       />
 
@@ -176,13 +172,10 @@ export default function MissionEncodingPage() {
         missionId={mission.id}
         onClose={() => setOpenSubmit(false)}
         onSubmitted={() => {
-          // Invalidation ciblée après submit (status/allowedActions peuvent changer)
           queryClient.invalidateQueries({ queryKey: ["mission", mission.id] });
           queryClient.invalidateQueries({
             queryKey: ["missionEncoding", mission.id],
           });
-
-          // Listes globales (best-effort)
           queryClient.invalidateQueries({ queryKey: ["missions"] });
           queryClient.invalidateQueries({ queryKey: ["missions", "offers"] });
           queryClient.invalidateQueries({

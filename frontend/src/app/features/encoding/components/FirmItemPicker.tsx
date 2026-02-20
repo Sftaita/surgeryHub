@@ -32,17 +32,16 @@ export default function FirmItemPicker({
   onChangeFirmId,
   onChangeItemId,
 }: Props) {
-  const activeFirms = (firms ?? []).filter((f) => f.active);
-  const activeItems = (items ?? []).filter((i) => i.active);
+  const visibleFirms = (firms ?? []).filter((f) => f.active !== false);
+  const visibleItems = (items ?? []).filter((i) => i.active !== false);
 
   const filteredItems =
-    firmId === "" ? [] : activeItems.filter((it) => it.firm?.id === firmId);
+    firmId === "" ? [] : visibleItems.filter((it) => it.firm?.id === firmId);
 
   const handleFirmChange = (e: SelectChangeEvent<string>) => {
     const v = e.target.value;
     const nextFirmId = v === "" ? "" : Number(v);
     onChangeFirmId(nextFirmId);
-    // reset item on firm change
     onChangeItemId("");
   };
 
@@ -63,7 +62,7 @@ export default function FirmItemPicker({
           onChange={handleFirmChange}
         >
           <MenuItem value="">—</MenuItem>
-          {activeFirms.map((f) => (
+          {visibleFirms.map((f) => (
             <MenuItem key={f.id} value={String(f.id)}>
               {f.name}
             </MenuItem>

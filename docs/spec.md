@@ -1,4 +1,4 @@
-# Surgical Hub — Specification v2.1 (PWA Missions + Matériel + Notifications)
+# Surgical Hub — Specification v2.2 (PWA Missions + Matériel + Notifications)
 
 Timezone default: Europe/Brussels
 Core principle: no patient data stored or inferred.
@@ -13,6 +13,9 @@ Core principle: no patient data stored or inferred.
 - Mobile-first PWA with installability + notifications.
 - Full audit trail (who/what/when) for all critical actions.
 - Claiming a mission must be concurrency-safe (no double assignment).
+- Only Manager/Admin can create official planning missions.
+- Surgeons can NEVER create missions.
+- Instrumentists may declare unforeseen missions, subject to Manager validation.
 
 ## 2. PWA Requirements
 
@@ -41,9 +44,11 @@ Rules:
 - 19:00 local: reminder to assigned instrumentist if mission ended and not submitted.
 - D+1 08:00 local (configurable): escalation for missions still not submitted.
 - Additional triggers:
-  - mission published (OPEN) to targeted instrumentist or pool
-  - mission claimed (to manager + surgeon)
-  - hours recorded/updated (summary to surgeon)
+  - mission published (OPEN)
+  - mission claimed
+  - mission declared (to manager)
+  - declared mission approved/rejected
+  - hours recorded/updated
   - dispute created/resolved
 - Each notification is logged: sent/failed/seen timestamps.
 
@@ -61,292 +66,209 @@ System roles:
 - MANAGER
 - ADMIN
 
-### 3.1 Sites (Hospitals)
+Surgeons:
 
-- Sites are master data maintained by Manager/Admin (create/update).
-- Every Mission belongs to exactly one Site.
+- cannot create missions
+- cannot publish missions
+- cannot approve declared missions
 
-### 3.2 Multi-site access (important nuance)
+Managers/Admins:
 
-- EMPLOYEE instrumentists can be tied to specific sites (internal staff).
-- FREELANCER instrumentists can work across sites:
-  - they can be invited/targeted for a mission without permanent site membership.
-- Managers/Admins operate within sites they manage.
+- control planning
+- validate declared missions
+- control financial workflow
 
-Access decisions are based on:
+## 4. Mission creation flows
 
-- role (system)
-- mission.site_id
-- membership/management rights (for managers/admins)
-- publication targeting (for freelance instrumentists)
-
-## 4. Two ways to create missions
+There are now three controlled creation paths.
 
 ### 4.1 Weekly generation from templates (scheduled missions)
 
-- WeeklyTemplate defines recurring time slots:
-  - site_id
-  - day_of_week
-  - start_time, end_time
-  - mission_type: BLOCK | CONSULTATION
-  - surgeon_user_id
-  - default_instrumentist_user_id (optional)
-  - schedule_precision: EXACT | APPROXIMATE (default EXACT)
-- Weekly generation creates Missions for future weeks.
-- Generated missions can be:
-  - ASSIGNED (if default instrumentist set)
-  - OPEN (if no instrumentist set and manager chooses to publish)
+Unchanged.
 
-### 4.2 Ad hoc missions (“plik plok”)
+Generated missions may be:
 
-- Manager/Admin can create a mission with:
-  - site, surgeon, type
-  - approximate or exact schedule
-  - instrumentist initially null
-- Manager/Admin can then publish it to:
-  - a pool of eligible instrumentists, or
-  - a specific instrumentist
-- Published missions become OPEN.
+- ASSIGNED
+- OPEN
 
-## 5. Mission publishing and claiming (anti-double)
+### 4.2 Ad hoc missions (manager-created)
 
-### 5.1 Mission statuses (minimum)
+Unchanged.
 
-- DRAFT: created but not published
-- OPEN: published, claimable by an instrumentist
-- ASSIGNED: instrumentist assigned/claimed
-- SUBMITTED: instrumentist submitted encoding (or “no material implanted” flag)
-- VALIDATED: manager validated (financial separation)
-- CLOSED: billing complete
+Status lifecycle:
+DRAFT → OPEN → ASSIGNED → SUBMITTED → VALIDATED → CLOSED
 
-### 5.2 Publishing rules
+### 4.3 Instrumentist-declared missions (NEW)
 
-- Only Manager/Admin can publish missions.
-- Publication targets:
-  - POOL: broadcast to eligible instrumentists (benchmark list)
-  - TARGETED: sent to a specific instrumentist
-- Publication creates NotificationEvents and optionally emails.
+Purpose: handle unforeseen real-world activity (urgent call, overrun block, etc.).
 
-### 5.3 Claim rules (critical)
+#### 4.3.1 Creation
 
-- Instrumentist can claim an OPEN mission if eligible by publication.
-- Claim is atomic: once claimed, mission is no longer available to others.
-- Server must enforce:
-  - DB uniqueness constraint on mission claim
-  - transaction + lock to prevent race conditions
-- If mission already claimed, API returns 409.
+Instrumentist may declare a mission using:
 
-## 6. Domain model (conceptual)
+- site_id
+- surgeon_user_id
+- mission_type
+- start_at / end_at (approximate allowed)
+- mandatory comment
 
-### 6.1 Site (Hospital)
+Upon creation:
 
-- id, name, address(optional), timezone
+- status = DECLARED
+- instrumentist_user_id = current user
+- created_by_user_id = instrumentist
+- no publication created
+- audit event: MISSION_DECLARED
 
-### 6.2 User
+#### 4.3.2 Restrictions
 
-- email (unique), firstname/lastname nullable, active flag
-- authentication: email/password + Google
-- instrumentist profile fields (if applicable):
-  - employment_type: EMPLOYEE | FREELANCER
-  - hourly_rate (manager/admin only; nullable)
-  - consultation_fee (manager/admin only; nullable)
-  - default_currency (EUR)
+DECLARED missions:
 
-### 6.3 SiteMembership (for staff + managers)
+- are NOT claimable
+- are NOT publishable
+- are NOT billable
+- cannot be VALIDATED
+- cannot generate invoice
+- cannot be CLOSED
 
-- user_id, site_id
-- site_role: MANAGER | ADMIN | (optional: STAFF)
-- Note: freelancers may exist without membership; eligibility is handled via publication targeting.
+Encoding is allowed (draft mode).
 
-### 6.4 Mission
+#### 4.3.3 Manager decision
 
-- site_id (required)
-- start_at, end_at (nullable allowed for approximate scheduling)
-- schedule_precision: EXACT | APPROXIMATE
-- type: BLOCK | CONSULTATION
-- surgeon_user_id (required)
-- instrumentist_user_id (nullable until claimed)
-- status (see 5.1)
+Manager/Admin may:
+
+- APPROVE → mission becomes ASSIGNED
+- REJECT → mission becomes REJECTED
+
+Audit events:
+
+- MISSION_DECLARED_APPROVED
+- MISSION_DECLARED_REJECTED
+
+Notification sent to instrumentist.
+
+If rejected:
+
+- mission remains in history
+- no deletion allowed
+- no financial consequence
+
+## 5. Mission lifecycle (updated)
+
+Mission statuses:
+
+- DRAFT
+- OPEN
+- ASSIGNED
+- DECLARED (new)
+- REJECTED (new – only for declared)
+- SUBMITTED
+- VALIDATED
+- CLOSED
+
+Rules:
+
+DECLARED can only transition to:
+
+- ASSIGNED (approved)
+- REJECTED
+
+REJECTED is terminal (no further transitions).
+
+ASSIGNED from DECLARED follows normal lifecycle.
+
+## 6. Claim rules (anti-double)
+
+Unchanged for OPEN missions.
+
+DECLARED missions:
+
+- cannot be claimed
+- instrumentist already attached
+
+## 7. Domain model (updates)
+
+Mission:
+
+- site_id
+- surgeon_user_id
+- instrumentist_user_id
+- status
 - created_by_user_id
-- Constraints:
-  - CONSULTATION missions cannot have any material consumption lines.
-
-### 6.5 Catalog
-
-- Firm (entité de référence) : id, name, active (manager/admin)
-- MaterialItem:
-  - manufacturer/firm
-  - reference_code
-  - label
-  - unit
-  - is_implant boolean
-  - active boolean
-
-### 6.6 Encoding structure: Intervention → Material (Firm via Item)
-
-- MissionIntervention:
-  - mission_id
-  - code, label
-  - order_index
-- MaterialLine (consumption):
-  - mission_id
-  - mission_intervention_id (nullable)
-  - item_id (MaterialItem)
-  - quantity
-  - comment
-  - created_by_user_id
-- Firm exposure:
-  - firm est **dérivée** via `MaterialItem.manufacturer` (FK stricte)
-  - le frontend ne peut pas surcharger une firm d’item
+- declared_comment (nullable, mandatory if status = DECLARED)
+- declared_at (nullable)
 
 Constraint:
 
-- forbidden if mission.type = CONSULTATION
+If status = DECLARED → created_by_user_id must equal instrumentist_user_id.
 
-Verrouillage encodage:
+## 8. Encoding structure
 
-- `submittedAt` : indique “déclaré fini” (utile pour éviter des rappels), **sans verrouiller** l’encodage.
-- lock réel via `encodingLockedAt` (manual manager) ou `invoiceGeneratedAt` (facturation).
+Unchanged.
 
-### 6.7 Manager-only: Implant Sub-Missions (billing grouping)
+DECLARED missions:
 
-(billing grouping)
+- encoding allowed
+- submit allowed
+- validation forbidden until approved
 
-- ImplantSubMission groups implant lines by firm for invoicing.
-- Fields:
-  - mission_id
-  - firm_name
-  - status: DRAFT | INVOICED | PAID
-- Links:
-  - contains MaterialLine entries where item.is_implant = true
-- Visibility: manager/admin only.
+## 9. Consultation hours and workflow
 
-## 7. Consultation hours, disputes, and workflow
+Unchanged structurally.
 
-### 7.1 Consultation rules
+However:
 
-- CONSULTATION: material strictly forbidden.
-- Hours encoding allowed only if:
-  - instrumentist is FREELANCER, OR
-  - manager/admin enabled hours for EMPLOYEE (config flag, default OFF)
+For DECLARED missions:
 
-### 7.2 InstrumentistService
+- hours are editable
+- computed_amount not calculated until approval
+- dispute system remains available after approval
 
-- mission_id
-- service_type: BLOCK | CONSULTATION
-- employment_type_snapshot: EMPLOYEE | FREELANCER
-- hours (nullable)
-- consultation_fee_applied (nullable)
-- hours_source: INSTRUMENTIST | MANAGER | SYSTEM
-- status: CALCULATED | APPROVED | PAID
-- computed_amount (manager/admin only)
-- Any hours change emits audit event SERVICE_HOURS_UPDATED.
+Audit remains mandatory.
 
-### 7.3 ServiceHoursDispute
+## 10. Notifications additions
 
-- mission_id, service_id
-- raised_by_user_id (surgeon)
-- reason_code: DURATION_INCOHERENT | WRONG_DATE | DUPLICATE | OTHER
-- comment mandatory if OTHER
-- status: OPEN | IN_REVIEW | RESOLVED | REJECTED
-- resolution_comment (manager/admin)
-- constraint: max one OPEN dispute per service.
-- Notifications:
-  - surgeon: dispute resolved
-  - instrumentist: hours adjusted or dispute rejected
+New notification types:
 
-### 7.4 Hours notification to surgeon
+- NOTIF_MISSION_DECLARED → to Manager/Admin
+- NOTIF_DECLARED_APPROVED → to Instrumentist
+- NOTIF_DECLARED_REJECTED → to Instrumentist
 
-- Trigger: hours set/modified on InstrumentistService and allowed by rules.
-- Content (no financials): site, date/time, type, instrumentist, hours, actions view/dispute.
-- Audit: HOURS_RECORDED_SUMMARY_SENT (sent/failed/seen)
+All logged.
 
-## 8. Ratings (quality)
+## 11. Abuse prevention rules
 
-### 8.1 Surgeon → Instrumentist rating (quality)
+System must:
 
-- InstrumentistRating:
-  - site_id (context), mission_id
-  - surgeon_user_id, instrumentist_user_id
-  - criteria 1–5: sterility_respect, equipment_knowledge, attitude, punctuality
-  - comment optional
-  - is_first_collaboration boolean
-  - constraint: 1 rating per surgeon per mission
-- Mandatory on first collaboration surgeon-instrumentist (rule as configured).
-- Instrumentist visibility: aggregated anonymized averages if threshold reached.
+- log count of declared missions per instrumentist
+- track rejection ratio
+- allow manager monitoring dashboard (future feature)
+- forbid deletion of declared missions
+- forbid financial processing until approval
 
-### 8.2 Instrumentist → Surgeon rating (new requirement)
+## 12. API additions (conceptual)
 
-- SurgeonRatingByInstrumentist:
-  - mission_id
-  - surgeon_user_id
-  - instrumentist_user_id
-  - criteria 1–5: cordiality, punctuality, mission_respect
-  - comment optional (recommended mandatory if any criterion ≤ 2)
-  - is_first_collaboration boolean
-  - constraint: 1 rating per instrumentist per mission
-- Mandatory when instrumentist works with surgeon for the first time (global first collaboration, not per site).
+New endpoints:
 
-## 9. Exports (surgeon activity) + audit
+- POST /api/missions/declare
+- POST /api/missions/{id}/approve-declared
+- POST /api/missions/{id}/reject-declared
 
-- Screen "My activity" for surgeon:
-  - filters: period, site(s), status, type
-  - columns: date, site, type, schedule, instrumentist, interventions, material summary, no-material flag, status, hours (no amount)
-- Exports:
-  - Excel: option A (1 row per mission + summary) or option B (1 row per material line)
-  - PDF: summary page + mission details
-- ExportLog:
-  - user_id, output_type, filters JSON, event_type, success/error, timestamps
-- Audit: EXPORT_GENERATED with filters.
+Authorization:
 
-## 10. Audit & Compliance
+- declare → INSTRUMENTIST only
+- approve/reject → MANAGER/ADMIN only
 
-- Audit events for:
-  - mission create/update/publish/claim
-  - intervention/firm/material line add/update/delete
-  - submit/validate/close
-  - hours updates, disputes lifecycle
-  - ratings created
-  - notification events sent/seen/failed
-  - exports generated
-- No patient data. GDPR by design.
+## 13. Audit & Compliance (extended)
 
-## 11. API & Architecture (baseline)
+Additional audit events:
 
-Backend:
+- MISSION_DECLARED
+- MISSION_DECLARED_APPROVED
+- MISSION_DECLARED_REJECTED
 
-- Symfony API
-- JWT access token + refresh token
-- Google login: frontend obtains Google ID token, backend validates and returns JWT + refresh token
-  Frontend:
-- React PWA + MUI
-- token storage initial approach: localStorage (v2.1); later can migrate to httpOnly cookies
+No patient data.
 
-Core endpoints (indicative):
+Full traceability preserved.
 
-- Auth:
-  - POST /api/auth/login
-  - POST /api/auth/google
-  - POST /api/auth/refresh
-- Missions:
-  - POST /api/missions (manager/admin)
-  - POST /api/missions/{id}/publish (manager/admin)
-  - POST /api/missions/{id}/claim (instrumentist)
-  - GET /api/missions (filters)
-  - GET /api/missions/{id}
-  - POST /api/missions/{id}/submit (instrumentist)
-- Encoding:
-  - POST/DELETE/PATCH /api/missions/{id}/interventions
-  - POST/DELETE/PATCH /api/interventions/{id}/firms
-  - POST/DELETE/PATCH /api/missions/{id}/material-lines
-- Hours:
-  - PATCH /api/missions/{id}/service
-- Disputes:
-  - POST /api/services/{serviceId}/disputes
-  - GET /api/disputes?status=OPEN
-  - PATCH /api/disputes/{id}
-- Ratings:
-  - POST /api/missions/{id}/instrumentist-rating
-  - POST /api/missions/{id}/surgeon-rating
-- Exports:
-  - POST /api/exports/surgeon-activity
+End of Specification v2.2

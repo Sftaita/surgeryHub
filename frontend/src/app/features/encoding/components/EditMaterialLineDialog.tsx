@@ -10,19 +10,17 @@ import {
   Typography,
 } from "@mui/material";
 
-import type { EncodingMaterialLine } from "../api/encoding.types";
-
-type PatchValues = {
-  quantity?: number;
-  comment?: string;
-};
+import type {
+  EncodingMaterialLine,
+  PatchMaterialLineBody,
+} from "../api/encoding.types";
 
 type Props = {
   open: boolean;
   loading: boolean;
   line: EncodingMaterialLine | null;
   onClose: () => void;
-  onSubmit: (values: PatchValues) => void;
+  onSubmit: (values: PatchMaterialLineBody) => void;
 };
 
 export default function EditMaterialLineDialog({
@@ -32,24 +30,30 @@ export default function EditMaterialLineDialog({
   onClose,
   onSubmit,
 }: Props) {
-  const [quantity, setQuantity] = React.useState<number>(1);
+  const [quantity, setQuantity] = React.useState<string>("");
   const [comment, setComment] = React.useState<string>("");
 
   React.useEffect(() => {
-    if (!open || !line) return;
-    setQuantity(Number(line.quantity ?? 1));
-    setComment(line.comment ?? "");
+    if (!open) return;
+    setQuantity(line?.quantity ?? "");
+    setComment(line?.comment ?? "");
   }, [open, line]);
 
+  const qtyOk = (() => {
+    const v = Number(String(quantity).replace(",", "."));
+    return Number.isFinite(v) && v > 0;
+  })();
+
+  const canSubmit = !!line && qtyOk;
+
   const submit = () => {
+    if (!line) return;
+
     onSubmit({
-      quantity: Number(quantity),
+      quantity: String(quantity ?? "").trim(),
       comment: comment ?? "",
     });
   };
-
-  const canSubmit =
-    line != null && Number.isFinite(Number(quantity)) && Number(quantity) > 0;
 
   return (
     <Dialog
@@ -58,22 +62,27 @@ export default function EditMaterialLineDialog({
       fullWidth
       maxWidth="sm"
     >
-      <DialogTitle>Éditer la ligne matériel</DialogTitle>
+      <DialogTitle>Modifier la ligne matériel</DialogTitle>
 
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
-          <Typography color="text.secondary">
-            Item: {line?.item?.label ?? "—"} — {line?.item?.firm?.name ?? "—"}
-          </Typography>
+          {line ? (
+            <Typography color="text.secondary">
+              {line.item.label}{" "}
+              <Typography component="span" color="text.secondary">
+                ({line.item.firm.name} / {line.item.referenceCode})
+              </Typography>
+            </Typography>
+          ) : null}
 
           <TextField
             label="Quantité"
-            type="number"
             value={quantity}
-            onChange={(e) => setQuantity(Number(e.target.value))}
+            onChange={(e) => setQuantity(e.target.value)}
             disabled={loading}
             fullWidth
-            inputProps={{ min: 0, step: 1 }}
+            inputProps={{ inputMode: "decimal" }}
+            helperText='Envoyer une string (ex: "3"). Le backend renvoie "3.00".'
           />
 
           <TextField

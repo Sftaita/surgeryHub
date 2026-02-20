@@ -1,33 +1,26 @@
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  Button,
-  Divider,
-  IconButton,
-  Paper,
-  Stack,
-  Typography,
-} from "@mui/material";
-import EditIcon from "@mui/icons-material/Edit";
-import DeleteIcon from "@mui/icons-material/Delete";
 
 import type {
   CatalogFirm,
   CatalogItem,
   EncodingIntervention,
   EncodingMaterialLine,
+  MissionEncodingResponse,
   CreateMaterialLineBody,
   PatchMaterialLineBody,
 } from "../api/encoding.types";
+
 import { useToast } from "../../../ui/toast/useToast";
 import {
   createMissionMaterialLine,
-  deleteMissionMaterialLine,
   patchMissionMaterialLine,
+  deleteMissionMaterialLine,
 } from "../api/encoding.api";
-import ConfirmDeleteDialog from "./ConfirmDeleteDialog";
+
 import AddMaterialLineDialog from "./AddMaterialLineDialog";
 import EditMaterialLineDialog from "./EditMaterialLineDialog";
+import ConfirmDeleteDialog from "./ConfirmDeleteDialog";
 
 type Props = {
   missionId: number;
@@ -37,6 +30,12 @@ type Props = {
     items: CatalogItem[];
     firms: CatalogFirm[];
   };
+
+  // Pilotage depuis MissionEncodingPage / InterventionsSection
+  openAdd: boolean;
+  preferredInterventionId: number | null;
+  onCloseAdd: () => void;
+  onOpenAddGlobal: () => void; // (utile si tu veux un bouton global plus tard)
 };
 
 function extractErrorMessage(err: any): string {
@@ -48,60 +47,252 @@ function extractErrorMessage(err: any): string {
   );
 }
 
+/**
+ * NOTE:
+ * - On ne rend PLUS la “carte Matériel” globale ici.
+ * - Le matériel est affiché sous chaque intervention (dans InterventionsSection).
+ * - Ce composant sert de contrôleur de dialogs + mutations (optimistes).
+ */
 export default function MaterialLinesSection({
   missionId,
   canEdit,
   interventions,
   catalog,
+  openAdd,
+  preferredInterventionId,
+  onCloseAdd,
 }: Props) {
   const toast = useToast();
   const queryClient = useQueryClient();
 
-  const [openAdd, setOpenAdd] = React.useState(false);
   const [editTarget, setEditTarget] = React.useState<{
     line: EncodingMaterialLine;
     interventionId: number;
   } | null>(null);
+
   const [deleteTarget, setDeleteTarget] = React.useState<{
     line: EncodingMaterialLine;
+    interventionId: number;
   } | null>(null);
 
-  const invalidate = React.useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] });
-    queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
-  }, [queryClient, missionId]);
+  const encodingKey = React.useMemo(
+    () => ["missionEncoding", missionId] as const,
+    [missionId],
+  );
+
+  const sortedInterventions = React.useMemo(() => {
+    return (interventions ?? [])
+      .slice()
+      .sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
+  }, [interventions]);
+
+  const findCatalogItem = React.useCallback(
+    (itemId: number) => {
+      const items = catalog?.items ?? [];
+      return items.find((it) => it.id === itemId) ?? null;
+    },
+    [catalog],
+  );
+
+  /**
+   * Optimistic helpers: update MissionEncodingResponse in cache
+   */
+  const setEncodingCache = React.useCallback(
+    (updater: (prev: MissionEncodingResponse) => MissionEncodingResponse) => {
+      queryClient.setQueryData(encodingKey, (prev: any) => {
+        if (!prev) return prev;
+        return updater(prev as MissionEncodingResponse);
+      });
+    },
+    [queryClient, encodingKey],
+  );
 
   const createMutation = useMutation({
     mutationFn: (body: CreateMaterialLineBody) =>
       createMissionMaterialLine(missionId, body),
-    onSuccess: async () => {
-      toast.success("Ligne matériel ajoutée");
-      setOpenAdd(false);
-      await invalidate();
+    onMutate: async (body) => {
+      if (!canEdit) return;
+
+      await queryClient.cancelQueries({ queryKey: encodingKey });
+
+      const previous = queryClient.getQueryData(encodingKey) as
+        | MissionEncodingResponse
+        | undefined;
+
+      // optimistic line
+      const tempId = -Date.now();
+      const catalogItem = findCatalogItem(body.itemId);
+
+      const optimisticLine: EncodingMaterialLine = {
+        id: tempId,
+        missionInterventionId: body.missionInterventionId,
+        item: catalogItem
+          ? {
+              id: catalogItem.id,
+              label: catalogItem.label,
+              referenceCode: catalogItem.referenceCode,
+              unit: catalogItem.unit,
+              isImplant: catalogItem.isImplant,
+              firm: {
+                id: catalogItem.firm.id,
+                name: catalogItem.firm.name,
+              },
+            }
+          : // fallback (devrait quasi jamais arriver car itemId vient du catalogue)
+            ({
+              id: body.itemId,
+              label: "—",
+              referenceCode: "",
+              unit: "",
+              isImplant: false,
+              firm: { id: 0, name: "—" },
+            } as any),
+        quantity: body.quantity, // string
+        comment: body.comment ?? "",
+      };
+
+      setEncodingCache((prev) => ({
+        ...prev,
+        interventions: (prev.interventions ?? []).map((itv) => {
+          if (itv.id !== body.missionInterventionId) return itv;
+          return {
+            ...itv,
+            materialLines: [...(itv.materialLines ?? []), optimisticLine],
+          };
+        }),
+      }));
+
+      return { previous, tempId };
     },
-    onError: (err: any) => toast.error(extractErrorMessage(err)),
+    onSuccess: (createdLine, body, ctx) => {
+      // remplace la ligne temp par la vraie
+      if (!ctx?.tempId) return;
+
+      setEncodingCache((prev) => ({
+        ...prev,
+        interventions: (prev.interventions ?? []).map((itv) => {
+          if (itv.id !== body.missionInterventionId) return itv;
+          return {
+            ...itv,
+            materialLines: (itv.materialLines ?? []).map((l) =>
+              l.id === ctx.tempId ? (createdLine as any) : l,
+            ),
+          };
+        }),
+      }));
+
+      toast.success("Ligne matériel ajoutée");
+      onCloseAdd();
+    },
+    onError: (err: any, _body, ctx) => {
+      // rollback
+      if (ctx?.previous) {
+        queryClient.setQueryData(encodingKey, ctx.previous);
+      }
+      toast.error(extractErrorMessage(err));
+    },
+    onSettled: async () => {
+      // sécurité : re-sync
+      await queryClient.invalidateQueries({ queryKey: encodingKey });
+      await queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
+    },
   });
 
   const patchMutation = useMutation({
     mutationFn: (args: { lineId: number; body: PatchMaterialLineBody }) =>
       patchMissionMaterialLine(missionId, args.lineId, args.body),
-    onSuccess: async () => {
+    onMutate: async (args) => {
+      if (!canEdit) return;
+
+      await queryClient.cancelQueries({ queryKey: encodingKey });
+
+      const previous = queryClient.getQueryData(encodingKey) as
+        | MissionEncodingResponse
+        | undefined;
+
+      setEncodingCache((prev) => ({
+        ...prev,
+        interventions: (prev.interventions ?? []).map((itv) => ({
+          ...itv,
+          materialLines: (itv.materialLines ?? []).map((l) => {
+            if (l.id !== args.lineId) return l;
+            return {
+              ...l,
+              quantity: args.body.quantity ?? l.quantity,
+              comment:
+                args.body.comment !== undefined ? args.body.comment : l.comment,
+            };
+          }),
+        })),
+      }));
+
+      return { previous };
+    },
+    onSuccess: (updatedLine) => {
+      // remplace par la version backend (source de vérité)
+      setEncodingCache((prev) => ({
+        ...prev,
+        interventions: (prev.interventions ?? []).map((itv) => ({
+          ...itv,
+          materialLines: (itv.materialLines ?? []).map((l) =>
+            l.id === (updatedLine as any).id ? (updatedLine as any) : l,
+          ),
+        })),
+      }));
+
       toast.success("Ligne matériel mise à jour");
       setEditTarget(null);
-      await invalidate();
     },
-    onError: (err: any) => toast.error(extractErrorMessage(err)),
+    onError: (err: any, _args, ctx) => {
+      if (ctx?.previous) {
+        queryClient.setQueryData(encodingKey, ctx.previous);
+      }
+      toast.error(extractErrorMessage(err));
+    },
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: encodingKey });
+      await queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
+    },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (lineId: number) =>
       deleteMissionMaterialLine(missionId, lineId),
-    onSuccess: async () => {
+    onMutate: async (lineId) => {
+      if (!canEdit) return;
+
+      await queryClient.cancelQueries({ queryKey: encodingKey });
+
+      const previous = queryClient.getQueryData(encodingKey) as
+        | MissionEncodingResponse
+        | undefined;
+
+      setEncodingCache((prev) => ({
+        ...prev,
+        interventions: (prev.interventions ?? []).map((itv) => ({
+          ...itv,
+          materialLines: (itv.materialLines ?? []).filter(
+            (l) => l.id !== lineId,
+          ),
+        })),
+      }));
+
+      return { previous };
+    },
+    onSuccess: () => {
       toast.success("Ligne matériel supprimée");
       setDeleteTarget(null);
-      await invalidate();
     },
-    onError: (err: any) => toast.error(extractErrorMessage(err)),
+    onError: (err: any, _lineId, ctx) => {
+      if (ctx?.previous) {
+        queryClient.setQueryData(encodingKey, ctx.previous);
+      }
+      toast.error(extractErrorMessage(err));
+    },
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: encodingKey });
+      await queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
+    },
   });
 
   const isBusy =
@@ -109,101 +300,25 @@ export default function MaterialLinesSection({
     patchMutation.isPending ||
     deleteMutation.isPending;
 
-  const sortedInterventions = (interventions ?? [])
-    .slice()
-    .sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
-
-  const hasAnyLines = sortedInterventions.some(
-    (i) => (i.materialLines ?? []).length > 0,
-  );
-  const hasAnyReqs = sortedInterventions.some(
-    (i) => (i.materialItemRequests ?? []).length > 0,
-  );
+  // expose des callbacks pour ouvrir edit/delete depuis l’affichage sous intervention
+  // (si tu ajoutes des boutons “éditer/supprimer” sous Matériel encodé dans InterventionsSection)
+  React.useEffect(() => {
+    // no-op : juste pour garder le composant vivant si tu veux y brancher des callbacks plus tard
+  }, []);
 
   return (
-    <Paper variant="outlined" sx={{ p: 2 }}>
-      <Stack spacing={2}>
-        <Stack
-          direction="row"
-          justifyContent="space-between"
-          alignItems="center"
-        >
-          <Typography variant="subtitle2">Matériel</Typography>
-
-          {canEdit && (
-            <Button
-              variant="contained"
-              size="small"
-              onClick={() => setOpenAdd(true)}
-              disabled={isBusy}
-            >
-              Ajouter
-            </Button>
-          )}
-        </Stack>
-
-        {!hasAnyLines && !hasAnyReqs ? (
-          <Typography color="text.secondary">Aucune ligne matériel</Typography>
-        ) : (
-          sortedInterventions.map((itv) => (
-            <Stack key={itv.id} spacing={1}>
-              <Typography sx={{ fontWeight: 600 }}>
-                {itv.code} — {itv.label}
-              </Typography>
-
-              {itv.materialLines.map((l) => (
-                <Stack key={l.id} spacing={0.5}>
-                  <Stack direction="row" spacing={1} alignItems="flex-start">
-                    <Stack sx={{ flex: 1 }}>
-                      <Typography>
-                        {l.item.label}{" "}
-                        <Typography component="span" color="text.secondary">
-                          ({l.item.firm.name} / {l.item.referenceCode})
-                        </Typography>
-                      </Typography>
-                      <Typography color="text.secondary">
-                        Qté: {l.quantity}
-                      </Typography>
-                    </Stack>
-
-                    {canEdit && (
-                      <Stack direction="row" spacing={0.5}>
-                        <IconButton
-                          size="small"
-                          disabled={isBusy}
-                          onClick={() =>
-                            setEditTarget({ line: l, interventionId: itv.id })
-                          }
-                        >
-                          <EditIcon fontSize="small" />
-                        </IconButton>
-                        <IconButton
-                          size="small"
-                          disabled={isBusy}
-                          onClick={() => setDeleteTarget({ line: l })}
-                        >
-                          <DeleteIcon fontSize="small" />
-                        </IconButton>
-                      </Stack>
-                    )}
-                  </Stack>
-                  <Divider />
-                </Stack>
-              ))}
-            </Stack>
-          ))
-        )}
-      </Stack>
-
+    <>
       <AddMaterialLineDialog
         open={openAdd}
         loading={createMutation.isPending}
         interventions={sortedInterventions}
         catalog={catalog}
-        onClose={() => (isBusy ? null : setOpenAdd(false))}
-        onSubmit={(values: CreateMaterialLineBody) =>
-          createMutation.mutate(values)
-        }
+        preferredInterventionId={preferredInterventionId}
+        onClose={() => (isBusy ? null : onCloseAdd())}
+        onSubmit={(values) => {
+          // values.quantity est string
+          createMutation.mutate(values);
+        }}
       />
 
       <EditMaterialLineDialog
@@ -211,11 +326,11 @@ export default function MaterialLinesSection({
         loading={patchMutation.isPending}
         line={editTarget?.line ?? null}
         onClose={() => (isBusy ? null : setEditTarget(null))}
-        onSubmit={(values: PatchMaterialLineBody) => {
+        onSubmit={(values) => {
           if (!editTarget) return;
           patchMutation.mutate({
             lineId: editTarget.line.id,
-            body: values,
+            body: values, // quantity: string | undefined ✅
           });
         }}
       />
@@ -235,6 +350,6 @@ export default function MaterialLinesSection({
           deleteMutation.mutate(deleteTarget.line.id);
         }}
       />
-    </Paper>
+    </>
   );
 }
