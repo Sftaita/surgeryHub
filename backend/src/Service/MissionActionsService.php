@@ -25,14 +25,21 @@ final class MissionActionsService
         $isSurgeon = $mission->getSurgeon()?->getId() === $viewer->getId();
         $isAssignedInstr = $mission->getInstrumentist()?->getId() === $viewer->getId();
 
+        // REJECTED = lecture seule (contrat)
+        if ($mission->getStatus() === MissionStatus::REJECTED) {
+            return ['view'];
+        }
+
         $actions = ['view'];
 
+        // Manager/Admin
         if ($isManager) {
             return match ($mission->getStatus()) {
                 MissionStatus::DRAFT => ['view', 'edit', 'publish'],
                 MissionStatus::OPEN => ['view', 'view_publications', 'cancel'],
                 MissionStatus::ASSIGNED => ['view', 'cancel', 'reassign', 'view_claim'],
                 MissionStatus::SUBMITTED => ['view', 'validate', 'reopen'],
+                MissionStatus::DECLARED => ['view', 'approve', 'reject', 'edit'],
                 default => ['view'],
             };
         }
@@ -42,20 +49,29 @@ final class MissionActionsService
             $actions[] = 'claim';
         }
 
-        // Instrumentiste assigné : submit / edit_encoding uniquement si ASSIGNED ou IN_PROGRESS
-        // ET seulement si l'encodage est autorisé (pas avant startAt).
+        // Instrumentiste assigné : encoding / submit selon statut
+        // - ASSIGNED / IN_PROGRESS : encodage standard (action existante: edit_encoding)
+        // - DECLARED : encodage autorisé (action contrat: encoding) + submit + edit_hours
+        // Toujours sous réserve du garde-fou encodage (ex: pas avant startAt).
         if (
             $isInstr
             && $isAssignedInstr
-            && in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true)
             && $this->isEncodingAllowedNow($mission, $viewer)
         ) {
-            $actions[] = 'edit_encoding';
-            $actions[] = 'submit';
+            if (in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true)) {
+                $actions[] = 'edit_encoding';
+                $actions[] = 'submit';
+            }
+
+            if ($mission->getStatus() === MissionStatus::DECLARED) {
+                $actions[] = 'encoding';
+                $actions[] = 'submit';
+                $actions[] = 'edit_hours';
+            }
         }
 
-        // Chirurgien : placeholders (tu pourras durcir plus tard selon statuts/feature flags)
-        if ($isSurgeon) {
+        // Chirurgien : uniquement view sur DECLARED (contrat)
+        if ($isSurgeon && $mission->getStatus() !== MissionStatus::DECLARED) {
             $actions[] = 'rate_instrumentist';
             $actions[] = 'dispute_hours';
         }

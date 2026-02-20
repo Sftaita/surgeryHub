@@ -24,6 +24,11 @@ class MissionVoter extends Voter
     // Encodage (ex: instrumentiste)
     public const EDIT_ENCODING = 'MISSION_EDIT_ENCODING';
 
+    // DECLARED flow (Lot B2)
+    public const DECLARE = 'MISSION_DECLARE';
+    public const APPROVE_DECLARED = 'MISSION_APPROVE_DECLARED';
+    public const REJECT_DECLARED = 'MISSION_REJECT_DECLARED';
+
     protected function supports(string $attribute, mixed $subject): bool
     {
         if (!in_array($attribute, [
@@ -34,12 +39,15 @@ class MissionVoter extends Voter
             self::SUBMIT,
             self::EDIT,
             self::EDIT_ENCODING,
+            self::DECLARE,
+            self::APPROVE_DECLARED,
+            self::REJECT_DECLARED,
         ], true)) {
             return false;
         }
 
-        // CREATE peut être évalué sur la classe
-        if ($attribute === self::CREATE) {
+        // CREATE et DECLARE peuvent être évalués sur la classe
+        if (in_array($attribute, [self::CREATE, self::DECLARE], true)) {
             return $subject === Mission::class || $subject instanceof Mission;
         }
 
@@ -56,9 +64,13 @@ class MissionVoter extends Voter
         $roles = $user->getRoles();
         $isManager = in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true);
 
-        // CREATE ne dépend pas d'une mission
+        // CREATE / DECLARE ne dépendent pas d'une mission existante
         if ($attribute === self::CREATE) {
             return $isManager;
+        }
+
+        if ($attribute === self::DECLARE) {
+            return in_array('ROLE_INSTRUMENTIST', $roles, true);
         }
 
         /** @var Mission $mission */
@@ -71,6 +83,8 @@ class MissionVoter extends Voter
             self::SUBMIT => $this->canSubmit($mission, $user, $isManager),
             self::EDIT => $this->canEdit($mission, $user, $isManager),
             self::EDIT_ENCODING => $this->canEditEncoding($mission, $user, $isManager),
+            self::APPROVE_DECLARED => $this->canApproveDeclared($mission, $isManager),
+            self::REJECT_DECLARED => $this->canRejectDeclared($mission, $isManager),
             default => false,
         };
     }
@@ -137,7 +151,13 @@ class MissionVoter extends Voter
         }
 
         // ✅ SUBMITTED autorisé (idempotent + liberté instrumentiste)
-        return in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS, MissionStatus::SUBMITTED], true);
+        // ✅ DECLARED autorisé (mission déclarée, encodage possible)
+        return in_array($mission->getStatus(), [
+            MissionStatus::DECLARED,
+            MissionStatus::ASSIGNED,
+            MissionStatus::IN_PROGRESS,
+            MissionStatus::SUBMITTED,
+        ], true);
     }
 
     private function canEdit(Mission $mission, User $user, bool $managerContext): bool
@@ -171,8 +191,32 @@ class MissionVoter extends Voter
             return false;
         }
 
+        // ✅ DECLARED autorisé
         // ✅ SUBMITTED autorisé (liberté instrumentiste)
-        return in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS, MissionStatus::SUBMITTED], true);
+        return in_array($mission->getStatus(), [
+            MissionStatus::DECLARED,
+            MissionStatus::ASSIGNED,
+            MissionStatus::IN_PROGRESS,
+            MissionStatus::SUBMITTED,
+        ], true);
+    }
+
+    private function canApproveDeclared(Mission $mission, bool $managerContext): bool
+    {
+        if (!$managerContext) {
+            return false;
+        }
+
+        return $mission->getStatus() === MissionStatus::DECLARED;
+    }
+
+    private function canRejectDeclared(Mission $mission, bool $managerContext): bool
+    {
+        if (!$managerContext) {
+            return false;
+        }
+
+        return $mission->getStatus() === MissionStatus::DECLARED;
     }
 
     private function isEligibleInstrumentistForOpenMission(Mission $mission, User $instrumentist): bool
