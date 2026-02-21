@@ -3,6 +3,7 @@
 
 namespace App\Service;
 
+use App\Dto\Request\DeclareMissionRequest;
 use App\Dto\Request\MissionCreateRequest;
 use App\Dto\Request\MissionFilter;
 use App\Dto\Request\MissionPatchRequest;
@@ -69,6 +70,74 @@ class MissionService
         return $mission;
     }
 
+    // ✅ Lot B3 — mission_declared
+    public function declareMission(DeclareMissionRequest $dto, User $currentUser): Mission
+    {
+        $site = $this->em->find(Hospital::class, $dto->siteId) ?? throw new NotFoundHttpException('Site not found');
+        $surgeon = $this->em->find(User::class, $dto->surgeonUserId) ?? throw new NotFoundHttpException('Surgeon not found');
+
+        if ($dto->startAt === null || $dto->endAt === null) {
+            throw new UnprocessableEntityHttpException('startAt and endAt are required');
+        }
+        if ($dto->endAt <= $dto->startAt) {
+            throw new UnprocessableEntityHttpException('endAt must be after startAt');
+        }
+
+        // declaredComment: optionnel (nullable en DB). On normalise la string vide en null.
+        $comment = $dto->declaredComment;
+        if ($comment !== null) {
+            $comment = trim($comment);
+            if ($comment === '') {
+                $comment = null;
+            }
+        }
+
+        $mission = new Mission();
+        $mission
+            ->setSite($site)
+            ->setType($dto->type)
+            ->setSchedulePrecision($dto->schedulePrecision)
+            ->setSurgeon($surgeon)
+            ->setInstrumentist($currentUser)
+            ->setCreatedBy($currentUser)
+            ->setStatus(MissionStatus::DECLARED)
+            ->setDeclaredAt(new \DateTimeImmutable())
+            ->setDeclaredComment($comment)
+            ->setStartAt($dto->startAt)
+            ->setEndAt($dto->endAt);
+
+        // ⚠️ strict: aucune MissionPublication créée
+
+        $this->em->persist($mission);
+        $this->em->flush();
+
+        return $mission;
+    }
+
+    public function approveDeclared(Mission $mission): Mission
+    {
+        if ($mission->getStatus() !== MissionStatus::DECLARED) {
+            throw new ConflictHttpException('Mission is not DECLARED');
+        }
+
+        $mission->setStatus(MissionStatus::ASSIGNED);
+        $this->em->flush();
+
+        return $mission;
+    }
+
+    public function rejectDeclared(Mission $mission): Mission
+    {
+        if ($mission->getStatus() !== MissionStatus::DECLARED) {
+            throw new ConflictHttpException('Mission is not DECLARED');
+        }
+
+        $mission->setStatus(MissionStatus::REJECTED);
+        $this->em->flush();
+
+        return $mission;
+    }
+
     public function patch(Mission $mission, MissionPatchRequest $dto, User $actor): Mission
     {
         if ($mission->getStatus() !== MissionStatus::DRAFT) {
@@ -124,6 +193,11 @@ class MissionService
 
     public function publish(Mission $mission, MissionPublishRequest $dto, User $publisher): MissionPublication
     {
+        // ✅ strict B3: pas de publish si statut != DRAFT (donc DECLARED bloqué)
+        if ($mission->getStatus() !== MissionStatus::DRAFT) {
+            throw new ConflictHttpException('Mission not publishable');
+        }
+
         $mission->setStatus(MissionStatus::OPEN);
 
         $publication = new MissionPublication();

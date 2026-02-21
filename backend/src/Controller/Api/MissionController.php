@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Dto\Request\DeclareMissionRequest;
 use App\Dto\Request\MissionCreateRequest;
 use App\Dto\Request\MissionFilter;
 use App\Dto\Request\MissionPatchRequest;
@@ -47,6 +48,44 @@ class MissionController extends AbstractController
         $mission = $this->missionService->create($dto, $user);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_CREATED);
+    }
+
+    // ✅ Lot B3 — declare
+    #[Route(path: '/declare', name: 'api_missions_declare', methods: ['POST'])]
+    public function declare(Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(MissionVoter::DECLARE, Mission::class);
+
+        /** @var DeclareMissionRequest $dto */
+        $dto = $this->deserializeAndValidate($request->getContent(), DeclareMissionRequest::class);
+
+        $mission = $this->missionService->declareMission($dto, $user);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_CREATED);
+    }
+
+    // ✅ Lot B3 — approve DECLARED → ASSIGNED
+    #[Route(path: '/{id}/approve-declared', name: 'api_missions_approve_declared', methods: ['POST'])]
+    public function approveDeclared(int $id, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::APPROVE_DECLARED, $mission);
+
+        $mission = $this->missionService->approveDeclared($mission);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    // ✅ Lot B3 — reject DECLARED → REJECTED
+    #[Route(path: '/{id}/reject-declared', name: 'api_missions_reject_declared', methods: ['POST'])]
+    public function rejectDeclared(int $id, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::REJECT_DECLARED, $mission);
+
+        $mission = $this->missionService->rejectDeclared($mission);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }
 
     #[Route(path: '/{id}', name: 'api_missions_patch', methods: ['PATCH'])]
