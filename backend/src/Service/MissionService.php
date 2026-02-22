@@ -37,6 +37,8 @@ class MissionService
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly MissionEncodingGuard $encodingGuard,
+        private readonly AuditService $auditService,
+        private readonly NotificationService $notificationService,
     ) {}
 
     public function create(MissionCreateRequest $dto, User $creator): Mission
@@ -109,30 +111,47 @@ class MissionService
         // ⚠️ strict: aucune MissionPublication créée
 
         $this->em->persist($mission);
+
+        // ✅ Lot B4 — Audit + Notifications (sans changer la logique métier)
+        $this->auditService->missionDeclared($mission, $currentUser);
+        $this->notificationService->missionDeclaredNotifyManagersAdmins($mission);
+
         $this->em->flush();
 
         return $mission;
     }
 
-    public function approveDeclared(Mission $mission): Mission
+    // ✅ Lot B4 — actor explicite (Option A) pour l’audit trail "who"
+    public function approveDeclared(Mission $mission, User $actor): Mission
     {
         if ($mission->getStatus() !== MissionStatus::DECLARED) {
             throw new ConflictHttpException('Mission is not DECLARED');
         }
 
         $mission->setStatus(MissionStatus::ASSIGNED);
+
+        // ✅ Lot B4 — Audit + Notifications
+        $this->auditService->missionDeclaredApproved($mission, $actor);
+        $this->notificationService->missionDeclaredApprovedNotifyInstrumentist($mission);
+
         $this->em->flush();
 
         return $mission;
     }
 
-    public function rejectDeclared(Mission $mission): Mission
+    // ✅ Lot B4 — actor explicite (Option A) pour l’audit trail "who"
+    public function rejectDeclared(Mission $mission, User $actor): Mission
     {
         if ($mission->getStatus() !== MissionStatus::DECLARED) {
             throw new ConflictHttpException('Mission is not DECLARED');
         }
 
         $mission->setStatus(MissionStatus::REJECTED);
+
+        // ✅ Lot B4 — Audit + Notifications
+        $this->auditService->missionDeclaredRejected($mission, $actor);
+        $this->notificationService->missionDeclaredRejectedNotifyInstrumentist($mission);
+
         $this->em->flush();
 
         return $mission;

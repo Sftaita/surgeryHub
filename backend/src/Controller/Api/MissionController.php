@@ -71,7 +71,8 @@ class MissionController extends AbstractController
         $mission = $this->missionService->getOr404($id);
         $this->denyAccessUnlessGranted(MissionVoter::APPROVE_DECLARED, $mission);
 
-        $mission = $this->missionService->approveDeclared($mission);
+        // ✅ Lot B4: actor explicite
+        $mission = $this->missionService->approveDeclared($mission, $user);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }
@@ -83,7 +84,8 @@ class MissionController extends AbstractController
         $mission = $this->missionService->getOr404($id);
         $this->denyAccessUnlessGranted(MissionVoter::REJECT_DECLARED, $mission);
 
-        $mission = $this->missionService->rejectDeclared($mission);
+        // ✅ Lot B4: actor explicite
+        $mission = $this->missionService->rejectDeclared($mission, $user);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }

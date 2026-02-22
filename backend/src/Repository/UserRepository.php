@@ -92,4 +92,30 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
 
         return $res;
     }
+
+    /**
+     * Managers + admins globaux (pas liés à un hôpital).
+     *
+     * @return list<User>
+     *
+     * NOTE: roles est stocké en JSON. Le LIKE fonctionne généralement sur MySQL car le JSON est comparé comme string.
+     */
+    public function findManagersAndAdmins(bool $activeOnly = true): array
+    {
+        $qb = $this->createQueryBuilder('u')
+            ->andWhere('(u.roles LIKE :manager OR u.roles LIKE :admin)')
+            ->setParameter('manager', '%"ROLE_MANAGER"%')
+            ->setParameter('admin', '%"ROLE_ADMIN"%')
+            ->orderBy('u.lastname', 'ASC')
+            ->addOrderBy('u.firstname', 'ASC')
+            ->addOrderBy('u.email', 'ASC');
+
+        if ($activeOnly) {
+            $qb->andWhere('u.active = :active')
+               ->setParameter('active', true);
+        }
+
+        /** @var list<User> $res */
+        return $qb->getQuery()->getResult();
+    }
 }

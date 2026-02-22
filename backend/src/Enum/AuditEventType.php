@@ -1,0 +1,10 @@
+<?php
+
+namespace App\Enum;
+
+enum AuditEventType: string
+{
+    case MISSION_DECLARED = 'MISSION_DECLARED';
+    case MISSION_DECLARED_APPROVED = 'MISSION_DECLARED_APPROVED';
+    case MISSION_DECLARED_REJECTED = 'MISSION_DECLARED_REJECTED';
+}
