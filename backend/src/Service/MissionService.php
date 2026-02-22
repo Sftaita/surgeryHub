@@ -21,6 +21,7 @@ use App\Enum\MissionType;
 use App\Enum\PublicationChannel;
 use App\Enum\PublicationScope;
 use App\Enum\SchedulePrecision;
+use App\Enum\ServiceStatus;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
@@ -146,15 +147,91 @@ class MissionService
             throw new ConflictHttpException('Mission is not DECLARED');
         }
 
-        $mission->setStatus(MissionStatus::REJECTED);
+        $conn = $this->em->getConnection();
+        $conn->beginTransaction();
 
-        // ✅ Lot B4 — Audit + Notifications
-        $this->auditService->missionDeclaredRejected($mission, $actor);
-        $this->notificationService->missionDeclaredRejectedNotifyInstrumentist($mission);
+        try {
+            // 🔒 Evite toute concurrence encodage / transition
+            $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
 
-        $this->em->flush();
+            // ✅ Lot B5 — purge transactionnelle complète de l’encodage
+            $this->purgeDeclaredEncoding($mission);
 
-        return $mission;
+            $mission->setStatus(MissionStatus::REJECTED);
+
+            // ✅ Lot B4 — Audit + Notifications
+            $this->auditService->missionDeclaredRejected($mission, $actor);
+            $this->notificationService->missionDeclaredRejectedNotifyInstrumentist($mission);
+
+            $this->em->flush();
+
+            // Après DQL, éviter tout état Doctrine stale en mémoire
+            $this->em->refresh($mission);
+
+            $conn->commit();
+
+            return $mission;
+        } catch (\Throwable $e) {
+            $conn->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * Lot B5 — purge transactionnelle de l'encodage d'une mission DECLARED.
+     *
+     * Supprime toutes les données strictement liées à l'encodage (interventions, matériel, requests, implants)
+     * et remet à zéro les heures/services instrumentiste liés à la mission.
+     *
+     * ⚠️ À exécuter dans une transaction.
+     */
+    private function purgeDeclaredEncoding(Mission $mission): void
+    {
+        // 1) Material item requests
+        $this->em->createQuery(<<<'DQL'
+            DELETE FROM App\Entity\MaterialItemRequest r
+             WHERE r.mission = :mission
+        DQL)
+            ->setParameter('mission', $mission)
+            ->execute();
+
+        // 2) Material lines (inclut implants)
+        $this->em->createQuery(<<<'DQL'
+            DELETE FROM App\Entity\MaterialLine ml
+             WHERE ml.mission = :mission
+        DQL)
+            ->setParameter('mission', $mission)
+            ->execute();
+
+        // 3) Implant sub missions
+        $this->em->createQuery(<<<'DQL'
+            DELETE FROM App\Entity\ImplantSubMission ism
+             WHERE ism.mission = :mission
+        DQL)
+            ->setParameter('mission', $mission)
+            ->execute();
+
+        // 4) Interventions
+        $this->em->createQuery(<<<'DQL'
+            DELETE FROM App\Entity\MissionIntervention i
+             WHERE i.mission = :mission
+        DQL)
+            ->setParameter('mission', $mission)
+            ->execute();
+
+        // 5) Heures / service instrumentiste: remise à zéro (modèle réel InstrumentistService)
+        $this->em->createQuery(<<<'DQL'
+            UPDATE App\Entity\InstrumentistService s
+               SET s.hours = NULL,
+                   s.consultationFeeApplied = NULL,
+                   s.hoursSource = NULL,
+                   s.computedAmount = NULL,
+                   s.status = :status
+             WHERE s.mission = :mission
+        DQL)
+            ->setParameter('mission', $mission)
+            ->setParameter('status', ServiceStatus::CALCULATED)
+            ->execute();
     }
 
     public function patch(Mission $mission, MissionPatchRequest $dto, User $actor): Mission

@@ -5,6 +5,7 @@ namespace App\Service;
 
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\MissionStatus;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 
@@ -12,6 +13,11 @@ final class MissionEncodingGuard
 {
     public function assertEncodingAllowed(Mission $mission, ?User $actor): void
     {
+        // 🔒 REJECTED = statut terminal figé
+        if ($mission->getStatus() === MissionStatus::REJECTED) {
+            throw new AccessDeniedHttpException('Encoding is not allowed for a rejected mission.');
+        }
+
         // 🔒 Hard lock: une fois verrouillé (manager) ou facture générée, personne ne peut modifier.
         if ($mission->getEncodingLockedAt() !== null || $mission->getInvoiceGeneratedAt() !== null) {
             throw new AccessDeniedHttpException('Encoding is locked for this mission.');
