@@ -29,7 +29,7 @@ export function getMissionSiteId(
   m?: {
     siteId?: number;
     site?: { id: number } | null;
-  } | null
+  } | null,
 ): number | undefined {
   if (!m) return undefined;
   if (typeof m.siteId === "number") return m.siteId;

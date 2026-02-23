@@ -7,11 +7,31 @@ export type AllowedAction =
   | "cancel"
   | "delete"
   | "edit_encoding"
+  // Lot F1 — Missions DECLARED
+  | "approve"
+  | "reject"
+  | "edit_hours"
+  | "declare"
   // compat éventuelle si backend renvoie "encoding" (reste piloté par allowedActions)
   | "encoding";
 
 export type SchedulePrecision = "APPROXIMATE" | "EXACT";
 export type MissionType = "BLOCK" | "CONSULTATION";
+
+/**
+ * MissionStatus (frontend) — strictement aligné sur App\Enum\MissionStatus (backend).
+ * Le frontend ne déduit jamais un droit par statut : seul allowedActions fait foi.
+ */
+export type MissionStatus =
+  | "DRAFT"
+  | "OPEN"
+  | "DECLARED"
+  | "ASSIGNED"
+  | "REJECTED"
+  | "SUBMITTED"
+  | "VALIDATED"
+  | "CLOSED"
+  | "IN_PROGRESS";
 
 export type CreateMissionBody = {
   siteId: number;
@@ -96,7 +116,7 @@ export interface Mission {
   site?: SiteRef | null;
   siteId?: number;
 
-  status?: string;
+  status?: MissionStatus;
 
   surgeon?: UserRef | null;
   instrumentist?: UserRef | null;
