@@ -1,6 +1,12 @@
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { CircularProgress, Stack, Typography } from "@mui/material";
+import {
+  CircularProgress,
+  Stack,
+  Typography,
+  Button,
+  Box,
+} from "@mui/material";
 
 import { fetchInstrumentistMyMissions } from "../../features/missions/api/missions.api";
 import MissionCardMobile from "../../features/missions/components/MissionCardMobile";
@@ -19,7 +25,25 @@ export default function MyMissionsPage() {
 
   return (
     <Stack spacing={2}>
-      <Typography variant="h6">Mes missions</Typography>
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 1,
+        }}
+      >
+        <Typography variant="h6">Mes missions</Typography>
+
+        {/* Lot F2 — point d'entrée instrumentiste (toujours visible) */}
+        <Button
+          variant="contained"
+          size="small"
+          onClick={() => navigate("/app/i/missions/declare")}
+        >
+          Déclarer une mission
+        </Button>
+      </Box>
 
       {missions.length === 0 && (
         <Typography>Aucune mission en cours</Typography>

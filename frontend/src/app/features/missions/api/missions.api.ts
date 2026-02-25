@@ -8,7 +8,11 @@ import type {
   UserListItem,
   InstrumentistsResponse,
 } from "./missions.types";
-import type { MissionPatchBody, PublishMissionBody } from "./missions.requests";
+import type {
+  MissionPatchBody,
+  PublishMissionBody,
+  DeclareMissionBody,
+} from "./missions.requests";
 
 /**
  * Filtres génériques backend (GET /api/missions)
@@ -113,6 +117,17 @@ export async function fetchInstrumentistMyMissions(page = 1, limit = 100) {
 
 export async function fetchMissionById(id: number) {
   const { data } = await apiClient.get<Mission>(`/api/missions/${id}`);
+  return data;
+}
+
+/**
+ * Lot F2 — Declare mission (instrumentist)
+ * POST /api/missions/declare
+ */
+export async function declareMission(
+  body: DeclareMissionBody,
+): Promise<Mission> {
+  const { data } = await apiClient.post<Mission>("/api/missions/declare", body);
   return data;
 }
 
