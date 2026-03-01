@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
 import { Box, Button, Chip, Stack } from "@mui/material";
@@ -14,6 +14,10 @@ import {
 
 export default function MissionsListPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const isToValidateView = location.pathname.endsWith("/to-validate");
+
   const [page, setPage] = useState(1);
   const limit = 100;
 
@@ -23,9 +27,28 @@ export default function MissionsListPage() {
     siteId?: number;
   }>({});
 
+  // ✅ Vue “À valider” = status forcé à DECLARED (pas une déduction de droit, juste un filtre de liste)
+  useEffect(() => {
+    setPage(1);
+    setFilters((prev) => {
+      if (isToValidateView) {
+        // on conserve type/siteId si déjà choisis, mais status fixé
+        return { ...prev, status: "DECLARED" };
+      }
+      // en quittant la vue, on ne force plus le statut
+      // (on ne reset pas agressivement: l'utilisateur peut déjà filtrer)
+      return prev;
+    });
+  }, [isToValidateView]);
+
+  const effectiveFilters = useMemo(() => {
+    if (!isToValidateView) return filters;
+    return { ...filters, status: "DECLARED" };
+  }, [filters, isToValidateView]);
+
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["missions", { page, limit, filters }],
-    queryFn: () => fetchMissions(page, limit, filters),
+    queryKey: ["missions", { page, limit, filters: effectiveFilters }],
+    queryFn: () => fetchMissions(page, limit, effectiveFilters),
   });
 
   const rows = data?.items ?? [];
@@ -80,35 +103,61 @@ export default function MissionsListPage() {
         ),
       },
     ],
-    [navigate]
+    [navigate],
   );
 
   if (isError) return <div>Erreur de chargement</div>;
 
   return (
     <Box sx={{ p: 2 }}>
-      <Stack
-        direction="row"
-        justifyContent="space-between"
-        alignItems="center"
-        mb={1.5}
-        gap={2}
-      >
-        <div />
+      {/* Switch simple entre vues, sans refactor transversal */}
+      <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
         <Button
-          variant="contained"
-          onClick={() => navigate("/app/m/missions/new")}
+          variant={!isToValidateView ? "contained" : "outlined"}
+          onClick={() => navigate("/app/m/missions")}
         >
-          Créer une mission
+          Toutes
         </Button>
+
+        <Button
+          variant={isToValidateView ? "contained" : "outlined"}
+          onClick={() => navigate("/app/m/missions/to-validate")}
+        >
+          À valider
+        </Button>
+
+        <Box sx={{ flex: 1 }} />
+
+        {/* Le bouton “Créer” reste sur la liste classique (pas obligatoire côté “À valider”) */}
+        {!isToValidateView ? (
+          <Button
+            variant="contained"
+            onClick={() => navigate("/app/m/missions/new")}
+          >
+            Créer une mission
+          </Button>
+        ) : null}
       </Stack>
 
       <MissionsFiltersBar
-        status={filters.status}
-        type={filters.type}
-        siteId={filters.siteId}
+        status={effectiveFilters.status}
+        type={effectiveFilters.type}
+        siteId={effectiveFilters.siteId}
         onChange={(next) => {
           setPage(1);
+
+          // Vue “À valider” : on ignore toute tentative de changer le status
+          // (on laisse type/siteId fonctionner normalement)
+          if (isToValidateView) {
+            const { status: _ignored, ...rest } = next as any;
+            setFilters((prev) => ({
+              ...prev,
+              ...rest,
+              status: "DECLARED",
+            }));
+            return;
+          }
+
           setFilters((prev) => ({ ...prev, ...next }));
         }}
       />

@@ -105,19 +105,52 @@ export async function fetchInstrumentistOffersWithFallback(
 }
 
 /**
- * Lot 3 — Mes missions instrumentiste (ASSIGNED / IN_PROGRESS)
- * GET /api/missions?assignedToMe=true&status=ASSIGNED,IN_PROGRESS&page=1&limit=100
+ * Lot 3 — Mes missions instrumentiste (missions déjà “à moi”)
+ *
+ * IMPORTANT (backend):
+ * - eligibleToMe=true = OFFRES (OPEN + publiées + claimables) -> exclut DECLARED
+ * - assignedToMe=true = MES MISSIONS (incluant DECLARED si on le demande)
+ *
+ * GET /api/missions?assignedToMe=true&status=DECLARED,ASSIGNED,IN_PROGRESS&page=1&limit=100
  */
 export async function fetchInstrumentistMyMissions(page = 1, limit = 100) {
   return fetchMissions(page, limit, {
     assignedToMe: true,
-    status: "ASSIGNED,IN_PROGRESS",
+    status: "DECLARED,ASSIGNED,IN_PROGRESS",
   });
 }
 
 export async function fetchMissionById(id: number) {
   const { data } = await apiClient.get<Mission>(`/api/missions/${id}`);
   return data;
+}
+
+/**
+ * Lot F4 — Manager/Admin — Approve mission declared
+ * POST /api/missions/{id}/approve-declared
+ *
+ * NOTE: backend peut répondre 200 (MissionDetailDto) ou 204.
+ */
+export async function approveDeclaredMission(
+  id: number,
+): Promise<Mission | null> {
+  const res = await apiClient.post(`/api/missions/${id}/approve-declared`);
+  if (res.status === 204) return null;
+  return (res.data as Mission) ?? null;
+}
+
+/**
+ * Lot F4 — Manager/Admin — Reject mission declared
+ * POST /api/missions/{id}/reject-declared
+ *
+ * NOTE: REJECT purge l’encodage côté backend (Lot B5).
+ */
+export async function rejectDeclaredMission(
+  id: number,
+): Promise<Mission | null> {
+  const res = await apiClient.post(`/api/missions/${id}/reject-declared`);
+  if (res.status === 204) return null;
+  return (res.data as Mission) ?? null;
 }
 
 /**

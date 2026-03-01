@@ -127,6 +127,12 @@ export function AppRouter() {
               {/* Lot 1 — Missions */}
               <Route path="m/missions" element={<MissionsListPage />} />
 
+              {/* Lot F4 — Vue “À valider” (missions DECLARED) */}
+              <Route
+                path="m/missions/to-validate"
+                element={<MissionsListPage />}
+              />
+
               {/* Lot 2b — Missions — Create */}
               <Route path="m/missions/new" element={<MissionCreatePage />} />
 
