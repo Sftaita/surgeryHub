@@ -104,6 +104,38 @@ export interface UserRef {
   displayName?: string | null;
 }
 
+/**
+ * Lot F5 — InstrumentistService (service:read / service:read_manager)
+ * IMPORTANT:
+ * - UI instrumentiste n'affiche jamais de champs financiers.
+ * - Backend peut inclure plus de champs selon serializer groups.
+ */
+export interface InstrumentistService {
+  id: number;
+
+  serviceType?: string | null;
+  employmentTypeSnapshot?: string | null;
+
+  /**
+   * Backend: decimal string le plus souvent.
+   * On garde string|number pour robustesse UI.
+   */
+  hours?: string | number | null;
+  hoursSource?: string | null;
+  status?: string | null;
+
+  /**
+   * Champs potentiellement présents côté manager (service:read_manager).
+   * ⚠️ Interdit d'affichage dans l'UI F5 (on ne les utilise pas).
+   */
+  consultationFeeApplied?: string | number | null;
+  computedAmount?: string | number | null;
+
+  mission?: { id: number } | null;
+
+  [key: string]: unknown;
+}
+
 export interface Mission {
   id: number;
 
@@ -122,6 +154,12 @@ export interface Mission {
   instrumentist?: UserRef | null;
 
   allowedActions?: AllowedAction[];
+
+  /**
+   * Lot F5 — bloc service (si présent dans MissionDetailDto).
+   * IMPORTANT: pas d'inférence côté frontend.
+   */
+  service?: InstrumentistService | null;
 
   [key: string]: unknown;
 }

@@ -8,6 +8,7 @@ import {
   Button,
   Stack,
   Typography,
+  Box,
 } from "@mui/material";
 
 import type { Mission, UserRef } from "../api/missions.types";
@@ -51,6 +52,66 @@ function userLabel(u?: UserRef | null): string {
   return full || u.email || "—";
 }
 
+function getStatusUi(status: string): {
+  badgeText: string;
+  badgeTone: "neutral" | "warning" | "error";
+  message?: string;
+} {
+  const s = String(status ?? "—");
+
+  if (s === "DECLARED") {
+    return {
+      badgeText: "DECLARED",
+      badgeTone: "warning",
+      message: "En attente de validation manager.",
+    };
+  }
+
+  if (s === "REJECTED") {
+    return {
+      badgeText: "REJECTED",
+      badgeTone: "error",
+      message: "Rejetée — encodage supprimé.",
+    };
+  }
+
+  return { badgeText: s, badgeTone: "neutral" };
+}
+
+function StatusBadge({
+  text,
+  tone,
+}: {
+  text: string;
+  tone: "neutral" | "warning" | "error";
+}) {
+  const sx =
+    tone === "warning"
+      ? { bgcolor: "warning.light", color: "warning.contrastText" }
+      : tone === "error"
+        ? { bgcolor: "error.light", color: "error.contrastText" }
+        : { bgcolor: "grey.200", color: "text.primary" };
+
+  return (
+    <Box
+      component="span"
+      sx={{
+        display: "inline-flex",
+        alignItems: "center",
+        px: 1,
+        py: 0.25,
+        borderRadius: 1,
+        fontSize: 12,
+        fontWeight: 700,
+        letterSpacing: 0.2,
+        ...sx,
+      }}
+    >
+      {text}
+    </Box>
+  );
+}
+
 export default function MissionCardMobile({
   mission,
   primaryAction,
@@ -61,7 +122,7 @@ export default function MissionCardMobile({
     (mission.siteId ? `Site #${mission.siteId}` : "—");
 
   const dateRange = formatMissionDateRange(mission.startAt, mission.endAt);
-  const status = (mission.status ?? "—").toString();
+  const statusUi = getStatusUi((mission.status ?? "—").toString());
 
   return (
     <Card variant="outlined">
@@ -76,7 +137,17 @@ export default function MissionCardMobile({
           <Typography variant="body2">
             Chirurgien : {userLabel(mission.surgeon)}
           </Typography>
-          <Typography variant="body2">Statut : {status}</Typography>
+
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Typography variant="body2">Statut :</Typography>
+            <StatusBadge text={statusUi.badgeText} tone={statusUi.badgeTone} />
+          </Stack>
+
+          {statusUi.message ? (
+            <Typography variant="body2" color="text.secondary">
+              {statusUi.message}
+            </Typography>
+          ) : null}
         </Stack>
       </CardContent>
 

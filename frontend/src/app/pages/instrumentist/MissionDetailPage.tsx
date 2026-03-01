@@ -22,6 +22,7 @@ import dayjs from "dayjs";
 
 import { fetchMissionById } from "../../features/missions/api/missions.api";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
+import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
 
 function formatDateShort(d: dayjs.Dayjs): string {
   return d.format("DD.MM.YY");
@@ -31,12 +32,99 @@ function formatTimeShort(d: dayjs.Dayjs): string {
   return d.format("HH[h]mm");
 }
 
+type StatusUi = {
+  badgeText: string;
+  badgeTone: "neutral" | "warning" | "error";
+  message?: string;
+  dialogTitle?: string;
+  dialogBody?: string[];
+};
+
+function getStatusUi(status: string): StatusUi {
+  const s = String(status ?? "—");
+
+  if (s === "DECLARED") {
+    return {
+      badgeText: "DECLARED",
+      badgeTone: "warning",
+      message: "Mission en attente de validation par le manager.",
+      dialogTitle: "Mission déclarée",
+      dialogBody: [
+        "Mission en attente de validation par le manager.",
+        "Vous pouvez consulter la mission. Certaines actions peuvent être indisponibles tant que la validation n’est pas faite.",
+      ],
+    };
+  }
+
+  if (s === "REJECTED") {
+    return {
+      badgeText: "REJECTED",
+      badgeTone: "error",
+      message: "Mission rejetée par le manager. Encodage supprimé.",
+      dialogTitle: "Mission rejetée",
+      dialogBody: [
+        "Mission rejetée par le manager.",
+        "L’encodage a été supprimé et aucune action d’édition n’est disponible.",
+      ],
+    };
+  }
+
+  return {
+    badgeText: s,
+    badgeTone: "neutral",
+  };
+}
+
+function StatusBadge({
+  text,
+  tone,
+}: {
+  text: string;
+  tone: "neutral" | "warning" | "error";
+}) {
+  const sx =
+    tone === "warning"
+      ? { bgcolor: "warning.light", color: "warning.contrastText" }
+      : tone === "error"
+        ? { bgcolor: "error.light", color: "error.contrastText" }
+        : { bgcolor: "grey.200", color: "text.primary" };
+
+  return (
+    <Box
+      component="span"
+      sx={{
+        display: "inline-flex",
+        alignItems: "center",
+        px: 1,
+        py: 0.25,
+        borderRadius: 1,
+        fontSize: 12,
+        fontWeight: 700,
+        letterSpacing: 0.2,
+        ...sx,
+      }}
+    >
+      {text}
+    </Box>
+  );
+}
+
+function formatHoursLabel(hours?: string | number | null): string {
+  if (hours === null || hours === undefined || hours === "") return "—";
+  const n = typeof hours === "string" ? Number(hours) : hours;
+  if (!Number.isFinite(n)) return "—";
+  return `${n} h`;
+}
+
 export default function MissionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [openSubmit, setOpenSubmit] = React.useState(false);
   const [statusInfoOpen, setStatusInfoOpen] = React.useState(false);
+
+  // Lot F5
+  const [openEditHours, setOpenEditHours] = React.useState(false);
 
   const missionId = Number(id);
   const isValidId = Number.isFinite(missionId) && missionId > 0;
@@ -54,16 +142,17 @@ export default function MissionDetailPage() {
   if (isLoading) return <CircularProgress />;
   if (!mission) return <Typography>Mission introuvable</Typography>;
 
-  // Lot 4 — strictement piloté par allowedActions
+  // Lot 4/5/6 — strictement piloté par allowedActions
   const canEncoding =
     mission.allowedActions?.includes("encoding") ||
     mission.allowedActions?.includes("edit_encoding");
 
   const canSubmit = mission.allowedActions?.includes("submit");
 
-  const isDeclared = mission.status === "DECLARED";
-  const rawStatus = String(mission.status ?? "—");
-  const statusLabel = isDeclared ? "En cours de validation" : rawStatus;
+  // Lot F5 — strictement piloté par allowedActions
+  const canEditHours = mission.allowedActions?.includes("edit_hours");
+
+  const statusUi = getStatusUi(String(mission.status ?? "—"));
 
   // --- Horaire (format utilisateur) ---
   // On parse via dayjs; la timezone par défaut est Europe/Brussels (AppProviders)
@@ -84,6 +173,11 @@ export default function MissionDetailPage() {
 
   // Lieu: éviter les doublons
   const siteName = (mission.site?.name ?? "").trim() || "—";
+
+  const hasStatusDialog = !!statusUi.dialogTitle;
+
+  // Lot F5 — service (heures prestées)
+  const hoursLabel = formatHoursLabel(mission.service?.hours ?? null);
 
   return (
     <Stack spacing={2}>
@@ -125,18 +219,54 @@ export default function MissionDetailPage() {
       </Stack>
 
       {/* Statut */}
-      <Stack direction="row" spacing={1} alignItems="center">
-        <Typography>Statut : {statusLabel}</Typography>
+      <Stack spacing={0.75}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Typography>Statut :</Typography>
+          <StatusBadge text={statusUi.badgeText} tone={statusUi.badgeTone} />
 
-        {isDeclared && (
-          <IconButton
-            aria-label="Information statut"
-            size="small"
-            onClick={() => setStatusInfoOpen(true)}
-          >
-            <HelpOutlineIcon fontSize="small" />
-          </IconButton>
-        )}
+          {hasStatusDialog && (
+            <IconButton
+              aria-label="Information statut"
+              size="small"
+              onClick={() => setStatusInfoOpen(true)}
+            >
+              <HelpOutlineIcon fontSize="small" />
+            </IconButton>
+          )}
+        </Stack>
+
+        {statusUi.message ? (
+          <Typography variant="body2" color="text.secondary">
+            {statusUi.message}
+          </Typography>
+        ) : null}
+      </Stack>
+
+      <Divider />
+
+      {/* Lot F5 — Heures prestées */}
+      <Stack spacing={0.75}>
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="space-between"
+        >
+          <Typography variant="subtitle2" color="text.secondary">
+            Heures prestées
+          </Typography>
+
+          {canEditHours ? (
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => setOpenEditHours(true)}
+            >
+              Modifier
+            </Button>
+          ) : null}
+        </Stack>
+
+        <Typography>{hoursLabel}</Typography>
       </Stack>
 
       <Divider />
@@ -170,28 +300,29 @@ export default function MissionDetailPage() {
         }}
       />
 
+      {canEditHours && openEditHours ? (
+        <EditServiceHoursDialog
+          open={openEditHours}
+          onClose={() => setOpenEditHours(false)}
+          mission={mission}
+        />
+      ) : null}
+
       {/* Explication statut: orientée utilisateur */}
       <Dialog
         open={statusInfoOpen}
         onClose={() => setStatusInfoOpen(false)}
-        aria-labelledby="declared-status-dialog-title"
+        aria-labelledby="status-dialog-title"
       >
-        <DialogTitle id="declared-status-dialog-title">
-          En cours de validation
+        <DialogTitle id="status-dialog-title">
+          {statusUi.dialogTitle ?? "Statut"}
         </DialogTitle>
 
         <DialogContent dividers>
           <Stack spacing={1}>
-            <Typography>
-              Cette mission a été déclarée et est en attente de validation.
-            </Typography>
-            <Typography>
-              Vous pouvez consulter la mission. Certaines actions peuvent être
-              indisponibles tant que la validation n’est pas faite.
-            </Typography>
-            <Typography>
-              Si elle est refusée, elle passera en statut “Refusée”.
-            </Typography>
+            {(statusUi.dialogBody ?? []).map((line, idx) => (
+              <Typography key={idx}>{line}</Typography>
+            ))}
           </Stack>
         </DialogContent>
 

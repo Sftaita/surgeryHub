@@ -15,7 +15,8 @@ export default function MyMissionsPage() {
   const navigate = useNavigate();
 
   const { data, isLoading } = useQuery({
-    queryKey: ["missions", "my"],
+    // aligné avec les invalidations existantes: ["missions","my-missions"]
+    queryKey: ["missions", "my-missions"],
     queryFn: () => fetchInstrumentistMyMissions(1, 100),
   });
 

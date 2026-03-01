@@ -33,6 +33,7 @@ import {
 
 import EditMissionDialog from "../../features/missions/components/EditMissionDialog";
 import PublishMissionDialog from "../../features/missions/components/PublishMissionDialog";
+import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
 import { useToast } from "../../ui/toast/useToast";
 
 type StatusUi = {
@@ -112,6 +113,13 @@ function StatusBadge({
   );
 }
 
+function formatHoursLabel(hours?: string | number | null): string {
+  if (hours === null || hours === undefined || hours === "") return "—";
+  const n = typeof hours === "string" ? Number(hours) : hours;
+  if (!Number.isFinite(n)) return "—";
+  return `${n} h`;
+}
+
 export default function MissionDetailPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -130,6 +138,9 @@ export default function MissionDetailPage() {
   const [openPublish, setOpenPublish] = React.useState(false);
   const [statusInfoOpen, setStatusInfoOpen] = React.useState(false);
 
+  // Lot F5
+  const [openEditHours, setOpenEditHours] = React.useState(false);
+
   // Lot F4 — Confirmations
   const [rejectConfirmOpen, setRejectConfirmOpen] = React.useState(false);
   const [approveConfirmOpen, setApproveConfirmOpen] = React.useState(false);
@@ -140,6 +151,7 @@ export default function MissionDetailPage() {
       setOpenEdit(false);
       setOpenPublish(false);
       setStatusInfoOpen(false);
+      setOpenEditHours(false);
       setRejectConfirmOpen(false);
       setApproveConfirmOpen(false);
     }
@@ -203,6 +215,9 @@ export default function MissionDetailPage() {
   const canApprove = allowed.includes("approve");
   const canReject = allowed.includes("reject");
 
+  // Lot F5 — strictement piloté par allowedActions
+  const canEditHours = allowed.includes("edit_hours");
+
   const precisionLabel = formatSchedulePrecision(data.schedulePrecision);
   const typeLabel = formatMissionType(data.type);
 
@@ -217,6 +232,9 @@ export default function MissionDetailPage() {
         : null;
 
   const anyLoading = approveMutation.isPending || rejectMutation.isPending;
+
+  // Lot F5 — service (heures prestées)
+  const hoursLabel = formatHoursLabel(data.service?.hours ?? null);
 
   return (
     <Box sx={{ p: 2, maxWidth: 900 }}>
@@ -333,6 +351,31 @@ export default function MissionDetailPage() {
           {formatPersonLabel(data.instrumentist)}
         </Typography>
 
+        {/* Lot F5 — Heures prestées (sans champs financiers) */}
+        <Stack spacing={0.75}>
+          <Stack
+            direction="row"
+            alignItems="center"
+            justifyContent="space-between"
+          >
+            <Typography>
+              <strong>Heures prestées :</strong>
+            </Typography>
+
+            {canEditHours ? (
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => setOpenEditHours(true)}
+              >
+                Modifier
+              </Button>
+            ) : null}
+          </Stack>
+
+          <Typography>{hoursLabel}</Typography>
+        </Stack>
+
         <Divider />
 
         <Box>
@@ -361,6 +404,14 @@ export default function MissionDetailPage() {
         <PublishMissionDialog
           open={openPublish}
           onClose={() => setOpenPublish(false)}
+          mission={data}
+        />
+      ) : null}
+
+      {canEditHours && openEditHours ? (
+        <EditServiceHoursDialog
+          open={openEditHours}
+          onClose={() => setOpenEditHours(false)}
           mission={data}
         />
       ) : null}

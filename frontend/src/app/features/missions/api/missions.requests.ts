@@ -21,6 +21,23 @@ export type PublishMissionBody =
   | { scope: "TARGETED"; targetUserId: number };
 
 /**
+ * Lot F2 — Declare mission (instrumentist)
+ * POST /api/missions/declare
+ *
+ * IMPORTANT:
+ * - pas de logique métier frontend
+ * - champs minimaux requis par le lot
+ */
+export type DeclareMissionBody = {
+  siteId: number;
+  type: MissionType;
+  startAt: string;
+  endAt: string;
+  surgeonUserId: number;
+  comment: string; // obligatoire
+};
+
+/**
  * SAFE helper
  * Peut être appelé avec mission undefined au premier render.
  * Utilisé pour dériver le siteId à renvoyer dans MissionPatchBody (Lot 2a).
