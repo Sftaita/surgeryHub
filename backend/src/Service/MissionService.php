@@ -477,22 +477,45 @@ class MissionService
             $qb->andWhere('m.type = :type')->setParameter('type', $typeEnum);
         }
 
-        if ($filter->periodStart) {
-            try {
-                $start = new \DateTimeImmutable($filter->periodStart);
-            } catch (\Throwable) {
-                throw new UnprocessableEntityHttpException('Invalid periodStart date');
-            }
-            $qb->andWhere('m.startAt >= :start')->setParameter('start', $start);
-        }
+        /**
+         * Lot P1B — Range filters from/to (datetime ISO 8601)
+         * Règle d'intersection :
+         *   m.startAt < to  AND  m.endAt > from
+         *
+         * - to est traité comme borne EXCLUE (strict <)
+         * - from est traité comme borne INCLUSE au sens intersection (strict > sur endAt)
+         *
+         * IMPORTANT: si from/to ne sont pas fournis, on conserve le comportement legacy
+         * (periodStart/periodEnd basé sur m.startAt).
+         */
+        $useRange = ($filter->fromProvided === true) || ($filter->toProvided === true);
 
-        if ($filter->periodEnd) {
-            try {
-                $end = new \DateTimeImmutable($filter->periodEnd);
-            } catch (\Throwable) {
-                throw new UnprocessableEntityHttpException('Invalid periodEnd date');
+        if ($useRange) {
+            if ($filter->toProvided === true && $filter->to !== null) {
+                $qb->andWhere('m.startAt < :to')->setParameter('to', $filter->to);
             }
-            $qb->andWhere('m.startAt <= :end')->setParameter('end', $end);
+            if ($filter->fromProvided === true && $filter->from !== null) {
+                $qb->andWhere('m.endAt > :from')->setParameter('from', $filter->from);
+            }
+        } else {
+            // Legacy behaviour unchanged
+            if ($filter->periodStart) {
+                try {
+                    $start = new \DateTimeImmutable($filter->periodStart);
+                } catch (\Throwable) {
+                    throw new UnprocessableEntityHttpException('Invalid periodStart date');
+                }
+                $qb->andWhere('m.startAt >= :start')->setParameter('start', $start);
+            }
+
+            if ($filter->periodEnd) {
+                try {
+                    $end = new \DateTimeImmutable($filter->periodEnd);
+                } catch (\Throwable) {
+                    throw new UnprocessableEntityHttpException('Invalid periodEnd date');
+                }
+                $qb->andWhere('m.startAt <= :end')->setParameter('end', $end);
+            }
         }
 
         if ($filter->assignedToMe === true) {

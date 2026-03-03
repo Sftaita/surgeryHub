@@ -3,6 +3,7 @@
 namespace App\Dto\Request;
 
 use Symfony\Component\Validator\Constraints as Assert;
+use Symfony\Component\Validator\Context\ExecutionContextInterface;
 
 class MissionFilter
 {
@@ -16,11 +17,21 @@ class MissionFilter
     public ?string $periodEnd = null;
 
     /**
-     * Alias utilisés par certains services (ex: MissionService::list)
-     * On les expose comme DateTimeImmutable pour éviter ambiguïtés.
+     * Nouveaux filtres calendrier (ISO 8601 datetime)
+     * - from : inclus
+     * - to   : exclu
+     *
+     * NB: on garde DateTimeImmutable pour éviter ambiguïtés.
      */
     public ?\DateTimeImmutable $from = null;
     public ?\DateTimeImmutable $to = null;
+
+    /**
+     * Flags pour distinguer "absent" vs "fourni mais invalide/vide"
+     * (et éviter tout changement de comportement quand from/to non fournis)
+     */
+    public bool $fromProvided = false;
+    public bool $toProvided = false;
 
     #[Assert\Positive]
     public ?int $siteId = null;
@@ -73,13 +84,15 @@ class MissionFilter
         $periodEnd = isset($q['periodEnd']) ? trim((string) $q['periodEnd']) : null;
         $dto->periodEnd = ($periodEnd === '') ? null : $periodEnd;
 
-        // Support optionnel: clients qui enverraient from/to directement
-        $from = isset($q['from']) ? trim((string) $q['from']) : null;
-        $to = isset($q['to']) ? trim((string) $q['to']) : null;
+        // Nouveaux filtres from/to (datetime ISO 8601) — ne pas dériver depuis periodStart/periodEnd
+        $rawFrom = isset($q['from']) ? trim((string) $q['from']) : null;
+        $rawTo = isset($q['to']) ? trim((string) $q['to']) : null;
 
-        // Construire from/to en priorité depuis query explicit, sinon depuis periodStart/periodEnd
-        $dto->from = self::parseDateToDateTimeImmutable($from ?: $dto->periodStart, false);
-        $dto->to = self::parseDateToDateTimeImmutable($to ?: $dto->periodEnd, true);
+        $dto->fromProvided = isset($q['from']) && $rawFrom !== null && $rawFrom !== '';
+        $dto->toProvided = isset($q['to']) && $rawTo !== null && $rawTo !== '';
+
+        $dto->from = $dto->fromProvided ? self::parseIsoDateTimeImmutable($rawFrom) : null;
+        $dto->to = $dto->toProvided ? self::parseIsoDateTimeImmutable($rawTo) : null;
 
         $dto->page = isset($q['page']) ? max(1, (int) $q['page']) : 1;
         $dto->limit = isset($q['limit']) ? min(100, max(1, (int) $q['limit'])) : 20;
@@ -87,32 +100,46 @@ class MissionFilter
         return $dto;
     }
 
-    /**
-     * Parse une date YYYY-MM-DD vers DateTimeImmutable.
-     * - endOfDay=false : 00:00:00
-     * - endOfDay=true  : 23:59:59
-     */
-    private static function parseDateToDateTimeImmutable(?string $date, bool $endOfDay): ?\DateTimeImmutable
+    #[Assert\Callback]
+    public function validate(ExecutionContextInterface $context): void
     {
-        if ($date === null || trim($date) === '') {
+        // from fourni mais non parsable => erreur claire
+        if ($this->fromProvided && $this->from === null) {
+            $context
+                ->buildViolation('Invalid from datetime format (ISO 8601 expected)')
+                ->atPath('from')
+                ->addViolation();
+        }
+
+        // to fourni mais non parsable => erreur claire
+        if ($this->toProvided && $this->to === null) {
+            $context
+                ->buildViolation('Invalid to datetime format (ISO 8601 expected)')
+                ->atPath('to')
+                ->addViolation();
+        }
+
+        // from < to si les deux sont fournis et valides
+        if ($this->fromProvided && $this->toProvided && $this->from !== null && $this->to !== null) {
+            if ($this->from >= $this->to) {
+                $context
+                    ->buildViolation('from must be strictly before to')
+                    ->atPath('from')
+                    ->addViolation();
+            }
+        }
+    }
+
+    private static function parseIsoDateTimeImmutable(?string $value): ?\DateTimeImmutable
+    {
+        if ($value === null || trim($value) === '') {
             return null;
         }
 
-        // strict format YYYY-MM-DD
-        $dt = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $date . ($endOfDay ? ' 23:59:59' : ' 00:00:00'));
-        if ($dt instanceof \DateTimeImmutable) {
-            return $dt;
-        }
-
-        // fallback contrôlé : on tente un parse ISO si un client envoie un datetime
         try {
-            $parsed = new \DateTimeImmutable($date);
-            if ($endOfDay) {
-                return $parsed->setTime(23, 59, 59);
-            }
-            return $parsed->setTime(0, 0, 0);
+            // Supporte ISO 8601 (avec ou sans timezone, selon conventions existantes)
+            return new \DateTimeImmutable($value);
         } catch (\Throwable) {
-            // pas de fallback silencieux -> on retourne null, la validation/usage en aval décidera
             return null;
         }
     }
