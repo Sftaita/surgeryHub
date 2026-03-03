@@ -7,6 +7,7 @@ import type {
   SiteListItem,
   UserListItem,
   InstrumentistsResponse,
+  InstrumentistService,
 } from "./missions.types";
 import type {
   MissionPatchBody,
@@ -122,6 +123,32 @@ export async function fetchInstrumentistMyMissions(page = 1, limit = 100) {
 
 export async function fetchMissionById(id: number) {
   const { data } = await apiClient.get<Mission>(`/api/missions/${id}`);
+  return data;
+}
+
+/**
+ * Lot F5 — UI Heures prestées : patch service (edit_hours)
+ * PATCH /api/missions/{id}/service
+ *
+ * IMPORTANT:
+ * - Body = ServiceUpdateRequest (champs optionnels)
+ * - UI instrumentiste n'envoie que hours (+ hoursSource optionnel)
+ */
+export type ServiceUpdateBody = {
+  hours?: number | null;
+  consultationFeeApplied?: number | null; // ⚠️ présent côté manager, NON utilisé en UI F5
+  hoursSource?: string | null; // ex: "INSTRUMENTIST"
+  status?: string | null; // ex: "CALCULATED" (optionnel)
+};
+
+export async function patchMissionService(
+  id: number,
+  body: ServiceUpdateBody,
+): Promise<InstrumentistService> {
+  const { data } = await apiClient.patch<InstrumentistService>(
+    `/api/missions/${id}/service`,
+    body,
+  );
   return data;
 }
 

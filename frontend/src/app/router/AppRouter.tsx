@@ -29,6 +29,9 @@ import MissionEncodingPage from "../pages/instrumentist/MissionEncodingPage";
 // Lot F2 — Instrumentist — Declare mission
 import DeclareMissionPage from "../pages/instrumentist/DeclareMissionPage";
 
+// Lot P1A — Planning instrumentiste (skeleton UI uniquement)
+import PlanningPage from "../pages/instrumentist/PlanningPage";
+
 function PostLoginRedirect() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
@@ -92,6 +95,9 @@ export function AppRouter() {
               />
               <Route path="i/offers" element={<OffersPage />} />
               <Route path="i/my-missions" element={<MyMissionsPage />} />
+
+              {/* Lot P1A — Planning (skeleton uniquement) */}
+              <Route path="i/planning" element={<PlanningPage />} />
 
               {/* Lot F2 — Declare mission */}
               <Route
