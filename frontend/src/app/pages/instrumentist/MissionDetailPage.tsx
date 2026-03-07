@@ -116,8 +116,17 @@ function formatHoursLabel(hours?: string | number | null): string {
   return `${n} h`;
 }
 
-export default function MissionDetailPage() {
-  const { id } = useParams<{ id: string }>();
+type MissionDetailContentProps = {
+  missionId: number;
+  embedded?: boolean;
+  onCloseEmbedded?: () => void;
+};
+
+export function MissionDetailContent({
+  missionId,
+  embedded = false,
+  onCloseEmbedded,
+}: MissionDetailContentProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [openSubmit, setOpenSubmit] = React.useState(false);
@@ -126,7 +135,6 @@ export default function MissionDetailPage() {
   // Lot F5
   const [openEditHours, setOpenEditHours] = React.useState(false);
 
-  const missionId = Number(id);
   const isValidId = Number.isFinite(missionId) && missionId > 0;
 
   const { data: mission, isLoading } = useQuery({
@@ -181,22 +189,22 @@ export default function MissionDetailPage() {
 
   return (
     <Stack spacing={2}>
-      {/* Header UX: retour clair */}
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-        <Button
-          variant="text"
-          startIcon={<ArrowBackIcon />}
-          onClick={() => navigate("/app/i/my-missions")}
-        >
-          Mes missions
-        </Button>
-      </Box>
+      {!embedded ? (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Button
+            variant="text"
+            startIcon={<ArrowBackIcon />}
+            onClick={() => navigate("/app/i/my-missions")}
+          >
+            Mes missions
+          </Button>
+        </Box>
+      ) : null}
 
       <Typography variant="h5">Mission #{mission.id}</Typography>
 
       <Divider />
 
-      {/* Lieu */}
       <Stack spacing={0.5}>
         <Typography variant="subtitle2" color="text.secondary">
           Lieu
@@ -204,7 +212,6 @@ export default function MissionDetailPage() {
         <Typography>{siteName}</Typography>
       </Stack>
 
-      {/* Horaire */}
       <Stack spacing={0.5}>
         <Typography variant="subtitle2" color="text.secondary">
           Horaire
@@ -218,7 +225,6 @@ export default function MissionDetailPage() {
         </Stack>
       </Stack>
 
-      {/* Statut */}
       <Stack spacing={0.75}>
         <Stack direction="row" spacing={1} alignItems="center">
           <Typography>Statut :</Typography>
@@ -244,7 +250,6 @@ export default function MissionDetailPage() {
 
       <Divider />
 
-      {/* Lot F5 — Heures prestées */}
       <Stack spacing={0.75}>
         <Stack
           direction="row"
@@ -297,6 +302,10 @@ export default function MissionDetailPage() {
           queryClient.invalidateQueries({
             queryKey: ["missions", "my-missions"],
           });
+
+          if (embedded && onCloseEmbedded) {
+            onCloseEmbedded();
+          }
         }}
       />
 
@@ -308,7 +317,6 @@ export default function MissionDetailPage() {
         />
       ) : null}
 
-      {/* Explication statut: orientée utilisateur */}
       <Dialog
         open={statusInfoOpen}
         onClose={() => setStatusInfoOpen(false)}
@@ -334,4 +342,17 @@ export default function MissionDetailPage() {
       </Dialog>
     </Stack>
   );
+}
+
+export default function MissionDetailPage() {
+  const { id } = useParams<{ id: string }>();
+
+  const missionId = Number(id);
+  const isValidId = Number.isFinite(missionId) && missionId > 0;
+
+  if (!isValidId) {
+    return <Typography>Identifiant de mission invalide</Typography>;
+  }
+
+  return <MissionDetailContent missionId={missionId} />;
 }

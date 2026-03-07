@@ -14,10 +14,13 @@ import {
   Typography,
   ToggleButton,
   ToggleButtonGroup,
+  Dialog,
+  DialogTitle,
+  DialogContent,
 } from "@mui/material";
 
 import { fetchMissions } from "../../features/missions/api/missions.api";
-import type { Mission } from "../../features/missions/api/missions.types";
+import { MissionDetailContent } from "./MissionDetailPage";
 
 type PlanningMode = "my" | "offers";
 type ViewMode = "week" | "month" | "list";
@@ -31,9 +34,7 @@ function pad2(value: number): string {
 }
 
 function formatDateToYmd(date: Date): string {
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(
-    date.getDate(),
-  )}`;
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
 
 function isValidYmd(value: string | null): value is string {
@@ -65,8 +66,8 @@ function addDays(date: Date, days: number): Date {
 }
 
 function startOfWeek(date: Date): Date {
-  const day = date.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
+  const day = date.getDay(); // 0 = dimanche, 1 = lundi, ...
+  const diff = day === 0 ? -6 : 1 - day; // semaine ISO-like: lundi
   return startOfDay(addDays(date, diff));
 }
 
@@ -94,6 +95,8 @@ function getRange(
     };
   }
 
+  // En attendant une fenêtre dédiée pour la vue "list",
+  // on garde le même chargement from/to que la semaine.
   const from = startOfWeek(baseDate);
   const to = addDays(from, 7);
 
@@ -141,34 +144,11 @@ function formatDisplayDate(dateYmd: string, view: ViewMode): string {
   });
 }
 
-function buildEventTitle(mission: Mission) {
-  const parts: string[] = [];
-
-  if (mission.site?.name) {
-    parts.push(mission.site.name);
-  }
-
-  if (mission.surgeon?.lastname) {
-    parts.push(`Dr ${mission.surgeon.lastname}`);
-  }
-
-  return parts.join(" • ") || `Mission ${mission.id}`;
-}
-
-function formatStartTime(startAt: string) {
-  try {
-    return new Date(startAt).toLocaleTimeString("fr-BE", {
-      hour: "2-digit",
-      minute: "2-digit",
-      timeZone: "Europe/Brussels",
-    });
-  } catch {
-    return "";
-  }
-}
-
 export default function PlanningPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const [selectedMissionId, setSelectedMissionId] = React.useState<
+    number | null
+  >(null);
 
   const todayYmd = React.useMemo(() => formatDateToYmd(new Date()), []);
   const mode = getSafeMode(searchParams.get("mode"));
@@ -237,22 +217,14 @@ export default function PlanningPage() {
     queryFn: () => fetchMissions(1, 100, filters),
   });
 
-  const calendarView =
-    view === "month"
-      ? "dayGridMonth"
-      : view === "week"
-        ? "timeGridWeek"
-        : "timeGridWeek";
+  const calendarView = view === "month" ? "dayGridMonth" : "timeGridWeek";
 
   const events = React.useMemo(() => {
     return (missionsQuery.data?.items ?? []).map((mission) => ({
       id: String(mission.id),
+      title: `Mission #${mission.id}`,
       start: mission.startAt,
       end: mission.endAt,
-      title: buildEventTitle(mission),
-      extendedProps: {
-        startTime: formatStartTime(mission.startAt),
-      },
     }));
   }, [missionsQuery.data?.items]);
 
@@ -286,9 +258,14 @@ export default function PlanningPage() {
         }}
         fullWidth
         size="small"
+        aria-label="Planning: Mes missions ou Offres"
       >
-        <ToggleButton value="my">Mes missions</ToggleButton>
-        <ToggleButton value="offers">Offres</ToggleButton>
+        <ToggleButton value="my" aria-label="Mes missions">
+          Mes missions
+        </ToggleButton>
+        <ToggleButton value="offers" aria-label="Offres">
+          Offres
+        </ToggleButton>
       </ToggleButtonGroup>
 
       <ToggleButtonGroup
@@ -300,10 +277,17 @@ export default function PlanningPage() {
         }}
         fullWidth
         size="small"
+        aria-label="Planning: vue"
       >
-        <ToggleButton value="week">Semaine</ToggleButton>
-        <ToggleButton value="month">Mois</ToggleButton>
-        <ToggleButton value="list">Liste</ToggleButton>
+        <ToggleButton value="week" aria-label="Semaine">
+          Semaine
+        </ToggleButton>
+        <ToggleButton value="month" aria-label="Mois">
+          Mois
+        </ToggleButton>
+        <ToggleButton value="list" aria-label="Liste">
+          Liste
+        </ToggleButton>
       </ToggleButtonGroup>
 
       <Paper variant="outlined" sx={{ p: 2 }}>
@@ -345,6 +329,16 @@ export default function PlanningPage() {
           <Typography variant="subtitle2">
             {formatDisplayDate(date, view)}
           </Typography>
+
+          <Typography variant="body2" color="text.secondary">
+            from: {range.from}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            to: {range.to}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Missions chargées : {missionsQuery.data?.items?.length ?? 0}
+          </Typography>
         </Stack>
       </Paper>
 
@@ -352,49 +346,89 @@ export default function PlanningPage() {
         <Alert severity="error">Impossible de charger le planning.</Alert>
       ) : null}
 
-      {view !== "list" && (
-        <Paper variant="outlined" sx={{ p: 1 }}>
-          <Box sx={{ minHeight: 600 }}>
-            {missionsQuery.isLoading ? (
-              <Box
-                sx={{
-                  minHeight: 600,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <CircularProgress size={28} />
-              </Box>
-            ) : (
-              <FullCalendar
-                key={calendarView}
-                plugins={[dayGridPlugin, timeGridPlugin]}
-                initialView={calendarView}
-                headerToolbar={false}
-                events={events}
-                height="auto"
-                locale="fr"
-              />
-            )}
-          </Box>
-        </Paper>
-      )}
+      <Paper variant="outlined" sx={{ p: 1 }}>
+        <Box sx={{ minHeight: 600, position: "relative" }}>
+          {missionsQuery.isLoading ? (
+            <Box
+              sx={{
+                minHeight: 600,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <CircularProgress size={28} />
+            </Box>
+          ) : (
+            <FullCalendar
+              key={`${calendarView}-${date}`}
+              plugins={[dayGridPlugin, timeGridPlugin]}
+              initialView={calendarView}
+              initialDate={date}
+              headerToolbar={false}
+              events={view === "list" ? [] : events}
+              height="auto"
+              locale="fr"
+              eventClick={(info) => {
+                const missionId = Number(info.event.id);
+                if (!Number.isFinite(missionId) || missionId <= 0) return;
+                setSelectedMissionId(missionId);
+              }}
+            />
+          )}
+        </Box>
 
-      {view === "list" && (
+        <Box sx={{ mt: 1, px: 1, pb: 1 }}>
+          <Typography variant="caption" color="text.secondary" display="block">
+            Mode sélectionné : {mode === "my" ? "Mes missions" : "Offres"}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" display="block">
+            Vue sélectionnée : {view}
+          </Typography>
+        </Box>
+      </Paper>
+
+      {view === "list" ? (
         <Paper variant="outlined" sx={{ p: 2 }}>
-          <Stack spacing={1}>
+          <Typography variant="subtitle2">Liste</Typography>
+          <Typography variant="body2" color="text.secondary">
+            {missionsQuery.isLoading
+              ? "Chargement…"
+              : `${missionsQuery.data?.items?.length ?? 0} mission(s) chargée(s).`}
+          </Typography>
+
+          <Stack spacing={1} sx={{ mt: 1 }}>
             {(missionsQuery.data?.items ?? []).map((mission) => (
-              <Box key={mission.id}>
-                <Typography variant="body2">
-                  {formatStartTime(mission.startAt)} —{" "}
-                  {buildEventTitle(mission)}
-                </Typography>
+              <Box
+                key={mission.id}
+                sx={{ cursor: "pointer" }}
+                onClick={() => setSelectedMissionId(mission.id)}
+              >
+                <Typography variant="body2">Mission #{mission.id}</Typography>
               </Box>
             ))}
           </Stack>
         </Paper>
-      )}
+      ) : null}
+
+      <Dialog
+        open={selectedMissionId !== null}
+        onClose={() => setSelectedMissionId(null)}
+        fullWidth
+        maxWidth="md"
+      >
+        <DialogTitle>Détail mission</DialogTitle>
+
+        <DialogContent dividers>
+          {selectedMissionId ? (
+            <MissionDetailContent
+              missionId={selectedMissionId}
+              embedded
+              onCloseEmbedded={() => setSelectedMissionId(null)}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </Stack>
   );
 }
