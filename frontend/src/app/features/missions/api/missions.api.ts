@@ -24,6 +24,10 @@ export type MissionsFilters = {
   type?: string;
   siteId?: number;
 
+  // Lot P1A.2 — planning from/to
+  from?: string;
+  to?: string;
+
   // Lot 3
   eligibleToMe?: boolean; // OPEN offers (si supporté backend)
   assignedToMe?: boolean; // my missions
