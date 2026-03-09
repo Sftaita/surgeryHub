@@ -28,13 +28,16 @@ type ViewMode = "week" | "month" | "list";
 const MY_MISSIONS_STATUSES =
   "ASSIGNED,DECLARED,IN_PROGRESS,SUBMITTED,VALIDATED,CLOSED";
 const OFFERS_STATUS = "OPEN";
+const CONFLICT_STATUSES = new Set(["ASSIGNED", "DECLARED", "IN_PROGRESS"]);
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
 }
 
 function formatDateToYmd(date: Date): string {
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(
+    date.getDate(),
+  )}`;
 }
 
 function isValidYmd(value: string | null): value is string {
@@ -65,9 +68,13 @@ function addDays(date: Date, days: number): Date {
   return copy;
 }
 
+function addMinutes(date: Date, minutes: number): Date {
+  return new Date(date.getTime() + minutes * 60 * 1000);
+}
+
 function startOfWeek(date: Date): Date {
-  const day = date.getDay(); // 0 = dimanche, 1 = lundi, ...
-  const diff = day === 0 ? -6 : 1 - day; // semaine ISO-like: lundi
+  const day = date.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
   return startOfDay(addDays(date, diff));
 }
 
@@ -95,8 +102,6 @@ function getRange(
     };
   }
 
-  // En attendant une fenêtre dédiée pour la vue "list",
-  // on garde le même chargement from/to que la semaine.
   const from = startOfWeek(baseDate);
   const to = addDays(from, 7);
 
@@ -111,8 +116,8 @@ function getSafeMode(value: string | null): PlanningMode {
 }
 
 function getSafeView(value: string | null): ViewMode {
-  if (value === "month" || value === "list") return value;
-  return "week";
+  if (value === "week" || value === "month" || value === "list") return value;
+  return "month";
 }
 
 function shiftDate(dateYmd: string, view: ViewMode, direction: -1 | 1): string {
@@ -144,6 +149,35 @@ function formatDisplayDate(dateYmd: string, view: ViewMode): string {
   });
 }
 
+function normalizeMissionInterval(mission: {
+  startAt: string;
+  endAt?: string | null;
+}): { start: string; end: string; startMs: number; endMs: number } | null {
+  const startDate = new Date(mission.startAt);
+  const startMs = startDate.getTime();
+
+  if (!Number.isFinite(startMs)) {
+    return null;
+  }
+
+  const rawEndDate = mission.endAt ? new Date(mission.endAt) : null;
+  const rawEndMs = rawEndDate ? rawEndDate.getTime() : Number.NaN;
+
+  const endDate =
+    rawEndDate && Number.isFinite(rawEndMs) && rawEndMs > startMs
+      ? rawEndDate
+      : addMinutes(startDate, 1);
+
+  const endMs = endDate.getTime();
+
+  return {
+    start: startDate.toISOString(),
+    end: endDate.toISOString(),
+    startMs,
+    endMs,
+  };
+}
+
 export default function PlanningPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedMissionId, setSelectedMissionId] = React.useState<
@@ -159,7 +193,6 @@ export default function PlanningPage() {
 
   React.useEffect(() => {
     const next = new URLSearchParams(searchParams);
-
     let changed = false;
 
     if (next.get("mode") !== mode) {
@@ -219,14 +252,65 @@ export default function PlanningPage() {
 
   const calendarView = view === "month" ? "dayGridMonth" : "timeGridWeek";
 
-  const events = React.useMemo(() => {
-    return (missionsQuery.data?.items ?? []).map((mission) => ({
-      id: String(mission.id),
-      title: `Mission #${mission.id}`,
-      start: mission.startAt,
-      end: mission.endAt,
-    }));
+  const conflictMissionIds = React.useMemo(() => {
+    const missions = missionsQuery.data?.items ?? [];
+
+    const relevantMissions = missions
+      .filter((mission) =>
+        mission.status ? CONFLICT_STATUSES.has(mission.status) : false,
+      )
+      .map((mission) => ({
+        mission,
+        interval: normalizeMissionInterval(mission),
+      }))
+      .filter((item): item is any => item.interval !== null);
+
+    const conflictingIds = new Set<number>();
+
+    for (let i = 0; i < relevantMissions.length; i++) {
+      const currentMission = relevantMissions[i];
+
+      for (let j = i + 1; j < relevantMissions.length; j++) {
+        const otherMission = relevantMissions[j];
+
+        const hasOverlap =
+          currentMission.interval.startMs < otherMission.interval.endMs &&
+          otherMission.interval.startMs < currentMission.interval.endMs;
+
+        if (hasOverlap) {
+          conflictingIds.add(currentMission.mission.id);
+          conflictingIds.add(otherMission.mission.id);
+        }
+      }
+    }
+
+    return conflictingIds;
   }, [missionsQuery.data?.items]);
+
+  const events = React.useMemo(() => {
+    return (missionsQuery.data?.items ?? []).map((mission) => {
+      const hasConflict = conflictMissionIds.has(mission.id);
+      const isDeclared = mission.status === "DECLARED";
+      const interval = normalizeMissionInterval(mission);
+
+      let title = `Mission #${mission.id}`;
+
+      if (hasConflict) {
+        title = `⚠ ${title}`;
+      }
+
+      if (isDeclared) {
+        title = `${title} • DECLARED`;
+      }
+
+      return {
+        id: String(mission.id),
+        title,
+        start: interval?.start ?? mission.startAt,
+        end: interval?.end ?? mission.endAt ?? mission.startAt,
+      };
+    });
+  }, [conflictMissionIds, missionsQuery.data?.items]);
 
   const updateSearchParams = React.useCallback(
     (patch: Partial<{ mode: PlanningMode; view: ViewMode; date: string }>) => {
@@ -258,14 +342,9 @@ export default function PlanningPage() {
         }}
         fullWidth
         size="small"
-        aria-label="Planning: Mes missions ou Offres"
       >
-        <ToggleButton value="my" aria-label="Mes missions">
-          Mes missions
-        </ToggleButton>
-        <ToggleButton value="offers" aria-label="Offres">
-          Offres
-        </ToggleButton>
+        <ToggleButton value="my">Mes missions</ToggleButton>
+        <ToggleButton value="offers">Offres</ToggleButton>
       </ToggleButtonGroup>
 
       <ToggleButtonGroup
@@ -277,17 +356,10 @@ export default function PlanningPage() {
         }}
         fullWidth
         size="small"
-        aria-label="Planning: vue"
       >
-        <ToggleButton value="week" aria-label="Semaine">
-          Semaine
-        </ToggleButton>
-        <ToggleButton value="month" aria-label="Mois">
-          Mois
-        </ToggleButton>
-        <ToggleButton value="list" aria-label="Liste">
-          Liste
-        </ToggleButton>
+        <ToggleButton value="week">Semaine</ToggleButton>
+        <ToggleButton value="month">Mois</ToggleButton>
+        <ToggleButton value="list">Liste</ToggleButton>
       </ToggleButtonGroup>
 
       <Paper variant="outlined" sx={{ p: 2 }}>
@@ -329,16 +401,6 @@ export default function PlanningPage() {
           <Typography variant="subtitle2">
             {formatDisplayDate(date, view)}
           </Typography>
-
-          <Typography variant="body2" color="text.secondary">
-            from: {range.from}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            to: {range.to}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Missions chargées : {missionsQuery.data?.items?.length ?? 0}
-          </Typography>
         </Stack>
       </Paper>
 
@@ -377,39 +439,7 @@ export default function PlanningPage() {
             />
           )}
         </Box>
-
-        <Box sx={{ mt: 1, px: 1, pb: 1 }}>
-          <Typography variant="caption" color="text.secondary" display="block">
-            Mode sélectionné : {mode === "my" ? "Mes missions" : "Offres"}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" display="block">
-            Vue sélectionnée : {view}
-          </Typography>
-        </Box>
       </Paper>
-
-      {view === "list" ? (
-        <Paper variant="outlined" sx={{ p: 2 }}>
-          <Typography variant="subtitle2">Liste</Typography>
-          <Typography variant="body2" color="text.secondary">
-            {missionsQuery.isLoading
-              ? "Chargement…"
-              : `${missionsQuery.data?.items?.length ?? 0} mission(s) chargée(s).`}
-          </Typography>
-
-          <Stack spacing={1} sx={{ mt: 1 }}>
-            {(missionsQuery.data?.items ?? []).map((mission) => (
-              <Box
-                key={mission.id}
-                sx={{ cursor: "pointer" }}
-                onClick={() => setSelectedMissionId(mission.id)}
-              >
-                <Typography variant="body2">Mission #{mission.id}</Typography>
-              </Box>
-            ))}
-          </Stack>
-        </Paper>
-      ) : null}
 
       <Dialog
         open={selectedMissionId !== null}
