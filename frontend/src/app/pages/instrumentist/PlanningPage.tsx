@@ -21,6 +21,7 @@ import {
 
 import { fetchMissions } from "../../features/missions/api/missions.api";
 import { MissionDetailContent } from "./MissionDetailPage";
+import type { Mission } from "../../features/missions/api/missions.types";
 
 type PlanningMode = "my" | "offers";
 type ViewMode = "week" | "month" | "list";
@@ -125,7 +126,7 @@ function shiftDate(dateYmd: string, view: ViewMode, direction: -1 | 1): string {
 
   if (view === "month") {
     return formatDateToYmd(
-      new Date(date.getFullYear(), date.getMonth() + direction, date.getDate()),
+      new Date(date.getFullYear(), date.getMonth() + direction, 1),
     );
   }
 
@@ -176,6 +177,58 @@ function normalizeMissionInterval(mission: {
     startMs,
     endMs,
   };
+}
+
+function formatMissionTime(startAt: string): string {
+  const date = new Date(startAt);
+  if (!Number.isFinite(date.getTime())) return "";
+  return date.toLocaleTimeString("fr-BE", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function getSurgeonLabel(mission: Mission): string {
+  const displayName = mission.surgeon?.displayName?.trim();
+  if (displayName) return `Dr ${displayName}`;
+
+  const firstname = mission.surgeon?.firstname?.trim() ?? "";
+  const lastname = mission.surgeon?.lastname?.trim() ?? "";
+
+  const fullName = `${firstname} ${lastname}`.trim();
+  if (fullName) return `Dr ${fullName}`;
+
+  return "";
+}
+
+function buildMonthMissionLabel(mission: Mission): string {
+  const time = formatMissionTime(mission.startAt);
+  const surgeon = getSurgeonLabel(mission);
+
+  if (time && surgeon) return `${time} ${surgeon}`;
+  if (time) return time;
+  if (surgeon) return surgeon;
+
+  return `Mission #${mission.id}`;
+}
+
+function getMissionStartDayKey(mission: Mission): string | null {
+  const date = new Date(mission.startAt);
+  if (!Number.isFinite(date.getTime())) return null;
+  return formatDateToYmd(date);
+}
+
+function parseHours(value: unknown): number {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  if (typeof value === "string") {
+    const normalized = Number(value);
+    return Number.isFinite(normalized) ? normalized : 0;
+  }
+
+  return 0;
 }
 
 export default function PlanningPage() {
@@ -250,11 +303,10 @@ export default function PlanningPage() {
     queryFn: () => fetchMissions(1, 100, filters),
   });
 
+  const missions = missionsQuery.data?.items ?? [];
   const calendarView = view === "month" ? "dayGridMonth" : "timeGridWeek";
 
   const conflictMissionIds = React.useMemo(() => {
-    const missions = missionsQuery.data?.items ?? [];
-
     const relevantMissions = missions
       .filter((mission) =>
         mission.status ? CONFLICT_STATUSES.has(mission.status) : false,
@@ -263,7 +315,19 @@ export default function PlanningPage() {
         mission,
         interval: normalizeMissionInterval(mission),
       }))
-      .filter((item): item is any => item.interval !== null);
+      .filter(
+        (
+          item,
+        ): item is {
+          mission: Mission;
+          interval: {
+            start: string;
+            end: string;
+            startMs: number;
+            endMs: number;
+          };
+        } => item.interval !== null,
+      );
 
     const conflictingIds = new Set<number>();
 
@@ -285,13 +349,97 @@ export default function PlanningPage() {
     }
 
     return conflictingIds;
-  }, [missionsQuery.data?.items]);
+  }, [missions]);
+
+  const monthDayBuckets = React.useMemo(() => {
+    const buckets = new Map<
+      string,
+      {
+        missions: Mission[];
+        hasConflict: boolean;
+      }
+    >();
+
+    for (const mission of missions) {
+      const dayKey = getMissionStartDayKey(mission);
+      if (!dayKey) continue;
+
+      const existing = buckets.get(dayKey);
+
+      if (existing) {
+        existing.missions.push(mission);
+        if (conflictMissionIds.has(mission.id)) {
+          existing.hasConflict = true;
+        }
+      } else {
+        buckets.set(dayKey, {
+          missions: [mission],
+          hasConflict: conflictMissionIds.has(mission.id),
+        });
+      }
+    }
+
+    return buckets;
+  }, [missions, conflictMissionIds]);
+
+  const monthlySummary = React.useMemo(() => {
+    const baseDate = parseYmdToLocalDate(date);
+    const month = baseDate.getMonth();
+    const year = baseDate.getFullYear();
+
+    let totalMissions = 0;
+    let totalHours = 0;
+
+    for (const mission of missions) {
+      const startDate = new Date(mission.startAt);
+      if (!Number.isFinite(startDate.getTime())) continue;
+
+      if (startDate.getFullYear() === year && startDate.getMonth() === month) {
+        totalMissions += 1;
+        totalHours += parseHours(mission.service?.hours);
+      }
+    }
+
+    return {
+      totalMissions,
+      totalHours,
+    };
+  }, [missions, date]);
 
   const events = React.useMemo(() => {
-    return (missionsQuery.data?.items ?? []).map((mission) => {
+    if (view === "month") {
+      return Array.from(monthDayBuckets.entries()).map(([dayKey, bucket]) => {
+        const firstMission = bucket.missions[0];
+        const extraCount = Math.max(bucket.missions.length - 1, 0);
+
+        let title = buildMonthMissionLabel(firstMission);
+
+        if (extraCount > 0) {
+          title = `${title} +${extraCount}`;
+        }
+
+        if (firstMission.status === "DECLARED") {
+          title = `${title} • DECLARED`;
+        }
+
+        if (bucket.hasConflict) {
+          title = `⚠ ${title}`;
+        }
+
+        return {
+          id: String(firstMission.id),
+          title,
+          start: dayKey,
+          end: dayKey,
+          allDay: true,
+        };
+      });
+    }
+
+    return missions.map((mission) => {
+      const interval = normalizeMissionInterval(mission);
       const hasConflict = conflictMissionIds.has(mission.id);
       const isDeclared = mission.status === "DECLARED";
-      const interval = normalizeMissionInterval(mission);
 
       let title = `Mission #${mission.id}`;
 
@@ -310,7 +458,7 @@ export default function PlanningPage() {
         end: interval?.end ?? mission.endAt ?? mission.startAt,
       };
     });
-  }, [conflictMissionIds, missionsQuery.data?.items]);
+  }, [view, monthDayBuckets, missions, conflictMissionIds]);
 
   const updateSearchParams = React.useCallback(
     (patch: Partial<{ mode: PlanningMode; view: ViewMode; date: string }>) => {
@@ -361,6 +509,25 @@ export default function PlanningPage() {
         <ToggleButton value="month">Mois</ToggleButton>
         <ToggleButton value="list">Liste</ToggleButton>
       </ToggleButtonGroup>
+
+      {view === "month" ? (
+        <Paper variant="outlined" sx={{ p: 2 }}>
+          <Stack
+            direction="row"
+            spacing={3}
+            useFlexGap
+            flexWrap="wrap"
+            alignItems="center"
+          >
+            <Typography variant="body2">
+              Missions du mois : {monthlySummary.totalMissions}
+            </Typography>
+            <Typography variant="body2">
+              Heures du mois : {monthlySummary.totalHours.toFixed(1)} h
+            </Typography>
+          </Stack>
+        </Paper>
+      ) : null}
 
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Stack spacing={1.5}>
