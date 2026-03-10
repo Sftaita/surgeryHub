@@ -17,6 +17,8 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 
 import { fetchMissions } from "../../features/missions/api/missions.api";
@@ -30,6 +32,7 @@ const MY_MISSIONS_STATUSES =
   "ASSIGNED,DECLARED,IN_PROGRESS,SUBMITTED,VALIDATED,CLOSED";
 const OFFERS_STATUS = "OPEN";
 const CONFLICT_STATUSES = new Set(["ASSIGNED", "DECLARED", "IN_PROGRESS"]);
+const SWIPE_THRESHOLD_PX = 50;
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
@@ -143,6 +146,28 @@ function formatDisplayDate(dateYmd: string, view: ViewMode): string {
     });
   }
 
+  if (view === "week") {
+    const weekStart = startOfWeek(date);
+    const weekEnd = addDays(weekStart, 6);
+
+    const startLabel = weekStart.toLocaleDateString("fr-BE", {
+      day: "2-digit",
+      month: "long",
+      year:
+        weekStart.getFullYear() !== weekEnd.getFullYear()
+          ? "numeric"
+          : undefined,
+    });
+
+    const endLabel = weekEnd.toLocaleDateString("fr-BE", {
+      day: "2-digit",
+      month: "long",
+      year: "numeric",
+    });
+
+    return `${startLabel} — ${endLabel}`;
+  }
+
   return date.toLocaleDateString("fr-BE", {
     day: "2-digit",
     month: "long",
@@ -212,6 +237,17 @@ function buildMonthMissionLabel(mission: Mission): string {
   return `Mission #${mission.id}`;
 }
 
+function buildWeekMissionLabel(mission: Mission): string {
+  const surgeon = getSurgeonLabel(mission);
+  let title = surgeon || `Mission #${mission.id}`;
+
+  if (mission.status === "DECLARED") {
+    title = `${title} • DECLARED`;
+  }
+
+  return title;
+}
+
 function getMissionStartDayKey(mission: Mission): string | null {
   const date = new Date(mission.startAt);
   if (!Number.isFinite(date.getTime())) return null;
@@ -236,6 +272,10 @@ export default function PlanningPage() {
   const [selectedMissionId, setSelectedMissionId] = React.useState<
     number | null
   >(null);
+  const touchStartXRef = React.useRef<number | null>(null);
+
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
 
   const todayYmd = React.useMemo(() => formatDateToYmd(new Date()), []);
   const mode = getSafeMode(searchParams.get("mode"));
@@ -438,27 +478,15 @@ export default function PlanningPage() {
 
     return missions.map((mission) => {
       const interval = normalizeMissionInterval(mission);
-      const hasConflict = conflictMissionIds.has(mission.id);
-      const isDeclared = mission.status === "DECLARED";
-
-      let title = `Mission #${mission.id}`;
-
-      if (hasConflict) {
-        title = `⚠ ${title}`;
-      }
-
-      if (isDeclared) {
-        title = `${title} • DECLARED`;
-      }
 
       return {
         id: String(mission.id),
-        title,
+        title: buildWeekMissionLabel(mission),
         start: interval?.start ?? mission.startAt,
         end: interval?.end ?? mission.endAt ?? mission.startAt,
       };
     });
-  }, [view, monthDayBuckets, missions, conflictMissionIds]);
+  }, [view, monthDayBuckets, missions]);
 
   const updateSearchParams = React.useCallback(
     (patch: Partial<{ mode: PlanningMode; view: ViewMode; date: string }>) => {
@@ -475,6 +503,46 @@ export default function PlanningPage() {
       setSearchParams(next);
     },
     [searchParams, mode, view, date, setSearchParams],
+  );
+
+  const handlePeriodShift = React.useCallback(
+    (direction: -1 | 1) => {
+      updateSearchParams({
+        date: shiftDate(date, view, direction),
+      });
+    },
+    [date, updateSearchParams, view],
+  );
+
+  const handleTouchStart = React.useCallback(
+    (event: React.TouchEvent<HTMLDivElement>) => {
+      if (!isMobile) return;
+      touchStartXRef.current = event.changedTouches[0]?.clientX ?? null;
+    },
+    [isMobile],
+  );
+
+  const handleTouchEnd = React.useCallback(
+    (event: React.TouchEvent<HTMLDivElement>) => {
+      if (!isMobile) return;
+
+      const startX = touchStartXRef.current;
+      const endX = event.changedTouches[0]?.clientX ?? null;
+      touchStartXRef.current = null;
+
+      if (startX === null || endX === null) return;
+
+      const deltaX = endX - startX;
+
+      if (Math.abs(deltaX) < SWIPE_THRESHOLD_PX) return;
+
+      if (deltaX < 0) {
+        handlePeriodShift(1);
+      } else {
+        handlePeriodShift(-1);
+      }
+    },
+    [handlePeriodShift, isMobile],
   );
 
   return (
@@ -529,84 +597,88 @@ export default function PlanningPage() {
         </Paper>
       ) : null}
 
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Stack spacing={1.5}>
-          <Stack direction="row" spacing={1} justifyContent="space-between">
-            <Button
-              variant="outlined"
-              size="small"
-              onClick={() =>
-                updateSearchParams({
-                  date: shiftDate(date, view, -1),
-                })
-              }
-            >
-              Précédent
-            </Button>
+      <Box onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
+        <Paper variant="outlined" sx={{ p: 2 }}>
+          <Stack spacing={1.5}>
+            <Stack direction="row" spacing={1} justifyContent="space-between">
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => handlePeriodShift(-1)}
+              >
+                Précédent
+              </Button>
 
-            <Button
-              variant="text"
-              size="small"
-              onClick={() => updateSearchParams({ date: todayYmd })}
-            >
-              Aujourd’hui
-            </Button>
+              {!isMobile ? (
+                <Button
+                  variant="text"
+                  size="small"
+                  onClick={() => updateSearchParams({ date: todayYmd })}
+                >
+                  Aujourd’hui
+                </Button>
+              ) : (
+                <Box />
+              )}
 
-            <Button
-              variant="outlined"
-              size="small"
-              onClick={() =>
-                updateSearchParams({
-                  date: shiftDate(date, view, 1),
-                })
-              }
-            >
-              Suivant
-            </Button>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => handlePeriodShift(1)}
+              >
+                Suivant
+              </Button>
+            </Stack>
+
+            <Typography variant="subtitle2">
+              {formatDisplayDate(date, view)}
+            </Typography>
           </Stack>
+        </Paper>
 
-          <Typography variant="subtitle2">
-            {formatDisplayDate(date, view)}
-          </Typography>
-        </Stack>
-      </Paper>
+        {missionsQuery.isError ? (
+          <Alert severity="error">Impossible de charger le planning.</Alert>
+        ) : null}
 
-      {missionsQuery.isError ? (
-        <Alert severity="error">Impossible de charger le planning.</Alert>
-      ) : null}
-
-      <Paper variant="outlined" sx={{ p: 1 }}>
-        <Box sx={{ minHeight: 600, position: "relative" }}>
-          {missionsQuery.isLoading ? (
-            <Box
-              sx={{
-                minHeight: 600,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <CircularProgress size={28} />
-            </Box>
-          ) : (
-            <FullCalendar
-              key={`${calendarView}-${date}`}
-              plugins={[dayGridPlugin, timeGridPlugin]}
-              initialView={calendarView}
-              initialDate={date}
-              headerToolbar={false}
-              events={view === "list" ? [] : events}
-              height="auto"
-              locale="fr"
-              eventClick={(info) => {
-                const missionId = Number(info.event.id);
-                if (!Number.isFinite(missionId) || missionId <= 0) return;
-                setSelectedMissionId(missionId);
-              }}
-            />
-          )}
-        </Box>
-      </Paper>
+        <Paper variant="outlined" sx={{ p: 1, mt: 2 }}>
+          <Box sx={{ minHeight: 600, position: "relative" }}>
+            {missionsQuery.isLoading ? (
+              <Box
+                sx={{
+                  minHeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <CircularProgress size={28} />
+              </Box>
+            ) : (
+              <FullCalendar
+                key={`${calendarView}-${date}`}
+                plugins={[dayGridPlugin, timeGridPlugin]}
+                initialView={calendarView}
+                initialDate={date}
+                headerToolbar={false}
+                events={view === "list" ? [] : events}
+                height="auto"
+                locale="fr"
+                eventClick={(info) => {
+                  const missionId = Number(info.event.id);
+                  if (!Number.isFinite(missionId) || missionId <= 0) return;
+                  setSelectedMissionId(missionId);
+                }}
+                slotMinTime="00:00:00"
+                slotMaxTime="24:00:00"
+                scrollTime="08:00:00"
+                allDaySlot={view !== "week" ? true : false}
+                slotEventOverlap={view === "week" ? false : true}
+                expandRows={view === "week"}
+              />
+            )}
+          </Box>
+        </Paper>
+      </Box>
 
       <Dialog
         open={selectedMissionId !== null}
