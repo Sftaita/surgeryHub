@@ -18,6 +18,9 @@ import MissionDetailPage from "../pages/manager/MissionDetailPage";
 // Lot 2b — Manager/Admin — Create mission
 import MissionCreatePage from "../pages/manager/MissionCreatePage";
 
+// Lot MGR-INS-1 — Manager/Admin — Instrumentists
+import InstrumentistsPage from "../pages/manager/InstrumentistsPage";
+
 // Lot 3 — Instrumentist (mobile-first)
 import OffersPage from "../pages/instrumentist/OffersPage";
 import MyMissionsPage from "../pages/instrumentist/MyMissionsPage";
@@ -143,6 +146,9 @@ export function AppRouter() {
               <Route path="m/missions/new" element={<MissionCreatePage />} />
 
               <Route path="m/missions/:id" element={<MissionDetailPage />} />
+
+              {/* Lot MGR-INS-1 — Instrumentists */}
+              <Route path="m/instrumentists" element={<InstrumentistsPage />} />
             </Route>
           </Route>
         </Route>

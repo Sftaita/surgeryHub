@@ -39,6 +39,9 @@ const OFFERS_STATUS = "OPEN";
 const CONFLICT_STATUSES = new Set(["ASSIGNED", "DECLARED", "IN_PROGRESS"]);
 const SWIPE_THRESHOLD_PX = 50;
 const SITE_FILTER_STORAGE_KEY = "instrumentist-planning-site-filter";
+const WEEK_SCROLL_TIME = "08:00:00";
+const WEEK_CALENDAR_HEIGHT_MOBILE = 720;
+const WEEK_CALENDAR_HEIGHT_DESKTOP = 760;
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
@@ -252,13 +255,13 @@ function buildMonthMissionLabel(mission: Mission): string {
 
 function buildWeekMissionLabel(mission: Mission): string {
   const surgeon = getSurgeonLabel(mission);
-  let title = surgeon || `Mission #${mission.id}`;
+  const site = getSiteLabel(mission);
 
-  if (mission.status === "DECLARED") {
-    title = `${title} • DECLARED`;
-  }
+  if (surgeon && site) return `${surgeon} • ${site}`;
+  if (surgeon) return surgeon;
+  if (site) return site;
 
-  return title;
+  return `Mission #${mission.id}`;
 }
 
 function getMissionStartDayKey(mission: Mission): string | null {
@@ -278,6 +281,37 @@ function parseHours(value: unknown): number {
   }
 
   return 0;
+}
+
+function getPlannedMissionHours(mission: Mission): number {
+  const startMs = new Date(mission.startAt).getTime();
+  const endMs = new Date(mission.endAt).getTime();
+
+  if (
+    !Number.isFinite(startMs) ||
+    !Number.isFinite(endMs) ||
+    endMs <= startMs
+  ) {
+    return 0;
+  }
+
+  return (endMs - startMs) / (1000 * 60 * 60);
+}
+
+function getMissionHoursForMonthlySummary(mission: Mission): number {
+  if (mission.status === "SUBMITTED" || mission.status === "VALIDATED") {
+    const encodedHours = parseHours(mission.service?.hours);
+    return encodedHours > 0 ? encodedHours : 0;
+  }
+
+  return getPlannedMissionHours(mission);
+}
+
+function formatHoursLabel(value: number): string {
+  return value.toLocaleString("fr-BE", {
+    minimumFractionDigits: Number.isInteger(value) ? 0 : 1,
+    maximumFractionDigits: 1,
+  });
 }
 
 function compareMissionsByStart(a: Mission, b: Mission): number {
@@ -300,6 +334,7 @@ export default function PlanningPage() {
     number | null
   >(null);
   const touchStartXRef = React.useRef<number | null>(null);
+  const touchStartYRef = React.useRef<number | null>(null);
 
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
@@ -494,10 +529,12 @@ export default function PlanningPage() {
       const startDate = new Date(mission.startAt);
       if (!Number.isFinite(startDate.getTime())) continue;
 
-      if (startDate.getFullYear() === year && startDate.getMonth() === month) {
-        totalMissions += 1;
-        totalHours += parseHours(mission.service?.hours);
+      if (startDate.getFullYear() !== year || startDate.getMonth() !== month) {
+        continue;
       }
+
+      totalMissions += 1;
+      totalHours += getMissionHoursForMonthlySummary(mission);
     }
 
     return {
@@ -584,6 +621,7 @@ export default function PlanningPage() {
     (event: React.TouchEvent<HTMLDivElement>) => {
       if (!isMobile) return;
       touchStartXRef.current = event.changedTouches[0]?.clientX ?? null;
+      touchStartYRef.current = event.changedTouches[0]?.clientY ?? null;
     },
     [isMobile],
   );
@@ -593,14 +631,27 @@ export default function PlanningPage() {
       if (!isMobile) return;
 
       const startX = touchStartXRef.current;
+      const startY = touchStartYRef.current;
       const endX = event.changedTouches[0]?.clientX ?? null;
-      touchStartXRef.current = null;
+      const endY = event.changedTouches[0]?.clientY ?? null;
 
-      if (startX === null || endX === null) return;
+      touchStartXRef.current = null;
+      touchStartYRef.current = null;
+
+      if (
+        startX === null ||
+        startY === null ||
+        endX === null ||
+        endY === null
+      ) {
+        return;
+      }
 
       const deltaX = endX - startX;
+      const deltaY = endY - startY;
 
       if (Math.abs(deltaX) < SWIPE_THRESHOLD_PX) return;
+      if (Math.abs(deltaX) <= Math.abs(deltaY)) return;
 
       if (deltaX < 0) {
         handlePeriodShift(1);
@@ -678,17 +729,49 @@ export default function PlanningPage() {
 
       <Box onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
         <Paper variant="outlined" sx={{ p: 2 }}>
-          <Stack spacing={1.5}>
-            <Stack direction="row" spacing={1} justifyContent="space-between">
+          {isMobile ? (
+            <Stack
+              direction="row"
+              spacing={1}
+              alignItems="center"
+              justifyContent="space-between"
+            >
               <Button
-                variant="outlined"
+                variant="text"
                 size="small"
                 onClick={() => handlePeriodShift(-1)}
+                sx={{ minWidth: 0, px: 1 }}
               >
-                Précédent
+                ‹
               </Button>
 
-              {!isMobile ? (
+              <Typography
+                variant="subtitle2"
+                sx={{ flex: 1, textAlign: "center", minWidth: 0 }}
+              >
+                {formatDisplayDate(date, view)}
+              </Typography>
+
+              <Button
+                variant="text"
+                size="small"
+                onClick={() => handlePeriodShift(1)}
+                sx={{ minWidth: 0, px: 1 }}
+              >
+                ›
+              </Button>
+            </Stack>
+          ) : (
+            <Stack spacing={1.5}>
+              <Stack direction="row" spacing={1} justifyContent="space-between">
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={() => handlePeriodShift(-1)}
+                >
+                  Précédent
+                </Button>
+
                 <Button
                   variant="text"
                   size="small"
@@ -696,27 +779,60 @@ export default function PlanningPage() {
                 >
                   Aujourd’hui
                 </Button>
-              ) : (
-                <Box />
-              )}
 
-              <Button
-                variant="outlined"
-                size="small"
-                onClick={() => handlePeriodShift(1)}
-              >
-                Suivant
-              </Button>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={() => handlePeriodShift(1)}
+                >
+                  Suivant
+                </Button>
+              </Stack>
+
+              <Typography variant="subtitle2">
+                {formatDisplayDate(date, view)}
+              </Typography>
             </Stack>
-
-            <Typography variant="subtitle2">
-              {formatDisplayDate(date, view)}
-            </Typography>
-          </Stack>
+          )}
         </Paper>
 
         {missionsQuery.isError ? (
           <Alert severity="error">Impossible de charger le planning.</Alert>
+        ) : null}
+
+        {view === "month" ? (
+          <Paper
+            variant="outlined"
+            sx={{
+              mt: 2,
+              px: 2,
+              py: 1.5,
+            }}
+          >
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={{ xs: 1, sm: 3 }}
+              useFlexGap
+            >
+              <Box>
+                <Typography variant="caption" color="text.secondary">
+                  Missions du mois
+                </Typography>
+                <Typography variant="subtitle2">
+                  {monthlySummary.totalMissions}
+                </Typography>
+              </Box>
+
+              <Box>
+                <Typography variant="caption" color="text.secondary">
+                  Heures du mois
+                </Typography>
+                <Typography variant="subtitle2">
+                  {formatHoursLabel(monthlySummary.totalHours)} h
+                </Typography>
+              </Box>
+            </Stack>
+          </Paper>
         ) : null}
 
         <Paper variant="outlined" sx={{ p: 1, mt: 2 }}>
@@ -740,7 +856,13 @@ export default function PlanningPage() {
                 initialDate={date}
                 headerToolbar={false}
                 events={view === "list" ? [] : events}
-                height="auto"
+                height={
+                  view === "week"
+                    ? isMobile
+                      ? WEEK_CALENDAR_HEIGHT_MOBILE
+                      : WEEK_CALENDAR_HEIGHT_DESKTOP
+                    : "auto"
+                }
                 locale="fr"
                 eventClick={(info) => {
                   const missionId = Number(info.event.id);
@@ -828,12 +950,39 @@ export default function PlanningPage() {
                     </Box>
                   );
                 }}
+                dayHeaderFormat={
+                  view === "week"
+                    ? {
+                        weekday: "short",
+                        day: "2-digit",
+                        month: "2-digit",
+                      }
+                    : undefined
+                }
+                eventTimeFormat={
+                  view === "week"
+                    ? {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        hour12: false,
+                      }
+                    : undefined
+                }
+                slotLabelFormat={
+                  view === "week"
+                    ? {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        hour12: false,
+                      }
+                    : undefined
+                }
                 slotMinTime="00:00:00"
                 slotMaxTime="24:00:00"
-                scrollTime="08:00:00"
+                scrollTime={WEEK_SCROLL_TIME}
                 allDaySlot={view !== "week" ? true : false}
                 slotEventOverlap={view === "week" ? false : true}
-                expandRows={view === "week"}
+                expandRows={view === "week" ? false : undefined}
               />
             )}
           </Box>
