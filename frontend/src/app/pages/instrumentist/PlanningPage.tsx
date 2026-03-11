@@ -19,9 +19,14 @@ import {
   DialogContent,
   useMediaQuery,
   useTheme,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from "@mui/material";
 
 import { fetchMissions } from "../../features/missions/api/missions.api";
+import { fetchSites } from "../../features/sites/api/sites.api";
 import { MissionDetailContent } from "./MissionDetailPage";
 import type { Mission } from "../../features/missions/api/missions.types";
 
@@ -33,6 +38,7 @@ const MY_MISSIONS_STATUSES =
 const OFFERS_STATUS = "OPEN";
 const CONFLICT_STATUSES = new Set(["ASSIGNED", "DECLARED", "IN_PROGRESS"]);
 const SWIPE_THRESHOLD_PX = 50;
+const SITE_FILTER_STORAGE_KEY = "instrumentist-planning-site-filter";
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
@@ -226,13 +232,20 @@ function getSurgeonLabel(mission: Mission): string {
   return "";
 }
 
+function getSiteLabel(mission: Mission): string {
+  return mission.site?.name?.trim() ?? "";
+}
+
 function buildMonthMissionLabel(mission: Mission): string {
   const time = formatMissionTime(mission.startAt);
   const surgeon = getSurgeonLabel(mission);
+  const site = getSiteLabel(mission);
 
   if (time && surgeon) return `${time} ${surgeon}`;
-  if (time) return time;
+  if (time && site) return `${time} ${site}`;
   if (surgeon) return surgeon;
+  if (site) return site;
+  if (time) return time;
 
   return `Mission #${mission.id}`;
 }
@@ -267,6 +280,20 @@ function parseHours(value: unknown): number {
   return 0;
 }
 
+function compareMissionsByStart(a: Mission, b: Mission): number {
+  const aTime = new Date(a.startAt).getTime();
+  const bTime = new Date(b.startAt).getTime();
+
+  const safeATime = Number.isFinite(aTime) ? aTime : Number.MAX_SAFE_INTEGER;
+  const safeBTime = Number.isFinite(bTime) ? bTime : Number.MAX_SAFE_INTEGER;
+
+  if (safeATime !== safeBTime) {
+    return safeATime - safeBTime;
+  }
+
+  return a.id - b.id;
+}
+
 export default function PlanningPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedMissionId, setSelectedMissionId] = React.useState<
@@ -276,6 +303,14 @@ export default function PlanningPage() {
 
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+
+  const [siteFilter, setSiteFilter] = React.useState<number | "">(() => {
+    if (typeof window === "undefined") return "";
+    const saved = window.localStorage.getItem(SITE_FILTER_STORAGE_KEY);
+    if (!saved) return "";
+    const parsed = Number(saved);
+    return Number.isFinite(parsed) ? parsed : "";
+  });
 
   const todayYmd = React.useMemo(() => formatDateToYmd(new Date()), []);
   const mode = getSafeMode(searchParams.get("mode"));
@@ -308,25 +343,45 @@ export default function PlanningPage() {
     }
   }, [date, mode, searchParams, setSearchParams, view]);
 
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    if (siteFilter === "") {
+      window.localStorage.removeItem(SITE_FILTER_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(SITE_FILTER_STORAGE_KEY, String(siteFilter));
+    }
+  }, [siteFilter]);
+
+  const sitesQuery = useQuery({
+    queryKey: ["sites"],
+    queryFn: fetchSites,
+    enabled: !isMobile,
+  });
+
   const range = React.useMemo(() => getRange(view, date), [view, date]);
 
   const filters = React.useMemo(() => {
+    const baseFilters = {
+      from: range.from,
+      to: range.to,
+      ...(siteFilter !== "" ? { siteId: siteFilter } : {}),
+    };
+
     if (mode === "offers") {
       return {
-        from: range.from,
-        to: range.to,
+        ...baseFilters,
         eligibleToMe: true,
         status: OFFERS_STATUS,
       };
     }
 
     return {
-      from: range.from,
-      to: range.to,
+      ...baseFilters,
       assignedToMe: true,
       status: MY_MISSIONS_STATUSES,
     };
-  }, [mode, range.from, range.to]);
+  }, [mode, range.from, range.to, siteFilter]);
 
   const missionsQuery = useQuery({
     queryKey: [
@@ -338,6 +393,7 @@ export default function PlanningPage() {
         date,
         from: range.from,
         to: range.to,
+        siteId: siteFilter === "" ? null : siteFilter,
       },
     ],
     queryFn: () => fetchMissions(1, 100, filters),
@@ -419,6 +475,10 @@ export default function PlanningPage() {
       }
     }
 
+    for (const bucket of buckets.values()) {
+      bucket.missions.sort(compareMissionsByStart);
+    }
+
     return buckets;
   }, [missions, conflictMissionIds]);
 
@@ -446,34 +506,40 @@ export default function PlanningPage() {
     };
   }, [missions, date]);
 
+  const monthDayMeta = React.useMemo(() => {
+    const meta = new Map<
+      string,
+      {
+        missionId: number;
+        title: string;
+        extraCount: number;
+        hasConflict: boolean;
+      }
+    >();
+
+    for (const [dayKey, bucket] of monthDayBuckets.entries()) {
+      const firstMission = bucket.missions[0];
+      if (!firstMission) continue;
+
+      meta.set(dayKey, {
+        missionId: firstMission.id,
+        title: buildMonthMissionLabel(firstMission),
+        extraCount: Math.max(bucket.missions.length - 1, 0),
+        hasConflict: bucket.hasConflict,
+      });
+    }
+
+    return meta;
+  }, [monthDayBuckets]);
+
   const events = React.useMemo(() => {
     if (view === "month") {
-      return Array.from(monthDayBuckets.entries()).map(([dayKey, bucket]) => {
-        const firstMission = bucket.missions[0];
-        const extraCount = Math.max(bucket.missions.length - 1, 0);
-
-        let title = buildMonthMissionLabel(firstMission);
-
-        if (extraCount > 0) {
-          title = `${title} +${extraCount}`;
-        }
-
-        if (firstMission.status === "DECLARED") {
-          title = `${title} • DECLARED`;
-        }
-
-        if (bucket.hasConflict) {
-          title = `⚠ ${title}`;
-        }
-
-        return {
-          id: String(firstMission.id),
-          title,
-          start: dayKey,
-          end: dayKey,
-          allDay: true,
-        };
-      });
+      return Array.from(monthDayMeta.entries()).map(([dayKey, meta]) => ({
+        id: String(meta.missionId),
+        title: meta.title,
+        start: dayKey,
+        allDay: true,
+      }));
     }
 
     return missions.map((mission) => {
@@ -486,7 +552,7 @@ export default function PlanningPage() {
         end: interval?.end ?? mission.endAt ?? mission.startAt,
       };
     });
-  }, [view, monthDayBuckets, missions]);
+  }, [view, monthDayMeta, missions]);
 
   const updateSearchParams = React.useCallback(
     (patch: Partial<{ mode: PlanningMode; view: ViewMode; date: string }>) => {
@@ -578,21 +644,34 @@ export default function PlanningPage() {
         <ToggleButton value="list">Liste</ToggleButton>
       </ToggleButtonGroup>
 
-      {view === "month" ? (
+      {!isMobile ? (
         <Paper variant="outlined" sx={{ p: 2 }}>
           <Stack
             direction="row"
-            spacing={3}
+            spacing={2}
             useFlexGap
             flexWrap="wrap"
             alignItems="center"
           >
-            <Typography variant="body2">
-              Missions du mois : {monthlySummary.totalMissions}
-            </Typography>
-            <Typography variant="body2">
-              Heures du mois : {monthlySummary.totalHours.toFixed(1)} h
-            </Typography>
+            <FormControl size="small" sx={{ minWidth: 220 }}>
+              <InputLabel id="planning-site-filter-label">Site</InputLabel>
+              <Select
+                labelId="planning-site-filter-label"
+                value={siteFilter}
+                label="Site"
+                onChange={(event) => {
+                  const value = event.target.value as string | number;
+                  setSiteFilter(value === "" ? "" : Number(value));
+                }}
+              >
+                <MenuItem value="">Tous les sites</MenuItem>
+                {(sitesQuery.data ?? []).map((site) => (
+                  <MenuItem key={site.id} value={site.id}>
+                    {site.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
           </Stack>
         </Paper>
       ) : null}
@@ -667,6 +746,87 @@ export default function PlanningPage() {
                   const missionId = Number(info.event.id);
                   if (!Number.isFinite(missionId) || missionId <= 0) return;
                   setSelectedMissionId(missionId);
+                }}
+                eventContent={(arg) => {
+                  if (view !== "month") {
+                    return undefined;
+                  }
+
+                  const dayKey = formatDateToYmd(arg.event.start ?? new Date());
+                  const meta = monthDayMeta.get(dayKey);
+                  const extraCount = meta?.extraCount ?? 0;
+
+                  return (
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 0.5,
+                        minWidth: 0,
+                        overflow: "hidden",
+                      }}
+                    >
+                      <Box
+                        component="span"
+                        sx={{
+                          minWidth: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {arg.event.title}
+                      </Box>
+
+                      {extraCount > 0 ? (
+                        <Box
+                          component="span"
+                          sx={{
+                            flexShrink: 0,
+                            color: "text.secondary",
+                          }}
+                        >
+                          +{extraCount}
+                        </Box>
+                      ) : null}
+                    </Box>
+                  );
+                }}
+                dayCellContent={(arg) => {
+                  if (view !== "month") {
+                    return arg.dayNumberText;
+                  }
+
+                  const dayKey = formatDateToYmd(arg.date);
+                  const meta = monthDayMeta.get(dayKey);
+
+                  return (
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        width: "100%",
+                      }}
+                    >
+                      <Box component="span">{arg.dayNumberText}</Box>
+
+                      {meta?.hasConflict ? (
+                        <Box
+                          component="span"
+                          sx={{
+                            fontSize: "0.7rem",
+                            lineHeight: 1,
+                            color: "text.secondary",
+                          }}
+                          aria-label="Conflit potentiel"
+                          title="Conflit potentiel"
+                        >
+                          ⚠
+                        </Box>
+                      ) : null}
+                    </Box>
+                  );
                 }}
                 slotMinTime="00:00:00"
                 slotMaxTime="24:00:00"
