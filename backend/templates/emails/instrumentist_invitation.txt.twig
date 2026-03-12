@@ -1,0 +1,17 @@
+Bonjour {{ displayName }},
+
+Votre compte instrumentiste SurgicalHub a été créé.
+
+Veuillez compléter votre compte via le lien suivant :
+
+{{ invitationUrl }}
+
+{% if expiresAt is not null %}
+Cette invitation expire le {{ expiresAt|date('d/m/Y H:i') }}.
+{% else %}
+Cette invitation expire dans 48 heures.
+{% endif %}
+
+Si vous n'attendiez pas cet email, vous pouvez simplement l'ignorer.
+
+SurgicalHub

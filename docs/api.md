@@ -1,6 +1,6 @@
 # SurgicalHub — API (Single Source of Truth)
 
-Last updated: 2026-02-20
+Last updated: 2026-03-11
 
 ## 1. Principes fondamentaux
 
@@ -276,5 +276,199 @@ Cas supplémentaires :
 - MISSION_DECLARED
 - MISSION_DECLARED_APPROVED
 - MISSION_DECLARED_REJECTED
+
+## 15. Instrumentistes — gestion manager (V1)
+
+Périmètre V1 retenu :
+
+- ressource instrumentiste portée par `User`
+- `employmentType` global au user
+- `hourlyRate` et `consultationFee` globaux au user
+- affiliations portées par `SiteMembership`
+- statut manager mappé sur `User.active`
+  - `active = true` → `Active`
+  - `active = false` → `Suspended`
+- aucun droit métier déduit côté frontend
+- aucune donnée patient
+
+### Endpoints cibles V1
+
+```text
+GET  /api/instrumentists
+GET  /api/instrumentists/{id}
+POST /api/instrumentists
+PATCH /api/instrumentists/{id}/rates
+POST /api/instrumentists/{id}/suspend
+POST /api/instrumentists/{id}/activate
+POST /api/instrumentists/{id}/site-memberships
+DELETE /api/instrumentists/{id}/site-memberships/{membershipId}
+GET /api/instrumentists/{id}/planning?from=...&to=...
+```
+
+### GET /api/instrumentists
+
+AuthZ: MANAGER / ADMIN
+
+Objectif : alimenter la liste `Ressources > Instrumentistes`.
+
+Filtres attendus côté V1 :
+
+- `search`
+- `active`
+- `employmentType`
+- `siteId`
+- pagination si déjà présente dans le socle existant
+
+Réponse attendue : liste légère compatible table manager.
+
+Champs utiles minimum :
+
+- `id`
+- `firstname`
+- `lastname`
+- `fullName`
+- `email`
+- `active`
+- `employmentType`
+- `sites`
+- `allowedActions`
+
+### GET /api/instrumentists/{id}
+
+AuthZ: MANAGER / ADMIN
+
+Objectif : alimenter le drawer instrumentiste.
+
+Champs utiles minimum :
+
+- identité complète
+- email
+- `active`
+- `employmentType`
+- `hourlyRate`
+- `consultationFee`
+- `defaultCurrency`
+- `siteMemberships`
+- `allowedActions`
+
+## 16. Instrumentistes — création manager + invitation
+
+### POST /api/instrumentists
+
+AuthZ: MANAGER / ADMIN
+
+Objectif : création rapide d’un instrumentiste depuis le manager.
+
+Règles V1 retenues :
+
+- création d’un `User`
+- attribution du rôle instrumentiste
+- `active = true`
+- `password = null` à la création
+- `employmentType` global obligatoire à la création
+- au moins un site obligatoire à la création
+- création des affiliations initiales (`SiteMembership`)
+- génération d’un `invitationToken`
+- génération d’un `invitationExpiresAt = now + 48h`
+- envoi d’un email d’invitation contenant un lien frontend
+- si email déjà utilisé : `409`
+- si l’envoi email échoue : la création reste valide, avec warning backend exploitable
+
+Body cible V1 :
+
+```json
+{
+  "firstname": null,
+  "lastname": null,
+  "email": "ole@example.com",
+  "employmentType": "FREELANCE",
+  "siteIds": [1, 2]
+}
+```
+
+Notes :
+
+- `firstname` / `lastname` peuvent rester vides à la création manager si le flux retenu est de laisser l’instrumentiste compléter son profil via invitation.
+- le backend reste source de vérité pour la validation exacte du payload final.
+
+Lien envoyé par email :
+
+```text
+{FRONTEND_URL}/complete-account?token=XXXX
+```
+
+`FRONTEND_URL` doit venir de la configuration backend.
+
+## 17. Invitations instrumentistes — activation / complétion du compte
+
+Flux V1 retenu :
+
+- le manager crée le compte
+- l’instrumentiste reçoit un email
+- l’instrumentiste ouvre le lien frontend
+- l’instrumentiste complète son profil
+- l’instrumentiste définit son mot de passe
+- le token est invalidé après activation
+
+Champs à compléter côté frontend lors de l’activation :
+
+- `firstname` (obligatoire)
+- `lastname` (obligatoire)
+- `phone` (obligatoire)
+- `password` (obligatoire)
+- `confirmPassword` (obligatoire côté frontend)
+- `profilePicture` (optionnel)
+
+Stockage V1 retenu dans `User` :
+
+- `invitationToken` nullable
+- `invitationExpiresAt` nullable
+- `phone`
+- `profilePicture` nullable
+
+Endpoints cibles V1 :
+
+```text
+GET  /api/invitations/{token}
+POST /api/invitations/complete
+```
+
+### GET /api/invitations/{token}
+
+Objectif : vérifier qu’un token d’invitation est valide avant affichage / soumission finale du formulaire frontend.
+
+Réponses attendues :
+
+- token valide
+- token expiré
+- token introuvable
+- compte déjà activé
+
+### POST /api/invitations/complete
+
+Objectif : finaliser l’activation du compte invité.
+
+Effets backend attendus :
+
+- validation du token
+- vérification expiration
+- mise à jour du profil utilisateur
+- hash du mot de passe
+- nullification de `invitationToken`
+- nullification de `invitationExpiresAt`
+
+Si le token correspond à un compte déjà activé :
+
+- réponse claire de type `Account already activated`
+- le frontend pourra rediriger vers login
+
+## 18. Distinction future — auto-inscription instrumentiste
+
+Hors périmètre V1 actuel.
+
+Décision retenue pour plus tard :
+
+- si l’instrumentiste se crée lui-même un compte, un flux séparé devra exiger une validation email préalable.
+- ce flux n’impacte pas la V1 manager décrite ci-dessus.
 
 Fin du document

@@ -1,286 +1,458 @@
-# Architecture — SurgicalHub Backend (Symfony)
+# Décisions d’architecture — SurgicalHub Backend
 
-Dernière mise à jour : 2026-02-20 (Europe/Brussels)
+Ce document trace les décisions d’architecture structurantes prises pour le backend SurgicalHub afin d’assurer :
 
-## 1. Contexte et objectifs
+- cohérence métier,
+- maintenabilité du code,
+- traçabilité des choix techniques,
+- alignement frontend ↔ backend.
 
-SurgicalHub est une API Symfony orientée “missions” permettant :
+## D-001 — Séparation mission vs encodage
 
-- aux managers/admins de créer et publier des missions,
-- aux instrumentistes de consulter des offres éligibles, claim, encoder (interventions + matériel), puis submit,
-- aux instrumentistes de déclarer des missions imprévues, soumises à validation manager,
-- aux chirurgiens d’évaluer l’instrumentiste et de gérer des litiges d’heures,
-- à l’équipe support (manager/admin) d’avoir une visibilité élargie (vues \*:read_manager), sans exposer de données financières aux rôles non autorisés.
+Date : 18-01-2026
 
-Contraintes clés :
+### Décision
 
-- Aucune donnée patient.
-- RBAC strict via Voters.
-- Gouvernance manager-centric.
-- Flux mobile-first instrumentiste.
-- Traçabilité complète des actions critiques.
+Le détail d’encodage opératoire (interventions, firms, matériel) n’est pas inclus dans  
+GET /api/missions/{id}.
 
-## 2. Architecture du code (dossiers)
+Un endpoint dédié est créé :
 
-Racine : backend/src
+GET /api/missions/{id}/encoding
 
-- Controller/
-- Dto/Request/
-- Entity/
-- Enum/
-- Security/Voter/
-- Service/
-- EventSubscriber/ApiExceptionSubscriber.php
+### Motivation
 
-Règles :
+Éviter l’alourdissement du payload mission standard.
 
-- Contrôleurs minces.
-- Logique métier exclusivement dans Service/\*.
-- Aucun contrôle de rôle direct dans les controllers.
-- Aucune inférence de droit côté frontend.
+Séparer clairement :
 
-## 3. Sécurité & Auth
+- le planning (mission),
+- de l’exécution opératoire (encodage).
 
-Inchangé :
+Permettre l’évolution du modèle d’encodage sans impacter :
 
-- JWT obligatoire.
-- Login classique + refresh + Google.
-- /healthz public.
+- les listings,
+- les écrans manager,
+- le frontend instrumentiste Lot 3.
 
-## 4. Modèle métier — Missions & cycle de vie
+### Conséquences
 
-### 4.1 Mission
+Deux appels frontend :
 
-Une Mission représente un créneau d’activité (planifié ou déclaré).
+- mission (planning + allowedActions),
+- encoding (interventions / matériel).
 
-Statuts
+Mapping dédié via MissionEncodingService.
 
-- DRAFT
-- OPEN
-- ASSIGNED
-- DECLARED (nouveau)
-- REJECTED (nouveau – uniquement pour DECLARED)
-- SUBMITTED
-- VALIDATED
-- CLOSED
+DTOs spécifiques et stables pour l’UI mobile.
 
-### 4.2 Flux planning classique
+---
 
-DRAFT → OPEN → ASSIGNED → SUBMITTED → VALIDATED → CLOSED
+## D-002 — Option B : encodage libre par interventions
 
-### 4.3 Flux mission déclarée (nouveau)
+Date : 18-01-2026
 
-Création :
+### Décision
 
-INSTRUMENTIST → DECLARED
+Une mission peut contenir plusieurs interventions, créées librement par l’instrumentiste.
+
+Aucune typologie d’intervention n’est imposée par la mission.
+
+### Motivation
+
+Fidélité maximale à la réalité opératoire.
+
+Pas de rigidité côté backend.
+
+UI encodage simple et progressive.
+
+---
+
+## D-003 — Hiérarchie d’encodage
+
+Date : 18-01-2026
+
+### Structure retenue
+
+```text
+Mission
+└─ MissionIntervention
+   ├─ MaterialLine
+   └─ MaterialItemRequest
+Règles métier
+
+MaterialLine
+
+matériel existant dans le catalogue,
+
+réellement utilisé.
+
+MaterialItemRequest
+
+matériel absent / inconnu,
+
+signalement à destination du manager.
+
+D-004 — Gestion du matériel implantable
+
+Date : 18-01-2026
+
+Décision
+
+Les items implantables (MaterialItem.isImplant = true) déclenchent automatiquement :
+
+la création,
+
+ou l’association à une ImplantSubMission.
+
+Motivation
+
+Préparer les futures étapes :
+
+reporting,
+
+validation,
+
+facturation.
+
+D-005 — RBAC strict via Voters
+
+Date : 17-01-2026
+
+Décision
+
+Toute logique d’autorisation passe exclusivement par des Voters.
+
+Aucun contrôle de rôle direct dans les controllers.
+
+Aucun droit inféré côté frontend.
+
+D-006 — allowedActions[] comme contrat frontend
+
+Date : 20-01-2026
+
+Décision
+
+Le backend calcule dynamiquement un tableau allowedActions[] pour chaque mission.
+
+Le frontend :
+
+n’infère jamais un droit,
+
+n’anticipe jamais un statut,
+
+affiche uniquement ce qui est explicitement autorisé.
+
+D-007 — Missions de type CONSULTATION
+
+Date : 18-01-2026
+
+Décision
+
+Les missions de type CONSULTATION ne peuvent pas contenir de matériel.
+
+D-008 — Garde-fou temporel sur l’encodage
+
+Date : 20-01-2026
+
+Décision
+
+Un instrumentiste ne peut pas encoder avant le début réel de la mission.
+
+D-009 — Catalogue matériel en lecture libre
+
+Date : 31-01-2026
+
+Décision
+
+Le catalogue MaterialItem est accessible en lecture à tous les rôles.
+
+D-010 — Erreurs API normalisées
+
+Date : 16-01-2026
+
+Décision
+
+Toutes les erreurs API passent par ApiExceptionSubscriber.
+
+D-011 — Documentation vivante en Markdown
+
+Date : 18-01-2026
+
+Décision
+
+Trois documents de référence maintenus à jour :
+
+docs/api.md
+
+docs/architecture.md
+
+docs/decisions.md
+
+D-012 — Firms en référentiel (fabricants) + dérivation via MaterialItem
+
+Date : 12-02-2026
+
+Décision
+
+Firm devient une entité de référence.
+
+L’instrumentiste ne peut jamais créer/éditer/supprimer une firm.
+
+Les firms apparaissent uniquement via MaterialItem.manufacturer.
+
+🆕 D-013 — Missions déclarées par instrumentiste (unforeseen activity control)
+
+Date : 20-02-2026
+
+Décision
+
+Un instrumentiste peut déclarer une mission imprévue via un flux contrôlé.
+
+Cette mission est créée avec le statut :
+
+DECLARED
+
+Elle doit obligatoirement être validée ou rejetée par un Manager/Admin.
+
+Les chirurgiens ne peuvent jamais créer de mission.
+
+Motivation
+
+Refléter la réalité terrain (urgences, dépassements bloc).
+
+Permettre l’encodage sans briser la cohérence planning.
+
+Maintenir un contrôle manager-centric du système.
+
+Éviter la création sauvage de missions validées automatiquement.
+
+Préserver la robustesse juridique et financière.
+
+Règles métier
+
+Une mission DECLARED :
+
+est créée uniquement par un INSTRUMENTIST,
+
+lie automatiquement instrumentist_user_id = created_by_user_id,
+
+n’est pas publiée,
+
+n’est pas claimable,
+
+n’est pas facturable,
+
+ne peut pas être VALIDATED,
+
+ne peut pas être CLOSED.
 
 Transitions autorisées :
 
-DECLARED → ASSIGNED (approve par manager)
-DECLARED → REJECTED (reject par manager)
+DECLARED → ASSIGNED (approve)
+DECLARED → REJECTED
 
-Contraintes :
+REJECTED est un statut terminal.
 
-- Une mission DECLARED n’est pas publiée.
-- Elle n’est pas claimable.
-- Elle n’est pas facturable.
-- Elle ne peut pas être VALIDATED.
-- Elle ne peut pas être CLOSED.
-- REJECTED est terminal.
+Gouvernance
 
-### 4.4 Champs supplémentaires Mission
+Seul un MANAGER/ADMIN peut :
 
-- declaredAt (nullable)
-- declaredComment (nullable, obligatoire si DECLARED)
+approuver
 
-Règle :
+rejeter
 
-Si status = DECLARED :
-
-- createdBy = instrumentist
-- instrumentist_user_id = createdBy
-
-## 5. Publications (offres)
-
-Inchangé pour OPEN.
-
-Important :
-
-Les missions DECLARED ne génèrent jamais de MissionPublication.
-
-## 6. Claim (anti-double)
-
-Inchangé.
-
-Interdiction :
-
-Claim impossible si status = DECLARED.
-
-## 7. Encodage opératoire
-
-Structure inchangée :
-
-- MissionIntervention
-- MaterialLine
-- MaterialItemRequest
-
-Règles supplémentaires :
-
-- Encodage autorisé sur DECLARED.
-- Lock financier interdit tant que mission non approuvée.
-- Invoice génération impossible si mission issue de DECLARED non validée.
-
-## 8. Endpoints (mis à jour)
-
-Missions
-
-- POST /api/missions
-- PATCH /api/missions/{id}
-- POST /api/missions/{id}/publish
-- POST /api/missions/{id}/claim
-- POST /api/missions/{id}/submit
-- GET /api/missions
-- GET /api/missions/{id}
-
-🆕 Missions déclarées
-
-- POST /api/missions/declare
-- POST /api/missions/{id}/approve-declared
-- POST /api/missions/{id}/reject-declared
-
-Encodage
-
-Inchangé.
-
-## 9. Services applicatifs (responsabilités mises à jour)
-
-MissionService
-
-Responsabilités étendues :
-
-- create
-- patch
-- publish
-- claim
-- submit
-- declare
-- approveDeclared
-- rejectDeclared
-
-Règles :
-
-- declare : force status DECLARED
-- approve : transforme en ASSIGNED
-- reject : transforme en REJECTED
-- Toutes les transitions passent par MissionService.
-
-MissionActionsService
-
-Doit intégrer :
-
-Si status = DECLARED :
-
-Instrumentiste (owner) :
-
-- view
-- encoding
-- submit
-- edit_hours
-
-Manager/Admin :
-
-- approve
-- reject
-- edit
-
-Surgeon :
-
-- view
-
-Aucun droit implicite.
-
-MissionVoter (mis à jour)
-
-Nouvelles capacités :
-
-- DECLARE
-- APPROVE_DECLARED
-- REJECT_DECLARED
-
-Toujours via Voters exclusivement.
-
-## 10. Audit & Events
-
-Nouveaux événements :
-
-- MISSION_DECLARED
-- MISSION_DECLARED_APPROVED
-- MISSION_DECLARED_REJECTED
+Le chirurgien a uniquement un droit de consultation.
 
 Aucune suppression autorisée.
 
-Toutes transitions loggées.
+Audit obligatoire.
 
-## 11. Notifications
+allowedActions impact
 
-Ajouts :
+Si mission.status = DECLARED :
 
-- Déclaration → manager
-- Approbation → instrumentiste
-- Rejet → instrumentiste
+Instrumentiste (owner) :
 
-Log complet des notifications.
+view
 
-## 12. Sécurité anti-abus
+encoding
 
-Architecture impose :
+submit (draft)
 
-- Historique complet.
-- Rejection ratio traçable.
-- Aucun impact financier sans validation.
-- Impossible de convertir DECLARED en OPEN.
+edit_hours
 
-## 13. Points d’attention techniques
+Manager/Admin :
 
-### 13.1 Enum MissionStatus
+approve
 
-Ajouter :
+reject
 
-DECLARED
-REJECTED
+edit
 
-Migration obligatoire.
+Surgeon :
 
-### 13.2 Transitions contrôlées
+view uniquement
 
-Aucune modification directe de status via patch générique.
+Sécurité & anti-abus
 
-Toutes transitions passent par MissionService.
+Historique complet conservé.
 
-### 13.3 Cohérence multi-site
+Rejection ratio mesurable.
 
-Lors de declare :
+Aucun impact financier sans validation.
 
-Vérifier éligibilité instrumentiste au site
-(EMPLOYEE membership ou FREELANCER autorisé).
+Impossible de convertir une mission DECLARED en OPEN.
 
-### 13.4 Encodage & finance
+Impact technique
 
-Interdire :
+Ajout enum MissionStatus::DECLARED
 
-- génération d’ImplantSubMission facturable
-- calcul final service financier
-- invoice generation
+Ajout enum MissionStatus::REJECTED
 
-tant que mission issue de DECLARED non validée.
+Nouvelles capacités Voter :
 
-## Résumé architectural
+DECLARE
 
-Avec D-013 intégré :
+APPROVE_DECLARED
 
-- Planning reste manager-centric.
-- Réalité terrain intégrée.
-- Aucun pouvoir excessif côté instrumentiste.
-- Aucun impact financier non validé.
-- RBAC respecté.
-- Frontend simplifié via allowedActions[].
+REJECT_DECLARED
+
+Extension MissionActionsService
+
+Nouveaux endpoints dédiés
+
+Nouveaux événements d’audit :
+
+MISSION_DECLARED
+
+MISSION_DECLARED_APPROVED
+
+MISSION_DECLARED_REJECTED
+
+🆕 D-014 — Onboarding instrumentiste via invitation manager
+
+Date : 11-03-2026
+
+Décision
+
+Lorsqu’un Manager crée un instrumentiste dans le système, un flux d’invitation est utilisé afin que l’instrumentiste finalise lui-même son compte.
+
+La création suit les règles suivantes :
+
+le User est créé immédiatement,
+
+active = true,
+
+password = null,
+
+un token d’invitation sécurisé est généré,
+
+ce token est envoyé par email à l’instrumentiste.
+
+L’email contient un lien vers le frontend :
+
+{FRONTEND_URL}/complete-account?token=XXXX
+
+Ce lien permet à l’instrumentiste :
+
+de compléter son profil,
+
+de définir son mot de passe,
+
+d’activer réellement son compte utilisateur.
+
+Stockage du token
+
+Pour limiter la complexité de la V1, le token est stocké directement dans l’entité User.
+
+Champs ajoutés :
+
+User
+ ├─ invitationToken
+ └─ invitationExpiresAt
+
+Durée de validité :
+
+48 heures
+
+Après utilisation :
+
+invitationToken = null
+invitationExpiresAt = null
+Complétion du profil
+
+Lors de l’ouverture du lien d’invitation, l’instrumentiste doit compléter :
+
+firstname
+lastname
+phone (obligatoire)
+password
+confirmPassword
+profilePicture (optionnel)
+
+Les champs phone et profilePicture sont ajoutés dans l’entité User.
+
+Gestion des cas particuliers
+Email déjà existant
+HTTP 409 — Email already used
+
+La création est refusée.
+
+Token déjà utilisé
+Account already activated
+
+Le frontend redirige vers la page de connexion.
+
+Échec d’envoi d’email
+
+Si l’email échoue :
+
+la création du compte est conservée,
+
+un warning est renvoyé à l’API,
+
+l’invitation pourra être renvoyée ultérieurement.
+
+Contraintes métier
+
+Lors de la création par un manager :
+
+au moins un site doit être sélectionné,
+
+une SiteMembership est créée pour chaque site.
+
+Distinction avec l’auto-inscription
+
+Deux flux sont distingués :
+
+Création par Manager :
+
+invitation envoyée
+
+activation via complétion du profil
+
+Auto-inscription instrumentiste (future évolution) :
+
+validation email obligatoire
+
+flux de création autonome
+
+Impact technique
+
+Ajouts dans User :
+
+phone
+profilePicture
+invitationToken
+invitationExpiresAt
+
+Nouveaux endpoints :
+
+GET  /api/invitations/{token}
+POST /api/invitations/complete
+Historique mis à jour
+
+20-02-2026 : D-013 — introduction missions DECLARED instrumentiste
+11-03-2026 : D-014 — onboarding instrumentiste par invitation manager
+```

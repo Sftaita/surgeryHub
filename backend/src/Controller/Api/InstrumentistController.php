@@ -11,6 +11,7 @@ use App\Entity\User;
 use App\Repository\UserRepository;
 use App\Security\Voter\InstrumentistVoter;
 use App\Service\InstrumentistServiceManager;
+use App\Service\NotificationService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -27,6 +28,7 @@ final class InstrumentistController extends AbstractController
     public function __construct(
         private readonly UserRepository $users,
         private readonly InstrumentistServiceManager $instrumentistServiceManager,
+        private readonly NotificationService $notificationService,
         private readonly SerializerInterface $serializer,
         private readonly ValidatorInterface $validator,
     ) {
@@ -36,7 +38,7 @@ final class InstrumentistController extends AbstractController
      * POST /api/instrumentists
      * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
      * - Création rapide d’un instrumentiste par un manager
-     * - Pas d’envoi d’email dans ce lot
+     * - Envoi d’email d’invitation non bloquant
      */
     #[Route('', name: 'api_instrumentists_create', methods: ['POST'])]
     public function create(Request $request): JsonResponse
@@ -65,6 +67,17 @@ final class InstrumentistController extends AbstractController
             }
         }
 
+        $warnings = [];
+
+        try {
+            $this->notificationService->sendInstrumentistInvitation($instrumentist);
+        } catch (\Throwable) {
+            $warnings[] = [
+                'code' => 'INVITATION_EMAIL_NOT_SENT',
+                'message' => 'Instrumentist created successfully but the invitation email could not be queued.',
+            ];
+        }
+
         return $this->json([
             'instrumentist' => new InstrumentistCreateResponse(
                 id: (int) $instrumentist->getId(),
@@ -78,7 +91,7 @@ final class InstrumentistController extends AbstractController
                 siteIds: array_values(array_unique($siteIds)),
                 invitationExpiresAt: $instrumentist->getInvitationExpiresAt()?->format(\DateTimeInterface::ATOM),
             ),
-            'warnings' => [],
+            'warnings' => $warnings,
         ], JsonResponse::HTTP_CREATED);
     }
 
