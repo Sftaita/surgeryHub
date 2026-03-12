@@ -35,17 +35,12 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
         $message = 'Internal server error';
         $violations = [];
 
-        // 1) Doctrine DB unique constraint -> 409 (ex: mission claim déjà pris)
         if ($e instanceof UniqueConstraintViolationException) {
             $status = 409;
             $code = 'CONFLICT';
-            // Message brut, mais on garde un wording stable si besoin
             $message = $e->getMessage() ?: 'Conflict';
-        }
-        // 2) Exceptions HTTP Symfony
-        elseif ($e instanceof HttpExceptionInterface) {
+        } elseif ($e instanceof HttpExceptionInterface) {
             $status = $e->getStatusCode();
-            // Message brut demandé par tes règles
             $message = $e->getMessage() ?: $message;
 
             $code = match ($status) {
@@ -56,15 +51,28 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
                 422 => 'VALIDATION_FAILED',
                 default => 'HTTP_ERROR',
             };
-        }
-        // 3) Cas spécifique : validation 422 (on garde le message brut)
-        elseif ($e instanceof UnprocessableEntityHttpException) {
+        } elseif ($e instanceof UnprocessableEntityHttpException) {
             $status = 422;
             $code = 'VALIDATION_FAILED';
             $message = $e->getMessage() ?: 'Validation failed';
         }
 
-        // Log systématique
+        if ($status === 422) {
+            $violations = $this->extractViolationsFromMessage($message);
+            if (count($violations) > 0) {
+                $message = 'Validation failed';
+            }
+        }
+
+        if ($status === 409 && $message === 'Email already exists') {
+            $violations = [
+                [
+                    'field' => 'email',
+                    'message' => 'Email already exists',
+                ],
+            ];
+        }
+
         $logContext = [
             'exception_class' => $e::class,
             'exception_message' => $e->getMessage(),
@@ -89,7 +97,6 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             ],
         ];
 
-        // Dev uniquement : debug
         if ($this->kernel->getEnvironment() === 'dev') {
             $payload['error']['debug'] = [
                 'exceptionClass' => $e::class,
@@ -98,5 +105,36 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
         }
 
         $event->setResponse(new JsonResponse($payload, $status));
+    }
+
+    /**
+     * @return list<array{field: ?string, message: string}>
+     */
+    private function extractViolationsFromMessage(string $message): array
+    {
+        $lines = preg_split('/\r\n|\r|\n/', trim($message)) ?: [];
+        $violations = [];
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+
+            if (preg_match('/^([^:]+):\s*(.+)$/', $line, $matches) === 1) {
+                $violations[] = [
+                    'field' => trim($matches[1]),
+                    'message' => trim($matches[2]),
+                ];
+                continue;
+            }
+
+            $violations[] = [
+                'field' => null,
+                'message' => $line,
+            ];
+        }
+
+        return $violations;
     }
 }

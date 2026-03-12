@@ -73,6 +73,12 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager'])]
     private ?string $defaultCurrency = 'EUR';
 
+    #[ORM\Column(length: 255, nullable: true)]
+    private ?string $invitationToken = null;
+
+    #[ORM\Column(nullable: true)]
+    private ?\DateTimeImmutable $invitationExpiresAt = null;
+
     /**
      * @var Collection<int, SiteMembership>
      */
@@ -141,7 +147,7 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
         return $this->password;
     }
 
-    public function setPassword(string $password): static
+    public function setPassword(?string $password): static
     {
         $this->password = $password;
 
@@ -154,7 +160,7 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function __serialize(): array
     {
         $data = (array) $this;
-        $data["\0".self::class."\0password"] = hash('crc32c', $this->password);
+        $data["\0".self::class."\0password"] = hash('crc32c', (string) $this->password);
 
         return $data;
     }
@@ -257,6 +263,30 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setDefaultCurrency(string $defaultCurrency): static
     {
         $this->defaultCurrency = $defaultCurrency;
+
+        return $this;
+    }
+
+    public function getInvitationToken(): ?string
+    {
+        return $this->invitationToken;
+    }
+
+    public function setInvitationToken(?string $invitationToken): static
+    {
+        $this->invitationToken = $invitationToken;
+
+        return $this;
+    }
+
+    public function getInvitationExpiresAt(): ?\DateTimeImmutable
+    {
+        return $this->invitationExpiresAt;
+    }
+
+    public function setInvitationExpiresAt(?\DateTimeImmutable $invitationExpiresAt): static
+    {
+        $this->invitationExpiresAt = $invitationExpiresAt;
 
         return $this;
     }

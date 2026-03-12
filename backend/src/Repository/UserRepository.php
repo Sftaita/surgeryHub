@@ -33,6 +33,19 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
         $this->getEntityManager()->flush();
     }
 
+    public function findOneByEmailInsensitive(string $email): ?User
+    {
+        /** @var ?User $user */
+        $user = $this->createQueryBuilder('u')
+            ->andWhere('LOWER(u.email) = :email')
+            ->setParameter('email', mb_strtolower(trim($email)))
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+
+        return $user;
+    }
+
     /**
      * @return list<User>
      *

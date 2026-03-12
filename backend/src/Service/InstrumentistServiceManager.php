@@ -2,23 +2,89 @@
 
 namespace App\Service;
 
+use App\Dto\Request\CreateInstrumentistRequest;
 use App\Dto\Request\ServiceDisputeCreateRequest;
 use App\Dto\Request\ServiceDisputeUpdateRequest;
 use App\Dto\Request\ServiceUpdateRequest;
+use App\Entity\Hospital;
 use App\Entity\InstrumentistService;
 use App\Entity\Mission;
 use App\Entity\ServiceHoursDispute;
+use App\Entity\SiteMembership;
 use App\Entity\User;
 use App\Enum\DisputeStatus;
+use App\Repository\UserRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Tools\Pagination\Paginator;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 class InstrumentistServiceManager
 {
-    public function __construct(private readonly EntityManagerInterface $em)
+    private const INVITATION_TTL_HOURS = 48;
+    private const SITE_ROLE_INSTRUMENTIST = 'INSTRUMENTIST';
+
+    public function __construct(
+        private readonly EntityManagerInterface $em,
+        private readonly UserRepository $users,
+    ) {
+    }
+
+    public function createInstrumentist(CreateInstrumentistRequest $dto): User
     {
+        $email = mb_strtolower(trim((string) $dto->email));
+        if ($email === '') {
+            throw new BadRequestHttpException('Email is required');
+        }
+
+        if ($this->users->findOneByEmailInsensitive($email) !== null) {
+            throw new ConflictHttpException('Email already exists');
+        }
+
+        $siteIds = array_values(array_unique($dto->siteIds));
+        if (count($siteIds) === 0) {
+            throw new BadRequestHttpException('At least one site is required');
+        }
+
+        $sites = [];
+        foreach ($siteIds as $siteId) {
+            $site = $this->em->find(Hospital::class, $siteId);
+            if (!$site instanceof Hospital) {
+                throw new NotFoundHttpException(sprintf('Site not found: %d', $siteId));
+            }
+            $sites[] = $site;
+        }
+
+        $firstname = $this->normalizeNullableString($dto->firstname);
+        $lastname = $this->normalizeNullableString($dto->lastname);
+
+        $user = new User();
+        $user
+            ->setEmail($email)
+            ->setFirstname($firstname)
+            ->setLastname($lastname)
+            ->setRoles(['ROLE_INSTRUMENTIST'])
+            ->setPassword(null)
+            ->setActive(true)
+            ->setInvitationToken(bin2hex(random_bytes(32)))
+            ->setInvitationExpiresAt(new \DateTimeImmutable(sprintf('+%d hours', self::INVITATION_TTL_HOURS)));
+
+        foreach ($sites as $site) {
+            $membership = new SiteMembership();
+            $membership
+                ->setSite($site)
+                ->setUser($user)
+                ->setSiteRole(self::SITE_ROLE_INSTRUMENTIST);
+
+            $user->addSiteMembership($membership);
+            $this->em->persist($membership);
+        }
+
+        $this->em->persist($user);
+        $this->em->flush();
+
+        return $user;
     }
 
     public function updateService(InstrumentistService $service, ServiceUpdateRequest $dto): InstrumentistService
@@ -116,5 +182,16 @@ class InstrumentistServiceManager
     public function getDisputeOr404(int $id): ServiceHoursDispute
     {
         return $this->em->find(ServiceHoursDispute::class, $id) ?? throw new NotFoundHttpException('Dispute not found');
+    }
+
+    private function normalizeNullableString(?string $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $normalized = trim($value);
+
+        return $normalized === '' ? null : $normalized;
     }
 }

@@ -10,12 +10,14 @@ final class InstrumentistVoter extends Voter
 {
     public const LIST = 'INSTRUMENTIST_LIST';
     public const LIST_WITH_RATES = 'INSTRUMENTIST_LIST_WITH_RATES';
+    public const CREATE = 'INSTRUMENTIST_CREATE';
 
     protected function supports(string $attribute, mixed $subject): bool
     {
         if (!in_array($attribute, [
             self::LIST,
             self::LIST_WITH_RATES,
+            self::CREATE,
         ], true)) {
             return false;
         }
@@ -37,6 +39,7 @@ final class InstrumentistVoter extends Voter
         return match ($attribute) {
             self::LIST => $isManager,
             self::LIST_WITH_RATES => $isManager,
+            self::CREATE => $isManager,
             default => false,
         };
     }

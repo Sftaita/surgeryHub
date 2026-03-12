@@ -2,24 +2,84 @@
 
 namespace App\Controller\Api;
 
+use App\Dto\Request\CreateInstrumentistRequest;
+use App\Dto\Request\Response\InstrumentistCreateResponse;
 use App\Dto\Request\Response\InstrumentistListItemResponse;
 use App\Dto\Request\Response\InstrumentistProfileResponse;
 use App\Dto\Request\Response\InstrumentistWithRatesListItemResponse;
 use App\Entity\User;
 use App\Repository\UserRepository;
 use App\Security\Voter\InstrumentistVoter;
+use App\Service\InstrumentistServiceManager;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Serializer\SerializerInterface;
+use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 #[Route('/api/instrumentists')]
 final class InstrumentistController extends AbstractController
 {
-    public function __construct(private readonly UserRepository $users)
+    public function __construct(
+        private readonly UserRepository $users,
+        private readonly InstrumentistServiceManager $instrumentistServiceManager,
+        private readonly SerializerInterface $serializer,
+        private readonly ValidatorInterface $validator,
+    ) {
+    }
+
+    /**
+     * POST /api/instrumentists
+     * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
+     * - Création rapide d’un instrumentiste par un manager
+     * - Pas d’envoi d’email dans ce lot
+     */
+    #[Route('', name: 'api_instrumentists_create', methods: ['POST'])]
+    public function create(Request $request): JsonResponse
     {
+        $this->denyAccessUnlessGranted(InstrumentistVoter::CREATE, User::class);
+
+        /** @var CreateInstrumentistRequest $dto */
+        $dto = $this->deserializeAndValidate($request->getContent(), CreateInstrumentistRequest::class);
+
+        $instrumentist = $this->instrumentistServiceManager->createInstrumentist($dto);
+
+        $firstname = $instrumentist->getFirstname();
+        $lastname = $instrumentist->getLastname();
+
+        $name = trim((string) ($firstname ?? '') . ' ' . (string) ($lastname ?? ''));
+        $displayName = $name !== '' ? $name : (string) $instrumentist->getEmail();
+
+        $employmentType = $instrumentist->getEmploymentType();
+        $employmentTypeValue = $employmentType ? $employmentType->value : null;
+
+        $siteIds = [];
+        foreach ($instrumentist->getSiteMemberships() as $membership) {
+            $site = $membership->getSite();
+            if ($site?->getId() !== null) {
+                $siteIds[] = (int) $site->getId();
+            }
+        }
+
+        return $this->json([
+            'instrumentist' => new InstrumentistCreateResponse(
+                id: (int) $instrumentist->getId(),
+                email: (string) $instrumentist->getEmail(),
+                firstname: $firstname,
+                lastname: $lastname,
+                displayName: $displayName,
+                active: $instrumentist->isActive(),
+                employmentType: $employmentTypeValue,
+                defaultCurrency: $instrumentist->getDefaultCurrency(),
+                siteIds: array_values(array_unique($siteIds)),
+                invitationExpiresAt: $instrumentist->getInvitationExpiresAt()?->format(\DateTimeInterface::ATOM),
+            ),
+            'warnings' => [],
+        ], JsonResponse::HTTP_CREATED);
     }
 
     /**
@@ -162,6 +222,23 @@ final class InstrumentistController extends AbstractController
             'items' => $dtos,
             'total' => count($dtos),
         ]);
+    }
+
+    private function deserializeAndValidate(string $json, string $class): object
+    {
+        $dto = $this->serializer->deserialize($json, $class, 'json');
+
+        $this->validateObject($dto);
+
+        return $dto;
+    }
+
+    private function validateObject(object $dto): void
+    {
+        $errors = $this->validator->validate($dto);
+        if (count($errors) > 0) {
+            throw new UnprocessableEntityHttpException((string) $errors);
+        }
     }
 
     private function parseNullableBoolQuery(Request $request, string $key): ?bool
