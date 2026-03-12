@@ -68,12 +68,12 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
      * @return list<User>
      *
      * Liste des instrumentistes, triée par nom/prénom/email.
-     * Filtre optionnel sur "active".
+     * Filtres optionnels sur "search", "active" et "siteId".
      *
      * NOTE: roles est stocké en JSON. Le LIKE fonctionne généralement sur MySQL car le JSON est comparé comme string.
      * Si un jour ça pose problème, on passera à JSON_CONTAINS via requête native.
      */
-    public function findInstrumentists(bool $activeOnly = true): array
+    public function findInstrumentists(?string $search = null, ?bool $active = null, ?int $siteId = null): array
     {
         $qb = $this->createQueryBuilder('u')
             ->andWhere('u.roles LIKE :role')
@@ -82,9 +82,21 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
             ->addOrderBy('u.firstname', 'ASC')
             ->addOrderBy('u.email', 'ASC');
 
-        if ($activeOnly) {
+        if ($active !== null) {
             $qb->andWhere('u.active = :active')
-               ->setParameter('active', true);
+               ->setParameter('active', $active);
+        }
+
+        if ($search !== null && trim($search) !== '') {
+            $search = trim($search);
+            $qb->andWhere('(LOWER(u.email) LIKE :search OR LOWER(u.firstname) LIKE :search OR LOWER(u.lastname) LIKE :search)')
+               ->setParameter('search', '%'.mb_strtolower($search).'%');
+        }
+
+        if ($siteId !== null) {
+            $qb->innerJoin('u.siteMemberships', 'sm')
+               ->andWhere('sm.site = :siteId')
+               ->setParameter('siteId', $siteId);
         }
 
         /** @var list<User> $res */

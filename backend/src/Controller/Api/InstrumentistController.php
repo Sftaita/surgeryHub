@@ -2,149 +2,148 @@
 
 namespace App\Controller\Api;
 
-use App\Dto\Request\MaterialLineCreateRequest;
-use App\Dto\Request\MaterialLineUpdateRequest;
-use App\Dto\Request\Response\MissionEncodingMaterialLineDto;
-use App\Entity\MaterialLine;
-use App\Entity\Mission;
+use App\Dto\Request\Response\InstrumentistListItemResponse;
+use App\Dto\Request\Response\InstrumentistWithRatesListItemResponse;
 use App\Entity\User;
-use App\Enum\MissionType;
-use App\Security\Voter\MissionVoter;
-use App\Service\InterventionService;
-use App\Service\MaterialItemMapper;
-use App\Service\MissionEncodingGuard;
-use Doctrine\ORM\EntityManagerInterface;
+use App\Repository\UserRepository;
+use App\Security\Voter\InstrumentistVoter;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
-use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
-use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
-use Symfony\Component\Security\Http\Attribute\CurrentUser;
-use Symfony\Component\Serializer\SerializerInterface;
-use Symfony\Component\Validator\Validator\ValidatorInterface;
 
-#[Route('/api/missions/{missionId}/material-lines')]
+#[Route('/api/instrumentists')]
 final class InstrumentistController extends AbstractController
 {
-    public function __construct(
-        private readonly EntityManagerInterface $em,
-        private readonly InterventionService $service,
-        private readonly MissionEncodingGuard $encodingGuard,
-        private readonly SerializerInterface $serializer,
-        private readonly ValidatorInterface $validator,
-        private readonly MaterialItemMapper $materialItemMapper,
-    ) {}
-
-    #[Route('', methods: ['POST'])]
-    public function create(int $missionId, Request $request, #[CurrentUser] User $user): JsonResponse
+    public function __construct(private readonly UserRepository $users)
     {
-        $mission = $this->em->find(Mission::class, $missionId);
-        if (!$mission) {
-            return $this->json(['message' => 'Mission not found'], Response::HTTP_NOT_FOUND);
-        }
-
-        if ($mission->getType() === MissionType::CONSULTATION) {
-            throw new BadRequestHttpException('Material not allowed for CONSULTATION missions');
-        }
-
-        $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
-        $this->encodingGuard->assertEncodingAllowed($mission, $user);
-
-        /** @var MaterialLineCreateRequest $dto */
-        $dto = $this->deserializeAndValidate($request->getContent(), MaterialLineCreateRequest::class);
-
-        $line = $this->service->createMaterialLine($mission, $dto, $user);
-
-        // ✅ Harmonisé: renvoyer le DTO complet (pas juste {id})
-        return $this->json($this->toMaterialLineResponseDto($line), Response::HTTP_CREATED);
     }
 
-    #[Route('/{lineId}', methods: ['PATCH'])]
-    public function update(int $missionId, int $lineId, Request $request, #[CurrentUser] User $user): JsonResponse
+    /**
+     * GET /api/instrumentists
+     * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
+     * - Retourne la liste manager des instrumentistes
+     * - Aucun champ financier
+     * - Filtres supportés: search, active, siteId
+     * - Tri: lastname, firstname, email
+     */
+    #[Route('', name: 'api_instrumentists_list', methods: ['GET'])]
+    public function list(Request $request): JsonResponse
     {
-        $mission = $this->em->find(Mission::class, $missionId);
-        if (!$mission) {
-            return $this->json(['message' => 'Mission not found'], Response::HTTP_NOT_FOUND);
+        $this->denyAccessUnlessGranted(InstrumentistVoter::LIST, User::class);
+
+        $search = $request->query->get('search');
+        $search = is_string($search) ? trim($search) : null;
+        if ($search === '') {
+            $search = null;
         }
 
-        if ($mission->getType() === MissionType::CONSULTATION) {
-            throw new BadRequestHttpException('Material not allowed for CONSULTATION missions');
+        $active = $this->parseNullableBoolQuery($request, 'active');
+        if ($active === null) {
+            $active = true;
         }
 
-        $line = $this->em->find(MaterialLine::class, $lineId);
-        if (!$line || $line->getMission()?->getId() !== $mission->getId()) {
-            return $this->json(['message' => 'Material line not found'], Response::HTTP_NOT_FOUND);
+        $siteId = $request->query->get('siteId');
+        if ($siteId !== null && (!is_scalar($siteId) || !ctype_digit((string) $siteId))) {
+            throw new BadRequestHttpException('Query parameter "siteId" must be a positive integer.');
         }
+        $siteId = $siteId !== null ? (int) $siteId : null;
 
-        $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
-        $this->encodingGuard->assertEncodingAllowed($mission, $user);
+        $items = $this->users->findInstrumentists($search, $active, $siteId);
 
-        /** @var MaterialLineUpdateRequest $dto */
-        $dto = $this->deserializeAndValidate($request->getContent(), MaterialLineUpdateRequest::class);
+        $dtos = array_map(static function (User $u): InstrumentistListItemResponse {
+            $firstname = $u->getFirstname();
+            $lastname = $u->getLastname();
 
-        $this->service->updateMaterialLine($line, $dto);
+            $name = trim((string) ($firstname ?? '') . ' ' . (string) ($lastname ?? ''));
+            $displayName = $name !== '' ? $name : (string) $u->getEmail();
 
-        // ✅ Harmonisé: renvoyer le DTO complet (au lieu de 204)
-        return $this->json($this->toMaterialLineResponseDto($line), Response::HTTP_OK);
+            $employmentType = $u->getEmploymentType();
+            $employmentTypeValue = $employmentType ? $employmentType->value : null;
+
+            return new InstrumentistListItemResponse(
+                id: (int) $u->getId(),
+                email: (string) $u->getEmail(),
+                firstname: $firstname,
+                lastname: $lastname,
+                active: $u->isActive(),
+                employmentType: $employmentTypeValue,
+                defaultCurrency: $u->getDefaultCurrency(),
+                displayName: $displayName,
+            );
+        }, $items);
+
+        return $this->json([
+            'items' => $dtos,
+            'total' => count($dtos),
+        ]);
     }
 
-    #[Route('/{lineId}', methods: ['DELETE'])]
-    public function delete(int $missionId, int $lineId, #[CurrentUser] User $user): JsonResponse
+    /**
+     * GET /api/instrumentists/with-rates
+     * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
+     * - Retourne tous les instrumentistes (actifs + inactifs)
+     * - Inclut les champs financiers
+     * - Tri: lastname, firstname, email
+     */
+    #[Route('/with-rates', name: 'api_instrumentists_list_with_rates', methods: ['GET'])]
+    public function listWithRates(): JsonResponse
     {
-        $mission = $this->em->find(Mission::class, $missionId);
-        if (!$mission) {
-            return $this->json(['message' => 'Mission not found'], Response::HTTP_NOT_FOUND);
-        }
+        $this->denyAccessUnlessGranted(InstrumentistVoter::LIST_WITH_RATES, User::class);
 
-        if ($mission->getType() === MissionType::CONSULTATION) {
-            throw new BadRequestHttpException('Material not allowed for CONSULTATION missions');
-        }
+        $items = $this->users->findInstrumentists(null, null, null);
 
-        $line = $this->em->find(MaterialLine::class, $lineId);
-        if (!$line || $line->getMission()?->getId() !== $mission->getId()) {
-            return $this->json(['message' => 'Material line not found'], Response::HTTP_NOT_FOUND);
-        }
+        $dtos = array_map(static function (User $u): InstrumentistWithRatesListItemResponse {
+            $firstname = $u->getFirstname();
+            $lastname = $u->getLastname();
 
-        $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
-        $this->encodingGuard->assertEncodingAllowed($mission, $user);
+            $name = trim((string) ($firstname ?? '') . ' ' . (string) ($lastname ?? ''));
+            $displayName = $name !== '' ? $name : (string) $u->getEmail();
 
-        $this->service->deleteMaterialLine($line);
+            $employmentType = $u->getEmploymentType();
+            $employmentTypeValue = $employmentType ? $employmentType->value : null;
 
-        return new JsonResponse(null, Response::HTTP_NO_CONTENT);
+            return new InstrumentistWithRatesListItemResponse(
+                id: (int) $u->getId(),
+                email: (string) $u->getEmail(),
+                firstname: $firstname,
+                lastname: $lastname,
+                active: $u->isActive(),
+                employmentType: $employmentTypeValue,
+                defaultCurrency: $u->getDefaultCurrency(),
+                hourlyRate: $u->getHourlyRate(),
+                consultationFee: $u->getConsultationFee(),
+                displayName: $displayName,
+            );
+        }, $items);
+
+        return $this->json([
+            'items' => $dtos,
+            'total' => count($dtos),
+        ]);
     }
 
-    private function deserializeAndValidate(string $json, string $class): object
+    private function parseNullableBoolQuery(Request $request, string $key): ?bool
     {
-        $dto = $this->serializer->deserialize($json, $class, 'json');
+        $value = $request->query->get($key);
 
-        $errors = $this->validator->validate($dto);
-        if (count($errors) > 0) {
-            throw new UnprocessableEntityHttpException((string) $errors);
+        if ($value === null || $value === '') {
+            return null;
         }
 
-        return $dto;
-    }
+        if (is_bool($value)) {
+            return $value;
+        }
 
-    private function toMaterialLineResponseDto(MaterialLine $line): MissionEncodingMaterialLineDto
-    {
-        $itemDto = $this->materialItemMapper->toSlim($line->getItem());
+        if (!is_scalar($value)) {
+            throw new BadRequestHttpException(sprintf('Query parameter "%s" must be a boolean.', $key));
+        }
 
-        // ✅ Sécurisé contre null (on ne crashe pas)
-        $missionInterventionId = $line->getMissionIntervention()?->getId();
-        $missionInterventionId = $missionInterventionId !== null ? (int) $missionInterventionId : null;
-
-        // ✅ Quantity toujours en string "x.xx"
-        $rawQty = $line->getQuantity();
-        $qty = $rawQty === null ? '1.00' : number_format((float) $rawQty, 2, '.', '');
-
-        return new MissionEncodingMaterialLineDto(
-            id: (int) $line->getId(),
-            missionInterventionId: $missionInterventionId,
-            item: $itemDto,
-            quantity: $qty,
-            comment: $line->getComment(),
-        );
+        return match (mb_strtolower((string) $value)) {
+            '1', 'true' => true,
+            '0', 'false' => false,
+            default => throw new BadRequestHttpException(sprintf('Query parameter "%s" must be "true", "false", "1" or "0".', $key)),
+        };
     }
 }
