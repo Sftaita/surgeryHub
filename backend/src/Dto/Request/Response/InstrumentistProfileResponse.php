@@ -1,12 +1,18 @@
 <?php
-// src/Dto/Response/InstrumentistProfileResponse.php
 
 namespace App\Dto\Request\Response;
 
 final class InstrumentistProfileResponse
 {
     public function __construct(
-        public string $employmentType,   // EMPLOYEE | FREELANCER
-        public string $defaultCurrency,  // ex. EUR
-    ) {}
+        public int $id,
+        public string $email,
+        public ?string $firstname,
+        public ?string $lastname,
+        public string $displayName,
+        public bool $active,
+        public ?string $employmentType,
+        public ?string $defaultCurrency,
+    ) {
+    }
 }

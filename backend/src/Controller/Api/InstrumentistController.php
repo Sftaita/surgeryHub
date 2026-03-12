@@ -3,6 +3,7 @@
 namespace App\Controller\Api;
 
 use App\Dto\Request\Response\InstrumentistListItemResponse;
+use App\Dto\Request\Response\InstrumentistProfileResponse;
 use App\Dto\Request\Response\InstrumentistWithRatesListItemResponse;
 use App\Entity\User;
 use App\Repository\UserRepository;
@@ -11,6 +12,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 
 #[Route('/api/instrumentists')]
@@ -78,6 +80,44 @@ final class InstrumentistController extends AbstractController
             'items' => $dtos,
             'total' => count($dtos),
         ]);
+    }
+
+    /**
+     * GET /api/instrumentists/{id}
+     * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
+     * - Retourne le détail manager d’un instrumentiste
+     * - Sans logique d’édition
+     * - 404 si introuvable
+     */
+    #[Route('/{id}', name: 'api_instrumentists_get', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function getOne(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(InstrumentistVoter::LIST, User::class);
+
+        $instrumentist = $this->users->findInstrumentistById($id);
+        if (!$instrumentist) {
+            throw new NotFoundHttpException('Instrumentist not found');
+        }
+
+        $firstname = $instrumentist->getFirstname();
+        $lastname = $instrumentist->getLastname();
+
+        $name = trim((string) ($firstname ?? '') . ' ' . (string) ($lastname ?? ''));
+        $displayName = $name !== '' ? $name : (string) $instrumentist->getEmail();
+
+        $employmentType = $instrumentist->getEmploymentType();
+        $employmentTypeValue = $employmentType ? $employmentType->value : null;
+
+        return $this->json(new InstrumentistProfileResponse(
+            id: (int) $instrumentist->getId(),
+            email: (string) $instrumentist->getEmail(),
+            firstname: $firstname,
+            lastname: $lastname,
+            displayName: $displayName,
+            active: $instrumentist->isActive(),
+            employmentType: $employmentTypeValue,
+            defaultCurrency: $instrumentist->getDefaultCurrency(),
+        ));
     }
 
     /**
