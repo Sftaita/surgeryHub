@@ -133,6 +133,21 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
         return $user;
     }
 
+    public function findInstrumentistByInvitationToken(string $token): ?User
+    {
+        /** @var ?User $user */
+        $user = $this->createQueryBuilder('u')
+            ->andWhere('u.invitationToken = :token')
+            ->andWhere('u.roles LIKE :role')
+            ->setParameter('token', $token)
+            ->setParameter('role', '%"ROLE_INSTRUMENTIST"%')
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+
+        return $user;
+    }
+
     /**
      * Managers + admins globaux (pas liés à un hôpital).
      *

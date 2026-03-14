@@ -1,30 +1,101 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>Complete your SurgicalHub account</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invitation SurgicalHub</title>
 </head>
-<body>
-    <p>Hello {{ displayName }},</p>
 
-    <p>Your SurgicalHub instrumentist account has been created.</p>
+<body style="margin:0;padding:0;background-color:#f4f7fb;font-family:Arial,Helvetica,sans-serif;color:#1f2937;">
 
-    <p>Please complete your account using the invitation link below:</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f4f7fb;padding:24px 0;">
+<tr>
+<td align="center">
 
-    <p>
-        <a href="{{ invitationUrl }}">{{ invitationUrl }}</a>
-    </p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:640px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,0.08);">
 
-    <p>
-        {% if expiresAt is not null %}
-            This invitation expires on {{ expiresAt|date('d/m/Y H:i') }}.
-        {% else %}
-            This invitation expires in 48 hours.
-        {% endif %}
-    </p>
+<tr>
+<td style="background:#0f172a;padding:24px 32px;">
+<h1 style="margin:0;font-size:24px;color:#ffffff;font-weight:700;">
+SurgicalHub
+</h1>
 
-    <p>If you were not expecting this email, you can ignore it.</p>
+<p style="margin:8px 0 0 0;font-size:14px;color:#cbd5e1;">
+Invitation instrumentiste
+</p>
+</td>
+</tr>
 
-    <p>SurgicalHub</p>
+<tr>
+<td style="padding:32px;">
+
+<p style="margin:0 0 16px 0;font-size:16px;">
+Bonjour {{ displayName }},
+</p>
+
+<p style="margin:0 0 16px 0;font-size:16px;color:#374151;">
+Votre compte instrumentiste SurgicalHub a été créé.
+</p>
+
+<p style="margin:0 0 24px 0;font-size:16px;color:#374151;">
+Veuillez compléter votre compte en cliquant sur le bouton ci-dessous.
+</p>
+
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin-bottom:24px;">
+<tr>
+<td align="center" style="background:#2563eb;border-radius:10px;">
+<a href="{{ invitationUrl }}"
+style="display:inline-block;padding:14px 24px;font-size:16px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;background:#2563eb;">
+Compléter mon compte
+</a>
+</td>
+</tr>
+</table>
+
+<div style="padding:16px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:12px;margin-bottom:24px;">
+
+<p style="margin:0 0 8px 0;font-size:14px;font-weight:700;">
+Lien d'invitation
+</p>
+
+<p style="margin:0;font-size:14px;word-break:break-all;">
+<a href="{{ invitationUrl }}" style="color:#2563eb;text-decoration:none;">
+{{ invitationUrl }}
+</a>
+</p>
+
+</div>
+
+<p style="margin:0 0 12px 0;font-size:14px;color:#6b7280;">
+{% if expiresAt is not null %}
+Cette invitation expire le {{ expiresAt|date('d/m/Y H:i') }}.
+{% else %}
+Cette invitation expire dans 48 heures.
+{% endif %}
+</p>
+
+<p style="margin:0;font-size:14px;color:#6b7280;">
+Si vous n'attendiez pas cet email, vous pouvez simplement l'ignorer.
+</p>
+
+</td>
+</tr>
+
+<tr>
+<td style="padding:20px 32px;background:#f8fafc;border-top:1px solid #e5e7eb;">
+
+<p style="margin:0;font-size:12px;color:#94a3b8;">
+Email envoyé automatiquement par SurgicalHub.
+</p>
+
+</td>
+</tr>
+
+</table>
+
+</td>
+</tr>
+</table>
+
 </body>
 </html>

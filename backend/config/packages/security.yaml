@@ -53,6 +53,7 @@ security:
         - { path: ^/api/auth/login, roles: PUBLIC_ACCESS }
         - { path: ^/api/auth/refresh, roles: PUBLIC_ACCESS }
         - { path: ^/api/auth/google, roles: PUBLIC_ACCESS }
+        - { path: ^/api/invitations, roles: PUBLIC_ACCESS }
 
         # Tout le reste de /api nécessite un JWT valide
         - { path: ^/api, roles: IS_AUTHENTICATED_FULLY }

@@ -13,6 +13,7 @@ final class MeResponse
         public string $email,
         public ?string $firstname,
         public ?string $lastname,
+        public ?string $profilePictureUrl,
         public string $role, // INSTRUMENTIST | SURGEON | MANAGER | ADMIN
         public ?InstrumentistProfileResponse $instrumentistProfile,
         public array $sites,

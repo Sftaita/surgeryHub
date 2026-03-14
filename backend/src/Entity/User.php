@@ -29,16 +29,10 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
     private ?string $email = null;
 
-    /**
-     * @var list<string> The user roles
-     */
     #[ORM\Column]
     #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
     private array $roles = [];
 
-    /**
-     * @var string The hashed password
-     */
     #[ORM\Column(nullable: true)]
     private ?string $password = null;
 
@@ -49,6 +43,15 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[ORM\Column(length: 255, nullable: true)]
     #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
     private ?string $lastname = null;
+
+    #[ORM\Column(length: 30, nullable: true)]
+    private ?string $phone = null;
+
+    #[ORM\Column(length: 255, nullable: true)]
+    private ?string $companyName = null;
+
+    #[ORM\Column(length: 64, nullable: true)]
+    private ?string $vatNumber = null;
 
     #[ORM\Column(length: 255, nullable: true)]
     private ?string $googleId = null;
@@ -79,6 +82,9 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[ORM\Column(nullable: true)]
     private ?\DateTimeImmutable $invitationExpiresAt = null;
 
+    #[ORM\Column(length: 255, nullable: true)]
+    private ?string $profilePicturePath = null;
+
     /**
      * @var Collection<int, SiteMembership>
      */
@@ -103,45 +109,27 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setEmail(string $email): static
     {
         $this->email = $email;
-
         return $this;
     }
 
-    /**
-     * A visual identifier that represents this user.
-     *
-     * @see UserInterface
-     */
     public function getUserIdentifier(): string
     {
         return (string) $this->email;
     }
 
-    /**
-     * @see UserInterface
-     */
     public function getRoles(): array
     {
         $roles = $this->roles;
-        // guarantee every user at least has ROLE_USER
         $roles[] = 'ROLE_USER';
-
         return array_unique($roles);
     }
 
-    /**
-     * @param list<string> $roles
-     */
     public function setRoles(array $roles): static
     {
         $this->roles = $roles;
-
         return $this;
     }
 
-    /**
-     * @see PasswordAuthenticatedUserInterface
-     */
     public function getPassword(): ?string
     {
         return $this->password;
@@ -150,26 +138,18 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setPassword(?string $password): static
     {
         $this->password = $password;
-
         return $this;
     }
 
-    /**
-     * Ensure the session doesn't contain actual password hashes by CRC32C-hashing them, as supported since Symfony 7.3.
-     */
     public function __serialize(): array
     {
         $data = (array) $this;
         $data["\0".self::class."\0password"] = hash('crc32c', (string) $this->password);
-
         return $data;
     }
 
     #[\Deprecated]
-    public function eraseCredentials(): void
-    {
-        // @deprecated, to be removed when upgrading to Symfony 8
-    }
+    public function eraseCredentials(): void {}
 
     public function getFirstname(): ?string
     {
@@ -179,7 +159,6 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setFirstname(?string $firstname): static
     {
         $this->firstname = $firstname;
-
         return $this;
     }
 
@@ -191,7 +170,39 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setLastname(?string $lastname): static
     {
         $this->lastname = $lastname;
+        return $this;
+    }
 
+    public function getPhone(): ?string
+    {
+        return $this->phone;
+    }
+
+    public function setPhone(?string $phone): static
+    {
+        $this->phone = $phone;
+        return $this;
+    }
+
+    public function getCompanyName(): ?string
+    {
+        return $this->companyName;
+    }
+
+    public function setCompanyName(?string $companyName): static
+    {
+        $this->companyName = $companyName;
+        return $this;
+    }
+
+    public function getVatNumber(): ?string
+    {
+        return $this->vatNumber;
+    }
+
+    public function setVatNumber(?string $vatNumber): static
+    {
+        $this->vatNumber = $vatNumber;
         return $this;
     }
 
@@ -203,7 +214,6 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setGoogleId(?string $googleId): static
     {
         $this->googleId = $googleId;
-
         return $this;
     }
 
@@ -215,7 +225,6 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setActive(bool $active): static
     {
         $this->active = $active;
-
         return $this;
     }
 
@@ -227,7 +236,6 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setEmploymentType(?EmploymentType $employmentType): static
     {
         $this->employmentType = $employmentType;
-
         return $this;
     }
 
@@ -239,7 +247,6 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setHourlyRate(?string $hourlyRate): static
     {
         $this->hourlyRate = $hourlyRate;
-
         return $this;
     }
 
@@ -251,7 +258,6 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setConsultationFee(?string $consultationFee): static
     {
         $this->consultationFee = $consultationFee;
-
         return $this;
     }
 
@@ -263,7 +269,6 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setDefaultCurrency(string $defaultCurrency): static
     {
         $this->defaultCurrency = $defaultCurrency;
-
         return $this;
     }
 
@@ -275,7 +280,6 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setInvitationToken(?string $invitationToken): static
     {
         $this->invitationToken = $invitationToken;
-
         return $this;
     }
 
@@ -287,13 +291,20 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setInvitationExpiresAt(?\DateTimeImmutable $invitationExpiresAt): static
     {
         $this->invitationExpiresAt = $invitationExpiresAt;
-
         return $this;
     }
 
-    /**
-     * @return Collection<int, SiteMembership>
-     */
+    public function getProfilePicturePath(): ?string
+    {
+        return $this->profilePicturePath;
+    }
+
+    public function setProfilePicturePath(?string $profilePicturePath): static
+    {
+        $this->profilePicturePath = $profilePicturePath;
+        return $this;
+    }
+
     public function getSiteMemberships(): Collection
     {
         return $this->siteMemberships;
@@ -305,7 +316,6 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
             $this->siteMemberships->add($siteMembership);
             $siteMembership->setUser($this);
         }
-
         return $this;
     }
 
@@ -316,7 +326,6 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
                 $siteMembership->setUser(null);
             }
         }
-
         return $this;
     }
 }

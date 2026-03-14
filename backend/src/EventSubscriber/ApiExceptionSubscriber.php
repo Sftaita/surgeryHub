@@ -73,13 +73,15 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             ];
         }
 
+        $request = $event->getRequest();
+
         $logContext = [
             'exception_class' => $e::class,
             'exception_message' => $e->getMessage(),
             'status' => $status,
             'code' => $code,
-            'path' => $event->getRequest()->getPathInfo(),
-            'method' => $event->getRequest()->getMethod(),
+            'path' => $this->sanitizePath($request->getPathInfo()),
+            'method' => $request->getMethod(),
         ];
 
         if ($status >= 500) {
@@ -136,5 +138,10 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
         }
 
         return $violations;
+    }
+
+    private function sanitizePath(string $path): string
+    {
+        return preg_replace('#^/api/invitations/[^/]+$#', '/api/invitations/[REDACTED]', $path) ?? $path;
     }
 }
