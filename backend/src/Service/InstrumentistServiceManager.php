@@ -103,6 +103,30 @@ class InstrumentistServiceManager
         return $instrumentist;
     }
 
+    public function suspendInstrumentist(User $instrumentist): User
+    {
+        if (!$instrumentist->isActive()) {
+            return $instrumentist;
+        }
+
+        $instrumentist->setActive(false);
+        $this->em->flush();
+
+        return $instrumentist;
+    }
+
+    public function activateInstrumentist(User $instrumentist): User
+    {
+        if ($instrumentist->isActive()) {
+            return $instrumentist;
+        }
+
+        $instrumentist->setActive(true);
+        $this->em->flush();
+
+        return $instrumentist;
+    }
+
     public function updateService(InstrumentistService $service, ServiceUpdateRequest $dto): InstrumentistService
     {
         if ($dto->hours !== null) {

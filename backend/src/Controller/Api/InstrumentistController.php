@@ -225,6 +225,56 @@ final class InstrumentistController extends AbstractController
     }
 
     /**
+     * POST /api/instrumentists/{id}/suspend
+     * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
+     * - Suspend un instrumentiste en positionnant active à false
+     * - 404 si instrumentiste introuvable
+     * - Comportement idempotent
+     */
+    #[Route('/{id}/suspend', name: 'api_instrumentists_suspend', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function suspend(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(InstrumentistVoter::SUSPEND, User::class);
+
+        $instrumentist = $this->users->findInstrumentistById($id);
+        if (!$instrumentist) {
+            throw new NotFoundHttpException('Instrumentist not found');
+        }
+
+        $instrumentist = $this->instrumentistServiceManager->suspendInstrumentist($instrumentist);
+
+        return $this->json([
+            'id' => (int) $instrumentist->getId(),
+            'active' => $instrumentist->isActive(),
+        ]);
+    }
+
+    /**
+     * POST /api/instrumentists/{id}/activate
+     * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
+     * - Réactive un instrumentiste en positionnant active à true
+     * - 404 si instrumentiste introuvable
+     * - Comportement idempotent
+     */
+    #[Route('/{id}/activate', name: 'api_instrumentists_activate', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function activate(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(InstrumentistVoter::ACTIVATE, User::class);
+
+        $instrumentist = $this->users->findInstrumentistById($id);
+        if (!$instrumentist) {
+            throw new NotFoundHttpException('Instrumentist not found');
+        }
+
+        $instrumentist = $this->instrumentistServiceManager->activateInstrumentist($instrumentist);
+
+        return $this->json([
+            'id' => (int) $instrumentist->getId(),
+            'active' => $instrumentist->isActive(),
+        ]);
+    }
+
+    /**
      * GET /api/instrumentists/with-rates
      * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
      * - Retourne tous les instrumentistes (actifs + inactifs)

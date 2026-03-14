@@ -12,6 +12,8 @@ final class InstrumentistVoter extends Voter
     public const LIST_WITH_RATES = 'INSTRUMENTIST_LIST_WITH_RATES';
     public const CREATE = 'INSTRUMENTIST_CREATE';
     public const UPDATE_RATES = 'INSTRUMENTIST_UPDATE_RATES';
+    public const SUSPEND = 'INSTRUMENTIST_SUSPEND';
+    public const ACTIVATE = 'INSTRUMENTIST_ACTIVATE';
 
     protected function supports(string $attribute, mixed $subject): bool
     {
@@ -20,6 +22,8 @@ final class InstrumentistVoter extends Voter
             self::LIST_WITH_RATES,
             self::CREATE,
             self::UPDATE_RATES,
+            self::SUSPEND,
+            self::ACTIVATE,
         ], true)) {
             return false;
         }
@@ -42,6 +46,8 @@ final class InstrumentistVoter extends Voter
             self::LIST_WITH_RATES => $isManager,
             self::CREATE => $isManager,
             self::UPDATE_RATES => $isManager,
+            self::SUSPEND => $isManager,
+            self::ACTIVATE => $isManager,
             default => false,
         };
     }
