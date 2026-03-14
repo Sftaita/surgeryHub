@@ -62,14 +62,17 @@ function EmptyState() {
   );
 }
 
-export function InstrumentistsTable() {
+type InstrumentistsTableProps = {
+  onOpenInstrumentist: (id: number) => void;
+};
+
+export function InstrumentistsTable({
+  onOpenInstrumentist,
+}: InstrumentistsTableProps) {
   const [search, setSearch] = useState("");
   const [activeFilter, setActiveFilter] = useState<
     "all" | "active" | "inactive"
   >("all");
-  const [openedInstrumentistId, setOpenedInstrumentistId] = useState<
-    number | null
-  >(null);
 
   const query = useMemo<InstrumentistsListQuery>(() => {
     const trimmedSearch = search.trim();
@@ -138,13 +141,13 @@ export function InstrumentistsTable() {
         sortable: false,
         filterable: false,
         renderCell: ({ row }) => (
-          <Button size="small" onClick={() => setOpenedInstrumentistId(row.id)}>
+          <Button size="small" onClick={() => onOpenInstrumentist(row.id)}>
             Ouvrir
           </Button>
         ),
       },
     ],
-    [],
+    [onOpenInstrumentist],
   );
 
   return (
@@ -214,18 +217,6 @@ export function InstrumentistsTable() {
           />
         </Box>
       </Paper>
-
-      {openedInstrumentistId !== null ? (
-        <Paper variant="outlined">
-          <Box sx={{ p: 2 }}>
-            <Typography variant="subtitle2">Ouverture préparée</Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-              Instrumentiste sélectionné : #{openedInstrumentistId}. Le drawer
-              détaillé sera branché dans le lot suivant.
-            </Typography>
-          </Box>
-        </Paper>
-      ) : null}
     </Stack>
   );
 }
