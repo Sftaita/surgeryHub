@@ -3,9 +3,11 @@
 namespace App\Controller\Api;
 
 use App\Dto\Request\CreateInstrumentistRequest;
+use App\Dto\Request\UpdateInstrumentistRatesRequest;
 use App\Dto\Request\Response\InstrumentistCreateResponse;
 use App\Dto\Request\Response\InstrumentistListItemResponse;
 use App\Dto\Request\Response\InstrumentistProfileResponse;
+use App\Dto\Request\Response\InstrumentistRatesResponse;
 use App\Dto\Request\Response\InstrumentistWithRatesListItemResponse;
 use App\Entity\User;
 use App\Repository\UserRepository;
@@ -190,6 +192,35 @@ final class InstrumentistController extends AbstractController
             active: $instrumentist->isActive(),
             employmentType: $employmentTypeValue,
             defaultCurrency: $instrumentist->getDefaultCurrency(),
+        ));
+    }
+
+    /**
+     * PATCH /api/instrumentists/{id}/rates
+     * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
+     * - Met à jour uniquement hourlyRate et/ou consultationFee
+     * - 404 si instrumentiste introuvable
+     * - Réponse simple compatible autosave
+     */
+    #[Route('/{id}/rates', name: 'api_instrumentists_update_rates', methods: ['PATCH'], requirements: ['id' => '\d+'])]
+    public function updateRates(int $id, Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(InstrumentistVoter::UPDATE_RATES, User::class);
+
+        $instrumentist = $this->users->findInstrumentistById($id);
+        if (!$instrumentist) {
+            throw new NotFoundHttpException('Instrumentist not found');
+        }
+
+        /** @var UpdateInstrumentistRatesRequest $dto */
+        $dto = $this->deserializeAndValidate($request->getContent(), UpdateInstrumentistRatesRequest::class);
+
+        $instrumentist = $this->instrumentistServiceManager->updateRates($instrumentist, $dto);
+
+        return $this->json(new InstrumentistRatesResponse(
+            id: (int) $instrumentist->getId(),
+            hourlyRate: $instrumentist->getHourlyRate(),
+            consultationFee: $instrumentist->getConsultationFee(),
         ));
     }
 

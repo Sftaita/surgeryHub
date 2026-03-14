@@ -11,6 +11,7 @@ final class InstrumentistVoter extends Voter
     public const LIST = 'INSTRUMENTIST_LIST';
     public const LIST_WITH_RATES = 'INSTRUMENTIST_LIST_WITH_RATES';
     public const CREATE = 'INSTRUMENTIST_CREATE';
+    public const UPDATE_RATES = 'INSTRUMENTIST_UPDATE_RATES';
 
     protected function supports(string $attribute, mixed $subject): bool
     {
@@ -18,11 +19,11 @@ final class InstrumentistVoter extends Voter
             self::LIST,
             self::LIST_WITH_RATES,
             self::CREATE,
+            self::UPDATE_RATES,
         ], true)) {
             return false;
         }
 
-        // Ces attributs sont évalués sans sujet métier (ou sur la classe User)
         return $subject === null || $subject === User::class;
     }
 
@@ -40,6 +41,7 @@ final class InstrumentistVoter extends Voter
             self::LIST => $isManager,
             self::LIST_WITH_RATES => $isManager,
             self::CREATE => $isManager,
+            self::UPDATE_RATES => $isManager,
             default => false,
         };
     }

@@ -6,6 +6,7 @@ use App\Dto\Request\CreateInstrumentistRequest;
 use App\Dto\Request\ServiceDisputeCreateRequest;
 use App\Dto\Request\ServiceDisputeUpdateRequest;
 use App\Dto\Request\ServiceUpdateRequest;
+use App\Dto\Request\UpdateInstrumentistRatesRequest;
 use App\Entity\Hospital;
 use App\Entity\InstrumentistService;
 use App\Entity\Mission;
@@ -85,6 +86,21 @@ class InstrumentistServiceManager
         $this->em->flush();
 
         return $user;
+    }
+
+    public function updateRates(User $instrumentist, UpdateInstrumentistRatesRequest $dto): User
+    {
+        if ($dto->hourlyRate !== null) {
+            $instrumentist->setHourlyRate((string) $dto->hourlyRate);
+        }
+
+        if ($dto->consultationFee !== null) {
+            $instrumentist->setConsultationFee((string) $dto->consultationFee);
+        }
+
+        $this->em->flush();
+
+        return $instrumentist;
     }
 
     public function updateService(InstrumentistService $service, ServiceUpdateRequest $dto): InstrumentistService
