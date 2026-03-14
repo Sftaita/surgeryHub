@@ -8,7 +8,6 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpKernel\Event\ExceptionEvent;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
-use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\HttpKernel\KernelEvents;
 use Symfony\Component\HttpKernel\KernelInterface;
 
@@ -44,6 +43,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $message = $e->getMessage() ?: $message;
 
             $code = match ($status) {
+                400 => 'BAD_REQUEST',
                 401 => 'UNAUTHORIZED',
                 403 => 'FORBIDDEN',
                 404 => 'NOT_FOUND',
@@ -51,10 +51,6 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
                 422 => 'VALIDATION_FAILED',
                 default => 'HTTP_ERROR',
             };
-        } elseif ($e instanceof UnprocessableEntityHttpException) {
-            $status = 422;
-            $code = 'VALIDATION_FAILED';
-            $message = $e->getMessage() ?: 'Validation failed';
         }
 
         if ($status === 422) {

@@ -12,10 +12,12 @@ use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Serializer\Exception\ExceptionInterface as SerializerExceptionInterface;
 use Symfony\Component\Serializer\SerializerInterface;
 use Symfony\Component\Validator\Constraints as Assert;
 use Symfony\Component\Validator\Validator\ValidatorInterface;
@@ -105,7 +107,7 @@ final class InvitationController extends AbstractController
         }
 
         if ($dto->password !== $dto->confirmPassword) {
-            throw new BadRequestHttpException('Passwords do not match');
+            throw new UnprocessableEntityHttpException('confirmPassword: Passwords do not match');
         }
 
         $profilePicture = $request->files->get('profilePicture');
@@ -133,12 +135,12 @@ final class InvitationController extends AbstractController
             throw new NotFoundHttpException('Invitation not found');
         }
 
-        if ($user->getInvitationExpiresAt() && $user->getInvitationExpiresAt() < new \DateTimeImmutable()) {
-            throw new BadRequestHttpException('Invitation expired');
+        if ($user->getInvitationExpiresAt() !== null && $user->getInvitationExpiresAt() <= new \DateTimeImmutable()) {
+            throw new ConflictHttpException('Invitation expired');
         }
 
         if ($user->getPassword() !== null) {
-            throw new BadRequestHttpException('Invitation already used');
+            throw new ConflictHttpException('Invitation already used');
         }
 
         $hashedPassword = $this->passwordHasher->hashPassword($user, $dto->password);
@@ -170,8 +172,13 @@ final class InvitationController extends AbstractController
         $contentType = $request->getContentTypeFormat();
 
         if ($contentType === 'json') {
-            /** @var InvitationCompleteRequest $dto */
-            $dto = $this->serializer->deserialize($request->getContent(), InvitationCompleteRequest::class, 'json');
+            try {
+                /** @var InvitationCompleteRequest $dto */
+                $dto = $this->serializer->deserialize($request->getContent(), InvitationCompleteRequest::class, 'json');
+            } catch (SerializerExceptionInterface $e) {
+                throw new BadRequestHttpException('Invalid JSON payload', $e);
+            }
+
             return $dto;
         }
 
