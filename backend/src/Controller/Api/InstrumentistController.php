@@ -197,6 +197,35 @@ final class InstrumentistController extends AbstractController
     }
 
     /**
+     * GET /api/instrumentists/{id}/planning
+     * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
+     * - Lecture seule orientée calendrier
+     * - 404 si instrumentiste introuvable
+     * - 422 si from/to manquent, sont invalides ou si la fenêtre est incohérente
+     */
+    #[Route('/{id}/planning', name: 'api_instrumentists_planning', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function planning(int $id, Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(InstrumentistVoter::LIST, User::class);
+
+        $instrumentist = $this->users->findInstrumentistById($id);
+        if (!$instrumentist) {
+            throw new NotFoundHttpException('Instrumentist not found');
+        }
+
+        $from = $this->parseRequiredDateTimeQuery($request, 'from');
+        $to = $this->parseRequiredDateTimeQuery($request, 'to');
+
+        if ($from >= $to) {
+            throw new UnprocessableEntityHttpException('from must be strictly before to');
+        }
+
+        return $this->json(
+            $this->instrumentistServiceManager->getPlanning($instrumentist, $from, $to)
+        );
+    }
+
+    /**
      * PATCH /api/instrumentists/{id}/rates
      * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
      * - Met à jour uniquement hourlyRate et/ou consultationFee
@@ -416,5 +445,24 @@ final class InstrumentistController extends AbstractController
             '0', 'false' => false,
             default => throw new BadRequestHttpException(sprintf('Query parameter "%s" must be "true", "false", "1" or "0".', $key)),
         };
+    }
+
+    private function parseRequiredDateTimeQuery(Request $request, string $key): \DateTimeImmutable
+    {
+        $value = $request->query->get($key);
+
+        if ($value === null || (is_string($value) && trim($value) === '')) {
+            throw new UnprocessableEntityHttpException(sprintf('Query parameter "%s" is required', $key));
+        }
+
+        if (!is_scalar($value)) {
+            throw new UnprocessableEntityHttpException(sprintf('Invalid %s datetime format (ISO 8601 expected)', $key));
+        }
+
+        try {
+            return new \DateTimeImmutable((string) $value);
+        } catch (\Throwable) {
+            throw new UnprocessableEntityHttpException(sprintf('Invalid %s datetime format (ISO 8601 expected)', $key));
+        }
     }
 }

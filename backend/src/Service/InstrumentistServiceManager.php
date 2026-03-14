@@ -104,6 +104,64 @@ class InstrumentistServiceManager
         return $instrumentist;
     }
 
+    /**
+     * @return list<array{
+     *     id:int,
+     *     title:string,
+     *     start:?string,
+     *     end:?string,
+     *     allDay:bool,
+     *     surgeon: array{
+     *         id:?int,
+     *         firstname:?string,
+     *         lastname:?string,
+     *         displayName:string
+     *     },
+     *     site: array{
+     *         id:?int,
+     *         name:?string
+     *     }
+     * }>
+     */
+    public function getPlanning(User $instrumentist, \DateTimeImmutable $from, \DateTimeImmutable $to): array
+    {
+        $missions = $this->em->getRepository(Mission::class)
+            ->createQueryBuilder('m')
+            ->leftJoin('m.surgeon', 'surgeon')->addSelect('surgeon')
+            ->leftJoin('m.site', 'site')->addSelect('site')
+            ->andWhere('m.instrumentist = :instrumentist')
+            ->andWhere('m.startAt < :to')
+            ->andWhere('m.endAt > :from')
+            ->setParameter('instrumentist', $instrumentist)
+            ->setParameter('from', $from)
+            ->setParameter('to', $to)
+            ->orderBy('m.startAt', 'ASC')
+            ->getQuery()
+            ->getResult();
+
+        return array_map(function (Mission $mission): array {
+            $title = $this->buildPlanningTitle($mission);
+
+            return [
+                'id' => (int) $mission->getId(),
+                'title' => $title,
+                'start' => $mission->getStartAt()?->format(\DateTimeInterface::ATOM),
+                'end' => $mission->getEndAt()?->format(\DateTimeInterface::ATOM),
+                'allDay' => false,
+                'surgeon' => [
+                    'id' => $mission->getSurgeon()?->getId(),
+                    'firstname' => $mission->getSurgeon()?->getFirstname(),
+                    'lastname' => $mission->getSurgeon()?->getLastname(),
+                    'displayName' => $title,
+                ],
+                'site' => [
+                    'id' => $mission->getSite()?->getId(),
+                    'name' => $mission->getSite()?->getName(),
+                ],
+            ];
+        }, $missions);
+    }
+
     public function addSiteMembership(User $instrumentist, AddInstrumentistSiteMembershipRequest $dto): SiteMembership
     {
         $site = $this->em->find(Hospital::class, $dto->siteId);
@@ -280,5 +338,26 @@ class InstrumentistServiceManager
         $normalized = trim($value);
 
         return $normalized === '' ? null : $normalized;
+    }
+
+    private function buildPlanningTitle(Mission $mission): string
+    {
+        $surgeon = $mission->getSurgeon();
+
+        $firstname = $surgeon?->getFirstname();
+        $lastname = $surgeon?->getLastname();
+
+        $fullName = trim((string) ($firstname ?? '') . ' ' . (string) ($lastname ?? ''));
+
+        if ($fullName !== '') {
+            return $fullName;
+        }
+
+        $email = $surgeon?->getEmail();
+        if (is_string($email) && $email !== '') {
+            return $email;
+        }
+
+        return sprintf('Mission #%d', (int) $mission->getId());
     }
 }
