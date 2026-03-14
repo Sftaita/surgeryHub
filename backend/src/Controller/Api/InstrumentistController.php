@@ -22,6 +22,7 @@ use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Serializer\Exception\ExceptionInterface as SerializerExceptionInterface;
 use Symfony\Component\Serializer\SerializerInterface;
 use Symfony\Component\Validator\Validator\ValidatorInterface;
 
@@ -409,7 +410,11 @@ final class InstrumentistController extends AbstractController
 
     private function deserializeAndValidate(string $json, string $class): object
     {
-        $dto = $this->serializer->deserialize($json, $class, 'json');
+        try {
+            $dto = $this->serializer->deserialize($json, $class, 'json');
+        } catch (SerializerExceptionInterface $e) {
+            throw new BadRequestHttpException('Invalid JSON payload', $e);
+        }
 
         $this->validateObject($dto);
 
@@ -459,8 +464,14 @@ final class InstrumentistController extends AbstractController
             throw new UnprocessableEntityHttpException(sprintf('Invalid %s datetime format (ISO 8601 expected)', $key));
         }
 
+        $normalized = trim((string) $value);
+
+        if (preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+\-]\d{2}:\d{2})$/', $normalized) !== 1) {
+            throw new UnprocessableEntityHttpException(sprintf('Invalid %s datetime format (ISO 8601 expected)', $key));
+        }
+
         try {
-            return new \DateTimeImmutable((string) $value);
+            return new \DateTimeImmutable($normalized);
         } catch (\Throwable) {
             throw new UnprocessableEntityHttpException(sprintf('Invalid %s datetime format (ISO 8601 expected)', $key));
         }
