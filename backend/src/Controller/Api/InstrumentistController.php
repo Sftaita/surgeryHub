@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Dto\Request\AddInstrumentistSiteMembershipRequest;
 use App\Dto\Request\CreateInstrumentistRequest;
 use App\Dto\Request\UpdateInstrumentistRatesRequest;
 use App\Dto\Request\Response\InstrumentistCreateResponse;
@@ -222,6 +223,65 @@ final class InstrumentistController extends AbstractController
             hourlyRate: $instrumentist->getHourlyRate(),
             consultationFee: $instrumentist->getConsultationFee(),
         ));
+    }
+
+    /**
+     * POST /api/instrumentists/{id}/site-memberships
+     * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
+     * - Ajoute une affiliation site à un instrumentiste
+     * - 404 si instrumentiste introuvable
+     * - 404 si site introuvable
+     * - 409 si doublon instrumentiste/site
+     */
+    #[Route('/{id}/site-memberships', name: 'api_instrumentists_add_site_membership', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function addSiteMembership(int $id, Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(InstrumentistVoter::ADD_SITE_MEMBERSHIP, User::class);
+
+        $instrumentist = $this->users->findInstrumentistById($id);
+        if (!$instrumentist) {
+            throw new NotFoundHttpException('Instrumentist not found');
+        }
+
+        /** @var AddInstrumentistSiteMembershipRequest $dto */
+        $dto = $this->deserializeAndValidate($request->getContent(), AddInstrumentistSiteMembershipRequest::class);
+
+        $membership = $this->instrumentistServiceManager->addSiteMembership($instrumentist, $dto);
+
+        return $this->json([
+            'id' => (int) $membership->getId(),
+            'site' => [
+                'id' => (int) $membership->getSite()->getId(),
+                'name' => (string) $membership->getSite()->getName(),
+            ],
+            'siteRole' => $membership->getSiteRole(),
+        ], JsonResponse::HTTP_CREATED);
+    }
+
+    /**
+     * DELETE /api/instrumentists/{id}/site-memberships/{membershipId}
+     * - Accès: ROLE_ADMIN / ROLE_MANAGER (via voter)
+     * - Supprime une affiliation site d’un instrumentiste
+     * - 404 si instrumentiste introuvable
+     * - 404 si membership introuvable
+     * - 404 si membership ne correspond pas à l’instrumentiste ciblé
+     */
+    #[Route('/{id}/site-memberships/{membershipId}', name: 'api_instrumentists_delete_site_membership', methods: ['DELETE'], requirements: ['id' => '\d+', 'membershipId' => '\d+'])]
+    public function deleteSiteMembership(int $id, int $membershipId): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(InstrumentistVoter::DELETE_SITE_MEMBERSHIP, User::class);
+
+        $instrumentist = $this->users->findInstrumentistById($id);
+        if (!$instrumentist) {
+            throw new NotFoundHttpException('Instrumentist not found');
+        }
+
+        $this->instrumentistServiceManager->deleteSiteMembership($instrumentist, $membershipId);
+
+        return $this->json([
+            'id' => $membershipId,
+            'deleted' => true,
+        ]);
     }
 
     /**

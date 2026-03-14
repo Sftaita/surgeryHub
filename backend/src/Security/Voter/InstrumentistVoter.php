@@ -12,6 +12,8 @@ final class InstrumentistVoter extends Voter
     public const LIST_WITH_RATES = 'INSTRUMENTIST_LIST_WITH_RATES';
     public const CREATE = 'INSTRUMENTIST_CREATE';
     public const UPDATE_RATES = 'INSTRUMENTIST_UPDATE_RATES';
+    public const ADD_SITE_MEMBERSHIP = 'INSTRUMENTIST_ADD_SITE_MEMBERSHIP';
+    public const DELETE_SITE_MEMBERSHIP = 'INSTRUMENTIST_DELETE_SITE_MEMBERSHIP';
     public const SUSPEND = 'INSTRUMENTIST_SUSPEND';
     public const ACTIVATE = 'INSTRUMENTIST_ACTIVATE';
 
@@ -22,6 +24,8 @@ final class InstrumentistVoter extends Voter
             self::LIST_WITH_RATES,
             self::CREATE,
             self::UPDATE_RATES,
+            self::ADD_SITE_MEMBERSHIP,
+            self::DELETE_SITE_MEMBERSHIP,
             self::SUSPEND,
             self::ACTIVATE,
         ], true)) {
@@ -46,6 +50,8 @@ final class InstrumentistVoter extends Voter
             self::LIST_WITH_RATES => $isManager,
             self::CREATE => $isManager,
             self::UPDATE_RATES => $isManager,
+            self::ADD_SITE_MEMBERSHIP => $isManager,
+            self::DELETE_SITE_MEMBERSHIP => $isManager,
             self::SUSPEND => $isManager,
             self::ACTIVATE => $isManager,
             default => false,

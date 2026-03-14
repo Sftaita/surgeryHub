@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Dto\Request\AddInstrumentistSiteMembershipRequest;
 use App\Dto\Request\CreateInstrumentistRequest;
 use App\Dto\Request\ServiceDisputeCreateRequest;
 use App\Dto\Request\ServiceDisputeUpdateRequest;
@@ -101,6 +102,52 @@ class InstrumentistServiceManager
         $this->em->flush();
 
         return $instrumentist;
+    }
+
+    public function addSiteMembership(User $instrumentist, AddInstrumentistSiteMembershipRequest $dto): SiteMembership
+    {
+        $site = $this->em->find(Hospital::class, $dto->siteId);
+        if (!$site instanceof Hospital) {
+            throw new NotFoundHttpException(sprintf('Site not found: %d', $dto->siteId));
+        }
+
+        foreach ($instrumentist->getSiteMemberships() as $existingMembership) {
+            $existingSite = $existingMembership->getSite();
+
+            if ($existingSite?->getId() === $site->getId()) {
+                throw new ConflictHttpException('Site membership already exists');
+            }
+        }
+
+        $membership = new SiteMembership();
+        $membership
+            ->setUser($instrumentist)
+            ->setSite($site)
+            ->setSiteRole(self::SITE_ROLE_INSTRUMENTIST);
+
+        $instrumentist->addSiteMembership($membership);
+
+        $this->em->persist($membership);
+        $this->em->flush();
+
+        return $membership;
+    }
+
+    public function deleteSiteMembership(User $instrumentist, int $membershipId): void
+    {
+        $membership = $this->em->find(SiteMembership::class, $membershipId);
+        if (!$membership instanceof SiteMembership) {
+            throw new NotFoundHttpException('Site membership not found');
+        }
+
+        $membershipUser = $membership->getUser();
+        if (!$membershipUser instanceof User || $membershipUser->getId() !== $instrumentist->getId()) {
+            throw new NotFoundHttpException('Site membership not found');
+        }
+
+        $instrumentist->removeSiteMembership($membership);
+        $this->em->remove($membership);
+        $this->em->flush();
     }
 
     public function suspendInstrumentist(User $instrumentist): User
