@@ -9,7 +9,9 @@ use App\Dto\Request\Response\InstrumentistCreateResponse;
 use App\Dto\Request\Response\InstrumentistListItemResponse;
 use App\Dto\Request\Response\InstrumentistProfileResponse;
 use App\Dto\Request\Response\InstrumentistRatesResponse;
+use App\Dto\Request\Response\InstrumentistSiteMembershipResponse;
 use App\Dto\Request\Response\InstrumentistWithRatesListItemResponse;
+use App\Dto\Request\Response\SiteSummaryResponse;
 use App\Entity\User;
 use App\Repository\UserRepository;
 use App\Security\Voter\InstrumentistVoter;
@@ -185,6 +187,26 @@ final class InstrumentistController extends AbstractController
         $employmentType = $instrumentist->getEmploymentType();
         $employmentTypeValue = $employmentType ? $employmentType->value : null;
 
+        $siteMemberships = [];
+        foreach ($instrumentist->getSiteMemberships() as $membership) {
+            $site = $membership->getSite();
+
+            if ($site === null || $site->getId() === null) {
+                continue;
+            }
+
+            $siteRole = $membership->getSiteRole();
+
+            $siteMemberships[] = new InstrumentistSiteMembershipResponse(
+                id: (int) $membership->getId(),
+                site: new SiteSummaryResponse(
+                    id: (int) $site->getId(),
+                    name: (string) $site->getName(),
+                ),
+                siteRole: is_string($siteRole) ? $siteRole : $siteRole->value,
+            );
+        }
+
         return $this->json(new InstrumentistProfileResponse(
             id: (int) $instrumentist->getId(),
             email: (string) $instrumentist->getEmail(),
@@ -194,6 +216,7 @@ final class InstrumentistController extends AbstractController
             active: $instrumentist->isActive(),
             employmentType: $employmentTypeValue,
             defaultCurrency: $instrumentist->getDefaultCurrency(),
+            siteMemberships: $siteMemberships,
         ));
     }
 

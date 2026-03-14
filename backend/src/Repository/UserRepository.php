@@ -122,6 +122,8 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
     {
         /** @var ?User $user */
         $user = $this->createQueryBuilder('u')
+            ->leftJoin('u.siteMemberships', 'sm')->addSelect('sm')
+            ->leftJoin('sm.site', 'site')->addSelect('site')
             ->andWhere('u.id = :id')
             ->andWhere('u.roles LIKE :role')
             ->setParameter('id', $id)

@@ -4,6 +4,9 @@ namespace App\Dto\Request\Response;
 
 final class InstrumentistProfileResponse
 {
+    /**
+     * @param InstrumentistSiteMembershipResponse[] $siteMemberships
+     */
     public function __construct(
         public int $id,
         public string $email,
@@ -13,6 +16,7 @@ final class InstrumentistProfileResponse
         public bool $active,
         public ?string $employmentType,
         public ?string $defaultCurrency,
+        public array $siteMemberships = [],
     ) {
     }
 }
