@@ -1,6 +1,6 @@
 # SurgicalHub — API (Single Source of Truth)
 
-_Last updated: 2026-03-15_
+_Last updated: 2026-03-15 (v2 — catalogue matériel)_
 
 ---
 
@@ -17,9 +17,26 @@ _Last updated: 2026-03-15_
 
 ---
 
-## 2. Référentiel Firm (Manager/Admin uniquement)
+## 2. Référentiel Firm
 
-_(Inchangé)_
+### `GET /api/firms`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Liste toutes les firmes actives, triées par nom.
+
+**Réponse — 200 :**
+
+```json
+[
+  { "id": 1, "name": "Arthrex" },
+  { "id": 2, "name": "Zimmer Biomet" }
+]
+```
+
+**Notes :**
+- Lecture seule — aucun endpoint de création/édition firm (géré en base)
+- Utilisé pour peupler le select dans les formulaires matériel
 
 ---
 
@@ -902,3 +919,245 @@ Finalise l'activation du compte invité.
 > Hors périmètre V1 actuel.
 
 Si l'instrumentiste se crée lui-même un compte, un flux séparé devra exiger une **validation email préalable**. Ce flux n'impacte pas la V1 manager décrite ci-dessus.
+
+---
+
+## 19. Catalogue matériel — Gestion manager
+
+**Principe :** 1 MaterialItem = 1 Firm. Un matériel appartient toujours à une seule firme.
+
+**Modèle MaterialItem :**
+
+| Champ | Type | Description |
+|---|---|---|
+| `id` | int | Identifiant |
+| `firm` | object | `{ id, name }` |
+| `label` | string | Nom du matériel |
+| `referenceCode` | string | Référence fabricant (peut être vide) |
+| `unit` | string | Unité (ex: `pièce`, `boîte`) |
+| `isImplant` | bool | `true` = implantable |
+
+---
+
+### 19.1 `GET /api/material-items`
+
+**AuthZ :** Tous rôles authentifiés
+
+**Query params :**
+
+| Param | Type | Description |
+|---|---|---|
+| `search` | string | Recherche sur `label` et `referenceCode` |
+| `firmId` | int | Filtre par firme |
+| `implantOnly` | bool | Filtre implants uniquement |
+| `active` | bool | Défaut : tous |
+| `page` | int | Défaut : 1 |
+| `limit` | int | Défaut : 50 |
+
+**Réponse — 200 :**
+
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "firm": { "id": 1, "name": "Arthrex" },
+      "label": "FiberTape",
+      "referenceCode": "AR-7234",
+      "unit": "pièce",
+      "isImplant": true
+    }
+  ],
+  "total": 42,
+  "page": 1,
+  "limit": 50
+}
+```
+
+---
+
+### 19.2 `GET /api/material-items/quick-search?q=fiber`
+
+**AuthZ :** Tous rôles authentifiés
+
+Autocomplete ultra-rapide (mobile-first, max 20 résultats).
+
+**Réponse — 200 :**
+
+```json
+{
+  "items": [
+    { "id": 1, "firm": { "id": 1, "name": "Arthrex" }, "label": "FiberTape", "referenceCode": "AR-7234", "unit": "pièce", "isImplant": true }
+  ]
+}
+```
+
+---
+
+### 19.3 `POST /api/material-items`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Créer un matériel dans le catalogue.
+
+**Body JSON :**
+
+```json
+{
+  "firmId": 1,
+  "label": "FiberTape",
+  "unit": "pièce",
+  "referenceCode": "AR-7234",
+  "isImplant": true
+}
+```
+
+| Champ | Requis | Description |
+|---|---|---|
+| `firmId` | ✓ | ID de la firme |
+| `label` | ✓ | Nom du matériel |
+| `unit` | ✓ | Unité |
+| `referenceCode` | — | Référence fabricant |
+| `isImplant` | — | Défaut `false` |
+
+**Réponse — 201 :** MaterialItem complet (même format que GET)
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `404` | Firm introuvable |
+| `422` | `firmId`, `label` ou `unit` manquant |
+
+---
+
+### 19.4 `PATCH /api/material-items/{id}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Mise à jour partielle — tous les champs sont optionnels.
+
+**Body JSON :**
+
+```json
+{
+  "label": "FiberTape v2",
+  "referenceCode": "AR-7235",
+  "isImplant": false
+}
+```
+
+**Réponse — 200 :** MaterialItem mis à jour
+
+**Erreurs :** `404` si introuvable, `422` si `label`/`unit` vide
+
+---
+
+## 20. Demandes matériel — Gestion manager
+
+Les `MaterialItemRequest` sont créées par les instrumentistes lors de l'encodage quand un matériel est absent du catalogue.
+
+**Modèle MaterialItemRequest :**
+
+| Champ | Type | Description |
+|---|---|---|
+| `id` | int | Identifiant |
+| `status` | string | `PENDING` / `RESOLVED` / `IGNORED` |
+| `label` | string | Nom demandé |
+| `referenceCode` | string\|null | Référence demandée |
+| `comment` | string\|null | Commentaire libre |
+| `createdAt` | ISO 8601 | Date de création |
+| `mission` | object | `{ id, site }` |
+| `requestedBy` | object | `{ id, displayName }` |
+| `materialItem` | object\|null | Matériel associé après résolution |
+
+**Transitions de statut :**
+
+```
+PENDING → RESOLVED  (via resolve)
+PENDING → IGNORED   (via ignore)
+```
+
+---
+
+### 20.1 `GET /api/material-item-requests`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Query params :**
+
+| Param | Valeurs | Description |
+|---|---|---|
+| `status` | `PENDING` \| `RESOLVED` \| `IGNORED` | Filtre (optionnel — tous si absent) |
+
+**Réponse — 200 :**
+
+```json
+{
+  "items": [
+    {
+      "id": 14,
+      "status": "PENDING",
+      "label": "FiberTape",
+      "referenceCode": "AR-7234",
+      "comment": "Utilisé lors de la ligamentoplastie",
+      "createdAt": "2026-03-15T10:00:00+01:00",
+      "mission": { "id": 42, "site": "Delta" },
+      "requestedBy": { "id": 5, "displayName": "Ole Salve" },
+      "materialItem": null
+    }
+  ],
+  "total": 1
+}
+```
+
+---
+
+### 20.2 `POST /api/material-item-requests/{id}/resolve`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Précondition :** `status = PENDING`
+
+**Body JSON :**
+
+```json
+{ "materialItemId": 45 }
+```
+
+**Effets backend :**
+1. Lie la demande au `MaterialItem` (`materialItem_id`)
+2. Passe `status → RESOLVED`
+3. Crée une `MaterialLine` sur la mission (quantity=1, même intervention)
+
+**Réponse — 200 :**
+
+```json
+{
+  "request": { "id": 14, "status": "RESOLVED", "materialItem": { "...": "..." }, "...": "..." },
+  "materialLine": { "id": 88 }
+}
+```
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `404` | Demande introuvable |
+| `404` | MaterialItem introuvable |
+| `409` | Demande non `PENDING` |
+| `422` | `materialItemId` manquant |
+
+---
+
+### 20.3 `POST /api/material-item-requests/{id}/ignore`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Précondition :** `status = PENDING`
+
+Body vide.
+
+**Réponse — 200 :** MaterialItemRequest avec `status: "IGNORED"`
+
+**Erreurs :** `404` introuvable, `409` non PENDING

@@ -173,15 +173,17 @@ Trois documents de référence maintenus à jour :
 
 ---
 
-## D-012 — Firms en référentiel (fabricants) + dérivation via MaterialItem
+## D-012 — Firms en référentiel (fabricants)
 
-Date : 12-02-2026
+Date : 12-02-2026 — Mise à jour : 15-03-2026
 
 ### Décision
 
-- `Firm` devient une entité de référence.
+- `Firm` est une entité de référence, gérée en base par un admin.
+- Un `MaterialItem` appartient toujours à exactement une `Firm` (1 matériel = 1 firme).
 - L'instrumentiste ne peut jamais créer/éditer/supprimer une firm.
-- Les firms apparaissent uniquement via `MaterialItem.manufacturer`.
+- `GET /api/firms` expose la liste des firmes actives pour les formulaires manager.
+- La création/édition de firms est hors périmètre frontend V1 — gestion directe en base.
 
 ---
 
@@ -441,6 +443,49 @@ POST /api/invitations/complete
 
 ---
 
+## D-016 — Module Catalogue Matériel — gestion manager
+
+Date : 15-03-2026
+
+### Décision
+
+Le manager peut gérer le catalogue matériel directement depuis l'interface (sans accès base de données).
+
+**Périmètre V1 :**
+- Création et édition de `MaterialItem` via `POST /api/material-items` et `PATCH /api/material-items/{id}`
+- Lecture des firmes via `GET /api/firms` pour les formulaires
+- Gestion du workflow des demandes matériel (`MaterialItemRequest`) : PENDING → RESOLVED / IGNORED
+
+**Modèle `MaterialItem` adapté à l'existant :**
+- `label` (pas `name`) — cohérence avec l'encodage existant
+- `referenceCode` (pas `reference`) — idem
+- `isImplant: bool` (pas d'enum IMPLANT/INSTRUMENT/CONSOMMABLE) — le backend ne distingue que 2 états
+- `unit` obligatoire — requis par l'entité existante
+
+**Réconciliation demandes matériel :**
+Lors de la résolution (`resolve`), le backend :
+1. Lie la demande au `MaterialItem` choisi
+2. Passe `status → RESOLVED`
+3. Crée automatiquement une `MaterialLine` sur la mission concernée (quantity=1)
+
+Ce mécanisme garantit que les lignes matériel de la mission reflètent toujours l'état catalogue.
+
+### Motivation
+
+- Éviter l'accès direct à la base de données pour les opérations courantes
+- Fermer la boucle encodage → demande → catalogue → ligne mission
+- Donner au manager visibilité et contrôle sur le catalogue sans surcharge technique
+
+### Impact technique
+
+- Ajout `status` + `materialItem` FK sur `MaterialItemRequest` (migration `Version20260315120000`)
+- Nouveaux controllers : `FirmController`, `MaterialItemRequestManagerController`
+- Extension `MaterialCatalogController` : POST + PATCH
+- Feature frontend `manager-catalogue` + pages `CataloguePage` / `CatalogueRequestsPage`
+- `DesktopLayout` refactorisé avec sidebar MUI permanente
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -454,3 +499,4 @@ POST /api/invitations/complete
 | 20-02-2026 | D-013 — Missions DECLARED |
 | 12-03-2026 | D-014 — Emails transactionnels via Symfony Mailer + Messenger |
 | 11-03-2026 | D-015 — Onboarding instrumentiste par invitation manager |
+| 15-03-2026 | D-016 — Module catalogue matériel + gestion demandes |

@@ -1,6 +1,6 @@
 # SurgicalHub — Architecture système
 
-_Last updated: 2026-03-15_
+_Last updated: 2026-03-15 (v2 — catalogue matériel, sidebar manager)_
 
 ---
 
@@ -10,8 +10,8 @@ SurgicalHub est une plateforme de gestion des missions chirurgicales. Elle conne
 
 | Rôle | Périmètre |
 |---|---|
-| `MANAGER` / `ADMIN` | Création et gestion des missions, des instrumentistes, validation |
-| `INSTRUMENTIST` | Prise en charge des missions, encodage des actes, déclarations |
+| `MANAGER` / `ADMIN` | Création et gestion des missions, des instrumentistes, du catalogue matériel, validation |
+| `INSTRUMENTIST` | Prise en charge des missions, encodage des actes, déclarations, demandes matériel |
 | `SURGEON` | Consultation uniquement |
 
 ---
@@ -30,7 +30,7 @@ SurgicalHub est une plateforme de gestion des missions chirurgicales. Elle conne
 - **MUI (Material UI v5)** — composants UI
 - **TanStack React Query** — cache serveur, mutations, invalidation
 - **React Router v6** — navigation
-- **FullCalendar** — affichage planning
+- **FullCalendar** — affichage planning (instrumentiste + drawer manager)
 - **Axios** — client HTTP avec intercepteur JWT + refresh
 
 ---
@@ -41,12 +41,15 @@ SurgicalHub est une plateforme de gestion des missions chirurgicales. Elle conne
 
 ```
 Api/
-├── AuthController          — login / refresh token
-├── MissionController       — CRUD missions + transitions de statut
-├── InstrumentistController — gestion manager des instrumentistes
-├── InvitationController    — flux complétion de compte (public)
-├── MeController            — profil utilisateur connecté
-└── ...
+├── AuthController                       — login / refresh token
+├── MissionController                    — CRUD missions + transitions de statut
+├── InstrumentistController              — gestion manager des instrumentistes
+├── InvitationController                 — flux complétion de compte (public)
+├── MeController                         — profil utilisateur connecté
+├── FirmController                       — GET /api/firms
+├── MaterialCatalogController            — CRUD /api/material-items
+├── MaterialItemRequestController        — POST demande (instrumentiste)
+└── MaterialItemRequestManagerController — gestion demandes manager (list/resolve/ignore)
 ```
 
 ### Autorisation — RBAC strict via Voters
@@ -66,6 +69,8 @@ POST /api/missions/{id}/approve-declared
 POST /api/missions/{id}/reject-declared
 POST /api/instrumentists/{id}/suspend
 POST /api/instrumentists/{id}/activate
+POST /api/material-item-requests/{id}/resolve
+POST /api/material-item-requests/{id}/ignore
 ```
 
 Pas de mutation libre via `PATCH` générique pour les transitions.
@@ -100,9 +105,21 @@ L'envoi est découplé de la logique métier : une erreur SMTP ne fait jamais é
 ```
 /login                      — public
 /complete-account?token=    — public (invitation instrumentiste)
-/app/m/*                    — Manager / Admin (desktop)
+/app/m/*                    — Manager / Admin (desktop, sidebar permanente)
 /app/i/*                    — Instrumentiste (mobile-first)
 /app/s/*                    — Surgeon
+```
+
+**Routes manager :**
+
+```
+/app/m/missions              — liste missions
+/app/m/missions/to-validate  — missions DECLARED à valider
+/app/m/missions/new          — création mission
+/app/m/missions/:id          — détail mission
+/app/m/instrumentists        — liste + drawer instrumentistes
+/app/m/catalogue             — catalogue matériel
+/app/m/catalogue/requests    — demandes matériel
 ```
 
 ### Organisation du code
@@ -116,18 +133,51 @@ src/app/
 │   ├── encoding/
 │   ├── manager-instrumentists/
 │   │   ├── api/      — types, fonctions API
-│   │   ├── components/
-│   │   ├── hooks/    — logique réutilisable (useInstrumentistDrawer)
+│   │   ├── components/  — InstrumentistDrawer, InstrumentistPlanningSection, ...
+│   │   ├── hooks/    — useInstrumentistDrawer
 │   │   └── utils/
+│   ├── manager-catalogue/
+│   │   ├── api/      — catalogue.types.ts, catalogue.api.ts
+│   │   └── components/  — MaterialItemFormDialog
 │   ├── invitation/
 │   └── sites/
 ├── pages/            — pages (orchestration uniquement)
 │   ├── manager/
+│   │   ├── MissionsListPage, MissionDetailPage, MissionCreatePage
+│   │   ├── InstrumentistsPage
+│   │   ├── CataloguePage
+│   │   └── CatalogueRequestsPage
 │   └── instrumentist/
-├── layouts/          — DesktopLayout, MobileLayout
+├── layouts/          — DesktopLayout (sidebar MUI permanente), MobileLayout
 ├── router/           — AppRouter, guards RequireAuth / RequireManager
 └── ui/               — composants UI partagés (Toast...)
 ```
+
+### Layout manager — Sidebar permanente
+
+`DesktopLayout` utilise un `Drawer` MUI permanent (largeur 220px) avec la navigation :
+
+```
+SurgicalHub
+─────────────
+Missions
+Instrumentistes
+CATALOGUE
+  Matériel
+  Demandes matériel
+─────────────
+Déconnexion
+```
+
+La navigation utilise `NavLink` de React Router — l'item actif est mis en surbrillance (`selected`).
+
+### MissionDetailContent — export nommé
+
+`MissionDetailPage` exporte deux éléments :
+- `export default MissionDetailPage` — page route `/app/m/missions/:id`
+- `export function MissionDetailContent({ missionId, embedded?, onCloseEmbedded? })` — utilisable en dialog (drawer planning instrumentiste, etc.)
+
+En mode `embedded` : pas de bouton retour, après approve/reject appelle `onCloseEmbedded()` au lieu de naviguer.
 
 ### Règles frontend
 
@@ -161,6 +211,16 @@ SiteMembership
 Hospital (site)
 ├── id, name
 
+Firm
+├── id, name (unique)
+└── active: bool
+
+MaterialItem
+├── id
+├── firm → Firm
+├── label, referenceCode, unit
+└── isImplant: bool
+
 Mission
 ├── id, status, type, schedulePrecision
 ├── startAt, endAt
@@ -173,6 +233,21 @@ Mission
 MissionIntervention
 ├── MaterialLine[]
 └── MaterialItemRequest[]
+
+MaterialLine
+├── mission → Mission
+├── missionIntervention → MissionIntervention (nullable)
+├── item → MaterialItem
+├── quantity (decimal)
+└── comment (nullable)
+
+MaterialItemRequest
+├── mission → Mission
+├── missionIntervention → MissionIntervention (nullable)
+├── label, referenceCode, comment
+├── status: 'PENDING' | 'RESOLVED' | 'IGNORED'
+├── materialItem → MaterialItem (nullable, renseigné lors de la résolution)
+└── createdBy → User
 ```
 
 ---
@@ -207,6 +282,20 @@ Manager → POST /api/missions (DRAFT)
 Instrumentiste → POST /api/missions/declare (DECLARED)
 Manager → POST /api/missions/{id}/approve-declared (ASSIGNED)
        ou POST /api/missions/{id}/reject-declared (REJECTED)
+```
+
+### Flux demande matériel
+
+```
+Instrumentiste → encodage → matériel absent
+              → POST /api/missions/{missionId}/material-item-requests (PENDING)
+
+Manager → GET /api/material-item-requests?status=PENDING
+        → [Créer produit] → POST /api/material-items (crée MaterialItem)
+                          → POST /api/material-item-requests/{id}/resolve (materialItemId)
+                          → status=RESOLVED + MaterialLine créée sur la mission
+        ou [Ignorer]     → POST /api/material-item-requests/{id}/ignore
+                          → status=IGNORED
 ```
 
 ---
