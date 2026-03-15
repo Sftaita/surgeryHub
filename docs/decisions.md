@@ -510,6 +510,33 @@ Les demandes `RESOLVED` et `IGNORED` sont exclues.
 
 ---
 
+## D-018 — Module Chirurgiens — gestion manager
+
+Date : 15-03-2026
+
+### Décision
+
+Le manager peut créer et gérer des chirurgiens via l'interface, avec le même flux d'invitation que les instrumentistes.
+
+**Périmètre V1 :**
+- Création via `POST /api/surgeons` avec envoi d'email d'invitation
+- Complétion du profil par le chirurgien via `/complete-account?token=XXX` (même flux)
+- Gestion des affiliations site
+- Planning : missions où le chirurgien est `mission.surgeon`
+
+**Hors périmètre V1 :**
+- Pas de tarifs (pas de `hourlyRate`, `consultationFee`)
+- Pas de toggle actif/suspendu
+- Pas de notation / rating manager (endpoint existant hors périmètre UI)
+
+### Motivation
+
+- Cohérence avec le module instrumentistes
+- Permettre au manager de gérer l'ensemble des acteurs du système
+- Réutilisation du flux d'invitation existant sans duplication de code
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -525,3 +552,4 @@ Les demandes `RESOLVED` et `IGNORED` sont exclues.
 | 11-03-2026 | D-015 — Onboarding instrumentiste par invitation manager |
 | 15-03-2026 | D-016 — Module catalogue matériel + gestion demandes |
 | 15-03-2026 | D-017 — Filtrage PENDING dans l'encoding instrumentiste |
+| 15-03-2026 | D-018 — Module Chirurgiens — gestion manager |

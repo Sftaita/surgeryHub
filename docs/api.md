@@ -1,6 +1,6 @@
 # SurgicalHub — API (Single Source of Truth)
 
-_Last updated: 2026-03-15 (v3 — material lines, material item requests instrumentiste, /api/me fix)_
+_Last updated: 2026-03-15 (v4 — module chirurgiens)_
 
 ---
 
@@ -1354,3 +1354,182 @@ Déclarer un matériel absent du catalogue lors de l'encodage. La demande est tr
 **Notes frontend :**
 - La demande n'est visible dans `GET /api/missions/{id}/encoding` que tant qu'elle est `PENDING`
 - Une fois résolue par le manager, une `MaterialLine` est créée automatiquement et la demande disparaît de l'encoding
+
+---
+
+## 23. Chirurgiens — Gestion manager
+
+Même principe que les instrumentistes : création par le manager, invitation par email, complétion du profil via `/complete-account?token=XXX`.
+
+**Différences par rapport aux instrumentistes :**
+- Pas de tarifs (`hourlyRate`, `consultationFee`)
+- Pas de toggle actif/suspendu
+- Planning : missions où le chirurgien est `mission.surgeon` (pas instrumentiste)
+
+**Endpoints implémentés :**
+
+```
+GET    /api/surgeons
+GET    /api/surgeons/{id}
+POST   /api/surgeons
+GET    /api/surgeons/{id}/planning?from=...&to=...
+POST   /api/surgeons/{id}/site-memberships
+DELETE /api/surgeons/{id}/site-memberships/{membershipId}
+```
+
+---
+
+### 23.1 `GET /api/surgeons`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Query params :**
+
+| Param | Type | Description |
+|---|---|---|
+| `q` | string | Recherche sur email / prénom / nom |
+| `active` | bool | Défaut : `true` |
+
+**Réponse — 200 :**
+
+```json
+{
+  "items": [
+    {
+      "id": 7,
+      "email": "dr.martin@example.com",
+      "firstname": "Jean",
+      "lastname": "Martin",
+      "displayName": "Jean Martin",
+      "active": true,
+      "profilePicturePath": null
+    }
+  ],
+  "total": 1
+}
+```
+
+---
+
+### 23.2 `GET /api/surgeons/{id}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Réponse — 200 :**
+
+```json
+{
+  "id": 7,
+  "email": "dr.martin@example.com",
+  "firstname": "Jean",
+  "lastname": "Martin",
+  "displayName": "Jean Martin",
+  "active": true,
+  "profilePicturePath": null,
+  "siteMemberships": [
+    { "id": 12, "site": { "id": 2, "name": "Delta" }, "siteRole": "SURGEON" }
+  ]
+}
+```
+
+**Erreurs :** `404` si introuvable ou rôle ≠ `ROLE_SURGEON`
+
+---
+
+### 23.3 `POST /api/surgeons`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Body JSON :**
+
+```json
+{
+  "email": "dr.martin@example.com",
+  "firstname": "Jean",
+  "lastname": "Martin",
+  "phone": "+32470000000",
+  "siteIds": [1, 2]
+}
+```
+
+**Effets backend :**
+- Création `User` (`roles = ['ROLE_SURGEON']`, `active = true`, `password = null`)
+- Token d'invitation généré (`invitationToken`, `invitationExpiresAt = now + 48h`)
+- `SiteMembership` créée par site avec `siteRole = "SURGEON"`
+- Email d'invitation envoyé (async via Messenger, même template que les instrumentistes)
+
+**Réponse — 201 :**
+
+```json
+{
+  "surgeon": {
+    "id": 7,
+    "email": "dr.martin@example.com",
+    "firstname": "Jean",
+    "lastname": "Martin",
+    "displayName": "Jean Martin",
+    "active": true,
+    "siteIds": [1, 2],
+    "invitationExpiresAt": "2026-03-17T10:00:00+00:00"
+  },
+  "warnings": []
+}
+```
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `409` | Email déjà utilisé |
+| `404` | Site introuvable |
+| `422` | Validation DTO |
+
+---
+
+### 23.4 `GET /api/surgeons/{id}/planning?from=...&to=...`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Même format de params que `GET /api/instrumentists/{id}/planning`.
+
+**Réponse — 200 :** Tableau d'événements FullCalendar.
+
+Le `title` de chaque événement est le nom de l'instrumentiste assigné (ou l'email, ou `"Mission #id"`).
+
+```json
+[
+  {
+    "id": 19,
+    "title": "Ole Salve",
+    "start": "2026-03-14T08:00:00+01:00",
+    "end": "2026-03-14T12:00:00+01:00",
+    "allDay": false,
+    "instrumentist": { "id": 5, "firstname": "Ole", "lastname": "Salve" },
+    "site": { "id": 2, "name": "Delta" }
+  }
+]
+```
+
+---
+
+### 23.5 `POST /api/surgeons/{id}/site-memberships`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Body JSON :** `{ "siteId": 3 }`
+
+**Réponse — 201 :**
+
+```json
+{ "id": 12, "site": { "id": 3, "name": "Delta" }, "siteRole": "SURGEON" }
+```
+
+**Erreurs :** `404` site/chirurgien introuvable, `409` affiliation déjà existante
+
+---
+
+### 23.6 `DELETE /api/surgeons/{id}/site-memberships/{membershipId}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Réponse — 200 :** `{ "id": 12, "deleted": true }`

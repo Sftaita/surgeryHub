@@ -1,6 +1,6 @@
 # SurgicalHub — Architecture système
 
-_Last updated: 2026-03-15 (v3 — material lines controller, encoding fixes, sidebar badge)_
+_Last updated: 2026-03-15 (v4 — module chirurgiens)_
 
 ---
 
@@ -44,6 +44,7 @@ Api/
 ├── AuthController                       — login / refresh token
 ├── MissionController                    — CRUD missions + transitions de statut
 ├── InstrumentistController              — gestion manager des instrumentistes
+├── SurgeonController                    — CRUD /api/surgeons + planning + site-memberships
 ├── InvitationController                 — flux complétion de compte (public)
 ├── MeController                         — profil utilisateur connecté
 ├── FirmController                       — GET /api/firms
@@ -123,6 +124,7 @@ L'envoi est découplé de la logique métier : une erreur SMTP ne fait jamais é
 /app/m/missions/new          — création mission
 /app/m/missions/:id          — détail mission
 /app/m/instrumentists        — liste + drawer instrumentistes
+/app/m/surgeons              — liste + drawer chirurgiens
 /app/m/catalogue             — catalogue matériel
 /app/m/catalogue/requests    — demandes matériel
 ```
@@ -141,6 +143,10 @@ src/app/
 │   │   ├── components/  — InstrumentistDrawer, InstrumentistPlanningSection, ...
 │   │   ├── hooks/    — useInstrumentistDrawer
 │   │   └── utils/
+│   ├── manager-surgeons/
+│   │   ├── api/      — surgeons.types.ts, surgeons.api.ts
+│   │   ├── components/  — SurgeonDrawer, SurgeonPlanningSection, ...
+│   │   └── hooks/    — useSurgeonDrawer
 │   ├── manager-catalogue/
 │   │   ├── api/      — catalogue.types.ts, catalogue.api.ts
 │   │   └── components/  — MaterialItemFormDialog
@@ -167,6 +173,7 @@ SurgicalHub
 ─────────────
 Missions
 Instrumentistes
+Chirurgiens
 CATALOGUE
   Matériel
   Demandes matériel
