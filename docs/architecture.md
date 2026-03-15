@@ -1,6 +1,6 @@
 # SurgicalHub — Architecture système
 
-_Last updated: 2026-03-15 (v2 — catalogue matériel, sidebar manager)_
+_Last updated: 2026-03-15 (v3 — material lines controller, encoding fixes, sidebar badge)_
 
 ---
 
@@ -49,7 +49,8 @@ Api/
 ├── FirmController                       — GET /api/firms
 ├── MaterialCatalogController            — CRUD /api/material-items
 ├── MaterialItemRequestController        — POST demande (instrumentiste)
-└── MaterialItemRequestManagerController — gestion demandes manager (list/resolve/ignore)
+├── MaterialItemRequestManagerController — gestion demandes manager (list/resolve/ignore)
+└── MaterialLineController               — CRUD /api/missions/{id}/material-lines
 ```
 
 ### Autorisation — RBAC strict via Voters
@@ -71,6 +72,10 @@ POST /api/instrumentists/{id}/suspend
 POST /api/instrumentists/{id}/activate
 POST /api/material-item-requests/{id}/resolve
 POST /api/material-item-requests/{id}/ignore
+POST /api/missions/{missionId}/material-lines
+PATCH /api/missions/{missionId}/material-lines/{lineId}
+DELETE /api/missions/{missionId}/material-lines/{lineId}
+POST /api/missions/{missionId}/material-item-requests
 ```
 
 Pas de mutation libre via `PATCH` générique pour les transitions.
@@ -185,6 +190,7 @@ En mode `embedded` : pas de bouton retour, après approve/reject appelle `onClos
 - **`allowedActions[]`** : les droits sur les missions sont calculés par le backend et consommés sans inférence côté client
 - **React Query** : toutes les mutations invalident ou mettent à jour le cache via `setQueryData` / `invalidateQueries`
 - **Optimistic updates** : utilisés pour les affiliations de site (avec rollback sur erreur)
+- **Badge sidebar** : le composant `DesktopLayout` poll toutes les 60s les demandes PENDING et affiche un badge sur "Demandes matériel"
 
 ---
 
@@ -296,6 +302,19 @@ Manager → GET /api/material-item-requests?status=PENDING
                           → status=RESOLVED + MaterialLine créée sur la mission
         ou [Ignorer]     → POST /api/material-item-requests/{id}/ignore
                           → status=IGNORED
+```
+
+### Flux encodage matériel (instrumentiste)
+
+```
+Instrumentiste → sélectionne firm → sélectionne item → quantité
+              → POST /api/missions/{id}/material-lines (optimistic update)
+
+Matériel absent → "Matériel non trouvé ?" → modal
+               → POST /api/missions/{id}/material-item-requests (PENDING)
+               → affiché sous l'intervention dans l'encoding
+               → Manager résout → MaterialLine créée automatiquement
+               → Request disparaît de l'encoding (filtre PENDING uniquement)
 ```
 
 ---

@@ -7,6 +7,8 @@ import type {
   CreateMaterialLineBody,
   PatchMaterialLineBody,
   MaterialLineDto,
+  CreateMaterialItemRequestBody,
+  MaterialItemRequestDto,
 } from "./encoding.types";
 
 export async function fetchMissionEncoding(
@@ -94,4 +96,19 @@ export async function deleteMissionMaterialLine(
   lineId: number,
 ): Promise<void> {
   await apiClient.delete(`/api/missions/${missionId}/material-lines/${lineId}`);
+}
+
+/**
+ * Material item requests
+ * - POST /api/missions/{missionId}/material-item-requests
+ */
+export async function createMissionMaterialItemRequest(
+  missionId: number,
+  body: CreateMaterialItemRequestBody,
+): Promise<MaterialItemRequestDto> {
+  const { data } = await apiClient.post<MaterialItemRequestDto>(
+    `/api/missions/${missionId}/material-item-requests`,
+    body,
+  );
+  return data;
 }

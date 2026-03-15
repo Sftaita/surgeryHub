@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  Chip,
   Stack,
   Typography,
   Paper,
@@ -19,6 +20,7 @@ import type {
   PatchMaterialLineBody,
   EncodingMaterialLine,
   MissionEncodingResponse,
+  CreateMaterialItemRequestBody,
 } from "../api/encoding.types";
 import { useToast } from "../../../ui/toast/useToast";
 import {
@@ -28,6 +30,7 @@ import {
   createMissionMaterialLine,
   patchMissionMaterialLine,
   deleteMissionMaterialLine,
+  createMissionMaterialItemRequest,
 } from "../api/encoding.api";
 
 import AddInterventionDialog from "./AddInterventionDialog";
@@ -35,6 +38,7 @@ import EditInterventionDialog from "./EditInterventionDialog";
 import ConfirmDeleteDialog from "./ConfirmDeleteDialog";
 import AddMaterialLineDialog from "./AddMaterialLineDialog";
 import EditMaterialLineDialog from "./EditMaterialLineDialog";
+import MaterialItemRequestDialog from "./MaterialItemRequestDialog";
 
 type Props = {
   missionId: number;
@@ -96,6 +100,11 @@ export default function InterventionsSection({
   const [preferredInterventionId, setPreferredInterventionId] = React.useState<
     number | null
   >(null);
+
+  // dialog - material item request
+  const [openRequestDialog, setOpenRequestDialog] = React.useState(false);
+  const [preferredRequestInterventionId, setPreferredRequestInterventionId] =
+    React.useState<number | null>(null);
 
   const [editLineTarget, setEditLineTarget] = React.useState<{
     line: EncodingMaterialLine;
@@ -335,13 +344,25 @@ export default function InterventionsSection({
     },
   });
 
+  const createRequestMutation = useMutation({
+    mutationFn: (body: CreateMaterialItemRequestBody) =>
+      createMissionMaterialItemRequest(missionId, body),
+    onSuccess: () => {
+      toast.success("Demande envoyée au manager.");
+      setOpenRequestDialog(false);
+      invalidate();
+    },
+    onError: (err: any) => toast.error(extractErrorMessage(err)),
+  });
+
   const isBusy =
     createInterventionMutation.isPending ||
     patchInterventionMutation.isPending ||
     deleteInterventionMutation.isPending ||
     createLineMutation.isPending ||
     patchLineMutation.isPending ||
-    deleteLineMutation.isPending;
+    deleteLineMutation.isPending ||
+    createRequestMutation.isPending;
 
   const sorted = (interventions ?? [])
     .slice()
@@ -467,9 +488,11 @@ export default function InterventionsSection({
                                 {l.item?.isImplant ? " — implant" : ""}
                               </Typography>
 
-                              <Typography color="text.secondary">
-                                Commentaire: {String(l.comment ?? "")}
-                              </Typography>
+                              {l.comment ? (
+                                <Typography color="text.secondary">
+                                  {l.comment}
+                                </Typography>
+                              ) : null}
                             </Stack>
 
                             {canEdit && (
@@ -501,6 +524,45 @@ export default function InterventionsSection({
                     </Stack>
                   )}
                 </Stack>
+
+                {/* Material item requests under intervention */}
+                {(itv.materialItemRequests ?? []).length > 0 && (
+                  <Stack spacing={1} sx={{ pl: 0 }}>
+                    <Typography sx={{ fontWeight: 700 }}>
+                      Demandes matériel
+                    </Typography>
+                    <Stack spacing={0.75}>
+                      {(itv.materialItemRequests ?? []).map((req) => (
+                        <Stack
+                          key={req.id}
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                        >
+                          <Stack sx={{ flex: 1 }}>
+                            <Typography variant="body2">{req.label}</Typography>
+                            {req.referenceCode ? (
+                              <Typography variant="caption" color="text.secondary">
+                                Réf : {req.referenceCode}
+                              </Typography>
+                            ) : null}
+                            {req.comment ? (
+                              <Typography variant="caption" color="text.secondary">
+                                {req.comment}
+                              </Typography>
+                            ) : null}
+                          </Stack>
+                          <Chip
+                            label="En attente"
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                          />
+                        </Stack>
+                      ))}
+                    </Stack>
+                  </Stack>
+                )}
 
                 {idx < sorted.length - 1 && <Divider />}
               </Stack>
@@ -556,13 +618,16 @@ export default function InterventionsSection({
         preferredInterventionId={preferredInterventionId}
         onClose={() => (isBusy ? null : setOpenAddMaterial(false))}
         onSubmit={(values) => {
-          // force quantity string (decimal)
           createLineMutation.mutate({
             missionInterventionId: values.missionInterventionId,
             itemId: values.itemId,
             quantity: String(values.quantity),
             comment: values.comment ?? "",
           });
+        }}
+        onNotFound={(itvId) => {
+          setPreferredRequestInterventionId(itvId || preferredInterventionId);
+          setOpenRequestDialog(true);
         }}
       />
 
@@ -600,6 +665,16 @@ export default function InterventionsSection({
           if (!deleteLineTarget) return;
           deleteLineMutation.mutate(deleteLineTarget.line.id);
         }}
+      />
+
+      {/* Dialog - material item request */}
+      <MaterialItemRequestDialog
+        open={openRequestDialog}
+        loading={createRequestMutation.isPending}
+        interventions={sorted}
+        preferredInterventionId={preferredRequestInterventionId}
+        onClose={() => (isBusy ? null : setOpenRequestDialog(false))}
+        onSubmit={(values) => createRequestMutation.mutate(values)}
       />
     </Paper>
   );

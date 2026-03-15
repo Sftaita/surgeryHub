@@ -45,7 +45,7 @@ class MaterialItemRequestController extends AbstractController
             'json'
         );
 
-        $req = $this->service->create($mission, $dto);
+        $req = $this->service->create($mission, $dto, $user);
 
         return $this->json(['id' => $req->getId()], Response::HTTP_CREATED);
     }

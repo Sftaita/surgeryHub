@@ -29,11 +29,13 @@ type Props = {
   interventions: EncodingIntervention[];
   catalog?: { items: CatalogItem[]; firms: CatalogFirm[] };
 
-  // NEW: permet d’ouvrir “Encoder matériel” depuis une intervention précise
+  // permet d’ouvrir “Encoder matériel” depuis une intervention précise
   preferredInterventionId: number | null;
 
   onClose: () => void;
   onSubmit: (values: CreateMaterialLineBody) => void;
+  // appelé quand l’instrumentiste ne trouve pas le matériel dans le catalogue
+  onNotFound?: (interventionId: number) => void;
 };
 
 export default function AddMaterialLineDialog({
@@ -44,6 +46,7 @@ export default function AddMaterialLineDialog({
   preferredInterventionId,
   onClose,
   onSubmit,
+  onNotFound,
 }: Props) {
   const [interventionId, setInterventionId] = React.useState<number | "">("");
   const [firmId, setFirmId] = React.useState<number | "">("");
@@ -169,6 +172,20 @@ export default function AddMaterialLineDialog({
       </DialogContent>
 
       <DialogActions>
+        {onNotFound && (
+          <Button
+            size="small"
+            color="inherit"
+            sx={{ mr: "auto" }}
+            disabled={loading}
+            onClick={() => {
+              onClose();
+              onNotFound(interventionId !== "" ? Number(interventionId) : 0);
+            }}
+          >
+            Matériel non trouvé ?
+          </Button>
+        )}
         <Button onClick={onClose} disabled={loading}>
           Annuler
         </Button>

@@ -120,3 +120,18 @@ export type MaterialLineDto = {
   quantity: string;
   comment: string;
 };
+
+export type CreateMaterialItemRequestBody = {
+  missionInterventionId: number;
+  label: string;
+  referenceCode?: string;
+  comment?: string;
+};
+
+export type MaterialItemRequestDto = {
+  id: number;
+  label: string;
+  referenceCode: string | null;
+  comment: string | null;
+  status: "PENDING" | "RESOLVED" | "IGNORED";
+};

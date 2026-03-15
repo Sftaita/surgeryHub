@@ -59,6 +59,25 @@ final class MeController extends AbstractController
                 $displayName = (string) $user->getEmail();
             }
 
+            $hourlyRate = $user->getHourlyRate();
+            $consultationFee = $user->getConsultationFee();
+
+            $siteMemberships = [];
+            foreach ($user->getSiteMemberships() as $membership) {
+                $site = $membership->getSite();
+                if (!$site || $site->getId() === null) {
+                    continue;
+                }
+                $siteMemberships[] = new \App\Dto\Request\Response\InstrumentistSiteMembershipResponse(
+                    id: (int) $membership->getId(),
+                    site: new \App\Dto\Request\Response\SiteSummaryResponse(
+                        id: (int) $site->getId(),
+                        name: (string) $site->getName(),
+                    ),
+                    siteRole: (string) ($membership->getSiteRole() ?? 'INSTRUMENTIST'),
+                );
+            }
+
             $instrumentistProfile = new InstrumentistProfileResponse(
                 id: (int) $user->getId(),
                 email: (string) $user->getEmail(),
@@ -68,6 +87,10 @@ final class MeController extends AbstractController
                 active: $user->isActive(),
                 employmentType: $employmentType,
                 defaultCurrency: $defaultCurrency,
+                hourlyRate: $hourlyRate !== null ? (string) $hourlyRate : null,
+                consultationFee: $consultationFee !== null ? (string) $consultationFee : null,
+                profilePicturePath: $profilePictureUrl,
+                siteMemberships: $siteMemberships,
             );
         }
 

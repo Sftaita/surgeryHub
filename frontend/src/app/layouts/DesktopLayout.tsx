@@ -1,5 +1,6 @@
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import {
+  Badge,
   Box,
   Divider,
   Drawer,
@@ -10,7 +11,9 @@ import {
   Typography,
   Button,
 } from "@mui/material";
+import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
+import { getMaterialRequests } from "../features/manager-catalogue/api/catalogue.api";
 
 const NAV_WIDTH = 220;
 
@@ -36,6 +39,13 @@ export function DesktopLayout() {
   const navigate = useNavigate();
   const { state, logout } = useAuth();
   const isAuthenticated = state.status === "authenticated";
+
+  const pendingRequestsQuery = useQuery({
+    queryKey: ["material-requests", "PENDING"],
+    queryFn: () => getMaterialRequests({ status: "PENDING" }),
+    refetchInterval: 60_000,
+  });
+  const pendingCount = pendingRequestsQuery.data?.items?.length ?? 0;
 
   return (
     <Box sx={{ display: "flex", minHeight: "100vh" }}>
@@ -78,25 +88,40 @@ export function DesktopLayout() {
                       >
                         {item.label}
                       </Typography>
-                      {item.children.map((child) => (
-                        <NavLink
-                          key={child.href}
-                          to={child.href}
-                          style={{ textDecoration: "none", color: "inherit" }}
-                        >
-                          {({ isActive }) => (
-                            <ListItemButton
-                              selected={isActive}
-                              sx={{ pl: 3, py: 0.75 }}
-                            >
-                              <ListItemText
-                                primary={child.label}
-                                primaryTypographyProps={{ variant: "body2" }}
-                              />
-                            </ListItemButton>
-                          )}
-                        </NavLink>
-                      ))}
+                      {item.children.map((child) => {
+                        const isRequests = child.href === "/app/m/catalogue/requests";
+                        return (
+                          <NavLink
+                            key={child.href}
+                            to={child.href}
+                            style={{ textDecoration: "none", color: "inherit" }}
+                          >
+                            {({ isActive }) => (
+                              <ListItemButton
+                                selected={isActive}
+                                sx={{ pl: 3, py: 0.75 }}
+                              >
+                                <ListItemText
+                                  primary={
+                                    isRequests && pendingCount > 0 ? (
+                                      <Badge
+                                        badgeContent={pendingCount}
+                                        color="error"
+                                        sx={{ "& .MuiBadge-badge": { right: -14, top: 1 } }}
+                                      >
+                                        {child.label}
+                                      </Badge>
+                                    ) : (
+                                      child.label
+                                    )
+                                  }
+                                  primaryTypographyProps={{ variant: "body2" }}
+                                />
+                              </ListItemButton>
+                            )}
+                          </NavLink>
+                        );
+                      })}
                     </Box>
                   );
                 }

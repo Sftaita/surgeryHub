@@ -6,6 +6,7 @@ use App\Dto\Request\MaterialItemRequestCreateRequest;
 use App\Entity\MaterialItemRequest;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
+use App\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
@@ -15,14 +16,15 @@ class MaterialItemRequestService
         private readonly EntityManagerInterface $em,
     ) {}
 
-    public function create(Mission $mission, MaterialItemRequestCreateRequest $dto): MaterialItemRequest
+    public function create(Mission $mission, MaterialItemRequestCreateRequest $dto, User $createdBy): MaterialItemRequest
     {
         $req = new MaterialItemRequest();
         $req
             ->setMission($mission)
             ->setLabel($dto->label)
             ->setReferenceCode($dto->referenceCode)
-            ->setComment($dto->comment);
+            ->setComment($dto->comment)
+            ->setCreatedBy($createdBy);
 
         if ($dto->missionInterventionId !== null) {
             $intervention = $this->em->find(MissionIntervention::class, $dto->missionInterventionId);

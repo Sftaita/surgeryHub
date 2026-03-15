@@ -1,6 +1,6 @@
 # SurgicalHub — API (Single Source of Truth)
 
-_Last updated: 2026-03-15 (v2 — catalogue matériel)_
+_Last updated: 2026-03-15 (v3 — material lines, material item requests instrumentiste, /api/me fix)_
 
 ---
 
@@ -219,6 +219,8 @@ DECLARED → REJECTED
 
 > Fonctionne aussi pour les missions `DECLARED`.
 
+> **materialItemRequests dans l'encoding :** seules les demandes avec `status = PENDING` sont incluses. Les demandes RESOLVED ou IGNORED n'apparaissent pas (la RESOLVED génère une MaterialLine visible dans `materialLines`).
+
 ---
 
 ## 8. Interventions
@@ -234,9 +236,97 @@ _(Inchangé)_
 
 ## 9. Material Lines
 
-_(Inchangé)_
+### `POST /api/missions/{missionId}/material-lines`
 
-**Contraintes supplémentaires :**
+**AuthZ :** `MissionVoter::EDIT_ENCODING` (instrumentiste assigné)
+
+Ajouter une ligne matériel à une intervention.
+
+**Body JSON :**
+
+```json
+{
+  "missionInterventionId": 12,
+  "itemId": 45,
+  "quantity": "3",
+  "comment": "Commentaire optionnel"
+}
+```
+
+| Champ | Requis | Description |
+|---|---|---|
+| `missionInterventionId` | ✓ | ID de l'intervention de la mission |
+| `itemId` | ✓ | ID du `MaterialItem` dans le catalogue |
+| `quantity` | ✓ | Quantité (string décimale : `"1"`, `"0.5"`, `"2,5"`) |
+| `comment` | — | Commentaire libre |
+
+**Effets backend :**
+- Vérifie que l'intervention appartient bien à la mission
+- Normalise la quantité en `DECIMAL(10,2)` (ex: `"3"` → `"3.00"`)
+- Set `createdBy = currentUser`
+
+**Réponse — 201 :**
+
+```json
+{
+  "id": 88,
+  "missionInterventionId": 12,
+  "item": {
+    "id": 45,
+    "firm": { "id": 1, "name": "Arthrex" },
+    "label": "Anchor suture 5.5mm",
+    "referenceCode": "AR-1234",
+    "unit": "pièce",
+    "isImplant": false
+  },
+  "quantity": "3.00",
+  "comment": "Commentaire optionnel"
+}
+```
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non autorisé / encoding guard |
+| `404` | Mission, intervention ou item introuvable |
+
+---
+
+### `PATCH /api/missions/{missionId}/material-lines/{lineId}`
+
+**AuthZ :** `MissionVoter::EDIT_ENCODING`
+
+Mise à jour partielle d'une ligne matériel.
+
+**Body JSON :**
+
+```json
+{
+  "quantity": "2",
+  "comment": "Nouveau commentaire"
+}
+```
+
+Tous les champs sont optionnels. `missionInterventionId` peut aussi être modifié.
+
+**Réponse — 200 :** MaterialLine mise à jour (même format que POST)
+
+---
+
+### `DELETE /api/missions/{missionId}/material-lines/{lineId}`
+
+**AuthZ :** `MissionVoter::EDIT_ENCODING`
+
+Supprimer une ligne matériel.
+
+**Réponse — 204 :** Pas de corps
+
+**Erreurs :** `404` si la ligne n'appartient pas à la mission
+
+---
+
+**Contraintes supplémentaires (toutes opérations material-lines) :**
 
 - Interdit si `mission.status = REJECTED`
 - Interdit si `mission.type = CONSULTATION`
@@ -1161,3 +1251,106 @@ Body vide.
 **Réponse — 200 :** MaterialItemRequest avec `status: "IGNORED"`
 
 **Erreurs :** `404` introuvable, `409` non PENDING
+
+---
+
+## 21. Profil utilisateur connecté
+
+### `GET /api/me`
+
+**AuthZ :** Tout utilisateur authentifié
+
+Retourne le profil de l'utilisateur connecté, adapté à son rôle.
+
+**Réponse — 200 (instrumentiste) :**
+
+```json
+{
+  "id": 12,
+  "email": "ole@example.com",
+  "firstname": "Ole",
+  "lastname": "Salve",
+  "profilePictureUrl": "http://localhost/uploads/profile-pictures/user-12.jpg",
+  "role": "INSTRUMENTIST",
+  "sites": [
+    { "id": 2, "name": "Delta", "timezone": "Europe/Brussels" }
+  ],
+  "activeSiteId": null,
+  "instrumentistProfile": {
+    "id": 12,
+    "email": "ole@example.com",
+    "firstname": "Ole",
+    "lastname": "Salve",
+    "displayName": "Ole Salve",
+    "active": true,
+    "employmentType": null,
+    "defaultCurrency": "EUR",
+    "hourlyRate": "350",
+    "consultationFee": "120",
+    "profilePicturePath": "/uploads/profile-pictures/user-12.jpg",
+    "siteMemberships": [
+      {
+        "id": 44,
+        "site": { "id": 2, "name": "Delta" },
+        "siteRole": "INSTRUMENTIST"
+      }
+    ]
+  }
+}
+```
+
+**Notes :**
+- `profilePictureUrl` est l'URL complète (absolue) construite par le backend
+- `profilePicturePath` dans `instrumentistProfile` est le chemin relatif
+- Pour les rôles `MANAGER` / `ADMIN` / `SURGEON`, `instrumentistProfile` est `null`
+
+---
+
+## 22. Demandes matériel — Côté instrumentiste
+
+### `POST /api/missions/{missionId}/material-item-requests`
+
+**AuthZ :** `MissionVoter::EDIT_ENCODING` (instrumentiste assigné)
+
+Déclarer un matériel absent du catalogue lors de l'encodage. La demande est transmise au manager.
+
+**Body JSON :**
+
+```json
+{
+  "missionInterventionId": 12,
+  "label": "Anchor suture 5.5mm Smith & Nephew",
+  "referenceCode": "REF-12345",
+  "comment": "Utilisé lors de la ligamentoplastie LCA"
+}
+```
+
+| Champ | Requis | Description |
+|---|---|---|
+| `missionInterventionId` | — | Intervention concernée (recommandé) |
+| `label` | ✓ | Nom du matériel demandé |
+| `referenceCode` | — | Référence fabricant connue |
+| `comment` | — | Informations complémentaires pour le manager |
+
+**Effets backend :**
+- Crée un `MaterialItemRequest` avec `status = PENDING`
+- Set `createdBy = currentUser`
+- La mission peut continuer sans bloquer l'encodage
+
+**Réponse — 201 :**
+
+```json
+{ "id": 14 }
+```
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non autorisé / encoding guard |
+| `404` | Mission introuvable / intervention introuvable |
+| `422` | `label` manquant |
+
+**Notes frontend :**
+- La demande n'est visible dans `GET /api/missions/{id}/encoding` que tant qu'elle est `PENDING`
+- Une fois résolue par le manager, une `MaterialLine` est créée automatiquement et la demande disparaît de l'encoding

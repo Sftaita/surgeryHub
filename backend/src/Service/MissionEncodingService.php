@@ -124,6 +124,9 @@ final class MissionEncodingService
             if ($req->getMissionIntervention()?->getId() !== $i->getId()) {
                 continue;
             }
+            if ($req->getStatus() !== MaterialItemRequest::STATUS_PENDING) {
+                continue;
+            }
             $requests[] = $this->mapMaterialItemRequest($req);
         }
 

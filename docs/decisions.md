@@ -486,6 +486,30 @@ Ce mécanisme garantit que les lignes matériel de la mission reflètent toujour
 
 ---
 
+## D-017 — Filtrage PENDING dans l'encoding instrumentiste
+
+Date : 15-03-2026
+
+### Décision
+
+Le payload `GET /api/missions/{id}/encoding` ne renvoie que les `MaterialItemRequest` avec `status = PENDING` dans le tableau `materialItemRequests` de chaque intervention.
+
+Les demandes `RESOLVED` et `IGNORED` sont exclues.
+
+### Motivation
+
+- Une demande `RESOLVED` génère automatiquement une `MaterialLine` sur la mission — elle est donc déjà représentée dans `materialLines`.
+- Afficher aussi la demande résolue provoquerait un doublon visuel côté instrumentiste.
+- Une demande `IGNORED` n'a plus d'action possible — l'afficher serait du bruit sans valeur.
+
+### Conséquences
+
+- L'instrumentiste voit uniquement les demandes en attente sous chaque intervention.
+- Dès que le manager résout une demande, elle disparaît de l'encoding et la MaterialLine correspondante apparaît.
+- Le manager voit toutes les demandes (PENDING/RESOLVED/IGNORED) via `GET /api/material-item-requests`.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -500,3 +524,4 @@ Ce mécanisme garantit que les lignes matériel de la mission reflètent toujour
 | 12-03-2026 | D-014 — Emails transactionnels via Symfony Mailer + Messenger |
 | 11-03-2026 | D-015 — Onboarding instrumentiste par invitation manager |
 | 15-03-2026 | D-016 — Module catalogue matériel + gestion demandes |
+| 15-03-2026 | D-017 — Filtrage PENDING dans l'encoding instrumentiste |
