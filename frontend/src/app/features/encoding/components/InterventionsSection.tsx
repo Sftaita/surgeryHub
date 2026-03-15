@@ -408,18 +408,15 @@ export default function InterventionsSection({
                 {/* Intervention line */}
                 <Stack direction="row" spacing={1} alignItems="flex-start">
                   <Stack sx={{ flex: 1 }} spacing={0.5}>
-                    <Typography sx={{ fontWeight: 700 }}>
+                    <Typography variant="subtitle2" fontWeight={700}>
                       {titlePrefix} — {itv.label}
-                    </Typography>
-                    <Typography color="text.secondary">
-                      orderIndex: {String(itv.orderIndex)}
                     </Typography>
                   </Stack>
 
                   {canEdit && (
                     <Stack direction="row" spacing={1} alignItems="center">
                       <Button
-                        variant="outlined"
+                        variant="text"
                         size="small"
                         onClick={() => {
                           setPreferredInterventionId(itv.id);
@@ -453,7 +450,7 @@ export default function InterventionsSection({
 
                 {/* Material lines under intervention */}
                 <Stack spacing={1} sx={{ pl: 0 }}>
-                  <Typography sx={{ fontWeight: 700 }}>
+                  <Typography variant="overline" color="text.secondary">
                     Matériel encodé
                   </Typography>
 
@@ -471,27 +468,20 @@ export default function InterventionsSection({
                             alignItems="flex-start"
                           >
                             <Stack sx={{ flex: 1 }}>
-                              <Typography>
-                                {l.item?.label ?? "—"}{" "}
-                                <Typography
-                                  component="span"
-                                  color="text.secondary"
-                                >
-                                  ({l.item?.firm?.name ?? "—"} /{" "}
-                                  {l.item?.referenceCode ?? "—"})
-                                </Typography>
+                              <Typography variant="body2">
+                                {l.item?.label ?? "—"}
                               </Typography>
 
-                              <Typography color="text.secondary">
-                                Qté: {String(l.quantity)}{" "}
-                                {l.item?.unit ? `(${l.item.unit})` : ""}
-                                {l.item?.isImplant ? " — implant" : ""}
+                              <Typography variant="caption" color="text.secondary">
+                                {l.item?.firm?.name ?? "—"}{l.item?.referenceCode ? ` · ${l.item.referenceCode}` : ""}
+                              </Typography>
+
+                              <Typography variant="body2" color="text.secondary">
+                                {l.quantity} {l.item?.unit ?? ""}{l.item?.isImplant ? " · implant" : ""}
                               </Typography>
 
                               {l.comment ? (
-                                <Typography color="text.secondary">
-                                  {l.comment}
-                                </Typography>
+                                <Typography variant="caption" color="text.secondary">{l.comment}</Typography>
                               ) : null}
                             </Stack>
 
@@ -528,7 +518,7 @@ export default function InterventionsSection({
                 {/* Material item requests under intervention */}
                 {(itv.materialItemRequests ?? []).length > 0 && (
                   <Stack spacing={1} sx={{ pl: 0 }}>
-                    <Typography sx={{ fontWeight: 700 }}>
+                    <Typography variant="overline" color="text.secondary">
                       Demandes matériel
                     </Typography>
                     <Stack spacing={0.75}>

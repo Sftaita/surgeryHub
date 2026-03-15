@@ -139,10 +139,19 @@ export default function MissionEncodingPage() {
     <Stack spacing={2}>
       <Stack direction="row" spacing={1} alignItems="center">
         <Button variant="outlined" onClick={() => navigate(-1)}>
-          Retour
+          ← Mission
         </Button>
 
-        <Typography variant="h6">Encodage — Mission #{mission.id}</Typography>
+        <Stack sx={{ flex: 1 }}>
+          <Typography variant="h6">Encodage — Mission #{mission.id}</Typography>
+          <Typography variant="caption" color="text.secondary">
+            {encoding.mission?.type === "BLOCK"
+              ? "Bloc opératoire"
+              : encoding.mission?.type === "CONSULTATION"
+                ? "Consultation"
+                : String(encoding.mission?.type ?? "")}
+          </Typography>
+        </Stack>
 
         {canSubmit && (
           <Button
@@ -150,15 +159,10 @@ export default function MissionEncodingPage() {
             onClick={() => setOpenSubmit(true)}
             sx={{ marginLeft: "auto" }}
           >
-            SUBMIT
+            Soumettre
           </Button>
         )}
       </Stack>
-
-      <Typography color="text.secondary">
-        Type: {String(encoding.mission?.type ?? "—")} — Statut:{" "}
-        {String(encoding.mission?.status ?? "—")}
-      </Typography>
 
       <InterventionsSection
         missionId={mission.id}

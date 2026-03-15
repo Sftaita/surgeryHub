@@ -13,100 +13,88 @@ import {
   DialogActions,
   Box,
   Divider,
+  Chip,
+  Paper,
 } from "@mui/material";
 
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 
 import dayjs from "dayjs";
+import "dayjs/locale/fr";
 
 import { fetchMissionById } from "../../features/missions/api/missions.api";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
 
-function formatDateShort(d: dayjs.Dayjs): string {
-  return d.format("DD.MM.YY");
-}
+dayjs.locale("fr");
 
-function formatTimeShort(d: dayjs.Dayjs): string {
-  return d.format("HH[h]mm");
-}
+type ChipColor =
+  | "default"
+  | "info"
+  | "primary"
+  | "warning"
+  | "error"
+  | "success";
 
 type StatusUi = {
-  badgeText: string;
-  badgeTone: "neutral" | "warning" | "error";
+  chipLabel: string;
+  chipColor: ChipColor;
   message?: string;
   dialogTitle?: string;
   dialogBody?: string[];
 };
 
 function getStatusUi(status: string): StatusUi {
-  const s = String(status ?? "—");
+  const s = String(status ?? "");
 
-  if (s === "DECLARED") {
-    return {
-      badgeText: "DECLARED",
-      badgeTone: "warning",
-      message: "Mission en attente de validation par le manager.",
-      dialogTitle: "Mission déclarée",
-      dialogBody: [
-        "Mission en attente de validation par le manager.",
-        "Vous pouvez consulter la mission. Certaines actions peuvent être indisponibles tant que la validation n’est pas faite.",
-      ],
-    };
+  switch (s) {
+    case "DRAFT":
+      return { chipLabel: "Brouillon", chipColor: "default" };
+    case "OPEN":
+      return { chipLabel: "Disponible", chipColor: "info" };
+    case "ASSIGNED":
+      return { chipLabel: "En cours", chipColor: "primary" };
+    case "DECLARED":
+      return {
+        chipLabel: "À valider",
+        chipColor: "warning",
+        message: "Mission en attente de validation par le manager.",
+        dialogTitle: "Mission déclarée",
+        dialogBody: [
+          "Mission en attente de validation par le manager.",
+          "Vous pouvez consulter la mission. Certaines actions peuvent être indisponibles tant que la validation n'est pas faite.",
+        ],
+      };
+    case "REJECTED":
+      return {
+        chipLabel: "Rejetée",
+        chipColor: "error",
+        message: "Mission rejetée par le manager. Encodage supprimé.",
+        dialogTitle: "Mission rejetée",
+        dialogBody: [
+          "Mission rejetée par le manager.",
+          "L'encodage a été supprimé et aucune action d'édition n'est disponible.",
+        ],
+      };
+    case "SUBMITTED":
+      return { chipLabel: "Soumis", chipColor: "success" };
+    case "VALIDATED":
+      return { chipLabel: "Validée", chipColor: "success" };
+    case "CLOSED":
+      return { chipLabel: "Clôturée", chipColor: "default" };
+    default:
+      return { chipLabel: s || "—", chipColor: "default" };
   }
-
-  if (s === "REJECTED") {
-    return {
-      badgeText: "REJECTED",
-      badgeTone: "error",
-      message: "Mission rejetée par le manager. Encodage supprimé.",
-      dialogTitle: "Mission rejetée",
-      dialogBody: [
-        "Mission rejetée par le manager.",
-        "L’encodage a été supprimé et aucune action d’édition n’est disponible.",
-      ],
-    };
-  }
-
-  return {
-    badgeText: s,
-    badgeTone: "neutral",
-  };
 }
 
-function StatusBadge({
-  text,
-  tone,
-}: {
-  text: string;
-  tone: "neutral" | "warning" | "error";
-}) {
-  const sx =
-    tone === "warning"
-      ? { bgcolor: "warning.light", color: "warning.contrastText" }
-      : tone === "error"
-        ? { bgcolor: "error.light", color: "error.contrastText" }
-        : { bgcolor: "grey.200", color: "text.primary" };
+function formatDateLong(d: dayjs.Dayjs): string {
+  const raw = d.format("dddd D MMMM YYYY");
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
 
-  return (
-    <Box
-      component="span"
-      sx={{
-        display: "inline-flex",
-        alignItems: "center",
-        px: 1,
-        py: 0.25,
-        borderRadius: 1,
-        fontSize: 12,
-        fontWeight: 700,
-        letterSpacing: 0.2,
-        ...sx,
-      }}
-    >
-      {text}
-    </Box>
-  );
+function formatTimeShort(d: dayjs.Dayjs): string {
+  return d.format("HH[h]mm");
 }
 
 function formatHoursLabel(hours?: string | number | null): string {
@@ -114,6 +102,12 @@ function formatHoursLabel(hours?: string | number | null): string {
   const n = typeof hours === "string" ? Number(hours) : hours;
   if (!Number.isFinite(n)) return "—";
   return `${n} h`;
+}
+
+function missionTypeLabel(type?: string | null): string {
+  if (type === "BLOCK") return "Bloc opératoire";
+  if (type === "CONSULTATION") return "Consultation";
+  return type ?? "—";
 }
 
 type MissionDetailContentProps = {
@@ -131,8 +125,6 @@ export function MissionDetailContent({
   const queryClient = useQueryClient();
   const [openSubmit, setOpenSubmit] = React.useState(false);
   const [statusInfoOpen, setStatusInfoOpen] = React.useState(false);
-
-  // Lot F5
   const [openEditHours, setOpenEditHours] = React.useState(false);
 
   const isValidId = Number.isFinite(missionId) && missionId > 0;
@@ -150,41 +142,42 @@ export function MissionDetailContent({
   if (isLoading) return <CircularProgress />;
   if (!mission) return <Typography>Mission introuvable</Typography>;
 
-  // Lot 4/5/6 — strictement piloté par allowedActions
   const canEncoding =
     mission.allowedActions?.includes("encoding") ||
     mission.allowedActions?.includes("edit_encoding");
 
   const canSubmit = mission.allowedActions?.includes("submit");
-
-  // Lot F5 — strictement piloté par allowedActions
   const canEditHours = mission.allowedActions?.includes("edit_hours");
 
-  const statusUi = getStatusUi(String(mission.status ?? "—"));
+  const statusUi = getStatusUi(String(mission.status ?? ""));
 
-  // --- Horaire (format utilisateur) ---
-  // On parse via dayjs; la timezone par défaut est Europe/Brussels (AppProviders)
   const start = mission.startAt ? dayjs(String(mission.startAt)) : null;
   const end = mission.endAt ? dayjs(String(mission.endAt)) : null;
 
   const hasBothDates = !!start && !!end && start.isValid() && end.isValid();
-  const sameDay = hasBothDates ? start!.isSame(end!, "day") : false;
 
-  const dateLine = (() => {
-    if (!hasBothDates) return "—";
-    if (sameDay) return formatDateShort(start!);
-    return `${formatDateShort(start!)} - ${formatDateShort(end!)}`;
-  })();
+  const dateLine = hasBothDates ? formatDateLong(start!) : "—";
+  const timeLine = hasBothDates
+    ? `${formatTimeShort(start!)} → ${formatTimeShort(end!)}`
+    : "—";
 
-  const startTimeLine = hasBothDates ? formatTimeShort(start!) : "—";
-  const endTimeLine = hasBothDates ? formatTimeShort(end!) : "—";
-
-  // Lieu: éviter les doublons
   const siteName = (mission.site?.name ?? "").trim() || "—";
 
-  const hasStatusDialog = !!statusUi.dialogTitle;
+  const surgeonRef = (mission as any).surgeon;
+  const surgeonLabel = (() => {
+    if (!surgeonRef) return null;
+    const fn = (surgeonRef.firstname ?? "").toString().trim();
+    const ln = (surgeonRef.lastname ?? "").toString().trim();
+    const full = `${fn} ${ln}`.trim();
+    if (full) return `Dr. ${full}`;
+    const dn = (surgeonRef.displayName ?? "").toString().trim();
+    if (dn) return dn;
+    return surgeonRef.email ?? null;
+  })();
 
-  // Lot F5 — service (heures prestées)
+  const missionType = missionTypeLabel((mission as any).type ?? null);
+
+  const hasStatusDialog = !!statusUi.dialogTitle;
   const hoursLabel = formatHoursLabel(mission.service?.hours ?? null);
 
   return (
@@ -205,30 +198,64 @@ export function MissionDetailContent({
 
       <Divider />
 
-      <Stack spacing={0.5}>
-        <Typography variant="subtitle2" color="text.secondary">
-          Lieu
-        </Typography>
-        <Typography>{siteName}</Typography>
-      </Stack>
+      <Paper variant="outlined" sx={{ p: 2 }}>
+        <Stack spacing={1.5}>
+          <Stack spacing={0.25}>
+            <Typography variant="caption" color="text.secondary">
+              Site
+            </Typography>
+            <Typography variant="body1" fontWeight={600}>
+              {siteName}
+            </Typography>
+          </Stack>
 
-      <Stack spacing={0.5}>
-        <Typography variant="subtitle2" color="text.secondary">
-          Horaire
-        </Typography>
+          <Stack spacing={0.25}>
+            <Typography variant="caption" color="text.secondary">
+              Date
+            </Typography>
+            <Typography variant="body1" fontWeight={600}>
+              {dateLine}
+            </Typography>
+          </Stack>
 
-        <Typography>Date : {dateLine}</Typography>
+          <Stack spacing={0.25}>
+            <Typography variant="caption" color="text.secondary">
+              Horaire
+            </Typography>
+            <Typography variant="body1" fontWeight={600}>
+              {timeLine}
+            </Typography>
+          </Stack>
 
-        <Stack direction="row" spacing={2}>
-          <Typography>Début : {startTimeLine}</Typography>
-          <Typography>Fin : {endTimeLine}</Typography>
+          {surgeonLabel ? (
+            <Stack spacing={0.25}>
+              <Typography variant="caption" color="text.secondary">
+                Chirurgien
+              </Typography>
+              <Typography variant="body1" fontWeight={600}>
+                {surgeonLabel}
+              </Typography>
+            </Stack>
+          ) : null}
+
+          <Stack spacing={0.25}>
+            <Typography variant="caption" color="text.secondary">
+              Type
+            </Typography>
+            <Typography variant="body1" fontWeight={600}>
+              {missionType}
+            </Typography>
+          </Stack>
         </Stack>
-      </Stack>
+      </Paper>
 
       <Stack spacing={0.75}>
         <Stack direction="row" spacing={1} alignItems="center">
-          <Typography>Statut :</Typography>
-          <StatusBadge text={statusUi.badgeText} tone={statusUi.badgeTone} />
+          <Chip
+            label={statusUi.chipLabel}
+            color={statusUi.chipColor}
+            size="small"
+          />
 
           {hasStatusDialog && (
             <IconButton
@@ -281,13 +308,13 @@ export function MissionDetailContent({
           variant="contained"
           onClick={() => navigate(`/app/i/missions/${mission.id}/encoding`)}
         >
-          Encodage
+          Encoder la mission
         </Button>
       )}
 
       {canSubmit && (
         <Button variant="contained" onClick={() => setOpenSubmit(true)}>
-          Submit
+          Soumettre
         </Button>
       )}
 

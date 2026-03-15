@@ -1,6 +1,7 @@
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
 import timezone from "dayjs/plugin/timezone";
+import "dayjs/locale/fr";
 import {
   Card,
   CardActions,
@@ -8,6 +9,7 @@ import {
   Button,
   Stack,
   Typography,
+  Chip,
   Box,
 } from "@mui/material";
 
@@ -15,6 +17,7 @@ import type { Mission, UserRef } from "../api/missions.types";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
+dayjs.locale("fr");
 
 type Action = {
   label: string;
@@ -30,12 +33,60 @@ type Props = {
   secondaryAction?: Action;
 };
 
-function formatMissionDateRange(startAt?: string, endAt?: string) {
+type ChipColor =
+  | "default"
+  | "info"
+  | "primary"
+  | "warning"
+  | "error"
+  | "success";
+
+function getStatusChip(status: string): { label: string; color: ChipColor } {
+  switch (status) {
+    case "DRAFT":
+      return { label: "Brouillon", color: "default" };
+    case "OPEN":
+      return { label: "Disponible", color: "info" };
+    case "ASSIGNED":
+      return { label: "En cours", color: "primary" };
+    case "DECLARED":
+      return { label: "À valider", color: "warning" };
+    case "REJECTED":
+      return { label: "Rejetée", color: "error" };
+    case "SUBMITTED":
+      return { label: "Soumis", color: "success" };
+    case "VALIDATED":
+      return { label: "Validée", color: "success" };
+    case "CLOSED":
+      return { label: "Clôturée", color: "default" };
+    default:
+      return { label: status, color: "default" };
+  }
+}
+
+function formatMissionDateRange(startAt?: string, endAt?: string): string {
   if (!startAt || !endAt) return "—";
   try {
-    const s = dayjs(startAt).tz("Europe/Brussels");
-    const e = dayjs(endAt).tz("Europe/Brussels");
-    return `${s.format("DD/MM HH:mm")} → ${e.format("DD/MM HH:mm")}`;
+    const s = dayjs(startAt).tz("Europe/Brussels").locale("fr");
+    const e = dayjs(endAt).tz("Europe/Brussels").locale("fr");
+    const startTime = s.format("HH[h]mm");
+    const endTime = e.format("HH[h]mm");
+
+    if (s.isSame(e, "day")) {
+      const dayLabel =
+        s.format("ddd").charAt(0).toUpperCase() + s.format("ddd").slice(1);
+      const dayNum = s.format("D");
+      const month = s.format("MMMM");
+      return `${dayLabel} ${dayNum} ${month} · ${startTime} → ${endTime}`;
+    } else {
+      const startDay = s.format("D");
+      const endDay = e.format("D");
+      const startMonth = s.format("MMMM");
+      const endMonth = e.format("MMMM");
+      const monthLabel =
+        startMonth === endMonth ? endMonth : `${startMonth} → ${endMonth}`;
+      return `${startDay} → ${endDay} ${monthLabel} · ${startTime} → ${endTime}`;
+    }
   } catch {
     return `${startAt} → ${endAt}`;
   }
@@ -52,62 +103,21 @@ function userLabel(u?: UserRef | null): string {
   return full || u.email || "—";
 }
 
-function getStatusUi(status: string): {
-  badgeText: string;
-  badgeTone: "neutral" | "warning" | "error";
-  message?: string;
-} {
-  const s = String(status ?? "—");
-
-  if (s === "DECLARED") {
-    return {
-      badgeText: "DECLARED",
-      badgeTone: "warning",
-      message: "En attente de validation manager.",
-    };
-  }
-
-  if (s === "REJECTED") {
-    return {
-      badgeText: "REJECTED",
-      badgeTone: "error",
-      message: "Rejetée — encodage supprimé.",
-    };
-  }
-
-  return { badgeText: s, badgeTone: "neutral" };
-}
-
-function StatusBadge({
-  text,
-  tone,
+function InfoRow({
+  label,
+  value,
 }: {
-  text: string;
-  tone: "neutral" | "warning" | "error";
+  label: string;
+  value: React.ReactNode;
 }) {
-  const sx =
-    tone === "warning"
-      ? { bgcolor: "warning.light", color: "warning.contrastText" }
-      : tone === "error"
-        ? { bgcolor: "error.light", color: "error.contrastText" }
-        : { bgcolor: "grey.200", color: "text.primary" };
-
   return (
-    <Box
-      component="span"
-      sx={{
-        display: "inline-flex",
-        alignItems: "center",
-        px: 1,
-        py: 0.25,
-        borderRadius: 1,
-        fontSize: 12,
-        fontWeight: 700,
-        letterSpacing: 0.2,
-        ...sx,
-      }}
-    >
-      {text}
+    <Box>
+      <Typography variant="caption" color="text.secondary" display="block">
+        {label}
+      </Typography>
+      <Typography variant="body2" fontWeight={600}>
+        {value}
+      </Typography>
     </Box>
   );
 }
@@ -122,32 +132,30 @@ export default function MissionCardMobile({
     (mission.siteId ? `Site #${mission.siteId}` : "—");
 
   const dateRange = formatMissionDateRange(mission.startAt, mission.endAt);
-  const statusUi = getStatusUi((mission.status ?? "—").toString());
+  const status = String(mission.status ?? "");
+  const { label: chipLabel, color: chipColor } = getStatusChip(status);
+  const surgeon = userLabel(mission.surgeon);
 
   return (
     <Card variant="outlined">
       <CardContent>
-        <Stack spacing={0.5}>
-          <Typography variant="subtitle1" fontWeight={700}>
-            Mission #{mission.id}
-          </Typography>
-
-          <Typography variant="body2">Site : {siteName}</Typography>
-          <Typography variant="body2">Horaire : {dateRange}</Typography>
-          <Typography variant="body2">
-            Chirurgien : {userLabel(mission.surgeon)}
-          </Typography>
-
-          <Stack direction="row" spacing={1} alignItems="center">
-            <Typography variant="body2">Statut :</Typography>
-            <StatusBadge text={statusUi.badgeText} tone={statusUi.badgeTone} />
+        <Stack spacing={1.5}>
+          <Stack
+            direction="row"
+            alignItems="center"
+            justifyContent="space-between"
+          >
+            <Typography variant="subtitle1" fontWeight={700}>
+              Mission #{mission.id}
+            </Typography>
+            <Chip label={chipLabel} color={chipColor} size="small" />
           </Stack>
 
-          {statusUi.message ? (
-            <Typography variant="body2" color="text.secondary">
-              {statusUi.message}
-            </Typography>
-          ) : null}
+          <Stack spacing={1}>
+            <InfoRow label="Site" value={siteName} />
+            <InfoRow label="Horaire" value={dateRange} />
+            <InfoRow label="Chirurgien" value={surgeon} />
+          </Stack>
         </Stack>
       </CardContent>
 
