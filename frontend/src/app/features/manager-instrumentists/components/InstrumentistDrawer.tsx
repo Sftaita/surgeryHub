@@ -17,6 +17,7 @@ import {
 
 import { DrawerSection } from "./DrawerSection";
 import { AddSiteMembershipDialog } from "./AddSiteMembershipDialog";
+import { InstrumentistPlanningSection } from "./InstrumentistPlanningSection";
 import ConfirmDeleteDialog from "../../encoding/components/ConfirmDeleteDialog";
 import { useInstrumentistDrawer } from "../hooks/useInstrumentistDrawer";
 import {
@@ -589,9 +590,9 @@ export function InstrumentistDrawer({
 
                 <Box ref={planningSectionRef}>
                   <DrawerSection title="Planning">
-                    <Typography variant="body2" color="text.secondary">
-                      Section préparée pour un prochain lot.
-                    </Typography>
+                    <InstrumentistPlanningSection
+                      instrumentistId={instrumentist.id}
+                    />
                   </DrawerSection>
                 </Box>
               </Stack>

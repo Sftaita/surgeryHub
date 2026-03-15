@@ -3,6 +3,7 @@
 namespace App\Controller\Api;
 
 use App\Dto\Request\MaterialItemFilter;
+use App\Entity\Firm;
 use App\Entity\MaterialItem;
 use App\Service\MaterialCatalogService;
 use App\Service\MaterialItemMapper;
@@ -10,6 +11,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
@@ -26,7 +28,7 @@ final class MaterialCatalogController extends AbstractController
     ) {}
 
     /**
-     * Catalogue standard (admin / recherche avancée)
+     * GET /api/material-items
      */
     #[Route(name: 'api_material_items_list', methods: ['GET'])]
     public function list(Request $request): JsonResponse
@@ -44,14 +46,12 @@ final class MaterialCatalogController extends AbstractController
         return $this->json([
             'items' => $items,
             'total' => $result['total'],
-            'page' => $result['page'],
+            'page'  => $result['page'],
             'limit' => $result['limit'],
         ]);
     }
 
     /**
-     * 🔥 MICRO-ÉTAPE — Autocomplete ultra-rapide (mobile-first)
-     *
      * GET /api/material-items/quick-search?q=abc
      */
     #[Route('/quick-search', name: 'api_material_items_quick_search', methods: ['GET'])]
@@ -66,10 +66,6 @@ final class MaterialCatalogController extends AbstractController
 
         $qb = $this->em->getRepository(MaterialItem::class)->createQueryBuilder('mi');
 
-        // Priorité absolue :
-        // 1) referenceCode exact
-        // 2) referenceCode LIKE
-        // 3) label LIKE
         $qb
             ->andWhere('mi.active = true')
             ->andWhere(
@@ -96,7 +92,7 @@ final class MaterialCatalogController extends AbstractController
     /**
      * GET /api/material-items/{id}
      */
-    #[Route('/{id}', name: 'api_material_items_get', methods: ['GET'])]
+    #[Route('/{id}', name: 'api_material_items_get', methods: ['GET'], requirements: ['id' => '\d+'])]
     public function getOne(int $id): JsonResponse
     {
         $mi = $this->em->getRepository(MaterialItem::class)->find($id);
@@ -104,6 +100,92 @@ final class MaterialCatalogController extends AbstractController
         if (!$mi instanceof MaterialItem) {
             throw new NotFoundHttpException('Material item not found');
         }
+
+        return $this->json($this->mapper->toSlim($mi));
+    }
+
+    /**
+     * POST /api/material-items
+     */
+    #[Route(name: 'api_material_items_create', methods: ['POST'])]
+    public function create(Request $request): JsonResponse
+    {
+        $body   = json_decode($request->getContent(), true) ?? [];
+        $firmId = $body['firmId'] ?? null;
+        $label  = trim((string) ($body['label'] ?? ''));
+        $unit   = trim((string) ($body['unit'] ?? ''));
+
+        if (!$firmId || $label === '' || $unit === '') {
+            return $this->json(
+                ['message' => 'firmId, label and unit are required'],
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+
+        $firm = $this->em->getRepository(Firm::class)->find((int) $firmId);
+        if (!$firm instanceof Firm) {
+            return $this->json(['message' => 'Firm not found'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $mi = new MaterialItem();
+        $mi->setFirm($firm);
+        $mi->setLabel($label);
+        $mi->setUnit($unit);
+        $mi->setReferenceCode(trim((string) ($body['referenceCode'] ?? '')));
+        $mi->setIsImplant((bool) ($body['isImplant'] ?? false));
+
+        $this->em->persist($mi);
+        $this->em->flush();
+
+        return $this->json($this->mapper->toSlim($mi), Response::HTTP_CREATED);
+    }
+
+    /**
+     * PATCH /api/material-items/{id}
+     */
+    #[Route('/{id}', name: 'api_material_items_update', methods: ['PATCH'], requirements: ['id' => '\d+'])]
+    public function update(int $id, Request $request): JsonResponse
+    {
+        $mi = $this->em->getRepository(MaterialItem::class)->find($id);
+        if (!$mi instanceof MaterialItem) {
+            throw new NotFoundHttpException('Material item not found');
+        }
+
+        $body = json_decode($request->getContent(), true) ?? [];
+
+        if (array_key_exists('firmId', $body)) {
+            $firm = $this->em->getRepository(Firm::class)->find((int) $body['firmId']);
+            if (!$firm instanceof Firm) {
+                return $this->json(['message' => 'Firm not found'], Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+            $mi->setFirm($firm);
+        }
+
+        if (array_key_exists('label', $body)) {
+            $label = trim((string) $body['label']);
+            if ($label === '') {
+                return $this->json(['message' => 'label cannot be empty'], Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+            $mi->setLabel($label);
+        }
+
+        if (array_key_exists('unit', $body)) {
+            $unit = trim((string) $body['unit']);
+            if ($unit === '') {
+                return $this->json(['message' => 'unit cannot be empty'], Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+            $mi->setUnit($unit);
+        }
+
+        if (array_key_exists('referenceCode', $body)) {
+            $mi->setReferenceCode(trim((string) $body['referenceCode']));
+        }
+
+        if (array_key_exists('isImplant', $body)) {
+            $mi->setIsImplant((bool) $body['isImplant']);
+        }
+
+        $this->em->flush();
 
         return $this->json($this->mapper->toSlim($mi));
     }

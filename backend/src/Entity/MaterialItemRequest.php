@@ -16,38 +16,51 @@ class MaterialItemRequest
 {
     use TimestampableTrait;
 
+    public const STATUS_PENDING  = 'PENDING';
+    public const STATUS_RESOLVED = 'RESOLVED';
+    public const STATUS_IGNORED  = 'IGNORED';
+
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['mission:read', 'mission:read_manager'])]
+    #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
     private ?int $id = null;
 
     #[ORM\ManyToOne(inversedBy: 'materialItemRequests')]
     #[ORM\JoinColumn(nullable: false)]
-    #[Groups(['mission:read', 'mission:read_manager'])]
+    #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
     private ?Mission $mission = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: true)]
-    #[Groups(['mission:read', 'mission:read_manager'])]
+    #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
     private ?MissionIntervention $missionIntervention = null;
 
     #[ORM\Column(length: 255)]
-    #[Groups(['mission:read', 'mission:read_manager'])]
+    #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
     private ?string $label = null;
 
     #[ORM\Column(length: 255, nullable: true)]
-    #[Groups(['mission:read', 'mission:read_manager'])]
+    #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
     private ?string $referenceCode = null;
 
     #[ORM\Column(type: 'text', nullable: true)]
-    #[Groups(['mission:read', 'mission:read_manager'])]
+    #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
     private ?string $comment = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
-    #[Groups(['mission:read_manager'])]
+    #[Groups(['mission:read_manager', 'material_request:read'])]
     private ?User $createdBy = null;
+
+    #[ORM\Column(length: 20, options: ['default' => 'PENDING'])]
+    #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
+    private string $status = self::STATUS_PENDING;
+
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
+    private ?MaterialItem $materialItem = null;
 
     public function getId(): ?int
     {
@@ -117,6 +130,28 @@ class MaterialItemRequest
     public function setCreatedBy(User $createdBy): static
     {
         $this->createdBy = $createdBy;
+        return $this;
+    }
+
+    public function getStatus(): string
+    {
+        return $this->status;
+    }
+
+    public function setStatus(string $status): static
+    {
+        $this->status = $status;
+        return $this;
+    }
+
+    public function getMaterialItem(): ?MaterialItem
+    {
+        return $this->materialItem;
+    }
+
+    public function setMaterialItem(?MaterialItem $materialItem): static
+    {
+        $this->materialItem = $materialItem;
         return $this;
     }
 }

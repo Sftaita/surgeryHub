@@ -68,7 +68,7 @@ function getStatusUi(status: string): StatusUi {
       dialogTitle: "Mission rejetée",
       dialogBody: [
         "Mission rejetée par le manager.",
-        "L’encodage a été supprimé. La mission est en statut terminal.",
+        "L'encodage a été supprimé. La mission est en statut terminal.",
       ],
     };
   }
@@ -120,13 +120,20 @@ function formatHoursLabel(hours?: string | number | null): string {
   return `${n} h`;
 }
 
-export default function MissionDetailPage() {
+type MissionDetailContentProps = {
+  missionId: number;
+  embedded?: boolean;
+  onCloseEmbedded?: () => void;
+};
+
+export function MissionDetailContent({
+  missionId,
+  embedded = false,
+  onCloseEmbedded,
+}: MissionDetailContentProps) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-
-  const { id } = useParams<{ id: string }>();
-  const missionId = Number(id);
 
   const { data, isLoading, isError, error } = useQuery<Mission>({
     queryKey: ["mission", missionId],
@@ -137,15 +144,10 @@ export default function MissionDetailPage() {
   const [openEdit, setOpenEdit] = React.useState(false);
   const [openPublish, setOpenPublish] = React.useState(false);
   const [statusInfoOpen, setStatusInfoOpen] = React.useState(false);
-
-  // Lot F5
   const [openEditHours, setOpenEditHours] = React.useState(false);
-
-  // Lot F4 — Confirmations
   const [rejectConfirmOpen, setRejectConfirmOpen] = React.useState(false);
   const [approveConfirmOpen, setApproveConfirmOpen] = React.useState(false);
 
-  // Si data disparaît, on ferme les dialogs
   React.useEffect(() => {
     if (!data) {
       setOpenEdit(false);
@@ -171,12 +173,16 @@ export default function MissionDetailPage() {
     onSuccess: async () => {
       await refreshAfterAction();
       toast.success("Mission approuvée.");
-      navigate("/app/m/missions/to-validate", { replace: true });
+      if (embedded) {
+        onCloseEmbedded?.();
+      } else {
+        navigate("/app/m/missions/to-validate", { replace: true });
+      }
     },
     onError: (err: any) => {
       const status = err?.response?.status;
       if (status === 403) toast.error("Accès interdit.");
-      else toast.error("Erreur lors de l’approbation.");
+      else toast.error("Erreur lors de l'approbation.");
     },
   });
 
@@ -185,7 +191,11 @@ export default function MissionDetailPage() {
     onSuccess: async () => {
       await refreshAfterAction();
       toast.success("Mission rejetée.");
-      navigate("/app/m/missions/to-validate", { replace: true });
+      if (embedded) {
+        onCloseEmbedded?.();
+      } else {
+        navigate("/app/m/missions/to-validate", { replace: true });
+      }
     },
     onError: (err: any) => {
       const status = err?.response?.status;
@@ -210,12 +220,8 @@ export default function MissionDetailPage() {
   const allowed = data.allowedActions ?? [];
   const canEdit = allowed.includes("edit");
   const canPublish = allowed.includes("publish");
-
-  // Lot F4 — visibles uniquement si allowedActions le permet
   const canApprove = allowed.includes("approve");
   const canReject = allowed.includes("reject");
-
-  // Lot F5 — strictement piloté par allowedActions
   const canEditHours = allowed.includes("edit_hours");
 
   const precisionLabel = formatSchedulePrecision(data.schedulePrecision);
@@ -226,34 +232,32 @@ export default function MissionDetailPage() {
 
   const precisionHelp =
     data.schedulePrecision === "EXACT"
-      ? "Créneau confirmé : l’horaire est considéré comme fixe."
+      ? "Créneau confirmé : l'horaire est considéré comme fixe."
       : data.schedulePrecision === "APPROXIMATE"
-        ? "Créneau estimé : l’horaire peut encore bouger."
+        ? "Créneau estimé : l'horaire peut encore bouger."
         : null;
 
   const anyLoading = approveMutation.isPending || rejectMutation.isPending;
-
-  // Lot F5 — service (heures prestées)
   const hoursLabel = formatHoursLabel(data.service?.hours ?? null);
 
   return (
-    <Box sx={{ p: 2, maxWidth: 900 }}>
+    <Box sx={{ p: embedded ? 0 : 2, maxWidth: embedded ? "none" : 900 }}>
       <Stack direction="row" alignItems="center" spacing={1} mb={1}>
-        {/* ✅ Retour */}
-        <IconButton
-          aria-label="Retour"
-          onClick={() => navigate(-1)}
-          size="small"
-        >
-          <ArrowBackIcon fontSize="small" />
-        </IconButton>
+        {!embedded ? (
+          <IconButton
+            aria-label="Retour"
+            onClick={() => navigate(-1)}
+            size="small"
+          >
+            <ArrowBackIcon fontSize="small" />
+          </IconButton>
+        ) : null}
 
         <Typography variant="h6">Mission #{data.id}</Typography>
 
         <Box sx={{ flex: 1 }} />
 
         <Stack direction="row" spacing={1}>
-          {/* ✅ Approve/Reject en FR + confirmation dialog */}
           {canReject ? (
             <Button
               color="error"
@@ -315,7 +319,6 @@ export default function MissionDetailPage() {
           <strong>Type :</strong> {typeLabel}
         </Typography>
 
-        {/* ✅ Statut : garder uniquement le sticker (pas de doublon texte) */}
         <Stack spacing={0.75}>
           <Stack direction="row" spacing={1} alignItems="center">
             <Typography>
@@ -351,7 +354,6 @@ export default function MissionDetailPage() {
           {formatPersonLabel(data.instrumentist)}
         </Typography>
 
-        {/* Lot F5 — Heures prestées (sans champs financiers) */}
         <Stack spacing={0.75}>
           <Stack
             direction="row"
@@ -440,7 +442,6 @@ export default function MissionDetailPage() {
         </DialogActions>
       </Dialog>
 
-      {/* ✅ Confirm Reject */}
       <Dialog
         open={rejectConfirmOpen}
         onClose={() => setRejectConfirmOpen(false)}
@@ -454,7 +455,7 @@ export default function MissionDetailPage() {
               Voulez-vous rejeter cette mission déclarée ?
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Le rejet supprime l’encodage côté backend.
+              Le rejet supprime l'encodage côté backend.
             </Typography>
           </Stack>
         </DialogContent>
@@ -481,14 +482,13 @@ export default function MissionDetailPage() {
         </DialogActions>
       </Dialog>
 
-      {/* ✅ Confirm Approve */}
       <Dialog
         open={approveConfirmOpen}
         onClose={() => setApproveConfirmOpen(false)}
         aria-labelledby="approve-dialog-title"
       >
         <DialogTitle id="approve-dialog-title">
-          Confirmer l’approbation
+          Confirmer l'approbation
         </DialogTitle>
 
         <DialogContent dividers>
@@ -522,4 +522,13 @@ export default function MissionDetailPage() {
       </Dialog>
     </Box>
   );
+}
+
+export default function MissionDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const missionId = Number(id);
+
+  if (!Number.isFinite(missionId)) return <div>ID invalide</div>;
+
+  return <MissionDetailContent missionId={missionId} />;
 }

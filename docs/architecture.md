@@ -1,456 +1,220 @@
-# Décisions d'architecture — SurgicalHub Backend
+# SurgicalHub — Architecture système
 
-Ce document trace les décisions d'architecture structurantes prises pour le backend SurgicalHub afin d'assurer :
-
-- cohérence métier,
-- maintenabilité du code,
-- traçabilité des choix techniques,
-- alignement frontend ↔ backend.
+_Last updated: 2026-03-15_
 
 ---
 
-## D-001 — Séparation mission vs encodage
+## 1. Vue d'ensemble
 
-Date : 18-01-2026
+SurgicalHub est une plateforme de gestion des missions chirurgicales. Elle connecte trois rôles :
 
-### Décision
-
-Le détail d'encodage opératoire (interventions, firms, matériel) n'est pas inclus dans
-`GET /api/missions/{id}`.
-
-Un endpoint dédié est créé :
-
-`GET /api/missions/{id}/encoding`
-
-### Motivation
-
-- Éviter l'alourdissement du payload mission standard.
-- Séparer clairement le planning (mission) de l'exécution opératoire (encodage).
-- Permettre l'évolution du modèle d'encodage sans impacter les listings, les écrans manager, le frontend instrumentiste Lot 3.
-
-### Conséquences
-
-- Deux appels frontend : mission (planning + allowedActions), encoding (interventions / matériel).
-- Mapping dédié via `MissionEncodingService`.
-- DTOs spécifiques et stables pour l'UI mobile.
-
----
-
-## D-002 — Option B : encodage libre par interventions
-
-Date : 18-01-2026
-
-### Décision
-
-Une mission peut contenir plusieurs interventions, créées librement par l'instrumentiste.
-
-Aucune typologie d'intervention n'est imposée par la mission.
-
-### Motivation
-
-- Fidélité maximale à la réalité opératoire.
-- Pas de rigidité côté backend.
-- UI encodage simple et progressive.
-
----
-
-## D-003 — Hiérarchie d'encodage
-
-Date : 18-01-2026
-
-### Structure retenue
-
-```text
-Mission
-└─ MissionIntervention
-   ├─ MaterialLine
-   └─ MaterialItemRequest
-```
-
-### Règles métier
-
-**MaterialLine :**
-- matériel existant dans le catalogue,
-- réellement utilisé.
-
-**MaterialItemRequest :**
-- matériel absent / inconnu,
-- signalement à destination du manager.
-
----
-
-## D-004 — Gestion du matériel implantable
-
-Date : 18-01-2026
-
-### Décision
-
-Les items implantables (`MaterialItem.isImplant = true`) déclenchent automatiquement la création ou l'association à une `ImplantSubMission`.
-
-### Motivation
-
-Préparer les futures étapes : reporting, validation, facturation.
-
----
-
-## D-005 — RBAC strict via Voters
-
-Date : 17-01-2026
-
-### Décision
-
-- Toute logique d'autorisation passe exclusivement par des Voters.
-- Aucun contrôle de rôle direct dans les controllers.
-- Aucun droit inféré côté frontend.
-
----
-
-## D-006 — allowedActions[] comme contrat frontend
-
-Date : 20-01-2026
-
-### Décision
-
-Le backend calcule dynamiquement un tableau `allowedActions[]` pour chaque mission.
-
-Le frontend :
-- n'infère jamais un droit,
-- n'anticipe jamais un statut,
-- affiche uniquement ce qui est explicitement autorisé.
-
----
-
-## D-007 — Missions de type CONSULTATION
-
-Date : 18-01-2026
-
-### Décision
-
-Les missions de type `CONSULTATION` ne peuvent pas contenir de matériel.
-
----
-
-## D-008 — Garde-fou temporel sur l'encodage
-
-Date : 20-01-2026
-
-### Décision
-
-Un instrumentiste ne peut pas encoder avant le début réel de la mission.
-
----
-
-## D-009 — Catalogue matériel en lecture libre
-
-Date : 31-01-2026
-
-### Décision
-
-Le catalogue `MaterialItem` est accessible en lecture à tous les rôles.
-
----
-
-## D-010 — Erreurs API normalisées
-
-Date : 16-01-2026
-
-### Décision
-
-Toutes les erreurs API passent par `ApiExceptionSubscriber`.
-
----
-
-## D-011 — Documentation vivante en Markdown
-
-Date : 18-01-2026
-
-### Décision
-
-Trois documents de référence maintenus à jour :
-- `docs/api.md`
-- `docs/architecture.md`
-- `docs/decisions.md`
-
----
-
-## D-012 — Firms en référentiel (fabricants) + dérivation via MaterialItem
-
-Date : 12-02-2026
-
-### Décision
-
-- `Firm` devient une entité de référence.
-- L'instrumentiste ne peut jamais créer/éditer/supprimer une firm.
-- Les firms apparaissent uniquement via `MaterialItem.manufacturer`.
-
----
-
-## D-013 — Missions déclarées par instrumentiste (unforeseen activity control)
-
-Date : 20-02-2026
-
-### Décision
-
-Un instrumentiste peut déclarer une mission imprévue via un flux contrôlé.
-
-Cette mission est créée avec le statut `DECLARED`. Elle doit obligatoirement être validée ou rejetée par un Manager/Admin.
-
-Les chirurgiens ne peuvent jamais créer de mission.
-
-### Motivation
-
-- Refléter la réalité terrain (urgences, dépassements bloc).
-- Permettre l'encodage sans briser la cohérence planning.
-- Maintenir un contrôle manager-centric du système.
-- Éviter la création sauvage de missions validées automatiquement.
-- Préserver la robustesse juridique et financière.
-
-### Règles métier
-
-Une mission `DECLARED` :
-- est créée uniquement par un `INSTRUMENTIST`,
-- lie automatiquement `instrumentist_user_id = created_by_user_id`,
-- n'est pas publiée,
-- n'est pas claimable,
-- n'est pas facturable,
-- ne peut pas être `VALIDATED`,
-- ne peut pas être `CLOSED`.
-
-Transitions autorisées :
-
-```
-DECLARED → ASSIGNED (approve)
-DECLARED → REJECTED
-```
-
-`REJECTED` est un statut terminal.
-
-### Gouvernance
-
-Seul un `MANAGER`/`ADMIN` peut approuver ou rejeter.
-
-- Le chirurgien a uniquement un droit de consultation.
-- Aucune suppression autorisée.
-- Audit obligatoire.
-
-### allowedActions impact
-
-Si `mission.status = DECLARED` :
-
-| Rôle | Actions |
+| Rôle | Périmètre |
 |---|---|
-| Instrumentiste (owner) | `view`, `encoding`, `submit`, `edit_hours` |
-| Manager / Admin | `approve`, `reject`, `edit` |
-| Surgeon | `view` |
-
-### Sécurité & anti-abus
-
-- Historique complet conservé.
-- Rejection ratio mesurable.
-- Aucun impact financier sans validation.
-- Impossible de convertir une mission `DECLARED` en `OPEN`.
-
-### Impact technique
-
-- Ajout enum `MissionStatus::DECLARED`
-- Ajout enum `MissionStatus::REJECTED`
-- Nouvelles capacités Voter : `DECLARE`, `APPROVE_DECLARED`, `REJECT_DECLARED`
-- Extension `MissionActionsService`
-- Nouveaux endpoints dédiés
-- Nouveaux événements d'audit : `MISSION_DECLARED`, `MISSION_DECLARED_APPROVED`, `MISSION_DECLARED_REJECTED`
+| `MANAGER` / `ADMIN` | Création et gestion des missions, des instrumentistes, validation |
+| `INSTRUMENTIST` | Prise en charge des missions, encodage des actes, déclarations |
+| `SURGEON` | Consultation uniquement |
 
 ---
 
-## D-014 — Onboarding instrumentiste via invitation manager
+## 2. Stack technique
 
-Date : 11-03-2026
+### Backend
+- **Symfony** (PHP) — API REST JSON
+- **Doctrine ORM** — persistance MySQL
+- **Symfony Security** — authentification JWT + RBAC via Voters
+- **Symfony Mailer + Messenger** — emails transactionnels asynchrones
+- **Stockage fichiers** — système de fichiers local (`public/uploads/`)
 
-### Décision
+### Frontend
+- **React 18 + TypeScript** — Vite
+- **MUI (Material UI v5)** — composants UI
+- **TanStack React Query** — cache serveur, mutations, invalidation
+- **React Router v6** — navigation
+- **FullCalendar** — affichage planning
+- **Axios** — client HTTP avec intercepteur JWT + refresh
 
-Lorsqu'un Manager crée un instrumentiste dans le système, un flux d'invitation est utilisé afin que l'instrumentiste finalise lui-même son compte.
+---
 
-La création suit les règles suivantes :
-- le `User` est créé immédiatement,
-- `active = true`,
-- `password = null`,
-- un token d'invitation sécurisé est généré,
-- ce token est envoyé par email à l'instrumentiste.
+## 3. Architecture backend
 
-L'email contient un lien vers le frontend :
+### Structure des controllers
 
 ```
-{FRONTEND_URL}/complete-account?token=XXXX
+Api/
+├── AuthController          — login / refresh token
+├── MissionController       — CRUD missions + transitions de statut
+├── InstrumentistController — gestion manager des instrumentistes
+├── InvitationController    — flux complétion de compte (public)
+├── MeController            — profil utilisateur connecté
+└── ...
 ```
 
-Ce lien permet à l'instrumentiste de compléter son profil, de définir son mot de passe et d'activer réellement son compte utilisateur.
+### Autorisation — RBAC strict via Voters
 
-### Stockage du token
+Toute logique d'accès passe par des Voters Symfony (`InstrumentistVoter`, `MissionVoter`, etc.).
+Aucun contrôle de rôle direct dans les controllers.
 
-Pour limiter la complexité de la V1, le token est stocké directement dans l'entité `User`.
+### Transitions de statut
 
-Champs ajoutés :
+Chaque changement d'état métier passe par un endpoint dédié :
+
+```
+POST /api/missions/{id}/publish
+POST /api/missions/{id}/claim
+POST /api/missions/{id}/submit
+POST /api/missions/{id}/approve-declared
+POST /api/missions/{id}/reject-declared
+POST /api/instrumentists/{id}/suspend
+POST /api/instrumentists/{id}/activate
+```
+
+Pas de mutation libre via `PATCH` générique pour les transitions.
+
+### Stockage des fichiers
+
+Photos de profil stockées dans `public/uploads/profile-pictures/`.
+
+```
+ProfilePictureStorage
+├── upload_dir       → {project}/public/uploads/profile-pictures
+└── public_base_path → /uploads/profile-pictures
+```
+
+`profilePicturePath` retourné par l'API est un chemin relatif au web root (`/uploads/profile-pictures/filename.jpg`).
+Le frontend construit l'URL complète : `VITE_API_BASE_URL + profilePicturePath`.
+
+### Emails transactionnels
+
+```
+Service métier → NotificationService → Messenger (async) → Worker → Symfony Mailer → SMTP
+```
+
+L'envoi est découplé de la logique métier : une erreur SMTP ne fait jamais échouer la requête API.
+
+---
+
+## 4. Architecture frontend
+
+### Structure des routes
+
+```
+/login                      — public
+/complete-account?token=    — public (invitation instrumentiste)
+/app/m/*                    — Manager / Admin (desktop)
+/app/i/*                    — Instrumentiste (mobile-first)
+/app/s/*                    — Surgeon
+```
+
+### Organisation du code
+
+```
+src/app/
+├── api/              — apiClient (Axios + intercepteur JWT)
+├── auth/             — AuthContext, tokens, refresh mutex
+├── features/         — features métier
+│   ├── missions/
+│   ├── encoding/
+│   ├── manager-instrumentists/
+│   │   ├── api/      — types, fonctions API
+│   │   ├── components/
+│   │   ├── hooks/    — logique réutilisable (useInstrumentistDrawer)
+│   │   └── utils/
+│   ├── invitation/
+│   └── sites/
+├── pages/            — pages (orchestration uniquement)
+│   ├── manager/
+│   └── instrumentist/
+├── layouts/          — DesktopLayout, MobileLayout
+├── router/           — AppRouter, guards RequireAuth / RequireManager
+└── ui/               — composants UI partagés (Toast...)
+```
+
+### Règles frontend
+
+- **Pas de fallback métier** : le frontend reflète strictement l'état serveur
+- **`allowedActions[]`** : les droits sur les missions sont calculés par le backend et consommés sans inférence côté client
+- **React Query** : toutes les mutations invalident ou mettent à jour le cache via `setQueryData` / `invalidateQueries`
+- **Optimistic updates** : utilisés pour les affiliations de site (avec rollback sur erreur)
+
+---
+
+## 5. Modèle de données (entités principales)
 
 ```
 User
- ├─ invitationToken
- └─ invitationExpiresAt
-```
+├── id, email, password (nullable)
+├── roles: ['ROLE_INSTRUMENTIST' | 'ROLE_MANAGER' | 'ROLE_ADMIN' | 'ROLE_SURGEON']
+├── active: bool
+├── firstname, lastname, displayName
+├── phone, profilePicturePath
+├── defaultCurrency, employmentType
+├── hourlyRate, consultationFee
+├── invitationToken, invitationExpiresAt
+└── SiteMembership[]
 
-- Durée de validité : **48 heures**
-- Après utilisation : `invitationToken = null`, `invitationExpiresAt = null`
+SiteMembership
+├── id
+├── user → User
+├── site → Hospital
+└── siteRole: 'INSTRUMENTIST' | ...
 
-### Complétion du profil
+Hospital (site)
+├── id, name
 
-Lors de l'ouverture du lien d'invitation, l'instrumentiste doit compléter :
-- `firstname`
-- `lastname`
-- `phone` (obligatoire)
-- `password`
-- `confirmPassword`
-- `profilePicture` (optionnel)
+Mission
+├── id, status, type, schedulePrecision
+├── startAt, endAt
+├── site → Hospital
+├── surgeon → User
+├── instrumentist → User (nullable)
+├── allowedActions[] (calculé dynamiquement)
+└── MissionIntervention[]
 
-Les champs `phone` et `profilePicture` sont ajoutés dans l'entité `User`.
-
-### Gestion des cas particuliers
-
-**Email déjà existant :** HTTP `409` — `Email already used` — la création est refusée.
-
-**Token déjà utilisé :** `Account already activated` — le frontend redirige vers la page de connexion.
-
-**Échec d'envoi d'email :** la création du compte est conservée, un warning est renvoyé à l'API, l'invitation pourra être renvoyée ultérieurement.
-
-### Contraintes métier
-
-Lors de la création par un manager :
-- au moins un site doit être sélectionné,
-- une `SiteMembership` est créée pour chaque site.
-
-### Distinction avec l'auto-inscription
-
-| Flux | Comportement |
-|---|---|
-| Création par Manager | invitation envoyée, activation via complétion du profil |
-| Auto-inscription (future évolution) | validation email obligatoire, flux de création autonome |
-
-### Impact technique
-
-Ajouts dans `User` : `phone`, `profilePicture`, `invitationToken`, `invitationExpiresAt`
-
-Nouveaux endpoints :
-```
-GET  /api/invitations/{token}
-POST /api/invitations/complete
+MissionIntervention
+├── MaterialLine[]
+└── MaterialItemRequest[]
 ```
 
 ---
 
-## D-015 — Envoi d'emails transactionnels via Symfony Mailer + Messenger
+## 6. Flux principaux
 
-Date : 12-03-2026
-
-### Décision
-
-Les emails transactionnels de SurgicalHub sont envoyés via Symfony Mailer et dispatchés de manière asynchrone via Symfony Messenger.
-
-L'envoi d'email ne bloque jamais les requêtes API.
-
-Les emails utilisent :
-- Symfony Mailer pour l'envoi SMTP
-- Twig pour le rendu HTML et texte
-- Symfony Messenger pour la file d'envoi
-- un transport Doctrine async
-
-### Motivation
-
-Garantir :
-- des requêtes API rapides,
-- une tolérance aux pannes SMTP,
-- une architecture réutilisable pour tous les emails futurs.
-
-Exemples d'emails futurs : invitation instrumentiste, reset password, mission assignée, mission publiée, validation manager, notifications système.
-
-L'utilisation de Messenger permet des retries automatiques, une gestion des erreurs centralisée et une meilleure scalabilité.
-
-### Architecture technique
-
-Flux d'envoi :
+### Flux invitation instrumentiste
 
 ```
-Controller / Service métier
-        │
-        ▼
-NotificationService
-        │
-        ▼
-Dispatch Messenger Message
-(App\Message\SendTemplatedEmailMessage)
-        │
-        ▼
-Transport async (Doctrine queue)
-        │
-        ▼
-Worker Messenger
-        │
-        ▼
-SendTemplatedEmailMessageHandler
-        │
-        ▼
-Symfony Mailer
-        │
-        ▼
-SMTP
+Manager → POST /api/instrumentists
+        → User créé (active=true, password=null, token généré)
+        → Email envoyé (async via Messenger)
+        → Instrumentiste ouvre /complete-account?token=XXXX
+        → GET /api/invitations/{token} (vérification)
+        → POST /api/invitations/complete (multipart/form-data)
+        → token invalidé, password défini, profil complété
 ```
 
-### Templates d'email
-
-Les emails utilisent Twig. Structure :
+### Flux mission standard
 
 ```
-templates/
-└─ emails/
-   ├─ instrumentist_invitation.html.twig
-   └─ instrumentist_invitation.txt.twig
+Manager → POST /api/missions (DRAFT)
+        → POST /api/missions/{id}/publish (OPEN)
+        → Instrumentiste → POST /api/missions/{id}/claim (ASSIGNED)
+        → Instrumentiste → encodage + POST /api/missions/{id}/submit (SUBMITTED)
+        → Manager → validation
 ```
 
-Deux formats sont envoyés : HTML (principal) et texte brut (fallback).
+### Flux mission déclarée (imprévue)
 
-### Configuration Messenger
-
-Transport utilisé : `async → doctrine://default`
-
-Retry automatique configuré :
-- `max_retries: 5`
-- `delay: 1000 ms`
-- `multiplier: 2`
-- `max_delay: 60000 ms`
-
-En cas d'échec final, les messages sont déplacés dans le transport `failed`.
-
-### Comportement API
-
-L'API ne dépend jamais du succès SMTP.
-
-- Si le message Messenger est correctement dispatché → succès normal
-- Si le dispatch échoue → la logique métier est conservée et un warning `INVITATION_EMAIL_NOT_SENT` est renvoyé
-
-Ainsi : aucune création métier n'est rollbackée, les erreurs email n'impactent pas le système.
-
-### Configuration environnement
-
-Variables utilisées : `MAILER_DSN`, `MAILER_FROM_ADDRESS`, `MAILER_FROM_NAME`, `FRONTEND_URL`
+```
+Instrumentiste → POST /api/missions/declare (DECLARED)
+Manager → POST /api/missions/{id}/approve-declared (ASSIGNED)
+       ou POST /api/missions/{id}/reject-declared (REJECTED)
+```
 
 ---
 
-## Historique
+## 7. Variables d'environnement frontend
 
-| Date | Décision |
+| Variable | Usage |
 |---|---|
-| 18-01-2026 | D-001 à D-003 — Séparation mission/encodage, hiérarchie |
-| 17-01-2026 | D-005 — RBAC via Voters |
-| 20-01-2026 | D-006, D-008 — allowedActions, garde-fou temporel |
-| 31-01-2026 | D-009 — Catalogue lecture libre |
-| 16-01-2026 | D-010 — Erreurs normalisées |
-| 12-02-2026 | D-012 — Firms référentiel |
-| 20-02-2026 | D-013 — Missions DECLARED |
-| 11-03-2026 | D-014 — Onboarding instrumentiste par invitation manager |
-| 12-03-2026 | D-015 — Emails transactionnels via Symfony Mailer + Messenger |
+| `VITE_API_BASE_URL` | Base URL du backend (ex: `http://localhost`) |
+
+Les URLs de fichiers uploadés sont construites comme `VITE_API_BASE_URL + profilePicturePath`.

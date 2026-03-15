@@ -1,6 +1,6 @@
 # SurgicalHub — API (Single Source of Truth)
 
-_Last updated: 2026-03-14_
+_Last updated: 2026-03-15_
 
 ---
 
@@ -327,6 +327,7 @@ Calculé dynamiquement. **Le frontend ne déduit jamais les droits.**
 - Ressource instrumentiste portée par `User`
 - `employmentType` global au user
 - `hourlyRate` et `consultationFee` globaux au user
+- `profilePicturePath` : chemin relatif de la photo de profil, défini lors de la complétion du compte
 - Affiliations portées par `SiteMembership`
 - Invitation stockée dans `User`
 - Statut manager mappé sur `User.active` :
@@ -437,12 +438,24 @@ Alimente le drawer instrumentiste.
   "displayName": "Ole Salve",
   "active": true,
   "employmentType": null,
-  "defaultCurrency": "EUR"
+  "defaultCurrency": "EUR",
+  "hourlyRate": "350",
+  "consultationFee": "120",
+  "profilePicturePath": "/uploads/profile-pictures/user-12-abc123.jpg",
+  "siteMemberships": [
+    {
+      "id": 44,
+      "site": { "id": 3, "name": "Delta" },
+      "siteRole": "INSTRUMENTIST"
+    }
+  ]
 }
 ```
 
 **Notes frontend :**
-- Pas de tarifs ni d'affiliations détaillées
+- `hourlyRate` et `consultationFee` sont des chaînes décimales ou `null`
+- `profilePicturePath` est un chemin relatif au web root du backend — construire l'URL complète avec `VITE_API_BASE_URL + profilePicturePath`
+- `siteMemberships` liste toutes les affiliations de l'instrumentiste
 - L'instrumentiste doit porter le rôle `ROLE_INSTRUMENTIST`, sinon traité comme introuvable
 
 **Erreurs possibles :**
