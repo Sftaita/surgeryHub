@@ -21,6 +21,9 @@ import MissionCreatePage from "../pages/manager/MissionCreatePage";
 // Lot MGR-INS-1 — Manager/Admin — Instrumentists
 import InstrumentistsPage from "../pages/manager/InstrumentistsPage";
 
+// Lot 10 — Invitation / finalisation de compte
+import CompleteAccountPage from "../pages/CompleteAccountPage";
+
 // Lot 3 — Instrumentist (mobile-first)
 import OffersPage from "../pages/instrumentist/OffersPage";
 import MyMissionsPage from "../pages/instrumentist/MyMissionsPage";
@@ -82,6 +85,7 @@ export function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/complete-account" element={<CompleteAccountPage />} />
 
       <Route element={<RequireAuth />}>
         <Route path="/" element={<PostLoginRedirect />} />

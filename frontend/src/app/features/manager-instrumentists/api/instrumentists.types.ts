@@ -1,12 +1,14 @@
 // Types alignés strictement avec api.md
 
+export type EmploymentTypeDTO = "EMPLOYEE" | "FREELANCER" | null;
+
 export type InstrumentistListItemDTO = {
   id: number;
   email: string;
   firstname: string | null;
   lastname: string | null;
   active: boolean;
-  employmentType: "EMPLOYEE" | "FREELANCER";
+  employmentType: EmploymentTypeDTO;
   defaultCurrency: string;
   displayName: string;
 };
@@ -16,6 +18,15 @@ export type InstrumentistsListResponseDTO = {
   total: number;
 };
 
+export type SiteMembershipDTO = {
+  id: number;
+  site: {
+    id: number;
+    name: string;
+  };
+  siteRole: string;
+};
+
 export type InstrumentistDetailDTO = {
   id: number;
   email: string;
@@ -23,8 +34,12 @@ export type InstrumentistDetailDTO = {
   lastname: string | null;
   displayName: string;
   active: boolean;
-  employmentType: "EMPLOYEE" | "FREELANCER";
+  employmentType: EmploymentTypeDTO;
   defaultCurrency: string;
+  hourlyRate: string | null;
+  consultationFee: string | null;
+  profilePicturePath: string | null;
+  siteMemberships: SiteMembershipDTO[];
 };
 
 export type CreateInstrumentistResponseDTO = {
@@ -35,7 +50,7 @@ export type CreateInstrumentistResponseDTO = {
     lastname: string | null;
     displayName: string;
     active: boolean;
-    employmentType: "EMPLOYEE" | "FREELANCER";
+    employmentType: EmploymentTypeDTO;
     defaultCurrency: string;
     siteIds: number[];
     invitationExpiresAt: string;
@@ -48,22 +63,13 @@ export type CreateInstrumentistResponseDTO = {
 
 export type InstrumentistRatesDTO = {
   id: number;
-  hourlyRate: number | null;
-  consultationFee: number | null;
+  hourlyRate: string | null;
+  consultationFee: string | null;
 };
 
 export type InstrumentistActiveStateDTO = {
   id: number;
   active: boolean;
-};
-
-export type SiteMembershipDTO = {
-  id: number;
-  site: {
-    id: number;
-    name: string;
-  };
-  siteRole: string;
 };
 
 export type DeleteMembershipResponseDTO = {

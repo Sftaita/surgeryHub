@@ -218,6 +218,7 @@ final class InstrumentistController extends AbstractController
             defaultCurrency: $instrumentist->getDefaultCurrency(),
             hourlyRate: $instrumentist->getHourlyRate(),
             consultationFee: $instrumentist->getConsultationFee(),
+            profilePicturePath: $instrumentist->getProfilePicturePath(),
             siteMemberships: $siteMemberships,
         ));
     }

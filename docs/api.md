@@ -80,7 +80,7 @@ Crée une mission planning classique (`DRAFT`).
 
 ---
 
-## 5. 🆕 Missions déclarées (Unforeseen activity)
+## 5. Missions déclarées (Unforeseen activity)
 
 ### `POST /api/missions/declare`
 

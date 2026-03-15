@@ -18,6 +18,7 @@ final class InstrumentistProfileResponse
         public ?string $defaultCurrency,
         public ?string $hourlyRate,
         public ?string $consultationFee,
+        public ?string $profilePicturePath,
         public array $siteMemberships = [],
     ) {
     }
