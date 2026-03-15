@@ -21,6 +21,9 @@ import MissionCreatePage from "../pages/manager/MissionCreatePage";
 // Lot MGR-INS-1 — Manager/Admin — Instrumentists
 import InstrumentistsPage from "../pages/manager/InstrumentistsPage";
 
+// Lot MGR-SUR-1 — Manager/Admin — Surgeons
+import SurgeonsPage from "../pages/manager/SurgeonsPage";
+
 // Catalogue matériel
 import CataloguePage from "../pages/manager/CataloguePage";
 import CatalogueRequestsPage from "../pages/manager/CatalogueRequestsPage";
@@ -157,6 +160,9 @@ export function AppRouter() {
 
               {/* Lot MGR-INS-1 — Instrumentists */}
               <Route path="m/instrumentists" element={<InstrumentistsPage />} />
+
+              {/* Lot MGR-SUR-1 — Surgeons */}
+              <Route path="m/surgeons" element={<SurgeonsPage />} />
 
               {/* Catalogue matériel */}
               <Route path="m/catalogue" element={<CataloguePage />} />

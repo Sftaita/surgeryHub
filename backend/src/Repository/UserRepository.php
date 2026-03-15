@@ -77,6 +77,19 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
         return $res;
     }
 
+    public function findSurgeonById(int $id): ?User
+    {
+        return $this->createQueryBuilder('u')
+            ->leftJoin('u.siteMemberships', 'sm')->addSelect('sm')
+            ->leftJoin('sm.site', 'site')->addSelect('site')
+            ->andWhere('u.id = :id')
+            ->andWhere('u.roles LIKE :role')
+            ->setParameter('id', $id)
+            ->setParameter('role', '%"ROLE_SURGEON"%')
+            ->getQuery()
+            ->getOneOrNullResult();
+    }
+
     /**
      * @return list<User>
      *

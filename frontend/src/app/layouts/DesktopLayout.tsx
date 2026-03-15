@@ -27,6 +27,10 @@ const NAV_ITEMS = [
     href: "/app/m/instrumentists",
   },
   {
+    label: "Chirurgiens",
+    href: "/app/m/surgeons",
+  },
+  {
     label: "Catalogue",
     children: [
       { label: "Matériel", href: "/app/m/catalogue" },

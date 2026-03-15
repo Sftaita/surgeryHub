@@ -85,6 +85,30 @@ class NotificationService
         );
     }
 
+    public function sendSurgeonInvitation(User $user): void
+    {
+        $token = $user->getInvitationToken();
+        if ($token === null || $token === '') {
+            throw new \LogicException('Invitation token is missing.');
+        }
+
+        $invitationUrl = $this->buildFrontendUrl(self::INSTRUMENTIST_INVITATION_PATH, [
+            'token' => $token,
+        ]);
+
+        $this->emailService->sendTemplatedEmail(
+            to: (string) $user->getEmail(),
+            subject: 'Complete your SurgicalHub account',
+            htmlTemplate: 'emails/instrumentist_invitation.html.twig',
+            context: [
+                'displayName' => $this->resolveDisplayName($user),
+                'invitationUrl' => $invitationUrl,
+                'expiresAt' => $user->getInvitationExpiresAt(),
+            ],
+            textTemplate: 'emails/instrumentist_invitation.txt.twig',
+        );
+    }
+
     private function createInApp(User $user, Mission $mission, string $eventType): void
     {
         $evt = new NotificationEvent();
