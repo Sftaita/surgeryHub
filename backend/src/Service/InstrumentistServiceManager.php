@@ -169,12 +169,13 @@ class InstrumentistServiceManager
             throw new NotFoundHttpException(sprintf('Site not found: %d', $dto->siteId));
         }
 
-        foreach ($instrumentist->getSiteMemberships() as $existingMembership) {
-            $existingSite = $existingMembership->getSite();
+        $existingMembership = $this->em->getRepository(SiteMembership::class)->findOneBy([
+            'user' => $instrumentist,
+            'site' => $site,
+        ]);
 
-            if ($existingSite?->getId() === $site->getId()) {
-                throw new ConflictHttpException('Site membership already exists');
-            }
+        if ($existingMembership instanceof SiteMembership) {
+            throw new ConflictHttpException('Cette affiliation site existe déjà pour cet instrumentiste.');
         }
 
         $membership = new SiteMembership();

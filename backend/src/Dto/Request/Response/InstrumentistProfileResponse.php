@@ -16,6 +16,8 @@ final class InstrumentistProfileResponse
         public bool $active,
         public ?string $employmentType,
         public ?string $defaultCurrency,
+        public ?string $hourlyRate,
+        public ?string $consultationFee,
         public array $siteMemberships = [],
     ) {
     }

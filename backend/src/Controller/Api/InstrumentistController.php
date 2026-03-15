@@ -216,6 +216,8 @@ final class InstrumentistController extends AbstractController
             active: $instrumentist->isActive(),
             employmentType: $employmentTypeValue,
             defaultCurrency: $instrumentist->getDefaultCurrency(),
+            hourlyRate: $instrumentist->getHourlyRate(),
+            consultationFee: $instrumentist->getConsultationFee(),
             siteMemberships: $siteMemberships,
         ));
     }
