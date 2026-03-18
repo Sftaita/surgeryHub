@@ -22,26 +22,26 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read', 'planning:read'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 180)]
-    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read', 'planning:read'])]
     private ?string $email = null;
 
     #[ORM\Column]
-    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read', 'planning:read'])]
     private array $roles = [];
 
     #[ORM\Column(nullable: true)]
     private ?string $password = null;
 
     #[ORM\Column(length: 255, nullable: true)]
-    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read', 'planning:read'])]
     private ?string $firstname = null;
 
     #[ORM\Column(length: 255, nullable: true)]
-    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read'])]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'export:read', 'planning:read'])]
     private ?string $lastname = null;
 
     #[ORM\Column(length: 30, nullable: true)]
@@ -57,8 +57,12 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     private ?string $googleId = null;
 
     #[ORM\Column(options: ['default' => true])]
-    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read'])]
+    #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read', 'planning:read'])]
     private bool $active = true;
+
+    #[ORM\Column(type: 'json', nullable: true)]
+    #[Groups(['user:read', 'planning:read'])]
+    private ?array $specialties = null;
 
     #[ORM\Column(enumType: EmploymentType::class, nullable: true)]
     #[Groups(['user:read', 'mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'rating:read'])]
@@ -302,6 +306,17 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setProfilePicturePath(?string $profilePicturePath): static
     {
         $this->profilePicturePath = $profilePicturePath;
+        return $this;
+    }
+
+    public function getSpecialties(): array
+    {
+        return $this->specialties ?? [];
+    }
+
+    public function setSpecialties(?array $specialties): static
+    {
+        $this->specialties = $specialties;
         return $this;
     }
 

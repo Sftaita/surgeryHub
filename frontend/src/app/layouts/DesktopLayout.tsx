@@ -38,6 +38,15 @@ const NAV_ITEMS = [
     ],
   },
   {
+    label: "Planning",
+    children: [
+      { label: "Templates", href: "/app/m/planning/templates" },
+      { label: "Générer", href: "/app/m/planning/generate" },
+      { label: "Absences", href: "/app/m/planning/absences" },
+      { label: "Compétences", href: "/app/m/planning/specialties" },
+    ],
+  },
+  {
     label: "Facturation",
     children: [
       { label: "Configuration", href: "/app/m/billing/config" },

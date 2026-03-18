@@ -39,6 +39,11 @@ const FirmInvoiceDetailPage             = React.lazy(() => import("../pages/mana
 const InstrumentistStatementsPage       = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementsPage"));
 const InstrumentistStatementDetailPage  = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementDetailPage"));
 const BillingConfigPage                 = React.lazy(() => import("../pages/manager/billing/BillingConfigPage"));
+const PlanningTemplatesPage             = React.lazy(() => import("../pages/manager/planning/PlanningTemplatesPage"));
+const PlanningTemplateEditorPage        = React.lazy(() => import("../pages/manager/planning/PlanningTemplateEditorPage"));
+const PlanningGeneratePage              = React.lazy(() => import("../pages/manager/planning/PlanningGeneratePage"));
+const AbsencesPage                      = React.lazy(() => import("../pages/manager/planning/AbsencesPage"));
+const SpecialtiesPage                   = React.lazy(() => import("../pages/manager/planning/SpecialtiesPage"));
 
 // ─── Suspense fallback ───────────────────────────────────────────────────────
 
@@ -132,6 +137,11 @@ export function AppRouter() {
                 <Route path="m/billing/firm-invoices/:id" element={<FirmInvoiceDetailPage />} />
                 <Route path="m/billing/statements" element={<InstrumentistStatementsPage />} />
                 <Route path="m/billing/statements/:id" element={<InstrumentistStatementDetailPage />} />
+                <Route path="m/planning/templates" element={<PlanningTemplatesPage />} />
+                <Route path="m/planning/templates/:id" element={<PlanningTemplateEditorPage />} />
+                <Route path="m/planning/generate" element={<PlanningGeneratePage />} />
+                <Route path="m/planning/absences" element={<AbsencesPage />} />
+                <Route path="m/planning/specialties" element={<SpecialtiesPage />} />
               </Route>
             </Route>
           </Route>

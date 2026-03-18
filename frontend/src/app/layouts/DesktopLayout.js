@@ -1,0 +1,77 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { Outlet, NavLink, useNavigate } from "react-router-dom";
+import { Badge, Box, Divider, Drawer, List, ListItemButton, ListItemText, Stack, Typography, Button, } from "@mui/material";
+import { useQuery } from "@tanstack/react-query";
+import { useAuth } from "../auth/AuthContext";
+import { getMaterialRequests } from "../features/manager-catalogue/api/catalogue.api";
+const NAV_WIDTH = 220;
+const NAV_ITEMS = [
+    {
+        label: "Missions",
+        href: "/app/m/missions",
+    },
+    {
+        label: "Instrumentistes",
+        href: "/app/m/instrumentists",
+    },
+    {
+        label: "Chirurgiens",
+        href: "/app/m/surgeons",
+    },
+    {
+        label: "Catalogue",
+        children: [
+            { label: "Matériel", href: "/app/m/catalogue" },
+            { label: "Demandes matériel", href: "/app/m/catalogue/requests" },
+        ],
+    },
+    {
+        label: "Planning",
+        children: [
+            { label: "Templates", href: "/app/m/planning/templates" },
+            { label: "Générer", href: "/app/m/planning/generate" },
+            { label: "Absences", href: "/app/m/planning/absences" },
+            { label: "Compétences", href: "/app/m/planning/specialties" },
+        ],
+    },
+    {
+        label: "Facturation",
+        children: [
+            { label: "Configuration", href: "/app/m/billing/config" },
+            { label: "Factures Firmes", href: "/app/m/billing/firm-invoices" },
+            { label: "Décomptes", href: "/app/m/billing/statements" },
+        ],
+    },
+];
+export function DesktopLayout() {
+    const navigate = useNavigate();
+    const { state, logout } = useAuth();
+    const isAuthenticated = state.status === "authenticated";
+    const pendingRequestsQuery = useQuery({
+        queryKey: ["material-requests", "PENDING"],
+        queryFn: () => getMaterialRequests({ status: "PENDING" }),
+        refetchInterval: 60_000,
+    });
+    const pendingCount = pendingRequestsQuery.data?.items?.length ?? 0;
+    return (_jsxs(Box, { sx: { display: "flex", minHeight: "100vh" }, children: [_jsx(Drawer, { variant: "permanent", sx: {
+                    width: NAV_WIDTH,
+                    flexShrink: 0,
+                    "& .MuiDrawer-paper": {
+                        width: NAV_WIDTH,
+                        boxSizing: "border-box",
+                        borderRight: "1px solid",
+                        borderColor: "divider",
+                    },
+                }, children: _jsxs(Stack, { sx: { height: "100%", py: 2 }, direction: "column", justifyContent: "space-between", children: [_jsxs(Box, { children: [_jsx(Box, { sx: { px: 2, pb: 1.5 }, children: _jsx(Typography, { variant: "subtitle2", fontWeight: 700, color: "primary", children: "SurgicalHub" }) }), _jsx(Divider, {}), _jsx(List, { dense: true, sx: { pt: 1 }, children: NAV_ITEMS.map((item) => {
+                                        if ("children" in item) {
+                                            return (_jsxs(Box, { children: [_jsx(Typography, { variant: "caption", color: "text.secondary", sx: { px: 2, pt: 1, pb: 0.25, display: "block", textTransform: "uppercase", letterSpacing: 0.5 }, children: item.label }), item.children.map((child) => {
+                                                        const isRequests = child.href === "/app/m/catalogue/requests";
+                                                        return (_jsx(NavLink, { to: child.href, style: { textDecoration: "none", color: "inherit" }, children: ({ isActive }) => (_jsx(ListItemButton, { selected: isActive, sx: { pl: 3, py: 0.75 }, children: _jsx(ListItemText, { primary: isRequests && pendingCount > 0 ? (_jsx(Badge, { badgeContent: pendingCount, color: "error", sx: { "& .MuiBadge-badge": { right: -14, top: 1 } }, children: child.label })) : (child.label), primaryTypographyProps: { variant: "body2" } }) })) }, child.href));
+                                                    })] }, item.label));
+                                        }
+                                        return (_jsx(NavLink, { to: item.href, style: { textDecoration: "none", color: "inherit" }, children: ({ isActive }) => (_jsx(ListItemButton, { selected: isActive, sx: { py: 0.75 }, children: _jsx(ListItemText, { primary: item.label, primaryTypographyProps: { variant: "body2" } }) })) }, item.href));
+                                    }) })] }), isAuthenticated && (_jsx(Box, { sx: { px: 2 }, children: _jsx(Button, { size: "small", variant: "text", color: "inherit", fullWidth: true, onClick: () => {
+                                    logout();
+                                    navigate("/login", { replace: true });
+                                }, children: "D\u00E9connexion" }) }))] }) }), _jsx(Box, { component: "main", sx: { flex: 1, p: 3, minWidth: 0 }, children: _jsx(Outlet, {}) })] }));
+}
