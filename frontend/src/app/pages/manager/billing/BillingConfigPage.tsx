@@ -4,6 +4,10 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   IconButton,
   MenuItem,
@@ -20,6 +24,7 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
+import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getFirmPricingRules,
@@ -40,6 +45,7 @@ export default function BillingConfigPage() {
   const toast = useToast();
   const qc = useQueryClient();
 
+  const [tutorialOpen, setTutorialOpen] = React.useState(false);
   const [selectedFirmId, setSelectedFirmId] = React.useState<number | "">("");
 
   // Firm list
@@ -137,7 +143,12 @@ export default function BillingConfigPage() {
 
   return (
     <Stack spacing={3}>
-      <Typography variant="h6" fontWeight={700}>Configuration facturation</Typography>
+      <Stack direction="row" alignItems="center" spacing={1}>
+        <Typography variant="h6" fontWeight={700}>Configuration facturation</Typography>
+        <IconButton size="small" onClick={() => setTutorialOpen(true)} color="primary" sx={{ opacity: 0.7 }}>
+          <HelpOutlineIcon fontSize="small" />
+        </IconButton>
+      </Stack>
 
       {/* Firm selector */}
       <Stack direction="row" spacing={2} alignItems="center">
@@ -153,6 +164,23 @@ export default function BillingConfigPage() {
           {(firmsQuery.data ?? []).map((f) => <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>)}
         </Select>
       </Stack>
+
+      {selectedFirmId === "" && (
+        <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 8, gap: 2.5 }}>
+          <img
+            src="https://cdn.undraw.co/illustration/settings_alfp.svg"
+            alt=""
+            style={{ width: 260, maxWidth: "100%", opacity: 0.88 }}
+          />
+          <Typography variant="h6" fontWeight={600} color="text.secondary">
+            Sélectionnez une firme pour commencer
+          </Typography>
+          <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ maxWidth: 420 }}>
+            Choisissez une firme ci-dessus pour configurer ses coordonnées de facturation
+            et définir ses règles tarifaires (interventions et implants).
+          </Typography>
+        </Box>
+      )}
 
       {selectedFirmId !== "" && (
         <>
@@ -307,6 +335,40 @@ export default function BillingConfigPage() {
           </Paper>
         </>
       )}
+      {/* Tutorial modal */}
+      <Dialog open={tutorialOpen} onClose={() => setTutorialOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ fontWeight: 700 }}>
+          Comment configurer la facturation ?
+        </DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2.5}>
+            {[
+              { n: 1, title: "Sélectionnez une firme", desc: "Choisissez la firme à configurer dans le menu déroulant en haut de la page." },
+              { n: 2, title: "Configurez le contact de facturation", desc: "Renseignez l'email principal de facturation ainsi que les éventuelles adresses en CC (séparées par virgule). Ces adresses seront utilisées lors de l'envoi des factures." },
+              { n: 3, title: "Ajoutez des règles tarifaires", desc: "Deux types de règles : par code d'intervention (ex : LCA → 350 €) ou par implant spécifique. Chaque règle applique un tarif fixe par occurrence sur les missions validées." },
+              { n: 4, title: "Activez ou désactivez les règles", desc: "Cliquez sur le badge de statut pour activer/désactiver une règle sans la supprimer, selon l'évolution des contrats." },
+            ].map(({ n, title, desc }) => (
+              <Stack key={n} direction="row" spacing={2} alignItems="flex-start">
+                <Box sx={{
+                  minWidth: 32, height: 32, borderRadius: "50%",
+                  bgcolor: "primary.main", color: "white",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontWeight: 700, fontSize: 14, flexShrink: 0,
+                }}>
+                  {n}
+                </Box>
+                <Box>
+                  <Typography variant="subtitle2" fontWeight={700}>{title}</Typography>
+                  <Typography variant="body2" color="text.secondary">{desc}</Typography>
+                </Box>
+              </Stack>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTutorialOpen(false)} variant="contained" disableElevation>J'ai compris</Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

@@ -4,7 +4,12 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
+  IconButton,
   MenuItem,
   Paper,
   Select,
@@ -18,6 +23,7 @@ import {
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
@@ -61,6 +67,7 @@ export default function FirmInvoicesPage() {
   const navigate = useNavigate();
 
   // ── Wizard state ──────────────────────────────────────────────────
+  const [tutorialOpen, setTutorialOpen] = React.useState(false);
   const [showWizard, setShowWizard] = React.useState(false);
   const [firmId, setFirmId] = React.useState("");
   const [periodYear, setPeriodYear] = React.useState(new Date().getFullYear());
@@ -159,7 +166,12 @@ export default function FirmInvoicesPage() {
   return (
     <Stack spacing={3}>
       <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Typography variant="h6" fontWeight={700}>Factures Firmes</Typography>
+        <Stack direction="row" alignItems="center" spacing={1}>
+          <Typography variant="h6" fontWeight={700}>Factures Firmes</Typography>
+          <IconButton size="small" onClick={() => setTutorialOpen(true)} color="primary" sx={{ opacity: 0.7 }}>
+            <HelpOutlineIcon fontSize="small" />
+          </IconButton>
+        </Stack>
         <Button variant="contained" disableElevation startIcon={<AddIcon />} onClick={() => setShowWizard(true)}>
           Nouvelle facture
         </Button>
@@ -389,6 +401,40 @@ export default function FirmInvoicesPage() {
           </Table>
         </Paper>
       )}
+
+      {/* Tutorial modal */}
+      <Dialog open={tutorialOpen} onClose={() => setTutorialOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ fontWeight: 700 }}>Comment générer une facture firme ?</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2.5}>
+            {[
+              { n: 1, title: "Configurez les règles tarifaires", desc: "Avant tout, rendez-vous dans \"Configuration\" pour définir les tarifs par firme : par code d'intervention (ex : LCA) ou par implant spécifique." },
+              { n: 2, title: "Créez une nouvelle facture", desc: "Cliquez sur \"+ Nouvelle facture\", sélectionnez la firme et la période (mois/année)." },
+              { n: 3, title: "Prévisualisez les prestations", desc: "SurgicalHub scanne toutes les missions validées sur la période et applique les règles actives. Seules les prestations non encore facturées apparaissent." },
+              { n: 4, title: "Sélectionnez et générez", desc: "Cochez les lignes à inclure (interventions et/ou implants), puis cliquez sur \"Générer\". La facture est créée avec un numéro unique (FIRM-YYYY-NNN)." },
+              { n: 5, title: "Envoyez par email", desc: "Depuis le détail de la facture, téléchargez le PDF ou envoyez-le directement à la firme avec le bouton d'envoi." },
+            ].map(({ n, title, desc }) => (
+              <Stack key={n} direction="row" spacing={2} alignItems="flex-start">
+                <Box sx={{
+                  minWidth: 32, height: 32, borderRadius: "50%",
+                  bgcolor: "primary.main", color: "white",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontWeight: 700, fontSize: 14, flexShrink: 0,
+                }}>
+                  {n}
+                </Box>
+                <Box>
+                  <Typography variant="subtitle2" fontWeight={700}>{title}</Typography>
+                  <Typography variant="body2" color="text.secondary">{desc}</Typography>
+                </Box>
+              </Stack>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTutorialOpen(false)} variant="contained" disableElevation>J'ai compris</Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

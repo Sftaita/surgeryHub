@@ -4,6 +4,11 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  IconButton,
   MenuItem,
   Paper,
   Select,
@@ -17,6 +22,7 @@ import {
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
@@ -55,6 +61,7 @@ export default function InstrumentistStatementsPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
 
+  const [tutorialOpen, setTutorialOpen] = React.useState(false);
   const [showWizard, setShowWizard] = React.useState(false);
   const [instrumentistId, setInstrumentistId] = React.useState("");
   const [periodYear, setPeriodYear] = React.useState(new Date().getFullYear());
@@ -121,7 +128,12 @@ export default function InstrumentistStatementsPage() {
   return (
     <Stack spacing={3}>
       <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Typography variant="h6" fontWeight={700}>Décomptes Instrumentistes</Typography>
+        <Stack direction="row" alignItems="center" spacing={1}>
+          <Typography variant="h6" fontWeight={700}>Décomptes Instrumentistes</Typography>
+          <IconButton size="small" onClick={() => setTutorialOpen(true)} color="primary" sx={{ opacity: 0.7 }}>
+            <HelpOutlineIcon fontSize="small" />
+          </IconButton>
+        </Stack>
         <Button variant="contained" disableElevation startIcon={<AddIcon />} onClick={() => setShowWizard(true)}>
           Nouveau décompte
         </Button>
@@ -318,6 +330,40 @@ export default function InstrumentistStatementsPage() {
           </Table>
         </Paper>
       )}
+
+      {/* Tutorial modal */}
+      <Dialog open={tutorialOpen} onClose={() => setTutorialOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ fontWeight: 700 }}>Comment générer un décompte instrumentiste ?</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2.5}>
+            {[
+              { n: 1, title: "Lancez le wizard", desc: "Cliquez sur \"+ Nouveau décompte\", sélectionnez l'instrumentiste et le mois concerné." },
+              { n: 2, title: "Prévisualisez les prestations", desc: "SurgicalHub liste toutes les missions validées du mois. Les blocs sont facturés en heures (durée arrondie au quart d'heure supérieur × tarif horaire). Les consultations sont facturées à l'unité × tarif consultation." },
+              { n: 3, title: "Sélectionnez les missions", desc: "Les missions déjà facturées sont grisées. Décochez manuellement celles que vous souhaitez exclure du décompte." },
+              { n: 4, title: "Générez le décompte", desc: "Cliquez sur \"Générer le décompte\". Un PDF est automatiquement produit avec le récapitulatif des prestations et le total." },
+              { n: 5, title: "Envoyez à l'instrumentiste", desc: "Depuis le détail du décompte, envoyez le PDF par email à l'instrumentiste une fois la période clôturée." },
+            ].map(({ n, title, desc }) => (
+              <Stack key={n} direction="row" spacing={2} alignItems="flex-start">
+                <Box sx={{
+                  minWidth: 32, height: 32, borderRadius: "50%",
+                  bgcolor: "primary.main", color: "white",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontWeight: 700, fontSize: 14, flexShrink: 0,
+                }}>
+                  {n}
+                </Box>
+                <Box>
+                  <Typography variant="subtitle2" fontWeight={700}>{title}</Typography>
+                  <Typography variant="body2" color="text.secondary">{desc}</Typography>
+                </Box>
+              </Stack>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTutorialOpen(false)} variant="contained" disableElevation>J'ai compris</Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }
