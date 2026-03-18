@@ -1,6 +1,6 @@
 # SurgicalHub — Architecture système
 
-_Last updated: 2026-03-15 (v4 — module chirurgiens)_
+_Last updated: 2026-03-18 (v5 — module facturation)_
 
 ---
 
@@ -51,7 +51,10 @@ Api/
 ├── MaterialCatalogController            — CRUD /api/material-items
 ├── MaterialItemRequestController        — POST demande (instrumentiste)
 ├── MaterialItemRequestManagerController — gestion demandes manager (list/resolve/ignore)
-└── MaterialLineController               — CRUD /api/missions/{id}/material-lines
+├── MaterialLineController               — CRUD /api/missions/{id}/material-lines
+├── FirmBillingController               — PATCH billing-contact + CRUD /api/firms/{id}/pricing-rules
+├── FirmInvoiceController               — CRUD /api/firm-invoices + preview/generate/send/mark-paid
+└── InstrumentistStatementController    — CRUD /api/instrumentist-statements + preview/generate/send/mark-paid
 ```
 
 ### Autorisation — RBAC strict via Voters
@@ -127,6 +130,11 @@ L'envoi est découplé de la logique métier : une erreur SMTP ne fait jamais é
 /app/m/surgeons              — liste + drawer chirurgiens
 /app/m/catalogue             — catalogue matériel
 /app/m/catalogue/requests    — demandes matériel
+/app/m/billing/config            — configuration tarifs firmes (PricingRules + billing contact)
+/app/m/billing/firm-invoices     — liste + génération factures firmes
+/app/m/billing/firm-invoices/:id — détail facture firme
+/app/m/billing/statements        — liste + génération décomptes instrumentistes
+/app/m/billing/statements/:id    — détail décompte instrumentiste
 ```
 
 ### Organisation du code
@@ -150,6 +158,10 @@ src/app/
 │   ├── manager-catalogue/
 │   │   ├── api/      — catalogue.types.ts, catalogue.api.ts
 │   │   └── components/  — MaterialItemFormDialog
+│   ├── billing-firm/
+│   │   └── api/      — firmInvoice.api.ts, firmBilling.api.ts
+│   ├── billing-instrumentist/
+│   │   └── api/      — statement.api.ts
 │   ├── invitation/
 │   └── sites/
 ├── pages/            — pages (orchestration uniquement)
@@ -177,6 +189,10 @@ Chirurgiens
 CATALOGUE
   Matériel
   Demandes matériel
+FACTURATION
+  Configuration
+  Factures Firmes
+  Décomptes
 ─────────────
 Déconnexion
 ```
@@ -261,6 +277,35 @@ MaterialItemRequest
 ├── status: 'PENDING' | 'RESOLVED' | 'IGNORED'
 ├── materialItem → MaterialItem (nullable, renseigné lors de la résolution)
 └── createdBy → User
+
+PricingRule
+├── firm → Firm
+├── ruleType: 'INTERVENTION_FEE' | 'IMPLANT_FEE'
+├── interventionCode (string nullable — matche MissionIntervention.code)
+└── materialItem → MaterialItem (nullable)
+
+FirmInvoice
+├── firm, number (FIRM-YYYY-NNN), status (DRAFT|GENERATED|SENT|PAID)
+├── periodStart, periodEnd, totalAmount
+├── billingEmailTo (snapshot), billingEmailCc (snapshot JSON)
+└── FirmInvoiceLine[]
+
+FirmInvoiceLine
+├── invoice, mission, lineType (INTERVENTION_FEE|IMPLANT_FEE)
+├── missionIntervention (nullable FK — anti-doublon)
+├── materialLine (nullable FK — anti-doublon)
+└── descriptionSnapshot, unitPrice (snapshot), quantity, totalAmount
+
+InstrumentistStatement
+├── instrumentist, periodYear, periodMonth
+├── status (DRAFT|GENERATED|SENT|PAID), totalAmount
+└── InstrumentistStatementLine[]
+
+InstrumentistStatementLine
+├── statement, mission, lineType (BLOC|CONSULTATION)
+├── durationMinutesRaw, durationMinutesRounded
+├── rateSnapshot (snapshot hourlyRate ou consultationFee)
+└── quantity, totalAmount, surgeonNameSnapshot, siteNameSnapshot, missionDateSnapshot
 ```
 
 ---

@@ -537,6 +537,111 @@ Le manager peut créer et gérer des chirurgiens via l'interface, avec le même 
 
 ---
 
+---
+
+## D-019 — Module Facturation Firmes
+
+Date : 18-03-2026
+
+### Décision
+
+Le manager peut générer des factures pour les firmes partenaires à partir des missions `VALIDATED`.
+
+**Modèle de tarification :**
+- `PricingRule` lie une `Firm` à une règle tarifaire de type `INTERVENTION_FEE` ou `IMPLANT_FEE`.
+- `INTERVENTION_FEE` : matche sur `MissionIntervention.code` (ex: "LCA") → montant fixe par occurrence.
+- `IMPLANT_FEE` : matche sur `MaterialItem` (implant) → montant par unité posée.
+- Une mission peut générer des lignes pour **plusieurs firmes** (ex: forfait Conmed + implants S&N).
+
+**Anti-doublon :**
+- `FirmInvoiceLine` conserve une FK nullable vers `MissionIntervention` (INTERVENTION_FEE) ou `MaterialLine` (IMPLANT_FEE).
+- Lors du preview/génération, toute intervention/materialLine déjà présente dans une facture `GENERATED/SENT/PAID` est exclue.
+
+**Contact de facturation :**
+- `Firm` porte `billingEmail` et `billingEmailCc` (JSON array), configurables par le manager.
+- L'email et les CC sont snapshotés dans `FirmInvoice` au moment de l'envoi.
+
+**Numérotation :** `FIRM-YYYY-NNN` (séquentiel par année).
+
+**PDF :** généré via DomPDF à partir d'un template Twig.
+
+**Email :** envoyé via `SendBillingEmailMessage` (Messenger async) avec PDF en pièce jointe et CC support.
+
+### Entités
+
+```
+PricingRule, FirmInvoice, FirmInvoiceLine
+```
+
+### Endpoints
+
+```
+PATCH  /api/firms/{id}/billing-contact
+GET    /api/firms/{id}/pricing-rules
+POST   /api/firms/{id}/pricing-rules
+PATCH  /api/firms/{id}/pricing-rules/{ruleId}
+DELETE /api/firms/{id}/pricing-rules/{ruleId}
+GET    /api/firm-invoices
+POST   /api/firm-invoices/preview
+POST   /api/firm-invoices
+GET    /api/firm-invoices/{id}
+GET    /api/firm-invoices/{id}/pdf
+POST   /api/firm-invoices/{id}/send
+POST   /api/firm-invoices/{id}/mark-paid
+```
+
+---
+
+## D-020 — Module Décomptes Instrumentistes
+
+Date : 18-03-2026
+
+### Décision
+
+Le manager peut générer des décomptes mensuels de prestations pour chaque instrumentiste.
+
+**Source :** missions `VALIDATED` uniquement, filtrées par mois/année sur `mission.startAt`.
+
+**Calcul BLOC :**
+- Durée brute = `endAt - startAt` (minutes)
+- Durée arrondie = `ceil(durationRaw / 15) * 15` minutes
+- Montant = `(durationRounded / 60) × User.hourlyRate`
+
+**Calcul CONSULTATION :** `1 × User.consultationFee`
+
+**Snapshot :** tarifs (`hourlyRate`, `consultationFee`), nom instrumentiste, nom chirurgien, nom site — tous figés à la génération.
+
+**Anti-doublon :** vérification service-side que la mission n'est pas déjà dans un décompte `GENERATED/SENT/PAID` pour le même mois.
+
+**Un seul décompte `GENERATED+` par (instrumentiste, mois, année)** — refus en `409` si tentative de doublon.
+
+### Entités
+
+```
+InstrumentistStatement, InstrumentistStatementLine
+```
+
+### Endpoints
+
+```
+GET  /api/instrumentist-statements
+POST /api/instrumentist-statements/preview
+POST /api/instrumentist-statements
+GET  /api/instrumentist-statements/{id}
+GET  /api/instrumentist-statements/{id}/pdf
+POST /api/instrumentist-statements/{id}/send
+POST /api/instrumentist-statements/{id}/mark-paid
+```
+
+### Impact historique
+
+| Date | Décision |
+|---|---|
+| 18-03-2026 | D-019 — Module Facturation Firmes |
+| 18-03-2026 | D-020 — Module Décomptes Instrumentistes |
+
+---
+
 ## Historique
 
 | Date | Décision |

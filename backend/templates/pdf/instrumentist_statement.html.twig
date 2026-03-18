@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: DejaVu Sans, sans-serif; font-size: 11px; color: #1a1a1a; }
+  .page { padding: 32px 40px; }
+  .header { display: table; width: 100%; margin-bottom: 28px; border-bottom: 2px solid #2e7d32; padding-bottom: 16px; }
+  .header-left { display: table-cell; vertical-align: top; }
+  .header-right { display: table-cell; text-align: right; vertical-align: top; }
+  .logo { font-size: 20px; font-weight: bold; color: #2e7d32; letter-spacing: 1px; }
+  .doc-title { font-size: 22px; font-weight: bold; color: #2e7d32; margin-bottom: 4px; }
+  .doc-sub { font-size: 13px; color: #555; }
+  .meta-grid { display: table; width: 100%; margin-bottom: 24px; }
+  .meta-col { display: table-cell; width: 50%; vertical-align: top; padding: 12px 16px; background: #f1f8f2; border-radius: 4px; }
+  .meta-col + .meta-col { background: none; padding-left: 24px; }
+  .meta-label { font-size: 9px; text-transform: uppercase; color: #888; letter-spacing: 0.5px; margin-bottom: 2px; }
+  .meta-value { font-size: 12px; color: #1a1a1a; font-weight: bold; }
+  .status-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 9px; font-weight: bold; text-transform: uppercase; }
+  .status-generated { background: #e3f2fd; color: #1565C0; }
+  .status-sent { background: #fff3e0; color: #e65100; }
+  .status-paid { background: #e8f5e9; color: #2e7d32; }
+  .section-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; margin-bottom: 8px; margin-top: 20px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+  thead th { background: #2e7d32; color: #fff; padding: 7px 10px; text-align: left; font-size: 10px; font-weight: bold; }
+  thead th.right { text-align: right; }
+  tbody tr:nth-child(even) { background: #f8fcf8; }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid #e8eaf0; font-size: 10px; }
+  tbody td.right { text-align: right; }
+  .total-row { display: table; width: 100%; margin-top: 12px; }
+  .total-row-inner { display: table-cell; text-align: right; }
+  .total-box { display: inline-block; background: #2e7d32; color: #fff; padding: 10px 20px; border-radius: 4px; }
+  .total-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.85; }
+  .total-amount { font-size: 18px; font-weight: bold; margin-top: 2px; }
+  .footer { margin-top: 36px; padding-top: 12px; border-top: 1px solid #e0e0e0; font-size: 9px; color: #aaa; text-align: center; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">SurgicalHub</div>
+    </div>
+    <div class="header-right">
+      <div class="doc-title">DÉCOMPTE</div>
+      <div class="doc-sub">{{ statement.periodMonth|string_pad(2, '0', 'left') }}/{{ statement.periodYear }}</div>
+    </div>
+  </div>
+
+  <div class="meta-grid">
+    <div class="meta-col">
+      <div class="meta-label">Instrumentiste</div>
+      <div class="meta-value">{{ statement.instrumentistNameSnapshot }}</div>
+      {% if statement.instrumentistEmailSnapshot %}
+        <div style="font-size:10px;color:#555;margin-top:4px;">{{ statement.instrumentistEmailSnapshot }}</div>
+      {% endif %}
+    </div>
+    <div class="meta-col">
+      <div style="display:table;width:100%;">
+        <div style="display:table-cell;">
+          <div class="meta-label">Période</div>
+          <div class="meta-value">{{ statement.periodMonth|string_pad(2, '0', 'left') }}/{{ statement.periodYear }}</div>
+        </div>
+        <div style="display:table-cell;text-align:right;vertical-align:top;">
+          <div class="meta-label">Statut</div>
+          <span class="status-badge status-{{ statement.status.value|lower }}">{{ statement.status.value }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title">Lignes de prestation</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Type</th>
+        <th>Chirurgien</th>
+        <th>Site</th>
+        <th class="right">Durée</th>
+        <th class="right">Tarif</th>
+        <th class="right">Montant</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in statement.lines %}
+      <tr>
+        <td>{{ line.missionDateSnapshot ? line.missionDateSnapshot|date('d/m/Y') : '—' }}</td>
+        <td>
+          {% if line.lineType.value == 'BLOC' %}
+            Bloc ({{ line.durationMinutesRounded }}min)
+          {% else %}
+            Consultation
+          {% endif %}
+        </td>
+        <td>{{ line.surgeonNameSnapshot ?? '—' }}</td>
+        <td>{{ line.siteNameSnapshot ?? '—' }}</td>
+        <td class="right">
+          {% if line.lineType.value == 'BLOC' %}
+            {{ line.quantity|number_format(2, ',', ' ') }}h
+          {% else %}
+            1
+          {% endif %}
+        </td>
+        <td class="right">{{ line.rateSnapshot|number_format(2, ',', ' ') }} €</td>
+        <td class="right"><strong>{{ line.totalAmount|number_format(2, ',', ' ') }} €</strong></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" style="text-align:center;color:#aaa;padding:16px;">Aucune prestation</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="total-row">
+    <div class="total-row-inner">
+      <div class="total-box">
+        <div class="total-label">Total à payer</div>
+        <div class="total-amount">{{ statement.totalAmount|number_format(2, ',', ' ') }} €</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    Document généré par SurgicalHub — {{ "now"|date('d/m/Y à H:i') }}
+  </div>
+</div>
+</body>
+</html>

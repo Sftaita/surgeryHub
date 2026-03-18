@@ -32,6 +32,12 @@ class Firm
     #[Groups(['mission:read', 'mission:read_manager'])]
     private bool $active = true;
 
+    #[ORM\Column(length: 255, nullable: true)]
+    private ?string $billingEmail = null;
+
+    #[ORM\Column(type: 'json', nullable: true)]
+    private ?array $billingEmailCc = null;
+
     public function getId(): ?int
     {
         return $this->id;
@@ -56,6 +62,28 @@ class Firm
     public function setActive(bool $active): static
     {
         $this->active = $active;
+        return $this;
+    }
+
+    public function getBillingEmail(): ?string
+    {
+        return $this->billingEmail;
+    }
+
+    public function setBillingEmail(?string $billingEmail): static
+    {
+        $this->billingEmail = $billingEmail;
+        return $this;
+    }
+
+    public function getBillingEmailCc(): ?array
+    {
+        return $this->billingEmailCc;
+    }
+
+    public function setBillingEmailCc(?array $billingEmailCc): static
+    {
+        $this->billingEmailCc = $billingEmailCc;
         return $this;
     }
 }

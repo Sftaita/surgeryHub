@@ -2,13 +2,17 @@
 
 namespace App\Service;
 
+use App\Entity\FirmInvoice;
+use App\Entity\InstrumentistStatement;
 use App\Entity\Mission;
 use App\Entity\NotificationEvent;
 use App\Entity\User;
 use App\Enum\PublicationChannel;
+use App\Message\SendBillingEmailMessage;
 use App\Repository\UserRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
+use Symfony\Component\Messenger\MessageBusInterface;
 
 class NotificationService
 {
@@ -18,8 +22,13 @@ class NotificationService
         private readonly EntityManagerInterface $em,
         private readonly UserRepository $userRepository,
         private readonly EmailService $emailService,
+        private readonly MessageBusInterface $bus,
         #[Autowire('%env(string:FRONTEND_URL)%')]
         private readonly string $frontendUrl,
+        #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
+        private readonly string $fromAddress,
+        #[Autowire('%env(string:MAILER_FROM_NAME)%')]
+        private readonly string $fromName,
     ) {
     }
 
@@ -107,6 +116,43 @@ class NotificationService
             ],
             textTemplate: 'emails/instrumentist_invitation.txt.twig',
         );
+    }
+
+    public function sendFirmInvoiceEmail(FirmInvoice $invoice, string $emailTo, array $emailCc, string $pdfBinary): void
+    {
+        $filename = sprintf('facture-%s-%s.pdf',
+            strtolower(str_replace(' ', '-', $invoice->getFirm()->getName())),
+            $invoice->getNumber() ?? $invoice->getId()
+        );
+
+        $this->bus->dispatch(new SendBillingEmailMessage(
+            to: $emailTo,
+            cc: $emailCc,
+            subject: sprintf('Facture %s — %s', $invoice->getNumber() ?? $invoice->getId(), $invoice->getFirm()->getName()),
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: 'emails/firm_invoice_sent.html.twig',
+            context: ['invoice' => $invoice],
+            attachmentBase64: base64_encode($pdfBinary),
+            attachmentFilename: $filename,
+        ));
+    }
+
+    public function sendStatementEmail(InstrumentistStatement $statement, string $emailTo, string $pdfBinary): void
+    {
+        $filename = sprintf('decompte-%02d-%d.pdf', $statement->getPeriodMonth(), $statement->getPeriodYear());
+
+        $this->bus->dispatch(new SendBillingEmailMessage(
+            to: $emailTo,
+            cc: [],
+            subject: sprintf('Décompte %02d/%d — %s', $statement->getPeriodMonth(), $statement->getPeriodYear(), $statement->getInstrumentistNameSnapshot() ?? ''),
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: 'emails/instrumentist_statement_sent.html.twig',
+            context: ['statement' => $statement],
+            attachmentBase64: base64_encode($pdfBinary),
+            attachmentFilename: $filename,
+        ));
     }
 
     private function createInApp(User $user, Mission $mission, string $eventType): void

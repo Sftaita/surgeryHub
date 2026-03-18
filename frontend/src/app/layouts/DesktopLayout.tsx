@@ -37,6 +37,14 @@ const NAV_ITEMS = [
       { label: "Demandes matériel", href: "/app/m/catalogue/requests" },
     ],
   },
+  {
+    label: "Facturation",
+    children: [
+      { label: "Configuration", href: "/app/m/billing/config" },
+      { label: "Factures Firmes", href: "/app/m/billing/firm-invoices" },
+      { label: "Décomptes", href: "/app/m/billing/statements" },
+    ],
+  },
 ] as const;
 
 export function DesktopLayout() {

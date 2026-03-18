@@ -1,4 +1,6 @@
+import * as React from "react";
 import { Navigate, Route, Routes, Outlet } from "react-router-dom";
+import { CircularProgress, Box } from "@mui/material";
 
 import { RequireAuth } from "./RequireAuth";
 import { RequireAppAccess } from "./RequireAppAccess";
@@ -10,169 +12,133 @@ import { ForbiddenPage } from "../pages/ForbiddenPage";
 import LoginPage from "../pages/LoginPage";
 import { useAuth } from "../auth/AuthContext";
 import { isMobileRole, isDesktopRole } from "../auth/roles";
-
-// Lot 1 — Manager/Admin — Missions
-import MissionsListPage from "../pages/manager/MissionsListPage";
-import MissionDetailPage from "../pages/manager/MissionDetailPage";
-
-// Lot 2b — Manager/Admin — Create mission
-import MissionCreatePage from "../pages/manager/MissionCreatePage";
-
-// Lot MGR-INS-1 — Manager/Admin — Instrumentists
-import InstrumentistsPage from "../pages/manager/InstrumentistsPage";
-
-// Lot MGR-SUR-1 — Manager/Admin — Surgeons
-import SurgeonsPage from "../pages/manager/SurgeonsPage";
-
-// Catalogue matériel
-import CataloguePage from "../pages/manager/CataloguePage";
-import CatalogueRequestsPage from "../pages/manager/CatalogueRequestsPage";
-
-// Lot 10 — Invitation / finalisation de compte
 import CompleteAccountPage from "../pages/CompleteAccountPage";
 
-// Lot 3 — Instrumentist (mobile-first)
-import OffersPage from "../pages/instrumentist/OffersPage";
-import MyMissionsPage from "../pages/instrumentist/MyMissionsPage";
-import MissionDetailPageInstrumentist from "../pages/instrumentist/MissionDetailPage";
+// ─── Lazy imports ────────────────────────────────────────────────────────────
 
-// Lot 4 — Instrumentist (mobile-first) — Encoding
-import MissionEncodingPage from "../pages/instrumentist/MissionEncodingPage";
+// Instrumentiste
+const TodayPage           = React.lazy(() => import("../pages/instrumentist/TodayPage"));
+const OffersPage          = React.lazy(() => import("../pages/instrumentist/OffersPage"));
+const MyMissionsPage      = React.lazy(() => import("../pages/instrumentist/MyMissionsPage"));
+const PlanningPage        = React.lazy(() => import("../pages/instrumentist/PlanningPage"));
+const NotificationsPage   = React.lazy(() => import("../pages/instrumentist/NotificationsPage"));
+const DeclareMissionPage  = React.lazy(() => import("../pages/instrumentist/DeclareMissionPage"));
+const MissionDetailPageI  = React.lazy(() => import("../pages/instrumentist/MissionDetailPage"));
+const MissionEncodingPage = React.lazy(() => import("../pages/instrumentist/MissionEncodingPage"));
 
-// Lot F2 — Instrumentist — Declare mission
-import DeclareMissionPage from "../pages/instrumentist/DeclareMissionPage";
+// Manager
+const MissionsListPage       = React.lazy(() => import("../pages/manager/MissionsListPage"));
+const MissionDetailPageM     = React.lazy(() => import("../pages/manager/MissionDetailPage"));
+const MissionCreatePage      = React.lazy(() => import("../pages/manager/MissionCreatePage"));
+const InstrumentistsPage     = React.lazy(() => import("../pages/manager/InstrumentistsPage"));
+const SurgeonsPage           = React.lazy(() => import("../pages/manager/SurgeonsPage"));
+const CataloguePage                     = React.lazy(() => import("../pages/manager/CataloguePage"));
+const CatalogueRequestsPage             = React.lazy(() => import("../pages/manager/CatalogueRequestsPage"));
+const FirmInvoicesPage                  = React.lazy(() => import("../pages/manager/billing/FirmInvoicesPage"));
+const FirmInvoiceDetailPage             = React.lazy(() => import("../pages/manager/billing/FirmInvoiceDetailPage"));
+const InstrumentistStatementsPage       = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementsPage"));
+const InstrumentistStatementDetailPage  = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementDetailPage"));
+const BillingConfigPage                 = React.lazy(() => import("../pages/manager/billing/BillingConfigPage"));
 
-// Lot P1A — Planning instrumentiste (skeleton UI uniquement)
-import PlanningPage from "../pages/instrumentist/PlanningPage";
+// ─── Suspense fallback ───────────────────────────────────────────────────────
+
+function PageLoader() {
+  return (
+    <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "60vh" }}>
+      <CircularProgress size={28} />
+    </Box>
+  );
+}
+
+// ─── Guards ──────────────────────────────────────────────────────────────────
 
 function PostLoginRedirect() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
-
   const role = state.user.role;
-
-  // ✅ Manager / Admin → va directement sur la liste missions
   if (isDesktopRole(role)) return <Navigate to="/app/m/missions" replace />;
-
-  // Instrumentist / Surgeon
   if (role === "SURGEON") return <Navigate to="/app/s" replace />;
-  if (isMobileRole(role)) return <Navigate to="/app/i/offers" replace />;
-
+  if (isMobileRole(role)) return <Navigate to="/app/i/today" replace />;
   return <Navigate to="/app/forbidden" replace />;
 }
 
-// ✅ Guard routes instrumentiste
 function RequireInstrumentist() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
-  const role = state.user.role;
-  if (role !== "INSTRUMENTIST")
-    return <Navigate to="/app/m/missions" replace />;
+  if (state.user.role !== "INSTRUMENTIST") return <Navigate to="/app/m/missions" replace />;
   return <Outlet />;
 }
 
-// ✅ Guard routes manager/admin
 function RequireManager() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
-  const role = state.user.role;
-  if (!isDesktopRole(role)) return <Navigate to="/app/i/offers" replace />;
+  if (!isDesktopRole(state.user.role)) return <Navigate to="/app/i/today" replace />;
   return <Outlet />;
 }
 
-// Placeholders socle
 function SurgeonHome() {
   return <div>Surgeon Home</div>;
 }
-function ManagerHome() {
-  return <div>Manager / Admin Home</div>;
-}
+
+// ─── Router ──────────────────────────────────────────────────────────────────
 
 export function AppRouter() {
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/complete-account" element={<CompleteAccountPage />} />
+    <React.Suspense fallback={<PageLoader />}>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/complete-account" element={<CompleteAccountPage />} />
 
-      <Route element={<RequireAuth />}>
-        <Route path="/" element={<PostLoginRedirect />} />
+        <Route element={<RequireAuth />}>
+          <Route path="/" element={<PostLoginRedirect />} />
 
-        <Route path="/app" element={<RequireAppAccess />}>
-          <Route path="forbidden" element={<ForbiddenPage />} />
+          <Route path="/app" element={<RequireAppAccess />}>
+            <Route path="forbidden" element={<ForbiddenPage />} />
 
-          {/* Instrumentist */}
-          <Route element={<RequireInstrumentist />}>
-            <Route element={<MobileLayout />}>
-              <Route
-                path="i"
-                element={<Navigate to="/app/i/offers" replace />}
-              />
-              <Route path="i/offers" element={<OffersPage />} />
-              <Route path="i/my-missions" element={<MyMissionsPage />} />
-
-              {/* Lot P1A — Planning (skeleton uniquement) */}
-              <Route path="i/planning" element={<PlanningPage />} />
-
-              {/* Lot F2 — Declare mission */}
-              <Route
-                path="i/missions/declare"
-                element={<DeclareMissionPage />}
-              />
-
-              <Route
-                path="i/missions/:id"
-                element={<MissionDetailPageInstrumentist />}
-              />
-              <Route
-                path="i/missions/:id/encoding"
-                element={<MissionEncodingPage />}
-              />
+            {/* Instrumentiste */}
+            <Route element={<RequireInstrumentist />}>
+              <Route element={<MobileLayout />}>
+                <Route path="i" element={<Navigate to="/app/i/today" replace />} />
+                <Route path="i/today" element={<TodayPage />} />
+                <Route path="i/offers" element={<OffersPage />} />
+                <Route path="i/my-missions" element={<MyMissionsPage />} />
+                <Route path="i/planning" element={<PlanningPage />} />
+                <Route path="i/notifications" element={<NotificationsPage />} />
+                <Route path="i/missions/declare" element={<DeclareMissionPage />} />
+                <Route path="i/missions/:id" element={<MissionDetailPageI />} />
+                <Route path="i/missions/:id/encoding" element={<MissionEncodingPage />} />
+              </Route>
             </Route>
-          </Route>
 
-          {/* Surgeon */}
-          <Route element={<MobileLayout />}>
-            <Route path="s" element={<SurgeonHome />} />
-          </Route>
+            {/* Surgeon */}
+            <Route element={<MobileLayout />}>
+              <Route path="s" element={<SurgeonHome />} />
+            </Route>
 
-          {/* Manager / Admin */}
-          <Route element={<RequireManager />}>
-            <Route element={<DesktopLayout />}>
-              {/* ✅ /app/m redirige sur la liste */}
-              <Route
-                path="m"
-                element={<Navigate to="/app/m/missions" replace />}
-              />
-
-              {/* Lot 1 — Missions */}
-              <Route path="m/missions" element={<MissionsListPage />} />
-
-              {/* Lot F4 — Vue “À valider” (missions DECLARED) */}
-              <Route
-                path="m/missions/to-validate"
-                element={<MissionsListPage />}
-              />
-
-              {/* Lot 2b — Missions — Create */}
-              <Route path="m/missions/new" element={<MissionCreatePage />} />
-
-              <Route path="m/missions/:id" element={<MissionDetailPage />} />
-
-              {/* Lot MGR-INS-1 — Instrumentists */}
-              <Route path="m/instrumentists" element={<InstrumentistsPage />} />
-
-              {/* Lot MGR-SUR-1 — Surgeons */}
-              <Route path="m/surgeons" element={<SurgeonsPage />} />
-
-              {/* Catalogue matériel */}
-              <Route path="m/catalogue" element={<CataloguePage />} />
-              <Route path="m/catalogue/requests" element={<CatalogueRequestsPage />} />
+            {/* Manager / Admin */}
+            <Route element={<RequireManager />}>
+              <Route element={<DesktopLayout />}>
+                <Route path="m" element={<Navigate to="/app/m/missions" replace />} />
+                <Route path="m/missions" element={<MissionsListPage />} />
+                <Route path="m/missions/to-validate" element={<MissionsListPage />} />
+                <Route path="m/missions/new" element={<MissionCreatePage />} />
+                <Route path="m/missions/:id" element={<MissionDetailPageM />} />
+                <Route path="m/instrumentists" element={<InstrumentistsPage />} />
+                <Route path="m/surgeons" element={<SurgeonsPage />} />
+                <Route path="m/catalogue" element={<CataloguePage />} />
+                <Route path="m/catalogue/requests" element={<CatalogueRequestsPage />} />
+                <Route path="m/billing/config" element={<BillingConfigPage />} />
+                <Route path="m/billing/firm-invoices" element={<FirmInvoicesPage />} />
+                <Route path="m/billing/firm-invoices/:id" element={<FirmInvoiceDetailPage />} />
+                <Route path="m/billing/statements" element={<InstrumentistStatementsPage />} />
+                <Route path="m/billing/statements/:id" element={<InstrumentistStatementDetailPage />} />
+              </Route>
             </Route>
           </Route>
         </Route>
-      </Route>
 
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </React.Suspense>
   );
 }

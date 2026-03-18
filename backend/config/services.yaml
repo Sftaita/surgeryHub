@@ -7,6 +7,9 @@
 parameters:
     app.profile_picture.upload_dir: "%kernel.project_dir%/public/uploads/profile-pictures"
     app.profile_picture.public_base_path: "/uploads/profile-pictures"
+    app.vapid.public_key: "%env(VAPID_PUBLIC_KEY)%"
+    app.vapid.private_key: "%env(VAPID_PRIVATE_KEY)%"
+    app.vapid.subject: "%env(VAPID_SUBJECT)%"
 
 services:
     # default configuration for services in *this* file
@@ -20,6 +23,17 @@ services:
             - "../src/DependencyInjection/"
             - "../src/Entity/"
             - "../src/Kernel.php"
+
+    App\Controller\Api\PushSubscriptionController:
+        arguments:
+            $vapidPublicKey: "%app.vapid.public_key%"
+        tags: ['controller.service_arguments']
+
+    App\Service\WebPushService:
+        arguments:
+            $vapidPublicKey: "%app.vapid.public_key%"
+            $vapidPrivateKey: "%app.vapid.private_key%"
+            $vapidSubject: "%app.vapid.subject%"
 
     App\EventListener\AuthenticationSuccessListener:
         tags:

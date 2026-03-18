@@ -1,6 +1,6 @@
 # SurgicalHub — API (Single Source of Truth)
 
-_Last updated: 2026-03-15 (v4 — module chirurgiens)_
+_Last updated: 2026-03-18 (v5 — module facturation)_
 
 ---
 
@@ -1533,3 +1533,387 @@ Le `title` de chaque événement est le nom de l'instrumentiste assigné (ou l'e
 **AuthZ :** `MANAGER` / `ADMIN`
 
 **Réponse — 200 :** `{ "id": 12, "deleted": true }`
+
+---
+
+## 24. Facturation Firmes
+
+**AuthZ :** `MANAGER` / `ADMIN` (via `BillingVoter::MANAGE`)
+
+### 24.1 Configuration contact facturation
+
+#### `PATCH /api/firms/{id}/billing-contact`
+
+**Body JSON :**
+
+```json
+{
+  "billingEmail": "facturation@arthrex.com",
+  "billingEmailCc": ["comptabilite@arthrex.com"]
+}
+```
+
+**Réponse — 200 :**
+
+```json
+{
+  "id": 1,
+  "billingEmail": "facturation@arthrex.com",
+  "billingEmailCc": ["comptabilite@arthrex.com"]
+}
+```
+
+---
+
+### 24.2 Règles tarifaires — CRUD
+
+#### `GET /api/firms/{id}/pricing-rules`
+
+Retourne toutes les règles (actives + inactives) pour la firme.
+
+**Réponse — 200 :**
+
+```json
+[
+  {
+    "id": 1,
+    "ruleType": "INTERVENTION_FEE",
+    "interventionCode": "LCA",
+    "materialItem": null,
+    "unitPrice": "100.00",
+    "active": true
+  },
+  {
+    "id": 2,
+    "ruleType": "IMPLANT_FEE",
+    "interventionCode": null,
+    "materialItem": { "id": 45, "label": "Anchor 5.5mm", "referenceCode": "SN-001", "firm": { "id": 1, "name": "S&N" } },
+    "unitPrice": "35.00",
+    "active": true
+  }
+]
+```
+
+#### `POST /api/firms/{id}/pricing-rules`
+
+**Body JSON (INTERVENTION_FEE) :**
+
+```json
+{
+  "ruleType": "INTERVENTION_FEE",
+  "interventionCode": "LCA",
+  "unitPrice": 100
+}
+```
+
+**Body JSON (IMPLANT_FEE) :**
+
+```json
+{
+  "ruleType": "IMPLANT_FEE",
+  "materialItemId": 45,
+  "unitPrice": 35
+}
+```
+
+**Contraintes :**
+- `materialItem` doit appartenir à la même firme que la règle (`IMPLANT_FEE`)
+- `interventionCode` est sensible à la casse (matche `MissionIntervention.code` exactement)
+
+**Réponse — 201 :** PricingRule complète (même format que GET)
+
+#### `PATCH /api/firms/{id}/pricing-rules/{ruleId}`
+
+**Body JSON :**
+
+```json
+{
+  "unitPrice": 110,
+  "active": false
+}
+```
+
+**Réponse — 200 :** PricingRule mise à jour
+
+#### `DELETE /api/firms/{id}/pricing-rules/{ruleId}`
+
+**Réponse — 200 :** `{ "id": 1, "deleted": true }`
+
+---
+
+### 24.3 Preview facture
+
+#### `POST /api/firm-invoices/preview`
+
+**Body JSON :**
+
+```json
+{
+  "firmId": 1,
+  "periodStart": "2026-03-01T00:00:00+01:00",
+  "periodEnd": "2026-03-31T23:59:59+01:00"
+}
+```
+
+**Réponse — 200 :**
+
+```json
+{
+  "firm": { "id": 1, "name": "Arthrex" },
+  "period": { "start": "2026-03-01", "end": "2026-03-31" },
+  "lines": [
+    {
+      "missionId": 42,
+      "missionDate": "2026-03-14",
+      "interventionId": 19,
+      "materialLineId": null,
+      "lineType": "INTERVENTION_FEE",
+      "descriptionSnapshot": "[LCA] Ligament croisé antérieur",
+      "firmNameSnapshot": "Arthrex",
+      "unitPrice": 100.0,
+      "quantity": 1.0,
+      "totalAmount": 100.0
+    }
+  ],
+  "totalAmount": 100.0
+}
+```
+
+**Notes :**
+- Exclut automatiquement les interventions/materialLines déjà dans une facture `GENERATED/SENT/PAID` pour cette firme
+- Seules les missions `VALIDATED` sont incluses
+
+---
+
+### 24.4 Générer une facture
+
+#### `POST /api/firm-invoices`
+
+**Body JSON :**
+
+```json
+{
+  "firmId": 1,
+  "periodStart": "2026-03-01T00:00:00+01:00",
+  "periodEnd": "2026-03-31T23:59:59+01:00",
+  "selectedInterventionIds": [19],
+  "selectedMaterialLineIds": []
+}
+```
+
+**Effets backend :**
+- Crée `FirmInvoice` avec `status = GENERATED`
+- Génère le numéro `FIRM-YYYY-NNN`
+- Crée les `FirmInvoiceLine` avec snapshot complet
+- Snapshote `billingEmailTo` / `billingEmailCc` depuis la `Firm`
+
+**Réponse — 201 :** FirmInvoice détaillée
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `404` | Firm introuvable |
+| `422` | Champs requis manquants / aucune ligne sélectionnée |
+
+---
+
+### 24.5 Détail, PDF, Envoi, Paiement
+
+#### `GET /api/firm-invoices/{id}`
+
+**Réponse — 200 :**
+
+```json
+{
+  "id": 1,
+  "number": "FIRM-2026-001",
+  "firm": { "id": 1, "name": "Arthrex" },
+  "status": "GENERATED",
+  "periodStart": "2026-03-01",
+  "periodEnd": "2026-03-31",
+  "totalAmount": "100.00",
+  "billingEmailTo": "facturation@arthrex.com",
+  "billingEmailCc": [],
+  "generatedAt": "2026-03-18T10:00:00+01:00",
+  "sentAt": null,
+  "paidAt": null,
+  "lines": [ { "...": "..." } ]
+}
+```
+
+#### `GET /api/firm-invoices/{id}/pdf`
+
+**Réponse :** PDF binaire (`Content-Type: application/pdf`)
+
+#### `POST /api/firm-invoices/{id}/send`
+
+**Précondition :** `status = GENERATED`
+
+**Body JSON :**
+
+```json
+{
+  "emailTo": "facturation@arthrex.com",
+  "emailCc": ["comptabilite@arthrex.com"]
+}
+```
+
+**Effets :** `status → SENT`, snapshot email mis à jour, PDF envoyé en pièce jointe via Messenger.
+
+**Réponse — 200 :** FirmInvoice mise à jour
+
+#### `POST /api/firm-invoices/{id}/mark-paid`
+
+**Effets :** `status → PAID`, `paidAt = now()`
+
+**Réponse — 200 :** FirmInvoice mise à jour
+
+---
+
+## 25. Décomptes Instrumentistes
+
+**AuthZ :** `MANAGER` / `ADMIN` (via `BillingVoter::MANAGE`)
+
+### 25.1 Preview décompte
+
+#### `POST /api/instrumentist-statements/preview`
+
+**Body JSON :**
+
+```json
+{
+  "instrumentistId": 12,
+  "year": 2026,
+  "month": 3
+}
+```
+
+**Réponse — 200 :**
+
+```json
+{
+  "instrumentist": {
+    "id": 12,
+    "displayName": "Ole Salve",
+    "email": "ole@example.com",
+    "hourlyRate": "350",
+    "consultationFee": "120"
+  },
+  "period": { "year": 2026, "month": 3 },
+  "lines": [
+    {
+      "missionId": 42,
+      "missionDate": "2026-03-14",
+      "lineType": "BLOC",
+      "durationMinutesRaw": 240,
+      "durationMinutesRounded": 240,
+      "rateSnapshot": 350.0,
+      "quantity": 4.0,
+      "totalAmount": 1400.0,
+      "surgeonName": "Jean Martin",
+      "siteName": "Delta"
+    }
+  ],
+  "totalAmount": 1400.0,
+  "alreadyBilledMissionIds": []
+}
+```
+
+**Calcul BLOC :**
+- `durationMinutesRaw` = `endAt - startAt` en minutes
+- `durationMinutesRounded` = `ceil(raw / 15) * 15`
+- `quantity` = `durationMinutesRounded / 60`
+- `totalAmount` = `quantity × hourlyRate`
+
+**Calcul CONSULTATION :** `quantity = 1`, `totalAmount = 1 × consultationFee`
+
+---
+
+### 25.2 Générer un décompte
+
+#### `POST /api/instrumentist-statements`
+
+**Body JSON :**
+
+```json
+{
+  "instrumentistId": 12,
+  "year": 2026,
+  "month": 3,
+  "selectedMissionIds": [42, 43]
+}
+```
+
+**Effets backend :**
+- Vérifie l'absence d'un décompte `GENERATED+` pour (instrumentiste, mois, année) → `409` si doublon
+- Crée `InstrumentistStatement` avec snapshot instrumentiste
+- Crée les `InstrumentistStatementLine` avec snapshot complet (tarifs, noms)
+
+**Réponse — 201 :** InstrumentistStatement détaillé
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `404` | Instrumentiste introuvable |
+| `409` | Décompte GENERATED+ déjà existant pour ce mois |
+| `422` | Champs requis manquants |
+
+---
+
+### 25.3 Détail, PDF, Envoi, Paiement
+
+#### `GET /api/instrumentist-statements/{id}`
+
+**Réponse — 200 :**
+
+```json
+{
+  "id": 1,
+  "instrumentist": { "id": 12, "displayName": "Ole Salve", "email": "ole@example.com" },
+  "periodYear": 2026,
+  "periodMonth": 3,
+  "status": "GENERATED",
+  "totalAmount": "1400.00",
+  "sentAt": null,
+  "paidAt": null,
+  "lines": [
+    {
+      "id": 1,
+      "missionId": 42,
+      "missionDate": "2026-03-14",
+      "lineType": "BLOC",
+      "durationMinutesRaw": 240,
+      "durationMinutesRounded": 240,
+      "rateSnapshot": "350.00",
+      "quantity": "4.0000",
+      "totalAmount": "1400.00",
+      "surgeonName": "Jean Martin",
+      "siteName": "Delta"
+    }
+  ]
+}
+```
+
+#### `GET /api/instrumentist-statements/{id}/pdf`
+
+**Réponse :** PDF binaire
+
+#### `POST /api/instrumentist-statements/{id}/send`
+
+**Précondition :** `status = GENERATED`
+
+**Body JSON :**
+
+```json
+{ "emailTo": "ole@example.com" }
+```
+
+**Effets :** `status → SENT`, PDF envoyé en pièce jointe.
+
+#### `POST /api/instrumentist-statements/{id}/mark-paid`
+
+**Effets :** `status → PAID`, `paidAt = now()`
+
+---
