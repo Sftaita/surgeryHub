@@ -100,8 +100,6 @@ function ResolveDialog({
   };
 
   const items: MaterialItemDTO[] = itemsQuery.data?.items ?? [];
-  const isLoading = resolving || createMutation.isPending;
-
   return (
     <>
       <MaterialItemFormDialog

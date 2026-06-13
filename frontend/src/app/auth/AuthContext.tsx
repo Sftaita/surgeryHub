@@ -8,8 +8,10 @@ import { clearAuth, readAuth, writeAuth } from "./authStorage";
 
 type User = {
   id: number;
-  role: string; // ex: "ROLE_ADMIN", "ROLE_SURGEON"
-  sites: unknown[]; // typage fin plus tard (LOT métier)
+  role: string;
+  sites: unknown[];
+  firstname?: string | null;
+  lastname?: string | null;
 };
 
 type AuthState =

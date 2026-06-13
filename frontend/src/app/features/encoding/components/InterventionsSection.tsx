@@ -1,16 +1,19 @@
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  Box,
+  Button,
   Chip,
+  Divider,
+  IconButton,
+  Paper,
   Stack,
   Typography,
-  Paper,
-  Divider,
-  Button,
-  IconButton,
 } from "@mui/material";
-import EditIcon from "@mui/icons-material/Edit";
+import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
+import EditIcon from "@mui/icons-material/Edit";
+import RemoveIcon from "@mui/icons-material/Remove";
 
 import type {
   EncodingIntervention,
@@ -44,10 +47,7 @@ type Props = {
   missionId: number;
   canEdit: boolean;
   interventions: EncodingIntervention[];
-  catalog?: {
-    items: CatalogItem[];
-    firms: CatalogFirm[];
-  };
+  catalog?: { items: CatalogItem[]; firms: CatalogFirm[] };
 };
 
 function extractErrorMessage(err: any): string {
@@ -59,71 +59,45 @@ function extractErrorMessage(err: any): string {
   );
 }
 
-function buildInterventionDisplayTitles(interventions: EncodingIntervention[]) {
-  // ex: LCA #1, LCA #2 si même code+label
-  const keyOf = (i: EncodingIntervention) => `${i.code}||${i.label}`;
-  const groups = new Map<string, EncodingIntervention[]>();
-  for (const itv of interventions) {
-    const k = keyOf(itv);
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k)!.push(itv);
-  }
-
-  const indexMap = new Map<number, { n?: number; total: number }>();
-  for (const [_, arr] of groups.entries()) {
-    const total = arr.length;
-    arr.forEach((itv, idx) => {
-      indexMap.set(itv.id, { n: total > 1 ? idx + 1 : undefined, total });
-    });
-  }
-  return indexMap;
+function parseQty(qty: string): number {
+  const n = parseFloat(qty);
+  return Number.isFinite(n) ? n : 1;
 }
 
-export default function InterventionsSection({
-  missionId,
-  canEdit,
-  interventions,
-  catalog,
-}: Props) {
+function displayQty(qty: string): string {
+  const n = parseFloat(qty);
+  if (!Number.isFinite(n)) return qty;
+  return n % 1 === 0 ? String(Math.round(n)) : String(n);
+}
+
+function buildInterventionTitle(itv: EncodingIntervention, index: number): string {
+  return `Intervention ${index + 1} — ${itv.label || itv.code}`;
+}
+
+export default function InterventionsSection({ missionId, canEdit, interventions, catalog }: Props) {
   const toast = useToast();
   const queryClient = useQueryClient();
 
-  // dialogs interventions
   const [openAddIntervention, setOpenAddIntervention] = React.useState(false);
-  const [editIntervention, setEditIntervention] =
-    React.useState<EncodingIntervention | null>(null);
-  const [deleteInterventionTarget, setDeleteInterventionTarget] =
-    React.useState<EncodingIntervention | null>(null);
+  const [editIntervention, setEditIntervention] = React.useState<EncodingIntervention | null>(null);
+  const [deleteInterventionTarget, setDeleteInterventionTarget] = React.useState<EncodingIntervention | null>(null);
 
-  // dialogs material
   const [openAddMaterial, setOpenAddMaterial] = React.useState(false);
-  const [preferredInterventionId, setPreferredInterventionId] = React.useState<
-    number | null
-  >(null);
+  const [preferredInterventionId, setPreferredInterventionId] = React.useState<number | null>(null);
 
-  // dialog - material item request
   const [openRequestDialog, setOpenRequestDialog] = React.useState(false);
-  const [preferredRequestInterventionId, setPreferredRequestInterventionId] =
-    React.useState<number | null>(null);
+  const [preferredRequestInterventionId, setPreferredRequestInterventionId] = React.useState<number | null>(null);
 
-  const [editLineTarget, setEditLineTarget] = React.useState<{
-    line: EncodingMaterialLine;
-  } | null>(null);
-
-  const [deleteLineTarget, setDeleteLineTarget] = React.useState<{
-    line: EncodingMaterialLine;
-  } | null>(null);
+  const [editLineTarget, setEditLineTarget] = React.useState<{ line: EncodingMaterialLine } | null>(null);
+  const [deleteLineTarget, setDeleteLineTarget] = React.useState<{ line: EncodingMaterialLine } | null>(null);
 
   const invalidate = React.useCallback(() => {
-    // Pas await ici -> on laisse le refetch se faire en background
     queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] });
     queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
   }, [queryClient, missionId]);
 
   const setEncodingCache = React.useCallback(
-    (
-      updater: (current: MissionEncodingResponse) => MissionEncodingResponse,
-    ) => {
+    (updater: (current: MissionEncodingResponse) => MissionEncodingResponse) => {
       queryClient.setQueryData(["missionEncoding", missionId], (old: any) => {
         if (!old) return old;
         return updater(old as MissionEncodingResponse);
@@ -132,66 +106,39 @@ export default function InterventionsSection({
     [queryClient, missionId],
   );
 
-  /**
-   * Mutations - Interventions
-   */
+  // ── Mutations: Interventions ──────────────────────────────────────
+
   const createInterventionMutation = useMutation({
     mutationFn: (body: { code: string; label: string; orderIndex: number }) =>
       createMissionIntervention(missionId, body),
-    onSuccess: async () => {
-      toast.success("Intervention ajoutée");
-      setOpenAddIntervention(false);
-      invalidate();
-    },
+    onSuccess: () => { toast.success("Intervention ajoutée"); setOpenAddIntervention(false); invalidate(); },
     onError: (err: any) => toast.error(extractErrorMessage(err)),
   });
 
   const patchInterventionMutation = useMutation({
-    mutationFn: (args: {
-      interventionId: number;
-      body: { code?: string; label?: string; orderIndex?: number };
-    }) => patchMissionIntervention(missionId, args.interventionId, args.body),
-    onSuccess: async () => {
-      toast.success("Intervention mise à jour");
-      setEditIntervention(null);
-      invalidate();
-    },
+    mutationFn: (args: { interventionId: number; body: { code?: string; label?: string; orderIndex?: number } }) =>
+      patchMissionIntervention(missionId, args.interventionId, args.body),
+    onSuccess: () => { toast.success("Intervention mise à jour"); setEditIntervention(null); invalidate(); },
     onError: (err: any) => toast.error(extractErrorMessage(err)),
   });
 
   const deleteInterventionMutation = useMutation({
-    mutationFn: (interventionId: number) =>
-      deleteMissionIntervention(missionId, interventionId),
-    onSuccess: async () => {
-      toast.success("Intervention supprimée");
-      setDeleteInterventionTarget(null);
-      invalidate();
-    },
+    mutationFn: (interventionId: number) => deleteMissionIntervention(missionId, interventionId),
+    onSuccess: () => { toast.success("Intervention supprimée"); setDeleteInterventionTarget(null); invalidate(); },
     onError: (err: any) => toast.error(extractErrorMessage(err)),
   });
 
-  /**
-   * Mutations - Material lines (OPTIMISTIC)
-   */
-  const createLineMutation = useMutation({
-    mutationFn: (body: CreateMaterialLineBody) =>
-      createMissionMaterialLine(missionId, body),
-    onMutate: async (body) => {
-      // 1) stop queries / snapshot
-      await queryClient.cancelQueries({
-        queryKey: ["missionEncoding", missionId],
-      });
-      const previous = queryClient.getQueryData(["missionEncoding", missionId]);
+  // ── Mutations: Material lines (optimistic) ────────────────────────
 
-      // 2) close dialog immediately (optimistic UX)
+  const createLineMutation = useMutation({
+    mutationFn: (body: CreateMaterialLineBody) => createMissionMaterialLine(missionId, body),
+    onMutate: async (body) => {
+      await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
+      const previous = queryClient.getQueryData(["missionEncoding", missionId]);
       setOpenAddMaterial(false);
       setPreferredInterventionId(null);
-
-      // 3) optimistic insert with temporary negative id
       const tempId = -Date.now();
-      const item =
-        (catalog?.items ?? []).find((i) => i.id === body.itemId) ?? null;
-
+      const item = (catalog?.items ?? []).find((i) => i.id === body.itemId) ?? null;
       if (item) {
         setEncodingCache((current) => ({
           ...current,
@@ -204,14 +151,7 @@ export default function InterventionsSection({
                 {
                   id: tempId,
                   missionInterventionId: body.missionInterventionId,
-                  item: {
-                    id: item.id,
-                    label: item.label,
-                    referenceCode: item.referenceCode,
-                    unit: item.unit,
-                    isImplant: item.isImplant,
-                    firm: { id: item.firm.id, name: item.firm.name },
-                  },
+                  item: { id: item.id, label: item.label, referenceCode: item.referenceCode, unit: item.unit, isImplant: item.isImplant, firm: { id: item.firm.id, name: item.firm.name } },
                   quantity: body.quantity,
                   comment: body.comment ?? "",
                 },
@@ -220,33 +160,22 @@ export default function InterventionsSection({
           }),
         }));
       }
-
       return { previous, tempId };
     },
     onSuccess: (created, _body, ctx) => {
-      // replace temp line with real one
       if (!ctx) return;
-
       setEncodingCache((current) => ({
         ...current,
         interventions: current.interventions.map((itv) => {
           if (itv.id !== created.missionInterventionId) return itv;
-          return {
-            ...itv,
-            materialLines: (itv.materialLines ?? []).map((l) =>
-              l.id === ctx.tempId ? created : l,
-            ),
-          };
+          return { ...itv, materialLines: (itv.materialLines ?? []).map((l) => l.id === ctx.tempId ? created : l) };
         }),
       }));
-
-      toast.success("Ligne matériel ajoutée");
+      toast.success("Matériel ajouté");
       invalidate();
     },
     onError: (err: any, _body, ctx) => {
-      if (ctx?.previous) {
-        queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
-      }
+      if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
       toast.error(extractErrorMessage(err));
     },
   });
@@ -255,316 +184,290 @@ export default function InterventionsSection({
     mutationFn: (args: { lineId: number; body: PatchMaterialLineBody }) =>
       patchMissionMaterialLine(missionId, args.lineId, args.body),
     onMutate: async (args) => {
-      await queryClient.cancelQueries({
-        queryKey: ["missionEncoding", missionId],
-      });
+      await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
       const previous = queryClient.getQueryData(["missionEncoding", missionId]);
-
-      // close dialog immediately
       setEditLineTarget(null);
-
-      // optimistic patch
       setEncodingCache((current) => ({
         ...current,
         interventions: current.interventions.map((itv) => ({
           ...itv,
           materialLines: (itv.materialLines ?? []).map((l) => {
             if (l.id !== args.lineId) return l;
-            return {
-              ...l,
-              quantity: args.body.quantity ?? l.quantity,
-              comment: args.body.comment ?? l.comment,
-            };
+            return { ...l, quantity: args.body.quantity ?? l.quantity, comment: args.body.comment ?? l.comment };
           }),
         })),
       }));
-
       return { previous };
     },
     onSuccess: (updated) => {
-      // ensure exact backend formatting (ex "3.00")
       setEncodingCache((current) => ({
         ...current,
         interventions: current.interventions.map((itv) => {
           if (itv.id !== updated.missionInterventionId) return itv;
-          return {
-            ...itv,
-            materialLines: (itv.materialLines ?? []).map((l) =>
-              l.id === updated.id ? updated : l,
-            ),
-          };
+          return { ...itv, materialLines: (itv.materialLines ?? []).map((l) => l.id === updated.id ? updated : l) };
         }),
       }));
-
-      toast.success("Ligne matériel mise à jour");
       invalidate();
     },
     onError: (err: any, _args, ctx) => {
-      if (ctx?.previous) {
-        queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
-      }
+      if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
       toast.error(extractErrorMessage(err));
     },
   });
 
   const deleteLineMutation = useMutation({
-    mutationFn: (lineId: number) =>
-      deleteMissionMaterialLine(missionId, lineId),
+    mutationFn: (lineId: number) => deleteMissionMaterialLine(missionId, lineId),
     onMutate: async (lineId) => {
-      await queryClient.cancelQueries({
-        queryKey: ["missionEncoding", missionId],
-      });
+      await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
       const previous = queryClient.getQueryData(["missionEncoding", missionId]);
-
-      // close confirm immediately
       setDeleteLineTarget(null);
-
-      // optimistic remove
       setEncodingCache((current) => ({
         ...current,
         interventions: current.interventions.map((itv) => ({
           ...itv,
-          materialLines: (itv.materialLines ?? []).filter(
-            (l) => l.id !== lineId,
-          ),
+          materialLines: (itv.materialLines ?? []).filter((l) => l.id !== lineId),
         })),
       }));
-
       return { previous };
     },
-    onSuccess: () => {
-      toast.success("Ligne matériel supprimée");
-      invalidate();
-    },
+    onSuccess: () => { toast.success("Matériel supprimé"); invalidate(); },
     onError: (err: any, _lineId, ctx) => {
-      if (ctx?.previous) {
-        queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
-      }
+      if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
       toast.error(extractErrorMessage(err));
     },
   });
 
   const createRequestMutation = useMutation({
-    mutationFn: (body: CreateMaterialItemRequestBody) =>
-      createMissionMaterialItemRequest(missionId, body),
-    onSuccess: () => {
-      toast.success("Demande envoyée au manager.");
-      setOpenRequestDialog(false);
-      invalidate();
-    },
+    mutationFn: (body: CreateMaterialItemRequestBody) => createMissionMaterialItemRequest(missionId, body),
+    onSuccess: () => { toast.success("Demande envoyée au manager."); setOpenRequestDialog(false); invalidate(); },
     onError: (err: any) => toast.error(extractErrorMessage(err)),
   });
 
   const isBusy =
-    createInterventionMutation.isPending ||
-    patchInterventionMutation.isPending ||
-    deleteInterventionMutation.isPending ||
-    createLineMutation.isPending ||
-    patchLineMutation.isPending ||
-    deleteLineMutation.isPending ||
-    createRequestMutation.isPending;
+    createInterventionMutation.isPending || patchInterventionMutation.isPending ||
+    deleteInterventionMutation.isPending || createLineMutation.isPending ||
+    patchLineMutation.isPending || deleteLineMutation.isPending || createRequestMutation.isPending;
 
-  const sorted = (interventions ?? [])
-    .slice()
-    .sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
+  const sorted = (interventions ?? []).slice().sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
 
-  const displayMap = buildInterventionDisplayTitles(sorted);
+  // Inline qty handlers
+  const handleQtyChange = (line: EncodingMaterialLine, delta: 1 | -1) => {
+    const current = parseQty(line.quantity);
+    const next = current + delta;
+    if (next <= 0) {
+      deleteLineMutation.mutate(line.id);
+    } else {
+      patchLineMutation.mutate({ lineId: line.id, body: { quantity: String(next) } });
+    }
+  };
 
   return (
-    <Paper variant="outlined" sx={{ p: 2 }}>
-      <Stack spacing={2}>
-        {/* Header + Add intervention outside items */}
-        <Stack
-          direction="row"
-          justifyContent="space-between"
-          alignItems="center"
-        >
-          <Typography variant="subtitle1">Interventions</Typography>
-
-          {canEdit && (
-            <Button
-              variant="contained"
-              size="small"
-              onClick={() => setOpenAddIntervention(true)}
-              disabled={isBusy}
-            >
-              Ajouter intervention
-            </Button>
-          )}
-        </Stack>
-
-        {sorted.length === 0 ? (
-          <Typography color="text.secondary">Aucune intervention</Typography>
-        ) : (
-          sorted.map((itv, idx) => {
-            const meta = displayMap.get(itv.id);
-            const titlePrefix =
-              meta?.n != null ? `${itv.code} n°${meta.n}` : itv.code;
-
-            const lines = itv.materialLines ?? [];
-
-            return (
-              <Stack key={itv.id} spacing={1}>
-                {/* Intervention line */}
-                <Stack direction="row" spacing={1} alignItems="flex-start">
-                  <Stack sx={{ flex: 1 }} spacing={0.5}>
-                    <Typography variant="subtitle2" fontWeight={700}>
-                      {titlePrefix} — {itv.label}
-                    </Typography>
-                  </Stack>
-
-                  {canEdit && (
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <Button
-                        variant="text"
-                        size="small"
-                        onClick={() => {
-                          setPreferredInterventionId(itv.id);
-                          setOpenAddMaterial(true);
-                        }}
-                        disabled={isBusy}
-                      >
-                        Encoder matériel
-                      </Button>
-
-                      <IconButton
-                        aria-label="Éditer"
-                        onClick={() => setEditIntervention(itv)}
-                        disabled={isBusy}
-                        size="small"
-                      >
-                        <EditIcon fontSize="small" />
-                      </IconButton>
-
-                      <IconButton
-                        aria-label="Supprimer"
-                        onClick={() => setDeleteInterventionTarget(itv)}
-                        disabled={isBusy}
-                        size="small"
-                      >
-                        <DeleteIcon fontSize="small" />
-                      </IconButton>
-                    </Stack>
-                  )}
-                </Stack>
-
-                {/* Material lines under intervention */}
-                <Stack spacing={1} sx={{ pl: 0 }}>
-                  <Typography variant="overline" color="text.secondary">
-                    Matériel encodé
-                  </Typography>
-
-                  {lines.length === 0 ? (
-                    <Typography color="text.secondary">
-                      Aucun matériel
-                    </Typography>
-                  ) : (
-                    <Stack spacing={1}>
-                      {lines.map((l) => (
-                        <Stack key={l.id} spacing={0.5}>
-                          <Stack
-                            direction="row"
-                            spacing={1}
-                            alignItems="flex-start"
-                          >
-                            <Stack sx={{ flex: 1 }}>
-                              <Typography variant="body2">
-                                {l.item?.label ?? "—"}
-                              </Typography>
-
-                              <Typography variant="caption" color="text.secondary">
-                                {l.item?.firm?.name ?? "—"}{l.item?.referenceCode ? ` · ${l.item.referenceCode}` : ""}
-                              </Typography>
-
-                              <Typography variant="body2" color="text.secondary">
-                                {l.quantity} {l.item?.unit ?? ""}{l.item?.isImplant ? " · implant" : ""}
-                              </Typography>
-
-                              {l.comment ? (
-                                <Typography variant="caption" color="text.secondary">{l.comment}</Typography>
-                              ) : null}
-                            </Stack>
-
-                            {canEdit && (
-                              <Stack direction="row" spacing={0.5}>
-                                <IconButton
-                                  size="small"
-                                  disabled={isBusy}
-                                  onClick={() => setEditLineTarget({ line: l })}
-                                >
-                                  <EditIcon fontSize="small" />
-                                </IconButton>
-
-                                <IconButton
-                                  size="small"
-                                  disabled={isBusy}
-                                  onClick={() =>
-                                    setDeleteLineTarget({ line: l })
-                                  }
-                                >
-                                  <DeleteIcon fontSize="small" />
-                                </IconButton>
-                              </Stack>
-                            )}
-                          </Stack>
-
-                          <Divider />
-                        </Stack>
-                      ))}
-                    </Stack>
-                  )}
-                </Stack>
-
-                {/* Material item requests under intervention */}
-                {(itv.materialItemRequests ?? []).length > 0 && (
-                  <Stack spacing={1} sx={{ pl: 0 }}>
-                    <Typography variant="overline" color="text.secondary">
-                      Demandes matériel
-                    </Typography>
-                    <Stack spacing={0.75}>
-                      {(itv.materialItemRequests ?? []).map((req) => (
-                        <Stack
-                          key={req.id}
-                          direction="row"
-                          spacing={1}
-                          alignItems="center"
-                        >
-                          <Stack sx={{ flex: 1 }}>
-                            <Typography variant="body2">{req.label}</Typography>
-                            {req.referenceCode ? (
-                              <Typography variant="caption" color="text.secondary">
-                                Réf : {req.referenceCode}
-                              </Typography>
-                            ) : null}
-                            {req.comment ? (
-                              <Typography variant="caption" color="text.secondary">
-                                {req.comment}
-                              </Typography>
-                            ) : null}
-                          </Stack>
-                          <Chip
-                            label="En attente"
-                            size="small"
-                            color="warning"
-                            variant="outlined"
-                          />
-                        </Stack>
-                      ))}
-                    </Stack>
-                  </Stack>
-                )}
-
-                {idx < sorted.length - 1 && <Divider />}
-              </Stack>
-            );
-          })
+    <Stack spacing={2}>
+      {/* Header */}
+      <Stack direction="row" justifyContent="space-between" alignItems="center">
+        <Typography variant="subtitle1" fontWeight={600}>
+          Interventions
+        </Typography>
+        {canEdit && (
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<AddIcon />}
+            onClick={() => setOpenAddIntervention(true)}
+            disabled={isBusy}
+          >
+            Ajouter
+          </Button>
         )}
       </Stack>
 
-      {/* Dialogs - interventions */}
+      {/* Empty state */}
+      {sorted.length === 0 ? (
+        <Paper
+          variant="outlined"
+          sx={{ borderRadius: 2, py: 4, textAlign: "center", borderStyle: "dashed" }}
+        >
+          <Typography color="text.secondary" mb={1.5}>
+            Aucune intervention encodée
+          </Typography>
+          {canEdit && (
+            <Button
+              variant="contained"
+              disableElevation
+              size="small"
+              startIcon={<AddIcon />}
+              onClick={() => setOpenAddIntervention(true)}
+              disabled={isBusy}
+            >
+              Ajouter une intervention
+            </Button>
+          )}
+        </Paper>
+      ) : (
+        sorted.map((itv, idx) => {
+          const lines = itv.materialLines ?? [];
+
+          return (
+            <Paper key={itv.id} variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+              {/* Intervention header */}
+              <Stack
+                direction="row"
+                alignItems="center"
+                sx={{ px: 2, py: 1.25, borderBottom: "1px solid", borderColor: "divider", bgcolor: "grey.50" }}
+              >
+                <Typography variant="subtitle2" fontWeight={700} sx={{ flex: 1 }}>
+                  {buildInterventionTitle(itv, idx)}
+                </Typography>
+                {canEdit && (
+                  <Stack direction="row" spacing={0.5}>
+                    <Button
+                      size="small"
+                      variant="text"
+                      onClick={() => { setPreferredInterventionId(itv.id); setOpenAddMaterial(true); }}
+                      disabled={isBusy}
+                    >
+                      + Matériel
+                    </Button>
+                    <IconButton size="small" disabled={isBusy} onClick={() => setEditIntervention(itv)}>
+                      <EditIcon fontSize="small" />
+                    </IconButton>
+                    <IconButton size="small" disabled={isBusy} onClick={() => setDeleteInterventionTarget(itv)}>
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                  </Stack>
+                )}
+              </Stack>
+
+              {/* Material lines */}
+              <Box sx={{ px: 2, py: lines.length === 0 ? 1.5 : 0.5 }}>
+                {lines.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Aucun matériel encodé
+                    {canEdit && (
+                      <>
+                        {" — "}
+                        <Box
+                          component="span"
+                          sx={{ color: "primary.main", cursor: "pointer", textDecoration: "underline" }}
+                          onClick={() => { setPreferredInterventionId(itv.id); setOpenAddMaterial(true); }}
+                        >
+                          Ajouter
+                        </Box>
+                      </>
+                    )}
+                  </Typography>
+                ) : (
+                  <Stack divider={<Divider />}>
+                    {lines.map((l) => (
+                      <Stack
+                        key={l.id}
+                        direction="row"
+                        alignItems="center"
+                        spacing={1}
+                        py={1}
+                      >
+                        {/* Info matériel */}
+                        <Stack sx={{ flex: 1, minWidth: 0 }}>
+                          <Typography variant="body2" noWrap>
+                            {l.item?.label ?? "—"}
+                            {l.item?.isImplant && (
+                              <Chip label="implant" size="small" sx={{ ml: 0.75, fontSize: "0.65rem", height: 16 }} />
+                            )}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" noWrap>
+                            {l.item?.firm?.name ?? "—"}
+                            {l.item?.referenceCode ? ` · ${l.item.referenceCode}` : ""}
+                          </Typography>
+                          {l.comment ? (
+                            <Typography variant="caption" color="text.disabled">
+                              {l.comment}
+                            </Typography>
+                          ) : null}
+                        </Stack>
+
+                        {/* Contrôles quantité */}
+                        {canEdit ? (
+                          <Stack direction="row" alignItems="center" spacing={0.5}>
+                            <IconButton
+                              size="small"
+                              disabled={isBusy}
+                              onClick={() => handleQtyChange(l, -1)}
+                              sx={{ bgcolor: "grey.100", borderRadius: 1, p: 0.5 }}
+                            >
+                              <RemoveIcon fontSize="small" />
+                            </IconButton>
+
+                            <Typography
+                              variant="body2"
+                              fontWeight={600}
+                              sx={{ minWidth: 28, textAlign: "center" }}
+                            >
+                              {displayQty(l.quantity)}
+                            </Typography>
+
+                            <IconButton
+                              size="small"
+                              disabled={isBusy}
+                              onClick={() => handleQtyChange(l, 1)}
+                              sx={{ bgcolor: "grey.100", borderRadius: 1, p: 0.5 }}
+                            >
+                              <AddIcon fontSize="small" />
+                            </IconButton>
+
+                            <IconButton
+                              size="small"
+                              disabled={isBusy}
+                              onClick={() => setEditLineTarget({ line: l })}
+                              sx={{ ml: 0.5 }}
+                            >
+                              <EditIcon fontSize="small" />
+                            </IconButton>
+                          </Stack>
+                        ) : (
+                          <Typography variant="body2" color="text.secondary">
+                            {displayQty(l.quantity)} {l.item?.unit ?? ""}
+                          </Typography>
+                        )}
+                      </Stack>
+                    ))}
+                  </Stack>
+                )}
+              </Box>
+
+              {/* Material item requests */}
+              {(itv.materialItemRequests ?? []).length > 0 && (
+                <Box sx={{ px: 2, pb: 1.5, borderTop: "1px solid", borderColor: "divider" }}>
+                  <Typography variant="overline" color="text.secondary" display="block" mt={1} mb={0.5}>
+                    Demandes en attente
+                  </Typography>
+                  <Stack spacing={0.75}>
+                    {(itv.materialItemRequests ?? []).map((req) => (
+                      <Stack key={req.id} direction="row" spacing={1} alignItems="center">
+                        <Stack sx={{ flex: 1 }}>
+                          <Typography variant="body2">{req.label}</Typography>
+                          {req.referenceCode && (
+                            <Typography variant="caption" color="text.secondary">
+                              Réf : {req.referenceCode}
+                            </Typography>
+                          )}
+                        </Stack>
+                        <Chip label="En attente" size="small" color="warning" variant="outlined" />
+                      </Stack>
+                    ))}
+                  </Stack>
+                </Box>
+              )}
+            </Paper>
+          );
+        })
+      )}
+
+      {/* Dialogs */}
       <AddInterventionDialog
         open={openAddIntervention}
         loading={createInterventionMutation.isPending}
+        firms={catalog?.firms ?? []}
+        existingCount={sorted.length}
         onClose={() => (isBusy ? null : setOpenAddIntervention(false))}
         onSubmit={(values) => createInterventionMutation.mutate(values)}
       />
@@ -576,30 +479,19 @@ export default function InterventionsSection({
         onClose={() => (isBusy ? null : setEditIntervention(null))}
         onSubmit={(values) => {
           if (!editIntervention) return;
-          patchInterventionMutation.mutate({
-            interventionId: editIntervention.id,
-            body: values,
-          });
+          patchInterventionMutation.mutate({ interventionId: editIntervention.id, body: values });
         }}
       />
 
       <ConfirmDeleteDialog
         open={!!deleteInterventionTarget}
         loading={deleteInterventionMutation.isPending}
-        title="Supprimer l’intervention ?"
-        message={
-          deleteInterventionTarget
-            ? `${deleteInterventionTarget.code} — ${deleteInterventionTarget.label}`
-            : ""
-        }
+        title="Supprimer l'intervention ?"
+        message={deleteInterventionTarget ? `${deleteInterventionTarget.code} — ${deleteInterventionTarget.label}` : ""}
         onClose={() => (isBusy ? null : setDeleteInterventionTarget(null))}
-        onConfirm={() => {
-          if (!deleteInterventionTarget) return;
-          deleteInterventionMutation.mutate(deleteInterventionTarget.id);
-        }}
+        onConfirm={() => { if (!deleteInterventionTarget) return; deleteInterventionMutation.mutate(deleteInterventionTarget.id); }}
       />
 
-      {/* Dialog - add material line */}
       <AddMaterialLineDialog
         open={openAddMaterial}
         loading={createLineMutation.isPending}
@@ -621,7 +513,6 @@ export default function InterventionsSection({
         }}
       />
 
-      {/* Dialog - edit material line */}
       <EditMaterialLineDialog
         open={!!editLineTarget}
         loading={patchLineMutation.isPending}
@@ -629,12 +520,10 @@ export default function InterventionsSection({
         onClose={() => (isBusy ? null : setEditLineTarget(null))}
         onSubmit={(values: PatchMaterialLineBody) => {
           if (!editLineTarget) return;
-
           patchLineMutation.mutate({
             lineId: editLineTarget.line.id,
             body: {
-              quantity:
-                values.quantity != null ? String(values.quantity) : undefined,
+              quantity: values.quantity != null ? String(values.quantity) : undefined,
               comment: values.comment,
             },
           });
@@ -644,20 +533,12 @@ export default function InterventionsSection({
       <ConfirmDeleteDialog
         open={!!deleteLineTarget}
         loading={deleteLineMutation.isPending}
-        title="Supprimer la ligne matériel ?"
-        message={
-          deleteLineTarget
-            ? `${deleteLineTarget.line.item.label} (${deleteLineTarget.line.item.firm.name})`
-            : ""
-        }
+        title="Supprimer le matériel ?"
+        message={deleteLineTarget ? `${deleteLineTarget.line.item.label} (${deleteLineTarget.line.item.firm.name})` : ""}
         onClose={() => (isBusy ? null : setDeleteLineTarget(null))}
-        onConfirm={() => {
-          if (!deleteLineTarget) return;
-          deleteLineMutation.mutate(deleteLineTarget.line.id);
-        }}
+        onConfirm={() => { if (!deleteLineTarget) return; deleteLineMutation.mutate(deleteLineTarget.line.id); }}
       />
 
-      {/* Dialog - material item request */}
       <MaterialItemRequestDialog
         open={openRequestDialog}
         loading={createRequestMutation.isPending}
@@ -666,6 +547,6 @@ export default function InterventionsSection({
         onClose={() => (isBusy ? null : setOpenRequestDialog(false))}
         onSubmit={(values) => createRequestMutation.mutate(values)}
       />
-    </Paper>
+    </Stack>
   );
 }

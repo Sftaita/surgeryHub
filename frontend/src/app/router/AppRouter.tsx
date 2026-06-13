@@ -13,6 +13,7 @@ import LoginPage from "../pages/LoginPage";
 import { useAuth } from "../auth/AuthContext";
 import { isMobileRole, isDesktopRole } from "../auth/roles";
 import CompleteAccountPage from "../pages/CompleteAccountPage";
+import LandingPage from "../pages/LandingPage";
 
 // ─── Lazy imports ────────────────────────────────────────────────────────────
 
@@ -25,6 +26,7 @@ const NotificationsPage   = React.lazy(() => import("../pages/instrumentist/Noti
 const DeclareMissionPage  = React.lazy(() => import("../pages/instrumentist/DeclareMissionPage"));
 const MissionDetailPageI  = React.lazy(() => import("../pages/instrumentist/MissionDetailPage"));
 const MissionEncodingPage = React.lazy(() => import("../pages/instrumentist/MissionEncodingPage"));
+const ProfilePage         = React.lazy(() => import("../pages/instrumentist/ProfilePage"));
 
 // Manager
 const MissionsListPage       = React.lazy(() => import("../pages/manager/MissionsListPage"));
@@ -34,6 +36,8 @@ const InstrumentistsPage     = React.lazy(() => import("../pages/manager/Instrum
 const SurgeonsPage           = React.lazy(() => import("../pages/manager/SurgeonsPage"));
 const CataloguePage                     = React.lazy(() => import("../pages/manager/CataloguePage"));
 const CatalogueRequestsPage             = React.lazy(() => import("../pages/manager/CatalogueRequestsPage"));
+const HospitalsPage                     = React.lazy(() => import("../pages/manager/HospitalsPage"));
+const FirmsPage                         = React.lazy(() => import("../pages/manager/FirmsPage"));
 const FirmInvoicesPage                  = React.lazy(() => import("../pages/manager/billing/FirmInvoicesPage"));
 const FirmInvoiceDetailPage             = React.lazy(() => import("../pages/manager/billing/FirmInvoiceDetailPage"));
 const InstrumentistStatementsPage       = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementsPage"));
@@ -42,8 +46,11 @@ const BillingConfigPage                 = React.lazy(() => import("../pages/mana
 const PlanningTemplatesPage             = React.lazy(() => import("../pages/manager/planning/PlanningTemplatesPage"));
 const PlanningTemplateEditorPage        = React.lazy(() => import("../pages/manager/planning/PlanningTemplateEditorPage"));
 const PlanningGeneratePage              = React.lazy(() => import("../pages/manager/planning/PlanningGeneratePage"));
+const PlanningSchedulePage              = React.lazy(() => import("../pages/manager/planning/PlanningSchedulePage"));
 const AbsencesPage                      = React.lazy(() => import("../pages/manager/planning/AbsencesPage"));
 const SpecialtiesPage                   = React.lazy(() => import("../pages/manager/planning/SpecialtiesPage"));
+const PlanningVersionsListPage          = React.lazy(() => import("../pages/manager/planning/PlanningVersionsListPage"));
+const PlanningVersionDetailPage         = React.lazy(() => import("../pages/manager/planning/PlanningVersionDetailPage"));
 
 // ─── Suspense fallback ───────────────────────────────────────────────────────
 
@@ -91,13 +98,13 @@ export function AppRouter() {
   return (
     <React.Suspense fallback={<PageLoader />}>
       <Routes>
+        <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/complete-account" element={<CompleteAccountPage />} />
 
         <Route element={<RequireAuth />}>
-          <Route path="/" element={<PostLoginRedirect />} />
-
           <Route path="/app" element={<RequireAppAccess />}>
+            <Route index element={<PostLoginRedirect />} />
             <Route path="forbidden" element={<ForbiddenPage />} />
 
             {/* Instrumentiste */}
@@ -109,6 +116,7 @@ export function AppRouter() {
                 <Route path="i/my-missions" element={<MyMissionsPage />} />
                 <Route path="i/planning" element={<PlanningPage />} />
                 <Route path="i/notifications" element={<NotificationsPage />} />
+                <Route path="i/profile" element={<ProfilePage />} />
                 <Route path="i/missions/declare" element={<DeclareMissionPage />} />
                 <Route path="i/missions/:id" element={<MissionDetailPageI />} />
                 <Route path="i/missions/:id/encoding" element={<MissionEncodingPage />} />
@@ -130,6 +138,8 @@ export function AppRouter() {
                 <Route path="m/missions/:id" element={<MissionDetailPageM />} />
                 <Route path="m/instrumentists" element={<InstrumentistsPage />} />
                 <Route path="m/surgeons" element={<SurgeonsPage />} />
+                <Route path="m/hospitals" element={<HospitalsPage />} />
+                <Route path="m/firms" element={<FirmsPage />} />
                 <Route path="m/catalogue" element={<CataloguePage />} />
                 <Route path="m/catalogue/requests" element={<CatalogueRequestsPage />} />
                 <Route path="m/billing/config" element={<BillingConfigPage />} />
@@ -140,8 +150,11 @@ export function AppRouter() {
                 <Route path="m/planning/templates" element={<PlanningTemplatesPage />} />
                 <Route path="m/planning/templates/:id" element={<PlanningTemplateEditorPage />} />
                 <Route path="m/planning/generate" element={<PlanningGeneratePage />} />
+                <Route path="m/planning/schedule" element={<PlanningSchedulePage />} />
                 <Route path="m/planning/absences" element={<AbsencesPage />} />
                 <Route path="m/planning/specialties" element={<SpecialtiesPage />} />
+                <Route path="m/planning/versions" element={<PlanningVersionsListPage />} />
+                <Route path="m/planning/versions/:id" element={<PlanningVersionDetailPage />} />
               </Route>
             </Route>
           </Route>

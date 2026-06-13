@@ -6,17 +6,21 @@ import {
   Button,
   Chip,
   Divider,
+  IconButton,
+  Paper,
   Stack,
   Typography,
-  IconButton,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
 } from "@mui/material";
 
-import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import CalendarTodayIcon from "@mui/icons-material/CalendarToday";
+import PersonIcon from "@mui/icons-material/Person";
+import LocalHospitalIcon from "@mui/icons-material/LocalHospital";
+import AccessTimeIcon from "@mui/icons-material/AccessTime";
 
 import {
   approveDeclaredMission,
@@ -28,6 +32,7 @@ import {
   formatBrusselsRange,
   formatPersonLabel,
   formatMissionType,
+  formatMissionStatus,
   formatSchedulePrecision,
 } from "../../features/missions/utils/missions.format";
 
@@ -36,80 +41,30 @@ import PublishMissionDialog from "../../features/missions/components/PublishMiss
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
 import { useToast } from "../../ui/toast/useToast";
 
-type StatusUi = {
-  badgeText: string;
-  badgeTone: "neutral" | "warning" | "error";
-  message?: string;
-  dialogTitle?: string;
-  dialogBody?: string[];
-};
+type ChipColor = "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning";
 
-function getStatusUi(status: string): StatusUi {
-  const s = String(status ?? "—");
-
-  if (s === "DECLARED") {
-    return {
-      badgeText: "DECLARED",
-      badgeTone: "warning",
-      message: "Mission en attente de validation par le manager.",
-      dialogTitle: "Mission déclarée",
-      dialogBody: [
-        "Mission en attente de validation par le manager.",
-        "Vous pouvez approuver ou rejeter selon les actions autorisées.",
-      ],
-    };
+function statusChipColor(status: string): ChipColor {
+  switch (status) {
+    case "DRAFT": return "default";
+    case "OPEN": return "info";
+    case "ASSIGNED": return "primary";
+    case "SUBMITTED": return "warning";
+    case "DECLARED": return "warning";
+    case "VALIDATED": return "success";
+    case "CLOSED": return "default";
+    case "REJECTED": return "error";
+    default: return "default";
   }
-
-  if (s === "REJECTED") {
-    return {
-      badgeText: "REJECTED",
-      badgeTone: "error",
-      message: "Mission rejetée par le manager. Encodage supprimé.",
-      dialogTitle: "Mission rejetée",
-      dialogBody: [
-        "Mission rejetée par le manager.",
-        "L'encodage a été supprimé. La mission est en statut terminal.",
-      ],
-    };
-  }
-
-  return {
-    badgeText: s,
-    badgeTone: "neutral",
-  };
 }
 
-function StatusBadge({
-  text,
-  tone,
-}: {
-  text: string;
-  tone: "neutral" | "warning" | "error";
-}) {
-  const sx =
-    tone === "warning"
-      ? { bgcolor: "warning.light", color: "warning.contrastText" }
-      : tone === "error"
-        ? { bgcolor: "error.light", color: "error.contrastText" }
-        : { bgcolor: "grey.200", color: "text.primary" };
-
+function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <Box
-      component="span"
-      sx={{
-        display: "inline-flex",
-        alignItems: "center",
-        px: 1,
-        py: 0.25,
-        borderRadius: 1,
-        fontSize: 12,
-        fontWeight: 700,
-        letterSpacing: 0.2,
-        ...sx,
-      }}
-    >
-      {text}
-    </Box>
+    <Stack direction="row" spacing={1} alignItems="flex-start" py={0.75}>
+      <Typography variant="body2" color="text.secondary" sx={{ minWidth: 140 }}>
+        {label}
+      </Typography>
+      <Box sx={{ flex: 1 }}>{children}</Box>
+    </Stack>
   );
 }
 
@@ -143,28 +98,13 @@ export function MissionDetailContent({
 
   const [openEdit, setOpenEdit] = React.useState(false);
   const [openPublish, setOpenPublish] = React.useState(false);
-  const [statusInfoOpen, setStatusInfoOpen] = React.useState(false);
   const [openEditHours, setOpenEditHours] = React.useState(false);
   const [rejectConfirmOpen, setRejectConfirmOpen] = React.useState(false);
   const [approveConfirmOpen, setApproveConfirmOpen] = React.useState(false);
 
-  React.useEffect(() => {
-    if (!data) {
-      setOpenEdit(false);
-      setOpenPublish(false);
-      setStatusInfoOpen(false);
-      setOpenEditHours(false);
-      setRejectConfirmOpen(false);
-      setApproveConfirmOpen(false);
-    }
-  }, [data]);
-
   async function refreshAfterAction() {
     await queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
-    await queryClient.invalidateQueries({
-      queryKey: ["missions"],
-      exact: false,
-    });
+    await queryClient.invalidateQueries({ queryKey: ["missions"], exact: false });
     await queryClient.refetchQueries({ queryKey: ["missions"], exact: false });
   }
 
@@ -173,16 +113,11 @@ export function MissionDetailContent({
     onSuccess: async () => {
       await refreshAfterAction();
       toast.success("Mission approuvée.");
-      if (embedded) {
-        onCloseEmbedded?.();
-      } else {
-        navigate("/app/m/missions/to-validate", { replace: true });
-      }
+      if (embedded) onCloseEmbedded?.();
+      else navigate("/app/m/missions/to-validate", { replace: true });
     },
     onError: (err: any) => {
-      const status = err?.response?.status;
-      if (status === 403) toast.error("Accès interdit.");
-      else toast.error("Erreur lors de l'approbation.");
+      toast.error(err?.response?.status === 403 ? "Accès interdit." : "Erreur lors de l'approbation.");
     },
   });
 
@@ -191,31 +126,25 @@ export function MissionDetailContent({
     onSuccess: async () => {
       await refreshAfterAction();
       toast.success("Mission rejetée.");
-      if (embedded) {
-        onCloseEmbedded?.();
-      } else {
-        navigate("/app/m/missions/to-validate", { replace: true });
-      }
+      if (embedded) onCloseEmbedded?.();
+      else navigate("/app/m/missions/to-validate", { replace: true });
     },
     onError: (err: any) => {
-      const status = err?.response?.status;
-      if (status === 403) toast.error("Accès interdit.");
-      else toast.error("Erreur lors du rejet.");
+      toast.error(err?.response?.status === 403 ? "Accès interdit." : "Erreur lors du rejet.");
     },
   });
 
-  if (!Number.isFinite(missionId)) return <div>ID invalide</div>;
-  if (isLoading) return <div>Chargement…</div>;
+  if (!Number.isFinite(missionId)) return <Typography sx={{ p: 3 }}>ID invalide</Typography>;
+  if (isLoading) return <Typography sx={{ p: 3 }} color="text.secondary">Chargement…</Typography>;
 
   if (isError) {
     const status = (error as any)?.response?.status;
-    if (status === 403) return <div>Accès interdit</div>;
-    if (status === 404) return <div>Mission introuvable</div>;
-    if (status === 401) return <div>Non authentifié</div>;
-    return <div>Erreur serveur</div>;
+    if (status === 403) return <Typography sx={{ p: 3 }}>Accès interdit</Typography>;
+    if (status === 404) return <Typography sx={{ p: 3 }}>Mission introuvable</Typography>;
+    return <Typography sx={{ p: 3 }}>Erreur serveur</Typography>;
   }
 
-  if (!data) return <div>Aucune donnée</div>;
+  if (!data) return null;
 
   const allowed = data.allowedActions ?? [];
   const canEdit = allowed.includes("edit");
@@ -224,298 +153,175 @@ export function MissionDetailContent({
   const canReject = allowed.includes("reject");
   const canEditHours = allowed.includes("edit_hours");
 
-  const precisionLabel = formatSchedulePrecision(data.schedulePrecision);
-  const typeLabel = formatMissionType(data.type);
-
-  const statusUi = getStatusUi(String(data.status ?? "—"));
-  const hasStatusDialog = !!statusUi.dialogTitle;
-
-  const precisionHelp =
-    data.schedulePrecision === "EXACT"
-      ? "Créneau confirmé : l'horaire est considéré comme fixe."
-      : data.schedulePrecision === "APPROXIMATE"
-        ? "Créneau estimé : l'horaire peut encore bouger."
-        : null;
-
   const anyLoading = approveMutation.isPending || rejectMutation.isPending;
-  const hoursLabel = formatHoursLabel(data.service?.hours ?? null);
 
   return (
-    <Box sx={{ p: embedded ? 0 : 2, maxWidth: embedded ? "none" : 900 }}>
-      <Stack direction="row" alignItems="center" spacing={1} mb={1}>
-        {!embedded ? (
-          <IconButton
-            aria-label="Retour"
-            onClick={() => navigate(-1)}
-            size="small"
-          >
+    <Box sx={{ maxWidth: embedded ? "none" : 800 }}>
+      {/* Header */}
+      <Stack direction="row" alignItems="center" spacing={1} mb={3}>
+        {!embedded && (
+          <IconButton onClick={() => navigate(-1)} size="small">
             <ArrowBackIcon fontSize="small" />
           </IconButton>
-        ) : null}
+        )}
 
-        <Typography variant="h6">Mission #{data.id}</Typography>
+        <Box sx={{ flex: 1 }}>
+          <Typography variant="h6" fontWeight={600}>
+            Mission #{data.id}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {formatMissionType(data.type)} · {data.site?.name ?? "—"}
+          </Typography>
+        </Box>
 
-        <Box sx={{ flex: 1 }} />
+        <Chip
+          label={formatMissionStatus(data.status)}
+          color={statusChipColor(String(data.status))}
+          size="small"
+          variant={data.status === "DRAFT" || data.status === "CLOSED" ? "outlined" : "filled"}
+        />
+      </Stack>
 
-        <Stack direction="row" spacing={1}>
-          {canReject ? (
-            <Button
-              color="error"
-              variant="outlined"
-              disabled={anyLoading}
-              onClick={() => setRejectConfirmOpen(true)}
-            >
+      {/* Actions */}
+      {(canEdit || canPublish || canApprove || canReject) && (
+        <Stack direction="row" spacing={1} mb={3} flexWrap="wrap">
+          {canReject && (
+            <Button color="error" variant="outlined" size="small" disabled={anyLoading}
+              onClick={() => setRejectConfirmOpen(true)}>
               Rejeter
             </Button>
-          ) : null}
-
-          {canApprove ? (
-            <Button
-              color="success"
-              variant="contained"
-              disabled={anyLoading}
-              onClick={() => setApproveConfirmOpen(true)}
-            >
+          )}
+          {canApprove && (
+            <Button color="success" variant="contained" size="small" disableElevation disabled={anyLoading}
+              onClick={() => setApproveConfirmOpen(true)}>
               Approuver
             </Button>
-          ) : null}
-
-          {canEdit ? (
-            <Button variant="outlined" onClick={() => setOpenEdit(true)}>
-              Éditer
+          )}
+          {canEdit && (
+            <Button variant="outlined" size="small" onClick={() => setOpenEdit(true)}>
+              Modifier
             </Button>
-          ) : null}
-
-          {canPublish ? (
-            <Button variant="contained" onClick={() => setOpenPublish(true)}>
+          )}
+          {canPublish && (
+            <Button variant="contained" size="small" disableElevation onClick={() => setOpenPublish(true)}>
               Publier
             </Button>
-          ) : null}
+          )}
         </Stack>
-      </Stack>
+      )}
 
-      <Stack spacing={1.5} mt={2}>
-        <Typography>
-          <strong>Site :</strong> {data.site?.name ?? "—"}
-        </Typography>
-
-        <Typography>
-          <strong>Date / heure :</strong>{" "}
-          {formatBrusselsRange(data.startAt, data.endAt)}
-        </Typography>
-
-        <Stack spacing={0.5}>
-          <Typography>
-            <strong>Précision :</strong> {precisionLabel}
-          </Typography>
-          {precisionHelp ? (
-            <Typography variant="body2" color="text.secondary">
-              {precisionHelp}
-            </Typography>
-          ) : null}
-        </Stack>
-
-        <Typography>
-          <strong>Type :</strong> {typeLabel}
-        </Typography>
-
-        <Stack spacing={0.75}>
-          <Stack direction="row" spacing={1} alignItems="center">
-            <Typography>
-              <strong>Statut :</strong>
-            </Typography>
-
-            <StatusBadge text={statusUi.badgeText} tone={statusUi.badgeTone} />
-
-            {hasStatusDialog ? (
-              <IconButton
-                aria-label="Information statut"
-                size="small"
-                onClick={() => setStatusInfoOpen(true)}
-              >
-                <HelpOutlineIcon fontSize="small" />
-              </IconButton>
-            ) : null}
+      <Stack spacing={2}>
+        {/* Planification */}
+        <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+          <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
+            <CalendarTodayIcon fontSize="small" color="action" />
+            <Typography variant="subtitle2" fontWeight={600}>Planification</Typography>
           </Stack>
+          <Divider sx={{ mb: 1.5 }} />
 
-          {statusUi.message ? (
-            <Typography variant="body2" color="text.secondary">
-              {statusUi.message}
-            </Typography>
-          ) : null}
-        </Stack>
+          <InfoRow label="Date / heure">
+            <Typography variant="body2">{formatBrusselsRange(data.startAt, data.endAt)}</Typography>
+          </InfoRow>
+          <InfoRow label="Précision horaire">
+            <Typography variant="body2">{formatSchedulePrecision(data.schedulePrecision)}</Typography>
+          </InfoRow>
+          <InfoRow label="Type">
+            <Typography variant="body2">{formatMissionType(data.type)}</Typography>
+          </InfoRow>
+          <InfoRow label="Site">
+            <Typography variant="body2">{data.site?.name ?? "—"}</Typography>
+          </InfoRow>
+        </Paper>
 
-        <Typography>
-          <strong>Chirurgien :</strong> {formatPersonLabel(data.surgeon)}
-        </Typography>
+        {/* Personnel */}
+        <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+          <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
+            <PersonIcon fontSize="small" color="action" />
+            <Typography variant="subtitle2" fontWeight={600}>Personnel</Typography>
+          </Stack>
+          <Divider sx={{ mb: 1.5 }} />
 
-        <Typography>
-          <strong>Instrumentiste :</strong>{" "}
-          {formatPersonLabel(data.instrumentist)}
-        </Typography>
+          <InfoRow label="Chirurgien">
+            <Typography variant="body2">{formatPersonLabel(data.surgeon)}</Typography>
+          </InfoRow>
+          <InfoRow label="Instrumentiste">
+            <Typography variant="body2">{formatPersonLabel(data.instrumentist)}</Typography>
+          </InfoRow>
+        </Paper>
 
-        <Stack spacing={0.75}>
-          <Stack
-            direction="row"
-            alignItems="center"
-            justifyContent="space-between"
-          >
-            <Typography>
-              <strong>Heures prestées :</strong>
-            </Typography>
-
-            {canEditHours ? (
-              <Button
-                variant="outlined"
-                size="small"
-                onClick={() => setOpenEditHours(true)}
-              >
+        {/* Service */}
+        <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+          <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" mb={1.5}>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <AccessTimeIcon fontSize="small" color="action" />
+              <Typography variant="subtitle2" fontWeight={600}>Heures de service</Typography>
+            </Stack>
+            {canEditHours && (
+              <Button variant="text" size="small" onClick={() => setOpenEditHours(true)}>
                 Modifier
               </Button>
-            ) : null}
+            )}
           </Stack>
+          <Divider sx={{ mb: 1.5 }} />
 
-          <Typography>{hoursLabel}</Typography>
-        </Stack>
+          <InfoRow label="Heures prestées">
+            <Typography variant="body2">{formatHoursLabel(data.service?.hours ?? null)}</Typography>
+          </InfoRow>
+        </Paper>
 
-        <Divider />
-
-        <Box>
-          <Typography>
-            <strong>Actions autorisées</strong>
-          </Typography>
-          <Stack direction="row" spacing={1} mt={1}>
-            {allowed.length === 0
-              ? "—"
-              : allowed.map((a) => (
-                  <Chip key={a} label={a} size="small" variant="outlined" />
-                ))}
-          </Stack>
-        </Box>
+        {/* Statut DECLARED */}
+        {data.status === "DECLARED" && (
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, borderColor: "warning.main", bgcolor: "warning.50" }}>
+            <Stack direction="row" spacing={1} alignItems="center" mb={0.5}>
+              <LocalHospitalIcon fontSize="small" color="warning" />
+              <Typography variant="subtitle2" fontWeight={600} color="warning.dark">
+                En attente de validation
+              </Typography>
+            </Stack>
+            <Typography variant="body2" color="text.secondary">
+              L'instrumentiste a déclaré cette mission. Vérifiez l'encodage et approuvez ou rejetez.
+            </Typography>
+          </Paper>
+        )}
       </Stack>
 
-      {canEdit && openEdit ? (
-        <EditMissionDialog
-          open={openEdit}
-          onClose={() => setOpenEdit(false)}
-          mission={data}
-        />
-      ) : null}
+      {/* Dialogs */}
+      {canEdit && openEdit && (
+        <EditMissionDialog open={openEdit} onClose={() => setOpenEdit(false)} mission={data} />
+      )}
+      {canPublish && openPublish && (
+        <PublishMissionDialog open={openPublish} onClose={() => setOpenPublish(false)} mission={data} />
+      )}
+      {canEditHours && openEditHours && (
+        <EditServiceHoursDialog open={openEditHours} onClose={() => setOpenEditHours(false)} mission={data} />
+      )}
 
-      {canPublish && openPublish ? (
-        <PublishMissionDialog
-          open={openPublish}
-          onClose={() => setOpenPublish(false)}
-          mission={data}
-        />
-      ) : null}
-
-      {canEditHours && openEditHours ? (
-        <EditServiceHoursDialog
-          open={openEditHours}
-          onClose={() => setOpenEditHours(false)}
-          mission={data}
-        />
-      ) : null}
-
-      <Dialog
-        open={statusInfoOpen}
-        onClose={() => setStatusInfoOpen(false)}
-        aria-labelledby="manager-status-dialog-title"
-      >
-        <DialogTitle id="manager-status-dialog-title">
-          {statusUi.dialogTitle ?? "Statut"}
-        </DialogTitle>
-
+      <Dialog open={rejectConfirmOpen} onClose={() => setRejectConfirmOpen(false)}>
+        <DialogTitle>Rejeter la mission</DialogTitle>
         <DialogContent dividers>
-          <Stack spacing={1}>
-            {(statusUi.dialogBody ?? []).map((line, idx) => (
-              <Typography key={idx}>{line}</Typography>
-            ))}
-          </Stack>
+          <Typography>Voulez-vous rejeter cette mission déclarée ?</Typography>
+          <Typography variant="body2" color="text.secondary" mt={0.5}>
+            Le rejet supprime l'encodage côté serveur.
+          </Typography>
         </DialogContent>
-
         <DialogActions>
-          <Button onClick={() => setStatusInfoOpen(false)} autoFocus>
-            OK
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={rejectConfirmOpen}
-        onClose={() => setRejectConfirmOpen(false)}
-        aria-labelledby="reject-dialog-title"
-      >
-        <DialogTitle id="reject-dialog-title">Confirmer le rejet</DialogTitle>
-
-        <DialogContent dividers>
-          <Stack spacing={1}>
-            <Typography>
-              Voulez-vous rejeter cette mission déclarée ?
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Le rejet supprime l'encodage côté backend.
-            </Typography>
-          </Stack>
-        </DialogContent>
-
-        <DialogActions>
-          <Button
-            onClick={() => setRejectConfirmOpen(false)}
-            disabled={anyLoading}
-          >
-            Annuler
-          </Button>
-
-          <Button
-            color="error"
-            variant="contained"
-            onClick={() => {
-              setRejectConfirmOpen(false);
-              rejectMutation.mutate();
-            }}
-            disabled={anyLoading}
-          >
+          <Button onClick={() => setRejectConfirmOpen(false)} disabled={anyLoading}>Annuler</Button>
+          <Button color="error" variant="contained" disabled={anyLoading}
+            onClick={() => { setRejectConfirmOpen(false); rejectMutation.mutate(); }}>
             Rejeter
           </Button>
         </DialogActions>
       </Dialog>
 
-      <Dialog
-        open={approveConfirmOpen}
-        onClose={() => setApproveConfirmOpen(false)}
-        aria-labelledby="approve-dialog-title"
-      >
-        <DialogTitle id="approve-dialog-title">
-          Confirmer l'approbation
-        </DialogTitle>
-
+      <Dialog open={approveConfirmOpen} onClose={() => setApproveConfirmOpen(false)}>
+        <DialogTitle>Approuver la mission</DialogTitle>
         <DialogContent dividers>
-          <Stack spacing={1}>
-            <Typography>
-              Voulez-vous approuver cette mission déclarée ?
-            </Typography>
-          </Stack>
+          <Typography>Voulez-vous approuver cette mission déclarée ?</Typography>
         </DialogContent>
-
         <DialogActions>
-          <Button
-            onClick={() => setApproveConfirmOpen(false)}
-            disabled={anyLoading}
-          >
-            Annuler
-          </Button>
-
-          <Button
-            color="success"
-            variant="contained"
-            onClick={() => {
-              setApproveConfirmOpen(false);
-              approveMutation.mutate();
-            }}
-            disabled={anyLoading}
-          >
+          <Button onClick={() => setApproveConfirmOpen(false)} disabled={anyLoading}>Annuler</Button>
+          <Button color="success" variant="contained" disabled={anyLoading}
+            onClick={() => { setApproveConfirmOpen(false); approveMutation.mutate(); }}>
             Approuver
           </Button>
         </DialogActions>
@@ -527,8 +333,6 @@ export function MissionDetailContent({
 export default function MissionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const missionId = Number(id);
-
-  if (!Number.isFinite(missionId)) return <div>ID invalide</div>;
-
+  if (!Number.isFinite(missionId)) return <Typography sx={{ p: 3 }}>ID invalide</Typography>;
   return <MissionDetailContent missionId={missionId} />;
 }

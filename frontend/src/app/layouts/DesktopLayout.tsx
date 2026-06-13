@@ -31,6 +31,14 @@ const NAV_ITEMS = [
     href: "/app/m/surgeons",
   },
   {
+    label: "Établissements",
+    href: "/app/m/hospitals",
+  },
+  {
+    label: "Firmes",
+    href: "/app/m/firms",
+  },
+  {
     label: "Catalogue",
     children: [
       { label: "Matériel", href: "/app/m/catalogue" },
@@ -40,10 +48,11 @@ const NAV_ITEMS = [
   {
     label: "Planning",
     children: [
-      { label: "Templates", href: "/app/m/planning/templates" },
-      { label: "Générer", href: "/app/m/planning/generate" },
-      { label: "Absences", href: "/app/m/planning/absences" },
-      { label: "Compétences", href: "/app/m/planning/specialties" },
+      { label: "Templates",  href: "/app/m/planning/templates" },
+      { label: "Générer",    href: "/app/m/planning/generate" },
+      { label: "Plannings",  href: "/app/m/planning/versions" },
+      { label: "Vue planning", href: "/app/m/planning/schedule" },
+      { label: "Absences",   href: "/app/m/planning/absences" },
     ],
   },
   {

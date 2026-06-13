@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
-import { Box, Button, Chip, Stack } from "@mui/material";
+import { Box, Button, Chip, Stack, Typography } from "@mui/material";
+import AddIcon from "@mui/icons-material/Add";
 
 import { fetchMissions } from "../../features/missions/api/missions.api";
 import type { Mission } from "../../features/missions/api/missions.types";
@@ -10,7 +11,25 @@ import { MissionsFiltersBar } from "../../features/missions/components/MissionsF
 import {
   formatBrusselsRange,
   formatPersonLabel,
+  formatMissionStatus,
+  formatMissionType,
 } from "../../../app/features/missions/utils/missions.format";
+
+type ChipColor = "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning";
+
+function statusChipColor(status: string): ChipColor {
+  switch (status) {
+    case "DRAFT": return "default";
+    case "OPEN": return "info";
+    case "ASSIGNED": return "primary";
+    case "SUBMITTED": return "warning";
+    case "DECLARED": return "warning";
+    case "VALIDATED": return "success";
+    case "CLOSED": return "default";
+    case "REJECTED": return "error";
+    default: return "default";
+  }
+}
 
 export default function MissionsListPage() {
   const navigate = useNavigate();
@@ -21,22 +40,12 @@ export default function MissionsListPage() {
   const [page, setPage] = useState(1);
   const limit = 100;
 
-  const [filters, setFilters] = useState<{
-    status?: string;
-    type?: string;
-    siteId?: number;
-  }>({});
+  const [filters, setFilters] = useState<{ status?: string; type?: string; siteId?: number }>({});
 
-  // ✅ Vue “À valider” = status forcé à DECLARED (pas une déduction de droit, juste un filtre de liste)
   useEffect(() => {
     setPage(1);
     setFilters((prev) => {
-      if (isToValidateView) {
-        // on conserve type/siteId si déjà choisis, mais status fixé
-        return { ...prev, status: "DECLARED" };
-      }
-      // en quittant la vue, on ne force plus le statut
-      // (on ne reset pas agressivement: l'utilisateur peut déjà filtrer)
+      if (isToValidateView) return { ...prev, status: "DECLARED" };
       return prev;
     });
   }, [isToValidateView]);
@@ -59,108 +68,113 @@ export default function MissionsListPage() {
       {
         field: "date",
         headerName: "Date / heure",
-        flex: 1.4,
+        flex: 1.5,
         sortable: false,
         renderCell: ({ row }) => (
-          <Stack direction="row" spacing={1} alignItems="center">
-            <span>{formatBrusselsRange(row.startAt, row.endAt)}</span>
-            <Chip size="small" label={row.schedulePrecision} />
-          </Stack>
+          <Typography variant="body2">
+            {formatBrusselsRange(row.startAt, row.endAt)}
+          </Typography>
         ),
       },
       {
         field: "site",
         headerName: "Site",
         flex: 1,
+        sortable: false,
         valueGetter: (_, row) => row.site?.name ?? "—",
       },
-      { field: "type", headerName: "Type", flex: 0.7 },
+      {
+        field: "type",
+        headerName: "Type",
+        flex: 0.9,
+        sortable: false,
+        renderCell: ({ row }) => (
+          <Typography variant="body2" color="text.secondary">
+            {formatMissionType(row.type)}
+          </Typography>
+        ),
+      },
       {
         field: "surgeon",
         headerName: "Chirurgien",
         flex: 1,
+        sortable: false,
         valueGetter: (_, row) => formatPersonLabel(row.surgeon),
       },
       {
         field: "instrumentist",
         headerName: "Instrumentiste",
         flex: 1,
+        sortable: false,
         valueGetter: (_, row) => formatPersonLabel(row.instrumentist),
       },
-      { field: "status", headerName: "Statut", flex: 0.7 },
       {
-        field: "actions",
-        headerName: "Actions",
-        flex: 0.6,
+        field: "status",
+        headerName: "Statut",
+        flex: 0.9,
         sortable: false,
         renderCell: ({ row }) => (
-          <Button
+          <Chip
+            label={formatMissionStatus(row.status)}
+            color={statusChipColor(String(row.status))}
             size="small"
-            onClick={() => navigate(`/app/m/missions/${row.id}`)}
-          >
-            Ouvrir
-          </Button>
+            variant={row.status === "DRAFT" || row.status === "CLOSED" ? "outlined" : "filled"}
+          />
         ),
       },
     ],
-    [navigate],
+    [],
   );
 
-  if (isError) return <div>Erreur de chargement</div>;
+  if (isError) return <Typography color="error" sx={{ p: 3 }}>Erreur de chargement</Typography>;
 
   return (
-    <Box sx={{ p: 2 }}>
-      {/* Switch simple entre vues, sans refactor transversal */}
-      <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
+    <Box>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2.5}>
+        <Typography variant="h6" fontWeight={600}>Missions</Typography>
+
+        {!isToValidateView && (
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => navigate("/app/m/missions/new")}
+            disableElevation
+          >
+            Nouvelle mission
+          </Button>
+        )}
+      </Stack>
+
+      <Stack direction="row" spacing={1} mb={2}>
         <Button
           variant={!isToValidateView ? "contained" : "outlined"}
+          size="small"
+          disableElevation
           onClick={() => navigate("/app/m/missions")}
         >
           Toutes
         </Button>
-
         <Button
           variant={isToValidateView ? "contained" : "outlined"}
+          size="small"
+          disableElevation
           onClick={() => navigate("/app/m/missions/to-validate")}
         >
           À valider
         </Button>
-
-        <Box sx={{ flex: 1 }} />
-
-        {/* Le bouton “Créer” reste sur la liste classique (pas obligatoire côté “À valider”) */}
-        {!isToValidateView ? (
-          <Button
-            variant="contained"
-            onClick={() => navigate("/app/m/missions/new")}
-          >
-            Créer une mission
-          </Button>
-        ) : null}
       </Stack>
 
-      <MissionsFiltersBar
-        status={effectiveFilters.status}
-        type={effectiveFilters.type}
-        siteId={effectiveFilters.siteId}
-        onChange={(next) => {
-          setPage(1);
-
-          // Vue “À valider” : on ignore toute tentative de changer le status
-          // (on laisse type/siteId fonctionner normalement)
-          if (isToValidateView) {
-            const { status: _ignored, ...rest } = next as any;
-            setFilters((prev) => ({
-              ...prev,
-              ...rest,
-              status: "DECLARED",
-            }));
-            return;
-          }
-
-          setFilters((prev) => ({ ...prev, ...next }));
-        }}
-      />
+      {!isToValidateView && (
+        <MissionsFiltersBar
+          status={effectiveFilters.status}
+          type={effectiveFilters.type}
+          siteId={effectiveFilters.siteId}
+          onChange={(next) => {
+            setPage(1);
+            setFilters((prev) => ({ ...prev, ...next }));
+          }}
+        />
+      )}
 
       <DataGrid
         rows={rows}
@@ -174,6 +188,14 @@ export default function MissionsListPage() {
         onPaginationModelChange={(m) => setPage(m.page + 1)}
         autoHeight
         disableRowSelectionOnClick
+        onRowClick={({ row }) => navigate(`/app/m/missions/${row.id}`)}
+        sx={{
+          border: "none",
+          "& .MuiDataGrid-row": { cursor: "pointer" },
+          "& .MuiDataGrid-row:hover": { bgcolor: "action.hover" },
+          "& .MuiDataGrid-columnHeaders": { bgcolor: "grey.50" },
+          "& .MuiDataGrid-cell": { alignContent: "center" },
+        }}
       />
     </Box>
   );

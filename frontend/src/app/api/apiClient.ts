@@ -33,6 +33,14 @@ apiClient.interceptors.response.use(
     // Si pas 401, on laisse remonter
     if (status !== 401) throw error;
 
+    // Le refresh lui-même a échoué (401) : ne pas retenter de refresh
+    // sur cette requête, sinon on attend une promesse circulaire (deadlock).
+    if (originalRequest?.url?.includes("/api/auth/refresh")) {
+      setRefreshPromise(null);
+      clearTokens();
+      throw error;
+    }
+
     // Évite boucle infinie
     if (originalRequest?._retry) {
       throw error;

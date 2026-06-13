@@ -33,20 +33,18 @@ export default function EditInterventionDialog({
 }: Props) {
   const [code, setCode] = React.useState("");
   const [label, setLabel] = React.useState("");
-  const [orderIndex, setOrderIndex] = React.useState<number>(1);
 
   React.useEffect(() => {
     if (!open || !intervention) return;
     setCode(intervention.code ?? "");
     setLabel(intervention.label ?? "");
-    setOrderIndex(Number(intervention.orderIndex ?? 1));
   }, [open, intervention]);
 
   const submit = () => {
     onSubmit({
-      code: code.trim(),
-      label: label.trim(),
-      orderIndex: Number(orderIndex),
+      code:       code.trim().toUpperCase(),
+      label:      label.trim() || code.trim().toUpperCase(),
+      orderIndex: intervention?.orderIndex, // preserve existing
     });
   };
 
@@ -55,32 +53,27 @@ export default function EditInterventionDialog({
       open={open}
       onClose={loading ? undefined : onClose}
       fullWidth
-      maxWidth="sm"
+      maxWidth="xs"
     >
-      <DialogTitle>Éditer l’intervention</DialogTitle>
+      <DialogTitle>Modifier l’intervention</DialogTitle>
 
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField
             label="Code"
             value={code}
-            onChange={(e) => setCode(e.target.value)}
+            onChange={(e) => setCode(e.target.value.toUpperCase())}
             disabled={loading}
+            size="small"
             fullWidth
+            inputProps={{ style: { fontFamily: "monospace", fontWeight: 700 } }}
           />
           <TextField
             label="Libellé"
             value={label}
             onChange={(e) => setLabel(e.target.value)}
             disabled={loading}
-            fullWidth
-          />
-          <TextField
-            label="Order index"
-            type="number"
-            value={orderIndex}
-            onChange={(e) => setOrderIndex(Number(e.target.value))}
-            disabled={loading}
+            size="small"
             fullWidth
           />
         </Stack>

@@ -16,7 +16,7 @@ import {
 } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import { getFirms } from "../api/catalogue.api";
-import type { FirmDTO, MaterialItemDTO } from "../api/catalogue.types";
+import type { FirmDTO } from "../api/catalogue.types";
 
 export type MaterialItemFormValues = {
   firmId: number | null;

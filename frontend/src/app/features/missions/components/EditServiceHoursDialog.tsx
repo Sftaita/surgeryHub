@@ -2,21 +2,20 @@ import * as React from "react";
 import {
   Alert,
   Button,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
+import { DateTimePicker } from "@mui/x-date-pickers/DateTimePicker";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import dayjs, { type Dayjs } from "dayjs";
 
 import type { Mission } from "../api/missions.types";
-import {
-  patchMissionService,
-  type ServiceUpdateBody,
-} from "../api/missions.api";
+import { patchMissionService, type ServiceUpdateBody } from "../api/missions.api";
 
 type Props = {
   open: boolean;
@@ -26,145 +25,148 @@ type Props = {
 
 function extractApiError(err: unknown): { status?: number; message: string } {
   const status = (err as any)?.response?.status as number | undefined;
-  const data = (err as any)?.response?.data;
-
+  const data   = (err as any)?.response?.data;
   const message =
-    (typeof data === "string" && data) ||
-    data?.message ||
-    data?.detail ||
-    "Une erreur est survenue";
-
+    (typeof data === "string" && data) || data?.message || data?.detail || "Une erreur est survenue";
   return { status, message };
 }
 
-function toNumberOrNull(value: string): number | null {
-  const v = value.trim();
-  if (!v) return null;
-  const n = Number(v);
-  if (!Number.isFinite(n)) return null;
-  return n;
+function formatDuration(hours: number): string {
+  if (!Number.isFinite(hours) || hours < 0) return "—";
+  const h = Math.floor(hours);
+  const m = Math.round((hours - h) * 60);
+  return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, "0")}`;
 }
 
-function formatHoursLabel(hours?: string | number | null): string {
-  if (hours === null || hours === undefined || hours === "") return "—";
-  const n = typeof hours === "string" ? Number(hours) : hours;
-  if (!Number.isFinite(n)) return "—";
-  return `${n} h`;
-}
+// Force mobile dialog on any screen size (consistent with DeclareMissionPage)
+const FORCE_MOBILE = "@media (min-width: 999999px)";
 
-export default function EditServiceHoursDialog({
-  open,
-  onClose,
-  mission,
-}: Props) {
+export default function EditServiceHoursDialog({ open, onClose, mission }: Props) {
   const queryClient = useQueryClient();
 
-  const currentHours = mission.service?.hours ?? null;
+  const [serviceStart, setServiceStart] = React.useState<Dayjs | null>(null);
+  const [serviceEnd,   setServiceEnd]   = React.useState<Dayjs | null>(null);
+  const [startOpen,    setStartOpen]    = React.useState(false);
+  const [endOpen,      setEndOpen]      = React.useState(false);
+  const [formError,    setFormError]    = React.useState<string | null>(null);
 
-  const [hoursStr, setHoursStr] = React.useState<string>("");
-  const [formError, setFormError] = React.useState<string | null>(null);
-
+  // Initialize from mission planned times on open
   React.useEffect(() => {
     if (!open) return;
-    const initial =
-      currentHours === null || currentHours === undefined
-        ? ""
-        : String(currentHours);
-    setHoursStr(initial);
+    setServiceStart(mission.startAt ? dayjs(mission.startAt) : null);
+    setServiceEnd(mission.endAt ? dayjs(mission.endAt) : null);
     setFormError(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, mission.id]);
 
+  const diffHours =
+    serviceStart && serviceEnd && serviceEnd.isAfter(serviceStart)
+      ? serviceEnd.diff(serviceStart, "minute") / 60
+      : null;
+
+  const hasOrderError = serviceStart && serviceEnd && !serviceEnd.isAfter(serviceStart);
+
   const mutation = useMutation({
-    mutationFn: async (body: ServiceUpdateBody) =>
-      patchMissionService(mission.id, body),
+    mutationFn: (body: ServiceUpdateBody) => patchMissionService(mission.id, body),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ["mission", mission.id],
-      });
+      await queryClient.invalidateQueries({ queryKey: ["mission", mission.id] });
       onClose();
     },
     onError: (err) => {
       const { status, message } = extractApiError(err);
-      if (status === 401)
-        return setFormError("Session expirée. Veuillez vous reconnecter.");
+      if (status === 401) return setFormError("Session expirée. Veuillez vous reconnecter.");
       if (status === 403) return setFormError("Accès interdit.");
       if (status === 404) return setFormError("Mission introuvable.");
-      if (status === 409)
-        return setFormError("Conflit. Recharge puis réessaye.");
-      if (status === 422)
-        return setFormError(
-          message || "Données invalides. Corrige le formulaire.",
-        );
+      if (status === 422) return setFormError(message || "Données invalides.");
       setFormError(message || "Erreur serveur.");
     },
   });
 
   function handleSubmit() {
     setFormError(null);
-
-    const parsed = toNumberOrNull(hoursStr);
-
-    // Backend: hours float|null >= 0
-    if (parsed === null) {
-      setFormError("Veuillez renseigner un nombre d’heures valide.");
+    if (!serviceStart || !serviceEnd) {
+      setFormError("Veuillez renseigner le début et la fin de prestation.");
       return;
     }
-    if (parsed < 0) {
-      setFormError("Le nombre d’heures doit être ≥ 0.");
+    if (!serviceEnd.isAfter(serviceStart)) {
+      setFormError("La fin doit être après le début.");
       return;
     }
-
-    mutation.mutate({
-      hours: parsed,
-      hoursSource: "INSTRUMENTIST",
-    });
+    const hours = Math.round((serviceEnd.diff(serviceStart, "minute") / 60) * 4) / 4; // round to 0.25h
+    mutation.mutate({ hours, hoursSource: "INSTRUMENTIST" });
   }
 
   return (
-    <Dialog
-      open={open}
-      onClose={mutation.isPending ? undefined : onClose}
-      fullWidth
-      maxWidth="xs"
-    >
+    <Dialog open={open} onClose={mutation.isPending ? undefined : onClose} fullWidth maxWidth="xs">
       <DialogTitle>Heures prestées — Mission #{mission.id}</DialogTitle>
 
       <DialogContent>
-        <Stack spacing={2} mt={1}>
-          {formError ? <Alert severity="error">{formError}</Alert> : null}
+        <Stack spacing={2.5} sx={{ mt: 1 }}>
+          {formError && <Alert severity="error">{formError}</Alert>}
 
-          <Stack spacing={0.5}>
-            <Typography variant="body2" color="text.secondary">
-              Valeur actuelle
-            </Typography>
-            <Typography>{formatHoursLabel(currentHours)}</Typography>
-          </Stack>
-
-          <TextField
-            label="Heures prestées"
-            type="number"
-            value={hoursStr}
-            onChange={(e) => setHoursStr(e.target.value)}
+          <DateTimePicker
+            label="Début de prestation"
+            value={serviceStart}
+            onChange={(v) => {
+              setServiceStart(v);
+              if (v && serviceEnd) {
+                // Sync end date to same day if end time was on the old day
+                const synced = v.hour(serviceEnd.hour()).minute(serviceEnd.minute()).second(0).millisecond(0);
+                setServiceEnd(synced.isAfter(v) ? synced : v.add(1, "hour"));
+              }
+            }}
+            open={startOpen}
+            onOpen={() => setStartOpen(true)}
+            onClose={() => setStartOpen(false)}
             disabled={mutation.isPending}
-            inputProps={{ min: 0, step: 0.25 }}
-            helperText="Ex: 5.5 (heures)."
-            fullWidth
-            required
+            desktopModeMediaQuery={FORCE_MOBILE}
+            slotProps={{
+              dialog: { fullScreen: true },
+              textField: {
+                fullWidth: true,
+                size: "small",
+                onClick: () => setStartOpen(true),
+                inputProps: { readOnly: true },
+              },
+            }}
           />
+
+          <DateTimePicker
+            label="Fin de prestation"
+            value={serviceEnd}
+            onChange={(v) => setServiceEnd(v)}
+            open={endOpen}
+            onOpen={() => setEndOpen(true)}
+            onClose={() => setEndOpen(false)}
+            disabled={mutation.isPending}
+            desktopModeMediaQuery={FORCE_MOBILE}
+            slotProps={{
+              dialog: { fullScreen: true },
+              textField: {
+                fullWidth: true,
+                size: "small",
+                onClick: () => setEndOpen(true),
+                inputProps: { readOnly: true },
+                error: !!hasOrderError,
+                helperText: hasOrderError ? "La fin doit être après le début." : " ",
+              },
+            }}
+          />
+
+          {/* Computed duration */}
+          <Stack direction="row" justifyContent="space-between" alignItems="center"
+            sx={{ bgcolor: "grey.50", borderRadius: 1.5, px: 2, py: 1.25 }}>
+            <Typography variant="body2" color="text.secondary">Durée calculée</Typography>
+            <Typography variant="body2" fontWeight={700} color={diffHours ? "primary.main" : "text.disabled"}>
+              {diffHours !== null ? formatDuration(diffHours) : "—"}
+            </Typography>
+          </Stack>
         </Stack>
       </DialogContent>
 
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose} disabled={mutation.isPending}>
-          Annuler
-        </Button>
-        <Button
-          variant="contained"
-          onClick={handleSubmit}
-          disabled={mutation.isPending}
-        >
-          Enregistrer
+        <Button onClick={onClose} disabled={mutation.isPending}>Annuler</Button>
+        <Button variant="contained" onClick={handleSubmit} disabled={mutation.isPending}>
+          {mutation.isPending ? <CircularProgress size={16} /> : "Enregistrer"}
         </Button>
       </DialogActions>
     </Dialog>
