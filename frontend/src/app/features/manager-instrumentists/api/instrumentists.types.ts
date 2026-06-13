@@ -40,6 +40,7 @@ export type InstrumentistDetailDTO = {
   consultationFee: string | null;
   profilePicturePath: string | null;
   siteMemberships: SiteMembershipDTO[];
+  specialties: string[];
 };
 
 export type CreateInstrumentistResponseDTO = {

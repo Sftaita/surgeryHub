@@ -13,6 +13,7 @@ final class InstrumentistListItemResponse
         public ?string $employmentType,
         public ?string $defaultCurrency,
         public string $displayName,
+        public array $specialties = [],
     ) {
     }
 }

@@ -152,6 +152,7 @@ final class InstrumentistController extends AbstractController
                 employmentType: $employmentTypeValue,
                 defaultCurrency: $u->getDefaultCurrency(),
                 displayName: $displayName,
+                specialties: $u->getSpecialties() ?? [],
             );
         }, $items);
 

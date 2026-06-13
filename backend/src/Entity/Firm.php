@@ -38,6 +38,15 @@ class Firm
     #[ORM\Column(type: 'json', nullable: true)]
     private ?array $billingEmailCc = null;
 
+    #[ORM\Column(length: 100, nullable: true)]
+    private ?string $country = null;
+
+    #[ORM\Column(length: 255, nullable: true)]
+    private ?string $representative = null;
+
+    #[ORM\Column(length: 30, nullable: true)]
+    private ?string $phone = null;
+
     public function getId(): ?int
     {
         return $this->id;
@@ -86,4 +95,13 @@ class Firm
         $this->billingEmailCc = $billingEmailCc;
         return $this;
     }
+
+    public function getCountry(): ?string { return $this->country; }
+    public function setCountry(?string $country): static { $this->country = $country; return $this; }
+
+    public function getRepresentative(): ?string { return $this->representative; }
+    public function setRepresentative(?string $representative): static { $this->representative = $representative; return $this; }
+
+    public function getPhone(): ?string { return $this->phone; }
+    public function setPhone(?string $phone): static { $this->phone = $phone; return $this; }
 }

@@ -20,6 +20,7 @@ final class InstrumentistProfileResponse
         public ?string $consultationFee,
         public ?string $profilePicturePath,
         public array $siteMemberships = [],
+        public array $specialties = [],
     ) {
     }
 }

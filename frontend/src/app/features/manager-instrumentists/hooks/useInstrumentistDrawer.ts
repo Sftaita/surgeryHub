@@ -26,6 +26,7 @@ export type SectionKey =
   | "sites"
   | "rates"
   | "status"
+  | "competences"
   | "planning";
 
 export type RatesFeedback =
@@ -59,6 +60,7 @@ export function useInstrumentistDrawer(
   const sitesSectionRef = useRef<HTMLDivElement | null>(null);
   const ratesSectionRef = useRef<HTMLDivElement | null>(null);
   const statusSectionRef = useRef<HTMLDivElement | null>(null);
+  const competencesSectionRef = useRef<HTMLDivElement | null>(null);
   const planningSectionRef = useRef<HTMLDivElement | null>(null);
 
   const {
@@ -365,6 +367,7 @@ export function useInstrumentistDrawer(
     sitesSectionRef,
     ratesSectionRef,
     statusSectionRef,
+    competencesSectionRef,
     planningSectionRef,
   };
 }

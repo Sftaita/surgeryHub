@@ -42,7 +42,7 @@ function getEmploymentTypeLabel(
     case "FREELANCER":
       return "Freelancer";
     default:
-      return employmentType;
+      return "—";
   }
 }
 

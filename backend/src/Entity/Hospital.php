@@ -35,6 +35,10 @@ class Hospital
     #[Groups(['hospital:read', 'mission:read', 'mission:read_manager', 'export:read', 'site:list'])]
     private ?string $timezone = null;
 
+    #[ORM\Column(length: 500, nullable: true)]
+    #[Groups(['hospital:read', 'site:list'])]
+    private ?string $photoPath = null;
+
     /**
      * @var Collection<int, SiteMembership>
      */
@@ -124,6 +128,17 @@ class Hospital
                 $membership->setSite(null);
             }
         }
+        return $this;
+    }
+
+    public function getPhotoPath(): ?string
+    {
+        return $this->photoPath;
+    }
+
+    public function setPhotoPath(?string $photoPath): static
+    {
+        $this->photoPath = $photoPath;
         return $this;
     }
 

@@ -14,12 +14,24 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { updateUserSpecialties } from "../../../features/planning-manager/api/planning.api";
+import { useToast } from "../../../ui/toast/useToast";
 
 import { DrawerSection } from "./DrawerSection";
 import { AddSiteMembershipDialog } from "./AddSiteMembershipDialog";
 import { InstrumentistPlanningSection } from "./InstrumentistPlanningSection";
 import ConfirmDeleteDialog from "../../encoding/components/ConfirmDeleteDialog";
 import { useInstrumentistDrawer } from "../hooks/useInstrumentistDrawer";
+
+const ORTHO_SPECIALTIES = [
+  { value: "EPAULE", label: "Épaule" },
+  { value: "GENOU",  label: "Genou" },
+  { value: "HANCHE", label: "Hanche" },
+  { value: "RACHIS", label: "Colonne" },
+  { value: "MAIN",   label: "Main" },
+  { value: "PIED",   label: "Pied" },
+];
 import {
   buildProfilePictureUrl,
   getEmploymentTypeLabel,
@@ -75,7 +87,26 @@ export function InstrumentistDrawer({
     ratesSectionRef,
     statusSectionRef,
     planningSectionRef,
+    competencesSectionRef,
   } = useInstrumentistDrawer(instrumentistId, open);
+
+  const toast = useToast();
+  const qc = useQueryClient();
+  const specialtiesMutation = useMutation({
+    mutationFn: (specialties: string[]) => updateUserSpecialties(instrumentistId!, specialties),
+    onSuccess: () => {
+      toast.success("Compétences enregistrées");
+      qc.invalidateQueries({ queryKey: ["instrumentist-detail", instrumentistId] });
+    },
+    onError: () => toast.error("Erreur lors de la sauvegarde"),
+  });
+
+  function toggleSpecialty(value: string, current: string[]) {
+    const next = current.includes(value)
+      ? current.filter((s) => s !== value)
+      : [...current, value];
+    specialtiesMutation.mutate(next);
+  }
 
   const hasRatesFeedback =
     ratesFeedback.type !== "idle" && ratesFeedback.message;
@@ -276,6 +307,7 @@ export function InstrumentistDrawer({
                         { key: "sites", label: "Sites" },
                         { key: "rates", label: "Tarifs" },
                         { key: "status", label: "Statut" },
+                        { key: "competences", label: "Compétences" },
                         { key: "planning", label: "Planning" },
                       ] as const
                     ).map(({ key, label }) => (
@@ -291,6 +323,7 @@ export function InstrumentistDrawer({
                               sites: sitesSectionRef,
                               rates: ratesSectionRef,
                               status: statusSectionRef,
+                              competences: competencesSectionRef,
                               planning: planningSectionRef,
                             }[key].current,
                           )
@@ -584,6 +617,39 @@ export function InstrumentistDrawer({
                           ? "L'instrumentiste peut se connecter et accéder aux missions."
                           : "L'instrumentiste est suspendu et ne peut pas se connecter."}
                       </Typography>
+                    </Stack>
+                  </DrawerSection>
+                </Box>
+
+                <Box ref={competencesSectionRef}>
+                  <DrawerSection title="Compétences orthopédiques">
+                    <Stack spacing={2}>
+                      <Typography variant="body2" color="text.secondary">
+                        Sélectionnez les spécialités maîtrisées par cet instrumentiste. Ces informations guident l'algorithme de suggestion de planning.
+                      </Typography>
+                      <Stack direction="row" flexWrap="wrap" gap={1}>
+                        {ORTHO_SPECIALTIES.map(({ value, label }) => {
+                          const active = (instrumentist.specialties ?? []).includes(value);
+                          return (
+                            <Chip
+                              key={value}
+                              label={label}
+                              size="small"
+                              color={active ? "primary" : "default"}
+                              variant={active ? "filled" : "outlined"}
+                              onClick={() => toggleSpecialty(value, instrumentist.specialties ?? [])}
+                              disabled={specialtiesMutation.isPending}
+                              sx={{ cursor: "pointer" }}
+                            />
+                          );
+                        })}
+                      </Stack>
+                      {specialtiesMutation.isPending && (
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <CircularProgress size={14} />
+                          <Typography variant="caption" color="text.secondary">Enregistrement…</Typography>
+                        </Stack>
+                      )}
                     </Stack>
                   </DrawerSection>
                 </Box>
