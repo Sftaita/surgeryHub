@@ -1,0 +1,1323 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Surgery Hub — La plateforme de gestion chirurgicale</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Reset & base ──────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --green:       #63C9A3;
+      --green-dark:  #42A882;
+      --green-xdark: #2E7A5E;
+      --green-light: #E8F8F2;
+      --green-mid:   #A8E4CE;
+      --white:       #FFFFFF;
+      --off-white:   #F7FDFB;
+      --gray-100:    #F3F4F6;
+      --gray-200:    #E5E7EB;
+      --gray-400:    #9CA3AF;
+      --gray-600:    #4B5563;
+      --gray-800:    #1F2937;
+      --radius:      12px;
+      --radius-lg:   20px;
+      --shadow-sm:   0 1px 3px rgba(0,0,0,.08);
+      --shadow-md:   0 4px 16px rgba(0,0,0,.10);
+      --shadow-lg:   0 12px 40px rgba(0,0,0,.12);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      color: var(--gray-800);
+      background: var(--white);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Utility ───────────────────────────────────────────────── */
+    .container { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
+    .flex { display: flex; }
+    .items-center { align-items: center; }
+    .gap-2 { gap: 8px; }
+    .gap-4 { gap: 16px; }
+
+    /* ── Navbar ────────────────────────────────────────────────── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(255,255,255,.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--gray-200);
+    }
+
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 68px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+    }
+
+    .logo-icon {
+      width: 40px;
+      height: 40px;
+    }
+
+    .logo-text {
+      font-size: 1.25rem;
+      font-weight: 800;
+      color: var(--green-dark);
+      letter-spacing: -.5px;
+      line-height: 1.1;
+    }
+
+    .logo-text span { display: block; }
+
+    .nav-links {
+      display: flex;
+      gap: 32px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      text-decoration: none;
+      font-size: .9rem;
+      font-weight: 500;
+      color: var(--gray-600);
+      transition: color .2s;
+    }
+
+    .nav-links a:hover { color: var(--green-dark); }
+
+    .nav-cta {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 22px;
+      border-radius: 999px;
+      font-size: .9rem;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      border: none;
+      transition: all .2s;
+      white-space: nowrap;
+    }
+
+    .btn-outline {
+      color: var(--green-dark);
+      border: 1.5px solid var(--green-dark);
+      background: transparent;
+    }
+    .btn-outline:hover { background: var(--green-light); }
+
+    .btn-primary {
+      background: var(--green);
+      color: var(--white);
+      box-shadow: 0 4px 14px rgba(99,201,163,.40);
+    }
+    .btn-primary:hover {
+      background: var(--green-dark);
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(99,201,163,.50);
+    }
+
+    .btn-lg {
+      padding: 14px 32px;
+      font-size: 1rem;
+    }
+
+    /* ── Hero ──────────────────────────────────────────────────── */
+    .hero {
+      background: linear-gradient(160deg, var(--off-white) 0%, var(--green-light) 60%, #D4F2E7 100%);
+      padding: 100px 0 80px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -120px; right: -120px;
+      width: 500px; height: 500px;
+      background: radial-gradient(circle, rgba(99,201,163,.18) 0%, transparent 70%);
+      border-radius: 50%;
+    }
+
+    .hero-inner {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 64px;
+      align-items: center;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--white);
+      border: 1px solid var(--green-mid);
+      color: var(--green-xdark);
+      font-size: .78rem;
+      font-weight: 600;
+      padding: 5px 14px;
+      border-radius: 999px;
+      margin-bottom: 24px;
+      letter-spacing: .4px;
+      text-transform: uppercase;
+    }
+
+    .hero-badge::before {
+      content: '';
+      width: 6px; height: 6px;
+      background: var(--green);
+      border-radius: 50%;
+    }
+
+    .hero h1 {
+      font-size: clamp(2.2rem, 4vw, 3.2rem);
+      font-weight: 800;
+      line-height: 1.15;
+      letter-spacing: -1.5px;
+      color: var(--gray-800);
+      margin-bottom: 20px;
+    }
+
+    .hero h1 .accent { color: var(--green-dark); }
+
+    .hero-sub {
+      font-size: 1.1rem;
+      color: var(--gray-600);
+      max-width: 480px;
+      margin-bottom: 36px;
+      line-height: 1.7;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .hero-note {
+      margin-top: 16px;
+      font-size: .8rem;
+      color: var(--gray-400);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .hero-note svg { color: var(--green); }
+
+    /* ── Hero Visual ───────────────────────────────────────────── */
+    .hero-visual {
+      position: relative;
+    }
+
+    .dashboard-card {
+      background: var(--white);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      overflow: hidden;
+      border: 1px solid var(--gray-200);
+    }
+
+    .card-header {
+      background: var(--green);
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .card-header-dots { display: flex; gap: 6px; }
+    .card-header-dots span {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: rgba(255,255,255,.5);
+    }
+
+    .card-header-title {
+      font-size: .82rem;
+      font-weight: 600;
+      color: var(--white);
+      margin-left: 4px;
+    }
+
+    .card-body { padding: 20px; }
+
+    .stat-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .stat-box {
+      background: var(--gray-100);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      text-align: center;
+    }
+
+    .stat-box .stat-num {
+      font-size: 1.5rem;
+      font-weight: 800;
+      color: var(--green-dark);
+      line-height: 1;
+    }
+
+    .stat-box .stat-lbl {
+      font-size: .7rem;
+      color: var(--gray-400);
+      margin-top: 4px;
+      font-weight: 500;
+    }
+
+    .mission-list { display: flex; flex-direction: column; gap: 8px; }
+
+    .mission-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      background: var(--gray-100);
+      font-size: .8rem;
+    }
+
+    .mission-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .dot-green { background: var(--green); }
+    .dot-yellow { background: #F59E0B; }
+    .dot-blue { background: #60A5FA; }
+    .dot-gray { background: var(--gray-400); }
+
+    .mission-info { flex: 1; }
+    .mission-name { font-weight: 600; color: var(--gray-800); line-height: 1.2; }
+    .mission-meta { color: var(--gray-400); font-size: .72rem; margin-top: 1px; }
+
+    .mission-badge {
+      font-size: .68rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: .3px;
+    }
+
+    .badge-assigned { background: #D1FAE5; color: #065F46; }
+    .badge-open     { background: #DBEAFE; color: #1E40AF; }
+    .badge-submitted{ background: #FEF3C7; color: #92400E; }
+    .badge-closed   { background: var(--gray-200); color: var(--gray-600); }
+
+    .floating-pill {
+      position: absolute;
+      background: var(--white);
+      border-radius: 999px;
+      box-shadow: var(--shadow-md);
+      padding: 8px 16px;
+      font-size: .78rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--gray-200);
+      animation: float 4s ease-in-out infinite;
+    }
+
+    .pill-1 { bottom: -20px; left: -20px; animation-delay: 0s; }
+    .pill-2 { top: -20px; right: -20px; animation-delay: 2s; }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50%       { transform: translateY(-8px); }
+    }
+
+    /* ── Logos strip ───────────────────────────────────────────── */
+    .strip {
+      padding: 32px 0;
+      border-bottom: 1px solid var(--gray-200);
+    }
+
+    .strip-inner {
+      display: flex;
+      align-items: center;
+      gap: 48px;
+      overflow: hidden;
+    }
+
+    .strip-label {
+      font-size: .78rem;
+      color: var(--gray-400);
+      font-weight: 500;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .strip-logos {
+      display: flex;
+      gap: 40px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .strip-logo-item {
+      font-size: .85rem;
+      font-weight: 700;
+      color: var(--gray-400);
+      letter-spacing: -.3px;
+    }
+
+    /* ── Features ──────────────────────────────────────────────── */
+    section { padding: 96px 0; }
+
+    .section-tag {
+      display: inline-block;
+      font-size: .75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--green-dark);
+      background: var(--green-light);
+      padding: 5px 14px;
+      border-radius: 999px;
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      font-size: clamp(1.8rem, 3vw, 2.4rem);
+      font-weight: 800;
+      letter-spacing: -1px;
+      line-height: 1.2;
+      margin-bottom: 16px;
+    }
+
+    .section-sub {
+      font-size: 1.05rem;
+      color: var(--gray-600);
+      max-width: 560px;
+      line-height: 1.7;
+    }
+
+    .section-head { text-align: center; margin-bottom: 64px; }
+    .section-head .section-sub { margin: 0 auto; }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+    }
+
+    .feature-card {
+      padding: 28px;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--gray-200);
+      background: var(--white);
+      transition: all .3s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .feature-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--green), var(--green-dark));
+      transform: scaleX(0);
+      transform-origin: left;
+      transition: transform .3s;
+    }
+
+    .feature-card:hover {
+      border-color: var(--green-mid);
+      box-shadow: var(--shadow-md);
+      transform: translateY(-4px);
+    }
+
+    .feature-card:hover::before { transform: scaleX(1); }
+
+    .feature-icon {
+      width: 48px; height: 48px;
+      background: var(--green-light);
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+      font-size: 1.4rem;
+    }
+
+    .feature-title {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+      color: var(--gray-800);
+    }
+
+    .feature-text {
+      font-size: .88rem;
+      color: var(--gray-600);
+      line-height: 1.65;
+    }
+
+    /* ── How it works ──────────────────────────────────────────── */
+    .hiw { background: var(--off-white); }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 32px;
+      position: relative;
+    }
+
+    .steps::before {
+      content: '';
+      position: absolute;
+      top: 28px;
+      left: calc(12.5% + 28px);
+      right: calc(12.5% + 28px);
+      height: 2px;
+      background: linear-gradient(90deg, var(--green-mid), var(--green), var(--green-mid));
+    }
+
+    .step { text-align: center; }
+
+    .step-num {
+      width: 56px; height: 56px;
+      border-radius: 50%;
+      background: var(--green);
+      color: var(--white);
+      font-size: 1.2rem;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 16px;
+      position: relative;
+      z-index: 1;
+      box-shadow: 0 0 0 6px var(--off-white), 0 0 0 8px var(--green-mid);
+    }
+
+    .step-title {
+      font-size: .95rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+      color: var(--gray-800);
+    }
+
+    .step-text {
+      font-size: .83rem;
+      color: var(--gray-600);
+      line-height: 1.6;
+    }
+
+    /* ── Roles ─────────────────────────────────────────────────── */
+    .roles-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 28px;
+    }
+
+    .role-card {
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      border: 1px solid var(--gray-200);
+      background: var(--white);
+      box-shadow: var(--shadow-sm);
+      transition: all .3s;
+    }
+
+    .role-card:hover {
+      box-shadow: var(--shadow-md);
+      transform: translateY(-4px);
+    }
+
+    .role-header {
+      padding: 24px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .role-header-manager  { background: linear-gradient(135deg, var(--green-light), #C6F0E2); }
+    .role-header-instru   { background: linear-gradient(135deg, #EFF6FF, #DBEAFE); }
+    .role-header-surgeon  { background: linear-gradient(135deg, #FFF7ED, #FED7AA); }
+
+    .role-icon {
+      width: 48px; height: 48px;
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+      background: var(--white);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .role-name {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--gray-800);
+    }
+
+    .role-tagline {
+      font-size: .78rem;
+      color: var(--gray-600);
+      margin-top: 2px;
+    }
+
+    .role-body { padding: 20px 24px; }
+
+    .role-features {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+
+    .role-features li {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: .85rem;
+      color: var(--gray-600);
+      line-height: 1.4;
+    }
+
+    .role-features li::before {
+      content: '';
+      width: 16px; height: 16px;
+      background: var(--green-light);
+      border-radius: 50%;
+      flex-shrink: 0;
+      margin-top: 1px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8l3.5 3.5L13 5' stroke='%2342A882' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    }
+
+    /* ── Metrics ───────────────────────────────────────────────── */
+    .metrics { background: linear-gradient(135deg, var(--green-xdark), var(--green-dark) 60%, var(--green)); }
+
+    .metrics .section-title { color: var(--white); }
+    .metrics .section-sub   { color: rgba(255,255,255,.75); }
+    .metrics .section-tag   { background: rgba(255,255,255,.15); color: var(--white); }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 2px;
+      background: rgba(255,255,255,.1);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      margin-top: 56px;
+    }
+
+    .metric-item {
+      background: rgba(255,255,255,.05);
+      padding: 36px 24px;
+      text-align: center;
+      transition: background .2s;
+    }
+
+    .metric-item:hover { background: rgba(255,255,255,.12); }
+
+    .metric-num {
+      font-size: 2.6rem;
+      font-weight: 800;
+      color: var(--white);
+      line-height: 1;
+      letter-spacing: -1px;
+    }
+
+    .metric-unit {
+      font-size: 1.2rem;
+      font-weight: 800;
+      color: var(--green-mid);
+    }
+
+    .metric-lbl {
+      font-size: .82rem;
+      color: rgba(255,255,255,.65);
+      margin-top: 8px;
+      font-weight: 500;
+    }
+
+    /* ── Testimonial ───────────────────────────────────────────── */
+    .testimonials { background: var(--gray-100); }
+
+    .testimonials-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+    }
+
+    .testimonial-card {
+      background: var(--white);
+      border-radius: var(--radius-lg);
+      padding: 28px;
+      border: 1px solid var(--gray-200);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .testimonial-stars {
+      color: #F59E0B;
+      font-size: 1rem;
+      margin-bottom: 14px;
+      letter-spacing: 2px;
+    }
+
+    .testimonial-text {
+      font-size: .9rem;
+      color: var(--gray-600);
+      line-height: 1.7;
+      margin-bottom: 20px;
+      font-style: italic;
+    }
+
+    .testimonial-author {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .author-avatar {
+      width: 38px; height: 38px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: .85rem;
+      font-weight: 700;
+      color: var(--white);
+      flex-shrink: 0;
+    }
+
+    .av-green  { background: var(--green-dark); }
+    .av-blue   { background: #3B82F6; }
+    .av-indigo { background: #6366F1; }
+
+    .author-name  { font-size: .88rem; font-weight: 700; color: var(--gray-800); }
+    .author-title { font-size: .75rem; color: var(--gray-400); margin-top: 1px; }
+
+    /* ── CTA ───────────────────────────────────────────────────── */
+    .cta-section {
+      padding: 100px 0;
+      text-align: center;
+      background: linear-gradient(160deg, var(--off-white), var(--green-light));
+    }
+
+    .cta-section .section-title { font-size: clamp(2rem, 3.5vw, 2.8rem); }
+
+    .cta-section .section-sub {
+      margin: 0 auto 36px;
+      max-width: 540px;
+    }
+
+    .cta-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+
+    /* ── Footer ────────────────────────────────────────────────── */
+    footer {
+      background: var(--gray-800);
+      color: rgba(255,255,255,.7);
+      padding: 56px 0 28px;
+    }
+
+    .footer-inner {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr 1fr;
+      gap: 40px;
+      margin-bottom: 40px;
+    }
+
+    .footer-brand .logo-text { color: var(--green); }
+
+    .footer-tagline {
+      font-size: .85rem;
+      margin-top: 12px;
+      line-height: 1.65;
+      max-width: 240px;
+      color: rgba(255,255,255,.5);
+    }
+
+    .footer-col h4 {
+      font-size: .82rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      color: rgba(255,255,255,.9);
+      margin-bottom: 16px;
+    }
+
+    .footer-col ul { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+    .footer-col a { color: rgba(255,255,255,.5); text-decoration: none; font-size: .85rem; transition: color .2s; }
+    .footer-col a:hover { color: var(--green); }
+
+    .footer-bottom {
+      border-top: 1px solid rgba(255,255,255,.08);
+      padding-top: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: .78rem;
+      color: rgba(255,255,255,.35);
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .footer-bottom a { color: rgba(255,255,255,.35); text-decoration: none; }
+    .footer-bottom a:hover { color: var(--green); }
+
+    /* ── Responsive ────────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      .hero-inner, .features-grid, .roles-grid, .testimonials-grid {
+        grid-template-columns: 1fr;
+      }
+      .hero-visual { display: none; }
+      .steps { grid-template-columns: repeat(2, 1fr); }
+      .steps::before { display: none; }
+      .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+      .footer-inner { grid-template-columns: 1fr 1fr; }
+      .nav-links { display: none; }
+    }
+
+    @media (max-width: 600px) {
+      section { padding: 64px 0; }
+      .metrics-grid { grid-template-columns: 1fr 1fr; }
+      .footer-inner { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ──────────────── NAVBAR ──────────────── -->
+  <nav>
+    <div class="container">
+      <div class="nav-inner">
+        <a href="#" class="logo">
+          <svg class="logo-icon" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="40" cy="40" r="38" fill="none" stroke="#63C9A3" stroke-width="4"/>
+            <!-- Scalpel -->
+            <line x1="26" y1="56" x2="48" y2="26" stroke="#63C9A3" stroke-width="3.5" stroke-linecap="round"/>
+            <path d="M44 22 L52 30 Q56 26 52 22 Z" fill="#63C9A3"/>
+            <line x1="29" y1="54" x2="34" y2="58" stroke="#63C9A3" stroke-width="2" stroke-linecap="round"/>
+            <!-- Fountain pen -->
+            <line x1="54" y1="56" x2="32" y2="24" stroke="#63C9A3" stroke-width="3.5" stroke-linecap="round"/>
+            <path d="M30 22 Q28 28 32 30 L36 22 Z" fill="#63C9A3"/>
+            <rect x="50" y="50" width="8" height="4" rx="2" transform="rotate(-55 54 52)" fill="#63C9A3"/>
+          </svg>
+          <div class="logo-text">
+            <span>SURGERY</span>
+            <span>HUB</span>
+          </div>
+        </a>
+
+        <ul class="nav-links">
+          <li><a href="#features">Fonctionnalités</a></li>
+          <li><a href="#how">Comment ça marche</a></li>
+          <li><a href="#roles">Pour qui</a></li>
+          <li><a href="#temoignages">Témoignages</a></li>
+        </ul>
+
+        <div class="nav-cta">
+          <a href="/login" class="btn btn-outline">Se connecter</a>
+          <a href="#demo" class="btn btn-primary">Demander une démo</a>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ──────────────── HERO ──────────────── -->
+  <section class="hero" id="hero">
+    <div class="container">
+      <div class="hero-inner">
+        <div class="hero-content">
+          <div class="hero-badge">Nouveau — Module Planning disponible</div>
+          <h1>
+            La plateforme qui<br/>
+            <span class="accent">connecte bloc opératoire</span><br/>
+            et gestion intelligente
+          </h1>
+          <p class="hero-sub">
+            Surgery Hub centralise la planification chirurgicale, la gestion des instrumentistes,
+            l'encodage des actes et la facturation — en un seul outil pensé pour les équipes du bloc.
+          </p>
+          <div class="hero-actions">
+            <a href="#demo" class="btn btn-primary btn-lg">Demander une démo gratuite</a>
+            <a href="#features" class="btn btn-outline btn-lg">Découvrir les fonctionnalités</a>
+          </div>
+          <p class="hero-note">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M7 1l1.5 4h4l-3.2 2.3 1.2 4L7 9 3.5 11.3l1.2-4L1.5 5h4z"/>
+            </svg>
+            Déjà utilisé dans des cliniques privées belges
+          </p>
+        </div>
+
+        <div class="hero-visual">
+          <div style="position:relative; padding: 20px;">
+            <div class="dashboard-card">
+              <div class="card-header">
+                <div class="card-header-dots">
+                  <span></span><span></span><span></span>
+                </div>
+                <span class="card-header-title">Surgery Hub — Planning du jour</span>
+              </div>
+              <div class="card-body">
+                <div class="stat-row">
+                  <div class="stat-box">
+                    <div class="stat-num">12</div>
+                    <div class="stat-lbl">Missions</div>
+                  </div>
+                  <div class="stat-box">
+                    <div class="stat-num">8</div>
+                    <div class="stat-lbl">Assignées</div>
+                  </div>
+                  <div class="stat-box">
+                    <div class="stat-num">4</div>
+                    <div class="stat-lbl">En attente</div>
+                  </div>
+                </div>
+                <div class="mission-list">
+                  <div class="mission-item">
+                    <div class="mission-dot dot-green"></div>
+                    <div class="mission-info">
+                      <div class="mission-name">Ligamentoplastie LCA</div>
+                      <div class="mission-meta">Dr Martin · Bloc A · 08:00–12:00</div>
+                    </div>
+                    <span class="mission-badge badge-assigned">Assigné</span>
+                  </div>
+                  <div class="mission-item">
+                    <div class="mission-dot dot-blue"></div>
+                    <div class="mission-info">
+                      <div class="mission-name">PTH cimentée</div>
+                      <div class="mission-meta">Dr Duval · Bloc B · 10:00–13:30</div>
+                    </div>
+                    <span class="mission-badge badge-open">Disponible</span>
+                  </div>
+                  <div class="mission-item">
+                    <div class="mission-dot dot-yellow"></div>
+                    <div class="mission-info">
+                      <div class="mission-name">Arthroscopie épaule</div>
+                      <div class="mission-meta">Dr Leroy · Bloc C · 14:00–16:00</div>
+                    </div>
+                    <span class="mission-badge badge-submitted">Soumis</span>
+                  </div>
+                  <div class="mission-item">
+                    <div class="mission-dot dot-gray"></div>
+                    <div class="mission-info">
+                      <div class="mission-name">Consultation orthopédie</div>
+                      <div class="mission-meta">Dr Martin · Cabinet · 16:30–17:30</div>
+                    </div>
+                    <span class="mission-badge badge-closed">Clôturé</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="floating-pill pill-1">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="7" cy="7" r="6" stroke="#63C9A3" stroke-width="1.5"/>
+                <path d="M4.5 7l1.8 1.8L9.5 5" stroke="#63C9A3" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span style="color:#42A882">+3 missions générées</span>
+            </div>
+
+            <div class="floating-pill pill-2">
+              <span style="font-size:1rem">📊</span>
+              <span style="color:#4B5563">Facturation <b style="color:#42A882">+18%</b></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──────────────── STRIP ──────────────── -->
+  <div class="strip">
+    <div class="container">
+      <div class="strip-inner">
+        <span class="strip-label">Intégré dans vos établissements</span>
+        <div class="strip-logos">
+          <span class="strip-logo-item">Clinique Saint-Jean</span>
+          <span class="strip-logo-item">CHU Delta</span>
+          <span class="strip-logo-item">Clinique du Sport</span>
+          <span class="strip-logo-item">Pôle Santé Alpha</span>
+          <span class="strip-logo-item">Centre Orthopédique</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ──────────────── FEATURES ──────────────── -->
+  <section id="features">
+    <div class="container">
+      <div class="section-head">
+        <span class="section-tag">Fonctionnalités</span>
+        <h2 class="section-title">Tout ce dont votre équipe a besoin</h2>
+        <p class="section-sub">
+          De la planification à la facturation, Surgery Hub couvre l'ensemble du cycle de vie
+          d'une mission chirurgicale.
+        </p>
+      </div>
+
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">📅</div>
+          <h3 class="feature-title">Planning intelligent</h3>
+          <p class="feature-text">
+            Gabarits de semaine PAIR/IMPAIR/TOUTES. Génération automatique des missions
+            avec algorithme de sélection des instrumentistes basé sur l'historique et les spécialités.
+          </p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🏥</div>
+          <h3 class="feature-title">Gestion des missions</h3>
+          <p class="feature-text">
+            Cycle complet DRAFT → OPEN → ASSIGNED → SUBMITTED → VALIDATED. Suivi en temps réel
+            pour le manager et les instrumentistes.
+          </p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📝</div>
+          <h3 class="feature-title">Encodage opératoire</h3>
+          <p class="feature-text">
+            L'instrumentiste encode les actes, interventions et matériels utilisés directement
+            depuis son mobile. Demandes de matériel manquant en un clic.
+          </p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📦</div>
+          <h3 class="feature-title">Catalogue matériel</h3>
+          <p class="feature-text">
+            Gestion du catalogue par firme fabricante. Résolution des demandes de matériel absent
+            avec création automatique des lignes de mission.
+          </p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">💶</div>
+          <h3 class="feature-title">Facturation intégrée</h3>
+          <p class="feature-text">
+            Génération automatique des factures firmes et décomptes instrumentistes. PDF, envoi
+            par email et suivi des paiements depuis l'interface.
+          </p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔔</div>
+          <h3 class="feature-title">Notifications temps réel</h3>
+          <p class="feature-text">
+            Alertes push pour les nouvelles missions, validations, et déploiements planning.
+            Application mobile-first pour les instrumentistes.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──────────────── HOW IT WORKS ──────────────── -->
+  <section class="hiw" id="how">
+    <div class="container">
+      <div class="section-head">
+        <span class="section-tag">Comment ça marche</span>
+        <h2 class="section-title">De la planification à la validation en 4 étapes</h2>
+        <p class="section-sub">
+          Un flux pensé pour les équipes chirurgicales — simple pour les instrumentistes,
+          puissant pour les managers.
+        </p>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <h4 class="step-title">Créer les gabarits</h4>
+          <p class="step-text">Le manager définit les semaines types avec chirurgiens, instrumentistes et créneaux.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <h4 class="step-title">Générer le planning</h4>
+          <p class="step-text">Sur une plage de dates, les missions sont créées automatiquement avec l'instrumentiste le plus adapté.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <h4 class="step-title">Encoder & Soumettre</h4>
+          <p class="step-text">L'instrumentiste encode les actes depuis son mobile et soumet la mission pour validation.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <h4 class="step-title">Valider & Facturer</h4>
+          <p class="step-text">Le manager valide les missions et génère factures firmes et décomptes instrumentistes en un clic.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──────────────── ROLES ──────────────── -->
+  <section id="roles">
+    <div class="container">
+      <div class="section-head">
+        <span class="section-tag">Pour qui</span>
+        <h2 class="section-title">Un outil pour chaque acteur du bloc</h2>
+        <p class="section-sub">
+          Chaque rôle dispose d'une interface adaptée à ses besoins et à son niveau d'accès.
+        </p>
+      </div>
+
+      <div class="roles-grid">
+        <div class="role-card">
+          <div class="role-header role-header-manager">
+            <div class="role-icon">👔</div>
+            <div>
+              <div class="role-name">Manager / Admin</div>
+              <div class="role-tagline">Vision complète, contrôle total</div>
+            </div>
+          </div>
+          <div class="role-body">
+            <ul class="role-features">
+              <li>Création et publication des missions</li>
+              <li>Gestion des instrumentistes et chirurgiens</li>
+              <li>Planning automatisé par gabarits</li>
+              <li>Validation des missions déclarées</li>
+              <li>Facturation firmes et décomptes</li>
+              <li>Catalogue matériel et demandes</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="role-card">
+          <div class="role-header role-header-instru">
+            <div class="role-icon">🩺</div>
+            <div>
+              <div class="role-name">Instrumentiste</div>
+              <div class="role-tagline">Mobile-first, au cœur du bloc</div>
+            </div>
+          </div>
+          <div class="role-body">
+            <ul class="role-features">
+              <li>Prise en charge des missions disponibles</li>
+              <li>Encodage des actes depuis mobile</li>
+              <li>Déclaration de missions imprévues</li>
+              <li>Soumission et suivi des missions</li>
+              <li>Notifications push en temps réel</li>
+              <li>Planning personnel hebdomadaire</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="role-card">
+          <div class="role-header role-header-surgeon">
+            <div class="role-icon">⚕️</div>
+            <div>
+              <div class="role-name">Chirurgien</div>
+              <div class="role-tagline">Consultation et visibilité</div>
+            </div>
+          </div>
+          <div class="role-body">
+            <ul class="role-features">
+              <li>Vue de son planning personnel</li>
+              <li>Consultation des missions associées</li>
+              <li>Historique des interventions</li>
+              <li>Visualisation de l'équipe assignée</li>
+              <li>Accès depuis n'importe quel appareil</li>
+              <li>Mise à jour en temps réel</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──────────────── METRICS ──────────────── -->
+  <section class="metrics">
+    <div class="container">
+      <div class="section-head">
+        <span class="section-tag">Chiffres clés</span>
+        <h2 class="section-title">Pensé pour la performance opératoire</h2>
+        <p class="section-sub">Des équipes chirurgicales plus efficaces, moins de charge administrative, plus de temps pour le soin.</p>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric-item">
+          <div class="metric-num">−70<span class="metric-unit">%</span></div>
+          <div class="metric-lbl">de temps passé sur la planification manuelle</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-num">3×</div>
+          <div class="metric-lbl">plus rapide pour générer les décomptes mensuels</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-num">100<span class="metric-unit">%</span></div>
+          <div class="metric-lbl">de traçabilité sur chaque mission et chaque matériel</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-num">0</div>
+          <div class="metric-lbl">double saisie — les données circulent automatiquement</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──────────────── TESTIMONIALS ──────────────── -->
+  <section class="testimonials" id="temoignages">
+    <div class="container">
+      <div class="section-head">
+        <span class="section-tag">Témoignages</span>
+        <h2 class="section-title">Ce que disent nos utilisateurs</h2>
+        <p class="section-sub">Des équipes chirurgicales qui ont transformé leur organisation quotidienne.</p>
+      </div>
+
+      <div class="testimonials-grid">
+        <div class="testimonial-card">
+          <div class="testimonial-stars">★★★★★</div>
+          <p class="testimonial-text">
+            "Surgery Hub nous a fait gagner des heures chaque semaine. La génération automatique du planning
+            est bluffante — les instrumentistes reçoivent leurs missions sans qu'on ait à tout saisir manuellement."
+          </p>
+          <div class="testimonial-author">
+            <div class="author-avatar av-green">SM</div>
+            <div>
+              <div class="author-name">Sophie M.</div>
+              <div class="author-title">Coordinatrice bloc — Clinique Saint-Jean</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="testimonial-card">
+          <div class="testimonial-stars">★★★★★</div>
+          <p class="testimonial-text">
+            "L'encodage depuis le téléphone est vraiment pratique. Je soumets mes missions directement
+            depuis le bloc, et le manager valide dans la journée. Fini les feuilles papier."
+          </p>
+          <div class="testimonial-author">
+            <div class="author-avatar av-blue">TL</div>
+            <div>
+              <div class="author-name">Thomas L.</div>
+              <div class="author-title">Instrumentiste — CHU Delta</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="testimonial-card">
+          <div class="testimonial-stars">★★★★★</div>
+          <p class="testimonial-text">
+            "La facturation était notre point noir. Aujourd'hui je génère les factures firmes et
+            les décomptes en quelques clics. Un gain de temps considérable en fin de mois."
+          </p>
+          <div class="testimonial-author">
+            <div class="author-avatar av-indigo">AP</div>
+            <div>
+              <div class="author-name">Alexia P.</div>
+              <div class="author-title">Responsable admin — Pôle Santé Alpha</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──────────────── CTA ──────────────── -->
+  <section class="cta-section" id="demo">
+    <div class="container">
+      <span class="section-tag">Démarrer</span>
+      <h2 class="section-title">Prêt à transformer votre gestion chirurgicale ?</h2>
+      <p class="section-sub">
+        Rejoignez les établissements qui ont simplifié leur planification et leur facturation
+        grâce à Surgery Hub.
+      </p>
+      <div class="cta-actions">
+        <a href="mailto:contact@surgeryhub.be" class="btn btn-primary btn-lg">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="1" y="3" width="14" height="10" rx="2"/>
+            <polyline points="1,3 8,9 15,3"/>
+          </svg>
+          Demander une démo
+        </a>
+        <a href="/login" class="btn btn-outline btn-lg">Accéder à l'application</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──────────────── FOOTER ──────────────── -->
+  <footer>
+    <div class="container">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <a href="#" class="logo">
+            <svg width="32" height="32" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="40" cy="40" r="38" fill="none" stroke="#63C9A3" stroke-width="4"/>
+              <line x1="26" y1="56" x2="48" y2="26" stroke="#63C9A3" stroke-width="3.5" stroke-linecap="round"/>
+              <path d="M44 22 L52 30 Q56 26 52 22 Z" fill="#63C9A3"/>
+              <line x1="54" y1="56" x2="32" y2="24" stroke="#63C9A3" stroke-width="3.5" stroke-linecap="round"/>
+              <path d="M30 22 Q28 28 32 30 L36 22 Z" fill="#63C9A3"/>
+            </svg>
+            <div class="logo-text"><span>SURGERY</span><span>HUB</span></div>
+          </a>
+          <p class="footer-tagline">
+            La plateforme qui connecte les équipes chirurgicales et simplifie la gestion du bloc opératoire.
+          </p>
+        </div>
+
+        <div class="footer-col">
+          <h4>Produit</h4>
+          <ul>
+            <li><a href="#features">Fonctionnalités</a></li>
+            <li><a href="#how">Comment ça marche</a></li>
+            <li><a href="#roles">Pour qui</a></li>
+            <li><a href="#demo">Tarifs</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-col">
+          <h4>Ressources</h4>
+          <ul>
+            <li><a href="#">Documentation</a></li>
+            <li><a href="#">Guide instrumentiste</a></li>
+            <li><a href="#">Guide manager</a></li>
+            <li><a href="#">API</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-col">
+          <h4>Contact</h4>
+          <ul>
+            <li><a href="mailto:contact@surgeryhub.be">contact@surgeryhub.be</a></li>
+            <li><a href="#">Support</a></li>
+            <li><a href="#">Mentions légales</a></li>
+            <li><a href="#">Confidentialité</a></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <span>© 2026 Surgery Hub. Tous droits réservés.</span>
+        <span>Conçu pour les équipes chirurgicales · Belgique</span>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
