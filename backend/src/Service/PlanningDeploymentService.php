@@ -5,183 +5,189 @@ namespace App\Service;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningDeployment;
+use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\MissionStatus;
-use App\Message\SendBillingEmailMessage;
+use App\Enum\PlanningDeploymentStatus;
+use App\Enum\PlanningVersionStatus;
+use App\Message\PlanningDeployPdfsMessage;
 use Doctrine\ORM\EntityManagerInterface;
-use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Messenger\MessageBusInterface;
-use Twig\Environment;
 
 class PlanningDeploymentService
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly PdfService $pdfService,
-        private readonly NotificationService $notificationService,
-        private readonly Environment $twig,
         private readonly MessageBusInterface $bus,
-        #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
-        private readonly string $fromAddress,
-        #[Autowire('%env(string:MAILER_FROM_NAME)%')]
-        private readonly string $fromName,
     ) {}
 
     /**
-     * Deploy planning: generate and send PDFs to instrumentists and surgeons.
+     * Deploy a PlanningVersion — only fast DB operations run synchronously:
+     *  1. Archive the currently ACTIVE version (if any)
+     *  2. Activate the target version (DRAFT → ACTIVE)
+     *  3. Publish missions in two separate bulk UPDATEs:
+     *       a. DRAFT + instrumentist IS NOT NULL  → ASSIGNED
+     *       b. DRAFT + instrumentist IS NULL + id IN selectedUncoveredIds → OPEN
+     *       c. DRAFT + instrumentist IS NULL + not selected → stays DRAFT
+     *  4. Record PlanningDeployment (status = PENDING)
+     *  5. Flush
+     *  6. Dispatch PlanningDeployPdfsMessage for async PDF/email/notification work
      *
-     * @return array{instrumentistsPdfsSent: int, surgeonsPdfsSent: int}
+     * The HTTP request returns immediately after step 5.
+     * All heavy work (PDFs, emails, notifications) runs in the Messenger worker.
+     *
+     * @param array<int> $selectedUncoveredMissionIds IDs of uncovered missions the manager chose to publish as pool
+     * @return array{deploymentId: ?int, missionCount: int, openPoolCount: int}
      */
-    public function deploy(string $from, string $to, ?int $siteId, User $deployedBy): array
-    {
+    public function deploy(
+        string $from,
+        string $to,
+        ?int $siteId,
+        User $deployedBy,
+        ?int $versionId = null,
+        array $selectedUncoveredMissionIds = [],
+        bool $sendChangeSummary = false,
+    ): array {
         $fromDate = new \DateTimeImmutable($from);
         $toDate   = new \DateTimeImmutable($to);
 
-        // 1. Find all missions in range with relevant statuses
-        $qb = $this->em->createQueryBuilder()
-            ->select('m')
-            ->from(Mission::class, 'm')
-            ->where('m.startAt >= :from')
-            ->andWhere('m.startAt <= :to')
-            ->andWhere('m.status IN (:statuses)')
-            ->setParameter('from', $fromDate->setTime(0, 0, 0))
-            ->setParameter('to', $toDate->setTime(23, 59, 59))
-            ->setParameter('statuses', [MissionStatus::DRAFT, MissionStatus::OPEN, MissionStatus::ASSIGNED]);
-
-        if ($siteId !== null) {
-            $site = $this->em->find(Hospital::class, $siteId);
-            if ($site !== null) {
-                $qb->andWhere('m.site = :site')->setParameter('site', $site);
-            }
+        // ── 1. Resolve the target PlanningVersion ─────────────────────────────
+        $version = null;
+        if ($versionId !== null) {
+            $version = $this->em->find(PlanningVersion::class, $versionId);
         }
 
-        /** @var Mission[] $missions */
-        $missions = $qb->getQuery()->getResult();
-
-        // 2. Group by instrumentist
-        $byInstrumentist = [];
-        foreach ($missions as $mission) {
-            $instr = $mission->getInstrumentist();
-            if ($instr !== null) {
-                $byInstrumentist[$instr->getId()][] = $mission;
-            }
-        }
-
-        // 3. Group by surgeon
-        $bySurgeon = [];
-        foreach ($missions as $mission) {
-            $surgeon = $mission->getSurgeon();
-            if ($surgeon !== null) {
-                $bySurgeon[$surgeon->getId()][] = $mission;
-            }
-        }
-
-        $instrumentistsSent = 0;
-        $surgeonsSent       = 0;
-
-        // 4. Send PDF to each instrumentist
-        foreach ($byInstrumentist as $instrId => $instrMissions) {
-            $instrumentist = $this->em->find(User::class, $instrId);
-            if ($instrumentist === null || !$instrumentist->getEmail()) {
-                continue;
+        // ── 2. Archive the current ACTIVE version (if any) ───────────────────
+        if ($version !== null) {
+            $previousActive = $this->findActiveVersion($version->getSite()?->getId(), $fromDate, $toDate);
+            if ($previousActive !== null && $previousActive->getId() !== $version->getId()) {
+                $previousActive->setStatus(PlanningVersionStatus::ARCHIVED);
+                $previousActive->setArchivedAt(new \DateTimeImmutable());
             }
 
-            $pdf = $this->pdfService->generateFromTemplate('pdf/planning_instrumentist.html.twig', [
-                'instrumentist' => $instrumentist,
-                'missions'      => $instrMissions,
-                'periodFrom'    => $fromDate,
-                'periodTo'      => $toDate,
-            ]);
-
-            $name = $this->displayName($instrumentist);
-            $filename = sprintf('planning-%s-%s-%s.pdf',
-                strtolower(str_replace(' ', '-', $name)),
-                $fromDate->format('Y-m-d'),
-                $toDate->format('Y-m-d')
-            );
-
-            $this->bus->dispatch(new SendBillingEmailMessage(
-                to: $instrumentist->getEmail(),
-                cc: [],
-                subject: sprintf('Planning du %s au %s', $fromDate->format('d/m/Y'), $toDate->format('d/m/Y')),
-                fromAddress: $this->fromAddress,
-                fromName: $this->fromName,
-                htmlTemplate: 'emails/planning_instrumentist.html.twig',
-                context: [
-                    'instrumentist' => $instrumentist,
-                    'periodFrom'    => $fromDate,
-                    'periodTo'      => $toDate,
-                ],
-                attachmentBase64: base64_encode($pdf),
-                attachmentFilename: $filename,
-            ));
-
-            $instrumentistsSent++;
+            // ── 3. Activate the target version ────────────────────────────────
+            $version->setStatus(PlanningVersionStatus::ACTIVE);
+            $version->setDeployedAt(new \DateTimeImmutable());
         }
 
-        // 5. Send PDF to each surgeon
-        foreach ($bySurgeon as $surgeonId => $surgeonMissions) {
-            $surgeon = $this->em->find(User::class, $surgeonId);
-            if ($surgeon === null || !$surgeon->getEmail()) {
-                continue;
+        // ── 4. Publish missions — two targeted bulk UPDATEs ──────────────────
+        if ($version !== null) {
+            // 4a. Pre-assigned missions (instrumentist already set) → ASSIGNED
+            //     These instrumentists own their mission immediately; no pool claim needed.
+            $assignedCount = (int) $this->em->createQuery(
+                'UPDATE App\Entity\Mission m SET m.status = :assigned
+                 WHERE m.planningVersion = :v AND m.status = :draft AND m.instrumentist IS NOT NULL'
+            )
+                ->setParameter('assigned', MissionStatus::ASSIGNED)
+                ->setParameter('v',        $version)
+                ->setParameter('draft',    MissionStatus::DRAFT)
+                ->execute();
+
+            // 4b. Uncovered missions the manager explicitly selected → OPEN (pool)
+            //     Unselected uncovered missions stay DRAFT (not published).
+            $poolCount = 0;
+            if (!empty($selectedUncoveredMissionIds)) {
+                $poolCount = (int) $this->em->createQuery(
+                    'UPDATE App\Entity\Mission m SET m.status = :open
+                     WHERE m.id IN (:ids) AND m.status = :draft AND m.instrumentist IS NULL'
+                )
+                    ->setParameter('open',  MissionStatus::OPEN)
+                    ->setParameter('ids',   $selectedUncoveredMissionIds)
+                    ->setParameter('draft', MissionStatus::DRAFT)
+                    ->execute();
             }
 
-            $pdf = $this->pdfService->generateFromTemplate('pdf/planning_surgeon.html.twig', [
-                'surgeon'    => $surgeon,
-                'missions'   => $surgeonMissions,
-                'periodFrom' => $fromDate,
-                'periodTo'   => $toDate,
-            ]);
+            $this->em->clear(Mission::class);
+            $missionCount = $assignedCount + $poolCount;
+        } else {
+            // Legacy fallback: no versionId — bulk UPDATE by date range.
+            // All missions in the period that are DRAFT become OPEN (old behaviour preserved).
+            $dql = 'UPDATE App\Entity\Mission m SET m.status = :open
+                    WHERE m.startAt >= :from AND m.startAt <= :to AND m.status = :draft';
 
-            $name = $this->displayName($surgeon);
-            $filename = sprintf('planning-chirurgien-%s-%s-%s.pdf',
-                strtolower(str_replace(' ', '-', $name)),
-                $fromDate->format('Y-m-d'),
-                $toDate->format('Y-m-d')
-            );
+            if ($siteId !== null) {
+                $dql .= ' AND m.site = :siteId';
+            }
 
-            $this->bus->dispatch(new SendBillingEmailMessage(
-                to: $surgeon->getEmail(),
-                cc: [],
-                subject: sprintf('Planning du %s au %s', $fromDate->format('d/m/Y'), $toDate->format('d/m/Y')),
-                fromAddress: $this->fromAddress,
-                fromName: $this->fromName,
-                htmlTemplate: 'emails/planning_surgeon.html.twig',
-                context: [
-                    'surgeon'    => $surgeon,
-                    'periodFrom' => $fromDate,
-                    'periodTo'   => $toDate,
-                ],
-                attachmentBase64: base64_encode($pdf),
-                attachmentFilename: $filename,
-            ));
+            $q = $this->em->createQuery($dql)
+                ->setParameter('open',  MissionStatus::OPEN)
+                ->setParameter('from',  $fromDate->setTime(0, 0, 0))
+                ->setParameter('to',    $toDate->setTime(23, 59, 59))
+                ->setParameter('draft', MissionStatus::DRAFT);
 
-            $surgeonsSent++;
+            if ($siteId !== null) {
+                $site = $this->em->find(Hospital::class, $siteId);
+                if ($site !== null) {
+                    $q->setParameter('siteId', $site);
+                }
+            }
+
+            $missionCount = (int) $q->execute();
+            $poolCount    = $missionCount; // legacy: all published as "open"
+            $this->em->clear(Mission::class);
         }
 
-        // 6. Record deployment
+        // ── 5. Record the deployment (PENDING — worker will update to DONE/FAILED) ──
         $deployment = new PlanningDeployment();
         $deployment->setPeriodFrom($fromDate);
         $deployment->setPeriodTo($toDate);
-        $deployment->setDeployedBy($deployedBy);
+        $deployment->setStatus(PlanningDeploymentStatus::PENDING);
+
+        // After em->clear(), $deployedBy may be detached from the identity map.
+        // getReference() returns a managed proxy without hitting the DB.
+        $deployment->setDeployedBy(
+            $this->em->getReference(User::class, $deployedBy->getId())
+        );
 
         if ($siteId !== null) {
             $site = $this->em->find(Hospital::class, $siteId);
-            $deployment->setSite($site);
+            $deployment->setSite($site ?? null);
         }
 
         $this->em->persist($deployment);
         $this->em->flush();
 
+        // ── 6. Dispatch async PDF + email + notifications ─────────────────────
+        // flush() above populates $deployment->getId() via Doctrine's identity map.
+        $this->bus->dispatch(new PlanningDeployPdfsMessage(
+            from:              $from,
+            to:                $to,
+            siteId:            $siteId,
+            deployedById:      $deployedBy->getId(),
+            deploymentId:      $deployment->getId(),
+            openUncoveredIds:  $selectedUncoveredMissionIds,
+            sendChangeSummary: $sendChangeSummary,
+            versionId:         $version?->getId(),
+        ));
+
         return [
-            'instrumentistsPdfsSent' => $instrumentistsSent,
-            'surgeonsPdfsSent'       => $surgeonsSent,
+            'deploymentId'  => $deployment->getId(),
+            'missionCount'  => $missionCount,
+            'openPoolCount' => $poolCount,
         ];
     }
 
-    private function displayName(User $user): string
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    private function findActiveVersion(?int $siteId, \DateTimeImmutable $from, \DateTimeImmutable $to): ?PlanningVersion
     {
-        $name = trim(($user->getFirstname() ?? '') . ' ' . ($user->getLastname() ?? ''));
-        return $name !== '' ? $name : ($user->getEmail() ?? '');
+        $qb = $this->em->createQueryBuilder()
+            ->select('v')
+            ->from(PlanningVersion::class, 'v')
+            ->where('v.status = :active')
+            ->andWhere('v.periodStart <= :to')
+            ->andWhere('v.periodEnd >= :from')
+            ->setParameter('active', PlanningVersionStatus::ACTIVE)
+            ->setParameter('from', $from)
+            ->setParameter('to', $to)
+            ->setMaxResults(1);
+
+        if ($siteId !== null) {
+            $qb->andWhere('v.site = :siteId')->setParameter('siteId', $siteId);
+        } else {
+            $qb->andWhere('v.site IS NULL');
+        }
+
+        return $qb->getQuery()->getOneOrNullResult();
     }
 }

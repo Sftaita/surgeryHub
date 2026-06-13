@@ -2,6 +2,7 @@
 
 namespace App\Entity;
 
+use App\Enum\PlanningDeploymentStatus;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
 
@@ -36,6 +37,22 @@ class PlanningDeployment
     #[Groups(['planning:read'])]
     private ?User $deployedBy = null;
 
+    #[ORM\Column(enumType: PlanningDeploymentStatus::class, length: 16)]
+    #[Groups(['planning:read'])]
+    private PlanningDeploymentStatus $status = PlanningDeploymentStatus::PENDING;
+
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['planning:read'])]
+    private ?\DateTimeImmutable $startedAt = null;
+
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['planning:read'])]
+    private ?\DateTimeImmutable $completedAt = null;
+
+    /** Stacktrace or error message logged when the async worker fails. */
+    #[ORM\Column(type: 'text', nullable: true)]
+    private ?string $errorLog = null;
+
     public function __construct()
     {
         $this->deployedAt = new \DateTimeImmutable();
@@ -56,4 +73,16 @@ class PlanningDeployment
 
     public function getDeployedBy(): ?User { return $this->deployedBy; }
     public function setDeployedBy(User $deployedBy): static { $this->deployedBy = $deployedBy; return $this; }
+
+    public function getStatus(): PlanningDeploymentStatus { return $this->status; }
+    public function setStatus(PlanningDeploymentStatus $status): static { $this->status = $status; return $this; }
+
+    public function getStartedAt(): ?\DateTimeImmutable { return $this->startedAt; }
+    public function setStartedAt(\DateTimeImmutable $startedAt): static { $this->startedAt = $startedAt; return $this; }
+
+    public function getCompletedAt(): ?\DateTimeImmutable { return $this->completedAt; }
+    public function setCompletedAt(\DateTimeImmutable $completedAt): static { $this->completedAt = $completedAt; return $this; }
+
+    public function getErrorLog(): ?string { return $this->errorLog; }
+    public function setErrorLog(?string $errorLog): static { $this->errorLog = $errorLog; return $this; }
 }

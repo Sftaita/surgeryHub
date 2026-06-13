@@ -28,7 +28,7 @@ class PlanningTemplateController extends AbstractController
         $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
 
         $templates = $this->em->createQuery(
-            'SELECT t FROM App\Entity\PlanningTemplate t ORDER BY t.dateStart DESC'
+            'SELECT t FROM App\Entity\PlanningTemplate t ORDER BY t.createdAt DESC'
         )->getResult();
 
         return $this->json(array_map(fn($t) => $this->serializeTemplate($t), $templates));
@@ -41,71 +41,30 @@ class PlanningTemplateController extends AbstractController
 
         $data = json_decode($request->getContent(), true) ?? [];
 
-        $typeStr   = $data['type'] ?? null;
-        $dateStart = $data['dateStart'] ?? null;
-        $siteId    = $data['siteId'] ?? null;
+        $typeStr = $data['type'] ?? null;
+        $siteId  = $data['siteId'] ?? null;
 
-        if (!$typeStr || !$dateStart) {
-            return $this->json(['error' => ['message' => 'type et dateStart sont requis.']], 400);
+        if (!$typeStr || !$siteId) {
+            return $this->json(['error' => ['message' => 'type et siteId sont requis.']], 400);
         }
 
         $type = PlanningTemplateType::tryFrom($typeStr);
         if ($type === null) {
-            return $this->json(['error' => ['message' => 'type invalide (PAIR ou IMPAIR).']], 400);
+            return $this->json(['error' => ['message' => 'type invalide (PAIR, IMPAIR ou TOUTES).']], 400);
         }
 
-        try {
-            $dateStartImmutable = new \DateTimeImmutable($dateStart);
-        } catch (\Exception) {
-            return $this->json(['error' => ['message' => 'Format dateStart invalide.']], 400);
-        }
-
-        $dateEnd = null;
-        if (!empty($data['dateEnd'])) {
-            try {
-                $dateEnd = new \DateTimeImmutable($data['dateEnd']);
-            } catch (\Exception) {
-                return $this->json(['error' => ['message' => 'Format dateEnd invalide.']], 400);
-            }
-        }
-
-        $site = null;
-        if ($siteId !== null) {
-            $site = $this->em->find(Hospital::class, $siteId);
-            if (!$site) {
-                return $this->json(['error' => ['message' => 'Site introuvable.']], 404);
-            }
-        }
-
-        // Auto-close previous active template of same type+site
-        $qb = $this->em->createQueryBuilder()
-            ->select('t')
-            ->from(PlanningTemplate::class, 't')
-            ->where('t.type = :type')
-            ->andWhere('(t.dateEnd IS NULL OR t.dateEnd >= :dateStart)')
-            ->setParameter('type', $type)
-            ->setParameter('dateStart', $dateStartImmutable->format('Y-m-d'));
-
-        if ($site !== null) {
-            $qb->andWhere('t.site = :site')->setParameter('site', $site);
-        } else {
-            $qb->andWhere('t.site IS NULL');
-        }
-
-        /** @var PlanningTemplate[] $activeTemplates */
-        $activeTemplates = $qb->getQuery()->getResult();
-
-        $closeDate = $dateStartImmutable->modify('-1 day');
-        foreach ($activeTemplates as $active) {
-            $active->setDateEnd($closeDate);
+        $site = $this->em->find(Hospital::class, $siteId);
+        if (!$site) {
+            return $this->json(['error' => ['message' => 'Site introuvable.']], 404);
         }
 
         $template = new PlanningTemplate();
         $template->setType($type);
-        $template->setDateStart($dateStartImmutable);
-        $template->setDateEnd($dateEnd);
         $template->setSite($site);
         $template->setCreatedBy($currentUser);
+        if (!empty($data['label'])) {
+            $template->setLabel(trim($data['label']));
+        }
 
         $this->em->persist($template);
         $this->em->flush();
@@ -140,6 +99,72 @@ class PlanningTemplateController extends AbstractController
         $this->em->flush();
 
         return $this->json(null, 204);
+    }
+
+    #[Route('/{id}', name: 'api_planning_templates_patch', methods: ['PATCH'])]
+    public function patch(int $id, Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $template = $this->em->find(PlanningTemplate::class, $id);
+        if (!$template) {
+            return $this->json(['error' => ['message' => 'Template introuvable.']], 404);
+        }
+
+        $data = json_decode($request->getContent(), true) ?? [];
+
+        if (array_key_exists('label', $data)) {
+            $template->setLabel($data['label'] !== null && $data['label'] !== '' ? trim($data['label']) : null);
+        }
+
+        if (array_key_exists('type', $data)) {
+            $type = PlanningTemplateType::tryFrom($data['type']);
+            if ($type === null) {
+                return $this->json(['error' => ['message' => 'type invalide (PAIR, IMPAIR ou TOUTES).']], 400);
+            }
+            $template->setType($type);
+        }
+
+        $this->em->flush();
+
+        return $this->json($this->serializeTemplate($template));
+    }
+
+    #[Route('/{id}/clone', name: 'api_planning_templates_clone', methods: ['POST'])]
+    public function clone(int $id, #[CurrentUser] User $currentUser): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $source = $this->em->find(PlanningTemplate::class, $id);
+        if (!$source) {
+            return $this->json(['error' => ['message' => 'Template introuvable.']], 404);
+        }
+
+        $copy = new PlanningTemplate();
+        $copy->setType($source->getType());
+        $copy->setSite($source->getSite());
+        $copy->setCreatedBy($currentUser);
+        $copy->setLabel('Copie de ' . ($source->getLabel() ?? 'template'));
+
+        $this->em->persist($copy);
+
+        foreach ($source->getSlots() as $slot) {
+            $newSlot = new PlanningSlot();
+            $newSlot->setTemplate($copy);
+            $newSlot->setDayOfWeek($slot->getDayOfWeek());
+            $newSlot->setPeriod($slot->getPeriod());
+            $newSlot->setStartTime($slot->getStartTime());
+            $newSlot->setEndTime($slot->getEndTime());
+            $newSlot->setSurgeon($slot->getSurgeon());
+            $newSlot->setMissionType($slot->getMissionType());
+            $newSlot->setSite($slot->getSite());
+            $newSlot->setInstrumentist($slot->getInstrumentist());
+            $this->em->persist($newSlot);
+        }
+
+        $this->em->flush();
+
+        return $this->json($this->serializeTemplate($copy), 201);
     }
 
     #[Route('/{id}/slots', name: 'api_planning_templates_add_slot', methods: ['POST'])]
@@ -338,9 +363,8 @@ class PlanningTemplateController extends AbstractController
         return [
             'id'        => $t->getId(),
             'type'      => $t->getType()->value,
-            'dateStart' => $t->getDateStart()->format('Y-m-d'),
-            'dateEnd'   => $t->getDateEnd()?->format('Y-m-d'),
-            'site'      => $t->getSite() ? ['id' => $t->getSite()->getId(), 'name' => $t->getSite()->getName()] : null,
+            'label'     => $t->getLabel(),
+            'site'      => ['id' => $t->getSite()->getId(), 'name' => $t->getSite()->getName()],
             'createdBy' => $t->getCreatedBy() ? ['id' => $t->getCreatedBy()->getId()] : null,
             'createdAt' => $t->getCreatedAt()->format(\DateTimeInterface::ATOM),
             'slots'     => array_map(fn($s) => $this->serializeSlot($s), $t->getSlots()->toArray()),

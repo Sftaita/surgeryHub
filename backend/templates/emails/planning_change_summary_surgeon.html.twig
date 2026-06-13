@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><style>
+body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+.container { max-width: 600px; margin: 0 auto; padding: 24px; }
+.header { border-bottom: 2px solid #1565C0; padding-bottom: 12px; margin-bottom: 20px; }
+.title { color: #1565C0; font-size: 18px; font-weight: bold; }
+.info-box { background: #fff8e1; border-left: 4px solid #f9a825; padding: 12px 16px; margin: 16px 0; border-radius: 0 4px 4px 0; }
+.section-title { font-size: 15px; font-weight: bold; margin: 20px 0 8px; color: #333; }
+ul { margin: 0 0 12px; padding-left: 20px; }
+li { margin-bottom: 6px; }
+.sub { color: #666; font-size: 12px; margin-left: 4px; }
+.note { color: #555; font-style: italic; margin-top: 16px; }
+.footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+</style></head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">SurgicalHub — Créneaux non couverts</div>
+  </div>
+
+  <p>Bonjour Dr {% if surgeon.firstname %}{{ surgeon.firstname }} {{ surgeon.lastname }}{% else %}{{ surgeon.email }}{% endif %},</p>
+
+  <div class="info-box">
+    Votre planning du <strong>{{ periodFrom|date('d/m/Y') }}</strong> au <strong>{{ periodTo|date('d/m/Y') }}</strong>
+    comporte <strong>{{ uncovered|length }} créneau(x) sans instrumentiste</strong>.
+  </div>
+
+  <p>
+    Ces créneaux ont été proposés aux instrumentistes du site sous forme de missions disponibles.<br>
+    Dès qu'une mission est acceptée, vous serez automatiquement informé.
+  </p>
+
+  <p class="note">
+    En l'absence de prise en charge, il vous appartient d'organiser l'instrumentation avec la firme si nécessaire.
+  </p>
+
+  <p class="section-title">Créneaux non couverts vous concernant :</p>
+  <ul>
+    {% for m in uncovered %}
+    <li>
+      <strong>{{ m.date|date('d/m/Y') }}</strong>
+      — {{ m.period == 'AM' ? 'Matin' : 'Après-midi' }}
+      <span class="sub">{{ m.startAt }}–{{ m.endAt }}</span>
+      {% if m.siteName %}<span class="sub">— {{ m.siteName }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+
+  <p>Le planning complet est joint à cet email en pièce jointe (PDF).</p>
+
+  <div class="footer">SurgicalHub — document confidentiel</div>
+</div>
+</body>
+</html>

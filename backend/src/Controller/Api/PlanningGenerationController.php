@@ -62,7 +62,7 @@ class PlanningGenerationController extends AbstractController
         }
 
         try {
-            $stats = $this->generator->generate($from, $to, $siteId, $surgeonId);
+            $stats = $this->generator->generate($from, $to, $siteId, $surgeonId, $currentUser);
         } catch (\Exception $e) {
             return $this->json(['error' => ['message' => $e->getMessage()]], 400);
         }

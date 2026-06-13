@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: DejaVu Sans, sans-serif; font-size: 10px; color: #1a1a1a; }
+  .page { padding: 28px 36px; }
+  .header { display: table; width: 100%; margin-bottom: 24px; border-bottom: 2px solid #1565c0; padding-bottom: 14px; }
+  .header-left { display: table-cell; vertical-align: top; }
+  .header-right { display: table-cell; text-align: right; vertical-align: top; }
+  .logo { font-size: 18px; font-weight: bold; color: #1565c0; letter-spacing: 1px; }
+  .doc-title { font-size: 20px; font-weight: bold; color: #1565c0; margin-bottom: 4px; }
+  .doc-sub { font-size: 11px; color: #555; }
+  .period-bar { background: #1565c0; color: #fff; padding: 6px 12px; border-radius: 3px; font-size: 11px; font-weight: bold; margin-bottom: 20px; display: inline-block; }
+  .week-header { background: #e8eaf6; border-left: 4px solid #3949ab; padding: 5px 10px; font-weight: bold; font-size: 11px; color: #283593; margin-top: 16px; margin-bottom: 6px; }
+  .week-header.pair { border-color: #1565c0; background: #e3f2fd; color: #0d47a1; }
+  .week-header.impair { border-color: #7b1fa2; background: #f3e5f5; color: #4a148c; }
+  .day-title { font-size: 10px; font-weight: bold; color: #555; text-transform: uppercase; letter-spacing: 0.4px; margin: 10px 0 3px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+  thead th { background: #37474f; color: #fff; padding: 5px 8px; text-align: left; font-size: 9px; font-weight: bold; }
+  tbody tr:nth-child(even) { background: #fafafa; }
+  tbody tr.uncovered { background: #fff8e1; }
+  tbody td { padding: 5px 8px; border-bottom: 1px solid #e0e0e0; font-size: 9px; }
+  .badge-block { display: inline-block; padding: 1px 5px; background: #bbdefb; color: #0d47a1; font-size: 8px; font-weight: bold; border-radius: 2px; }
+  .badge-consultation { display: inline-block; padding: 1px 5px; background: #e1f5fe; color: #01579b; font-size: 8px; font-weight: bold; border-radius: 2px; }
+  .text-uncovered { color: #e65100; font-style: italic; }
+  .no-data { color: #999; font-style: italic; padding: 6px 0; }
+  .legend { display: table; width: 100%; margin-bottom: 14px; font-size: 9px; }
+  .legend-item { display: table-cell; padding: 4px 8px; }
+  .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .footer { margin-top: 24px; border-top: 1px solid #e0e0e0; padding-top: 8px; font-size: 8px; color: #999; text-align: right; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">SurgicalHub</div>
+    </div>
+    <div class="header-right">
+      <div class="doc-title">Planning Global</div>
+      <div class="doc-sub">Généré le {{ "now"|date("d/m/Y H:i") }}</div>
+    </div>
+  </div>
+
+  <div class="period-bar">
+    Période : {{ periodFrom|date("d/m/Y") }} — {{ periodTo|date("d/m/Y") }}
+    &nbsp;·&nbsp; {{ missions|length }} mission(s)
+  </div>
+
+  {# Group missions by ISO week, then by day #}
+  {% set byWeek = {} %}
+  {% for mission in missions %}
+    {% set day = mission.startAt|date("Y-m-d") %}
+    {% set week = mission.startAt|date("W")|number_format %}
+    {% if byWeek[week] is not defined %}
+      {% set byWeek = byWeek|merge({(week): {}}) %}
+    {% endif %}
+    {% if byWeek[week][day] is not defined %}
+      {% set byWeek = byWeek|merge({(week): byWeek[week]|merge({(day): []})}) %}
+    {% endif %}
+    {% set byWeek = byWeek|merge({(week): byWeek[week]|merge({(day): byWeek[week][day]|merge([mission])})}) %}
+  {% endfor %}
+
+  {% for week, days in byWeek %}
+    {% set parity = (week % 2 == 0) ? 'pair' : 'impair' %}
+    <div class="week-header {{ parity }}">
+      Semaine {{ week }} &nbsp;({{ parity == 'pair' ? 'Paire' : 'Impaire' }})
+    </div>
+
+    {% for day, dayMissions in days %}
+      <div class="day-title">{{ day|date("l d/m/Y")|capitalize }}</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Heure</th>
+            <th>Type</th>
+            <th>Chirurgien</th>
+            <th>Instrumentiste</th>
+            <th>Site</th>
+            <th>Statut</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for mission in dayMissions %}
+          <tr{% if not mission.instrumentist %} class="uncovered"{% endif %}>
+            <td>{{ mission.startAt|date("H:i") }} – {{ mission.endAt|date("H:i") }}</td>
+            <td>
+              {% if mission.type.value == 'BLOCK' %}
+                <span class="badge-block">Bloc</span>
+              {% else %}
+                <span class="badge-consultation">Consult.</span>
+              {% endif %}
+            </td>
+            <td>
+              {% set sName = (mission.surgeon.firstname ~ ' ' ~ mission.surgeon.lastname)|trim %}
+              {{ sName != '' ? sName : mission.surgeon.email }}
+            </td>
+            <td>
+              {% if mission.instrumentist %}
+                {% set iName = (mission.instrumentist.firstname ~ ' ' ~ mission.instrumentist.lastname)|trim %}
+                {{ iName != '' ? iName : mission.instrumentist.email }}
+              {% else %}
+                <span class="text-uncovered">Non attribué</span>
+              {% endif %}
+            </td>
+            <td>{{ mission.site ? mission.site.name : '—' }}</td>
+            <td>{{ mission.status.value }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endfor %}
+  {% else %}
+    <div class="no-data">Aucune mission planifiée pour cette période.</div>
+  {% endfor %}
+
+  <div class="footer">SurgicalHub — Document généré automatiquement — Confidentiel</div>
+</div>
+</body>
+</html>

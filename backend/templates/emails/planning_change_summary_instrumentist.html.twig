@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><style>
+body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+.container { max-width: 600px; margin: 0 auto; padding: 24px; }
+.header { border-bottom: 2px solid #1565C0; padding-bottom: 12px; margin-bottom: 20px; }
+.title { color: #1565C0; font-size: 18px; font-weight: bold; }
+h3 { font-size: 15px; margin: 20px 0 8px; }
+h3.added   { color: #2e7d32; }
+h3.removed { color: #c62828; }
+h3.modified{ color: #e65100; }
+h3.uncovered { color: #555; }
+ul { margin: 0 0 12px; padding-left: 20px; }
+li { margin-bottom: 4px; }
+.sub { color: #666; font-size: 12px; margin-left: 4px; }
+.footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+</style></head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">SurgicalHub — Récapitulatif planning</div>
+  </div>
+
+  <p>Bonjour {% if instrumentist.firstname %}{{ instrumentist.firstname }}{% else %}{{ instrumentist.email }}{% endif %},</p>
+  <p>Voici les modifications du planning <strong>{{ periodFrom|date('d/m/Y') }}</strong> au <strong>{{ periodTo|date('d/m/Y') }}</strong> qui vous concernent.</p>
+
+  {% if added %}
+  <h3 class="added">✅ Nouvelles missions ({{ added|length }})</h3>
+  <ul>
+    {% for m in added %}
+    <li>
+      <strong>{{ m.date|date('d/m/Y') }}</strong>
+      {{ m.period == 'AM' ? 'Matin' : 'Après-midi' }}
+      — {{ m.surgeonName }}
+      {% if m.siteName %}<span class="sub">({{ m.siteName }})</span>{% endif %}
+      <span class="sub">{{ m.startAt }}–{{ m.endAt }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if modified %}
+  <h3 class="modified">🔄 Modifications ({{ modified|length }})</h3>
+  <ul>
+    {% for entry in modified %}
+    <li>
+      <strong>{{ entry.mission.date|date('d/m/Y') }}</strong>
+      {{ entry.mission.period == 'AM' ? 'Matin' : 'Après-midi' }}
+      — {{ entry.mission.surgeonName }}
+      {% if entry.mission.siteName %}<span class="sub">({{ entry.mission.siteName }})</span>{% endif %}
+      {% if entry.changes.schedule is defined %}
+        <br><span class="sub">Horaire : {{ entry.changes.schedule.from.startAt }}–{{ entry.changes.schedule.from.endAt }} → {{ entry.changes.schedule.to.startAt }}–{{ entry.changes.schedule.to.endAt }}</span>
+      {% endif %}
+      {% if entry.changes.instrumentist is defined %}
+        <br><span class="sub">Instrumentiste : {{ entry.changes.instrumentist.from ? entry.changes.instrumentist.from.name : 'Aucun' }} → {{ entry.changes.instrumentist.to ? entry.changes.instrumentist.to.name : 'Aucun' }}</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if removed %}
+  <h3 class="removed">❌ Missions supprimées ({{ removed|length }})</h3>
+  <ul>
+    {% for m in removed %}
+    <li>
+      <strong>{{ m.date|date('d/m/Y') }}</strong>
+      {{ m.period == 'AM' ? 'Matin' : 'Après-midi' }}
+      — {{ m.surgeonName }}
+      {% if m.siteName %}<span class="sub">({{ m.siteName }})</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if uncovered %}
+  <h3 class="uncovered">⚠️ Postes non couverts sur votre site ({{ uncovered|length }})</h3>
+  <ul>
+    {% for m in uncovered %}
+    <li>
+      <strong>{{ m.date|date('d/m/Y') }}</strong>
+      {{ m.period == 'AM' ? 'Matin' : 'Après-midi' }}
+      — {{ m.surgeonName }}
+      {% if m.siteName %}<span class="sub">({{ m.siteName }})</span>{% endif %}
+      <span class="sub">{{ m.startAt }}–{{ m.endAt }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <div class="footer">SurgicalHub — document confidentiel</div>
+</div>
+</body>
+</html>

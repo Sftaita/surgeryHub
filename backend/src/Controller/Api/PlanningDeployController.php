@@ -20,17 +20,29 @@ class PlanningDeployController extends AbstractController
     {
         $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
 
-        $data   = json_decode($request->getContent(), true) ?? [];
-        $from   = $data['from'] ?? null;
-        $to     = $data['to'] ?? null;
-        $siteId = isset($data['siteId']) ? (int) $data['siteId'] : null;
+        $data      = json_decode($request->getContent(), true) ?? [];
+        $from      = $data['from']      ?? null;
+        $to        = $data['to']        ?? null;
+        $siteId    = isset($data['siteId'])    ? (int) $data['siteId']    : null;
+        $versionId = isset($data['versionId']) ? (int) $data['versionId'] : null;
+
+        $sendChangeSummary = (bool) ($data['sendChangeSummary'] ?? false);
+
+        // Validate and sanitize selectedUncoveredMissionIds
+        $rawIds    = $data['selectedUncoveredMissionIds'] ?? [];
+        $selectedIds = is_array($rawIds)
+            ? array_values(array_filter(array_map('intval', $rawIds), fn(int $id) => $id > 0))
+            : [];
 
         if (!$from || !$to) {
             return $this->json(['error' => ['message' => 'from et to sont requis.']], 400);
         }
 
         try {
-            $result = $this->deploymentService->deploy($from, $to, $siteId, $currentUser);
+            $result = $this->deploymentService->deploy(
+                $from, $to, $siteId, $currentUser,
+                $versionId, $selectedIds, $sendChangeSummary,
+            );
         } catch (\Exception $e) {
             return $this->json(['error' => ['message' => $e->getMessage()]], 400);
         }

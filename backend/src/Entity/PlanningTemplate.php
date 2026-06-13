@@ -17,22 +17,18 @@ class PlanningTemplate
     #[Groups(['planning:read'])]
     private ?int $id = null;
 
-    #[ORM\Column(enumType: PlanningTemplateType::class, length: 6)]
+    #[ORM\Column(enumType: PlanningTemplateType::class, length: 7)]
     #[Groups(['planning:read'])]
     private PlanningTemplateType $type;
 
-    #[ORM\Column(type: 'date_immutable')]
+    #[ORM\Column(type: 'string', length: 100, nullable: true)]
     #[Groups(['planning:read'])]
-    private \DateTimeImmutable $dateStart;
-
-    #[ORM\Column(type: 'date_immutable', nullable: true)]
-    #[Groups(['planning:read'])]
-    private ?\DateTimeImmutable $dateEnd = null;
+    private ?string $label = null;
 
     #[ORM\ManyToOne]
-    #[ORM\JoinColumn(nullable: true)]
+    #[ORM\JoinColumn(nullable: false)]
     #[Groups(['planning:read'])]
-    private ?Hospital $site = null;
+    private Hospital $site;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
@@ -59,14 +55,11 @@ class PlanningTemplate
     public function getType(): PlanningTemplateType { return $this->type; }
     public function setType(PlanningTemplateType $type): static { $this->type = $type; return $this; }
 
-    public function getDateStart(): \DateTimeImmutable { return $this->dateStart; }
-    public function setDateStart(\DateTimeImmutable $dateStart): static { $this->dateStart = $dateStart; return $this; }
+    public function getLabel(): ?string { return $this->label; }
+    public function setLabel(?string $label): static { $this->label = $label; return $this; }
 
-    public function getDateEnd(): ?\DateTimeImmutable { return $this->dateEnd; }
-    public function setDateEnd(?\DateTimeImmutable $dateEnd): static { $this->dateEnd = $dateEnd; return $this; }
-
-    public function getSite(): ?Hospital { return $this->site; }
-    public function setSite(?Hospital $site): static { $this->site = $site; return $this; }
+    public function getSite(): Hospital { return $this->site; }
+    public function setSite(Hospital $site): static { $this->site = $site; return $this; }
 
     public function getCreatedBy(): ?User { return $this->createdBy; }
     public function setCreatedBy(User $createdBy): static { $this->createdBy = $createdBy; return $this; }
