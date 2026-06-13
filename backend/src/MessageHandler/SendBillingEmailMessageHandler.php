@@ -45,6 +45,12 @@ final class SendBillingEmailMessageHandler
             );
         }
 
+        foreach ($message->extraAttachments as $extra) {
+            if (isset($extra['base64'], $extra['filename'])) {
+                $email->attach(base64_decode($extra['base64']), $extra['filename'], 'application/pdf');
+            }
+        }
+
         $this->mailer->send($email);
 
         $this->logger->info('Billing email sent', [

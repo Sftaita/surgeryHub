@@ -13,6 +13,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
 #[ORM\HasLifecycleCallbacks]
+#[ORM\Index(columns: ['updated_at'], name: 'IDX_MISSION_UPDATED_AT')]
 class Mission
 {
     use TimestampableTrait;
@@ -83,6 +84,10 @@ class Mission
     #[ORM\Column(type: 'text', nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
     private ?string $declaredComment = null;
+
+    #[ORM\ManyToOne(inversedBy: 'missions')]
+    #[ORM\JoinColumn(nullable: true)]
+    private ?PlanningVersion $planningVersion = null;
 
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionClaim::class, orphanRemoval: true)]
     private Collection $claims;
@@ -167,6 +172,9 @@ class Mission
 
     public function getDeclaredComment(): ?string { return $this->declaredComment; }
     public function setDeclaredComment(?string $declaredComment): static { $this->declaredComment = $declaredComment; return $this; }
+
+    public function getPlanningVersion(): ?PlanningVersion { return $this->planningVersion; }
+    public function setPlanningVersion(?PlanningVersion $planningVersion): static { $this->planningVersion = $planningVersion; return $this; }
 
     public function isEncodingLocked(): bool
     {

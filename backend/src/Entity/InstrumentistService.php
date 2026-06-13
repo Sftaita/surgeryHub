@@ -90,7 +90,7 @@ class InstrumentistService
         return $this->employmentTypeSnapshot;
     }
 
-    public function setEmploymentTypeSnapshot(EmploymentType $employmentTypeSnapshot): static
+    public function setEmploymentTypeSnapshot(?EmploymentType $employmentTypeSnapshot): static
     {
         $this->employmentTypeSnapshot = $employmentTypeSnapshot;
 

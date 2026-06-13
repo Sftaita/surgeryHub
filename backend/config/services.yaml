@@ -7,6 +7,8 @@
 parameters:
     app.profile_picture.upload_dir: "%kernel.project_dir%/public/uploads/profile-pictures"
     app.profile_picture.public_base_path: "/uploads/profile-pictures"
+    app.hospital_photo.upload_dir: "%kernel.project_dir%/public/uploads/hospital-photos"
+    app.hospital_photo.public_base_path: "/uploads/hospital-photos"
     app.vapid.public_key: "%env(VAPID_PUBLIC_KEY)%"
     app.vapid.private_key: "%env(VAPID_PRIVATE_KEY)%"
     app.vapid.subject: "%env(VAPID_SUBJECT)%"
@@ -40,3 +42,7 @@ services:
             - name: kernel.event_listener
               event: lexik_jwt_authentication.on_authentication_success
               method: onAuthenticationSuccess
+
+    App\Command\CreateDevUserCommand:
+        arguments:
+            $appEnv: "%kernel.environment%"

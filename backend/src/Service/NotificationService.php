@@ -155,6 +155,76 @@ class NotificationService
         ));
     }
 
+    // ── Planning notifications ────────────────────────────────────────────────
+
+    /**
+     * Notify an instrumentist that a mission has been individually assigned to them at deploy time.
+     */
+    public function planningMissionAssignedNotifyInstrumentist(Mission $mission): void
+    {
+        $instrumentist = $mission->getInstrumentist();
+        if (!$instrumentist instanceof User) {
+            return;
+        }
+
+        $this->createInAppPlanning(
+            $instrumentist,
+            'PLANNING_MISSION_ASSIGNED',
+            [
+                'missionId' => $mission->getId(),
+                'siteId'    => $mission->getSite()?->getId(),
+                'siteName'  => $mission->getSite()?->getName(),
+                'startAt'   => $mission->getStartAt()?->format(\DateTimeInterface::ATOM),
+            ]
+        );
+    }
+
+    /**
+     * Notify all active instrumentists of a site that new OPEN missions are available (pool).
+     * Sends one notification per instrumentist (not one per mission).
+     * Message template: "X nouvelles missions publiées à [site] entre [from] et [to]".
+     *
+     * @param User[] $siteInstrumentists Active instrumentists of the site
+     */
+    public function planningNewOpenMissionsNotifySite(
+        array $siteInstrumentists,
+        int $missionCount,
+        string $siteName,
+        string $periodFrom,
+        string $periodTo,
+    ): void {
+        foreach ($siteInstrumentists as $instrumentist) {
+            $this->createInAppPlanning(
+                $instrumentist,
+                'PLANNING_OPEN_MISSIONS_AVAILABLE',
+                [
+                    'siteName'     => $siteName,
+                    'missionCount' => $missionCount,
+                    'periodFrom'   => $periodFrom,
+                    'periodTo'     => $periodTo,
+                ]
+            );
+        }
+    }
+
+    /**
+     * Notify the manager that a planning version was deployed successfully.
+     */
+    public function planningDeployedNotifyManager(User $manager, int $missionCount, string $from, string $to): void
+    {
+        $this->createInAppPlanning(
+            $manager,
+            'PLANNING_DEPLOYED',
+            [
+                'missionCount' => $missionCount,
+                'from'         => $from,
+                'to'           => $to,
+            ]
+        );
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
     private function createInApp(User $user, Mission $mission, string $eventType): void
     {
         $evt = new NotificationEvent();
@@ -172,6 +242,19 @@ class NotificationService
 
         $this->em->persist($evt);
         // flush géré par MissionService
+    }
+
+    private function createInAppPlanning(User $user, string $eventType, array $payload): void
+    {
+        $evt = new NotificationEvent();
+        $evt
+            ->setUser($user)
+            ->setEventType($eventType)
+            ->setChannel(PublicationChannel::IN_APP)
+            ->setPayload($payload)
+            ->setSentAt(new \DateTimeImmutable());
+
+        $this->em->persist($evt);
     }
 
     private function buildFrontendUrl(string $path, array $query = []): string

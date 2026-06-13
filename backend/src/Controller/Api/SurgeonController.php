@@ -53,6 +53,7 @@ final class SurgeonController extends AbstractController
                 'active' => $u->isActive(),
                 'displayName' => $name !== '' ? $name : (string) $u->getEmail(),
                 'profilePicturePath' => $u->getProfilePicturePath(),
+                'specialties' => $u->getSpecialties() ?? [],
             ];
         }, $items);
 

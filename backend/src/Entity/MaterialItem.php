@@ -43,6 +43,18 @@ class MaterialItem
     #[Groups(['mission:read', 'mission:read_manager'])]
     private bool $active = true;
 
+    #[ORM\Column(length: 255, nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
+    private ?string $implantType = null;
+
+    #[ORM\Column(length: 255, nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
+    private ?string $material = null;
+
+    #[ORM\Column(type: 'text', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
+    private ?string $description = null;
+
     public function getId(): ?int
     {
         return $this->id;
@@ -113,4 +125,13 @@ class MaterialItem
         $this->active = $active;
         return $this;
     }
+
+    public function getImplantType(): ?string { return $this->implantType; }
+    public function setImplantType(?string $v): static { $this->implantType = $v; return $this; }
+
+    public function getMaterial(): ?string { return $this->material; }
+    public function setMaterial(?string $v): static { $this->material = $v; return $this; }
+
+    public function getDescription(): ?string { return $this->description; }
+    public function setDescription(?string $v): static { $this->description = $v; return $this; }
 }

@@ -91,6 +91,7 @@ final class MeController extends AbstractController
                 consultationFee: $consultationFee !== null ? (string) $consultationFee : null,
                 profilePicturePath: $profilePictureUrl,
                 siteMemberships: $siteMemberships,
+                specialties: $user->getSpecialties() ?? [],
             );
         }
 

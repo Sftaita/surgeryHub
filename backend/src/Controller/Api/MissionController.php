@@ -15,6 +15,8 @@ use App\Service\MissionEncodingGuard;
 use App\Service\MissionEncodingService;
 use App\Service\MissionMapper;
 use App\Service\MissionService;
+use App\Service\WebPushService;
+use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -35,6 +37,8 @@ class MissionController extends AbstractController
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
         private readonly ValidatorInterface $validator,
+        private readonly WebPushService $webPushService,
+        private readonly EntityManagerInterface $em,
     ) {}
 
     #[Route(name: 'api_missions_create', methods: ['POST'])]
@@ -115,7 +119,39 @@ class MissionController extends AbstractController
 
         $this->missionService->publish($mission, $dto, $user);
 
+        $this->webPushService->sendToSiteInstrumentists(
+            $mission,
+            'Nouvelle mission disponible',
+            'Une nouvelle mission a été publiée sur votre site.',
+            ['missionId' => $mission->getId()],
+        );
+
         return new JsonResponse(null, JsonResponse::HTTP_NO_CONTENT);
+    }
+
+    #[Route(path: '/{id}/assign-instrumentist', name: 'api_missions_assign_instrumentist', methods: ['POST'])]
+    public function assignInstrumentist(int $id, Request $request, #[CurrentUser] User $currentUser): JsonResponse
+    {
+        $this->denyAccessUnlessGranted('ROLE_MANAGER');
+
+        $mission = $this->missionService->getOr404($id);
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $instrumentistId = $data['instrumentistId'] ?? null;
+
+        if ($instrumentistId === null) {
+            $mission->setInstrumentist(null);
+        } else {
+            $instrumentist = $this->em->find(User::class, $instrumentistId);
+            if (!$instrumentist) {
+                return $this->json(['error' => ['message' => 'Instrumentiste introuvable.']], 404);
+            }
+            $mission->setInstrumentist($instrumentist);
+        }
+
+        $this->em->flush();
+
+        return $this->json($this->mapper->toDetailDto($mission, $currentUser));
     }
 
     #[Route(path: '/{id}/claim', name: 'api_missions_claim', methods: ['POST'])]

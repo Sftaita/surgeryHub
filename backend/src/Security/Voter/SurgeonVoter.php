@@ -31,7 +31,11 @@ final class SurgeonVoter extends Voter
 
         $roles = $user->getRoles();
         $isManager = in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true);
+        $isInstrumentist = in_array('ROLE_INSTRUMENTIST', $roles, true);
 
-        return $isManager;
+        return match ($attribute) {
+            self::LIST => $isManager || $isInstrumentist,
+            default => $isManager,
+        };
     }
 }

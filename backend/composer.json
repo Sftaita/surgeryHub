@@ -16,6 +16,7 @@
         "lexik/jwt-authentication-bundle": "^3.2",
         "minishlink/web-push": "^10.0",
         "nelmio/cors-bundle": "^2.6",
+        "sentry/sentry-symfony": "*",
         "symfony/console": "7.4.*",
         "symfony/doctrine-messenger": "7.4.*",
         "symfony/dotenv": "7.4.*",
@@ -84,6 +85,9 @@
         }
     },
     "require-dev": {
+        "phpunit/phpunit": "^11.5",
+        "symfony/browser-kit": "7.4.*",
+        "symfony/css-selector": "7.4.*",
         "symfony/stopwatch": "7.4.*",
         "symfony/web-profiler-bundle": "7.4.*"
     }

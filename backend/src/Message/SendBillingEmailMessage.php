@@ -7,6 +7,7 @@ final class SendBillingEmailMessage
     /**
      * @param string[] $cc
      * @param array<string, mixed> $context
+     * @param array<array{base64: string, filename: string}> $extraAttachments Additional PDF attachments
      */
     public function __construct(
         public readonly string $to,
@@ -16,8 +17,10 @@ final class SendBillingEmailMessage
         public readonly string $fromName,
         public readonly string $htmlTemplate,
         public readonly array $context = [],
-        /** Base64-encoded PDF binary */
+        /** Base64-encoded primary PDF binary */
         public readonly ?string $attachmentBase64 = null,
         public readonly ?string $attachmentFilename = null,
+        /** Additional attachments: [{base64: string, filename: string}] */
+        public readonly array $extraAttachments = [],
     ) {}
 }
