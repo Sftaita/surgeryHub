@@ -9,48 +9,42 @@ import {
   Box,
   Button,
   CircularProgress,
-  Paper,
-  Stack,
-  Typography,
-  ToggleButton,
-  ToggleButtonGroup,
   Dialog,
   DialogTitle,
   DialogContent,
+  Stack,
+  ToggleButton,
+  ToggleButtonGroup,
+  Typography,
   useMediaQuery,
   useTheme,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
 } from "@mui/material";
+import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 
 import { fetchMissions } from "../../features/missions/api/missions.api";
-import { fetchSites } from "../../features/sites/api/sites.api";
 import { MissionDetailContent } from "./MissionDetailPage";
 import type { Mission } from "../../features/missions/api/missions.types";
 
-type PlanningMode = "my" | "offers";
-type ViewMode = "week" | "month" | "list";
+type ViewMode = "week" | "month";
+
+const APPBAR_HEIGHT = 56;
+const NAV_HEIGHT = 56;
+const CONTROLS_HEIGHT = 52;
 
 const MY_MISSIONS_STATUSES =
   "ASSIGNED,DECLARED,IN_PROGRESS,SUBMITTED,VALIDATED,CLOSED";
-const OFFERS_STATUS = "OPEN";
+
 const CONFLICT_STATUSES = new Set(["ASSIGNED", "DECLARED", "IN_PROGRESS"]);
 const SWIPE_THRESHOLD_PX = 50;
-const SITE_FILTER_STORAGE_KEY = "instrumentist-planning-site-filter";
 const WEEK_SCROLL_TIME = "08:00:00";
-const WEEK_CALENDAR_HEIGHT_MOBILE = 720;
-const WEEK_CALENDAR_HEIGHT_DESKTOP = 760;
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
 }
 
 function formatDateToYmd(date: Date): string {
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(
-    date.getDate(),
-  )}`;
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
 
 function isValidYmd(value: string | null): value is string {
@@ -64,15 +58,7 @@ function parseYmdToLocalDate(value: string): Date {
 }
 
 function startOfDay(date: Date): Date {
-  return new Date(
-    date.getFullYear(),
-    date.getMonth(),
-    date.getDate(),
-    0,
-    0,
-    0,
-    0,
-  );
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
 }
 
 function addDays(date: Date, days: number): Date {
@@ -95,53 +81,30 @@ function startOfMonth(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
 }
 
-function toIsoString(date: Date): string {
-  return date.toISOString();
-}
-
-function getRange(
-  view: ViewMode,
-  dateYmd: string,
-): { from: string; to: string } {
+function getRange(view: ViewMode, dateYmd: string): { from: string; to: string } {
   const baseDate = parseYmdToLocalDate(dateYmd);
 
   if (view === "month") {
     const from = startOfMonth(baseDate);
     const to = new Date(from.getFullYear(), from.getMonth() + 1, 1, 0, 0, 0, 0);
-
-    return {
-      from: toIsoString(from),
-      to: toIsoString(to),
-    };
+    return { from: from.toISOString(), to: to.toISOString() };
   }
 
   const from = startOfWeek(baseDate);
   const to = addDays(from, 7);
-
-  return {
-    from: toIsoString(from),
-    to: toIsoString(to),
-  };
-}
-
-function getSafeMode(value: string | null): PlanningMode {
-  return value === "offers" ? "offers" : "my";
+  return { from: from.toISOString(), to: to.toISOString() };
 }
 
 function getSafeView(value: string | null): ViewMode {
-  if (value === "week" || value === "month" || value === "list") return value;
+  if (value === "week" || value === "month") return value;
   return "month";
 }
 
 function shiftDate(dateYmd: string, view: ViewMode, direction: -1 | 1): string {
   const date = parseYmdToLocalDate(dateYmd);
-
   if (view === "month") {
-    return formatDateToYmd(
-      new Date(date.getFullYear(), date.getMonth() + direction, 1),
-    );
+    return formatDateToYmd(new Date(date.getFullYear(), date.getMonth() + direction, 1));
   }
-
   return formatDateToYmd(addDays(date, direction * 7));
 }
 
@@ -149,89 +112,52 @@ function formatDisplayDate(dateYmd: string, view: ViewMode): string {
   const date = parseYmdToLocalDate(dateYmd);
 
   if (view === "month") {
-    return date.toLocaleDateString("fr-BE", {
-      month: "long",
-      year: "numeric",
-    });
+    return date.toLocaleDateString("fr-BE", { month: "long", year: "numeric" });
   }
 
-  if (view === "week") {
-    const weekStart = startOfWeek(date);
-    const weekEnd = addDays(weekStart, 6);
-
-    const startLabel = weekStart.toLocaleDateString("fr-BE", {
-      day: "2-digit",
-      month: "long",
-      year:
-        weekStart.getFullYear() !== weekEnd.getFullYear()
-          ? "numeric"
-          : undefined,
-    });
-
-    const endLabel = weekEnd.toLocaleDateString("fr-BE", {
-      day: "2-digit",
-      month: "long",
-      year: "numeric",
-    });
-
-    return `${startLabel} — ${endLabel}`;
-  }
-
-  return date.toLocaleDateString("fr-BE", {
+  const weekStart = startOfWeek(date);
+  const weekEnd = addDays(weekStart, 6);
+  const startLabel = weekStart.toLocaleDateString("fr-BE", {
     day: "2-digit",
-    month: "long",
+    month: "short",
+    year: weekStart.getFullYear() !== weekEnd.getFullYear() ? "numeric" : undefined,
+  });
+  const endLabel = weekEnd.toLocaleDateString("fr-BE", {
+    day: "2-digit",
+    month: "short",
     year: "numeric",
   });
+  return `${startLabel} — ${endLabel}`;
 }
 
-function normalizeMissionInterval(mission: {
-  startAt: string;
-  endAt?: string | null;
-}): { start: string; end: string; startMs: number; endMs: number } | null {
+function normalizeMissionInterval(mission: { startAt: string; endAt?: string | null }) {
   const startDate = new Date(mission.startAt);
   const startMs = startDate.getTime();
-
-  if (!Number.isFinite(startMs)) {
-    return null;
-  }
+  if (!Number.isFinite(startMs)) return null;
 
   const rawEndDate = mission.endAt ? new Date(mission.endAt) : null;
   const rawEndMs = rawEndDate ? rawEndDate.getTime() : Number.NaN;
-
   const endDate =
     rawEndDate && Number.isFinite(rawEndMs) && rawEndMs > startMs
       ? rawEndDate
       : addMinutes(startDate, 1);
 
-  const endMs = endDate.getTime();
-
-  return {
-    start: startDate.toISOString(),
-    end: endDate.toISOString(),
-    startMs,
-    endMs,
-  };
+  return { start: startDate.toISOString(), end: endDate.toISOString(), startMs, endMs: endDate.getTime() };
 }
 
 function formatMissionTime(startAt: string): string {
   const date = new Date(startAt);
   if (!Number.isFinite(date.getTime())) return "";
-  return date.toLocaleTimeString("fr-BE", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return date.toLocaleTimeString("fr-BE", { hour: "2-digit", minute: "2-digit" });
 }
 
 function getSurgeonLabel(mission: Mission): string {
   const displayName = mission.surgeon?.displayName?.trim();
   if (displayName) return `Dr ${displayName}`;
-
   const firstname = mission.surgeon?.firstname?.trim() ?? "";
   const lastname = mission.surgeon?.lastname?.trim() ?? "";
-
   const fullName = `${firstname} ${lastname}`.trim();
   if (fullName) return `Dr ${fullName}`;
-
   return "";
 }
 
@@ -243,25 +169,20 @@ function buildMonthMissionLabel(mission: Mission): string {
   const time = formatMissionTime(mission.startAt);
   const surgeon = getSurgeonLabel(mission);
   const site = getSiteLabel(mission);
-
   if (time && surgeon) return `${time} ${surgeon}`;
   if (time && site) return `${time} ${site}`;
   if (surgeon) return surgeon;
   if (site) return site;
-  if (time) return time;
-
-  return `Mission #${mission.id}`;
+  return `#${mission.id}`;
 }
 
 function buildWeekMissionLabel(mission: Mission): string {
   const surgeon = getSurgeonLabel(mission);
   const site = getSiteLabel(mission);
-
   if (surgeon && site) return `${surgeon} • ${site}`;
   if (surgeon) return surgeon;
   if (site) return site;
-
-  return `Mission #${mission.id}`;
+  return `#${mission.id}`;
 }
 
 function getMissionStartDayKey(mission: Mission): string | null {
@@ -270,302 +191,104 @@ function getMissionStartDayKey(mission: Mission): string | null {
   return formatDateToYmd(date);
 }
 
-function parseHours(value: unknown): number {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : 0;
-  }
-
-  if (typeof value === "string") {
-    const normalized = Number(value);
-    return Number.isFinite(normalized) ? normalized : 0;
-  }
-
-  return 0;
-}
-
-function getPlannedMissionHours(mission: Mission): number {
-  const startMs = new Date(mission.startAt).getTime();
-  const endMs = new Date(mission.endAt).getTime();
-
-  if (
-    !Number.isFinite(startMs) ||
-    !Number.isFinite(endMs) ||
-    endMs <= startMs
-  ) {
-    return 0;
-  }
-
-  return (endMs - startMs) / (1000 * 60 * 60);
-}
-
-function getMissionHoursForMonthlySummary(mission: Mission): number {
-  if (mission.status === "SUBMITTED" || mission.status === "VALIDATED") {
-    const encodedHours = parseHours(mission.service?.hours);
-    return encodedHours > 0 ? encodedHours : 0;
-  }
-
-  return getPlannedMissionHours(mission);
-}
-
-function formatHoursLabel(value: number): string {
-  return value.toLocaleString("fr-BE", {
-    minimumFractionDigits: Number.isInteger(value) ? 0 : 1,
-    maximumFractionDigits: 1,
-  });
-}
-
 function compareMissionsByStart(a: Mission, b: Mission): number {
   const aTime = new Date(a.startAt).getTime();
   const bTime = new Date(b.startAt).getTime();
-
-  const safeATime = Number.isFinite(aTime) ? aTime : Number.MAX_SAFE_INTEGER;
-  const safeBTime = Number.isFinite(bTime) ? bTime : Number.MAX_SAFE_INTEGER;
-
-  if (safeATime !== safeBTime) {
-    return safeATime - safeBTime;
-  }
-
-  return a.id - b.id;
+  const safeA = Number.isFinite(aTime) ? aTime : Number.MAX_SAFE_INTEGER;
+  const safeB = Number.isFinite(bTime) ? bTime : Number.MAX_SAFE_INTEGER;
+  return safeA !== safeB ? safeA - safeB : a.id - b.id;
 }
 
 export default function PlanningPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [selectedMissionId, setSelectedMissionId] = React.useState<
-    number | null
-  >(null);
+  const [selectedMissionId, setSelectedMissionId] = React.useState<number | null>(null);
   const touchStartXRef = React.useRef<number | null>(null);
   const touchStartYRef = React.useRef<number | null>(null);
 
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
 
-  const [siteFilter, setSiteFilter] = React.useState<number | "">(() => {
-    if (typeof window === "undefined") return "";
-    const saved = window.localStorage.getItem(SITE_FILTER_STORAGE_KEY);
-    if (!saved) return "";
-    const parsed = Number(saved);
-    return Number.isFinite(parsed) ? parsed : "";
-  });
-
   const todayYmd = React.useMemo(() => formatDateToYmd(new Date()), []);
-  const mode = getSafeMode(searchParams.get("mode"));
   const view = getSafeView(searchParams.get("view"));
-  const date = isValidYmd(searchParams.get("date"))
-    ? (searchParams.get("date") as string)
-    : todayYmd;
+  const date = isValidYmd(searchParams.get("date")) ? (searchParams.get("date") as string) : todayYmd;
 
   React.useEffect(() => {
     const next = new URLSearchParams(searchParams);
     let changed = false;
-
-    if (next.get("mode") !== mode) {
-      next.set("mode", mode);
-      changed = true;
-    }
-
-    if (next.get("view") !== view) {
-      next.set("view", view);
-      changed = true;
-    }
-
-    if (next.get("date") !== date) {
-      next.set("date", date);
-      changed = true;
-    }
-
-    if (changed) {
-      setSearchParams(next, { replace: true });
-    }
-  }, [date, mode, searchParams, setSearchParams, view]);
-
-  React.useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    if (siteFilter === "") {
-      window.localStorage.removeItem(SITE_FILTER_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(SITE_FILTER_STORAGE_KEY, String(siteFilter));
-    }
-  }, [siteFilter]);
-
-  const sitesQuery = useQuery({
-    queryKey: ["sites"],
-    queryFn: fetchSites,
-    enabled: !isMobile,
-  });
+    if (next.get("view") !== view) { next.set("view", view); changed = true; }
+    if (next.get("date") !== date) { next.set("date", date); changed = true; }
+    if (changed) setSearchParams(next, { replace: true });
+  }, [date, searchParams, setSearchParams, view]);
 
   const range = React.useMemo(() => getRange(view, date), [view, date]);
 
-  const filters = React.useMemo(() => {
-    const baseFilters = {
-      from: range.from,
-      to: range.to,
-      ...(siteFilter !== "" ? { siteId: siteFilter } : {}),
-    };
-
-    if (mode === "offers") {
-      return {
-        ...baseFilters,
-        eligibleToMe: true,
-        status: OFFERS_STATUS,
-      };
-    }
-
-    return {
-      ...baseFilters,
-      assignedToMe: true,
-      status: MY_MISSIONS_STATUSES,
-    };
-  }, [mode, range.from, range.to, siteFilter]);
-
   const missionsQuery = useQuery({
-    queryKey: [
-      "missions",
-      "planning",
-      {
-        mode,
-        view,
-        date,
+    queryKey: ["missions", "planning", { view, date, from: range.from, to: range.to }],
+    queryFn: () =>
+      fetchMissions(1, 100, {
         from: range.from,
         to: range.to,
-        siteId: siteFilter === "" ? null : siteFilter,
-      },
-    ],
-    queryFn: () => fetchMissions(1, 100, filters),
+        assignedToMe: true,
+        status: MY_MISSIONS_STATUSES,
+      }),
   });
 
   const missions = missionsQuery.data?.items ?? [];
   const calendarView = view === "month" ? "dayGridMonth" : "timeGridWeek";
 
   const conflictMissionIds = React.useMemo(() => {
-    const relevantMissions = missions
-      .filter((mission) =>
-        mission.status ? CONFLICT_STATUSES.has(mission.status) : false,
-      )
-      .map((mission) => ({
-        mission,
-        interval: normalizeMissionInterval(mission),
-      }))
-      .filter(
-        (
-          item,
-        ): item is {
-          mission: Mission;
-          interval: {
-            start: string;
-            end: string;
-            startMs: number;
-            endMs: number;
-          };
-        } => item.interval !== null,
+    const relevant = missions
+      .filter((m) => m.status && CONFLICT_STATUSES.has(m.status))
+      .map((m) => ({ mission: m, interval: normalizeMissionInterval(m) }))
+      .filter((item): item is { mission: Mission; interval: NonNullable<ReturnType<typeof normalizeMissionInterval>> } =>
+        item.interval !== null
       );
 
-    const conflictingIds = new Set<number>();
-
-    for (let i = 0; i < relevantMissions.length; i++) {
-      const currentMission = relevantMissions[i];
-
-      for (let j = i + 1; j < relevantMissions.length; j++) {
-        const otherMission = relevantMissions[j];
-
-        const hasOverlap =
-          currentMission.interval.startMs < otherMission.interval.endMs &&
-          otherMission.interval.startMs < currentMission.interval.endMs;
-
-        if (hasOverlap) {
-          conflictingIds.add(currentMission.mission.id);
-          conflictingIds.add(otherMission.mission.id);
+    const ids = new Set<number>();
+    for (let i = 0; i < relevant.length; i++) {
+      for (let j = i + 1; j < relevant.length; j++) {
+        const a = relevant[i].interval;
+        const b = relevant[j].interval;
+        if (a.startMs < b.endMs && b.startMs < a.endMs) {
+          ids.add(relevant[i].mission.id);
+          ids.add(relevant[j].mission.id);
         }
       }
     }
-
-    return conflictingIds;
+    return ids;
   }, [missions]);
 
   const monthDayBuckets = React.useMemo(() => {
-    const buckets = new Map<
-      string,
-      {
-        missions: Mission[];
-        hasConflict: boolean;
-      }
-    >();
-
+    const buckets = new Map<string, { missions: Mission[]; hasConflict: boolean }>();
     for (const mission of missions) {
       const dayKey = getMissionStartDayKey(mission);
       if (!dayKey) continue;
-
       const existing = buckets.get(dayKey);
-
       if (existing) {
         existing.missions.push(mission);
-        if (conflictMissionIds.has(mission.id)) {
-          existing.hasConflict = true;
-        }
+        if (conflictMissionIds.has(mission.id)) existing.hasConflict = true;
       } else {
-        buckets.set(dayKey, {
-          missions: [mission],
-          hasConflict: conflictMissionIds.has(mission.id),
-        });
+        buckets.set(dayKey, { missions: [mission], hasConflict: conflictMissionIds.has(mission.id) });
       }
     }
-
     for (const bucket of buckets.values()) {
       bucket.missions.sort(compareMissionsByStart);
     }
-
     return buckets;
   }, [missions, conflictMissionIds]);
 
-  const monthlySummary = React.useMemo(() => {
-    const baseDate = parseYmdToLocalDate(date);
-    const month = baseDate.getMonth();
-    const year = baseDate.getFullYear();
-
-    let totalMissions = 0;
-    let totalHours = 0;
-
-    for (const mission of missions) {
-      const startDate = new Date(mission.startAt);
-      if (!Number.isFinite(startDate.getTime())) continue;
-
-      if (startDate.getFullYear() !== year || startDate.getMonth() !== month) {
-        continue;
-      }
-
-      totalMissions += 1;
-      totalHours += getMissionHoursForMonthlySummary(mission);
-    }
-
-    return {
-      totalMissions,
-      totalHours,
-    };
-  }, [missions, date]);
-
   const monthDayMeta = React.useMemo(() => {
-    const meta = new Map<
-      string,
-      {
-        missionId: number;
-        title: string;
-        extraCount: number;
-        hasConflict: boolean;
-      }
-    >();
-
+    const meta = new Map<string, { missionId: number; title: string; extraCount: number; hasConflict: boolean }>();
     for (const [dayKey, bucket] of monthDayBuckets.entries()) {
-      const firstMission = bucket.missions[0];
-      if (!firstMission) continue;
-
+      const first = bucket.missions[0];
+      if (!first) continue;
       meta.set(dayKey, {
-        missionId: firstMission.id,
-        title: buildMonthMissionLabel(firstMission),
+        missionId: first.id,
+        title: buildMonthMissionLabel(first),
         extraCount: Math.max(bucket.missions.length - 1, 0),
         hasConflict: bucket.hasConflict,
       });
     }
-
     return meta;
   }, [monthDayBuckets]);
 
@@ -578,10 +301,8 @@ export default function PlanningPage() {
         allDay: true,
       }));
     }
-
     return missions.map((mission) => {
       const interval = normalizeMissionInterval(mission);
-
       return {
         id: String(mission.id),
         title: buildWeekMissionLabel(mission),
@@ -592,27 +313,18 @@ export default function PlanningPage() {
   }, [view, monthDayMeta, missions]);
 
   const updateSearchParams = React.useCallback(
-    (patch: Partial<{ mode: PlanningMode; view: ViewMode; date: string }>) => {
+    (patch: Partial<{ view: ViewMode; date: string }>) => {
       const next = new URLSearchParams(searchParams);
-
-      const nextMode = patch.mode ?? mode;
-      const nextView = patch.view ?? view;
-      const nextDate = patch.date ?? date;
-
-      next.set("mode", nextMode);
-      next.set("view", nextView);
-      next.set("date", nextDate);
-
+      next.set("view", patch.view ?? view);
+      next.set("date", patch.date ?? date);
       setSearchParams(next);
     },
-    [searchParams, mode, view, date, setSearchParams],
+    [searchParams, view, date, setSearchParams],
   );
 
   const handlePeriodShift = React.useCallback(
     (direction: -1 | 1) => {
-      updateSearchParams({
-        date: shiftDate(date, view, direction),
-      });
+      updateSearchParams({ date: shiftDate(date, view, direction) });
     },
     [date, updateSearchParams, view],
   );
@@ -629,365 +341,184 @@ export default function PlanningPage() {
   const handleTouchEnd = React.useCallback(
     (event: React.TouchEvent<HTMLDivElement>) => {
       if (!isMobile) return;
-
       const startX = touchStartXRef.current;
       const startY = touchStartYRef.current;
       const endX = event.changedTouches[0]?.clientX ?? null;
       const endY = event.changedTouches[0]?.clientY ?? null;
-
       touchStartXRef.current = null;
       touchStartYRef.current = null;
-
-      if (
-        startX === null ||
-        startY === null ||
-        endX === null ||
-        endY === null
-      ) {
-        return;
-      }
-
+      if (startX === null || startY === null || endX === null || endY === null) return;
       const deltaX = endX - startX;
       const deltaY = endY - startY;
-
       if (Math.abs(deltaX) < SWIPE_THRESHOLD_PX) return;
       if (Math.abs(deltaX) <= Math.abs(deltaY)) return;
-
-      if (deltaX < 0) {
-        handlePeriodShift(1);
-      } else {
-        handlePeriodShift(-1);
-      }
+      handlePeriodShift(deltaX < 0 ? 1 : -1);
     },
     [handlePeriodShift, isMobile],
   );
 
+  const calendarHeight = `calc(100dvh - ${APPBAR_HEIGHT + NAV_HEIGHT + CONTROLS_HEIGHT}px)`;
+
   return (
-    <Stack spacing={2}>
-      <Typography variant="h6">Planning</Typography>
-
-      <ToggleButtonGroup
-        value={mode}
-        exclusive
-        onChange={(_, value: PlanningMode | null) => {
-          if (!value) return;
-          updateSearchParams({ mode: value });
+    <Box
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+    >
+      {/* Compact controls bar */}
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1}
+        sx={{
+          px: 1.5,
+          py: 0.75,
+          borderBottom: "1px solid",
+          borderColor: "divider",
+          bgcolor: "background.paper",
+          flexShrink: 0,
+          height: CONTROLS_HEIGHT,
         }}
-        fullWidth
-        size="small"
       >
-        <ToggleButton value="my">Mes missions</ToggleButton>
-        <ToggleButton value="offers">Offres</ToggleButton>
-      </ToggleButtonGroup>
+        {/* View toggle */}
+        <ToggleButtonGroup
+          value={view}
+          exclusive
+          onChange={(_, value: ViewMode | null) => {
+            if (!value) return;
+            updateSearchParams({ view: value });
+          }}
+          size="small"
+          sx={{ flexShrink: 0 }}
+        >
+          <ToggleButton value="month" sx={{ px: 1.5, fontSize: "0.75rem" }}>
+            Mois
+          </ToggleButton>
+          <ToggleButton value="week" sx={{ px: 1.5, fontSize: "0.75rem" }}>
+            Semaine
+          </ToggleButton>
+        </ToggleButtonGroup>
 
-      <ToggleButtonGroup
-        value={view}
-        exclusive
-        onChange={(_, value: ViewMode | null) => {
-          if (!value) return;
-          updateSearchParams({ view: value });
-        }}
-        fullWidth
-        size="small"
-      >
-        <ToggleButton value="week">Semaine</ToggleButton>
-        <ToggleButton value="month">Mois</ToggleButton>
-        <ToggleButton value="list">Liste</ToggleButton>
-      </ToggleButtonGroup>
-
-      {!isMobile ? (
-        <Paper variant="outlined" sx={{ p: 2 }}>
-          <Stack
-            direction="row"
-            spacing={2}
-            useFlexGap
-            flexWrap="wrap"
-            alignItems="center"
+        {/* Date navigation */}
+        <Stack direction="row" alignItems="center" sx={{ flex: 1, minWidth: 0 }}>
+          <Button
+            size="small"
+            onClick={() => handlePeriodShift(-1)}
+            sx={{ minWidth: 0, p: 0.5 }}
           >
-            <FormControl size="small" sx={{ minWidth: 220 }}>
-              <InputLabel id="planning-site-filter-label">Site</InputLabel>
-              <Select
-                labelId="planning-site-filter-label"
-                value={siteFilter}
-                label="Site"
-                onChange={(event) => {
-                  const value = event.target.value as string | number;
-                  setSiteFilter(value === "" ? "" : Number(value));
-                }}
-              >
-                <MenuItem value="">Tous les sites</MenuItem>
-                {(sitesQuery.data ?? []).map((site) => (
-                  <MenuItem key={site.id} value={site.id}>
-                    {site.name}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Stack>
-        </Paper>
-      ) : null}
+            <ChevronLeftIcon fontSize="small" />
+          </Button>
+          <Typography
+            variant="caption"
+            fontWeight={600}
+            sx={{ flex: 1, textAlign: "center", minWidth: 0, px: 0.5 }}
+            noWrap
+          >
+            {formatDisplayDate(date, view)}
+          </Typography>
+          <Button
+            size="small"
+            onClick={() => handlePeriodShift(1)}
+            sx={{ minWidth: 0, p: 0.5 }}
+          >
+            <ChevronRightIcon fontSize="small" />
+          </Button>
+        </Stack>
 
-      <Box onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
-        <Paper variant="outlined" sx={{ p: 2 }}>
-          {isMobile ? (
-            <Stack
-              direction="row"
-              spacing={1}
-              alignItems="center"
-              justifyContent="space-between"
-            >
-              <Button
-                variant="text"
-                size="small"
-                onClick={() => handlePeriodShift(-1)}
-                sx={{ minWidth: 0, px: 1 }}
-              >
-                ‹
-              </Button>
+        {/* Today */}
+        <Button
+          size="small"
+          variant="text"
+          onClick={() => updateSearchParams({ date: todayYmd })}
+          sx={{ flexShrink: 0, fontSize: "0.7rem", px: 1 }}
+        >
+          Auj.
+        </Button>
+      </Stack>
 
-              <Typography
-                variant="subtitle2"
-                sx={{ flex: 1, textAlign: "center", minWidth: 0 }}
-              >
-                {formatDisplayDate(date, view)}
-              </Typography>
+      {missionsQuery.isError && (
+        <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
+          Impossible de charger le planning.
+        </Alert>
+      )}
 
-              <Button
-                variant="text"
-                size="small"
-                onClick={() => handlePeriodShift(1)}
-                sx={{ minWidth: 0, px: 1 }}
-              >
-                ›
-              </Button>
-            </Stack>
-          ) : (
-            <Stack spacing={1.5}>
-              <Stack direction="row" spacing={1} justifyContent="space-between">
-                <Button
-                  variant="outlined"
-                  size="small"
-                  onClick={() => handlePeriodShift(-1)}
-                >
-                  Précédent
-                </Button>
-
-                <Button
-                  variant="text"
-                  size="small"
-                  onClick={() => updateSearchParams({ date: todayYmd })}
-                >
-                  Aujourd’hui
-                </Button>
-
-                <Button
-                  variant="outlined"
-                  size="small"
-                  onClick={() => handlePeriodShift(1)}
-                >
-                  Suivant
-                </Button>
-              </Stack>
-
-              <Typography variant="subtitle2">
-                {formatDisplayDate(date, view)}
-              </Typography>
-            </Stack>
-          )}
-        </Paper>
-
-        {missionsQuery.isError ? (
-          <Alert severity="error">Impossible de charger le planning.</Alert>
-        ) : null}
-
-        {view === "month" ? (
-          <Paper
-            variant="outlined"
-            sx={{
-              mt: 2,
-              px: 2,
-              py: 1.5,
+      {/* Calendar */}
+      {missionsQuery.isLoading ? (
+        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "center", height: calendarHeight }}>
+          <CircularProgress size={28} />
+        </Box>
+      ) : (
+        <Box sx={{ overflow: "hidden" }}>
+          <FullCalendar
+            key={`${calendarView}-${date}`}
+            plugins={[dayGridPlugin, timeGridPlugin]}
+            initialView={calendarView}
+            initialDate={date}
+            headerToolbar={false}
+            events={events}
+            height={calendarHeight}
+            locale="fr"
+            eventClick={(info) => {
+              const missionId = Number(info.event.id);
+              if (!Number.isFinite(missionId) || missionId <= 0) return;
+              setSelectedMissionId(missionId);
             }}
-          >
-            <Stack
-              direction={{ xs: "column", sm: "row" }}
-              spacing={{ xs: 1, sm: 3 }}
-              useFlexGap
-            >
-              <Box>
-                <Typography variant="caption" color="text.secondary">
-                  Missions du mois
-                </Typography>
-                <Typography variant="subtitle2">
-                  {monthlySummary.totalMissions}
-                </Typography>
-              </Box>
-
-              <Box>
-                <Typography variant="caption" color="text.secondary">
-                  Heures du mois
-                </Typography>
-                <Typography variant="subtitle2">
-                  {formatHoursLabel(monthlySummary.totalHours)} h
-                </Typography>
-              </Box>
-            </Stack>
-          </Paper>
-        ) : null}
-
-        <Paper variant="outlined" sx={{ p: 1, mt: 2 }}>
-          <Box sx={{ minHeight: 600, position: "relative" }}>
-            {missionsQuery.isLoading ? (
-              <Box
-                sx={{
-                  minHeight: 600,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <CircularProgress size={28} />
-              </Box>
-            ) : (
-              <FullCalendar
-                key={`${calendarView}-${date}`}
-                plugins={[dayGridPlugin, timeGridPlugin]}
-                initialView={calendarView}
-                initialDate={date}
-                headerToolbar={false}
-                events={view === "list" ? [] : events}
-                height={
-                  view === "week"
-                    ? isMobile
-                      ? WEEK_CALENDAR_HEIGHT_MOBILE
-                      : WEEK_CALENDAR_HEIGHT_DESKTOP
-                    : "auto"
-                }
-                locale="fr"
-                eventClick={(info) => {
-                  const missionId = Number(info.event.id);
-                  if (!Number.isFinite(missionId) || missionId <= 0) return;
-                  setSelectedMissionId(missionId);
-                }}
-                eventContent={(arg) => {
-                  if (view !== "month") {
-                    return undefined;
-                  }
-
-                  const dayKey = formatDateToYmd(arg.event.start ?? new Date());
-                  const meta = monthDayMeta.get(dayKey);
-                  const extraCount = meta?.extraCount ?? 0;
-
-                  return (
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.5,
-                        minWidth: 0,
-                        overflow: "hidden",
-                      }}
-                    >
-                      <Box
-                        component="span"
-                        sx={{
-                          minWidth: 0,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {arg.event.title}
-                      </Box>
-
-                      {extraCount > 0 ? (
-                        <Box
-                          component="span"
-                          sx={{
-                            flexShrink: 0,
-                            color: "text.secondary",
-                          }}
-                        >
-                          +{extraCount}
-                        </Box>
-                      ) : null}
+            eventContent={(arg) => {
+              if (view !== "month") return undefined;
+              const dayKey = formatDateToYmd(arg.event.start ?? new Date());
+              const meta = monthDayMeta.get(dayKey);
+              const extraCount = meta?.extraCount ?? 0;
+              return (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, minWidth: 0, overflow: "hidden" }}>
+                  <Box component="span" sx={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {arg.event.title}
+                  </Box>
+                  {extraCount > 0 && (
+                    <Box component="span" sx={{ flexShrink: 0, color: "text.secondary" }}>
+                      +{extraCount}
                     </Box>
-                  );
-                }}
-                dayCellContent={(arg) => {
-                  if (view !== "month") {
-                    return arg.dayNumberText;
-                  }
-
-                  const dayKey = formatDateToYmd(arg.date);
-                  const meta = monthDayMeta.get(dayKey);
-
-                  return (
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        width: "100%",
-                      }}
-                    >
-                      <Box component="span">{arg.dayNumberText}</Box>
-
-                      {meta?.hasConflict ? (
-                        <Box
-                          component="span"
-                          sx={{
-                            fontSize: "0.7rem",
-                            lineHeight: 1,
-                            color: "text.secondary",
-                          }}
-                          aria-label="Conflit potentiel"
-                          title="Conflit potentiel"
-                        >
-                          ⚠
-                        </Box>
-                      ) : null}
+                  )}
+                </Box>
+              );
+            }}
+            dayCellContent={(arg) => {
+              if (view !== "month") return arg.dayNumberText;
+              const dayKey = formatDateToYmd(arg.date);
+              const meta = monthDayMeta.get(dayKey);
+              return (
+                <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+                  <Box component="span">{arg.dayNumberText}</Box>
+                  {meta?.hasConflict && (
+                    <Box component="span" sx={{ fontSize: "0.7rem", lineHeight: 1, color: "text.secondary" }} title="Conflit potentiel">
+                      ⚠
                     </Box>
-                  );
-                }}
-                dayHeaderFormat={
-                  view === "week"
-                    ? {
-                        weekday: "short",
-                        day: "2-digit",
-                        month: "2-digit",
-                      }
-                    : undefined
-                }
-                eventTimeFormat={
-                  view === "week"
-                    ? {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        hour12: false,
-                      }
-                    : undefined
-                }
-                slotLabelFormat={
-                  view === "week"
-                    ? {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        hour12: false,
-                      }
-                    : undefined
-                }
-                slotMinTime="00:00:00"
-                slotMaxTime="24:00:00"
-                scrollTime={WEEK_SCROLL_TIME}
-                allDaySlot={view !== "week" ? true : false}
-                slotEventOverlap={view === "week" ? false : true}
-                expandRows={view === "week" ? false : undefined}
-              />
-            )}
-          </Box>
-        </Paper>
-      </Box>
+                  )}
+                </Box>
+              );
+            }}
+            dayHeaderFormat={
+              view === "week"
+                ? { weekday: "short", day: "2-digit", month: "2-digit" }
+                : undefined
+            }
+            eventTimeFormat={
+              view === "week"
+                ? { hour: "2-digit", minute: "2-digit", hour12: false }
+                : undefined
+            }
+            slotLabelFormat={
+              view === "week"
+                ? { hour: "2-digit", minute: "2-digit", hour12: false }
+                : undefined
+            }
+            slotMinTime="00:00:00"
+            slotMaxTime="24:00:00"
+            scrollTime={WEEK_SCROLL_TIME}
+            allDaySlot={view !== "week"}
+            slotEventOverlap={view === "week" ? false : true}
+            expandRows={false}
+          />
+        </Box>
+      )}
 
       <Dialog
         open={selectedMissionId !== null}
@@ -996,7 +527,6 @@ export default function PlanningPage() {
         maxWidth="md"
       >
         <DialogTitle>Détail mission</DialogTitle>
-
         <DialogContent dividers>
           {selectedMissionId ? (
             <MissionDetailContent
@@ -1007,6 +537,6 @@ export default function PlanningPage() {
           ) : null}
         </DialogContent>
       </Dialog>
-    </Stack>
+    </Box>
   );
 }

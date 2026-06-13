@@ -2,106 +2,80 @@ import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Box,
   Button,
+  Chip,
   CircularProgress,
+  IconButton,
   Stack,
   Typography,
-  IconButton,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
-  Box,
-  Divider,
-  Chip,
-  Paper,
 } from "@mui/material";
 
-import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import AccessTimeIcon from "@mui/icons-material/AccessTime";
+import LocationOnIcon from "@mui/icons-material/LocationOn";
+import PersonIcon from "@mui/icons-material/Person";
+import EditNoteIcon from "@mui/icons-material/EditNote";
+import MedicalServicesIcon from "@mui/icons-material/MedicalServices";
+import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 
 import dayjs from "dayjs";
 import "dayjs/locale/fr";
 
 import { fetchMissionById } from "../../features/missions/api/missions.api";
+import type { Mission } from "../../features/missions/api/missions.types";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
+import { MobileCard } from "../../ui/mobile/MobileCard";
 
 dayjs.locale("fr");
 
-type ChipColor =
-  | "default"
-  | "info"
-  | "primary"
-  | "warning"
-  | "error"
-  | "success";
+type ChipColor = "default" | "info" | "primary" | "warning" | "error" | "success";
 
-type StatusUi = {
-  chipLabel: string;
-  chipColor: ChipColor;
-  message?: string;
-  dialogTitle?: string;
-  dialogBody?: string[];
-};
-
-function getStatusUi(status: string): StatusUi {
-  const s = String(status ?? "");
-
-  switch (s) {
-    case "DRAFT":
-      return { chipLabel: "Brouillon", chipColor: "default" };
-    case "OPEN":
-      return { chipLabel: "Disponible", chipColor: "info" };
-    case "ASSIGNED":
-      return { chipLabel: "En cours", chipColor: "primary" };
-    case "DECLARED":
-      return {
-        chipLabel: "À valider",
-        chipColor: "warning",
-        message: "Mission en attente de validation par le manager.",
-        dialogTitle: "Mission déclarée",
-        dialogBody: [
-          "Mission en attente de validation par le manager.",
-          "Vous pouvez consulter la mission. Certaines actions peuvent être indisponibles tant que la validation n'est pas faite.",
-        ],
-      };
-    case "REJECTED":
-      return {
-        chipLabel: "Rejetée",
-        chipColor: "error",
-        message: "Mission rejetée par le manager. Encodage supprimé.",
-        dialogTitle: "Mission rejetée",
-        dialogBody: [
-          "Mission rejetée par le manager.",
-          "L'encodage a été supprimé et aucune action d'édition n'est disponible.",
-        ],
-      };
-    case "SUBMITTED":
-      return { chipLabel: "Soumis", chipColor: "success" };
-    case "VALIDATED":
-      return { chipLabel: "Validée", chipColor: "success" };
-    case "CLOSED":
-      return { chipLabel: "Clôturée", chipColor: "default" };
-    default:
-      return { chipLabel: s || "—", chipColor: "default" };
+function getStatusChip(status: string): { label: string; color: ChipColor } {
+  switch (status) {
+    case "DRAFT": return { label: "Brouillon", color: "default" };
+    case "OPEN": return { label: "Disponible", color: "info" };
+    case "ASSIGNED": return { label: "En cours", color: "primary" };
+    case "DECLARED": return { label: "À valider", color: "warning" };
+    case "REJECTED": return { label: "Rejetée", color: "error" };
+    case "SUBMITTED": return { label: "Soumise", color: "success" };
+    case "VALIDATED": return { label: "Validée", color: "success" };
+    case "CLOSED": return { label: "Clôturée", color: "default" };
+    default: return { label: status || "—", color: "default" };
   }
 }
 
-function formatDateLong(d: dayjs.Dayjs): string {
-  const raw = d.format("dddd D MMMM YYYY");
+function formatTime(iso?: string): string {
+  if (!iso) return "—";
+  return dayjs(iso).format("HH[h]mm");
+}
+
+function formatDate(iso?: string): string {
+  if (!iso) return "—";
+  const raw = dayjs(iso).format("dddd D MMMM YYYY");
   return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
-function formatTimeShort(d: dayjs.Dayjs): string {
-  return d.format("HH[h]mm");
-}
-
-function formatHoursLabel(hours?: string | number | null): string {
+function formatHours(hours?: string | number | null): string {
   if (hours === null || hours === undefined || hours === "") return "—";
   const n = typeof hours === "string" ? Number(hours) : hours;
   if (!Number.isFinite(n)) return "—";
   return `${n} h`;
+}
+
+function surgeonLabel(mission: Mission): string {
+  const s = mission.surgeon;
+  if (!s) return "—";
+  const fn = (s.firstname ?? "").trim();
+  const ln = (s.lastname ?? "").trim();
+  const full = `${fn} ${ln}`.trim();
+  if (full) return `Dr. ${full}`;
+  return (s as any).displayName?.trim() || s.email || "—";
 }
 
 function missionTypeLabel(type?: string | null): string {
@@ -110,214 +84,229 @@ function missionTypeLabel(type?: string | null): string {
   return type ?? "—";
 }
 
-type MissionDetailContentProps = {
+// ─── Reusable section card ──────────────────────────────────────────────────
+type SectionCardProps = {
+  icon: React.ReactNode;
+  title: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+};
+
+function SectionCard({ icon, title, action, children }: SectionCardProps) {
+  return (
+    <MobileCard>
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1}
+        sx={{
+          px: 2,
+          py: 1.5,
+          borderBottom: "1px solid",
+          borderColor: "divider",
+        }}
+      >
+        <Box sx={{ color: "primary.main", display: "flex" }}>{icon}</Box>
+        <Typography variant="subtitle2" sx={{ flex: 1 }}>
+          {title}
+        </Typography>
+        {action}
+      </Stack>
+      <Box sx={{ px: 2, py: 1.75 }}>{children}</Box>
+    </MobileCard>
+  );
+}
+
+// ─── Info row ───────────────────────────────────────────────────────────────
+function InfoRow({ icon, label, value }: { icon: React.ReactNode; label?: string; value: string }) {
+  return (
+    <Stack direction="row" spacing={1.5} alignItems="flex-start">
+      <Box sx={{ color: "text.disabled", display: "flex", mt: 0.2, flexShrink: 0 }}>{icon}</Box>
+      <Box>
+        {label && (
+          <Typography variant="caption" color="text.disabled" display="block">
+            {label}
+          </Typography>
+        )}
+        <Typography variant="body2" fontWeight={500}>
+          {value}
+        </Typography>
+      </Box>
+    </Stack>
+  );
+}
+
+// ─── Content ─────────────────────────────────────────────────────────────────
+type Props = {
   missionId: number;
   embedded?: boolean;
   onCloseEmbedded?: () => void;
 };
 
-export function MissionDetailContent({
-  missionId,
-  embedded = false,
-  onCloseEmbedded,
-}: MissionDetailContentProps) {
+export function MissionDetailContent({ missionId, embedded = false, onCloseEmbedded }: Props) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [openSubmit, setOpenSubmit] = React.useState(false);
-  const [statusInfoOpen, setStatusInfoOpen] = React.useState(false);
-  const [openEditHours, setOpenEditHours] = React.useState(false);
 
-  const isValidId = Number.isFinite(missionId) && missionId > 0;
+  const [openSubmit, setOpenSubmit] = React.useState(false);
+  const [openEditHours, setOpenEditHours] = React.useState(false);
+  const [statusInfoOpen, setStatusInfoOpen] = React.useState(false);
 
   const { data: mission, isLoading } = useQuery({
     queryKey: ["mission", missionId],
     queryFn: () => fetchMissionById(missionId),
-    enabled: isValidId,
+    enabled: Number.isFinite(missionId) && missionId > 0,
   });
 
-  if (!isValidId) {
-    return <Typography>Identifiant de mission invalide</Typography>;
-  }
-
+  if (!Number.isFinite(missionId) || missionId <= 0)
+    return <Typography>Identifiant invalide</Typography>;
   if (isLoading) return <CircularProgress />;
   if (!mission) return <Typography>Mission introuvable</Typography>;
 
-  const canEncoding =
-    mission.allowedActions?.includes("encoding") ||
-    mission.allowedActions?.includes("edit_encoding");
+  const allowed = mission.allowedActions ?? [];
+  const canEncoding = allowed.includes("encoding") || allowed.includes("edit_encoding");
+  const canSubmit = allowed.includes("submit");
+  const canEditHours = allowed.includes("edit_hours");
 
-  const canSubmit = mission.allowedActions?.includes("submit");
-  const canEditHours = mission.allowedActions?.includes("edit_hours");
+  const { label: chipLabel, color: chipColor } = getStatusChip(String(mission.status ?? ""));
+  const hoursLabel = formatHours(mission.service?.hours ?? null);
+  const isEncodingPending =
+    (mission.status === "ASSIGNED" || mission.status === "IN_PROGRESS" || mission.status === "DECLARED") &&
+    canEncoding;
 
-  const statusUi = getStatusUi(String(mission.status ?? ""));
-
-  const start = mission.startAt ? dayjs(String(mission.startAt)) : null;
-  const end = mission.endAt ? dayjs(String(mission.endAt)) : null;
-
-  const hasBothDates = !!start && !!end && start.isValid() && end.isValid();
-
-  const dateLine = hasBothDates ? formatDateLong(start!) : "—";
-  const timeLine = hasBothDates
-    ? `${formatTimeShort(start!)} → ${formatTimeShort(end!)}`
-    : "—";
-
-  const siteName = (mission.site?.name ?? "").trim() || "—";
-
-  const surgeonRef = (mission as any).surgeon;
-  const surgeonLabel = (() => {
-    if (!surgeonRef) return null;
-    const fn = (surgeonRef.firstname ?? "").toString().trim();
-    const ln = (surgeonRef.lastname ?? "").toString().trim();
-    const full = `${fn} ${ln}`.trim();
-    if (full) return `Dr. ${full}`;
-    const dn = (surgeonRef.displayName ?? "").toString().trim();
-    if (dn) return dn;
-    return surgeonRef.email ?? null;
-  })();
-
-  const missionType = missionTypeLabel((mission as any).type ?? null);
-
-  const hasStatusDialog = !!statusUi.dialogTitle;
-  const hoursLabel = formatHoursLabel(mission.service?.hours ?? null);
+  const hasStatusInfo = mission.status === "DECLARED" || mission.status === "REJECTED";
 
   return (
     <Stack spacing={2}>
-      {!embedded ? (
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <Button
-            variant="text"
-            startIcon={<ArrowBackIcon />}
-            onClick={() => navigate("/app/i/my-missions")}
-          >
-            Mes missions
-          </Button>
-        </Box>
-      ) : null}
-
-      <Typography variant="h5">Mission #{mission.id}</Typography>
-
-      <Divider />
-
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Stack spacing={1.5}>
-          <Stack spacing={0.25}>
-            <Typography variant="caption" color="text.secondary">
-              Site
-            </Typography>
-            <Typography variant="body1" fontWeight={600}>
-              {siteName}
-            </Typography>
-          </Stack>
-
-          <Stack spacing={0.25}>
-            <Typography variant="caption" color="text.secondary">
-              Date
-            </Typography>
-            <Typography variant="body1" fontWeight={600}>
-              {dateLine}
-            </Typography>
-          </Stack>
-
-          <Stack spacing={0.25}>
-            <Typography variant="caption" color="text.secondary">
-              Horaire
-            </Typography>
-            <Typography variant="body1" fontWeight={600}>
-              {timeLine}
-            </Typography>
-          </Stack>
-
-          {surgeonLabel ? (
-            <Stack spacing={0.25}>
-              <Typography variant="caption" color="text.secondary">
-                Chirurgien
-              </Typography>
-              <Typography variant="body1" fontWeight={600}>
-                {surgeonLabel}
-              </Typography>
-            </Stack>
-          ) : null}
-
-          <Stack spacing={0.25}>
-            <Typography variant="caption" color="text.secondary">
-              Type
-            </Typography>
-            <Typography variant="body1" fontWeight={600}>
-              {missionType}
-            </Typography>
-          </Stack>
-        </Stack>
-      </Paper>
-
-      <Stack spacing={0.75}>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Chip
-            label={statusUi.chipLabel}
-            color={statusUi.chipColor}
-            size="small"
-          />
-
-          {hasStatusDialog && (
-            <IconButton
-              aria-label="Information statut"
-              size="small"
-              onClick={() => setStatusInfoOpen(true)}
-            >
+      {/* Header */}
+      {!embedded && (
+        <Stack direction="row" alignItems="center" spacing={1}>
+          <IconButton size="small" onClick={() => navigate(-1)}>
+            <ArrowBackIcon fontSize="small" />
+          </IconButton>
+          <Typography variant="subtitle1" sx={{ flex: 1 }}>
+            Mission #{mission.id}
+          </Typography>
+          <Chip label={chipLabel} color={chipColor} size="small" />
+          {hasStatusInfo && (
+            <IconButton size="small" onClick={() => setStatusInfoOpen(true)}>
               <HelpOutlineIcon fontSize="small" />
             </IconButton>
           )}
         </Stack>
+      )}
 
-        {statusUi.message ? (
-          <Typography variant="body2" color="text.secondary">
-            {statusUi.message}
-          </Typography>
-        ) : null}
-      </Stack>
+      {/* Zone 1 — Info mission */}
+      <SectionCard icon={<LocationOnIcon fontSize="small" />} title="Mission">
+        <Stack spacing={1.5}>
+          <InfoRow icon={<LocationOnIcon fontSize="small" />} label="Site" value={mission.site?.name ?? "—"} />
+          <InfoRow
+            icon={<AccessTimeIcon fontSize="small" />}
+            label="Horaire"
+            value={`${formatDate(mission.startAt)} · ${formatTime(mission.startAt)} → ${formatTime(mission.endAt)}`}
+          />
+          <InfoRow icon={<PersonIcon fontSize="small" />} label="Chirurgien" value={surgeonLabel(mission)} />
+          <InfoRow
+            icon={<MedicalServicesIcon fontSize="small" />}
+            label="Type"
+            value={missionTypeLabel((mission as any).type)}
+          />
+        </Stack>
+      </SectionCard>
 
-      <Divider />
-
-      <Stack spacing={0.75}>
-        <Stack
-          direction="row"
-          alignItems="center"
-          justifyContent="space-between"
-        >
-          <Typography variant="subtitle2" color="text.secondary">
-            Heures prestées
-          </Typography>
-
-          {canEditHours ? (
-            <Button
-              variant="outlined"
-              size="small"
-              onClick={() => setOpenEditHours(true)}
-            >
+      {/* Zone 2 — Prestation */}
+      <SectionCard
+        icon={<AccessTimeIcon fontSize="small" />}
+        title="Prestation"
+        action={
+          canEditHours ? (
+            <Button size="small" variant="text" onClick={() => setOpenEditHours(true)}>
               Modifier
             </Button>
-          ) : null}
+          ) : undefined
+        }
+      >
+        <Stack spacing={1.5}>
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Typography variant="body2" color="text.secondary">
+              Heures prestées
+            </Typography>
+            <Typography variant="body2" fontWeight={700} color={hoursLabel === "—" ? "text.disabled" : "text.primary"}>
+              {hoursLabel}
+            </Typography>
+          </Stack>
+
+          {isEncodingPending && (
+            <Box
+              sx={{
+                bgcolor: "#EFF6FF",
+                borderRadius: 2,
+                px: 1.5,
+                py: 1,
+                border: "1px solid #DBEAFE",
+              }}
+            >
+              <Typography variant="caption" color="primary.dark">
+                Pour que les heures soient comptabilisées, l'encodage de la mission doit être terminé.
+              </Typography>
+            </Box>
+          )}
         </Stack>
+      </SectionCard>
 
-        <Typography>{hoursLabel}</Typography>
-      </Stack>
+      {/* Zone 3 — Interventions / Matériel */}
+      <SectionCard
+        icon={<EditNoteIcon fontSize="small" />}
+        title="Interventions & matériel"
+        action={
+          canEncoding ? (
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => navigate(`/app/i/missions/${mission.id}/encoding`)}
+            >
+              Gérer
+            </Button>
+          ) : undefined
+        }
+      >
+        <Typography variant="body2" color="text.secondary">
+          {canEncoding
+            ? "Encodez les interventions et le matériel utilisé."
+            : "Encodage non disponible pour cette mission."}
+        </Typography>
+      </SectionCard>
 
-      <Divider />
-
-      {canEncoding && (
-        <Button
-          variant="contained"
-          onClick={() => navigate(`/app/i/missions/${mission.id}/encoding`)}
-        >
-          Encoder la mission
-        </Button>
+      {/* Actions */}
+      {(canEncoding || canSubmit) && (
+        <Stack spacing={1.5}>
+          {canEncoding && (
+            <Button
+              variant="contained"
+              disableElevation
+              fullWidth
+              size="large"
+              onClick={() => navigate(`/app/i/missions/${mission.id}/encoding`)}
+              sx={{ borderRadius: 2, fontWeight: 700 }}
+            >
+              Encoder la mission
+            </Button>
+          )}
+          {canSubmit && (
+            <Button
+              variant={canEncoding ? "outlined" : "contained"}
+              disableElevation
+              fullWidth
+              size="large"
+              onClick={() => setOpenSubmit(true)}
+              sx={{ borderRadius: 2, fontWeight: 700 }}
+            >
+              Terminer l'encodage
+            </Button>
+          )}
+        </Stack>
       )}
 
-      {canSubmit && (
-        <Button variant="contained" onClick={() => setOpenSubmit(true)}>
-          Soumettre
-        </Button>
-      )}
-
+      {/* Dialogs */}
       <SubmitDialog
         open={openSubmit}
         missionId={mission.id}
@@ -325,46 +314,36 @@ export function MissionDetailContent({
         onSubmitted={() => {
           queryClient.invalidateQueries({ queryKey: ["mission", mission.id] });
           queryClient.invalidateQueries({ queryKey: ["missions"] });
-          queryClient.invalidateQueries({ queryKey: ["missions", "offers"] });
-          queryClient.invalidateQueries({
-            queryKey: ["missions", "my-missions"],
-          });
-
-          if (embedded && onCloseEmbedded) {
-            onCloseEmbedded();
-          }
+          if (embedded) onCloseEmbedded?.();
         }}
       />
 
-      {canEditHours && openEditHours ? (
+      {canEditHours && openEditHours && (
         <EditServiceHoursDialog
           open={openEditHours}
           onClose={() => setOpenEditHours(false)}
           mission={mission}
         />
-      ) : null}
+      )}
 
-      <Dialog
-        open={statusInfoOpen}
-        onClose={() => setStatusInfoOpen(false)}
-        aria-labelledby="status-dialog-title"
-      >
-        <DialogTitle id="status-dialog-title">
-          {statusUi.dialogTitle ?? "Statut"}
+      <Dialog open={statusInfoOpen} onClose={() => setStatusInfoOpen(false)}>
+        <DialogTitle>
+          {mission.status === "DECLARED" ? "Mission déclarée" : "Mission rejetée"}
         </DialogTitle>
-
         <DialogContent dividers>
-          <Stack spacing={1}>
-            {(statusUi.dialogBody ?? []).map((line, idx) => (
-              <Typography key={idx}>{line}</Typography>
-            ))}
-          </Stack>
+          {mission.status === "DECLARED" && (
+            <Typography>
+              Cette mission est en attente de validation par le manager. Certaines actions peuvent être indisponibles.
+            </Typography>
+          )}
+          {mission.status === "REJECTED" && (
+            <Typography>
+              Cette mission a été rejetée par le manager. L'encodage a été supprimé.
+            </Typography>
+          )}
         </DialogContent>
-
         <DialogActions>
-          <Button onClick={() => setStatusInfoOpen(false)} autoFocus>
-            OK
-          </Button>
+          <Button onClick={() => setStatusInfoOpen(false)}>OK</Button>
         </DialogActions>
       </Dialog>
     </Stack>
@@ -373,13 +352,8 @@ export function MissionDetailContent({
 
 export default function MissionDetailPage() {
   const { id } = useParams<{ id: string }>();
-
   const missionId = Number(id);
-  const isValidId = Number.isFinite(missionId) && missionId > 0;
-
-  if (!isValidId) {
-    return <Typography>Identifiant de mission invalide</Typography>;
-  }
-
+  if (!Number.isFinite(missionId) || missionId <= 0)
+    return <Typography>Identifiant invalide</Typography>;
   return <MissionDetailContent missionId={missionId} />;
 }

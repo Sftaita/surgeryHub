@@ -1,12 +1,24 @@
 import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, CircularProgress, Stack, Typography } from "@mui/material";
+import {
+  Box,
+  Button,
+  CircularProgress,
+  Divider,
+  Stack,
+  Typography,
+} from "@mui/material";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import AccessTimeIcon from "@mui/icons-material/AccessTime";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import { MobileCard } from "../../ui/mobile/MobileCard";
 
 import { fetchMissionById } from "../../features/missions/api/missions.api";
 import { fetchMissionEncoding } from "../../features/encoding/api/encoding.api";
 import InterventionsSection from "../../features/encoding/components/InterventionsSection";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
+import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
 
 function extractErrorMessage(err: any): string {
   return (
@@ -17,12 +29,20 @@ function extractErrorMessage(err: any): string {
   );
 }
 
+function formatHours(hours?: string | number | null): string {
+  if (hours === null || hours === undefined || hours === "") return "Non renseigné";
+  const n = typeof hours === "string" ? Number(hours) : hours;
+  if (!Number.isFinite(n)) return "Non renseigné";
+  return `${n} h`;
+}
+
 export default function MissionEncodingPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const [openSubmit, setOpenSubmit] = React.useState(false);
+  const [openEditHours, setOpenEditHours] = React.useState(false);
 
   const missionId = Number(id);
   const isValidId = Number.isFinite(missionId) && missionId > 0;
@@ -37,10 +57,12 @@ export default function MissionEncodingPage() {
     enabled: isValidId,
   });
 
-  // Compat backend: "edit_encoding"
   const canEncoding =
     mission?.allowedActions?.includes("encoding") ||
     mission?.allowedActions?.includes("edit_encoding");
+
+  const canSubmit = mission?.allowedActions?.includes("submit") ?? false;
+  const canEditHours = mission?.allowedActions?.includes("edit_hours") ?? false;
 
   const {
     data: encoding,
@@ -52,44 +74,30 @@ export default function MissionEncodingPage() {
     enabled: isValidId && !!mission && !!canEncoding,
   });
 
-  if (!isValidId)
-    return <Typography>Identifiant de mission invalide</Typography>;
+  if (!isValidId) return <Typography>Identifiant invalide</Typography>;
   if (isMissionLoading) return <CircularProgress />;
 
   if (missionError) {
     return (
       <Stack spacing={2}>
-        <Button variant="outlined" onClick={() => navigate(-1)}>
+        <Button variant="outlined" size="small" startIcon={<ArrowBackIcon />} onClick={() => navigate(-1)}>
           Retour
         </Button>
-        <Typography color="error">
-          {extractErrorMessage(missionError)}
-        </Typography>
+        <Typography color="error">{extractErrorMessage(missionError)}</Typography>
       </Stack>
     );
   }
 
-  if (!mission) {
-    return (
-      <Stack spacing={2}>
-        <Button variant="outlined" onClick={() => navigate(-1)}>
-          Retour
-        </Button>
-        <Typography>Mission introuvable</Typography>
-      </Stack>
-    );
-  }
+  if (!mission) return <Typography>Mission introuvable</Typography>;
 
   if (!canEncoding) {
     return (
       <Stack spacing={2}>
-        <Button variant="outlined" onClick={() => navigate(-1)}>
+        <Button variant="outlined" size="small" startIcon={<ArrowBackIcon />} onClick={() => navigate(-1)}>
           Retour
         </Button>
-        <Typography variant="h6">Encodage — Mission #{mission.id}</Typography>
         <Typography color="text.secondary">
-          Accès non autorisé (allowedActions ne contient pas
-          encoding/edit_encoding).
+          L'encodage n'est pas disponible pour cette mission.
         </Typography>
       </Stack>
     );
@@ -100,70 +108,91 @@ export default function MissionEncodingPage() {
   if (encodingError) {
     return (
       <Stack spacing={2}>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Button variant="outlined" onClick={() => navigate(-1)}>
-            Retour
-          </Button>
-          <Typography variant="h6">Encodage — Mission #{mission.id}</Typography>
-        </Stack>
-        <Typography color="error">
-          {extractErrorMessage(encodingError)}
-        </Typography>
+        <Button variant="outlined" size="small" startIcon={<ArrowBackIcon />} onClick={() => navigate(-1)}>
+          Retour
+        </Button>
+        <Typography color="error">{extractErrorMessage(encodingError)}</Typography>
       </Stack>
     );
   }
 
-  if (!encoding) {
-    return (
-      <Stack spacing={2}>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Button variant="outlined" onClick={() => navigate(-1)}>
-            Retour
-          </Button>
-          <Typography variant="h6">Encodage — Mission #{mission.id}</Typography>
-        </Stack>
-        <Typography>Encodage introuvable</Typography>
-      </Stack>
-    );
-  }
+  if (!encoding) return <Typography>Données d'encodage introuvables</Typography>;
 
   const canEdit =
     encoding.mission?.allowedActions?.includes("encoding") ||
     encoding.mission?.allowedActions?.includes("edit_encoding") ||
     false;
 
-  const canSubmit =
-    encoding.mission?.allowedActions?.includes("submit") ?? false;
+  const hoursLabel = formatHours(mission.service?.hours ?? null);
 
   return (
     <Stack spacing={2}>
+      {/* Header */}
       <Stack direction="row" spacing={1} alignItems="center">
-        <Button variant="outlined" onClick={() => navigate(-1)}>
-          ← Mission
+        <Button
+          variant="text"
+          size="small"
+          startIcon={<ArrowBackIcon />}
+          onClick={() => navigate(-1)}
+          sx={{ minWidth: 0 }}
+        >
+          Mission
         </Button>
-
-        <Stack sx={{ flex: 1 }}>
-          <Typography variant="h6">Encodage — Mission #{mission.id}</Typography>
-          <Typography variant="caption" color="text.secondary">
-            {encoding.mission?.type === "BLOCK"
-              ? "Bloc opératoire"
-              : encoding.mission?.type === "CONSULTATION"
-                ? "Consultation"
-                : String(encoding.mission?.type ?? "")}
-          </Typography>
-        </Stack>
-
-        {canSubmit && (
-          <Button
-            variant="contained"
-            onClick={() => setOpenSubmit(true)}
-            sx={{ marginLeft: "auto" }}
-          >
-            Soumettre
-          </Button>
-        )}
+        <Typography variant="subtitle1" fontWeight={600} sx={{ flex: 1 }}>
+          Encodage #{mission.id}
+        </Typography>
       </Stack>
 
+      {/* Bandeau aide */}
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="flex-start"
+        sx={{
+          px: 1.5,
+          py: 1.25,
+          bgcolor: "#EFF6FF",
+          borderRadius: 2,
+          border: "1px solid #DBEAFE",
+        }}
+      >
+        <InfoOutlinedIcon sx={{ fontSize: 16, color: "primary.main", mt: 0.1, flexShrink: 0 }} />
+        <Typography variant="caption" color="primary.dark">
+          Pour que les heures soient comptabilisées, l'encodage de la mission doit être terminé.
+        </Typography>
+      </Stack>
+
+      {/* Zone heures */}
+      <MobileCard>
+        <Stack
+          direction="row"
+          alignItems="center"
+          sx={{ px: 2, py: 1.5, borderBottom: "1px solid", borderColor: "divider" }}
+        >
+          <Box sx={{ color: "primary.main", display: "flex", mr: 1 }}>
+            <AccessTimeIcon fontSize="small" />
+          </Box>
+          <Typography variant="subtitle2" sx={{ flex: 1 }}>
+            Heures prestées
+          </Typography>
+          {canEditHours && (
+            <Button size="small" variant="text" onClick={() => setOpenEditHours(true)}>
+              Modifier
+            </Button>
+          )}
+        </Stack>
+        <Box sx={{ px: 2, py: 2 }}>
+          <Typography
+            variant="h4"
+            fontWeight={800}
+            color={hoursLabel === "Non renseigné" ? "text.disabled" : "primary.main"}
+          >
+            {hoursLabel}
+          </Typography>
+        </Box>
+      </MobileCard>
+
+      {/* Interventions */}
       <InterventionsSection
         missionId={mission.id}
         canEdit={canEdit}
@@ -171,22 +200,41 @@ export default function MissionEncodingPage() {
         catalog={encoding.catalog}
       />
 
+      <Divider />
+
+      {/* Terminer l'encodage */}
+      {canSubmit && (
+        <Button
+          variant="contained"
+          disableElevation
+          fullWidth
+          size="large"
+          onClick={() => setOpenSubmit(true)}
+          sx={{ borderRadius: 2, fontWeight: 700 }}
+        >
+          Terminer l'encodage
+        </Button>
+      )}
+
       <SubmitDialog
         open={openSubmit}
         missionId={mission.id}
         onClose={() => setOpenSubmit(false)}
         onSubmitted={() => {
           queryClient.invalidateQueries({ queryKey: ["mission", mission.id] });
-          queryClient.invalidateQueries({
-            queryKey: ["missionEncoding", mission.id],
-          });
+          queryClient.invalidateQueries({ queryKey: ["missionEncoding", mission.id] });
           queryClient.invalidateQueries({ queryKey: ["missions"] });
-          queryClient.invalidateQueries({ queryKey: ["missions", "offers"] });
-          queryClient.invalidateQueries({
-            queryKey: ["missions", "my-missions"],
-          });
+          navigate(-1);
         }}
       />
+
+      {canEditHours && openEditHours && (
+        <EditServiceHoursDialog
+          open={openEditHours}
+          onClose={() => setOpenEditHours(false)}
+          mission={mission}
+        />
+      )}
     </Stack>
   );
 }
