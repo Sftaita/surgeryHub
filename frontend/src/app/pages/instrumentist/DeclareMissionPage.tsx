@@ -27,6 +27,7 @@ import {
 } from "../../features/missions/api/missions.api";
 
 import { useToast } from "../../ui/toast/useToast";
+import { requestMissionSync } from "../../features/missions/sync/missionSyncBus";
 
 function buildSurgeonLabel(u: UserListItem): string {
   const display = (u.displayName ?? "").trim();
@@ -156,6 +157,7 @@ export default function DeclareMissionPage() {
     },
     onSuccess: (mission) => {
       toast.success("Mission déclarée. En cours de validation.");
+      requestMissionSync();
       navigate(`/app/i/missions/${mission.id}`, { replace: true });
     },
     onError: (err: any) => {

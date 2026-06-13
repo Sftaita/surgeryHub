@@ -6,13 +6,29 @@ import {
   BottomNavigationAction,
   Paper,
   Box,
+  AppBar,
+  Toolbar,
+  Typography,
+  IconButton,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
 } from "@mui/material";
+import TodayIcon from "@mui/icons-material/Today";
+import CalendarMonthIcon from "@mui/icons-material/CalendarMonth";
 import LocalOfferIcon from "@mui/icons-material/LocalOffer";
-import AssignmentIcon from "@mui/icons-material/Assignment";
-import { useQuery } from "@tanstack/react-query";
+import NotificationsIcon from "@mui/icons-material/Notifications";
+import AccountCircleIcon from "@mui/icons-material/AccountCircle";
+import LogoutIcon from "@mui/icons-material/Logout";
+import PersonIcon from "@mui/icons-material/Person";
 
-import { fetchInstrumentistOffersWithFallback } from "../features/missions/api/missions.api";
+import { useQuery } from "@tanstack/react-query";
+import { usePushNotifications } from "../features/push/usePushNotifications";
+import { useNotifications } from "../features/push/useNotifications";
 import { useAuth } from "../auth/AuthContext";
+import { fetchInstrumentistOffersWithFallback } from "../features/missions/api/missions.api";
+import { useInstrumentistMissionSync } from "../features/missions/sync/useInstrumentistMissionSync";
 
 type Tab = {
   label: string;
@@ -21,196 +37,192 @@ type Tab = {
 };
 
 const NAV_HEIGHT = 56;
+const APPBAR_HEIGHT = 56;
 
-// Safe-area iOS (ne casse rien ailleurs)
-const SAFE_AREA_STYLE: React.CSSProperties = {
+const SAFE_AREA_BOTTOM: React.CSSProperties = {
   paddingBottom: "env(safe-area-inset-bottom)",
 };
 
-// D) Limite/purge
-const SEEN_IDS_MAX = 100;
+const tabs: Tab[] = [
+  {
+    label: "Aujourd'hui",
+    path: "/app/i/today",
+    match: (p) => p === "/app/i" || p === "/app/i/today",
+  },
+  {
+    label: "Planning",
+    path: "/app/i/planning",
+    match: (p) => p.startsWith("/app/i/planning"),
+  },
+  {
+    label: "Offres",
+    path: "/app/i/offers",
+    match: (p) => p.startsWith("/app/i/offers"),
+  },
+];
 
-const LS_SEEN_OFFERS_KEY = "instrumentist.offers.seenIds";
-const LS_NEW_OFFERS_FLAG_KEY = "instrumentist.offers.hasNew"; // best-effort local (per device)
-
-function readSeenOfferIds(): number[] {
-  try {
-    const raw = localStorage.getItem(LS_SEEN_OFFERS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((x) => Number(x))
-      .filter((n) => Number.isFinite(n) && n > 0);
-  } catch {
-    return [];
-  }
-}
-
-function writeSeenOfferIds(ids: number[]) {
-  try {
-    // D) purge: garder les N derniers
-    const limited = ids.slice(-SEEN_IDS_MAX);
-    localStorage.setItem(LS_SEEN_OFFERS_KEY, JSON.stringify(limited));
-  } catch {
-    // ignore (private mode / storage disabled)
-  }
-}
-
-function readHasNewFlag(): boolean {
-  try {
-    return localStorage.getItem(LS_NEW_OFFERS_FLAG_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function writeHasNewFlag(v: boolean) {
-  try {
-    localStorage.setItem(LS_NEW_OFFERS_FLAG_KEY, v ? "1" : "0");
-  } catch {
-    // ignore
-  }
+function getTabLabel(pathname: string): string {
+  const tab = tabs.find((t) => t.match(pathname));
+  if (tab) return tab.label;
+  if (pathname.startsWith("/app/i/notifications")) return "Notifications";
+  if (pathname.startsWith("/app/i/missions")) return "Mission";
+  return "SurgicalHub";
 }
 
 export function MobileLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const pathname = location.pathname;
+  const { logout } = useAuth();
 
-  const { state, logout } = useAuth();
-  const isAuthenticated = state.status === "authenticated";
+  const [menuAnchor, setMenuAnchor] = React.useState<null | HTMLElement>(null);
+
+  useInstrumentistMissionSync();
 
   const isInstrumentist = pathname.startsWith("/app/i");
+  const isPlanning = pathname.startsWith("/app/i/planning");
 
-  // C) polling seulement sur /app/i/offers (et /app/i redirige vers offers)
-  const isOnOffersPage = pathname.startsWith("/app/i/offers");
-
-  const tabs: Tab[] = [
-    {
-      label: "Offres",
-      path: "/app/i/offers",
-      match: (p) => p === "/app/i" || p.startsWith("/app/i/offers"),
-    },
-    {
-      label: "Mes missions",
-      path: "/app/i/my-missions",
-      match: (p) =>
-        p.startsWith("/app/i/my-missions") || p.startsWith("/app/i/missions/"),
-    },
-  ];
-
-  const activeIndex = isInstrumentist
-    ? Math.max(
-        0,
-        tabs.findIndex((t) => t.match(pathname)),
-      )
-    : -1;
-
-  // Compteur + dot: uniquement quand instrumentiste
-  // C) Polling actif uniquement sur Offres (sinon pas de refetchInterval)
   const { data: offersData } = useQuery({
     queryKey: ["missions", "offers"],
     queryFn: () => fetchInstrumentistOffersWithFallback(1, 100),
-    enabled: isInstrumentist, // pas côté surgeon
-    refetchInterval: isInstrumentist && isOnOffersPage ? 60_000 : false,
+    enabled: isInstrumentist,
+    refetchInterval: isInstrumentist ? 60_000 : false,
   });
+  const offersCount = offersData?.items?.length ?? 0;
 
-  const offers = offersData?.items ?? [];
-  const offersCount = offers.length;
+  const { pushState, requestPermission } = usePushNotifications();
+  const { badgeLabel } = useNotifications();
 
-  // A) best-effort local state + persisted flag (pour garder la dot si on quitte offers)
-  const [hasNewOffers, setHasNewOffers] = React.useState<boolean>(() =>
-    readHasNewFlag(),
-  );
+  const activeIndex = isInstrumentist
+    ? Math.max(-1, tabs.findIndex((t) => t.match(pathname)))
+    : -1;
 
-  // Détection de nouvelles offres: best-effort local
-  React.useEffect(() => {
-    if (!isInstrumentist) return;
-    if (!offersData) return;
-
-    const currentIds = offers
-      .map((m) => Number(m.id))
-      .filter((n) => Number.isFinite(n) && n > 0);
-
-    const seenIds = readSeenOfferIds();
-    const seen = new Set(seenIds);
-
-    // Premier init: si vide, on initialise sans marquer "new"
-    if (seenIds.length === 0) {
-      writeSeenOfferIds(currentIds);
-      setHasNewOffers(false);
-      writeHasNewFlag(false);
-      return;
-    }
-
-    const anyNew = currentIds.some((id) => !seen.has(id));
-
-    // Si de nouvelles offres apparaissent:
-    // - si on est sur Offres => on marque vu immédiatement (pas de dot)
-    // - sinon => on active la dot
-    if (anyNew) {
-      if (isOnOffersPage) {
-        writeSeenOfferIds(currentIds);
-        setHasNewOffers(false);
-        writeHasNewFlag(false);
-      } else {
-        setHasNewOffers(true);
-        writeHasNewFlag(true);
-      }
-    }
-  }, [isInstrumentist, offersData, offers, isOnOffersPage]);
-
-  // Quand l'utilisateur revient sur Offres : mark as seen + reset dot
-  React.useEffect(() => {
-    if (!isInstrumentist) return;
-    if (!isOnOffersPage) return;
-
-    const currentIds = offers
-      .map((m) => Number(m.id))
-      .filter((n) => Number.isFinite(n) && n > 0);
-
-    if (currentIds.length > 0) {
-      writeSeenOfferIds(currentIds);
-    }
-    setHasNewOffers(false);
-    writeHasNewFlag(false);
-  }, [isInstrumentist, isOnOffersPage, offers]);
+  const handleLogout = () => {
+    setMenuAnchor(null);
+    logout();
+    navigate("/login", { replace: true });
+  };
 
   return (
-    <Box
-      sx={{
-        minHeight: "100vh",
-        boxSizing: "border-box",
-        px: 1.5,
-        pt: 1.5,
-        pb: isInstrumentist
-          ? `calc(${NAV_HEIGHT}px + env(safe-area-inset-bottom) + 16px)`
-          : 1.5,
-      }}
-    >
-      {/* Header minimal avec logout (sans impacter la logique métier) */}
-      {isAuthenticated && (
-        <Box
+    <Box sx={{ minHeight: "100vh", display: "flex", flexDirection: "column", bgcolor: "background.default" }}>
+      {/* Top App Bar */}
+      {isInstrumentist && (
+        <AppBar
+          position="fixed"
+          color="default"
+          elevation={0}
           sx={{
-            display: "flex",
-            justifyContent: "flex-end",
-            mb: 1,
+            bgcolor: "background.paper",
+            zIndex: (theme) => theme.zIndex.appBar,
+            boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
           }}
         >
-          <button
-            onClick={() => {
-              logout();
-              navigate("/login", { replace: true });
+          <Toolbar sx={{ minHeight: APPBAR_HEIGHT, px: 2 }}>
+            <Typography variant="subtitle1" fontWeight={700} color="primary" sx={{ flex: 1 }}>
+              {getTabLabel(pathname)}
+            </Typography>
+
+            <IconButton
+              size="small"
+              onClick={() => navigate("/app/i/notifications")}
+              aria-label="Notifications"
+            >
+              <Badge badgeContent={badgeLabel} color="error">
+                <NotificationsIcon fontSize="small" />
+              </Badge>
+            </IconButton>
+
+            <IconButton
+              size="small"
+              onClick={(e) => setMenuAnchor(e.currentTarget)}
+              aria-label="Profil"
+              sx={{ ml: 0.5 }}
+            >
+              <AccountCircleIcon fontSize="small" />
+            </IconButton>
+
+            <Menu
+              anchorEl={menuAnchor}
+              open={Boolean(menuAnchor)}
+              onClose={() => setMenuAnchor(null)}
+              transformOrigin={{ horizontal: "right", vertical: "top" }}
+              anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
+            >
+              <MenuItem onClick={() => { setMenuAnchor(null); navigate("/app/i/profile"); }}>
+                <ListItemIcon>
+                  <PersonIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText>Mon profil</ListItemText>
+              </MenuItem>
+              <MenuItem onClick={handleLogout}>
+                <ListItemIcon>
+                  <LogoutIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText>Se déconnecter</ListItemText>
+              </MenuItem>
+            </Menu>
+          </Toolbar>
+        </AppBar>
+      )}
+
+      {/* Bandeau activation notifications */}
+      {isInstrumentist && pushState === "prompt" && (
+        <Box
+          sx={{
+            position: "fixed",
+            top: APPBAR_HEIGHT,
+            left: 0,
+            right: 0,
+            zIndex: (theme) => theme.zIndex.appBar - 1,
+            bgcolor: "primary.main",
+            color: "primary.contrastText",
+            px: 2,
+            py: 0.75,
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+          }}
+        >
+          <Typography variant="body2" sx={{ flex: 1, fontSize: "0.8rem" }}>
+            Activez les notifications pour les nouvelles missions
+          </Typography>
+          <Typography
+            component="button"
+            variant="body2"
+            fontWeight={700}
+            sx={{
+              border: "none",
+              bgcolor: "transparent",
+              color: "inherit",
+              cursor: "pointer",
+              fontSize: "0.8rem",
+              textDecoration: "underline",
+              p: 0,
             }}
+            onClick={requestPermission}
           >
-            Logout
-          </button>
+            Activer
+          </Typography>
         </Box>
       )}
 
-      <Outlet />
+      {/* Content area */}
+      <Box
+        sx={{
+          flex: 1,
+          px: isPlanning ? 0 : 1.5,
+          pt: isPlanning
+            ? `${APPBAR_HEIGHT}px`
+            : `${APPBAR_HEIGHT + (pushState === "prompt" ? 40 : 0) + 12}px`,
+          pb: isPlanning
+            ? 0
+            : `calc(${NAV_HEIGHT}px + env(safe-area-inset-bottom) + 16px)`,
+        }}
+      >
+        <Outlet />
+      </Box>
 
+      {/* Bottom nav */}
       {isInstrumentist && (
         <Paper
           elevation={8}
@@ -222,48 +234,43 @@ export function MobileLayout() {
             right: 0,
             bottom: 0,
             borderTop: "1px solid rgba(0,0,0,0.12)",
-            ...SAFE_AREA_STYLE,
+            ...SAFE_AREA_BOTTOM,
           }}
         >
           <BottomNavigation
             showLabels
-            value={activeIndex}
+            value={activeIndex >= 0 ? activeIndex : false}
             onChange={(_, newValue: number) => {
               const tab = tabs[newValue];
               if (tab) navigate(tab.path);
             }}
             sx={{
               height: NAV_HEIGHT,
-              "& .MuiBottomNavigationAction-root": { minWidth: 0 },
+              bgcolor: "background.paper",
+              "& .MuiBottomNavigationAction-root": {
+                color: "text.disabled",
+                fontSize: "0.7rem",
+              },
               "& .MuiBottomNavigationAction-root.Mui-selected": {
-                color: "primary.main", // 🎨 actif = theme primary
+                color: "primary.main",
               },
             }}
           >
             <BottomNavigationAction
-              label="Offres"
-              icon={
-                <Badge
-                  badgeContent={offersCount}
-                  color="error"
-                  overlap="circular"
-                >
-                  <Badge
-                    variant="dot"
-                    color="error"
-                    overlap="circular"
-                    invisible={!hasNewOffers}
-                  >
-                    <LocalOfferIcon />
-                  </Badge>
-                </Badge>
-              }
-              sx={{ "&.Mui-selected": { color: "primary.main" } }}
+              label="Aujourd'hui"
+              icon={<TodayIcon />}
             />
             <BottomNavigationAction
-              label="Mes missions"
-              icon={<AssignmentIcon />}
-              sx={{ "&.Mui-selected": { color: "primary.main" } }}
+              label="Planning"
+              icon={<CalendarMonthIcon />}
+            />
+            <BottomNavigationAction
+              label="Offres"
+              icon={
+                <Badge badgeContent={offersCount || undefined} color="error" max={9}>
+                  <LocalOfferIcon />
+                </Badge>
+              }
             />
           </BottomNavigation>
         </Paper>

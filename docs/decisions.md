@@ -642,6 +642,51 @@ POST /api/instrumentist-statements/{id}/mark-paid
 
 ---
 
+## D-045 — Synchronisation missions instrumentiste par polling intelligent (V1, sans Mercure)
+
+Date : 2026-06-12
+
+### Décision
+
+Synchronisation des missions instrumentiste (onglet Offres / Mes missions / Planning) via un
+endpoint de polling dédié plutôt que Mercure/WebSocket :
+
+- `GET /api/instrumentist/missions/sync?since=ISO_DATE` — retourne `{ serverTime, changed,
+  missions[], removedMissionIds[] }` (voir `docs/api.md` §27).
+- Index DB `IDX_MISSION_UPDATED_AT` sur `mission.updated_at` (migration
+  `Version20260610000001`) pour permettre un filtrage `since` performant.
+- `updatedAt` est déjà rafraîchi automatiquement sur toute transition de statut
+  (`TimestampableTrait` + `#[ORM\PreUpdate]`) — aucune modification nécessaire dans
+  `MissionService` pour publish/claim/submit/approve/reject.
+- Frontend : hook `useInstrumentistMissionSync()` monté dans `MobileLayout` — polling 30s
+  actif uniquement si connecté + `ROLE_INSTRUMENTIST` + onglet visible + réseau online ; pause
+  si hidden/offline ; refresh immédiat au retour online/focus ou via `requestMissionSync()`
+  (bus d'événements) après claim/submit/declare.
+- `lastSyncAt` est dérivé de `serverTime` (jamais de l'heure locale), persisté en
+  `localStorage`.
+- Le cache React Query (`["missions", ...]`, toutes clés dynamiques incluses) est patché en
+  place par `applyMissionSyncToCache` : update/suppression des missions existantes, ajout des
+  nouvelles offres OPEN claimables, ajout des missions nouvellement assignées dans "Mes
+  missions".
+- Anti-spam : un seul toast groupé ("N nouvelles missions disponibles") même si plusieurs
+  offres arrivent dans le même cycle.
+
+### Motivation
+
+- Hébergement mutualisé (Hostinger) — Mercure/WebSocket non disponibles.
+- Les instrumentistes doivent voir apparaître les nouvelles missions OPEN sans refresh manuel,
+  et voir disparaître les offres prises par d'autres (anti-collision sur le claim).
+
+### Garde-fous (inchangés)
+
+- Aucune donnée patient dans la réponse de sync (`MissionListDto` uniquement).
+- `allowedActions[]` reste l'unique source de vérité côté frontend — aucune inférence de droit
+  basée sur le statut.
+- Le `claim` reste transactionnel côté `POST /api/missions/{id}/claim` (`409` si déjà prise) ;
+  l'endpoint de sync ne fait que refléter l'état serveur.
+
+---
+
 ## Historique
 
 | Date | Décision |

@@ -163,3 +163,18 @@ export interface Mission {
 
   [key: string]: unknown;
 }
+
+/**
+ * V1 "polling intelligent" — GET /api/instrumentist/missions/sync?since=ISO_DATE
+ *
+ * IMPORTANT:
+ * - lastSyncAt côté client doit être dérivé de `serverTime` (jamais de l'heure locale).
+ * - aucune donnée patient n'est jamais présente ici (MissionListDto).
+ * - allowedActions reste la seule source de vérité pour les droits côté frontend.
+ */
+export type MissionSyncResponse = {
+  serverTime: string;
+  changed: boolean;
+  missions: Mission[];
+  removedMissionIds: number[];
+};

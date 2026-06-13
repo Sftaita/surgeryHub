@@ -8,6 +8,7 @@ import type {
   UserListItem,
   InstrumentistsResponse,
   InstrumentistService,
+  MissionSyncResponse,
 } from "./missions.types";
 import type {
   MissionPatchBody,
@@ -123,6 +124,24 @@ export async function fetchInstrumentistMyMissions(page = 1, limit = 100) {
     assignedToMe: true,
     status: "DECLARED,ASSIGNED,IN_PROGRESS",
   });
+}
+
+/**
+ * V1 "polling intelligent" — GET /api/instrumentist/missions/sync?since=ISO_DATE
+ *
+ * - `since` absent => premier sync (le backend renvoie l'état pertinent complet)
+ * - 422 si `since` est fourni mais n'est pas un ISO 8601 valide
+ */
+export async function fetchInstrumentistMissionSync(
+  since?: string | null,
+): Promise<MissionSyncResponse> {
+  const { data } = await apiClient.get<MissionSyncResponse>(
+    "/api/instrumentist/missions/sync",
+    {
+      params: since ? { since } : {},
+    },
+  );
+  return data;
 }
 
 export async function fetchMissionById(id: number) {

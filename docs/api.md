@@ -1917,3 +1917,62 @@ Retourne toutes les règles (actives + inactives) pour la firme.
 **Effets :** `status → PAID`, `paidAt = now()`
 
 ---
+
+## 27. Synchronisation missions instrumentiste (polling intelligent V1)
+
+### `GET /api/instrumentist/missions/sync?since=ISO_DATE`
+
+**AuthZ :** `ROLE_INSTRUMENTIST`
+
+**Contexte :** V1 "polling intelligent" — synchronise les missions OPEN/ASSIGNED de
+l'instrumentiste connecté sans Mercure/WebSocket (compatible hébergement mutualisé).
+
+**Query params :**
+
+| Param | Type | Requis | Description |
+|---|---|---|---|
+| `since` | string (ISO 8601) | Non | Ne retourne que les missions créées/modifiées depuis cette date. Absent = premier sync (état complet pertinent). |
+
+**Réponse — 200 :**
+
+```json
+{
+  "serverTime": "2026-06-12T10:00:00+00:00",
+  "changed": true,
+  "missions": [
+    {
+      "id": 42,
+      "type": "BLOCK",
+      "schedulePrecision": "EXACT",
+      "startAt": "2026-06-12T08:00:00+00:00",
+      "endAt": "2026-06-12T12:00:00+00:00",
+      "status": "OPEN",
+      "site": { "id": 1, "name": "Alpha" },
+      "allowedActions": ["claim"]
+    }
+  ],
+  "removedMissionIds": [123, 124]
+}
+```
+
+**Contenu de `missions[]` :**
+- Missions `OPEN` éligibles (publication POOL/TARGETED + appartenance site, mêmes règles que `eligibleToMe=true`)
+- Missions `ASSIGNED` (et autres statuts pertinents) déjà attribuées à l'utilisateur courant
+- Toute mission créée/modifiée depuis `since` qui concerne l'utilisateur (changement de statut pertinent)
+
+**`removedMissionIds[]` :** identifiants de missions précédemment visibles (offres) qui ne sont
+plus éligibles pour l'utilisateur (ex : claimées par un autre instrumentiste) — le frontend doit
+les retirer de la liste "Offres".
+
+**Règles :**
+- `serverTime` est l'horloge serveur — le frontend doit dériver son prochain `since` de cette
+  valeur, jamais de l'heure locale.
+- Aucune donnée patient n'est jamais incluse (`MissionListDto` uniquement).
+- `allowedActions[]` reste la seule source de vérité côté frontend pour les droits.
+- Le `claim` reste transactionnel côté `POST /api/missions/{id}/claim`, avec `409` si déjà prise —
+  cet endpoint de sync ne fait que refléter l'état serveur.
+
+**Erreurs :**
+- `422` si `since` est fourni mais n'est pas un ISO 8601 valide
+
+---

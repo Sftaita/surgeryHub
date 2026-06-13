@@ -13,6 +13,7 @@ import {
 
 import { submitMission } from "../api/missions.api";
 import { useToast } from "../../../ui/toast/useToast";
+import { requestMissionSync } from "../sync/missionSyncBus";
 
 type Props = {
   open: boolean;
@@ -55,6 +56,7 @@ export default function SubmitDialog({
     try {
       await submitMission(missionId, { noMaterial, comment });
       toast.success("Mission soumise");
+      requestMissionSync();
       onClose();
       onSubmitted?.();
     } catch (err: any) {
@@ -72,7 +74,7 @@ export default function SubmitDialog({
       fullWidth
       maxWidth="sm"
     >
-      <DialogTitle>Submit</DialogTitle>
+      <DialogTitle>Terminer l'encodage</DialogTitle>
 
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
@@ -84,7 +86,7 @@ export default function SubmitDialog({
                 disabled={loading}
               />
             }
-            label="Aucun matériel (noMaterial)"
+            label="Aucun matériel utilisé"
           />
 
           <TextField
@@ -105,7 +107,7 @@ export default function SubmitDialog({
           Annuler
         </Button>
         <Button variant="contained" onClick={handleSubmit} disabled={loading}>
-          {loading ? "..." : "Valider"}
+          {loading ? "..." : "Confirmer"}
         </Button>
       </DialogActions>
     </Dialog>
