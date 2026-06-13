@@ -1,0 +1,17 @@
+# Build artifacts
+vendor/
+var/cache/
+var/log/
+var/sessions/
+
+# Secrets — generated at runtime by entrypoint
+.env.local
+.env.*.local
+config/jwt/private.pem
+config/jwt/public.pem
+
+# Dev tools
+tests/
+.php-cs-fixer.cache
+phpunit.xml
+phpstan.neon

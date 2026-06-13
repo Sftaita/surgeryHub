@@ -1,0 +1,11 @@
+# Build artifacts
+node_modules/
+dist/
+.vite/
+
+# Secrets
+.env.local
+.env.*.local
+
+# Cache
+.npm/

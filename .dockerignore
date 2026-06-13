@@ -1,0 +1,29 @@
+# Version control
+.git
+.github
+.gitignore
+
+# Documentation
+docs/
+*.md
+
+# Frontend — not part of PHP build context
+frontend/
+
+# Backend — build artifacts and secrets never go into the image
+backend/vendor/
+backend/var/
+backend/.env.local
+backend/.env.*.local
+backend/config/jwt/private.pem
+backend/config/jwt/public.pem
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
