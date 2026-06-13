@@ -1,0 +1,5 @@
+# Hostinger : document root imposé, créé par l'hébergeur, non versionné.
+# Sur le serveur, ~/domains/surgicalhub.be/public_html/ contient le build
+# React déployé (frontend/dist/) et l'entrée publique Symfony (backend/public/).
+# Voir docs/production-hostinger.md.
+/public_html/

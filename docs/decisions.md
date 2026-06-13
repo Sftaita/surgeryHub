@@ -642,6 +642,796 @@ POST /api/instrumentist-statements/{id}/mark-paid
 
 ---
 
+---
+
+## D-021 — Module Planning — gabarits permanents
+
+Date : 18-03-2026
+
+### Décision
+
+Le planning est généré à partir de **gabarits de semaine permanents** (`PlanningTemplate`), sans dates de validité.
+
+**Modèle retenu :**
+- Un `PlanningTemplate` définit une semaine type : `PAIR` / `IMPAIR` / `TOUTES`
+- Il est obligatoirement rattaché à un site (`Hospital`)
+- Il contient des `PlanningSlot` (créneau : jour, AM/PM, chirurgien, instrumentiste, type)
+- La génération déroule les templates sur une plage de dates et crée des missions `DRAFT`
+- Le déploiement publie les missions et envoie des PDFs par email
+
+**Algorithme de sélection d'instrumentiste :**
+1. Exclusion des instrumentistes absents (`Absence`)
+2. Exclusion des instrumentistes déjà affectés (collision de créneau)
+3. Scoring sur 100 pts : spécialité (0–40 pts) + historique chirurgien VALIDATED (0–35 pts) + expérience type BLOCK/CONSULTATION (0–25 pts)
+4. Tri : historique + spécialité en premier, puis spécialité seule, puis score décroissant
+
+**Types de semaine :**
+- `PAIR` : s'applique aux semaines paires du calendrier ISO
+- `IMPAIR` : semaines impaires
+- `TOUTES` : toutes les semaines (priorité sur PAIR/IMPAIR)
+
+### Motivation
+
+- Éviter la saisie manuelle mission par mission
+- Refléter les habitudes récurrentes des chirurgiens
+- Permettre la gestion fine PAIR/IMPAIR courante en chirurgie orthopédique
+
+### Impact technique
+
+- Entités : `PlanningTemplate`, `PlanningSlot`, `Absence`
+- Service : `PlanningGeneratorService` — calcul semaine ISO, filtrage absences, scoring
+- Migrations : suppression `date_start`/`date_end`, `site_id NOT NULL`, `type VARCHAR(7)` (pour TOUTES)
+- Controllers : `PlanningTemplateController`, `AbsenceController`, `PlanningGeneratorController`
+- Frontend : feature `planning-manager`, pages dans `src/app/pages/manager/planning/`
+
+---
+
+## D-022 — Template naming — édition inline optimiste
+
+Date : 18-03-2026
+
+### Décision
+
+Les `PlanningTemplate` peuvent avoir un nom personnalisé (`label`), éditable inline depuis l'éditeur de gabarit.
+
+**Pattern d'édition optimiste :**
+1. Clic sur l'icône crayon → `editingTitle = true`, affichage d'un `TextField`
+2. Validation (Enter / blur) → `setEditingTitle(false)` **immédiatement** (fermeture optimiste)
+3. `optimisticLabel` mis à jour immédiatement pour l'affichage
+4. Mutation API `PATCH /api/planning/templates/{id}` lancée en arrière-plan
+5. Succès → `optimisticLabel = undefined` (revenir à la valeur serveur après invalidation)
+6. Erreur → `optimisticLabel = previousLabel` + toast d'erreur + réouverture de l'édition
+
+### Motivation
+
+- UX fluide : pas d'attente de la réponse API pour fermer le champ
+- Cohérence avec les patterns optimistes du reste de l'application (affiliations de site)
+- Rollback fiable en cas d'erreur
+
+### Impact technique
+
+- Endpoint `PATCH /api/planning/templates/{id}` avec body `{ label: string | null }`
+- `null` pour effacer le nom (affiché "Sans nom" en italique dans l'UI)
+- `renameTemplate()` dans `planning.api.ts`
+
+---
+
+## D-023 — Drag & drop de slots — positionnement optimiste
+
+Date : 18-03-2026
+
+### Décision
+
+L'éditeur de gabarit supporte le glisser-déposer des slots entre cellules (jour × période) via l'API HTML5 DnD native (sans bibliothèque externe).
+
+**Pattern de positionnement optimiste :**
+1. `onDragStart` : mémorise `slotId`, `sourceDayOfWeek`, `sourcePeriod`
+2. `onDrop` (sur une cellule cible) : appelle `setPosOverrides(map.set(slotId, { dayOfWeek, period }))` immédiatement
+3. L'affichage recalcule `effectiveSlots` en appliquant les overrides → la carte est déjà dans sa nouvelle cellule
+4. Mutation `PUT /api/planning/templates/{id}/slots/{slotId}` lancée
+5. Succès → `posOverrides.delete(slotId)` + invalidation du cache
+6. Erreur → `posOverrides.delete(slotId)` + toast + la carte revient à sa position originale
+
+**Contraintes :**
+- Un slot ne peut être déplacé que sur une cellule différente (même jour+période = no-op)
+- La mutation `updateSlot` accepte `dayOfWeek`, `period`, `startTime`, `endTime`, `surgeonId`, `instrumentistId`
+
+### Motivation
+
+- Éviter le "clignotement" d'une carte qui revient à sa position avant d'aller à la nouvelle
+- Feedback immédiat pour l'utilisateur
+- Gestion propre du rollback sans état incohérent
+
+### Impact technique
+
+- `posOverrides: Map<number, { dayOfWeek: number; period: "AM" | "PM" }>` dans le state local de `PlanningTemplateEditorPage`
+- `effectiveSlots` = `rawSlots.map(s => posOverrides.has(s.id) ? { ...s, ...posOverrides.get(s.id) } : s)`
+- HTML5 `draggable`, `onDragStart`, `onDragOver`, `onDrop`, `onDragLeave` — pas de dépendance DnD externe
+
+---
+
+## D-024 — Vue tableau pour la génération du planning
+
+Date : 27-04-2026
+
+### Décision
+
+La page `PlanningGeneratePage` affiche les lignes de prévisualisation sous forme de **tableau groupé par semaine**, calqué sur le format du planning Excel interne (Jour | Date | Chirurgien | Période | Instrumentiste | Site | État).
+
+**Structure du tableau :**
+- Une section par semaine ISO, avec barre d'en-tête colorée (bleu = paire, violet = impaire)
+- Cellules Jour et Date fusionnées (`rowSpan`) pour les jours multi-créneaux
+- Tri au sein de chaque jour : chirurgien A→Z, puis Matin avant Après-midi (dérivé de `startTime < 12:00`)
+- Couleur de ligne pilotée par le statut : blanc (COVERED), jaune (UNCOVERED), bleu (MODIFIED), rouge (CONFLICT), gris (SKIPPED)
+
+### Motivation
+
+- Cohérence avec le document de référence PDF/Excel utilisé en production
+- Lisibilité supérieure pour une semaine complète vs le layout deux-panneaux (calendrier + détail)
+- Facilite la relecture et la validation avant génération
+
+### Impact technique
+
+- `groupIntoWeeks()` : regroupe les `PreviewLine[]` par numéro de semaine ISO, calcule PAIR/IMPAIR, trie les lignes de chaque jour
+- `getPeriod(startTime)` : déduit Matin/Après-midi depuis l'heure de début
+- `PlanningGeneratePage` : suppression du layout deux-panneaux, rendu `Table` MUI par section semaine
+
+---
+
+## D-025 — Détection de conflits intra-preview
+
+Date : 27-04-2026
+
+### Décision
+
+`PlanningGeneratorService::preview()` détecte désormais deux types de conflits instrumentiste, pas seulement les conflits avec les missions en base.
+
+**Conflit intra-preview :** si deux slots de templates différents assignent le même instrumentiste à des créneaux qui se chevauchent dans la même preview, le second slot reçoit le statut `CONFLICT`. La détection utilise une map en mémoire `$previewAssignments[instrumentistId] = [[dateStr, startMins, endMins], …]` accumulée au fil du traitement.
+
+**Conflit avec DRAFT :** `hasInstrumentistConflict()` n'exclut plus les missions `DRAFT` (seules les `REJECTED` sont exclues). Ainsi, une re-preview après génération détecte les conflits avec les missions générées.
+
+### Motivation
+
+- Sans intra-preview : deux templates assignant le même instrumentiste deux fois le même matin passaient tous les deux `COVERED` — la génération créait des missions en double-booking silencieux
+- Sans inclusion DRAFT : une re-preview après génération ne détectait pas les conflits inter-templates générés
+
+### Impact technique
+
+- `PlanningGeneratorService::preview()` : ajout de `$previewAssignments`, vérification avant `hasInstrumentistConflict()`
+- `PlanningGeneratorService::hasInstrumentistConflict()` : `excluded` = `[REJECTED]` (DRAFT retiré)
+- Test couvert : `test_intra_preview_conflict_detected_across_templates`
+
+---
+
+## D-026 — Attribution manuelle d'instrumentiste inline
+
+Date : 27-04-2026
+
+### Décision
+
+La colonne Instrumentiste de `PlanningGeneratePage` contient un `<Select>` MUI directement dans chaque cellule (pas de dialog ou popover).
+
+**Comportement :**
+- La liste de tous les instrumentistes actifs est chargée une fois via `GET /api/instrumentists?active=true` au niveau de la page et passée en prop
+- **Avant génération** (`existingMissionId = null`) : la sélection met à jour `previewLines` localement — permet de préparer l'attribution avant de générer
+- **Après génération** (`existingMissionId` présent) : la sélection appelle `POST /api/missions/{id}/assign-instrumentist` puis met à jour `previewLines` localement (statut → `COVERED`)
+- Désélectionner (valeur vide) remet le statut à `UNCOVERED` localement
+
+### Motivation
+
+- L'approche Popover + suggestions scorées était invisible (clic non évident) et bloquée avant génération
+- Un `<Select>` inline est le pattern UX le plus direct pour "liste déroulante"
+- Permettre l'attribution avant génération donne plus de flexibilité au manager (ajuster, puis générer)
+
+### Impact technique
+
+- `InstrumentistCell` : composant avec `<Select>` MUI, `canEdit = status !== "SKIPPED"`
+- `instrumentistsQuery` : `GET /api/instrumentists?active=true` avec `staleTime: 5min`, chargé au niveau page
+- `handleAssigned(lineKey, instrumentistId, name)` : identifie la ligne par `${date}-${slotId}`, met à jour `previewLines`
+
+---
+
+## D-027 — Autocomplete pour chirurgien/instrumentiste dans SlotDialog
+
+Date : 27-04-2026
+
+### Décision
+
+Les champs Chirurgien et Instrumentiste dans `SlotDialog` (éditeur de gabarit) utilisent `<Autocomplete>` MUI au lieu de `<Select>`.
+
+**Comportement :**
+- L'utilisateur tape n'importe quelle partie du prénom, nom ou email → la liste filtre en temps réel (filtrage côté client sur la liste déjà chargée)
+- Le champ Chirurgien est obligatoire (le bouton Ajouter/Enregistrer reste désactivé si vide)
+- Le champ Instrumentiste est optionnel : bouton ✕ pour effacer la sélection
+- `noOptionsText="Aucun résultat"` affiché quand la recherche ne matche rien
+
+### Motivation
+
+- Avec `<Select>`, les listes de 20+ chirurgiens/instrumentistes nécessitent un scroll manuel — peu ergonomique
+- `<Autocomplete>` permet de trouver rapidement en tapant 2-3 lettres
+- Cohérence avec les patterns de l'application (les autres formulaires de recherche utilisent déjà ce pattern)
+
+### Impact technique
+
+- Remplacement de `<FormControl><InputLabel><Select>` par `<Autocomplete renderInput={TextField}>` dans `SlotDialog`
+- La valeur `surgeonId`/`instrumentistId` (string) est convertie en `UserOption | null` via `.find()` pour alimenter `value` de l'Autocomplete
+- `onChange` reçoit `UserOption | null` et met à jour le form state avec `String(val.id)` ou `""`
+
+---
+
+## D-028 — Couleurs par chirurgien dans l'éditeur de gabarit
+
+Date : 27-04-2026
+
+### Décision
+
+Dans `PlanningTemplateEditorPage`, chaque chirurgien reçoit une couleur visuelle déterministe appliquée à tous ses créneaux (`SlotBlock`), quel que soit le jour de la semaine.
+
+**Implémentation :**
+- Palette de 10 paires `{ bg: string; accent: string }` couvrant bleu, émeraude, violet, rose, ambre, teal, rouge, indigo, lime, purple
+- Attribution via `getSurgeonColor(surgeonId: number)` → `SURGEON_COLORS[surgeonId % 10]`
+- `accent` utilisé pour la bordure gauche et les textes colorés du slot
+- `bg` utilisé pour le fond du bloc
+- L'indicateur *"Sans instrumentiste"* reste affiché en texte orange pour préserver l'alerte de complétion, indépendamment de la couleur du chirurgien
+
+### Motivation
+
+- Identifier visuellement chaque chirurgien d'un coup d'œil sur la grille hebdomadaire, sans avoir à lire le texte
+- Cohérence cross-day : même chirurgien = même couleur sur Lundi, Mercredi, Vendredi
+
+### Impact technique
+
+- `SURGEON_COLORS[]` et `getSurgeonColor()` ajoutés juste avant `SlotBlock` dans `PlanningTemplateEditorPage.tsx`
+- Suppression de la logique `isBlock ? BLUE : "#7C3AED"` qui colorait selon le type de mission
+- `isBlock` conservé uniquement pour le chip "Bloc/Consult." en bas du bloc
+
+---
+
+## D-029 — Résolution des créneaux non-attribués avant génération
+
+Date : 27-04-2026
+
+### Décision
+
+Un bouton **"Résoudre les non-attribués (N)"** apparaît sur la page de génération dès qu'il y a des lignes `UNCOVERED` après preview. Il ouvre un modal qui propose une action par ligne, mutuellement exclusive :
+
+**Option A — Instrumentiste libéré disponible :**
+- Détecté depuis les lignes `SKIPPED` du même jour (chirurgien absent → instrumentiste assigné libéré)
+- Validation : l'instrumentiste n'a pas de slot actif qui chevauche le créneau cible
+- Action : `POST /api/missions` (DRAFT) + `POST /api/missions/{id}/publish { scope: TARGETED, targetUserId }`
+- Résultat : mission ciblée vers l'instrumentiste ; ligne → COVERED dans le tableau
+
+**Option B — Aucun libéré disponible :**
+- Action : `POST /api/missions` (DRAFT) + `POST /api/missions/{id}/publish { scope: POOL }`
+- Résultat : mission ouverte à tous les instrumentistes ; ligne → "Demande envoyée" (fond bleu)
+
+### Cohérence avec "Générer"
+
+`PlanningGeneratorService::generate()` est modifié pour ne PAS écraser les missions MODIFIED dont le statut est hors `DRAFT` (OPEN, ASSIGNED…). Les missions créées et publiées manuellement en étape ② sont donc préservées lors du batch "Générer".
+
+### Calcul des libérés — frontend only
+
+Aucun nouvel endpoint backend. La logique `getFreedInstrumentists(previewLines, target)` :
+1. Filtre les `SKIPPED` du même jour avec un instrumentiste
+2. Retire ceux qui ont un slot actif chevauche le créneau cible
+3. Retourne la liste avec l'explication ("Libéré — Dr X est absent ce jour-là")
+
+### Motivation
+
+- Éviter que des créneaux UNCOVERED restent sans solution jusqu'au déploiement
+- Valoriser les instrumentistes "libérés" par les absences de chirurgiens
+- Offrir une alternative (POOL) quand aucun libéré n'est disponible
+- Pas de nouvel endpoint backend — tout repose sur les endpoints mission existants
+
+---
+
+## D-030 — Doublon instrumentiste dans l'éditeur de gabarit
+
+Date : 28-04-2026
+
+### Décision
+
+`DayTimeline` calcule en `useMemo` les instrumentistes qui apparaissent sur des créneaux qui se chevauchent dans le même jour. Les `SlotBlock` concernés reçoivent `isDuplicate=true` et affichent : fond orange, outline orange, badge "Doublon" en bas du time range.
+
+**Algorithme** : regroupement des slots par `instrumentist.id` → test `overlaps()` sur chaque paire → `Set<number>` des IDs doublon.
+
+### Motivation
+
+La doc (D-023, UX clé éditeur) mentionne ce comportement mais il n'était pas implémenté. Un manager pouvait créer deux slots lundi matin avec le même instrumentiste sans aucun avertissement — la collision n'était détectée qu'au preview de génération.
+
+---
+
+## D-031 — Alerte déploiement manquant + AppErrorBoundary MUI
+
+Date : 28-04-2026
+
+### Décision
+
+**Alerte déploiement :** après une génération réussie, un `<Alert severity="warning">` persiste tant que le manager n'a pas cliqué "Déployer". Il disparaît après un déploiement réussi (`deployed = true`). Réinitialisation lors d'un re-preview.
+
+**AppErrorBoundary :** l'affichage de secours en cas de crash React est désormais stylé (HTML/CSS autonome, sans dépendance MUI pour être robuste à un crash du ThemeProvider) : carte centrée, icône warning, message, détail de l'erreur en mode dev, bouton "Recharger la page".
+
+### Motivation
+
+- Sans alerte déploiement : risque réel de laisser des missions en DRAFT (invisibles côté instrumentiste) après génération
+- Sans AppErrorBoundary propre : un crash React affichait du HTML brut non stylé, confusant pour l'utilisateur
+
+---
+
+## D-032 — Attribution directe libéré + DeployPreCheckModal
+
+Date : 28-04-2026
+
+### Décision
+
+**Attribution directe (Option B)** : quand un instrumentiste libéré est assigné via "Envoyer" dans le `ResolveModal`, la mission est créée en DRAFT avec `instrumentistUserId` directement défini (`POST /api/missions { instrumentistUserId }`). Plus de `publishMission TARGETED`. Le déploiement publie ensuite la mission → l'instrumentiste la voit comme la sienne (OPEN avec son nom). Le flux OPEN → ASSIGNED sera traité dans une itération future.
+
+**Re-preview automatique après Générer** : après `generateMutation.onSuccess`, un appel `previewPlanning` est lancé automatiquement pour synchroniser les `existingMissionId` dans `previewLines`. Sans ça, le `DeployPreCheckModal` ne sait pas quelles lignes UNCOVERED ont déjà une mission créée par "Générer" et risquerait de créer des doublons.
+
+**DeployPreCheckModal** : remplace le simple confirm dialog du déploiement. S'ouvre au clic "Déployer et envoyer les PDFs". Filtre les lignes `status === "UNCOVERED" && existingMissionId === null && !openRequestKeys` (vraiment sans mission). Propose :
+- "Créer toutes les missions (N)" — batch
+- "Créer une mission" par ligne
+- "Ignorer et déployer" — skip les non-résolus
+- "Déployer et envoyer les PDFs" — procède au déploiement
+
+### Workflow complet avec ces changements
+
+```
+① Preview
+② Résoudre les non-attribués (libérés → attributions directes DRAFT)
+③ Générer (batch DRAFTs + re-preview auto)
+④ Déployer → DeployPreCheckModal
+     → créer missions restantes si besoin
+     → confirmer déploiement (publie tous les DRAFTs + envoie PDFs)
+```
+
+### Flux à construire (itération future)
+
+Après déploiement, les missions OPEN avec `instrumentist` pré-assigné (Option B) ont besoin d'un flux côté instrumentiste (claim automatique ou interface dédiée).
+
+---
+
+## D-033 — Page planning publié (`PlanningSchedulePage`)
+
+Date : 28-04-2026
+
+### Décision
+
+Une nouvelle page `/app/m/planning/schedule` ("Planning" dans la sidebar) affiche les missions publiées sous le même format de tableau semaine par semaine que `PlanningGeneratePage`.
+
+**Source de données :** `GET /api/missions?from=...&to=...&siteId=...` avec pagination limit=500. Les missions DRAFT et REJECTED sont exclues côté frontend.
+
+**Structure du tableau :** identique à la page de génération — sections PAIR/IMPAIR, rowSpan Jour+Date, tri chirurgien A→Z puis Matin avant Après-midi.
+
+**Colonne Statut :** chip coloré par statut mission :
+
+| Statut | Chip |
+|---|---|
+| OPEN | bleu "À réserver" (outlined) |
+| ASSIGNED | vert "Assigné" |
+| SUBMITTED | primary "Soumis" |
+| VALIDATED | secondary "Validé" |
+| DECLARED | orange "Déclaré" |
+| CLOSED | gris "Clôturé" |
+
+**Instrumentiste modifiable inline :** `<Select>` MUI pour les missions `OPEN` et `ASSIGNED` — appelle `POST /api/missions/{id}/assign-instrumentist`. Read-only pour les autres statuts.
+
+**Chargement manuel :** bouton "Charger le planning" (la query est `enabled: false` — pas de chargement automatique au montage).
+
+### Motivation
+
+- Donner au manager une vue de lecture/modification du planning déployé sans repasser par la génération
+- Même format visuel que le tableau de génération → cohérence UX
+
+### Impact technique
+
+- `PlanningSchedulePage.tsx` : nouvelle page avec `ScheduleRow` (interface locale), `toRow(Mission)`, `groupRows()`, `ScheduleInstrumentistCell`
+- Route ajoutée : `m/planning/schedule` dans `AppRouter.tsx`
+- Item ajouté dans la section Planning de `DesktopLayout.tsx`
+- `architecture.md` : route `/app/m/planning/deploy` (obsolète) remplacée par `/app/m/planning/schedule`
+
+---
+
+## D-034 — Auto-assignation backend des instrumentistes libérés dans preview()
+
+Date : 28-04-2026
+
+### Décision
+
+`PlanningGeneratorService::preview()` effectue un **second passage** après la boucle principale pour réaffecter automatiquement les instrumentistes libérés aux créneaux sans instrumentiste du même jour.
+
+### Motivation
+
+Sans ce mécanisme, quand un chirurgien est absent, son instrumentiste apparaissait libéré (SKIPPED) mais les autres créneaux du même jour restaient UNCOVERED ou COVERED-sans-instrumentiste sans proposition automatique. Le manager devait manuellement ouvrir le modal "Résoudre" pour chaque créneau, ce qui était contre-intuitif.
+
+### Règle "libéré"
+
+Un instrumentiste est "libéré" si et seulement si **tous** ses slots du jour sont SKIPPED. Un instrumentiste qui a au moins un slot actif (non-SKIPPED) n'est pas libéré.
+
+### Lignes concernées par le second passage
+
+Le second passage traite **deux types** de lignes — c'est le point critique :
+
+1. `status === 'UNCOVERED'` — slot sans instrumentiste, aucune mission existante
+2. `status === 'COVERED' && instrumentistId === null` — **mission existante** sans instrumentiste
+
+Le cas 2 est non-évident : quand une génération précédente a créé une mission DRAFT sans instrumentiste (parce qu'aucun n'était disponible à l'époque), la preview la marque COVERED (mission existante = slot couvert). Sans le traitement du cas 2, Françoise n'était pas proposée à Jérôme même si elle était libre, parce que la ligne Jérôme était déjà COVERED.
+
+### Affectation multi-créneaux
+
+Un instrumentiste libéré peut couvrir **plusieurs créneaux non-chevauchants** le même jour. L'instrumentiste **n'est pas retiré du pool** après la première affectation. Les affectations suivantes sont contrôlées par `$secondPassAssignments` (map en mémoire) pour éviter le double-booking entre les affectations du second passage lui-même.
+
+### Impact sur `generate()`
+
+Quand `generate()` voit une ligne `COVERED + freedFrom=true + existingMissionId` avec `instrumentistId != null`, il met à jour l'instrumentiste de la mission DRAFT existante au lieu de la sauter. Ainsi, après "Générer", les missions existantes reçoivent bien Françoise comme instrumentiste.
+
+### Champs ajoutés à `PreviewLine`
+
+| Champ | Usage |
+|---|---|
+| `freedFrom: bool` | `true` si auto-assigné depuis un libéré — badge vert "Libéré" en frontend |
+| `existingInstrumentistId: int\|null` | Instrumentiste actuel de la mission existante (MODIFIED) |
+| `existingInstrumentistName: string\|null` | Nom affiché dans le tooltip MODIFIED |
+
+### Test de régression
+
+`PlanningFreedInstrumentistTest::test_freed_instrumentist_assigned_to_covered_missions_without_instrumentist` — vérifie explicitement que des missions COVERED sans instrumentiste reçoivent l'instrumentiste libéré via le second passage.
+
+---
+
+## D-035 — Multi-salle : claim exclusif de mission par slot (claimMission)
+
+Date : 28-04-2026
+
+### Décision
+
+Quand un chirurgien opère dans **deux salles simultanément** (même heure, deux instrumentistes différents), le système de preview doit associer chaque slot à sa propre mission existante — pas toujours la même.
+
+### Problème initial
+
+`findExistingMission()` cherchait par chirurgien+site+jour+heure et retournait la **première mission trouvée**. Pour deux slots PM d'Arnaud Deltour (Salve Decorte et Sophie Colette) :
+- Slot 1 (Salve) → mission trouvée avec Salve → COVERED ✅
+- Slot 2 (Sophie) → **même mission** trouvée, Salve ≠ Sophie → MODIFIED ❌
+
+### Solution : pré-chargement + claim exclusif
+
+`findExistingMission()` (requête DB par slot) est remplacée par :
+1. **`loadExistingMissionsPool()`** — une seule requête DQL au début de `preview()`, groupe les missions par `"{surgeonId}_{siteId}_{YYYY-MM-DD}"`
+2. **`claimMission()`** — pour chaque slot, cherche dans le pool la meilleure mission non encore réclamée :
+   - Priorité 1 : match exact instrumentiste (slot.instrumentistId === mission.instrumentistId)
+   - Priorité 2 : n'importe quelle mission non réclamée à la même heure (±30 min)
+   - Une mission réclamée ne peut plus être attribuée à un autre slot (`$claimedMissionIds`)
+
+### Résultat
+
+- Deux missions en base (Salve + Sophie) → chaque slot claim la sienne → deux COVERED ✅
+- Une seule mission en base (Salve) → slot 1 claim (exact match), slot 2 → UNCOVERED (crée une nouvelle mission à la génération) ✅
+
+### Bonus : performance
+
+Un seul `SELECT` pour charger toutes les missions de la période au lieu de N requêtes (une par slot). Le `hasInstrumentistConflict()` reste une requête séparée car il vérifie les chevauchements horaires.
+
+### Test de régression
+
+`PlanningGeneratorServiceTest::test_multi_room_two_slots_same_surgeon_same_time_each_claim_own_mission`
+
+---
+
+## D-036 — Optimisation preview() : 3 pré-chargements DB au lieu de N×M requêtes
+
+Date : 29-04-2026
+
+### Décision
+
+`PlanningGeneratorService::preview()` ne fait **que 3 requêtes DB** pour toute période, quelle que soit sa longueur :
+
+| Requête | Méthode | Quoi |
+|---|---|---|
+| 1 | `loadAllTemplates()` | Tous les templates + slots (QB, filtré par site) |
+| 2 | `loadAbsencesMap()` | Toutes les absences de la période (DQL token `absencesFrom`) |
+| 3 | `loadExistingMissionsPool()` | Toutes les missions existantes (DQL token `poolFrom`) |
+
+Tout le reste (filtrage PAIR/IMPAIR, vérification absences, détection conflits) s'effectue **en mémoire**.
+
+### Problème initial
+
+Avant l'optimisation, la boucle `while ($current <= $end)` exécutait **par jour** :
+- 1 QB pour charger les templates
+- Par slot : 1 query `isAbsent(surgeon)` + 1 query `isAbsent(instrumentist)` + 1 query `hasInstrumentistConflict`
+
+Résultat : ~1 830 queries pour 61 jours × 10 slots/jour. Doublement avec le re-preview automatique post-génération → **timeout HTTP**.
+
+### Méthodes de remplacement
+
+| Ancienne méthode | Nouvelle méthode | Changement |
+|---|---|---|
+| `isAbsent(User, day)` → 1 DB | `isAbsentFast(userId, dayStr, $absencesByUser)` | In-memory map lookup |
+| `hasInstrumentistConflict(User, ...)` → 1 DB | `hasConflictFast(instId, start, end, $missionsByInstrumentist)` | In-memory map lookup |
+| QB templates per day | `loadAllTemplates()` once + filtrage PAIR/IMPAIR in-memory | 1 QB au lieu de N |
+
+### Structures de données
+
+- `$absencesByUser` : `[userId => [[dateStart Y-m-d, dateEnd Y-m-d], ...]]`
+- `$existingMissionsPool` : `["{surgeonId}_{siteId}_{YYYY-MM-DD}" => Mission[]]`
+- `$missionsByInstrumentist` : `[instrumentistId => Mission[]]` (index secondaire du pool)
+
+### Test de régression
+
+`PlanningPreviewPerformanceTest::test_two_month_preview_uses_only_3_db_queries` vérifie que pour 61 jours le total de requêtes DB est exactement 3 (1 QB + 1 absencesFrom + 1 poolFrom).
+
+---
+
+## D-037 — Déploiement asynchrone : PDF et emails via PlanningDeployPdfsMessageHandler
+
+Date : 29-04-2026
+
+### Décision
+
+`PlanningDeploymentService::deploy()` ne fait **que le travail DB** (rapide) et retourne immédiatement. La génération des PDFs et l'envoi des emails sont délégués à `PlanningDeployPdfsMessageHandler` via Messenger (asynchrone).
+
+### Problème initial
+
+`deploy()` générait tous les PDFs synchroniquement (DomPDF × N instrumentistes + N chirurgiens + 1 global) avant de répondre. Avec ~194 missions → timeout HTTP systématique.
+
+### Architecture après
+
+```
+HTTP POST /api/planning/deploy
+    │
+    ▼
+PlanningDeploymentService::deploy()
+    ├── Archive version ACTIVE précédente (si applicable)
+    ├── Passe version DRAFT → ACTIVE
+    ├── Publie missions DRAFT → OPEN
+    ├── Persist + flush
+    └── bus.dispatch(PlanningDeployPdfsMessage)  ← async
+            │
+            ▼  (dans le worker Messenger)
+    PlanningDeployPdfsMessageHandler
+        ├── Charge les missions publiées
+        ├── Génère PDF global (1 fois)
+        ├── Pour chaque instrumentiste : génère PDF perso + envoie email
+        ├── Pour chaque chirurgien : génère PDF perso + PDF global + envoie email
+        └── Push notifications (ASSIGNED + OPEN pool + manager)
+```
+
+**Retour HTTP** : `{ deploymentId, missionCount, openPoolCount }` — retourné immédiatement après le flush.
+
+### Règles
+
+- Failure d'un PDF individuel → logged, autres PDFs continuent (try/catch par individu)
+- Failure SMTP → ne bloque pas le worker (Messenger retry automatique)
+- La réponse HTTP ne dépend pas du succès des PDFs
+
+---
+
+## D-038 — Résumé version par période+site (pas par FK) + sémantique "skipped" clarifiée
+
+Date : 29-04-2026
+
+### Décision
+
+#### Résumé `GET /api/planning/versions/{id}`
+
+**Avant :** `PlanningVersionController` comptait `$version->getMissions()` — missions liées à cette version par FK `planningVersion_id`. À la 2e génération d'une même période, si rien n'est créé (tout déjà couvert), la version a 0 missions liées → résumé à 0 partout → confusion.
+
+**Après :** Le contrôleur requête **toutes les missions non-rejetées de la période+site** de la version, indépendamment de leur `planningVersion_id`. Cela donne la vraie image du planning actuel quelle que soit la version qui les a créées.
+
+Nouveaux champs `summary` :
+
+| Champ | Remplace | Description |
+|---|---|---|
+| `draft` | — | DRAFT — en attente de déploiement |
+| `open` | — | OPEN — publiées, disponibles pool |
+| `assigned` | `assigned` | ASSIGNED+ — avec instrumentiste confirmé |
+| `withoutInstrumentist` | `unassigned` | DRAFT ou OPEN sans instrumentiste |
+
+#### Sémantique "skipped" dans `POST /api/planning/generate`
+
+`skipped` compte **deux cas** :
+1. Chirurgien absent → slot SKIPPED
+2. Slot avec mission existante déjà couverte → préservée sans modification
+
+Le frontend affiche "X mission(s) existantes préservées" quand `created === 0 && updated === 0` pour éviter la confusion "205 ignorées" qui semblait indiquer un problème.
+
+### Motivation
+
+Quand un manager génère une 2e fois sur la même période (pour ajouter un slot ou corriger), le résumé montrait 0 partout même si 200 missions existaient déjà. Cela créait de l'inquiétude.
+
+---
+
+## D-039 — Modal déploiement 2 étapes : selectedUncoveredMissionIds + sendChangeSummary
+
+Date : 30-04-2026
+
+### Décision
+
+Le déploiement du planning passe par un modal en 2 étapes côté frontend.
+
+**Étape 1 — Postes sans instrumentiste**
+
+Le manager voit la liste des missions DRAFT sans instrumentiste (avec `existingMissionId` non null). Checkboxes cochées par défaut. Il peut décocher celles qu'il ne veut pas publier en pool. Les IDs cochés sont envoyés dans `selectedUncoveredMissionIds`.
+
+**Étape 2 — Récapitulatif des modifications**
+
+Le frontend appelle `GET /api/planning/versions/{id}/diff` pour afficher le diff. Une checkbox `sendChangeSummary` (pré-cochée si diff non vide) déclenche l'envoi d'emails de récapitulatif par le worker.
+
+**Règles de statut à la publication :**
+
+```
+DRAFT + instrumentist IS NOT NULL            → ASSIGNED  (2 bulk UPDATEs séparés)
+DRAFT + instrumentist IS NULL + sélectionné  → OPEN
+DRAFT + instrumentist IS NULL + non sélectionné → reste DRAFT
+```
+
+**Retour HTTP :** `{ deploymentId, missionCount, openPoolCount }`
+
+### Motivation
+
+Avant ce modal, toutes les missions DRAFT passaient OPEN en bloc, y compris les non-attribuées que le manager n'avait pas l'intention de publier en pool. La distinction ASSIGNED/OPEN n'existait pas.
+
+---
+
+## D-040 — PlanningDiffService : clé de matching missions entre versions
+
+Date : 30-04-2026
+
+### Décision
+
+**Clé de matching :** `siteId_surgeonId_missionType_date_startAt(arrondi 15 min)`
+
+- **Priorité 1 :** `templateSlotId` — non disponible sur l'entité Mission (pas de FK template → mission après génération).
+- **Priorité 2 (implémentée) :** composite key `siteId + surgeonId + missionType + date + startAt` avec arrondi à 15 min.
+
+**Pourquoi l'arrondi 15 min ?**
+Absorbe les micro-décalages entre versions (08:00 ↔ 08:07 → même slot, pas de fausse modification). Les vrais changements d'horaire (08:00 ↔ 08:30 → clés distinctes) sont détectés. La comparaison exacte `startAt` dans `detectChanges()` signale quand même la différence de temps.
+
+**Collision :** deux missions avec exactement la même clé (même chirurgien, même site, même type, même heure arrondie) reçoivent un suffixe `_1`, `_2`... Le matching cross-version en cas de collision est order-dépendant (limite V1 acceptée, cas très rare en pratique).
+
+**Champs comparés :** `startAt`, `endAt`, `surgeon`, `site`, `instrumentist`.
+**Exclus :** statut, notes, champs financiers, timestamps.
+
+### Conséquences
+
+- `PlanningDiffService::computeDiff(array $old, array $new)` est publique et testable sans EM.
+- `PlanningDiffService::diff(PlanningVersion $draft)` orchestre : trouve version précédente (ACTIVE → ARCHIVED) + charge missions par FK + délègue à `computeDiff`.
+
+---
+
+## D-041 — Idempotence PlanningDeployment : status PENDING/PROCESSING/DONE/FAILED
+
+Date : 30-04-2026
+
+### Décision
+
+`PlanningDeployment` porte un champ `status` enum :
+
+| Valeur | Signification |
+|---|---|
+| `PENDING` | Créé par `deploy()`, worker pas encore démarré |
+| `PROCESSING` | Worker a commencé le traitement |
+| `DONE` | Worker a terminé avec succès |
+| `FAILED` | Worker a échoué (errorLog rempli) |
+
+**Idempotence :** le handler vérifie en entrée `status == DONE` → return immédiatement si vrai.
+
+**Limite V1 :** si le worker crash entre PROCESSING et DONE (→ retry Messenger), il re-exécute intégralement (PDF et emails peuvent être dupliqués). Un log d'envoi par destinataire/canal éliminerait ce risque mais est différé.
+
+**Retry :** en cas d'exception, le handler re-throw → Messenger planifie une nouvelle tentative (max 5, délai exponentiel). `status` est mis à `FAILED` + `errorLog` tronqué à 65 535 chars.
+
+### Résultat pour les lignes existantes avant migration
+
+La migration `Version20260429000001` ajoute `status DEFAULT 'DONE'` pour les déploiements antérieurs.
+
+---
+
+## D-042 — getReference() après em->clear() pour éviter cascade persist
+
+Date : 30-04-2026
+
+### Décision
+
+Dans `PlanningDeploymentService::deploy()`, après les bulk DQL UPDATEs, `em->clear()` est appelé pour purger l'identity map. En Doctrine ORM 3.x, `clear(ClassName::class)` est ignoré — **toutes les entités sont détachées**, y compris `$deployedBy` (User).
+
+Utiliser `$deployment->setDeployedBy($deployedBy)` directement après `em->clear()` → flush() throw :
+```
+A new entity was found through PlanningDeployment#deployedBy that was not configured
+to cascade persist.
+```
+
+**Fix :** `$this->em->getReference(User::class, $deployedBy->getId())` retourne un proxy Doctrine **managé** sans requête SQL.
+
+```php
+$deployment->setDeployedBy(
+    $this->em->getReference(User::class, $deployedBy->getId())
+);
+```
+
+**Test de régression :** `test_deploy_calls_getReference_for_deployedBy_to_survive_em_clear` vérifie via `expects($this->once())->method('getReference')->with(User::class, 1)` que l'appel est présent.
+
+---
+
+## D-043 — Routing Messenger obligatoire pour tout message à handler IO-intensif
+
+Date : 30-04-2026
+
+### Décision
+
+Tout message Symfony Messenger dont le handler fait du IO significatif (PDF, SMTP, DB writes) **doit** être explicitement routé vers le transport `async` dans `config/packages/messenger.yaml`.
+
+```yaml
+routing:
+    App\Message\PlanningDeployPdfsMessage: async  # PDF Dompdf + SMTP
+    App\Message\SendBillingEmailMessage:   async  # SMTP
+    App\Message\SendTemplatedEmailMessage: async  # SMTP
+```
+
+### Problème initial (régression)
+
+`PlanningDeployPdfsMessage` et `SendBillingEmailMessage` n'avaient pas de règle de routing. Symfony Messenger les traitait **synchroniquement dans la requête HTTP** par défaut. La génération PDF (Dompdf × N instrumentistes + N chirurgiens) excédait le timeout axios de 10 s → erreur frontend systématique au déploiement.
+
+### Règle structurante
+
+> Tout nouveau message avec un handler IO-intensif doit ajouter sa ligne dans `messenger.yaml` **avant** de merger.
+
+**Test de régression :** `tests/Unit/Config/MessengerRoutingTest.php` parse le YAML et vérifie que `PlanningDeployPdfsMessage` et `SendBillingEmailMessage` sont bien routés vers `async`. Si le routing est retiré accidentellement, le test échoue immédiatement.
+
+---
+
+## D-044 — Observabilité : Sentry + channel Monolog push
+
+Date : 2026-05-29
+
+### Décision
+
+Deux outils d'observabilité mis en place :
+
+**Sentry** — capture des erreurs en production, côté backend et frontend.
+
+- Backend : `sentry/sentry-symfony` — capture toutes les exceptions PHP non gérées ; le handler Monolog `sentry` (level `error`) remonte également les erreurs critiques du canal `push`.
+- Frontend : `@sentry/react` — initialisé dans `main.tsx` avant le render. `AppErrorBoundary.componentDidCatch` appelle `Sentry.captureException()` pour remonter les crashes React.
+- `SENTRY_DSN` configuré dans `backend/.env` et `VITE_SENTRY_DSN` dans `frontend/.env`.
+- Sentry se désactive automatiquement si la variable d'environnement est absente (`enabled: !!dsn`).
+
+**Channel Monolog `push`** — tous les événements liés aux push notifications passent par ce canal dédié, séparé du log applicatif général.
+
+| Événement | Level | Déclencheur |
+|---|---|---|
+| `push.subscription_created` | INFO | Nouveau device enregistré |
+| `push.subscription_updated` | INFO | Re-subscribe device existant |
+| `push.subscription_removed` | INFO | Unsubscribe explicite |
+| `push.send_failed` | WARNING | Notification refusée par le push service |
+| `push.flush_failed` | ERROR | Push service injoignable — capturé par Sentry |
+| `push.batch_done` | INFO | Récap batch (sent / failed / expired) |
+
+### Motivation
+
+- Sans observabilité, les échecs push (encoding incorrect, service down, subscription expirée) étaient silencieux — aucun moyen de savoir si les notifications arrivent.
+- Sentry permet d'être alerté en temps réel sur les exceptions prod sans avoir à surveiller les logs manuellement.
+- Un canal `push` dédié permet de filtrer et monitorer uniquement les événements push sans bruit.
+
+### Variables d'environnement
+
+```
+# backend/.env
+SENTRY_DSN="https://..."
+
+# frontend/.env
+VITE_SENTRY_DSN="https://..."
+```
+
+### Impact technique
+
+- `WebPushService` : injecte `monolog.logger.push` via `#[Autowire]`, logs structurés avec contexte (`type`, `endpoint`, `sent`/`failed`/`expired`)
+- `PushSubscriptionController` : idem, log sur subscribe/unsubscribe
+- `config/packages/monolog.yaml` : canal `push` déclaré, handler `sentry` ajouté en `when@prod`
+- `config/packages/sentry.yaml` : config Sentry bundle
+- `config/bundles.php` : `SentryBundle` enregistré
+- `frontend/src/main.tsx` : `Sentry.init()` avec `browserTracingIntegration`, `tracesSampleRate: 0.1`
+- `frontend/src/app/errors/AppErrorBoundary.tsx` : `Sentry.captureException` dans `componentDidCatch`
+
+---
+
 ## D-045 — Synchronisation missions instrumentiste par polling intelligent (V1, sans Mercure)
 
 Date : 2026-06-12
@@ -703,3 +1493,29 @@ endpoint de polling dédié plutôt que Mercure/WebSocket :
 | 15-03-2026 | D-016 — Module catalogue matériel + gestion demandes |
 | 15-03-2026 | D-017 — Filtrage PENDING dans l'encoding instrumentiste |
 | 15-03-2026 | D-018 — Module Chirurgiens — gestion manager |
+| 18-03-2026 | D-019 — Module Facturation Firmes |
+| 18-03-2026 | D-020 — Module Décomptes Instrumentistes |
+| 18-03-2026 | D-021 — Module Planning — gabarits permanents |
+| 18-03-2026 | D-022 — Template naming — édition inline optimiste |
+| 18-03-2026 | D-023 — Drag & drop de slots — positionnement optimiste |
+| 27-04-2026 | D-024 — Vue tableau pour la génération du planning |
+| 27-04-2026 | D-025 — Détection de conflits intra-preview |
+| 27-04-2026 | D-026 — Attribution manuelle d'instrumentiste inline |
+| 27-04-2026 | D-027 — Autocomplete pour chirurgien/instrumentiste dans SlotDialog |
+| 27-04-2026 | D-028 — Couleurs par chirurgien dans l'éditeur de gabarit |
+| 27-04-2026 | D-029 — Résolution des créneaux non-attribués avant génération |
+| 28-04-2026 | D-030 — Doublon instrumentiste dans l'éditeur de gabarit |
+| 28-04-2026 | D-031 — Alerte déploiement manquant + AppErrorBoundary MUI |
+| 28-04-2026 | D-032 — Attribution directe libéré + DeployPreCheckModal |
+| 28-04-2026 | D-033 — Page planning publié (PlanningSchedulePage) |
+| 28-04-2026 | D-034 — Auto-assignation backend des instrumentistes libérés dans preview() |
+| 28-04-2026 | D-035 — Multi-salle : claim exclusif de mission par slot (claimMission) |
+| 29-04-2026 | D-036 — Optimisation preview() : 3 pré-chargements DB au lieu de N×M requêtes |
+| 29-04-2026 | D-037 — Déploiement asynchrone : PDF et emails via PlanningDeployPdfsMessageHandler |
+| 29-04-2026 | D-038 — Résumé version par période+site (pas par FK) + sémantique "skipped" clarifiée |
+| 30-04-2026 | D-039 — Modal déploiement 2 étapes : selectedUncoveredMissionIds + sendChangeSummary |
+| 30-04-2026 | D-040 — PlanningDiffService : clé de matching missions entre versions |
+| 30-04-2026 | D-041 — Idempotence PlanningDeployment : status PENDING/PROCESSING/DONE/FAILED |
+| 30-04-2026 | D-042 — getReference() après em->clear() pour éviter cascade persist |
+| 30-04-2026 | D-043 — Routing Messenger obligatoire pour tout message à handler IO-intensif |
+| 29-05-2026 | D-044 — Observabilité : Sentry + channel Monolog push |

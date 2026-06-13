@@ -16,6 +16,8 @@ framework:
 
         routing:
             App\Message\SendTemplatedEmailMessage: async
+            App\Message\SendBillingEmailMessage:   async
+            App\Message\PlanningDeployPdfsMessage: async
 
 # when@test:
 #    framework:

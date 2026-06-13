@@ -1,6 +1,6 @@
 # SurgicalHub — API (Single Source of Truth)
 
-_Last updated: 2026-03-18 (v5 — module facturation)_
+_Last updated: 2026-03-18 (v6 — module planning)_
 
 ---
 
@@ -496,7 +496,8 @@ Alimente la liste _Ressources > Instrumentistes_.
       "active": true,
       "employmentType": null,
       "defaultCurrency": "EUR",
-      "displayName": "Ole Salve"
+      "displayName": "Ole Salve",
+      "specialties": ["GENOU", "EPAULE"]
     }
   ],
   "total": 1
@@ -508,6 +509,7 @@ Alimente la liste _Ressources > Instrumentistes_.
 - Pas de filtre `employmentType`
 - Pas d'affiliations détaillées ni de tarifs dans la réponse
 - `displayName` : `firstname + lastname` si disponible, sinon `email`
+- `specialties` : tableau de codes spécialité (voir module planning pour les valeurs possibles)
 
 **Erreurs possibles :**
 
@@ -1402,7 +1404,8 @@ DELETE /api/surgeons/{id}/site-memberships/{membershipId}
       "lastname": "Martin",
       "displayName": "Jean Martin",
       "active": true,
-      "profilePicturePath": null
+      "profilePicturePath": null,
+      "specialties": ["RACHIS"]
     }
   ],
   "total": 1
@@ -1915,6 +1918,627 @@ Retourne toutes les règles (actives + inactives) pour la firme.
 #### `POST /api/instrumentist-statements/{id}/mark-paid`
 
 **Effets :** `status → PAID`, `paidAt = now()`
+
+---
+
+## 26. Module Planning — Gestion manager
+
+Le module Planning permet au manager de définir des gabarits de semaine (templates), de gérer les absences des utilisateurs et de générer/déployer un planning de missions sur une plage de dates.
+
+### Spécialités disponibles
+
+Les codes de spécialité suivants sont reconnus dans tout le module :
+
+| Code | Libellé |
+|---|---|
+| `GENOU` | Genou |
+| `EPAULE` | Épaule |
+| `HANCHE` | Hanche |
+| `RACHIS` | Rachis |
+| `MAIN` | Main / Poignet |
+| `PIED` | Pied / Cheville |
+| `NEUROCHIRURGIE` | Neurochirurgie |
+| `CARDIOTHORACIQUE` | Cardiothoracique |
+| `VISCERAL` | Viscéral |
+| `UROLOGIE` | Urologie |
+| `GYNECOLOGIE` | Gynécologie |
+| `PEDIATRIQUE` | Pédiatrique |
+
+---
+
+### 26.1 Templates de planning
+
+Un `PlanningTemplate` définit un gabarit de semaine récurrent. Il est associé à un site obligatoire et possède un type de semaine.
+
+**Modèle PlanningTemplate :**
+
+| Champ | Type | Description |
+|---|---|---|
+| `id` | int | Identifiant |
+| `type` | string | `PAIR` / `IMPAIR` / `TOUTES` |
+| `label` | string\|null | Nom personnalisé (optionnel) |
+| `site` | object | `{ id, name }` — obligatoire |
+| `slots` | PlanningSlot[] | Créneaux du gabarit |
+| `createdAt` | ISO 8601 | Date de création |
+
+**Modèle PlanningSlot :**
+
+| Champ | Type | Description |
+|---|---|---|
+| `id` | int | Identifiant |
+| `dayOfWeek` | int | 1 = Lundi … 7 = Dimanche |
+| `period` | string | `AM` / `PM` |
+| `startTime` | string | Format `HH:MM:SS` |
+| `endTime` | string | Format `HH:MM:SS` |
+| `missionType` | string | `BLOCK` / `CONSULTATION` |
+| `surgeon` | object | `{ id, name }` |
+| `instrumentist` | object\|null | `{ id, name }` |
+| `site` | object\|null | `{ id, name }` |
+
+> **Important :** `surgeon` et `instrumentist` dans les slots sont sérialisés sous la forme compacte `{ id, name }` (pas `{ id, firstname, lastname }`).
+
+---
+
+#### `GET /api/planning/templates`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Retourne tous les templates du site courant, triés par `createdAt DESC`.
+
+**Réponse — 200 :**
+
+```json
+[
+  {
+    "id": 1,
+    "type": "PAIR",
+    "label": "Semaine standard genou",
+    "site": { "id": 2, "name": "Delta" },
+    "slots": [],
+    "createdAt": "2026-03-18T10:00:00+01:00"
+  }
+]
+```
+
+---
+
+#### `POST /api/planning/templates`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Body JSON :**
+
+```json
+{
+  "type": "PAIR",
+  "siteId": 2,
+  "label": "Semaine standard genou"
+}
+```
+
+| Champ | Requis | Description |
+|---|---|---|
+| `type` | ✓ | `PAIR` / `IMPAIR` / `TOUTES` |
+| `siteId` | ✓ | Site du template |
+| `label` | — | Nom personnalisé |
+
+**Réponse — 201 :** PlanningTemplate créé (sans slots)
+
+---
+
+#### `GET /api/planning/templates/{id}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Réponse — 200 :** PlanningTemplate avec tous ses slots
+
+**Erreurs :** `404` si introuvable
+
+---
+
+#### `PATCH /api/planning/templates/{id}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Renommer (ou effacer le nom de) un template.
+
+**Body JSON :**
+
+```json
+{ "label": "Nouveau nom" }
+```
+
+Passer `null` pour effacer le nom.
+
+**Réponse — 200 :** PlanningTemplate mis à jour
+
+---
+
+#### `DELETE /api/planning/templates/{id}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Réponse — 204 :** Pas de corps
+
+---
+
+### 26.2 Slots
+
+#### `POST /api/planning/templates/{templateId}/slots`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Ajouter un créneau au template.
+
+**Body JSON :**
+
+```json
+{
+  "dayOfWeek": 1,
+  "period": "AM",
+  "startTime": "08:00:00",
+  "endTime": "13:00:00",
+  "surgeonId": 7,
+  "missionType": "BLOCK",
+  "instrumentistId": 12,
+  "siteId": 2
+}
+```
+
+| Champ | Requis | Description |
+|---|---|---|
+| `dayOfWeek` | ✓ | 1–7 (lundi–dimanche) |
+| `period` | ✓ | `AM` ou `PM` |
+| `startTime` | ✓ | `HH:MM:SS` |
+| `endTime` | ✓ | `HH:MM:SS` |
+| `surgeonId` | ✓ | ID du chirurgien |
+| `missionType` | ✓ | `BLOCK` ou `CONSULTATION` |
+| `instrumentistId` | — | ID de l'instrumentiste |
+| `siteId` | — | Surcharge de site pour ce slot |
+
+**Réponse — 201 :** PlanningSlot créé
+
+---
+
+#### `PUT /api/planning/templates/{templateId}/slots/{slotId}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Mise à jour complète d'un slot (tous les champs sont optionnels dans le body).
+
+**Body JSON :**
+
+```json
+{
+  "dayOfWeek": 2,
+  "period": "PM",
+  "startTime": "13:00:00",
+  "endTime": "17:00:00",
+  "surgeonId": 7,
+  "missionType": "BLOCK",
+  "instrumentistId": 12
+}
+```
+
+**Réponse — 200 :** PlanningSlot mis à jour
+
+Utilisé notamment pour les déplacements drag & drop (changement de `dayOfWeek` + `period`).
+
+---
+
+#### `DELETE /api/planning/templates/{templateId}/slots/{slotId}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Réponse — 204 :** Pas de corps
+
+---
+
+### 26.3 Absences
+
+**Modèle Absence :**
+
+| Champ | Type | Description |
+|---|---|---|
+| `id` | int | Identifiant |
+| `user` | object | `{ id, firstname, lastname, email, specialties[] }` |
+| `dateStart` | string | `YYYY-MM-DD` |
+| `dateEnd` | string | `YYYY-MM-DD` |
+| `reason` | string\|null | Motif libre |
+| `createdAt` | ISO 8601 | Date de création |
+
+---
+
+#### `GET /api/absences`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Query params :**
+
+| Param | Type | Description |
+|---|---|---|
+| `userId` | int | Filtre par utilisateur |
+| `from` | string | Date de début (`YYYY-MM-DD`) |
+| `to` | string | Date de fin (`YYYY-MM-DD`) |
+
+**Réponse — 200 :** Tableau d'absences
+
+---
+
+#### `POST /api/absences`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Body JSON :**
+
+```json
+{
+  "userId": 12,
+  "dateStart": "2026-03-24",
+  "dateEnd": "2026-03-28",
+  "reason": "Congé"
+}
+```
+
+**Réponse — 201 :** Absence créée
+
+---
+
+#### `DELETE /api/absences/{id}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Réponse — 204 :** Pas de corps
+
+---
+
+### 26.4 Preview planning
+
+#### `POST /api/planning/preview`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Simule la génération d'un planning sur une plage de dates sans créer de missions.
+
+**Body JSON :**
+
+```json
+{
+  "from": "2026-03-23",
+  "to": "2026-03-27",
+  "siteId": 2,
+  "surgeonId": null
+}
+```
+
+| Champ | Requis | Description |
+|---|---|---|
+| `from` | ✓ | Date de début (`YYYY-MM-DD`) |
+| `to` | ✓ | Date de fin (`YYYY-MM-DD`) |
+| `siteId` | — | Filtre par site |
+| `surgeonId` | — | Filtre par chirurgien |
+
+**Réponse — 200 :** Tableau de `PreviewLine`
+
+```json
+[
+  {
+    "date": "2026-03-23",
+    "slotId": 1,
+    "surgeonId": 7,
+    "surgeonName": "Jean Martin",
+    "missionType": "BLOCK",
+    "startTime": "08:00:00",
+    "endTime": "13:00:00",
+    "siteId": 2,
+    "siteName": "Delta",
+    "instrumentistId": 12,
+    "instrumentistName": "Ole Salve",
+    "status": "COVERED",
+    "existingMissionId": null,
+    "existingInstrumentistId": null,
+    "existingInstrumentistName": null,
+    "freedFrom": false
+  }
+]
+```
+
+**Champs `PreviewLine` :**
+
+| Champ | Type | Description |
+|---|---|---|
+| `instrumentistId` | `int\|null` | Instrumentiste suggéré (gabarit ou libéré auto) |
+| `existingMissionId` | `int\|null` | ID de la mission existante en base (si COVERED/MODIFIED) |
+| `existingInstrumentistId` | `int\|null` | Instrumentiste actuellement dans la mission existante (MODIFIED uniquement) |
+| `existingInstrumentistName` | `string\|null` | Nom de l'instrumentiste actuel de la mission existante (MODIFIED uniquement) |
+| `freedFrom` | `bool` | `true` si l'instrumentiste a été auto-assigné depuis un slot SKIPPED (chirurgien absent) |
+
+**Valeurs `status` :**
+
+| Valeur | Description |
+|---|---|
+| `COVERED` | Créneau couvert — instrumentiste assigné (gabarit ou libéré auto via `freedFrom`) |
+| `UNCOVERED` | Aucun instrumentiste disponible après application des absences et des libérés |
+| `MODIFIED` | Mission existante avec un instrumentiste différent du gabarit — `existingInstrumentistName` indique qui est actuellement là |
+| `CONFLICT` | Instrumentiste en double-booking détecté (DB ou intra-preview) |
+| `SKIPPED` | Chirurgien absent — slot ignoré, instrumentiste marqué comme libéré |
+
+**Règle `freedFrom` :** un instrumentiste est dit "libéré" quand **tous** ses slots du jour sont `SKIPPED`. Il peut alors être auto-assigné à plusieurs créneaux non-chevauchants sur le même jour (ex : AM chez Jérôme + PM chez Samy si son chirurgien est absent toute la journée).
+
+---
+
+### 26.5 Générer le planning
+
+#### `POST /api/planning/generate`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Génère effectivement les missions à partir des templates et de la plage de dates.
+
+**Body JSON :** Même format que `/api/planning/preview`
+
+**Effets backend :**
+- Pour chaque slot actif sur la plage : crée ou met à jour une `Mission` (`DRAFT`)
+- Applique les absences pour exclure les instrumentistes indisponibles
+- Sélectionne l'instrumentiste selon l'algorithme de scoring (historique + spécialité)
+
+**Réponse — 200 :**
+
+```json
+{
+  "versionId": 2,
+  "created": 8,
+  "updated": 2,
+  "skipped": 1
+}
+```
+
+**Sémantique de `skipped` :**
+
+| Cas | Comptabilisé dans `skipped` |
+|---|---|
+| Chirurgien absent (slot SKIPPED) | ✓ |
+| Slot avec mission existante déjà couverte (préservée) | ✓ |
+
+> `skipped` ne signifie **pas** que les missions ont été supprimées ou ignorées — les missions existantes sont **préservées**. Le frontend affiche "X mission(s) existantes préservées" si `created === 0 && updated === 0`.
+
+---
+
+### 26.5b Résumé de version
+
+#### `GET /api/planning/versions/{id}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Retourne l'état courant de toutes les missions de la période+site de la version.
+
+> Important : ce endpoint requête **toutes les missions de la période** (pas seulement celles liées à cette version par FK). Cela évite d'afficher 0 lorsque la génération n'a rien créé car tout était déjà couvert.
+
+**Réponse — 200 :**
+
+```json
+{
+  "id": 2,
+  "versionNumber": 2,
+  "status": "DRAFT",
+  "periodStart": "2026-04-28",
+  "periodEnd": "2026-06-28",
+  "generatedAt": "2026-04-29T10:00:00+02:00",
+  "deployedAt": null,
+  "archivedAt": null,
+  "site": { "id": 1, "name": "CHIREC - Hôpital Delta" },
+  "generatedBy": { "id": 5, "email": "manager@example.com" },
+  "summary": {
+    "total": 205,
+    "draft": 195,
+    "open": 0,
+    "assigned": 10,
+    "withoutInstrumentist": 12,
+    "surgeonCount": 8,
+    "instrumentistCount": 6
+  }
+}
+```
+
+**Champs `summary` :**
+
+| Champ | Description |
+|---|---|
+| `total` | Toutes les missions non-rejetées de la période |
+| `draft` | Statut DRAFT — créées, pas encore publiées |
+| `open` | Statut OPEN — publiées, disponibles au pool |
+| `assigned` | ASSIGNED, SUBMITTED, VALIDATED, CLOSED — avec instrumentiste confirmé |
+| `withoutInstrumentist` | DRAFT ou OPEN sans instrumentiste attribué |
+| `surgeonCount` | Nombre de chirurgiens distincts |
+| `instrumentistCount` | Nombre d'instrumentistes distincts assignés |
+
+---
+
+### 26.6 Déployer le planning
+
+#### `POST /api/planning/deploy`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Publie les missions `DRAFT` de la version selon les règles ci-dessous, puis dispatche la génération des PDFs, les emails et les notifications **de façon asynchrone** via Symfony Messenger.
+
+**Règles de publication des statuts :**
+
+| Mission DRAFT | Condition | Nouveau statut |
+|---|---|---|
+| Avec instrumentiste assigné | Toujours | `ASSIGNED` |
+| Sans instrumentiste + ID dans `selectedUncoveredMissionIds` | Manager a coché | `OPEN` (pool) |
+| Sans instrumentiste + ID absent de `selectedUncoveredMissionIds` | Manager a décoché | reste `DRAFT` |
+
+**Body JSON :**
+
+```json
+{
+  "from": "2026-03-23",
+  "to": "2026-03-27",
+  "siteId": 2,
+  "versionId": 5,
+  "selectedUncoveredMissionIds": [101, 102, 103],
+  "sendChangeSummary": true
+}
+```
+
+| Champ | Type | Requis | Description |
+|---|---|---|---|
+| `from` | string (date) | ✓ | Début de période |
+| `to` | string (date) | ✓ | Fin de période |
+| `siteId` | int \| null | — | Filtre par site (null = tous) |
+| `versionId` | int \| null | — | ID de la `PlanningVersion` DRAFT à déployer |
+| `selectedUncoveredMissionIds` | int[] | — | IDs des missions sans instrumentiste à publier en pool (défaut `[]`) |
+| `sendChangeSummary` | bool | — | Si `true`, le worker envoie un email de diff aux instrumentistes et chirurgiens concernés (défaut `false`) |
+
+**Réponse — 200 (immédiate, avant la fin des PDFs) :**
+
+```json
+{
+  "deploymentId": 7,
+  "missionCount": 45,
+  "openPoolCount": 3
+}
+```
+
+| Champ | Description |
+|---|---|
+| `deploymentId` | ID du `PlanningDeployment` créé (status `PENDING`, puis `DONE`/`FAILED` par le worker) |
+| `missionCount` | Total de missions publiées (ASSIGNED + OPEN) |
+| `openPoolCount` | Missions publiées en pool (sans instrumentiste, cochées par le manager) |
+
+> **Async** : PDFs, emails, notifications et `sendChangeSummary` s'exécutent dans le worker Messenger (`PlanningDeployPdfsMessageHandler`). La réponse HTTP retourne immédiatement après le flush DB.
+>
+> **Idempotence** : si le worker reçoit le même message deux fois (retry Messenger), il vérifie `PlanningDeployment.status == DONE` avant d'agir — aucun double envoi dans ce cas.
+>
+> **Worker requis** : `php bin/console messenger:consume async`
+
+---
+
+### 26.6b Diff de version (pré-déploiement)
+
+#### `GET /api/planning/versions/{id}/diff`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Calcule le diff "planning visible" entre la version `{id}` et la version ACTIVE/ARCHIVED la plus récente pour la même période+site. À appeler **avant déploiement** pour prévisualiser ce qui va changer.
+
+**Réponse — 200 :**
+
+```json
+{
+  "added": [
+    {
+      "date": "2026-03-24",
+      "period": "AM",
+      "startAt": "08:00",
+      "endAt": "13:00",
+      "missionType": "BLOCK",
+      "surgeonId": 10,
+      "surgeonName": "Jean Dupont",
+      "instrumentistId": 20,
+      "instrumentistName": "Marie Martin",
+      "siteName": "Alpha"
+    }
+  ],
+  "removed": [ ... ],
+  "modified": [
+    {
+      "mission": { ... },
+      "changes": {
+        "instrumentist": {
+          "from": { "id": 20, "name": "Marie Martin" },
+          "to":   { "id": 21, "name": "Sophie Bernard" }
+        },
+        "schedule": {
+          "from": { "startAt": "08:00", "endAt": "13:00" },
+          "to":   { "startAt": "08:00", "endAt": "12:30" }
+        }
+      }
+    }
+  ]
+}
+```
+
+**Champs comparés (planning visible uniquement) :**
+`startAt`, `endAt`, `surgeon`, `site`, `instrumentist`
+
+**Exclus du diff :** statut, notes, champs financiers, metadata.
+
+**Clé de matching** : `siteId_surgeonId_missionType_date_startAt(arrondi 15 min)`.
+L'arrondi de 15 min absorbe les micro-décalages (08:00 ↔ 08:07 → même slot) sans masquer les vrais changements (08:00 ↔ 08:30 → clés distinctes → add + remove).
+
+**Si diff vide :** `{ "added": [], "removed": [], "modified": [] }` — premier déploiement ou planning identique.
+
+---
+
+### 26.7 Instrumentistes suggérés
+
+#### `GET /api/missions/{missionId}/suggested-instrumentists`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Retourne une liste ordonnée d'instrumentistes adaptés à la mission, basée sur l'algorithme de scoring.
+
+**Réponse — 200 :**
+
+```json
+[
+  {
+    "id": 12,
+    "name": "Ole Salve",
+    "email": "ole@example.com",
+    "score": 85,
+    "hasHistory": true,
+    "specialtyMatch": true
+  }
+]
+```
+
+**Algorithme de scoring :**
+- `hasHistory` : l'instrumentiste a déjà travaillé avec ce chirurgien
+- `specialtyMatch` : spécialité de l'instrumentiste correspond au type de mission
+- `score` : combinaison pondérée des facteurs ci-dessus
+
+---
+
+### 26.8 Spécialités utilisateur
+
+#### `PATCH /api/users/{id}/specialties`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Met à jour les spécialités d'un utilisateur (instrumentiste ou chirurgien).
+
+**Body JSON :**
+
+```json
+{ "specialties": ["GENOU", "EPAULE", "RACHIS"] }
+```
+
+**Réponse — 204 :** Pas de corps
+
+**Erreurs :** `404` si utilisateur introuvable, `422` si valeurs invalides
+
+---
+
+### 26.9 Sites
+
+#### `GET /api/sites`
+
+**AuthZ :** Tout utilisateur authentifié
+
+Retourne la liste de tous les sites (hôpitaux).
+
+**Réponse — 200 :**
+
+```json
+[
+  { "id": 1, "name": "Alpha" },
+  { "id": 2, "name": "Delta" }
+]
+```
 
 ---
 

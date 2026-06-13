@@ -1,6 +1,6 @@
 # SurgicalHub — Architecture système
 
-_Last updated: 2026-03-18 (v5 — module facturation)_
+_Last updated: 2026-05-29 (v7 — observabilité, push fixes)_
 
 ---
 
@@ -24,14 +24,16 @@ SurgicalHub est une plateforme de gestion des missions chirurgicales. Elle conne
 - **Symfony Security** — authentification JWT + RBAC via Voters
 - **Symfony Mailer + Messenger** — emails transactionnels asynchrones
 - **Stockage fichiers** — système de fichiers local (`public/uploads/`)
+- **Sentry** (`sentry/sentry-symfony`) — capture des exceptions en prod ; channel Monolog `push` pour les événements push
 
 ### Frontend
-- **React 18 + TypeScript** — Vite
-- **MUI (Material UI v5)** — composants UI
+- **React 19 + TypeScript** — Vite
+- **MUI (Material UI v7)** — composants UI
 - **TanStack React Query** — cache serveur, mutations, invalidation
-- **React Router v6** — navigation
+- **React Router v7** — navigation
 - **FullCalendar** — affichage planning (instrumentiste + drawer manager)
 - **Axios** — client HTTP avec intercepteur JWT + refresh
+- **Sentry** (`@sentry/react`) — capture des erreurs JS et crashes `AppErrorBoundary`
 
 ---
 
@@ -54,7 +56,14 @@ Api/
 ├── MaterialLineController               — CRUD /api/missions/{id}/material-lines
 ├── FirmBillingController               — PATCH billing-contact + CRUD /api/firms/{id}/pricing-rules
 ├── FirmInvoiceController               — CRUD /api/firm-invoices + preview/generate/send/mark-paid
-└── InstrumentistStatementController    — CRUD /api/instrumentist-statements + preview/generate/send/mark-paid
+├── InstrumentistStatementController    — CRUD /api/instrumentist-statements + preview/generate/send/mark-paid
+├── PlanningTemplateController          — CRUD /api/planning/templates + slots
+├── AbsenceController                   — CRUD /api/absences
+├── PlanningGenerationController        — POST /api/planning/preview + /generate
+├── PlanningDeployController            — POST /api/planning/deploy
+├── PlanningVersionController           — GET /api/planning/versions/{id} + diff
+├── SiteController                      — GET /api/sites
+└── UserController                      — PATCH /api/users/{id}/specialties
 ```
 
 ### Autorisation — RBAC strict via Voters
@@ -62,9 +71,9 @@ Api/
 Toute logique d'accès passe par des Voters Symfony (`InstrumentistVoter`, `MissionVoter`, etc.).
 Aucun contrôle de rôle direct dans les controllers.
 
-### Transitions de statut
+### Endpoints d'action métier
 
-Chaque changement d'état métier passe par un endpoint dédié :
+Chaque mutation d'état passe par un endpoint dédié — aucune mutation libre via `PATCH` générique :
 
 ```
 POST /api/missions/{id}/publish
@@ -80,9 +89,10 @@ POST /api/missions/{missionId}/material-lines
 PATCH /api/missions/{missionId}/material-lines/{lineId}
 DELETE /api/missions/{missionId}/material-lines/{lineId}
 POST /api/missions/{missionId}/material-item-requests
+POST /api/planning/generate
+POST /api/planning/deploy
 ```
 
-Pas de mutation libre via `PATCH` générique pour les transitions.
 
 ### Stockage des fichiers
 
@@ -135,6 +145,14 @@ L'envoi est découplé de la logique métier : une erreur SMTP ne fait jamais é
 /app/m/billing/firm-invoices/:id — détail facture firme
 /app/m/billing/statements        — liste + génération décomptes instrumentistes
 /app/m/billing/statements/:id    — détail décompte instrumentiste
+/app/m/planning/templates        — liste des gabarits de semaine
+/app/m/planning/templates/:id    — éditeur de gabarit (timeline par jour, drag & drop)
+/app/m/planning/generate         — prévisualisation, résolution, génération et déploiement (modal 2 étapes)
+/app/m/planning/versions         — liste de toutes les PlanningVersions avec filtres et actions
+/app/m/planning/versions/:id     — détail d'une PlanningVersion (compteurs, diff, déploiement, suppression)
+/app/m/planning/schedule         — planning publié (vue tableau lecture + modification instrumentiste)
+/app/m/planning/absences         — gestion des absences
+/app/m/planning/specialties      — compétences & spécialités instrumentistes/chirurgiens
 ```
 
 ### Organisation du code
@@ -164,14 +182,27 @@ src/app/
 │   │   └── api/      — firmInvoice.api.ts, firmBilling.api.ts
 │   ├── billing-instrumentist/
 │   │   └── api/      — statement.api.ts
+│   ├── planning-manager/
+│   │   ├── api/      — planning.api.ts (types + fonctions API planning)
+│   │   └── components/  — DeployModal (modal 2 étapes partagé entre PlanningGeneratePage et PlanningVersionDetailPage)
 │   ├── invitation/
 │   └── sites/
+│       └── api/      — sites.api.ts (fetchSites partagé)
 ├── pages/            — pages (orchestration uniquement)
 │   ├── manager/
 │   │   ├── MissionsListPage, MissionDetailPage, MissionCreatePage
 │   │   ├── InstrumentistsPage
-│   │   ├── CataloguePage
-│   │   └── CatalogueRequestsPage
+│   │   ├── CataloguePage, CatalogueRequestsPage
+│   │   ├── SurgeonsPage
+│   │   └── planning/
+│   │       ├── PlanningTemplatesPage        — liste des gabarits
+│   │       ├── PlanningTemplateEditorPage   — éditeur de gabarit (timeline par jour, drag & drop)
+│   │       ├── PlanningGeneratePage         — prévisualisation, résolution, génération, déploiement
+│   │       ├── PlanningVersionsListPage     — liste des PlanningVersions avec filtres et actions
+│   │       ├── PlanningVersionDetailPage    — détail d'une PlanningVersion (diff, déploiement, suppression)
+│   │       ├── PlanningSchedulePage         — planning publié (tableau lecture + edit instrumentiste)
+│   │       ├── AbsencesPage                 — gestion des absences
+│   │       └── SpecialtiesPage              — compétences & spécialités
 │   └── instrumentist/
 ├── layouts/          — DesktopLayout (sidebar MUI permanente), MobileLayout
 ├── router/           — AppRouter, guards RequireAuth / RequireManager
@@ -195,6 +226,12 @@ FACTURATION
   Configuration
   Factures Firmes
   Décomptes
+PLANNING
+  Gabarits
+  Générer
+  Planning
+  Absences
+  Spécialités
 ─────────────
 Déconnexion
 ```
@@ -214,8 +251,10 @@ En mode `embedded` : pas de bouton retour, après approve/reject appelle `onClos
 - **Pas de fallback métier** : le frontend reflète strictement l'état serveur
 - **`allowedActions[]`** : les droits sur les missions sont calculés par le backend et consommés sans inférence côté client
 - **React Query** : toutes les mutations invalident ou mettent à jour le cache via `setQueryData` / `invalidateQueries`
-- **Optimistic updates** : utilisés pour les affiliations de site (avec rollback sur erreur)
+- **Optimistic updates** : utilisés pour les affiliations de site, le renommage de templates et le drag & drop de slots (avec rollback sur erreur dans les trois cas)
 - **Badge sidebar** : le composant `DesktopLayout` poll toutes les 60s les demandes PENDING et affiche un badge sur "Demandes matériel"
+- **`SlotUser`** : dans les slots de planning, surgeon et instrumentist sont sérialisés sous la forme compacte `{ id, name }` — ne pas utiliser `UserRef` (`{ id, firstname, lastname }`) pour ces champs
+- **`fetchSites`** : la fonction partagée `fetchSites()` de `sites.api.ts` est utilisée partout pour charger la liste des sites (clé React Query : `["sites"]`)
 
 ### Synchronisation instrumentiste — polling intelligent (D-045)
 
@@ -241,6 +280,7 @@ User
 ├── defaultCurrency, employmentType
 ├── hourlyRate, consultationFee
 ├── invitationToken, invitationExpiresAt
+├── specialties: string[] (JSON) — codes spécialité (GENOU, EPAULE, …)
 └── SiteMembership[]
 
 SiteMembership
@@ -318,6 +358,33 @@ InstrumentistStatementLine
 ├── durationMinutesRaw, durationMinutesRounded
 ├── rateSnapshot (snapshot hourlyRate ou consultationFee)
 └── quantity, totalAmount, surgeonNameSnapshot, siteNameSnapshot, missionDateSnapshot
+
+PlanningTemplate
+├── id
+├── type: 'PAIR' | 'IMPAIR' | 'TOUTES'
+├── label: string (nullable) — nom personnalisé
+├── site → Hospital (obligatoire)
+├── createdBy → User
+├── createdAt
+└── PlanningSlot[]
+
+PlanningSlot
+├── id
+├── template → PlanningTemplate
+├── dayOfWeek: int (1=Lundi … 7=Dimanche)
+├── period: 'AM' | 'PM'
+├── startTime, endTime (HH:MM:SS)
+├── missionType: 'BLOCK' | 'CONSULTATION'
+├── surgeon → User
+├── instrumentist → User (nullable)
+└── site → Hospital (nullable — surcharge par rapport au template)
+
+Absence
+├── id
+├── user → User
+├── dateStart, dateEnd (date)
+├── reason: string (nullable)
+└── createdBy → User
 ```
 
 ---
@@ -383,7 +450,154 @@ Matériel absent → "Matériel non trouvé ?" → modal
 
 ---
 
-## 7. Variables d'environnement frontend
+## 7. Flux planning
+
+### Génération du planning
+
+```
+Manager → définit PlanningTemplates (PAIR/IMPAIR/TOUTES) + PlanningSlots
+        → enregistre les Absences des instrumentistes/chirurgiens
+
+        ① POST /api/planning/preview   — simulation sans écriture
+             → tableau par semaine (COVERED / UNCOVERED / SKIPPED / CONFLICT / MODIFIED)
+
+        ② [Si UNCOVERED] Bouton "Résoudre les non-attribués"
+             → modal par ligne UNCOVERED :
+               • Instrumentiste libéré détecté (slot SKIPPED → chirurgien absent)
+                   → POST /api/missions { instrumentistUserId }   (DRAFT avec instrumentiste direct)
+                   → ligne passe COVERED — le déploiement (④) le publiera en ASSIGNED
+               • Aucun libéré disponible
+                   → POST /api/missions   (DRAFT)
+                   → POST /api/missions/{id}/publish  { scope: POOL }
+                   → ligne affiche "Demande envoyée" (fond bleu)
+
+        ③ POST /api/planning/generate  — crée les missions DRAFT restantes
+             (les missions déjà publiées en ② ne sont pas écrasées)
+
+        ④ POST /api/planning/deploy    — publie les DRAFT + envoie les PDFs
+```
+
+### Auto-assignation des instrumentistes libérés (backend — second passage)
+
+`PlanningGeneratorService::preview()` effectue un **second passage** après la boucle principale pour réaffecter automatiquement les instrumentistes libérés aux créneaux sans instrumentiste.
+
+**Définition "libéré"** : un instrumentiste dont **tous** les slots du jour sont `SKIPPED` (son chirurgien est absent). Il peut couvrir plusieurs créneaux non-chevauchants le même jour.
+
+**Algorithme :**
+
+1. **Construction du pool** — collecter les instrumentistes présents uniquement sur des lignes `SKIPPED`. Retirer immédiatement tout instrumentiste qui apparaît aussi sur au moins une ligne non-SKIPPED (il n'est pas vraiment libre).
+
+2. **Traitement des créneaux candidats** — pour chaque ligne qui a besoin d'un instrumentiste :
+   - `status === 'UNCOVERED'` (aucun instrumentiste, aucune mission existante)
+   - `status === 'COVERED' && instrumentistId === null` (mission existante sans instrumentiste)
+
+3. **Vérification d'overlap** — pour chaque libéré candidat :
+   - Aucune ligne non-SKIPPED avec cet instrumentiste ne doit chevaucher le créneau cible (check sur `$lines`)
+   - Aucune affectation du second passage lui-même ne doit chevaucher (check sur `$secondPassAssignments`)
+
+4. **Affectation** — si disponible : `instrumentistId` mis à jour, `status → COVERED`, `freedFrom = true`. L'instrumentiste reste dans le pool (peut couvrir un autre créneau non-chevauchant).
+
+**Champ `freedFrom`** : exposé dans `PreviewLine`, consommé par `generate()` pour mettre à jour l'instrumentiste des missions existantes sans instrumentiste, et par le frontend pour afficher le badge "Libéré".
+
+### Vue tableau de la page Générer (`PlanningGeneratePage`)
+
+La page `/app/m/planning/generate` affiche les lignes de prévisualisation sous forme de **tableau groupé par semaine**, calqué sur le format du planning Excel interne.
+
+**Structure :**
+- Chaque semaine a une barre d'en-tête colorée : bleu = semaine paire, violet = semaine impaire
+- Colonnes : **Jour** (rowspan) | **Date** (rowspan) | **Chirurgien** | **Période** | **Instrumentiste** | **Site** | **État**
+- Les lignes d'un même jour partagent les cellules Jour et Date (`rowSpan`)
+- Tri au sein de chaque jour : chirurgien A→Z, puis Matin avant Après-midi
+
+**Couleur de ligne par statut :**
+
+| Statut | Couleur |
+|---|---|
+| `COVERED` | Blanc |
+| `UNCOVERED` | Jaune clair |
+| `MODIFIED` | Bleu clair |
+| `CONFLICT` | Rouge clair |
+| `SKIPPED` | Gris (chirurgien absent) |
+
+**Attribution inline d'instrumentiste :**
+- La colonne Instrumentiste contient un `<Select>` MUI directement dans chaque cellule
+- La liste est chargée une fois depuis `GET /api/instrumentists?active=true`
+- Avant génération : la sélection met à jour l'état local uniquement (`previewLines`)
+- Après génération (`existingMissionId` présent) : la sélection appelle `POST /api/missions/{id}/assign-instrumentist` puis met à jour l'état local
+
+### Performances de preview() — 3 requêtes DB pour toute période
+
+`preview()` pré-charge tout en 3 requêtes avant la boucle sur les jours, puis travaille entièrement en mémoire :
+
+| # | Méthode | Token DQL | Ce qui est chargé |
+|---|---|---|---|
+| 1 | `loadAllTemplates()` | QB | Tous les templates + slots (filtré par site) |
+| 2 | `loadAbsencesMap()` | `absencesFrom` | Toutes les absences → `[userId => [[start, end]]]` |
+| 3 | `loadExistingMissionsPool()` | `poolFrom` | Toutes les missions → `["{surgeonId}_{siteId}_{date}" => Mission[]]` |
+
+Le filtrage PAIR/IMPAIR, les vérifications d'absence (`isAbsentFast`) et les conflits (`hasConflictFast`) sont 100% en mémoire. Sans ça, un planning de 2 mois × 10 slots/jour = ~1 830 requêtes DB → timeout.
+
+**Test de régression :** `PlanningPreviewPerformanceTest::test_two_month_preview_uses_only_3_db_queries`
+
+### Déploiement asynchrone — PlanningDeployPdfsMessageHandler
+
+`PlanningDeploymentService::deploy()` ne fait que le travail DB (rapide) et retourne immédiatement `{ missionCount }`. La génération des PDFs et l'envoi des emails sont délégués à `PlanningDeployPdfsMessageHandler` via Messenger (worker asynchrone). Cela évite le timeout HTTP sur les plannings avec beaucoup de chirurgiens/instrumentistes.
+
+### Détection de conflits
+
+`PlanningGeneratorService::preview()` détecte deux types de conflits :
+
+1. **Conflit pool** : l'instrumentiste a une mission dans `$missionsByInstrumentist` (index en mémoire du pool) qui chevauche le créneau → statut `CONFLICT`
+2. **Conflit intra-preview** : deux slots de templates différents assignent le même instrumentiste à des créneaux qui se chevauchent dans la même preview → le second slot reçoit `CONFLICT`
+
+La détection intra-preview utilise une map en mémoire `$previewAssignments[instrumentistId]` qui accumule les plages `[dateStr, startMinutes, endMinutes]` au fil du traitement.
+
+Les missions `DRAFT` sont incluses dans le check DB (seules les `REJECTED` sont exclues), ce qui permet de détecter les conflits lors d'une re-preview après génération.
+
+### Algorithme de sélection d'instrumentiste (suggestions)
+
+`PlanningScoreService::suggestForMission()` — alimenté par `GET /api/missions/{id}/suggested-instrumentists` :
+
+1. Charge tous les instrumentistes actifs du même site
+2. Filtre les absents (via `Absence`)
+3. Filtre les instrumentistes avec une mission en conflit horaire
+4. Score les candidats restants (sur 100 pts) :
+   - Spécialité correspondante : 0–40 pts
+   - Historique avec ce chirurgien (missions VALIDATED) : 0–35 pts
+   - Expérience du type de mission (BLOCK/CONSULTATION) : 0–25 pts
+5. Tri : historique + spécialité en premier, puis spécialité seule, puis score décroissant
+
+### Page planning publié (`PlanningSchedulePage`)
+
+La page `/app/m/planning/schedule` ("Planning" dans la sidebar) affiche les missions publiées dans le **même format de tableau** que `PlanningGeneratePage`.
+
+**Source :** `GET /api/missions?from=...&to=...&siteId=...` (limit 500). DRAFT et REJECTED exclus côté frontend.
+
+**Colonnes :** Jour (rowSpan) | Date (rowSpan) | Chirurgien | Période | Instrumentiste | Site | Statut
+
+**Statut mission :** chip coloré — À réserver (OPEN, bleu outlined), Assigné (vert), Soumis, Validé, Déclaré, Clôturé.
+
+**Instrumentiste éditable inline :** `<Select>` pour OPEN et ASSIGNED → `POST /api/missions/{id}/assign-instrumentist`. Read-only pour SUBMITTED / VALIDATED / CLOSED.
+
+**Chargement manuel :** bouton "Charger le planning" — `useQuery({ enabled: false })` + `refetch()` explicite.
+
+---
+
+### Éditeur de gabarit — UX clé
+
+- **Timeline par jour** : accordéon par jour, timeline Google Calendar–style (6h–22h), clic sur le fond pour créer un créneau à l'heure cliquée
+- **Samedi/Dimanche masqués** par défaut — toggle pour les afficher (auto-révélés si des slots existent le week-end)
+- **Inline title edit** : clic sur l'icône crayon → TextField → validation optimiste (UI mise à jour immédiatement, rollback sur erreur API)
+- **Doublon** : même instrumentiste sur deux créneaux qui se chevauchent → bordure orange + chip "Doublon"
+- **Clic pour éditer** : clic sur une carte de slot ouvre le dialog d'édition pré-rempli
+- **Autocomplete chirurgien / instrumentiste** : les champs Chirurgien et Instrumentiste dans `SlotDialog` utilisent `<Autocomplete>` MUI — l'utilisateur peut taper pour filtrer la liste en temps réel ; l'instrumentiste est optionnel (bouton ✕ pour effacer)
+- **Couleurs par chirurgien** : chaque chirurgien reçoit une couleur déterministe (`surgeonId % 10` sur une palette de 10 paires) appliquée à tous ses `SlotBlock` quelle que soit la colonne jour — identique sur Lundi, Mercredi, Vendredi etc.
+- **Doublon instrumentiste** : `DayTimeline` calcule via `React.useMemo` quels instrumentistes apparaissent sur des créneaux qui se chevauchent (`overlaps()`). Les `SlotBlock` concernés reçoivent `isDuplicate=true` → fond orange, outline orange, badge "Doublon"
+- **Raccourcis période** : le `SlotDialog` propose deux boutons "Matin (08h–12h)" / "Après-midi (12h–17h)" qui pré-remplissent les champs Début/Fin ; le bouton actif s'affiche en `contained`
+
+---
+
+## 8. Variables d'environnement frontend
 
 | Variable | Usage |
 |---|---|
