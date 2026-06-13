@@ -145,6 +145,8 @@ src/app/
 ├── auth/             — AuthContext, tokens, refresh mutex
 ├── features/         — features métier
 │   ├── missions/
+│   │   └── sync/     — polling intelligent instrumentiste (D-045) : useInstrumentistMissionSync,
+│   │                    applyMissionSyncToCache, missionSyncBus
 │   ├── encoding/
 │   ├── manager-instrumentists/
 │   │   ├── api/      — types, fonctions API
@@ -214,6 +216,16 @@ En mode `embedded` : pas de bouton retour, après approve/reject appelle `onClos
 - **React Query** : toutes les mutations invalident ou mettent à jour le cache via `setQueryData` / `invalidateQueries`
 - **Optimistic updates** : utilisés pour les affiliations de site (avec rollback sur erreur)
 - **Badge sidebar** : le composant `DesktopLayout` poll toutes les 60s les demandes PENDING et affiche un badge sur "Demandes matériel"
+
+### Synchronisation instrumentiste — polling intelligent (D-045)
+
+`useInstrumentistMissionSync()` (monté dans `MobileLayout`) interroge
+`GET /api/instrumentist/missions/sync?since=...` (voir `docs/api.md` §27) toutes les 30s,
+en pause si l'onglet est caché ou hors-ligne, avec refresh immédiat au retour focus/online
+ou via `requestMissionSync()` (bus d'événements appelé après claim/submit/declare).
+`applyMissionSyncToCache` patche en place le cache React Query `["missions", ...]` (mise à
+jour/suppression des missions existantes, ajout des nouvelles offres OPEN et des missions
+nouvellement assignées) et déclenche un toast groupé pour les nouvelles offres.
 
 ---
 
