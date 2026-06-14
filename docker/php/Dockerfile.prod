@@ -1,0 +1,66 @@
+FROM php:8.2-fpm
+
+# ── Layer 1: System packages ────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    unzip \
+    libicu-dev \
+    libzip-dev \
+    libpng-dev \
+    libjpeg62-turbo-dev \
+    libfreetype6-dev \
+    libgmp-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Layer 2: PHP core extensions ────────────────────────────────────────────
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install -j"$(nproc)" \
+        pdo_mysql \
+        intl \
+        zip \
+        gd \
+        opcache \
+        pcntl \
+        gmp
+
+# ── Layer 3: PECL extensions (redis only — no xdebug in prod) ───────────────
+RUN pecl install redis \
+    && docker-php-ext-enable redis
+
+# ── Layer 4: Opcache production settings ────────────────────────────────────
+RUN { \
+    echo 'opcache.memory_consumption=192'; \
+    echo 'opcache.interned_strings_buffer=16'; \
+    echo 'opcache.max_accelerated_files=20000'; \
+    echo 'opcache.validate_timestamps=0'; \
+    echo 'opcache.preload_user=www-data'; \
+    } > /usr/local/etc/php/conf.d/opcache-prod.ini
+
+# ── Layer 5: Composer 2 ──────────────────────────────────────────────────────
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
+WORKDIR /var/www/backend
+
+# ── Layer 6: Dependencies (cached separately from app source) ───────────────
+COPY backend/composer.json backend/composer.lock backend/symfony.lock ./
+RUN composer install --no-interaction --no-dev --no-scripts --no-autoloader --optimize-autoloader
+
+# ── Layer 7: Application source ──────────────────────────────────────────────
+COPY backend/ .
+RUN composer dump-autoload --no-dev --optimize --classmap-authoritative \
+    && mkdir -p var/cache var/log var/jwt public/uploads \
+    && chown -R www-data:www-data var public/uploads
+
+ENV APP_ENV=prod
+ENV XDEBUG_MODE=off
+
+COPY docker/php/entrypoint.prod.sh /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Container starts as root: entrypoint fixes ownership of mounted volumes,
+# then php-fpm (master) drops workers to www-data per its pool config.
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["php-fpm"]
