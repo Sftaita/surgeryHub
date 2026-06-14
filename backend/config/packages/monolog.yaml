@@ -54,7 +54,3 @@ when@prod:
                 channels: [deprecation]
                 path: php://stderr
                 formatter: monolog.formatter.json
-            sentry:
-                type: sentry
-                level: error
-                hub_id: Sentry\State\HubInterface
