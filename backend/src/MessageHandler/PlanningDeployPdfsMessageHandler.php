@@ -14,7 +14,7 @@ use App\Message\SendBillingEmailMessage;
 use App\Service\NotificationService;
 use App\Service\PdfService;
 use App\Service\PlanningDiffService;
-use App\Service\WebPushService;
+use App\Service\WebPushServiceInterface;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
@@ -47,7 +47,7 @@ final class PlanningDeployPdfsMessageHandler
         private readonly EntityManagerInterface $em,
         private readonly PdfService $pdfService,
         private readonly NotificationService $notificationService,
-        private readonly WebPushService $webPushService,
+        private readonly WebPushServiceInterface $webPushService,
         private readonly MessageBusInterface $bus,
         private readonly PlanningDiffService $diffService,
         #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]

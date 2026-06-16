@@ -70,7 +70,11 @@ class NotificationService
         $this->createInApp($instrumentist, $mission, 'MISSION_DECLARED_REJECTED');
     }
 
-    public function sendInstrumentistInvitation(User $user): void
+    /**
+     * Méthode générique d'envoi d'invitation, quel que soit le rôle.
+     * Met à jour invitationLastSentAt sur l'entité (flush géré par l'appelant).
+     */
+    public function sendUserInvitation(User $user): void
     {
         $token = $user->getInvitationToken();
         if ($token === null || $token === '') {
@@ -92,30 +96,20 @@ class NotificationService
             ],
             textTemplate: 'emails/instrumentist_invitation.txt.twig',
         );
+
+        $user->setInvitationLastSentAt(new \DateTimeImmutable());
+    }
+
+    public function sendInstrumentistInvitation(User $user): void
+    {
+        $this->sendUserInvitation($user);
+        $this->em->flush();
     }
 
     public function sendSurgeonInvitation(User $user): void
     {
-        $token = $user->getInvitationToken();
-        if ($token === null || $token === '') {
-            throw new \LogicException('Invitation token is missing.');
-        }
-
-        $invitationUrl = $this->buildFrontendUrl(self::INSTRUMENTIST_INVITATION_PATH, [
-            'token' => $token,
-        ]);
-
-        $this->emailService->sendTemplatedEmail(
-            to: (string) $user->getEmail(),
-            subject: 'Complete your SurgicalHub account',
-            htmlTemplate: 'emails/instrumentist_invitation.html.twig',
-            context: [
-                'displayName' => $this->resolveDisplayName($user),
-                'invitationUrl' => $invitationUrl,
-                'expiresAt' => $user->getInvitationExpiresAt(),
-            ],
-            textTemplate: 'emails/instrumentist_invitation.txt.twig',
-        );
+        $this->sendUserInvitation($user);
+        $this->em->flush();
     }
 
     public function sendFirmInvoiceEmail(FirmInvoice $invoice, string $emailTo, array $emailCc, string $pdfBinary): void

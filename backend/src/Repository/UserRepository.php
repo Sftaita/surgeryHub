@@ -164,6 +164,82 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
     }
 
     /**
+     * Trouve un utilisateur par son token d'invitation, quel que soit son rôle.
+     * Corrige le bug silencieux où les chirurgiens/managers ne pouvaient pas compléter leur compte.
+     */
+    public function findByInvitationToken(string $token): ?User
+    {
+        /** @var ?User $user */
+        $user = $this->createQueryBuilder('u')
+            ->andWhere('u.invitationToken = :token')
+            ->setParameter('token', $token)
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+
+        return $user;
+    }
+
+    /**
+     * Liste tous les utilisateurs avec filtres optionnels (pour le module admin).
+     *
+     * @return list<User>
+     */
+    public function findAllUsers(
+        ?string $search = null,
+        ?string $role = null,
+        ?bool $active = null,
+        ?int $siteId = null,
+    ): array {
+        $qb = $this->createQueryBuilder('u')
+            ->leftJoin('u.siteMemberships', 'sm')->addSelect('sm')
+            ->leftJoin('sm.site', 'site')->addSelect('site')
+            ->orderBy('u.lastname', 'ASC')
+            ->addOrderBy('u.firstname', 'ASC')
+            ->addOrderBy('u.email', 'ASC');
+
+        if ($search !== null && trim($search) !== '') {
+            $s = mb_strtolower(trim($search));
+            $qb->andWhere('(LOWER(u.email) LIKE :s OR LOWER(u.firstname) LIKE :s OR LOWER(u.lastname) LIKE :s)')
+               ->setParameter('s', '%'.$s.'%');
+        }
+
+        if ($role !== null && $role !== '') {
+            $qb->andWhere('u.roles LIKE :role')
+               ->setParameter('role', '%"'.$role.'"%');
+        }
+
+        if ($active !== null) {
+            $qb->andWhere('u.active = :active')
+               ->setParameter('active', $active);
+        }
+
+        if ($siteId !== null) {
+            $qb->andWhere('sm.site = :siteId')
+               ->setParameter('siteId', $siteId);
+        }
+
+        /** @var list<User> $res */
+        $res = $qb->getQuery()->getResult();
+        return $res;
+    }
+
+    public function findUserById(int $id): ?User
+    {
+        /** @var ?User $user */
+        $user = $this->createQueryBuilder('u')
+            ->leftJoin('u.siteMemberships', 'sm')->addSelect('sm')
+            ->leftJoin('sm.site', 'site')->addSelect('site')
+            ->andWhere('u.id = :id')
+            ->setParameter('id', $id)
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+
+        return $user;
+    }
+
+    /**
      * Managers + admins globaux (pas liés à un hôpital).
      *
      * @return list<User>

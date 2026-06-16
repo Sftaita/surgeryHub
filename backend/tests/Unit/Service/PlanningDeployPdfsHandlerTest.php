@@ -17,6 +17,7 @@ use App\MessageHandler\PlanningDeployPdfsMessageHandler;
 use App\Service\NotificationService;
 use App\Service\PdfService;
 use App\Service\PlanningDiffService;
+use App\Service\WebPushServiceInterface;
 use Doctrine\ORM\AbstractQuery;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Query;
@@ -38,6 +39,7 @@ class PlanningDeployPdfsHandlerTest extends TestCase
     private EntityManagerInterface&MockObject $em;
     private PdfService&MockObject             $pdf;
     private NotificationService&MockObject    $notif;
+    private WebPushServiceInterface&MockObject $webPush;
     private MessageBusInterface&MockObject    $bus;
     private PlanningDiffService&MockObject    $diffService;
 
@@ -49,6 +51,7 @@ class PlanningDeployPdfsHandlerTest extends TestCase
         $this->em          = $this->createMock(EntityManagerInterface::class);
         $this->pdf         = $this->createMock(PdfService::class);
         $this->notif       = $this->createMock(NotificationService::class);
+        $this->webPush     = $this->createMock(WebPushServiceInterface::class);
         $this->bus         = $this->createMock(MessageBusInterface::class);
         $this->diffService = $this->createMock(PlanningDiffService::class);
 
@@ -107,6 +110,7 @@ class PlanningDeployPdfsHandlerTest extends TestCase
             $this->em,
             $this->pdf,
             $this->notif,
+            $this->webPush,
             $this->bus,
             $this->diffService,
             'noreply@test.com',
@@ -296,8 +300,8 @@ class PlanningDeployPdfsHandlerTest extends TestCase
         $threw = false;
         try {
             (new PlanningDeployPdfsMessageHandler(
-                $this->em, $this->pdf, $this->notif, $this->bus,
-                $this->diffService, 'noreply@test.com', 'SurgicalHub'
+                $this->em, $this->pdf, $this->notif, $this->webPush,
+                $this->bus, $this->diffService, 'noreply@test.com', 'SurgicalHub'
             ))->__invoke($this->makeMessage());
         } catch (\Throwable) {
             $threw = true;

@@ -2600,3 +2600,334 @@ les retirer de la liste "Offres".
 - `422` si `since` est fourni mais n'est pas un ISO 8601 valide
 
 ---
+
+## 28. Module Administration (ROLE_ADMIN)
+
+> Tous les endpoints ci-dessous requièrent `ROLE_ADMIN`. Tout autre rôle reçoit `403 Forbidden`.
+
+---
+
+### 28.1 Liste des utilisateurs
+
+```
+GET /api/admin/users
+```
+
+**Query params :**
+
+| Paramètre | Type    | Description |
+|-----------|---------|-------------|
+| `search`  | string  | Filtre sur email, prénom, nom (insensible à la casse) |
+| `role`    | string  | `ROLE_INSTRUMENTIST` \| `ROLE_SURGEON` \| `ROLE_MANAGER` \| `ROLE_ADMIN` |
+| `active`  | bool    | `true` / `false` / absent = tous |
+| `siteId`  | integer | ID du site (filtre par appartenance) |
+
+**Réponse 200 :**
+
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "email": "alice@example.com",
+      "firstname": "Alice",
+      "lastname": "Dupont",
+      "displayName": "Alice Dupont",
+      "role": "INSTRUMENTIST",
+      "active": true,
+      "invitationStatus": "used",
+      "sites": [{ "id": 1, "name": "CHU Liège" }]
+    }
+  ],
+  "total": 1
+}
+```
+
+**`invitationStatus` possibles :** `used` | `pending` | `expired` | `email_not_sent` | `none`
+
+---
+
+### 28.2 Détail utilisateur
+
+```
+GET /api/admin/users/{id}
+```
+
+**Réponse 200 :**
+
+```json
+{
+  "id": 1,
+  "email": "alice@example.com",
+  "firstname": "Alice",
+  "lastname": "Dupont",
+  "phone": "+32 470 12 34 56",
+  "displayName": "Alice Dupont",
+  "role": "INSTRUMENTIST",
+  "active": true,
+  "invitationStatus": "used",
+  "invitationExpiresAt": null,
+  "invitationLastSentAt": "2026-06-01T10:00:00+00:00",
+  "siteMemberships": [
+    { "id": 12, "site": { "id": 1, "name": "CHU Liège" }, "siteRole": "INSTRUMENTIST" }
+  ]
+}
+```
+
+**Erreurs :** `404` si l'utilisateur n'existe pas.
+
+---
+
+### 28.3 Créer un utilisateur
+
+```
+POST /api/admin/users
+```
+
+**Body :**
+
+```json
+{
+  "email": "bob@example.com",
+  "firstname": "Bob",
+  "lastname": "Martin",
+  "phone": "+32 470 00 00 00",
+  "role": "ROLE_INSTRUMENTIST",
+  "siteIds": [1, 2]
+}
+```
+
+**Champs :** `role` ∈ `ROLE_INSTRUMENTIST` | `ROLE_SURGEON` | `ROLE_MANAGER`. `siteIds` doit contenir au moins 1 ID valide.
+
+**Réponse 201 :**
+
+```json
+{
+  "user": { /* AdminUserDetail */ },
+  "warnings": []
+}
+```
+
+Un `warning` `INVITATION_EMAIL_NOT_SENT` apparaît si l'email n'a pas pu être mis en file.
+L'utilisateur est créé dans tous les cas.
+
+**Erreurs :** `409` si l'email est déjà utilisé, `404` si un `siteId` est invalide, `422` si validation échoue.
+
+---
+
+### 28.4 Modifier les champs d'identité
+
+```
+PATCH /api/admin/users/{id}
+```
+
+**Body (partiel) :**
+
+```json
+{ "firstname": "Bobby", "lastname": "Martin", "phone": "" }
+```
+
+Seuls `firstname`, `lastname`, `phone` sont modifiables. Une chaîne vide `""` met le champ à null.
+
+**Réponse 200 :** `AdminUserDetail`
+
+---
+
+### 28.5 Suspendre un utilisateur
+
+```
+POST /api/admin/users/{id}/suspend
+```
+
+Idempotent : si déjà suspendu, retourne simplement l'état actuel sans relancer d'audit.
+
+**Réponse 200 :**
+
+```json
+{ "id": 1, "active": false }
+```
+
+---
+
+### 28.6 Réactiver un utilisateur
+
+```
+POST /api/admin/users/{id}/activate
+```
+
+Idempotent : si déjà actif, no-op.
+
+**Réponse 200 :**
+
+```json
+{ "id": 1, "active": true }
+```
+
+---
+
+### 28.7 Changer le rôle
+
+```
+POST /api/admin/users/{id}/change-role
+```
+
+**Body :**
+
+```json
+{ "newRole": "ROLE_SURGEON" }
+```
+
+**Règles :**
+- `newRole` ∈ `ROLE_INSTRUMENTIST` | `ROLE_SURGEON` | `ROLE_MANAGER`.
+- L'admin ne peut pas changer son propre rôle (`400`).
+- Met également à jour le `siteRole` de toutes les `SiteMembership` existantes.
+
+**Réponse 200 :** `AdminUserDetail`
+
+---
+
+### 28.8 Renvoyer l'invitation
+
+```
+POST /api/admin/users/{id}/resend-invitation
+```
+
+**Règles :** Impossible si le compte est déjà activé (password ≠ null → `409`).
+Régénère le token et repart pour 48 h.
+
+**Réponse 200 :**
+
+```json
+{
+  "id": 1,
+  "invitationStatus": "pending",
+  "invitationExpiresAt": "2026-06-18T10:00:00+00:00",
+  "invitationLastSentAt": "2026-06-16T10:00:00+00:00"
+}
+```
+
+---
+
+### 28.9 Ajouter une affiliation site
+
+```
+POST /api/admin/users/{id}/site-memberships
+```
+
+**Body :**
+
+```json
+{ "siteId": 3 }
+```
+
+**Erreurs :** `404` si site inconnu, `409` si affiliation déjà existante.
+
+**Réponse 201 :**
+
+```json
+{
+  "id": 15,
+  "site": { "id": 3, "name": "CHR Namur" },
+  "siteRole": "INSTRUMENTIST"
+}
+```
+
+---
+
+### 28.10 Retirer une affiliation site
+
+```
+DELETE /api/admin/users/{id}/site-memberships/{membershipId}
+```
+
+**Erreurs :** `404` si le membership n'appartient pas à l'utilisateur.
+
+**Réponse 200 :**
+
+```json
+{ "id": 15, "deleted": true }
+```
+
+---
+
+### 28.11 Liste des invitations
+
+```
+GET /api/admin/invitations
+```
+
+**Query params :**
+
+| Paramètre | Type            | Description |
+|-----------|-----------------|-------------|
+| `status`  | string (répété) | Filtrer par `pending` \| `expired` \| `used` \| `email_not_sent` \| `none` |
+
+Exemple : `?status[]=pending&status[]=expired`
+
+**Réponse 200 :**
+
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "email": "charlie@example.com",
+      "displayName": "Charlie",
+      "role": "INSTRUMENTIST",
+      "active": true,
+      "invitationStatus": "pending",
+      "invitationExpiresAt": "2026-06-18T10:00:00+00:00",
+      "invitationLastSentAt": "2026-06-16T10:00:00+00:00"
+    }
+  ],
+  "total": 1
+}
+```
+
+---
+
+### 28.12 Journal d'audit
+
+```
+GET /api/admin/audit
+```
+
+**Query params :**
+
+| Paramètre      | Type    | Description |
+|----------------|---------|-------------|
+| `from`         | ISO8601 | Depuis (inclusif) |
+| `to`           | ISO8601 | Jusqu'au (inclusif) |
+| `targetUserId` | integer | Filtrer par utilisateur cible |
+| `eventType`    | string  | Voir liste ci-dessous |
+| `limit`        | integer | Max 500, défaut 200 |
+| `offset`       | integer | Pagination |
+
+**`eventType` possibles :** `USER_CREATED` | `USER_INVITATION_SENT` | `USER_INVITATION_RESENT` |
+`USER_INVITATION_COMPLETED` | `USER_SUSPENDED` | `USER_REACTIVATED` | `USER_ROLE_CHANGED` |
+`USER_SITE_ADDED` | `USER_SITE_REMOVED`
+
+**Réponse 200 :**
+
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "eventType": "USER_CREATED",
+      "description": "Utilisateur créé avec le rôle ROLE_INSTRUMENTIST",
+      "payload": { "role": "ROLE_INSTRUMENTIST" },
+      "createdAt": "2026-06-16T10:00:00+00:00",
+      "actor": { "id": 10, "email": "admin@example.com", "displayName": "Admin" },
+      "targetUser": { "id": 1, "email": "alice@example.com", "displayName": "Alice Dupont" }
+    }
+  ],
+  "total": 1,
+  "limit": 200,
+  "offset": 0
+}
+```
+
+**Note :** `targetUser` peut être `null` si l'utilisateur a été supprimé (ON DELETE SET NULL).
+
+---

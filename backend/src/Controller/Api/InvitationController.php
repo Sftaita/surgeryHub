@@ -6,6 +6,7 @@ use App\Dto\Request\InvitationCompleteRequest;
 use App\Entity\User;
 use App\Repository\UserRepository;
 use App\Service\ProfilePictureStorage;
+use App\Service\UserAuditService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
@@ -32,6 +33,7 @@ final class InvitationController extends AbstractController
         private readonly ValidatorInterface $validator,
         private readonly UserPasswordHasherInterface $passwordHasher,
         private readonly ProfilePictureStorage $profilePictureStorage,
+        private readonly UserAuditService $userAudit,
     ) {
     }
 
@@ -53,23 +55,23 @@ final class InvitationController extends AbstractController
             ]);
         }
 
-        $instrumentist = $this->users->findInstrumentistByInvitationToken($normalizedToken);
+        $user = $this->users->findByInvitationToken($normalizedToken);
 
-        if (!$instrumentist instanceof User) {
+        if (!$user instanceof User) {
             return $this->json([
                 'status' => 'invalid',
                 'valid' => false,
             ]);
         }
 
-        if ($instrumentist->getPassword() !== null) {
+        if ($user->getPassword() !== null) {
             return $this->json([
                 'status' => 'used',
                 'valid' => false,
             ]);
         }
 
-        $expiresAt = $instrumentist->getInvitationExpiresAt();
+        $expiresAt = $user->getInvitationExpiresAt();
         if (!$expiresAt instanceof \DateTimeImmutable || $expiresAt <= new \DateTimeImmutable()) {
             return $this->json([
                 'status' => 'expired',
@@ -77,17 +79,17 @@ final class InvitationController extends AbstractController
             ]);
         }
 
-        $firstname = $instrumentist->getFirstname();
-        $lastname = $instrumentist->getLastname();
+        $firstname = $user->getFirstname();
+        $lastname = $user->getLastname();
 
         $name = trim((string) ($firstname ?? '') . ' ' . (string) ($lastname ?? ''));
-        $displayName = $name !== '' ? $name : (string) $instrumentist->getEmail();
+        $displayName = $name !== '' ? $name : (string) $user->getEmail();
 
         return $this->json([
             'status' => 'valid',
             'valid' => true,
             'invitation' => [
-                'email' => (string) $instrumentist->getEmail(),
+                'email' => (string) $user->getEmail(),
                 'firstname' => $firstname,
                 'lastname' => $lastname,
                 'displayName' => $displayName,
@@ -129,7 +131,7 @@ final class InvitationController extends AbstractController
             }
         }
 
-        $user = $this->users->findInstrumentistByInvitationToken($dto->token);
+        $user = $this->users->findByInvitationToken($dto->token);
 
         if (!$user instanceof User) {
             throw new NotFoundHttpException('Invitation not found');
@@ -160,6 +162,7 @@ final class InvitationController extends AbstractController
             $user->setProfilePicturePath($publicPath);
         }
 
+        $this->userAudit->userInvitationCompleted($user);
         $this->em->flush();
 
         return $this->json([

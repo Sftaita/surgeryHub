@@ -12,7 +12,7 @@ use Minishlink\WebPush\WebPush;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
-final class WebPushService
+final class WebPushService implements WebPushServiceInterface
 {
     public function __construct(
         private readonly EntityManagerInterface $em,

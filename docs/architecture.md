@@ -63,7 +63,11 @@ Api/
 ├── PlanningDeployController            — POST /api/planning/deploy
 ├── PlanningVersionController           — GET /api/planning/versions/{id} + diff
 ├── SiteController                      — GET /api/sites
-└── UserController                      — PATCH /api/users/{id}/specialties
+├── UserController                      — PATCH /api/users/{id}/specialties
+├── InstrumentistMissionSyncController  — GET /api/instrumentist/missions/sync (polling)
+├── AdminUserController                 — GET/POST/PATCH /api/admin/users + transitions
+├── AdminInvitationController           — GET /api/admin/invitations
+└── AdminAuditController                — GET /api/admin/audit
 ```
 
 ### Autorisation — RBAC strict via Voters
@@ -91,6 +95,12 @@ DELETE /api/missions/{missionId}/material-lines/{lineId}
 POST /api/missions/{missionId}/material-item-requests
 POST /api/planning/generate
 POST /api/planning/deploy
+POST /api/admin/users/{id}/suspend
+POST /api/admin/users/{id}/activate
+POST /api/admin/users/{id}/change-role
+POST /api/admin/users/{id}/resend-invitation
+POST /api/admin/users/{id}/site-memberships
+DELETE /api/admin/users/{id}/site-memberships/{membershipId}
 ```
 
 
@@ -186,9 +196,17 @@ src/app/
 │   │   ├── api/      — planning.api.ts (types + fonctions API planning)
 │   │   └── components/  — DeployModal (modal 2 étapes partagé entre PlanningGeneratePage et PlanningVersionDetailPage)
 │   ├── invitation/
+│   ├── admin/
+│   │   ├── api/         — admin.types.ts, admin.api.ts (CRUD utilisateurs, invitations, audit)
+│   │   └── components/  — AdminUserDrawer, AdminCreateUserModal, AdminChangeRoleModal,
+│   │                        AdminSuspendModal, InvitationStatusChip
 │   └── sites/
 │       └── api/      — sites.api.ts (fetchSites partagé)
 ├── pages/            — pages (orchestration uniquement)
+│   ├── admin/
+│   │   ├── AdminUsersPage        — liste + filtres + drawer + création
+│   │   ├── AdminInvitationsPage  — liste invitations avec filtres par statut + renvoi
+│   │   └── AdminAuditPage        — journal d'audit en lecture seule
 │   ├── manager/
 │   │   ├── MissionsListPage, MissionDetailPage, MissionCreatePage
 │   │   ├── InstrumentistsPage
@@ -205,7 +223,7 @@ src/app/
 │   │       └── SpecialtiesPage              — compétences & spécialités
 │   └── instrumentist/
 ├── layouts/          — DesktopLayout (sidebar MUI permanente), MobileLayout
-├── router/           — AppRouter, guards RequireAuth / RequireManager
+├── router/           — AppRouter, guards RequireAuth / RequireManager / RequireAdmin
 └── ui/               — composants UI partagés (Toast...)
 ```
 
@@ -232,6 +250,11 @@ PLANNING
   Planning
   Absences
   Spécialités
+─────────────         ← affiché uniquement si role === 'ADMIN'
+ADMINISTRATION
+  Utilisateurs
+  Invitations
+  Audit
 ─────────────
 Déconnexion
 ```

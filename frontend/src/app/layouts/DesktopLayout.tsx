@@ -173,6 +173,41 @@ export function DesktopLayout() {
                   </NavLink>
                 );
               })}
+
+              {/* Section Administration — ADMIN uniquement */}
+              {state.status === "authenticated" && state.user.role === "ADMIN" && (
+                <Box>
+                  <Divider sx={{ mt: 1 }} />
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ px: 2, pt: 1.5, pb: 0.25, display: "block", textTransform: "uppercase", letterSpacing: 0.5 }}
+                  >
+                    Administration
+                  </Typography>
+                  {[
+                    { label: "Utilisateurs", href: "/app/admin/users" },
+                    { label: "Sites",        href: "/app/admin/sites" },
+                    { label: "Invitations",  href: "/app/admin/invitations" },
+                    { label: "Audit",        href: "/app/admin/audit" },
+                  ].map((item) => (
+                    <NavLink
+                      key={item.href}
+                      to={item.href}
+                      style={{ textDecoration: "none", color: "inherit" }}
+                    >
+                      {({ isActive }) => (
+                        <ListItemButton selected={isActive} sx={{ pl: 3, py: 0.75 }}>
+                          <ListItemText
+                            primary={item.label}
+                            primaryTypographyProps={{ variant: "body2" }}
+                          />
+                        </ListItemButton>
+                      )}
+                    </NavLink>
+                  ))}
+                </Box>
+              )}
             </List>
           </Box>
 

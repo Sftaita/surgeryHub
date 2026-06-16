@@ -1,0 +1,16 @@
+<?php
+
+namespace App\Enum;
+
+enum UserAuditEventType: string
+{
+    case USER_CREATED              = 'USER_CREATED';
+    case USER_INVITATION_SENT      = 'USER_INVITATION_SENT';
+    case USER_INVITATION_RESENT    = 'USER_INVITATION_RESENT';
+    case USER_INVITATION_COMPLETED = 'USER_INVITATION_COMPLETED';
+    case USER_SUSPENDED            = 'USER_SUSPENDED';
+    case USER_REACTIVATED          = 'USER_REACTIVATED';
+    case USER_ROLE_CHANGED         = 'USER_ROLE_CHANGED';
+    case USER_SITE_ADDED           = 'USER_SITE_ADDED';
+    case USER_SITE_REMOVED         = 'USER_SITE_REMOVED';
+}

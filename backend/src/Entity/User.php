@@ -89,6 +89,9 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[ORM\Column(length: 255, nullable: true)]
     private ?string $profilePicturePath = null;
 
+    #[ORM\Column(nullable: true)]
+    private ?\DateTimeImmutable $invitationLastSentAt = null;
+
     /**
      * @var Collection<int, SiteMembership>
      */
@@ -306,6 +309,17 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setProfilePicturePath(?string $profilePicturePath): static
     {
         $this->profilePicturePath = $profilePicturePath;
+        return $this;
+    }
+
+    public function getInvitationLastSentAt(): ?\DateTimeImmutable
+    {
+        return $this->invitationLastSentAt;
+    }
+
+    public function setInvitationLastSentAt(?\DateTimeImmutable $invitationLastSentAt): static
+    {
+        $this->invitationLastSentAt = $invitationLastSentAt;
         return $this;
     }
 

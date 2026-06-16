@@ -28,6 +28,12 @@ const MissionDetailPageI  = React.lazy(() => import("../pages/instrumentist/Miss
 const MissionEncodingPage = React.lazy(() => import("../pages/instrumentist/MissionEncodingPage"));
 const ProfilePage         = React.lazy(() => import("../pages/instrumentist/ProfilePage"));
 
+// Admin
+const AdminUsersPage       = React.lazy(() => import("../pages/admin/AdminUsersPage"));
+const AdminSitesPage       = React.lazy(() => import("../pages/admin/AdminSitesPage"));
+const AdminInvitationsPage = React.lazy(() => import("../pages/admin/AdminInvitationsPage"));
+const AdminAuditPage       = React.lazy(() => import("../pages/admin/AdminAuditPage"));
+
 // Manager
 const MissionsListPage       = React.lazy(() => import("../pages/manager/MissionsListPage"));
 const MissionDetailPageM     = React.lazy(() => import("../pages/manager/MissionDetailPage"));
@@ -85,6 +91,13 @@ function RequireManager() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
   if (!isDesktopRole(state.user.role)) return <Navigate to="/app/i/today" replace />;
+  return <Outlet />;
+}
+
+function RequireAdmin() {
+  const { state } = useAuth();
+  if (state.status !== "authenticated") return <Navigate to="/login" replace />;
+  if (state.user.role !== "ADMIN") return <Navigate to="/app/forbidden" replace />;
   return <Outlet />;
 }
 
@@ -155,6 +168,16 @@ export function AppRouter() {
                 <Route path="m/planning/specialties" element={<SpecialtiesPage />} />
                 <Route path="m/planning/versions" element={<PlanningVersionsListPage />} />
                 <Route path="m/planning/versions/:id" element={<PlanningVersionDetailPage />} />
+              </Route>
+            </Route>
+
+            {/* Admin */}
+            <Route element={<RequireAdmin />}>
+              <Route element={<DesktopLayout />}>
+                <Route path="admin/users"       element={<AdminUsersPage />} />
+                <Route path="admin/sites"       element={<AdminSitesPage />} />
+                <Route path="admin/invitations" element={<AdminInvitationsPage />} />
+                <Route path="admin/audit"       element={<AdminAuditPage />} />
               </Route>
             </Route>
           </Route>

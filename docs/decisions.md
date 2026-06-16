@@ -1477,6 +1477,67 @@ endpoint de polling dédié plutôt que Mercure/WebSocket :
 
 ---
 
+---
+
+## D-046 — Module Administration — ROLE_ADMIN
+
+Date : 2026-06-16
+
+### Décision
+
+Ajout d'un rôle `ROLE_ADMIN` superposé à `ROLE_MANAGER`. Les admins ont accès à l'intégralité
+du module manager **et** à un module Administration dédié exposant :
+
+- **Gestion des utilisateurs** (`GET/POST /api/admin/users`, `GET/PATCH /api/admin/users/{id}`)
+- **Transitions d'état utilisateur** (endpoints dédiés : `/suspend`, `/activate`, `/change-role`,
+  `/resend-invitation`, `/site-memberships`)
+- **Vue invitations** (`GET /api/admin/invitations`)
+- **Journal d'audit** (`GET /api/admin/audit`) via l'entité `UserAuditEvent` (séparée de
+  `AuditEvent` dont la FK mission est NOT NULL)
+
+Contraintes retenues :
+
+- `UserAdministrationVoter` — toutes les permissions exigent `ROLE_ADMIN` ; aucun contrôle de
+  rôle direct dans les contrôleurs.
+- `UserAdministrationService` — toute la logique métier centralisée (création, suspension,
+  changement de rôle, renvoi d'invitation, gestion sites). Flush contrôlé par le service.
+- `UserAuditService` — journalise chaque action critique ; ne flush pas (laisse le service
+  appelant contrôler la transaction).
+- L'invitation est désormais générique (`NotificationService::sendUserInvitation()`) — bug
+  silencieux corrigé : `findInstrumentistByInvitationToken()` filtrait par rôle et empêchait les
+  chirurgiens/managers de compléter leur compte.
+- `invitationLastSentAt` (nouveau champ `User`) détermine le statut `email_not_sent` distinct de
+  `expired`/`pending`.
+- `SiteMembership.siteRole` VARCHAR(50) sans contrainte DB — la valeur `'MANAGER'` est acceptée
+  sans migration supplémentaire.
+- Frontend : section **Administration** visible uniquement si `role === 'ADMIN'` dans le sidebar ;
+  garde `RequireAdmin` sur toutes les routes `/app/admin/*`.
+
+### Motivation
+
+- Un ROLE_ADMIN doit pouvoir gérer tous les utilisateurs sans passer par le manager d'un site.
+- L'auditabilité des actions administratives requiert une trace séparée des missions.
+- Le flux d'invitation n'était pas générique et cachait un bug silencieux sur les chirurgiens.
+
+### Garde-fous
+
+- Aucun impact sur les workflows manager existants.
+- Aucune donnée patient dans le module admin.
+- L'ADMIN ne peut pas changer son propre rôle (garde côté `UserAdministrationService`).
+- Le frontend ne déduit aucun droit — `allowedActions[]` reste la règle générale, et les boutons
+  d'action sont pilotés par l'état retourné par le backend.
+
+### Contrainte FK `actor_id` (UserAuditEvent)
+
+`actor_id` est NOT NULL avec `ON DELETE RESTRICT` (comportement par défaut MySQL). En conséquence,
+un utilisateur ayant généré des événements d'audit en tant qu'acteur **ne peut pas être supprimé**
+de la base tant que ces événements existent. C'est intentionnel : l'audit trail est une obligation
+et la suppression physique d'admins n'est pas supportée (un admin peut être suspendu, pas supprimé).
+`target_user_id` utilise `ON DELETE SET NULL` pour préserver les événements même si la cible est
+supprimée.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -1519,3 +1580,5 @@ endpoint de polling dédié plutôt que Mercure/WebSocket :
 | 30-04-2026 | D-042 — getReference() après em->clear() pour éviter cascade persist |
 | 30-04-2026 | D-043 — Routing Messenger obligatoire pour tout message à handler IO-intensif |
 | 29-05-2026 | D-044 — Observabilité : Sentry + channel Monolog push |
+| 12-06-2026 | D-045 — Synchronisation missions instrumentiste par polling intelligent |
+| 16-06-2026 | D-046 — Module Administration — ROLE_ADMIN |
