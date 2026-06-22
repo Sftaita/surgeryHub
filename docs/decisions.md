@@ -1538,6 +1538,177 @@ supprimée.
 
 ---
 
+## D-047 — Remember me / session persistante
+
+Date : 2026-06-19
+
+### Objectif
+
+Permettre une session persistante optionnelle ("Se souvenir de moi") sur `/login`, sans toucher
+au mécanisme d'authentification existant (Lexik JWT + Gesdinet refresh token + stockage
+`localStorage` côté frontend).
+
+### Décision
+
+Ajout d'un champ optionnel `rememberMe` (boolean, défaut `false`) au payload de
+`POST /api/auth/login` et `POST /api/auth/google`. Il pilote uniquement la **durée de vie du
+refresh token** émis au login :
+
+| Token | Durée |
+|---|---|
+| Access token (Lexik JWT) | 1 heure — fixe, indépendante de `rememberMe` |
+| Refresh token, `rememberMe=false` (défaut) | 1 jour |
+| Refresh token, `rememberMe=true` | 30 jours (durée historique du bundle, inchangée) |
+
+Le champ `remember_me` (boolean) est ajouté à l'entité `RefreshToken` / table `refresh_tokens`
+(migration `Version20260619145211`) pour tracer le mode de session associé à chaque token.
+
+**Un seul refresh token est créé par login**, et **un appel à `/api/auth/refresh` n'en crée
+jamais un second** : pas de rotation du refresh token en V1 — le même refresh token reste valable
+jusqu'à son expiration. Ce choix s'appuie sur le comportement par défaut du bundle
+`gesdinet/jwt-refresh-token-bundle` (`ttl_update: false`), déjà en place — l'introduire aurait
+nécessité de la complexité supplémentaire (gestion de concurrence multi-onglets) pour un gain de
+sécurité marginal vu que le token reste côté client en `localStorage` uniquement (jamais exposé à
+un tiers via cookie). Voir aussi le correctif anti-orphelin ci-dessous : sans lui, le listener du
+bundle Gesdinet créait un second refresh token à chaque login (avec un TTL fixe de 30 jours,
+ignorant `rememberMe`).
+
+Le logout (`POST /api/auth/logout`, nouveau) invalide/supprime le refresh token fourni, côté
+serveur, en base. Implémenté en activant la configuration `logout: { path: /api/auth/logout }`
+sur le firewall `api` : le listener `Gesdinet\JWTRefreshTokenBundle\EventListener\LogoutEventListener`
+(déjà fourni par le bundle, jusqu'ici inutilisé car aucun firewall ne déclarait de `logout:`)
+prend en charge l'invalidation sans code applicatif supplémentaire.
+
+Le **frontend conserve le stockage `localStorage`** en V1 (pas de cookie). Le **CORS reste
+inchangé** (`allow_credentials: false` dans `nelmio_cors.yaml`) — pas de cookie HttpOnly en V1.
+
+**Raison de ce choix** : changement minimal et compatible avec l'existant — `rememberMe` ne fait
+que faire varier un TTL et ajouter un appel de logout, sans casser l'intercepteur Axios (refresh +
+retry + mutex déjà en place) ni `AuthContext` (bootstrap au chargement, état `anonymous` /
+`loading` / `authenticated`). Passer à un cookie HttpOnly aurait nécessité une refonte CORS
+(`allow_credentials: true`, origines explicites) et la réécriture de l'intercepteur Axios et de
+`AuthContext` — hors périmètre de cette fonctionnalité.
+
+### Évolution future recommandée
+
+Si le risque d'exfiltration du refresh token via XSS devient une préoccupation prioritaire (le
+`localStorage` est lisible par tout script exécuté dans la page), migrer le refresh token vers un
+**cookie HttpOnly, `Secure`, `SameSite=Lax`**, avec :
+- `allow_credentials: true` et origines CORS explicites (plus de regex large) ;
+- l'intercepteur Axios adapté pour ne plus lire/écrire le refresh token en JS (le navigateur le
+  gère via le cookie) ;
+- `AuthContext` simplifié (plus besoin de stocker `refreshToken` côté JS, seul l'access token
+  reste géré en mémoire/`localStorage`).
+
+Cette évolution est volontairement reportée : elle change la surface CORS et le contrat
+frontend/backend, alors que le besoin actuel (session courte vs longue) ne le justifie pas.
+
+### Motivation
+
+- Besoin produit : une session courte par défaut (sécurité), une session longue optionnelle
+  (confort) sans changer le mécanisme de stockage front existant (`localStorage` + intercepteur
+  Axios + mutex de refresh, déjà robustes face aux 401 concurrents).
+- Le logout actuel ne faisait que vider le `localStorage` côté client : le refresh token restait
+  valide en base jusqu'à expiration naturelle (30 jours), même après déconnexion explicite. Faille
+  corrigée par cette décision.
+
+### Garde-fous
+
+- Pas de cookies HttpOnly en V1 (voir "Évolution future recommandée" ci-dessus) : le CORS du
+  projet a `allow_credentials: false` (voir `nelmio_cors.yaml`) — introduire des cookies aurait
+  nécessité une refonte CORS plus large que le périmètre de cette fonctionnalité. Le `localStorage`
+  reste donc la stratégie de stockage frontend en V1.
+- `rememberMe` absent du payload est traité comme `false` (rétrocompatibilité totale avec les
+  clients existants).
+- Correctif anti-orphelin : avant ce correctif, le listener `App\EventListener\AuthenticationSuccessListener`
+  se déclenchait aussi bien au login qu'au refresh (les deux passent par l'événement
+  `lexik_jwt_authentication.on_authentication_success`), et le listener `AttachRefreshTokenOnSuccessListener`
+  du bundle Gesdinet (qui écoute le même événement, exécuté juste après) créait alors un **second**
+  refresh token à chaque login, avec le TTL global du bundle (30 jours, ignorant `rememberMe`), et
+  écrasait la réponse. Corrigé en : (1) scopant notre listener au path `/api/auth/login`
+  uniquement (aucune création au refresh) et (2) en plaçant le refresh token créé dans les
+  attributs de la requête (`$request->attributes->set('refresh_token', ...)`) pour que le listener
+  Gesdinet le retrouve et le réutilise au lieu d'en créer un second. Preuve par test :
+  `LoginRefreshTokenOrphanRegressionTest` (câble les deux vrais listeners) et
+  `AuthRememberMeFlowTest` (vrai client HTTP + vraie base) vérifient explicitement qu'une seule
+  ligne `refresh_tokens` existe par login.
+- Frontend : message discret "Votre session a expiré" affiché sur `/login` après un échec de
+  refresh (pas de boucle 401 — l'intercepteur Axios existant gérait déjà ce cas).
+
+---
+
+## D-048 — Planning V2 : bascule UI (cutover) et désactivation de la navigation V1
+
+Date : 2026-06-22
+
+### Objectif
+
+Planning V2 (entités, moteur de génération, alertes, réassignation, notifications, API, puis
+frontend complet — voir `docs/planning-v2-architecture-freeze.md`) est implémenté, redessiné et
+validé. Le faire devenir l'interface planning officielle des managers, sans supprimer V1.
+
+### Décision
+
+- **Le menu latéral manager "Planning" pointe désormais vers `/app/m/planning/v2`.** L'entrée est
+  simplement libellée "Planning" (pas "Planning V2", pas "Bêta") — c'est maintenant l'UI planning
+  par défaut, pas un module expérimental parallèle.
+- **Les entrées V1 historiques (Templates, Générer, Plannings/versions, Vue planning,
+  Spécialités) sont retirées de la navigation manager.** Elles ne sont plus dans `DesktopLayout`.
+  "Absences" reste visible (page partagée V1/V2, pas une vue V1 obsolète — V2 n'a pas encore
+  d'écran de gestion des absences propre).
+- **`/app/m/planning` (chemin nu) redirige vers `/app/m/planning/v2`** (`<Navigate replace>`).
+- **Les routes V1 restent techniquement actives**, accessibles par URL directe uniquement
+  (`/app/m/planning/templates`, `/generate`, `/versions`, `/versions/:id`, `/schedule`,
+  `/specialties`) — filet de sécurité en cas de régression V2, pas une fonctionnalité visible.
+- **Le code V1 n'est pas supprimé.** `PlanningGeneratorService`, `PlanningTemplateController`,
+  `PlanningTemplate`/`PlanningSlot`/`PlanningTemplateType`, et les pages frontend associées
+  restent en place. Leur suppression est explicitement **reportée**, pas annulée — voir le critère
+  de sortie déjà posé dans `docs/planning-v2-architecture-freeze.md` §C (un cycle complet de
+  facturation/encodage sans incident sur V2 avant suppression de V1).
+- **Récurrences mensuelles ("1ère/2e/3e/4e semaine du mois") retirées du formulaire de création/
+  édition de poste**, sans suppression de la capacité backend. Audit : la branche
+  `MONTHLY`+`monthlyNthWeekday` de `PlanningGeneratorServiceV2::isOccurrenceActive()` porte le
+  commentaire explicite *"Simplified nth-weekday-of-month match (not part of Batch 2's required
+  test matrix)"* — aucun test ne couvre la correction de l'expansion de récurrence pour ce cas
+  (seule la validation de saisie est testée). Les options restent dans le code
+  (`recurrencePresets.ts` — `RECURRENCE_PRESET_OPTIONS` complet) pour ne pas casser l'édition d'un
+  poste existant qui en utiliserait déjà une, mais seules les récurrences validées
+  (`LAUNCH_RECURRENCE_PRESET_OPTIONS` : toutes les semaines, semaines paires, semaines impaires,
+  une semaine sur deux, jours sélectionnés) sont proposées à la création/édition. Couverture de
+  test pour le cas mensuel = travail futur documenté (voir
+  `docs/planning-v2-architecture-freeze.md`), pas un blocage du lancement.
+- **Les cartes "Fin de poste proche" déplacées de l'onglet Alertes vers l'onglet Postes.** Ce ne
+  sont pas des `PlanningAlert` réelles (aucune entité backend, calcul de date 100% frontend depuis
+  `SurgeonSchedulePost.endDate`) — les mélanger avec les vraies alertes nécessitant une action
+  (acquitter/résoudre/réassigner/ouvrir) créait une ambiguïté sur ce qui est une alerte officielle.
+  Dans l'onglet Postes, la carte porte le badge "Information" et le texte fixe "Ce poste arrive
+  bientôt à échéance.", sans aucun bouton d'action.
+
+### Raison de ce choix
+
+Le frontend V2 a été entièrement reconstruit (4 onglets, design system dédié, validation manuelle
+batch par batch) et testé (115 tests frontend, 416 tests backend, tous verts). V1 reste la seule
+voie de repli pendant la période de rodage — d'où la décision de **masquer sans supprimer** :
+risque de régression minimal (un manager perdu peut encore atteindre V1 par URL directe en
+attendant un correctif), tout en forçant l'usage réel de V2 pour la validation en conditions
+réelles avant la suppression définitive de V1.
+
+### Travail restant (non bloquant pour ce lancement)
+
+- **Batch 14 — Préférences de notification** : `GET`/`PATCH /api/notification-preferences`,
+  UI de réglage par type d'alerte (Planning alert, Absence chirurgien, Absence instrumentiste,
+  Réassignation, Mission ouverte, Rappel) × par canal (in-app, email, push). Nécessaire avant une
+  généralisation large, mais ne bloque pas ce lancement initial (les canaux in-app/email
+  fonctionnent déjà avec les valeurs par défaut du resolver).
+- Couverture de test pour l'expansion de récurrence `MONTHLY`+`monthlyNthWeekday`, avant de
+  rouvrir ces options dans le formulaire.
+- Détection de conflits cross-site (`SURGEON_CONFLICT`/`INSTRUMENTIST_CONFLICT`) — toujours non
+  déclenchée, cf. `planning-v2-architecture-freeze.md` §G.
+- Critère de sortie pour la suppression effective de V1 : un cycle complet de
+  facturation/encodage sans incident sur V2 (cf. §C du freeze doc), site par site.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -1582,3 +1753,5 @@ supprimée.
 | 29-05-2026 | D-044 — Observabilité : Sentry + channel Monolog push |
 | 12-06-2026 | D-045 — Synchronisation missions instrumentiste par polling intelligent |
 | 16-06-2026 | D-046 — Module Administration — ROLE_ADMIN |
+| 19-06-2026 | D-047 — Remember me / session persistante |
+| 22-06-2026 | D-048 — Planning V2 : bascule UI (cutover) et désactivation de la navigation V1 |

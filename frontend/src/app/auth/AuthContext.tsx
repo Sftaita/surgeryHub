@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { apiClient } from "../api/apiClient";
 import { clearAuth, readAuth, writeAuth } from "./authStorage";
+import { loginRequest, logoutRequest } from "./authApi";
 
 /* ======================
    Types
@@ -21,7 +22,7 @@ type AuthState =
 
 type AuthContextType = {
   state: AuthState;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, rememberMe?: boolean) => Promise<void>;
   logout: () => void;
 };
 
@@ -30,26 +31,6 @@ type AuthContextType = {
 ====================== */
 
 const AuthContext = createContext<AuthContextType | null>(null);
-
-/* ======================
-   Helpers
-====================== */
-
-function normalizeLoginPayload(data: any) {
-  const accessToken =
-    data.accessToken ?? data.access_token ?? data.token ?? null;
-
-  const refreshToken = data.refreshToken ?? data.refresh_token ?? null;
-
-  if (!accessToken) {
-    throw new Error("Login payload invalide : token manquant");
-  }
-  if (!refreshToken) {
-    throw new Error("Login payload invalide : refresh_token manquant");
-  }
-
-  return { accessToken, refreshToken };
-}
 
 /* ======================
    Provider
@@ -84,15 +65,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   /**
    * LOGIN
    */
-  async function login(email: string, password: string) {
+  async function login(email: string, password: string, rememberMe = false) {
     setState({ status: "loading" });
 
-    const res = await apiClient.post("/api/auth/login", {
-      email,
-      password,
-    });
-
-    const tokens = normalizeLoginPayload(res.data);
+    const tokens = await loginRequest(email, password, rememberMe);
     writeAuth(tokens);
 
     const me = await apiClient.get("/api/me");
@@ -104,6 +80,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * LOGOUT
    */
   function logout() {
+    const stored = readAuth();
+    if (stored?.refreshToken) {
+      void logoutRequest(stored.refreshToken);
+    }
     clearAuth();
     setState({ status: "anonymous" });
   }

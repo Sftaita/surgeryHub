@@ -1,7 +1,6 @@
 import * as React from "react";
 import {
   Alert,
-  Box,
   Button,
   Checkbox,
   CircularProgress,
@@ -24,6 +23,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../../../api/apiClient";
 import { createAdminUser } from "../api/admin.api";
 import type { AdminCreateUserPayload } from "../api/admin.types";
+import { PhoneInputField } from "../../../components/PhoneInputField";
 
 interface Site {
   id: number;
@@ -45,6 +45,7 @@ interface FormErrors {
   email?: string;
   firstname?: string;
   lastname?: string;
+  phone?: string;
   siteIds?: string;
 }
 
@@ -93,6 +94,7 @@ export function AdminCreateUserModal({ open, onClose }: Props) {
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) e.email = "Email invalide";
     if (!form.firstname?.trim()) e.firstname = "Prénom requis";
     if (!form.lastname?.trim()) e.lastname = "Nom requis";
+    if (form.phone && !/^\+\d{7,15}$/.test(form.phone)) e.phone = "Numéro invalide";
     if (form.siteIds.length === 0) e.siteIds = "Au moins un site requis";
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -164,12 +166,12 @@ export function AdminCreateUserModal({ open, onClose }: Props) {
               size="small"
             />
 
-            <TextField
+            <PhoneInputField
               label="Téléphone (optionnel)"
-              value={form.phone}
-              onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
-              fullWidth
-              size="small"
+              value={form.phone ?? ""}
+              onChange={(e164) => setForm((f) => ({ ...f, phone: e164 }))}
+              error={!!errors.phone}
+              helperText={errors.phone}
             />
 
             <FormControl>

@@ -14,6 +14,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
 #[ORM\Entity]
 #[ORM\HasLifecycleCallbacks]
 #[ORM\Index(columns: ['updated_at'], name: 'IDX_MISSION_UPDATED_AT')]
+#[ORM\Index(columns: ['start_at', 'end_at'], name: 'idx_mission_start_end')]
 class Mission
 {
     use TimestampableTrait;

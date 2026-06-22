@@ -68,6 +68,16 @@ class PlanningDeploymentService
             // ── 3. Activate the target version ────────────────────────────────
             $version->setStatus(PlanningVersionStatus::ACTIVE);
             $version->setDeployedAt(new \DateTimeImmutable());
+
+            // Flush now, before the bulk-update/clear block below. Doctrine ORM 3.x's
+            // EntityManager::clear() takes no arguments and always clears the ENTIRE
+            // identity map — the `Mission::class` argument passed to it further down is
+            // silently ignored. Without this flush, $version's ACTIVE status would be
+            // detached and lost before ever reaching the database (found via Batch 9's
+            // functional deploy test; a real EntityManager — not a mock — is what
+            // surfaces this kind of bug. Affects V1 and V2 equally; this service is
+            // reused unchanged by both, see docs/planning-v2-architecture-freeze.md §D).
+            $this->em->flush();
         }
 
         // ── 4. Publish missions — two targeted bulk UPDATEs ──────────────────

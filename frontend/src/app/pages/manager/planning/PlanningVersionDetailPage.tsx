@@ -16,7 +16,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   getPlanningVersion, getVersionDiff, deployPlanning, previewPlanning,
   deletePlanningVersion, triggerVersionPdfDownload,
-  type PlanningVersionSummary, type MissionDiffEntry, type PlanningDiff, type PreviewLine,
+  type MissionDiffEntry, type PlanningDiff, type PreviewLine,
 } from "../../../features/planning-manager/api/planning.api";
 import { DeployModal } from "../../../features/planning-manager/components/DeployModal";
 import { useToast } from "../../../ui/toast/useToast";

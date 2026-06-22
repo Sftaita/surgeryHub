@@ -16,8 +16,8 @@ import EditIcon        from "@mui/icons-material/Edit";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   previewPlanning, generatePlanning, deployPlanning, getPlanningVersion,
-  getSuggestedInstrumentists, assignInstrumentist,
-  createMission, publishMission,
+  assignInstrumentist,
+  createMission,
   type PreviewLine, type CoverageStatus, type PlanningVersionSummary,
 } from "../../../features/planning-manager/api/planning.api";
 import { fetchSites } from "../../../features/sites/api/sites.api";

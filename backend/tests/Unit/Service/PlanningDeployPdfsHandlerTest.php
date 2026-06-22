@@ -908,6 +908,57 @@ class PlanningDeployPdfsHandlerTest extends TestCase
         );
     }
 
+    // ── Batch 11 Fix 3: outer catch marks deployment FAILED ─────────────────
+
+    /**
+     * An exception that escapes every inner try/catch (e.g. the missions query itself
+     * failing) must be caught by the handler's outer try/catch, which marks the
+     * deployment FAILED with a useful error message and rethrows so Messenger's own
+     * retry/failure-transport handling still applies. This locks in already-correct
+     * behavior that had no test coverage before Batch 11 — it's the catchable half of
+     * the stuck-PROCESSING bug (the other half, a non-catchable OOM fatal, is handled
+     * by raising the worker's memory_limit and by PlanningDeploymentReconcileStuckCommand).
+     */
+    public function test_exception_during_processing_marks_deployment_failed_and_rethrows(): void
+    {
+        $deployment = new PlanningDeployment();
+        $mgr = $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === PlanningDeployment::class && $id === 7 => $deployment,
+                $class === User::class && $id === 99              => $mgr,
+                default                                           => null,
+            });
+
+        $qb = $this->createMock(QueryBuilder::class);
+        $qb->method('select')->willReturnSelf();
+        $qb->method('from')->willReturnSelf();
+        $qb->method('where')->willReturnSelf();
+        $qb->method('andWhere')->willReturnSelf();
+        $qb->method('setParameter')->willReturnSelf();
+        $q = $this->createMock(Query::class);
+        $q->method('getResult')->willThrowException(new \RuntimeException('DB connection lost mid-query'));
+        $qb->method('getQuery')->willReturn($q);
+        $this->em->method('createQueryBuilder')->willReturn($qb);
+
+        $threw = false;
+        try {
+            $this->makeHandler()->__invoke($this->makeMessage(deploymentId: 7));
+        } catch (\RuntimeException $e) {
+            $threw = true;
+            $this->assertSame('DB connection lost mid-query', $e->getMessage());
+        }
+
+        $this->assertTrue($threw, 'The handler must rethrow so Messenger can apply its own retry/failure policy');
+        $this->assertSame(PlanningDeploymentStatus::FAILED, $deployment->getStatus(),
+            'Deployment must be marked FAILED, not left stuck on PROCESSING'
+        );
+        $this->assertNotNull($deployment->getErrorLog(), 'errorLog must contain a useful message for managers/ops');
+        $this->assertStringContainsString('DB connection lost mid-query', $deployment->getErrorLog());
+        $this->assertNull($deployment->getCompletedAt(), 'completedAt must stay null on failure');
+    }
+
     /**
      * If openUncoveredIds is empty, planningNewOpenMissionsNotifySite must never be called.
      */

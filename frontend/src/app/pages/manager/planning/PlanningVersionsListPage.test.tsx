@@ -1,9 +1,9 @@
-import * as React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import PlanningVersionsListPage from "./PlanningVersionsListPage";
+import type { PlanningVersionSummary } from "../../../features/planning-manager/api/planning.api";
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ import * as planningApi from "../../../features/planning-manager/api/planning.ap
 
 // ── Factories ─────────────────────────────────────────────────────────────────
 
-function makeVersion(overrides: Record<string, unknown> = {}) {
+function makeVersion(overrides: Partial<PlanningVersionSummary> = {}): PlanningVersionSummary {
   return {
     id: 1,
     versionNumber: 1,
@@ -47,7 +47,7 @@ function makeVersion(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makePage(items: object[], total = items.length) {
+function makePage(items: ReturnType<typeof makeVersion>[], total = items.length) {
   return { items, total, page: 1, limit: 50 };
 }
 

@@ -3,6 +3,7 @@
 namespace App\Controller;
 
 use App\Entity\User;
+use App\EventListener\AuthenticationSuccessListener;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -10,6 +11,7 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Lexik\Bundle\JWTAuthenticationBundle\Services\JWTTokenManagerInterface;
+use Gesdinet\JWTRefreshTokenBundle\Generator\RefreshTokenGeneratorInterface;
 use Gesdinet\JWTRefreshTokenBundle\Model\RefreshTokenManagerInterface;
 
 final class AuthGoogleController
@@ -21,10 +23,12 @@ final class AuthGoogleController
         EntityManagerInterface $em,
         JWTTokenManagerInterface $jwtManager,
         RefreshTokenManagerInterface $refreshTokenManager,
+        RefreshTokenGeneratorInterface $refreshTokenGenerator,
         UserPasswordHasherInterface $hasher,
     ): JsonResponse {
         $payload = json_decode($request->getContent(), true) ?? [];
         $credential = $payload['credential'] ?? null;
+        $rememberMe = (bool) ($payload['rememberMe'] ?? false);
 
         if (!$credential) {
             return new JsonResponse(['error' => 'Missing credential'], 400);
@@ -67,10 +71,10 @@ final class AuthGoogleController
         $token = $jwtManager->create($user);
 
         // Générer refresh token
-        $refreshToken = $refreshTokenManager->create();
-        $refreshToken->setUsername($user->getUserIdentifier());
-        $refreshToken->setRefreshToken(bin2hex(random_bytes(64)));
-        $refreshToken->setValid((new \DateTimeImmutable())->modify('+30 days'));
+        $ttl = $rememberMe ? AuthenticationSuccessListener::TTL_REMEMBER_ME : AuthenticationSuccessListener::TTL_DEFAULT;
+
+        $refreshToken = $refreshTokenGenerator->createForUserWithTtl($user, $ttl);
+        $refreshToken->setRememberMe($rememberMe);
         $refreshTokenManager->save($refreshToken);
 
         return new JsonResponse([

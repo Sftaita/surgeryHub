@@ -21,7 +21,7 @@ SurgicalHub est une plateforme de gestion des missions chirurgicales. Elle conne
 ### Backend
 - **Symfony** (PHP) — API REST JSON
 - **Doctrine ORM** — persistance MySQL
-- **Symfony Security** — authentification JWT + RBAC via Voters
+- **Symfony Security** — authentification JWT (Lexik) + refresh token DB-backed (Gesdinet) + RBAC via Voters
 - **Symfony Mailer + Messenger** — emails transactionnels asynchrones
 - **Stockage fichiers** — système de fichiers local (`public/uploads/`)
 - **Sentry** (`sentry/sentry-symfony`) — capture des exceptions en prod ; channel Monolog `push` pour les événements push
@@ -43,7 +43,9 @@ SurgicalHub est une plateforme de gestion des missions chirurgicales. Elle conne
 
 ```
 Api/
-├── AuthController                       — login / refresh token
+├── AuthGoogleController                 — login Google OAuth (+ rememberMe)
+│   (login email/password géré par le firewall `login`, refresh par `refresh_jwt`,
+│    logout par `logout` — voir D-047 « Remember me » dans decisions.md)
 ├── MissionController                    — CRUD missions + transitions de statut
 ├── InstrumentistController              — gestion manager des instrumentistes
 ├── SurgeonController                    — CRUD /api/surgeons + planning + site-memberships
@@ -617,6 +619,87 @@ La page `/app/m/planning/schedule` ("Planning" dans la sidebar) affiche les miss
 - **Couleurs par chirurgien** : chaque chirurgien reçoit une couleur déterministe (`surgeonId % 10` sur une palette de 10 paires) appliquée à tous ses `SlotBlock` quelle que soit la colonne jour — identique sur Lundi, Mercredi, Vendredi etc.
 - **Doublon instrumentiste** : `DayTimeline` calcule via `React.useMemo` quels instrumentistes apparaissent sur des créneaux qui se chevauchent (`overlaps()`). Les `SlotBlock` concernés reçoivent `isDuplicate=true` → fond orange, outline orange, badge "Doublon"
 - **Raccourcis période** : le `SlotDialog` propose deux boutons "Matin (08h–12h)" / "Après-midi (12h–17h)" qui pré-remplissent les champs Début/Fin ; le bouton actif s'affiche en `contained`
+
+---
+
+### Flux planning V2 — postes récurrents (Batches 1–13)
+
+**Planning V2 est désormais l'interface planning officielle des managers (cutover UI,
+Batch 13, voir D-048 dans `docs/decisions.md`).** Le menu latéral "Planning" et le chemin
+nu `/app/m/planning` pointent vers `/app/m/planning/v2`. La section 7 ci-dessus
+(`PlanningTemplate`/`PlanningSlot`, parité PAIR/IMPAIR/TOUTES) **n'est pas supprimée** —
+son code et ses routes restent actifs, atteignables par URL directe uniquement, comme
+filet de repli pendant la période de rodage. Voir `docs/planning-v2-architecture-freeze.md`
+pour la stratégie de suppression définitive de V1 (flag par site, critère de sortie —
+toujours non implémentée, seule la bascule UI manager est faite).
+
+**Modèle** : `SurgeonSchedulePost` (poste récurrent d'un chirurgien, rattaché à un site
+obligatoire) porte une `RecurrenceRule` embarquée (`frequency` WEEKLY/MONTHLY,
+`interval`, `weekdays`, `anchorDate`, `monthlyNthWeekday`) qui généralise PAIR/IMPAIR
+(`interval=2` avec une phase arbitraire, pas seulement la parité ISO calendaire) et
+ajoute des récurrences que V1 ne pouvait pas exprimer (toutes les 3 semaines, jours
+spécifiques, mensuel). Les horaires viennent de `ShiftPeriodConfig` (MATIN/APRES_MIDI/
+JOURNEE configurables par site), jamais codés en dur sur le poste.
+
+```
+Manager → définit SurgeonSchedulePosts (site obligatoire, période, récurrence, instrumentiste optionnel)
+        → configure ShiftPeriodConfig par site si besoin (sinon, valeurs par défaut migrées depuis V1)
+
+        ① POST /api/planning/v2/preview   { siteId|siteGroupId, year, month }
+             → lignes COVERED/UNCOVERED/SKIPPED/CONFLICT/MODIFIED + résumé agrégé
+
+        ② POST /api/planning/v2/generate  — même body — crée PlanningVersion (DRAFT) + Missions (DRAFT)
+             → rejet explicite (409) si un brouillon non déployé existe déjà pour la même période/site
+
+        ③ POST /api/planning/v2/deploy    { planningVersionId, sendPdf }
+             → réutilise PlanningDeploymentService SANS AUCUNE logique V2-spécifique
+```
+
+**Réutilisation confirmée à 100 %** (audité Batch 8, vérifié à nouveau Batch 9) :
+`PlanningVersion`, `Mission`, `PlanningDeploymentService`, `PlanningDiffService`,
+`PdfService` et tous les templates PDF (`planning_global/instrumentist/surgeon.html.twig`)
+ne référencent **jamais** `PlanningTemplate`/`PlanningSlot`/PAIR/IMPAIR/TOUTES — le
+cutover (non implémenté) n'aura jamais qu'à changer quel générateur produit les
+`Mission`, rien en aval.
+
+**Alertes (Batch 3–5)** : `PlanningAlert` détecte l'impact d'une absence sur des
+missions déjà générées/publiées (`AbsenceImpactService`), jamais avant. Types
+implémentés : `SURGEON_ABSENCE`, `INSTRUMENTIST_ABSENCE`, `REASSIGNMENT_REQUIRED`,
+`OCCURRENCE_CANCELLED`. `SURGEON_CONFLICT`/`INSTRUMENTIST_CONFLICT` sont définis mais
+pas encore déclenchés — le détecteur de conflit actuel (preview, en mémoire) est scopé
+au site/groupe d'un seul appel de génération ; un instrumentiste multi-site doublement
+réservé via deux générations séparées sur des sites différents n'est jamais détecté
+aujourd'hui (gap documenté dans le freeze §G, pas corrigé).
+
+**Notifications (Batch 7)** : `PlanningAlertRaisedMessage` (Messenger, routé `async`)
+fan-out vers manager/admin + personne concernée, chaque canal (in-app/email/push) gated
+par `NotificationPreferenceResolver` — jamais codé en dur. Une seule granularité
+(`NotificationType::PLANNING_ALERT`) existe aujourd'hui ; conçu pour évoluer sans
+changement d'architecture (voir freeze §H).
+
+**Bug corrigé Batch 9** (service partagé V1/V2) : `PlanningDeploymentService::deploy()`
+appelait `$em->clear(Mission::class)` — argument ignoré silencieusement par Doctrine
+ORM 3.x (`clear()` n'accepte plus de paramètre et vide tout l'identity map), détachant
+la `PlanningVersion` avant son `flush()` final et perdant son passage à `ACTIVE`. Trouvé
+par le premier test fonctionnel (EntityManager réel, pas un mock) à exercer ce chemin.
+Corrigé par un `flush()` immédiat après l'activation — aucun changement de comportement
+métier, V1 et V2 en bénéficient également.
+
+**Frontend (Batches 10–12) puis cutover UI (Batch 13)** : module React/MUI dédié à 4
+onglets (Postes / Générer / Alertes / Paramètres), design system propre (`theme/tokens.ts`,
+palette bleu médical distincte du vert mobile — vert réservé aux statuts OK/résolu),
+`SearchableSelect` (combobox accessible réutilisé partout). Deux décisions de lancement
+notables (Batch 13) :
+- **Récurrences mensuelles non exposées** dans le formulaire de poste — la branche
+  `MONTHLY`+`monthlyNthWeekday` de `PlanningGeneratorServiceV2::isOccurrenceActive()`
+  n'a aucune couverture de test sur l'expansion de récurrence (seule la validation de
+  saisie est testée) ; le code reste en place côté backend et frontend
+  (`recurrencePresets.ts`), mais seules les récurrences validées (hebdomadaire,
+  paire/impaire, une semaine sur deux, jours sélectionnés) sont proposées à la création.
+- **"Fin de poste proche" vit dans l'onglet Postes, pas Alertes** — ce n'est pas une
+  `PlanningAlert` (calcul de date 100% frontend depuis `SurgeonSchedulePost.endDate`,
+  aucune entité backend), donc jamais mélangée visuellement avec les vraies alertes qui
+  exigent une action serveur.
 
 ---
 

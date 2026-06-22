@@ -54,6 +54,7 @@ class UserAdministrationService
             ->setEmail($email)
             ->setFirstname($dto->firstname !== '' ? $dto->firstname : null)
             ->setLastname($dto->lastname !== '' ? $dto->lastname : null)
+            ->setPhone($dto->phone !== '' ? $dto->phone : null)
             ->setActive(true)
             ->setRoles([$role])
             ->setInvitationToken(bin2hex(random_bytes(32)))

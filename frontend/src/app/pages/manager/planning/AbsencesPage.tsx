@@ -131,7 +131,7 @@ export default function AbsencesPage() {
                 );
                 return (
                   <TableRow key={abs.id} hover>
-                    <TableCell fontWeight={600}>{userName(abs.user)}</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>{userName(abs.user)}</TableCell>
                     <TableCell>{new Date(abs.dateStart + "T00:00:00").toLocaleDateString("fr-BE")}</TableCell>
                     <TableCell>{new Date(abs.dateEnd + "T00:00:00").toLocaleDateString("fr-BE")}</TableCell>
                     <TableCell>

@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import Checkbox from "@mui/material/Checkbox";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import { useAuth } from "../auth/AuthContext";
+import { consumeSessionExpired } from "../auth/authStorage";
 
 type LocationState = { from?: string } | null;
 
@@ -55,8 +58,10 @@ export default function LoginPage() {
 
   const [email,      setEmail]      = useState("");
   const [password,   setPassword]   = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const [showPwd,    setShowPwd]    = useState(false);
   const [error,      setError]      = useState<string | null>(null);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const canSubmit = useMemo(
@@ -68,6 +73,10 @@ export default function LoginPage() {
     if (state.status === "authenticated") navigate(from, { replace: true });
   }, [state.status, navigate, from]);
 
+  useEffect(() => {
+    if (consumeSessionExpired()) setSessionExpired(true);
+  }, []);
+
   function clearError() { if (error) setError(null); }
 
   async function onSubmit(e: React.FormEvent) {
@@ -76,7 +85,7 @@ export default function LoginPage() {
     setError(null);
     setSubmitting(true);
     try {
-      await login(email.trim(), password);
+      await login(email.trim(), password, rememberMe);
     } catch (err: any) {
       setError(getNiceErrorMessage(err));
       setSubmitting(false);
@@ -205,6 +214,20 @@ export default function LoginPage() {
             Accédez à votre espace Surgery Hub.
           </p>
 
+          {sessionExpired && (
+            <div style={{
+              padding: "10px 14px",
+              borderRadius: 10,
+              background: "#F0F9FF",
+              border: "1px solid #BAE6FD",
+              fontSize: ".82rem",
+              color: "#0369A1",
+              marginBottom: 16,
+            }}>
+              Votre session a expiré. Merci de vous reconnecter.
+            </div>
+          )}
+
           <form onSubmit={onSubmit} noValidate style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
             {/* Email */}
@@ -252,6 +275,32 @@ export default function LoginPage() {
                 </button>
               </div>
             </div>
+
+            {/* Se souvenir de moi */}
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  disabled={submitting}
+                  size="small"
+                  sx={{
+                    color: "#94A3B8",
+                    "&.Mui-checked": { color: GREEN },
+                    padding: "4px 8px",
+                  }}
+                />
+              }
+              label="Se souvenir de moi"
+              sx={{
+                marginLeft: 0,
+                "& .MuiFormControlLabel-label": {
+                  fontSize: ".82rem",
+                  color: "#334155",
+                  fontWeight: 500,
+                },
+              }}
+            />
 
             {/* Erreur */}
             {error && (

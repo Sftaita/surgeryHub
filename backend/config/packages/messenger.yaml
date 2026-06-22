@@ -18,9 +18,10 @@ framework:
             App\Message\SendTemplatedEmailMessage: async
             App\Message\SendBillingEmailMessage:   async
             App\Message\PlanningDeployPdfsMessage: async
+            App\Message\PlanningAlertRaisedMessage: async
 
-# when@test:
-#    framework:
-#        messenger:
-#            transports:
-#                async: 'in-memory://'
+when@test:
+    framework:
+        messenger:
+            transports:
+                async: 'in-memory://'

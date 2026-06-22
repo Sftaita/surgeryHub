@@ -24,7 +24,14 @@ services:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    command: php bin/console messenger:consume async --limit=50 -vv
+    # memory_limit raised from PHP's 128M default — DomPDF generation for planning
+    # deploys (instrumentist/surgeon/global PDFs, batched per mission) OOM-crashed the
+    # worker at 128M for ~10+ missions. A fatal "allowed memory size exhausted" is not
+    # catchable in PHP, so the handler's own try/catch never runs and the deployment is
+    # left stuck on PROCESSING (see PlanningDeploymentReconcileStuckCommand for the
+    # recovery side of this fix). Scoped to the messenger service only — the php-fpm
+    # web service keeps the default limit.
+    command: php -d memory_limit=512M bin/console messenger:consume async --limit=50 -vv
     volumes:
       - ./backend:/var/www/backend          # source code — bind mount
       - vendor_data:/var/www/backend/vendor  # shared with php service — same vendor volume

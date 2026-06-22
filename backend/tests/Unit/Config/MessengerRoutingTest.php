@@ -2,6 +2,7 @@
 
 namespace App\Tests\Unit\Config;
 
+use App\Message\PlanningAlertRaisedMessage;
 use App\Message\PlanningDeployPdfsMessage;
 use App\Message\SendBillingEmailMessage;
 use PHPUnit\Framework\TestCase;
@@ -73,6 +74,27 @@ class MessengerRoutingTest extends TestCase
             'async',
             self::$routing[SendBillingEmailMessage::class],
             'SendBillingEmailMessage must be routed to "async".'
+        );
+    }
+
+    // ── PlanningAlertRaisedMessage ────────────────────────────────────────────
+
+    /**
+     * Batch 7: dispatching a notification fan-out synchronously in the HTTP request
+     * (the absence create/update endpoint) would add per-recipient DB writes and a
+     * potential email dispatch to the request — must run in the worker.
+     */
+    public function test_planning_alert_raised_message_is_routed_to_async(): void
+    {
+        $this->assertArrayHasKey(
+            PlanningAlertRaisedMessage::class,
+            self::$routing,
+            'PlanningAlertRaisedMessage has no transport routing — it would run synchronously in the HTTP request that created/updated the absence.'
+        );
+        $this->assertSame(
+            'async',
+            self::$routing[PlanningAlertRaisedMessage::class],
+            'PlanningAlertRaisedMessage must be routed to "async".'
         );
     }
 

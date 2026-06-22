@@ -1,5 +1,11 @@
 # SurgicalHub — Mise en production sur Hostinger Cloud Startup
 
+> **⚠️ OBSOLÈTE depuis 2026-06-16** — Le serveur de production est maintenant
+> un **VPS Docker** (`deploy@187.124.55.15`). Ce document est conservé à des
+> fins d'archive uniquement.
+> 
+> **Document actuel** : [`docs/production.md`](production.md)
+
 _Cible : `https://surgicalhub.be` (frontend) + `https://api.surgicalhub.be` (API Symfony)_
 
 Ce document décrit la stratégie complète de mise en production sur un

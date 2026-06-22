@@ -29,3 +29,15 @@ export function writeAuth(auth: StoredAuth) {
 export function clearAuth() {
   localStorage.removeItem(STORAGE_KEY);
 }
+
+const SESSION_EXPIRED_KEY = "surgicalhub.auth.sessionExpired";
+
+export function markSessionExpired() {
+  sessionStorage.setItem(SESSION_EXPIRED_KEY, "1");
+}
+
+export function consumeSessionExpired(): boolean {
+  const expired = sessionStorage.getItem(SESSION_EXPIRED_KEY) === "1";
+  sessionStorage.removeItem(SESSION_EXPIRED_KEY);
+  return expired;
+}

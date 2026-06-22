@@ -2,10 +2,9 @@ import * as React from "react";
 import {
   Alert, Box, Button, Chip, CircularProgress, MenuItem, Paper, Select, Stack,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField,
-  Tooltip, Typography,
+  Typography,
 } from "@mui/material";
-import EditIcon from "@mui/icons-material/Edit";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { fetchMissions } from "../../../features/missions/api/missions.api";
 import type { Mission, MissionStatus } from "../../../features/missions/api/missions.types";
 import { fetchSites } from "../../../features/sites/api/sites.api";
@@ -194,7 +193,6 @@ function ScheduleInstrumentistCell({
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function PlanningSchedulePage() {
-  const today = new Date().toISOString().slice(0, 10);
   const [from, setFrom] = React.useState(() => {
     const d = new Date(); d.setDate(d.getDate() - 7); return d.toISOString().slice(0, 10);
   });

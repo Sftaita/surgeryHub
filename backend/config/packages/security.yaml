@@ -23,6 +23,7 @@ security:
             pattern: ^/api/auth/login
             stateless: true
             provider: app_user_provider
+            user_checker: App\Security\UserChecker
             json_login:
                 check_path: /api/auth/login
                 username_path: email
@@ -36,9 +37,12 @@ security:
             stateless: true
             entry_point: jwt
             provider: app_user_provider
+            user_checker: App\Security\UserChecker
             jwt: ~
             refresh_jwt:
                 check_path: /api/auth/refresh
+            logout:
+                path: /api/auth/logout
 
         # Firewall "site" (si tu ajoutes des pages non-API un jour)
         main:
@@ -52,6 +56,7 @@ security:
         # Endpoints publics
         - { path: ^/api/auth/login, roles: PUBLIC_ACCESS }
         - { path: ^/api/auth/refresh, roles: PUBLIC_ACCESS }
+        - { path: ^/api/auth/logout, roles: PUBLIC_ACCESS }
         - { path: ^/api/auth/google, roles: PUBLIC_ACCESS }
         - { path: ^/api/invitations, roles: PUBLIC_ACCESS }
 

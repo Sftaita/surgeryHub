@@ -1,4 +1,3 @@
-import * as React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -116,7 +115,7 @@ describe("PlanningTemplateEditorPage — SlotDialog Autocomplete", () => {
   it("opens add dialog when + button is clicked", async () => {
     renderPage();
     await waitFor(() => screen.getAllByRole("button", { name: /Ajouter un créneau/i }));
-    const user = await openAddDialog();
+    await openAddDialog();
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(screen.getByText(/Ajouter un créneau/i)).toBeInTheDocument();
   });

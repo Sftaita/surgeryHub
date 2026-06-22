@@ -7,6 +7,7 @@ import {
 } from "../auth/authTokens";
 import { refreshTokens } from "../auth/authApi";
 import { getRefreshPromise, setRefreshPromise } from "../auth/refreshMutex";
+import { markSessionExpired } from "../auth/authStorage";
 
 export const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL,
@@ -37,6 +38,7 @@ apiClient.interceptors.response.use(
     // sur cette requête, sinon on attend une promesse circulaire (deadlock).
     if (originalRequest?.url?.includes("/api/auth/refresh")) {
       setRefreshPromise(null);
+      markSessionExpired();
       clearTokens();
       throw error;
     }
@@ -72,6 +74,7 @@ apiClient.interceptors.response.use(
       return apiClient(originalRequest);
     } catch (e) {
       setRefreshPromise(null);
+      markSessionExpired();
       clearTokens();
       throw error;
     }

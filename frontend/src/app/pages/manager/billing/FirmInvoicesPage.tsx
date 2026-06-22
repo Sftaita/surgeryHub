@@ -31,7 +31,6 @@ import {
   getFirmInvoices,
   previewFirmInvoice,
   generateFirmInvoice,
-  sendFirmInvoice,
   markFirmInvoicePaid,
   getFirmInvoicePdfUrl,
   type FirmInvoice,

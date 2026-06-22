@@ -2542,6 +2542,148 @@ Retourne la liste de tous les sites (hôpitaux).
 
 ---
 
+### 26.10 Module Planning V2 — Postes récurrents (Batches 1–9, UI lancée Batch 13)
+
+> **V2 est désormais l'interface planning officielle des managers** (cutover UI, voir
+> `docs/decisions.md` D-048) — le menu latéral "Planning" et `/app/m/planning` pointent
+> vers V2. **Les endpoints V1 (sections 26.1–26.9 ci-dessus) restent actifs et inchangés**
+> — aucune route supprimée, aucun comportement modifié ; seule la navigation manager a
+> changé. V2 utilise un modèle centré sur des **postes récurrents de chirurgien**
+> (`SurgeonSchedulePost` + `RecurrenceRule`) au lieu de gabarits par parité de semaine.
+> Voir `docs/planning-v2-architecture-freeze.md` pour l'architecture complète et la
+> stratégie de suppression définitive de V1 (flag par site, critère de sortie — toujours
+> non implémentée).
+>
+> **Récurrences mensuelles non exposées côté UI** (Batch 13) : `monthlyNthWeekday` reste
+> un champ valide sur l'API (voir ci-dessous) mais le formulaire de création/édition de
+> poste ne propose plus les presets "1ère/2e/3e/4e semaine du mois" — la branche
+> d'expansion de récurrence correspondante n'a pas de couverture de test. Toujours
+> appelable directement via l'API.
+
+**AuthZ : `MANAGER` / `ADMIN` sur tous les endpoints V2, sans exception.**
+
+#### Entités de configuration (CRUD — Batch 6)
+
+| Ressource | Endpoints |
+|---|---|
+| Groupes de sites | `GET/POST /api/planning/site-groups`, `GET/PATCH/DELETE /api/planning/site-groups/{id}`, `POST /api/planning/site-groups/{id}/sites`, `DELETE /api/planning/site-groups/{id}/sites/{siteId}` |
+| Périodes horaires par site | `GET/POST /api/planning/shift-periods`, `PATCH/DELETE /api/planning/shift-periods/{id}` — `DELETE` désactive (`active=false`), ne supprime jamais |
+| Postes chirurgien | `GET/POST /api/planning/surgeon-posts`, `GET/PATCH/DELETE /api/planning/surgeon-posts/{id}` — `DELETE` désactive, ne supprime jamais |
+| Exceptions d'occurrence | `GET/POST /api/planning/surgeon-posts/{postId}/exceptions`, `PATCH/DELETE /api/planning/exceptions/{id}` — `DELETE` ici est une vraie suppression (métadonnée de planification pure, pas de donnée historique/auditée) |
+
+`SurgeonSchedulePost.recurrence` (objet `RecurrenceRule`) :
+
+```json
+{ "frequency": "WEEKLY", "interval": 1, "weekdays": [1, 3], "anchorDate": "2026-01-05", "monthlyNthWeekday": null }
+```
+
+`interval=2` généralise PAIR/IMPAIR (n'importe quelle phase, pas seulement la parité ISO).
+`weekdays` est requis et non vide pour `WEEKLY` ; ignoré pour `MONTHLY`.
+
+#### Alertes (Batch 3–5)
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/planning/alerts` | Liste filtrable (`status`, `type`, `siteId`, `surgeonId`, `instrumentistId`, `missionStatus`, `from`, `to`) |
+| `GET /api/planning/alerts/{id}` | Détail + bloc `actions` (`canAcknowledge`, `canResolve`, `canIgnore`, `canReassign`, `canOpenAsAvailable`, `recommendedAction`) |
+| `POST /api/planning/alerts/{id}/acknowledge` | OPEN → ACKNOWLEDGED |
+| `POST /api/planning/alerts/{id}/resolve` | OPEN/ACKNOWLEDGED → RESOLVED |
+| `POST /api/planning/alerts/{id}/ignore` | OPEN/ACKNOWLEDGED → IGNORED |
+| `POST /api/planning/alerts/{id}/reassign` | `{instrumentistId, note?}` — change l'instrumentiste de la mission, résout l'alerte |
+| `POST /api/planning/alerts/{id}/open-as-available` | Vide l'instrumentiste, mission → `OPEN`, résout l'alerte |
+| `GET /api/planning/alerts/{id}/eligible-instrumentists` | Instrumentistes actifs, affiliés au site, ni absents ni en conflit — `{items: [{id, email, name, sites: string[]}]}` (`sites` ajouté Batch 12 pour le modal de réassignation) |
+
+Statuts : `OPEN`/`ACKNOWLEDGED`/`RESOLVED`/`IGNORED`. Répéter la même transition est
+idempotent (200, pas d'erreur — la première résolution gagne). Croiser les deux états
+terminaux (`RESOLVED`↔`IGNORED`) ou agir sur un état terminal → `409 CONFLICT`.
+Types : `SURGEON_ABSENCE`, `INSTRUMENTIST_ABSENCE`, `REASSIGNMENT_REQUIRED`,
+`OCCURRENCE_CANCELLED`, `SURGEON_CONFLICT`, `INSTRUMENTIST_CONFLICT` (les deux derniers
+sont définis mais pas encore déclenchés — voir freeze §G).
+
+#### Génération de planning V2 (Batch 9)
+
+Parallèle complet de `/api/planning/preview|generate` (26.1) et `/api/planning/deploy`
+(26.6/26.6b) ci-dessus, mais piloté par mois calendaire + `SurgeonSchedulePost` au lieu
+de plage de dates + `PlanningTemplate`.
+
+##### `POST /api/planning/v2/preview`
+
+**Body :**
+
+```json
+{ "siteId": 1, "siteGroupId": null, "year": 2026, "month": 9 }
+```
+
+Exactement un de `siteId` / `siteGroupId` requis (`400` sinon, dans les deux sens).
+`year`/`month` requis. Aucune écriture en base.
+
+**Réponse — 200 :**
+
+```json
+{
+  "lines": [{
+    "date": "2026-09-07", "postId": 12, "surgeonId": 3, "surgeonName": "Dr X",
+    "missionType": "BLOCK", "startTime": "08:00", "endTime": "13:00",
+    "siteId": 1, "siteName": "Alpha", "instrumentistId": 5, "instrumentistName": "Y",
+    "status": "COVERED",
+    "existingMissionId": null, "existingInstrumentistId": null, "existingInstrumentistName": null,
+    "freedFrom": false
+  }],
+  "summary": { "total": 8, "covered": 6, "uncovered": 1, "skipped": 1, "conflict": 0, "modified": 0 }
+}
+```
+
+`status` : `SKIPPED` (chirurgien absent) | `UNCOVERED` | `COVERED` | `MODIFIED` | `CONFLICT`.
+
+##### `POST /api/planning/v2/generate`
+
+Même body que preview. Crée une `PlanningVersion` (`DRAFT`) + des `Mission` (`DRAFT`) —
+réutilise intégralement le cycle de vie `PlanningVersion`/`Mission` existant, aucune
+table V2-spécifique pour les missions. Ne déploie pas, n'envoie aucun PDF.
+
+**Rejet explicite des doublons (`409 CONFLICT`)** : si un brouillon (`DRAFT`) non déployé
+existe déjà pour exactement le même site/groupe + période, le second appel est rejeté
+plutôt que de créer un second brouillon silencieusement. Une fois la version
+déployée/archivée, regénérer la même période est autorisé (nouvelle version, numéro
+incrémenté — comportement V1 inchangé).
+
+> **Limite connue** : pour une génération par groupe de sites, `PlanningVersion.site`
+> vaut `null` (pas de colonne `siteGroupId` sur `PlanningVersion`) — deux groupes
+> différents générés pour le même mois partagent le même "bucket" de détection de
+> doublon que le cas "tous sites" de V1. Documenté dans le freeze §B/§I, non corrigé.
+
+**Réponse — 200 :**
+
+```json
+{ "versionId": 7, "created": 8, "updated": 0, "skipped": 1 }
+```
+
+##### `POST /api/planning/v2/deploy`
+
+**Body :**
+
+```json
+{ "planningVersionId": 7, "sendPdf": true }
+```
+
+Réutilise **sans aucune logique V2-spécifique** `PlanningDeploymentService::deploy()` —
+le même service que V1 (section 26.6). `from`/`to`/`siteId` sont dérivés automatiquement
+de la `PlanningVersion` ciblée. `sendPdf` est transmis au paramètre existant
+`sendChangeSummary` (pas de levier "désactiver les PDFs" dans le service partagé — les
+PDFs standard par destinataire sont envoyés inconditionnellement, comme en V1).
+
+**Réponse — 200 :** identique à 26.6 (`deploymentId`, `missionCount`, `openPoolCount`).
+
+> **Correctif appliqué dans ce batch** (affecte V1 et V2 — service partagé) :
+> `PlanningDeploymentService::deploy()` appelait `$em->clear(Mission::class)`, mais
+> Doctrine ORM 3.x ignore l'argument et vide **tout** l'identity map — la `PlanningVersion`
+> activée était détachée avant le `flush()` final et son statut `ACTIVE` n'était jamais
+> persisté. Corrigé par un `flush()` immédiatement après l'activation. Trouvé par le
+> premier test fonctionnel (EntityManager réel) à exercer ce chemin de code — les tests
+> unitaires existants mockaient `EntityManager` et ne pouvaient pas révéler ce bug.
+
+---
+
 ## 27. Synchronisation missions instrumentiste (polling intelligent V1)
 
 ### `GET /api/instrumentist/missions/sync?since=ISO_DATE`
@@ -2929,5 +3071,70 @@ GET /api/admin/audit
 ```
 
 **Note :** `targetUser` peut être `null` si l'utilisateur a été supprimé (ON DELETE SET NULL).
+
+---
+
+## 29. Authentification — login, refresh, logout, « Se souvenir de moi »
+
+**AuthZ :** `PUBLIC_ACCESS` pour les trois endpoints ci-dessous.
+
+### `POST /api/auth/login`
+
+```json
+{ "email": "user@example.com", "password": "...", "rememberMe": false }
+```
+
+`rememberMe` est optionnel ; absent ou omis, il est traité comme `false` (rétrocompatible avec les clients existants).
+
+**Réponse — 200 :**
+
+```json
+{ "token": "<jwt access token>", "refresh_token": "<refresh token>" }
+```
+
+Durée de vie du refresh token retourné :
+
+| `rememberMe` | TTL refresh token |
+|---|---|
+| `false` (ou absent) | 1 jour (86400 s) |
+| `true` | 30 jours (2592000 s) |
+
+L'access token (JWT) a une durée de vie fixe de 1h, indépendante de `rememberMe`.
+
+### `POST /api/auth/google`
+
+Même contrat que `/api/auth/login` : accepte un champ optionnel `rememberMe` (boolean, défaut `false`) en plus de `credential`.
+
+### `POST /api/auth/refresh`
+
+```json
+{ "refresh_token": "..." }
+```
+
+Retourne un nouvel access token. Le refresh token n'est **pas rotaté** : le même `refresh_token` reste valable jusqu'à son expiration (TTL fixée au login selon `rememberMe`). Aucun nouveau refresh token n'est créé en base à cette étape.
+
+**Réponse — 200 :**
+
+```json
+{ "token": "<nouveau jwt>", "refresh_token": "<même refresh token>" }
+```
+
+**401** si le refresh token est invalide, inconnu ou expiré.
+
+### `POST /api/auth/logout`
+
+```json
+{ "refresh_token": "..." }
+```
+
+Invalide (supprime) le refresh token correspondant en base. Idempotent : si le token est déjà invalide/inconnu, répond `200` avec un message explicite plutôt qu'une erreur.
+
+**Réponse — 200 :**
+
+```json
+{ "code": 200, "message": "The supplied refresh_token has been invalidated." }
+```
+
+**400** si `refresh_token` est manquant dans le corps de la requête.
 
 ---

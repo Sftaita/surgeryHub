@@ -1,61 +1,63 @@
-# SurgicalHub — Configuration des clés SSH (Hostinger)
+# SurgicalHub — Configuration des clés SSH
 
 Ce fichier centralise les clés SSH nécessaires au déploiement. **Seules les
-clés PUBLIQUES vont ici** (et même celles-ci ne devraient idéalement pas
-être commitées si le repo est public — préférez un gestionnaire de secrets
-si possible). **Ne mettez jamais de clé PRIVÉE dans ce fichier ni dans le
-repo.**
-
-Il y a deux usages distincts :
-
-1. **Connexion SSH locale → serveur Hostinger** (pour déployer)
-2. **Deploy key serveur → GitHub** (pour `git clone` / `git pull` du dépôt
-   privé depuis le serveur)
+clés PUBLIQUES vont ici**. **Ne mettez jamais de clé PRIVÉE dans ce fichier
+ni dans le repo.**
 
 ---
 
-## 1. Connexion SSH locale → Hostinger
-
-### 1.1 Générer une paire de clés (sur votre machine, si pas déjà fait)
+## Serveur de production actuel — VPS Docker
 
 ```bash
-ssh-keygen -t ed25519 -C "samy@surgicalhub-deploy" -f ~/.ssh/surgicalhub_hostinger
+ssh deploy@187.124.55.15
 ```
 
-→ Crée `~/.ssh/surgicalhub_hostinger` (privée, **ne la partagez jamais**) et
-`~/.ssh/surgicalhub_hostinger.pub` (publique).
-
-### 1.2 Coller votre clé PUBLIQUE ici (pour référence / à ajouter sur Hostinger)
+Clé publique autorisée (`~deploy/.ssh/authorized_keys` sur le serveur) :
 
 ```
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMDcVFk8oihxXDhVj+iKUTAytqwBhRXSuL/ZsFTL5rW5 samy.ftaita89@gmail.com
 ```
 
-### 1.3 Ajouter la clé publique sur Hostinger
-
-Soit via hPanel (Avancé > SSH Access > "Manage SSH Keys" > coller la clé
-publique), soit manuellement :
-
-```bash
-# Depuis votre machine — copie la clé publique vers le serveur
-ssh-copy-id -p 65002 -i ~/.ssh/surgicalhub_hostinger.pub u245913739@91.108.115.96
-
-# Si ssh-copy-id n'est pas disponible (Windows) :
-cat ~/.ssh/surgicalhub_hostinger.pub | ssh -p 65002 u245913739@91.108.115.96 \
-  "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
-```
-
-### 1.4 Configurer un alias pratique (`~/.ssh/config` local)
+Alias `~/.ssh/config` pratique (optionnel) :
 
 ```text
 Host surgicalhub-prod
+  HostName 187.124.55.15
+  User deploy
+```
+
+Ensuite : `ssh surgicalhub-prod` suffit.
+
+Voir [`docs/production.md`](production.md) pour la procédure de déploiement complète.
+
+---
+
+## Historique — Hostinger (obsolète depuis 2026-06-16)
+
+L'hébergement Hostinger (`u245913739@91.108.115.96:65002`) a été remplacé par
+le VPS Docker. Les infos ci-dessous sont conservées à titre d'archive.
+
+### Connexion SSH locale → Hostinger
+
+```bash
+ssh-keygen -t ed25519 -C "samy@surgicalhub-deploy" -f ~/.ssh/surgicalhub_hostinger
+```
+
+Clé publique Hostinger :
+
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMDcVFk8oihxXDhVj+iKUTAytqwBhRXSuL/ZsFTL5rW5 samy.ftaita89@gmail.com
+```
+
+Alias Hostinger :
+
+```text
+Host surgicalhub-hostinger
   HostName 91.108.115.96
   Port 65002
   User u245913739
   IdentityFile ~/.ssh/surgicalhub_hostinger
 ```
-
-Ensuite : `ssh surgicalhub-prod` suffit (plus besoin de retaper port/host/user).
 
 ---
 

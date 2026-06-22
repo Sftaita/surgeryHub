@@ -27,6 +27,7 @@
     "axios": "^1.13.2",
     "dayjs": "^1.11.19",
     "mui-tel-input": "^9.0.1",
+    "react-international-phone": "^4.8.0",
     "react-router-dom": "^7.11.0",
     "vue": "^3.5.24"
   },

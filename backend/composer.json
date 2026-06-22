@@ -13,6 +13,7 @@
         "doctrine/orm": "^3.6",
         "dompdf/dompdf": "*",
         "gesdinet/jwt-refresh-token-bundle": "^1.5",
+        "giggsey/libphonenumber-for-php": "^9.0",
         "lexik/jwt-authentication-bundle": "^3.2",
         "minishlink/web-push": "^10.0",
         "nelmio/cors-bundle": "^2.6",

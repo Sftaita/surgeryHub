@@ -8,6 +8,7 @@ use App\Entity\Mission;
 use App\Entity\NotificationEvent;
 use App\Entity\User;
 use App\Enum\PublicationChannel;
+use App\Message\PlanningAlertRaisedMessage;
 use App\Message\SendBillingEmailMessage;
 use App\Repository\UserRepository;
 use Doctrine\ORM\EntityManagerInterface;
@@ -214,6 +215,60 @@ class NotificationService
                 'from'         => $from,
                 'to'           => $to,
             ]
+        );
+    }
+
+    /**
+     * In-app row for a PlanningAlert (Batch 7). Channel gating (whether to also email/push)
+     * is the caller's responsibility (PlanningAlertRaisedMessageHandler) via
+     * NotificationPreferenceResolver — this method only ever writes the IN_APP row.
+     * Payload is deliberately generic: mission/site/date/type only, no patient data.
+     */
+    public function planningAlertRaisedNotifyInApp(User $recipient, PlanningAlertRaisedMessage $message): void
+    {
+        $this->createInAppPlanning(
+            $recipient,
+            'PLANNING_ALERT_RAISED',
+            [
+                'alertId'         => $message->alertId,
+                'alertType'       => $message->alertType,
+                'missionId'       => $message->missionId,
+                'siteId'          => $message->siteId,
+                'siteName'        => $message->siteName,
+                'missionDate'     => $message->missionDate,
+            ],
+        );
+    }
+
+    /**
+     * Notify the old and new instrumentist after a manager reassigns a mission from a
+     * PlanningAlert resolution action. Either side may be null/absent: a mission that had
+     * no instrumentist yet has no "old" one; this is still called with whichever exists.
+     */
+    public function planningAlertReassignedNotify(Mission $mission, ?User $oldInstrumentist, User $newInstrumentist): void
+    {
+        if ($oldInstrumentist !== null && $oldInstrumentist->getId() !== $newInstrumentist->getId()) {
+            $this->createInAppPlanning(
+                $oldInstrumentist,
+                'PLANNING_ALERT_REASSIGNED_AWAY',
+                [
+                    'missionId' => $mission->getId(),
+                    'siteId'    => $mission->getSite()?->getId(),
+                    'siteName'  => $mission->getSite()?->getName(),
+                    'missionDate' => $mission->getStartAt()->format('Y-m-d'),
+                ],
+            );
+        }
+
+        $this->createInAppPlanning(
+            $newInstrumentist,
+            'PLANNING_ALERT_REASSIGNED_TO',
+            [
+                'missionId' => $mission->getId(),
+                'siteId'    => $mission->getSite()?->getId(),
+                'siteName'  => $mission->getSite()?->getName(),
+                'missionDate' => $mission->getStartAt()->format('Y-m-d'),
+            ],
         );
     }
 

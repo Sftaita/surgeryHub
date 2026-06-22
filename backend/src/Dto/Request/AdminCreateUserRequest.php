@@ -14,6 +14,10 @@ class AdminCreateUserRequest
 
     public ?string $lastname = null;
 
+    #[Assert\Regex(
+        pattern: '/^\+[1-9]\d{6,14}$/',
+        message: 'Phone must be in E.164 format (e.g. +32490123456)',
+    )]
     public ?string $phone = null;
 
     #[Assert\NotBlank]

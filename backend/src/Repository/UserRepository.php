@@ -232,7 +232,8 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
             ->leftJoin('sm.site', 'site')->addSelect('site')
             ->andWhere('u.id = :id')
             ->setParameter('id', $id)
-            ->setMaxResults(1)
+            // No setMaxResults: SQL LIMIT on a JOIN would silently drop rows and
+            // cause incomplete collections (Doctrine hydration needs all JOIN rows).
             ->getQuery()
             ->getOneOrNullResult();
 

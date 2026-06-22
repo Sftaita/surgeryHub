@@ -49,6 +49,13 @@ export default defineConfig({
   },
   server: {
     host: true,
+    watch: {
+      // Docker Desktop + bind-mount Windows (NTFS) : les évènements de FS natifs
+      // ne remontent pas toujours au conteneur, donc Vite ne voit pas les
+      // modifications faites côté hôte. Le polling force une vérification
+      // périodique des fichiers, fiable dans ce contexte.
+      usePolling: true,
+    },
     proxy: {
       "/api": {
         target: backendUrl,

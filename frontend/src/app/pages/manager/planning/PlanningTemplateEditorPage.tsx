@@ -26,7 +26,6 @@ import { apiClient } from "../../../api/apiClient";
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const BG             = "#ECF2FB";
 const BLUE           = "#2563EB";
-const BLUE_DARK      = "#1E40AF";
 
 // ── Timeline constants ────────────────────────────────────────────────────────
 const HOUR_H         = 64;   // px per hour
