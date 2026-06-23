@@ -75,6 +75,7 @@ export function CreateSurgeonDialog({ open, onClose }: Props) {
   const [selectedSites, setSelectedSites] = React.useState<Site[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [emailError, setEmailError] = React.useState<string>("");
+  const [siteIdsError, setSiteIdsError] = React.useState<string>("");
 
   const {
     data: sites = [],
@@ -98,6 +99,7 @@ export function CreateSurgeonDialog({ open, onClose }: Props) {
     setSelectedSites([]);
     setLoading(false);
     setEmailError("");
+    setSiteIdsError("");
   }, [open]);
 
   const handleSubmit = async () => {
@@ -111,12 +113,26 @@ export function CreateSurgeonDialog({ open, onClose }: Props) {
     const normalizedPhone = normalizePhoneValue(phone);
     const siteIds = selectedSites.map((site) => site.id);
 
+    let hasError = false;
+
     if (trimmedEmail === "") {
       setEmailError("L'email est requis.");
+      hasError = true;
+    } else {
+      setEmailError("");
+    }
+
+    if (siteIds.length === 0) {
+      setSiteIdsError("Au moins un site est requis pour un chirurgien.");
+      hasError = true;
+    } else {
+      setSiteIdsError("");
+    }
+
+    if (hasError) {
       return;
     }
 
-    setEmailError("");
     setLoading(true);
 
     try {
@@ -209,7 +225,12 @@ export function CreateSurgeonDialog({ open, onClose }: Props) {
             multiple
             options={sites}
             value={selectedSites}
-            onChange={(_event, value) => setSelectedSites(value)}
+            onChange={(_event, value) => {
+              setSelectedSites(value);
+              if (siteIdsError) {
+                setSiteIdsError("");
+              }
+            }}
             disabled={loading || sitesLoading}
             loading={sitesLoading}
             getOptionLabel={(option) => option.name}
@@ -233,24 +254,22 @@ export function CreateSurgeonDialog({ open, onClose }: Props) {
               <TextField
                 {...params}
                 label="Sites d'activité"
+                required
                 placeholder={
                   selectedSites.length === 0
                     ? "Rechercher un ou plusieurs sites"
                     : ""
                 }
-                helperText={
-                  sitesError
-                    ? "Impossible de charger les sites. Vous pouvez créer le chirurgien sans site."
-                    : undefined
-                }
+                error={siteIdsError !== ""}
+                helperText={siteIdsError || undefined}
               />
             )}
           />
 
           {sitesError ? (
-            <Alert severity="warning">
-              Impossible de charger les sites. Vous pouvez créer le chirurgien
-              sans site.
+            <Alert severity="error">
+              Impossible de charger les sites. Un chirurgien doit avoir au
+              moins un site.
             </Alert>
           ) : null}
         </Stack>

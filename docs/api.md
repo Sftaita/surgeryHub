@@ -808,6 +808,8 @@ Supprimer une affiliation site d'un instrumentiste.
 - La membership doit exister
 - Elle doit appartenir à l'instrumentiste ciblé
 - Sinon : `404`
+- Refusé (`409`) si c'est la **dernière** affiliation de l'instrumentiste — un instrumentiste doit
+  toujours garder au moins un site (D-049)
 
 **Réponse succès — 200 :**
 
@@ -815,7 +817,8 @@ Supprimer une affiliation site d'un instrumentiste.
 { "id": 44, "deleted": true }
 ```
 
-**Erreurs possibles :** `404` — messages : `Instrumentist not found` / `Site membership not found`
+**Erreurs possibles :** `404` — messages : `Instrumentist not found` / `Site membership not found` ;
+`409` — `Cannot remove the last site of an instrumentist — at least one site is required.`
 
 ---
 
@@ -1534,6 +1537,10 @@ Le `title` de chaque événement est le nom de l'instrumentiste assigné (ou l'e
 ### 23.6 `DELETE /api/surgeons/{id}/site-memberships/{membershipId}`
 
 **AuthZ :** `MANAGER` / `ADMIN`
+
+**Erreurs :** `404` membership inconnu/n'appartient pas au chirurgien ; `409` si c'est la
+**dernière** affiliation du chirurgien — un chirurgien doit toujours garder au moins un site
+(D-049).
 
 **Réponse — 200 :** `{ "id": 12, "deleted": true }`
 
@@ -2839,7 +2846,20 @@ POST /api/admin/users
 }
 ```
 
-**Champs :** `role` ∈ `ROLE_INSTRUMENTIST` | `ROLE_SURGEON` | `ROLE_MANAGER`. `siteIds` doit contenir au moins 1 ID valide.
+**Champs :** `role` ∈ `ROLE_INSTRUMENTIST` | `ROLE_SURGEON` | `ROLE_MANAGER`.
+
+**Règle d'affiliation aux sites (D-049)** — `siteIds` n'a **pas** de minimum statique : le nombre
+de sites obligatoire dépend du rôle choisi, vérifié côté `UserAdministrationService::createUser()` :
+
+| Rôle | Site obligatoire |
+|---|---|
+| `ROLE_INSTRUMENTIST` | Oui (≥1) |
+| `ROLE_SURGEON` | Oui (≥1) |
+| `ROLE_MANAGER` | Non (`siteIds` peut être `[]`) |
+
+(`ROLE_ADMIN` n'est pas créable via cet endpoint — uniquement via les commandes console
+`app:user:create`/`app:create-dev-user` — mais suit la même règle "non obligatoire" si jamais
+exposé ici.)
 
 **Réponse 201 :**
 
@@ -2853,7 +2873,8 @@ POST /api/admin/users
 Un `warning` `INVITATION_EMAIL_NOT_SENT` apparaît si l'email n'a pas pu être mis en file.
 L'utilisateur est créé dans tous les cas.
 
-**Erreurs :** `409` si l'email est déjà utilisé, `404` si un `siteId` est invalide, `422` si validation échoue.
+**Erreurs :** `409` si l'email est déjà utilisé, `404` si un `siteId` est invalide, `400` si le
+rôle requiert un site et qu'aucun `siteId` n'est fourni, `422` si validation échoue.
 
 ---
 
@@ -2922,6 +2943,9 @@ POST /api/admin/users/{id}/change-role
 **Règles :**
 - `newRole` ∈ `ROLE_INSTRUMENTIST` | `ROLE_SURGEON` | `ROLE_MANAGER`.
 - L'admin ne peut pas changer son propre rôle (`400`).
+- Si `newRole` est `ROLE_INSTRUMENTIST` ou `ROLE_SURGEON` et que l'utilisateur cible n'a aucune
+  `SiteMembership`, le changement est refusé (`400`) — ces rôles requièrent toujours au moins un
+  site (D-049). Aucune restriction si `newRole` est `ROLE_MANAGER`.
 - Met également à jour le `siteRole` de toutes les `SiteMembership` existantes.
 
 **Réponse 200 :** `AdminUserDetail`
@@ -2982,7 +3006,9 @@ POST /api/admin/users/{id}/site-memberships
 DELETE /api/admin/users/{id}/site-memberships/{membershipId}
 ```
 
-**Erreurs :** `404` si le membership n'appartient pas à l'utilisateur.
+**Erreurs :** `404` si le membership n'appartient pas à l'utilisateur ; `409` si l'utilisateur est
+`ROLE_INSTRUMENTIST` ou `ROLE_SURGEON` et que c'est sa **dernière** affiliation (ces rôles
+requièrent toujours au moins un site, D-049). Aucune restriction pour `ROLE_MANAGER`/`ROLE_ADMIN`.
 
 **Réponse 200 :**
 

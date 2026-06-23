@@ -204,6 +204,10 @@ class InstrumentistServiceManager
             throw new NotFoundHttpException('Site membership not found');
         }
 
+        if (count($instrumentist->getSiteMemberships()) <= 1) {
+            throw new ConflictHttpException('Cannot remove the last site of an instrumentist — at least one site is required.');
+        }
+
         $instrumentist->removeSiteMembership($membership);
         $this->em->remove($membership);
         $this->em->flush();

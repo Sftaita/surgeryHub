@@ -1709,6 +1709,74 @@ réelles avant la suppression définitive de V1.
 
 ---
 
+## D-049 — Règles d'affiliation aux sites par rôle métier
+
+Date : 2026-06-23
+
+### Décision
+
+`SiteMembership` reste une propriété générique de `User` (tout utilisateur peut avoir 0 à N
+sites), mais le **nombre de sites obligatoire dépend désormais du rôle métier**, appliqué de
+façon symétrique à la création, à la suppression d'une affiliation et au changement de rôle :
+
+| Rôle | Sites autorisés | Site obligatoire |
+|---|---|---|
+| INSTRUMENTIST | 1..N | Oui |
+| SURGEON | 1..N | Oui |
+| MANAGER | 0..N | Non |
+| ADMIN | 0..N | Non |
+
+Un chirurgien est une entité globale unique : un même `User` peut être affilié à plusieurs sites
+(`SiteMembership` ×N) sans jamais être dupliqué par hôpital — ce modèle (une ligne `User` +
+plusieurs `SiteMembership`) était déjà correctement implémenté pour `SurgeonServiceManager` et
+`InstrumentistServiceManager` ; cette décision en fait une règle explicite et l'étend à
+`UserAdministrationService` (création générique manager/admin/instrumentiste/chirurgien via
+`POST /api/admin/users`).
+
+### Implémentation
+
+- **`AdminCreateUserRequest::$siteIds`** : retrait de la contrainte statique
+  `Assert\Count(min: 1)` — un constraint par champ ne peut pas dépendre d'un autre champ (ici le
+  rôle). Le contrôle devient conditionnel, posé dans le service.
+- **`UserAdministrationService`** — nouvelle constante `ROLES_REQUIRING_SITE =
+  ['ROLE_INSTRUMENTIST', 'ROLE_SURGEON']`, vérifiée à 3 endroits :
+  - `createUser()` : 400 si rôle requérant un site et `siteIds` vide.
+  - `removeSiteMembership()` : 409 si le rôle requiert un site et qu'il ne reste qu'une seule
+    affiliation (empêche de vider le dernier site d'un chirurgien/instrumentiste).
+  - `changeRole()` : 400 si le nouveau rôle requiert un site et que l'utilisateur cible n'en a
+    aucun (évite de faire passer un manager à 0 site directement en chirurgien/instrumentiste).
+- **`SurgeonServiceManager::deleteSiteMembership()` / `InstrumentistServiceManager::deleteSiteMembership()`**
+  — même garde de suppression du dernier site (409), ajoutée à ces deux services qui n'avaient
+  aucune protection contre la suppression jusqu'ici (seule la création vérifiait déjà `count(siteIds) === 0`).
+- **`CreateSurgeonRequest`/`CreateInstrumentistRequest`** : déjà corrects (`Assert\Count(min: 1)`
+  statique, car ces DTOs sont mono-rôle) — aucun changement nécessaire.
+- **Frontend** : `AdminCreateUserModal` rend la validation du nombre de sites conditionnelle au
+  rôle sélectionné (`ROLES_REQUIRING_SITE`). `CreateSurgeonDialog`/`CreateInstrumentistDialog`
+  avaient un bug où le frontend ne validait pas le site obligatoire avant l'appel API (rejet
+  silencieux côté serveur uniquement) — validation ajoutée, et le texte trompeur "vous pouvez
+  créer [...] sans site" (faux, car le backend rejette déjà ce cas) a été retiré. `AdminUserDrawer`
+  expose désormais l'ajout de site (`addAdminSiteMembership`, jusqu'ici défini mais jamais appelé
+  par aucune UI) en plus du retrait déjà existant — les écrans `SurgeonDrawer`/`InstrumentistDrawer`
+  avaient déjà les deux actions.
+
+### Motivation
+
+Aligner le modèle technique sur la réalité métier : un manager ou un admin n'opère pas
+nécessairement depuis un site physique (rôle transverse), alors qu'un instrumentiste ou un
+chirurgien doit toujours être rattaché à au moins un site pour être planifiable. L'invariant
+n'était auparavant vérifié qu'à la création — un instrumentiste pouvait être vidé de tous ses
+sites via l'endpoint de suppression sans qu'aucune garde n'existe.
+
+### Garde-fous
+
+- Aucune logique de fallback côté frontend : la règle est strictement appliquée côté backend
+  (service), le frontend ne fait que refléter la contrainte pour l'UX (message d'erreur avant
+  l'appel réseau).
+- L'API reste inchangée (`POST /api/admin/users`, `POST/DELETE .../site-memberships`) — création
+  de compte et gestion d'affiliation restent deux opérations indépendantes.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -1755,3 +1823,4 @@ réelles avant la suppression définitive de V1.
 | 16-06-2026 | D-046 — Module Administration — ROLE_ADMIN |
 | 19-06-2026 | D-047 — Remember me / session persistante |
 | 22-06-2026 | D-048 — Planning V2 : bascule UI (cutover) et désactivation de la navigation V1 |
+| 23-06-2026 | D-049 — Règles d'affiliation aux sites par rôle métier |

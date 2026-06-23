@@ -313,7 +313,26 @@ SiteMembership
 ├── user → User
 ├── site → Hospital
 └── siteRole: 'INSTRUMENTIST' | ...
+```
 
+`SiteMembership` est une propriété générique : tout utilisateur peut avoir 0 à N sites, mais le
+nombre minimum requis dépend du rôle métier (D-049) :
+
+| Rôle | Sites autorisés | Site obligatoire |
+|---|---|---|
+| INSTRUMENTIST | 1..N | Oui |
+| SURGEON | 1..N | Oui |
+| MANAGER | 0..N | Non |
+| ADMIN | 0..N | Non |
+
+Un chirurgien (ou instrumentiste) est une entité globale unique, jamais dupliquée par hôpital :
+plusieurs `SiteMembership` peuvent pointer vers le même `User`, un par site d'activité (ex. un
+chirurgien affilié à Delta, Saint-Jean et Parc Léopold reste un seul compte). L'invariant "au
+moins un site pour INSTRUMENTIST/SURGEON" est vérifié côté backend à la création, à la suppression
+d'une affiliation (refus si c'est la dernière) et au changement de rôle — jamais côté frontend
+(pas de fallback métier, cf. conventions générales).
+
+```
 Hospital (site)
 ├── id, name
 

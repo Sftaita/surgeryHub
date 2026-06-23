@@ -112,6 +112,63 @@ final class UserAdministrationServiceTest extends TestCase
         self::assertNull($user->getInvitationLastSentAt());
     }
 
+    public function testCreateUserThrowsBadRequestWhenInstrumentistHasNoSite(): void
+    {
+        $this->expectException(BadRequestHttpException::class);
+        $this->expectExceptionMessage('At least one site is required for role ROLE_INSTRUMENTIST.');
+
+        $admin = $this->buildAdmin();
+        $dto   = $this->buildCreateDto('new@example.com', 'ROLE_INSTRUMENTIST', []);
+        $this->users->method('findOneByEmailInsensitive')->willReturn(null);
+
+        $this->service->createUser($dto, $admin);
+    }
+
+    public function testCreateUserThrowsBadRequestWhenSurgeonHasNoSite(): void
+    {
+        $this->expectException(BadRequestHttpException::class);
+        $this->expectExceptionMessage('At least one site is required for role ROLE_SURGEON.');
+
+        $admin = $this->buildAdmin();
+        $dto   = $this->buildCreateDto('new@example.com', 'ROLE_SURGEON', []);
+        $this->users->method('findOneByEmailInsensitive')->willReturn(null);
+
+        $this->service->createUser($dto, $admin);
+    }
+
+    public function testCreateUserSucceedsForManagerWithoutSite(): void
+    {
+        $admin = $this->buildAdmin();
+        $dto   = $this->buildCreateDto('manager@example.com', 'ROLE_MANAGER', []);
+
+        $this->users->method('findOneByEmailInsensitive')->willReturn(null);
+        $this->em->expects(self::atLeastOnce())->method('persist');
+        $this->em->expects(self::atLeastOnce())->method('flush');
+
+        $user = $this->service->createUser($dto, $admin);
+
+        self::assertContains('ROLE_MANAGER', $user->getRoles());
+        self::assertCount(0, $user->getSiteMemberships());
+    }
+
+    public function testCreateUserSucceedsForManagerWithMultipleSites(): void
+    {
+        $site1 = $this->buildSite(1, 'CHU Liège');
+        $site2 = $this->buildSite(2, 'Saint-Jean');
+        $admin = $this->buildAdmin();
+        $dto   = $this->buildCreateDto('manager@example.com', 'ROLE_MANAGER', [1, 2]);
+
+        $this->users->method('findOneByEmailInsensitive')->willReturn(null);
+        $this->em->method('find')->willReturnMap([
+            [Hospital::class, 1, $site1],
+            [Hospital::class, 2, $site2],
+        ]);
+
+        $user = $this->service->createUser($dto, $admin);
+
+        self::assertContains('ROLE_MANAGER', $user->getRoles());
+    }
+
     // ── suspendUser / activateUser ─────────────────────────────────────────────
 
     public function testSuspendUserSetsActiveToFalse(): void
@@ -195,6 +252,30 @@ final class UserAdministrationServiceTest extends TestCase
         $admin  = $this->buildAdmin();
         $target = $this->buildUserWithId(2, ['ROLE_INSTRUMENTIST']);
         $this->service->changeRole($target, 'ROLE_ADMIN', $admin);
+    }
+
+    public function testChangeRoleThrowsWhenTargetHasNoSiteAndNewRoleRequiresSite(): void
+    {
+        $this->expectException(BadRequestHttpException::class);
+        $this->expectExceptionMessage('the user has no site');
+
+        $admin  = $this->buildAdmin();
+        $target = $this->buildUserWithId(2, ['ROLE_MANAGER']);
+
+        $this->service->changeRole($target, 'ROLE_SURGEON', $admin);
+    }
+
+    public function testChangeRoleSucceedsToManagerEvenWithoutSite(): void
+    {
+        $admin  = $this->buildAdmin();
+        $target = $this->buildUserWithId(2, ['ROLE_INSTRUMENTIST']);
+
+        $this->em->expects(self::once())->method('flush');
+        $this->audit->expects(self::once())->method('userRoleChanged');
+
+        $result = $this->service->changeRole($target, 'ROLE_MANAGER', $admin);
+
+        self::assertContains('ROLE_MANAGER', $result->getRoles());
     }
 
     // ── resendInvitation ──────────────────────────────────────────────────────
@@ -298,6 +379,36 @@ final class UserAdministrationServiceTest extends TestCase
         $this->service->removeSiteMembership($target, 999, $admin);
     }
 
+    public function testRemoveSiteMembershipThrowsConflictWhenLastSiteForInstrumentist(): void
+    {
+        $this->expectException(ConflictHttpException::class);
+        $this->expectExceptionMessage('at least one site is required');
+
+        $admin  = $this->buildAdmin();
+        $site   = $this->buildSite(1, 'CHU');
+        $target = $this->buildUser(['ROLE_INSTRUMENTIST']);
+
+        $membership = $this->buildMembershipWithId(5, $site, $target, 'INSTRUMENTIST');
+        $target->addSiteMembership($membership);
+
+        $this->service->removeSiteMembership($target, 5, $admin);
+    }
+
+    public function testRemoveSiteMembershipSucceedsForManagerEvenWhenLastSite(): void
+    {
+        $admin  = $this->buildAdmin();
+        $site   = $this->buildSite(1, 'CHU');
+        $target = $this->buildUser(['ROLE_MANAGER']);
+
+        $membership = $this->buildMembershipWithId(5, $site, $target, 'MANAGER');
+        $target->addSiteMembership($membership);
+
+        $this->em->expects(self::once())->method('flush');
+        $this->audit->expects(self::once())->method('userSiteRemoved');
+
+        $this->service->removeSiteMembership($target, 5, $admin);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private function buildAdmin(): User
@@ -330,6 +441,16 @@ final class UserAdministrationServiceTest extends TestCase
         $site->method('getId')->willReturn($id);
         $site->setName($name);
         return $site;
+    }
+
+    private function buildMembershipWithId(int $id, Hospital $site, User $user, string $siteRole): SiteMembership
+    {
+        $membership = $this->getMockBuilder(SiteMembership::class)
+            ->onlyMethods(['getId'])
+            ->getMock();
+        $membership->method('getId')->willReturn($id);
+        $membership->setSite($site)->setUser($user)->setSiteRole($siteRole);
+        return $membership;
     }
 
     private function buildCreateDto(string $email, string $role, array $siteIds): AdminCreateUserRequest

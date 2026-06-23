@@ -14,6 +14,7 @@ use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
+/** A surgeon must always keep at least one site — enforced at creation and on every removal. */
 class SurgeonServiceManager
 {
     private const INVITATION_TTL_HOURS = 48;
@@ -157,6 +158,10 @@ class SurgeonServiceManager
         $membershipUser = $membership->getUser();
         if (!$membershipUser instanceof User || $membershipUser->getId() !== $surgeon->getId()) {
             throw new NotFoundHttpException('Site membership not found');
+        }
+
+        if (count($surgeon->getSiteMemberships()) <= 1) {
+            throw new ConflictHttpException('Cannot remove the last site of a surgeon — at least one site is required.');
         }
 
         $surgeon->removeSiteMembership($membership);

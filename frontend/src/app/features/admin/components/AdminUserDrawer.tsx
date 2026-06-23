@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
@@ -9,6 +10,7 @@ import {
   Drawer,
   IconButton,
   Stack,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -18,9 +20,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getAdminUser,
   resendAdminInvitation,
+  addAdminSiteMembership,
   removeAdminSiteMembership,
 } from "../api/admin.api";
 import type { AdminUserDetail } from "../api/admin.types";
+import { fetchSites, type Site } from "../../sites/api/sites.api";
 import { InvitationStatusChip } from "./InvitationStatusChip";
 import { AdminChangeRoleModal } from "./AdminChangeRoleModal";
 import { AdminSuspendModal } from "./AdminSuspendModal";
@@ -37,6 +41,7 @@ export function AdminUserDrawer({ userId, onClose }: Props) {
   const [changeRoleOpen, setChangeRoleOpen] = React.useState(false);
   const [suspendOpen, setSuspendOpen] = React.useState(false);
   const [localUser, setLocalUser] = React.useState<AdminUserDetail | null>(null);
+  const [siteToAdd, setSiteToAdd] = React.useState<Site | null>(null);
 
   const query = useQuery({
     queryKey: ["admin-user", userId],
@@ -44,10 +49,17 @@ export function AdminUserDrawer({ userId, onClose }: Props) {
     enabled: userId !== null,
   });
 
+  const sitesQuery = useQuery({
+    queryKey: ["sites"],
+    queryFn: fetchSites,
+    enabled: userId !== null,
+  });
+
   const user = localUser ?? query.data ?? null;
 
   React.useEffect(() => {
     setLocalUser(null);
+    setSiteToAdd(null);
   }, [userId]);
 
   const resendMutation = useMutation({
@@ -66,6 +78,19 @@ export function AdminUserDrawer({ userId, onClose }: Props) {
       qc.invalidateQueries({ queryKey: ["admin-users"] });
     },
   });
+
+  const addSiteMutation = useMutation({
+    mutationFn: (siteId: number) => addAdminSiteMembership(userId!, siteId),
+    onSuccess: () => {
+      setSiteToAdd(null);
+      qc.invalidateQueries({ queryKey: ["admin-user", userId] });
+      qc.invalidateQueries({ queryKey: ["admin-users"] });
+    },
+  });
+
+  const availableSites = (sitesQuery.data ?? []).filter(
+    (site) => !user?.siteMemberships.some((m) => m.site.id === site.id),
+  );
 
   const canResend =
     user !== null && user.invitationStatus !== "used" && user.invitationStatus !== "none";
@@ -162,7 +187,7 @@ export function AdminUserDrawer({ userId, onClose }: Props) {
                   <Typography variant="subtitle2" color="text.secondary" gutterBottom>
                     Sites ({user.siteMemberships.length})
                   </Typography>
-                  <Stack spacing={0.5}>
+                  <Stack spacing={0.5} sx={{ mb: 1.5 }}>
                     {user.siteMemberships.length === 0 ? (
                       <Typography variant="body2" color="text.secondary">Aucun site assigné.</Typography>
                     ) : (
@@ -183,6 +208,43 @@ export function AdminUserDrawer({ userId, onClose }: Props) {
                       ))
                     )}
                   </Stack>
+
+                  {removeSiteMutation.isError && (
+                    <Alert severity="error" sx={{ mb: 1 }}>
+                      Impossible de retirer ce site.
+                    </Alert>
+                  )}
+
+                  <Stack direction="row" spacing={1} alignItems="flex-start">
+                    <Autocomplete
+                      size="small"
+                      options={availableSites}
+                      value={siteToAdd}
+                      onChange={(_event, value) => setSiteToAdd(value)}
+                      loading={sitesQuery.isLoading}
+                      getOptionLabel={(option) => option.name}
+                      isOptionEqualToValue={(option, value) => option.id === value.id}
+                      disabled={addSiteMutation.isPending}
+                      sx={{ flex: 1 }}
+                      renderInput={(params) => (
+                        <TextField {...params} placeholder="Ajouter un site" />
+                      )}
+                    />
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      disabled={!siteToAdd || addSiteMutation.isPending}
+                      onClick={() => siteToAdd && addSiteMutation.mutate(siteToAdd.id)}
+                    >
+                      {addSiteMutation.isPending ? <CircularProgress size={16} /> : "Ajouter"}
+                    </Button>
+                  </Stack>
+
+                  {addSiteMutation.isError && (
+                    <Alert severity="error" sx={{ mt: 1 }}>
+                      Impossible d&apos;ajouter ce site.
+                    </Alert>
+                  )}
                 </Box>
               </Stack>
             )}

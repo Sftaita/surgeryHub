@@ -23,6 +23,13 @@ class UserAdministrationService
         'ROLE_MANAGER'       => 'MANAGER',
     ];
 
+    /**
+     * Roles that must always keep at least one SiteMembership — both at creation and
+     * for every subsequent removal. MANAGER and ADMIN are intentionally absent: they
+     * may have zero, one, or several sites, never required.
+     */
+    private const ROLES_REQUIRING_SITE = ['ROLE_INSTRUMENTIST', 'ROLE_SURGEON'];
+
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly UserRepository $users,
@@ -46,6 +53,13 @@ class UserAdministrationService
             throw new BadRequestHttpException('Invalid role');
         }
         $siteRole = self::ROLE_TO_SITE_ROLE[$role];
+
+        if (in_array($role, self::ROLES_REQUIRING_SITE, true) && count($dto->siteIds) === 0) {
+            throw new BadRequestHttpException(sprintf(
+                'At least one site is required for role %s.',
+                $role,
+            ));
+        }
 
         $sites = $this->resolveSites($dto->siteIds);
 
@@ -135,6 +149,13 @@ class UserAdministrationService
             throw new BadRequestHttpException('An admin cannot change their own role.');
         }
 
+        if (in_array($newRole, self::ROLES_REQUIRING_SITE, true) && count($target->getSiteMemberships()) === 0) {
+            throw new BadRequestHttpException(sprintf(
+                'Cannot change role to %s — the user has no site, and at least one is required for this role.',
+                $newRole,
+            ));
+        }
+
         $oldRoles = $target->getRoles();
         $oldRole  = $this->extractBusinessRole($oldRoles);
         $newSiteRole = self::ROLE_TO_SITE_ROLE[$newRole];
@@ -219,6 +240,14 @@ class UserAdministrationService
 
         if ($membership === null) {
             throw new NotFoundHttpException('Site membership not found');
+        }
+
+        $businessRole = $this->extractRoleConstant($target);
+        if (in_array($businessRole, self::ROLES_REQUIRING_SITE, true) && count($target->getSiteMemberships()) <= 1) {
+            throw new ConflictHttpException(sprintf(
+                'Cannot remove the last site of a %s — at least one site is required.',
+                $businessRole,
+            ));
         }
 
         $siteName = $membership->getSite()?->getName() ?? 'Inconnu';

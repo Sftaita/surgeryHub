@@ -58,6 +58,11 @@ const EMPTY: AdminCreateUserPayload = {
   siteIds: [],
 };
 
+const ROLES_REQUIRING_SITE: ReadonlyArray<AdminCreateUserPayload["role"]> = [
+  "ROLE_INSTRUMENTIST",
+  "ROLE_SURGEON",
+];
+
 export function AdminCreateUserModal({ open, onClose }: Props) {
   const qc = useQueryClient();
   const [form, setForm] = React.useState<AdminCreateUserPayload>(EMPTY);
@@ -95,7 +100,9 @@ export function AdminCreateUserModal({ open, onClose }: Props) {
     if (!form.firstname?.trim()) e.firstname = "Prénom requis";
     if (!form.lastname?.trim()) e.lastname = "Nom requis";
     if (form.phone && !/^\+\d{7,15}$/.test(form.phone)) e.phone = "Numéro invalide";
-    if (form.siteIds.length === 0) e.siteIds = "Au moins un site requis";
+    if (ROLES_REQUIRING_SITE.includes(form.role) && form.siteIds.length === 0) {
+      e.siteIds = "Au moins un site requis";
+    }
     setErrors(e);
     return Object.keys(e).length === 0;
   }
@@ -189,7 +196,7 @@ export function AdminCreateUserModal({ open, onClose }: Props) {
               </RadioGroup>
             </FormControl>
 
-            <FormControl error={!!errors.siteIds} required>
+            <FormControl error={!!errors.siteIds} required={ROLES_REQUIRING_SITE.includes(form.role)}>
               <FormLabel>Sites</FormLabel>
               {sitesQuery.isLoading ? (
                 <CircularProgress size={20} sx={{ mt: 1 }} />

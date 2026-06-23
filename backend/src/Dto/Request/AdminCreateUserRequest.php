@@ -25,10 +25,14 @@ class AdminCreateUserRequest
     public ?string $role = null;
 
     /**
+     * Whether at least one site is required depends on the role — INSTRUMENTIST and
+     * SURGEON must have one, MANAGER (and ADMIN, if ever creatable here) do not. That
+     * role-dependent check lives in UserAdministrationService::createUser(), not here,
+     * since a static per-field constraint can't see the value of another field.
+     *
      * @var list<int>
      */
     #[Assert\NotNull]
-    #[Assert\Count(min: 1)]
     #[Assert\All([
         new Assert\NotNull(),
         new Assert\Positive(),
