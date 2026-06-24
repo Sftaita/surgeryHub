@@ -64,17 +64,65 @@ class AbsenceImpactService
     }
 
     /**
-     * Call BEFORE the Absence row is removed from the database — resolves every alert
-     * still tied to it. Alert rows are never deleted; PlanningAlert.absence is
-     * ON DELETE SET NULL so history survives even after the absence itself is gone.
+     * Call BEFORE the Absence row is removed from the database.
      *
-     * @return \App\Entity\PlanningAlert[] the alerts that were resolved
+     * For each alert currently tied to this absence: if another Absence row for the same
+     * user still overlaps the alert's mission (e.g. a range and an isolated day that fell
+     * inside it — see D-050), the alert must stay active — it would be wrong to resolve an
+     * alert whose underlying problem (the person is still absent on that date, via a
+     * different row) hasn't actually gone away. In that case the alert is simply re-pointed
+     * to the surviving absence so it never references a deleted row. Otherwise, the alert is
+     * resolved (never deleted) exactly as before — PlanningAlert.absence is ON DELETE SET
+     * NULL so history survives even when nothing replaces it.
+     *
+     * @return \App\Entity\PlanningAlert[] the alerts that were actually resolved (excludes
+     *         alerts kept active because of a surviving overlapping absence)
      */
     public function onAbsenceDeleted(Absence $absence): array
     {
-        $resolved = $this->alertService->resolveAllForAbsence($absence, 'Absence supprimée.');
+        $user   = $absence->getUser();
+        $alerts = $this->alertService->findActiveAlertsForAbsence($absence);
+
+        $resolved = [];
+        foreach ($alerts as $alert) {
+            $replacement = $this->findOtherOverlappingAbsence($user, $alert->getMission(), $absence);
+            if ($replacement !== null) {
+                $alert->setAbsence($replacement);
+                continue;
+            }
+            $alert->resolve(null, 'Absence supprimée.');
+            $resolved[] = $alert;
+        }
+
         $this->em->flush();
         return $resolved;
+    }
+
+    /**
+     * Finds another (still-existing) Absence row for the same user that still overlaps the
+     * given mission, excluding the row about to be deleted. Used by onAbsenceDeleted() to
+     * decide whether an alert's underlying problem has actually disappeared.
+     */
+    private function findOtherOverlappingAbsence(?User $user, Mission $mission, Absence $excluding): ?Absence
+    {
+        if ($user === null) {
+            return null;
+        }
+
+        return $this->em->createQuery(
+            'SELECT a FROM App\Entity\Absence a
+             WHERE a.user = :user
+               AND a.id != :excludingId
+               AND a.dateStart <= :missionEnd
+               AND a.dateEnd >= :missionStart
+             ORDER BY a.dateStart ASC'
+        )
+            ->setParameter('user', $user)
+            ->setParameter('excludingId', $excluding->getId())
+            ->setParameter('missionStart', $mission->getStartAt()->format('Y-m-d'))
+            ->setParameter('missionEnd', $mission->getEndAt()->format('Y-m-d'))
+            ->setMaxResults(1)
+            ->getOneOrNullResult();
     }
 
     /** @return array{created: \App\Entity\PlanningAlert[], resolved: \App\Entity\PlanningAlert[], notifications: PlanningAlertRaisedMessage[]} */

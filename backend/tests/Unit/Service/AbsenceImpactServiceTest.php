@@ -40,6 +40,8 @@ class AbsenceImpactServiceTest extends TestCase
     /** Stub return value for the next alertService->createIfNotDuplicate() call. */
     private ?array $nextCreateResult = null;
     private array $activeAlertsForAbsence = [];
+    /** Stub return value for findOtherOverlappingAbsence()'s query (onAbsenceDeleted). */
+    private ?Absence $nextOverlappingAbsence = null;
     /** Managers/admins returned by userRepository->findManagersAndAdmins() — empty by default so tests stay focused. */
     private array $managers = [];
     /** Every message passed to bus->dispatch(), in call order. */
@@ -56,6 +58,7 @@ class AbsenceImpactServiceTest extends TestCase
         $this->overlappingMissions   = [];
         $this->nextCreateResult      = null;
         $this->activeAlertsForAbsence = [];
+        $this->nextOverlappingAbsence = null;
         $this->managers       = [];
         $this->dispatched     = [];
 
@@ -63,7 +66,12 @@ class AbsenceImpactServiceTest extends TestCase
             ->willReturnCallback(function (string $dql): Query {
                 $q = $this->createMock(Query::class);
                 $q->method('setParameter')->willReturnSelf();
+                $q->method('setMaxResults')->willReturnSelf();
+                $isAbsenceOverlapQuery = str_contains($dql, 'FROM App\Entity\Absence');
                 $q->method('getResult')->willReturnCallback(fn () => $this->overlappingMissions);
+                $q->method('getOneOrNullResult')->willReturnCallback(
+                    fn () => $isAbsenceOverlapQuery ? $this->nextOverlappingAbsence : null
+                );
                 return $q;
             });
 
@@ -321,23 +329,52 @@ class AbsenceImpactServiceTest extends TestCase
 
     // ── E. Absence deletion: resolve, never silently delete ──────────────────
 
-    public function test_absence_deleted_resolves_all_its_active_alerts(): void
+    public function test_absence_deleted_resolves_alerts_with_no_surviving_overlapping_absence(): void
     {
         $surgeon = $this->makeUser('surgeon@test.com');
+        $site    = $this->makeSite();
         $absence = $this->makeAbsence($surgeon);
         $alert1  = $this->makeAlert();
+        $alert1->setMission($this->makeMission($surgeon, null, $site, MissionStatus::DRAFT));
         $alert2  = $this->makeAlert();
+        $alert2->setMission($this->makeMission($surgeon, null, $site, MissionStatus::DRAFT));
 
-        $this->alertService->expects($this->once())
-            ->method('resolveAllForAbsence')
-            ->with($absence, $this->isType('string'))
-            ->willReturn([$alert1, $alert2]);
+        $this->activeAlertsForAbsence = [$alert1, $alert2];
+        $this->nextOverlappingAbsence = null; // no other absence covers either mission
 
         $this->em->expects($this->never())->method('remove');
 
         $resolved = $this->makeService()->onAbsenceDeleted($absence);
 
         $this->assertSame([$alert1, $alert2], $resolved);
+        $this->assertSame(\App\Enum\PlanningAlertStatus::RESOLVED, $alert1->getStatus());
+        $this->assertSame(\App\Enum\PlanningAlertStatus::RESOLVED, $alert2->getStatus());
+    }
+
+    /**
+     * D-050 follow-up — the residual gap explicitly called out in that ADR: deleting an
+     * absence must NOT resolve an alert whose mission is still covered by another absence
+     * for the same person (e.g. a range + an isolated day that fell inside it).
+     */
+    public function test_absence_deleted_keeps_alert_active_when_another_absence_still_overlaps_the_mission(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com');
+        $site    = $this->makeSite();
+        $deletedAbsence  = $this->makeAbsence($surgeon);
+        $survivingAbsence = $this->makeAbsence($surgeon);
+
+        $alert = $this->makeAlert();
+        $alert->setMission($this->makeMission($surgeon, null, $site, MissionStatus::DRAFT));
+        $alert->setAbsence($deletedAbsence);
+
+        $this->activeAlertsForAbsence = [$alert];
+        $this->nextOverlappingAbsence = $survivingAbsence;
+
+        $resolved = $this->makeService()->onAbsenceDeleted($deletedAbsence);
+
+        $this->assertSame([], $resolved, 'Alert must not be reported as resolved when another absence still covers its mission');
+        $this->assertSame(\App\Enum\PlanningAlertStatus::OPEN, $alert->getStatus());
+        $this->assertSame($survivingAbsence, $alert->getAbsence(), 'Alert must be re-pointed to the surviving absence');
     }
 
     // ── F. Anti-duplicate (orchestration level — true mechanics tested in PlanningAlertServiceTest) ──

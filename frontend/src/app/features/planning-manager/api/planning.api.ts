@@ -231,6 +231,25 @@ export async function createAbsence(data: {
   return res.data;
 }
 
+/**
+ * "Jours isolés" mode — creates one single-day Absence row (dateStart === dateEnd) per
+ * selected date, sequentially. No new backend endpoint: the model already accepts
+ * dateStart === dateEnd, and every consumer (generator V1/V2, score service, alert engine)
+ * already reads Absence as one-row-per-interval, so N isolated days are just N existing
+ * rows — see docs/decisions.md for the ADR.
+ */
+export async function createIsolatedDayAbsences(data: {
+  userId: number;
+  dates: string[];
+  reason?: string;
+}): Promise<Absence[]> {
+  const created: Absence[] = [];
+  for (const date of data.dates) {
+    created.push(await createAbsence({ userId: data.userId, dateStart: date, dateEnd: date, reason: data.reason }));
+  }
+  return created;
+}
+
 export async function deleteAbsence(id: number): Promise<void> {
   await apiClient.delete(`/api/absences/${id}`);
 }

@@ -135,6 +135,23 @@ final class AbsenceControllerTest extends WebTestCase
         return $m;
     }
 
+    private function makeMissionOnDay(User $surgeon, Hospital $site, string $day): Mission
+    {
+        $m = new Mission();
+        $m->setStatus(MissionStatus::DRAFT);
+        $m->setType(MissionType::BLOCK);
+        $m->setSurgeon($surgeon);
+        $m->setSite($site);
+        $m->setStartAt(new \DateTimeImmutable("{$day} 08:00:00"));
+        $m->setEndAt(new \DateTimeImmutable("{$day} 13:00:00"));
+        $m->setCreatedBy($surgeon);
+        $m->setSchedulePrecision(SchedulePrecision::EXACT);
+        $this->em->persist($m);
+        $this->em->flush();
+        $this->createdIds['missions'][] = $m->getId();
+        return $m;
+    }
+
     private function json(Response $response): array
     {
         return json_decode((string) $response->getContent(), true) ?? [];
@@ -381,6 +398,235 @@ final class AbsenceControllerTest extends WebTestCase
         $mission = $this->em->find(Mission::class, $mission->getId());
         $alerts  = $this->findAlertsForMission($mission);
         self::assertCount(1, $alerts, 'Re-syncing an absence whose range did not change must not create a duplicate alert');
+    }
+
+    // ── Jours isolés (ticket "Support des jours d'absence isolés") ──────────
+    //
+    // The frontend creates one Absence row per isolated day (dateStart === dateEnd) instead
+    // of a single multi-day row. These tests prove the existing model/engine already handles
+    // that pattern correctly with zero entity/migration change.
+
+    #[WithoutErrorHandler]
+    public function test_creating_several_isolated_day_absences_creates_one_row_each_and_each_is_recognized(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        // Three DRAFT missions, one per isolated day the surgeon will declare absent.
+        $missionA = $this->makeMissionOnDay($surgeon, $site, '2026-07-04');
+        $missionB = $this->makeMissionOnDay($surgeon, $site, '2026-07-09');
+        $missionC = $this->makeMissionOnDay($surgeon, $site, '2026-07-18');
+
+        foreach (['2026-07-04', '2026-07-09', '2026-07-18'] as $day) {
+            $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+                'userId' => $surgeon->getId(), 'dateStart' => $day, 'dateEnd' => $day,
+            ]));
+            self::assertSame(201, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+            $absence = $this->json($client->getResponse());
+            $this->createdIds['absences'][] = $absence['id'];
+            self::assertSame($day, $absence['dateStart']);
+            self::assertSame($day, $absence['dateEnd']);
+        }
+
+        $list = $this->em->createQueryBuilder()
+            ->select('a')->from(Absence::class, 'a')
+            ->where('a.user = :u')->setParameter('u', $surgeon)
+            ->getQuery()->getResult();
+        self::assertCount(3, $list, 'Three isolated-day selections must produce three Absence rows');
+
+        $this->em->clear();
+        foreach ([$missionA, $missionB, $missionC] as $mission) {
+            $reloaded = $this->em->find(Mission::class, $mission->getId());
+            $alerts   = $this->findAlertsForMission($reloaded);
+            self::assertCount(1, $alerts, "Mission on {$reloaded->getStartAt()->format('Y-m-d')} must have exactly one alert");
+            self::assertSame('SURGEON_ABSENCE', $alerts[0]->getType()->value);
+        }
+    }
+
+    #[WithoutErrorHandler]
+    public function test_deleting_one_isolated_day_absence_leaves_the_others_intact(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $ids = [];
+        foreach (['2026-07-04', '2026-07-09', '2026-07-18'] as $day) {
+            $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+                'userId' => $surgeon->getId(), 'dateStart' => $day, 'dateEnd' => $day,
+            ]));
+            $absence = $this->json($client->getResponse());
+            $ids[$day] = $absence['id'];
+            $this->createdIds['absences'][] = $absence['id'];
+        }
+
+        $client->request('DELETE', "/api/absences/{$ids['2026-07-09']}", server: $this->auth($token));
+        self::assertSame(204, $client->getResponse()->getStatusCode());
+        $this->createdIds['absences'] = array_values(array_diff($this->createdIds['absences'], [$ids['2026-07-09']]));
+
+        $remaining = $this->em->createQueryBuilder()
+            ->select('a')->from(Absence::class, 'a')
+            ->where('a.user = :u')->setParameter('u', $surgeon)
+            ->orderBy('a.dateStart', 'ASC')
+            ->getQuery()->getResult();
+
+        self::assertCount(2, $remaining);
+        self::assertSame('2026-07-04', $remaining[0]->getDateStart()->format('Y-m-d'));
+        self::assertSame('2026-07-18', $remaining[1]->getDateStart()->format('Y-m-d'));
+    }
+
+    #[WithoutErrorHandler]
+    public function test_mixing_a_range_and_isolated_days_all_are_taken_into_account(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $missionInRange   = $this->makeMissionOnDay($surgeon, $site, '2026-07-05');
+        $missionDay21     = $this->makeMissionOnDay($surgeon, $site, '2026-07-21');
+        $missionDay28     = $this->makeMissionOnDay($surgeon, $site, '2026-07-28');
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-07-01', 'dateEnd' => '2026-07-15',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $this->createdIds['absences'][] = $this->json($client->getResponse())['id'];
+
+        foreach (['2026-07-21', '2026-07-28'] as $day) {
+            $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+                'userId' => $surgeon->getId(), 'dateStart' => $day, 'dateEnd' => $day,
+            ]));
+            self::assertSame(201, $client->getResponse()->getStatusCode());
+            $this->createdIds['absences'][] = $this->json($client->getResponse())['id'];
+        }
+
+        $this->em->clear();
+        foreach ([$missionInRange, $missionDay21, $missionDay28] as $mission) {
+            $reloaded = $this->em->find(Mission::class, $mission->getId());
+            self::assertCount(1, $this->findAlertsForMission($reloaded), "Mission on {$reloaded->getStartAt()->format('Y-m-d')} must be alerted");
+        }
+    }
+
+    /**
+     * Cas 6 — regression test for the PlanningAlertService::findActiveAlert() fix: an
+     * isolated day already covered by an existing range must NOT raise a second alert for
+     * the same mission.
+     */
+    #[WithoutErrorHandler]
+    public function test_isolated_day_already_covered_by_an_existing_range_does_not_duplicate_the_alert(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $mission = $this->makeMissionOnDay($surgeon, $site, '2026-07-09');
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-07-01', 'dateEnd' => '2026-07-15',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $this->createdIds['absences'][] = $this->json($client->getResponse())['id'];
+
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        self::assertCount(1, $this->findAlertsForMission($mission), 'Alert must exist after the range is created');
+
+        // An isolated day already inside the range above, for the same person.
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-07-09', 'dateEnd' => '2026-07-09',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $this->createdIds['absences'][] = $this->json($client->getResponse())['id'];
+
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        $alerts  = $this->findAlertsForMission($mission);
+        self::assertCount(1, $alerts, 'A second overlapping Absence row for the same person must not create a duplicate alert');
+        self::assertSame('OPEN', $alerts[0]->getStatus()->value);
+    }
+
+    /**
+     * D-050 follow-up — deleting the absence that originally raised an alert must not
+     * resolve it if another absence for the same person still overlaps the same mission.
+     * Steps exactly as specified: range → isolated day inside it → delete the range (alert
+     * must stay OPEN, re-pointed to the isolated day) → delete the isolated day too (alert
+     * must now resolve, nothing left covering the mission).
+     */
+    #[WithoutErrorHandler]
+    public function test_deleting_one_of_two_overlapping_absences_keeps_the_alert_open_until_the_last_one_is_gone(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+
+        // 1) Create a mission.
+        $mission = $this->makeMissionOnDay($surgeon, $site, '2026-07-09');
+
+        // 2) Create a range absence that generates the alert.
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-07-01', 'dateEnd' => '2026-07-15',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $rangeAbsenceId = $this->json($client->getResponse())['id'];
+
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        $alerts  = $this->findAlertsForMission($mission);
+        self::assertCount(1, $alerts, 'Alert must exist after the range is created');
+        $alertId = $alerts[0]->getId();
+
+        // 3) Create an overlapping isolated-day absence.
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-07-09', 'dateEnd' => '2026-07-09',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $isolatedDayAbsenceId = $this->json($client->getResponse())['id'];
+
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        self::assertCount(1, $this->findAlertsForMission($mission), 'Still exactly one alert — no duplicate from the second absence');
+
+        // 4) Delete the range absence.
+        $client->request('DELETE', "/api/absences/{$rangeAbsenceId}", server: $this->auth($token));
+        self::assertSame(204, $client->getResponse()->getStatusCode());
+
+        // 5) The alert must remain OPEN — the isolated day still covers the mission.
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        $alerts  = $this->findAlertsForMission($mission);
+        self::assertCount(1, $alerts, 'Alert row must still be the same one, not duplicated');
+        self::assertSame($alertId, $alerts[0]->getId());
+        self::assertSame('OPEN', $alerts[0]->getStatus()->value, 'Alert must stay active: the isolated day still overlaps this mission');
+        self::assertNotNull($alerts[0]->getAbsence(), 'Alert must be re-pointed to the surviving absence, not left dangling');
+        self::assertSame($isolatedDayAbsenceId, $alerts[0]->getAbsence()->getId());
+
+        // 6) Now delete the isolated-day absence too — nothing overlaps the mission anymore.
+        $client->request('DELETE', "/api/absences/{$isolatedDayAbsenceId}", server: $this->auth($token));
+        self::assertSame(204, $client->getResponse()->getStatusCode());
+
+        // 7) The alert must now be resolved.
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        $alerts  = $this->findAlertsForMission($mission);
+        self::assertCount(1, $alerts, 'Alert row must survive, only resolved (never deleted)');
+        self::assertSame($alertId, $alerts[0]->getId());
+        self::assertSame('RESOLVED', $alerts[0]->getStatus()->value);
+        self::assertNull($alerts[0]->getAbsence(), 'absence FK must be SET NULL once nothing replaces it');
+
+        // Clean up the now-resolved alert directly — both absences are already deleted.
+        $this->em->remove($alerts[0]);
+        $this->em->flush();
     }
 
     // ── Unauthorized role rejected ───────────────────────────────────────────

@@ -1,17 +1,20 @@
 import * as React from "react";
 import {
   Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
-  DialogTitle, IconButton, MenuItem, Paper, Select, Stack,
+  DialogTitle, IconButton, MenuItem, Paper, Select, Stack, ToggleButton, ToggleButtonGroup,
   Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
+import CloseIcon from "@mui/icons-material/Close";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  getAbsences, createAbsence, deleteAbsence, type Absence,
+  getAbsences, createAbsence, createIsolatedDayAbsences, deleteAbsence, type Absence,
 } from "../../../features/planning-manager/api/planning.api";
 import { useToast } from "../../../ui/toast/useToast";
 import { apiClient } from "../../../api/apiClient";
+
+type AbsenceMode = "period" | "isolatedDays";
 
 function extractError(err: unknown): string {
   const e = err as any;
@@ -27,11 +30,27 @@ export default function AbsencesPage() {
   const qc = useQueryClient();
 
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [mode, setMode] = React.useState<AbsenceMode>("period");
   const [userId, setUserId] = React.useState<number | "">("");
   const [dateStart, setDateStart] = React.useState(new Date().toISOString().slice(0, 10));
   const [dateEnd, setDateEnd] = React.useState(new Date().toISOString().slice(0, 10));
+  const [isolatedDates, setIsolatedDates] = React.useState<string[]>([]);
+  const [nextIsolatedDate, setNextIsolatedDate] = React.useState(new Date().toISOString().slice(0, 10));
   const [reason, setReason] = React.useState("");
   const [filterUserId, setFilterUserId] = React.useState<number | "">("");
+
+  function addIsolatedDate() {
+    if (!nextIsolatedDate || isolatedDates.includes(nextIsolatedDate)) return;
+    setIsolatedDates((prev) => [...prev, nextIsolatedDate].sort());
+  }
+
+  function removeIsolatedDate(date: string) {
+    setIsolatedDates((prev) => prev.filter((d) => d !== date));
+  }
+
+  function resetCreateForm() {
+    setUserId(""); setReason(""); setIsolatedDates([]); setMode("period");
+  }
 
   const absencesQuery = useQuery({
     queryKey: ["absences", filterUserId],
@@ -52,20 +71,21 @@ export default function AbsencesPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () => createAbsence({
-      userId: userId as number,
-      dateStart,
-      dateEnd,
-      reason: reason.trim() || undefined,
-    }),
-    onSuccess: () => {
-      toast.success("Absence enregistrée");
+    mutationFn: () => mode === "period"
+      ? createAbsence({ userId: userId as number, dateStart, dateEnd, reason: reason.trim() || undefined })
+      : createIsolatedDayAbsences({ userId: userId as number, dates: isolatedDates, reason: reason.trim() || undefined }),
+    onSuccess: (created) => {
+      const count = Array.isArray(created) ? created.length : 1;
+      toast.success(count > 1 ? `${count} absences enregistrées` : "Absence enregistrée");
       qc.invalidateQueries({ queryKey: ["absences"] });
       setCreateOpen(false);
-      setUserId(""); setReason("");
+      resetCreateForm();
     },
     onError: (err) => toast.error(extractError(err)),
   });
+
+  const canSubmitCreate = !!userId && !createMutation.isPending
+    && (mode === "period" ? !!dateStart && !!dateEnd : isolatedDates.length > 0);
 
   const deleteMutation = useMutation({
     mutationFn: deleteAbsence,
@@ -156,7 +176,7 @@ export default function AbsencesPage() {
       )}
 
       {/* Create dialog */}
-      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="xs" fullWidth>
+      <Dialog open={createOpen} onClose={() => { setCreateOpen(false); resetCreateForm(); }} maxWidth="xs" fullWidth>
         <DialogTitle fontWeight={700}>Nouvelle absence</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
@@ -172,18 +192,63 @@ export default function AbsencesPage() {
                 </MenuItem>
               ))}
             </Select>
-            <Stack direction="row" spacing={1}>
-              <TextField
-                label="Du" type="date" value={dateStart}
-                onChange={(e) => setDateStart(e.target.value)}
-                size="small" InputLabelProps={{ shrink: true }} fullWidth
-              />
-              <TextField
-                label="Au" type="date" value={dateEnd}
-                onChange={(e) => setDateEnd(e.target.value)}
-                size="small" InputLabelProps={{ shrink: true }} fullWidth
-              />
-            </Stack>
+
+            <ToggleButtonGroup
+              value={mode}
+              exclusive
+              size="small"
+              onChange={(_, v) => { if (v) setMode(v); }}
+              fullWidth
+            >
+              <ToggleButton value="period">Période</ToggleButton>
+              <ToggleButton value="isolatedDays">Jours isolés</ToggleButton>
+            </ToggleButtonGroup>
+
+            {mode === "period" ? (
+              <Stack direction="row" spacing={1}>
+                <TextField
+                  label="Du" type="date" value={dateStart}
+                  onChange={(e) => setDateStart(e.target.value)}
+                  size="small" InputLabelProps={{ shrink: true }} fullWidth
+                />
+                <TextField
+                  label="Au" type="date" value={dateEnd}
+                  onChange={(e) => setDateEnd(e.target.value)}
+                  size="small" InputLabelProps={{ shrink: true }} fullWidth
+                />
+              </Stack>
+            ) : (
+              <Stack spacing={1}>
+                <Stack direction="row" spacing={1}>
+                  <TextField
+                    label="Ajouter une date" type="date" value={nextIsolatedDate}
+                    onChange={(e) => setNextIsolatedDate(e.target.value)}
+                    size="small" InputLabelProps={{ shrink: true }} fullWidth
+                  />
+                  <Button variant="outlined" onClick={addIsolatedDate} disabled={!nextIsolatedDate || isolatedDates.includes(nextIsolatedDate)}>
+                    Ajouter
+                  </Button>
+                </Stack>
+                {isolatedDates.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Aucun jour ajouté pour le moment.
+                  </Typography>
+                ) : (
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    {isolatedDates.map((date) => (
+                      <Chip
+                        key={date}
+                        label={new Date(date + "T00:00:00").toLocaleDateString("fr-BE")}
+                        onDelete={() => removeIsolatedDate(date)}
+                        deleteIcon={<CloseIcon fontSize="small" />}
+                        size="small"
+                      />
+                    ))}
+                  </Stack>
+                )}
+              </Stack>
+            )}
+
             <TextField
               label="Motif (optionnel)" value={reason}
               onChange={(e) => setReason(e.target.value)}
@@ -193,11 +258,11 @@ export default function AbsencesPage() {
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setCreateOpen(false)} color="inherit">Annuler</Button>
+          <Button onClick={() => { setCreateOpen(false); resetCreateForm(); }} color="inherit">Annuler</Button>
           <Button
             variant="contained" disableElevation
             onClick={() => createMutation.mutate()}
-            disabled={!userId || !dateStart || !dateEnd || createMutation.isPending}
+            disabled={!canSubmitCreate}
           >
             {createMutation.isPending ? <CircularProgress size={16} /> : "Enregistrer"}
           </Button>

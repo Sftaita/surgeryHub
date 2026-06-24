@@ -1777,6 +1777,75 @@ sites via l'endpoint de suppression sans qu'aucune garde n'existe.
 
 ---
 
+## D-050 — Absences "jours isolés" : N lignes `Absence` d'un jour, pas de nouveau champ
+
+Date : 2026-06-24
+
+### Décision
+
+Pour permettre de déclarer des jours isolés (ex. 04/07, 09/07, 18/07) en plus des périodes
+continues existantes, **le modèle `Absence` (`dateStart`/`dateEnd`) n'est pas modifié**. Le
+frontend crée une ligne `Absence` par jour isolé sélectionné, avec `dateStart === dateEnd` —
+un cas déjà accepté par l'API et déjà traité correctement par tous les services métier.
+
+Options écartées : ajouter un champ `dates: json`, ou un `absence_type` — rejetées car une
+revue complète montre que `PlanningGeneratorService` (V1), `PlanningGeneratorServiceV2`,
+`PlanningScoreService` et `AbsenceImpactService` chargent déjà les absences comme des **listes
+d'intervalles par utilisateur** (`loadAbsencesMap()` → `[userId => [[start,end], ...]]`), sans
+jamais supposer une seule ligne par personne. Le besoin "jours isolés" est donc un cas
+particulier déjà supporté, pas un besoin de modèle.
+
+### Implémentation
+
+- **Frontend** : `planning.api.ts` expose `createIsolatedDayAbsences({userId, dates, reason})`
+  qui boucle `createAbsence()` une fois par date (séquentiel, par cohérence avec le pattern déjà
+  utilisé pour la génération multi-mois de Planning V2). `AbsencesPage.tsx` ajoute un toggle
+  **Période / Jours isolés** : le premier mode garde le comportement `Du/Au` existant inchangé ;
+  le second affiche des chips de dates ajoutables/retirables.
+- **Backend correctif ciblé** : `PlanningAlertService::findActiveAlert()` déduplique
+  désormais sur `(mission, type)` au lieu de `(mission, type, absence)`. Défaut préexistant
+  trouvé lors de l'analyse : deux lignes `Absence` différentes qui se recouvrent pour la même
+  personne sur la même `Mission` (ex. une période + un jour isolé déjà inclus dedans) créaient
+  une alerte en double, car l'ancienne clé incluait la ligne `Absence` exacte. `absence` reste
+  stocké sur l'alerte à titre d'attribution/traçabilité, mais ne fait plus partie de la clé
+  d'unicité logique.
+- **Aucune migration**, aucune entité modifiée, aucun générateur V1/V2 modifié.
+
+### Limite connue — traitée (suivi du 2026-06-24)
+
+La limite initialement documentée ici (suppression d'une absence qui résolvait l'alerte même
+si une autre absence chevauchante existait encore pour la même personne) est corrigée :
+`AbsenceImpactService::onAbsenceDeleted()` n'appelle plus
+`PlanningAlertService::resolveAllForAbsence()` sans condition. Pour chaque alerte liée à
+l'absence supprimée, une requête `findOtherOverlappingAbsence(user, mission, excluding)`
+vérifie si une **autre** ligne `Absence` du même utilisateur couvre encore la mission de
+l'alerte :
+- si oui → l'alerte reste `OPEN`, simplement **re-pointée** (`PlanningAlert.absence`) vers
+  l'absence survivante, pour ne jamais référencer une ligne supprimée ;
+- si non → comportement inchangé : l'alerte est résolue (jamais supprimée).
+
+Toujours **zéro migration, zéro modification d'entité** — `findOtherOverlappingAbsence()` est
+une requête DQL supplémentaire dans `AbsenceImpactService`, au même endroit que
+`findOverlappingMissions()`. `PlanningAlertService::resolveAllForAbsence()` reste disponible
+(testé en isolation) mais n'est plus appelée par ce chemin.
+
+Test fonctionnel dédié (réel, DB) : `AbsenceControllerTest::test_deleting_one_of_two_overlapping_absences_keeps_the_alert_open_until_the_last_one_is_gone`
+— mission → absence période (alerte créée) → absence jour isolé chevauchante (pas de
+doublon) → suppression de la période (alerte reste `OPEN`, re-pointée vers le jour isolé) →
+suppression du jour isolé (alerte enfin résolue).
+
+### Garde-fous
+
+- Comportement des absences déjà en production strictement inchangé (une période = toujours
+  une seule ligne, comme avant).
+- Tous les tests existants (`AbsenceControllerTest`, `AbsenceImpactServiceTest`,
+  `PlanningAlertServiceTest`, suites V1/V2) restent verts ; l'unique test modifié
+  (`test_absence_deleted_resolves_all_its_active_alerts` → renommé
+  `test_absence_deleted_resolves_alerts_with_no_surviving_overlapping_absence`) l'est pour
+  refléter le nouveau chemin d'appel, pas pour affaiblir l'assertion.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -1824,3 +1893,4 @@ sites via l'endpoint de suppression sans qu'aucune garde n'existe.
 | 19-06-2026 | D-047 — Remember me / session persistante |
 | 22-06-2026 | D-048 — Planning V2 : bascule UI (cutover) et désactivation de la navigation V1 |
 | 23-06-2026 | D-049 — Règles d'affiliation aux sites par rôle métier |
+| 24-06-2026 | D-050 — Absences "jours isolés" : N lignes `Absence` d'un jour, pas de nouveau champ |

@@ -28,12 +28,17 @@ class PlanningAlertService
     ) {}
 
     /**
-     * Returns the existing OPEN/ACKNOWLEDGED alert for this exact (mission, type, absence)
-     * combination, if one already exists — the anti-duplicate guard.
+     * Returns the existing OPEN/ACKNOWLEDGED alert for this (mission, type) combination, if
+     * one already exists — the anti-duplicate guard.
+     *
+     * Deliberately does NOT key on `absence`: a single Mission can be covered by more than
+     * one Absence row for the same person (e.g. a continuous range plus an isolated day that
+     * falls inside it) and must still only ever raise one alert. `$absence` is kept as a
+     * parameter purely so callers can attribute/snapshot the triggering row on first creation.
      */
     public function findActiveAlert(Mission $mission, PlanningAlertType $type, ?Absence $absence): ?PlanningAlert
     {
-        $qb = $this->em->createQueryBuilder()
+        return $this->em->createQueryBuilder()
             ->select('a')
             ->from(PlanningAlert::class, 'a')
             ->where('a.mission = :mission')
@@ -41,15 +46,9 @@ class PlanningAlertService
             ->andWhere('a.status IN (:openStatuses)')
             ->setParameter('mission', $mission)
             ->setParameter('type', $type)
-            ->setParameter('openStatuses', [PlanningAlertStatus::OPEN, PlanningAlertStatus::ACKNOWLEDGED]);
-
-        if ($absence !== null) {
-            $qb->andWhere('a.absence = :absence')->setParameter('absence', $absence);
-        } else {
-            $qb->andWhere('a.absence IS NULL');
-        }
-
-        return $qb->getQuery()->getOneOrNullResult();
+            ->setParameter('openStatuses', [PlanningAlertStatus::OPEN, PlanningAlertStatus::ACKNOWLEDGED])
+            ->getQuery()
+            ->getOneOrNullResult();
     }
 
     /**

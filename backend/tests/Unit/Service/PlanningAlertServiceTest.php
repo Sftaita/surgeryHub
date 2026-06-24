@@ -166,6 +166,34 @@ class PlanningAlertServiceTest extends TestCase
         $this->assertCount(1, $this->persisted, 'Re-running impact detection on the same absence must not create a second identical alert');
     }
 
+    /**
+     * Cas 6 (jours isolés) — a continuous range and an isolated day that falls inside it are
+     * two DIFFERENT Absence rows for the same person. Both can overlap the same Mission.
+     * The anti-duplicate guard must key on (mission, type) only, not (mission, type, absence),
+     * otherwise the second row's sync() would not see the first row's alert and would create
+     * a duplicate.
+     */
+    public function test_create_if_not_duplicate_treats_two_different_absences_over_same_mission_as_duplicate(): void
+    {
+        $mission       = $this->makeMission();
+        $rangeAbsence  = $this->makeAbsence();
+        $isolatedDayAbsence = $this->makeAbsence();
+        $service = $this->makeService();
+
+        $this->nextResult = null; // nothing alerted yet
+        $first = $service->createIfNotDuplicate($mission, PlanningAlertType::SURGEON_ABSENCE, $rangeAbsence, []);
+        $this->assertTrue($first['created']);
+
+        // The isolated-day absence is a different row, but the query layer would now find
+        // the alert created above (same mission/type) — simulate that real-DB behavior.
+        $this->nextResult = $first['alert'];
+        $second = $service->createIfNotDuplicate($mission, PlanningAlertType::SURGEON_ABSENCE, $isolatedDayAbsence, []);
+
+        $this->assertFalse($second['created'], 'A second Absence row overlapping the same mission must not raise a duplicate alert');
+        $this->assertSame($first['alert'], $second['alert']);
+        $this->assertCount(1, $this->persisted);
+    }
+
     // ── Resolution (sections D/E) ────────────────────────────────────────────
 
     public function test_resolve_all_for_absence_resolves_without_deleting(): void

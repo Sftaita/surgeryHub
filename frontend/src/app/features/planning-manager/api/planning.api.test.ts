@@ -1,6 +1,12 @@
-import { describe, it, expect } from "vitest";
-import { userName, SPECIALTIES, DAY_LABELS } from "./planning.api";
-import type { UserRef } from "./planning.api";
+import { describe, it, expect, vi } from "vitest";
+
+vi.mock("../../../api/apiClient", () => ({
+  apiClient: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
+}));
+
+import { userName, SPECIALTIES, DAY_LABELS, createIsolatedDayAbsences } from "./planning.api";
+import type { UserRef, Absence } from "./planning.api";
+import { apiClient } from "../../../api/apiClient";
 
 describe("userName()", () => {
   it("returns trimmed first+last name when both are set", () => {
@@ -51,5 +57,40 @@ describe("DAY_LABELS", () => {
   it("maps ISO day numbers correctly", () => {
     expect(DAY_LABELS[1]).toBe("Lundi");
     expect(DAY_LABELS[7]).toBe("Dimanche");
+  });
+});
+
+describe("createIsolatedDayAbsences() — Cas 3 (jours isolés)", () => {
+  function makeAbsence(date: string): Absence {
+    return {
+      id: Math.random(),
+      user: { id: 1, email: "x@test.com" },
+      dateStart: date, dateEnd: date, reason: null, createdAt: "2026-06-24T00:00:00Z",
+    };
+  }
+
+  it("creates one Absence per date with dateStart === dateEnd, sequentially", async () => {
+    const posted = vi.mocked(apiClient.post);
+    posted.mockImplementation(async (_url, body: any) => ({ data: makeAbsence(body.dateStart) }));
+
+    const result = await createIsolatedDayAbsences({ userId: 7, dates: ["2026-07-04", "2026-07-09", "2026-07-18"] });
+
+    expect(posted).toHaveBeenCalledTimes(3);
+    expect(posted.mock.calls.map((c) => c[1])).toEqual([
+      { userId: 7, dateStart: "2026-07-04", dateEnd: "2026-07-04", reason: undefined },
+      { userId: 7, dateStart: "2026-07-09", dateEnd: "2026-07-09", reason: undefined },
+      { userId: 7, dateStart: "2026-07-18", dateEnd: "2026-07-18", reason: undefined },
+    ]);
+    expect(result.map((a) => a.dateStart)).toEqual(["2026-07-04", "2026-07-09", "2026-07-18"]);
+  });
+
+  it("returns an empty array for no dates without calling the API", async () => {
+    const posted = vi.mocked(apiClient.post);
+    posted.mockClear();
+
+    const result = await createIsolatedDayAbsences({ userId: 7, dates: [] });
+
+    expect(result).toEqual([]);
+    expect(posted).not.toHaveBeenCalled();
   });
 });
