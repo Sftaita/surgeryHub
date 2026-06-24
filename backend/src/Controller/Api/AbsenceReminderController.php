@@ -99,7 +99,10 @@ class AbsenceReminderController extends AbstractController
     {
         $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
 
-        $data    = json_decode($request->getContent(), true) ?? [];
+        $data = $this->decodeJsonBody($request);
+        if ($data === false) {
+            return $this->json(['error' => 'Corps de requête JSON invalide.'], 400);
+        }
         $message = trim((string) ($data['message'] ?? '')) ?: self::DEFAULT_REQUEST_MESSAGE;
         $userIds = $this->extractUserIds($data);
 
@@ -132,7 +135,10 @@ class AbsenceReminderController extends AbstractController
     {
         $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
 
-        $data    = json_decode($request->getContent(), true) ?? [];
+        $data = $this->decodeJsonBody($request);
+        if ($data === false) {
+            return $this->json(['error' => 'Corps de requête JSON invalide.'], 400);
+        }
         $message = trim((string) ($data['message'] ?? '')) ?: self::DEFAULT_CONFIRM_MESSAGE;
         $userIds = $this->extractUserIds($data);
 
@@ -154,6 +160,27 @@ class AbsenceReminderController extends AbstractController
             'sent'  => true,
             'count' => $sentCount,
         ]);
+    }
+
+    /**
+     * Returns the decoded body, or `false` if the body is present but not valid JSON. An
+     * empty body is treated as `[]` (defaults apply) — only genuinely malformed JSON must be
+     * rejected, never silently treated as "no filter, send to everyone".
+     *
+     * @return array<string, mixed>|false
+     */
+    private function decodeJsonBody(Request $request): array|false
+    {
+        $raw = $request->getContent();
+        if ($raw === '') {
+            return [];
+        }
+        $data = json_decode($raw, true);
+        if (!is_array($data)) {
+            return false;
+        }
+
+        return $data;
     }
 
     /** @return list<int>|null null means "no filter — everyone in scope". */

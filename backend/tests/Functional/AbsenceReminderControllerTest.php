@@ -129,6 +129,43 @@ final class AbsenceReminderControllerTest extends WebTestCase
         self::assertSame(403, $client->getResponse()->getStatusCode());
     }
 
+    #[WithoutErrorHandler]
+    public function test_request_missing_rejects_malformed_json_instead_of_sending_to_everyone(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+        $this->makeUser('ROLE_INSTRUMENTIST'); // would be eligible — must NOT receive anything
+
+        /** @var InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+
+        $client->request('POST', '/api/planning/absences/request-missing', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: '{not valid json');
+
+        self::assertSame(400, $client->getResponse()->getStatusCode());
+        self::assertCount(0, $transport->getSent(), 'Malformed JSON must never fall back to "send to everyone"');
+    }
+
+    #[WithoutErrorHandler]
+    public function test_confirm_encoded_rejects_malformed_json_instead_of_sending_to_everyone(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        /** @var InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+
+        $client->request('POST', '/api/planning/absences/confirm-encoded', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: '{not valid json');
+
+        self::assertSame(400, $client->getResponse()->getStatusCode());
+        self::assertCount(0, $transport->getSent(), 'Malformed JSON must never fall back to "send to everyone"');
+    }
+
     // ── request-missing — one INDIVIDUAL email per selected person, to their own address ──
 
     #[WithoutErrorHandler]

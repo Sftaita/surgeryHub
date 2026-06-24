@@ -2249,7 +2249,7 @@ restreindre l'envoi à une sélection (absent = tout le monde dans le périmètr
 
 **AuthZ :** `MANAGER` / `ADMIN`
 
-**Body JSON (optionnel) :** `{ "message": "Texte personnalisé", "userIds": [12, 18] }` — `message` absent → message par défaut backend (explique qu'aucun congé n'est encodé et invite à répondre à `boost.conge@gmail.com`). `userIds` absent → toutes les personnes sans absence sur la période.
+**Body JSON (optionnel) :** `{ "message": "Texte personnalisé", "userIds": [12, 18] }` — `message` absent → message par défaut backend (explique qu'aucun congé n'est encodé et invite à répondre à `boost.conge@gmail.com`). `userIds` absent (champ non présent dans un JSON valide) → toutes les personnes sans absence sur la période. **Si le body n'est pas un JSON valide → 400**, jamais de fallback silencieux vers "tout le monde".
 
 **Effet :** dispatch d'**un `SendTemplatedEmailMessage` par personne sélectionnée**, à sa propre
 adresse (jamais vers `boost.conge@gmail.com`, qui n'apparaît que comme texte dans le message).
@@ -2266,7 +2266,7 @@ Enregistre un `UserAuditEvent` (`ABSENCES_REQUEST_SENT`, `targetUser` null,
 
 **AuthZ :** `MANAGER` / `ADMIN`
 
-**Body JSON (optionnel) :** `{ "message": "Texte personnalisé", "userIds": [12, 18] }` — `userIds` absent → toutes les personnes avec au moins une absence future.
+**Body JSON (optionnel) :** `{ "message": "Texte personnalisé", "userIds": [12, 18] }` — `userIds` absent (champ non présent dans un JSON valide) → toutes les personnes avec au moins une absence future. **Si le body n'est pas un JSON valide → 400**, jamais de fallback silencieux vers "tout le monde".
 
 **Effet :** dispatch d'**un `SendTemplatedEmailMessage` par personne sélectionnée**, à sa propre
 adresse, contenant **tous ses congés futurs** (`dateEnd >= aujourd'hui`, sans plafond de 3
