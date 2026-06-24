@@ -15,11 +15,15 @@ Voir aussi : [`docs/backup-and-restore.md`](backup-and-restore.md) · [`docs/pro
 
 ## Version actuelle de production
 
-**Dernier tag déployé : voir `git tag -l 'v*-prod' --sort=-creatordate | head -1`.**
-Ne jamais supposer la version sans vérifier — voir
-[`docs/deployment-versioning.md`](deployment-versioning.md) §2.2 pour la
-procédure de vérification réelle (le tag seul ne suffit pas, il faut un
-marqueur de fichier confirmé sur le serveur).
+**Dernier tag déployé : `v2026.06.24-prod` → commit `bae8ec1`.**
+Vérifié le 2026-06-24 par marqueur de fichier réel sur le serveur (pas
+seulement par le tag — voir [`docs/deployment-versioning.md`](deployment-versioning.md)
+§2.2). Pour confirmer à tout moment :
+
+```bash
+git tag -l 'v*-prod' --sort=-creatordate | head -1
+ssh surgicalhub-prod "grep -n 'does NOT key on' /opt/stack/apps/surgicalhub/src/backend/src/Service/PlanningAlertService.php"
+```
 
 ### Historique des versions déployées
 
@@ -28,7 +32,7 @@ réécrire une ligne existante — c'est un historique._
 
 | Tag | Commit | Date | Notes |
 |---|---|---|---|
-| _(à créer)_ | `bae8ec1` | 2026-06-24 | Lot absences isolées + alertes chevauchantes + rattrapage Planning V2 launch (8296e70) et règles site-membership (eb1fa15). Déployé et validé par tests santé ; tag pas encore créé/poussé au moment de la rédaction — voir §7 de `deployment-versioning.md`. |
+| `v2026.06.24-prod` | `bae8ec1` | 2026-06-24 | Lot absences isolées + alertes chevauchantes + rattrapage Planning V2 launch (8296e70) et règles site-membership (eb1fa15). Tag annoté créé et poussé sur `origin` après validation des tests santé. Le commit doc `9e926f6` (ajout de `deployment-versioning.md`) a été poussé sur `main` ensuite mais n'est **pas** déployé sur le serveur — le tag pointe volontairement sur `bae8ec1`, pas sur `HEAD`. |
 
 ---
 
