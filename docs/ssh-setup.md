@@ -12,18 +12,23 @@ ni dans le repo.**
 ssh deploy@187.124.55.15
 ```
 
-Clé publique autorisée (`~deploy/.ssh/authorized_keys` sur le serveur) :
+Clés publiques autorisées (`~deploy/.ssh/authorized_keys` sur le serveur) :
 
 ```
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMDcVFk8oihxXDhVj+iKUTAytqwBhRXSuL/ZsFTL5rW5 samy.ftaita89@gmail.com
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN11NuB3Lv0viPPzy+vKUMf6NcJEyoBzHFhOcLFV89Xw samy@surgicalhub.be
 ```
 
-Alias `~/.ssh/config` pratique (optionnel) :
+La seconde a été ajoutée le 2026-06-24 pour permettre les déploiements assistés
+(clé privée locale `~/.ssh/surgicalhub_prod`).
+
+Alias `~/.ssh/config` pratique (déjà configuré) :
 
 ```text
 Host surgicalhub-prod
   HostName 187.124.55.15
   User deploy
+  IdentityFile ~/.ssh/surgicalhub_prod
 ```
 
 Ensuite : `ssh surgicalhub-prod` suffit.
