@@ -76,6 +76,78 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
         $this->assertStringContainsString('Carla', $html);
     }
 
+    public function test_absences_request_missing_email_renders(): void
+    {
+        $instr = $this->makeUser('instr@test.com', 'Carla');
+        $instr->setRoles(['ROLE_INSTRUMENTIST']);
+        $instr->setLastname('Dupont');
+
+        $html = $this->twig()->render('emails/absences_request_missing.html.twig', [
+            'user'    => $instr,
+            'greeting' => 'Bonjour Carla',
+            'message' => 'Merci de nous transmettre vos congés à boost.conge@gmail.com.',
+        ]);
+
+        $this->assertStringContainsString('Bonjour Carla,', $html);
+        $this->assertStringContainsString('Merci de nous transmettre vos congés à boost.conge@gmail.com.', $html);
+        // boost.conge@gmail.com only ever appears as plain text inside the message — never
+        // as a structural/recipient element of the template itself.
+        $this->assertSame(1, substr_count($html, 'boost.conge@gmail.com'));
+    }
+
+    public function test_absences_confirm_encoded_email_renders(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', 'Alice');
+        $surgeon->setRoles(['ROLE_SURGEON']);
+        $surgeon->setLastname('Martin');
+
+        $absence = new \App\Entity\Absence();
+        $absence->setUser($surgeon);
+        $absence->setDateStart(new \DateTimeImmutable('2026-09-10'));
+        $absence->setDateEnd(new \DateTimeImmutable('2026-09-15'));
+        $absence->setCreatedBy($surgeon);
+
+        $message = 'Voici le récapitulatif. À terme, cette confirmation se fera directement via votre espace SurgicalHub.';
+        $html = $this->twig()->render('emails/absences_confirm_encoded.html.twig', [
+            'user'    => $surgeon,
+            'greeting' => 'Bonjour Dr Martin',
+            'absences' => [$absence],
+            'message' => $message,
+        ]);
+
+        $this->assertStringContainsString('Bonjour Dr Martin,', $html);
+        // Period format: "01/07/2026 → 15/07/2026" — never "du ... au ...".
+        $this->assertStringContainsString('10/09/2026 → 15/09/2026', $html);
+        $this->assertStringNotContainsString('du 10/09/2026', $html);
+        $this->assertStringContainsString($message, $html);
+        // The template must never repeat a "à terme..." note of its own — the message is the
+        // single source for that sentence (regression guard for the duplicated-text bug).
+        $this->assertSame(1, substr_count($html, 'À terme'));
+    }
+
+    public function test_absences_confirm_encoded_email_renders_isolated_day_without_arrow(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', 'Alice');
+        $surgeon->setRoles(['ROLE_SURGEON']);
+        $surgeon->setLastname('Martin');
+
+        $isolatedDay = new \App\Entity\Absence();
+        $isolatedDay->setUser($surgeon);
+        $isolatedDay->setDateStart(new \DateTimeImmutable('2026-07-07'));
+        $isolatedDay->setDateEnd(new \DateTimeImmutable('2026-07-07'));
+        $isolatedDay->setCreatedBy($surgeon);
+
+        $html = $this->twig()->render('emails/absences_confirm_encoded.html.twig', [
+            'user'    => $surgeon,
+            'greeting' => 'Bonjour Dr Martin',
+            'absences' => [$isolatedDay],
+            'message' => 'Récapitulatif.',
+        ]);
+
+        $this->assertStringContainsString('07/07/2026', $html);
+        $this->assertStringNotContainsString('07/07/2026 →', $html, 'An isolated day must render as a single date, never with an arrow range');
+    }
+
     public function test_planning_change_summary_surgeon_email_renders(): void
     {
         $html = $this->twig()->render('emails/planning_change_summary_surgeon.html.twig', [

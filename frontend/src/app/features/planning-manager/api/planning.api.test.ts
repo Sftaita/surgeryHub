@@ -64,7 +64,7 @@ describe("createIsolatedDayAbsences() — Cas 3 (jours isolés)", () => {
   function makeAbsence(date: string): Absence {
     return {
       id: Math.random(),
-      user: { id: 1, email: "x@test.com" },
+      user: { id: 1, email: "x@test.com", role: "INSTRUMENTIST" },
       dateStart: date, dateEnd: date, reason: null, createdAt: "2026-06-24T00:00:00Z",
     };
   }

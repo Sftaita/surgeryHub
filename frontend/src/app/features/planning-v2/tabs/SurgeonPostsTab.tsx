@@ -25,7 +25,7 @@ import type { SearchableOption } from "../components/SearchableSelect";
 import { ExceptionsSheet } from "../components/ExceptionsSheet";
 import { EndingSoonAlertCard } from "../components/EndingSoonAlertCard";
 import { isEndingSoon, findEndingSoonPosts } from "../api/endingSoon";
-import { avatarColorFor, initialsFor } from "../api/avatarColor";
+import { avatarColorFor, initialsFor } from "../../../ui/avatar/avatarColor";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 
 type Layout = "split" | "cards" | "rows";

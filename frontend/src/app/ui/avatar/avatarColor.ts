@@ -1,5 +1,5 @@
 // Deterministic avatar color derived from a name/email — same person always gets the
-// same color across sidebar, cards, and reassign modal without server-side storage.
+// same color across the app without server-side storage.
 const PALETTE: Array<{ bg: string; fg: string }> = [
   { bg: "#EDF4FF", fg: "#1B5FD0" },
   { bg: "#FEF6E7", fg: "#B7791F" },

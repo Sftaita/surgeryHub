@@ -2148,7 +2148,7 @@ Utilisé notamment pour les déplacements drag & drop (changement de `dayOfWeek`
 | Champ | Type | Description |
 |---|---|---|
 | `id` | int | Identifiant |
-| `user` | object | `{ id, firstname, lastname, email, specialties[] }` |
+| `user` | object | `{ id, name, firstname, lastname, email, role }` — `role` est `INSTRUMENTIST`\|`SURGEON`\|`null` (D-051) |
 | `dateStart` | string | `YYYY-MM-DD` |
 | `dateEnd` | string | `YYYY-MM-DD` |
 | `reason` | string\|null | Motif libre |
@@ -2196,6 +2196,91 @@ Utilisé notamment pour les déplacements drag & drop (changement de `dayOfWeek`
 **AuthZ :** `MANAGER` / `ADMIN`
 
 **Réponse — 204 :** Pas de corps
+
+---
+
+### 26.3b Relances congés manager (D-051)
+
+Cible : instrumentistes + chirurgiens actifs uniquement. **Les deux actions envoient
+désormais un email individuel par personne sélectionnée, à sa propre adresse — jamais à
+`boost.conge@gmail.com`** (cette adresse n'apparaît plus que comme texte dans le message de
+`request-missing`, invitant son destinataire à y répondre).
+
+Chaque email commence par une salutation personnalisée (rendue par le template, jamais par le
+texte éditable) : « Bonjour Dr {nom} » pour un chirurgien, « Bonjour {prénom} » pour un
+instrumentiste.
+
+**Périodes — différentes selon l'action, calculées côté backend uniquement :**
+- `request-missing` → sélection bornée à aujourd'hui → aujourd'hui + 3 mois (qui n'a *rien*
+  d'encodé sur cette fenêtre).
+- `confirm-encoded` → **tous les congés futurs, sans plafond de 3 mois** (`dateEnd >=
+  aujourd'hui` uniquement).
+
+Les deux endpoints `POST` acceptent un `userIds: number[]` optionnel dans le body pour
+restreindre l'envoi à une sélection (absent = tout le monde dans le périmètre).
+
+#### `GET /api/planning/absences/missing-preview`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Réponse — 200 :**
+
+```json
+{ "count": 3, "people": [{ "id": 12, "name": "Jean Martin", "email": "...", "role": "SURGEON" }] }
+```
+
+#### `GET /api/planning/absences/encoded-preview`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Réponse — 200 :**
+
+```json
+{
+  "count": 2,
+  "groups": [{
+    "user": { "id": 12, "name": "Jean Martin", "email": "...", "role": "SURGEON" },
+    "absences": [{ "dateStart": "2026-09-10", "dateEnd": "2026-09-15", "reason": null }]
+  }]
+}
+```
+
+#### `POST /api/planning/absences/request-missing`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Body JSON (optionnel) :** `{ "message": "Texte personnalisé", "userIds": [12, 18] }` — `message` absent → message par défaut backend (explique qu'aucun congé n'est encodé et invite à répondre à `boost.conge@gmail.com`). `userIds` absent → toutes les personnes sans absence sur la période.
+
+**Effet :** dispatch d'**un `SendTemplatedEmailMessage` par personne sélectionnée**, à sa propre
+adresse (jamais vers `boost.conge@gmail.com`, qui n'apparaît que comme texte dans le message).
+Enregistre un `UserAuditEvent` (`ABSENCES_REQUEST_SENT`, `targetUser` null,
+`payload.count` = nombre d'emails individuels envoyés).
+
+**Réponse — 200 :**
+
+```json
+{ "sent": true, "count": 3 }
+```
+
+#### `POST /api/planning/absences/confirm-encoded`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Body JSON (optionnel) :** `{ "message": "Texte personnalisé", "userIds": [12, 18] }` — `userIds` absent → toutes les personnes avec au moins une absence future.
+
+**Effet :** dispatch d'**un `SendTemplatedEmailMessage` par personne sélectionnée**, à sa propre
+adresse, contenant **tous ses congés futurs** (`dateEnd >= aujourd'hui`, sans plafond de 3
+mois) — jamais vers `boost.conge@gmail.com`. Enregistre un `UserAuditEvent`
+(`ABSENCES_CONFIRMATION_SENT`, `payload.count` = nombre d'emails individuels envoyés).
+
+**Réponse — 200 :**
+
+```json
+{ "sent": true, "count": 2 }
+```
+
+Aucune des deux réponses n'a de champ `recipient` — il y a toujours N destinataires
+individuels, jamais une adresse unique.
 
 ---
 

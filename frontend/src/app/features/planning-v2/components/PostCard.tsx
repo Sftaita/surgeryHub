@@ -10,7 +10,7 @@ import type { SurgeonSchedulePostV2 } from "../api/planningV2.types";
 import { summarizeRecurrence } from "../api/planningV2.types";
 import { isEndingSoon, formatEndingSoonLabel } from "../api/endingSoon";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
-import { avatarColorFor, initialsFor } from "../api/avatarColor";
+import { Avatar } from "../../../ui/avatar/Avatar";
 
 const PERIOD_LABELS: Record<string, string> = { MATIN: "Matin", APRES_MIDI: "Après-midi", JOURNEE: "Journée" };
 const PERIOD_HOURS: Record<string, string> = { MATIN: "08h–13h", APRES_MIDI: "13h–18h", JOURNEE: "08h–18h" };
@@ -99,7 +99,7 @@ export function PostCard({ post, variant = "card", onEdit, onToggleActive, onMan
         </Stack>
         <Stack direction="row" spacing={1.1} alignItems="center" sx={{ color: planningV2Colors.textBody, fontSize: 12.5 }}>
           <RepeatOutlinedIcon sx={{ fontSize: 14, color: planningV2Colors.textSecondary }} />
-          <span>{summarizeRecurrence(post.recurrence, post.startDate)}</span>
+          <span>{summarizeRecurrence(post.recurrence)}</span>
         </Stack>
         {post.recurrence.frequency === "WEEKLY" && (
           <Stack direction="row" spacing={1.1} alignItems="center" sx={{ color: planningV2Colors.textBody, fontSize: 12.5 }}>
@@ -129,16 +129,7 @@ export function PostCard({ post, variant = "card", onEdit, onToggleActive, onMan
         <Stack direction="row" alignItems="center" spacing={1} sx={{ minWidth: 0 }}>
           {post.instrumentist ? (
             <>
-              <Box
-                sx={{
-                  width: 24, height: 24, borderRadius: "999px", flex: "none",
-                  bgcolor: avatarColorFor(post.instrumentist.name ?? post.instrumentist.email).bg,
-                  color: avatarColorFor(post.instrumentist.name ?? post.instrumentist.email).fg,
-                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700,
-                }}
-              >
-                {initialsFor(post.instrumentist.name ?? post.instrumentist.email)}
-              </Box>
+              <Avatar name={post.instrumentist.name ?? post.instrumentist.email} />
               <Typography noWrap sx={{ fontSize: 12.5, fontWeight: 600, color: planningV2Colors.textStrong }}>
                 {post.instrumentist.name ?? post.instrumentist.email}
               </Typography>

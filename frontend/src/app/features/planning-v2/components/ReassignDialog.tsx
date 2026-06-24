@@ -8,7 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import type { PlanningAlertV2 } from "../api/planningV2.types";
 import { getEligibleInstrumentists, extractErrorV2 } from "../api/planningV2.api";
-import { avatarColorFor, initialsFor } from "../api/avatarColor";
+import { avatarColorFor, initialsFor } from "../../../ui/avatar/avatarColor";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 
 type View = "list" | "compare";

@@ -1846,6 +1846,109 @@ suppression du jour isolé (alerte enfin résolue).
 
 ---
 
+## D-051 — Relances congés manager : preview backend, destinataires différenciés, audit sans cible unique
+
+Date : 2026-06-24 (amendé deux fois le 2026-06-24 — voir historique des corrections en fin de section)
+
+### Décision (état final)
+
+Les **deux** actions manager envoient désormais **un email individuel par personne
+sélectionnée, à sa propre adresse** — jamais à une adresse fixe. `boost.conge@gmail.com`
+n'apparaît plus *nulle part* comme destinataire réel ; c'est uniquement un bout de texte dans
+le message de "Demander les congés", invitant son destinataire à y répondre directement.
+
+- **"Demander les congés"** : sélection = instrumentistes/chirurgiens actifs **sans aucune
+  absence chevauchant aujourd'hui → +3 mois**. Le message dit qu'aucun congé n'est encodé,
+  demande de répondre à `boost.conge@gmail.com`, et annonce la future fonctionnalité in-app.
+- **"Confirmer les congés encodés"** : sélection = instrumentistes/chirurgiens actifs **avec au
+  moins une absence future**. L'email contient **tous** les congés futurs de la personne
+  (`dateEnd >= aujourd'hui`, **sans plafond de 3 mois** — différent de la fenêtre de
+  sélection de "Demander les congés", volontairement).
+
+Les deux actions acceptent un `userIds[]` optionnel dans le body pour restreindre la sélection
+(coché par défaut = tout le monde côté frontend, décocher = exclu de l'envoi — personne décochée
+ne reçoit rien).
+
+Chaque période est calculée **à un seul endroit** : `AbsenceReminderService::defaultPeriod()`
+(3 mois, "missing") et `AbsenceReminderService::findAllFutureEncodedAbsencesGrouped()` (uncapped,
+"encoded") — partagées entre les endpoints de prévisualisation (GET) et d'envoi (POST), jamais
+recalculées côté frontend, pour qu'il soit structurellement impossible que l'aperçu affiché
+diverge de ce qui est réellement envoyé.
+
+### Alternative écartée
+
+Calculer l'aperçu côté client à partir des données déjà chargées dans la table des absences
+(zéro endpoint supplémentaire). Écartée : la table principale est paginée/filtrée pour
+l'affichage, et un calcul client dupliquerait la définition de la période — exactement le
+type de double-source-de-vérité qui a causé l'incident D-050 (la base plus à jour que le
+code). Le coût de 2 endpoints GET supplémentaires est jugé inférieur à ce risque.
+
+### Implémentation
+
+- **`AbsenceReminderService`** : `findUsersWithoutAbsenceInPeriod($from, $to)` (3 mois,
+  "missing") et `findAllFutureEncodedAbsencesGrouped($from)` (uncapped, "encoded" — prend
+  volontairement un seul paramètre, pas de `$to`). Aucune entité modifiée, aucune migration.
+- **`AbsenceReminderController`** (`/api/planning/absences/{missing-preview,encoded-preview,
+  request-missing,confirm-encoded}`) sous `PlanningVoter::PLANNING_MANAGE` (même gate que
+  `AbsenceController` — MANAGER ou ADMIN). Body JSON simple (`{message?: string, userIds?:
+  number[]}`) lu directement comme `AbsenceController::create()` le fait déjà — pas de
+  DTO/Serializer.
+- **Envoi** : `NotificationService::sendAbsenceRequestMissingEmailToUser()` et
+  `::sendAbsenceConfirmEncodedEmailToUser()` dispatchent chacune `SendTemplatedEmailMessage`
+  via le bus (même mécanisme déjà async que les emails de facturation — D-043 respecté sans
+  rien ajouter à `messenger.yaml`), **une fois par personne** (boucle dans le contrôleur) —
+  `count` retourné est donc le nombre d'emails individuels effectivement envoyés, pas le nombre
+  de personnes vues en preview (qui peut différer si certaines sont décochées). Aucune des deux
+  réponses n'a de champ `recipient`.
+- **Templates** : `absences_request_missing.html.twig` simplifié à `{user, greeting, message}`
+  (plus de table de plusieurs personnes — un seul destinataire désormais) ;
+  `absences_confirm_encoded.html.twig` perd son encadré `.note` qui répétait presque mot pour
+  mot la phrase "à terme..." déjà présente dans `{{ message }}` — un seul bloc de texte. Les
+  deux templates rendent `{{ greeting }},` juste avant `{{ message }}`.
+- **Audit** : `UserAuditEvent` avec `targetUser = null` — ces actions concernent N personnes à
+  la fois, pas une cible unique ; `payload.count` porte le nombre concerné. Deux cas d'enum
+  (`ABSENCES_REQUEST_SENT`, `ABSENCES_CONFIRMATION_SENT`), pas de nouveau mécanisme d'audit.
+- **`AbsenceController::serialize()`** étendu (champ additif `role` + `firstname`/`lastname`
+  séparés) pour permettre au frontend d'afficher une identité lisible et de trier
+  Instrumentistes→Chirurgiens dans la liste principale — aucun consommateur existant cassé.
+
+### Garde-fous
+
+- Aucune donnée patient dans les emails (liste de personnes + dates uniquement) — vérifié par
+  test fonctionnel (`assertStringNotContainsStringIgnoringCase('patient', ...)`).
+- Test fonctionnel dédié vérifie que `missing-preview` et `request-missing` retournent
+  exactement le même `count`.
+- Test dédié confirme qu'aucun email n'est jamais envoyé à `boost.conge@gmail.com` pour les
+  deux actions, et qu'une absence à 8 mois est bien incluse dans "confirm-encoded" (pas de
+  plafond de 3 mois).
+- Test de rendu Twig dédié au non-régression de la duplication de texte (`substr_count($html,
+  'À terme') === 1`).
+- Découverte pendant l'implémentation : `KernelBrowser` réinitialise le conteneur (donc le
+  transport en mémoire de test) entre deux requêtes par défaut — `$client->disableReboot()`
+  est nécessaire dans tout test fonctionnel qui authentifie puis vérifie un message Messenger
+  dispatché sur plusieurs requêtes du même test. Documenté ici pour la prochaine fois.
+
+### Historique des corrections (toutes le 2026-06-24, avant toute mise en prod)
+
+1. Version initiale : les deux actions envoyaient un seul email groupé à
+   `boost.conge@gmail.com`.
+2. 1er amendement : "Confirmer les congés encodés" corrigé en envoi individuel par personne —
+   l'implémentation initiale était une incompréhension du besoin, jamais déployée.
+3. 2e amendement : "Demander les congés" corrigé en envoi individuel par personne également ;
+   "Confirmer les congés encodés" passe de "3 prochains mois" à "tous les congés futurs sans
+   plafond" ; suppression de la répétition de texte dans le template de confirmation.
+4. 3e amendement (celui-ci) : salutation personnalisée par destinataire — "Bonjour Dr
+   {nom}" pour un chirurgien, "Bonjour {prénom}" pour un instrumentiste (repli sur "Bonjour"
+   seul si le champ pertinent est vide). Calculée par `NotificationService::greetingFor()` et
+   passée au contexte Twig (`greeting`), rendue par le template, **jamais** par le texte
+   éditable du manager — qui ne contient donc plus "Bonjour," en dur (évite toute duplication
+   si le manager personnalise le message).
+
+Aucune de ces quatre versions n'a été déployée en production — corrigées en cours de
+développement, avant tout déploiement réel.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -1894,3 +1997,4 @@ suppression du jour isolé (alerte enfin résolue).
 | 22-06-2026 | D-048 — Planning V2 : bascule UI (cutover) et désactivation de la navigation V1 |
 | 23-06-2026 | D-049 — Règles d'affiliation aux sites par rôle métier |
 | 24-06-2026 | D-050 — Absences "jours isolés" : N lignes `Absence` d'un jour, pas de nouveau champ |
+| 24-06-2026 | D-051 — Relances congés manager : preview backend, destinataire fixe, audit sans cible unique |

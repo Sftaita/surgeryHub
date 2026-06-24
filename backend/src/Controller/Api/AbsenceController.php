@@ -169,14 +169,35 @@ class AbsenceController extends AbstractController
         return [
             'id'        => $a->getId(),
             'user'      => $user ? [
-                'id'    => $user->getId(),
-                'name'  => $name ?: $user->getEmail(),
-                'email' => $user->getEmail(),
+                'id'        => $user->getId(),
+                'name'      => $name ?: $user->getEmail(),
+                'firstname' => $user->getFirstname(),
+                'lastname'  => $user->getLastname(),
+                'email'     => $user->getEmail(),
+                'role'      => self::personRole($user),
             ] : null,
             'dateStart' => $a->getDateStart()->format('Y-m-d'),
             'dateEnd'   => $a->getDateEnd()->format('Y-m-d'),
             'reason'    => $a->getReason(),
             'createdAt' => $a->getCreatedAt()->format(\DateTimeInterface::ATOM),
         ];
+    }
+
+    /**
+     * Absences only ever concern instrumentists and surgeons in practice — this resolves
+     * which one, for display/sort/filter purposes on the manager-facing list. Returns null
+     * for any other role rather than guessing (defensive, should not normally happen since
+     * only those two roles can be selected when creating an absence).
+     */
+    private static function personRole(User $user): ?string
+    {
+        $roles = $user->getRoles();
+        if (in_array('ROLE_INSTRUMENTIST', $roles, true)) {
+            return 'INSTRUMENTIST';
+        }
+        if (in_array('ROLE_SURGEON', $roles, true)) {
+            return 'SURGEON';
+        }
+        return null;
     }
 }

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import AbsencesPage from "./AbsencesPage";
+import AbsencesPage, { getIsolatedDatesToSubmit } from "./AbsencesPage";
 import type { Absence } from "../../../features/planning-manager/api/planning.api";
 
 vi.mock("../../../features/planning-manager/api/planning.api", () => ({
@@ -10,23 +10,32 @@ vi.mock("../../../features/planning-manager/api/planning.api", () => ({
   createAbsence: vi.fn(),
   createIsolatedDayAbsences: vi.fn(),
   deleteAbsence: vi.fn(),
+  getMissingAbsencesPreview: vi.fn().mockResolvedValue({ count: 0, people: [] }),
+  getEncodedAbsencesPreview: vi.fn().mockResolvedValue({ count: 0, groups: [] }),
+  requestMissingAbsences: vi.fn(),
+  confirmEncodedAbsences: vi.fn(),
+}));
+
+vi.mock("../../../features/manager-instrumentists/api/instrumentists.api", () => ({
+  getInstrumentists: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+}));
+
+vi.mock("../../../features/manager-surgeons/api/surgeons.api", () => ({
+  getSurgeons: vi.fn().mockResolvedValue({ items: [], total: 0 }),
 }));
 
 vi.mock("../../../ui/toast/useToast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn() }),
 }));
 
-vi.mock("../../../api/apiClient", () => ({
-  apiClient: { get: vi.fn() },
-}));
-
 import * as planningApi from "../../../features/planning-manager/api/planning.api";
-import { apiClient } from "../../../api/apiClient";
+import * as instrumentistsApi from "../../../features/manager-instrumentists/api/instrumentists.api";
+import * as surgeonsApi from "../../../features/manager-surgeons/api/surgeons.api";
 
 function makeAbsence(overrides: Partial<Absence> = {}): Absence {
   return {
     id: 1,
-    user: { id: 1, email: "martin@test.com", firstname: "Jean", lastname: "Martin" },
+    user: { id: 1, email: "martin@test.com", firstname: "Jean", lastname: "Martin", role: "SURGEON" },
     dateStart: "2026-07-01",
     dateEnd: "2026-07-15",
     reason: null,
@@ -46,21 +55,228 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks() does not reset mockResolvedValue() — restore the safe defaults here so a
+  // test that populated data doesn't leak it into the next test in this file.
+  vi.mocked(planningApi.getAbsences).mockResolvedValue([]);
+  vi.mocked(instrumentistsApi.getInstrumentists).mockResolvedValue({ items: [], total: 0 });
+  vi.mocked(surgeonsApi.getSurgeons).mockResolvedValue({ items: [], total: 0 });
 });
+
+/** Mocks the surgeon "Jean Martin" as findable by PersonSearchSelect's debounced search. */
+function mockSearchablePerson() {
+  vi.mocked(surgeonsApi.getSurgeons).mockResolvedValue({
+    items: [{ id: 1, email: "martin@test.com", firstname: "Jean", lastname: "Martin", displayName: "Jean Martin", active: true, profilePicturePath: null }],
+    total: 1,
+  });
+}
 
 async function openCreateDialog(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: /Nouvelle absence/i }));
-  await user.click(screen.getByText("Sélectionner une personne"));
-  await user.click(await screen.findByText("Jean Martin (Chirurgien)"));
+  const label = screen.getByText("Personne");
+  const container = label.closest("div")!;
+  const input = within(container).getByRole("combobox");
+  await user.click(input);
+  await user.type(input, "Martin");
+  await user.click(await screen.findByText("Jean Martin", {}, { timeout: 3000 }));
 }
+
+describe("getIsolatedDatesToSubmit() — fusion champ + chips, dédoublonnée", () => {
+  it("ajoute la date du champ quand la liste de chips est vide", () => {
+    expect(getIsolatedDatesToSubmit([], "2026-07-04")).toEqual(["2026-07-04"]);
+  });
+
+  it("renvoie la liste de chips inchangée quand le champ est vide", () => {
+    expect(getIsolatedDatesToSubmit(["2026-07-04"], "")).toEqual(["2026-07-04"]);
+  });
+
+  it("fusionne le champ avec les chips existants, trié", () => {
+    expect(getIsolatedDatesToSubmit(["2026-07-18"], "2026-07-04")).toEqual(["2026-07-04", "2026-07-18"]);
+  });
+
+  it("ne duplique pas si la date du champ est déjà dans les chips", () => {
+    expect(getIsolatedDatesToSubmit(["2026-07-04", "2026-07-18"], "2026-07-04")).toEqual(["2026-07-04", "2026-07-18"]);
+  });
+});
+
+describe("AbsencesPage — recherche dynamique du sélecteur personne (pas de liste eager)", () => {
+  it("n'affiche aucune option et n'appelle aucune API tant qu'on n'a pas tapé", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(screen.getByRole("button", { name: /Nouvelle absence/i }));
+
+    expect(screen.getByPlaceholderText("Rechercher une personne…")).toBeInTheDocument();
+    expect(instrumentistsApi.getInstrumentists).not.toHaveBeenCalled();
+    expect(surgeonsApi.getSurgeons).not.toHaveBeenCalled();
+  });
+
+  it("interroge le backend (search/q) une fois qu'on tape, et affiche le résultat avec avatar+rôle+email", async () => {
+    mockSearchablePerson();
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(screen.getByRole("button", { name: /Nouvelle absence/i }));
+
+    const input = within(screen.getByText("Personne").closest("div")!).getByRole("combobox");
+    await user.type(input, "Martin");
+
+    expect(await screen.findByText("Jean Martin", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.getByText(/Chirurgien · martin@test.com/)).toBeInTheDocument();
+    await waitFor(() => expect(surgeonsApi.getSurgeons).toHaveBeenCalledWith({ q: "Martin" }));
+  });
+});
+
+describe("AbsencesPage — table principale : identité, tri, recherche, filtres", () => {
+  function mockAbsences() {
+    vi.mocked(planningApi.getAbsences).mockResolvedValue([
+      makeAbsence({ id: 1, user: { id: 1, email: "martin@test.com", firstname: "Jean", lastname: "Martin", role: "SURGEON" } }),
+      makeAbsence({ id: 2, user: { id: 2, email: "diane@test.com", firstname: "Diane", lastname: "Lefebvre", role: "INSTRUMENTIST" } }),
+    ]);
+  }
+
+  it("affiche prénom/nom/rôle/email au lieu de l'email seul comme libellé", async () => {
+    mockAbsences();
+    renderPage();
+
+    expect(await screen.findByText(/Jean Martin/)).toBeInTheDocument();
+    expect(screen.getByText("(Chirurgien)")).toBeInTheDocument();
+    expect(screen.getByText("martin@test.com")).toBeInTheDocument();
+    expect(screen.getByText(/Diane Lefebvre/)).toBeInTheDocument();
+    expect(screen.getByText("(Instrumentiste)")).toBeInTheDocument();
+  });
+
+  it("trie par rôle (instrumentistes puis chirurgiens) puis nom de famille", async () => {
+    mockAbsences();
+    renderPage();
+    await screen.findByText(/Jean Martin/);
+
+    const rows = screen.getAllByRole("row").slice(1); // skip header
+    expect(within(rows[0]).getByText(/Diane Lefebvre/)).toBeInTheDocument(); // INSTRUMENTIST first
+    expect(within(rows[1]).getByText(/Jean Martin/)).toBeInTheDocument();
+  });
+
+  it("filtre dynamiquement par recherche (nom, email, rôle)", async () => {
+    mockAbsences();
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/Jean Martin/);
+
+    await user.type(screen.getByPlaceholderText("Rechercher (nom, email, rôle)…"), "diane");
+
+    expect(screen.queryByText(/Jean Martin/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Diane Lefebvre/)).toBeInTheDocument();
+  });
+
+  it("filtre rapide Instrumentistes ne montre que les instrumentistes", async () => {
+    mockAbsences();
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/Jean Martin/);
+
+    await user.click(screen.getByText(/Instrumentistes \(1\)/));
+
+    expect(screen.queryByText(/Jean Martin/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Diane Lefebvre/)).toBeInTheDocument();
+  });
+
+  it("le bouton « Demander les congés » ouvre le dialogue correspondant", async () => {
+    mockAbsences();
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/Jean Martin/);
+
+    await user.click(screen.getByRole("button", { name: "Demander les congés" }));
+
+    expect(await screen.findByRole("heading", { name: "Demander les congés" })).toBeInTheDocument();
+  });
+
+  it("le bouton « Confirmer les congés encodés » ouvre le dialogue correspondant", async () => {
+    mockAbsences();
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/Jean Martin/);
+
+    await user.click(screen.getByRole("button", { name: "Confirmer les congés encodés" }));
+
+    expect(await screen.findByRole("heading", { name: "Confirmer les congés encodés" })).toBeInTheDocument();
+  });
+});
+
+describe("AbsencesPage — historique (absences passées masquées par défaut)", () => {
+  it("appelle getAbsences avec from=aujourd'hui par défaut (historique décoché)", async () => {
+    renderPage();
+    await waitFor(() => expect(planningApi.getAbsences).toHaveBeenCalled());
+
+    const call = vi.mocked(planningApi.getAbsences).mock.calls[0][0];
+    expect(call).toEqual({ from: expect.any(String) });
+  });
+
+  it("recharge sans filtre `from` quand on coche « Afficher l'historique »", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(planningApi.getAbsences).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("checkbox", { name: /Afficher l'historique/i }));
+
+    await waitFor(() => {
+      const lastCall = vi.mocked(planningApi.getAbsences).mock.calls.at(-1)![0];
+      expect(lastCall).toBeUndefined();
+    });
+  });
+});
+
+describe("AbsencesPage — mise à jour optimiste", () => {
+  it("la nouvelle absence (période) apparaît immédiatement, avant la résolution de l'appel réseau", async () => {
+    mockSearchablePerson();
+    let resolveCreate!: (v: Absence) => void;
+    vi.mocked(planningApi.createAbsence).mockImplementation(() => new Promise((resolve) => { resolveCreate = resolve; }));
+
+    const user = userEvent.setup();
+    renderPage();
+    await openCreateDialog(user);
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+
+    // Visible immediately, before the network promise resolves.
+    expect(await screen.findByText(/Jean Martin/)).toBeInTheDocument();
+
+    resolveCreate(makeAbsence({ id: 99 }));
+    await waitFor(() => expect(planningApi.createAbsence).toHaveBeenCalledTimes(1));
+  });
+
+  it("rollback et toast d'erreur si la création échoue", async () => {
+    mockSearchablePerson();
+    let rejectCreate!: (e: Error) => void;
+    vi.mocked(planningApi.createAbsence).mockImplementation(() => new Promise((_, reject) => { rejectCreate = reject; }));
+
+    const user = userEvent.setup();
+    renderPage();
+    await openCreateDialog(user);
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+
+    expect(await screen.findByText(/Jean Martin/)).toBeInTheDocument(); // optimistic row shown
+
+    rejectCreate(new Error("boom"));
+    await waitFor(() => expect(screen.queryByText(/Jean Martin/)).not.toBeInTheDocument()); // rolled back
+  });
+
+  it("la ligne disparaît immédiatement à la suppression, avant la résolution de l'appel réseau", async () => {
+    vi.mocked(planningApi.getAbsences).mockResolvedValue([makeAbsence({ id: 1 })]);
+    let resolveDelete!: () => void;
+    vi.mocked(planningApi.deleteAbsence).mockImplementation(() => new Promise((resolve) => { resolveDelete = resolve; }));
+
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/Jean Martin/);
+
+    await user.click(screen.getByRole("button", { name: "Supprimer" }));
+
+    await waitFor(() => expect(screen.queryByText(/Jean Martin/)).not.toBeInTheDocument());
+    resolveDelete();
+    await waitFor(() => expect(planningApi.deleteAbsence).toHaveBeenCalledTimes(1));
+  });
+});
 
 describe("AbsencesPage — non-régression mode Période (Cas 1)", () => {
   it("garde le comportement Du/Au existant : un seul appel createAbsence", async () => {
-    vi.mocked(apiClient.get).mockImplementation(async (url: string) => {
-      if (url === "/api/instrumentists") return { data: { items: [] } };
-      if (url === "/api/surgeons") return { data: { items: [{ id: 1, firstname: "Jean", lastname: "Martin", email: "martin@test.com" }] } };
-      return { data: {} };
-    });
+    mockSearchablePerson();
     vi.mocked(planningApi.createAbsence).mockResolvedValue(makeAbsence());
 
     const user = userEvent.setup();
@@ -79,12 +295,37 @@ describe("AbsencesPage — non-régression mode Période (Cas 1)", () => {
 });
 
 describe("AbsencesPage — mode Jours isolés (Cas 3)", () => {
-  it("désactive Enregistrer tant qu'aucun jour n'est ajouté, puis envoie tous les jours en un seul appel groupé", async () => {
-    vi.mocked(apiClient.get).mockImplementation(async (url: string) => {
-      if (url === "/api/instrumentists") return { data: { items: [] } };
-      if (url === "/api/surgeons") return { data: { items: [{ id: 1, firstname: "Jean", lastname: "Martin", email: "martin@test.com" }] } };
-      return { data: {} };
-    });
+  it("désactive Enregistrer quand le champ est vide et aucun jour n'est ajouté", async () => {
+    mockSearchablePerson();
+    const user = userEvent.setup();
+    renderPage();
+    await openCreateDialog(user);
+    await user.click(screen.getByRole("button", { name: "Jours isolés" }));
+
+    // The field is pre-filled with today's date by default — clear it to test true emptiness.
+    await user.clear(screen.getByLabelText("Ajouter une date"));
+
+    expect(screen.getByRole("button", { name: "Enregistrer" })).toBeDisabled();
+  });
+
+  it("active Enregistrer dès qu'une date valide est dans le champ, même sans cliquer Ajouter (régression bug prod)", async () => {
+    mockSearchablePerson();
+    const user = userEvent.setup();
+    renderPage();
+    await openCreateDialog(user);
+    await user.click(screen.getByRole("button", { name: "Jours isolés" }));
+
+    const dateInput = screen.getByLabelText("Ajouter une date");
+    await user.clear(dateInput);
+    await user.type(dateInput, "2026-07-04");
+
+    // No click on "Ajouter" — the field has a date but no chip exists yet.
+    expect(screen.queryByText("04/07/2026")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enregistrer" })).toBeEnabled();
+  });
+
+  it("clic sur Ajouter puis Enregistrer envoie tous les jours en un seul appel groupé (flux existant)", async () => {
+    mockSearchablePerson();
     vi.mocked(planningApi.createIsolatedDayAbsences).mockResolvedValue([
       makeAbsence({ id: 1, dateStart: "2026-07-04", dateEnd: "2026-07-04" }),
       makeAbsence({ id: 2, dateStart: "2026-07-09", dateEnd: "2026-07-09" }),
@@ -94,11 +335,7 @@ describe("AbsencesPage — mode Jours isolés (Cas 3)", () => {
     const user = userEvent.setup();
     renderPage();
     await openCreateDialog(user);
-
     await user.click(screen.getByRole("button", { name: "Jours isolés" }));
-
-    const enregistrer = screen.getByRole("button", { name: "Enregistrer" });
-    expect(enregistrer).toBeDisabled();
 
     const dateInput = screen.getByLabelText("Ajouter une date");
     for (const date of ["2026-07-04", "2026-07-09", "2026-07-18"]) {
@@ -110,8 +347,9 @@ describe("AbsencesPage — mode Jours isolés (Cas 3)", () => {
     expect(screen.getByText("04/07/2026")).toBeInTheDocument();
     expect(screen.getByText("09/07/2026")).toBeInTheDocument();
     expect(screen.getByText("18/07/2026")).toBeInTheDocument();
-    expect(enregistrer).toBeEnabled();
 
+    const enregistrer = screen.getByRole("button", { name: "Enregistrer" });
+    expect(enregistrer).toBeEnabled();
     await user.click(enregistrer);
 
     await waitFor(() => expect(planningApi.createIsolatedDayAbsences).toHaveBeenCalledTimes(1));
@@ -121,13 +359,59 @@ describe("AbsencesPage — mode Jours isolés (Cas 3)", () => {
     expect(planningApi.createAbsence).not.toHaveBeenCalled();
   });
 
-  it("permet de retirer un jour isolé avant validation (Cas 4)", async () => {
-    vi.mocked(apiClient.get).mockImplementation(async (url: string) => {
-      if (url === "/api/instrumentists") return { data: { items: [] } };
-      if (url === "/api/surgeons") return { data: { items: [{ id: 1, firstname: "Jean", lastname: "Martin", email: "martin@test.com" }] } };
-      return { data: {} };
-    });
+  it("choisir une date puis cliquer directement Enregistrer sans cliquer Ajouter crée une absence dateStart=dateEnd", async () => {
+    mockSearchablePerson();
+    vi.mocked(planningApi.createIsolatedDayAbsences).mockResolvedValue([
+      makeAbsence({ id: 1, dateStart: "2026-07-04", dateEnd: "2026-07-04" }),
+    ]);
 
+    const user = userEvent.setup();
+    renderPage();
+    await openCreateDialog(user);
+    await user.click(screen.getByRole("button", { name: "Jours isolés" }));
+
+    const dateInput = screen.getByLabelText("Ajouter une date");
+    await user.clear(dateInput);
+    await user.type(dateInput, "2026-07-04");
+
+    // Directly click Enregistrer — never clicked "Ajouter", no chip was ever shown.
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+
+    await waitFor(() => expect(planningApi.createIsolatedDayAbsences).toHaveBeenCalledTimes(1));
+    expect(planningApi.createIsolatedDayAbsences).toHaveBeenCalledWith({
+      userId: 1, dates: ["2026-07-04"], reason: undefined,
+    });
+    expect(planningApi.createAbsence).not.toHaveBeenCalled();
+  });
+
+  it("date déjà en chip + même date dans le champ → une seule absence créée (pas de doublon)", async () => {
+    mockSearchablePerson();
+    vi.mocked(planningApi.createIsolatedDayAbsences).mockResolvedValue([
+      makeAbsence({ id: 1, dateStart: "2026-07-04", dateEnd: "2026-07-04" }),
+    ]);
+
+    const user = userEvent.setup();
+    renderPage();
+    await openCreateDialog(user);
+    await user.click(screen.getByRole("button", { name: "Jours isolés" }));
+
+    const dateInput = screen.getByLabelText("Ajouter une date");
+    await user.clear(dateInput);
+    await user.type(dateInput, "2026-07-04");
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+    expect(screen.getByText("04/07/2026")).toBeInTheDocument();
+
+    // The field still shows the same date that was just added as a chip — click Enregistrer directly.
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+
+    await waitFor(() => expect(planningApi.createIsolatedDayAbsences).toHaveBeenCalledTimes(1));
+    expect(planningApi.createIsolatedDayAbsences).toHaveBeenCalledWith({
+      userId: 1, dates: ["2026-07-04"], reason: undefined,
+    });
+  });
+
+  it("permet de retirer un jour isolé avant validation (Cas 4)", async () => {
+    mockSearchablePerson();
     const user = userEvent.setup();
     renderPage();
     await openCreateDialog(user);

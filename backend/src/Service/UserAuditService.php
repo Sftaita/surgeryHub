@@ -112,6 +112,30 @@ class UserAuditService
         );
     }
 
+    /** No single target — concerns N people at once, listed in the payload. */
+    public function absencesRequestSent(User $actor, int $recipientCount): void
+    {
+        $this->persist(
+            actor: $actor,
+            target: null,
+            type: UserAuditEventType::ABSENCES_REQUEST_SENT,
+            description: sprintf('Demande de congés envoyée pour %d personne(s) sans absence renseignée', $recipientCount),
+            payload: ['count' => $recipientCount],
+        );
+    }
+
+    /** No single target — concerns N people at once, listed in the payload. */
+    public function absencesConfirmationSent(User $actor, int $peopleWithAbsencesCount): void
+    {
+        $this->persist(
+            actor: $actor,
+            target: null,
+            type: UserAuditEventType::ABSENCES_CONFIRMATION_SENT,
+            description: sprintf('Récapitulatif des congés envoyé pour %d personne(s)', $peopleWithAbsencesCount),
+            payload: ['count' => $peopleWithAbsencesCount],
+        );
+    }
+
     private function persist(
         User $actor,
         ?User $target,

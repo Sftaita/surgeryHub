@@ -166,6 +166,35 @@ final class AbsenceControllerTest extends WebTestCase
             ->getQuery()->getResult();
     }
 
+    // ── Serialization: role field for manager-facing list display ──────────
+
+    #[WithoutErrorHandler]
+    public function test_create_response_includes_user_role_for_surgeon_and_instrumentist(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $instr   = $this->makeUser('ROLE_INSTRUMENTIST');
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-08-01', 'dateEnd' => '2026-08-01',
+        ]));
+        $surgeonAbsence = $this->json($client->getResponse());
+        $this->createdIds['absences'][] = $surgeonAbsence['id'];
+        self::assertSame('SURGEON', $surgeonAbsence['user']['role']);
+        self::assertArrayHasKey('firstname', $surgeonAbsence['user']);
+        self::assertArrayHasKey('lastname', $surgeonAbsence['user']);
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $instr->getId(), 'dateStart' => '2026-08-02', 'dateEnd' => '2026-08-02',
+        ]));
+        $instrAbsence = $this->json($client->getResponse());
+        $this->createdIds['absences'][] = $instrAbsence['id'];
+        self::assertSame('INSTRUMENTIST', $instrAbsence['user']['role']);
+    }
+
     // ── Create: surgeon absence ──────────────────────────────────────────────
 
     #[WithoutErrorHandler]

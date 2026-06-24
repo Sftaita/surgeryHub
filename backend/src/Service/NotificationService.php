@@ -10,6 +10,7 @@ use App\Entity\User;
 use App\Enum\PublicationChannel;
 use App\Message\PlanningAlertRaisedMessage;
 use App\Message\SendBillingEmailMessage;
+use App\Message\SendTemplatedEmailMessage;
 use App\Repository\UserRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -148,6 +149,62 @@ class NotificationService
             attachmentBase64: base64_encode($pdfBinary),
             attachmentFilename: $filename,
         ));
+    }
+
+    // ── Absences — manager reminder emails (D-051) ───────────────────────────
+    //
+    // Both actions send ONE INDIVIDUAL email PER selected person, to their OWN address —
+    // never to a fixed mailbox. `boost.conge@gmail.com` only ever appears as plain text
+    // inside the request-missing message (asking the recipient to reply there), never as an
+    // actual `to:` — see D-051 second amendment. Both dispatch SendTemplatedEmailMessage via
+    // the bus (async, same as billing emails), never block the request, never duplicate the
+    // period computation (that lives only in AbsenceReminderService).
+
+    public function sendAbsenceRequestMissingEmailToUser(User $user, string $message): void
+    {
+        $this->bus->dispatch(new SendTemplatedEmailMessage(
+            to: (string) $user->getEmail(),
+            subject: 'SurgicalHub — Vos congés à venir',
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: 'emails/absences_request_missing.html.twig',
+            context: ['user' => $user, 'greeting' => $this->greetingFor($user), 'message' => $message],
+        ));
+    }
+
+    /**
+     * One individual email, to the person's OWN address, containing ALL of their future
+     * absences (dateEnd >= today, no 3-month cap — unlike the missing-absence selection
+     * criteria, this is a confirmation of everything currently on record).
+     *
+     * @param \App\Entity\Absence[] $absences
+     */
+    public function sendAbsenceConfirmEncodedEmailToUser(User $user, array $absences, string $message): void
+    {
+        $this->bus->dispatch(new SendTemplatedEmailMessage(
+            to: (string) $user->getEmail(),
+            subject: 'SurgicalHub — Récapitulatif de vos congés encodés',
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: 'emails/absences_confirm_encoded.html.twig',
+            context: ['user' => $user, 'greeting' => $this->greetingFor($user), 'absences' => $absences, 'message' => $message],
+        ));
+    }
+
+    /**
+     * "Bonjour Dr {lastname}" for surgeons, "Bonjour {firstname}" for everyone else
+     * (instrumentists) — falls back to "Bonjour" alone if the relevant name part is missing,
+     * never an empty/broken greeting.
+     */
+    private function greetingFor(User $user): string
+    {
+        if (in_array('ROLE_SURGEON', $user->getRoles(), true)) {
+            $lastname = $user->getLastname();
+            return $lastname ? "Bonjour Dr {$lastname}" : 'Bonjour';
+        }
+
+        $firstname = $user->getFirstname();
+        return $firstname ? "Bonjour {$firstname}" : 'Bonjour';
     }
 
     // ── Planning notifications ────────────────────────────────────────────────

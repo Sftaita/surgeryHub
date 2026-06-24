@@ -65,9 +65,15 @@ export interface PlanningTemplate {
   createdAt: string;
 }
 
+export type PersonRole = "INSTRUMENTIST" | "SURGEON";
+
+export interface AbsenceUserRef extends UserRef {
+  role: PersonRole | null;
+}
+
 export interface Absence {
   id: number;
-  user: UserRef;
+  user: AbsenceUserRef;
   dateStart: string;
   dateEnd: string;
   reason: string | null;
@@ -252,6 +258,64 @@ export async function createIsolatedDayAbsences(data: {
 
 export async function deleteAbsence(id: number): Promise<void> {
   await apiClient.delete(`/api/absences/${id}`);
+}
+
+// ─── Absences — manager reminder emails (D-051) ───────────────────────────────
+
+export interface AbsenceReminderPerson {
+  id: number;
+  name: string;
+  email: string;
+  role: PersonRole;
+}
+
+export interface MissingAbsencesPreview {
+  count: number;
+  people: AbsenceReminderPerson[];
+}
+
+export interface EncodedAbsenceGroup {
+  user: AbsenceReminderPerson;
+  absences: Array<{ dateStart: string; dateEnd: string; reason: string | null }>;
+}
+
+export interface EncodedAbsencesPreview {
+  count: number;
+  groups: EncodedAbsenceGroup[];
+}
+
+/** Both actions send one individual email per selected person — never a single fixed recipient. See D-051. */
+export interface AbsenceReminderSendResult {
+  sent: boolean;
+  count: number;
+}
+
+export async function getMissingAbsencesPreview(): Promise<MissingAbsencesPreview> {
+  const res = await apiClient.get("/api/planning/absences/missing-preview");
+  return res.data;
+}
+
+export async function getEncodedAbsencesPreview(): Promise<EncodedAbsencesPreview> {
+  const res = await apiClient.get("/api/planning/absences/encoded-preview");
+  return res.data;
+}
+
+/** Sends one individual email per selected person, to their own address — see D-051. */
+export async function requestMissingAbsences(message: string | undefined, userIds: number[]): Promise<AbsenceReminderSendResult> {
+  const res = await apiClient.post("/api/planning/absences/request-missing", {
+    ...(message ? { message } : {}),
+    userIds,
+  });
+  return res.data;
+}
+
+/** Sends one individual email per selected person, to their own address — see D-051. */
+export async function confirmEncodedAbsences(message: string | undefined, userIds: number[]): Promise<AbsenceReminderSendResult> {
+  const res = await apiClient.post("/api/planning/absences/confirm-encoded", {
+    ...(message ? { message } : {}),
+    userIds,
+  });
+  return res.data;
 }
 
 // ─── Generation API ───────────────────────────────────────────────────────────
