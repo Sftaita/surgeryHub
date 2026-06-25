@@ -34,8 +34,23 @@ interface Props {
 
 const ROLE_LABELS: Record<PersonRole, string> = { INSTRUMENTIST: "Instrumentiste", SURGEON: "Chirurgien" };
 
+/** Collapses any stray whitespace (e.g. a trailing space stored on `firstname` in the DB)
+ *  so neither the display nor the search ever shows/compares a doubled space. */
+function collapseSpaces(s: string): string {
+  return s.trim().replace(/\s+/g, " ");
+}
+
 function displayName(p: { firstname: string | null; lastname: string | null; email: string }): string {
-  return `${p.firstname ?? ""} ${p.lastname ?? ""}`.trim() || p.email;
+  return collapseSpaces(`${p.firstname ?? ""} ${p.lastname ?? ""}`) || p.email;
+}
+
+/** Strips accents so "deltour"/"Deltour"/"Démètre" etc. all compare equal regardless of diacritics. */
+function foldAccents(s: string): string {
+  return s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
+}
+
+function normalizeForSearch(s: string): string {
+  return foldAccents(collapseSpaces(s)).toLowerCase();
 }
 
 /** Instrumentistes → Chirurgiens → nom de famille → prénom → email en dernier repli. */
@@ -57,13 +72,27 @@ function comparePersonOptions(a: PersonOption, b: PersonOption): number {
     || emailA.localeCompare(emailB);
 }
 
-/** Substring match on prénom, nom, email or rôle — all client-side, no debounce. */
+/**
+ * Substring match on prénom, nom, email, rôle, OR the full name in either word order
+ * ("Arnaud Deltour" as well as "Deltour Arnaud") — all client-side, no debounce. Accent- and
+ * whitespace-insensitive so a trailing space stuck on `firstname` in the DB (real prod data:
+ * "Arnaud " for surgeon #8) never breaks a match.
+ */
 function matchesQuery(option: PersonOption, query: string): boolean {
-  const q = query.trim().toLowerCase();
+  const q = normalizeForSearch(query);
   if (!q) return true;
-  const roleLabel = ROLE_LABELS[option.role].toLowerCase();
-  return [option.firstname, option.lastname, option.email, roleLabel]
-    .some((field) => (field ?? "").toLowerCase().includes(q));
+  const firstname = normalizeForSearch(option.firstname ?? "");
+  const lastname = normalizeForSearch(option.lastname ?? "");
+  const roleLabel = normalizeForSearch(ROLE_LABELS[option.role]);
+  const candidates = [
+    firstname,
+    lastname,
+    normalizeForSearch(option.email),
+    roleLabel,
+    collapseSpaces(`${firstname} ${lastname}`),
+    collapseSpaces(`${lastname} ${firstname}`),
+  ];
+  return candidates.some((field) => field.includes(q));
 }
 
 export function personOptionsQueryKey(scope: PersonSearchScope) {
@@ -75,8 +104,8 @@ export async function fetchActivePersonOptions(scope: PersonSearchScope = "all")
     scope === "all" || scope === "instrumentists" ? getInstrumentists({ active: true }) : null,
     scope === "all" || scope === "surgeons" ? getSurgeons({ active: true }) : null,
   ]);
-  const insts: PersonOption[] = (instRes?.items ?? []).map((u) => ({ id: u.id, name: displayName(u), firstname: u.firstname, lastname: u.lastname, email: u.email, role: "INSTRUMENTIST" }));
-  const surgs: PersonOption[] = (surgRes?.items ?? []).map((u) => ({ id: u.id, name: displayName(u), firstname: u.firstname, lastname: u.lastname, email: u.email, role: "SURGEON" }));
+  const insts: PersonOption[] = (instRes?.items ?? []).map((u) => ({ id: u.id, name: displayName(u), firstname: u.firstname?.trim() || null, lastname: u.lastname?.trim() || null, email: u.email, role: "INSTRUMENTIST" }));
+  const surgs: PersonOption[] = (surgRes?.items ?? []).map((u) => ({ id: u.id, name: displayName(u), firstname: u.firstname?.trim() || null, lastname: u.lastname?.trim() || null, email: u.email, role: "SURGEON" }));
   return [...insts, ...surgs].sort(comparePersonOptions);
 }
 

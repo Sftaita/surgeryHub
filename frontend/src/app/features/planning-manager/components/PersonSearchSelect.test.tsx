@@ -33,6 +33,71 @@ function renderSelect(props: Partial<React.ComponentProps<typeof PersonSearchSel
   return { onChange };
 }
 
+describe("PersonSearchSelect — régression Arnaud Deltour : recherche par nom complet", () => {
+  function mockArnaudDeltour() {
+    vi.mocked(surgeonsApi.getSurgeons).mockResolvedValue({
+      items: [{
+        id: 8, email: "arnauddeltour@hotmail.com",
+        // Real prod data quality issue: a trailing space stuck on firstname.
+        firstname: "Arnaud ", lastname: "Deltour",
+        displayName: "Arnaud  Deltour", active: true, profilePicturePath: null,
+      }],
+      total: 1,
+    });
+  }
+
+  async function searchAndExpectMatch(user: ReturnType<typeof userEvent.setup>, query: string) {
+    const input = screen.getByRole("combobox");
+    await user.clear(input);
+    await user.type(input, query);
+    expect(await screen.findByText("Arnaud Deltour", {}, { timeout: 3000 })).toBeInTheDocument();
+  }
+
+  it('affiche "Arnaud Deltour" sans double espace malgré le firstname="Arnaud " en base', async () => {
+    mockArnaudDeltour();
+    const user = userEvent.setup();
+    renderSelect();
+    await user.click(screen.getByRole("combobox"));
+
+    expect(await screen.findByText("Arnaud Deltour", {}, { timeout: 3000 })).toBeInTheDocument();
+  });
+
+  it('recherche "Arnaud" (prénom seul) trouve la personne', async () => {
+    mockArnaudDeltour();
+    const user = userEvent.setup();
+    renderSelect();
+    await searchAndExpectMatch(user, "Arnaud");
+  });
+
+  it('recherche "Deltour" (nom seul) trouve la personne', async () => {
+    mockArnaudDeltour();
+    const user = userEvent.setup();
+    renderSelect();
+    await searchAndExpectMatch(user, "Deltour");
+  });
+
+  it('recherche "Arnaud Deltour" (prénom puis nom) trouve la personne — c\'était le bug signalé', async () => {
+    mockArnaudDeltour();
+    const user = userEvent.setup();
+    renderSelect();
+    await searchAndExpectMatch(user, "Arnaud Deltour");
+  });
+
+  it('recherche "Deltour Arnaud" (nom puis prénom) trouve aussi la personne', async () => {
+    mockArnaudDeltour();
+    const user = userEvent.setup();
+    renderSelect();
+    await searchAndExpectMatch(user, "Deltour Arnaud");
+  });
+
+  it("recherche insensible à la casse et aux espaces multiples", async () => {
+    mockArnaudDeltour();
+    const user = userEvent.setup();
+    renderSelect();
+    await searchAndExpectMatch(user, "  ARNAUD   deltour  ");
+  });
+});
+
 describe("PersonSearchSelect — scope (all/instrumentists/surgeons)", () => {
   it('scope="all" (par défaut) appelle les deux API et affiche les deux rôles', async () => {
     vi.mocked(instrumentistsApi.getInstrumentists).mockResolvedValue({

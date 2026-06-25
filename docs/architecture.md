@@ -299,7 +299,19 @@ chirurgien.
   - `"surgeons"` → charge uniquement `getSurgeons`, n'appelle jamais `getInstrumentists`
 - **Cache React Query par scope** : `personOptionsQueryKey(scope)` → `["personOptions", "active", scope]` — chaque scope a sa propre entrée de cache, jamais partagée entre scopes différents.
 - **Tri** : rôle (instrumentistes avant chirurgiens) → nom de famille → prénom → email (repli).
-- **Affichage** : avatar, nom complet, rôle, email en second niveau.
+- **Affichage** : avatar, nom complet **Prénom Nom** (ordre conservé volontairement — voir note
+  ci-dessous), rôle, email en second niveau.
+- **Recherche locale insensible aux accents/casse/espaces, sur les deux ordres du nom complet** :
+  taper "Arnaud Deltour" **ou** "Deltour Arnaud" trouve la même personne, même si `firstname`
+  contient une espace finale parasite (anomalie de donnée réelle constatée en prod, neutralisée
+  par un trim à la source dans `fetchActivePersonOptions`). Avant ce correctif, la recherche ne
+  comparait la requête qu'à chaque champ séparément (`firstname`, `lastname`, `email`, `rôle`),
+  jamais au nom complet — un nom à deux mots ne pouvait donc jamais matcher.
+- **Affichage Prénom Nom conservé délibérément** : la recherche accepte désormais les deux
+  ordres, mais l'affichage reste Prénom Nom pour ne pas casser l'UX et les tests existants sur
+  tous les écrans consommateurs. Une éventuelle inversion vers "Nom Prénom" doit être traitée
+  comme un **lot UX séparé et explicite**, pas comme un effet de bord d'un correctif de
+  recherche.
 - **Usage actuel** : `AbsencesPage` avec `scope="all"`.
 
 ### Synchronisation instrumentiste — polling intelligent (D-045)
