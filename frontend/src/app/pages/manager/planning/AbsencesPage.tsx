@@ -118,6 +118,13 @@ export default function AbsencesPage() {
     queryFn: () => getAbsences(showHistory ? undefined : { from: todayISO() }),
   });
 
+  // Synchronous re-entrancy guard for "Enregistrer" — same pattern as AbsenceReminderDialog's
+  // sendingRef. createMutation.isPending alone is NOT enough: it only takes effect once React
+  // has re-rendered with the disabled button, and a fast double-click can land both clicks
+  // before that happens. This ref is checked/set synchronously inside submitCreate, before
+  // anything async runs, and is only ever cleared in onSettled (success or error).
+  const submittingRef = React.useRef(false);
+
   const createMutation = useMutation({
     mutationFn: async (isolatedDatesOverride?: string[]): Promise<Absence[]> => mode === "period"
       ? [await createAbsence({ userId: selectedPerson!.id, dateStart, dateEnd, reason: reason.trim() || undefined })]
@@ -141,7 +148,10 @@ export default function AbsencesPage() {
       if (ctx?.previous) qc.setQueryData(absencesKey, ctx.previous);
       toast.error(extractError(err));
     },
-    onSettled: () => { qc.invalidateQueries({ queryKey: ["absences"] }); },
+    onSettled: () => {
+      submittingRef.current = false;
+      qc.invalidateQueries({ queryKey: ["absences"] });
+    },
   });
 
   // What would actually be submitted right now in isolated-days mode — includes the date
@@ -152,6 +162,15 @@ export default function AbsencesPage() {
     && (mode === "period" ? !!dateStart && !!dateEnd : isolatedDatesToSubmit.length > 0);
 
   function submitCreate() {
+    if (submittingRef.current) return;
+    // Defensive guard — not a substitute for root-causing the "Cannot read properties of
+    // null (reading 'id')" report, but it turns a crash into a clear, recoverable message if
+    // selectedPerson is ever null here for a reason not yet identified.
+    if (!selectedPerson) {
+      toast.error("Veuillez sélectionner une personne");
+      return;
+    }
+    submittingRef.current = true;
     if (mode === "isolatedDays") {
       createMutation.mutate(isolatedDatesToSubmit);
     } else {

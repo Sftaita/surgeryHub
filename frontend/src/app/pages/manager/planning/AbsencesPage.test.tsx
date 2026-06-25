@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import AbsencesPage, { getIsolatedDatesToSubmit } from "./AbsencesPage";
@@ -276,6 +276,91 @@ describe("AbsencesPage — mise à jour optimiste", () => {
     resolveDelete();
     await waitFor(() => expect(planningApi.deleteAbsence).toHaveBeenCalledTimes(1));
   });
+});
+
+describe("AbsencesPage — garde anti-double-soumission sur Enregistrer", () => {
+  it("double-clic rapide en mode période → un seul appel createAbsence", async () => {
+    mockSearchablePerson();
+    let resolveCreate!: (v: Absence) => void;
+    vi.mocked(planningApi.createAbsence).mockImplementation(() => new Promise((resolve) => { resolveCreate = resolve; }));
+
+    const user = userEvent.setup();
+    renderPage();
+    await openCreateDialog(user);
+
+    const submitBtn = screen.getByRole("button", { name: "Enregistrer" });
+    fireEvent.click(submitBtn);
+    fireEvent.click(submitBtn);
+    fireEvent.click(submitBtn);
+
+    await waitFor(() => expect(planningApi.createAbsence).toHaveBeenCalled());
+    resolveCreate(makeAbsence({ id: 99 }));
+    await waitFor(() => expect(planningApi.createAbsence).toHaveBeenCalledTimes(1));
+  });
+
+  it("double-clic rapide en mode jours isolés → un seul batch createIsolatedDayAbsences", async () => {
+    mockSearchablePerson();
+    let resolveCreate!: (v: Absence[]) => void;
+    vi.mocked(planningApi.createIsolatedDayAbsences).mockImplementation(
+      () => new Promise((resolve) => { resolveCreate = resolve; }),
+    );
+
+    const user = userEvent.setup();
+    renderPage();
+    await openCreateDialog(user);
+    await user.click(screen.getByRole("button", { name: "Jours isolés" }));
+    const dateInput = screen.getByLabelText("Ajouter une date");
+    await user.clear(dateInput);
+    await user.type(dateInput, "2026-07-04");
+
+    const submitBtn = screen.getByRole("button", { name: "Enregistrer" });
+    fireEvent.click(submitBtn);
+    fireEvent.click(submitBtn);
+    fireEvent.click(submitBtn);
+
+    await waitFor(() => expect(planningApi.createIsolatedDayAbsences).toHaveBeenCalled());
+    resolveCreate([makeAbsence({ id: 99 })]);
+    await waitFor(() => expect(planningApi.createIsolatedDayAbsences).toHaveBeenCalledTimes(1));
+    expect(planningApi.createAbsence).not.toHaveBeenCalled();
+  });
+
+  it("la garde se libère après un succès — un nouveau Enregistrer fonctionne ensuite normalement", async () => {
+    mockSearchablePerson();
+    vi.mocked(planningApi.createAbsence).mockResolvedValue(makeAbsence({ id: 99 }));
+
+    const user = userEvent.setup();
+    renderPage();
+    await openCreateDialog(user);
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+    await waitFor(() => expect(planningApi.createAbsence).toHaveBeenCalledTimes(1));
+    // Wait out MUI's Dialog exit transition (the rest of the page is aria-hidden until then).
+    await waitFor(() => expect(screen.queryByText("Personne")).not.toBeInTheDocument());
+
+    // Open a second create flow after the first one fully settled.
+    await openCreateDialog(user);
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+    await waitFor(() => expect(planningApi.createAbsence).toHaveBeenCalledTimes(2));
+  });
+
+  it("la garde se libère après une erreur — un nouveau Enregistrer fonctionne ensuite normalement", async () => {
+    mockSearchablePerson();
+    vi.mocked(planningApi.createAbsence).mockRejectedValueOnce(new Error("boom"));
+
+    const user = userEvent.setup();
+    renderPage();
+    await openCreateDialog(user);
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+    await waitFor(() => expect(planningApi.createAbsence).toHaveBeenCalledTimes(1));
+    // Failed mutation: onMutate had already optimistically closed the dialog, but the row
+    // gets rolled back — wait for that rollback before reopening.
+    await waitFor(() => expect(screen.queryByText("Personne")).not.toBeInTheDocument());
+
+    vi.mocked(planningApi.createAbsence).mockResolvedValueOnce(makeAbsence({ id: 99 }));
+    await openCreateDialog(user);
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+    await waitFor(() => expect(planningApi.createAbsence).toHaveBeenCalledTimes(2));
+  });
+
 });
 
 describe("AbsencesPage — non-régression mode Période (Cas 1)", () => {
