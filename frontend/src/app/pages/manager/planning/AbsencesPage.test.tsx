@@ -278,6 +278,94 @@ describe("AbsencesPage — mise à jour optimiste", () => {
   });
 });
 
+describe("AbsencesPage — flux complet réel : recherche → sélection → création (régression prod)", () => {
+  // Reproduces, end to end, the exact real-browser scenario that crashed with "Cannot read
+  // properties of null (reading 'id')": onMutate's resetCreateForm() nulled selectedPerson via
+  // closure before mutationFn (a freshly re-rendered closure) ran. The fix passes a snapshot of
+  // the selection through the mutation's `variables` instead of reading live component state.
+
+  function mockArnaudDeltour() {
+    vi.mocked(surgeonsApi.getSurgeons).mockResolvedValue({
+      items: [{
+        id: 8, email: "arnauddeltour@hotmail.com",
+        firstname: "Arnaud ", lastname: "Deltour",
+        displayName: "Arnaud  Deltour", active: true, profilePicturePath: null,
+      }],
+      total: 1,
+    });
+  }
+
+  function mockSophieInstrumentist() {
+    vi.mocked(instrumentistsApi.getInstrumentists).mockResolvedValue({
+      items: [{
+        id: 19, email: "sophie@hospiathome.be", firstname: "Sophie", lastname: "Collette",
+        active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Sophie Collette",
+      }],
+      total: 1,
+    });
+  }
+
+  it("chirurgien — recherche \"Arnaud Deltour\", sélection, création période : un seul appel, payload correct, ligne optimiste, pas de toast d'erreur", async () => {
+    mockArnaudDeltour();
+    let resolveCreate!: (v: Absence) => void;
+    vi.mocked(planningApi.createAbsence).mockImplementation(() => new Promise((resolve) => { resolveCreate = resolve; }));
+
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(surgeonsApi.getSurgeons).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: /Nouvelle absence/i }));
+    const input = within(screen.getByText("Personne").closest("div")!).getByRole("combobox");
+    await user.click(input);
+    await user.type(input, "Arnaud Deltour");
+    await user.click(await screen.findByText("Arnaud Deltour", {}, { timeout: 3000 }));
+
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+
+    // Optimistic row visible immediately, before the network promise resolves — this is the
+    // exact moment that used to crash with "Cannot read properties of null (reading 'id')".
+    expect(await screen.findByText(/Arnaud Deltour/, {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.queryByText(/Cannot read properties of null/)).not.toBeInTheDocument();
+
+    resolveCreate(makeAbsence({ id: 99 }));
+    await waitFor(() => expect(planningApi.createAbsence).toHaveBeenCalledTimes(1));
+    expect(planningApi.createAbsence).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 8, dateStart: expect.any(String), dateEnd: expect.any(String) }),
+    );
+    expect(planningApi.createIsolatedDayAbsences).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Cannot read properties of null/)).not.toBeInTheDocument();
+  });
+
+  it("instrumentiste — recherche, sélection, création période : un seul appel, payload correct, ligne optimiste, pas de toast d'erreur", async () => {
+    mockSophieInstrumentist();
+    let resolveCreate!: (v: Absence) => void;
+    vi.mocked(planningApi.createAbsence).mockImplementation(() => new Promise((resolve) => { resolveCreate = resolve; }));
+
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(instrumentistsApi.getInstrumentists).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: /Nouvelle absence/i }));
+    const input = within(screen.getByText("Personne").closest("div")!).getByRole("combobox");
+    await user.click(input);
+    await user.type(input, "Sophie Collette");
+    await user.click(await screen.findByText("Sophie Collette", {}, { timeout: 3000 }));
+
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+
+    expect(await screen.findByText(/Sophie Collette/, {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.queryByText(/Cannot read properties of null/)).not.toBeInTheDocument();
+
+    resolveCreate(makeAbsence({ id: 100 }));
+    await waitFor(() => expect(planningApi.createAbsence).toHaveBeenCalledTimes(1));
+    expect(planningApi.createAbsence).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 19, dateStart: expect.any(String), dateEnd: expect.any(String) }),
+    );
+    expect(planningApi.createIsolatedDayAbsences).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Cannot read properties of null/)).not.toBeInTheDocument();
+  });
+});
+
 describe("AbsencesPage — garde anti-double-soumission sur Enregistrer", () => {
   it("double-clic rapide en mode période → un seul appel createAbsence", async () => {
     mockSearchablePerson();

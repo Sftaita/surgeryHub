@@ -125,17 +125,38 @@ export default function AbsencesPage() {
   // anything async runs, and is only ever cleared in onSettled (success or error).
   const submittingRef = React.useRef(false);
 
+  /**
+   * ROOT CAUSE of "Cannot read properties of null (reading 'id')" (found via real-browser
+   * repro with temporary instrumentation, never reproduced as a race — 100% deterministic on
+   * a single click): `mutationFn`/`onMutate` used to read `selectedPerson`/`dateStart`/
+   * `dateEnd`/`reason` via closure over component state. `onMutate` itself calls
+   * `resetCreateForm()` (→ `setSelectedPerson(null)`) BEFORE its promise resolves. React
+   * re-renders from that state change, and react-query reads `mutationFn` LIVE off
+   * `this.options` at call time (not a reference captured when `.mutate()` was invoked) — so
+   * by the time `mutationFn` actually runs, it's the closure from the NEW render, where
+   * `selectedPerson` is already `null`. Fix: never read live component state in
+   * `mutationFn`/`onMutate` — snapshot everything needed into the mutation's `variables`
+   * instead, which React Query passes by value, immune to later re-renders.
+   */
+  type CreateAbsenceVariables = {
+    person: PersonOption;
+    mode: AbsenceMode;
+    dateStart: string;
+    dateEnd: string;
+    reason: string;
+    isolatedDates: string[];
+  };
+
   const createMutation = useMutation({
-    mutationFn: async (isolatedDatesOverride?: string[]): Promise<Absence[]> => mode === "period"
-      ? [await createAbsence({ userId: selectedPerson!.id, dateStart, dateEnd, reason: reason.trim() || undefined })]
-      : createIsolatedDayAbsences({ userId: selectedPerson!.id, dates: isolatedDatesOverride ?? isolatedDates, reason: reason.trim() || undefined }),
-    onMutate: async (isolatedDatesOverride?: string[]) => {
+    mutationFn: async (vars: CreateAbsenceVariables): Promise<Absence[]> => vars.mode === "period"
+      ? [await createAbsence({ userId: vars.person.id, dateStart: vars.dateStart, dateEnd: vars.dateEnd, reason: vars.reason || undefined })]
+      : createIsolatedDayAbsences({ userId: vars.person.id, dates: vars.isolatedDates, reason: vars.reason || undefined }),
+    onMutate: async (vars: CreateAbsenceVariables) => {
       await qc.cancelQueries({ queryKey: absencesKey });
       const previous = qc.getQueryData<Absence[]>(absencesKey);
-      const person = selectedPerson!;
-      const optimisticRows = mode === "period"
-        ? [optimisticAbsence(person, dateStart, dateEnd, reason.trim())]
-        : (isolatedDatesOverride ?? isolatedDates).map((d) => optimisticAbsence(person, d, d, reason.trim()));
+      const optimisticRows = vars.mode === "period"
+        ? [optimisticAbsence(vars.person, vars.dateStart, vars.dateEnd, vars.reason)]
+        : vars.isolatedDates.map((d) => optimisticAbsence(vars.person, d, d, vars.reason));
       qc.setQueryData<Absence[]>(absencesKey, (old) => [...(old ?? []), ...optimisticRows]);
       setCreateOpen(false);
       resetCreateForm();
@@ -163,19 +184,21 @@ export default function AbsencesPage() {
 
   function submitCreate() {
     if (submittingRef.current) return;
-    // Defensive guard — not a substitute for root-causing the "Cannot read properties of
-    // null (reading 'id')" report, but it turns a crash into a clear, recoverable message if
-    // selectedPerson is ever null here for a reason not yet identified.
+    // Defensive guard — kept even after the root-cause fix above: turns any future "no
+    // person selected" edge case into a clear message instead of a crash.
     if (!selectedPerson) {
       toast.error("Veuillez sélectionner une personne");
       return;
     }
     submittingRef.current = true;
-    if (mode === "isolatedDays") {
-      createMutation.mutate(isolatedDatesToSubmit);
-    } else {
-      createMutation.mutate(undefined);
-    }
+    createMutation.mutate({
+      person: selectedPerson,
+      mode,
+      dateStart,
+      dateEnd,
+      reason: reason.trim(),
+      isolatedDates: isolatedDatesToSubmit,
+    });
   }
 
   const deleteMutation = useMutation({
