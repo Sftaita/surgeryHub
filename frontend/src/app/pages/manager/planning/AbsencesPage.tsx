@@ -16,7 +16,9 @@ import {
 } from "../../../features/planning-manager/api/planning.api";
 import { useToast } from "../../../ui/toast/useToast";
 import { Avatar } from "../../../ui/avatar/Avatar";
-import { PersonSearchSelect, type PersonOption } from "../../../features/planning-manager/components/PersonSearchSelect";
+import {
+  PersonSearchSelect, type PersonOption, personOptionsQueryKey, fetchActivePersonOptions,
+} from "../../../features/planning-manager/components/PersonSearchSelect";
 import { AbsenceReminderDialog } from "../../../features/planning-manager/components/AbsenceReminderDialog";
 
 type AbsenceMode = "period" | "isolatedDays";
@@ -88,6 +90,13 @@ export default function AbsencesPage() {
   const [showHistory, setShowHistory] = React.useState(false);
   const [requestDialogOpen, setRequestDialogOpen] = React.useState(false);
   const [confirmDialogOpen, setConfirmDialogOpen] = React.useState(false);
+
+  // Warm the PersonSearchSelect cache as soon as the page loads, so the "Nouvelle absence"
+  // dialog never has to wait on it later — React Query dedupes this with the component's own
+  // useQuery() call on the same key.
+  React.useEffect(() => {
+    qc.prefetchQuery({ queryKey: personOptionsQueryKey("all"), queryFn: () => fetchActivePersonOptions("all") });
+  }, [qc]);
 
   function addIsolatedDate() {
     setIsolatedDates((prev) => getIsolatedDatesToSubmit(prev, nextIsolatedDate));
@@ -327,6 +336,7 @@ export default function AbsencesPage() {
           <Stack spacing={2} sx={{ pt: 1 }}>
             <PersonSearchSelect
               label="Personne"
+              scope="all"
               value={selectedPerson}
               onChange={setSelectedPerson}
             />

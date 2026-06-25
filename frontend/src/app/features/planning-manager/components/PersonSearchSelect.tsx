@@ -1,6 +1,6 @@
-import * as React from "react";
 import { Autocomplete, Box, CircularProgress, TextField, Typography } from "@mui/material";
 import SearchOutlinedIcon from "@mui/icons-material/SearchOutlined";
+import { useQuery } from "@tanstack/react-query";
 
 import { getInstrumentists } from "../../manager-instrumentists/api/instrumentists.api";
 import { getSurgeons } from "../../manager-surgeons/api/surgeons.api";
@@ -16,10 +16,19 @@ export interface PersonOption {
   role: PersonRole;
 }
 
+/**
+ * Which population this instance searches over — generic, not absences-specific. `"all"`
+ * (the default) covers every consumer that needs to pick any active person; `"instrumentists"`
+ * / `"surgeons"` restrict both the displayed options AND the underlying API calls (the other
+ * endpoint is never hit).
+ */
+export type PersonSearchScope = "all" | "instrumentists" | "surgeons";
+
 interface Props {
   label: string;
   value: PersonOption | null;
   onChange: (person: PersonOption | null) => void;
+  scope?: PersonSearchScope;
   disabled?: boolean;
 }
 
@@ -48,41 +57,47 @@ function comparePersonOptions(a: PersonOption, b: PersonOption): number {
     || emailA.localeCompare(emailB);
 }
 
-/**
- * Server-side debounced person search — never lists everyone upfront. Below ~100+ users,
- * an eager full-list autocomplete becomes both slow to load and unpleasant to scroll; this
- * fetches only matches for whatever was typed, from /api/instrumentists + /api/surgeons
- * (both already support search server-side — search=, q= respectively).
- */
-export function PersonSearchSelect({ label, value, onChange, disabled }: Props) {
-  const [inputValue, setInputValue] = React.useState("");
-  const [options, setOptions] = React.useState<PersonOption[]>([]);
-  const [loading, setLoading] = React.useState(false);
+/** Substring match on prénom, nom, email or rôle — all client-side, no debounce. */
+function matchesQuery(option: PersonOption, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const roleLabel = ROLE_LABELS[option.role].toLowerCase();
+  return [option.firstname, option.lastname, option.email, roleLabel]
+    .some((field) => (field ?? "").toLowerCase().includes(q));
+}
 
-  React.useEffect(() => {
-    const query = inputValue.trim();
-    if (query.length === 0) {
-      setOptions([]);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    const timer = setTimeout(async () => {
-      try {
-        const [instRes, surgRes] = await Promise.all([
-          getInstrumentists({ search: query }),
-          getSurgeons({ q: query }),
-        ]);
-        if (cancelled) return;
-        const insts: PersonOption[] = instRes.items.map((u) => ({ id: u.id, name: displayName(u), firstname: u.firstname, lastname: u.lastname, email: u.email, role: "INSTRUMENTIST" }));
-        const surgs: PersonOption[] = surgRes.items.map((u) => ({ id: u.id, name: displayName(u), firstname: u.firstname, lastname: u.lastname, email: u.email, role: "SURGEON" }));
-        setOptions([...insts, ...surgs].sort(comparePersonOptions));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }, 300);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [inputValue]);
+export function personOptionsQueryKey(scope: PersonSearchScope) {
+  return ["personOptions", "active", scope] as const;
+}
+
+export async function fetchActivePersonOptions(scope: PersonSearchScope = "all"): Promise<PersonOption[]> {
+  const [instRes, surgRes] = await Promise.all([
+    scope === "all" || scope === "instrumentists" ? getInstrumentists({ active: true }) : null,
+    scope === "all" || scope === "surgeons" ? getSurgeons({ active: true }) : null,
+  ]);
+  const insts: PersonOption[] = (instRes?.items ?? []).map((u) => ({ id: u.id, name: displayName(u), firstname: u.firstname, lastname: u.lastname, email: u.email, role: "INSTRUMENTIST" }));
+  const surgs: PersonOption[] = (surgRes?.items ?? []).map((u) => ({ id: u.id, name: displayName(u), firstname: u.firstname, lastname: u.lastname, email: u.email, role: "SURGEON" }));
+  return [...insts, ...surgs].sort(comparePersonOptions);
+}
+
+export function usePersonOptions(scope: PersonSearchScope = "all") {
+  return useQuery({
+    queryKey: personOptionsQueryKey(scope),
+    queryFn: () => fetchActivePersonOptions(scope),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+/**
+ * Generic person picker — NOT specific to absences. Loads the active population for the given
+ * `scope` ONCE (cached by React Query, keyed per scope — shared across every dialog open and
+ * every other consumer using the same scope) and filters entirely client-side from then on. No
+ * request is fired while typing — this is a deliberate UX choice over a server-side debounced
+ * search, which felt sluggish in real manager usage.
+ */
+export function PersonSearchSelect({ label, value, onChange, scope = "all", disabled }: Props) {
+  const { data, isLoading } = usePersonOptions(scope);
+  const options = data ?? [];
 
   return (
     <Box>
@@ -93,14 +108,14 @@ export function PersonSearchSelect({ label, value, onChange, disabled }: Props) 
         disabled={disabled}
         options={options}
         value={value}
-        inputValue={inputValue}
-        onInputChange={(_, v) => setInputValue(v)}
+        openOnFocus
         onChange={(_, v) => onChange(v)}
         getOptionLabel={(o) => o.name}
         isOptionEqualToValue={(o, v) => o.id === v.id && o.role === v.role}
-        filterOptions={(opts) => opts}
-        loading={loading}
-        noOptionsText={inputValue.trim() ? "Aucun résultat" : "Tapez pour rechercher…"}
+        filterOptions={(opts, state) => opts.filter((o) => matchesQuery(o, state.inputValue))}
+        loading={isLoading}
+        loadingText="Chargement…"
+        noOptionsText="Aucun résultat"
         renderOption={(props, option) => (
           <Box component="li" {...props} key={`${option.role}-${option.id}`} sx={{ display: "flex", alignItems: "center !important", gap: 1 }}>
             <Avatar name={option.name} size={26} />
@@ -118,7 +133,7 @@ export function PersonSearchSelect({ label, value, onChange, disabled }: Props) 
               input: {
                 ...params.InputProps,
                 startAdornment: <SearchOutlinedIcon sx={{ fontSize: 16, color: "text.secondary", mr: 0.5 }} />,
-                endAdornment: <>{loading ? <CircularProgress size={16} /> : null}{params.InputProps.endAdornment}</>,
+                endAdornment: <>{isLoading ? <CircularProgress size={16} /> : null}{params.InputProps.endAdornment}</>,
               },
             }}
           />

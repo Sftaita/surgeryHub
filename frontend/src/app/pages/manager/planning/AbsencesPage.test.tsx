@@ -62,7 +62,7 @@ beforeEach(() => {
   vi.mocked(surgeonsApi.getSurgeons).mockResolvedValue({ items: [], total: 0 });
 });
 
-/** Mocks the surgeon "Jean Martin" as findable by PersonSearchSelect's debounced search. */
+/** Mocks the surgeon "Jean Martin" as part of PersonSearchSelect's once-loaded active list. */
 function mockSearchablePerson() {
   vi.mocked(surgeonsApi.getSurgeons).mockResolvedValue({
     items: [{ id: 1, email: "martin@test.com", firstname: "Jean", lastname: "Martin", displayName: "Jean Martin", active: true, profilePicturePath: null }],
@@ -76,7 +76,6 @@ async function openCreateDialog(user: ReturnType<typeof userEvent.setup>) {
   const container = label.closest("div")!;
   const input = within(container).getByRole("combobox");
   await user.click(input);
-  await user.type(input, "Martin");
   await user.click(await screen.findByText("Jean Martin", {}, { timeout: 3000 }));
 }
 
@@ -98,29 +97,34 @@ describe("getIsolatedDatesToSubmit() — fusion champ + chips, dédoublonnée", 
   });
 });
 
-describe("AbsencesPage — recherche dynamique du sélecteur personne (pas de liste eager)", () => {
-  it("n'affiche aucune option et n'appelle aucune API tant qu'on n'a pas tapé", async () => {
-    const user = userEvent.setup();
+describe("AbsencesPage — sélecteur personne : liste chargée une fois, filtrée côté client", () => {
+  it("précharge la liste des actifs dès le montage de la page, pas seulement à l'ouverture du dialogue", async () => {
     renderPage();
-    await user.click(screen.getByRole("button", { name: /Nouvelle absence/i }));
 
-    expect(screen.getByPlaceholderText("Rechercher une personne…")).toBeInTheDocument();
-    expect(instrumentistsApi.getInstrumentists).not.toHaveBeenCalled();
-    expect(surgeonsApi.getSurgeons).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(instrumentistsApi.getInstrumentists).toHaveBeenCalledWith({ active: true });
+      expect(surgeonsApi.getSurgeons).toHaveBeenCalledWith({ active: true });
+    });
   });
 
-  it("interroge le backend (search/q) une fois qu'on tape, et affiche le résultat avec avatar+rôle+email", async () => {
+  it("ouvre la liste complète au focus puis filtre côté client en tapant, avatar+rôle+email affichés, sans nouvel appel API", async () => {
     mockSearchablePerson();
     const user = userEvent.setup();
     renderPage();
+    await waitFor(() => expect(surgeonsApi.getSurgeons).toHaveBeenCalledTimes(1));
+
     await user.click(screen.getByRole("button", { name: /Nouvelle absence/i }));
-
     const input = within(screen.getByText("Personne").closest("div")!).getByRole("combobox");
-    await user.type(input, "Martin");
-
+    await user.click(input);
     expect(await screen.findByText("Jean Martin", {}, { timeout: 3000 })).toBeInTheDocument();
+
+    await user.type(input, "Martin");
+    expect(screen.getByText("Jean Martin")).toBeInTheDocument();
     expect(screen.getByText(/Chirurgien · martin@test.com/)).toBeInTheDocument();
-    await waitFor(() => expect(surgeonsApi.getSurgeons).toHaveBeenCalledWith({ q: "Martin" }));
+
+    // Filtering while typing must never trigger another network call — it's all client-side now.
+    expect(surgeonsApi.getSurgeons).toHaveBeenCalledTimes(1);
+    expect(instrumentistsApi.getInstrumentists).toHaveBeenCalledTimes(1);
   });
 });
 

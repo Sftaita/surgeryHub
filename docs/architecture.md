@@ -281,6 +281,27 @@ En mode `embedded` : pas de bouton retour, après approve/reject appelle `onClos
 - **`SlotUser`** : dans les slots de planning, surgeon et instrumentist sont sérialisés sous la forme compacte `{ id, name }` — ne pas utiliser `UserRef` (`{ id, firstname, lastname }`) pour ces champs
 - **`fetchSites`** : la fonction partagée `fetchSites()` de `sites.api.ts` est utilisée partout pour charger la liste des sites (clé React Query : `["sites"]`)
 
+### Composants partagés — PersonSearchSelect
+
+`PersonSearchSelect` (`frontend/src/app/features/planning-manager/components/PersonSearchSelect.tsx`)
+est un composant générique de recherche/sélection de personnes — **pas spécifique aux
+absences**, réutilisable partout où un manager doit choisir un instrumentiste et/ou un
+chirurgien.
+
+- **Chargement unique puis recherche locale** : la population active est chargée une seule
+  fois (au montage du composant, ou plus tôt via `qc.prefetchQuery`) puis tout le filtrage se
+  fait côté client (`filterOptions` du MUI `Autocomplete`). **Aucun appel API n'est déclenché
+  pendant la frappe** — choix UX délibéré après retour terrain défavorable sur une recherche
+  serveur débouncée.
+- **`scope` (prop, défaut `"all"`)** : `PersonSearchScope = "all" | "instrumentists" | "surgeons"`.
+  - `"all"` → charge instrumentistes + chirurgiens
+  - `"instrumentists"` → charge uniquement `getInstrumentists`, n'appelle jamais `getSurgeons`
+  - `"surgeons"` → charge uniquement `getSurgeons`, n'appelle jamais `getInstrumentists`
+- **Cache React Query par scope** : `personOptionsQueryKey(scope)` → `["personOptions", "active", scope]` — chaque scope a sa propre entrée de cache, jamais partagée entre scopes différents.
+- **Tri** : rôle (instrumentistes avant chirurgiens) → nom de famille → prénom → email (repli).
+- **Affichage** : avatar, nom complet, rôle, email en second niveau.
+- **Usage actuel** : `AbsencesPage` avec `scope="all"`.
+
 ### Synchronisation instrumentiste — polling intelligent (D-045)
 
 `useInstrumentistMissionSync()` (monté dans `MobileLayout`) interroge
