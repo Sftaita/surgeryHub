@@ -4,11 +4,11 @@ import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import AccessTimeOutlinedIcon from "@mui/icons-material/AccessTimeOutlined";
 import RepeatOutlinedIcon from "@mui/icons-material/RepeatOutlined";
 import CalendarTodayOutlinedIcon from "@mui/icons-material/CalendarTodayOutlined";
-import EventBusyOutlinedIcon from "@mui/icons-material/EventBusyOutlined";
+import ScheduleOutlinedIcon from "@mui/icons-material/ScheduleOutlined";
 
 import type { SurgeonSchedulePostV2 } from "../api/planningV2.types";
 import { summarizeRecurrence } from "../api/planningV2.types";
-import { isEndingSoon, formatEndingSoonLabel } from "../api/endingSoon";
+import { isEndingSoon } from "../api/endingSoon";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 import { Avatar } from "../../../ui/avatar/Avatar";
 
@@ -60,14 +60,6 @@ export function PostCard({ post, variant = "card", onEdit, onToggleActive, onMan
           {!post.active && (
             <Chip size="small" label="Désactivé" sx={{ height: 22, fontSize: 11.5, fontWeight: 700, bgcolor: "#F1F4F7", color: planningV2Colors.textMuted }} />
           )}
-          {endingSoon && post.endDate && (
-            <Chip
-              size="small"
-              icon={<EventBusyOutlinedIcon sx={{ fontSize: 13 }} />}
-              label={formatEndingSoonLabel(post.endDate)}
-              sx={{ height: 22, fontSize: 11, fontWeight: 700, bgcolor: planningV2Colors.warnBg, color: planningV2Colors.warnFg }}
-            />
-          )}
         </Stack>
         <IconButton size="small" onClick={(e) => setMenuAnchor(e.currentTarget)} sx={{ color: planningV2Colors.textSecondary }}>
           <MoreHorizIcon fontSize="small" />
@@ -113,15 +105,44 @@ export function PostCard({ post, variant = "card", onEdit, onToggleActive, onMan
               <CalendarTodayOutlinedIcon sx={{ fontSize: 13, color: planningV2Colors.textSecondary }} />
               <span style={{ fontVariantNumeric: "tabular-nums" }}>Du {formatFr(post.startDate)}</span>
             </Stack>
-            <Stack direction="row" spacing={1.1} alignItems="center" sx={{ color: planningV2Colors.textBody, fontSize: 12.5 }}>
-              <CalendarTodayOutlinedIcon sx={{ fontSize: 13, color: planningV2Colors.textSecondary }} />
-              <span style={{ fontVariantNumeric: "tabular-nums" }}>
-                {post.endDate ? `Jusqu'au ${formatFr(post.endDate)}` : "Sans date de fin"}
-              </span>
-            </Stack>
+            {post.endDate && (
+              <Stack direction="row" spacing={1.1} alignItems="center" sx={{ color: planningV2Colors.textBody, fontSize: 12.5 }}>
+                <CalendarTodayOutlinedIcon sx={{ fontSize: 13, color: planningV2Colors.textSecondary }} />
+                <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                  Fin le {formatFr(post.endDate)}
+                </span>
+              </Stack>
+            )}
           </>
         )}
       </Box>
+
+      {endingSoon && post.endDate && (
+        <Stack
+          direction="row" alignItems="center" justifyContent="space-between" spacing={1}
+          sx={{ mb: 1.4, px: 1.25, py: 0.9, bgcolor: "#FBF6E9", border: "1px solid #F0E6CC", borderRadius: "9px" }}
+        >
+          <Stack direction="row" alignItems="center" spacing={0.9}>
+            <ScheduleOutlinedIcon sx={{ fontSize: 14, color: "#8A6420" }} />
+            <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#8A6420", fontVariantNumeric: "tabular-nums" }}>
+              {daysUntil(post.endDate) === 0
+                ? `Se termine aujourd'hui · ${formatFr(post.endDate)}`
+                : `Se termine dans ${daysUntil(post.endDate)} j · ${formatFr(post.endDate)}`}
+            </Typography>
+          </Stack>
+          <Box
+            component="button"
+            onClick={() => onEdit(post)}
+            sx={{
+              border: "1px solid #E7D49E", borderRadius: "7px", bgcolor: "#fff",
+              color: "#8A6420", fontSize: 11.5, fontWeight: 700, fontFamily: "inherit",
+              px: 1.1, py: 0.4, cursor: "pointer", "&:hover": { bgcolor: "#FEF6E7" },
+            }}
+          >
+            Prolonger
+          </Box>
+        </Stack>
+      )}
 
       <Box sx={{ height: "1px", background: planningV2Colors.divider, mb: 1.4 }} />
 
@@ -167,4 +188,10 @@ export function PostCard({ post, variant = "card", onEdit, onToggleActive, onMan
 
 function formatFr(iso: string): string {
   return new Date(iso + "T00:00:00").toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function daysUntil(iso: string): number {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((new Date(iso + "T00:00:00").getTime() - today.getTime()) / 86_400_000);
 }

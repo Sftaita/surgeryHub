@@ -38,6 +38,15 @@ const WEEKDAYS: Array<{ value: number; label: string }> = [
   { value: 4, label: "Jeu" }, { value: 5, label: "Ven" },
 ];
 
+const WEEKDAYS_FULL: Array<{ value: number; label: string }> = [
+  { value: 1, label: "Lundi" }, { value: 2, label: "Mardi" }, { value: 3, label: "Mercredi" },
+  { value: 4, label: "Jeudi" }, { value: 5, label: "Vendredi" }, { value: 6, label: "Samedi" }, { value: 7, label: "Dimanche" },
+];
+
+const MONTH_WEEKS: Array<{ value: number; label: string }> = [
+  { value: 1, label: "1er" }, { value: 2, label: "2e" }, { value: 3, label: "3e" }, { value: 4, label: "4e" }, { value: 5, label: "5e" },
+];
+
 const PERIODS: Array<{ value: ShiftPeriod; label: string; sub: string }> = [
   { value: "MATIN", label: "Matin", sub: "08h–13h" },
   { value: "APRES_MIDI", label: "Après-midi", sub: "13h–18h" },
@@ -62,6 +71,7 @@ export function PostFormDialog({
   const [endDate, setEndDate] = React.useState("");
   const [preset, setPreset] = React.useState<RecurrencePresetKey>("WEEKLY");
   const [weekdays, setWeekdays] = React.useState<number[]>([1]);
+  const [monthWeeks, setMonthWeeks] = React.useState<number[]>([1]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -75,6 +85,7 @@ export function PostFormDialog({
       setEndDate(editingPost.endDate ?? "");
       setPreset(recurrenceToPreset(editingPost.recurrence));
       setWeekdays(editingPost.recurrence.weekdays.length ? editingPost.recurrence.weekdays : [1]);
+      setMonthWeeks(editingPost.recurrence.monthWeeks.length ? editingPost.recurrence.monthWeeks : [1]);
     } else {
       setSurgeonId(preselectedSurgeonId ?? null);
       setSiteId(null);
@@ -85,11 +96,13 @@ export function PostFormDialog({
       setEndDate("");
       setPreset("WEEKLY");
       setWeekdays([1]);
+      setMonthWeeks([1]);
     }
   }, [open, editingPost, preselectedSurgeonId]);
 
   const monthly = presetIsMonthly(preset);
-  const canSubmit = surgeonId !== null && siteId !== null && startDate !== "" && (monthly || weekdays.length > 0);
+  const canSubmit = surgeonId !== null && siteId !== null && startDate !== ""
+    && weekdays.length > 0 && (!monthly || monthWeeks.length > 0);
 
   const surgeonName = surgeons.find((s) => s.id === surgeonId)?.label ?? "";
   const siteName = sites.find((s) => s.id === siteId)?.name ?? "";
@@ -110,7 +123,7 @@ export function PostFormDialog({
       instrumentistId: instrumentistId ?? null,
       startDate,
       endDate: endDate || null,
-      recurrence: presetToRecurrence(preset, weekdays, startDate),
+      recurrence: presetToRecurrence(preset, weekdays, startDate, monthWeeks),
     });
   }
 
@@ -193,9 +206,24 @@ export function PostFormDialog({
         />
 
         {monthly ? (
-          <Typography sx={{ fontSize: 12, color: planningV2Colors.textSecondary, mt: -1 }}>
-            Le jour de la semaine sera calculé depuis la date de début (ex. tous les 2e lundis).
-          </Typography>
+          <Stack spacing={1.75}>
+            <Box>
+              <Typography sx={{ fontSize: 12, fontWeight: 700, color: planningV2Colors.textBody, mb: 1 }}>Occurrences</Typography>
+              <ToggleButtonGroup value={monthWeeks} onChange={(_, v) => setMonthWeeks(v)} size="small">
+                {MONTH_WEEKS.map((w) => (
+                  <ToggleButton key={w.value} value={w.value}>{w.label}</ToggleButton>
+                ))}
+              </ToggleButtonGroup>
+            </Box>
+            <Box>
+              <Typography sx={{ fontSize: 12, fontWeight: 700, color: planningV2Colors.textBody, mb: 1 }}>Jours</Typography>
+              <ToggleButtonGroup value={weekdays} onChange={(_, v) => setWeekdays(v)} size="small">
+                {WEEKDAYS_FULL.map((d) => (
+                  <ToggleButton key={d.value} value={d.value}>{d.label}</ToggleButton>
+                ))}
+              </ToggleButtonGroup>
+            </Box>
+          </Stack>
         ) : (
           <Box>
             <Typography sx={{ fontSize: 12, fontWeight: 700, color: planningV2Colors.textBody, mb: 1 }}>Jours</Typography>

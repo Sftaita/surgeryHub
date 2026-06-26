@@ -10,14 +10,22 @@ import SyncOutlinedIcon from "@mui/icons-material/SyncOutlined";
 import EventBusyOutlinedIcon from "@mui/icons-material/EventBusyOutlined";
 import CalendarTodayOutlinedIcon from "@mui/icons-material/CalendarTodayOutlined";
 import ChevronRightOutlinedIcon from "@mui/icons-material/ChevronRightOutlined";
+import CheckIcon from "@mui/icons-material/Check";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { fetchSites } from "../../sites/api/sites.api";
-import { getSiteGroups, previewPlanningV2, generatePlanningV2, deployPlanningV2, extractErrorV2 } from "../api/planningV2.api";
+import { getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2, extractErrorV2 } from "../api/planningV2.api";
 import { listPlanningVersions } from "../../planning-manager/api/planning.api";
-import type { PreviewLineStatus, PreviewLineV2, PreviewResponseV2, GeneratedPlanningV2 } from "../api/planningV2.types";
+import type { PreviewLineStatus, PreviewLineV2, PreviewResponseV2 } from "../api/planningV2.types";
+import {
+  buildMonthChipIds, monthIdToYearMonth, mergePreviewResponses,
+  aggregateGenerated, aggregateDeploy, type AggregatedGenerated, type AggregatedDeploy,
+  severityOf, filterLines, countBySeverity, type SeverityFilter,
+  groupLinesByDayAndSurgeon, formatDayHeader,
+} from "../api/generatePreviewGrouping";
 import { useToast } from "../../../ui/toast/useToast";
 import { SearchableSelect, type SearchableOption } from "../components/SearchableSelect";
+import { Avatar, EmptyAvatar } from "../../../ui/avatar/Avatar";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 
 const STATUS_TOKENS: Record<PreviewLineStatus, { label: string; fg: string; bg: string; dot: string; icon: React.ReactElement }> = {
@@ -27,6 +35,14 @@ const STATUS_TOKENS: Record<PreviewLineStatus, { label: string; fg: string; bg: 
   CONFLICT:  { label: "Conflit",              fg: "#A8554F", bg: "#FBF2F1", dot: "#D58A84", icon: <ErrorOutlineOutlinedIcon sx={{ fontSize: 14 }} /> },
   SKIPPED:   { label: "Chirurgien absent",    fg: "#8A6420", bg: "#FAF5E9", dot: "#DBAB4E", icon: <EventBusyOutlinedIcon sx={{ fontSize: 14 }} /> },
 };
+
+const FILTER_CHIPS: Array<{ key: SeverityFilter; label: string; dot: string }> = [
+  { key: "all", label: "Tout", dot: "#98A2AE" },
+  { key: "ok", label: "OK", dot: "#5BBE96" },
+  { key: "info", label: "Missions ouvertes", dot: "#7AA0D4" },
+  { key: "warn", label: "À surveiller", dot: "#DBAB4E" },
+  { key: "crit", label: "Conflits", dot: "#D58A84" },
+];
 
 const MONTH_LABELS = [
   "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
@@ -42,14 +58,15 @@ export function GeneratePlanningTab() {
   const toast = useToast();
   const { year: defYear, month: defMonth } = defaultYearMonth();
 
-  const [year, setYear] = React.useState(defYear);
-  const [month, setMonth] = React.useState(defMonth);
+  const monthChipIds = React.useMemo(() => buildMonthChipIds({ year: defYear, month: defMonth }, 6), [defYear, defMonth]);
+  const [selectedMonthIds, setSelectedMonthIds] = React.useState<number[]>([monthChipIds[0]]);
   const [targetId, setTargetId] = React.useState<number | null>(null);
 
   const [preview, setPreview] = React.useState<PreviewResponseV2 | null>(null);
-  const [generated, setGenerated] = React.useState<GeneratedPlanningV2 | null>(null);
-  const [deployed, setDeployed] = React.useState(false);
+  const [generated, setGenerated] = React.useState<AggregatedGenerated | null>(null);
+  const [deployed, setDeployed] = React.useState<AggregatedDeploy | null>(null);
   const [sendPdf, setSendPdf] = React.useState(true);
+  const [genFilter, setGenFilter] = React.useState<SeverityFilter>("all");
 
   const sitesQuery = useQuery({ queryKey: ["sites"], queryFn: fetchSites });
   const groupsQuery = useQuery({ queryKey: ["planning-v2", "site-groups"], queryFn: getSiteGroups });
@@ -65,23 +82,20 @@ export function GeneratePlanningTab() {
 
   const target = React.useMemo(() => {
     if (targetId === null) return null;
-    if (targetId >= GROUP_ID_OFFSET) return { siteId: null, siteGroupId: targetId - GROUP_ID_OFFSET, year, month };
-    return { siteId: targetId, siteGroupId: null, year, month };
-  }, [targetId, year, month]);
+    if (targetId >= GROUP_ID_OFFSET) return { siteId: null as number | null, siteGroupId: targetId - GROUP_ID_OFFSET };
+    return { siteId: targetId, siteGroupId: null as number | null };
+  }, [targetId]);
 
-  // ±12 months around the current one, encoded as year*12+(month-1) so a single
-  // searchable field covers both month and year without a separate year input.
-  const monthOptions: SearchableOption[] = React.useMemo(() => {
-    const base = defYear * 12 + (defMonth - 1);
-    const opts: SearchableOption[] = [];
-    for (let offset = -12; offset <= 12; offset++) {
-      const id = base + offset;
-      const y = Math.floor(id / 12);
-      const m = (id % 12) + 1;
-      opts.push({ id, label: `${MONTH_LABELS[m - 1]} ${y}` });
-    }
-    return opts;
-  }, [defYear, defMonth]);
+  const activePostsQuery = useQuery({
+    queryKey: ["planning-v2", "active-posts-count", targetId],
+    queryFn: () => getSurgeonPosts({
+      siteId: target?.siteId ?? undefined,
+      siteGroupId: target?.siteGroupId ?? undefined,
+      active: true,
+    }),
+    enabled: !!target,
+  });
+  const activePostsCount = activePostsQuery.data?.items.length ?? 0;
 
   const historyQuery = useQuery({
     queryKey: ["planning-v2", "versions-history", targetId],
@@ -89,14 +103,31 @@ export function GeneratePlanningTab() {
     enabled: !preview && !generated,
   });
 
+  function toggleMonth(id: number) {
+    setSelectedMonthIds((prev) => (prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]));
+  }
+
   const previewMutation = useMutation({
-    mutationFn: () => previewPlanningV2(target!),
-    onSuccess: (data) => { setPreview(data); setGenerated(null); setDeployed(false); },
+    mutationFn: async () => {
+      const months = selectedMonthIds.map(monthIdToYearMonth);
+      const responses = await Promise.all(
+        months.map((ym) => previewPlanningV2({ siteId: target!.siteId, siteGroupId: target!.siteGroupId, ...ym })),
+      );
+      return mergePreviewResponses(responses);
+    },
+    onSuccess: (data) => { setPreview(data); setGenerated(null); setDeployed(null); setGenFilter("all"); },
     onError: (err) => toast.error(extractErrorV2(err)),
   });
 
   const generateMutation = useMutation({
-    mutationFn: () => generatePlanningV2(target!),
+    mutationFn: async () => {
+      const months = selectedMonthIds.map(monthIdToYearMonth);
+      const versions = [];
+      for (const ym of months) {
+        versions.push(await generatePlanningV2({ siteId: target!.siteId, siteGroupId: target!.siteGroupId, ...ym }));
+      }
+      return aggregateGenerated(versions);
+    },
     onSuccess: (data) => {
       setGenerated(data);
       toast.success(`Brouillon créé — ${data.created} mission(s) créée(s)`);
@@ -105,10 +136,16 @@ export function GeneratePlanningTab() {
   });
 
   const deployMutation = useMutation({
-    mutationFn: () => deployPlanningV2(generated!.versionId, sendPdf),
+    mutationFn: async () => {
+      const results = [];
+      for (const v of generated!.versions) {
+        results.push(await deployPlanningV2(v.versionId, sendPdf));
+      }
+      return aggregateDeploy(results);
+    },
     onSuccess: (data) => {
       toast.success(`Planning déployé — ${data.missionCount} mission(s) publiée(s)`);
-      setDeployed(true);
+      setDeployed(data);
     },
     onError: (err) => toast.error(extractErrorV2(err)),
   });
@@ -116,11 +153,20 @@ export function GeneratePlanningTab() {
   function resetGen() {
     setPreview(null);
     setGenerated(null);
-    setDeployed(false);
+    setDeployed(null);
+    setGenFilter("all");
   }
 
   const lines: PreviewLineV2[] = preview?.lines ?? [];
-  const monthLabel = `${MONTH_LABELS[month - 1]} ${year}`;
+  const filteredLines = filterLines(lines, genFilter);
+  const dayGroups = groupLinesByDayAndSurgeon(filteredLines);
+  const severityCounts = countBySeverity(lines);
+
+  const monthsLabel = selectedMonthIds.length === 0
+    ? "Sélectionnez au moins un mois"
+    : selectedMonthIds.length === 1
+      ? `${MONTH_LABELS[monthIdToYearMonth(selectedMonthIds[0]).month - 1]} ${monthIdToYearMonth(selectedMonthIds[0]).year}`
+      : `${selectedMonthIds.length} mois`;
 
   const stepIndex = deployed ? 3 : generated ? 2 : preview ? 1 : 0;
 
@@ -128,26 +174,45 @@ export function GeneratePlanningTab() {
     <Box>
       <Typography sx={{ fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" }}>Générer le planning</Typography>
       <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted, mt: 0.5, mb: 3 }}>
-        Prévisualisez, vérifiez, puis déployez les missions du mois.
+        Prévisualisez, vérifiez, puis déployez les missions des mois sélectionnés.
       </Typography>
 
       <Stepper stepIndex={stepIndex} />
 
+      <Box sx={{ mb: 2.75 }}>
+        <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 1 }}>
+          <Typography sx={{ fontSize: 12, fontWeight: 700, color: planningV2Colors.textBody }}>Mois</Typography>
+          <Typography sx={{ fontSize: 12, color: planningV2Colors.textSecondary }}>
+            {selectedMonthIds.length === 0
+              ? "Sélectionnez au moins un mois"
+              : `${selectedMonthIds.length} mois · ${activePostsCount} poste${activePostsCount > 1 ? "s" : ""}`}
+          </Typography>
+        </Stack>
+        <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }} useFlexGap>
+          {monthChipIds.map((id) => {
+            const ym = monthIdToYearMonth(id);
+            const selected = selectedMonthIds.includes(id);
+            return (
+              <Chip
+                key={id}
+                clickable
+                onClick={() => toggleMonth(id)}
+                icon={selected ? <CheckIcon sx={{ fontSize: 14, color: "#fff !important" }} /> : undefined}
+                label={`${MONTH_LABELS[ym.month - 1]} ${ym.year}`}
+                sx={{
+                  height: 36, fontSize: 13, fontWeight: 600, borderRadius: planningV2Radii.pill,
+                  bgcolor: selected ? planningV2Colors.brand : "#F8FAFC",
+                  color: selected ? "#fff" : planningV2Colors.textBody,
+                  border: `1px solid ${selected ? planningV2Colors.brand : "#E7EBEF"}`,
+                  "&:hover": { bgcolor: selected ? planningV2Colors.brandHover : "#F1F4F7" },
+                }}
+              />
+            );
+          })}
+        </Stack>
+      </Box>
+
       <Stack direction="row" spacing={1.75} sx={{ mb: 2.75, flexWrap: "wrap" }} useFlexGap>
-        <Box sx={{ flex: 1, minWidth: 220 }}>
-          <SearchableSelect
-            label="Mois"
-            required
-            icon={<CalendarTodayOutlinedIcon sx={{ fontSize: 16, color: planningV2Colors.textSecondary, mr: 0.5 }} />}
-            options={monthOptions}
-            value={year * 12 + (month - 1)}
-            onChange={(id) => {
-              if (id === null) return;
-              setYear(Math.floor(id / 12));
-              setMonth((id % 12) + 1);
-            }}
-          />
-        </Box>
         <Box sx={{ flex: 1, minWidth: 220 }}>
           <SearchableSelect
             label="Site ou groupe de sites"
@@ -161,11 +226,16 @@ export function GeneratePlanningTab() {
         </Box>
         <Box sx={{ display: "flex", alignItems: "flex-end" }}>
           <Button
-            variant="contained" disableElevation disabled={!target || previewMutation.isPending}
+            variant="contained" disableElevation
+            disabled={!target || selectedMonthIds.length === 0 || previewMutation.isPending}
             onClick={() => previewMutation.mutate()}
             sx={{
               height: 42, px: 2.5, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600,
-              bgcolor: planningV2Colors.textTitle, "&:hover": { bgcolor: "#243240" },
+              bgcolor: !target || selectedMonthIds.length === 0 ? "#E7EBEF" : planningV2Colors.textTitle,
+              color: !target || selectedMonthIds.length === 0 ? "#98A2AE" : "#fff",
+              cursor: !target || selectedMonthIds.length === 0 ? "not-allowed" : "pointer",
+              "&:hover": { bgcolor: !target || selectedMonthIds.length === 0 ? "#E7EBEF" : "#243240" },
+              "&.Mui-disabled": { bgcolor: "#E7EBEF", color: "#98A2AE" },
             }}
           >
             Prévisualiser
@@ -180,9 +250,9 @@ export function GeneratePlanningTab() {
             <Box sx={{ width: 52, height: 52, borderRadius: planningV2Radii.cardLg, bgcolor: planningV2Colors.infoBg, display: "flex", alignItems: "center", justifyContent: "center", mx: "auto", mb: 1.75 }}>
               <RocketLaunchOutlinedIcon sx={{ fontSize: 24, color: planningV2Colors.brand }} />
             </Box>
-            <Typography sx={{ fontSize: 15, fontWeight: 700 }}>Prêt à générer {monthLabel}</Typography>
+            <Typography sx={{ fontSize: 15, fontWeight: 700 }}>Prêt à générer {monthsLabel}</Typography>
             <Typography sx={{ fontSize: 13, color: planningV2Colors.textMuted, mt: 0.75, maxWidth: 380, mx: "auto" }}>
-              Choisissez le mois et le périmètre, puis lancez la prévisualisation pour vérifier chaque poste avant de déployer.
+              Choisissez les mois et le périmètre, puis lancez la prévisualisation pour vérifier chaque poste avant de déployer.
             </Typography>
           </Box>
 
@@ -265,65 +335,117 @@ export function GeneratePlanningTab() {
       {preview && !deployed && (
         <Box>
           <Stack direction="row" spacing={1.25} sx={{ mb: 1.75, flexWrap: "wrap" }} useFlexGap>
-            <SummaryPill dot="#98A2AE" label="Total" n={preview.summary.total} />
-            <SummaryPill dot="#5BBE96" label="OK" n={preview.summary.covered} />
-            <SummaryPill dot="#7AA0D4" label="Mission ouverte" n={preview.summary.uncovered} />
-            <SummaryPill dot="#DBAB4E" label="Chirurgien absent" n={preview.summary.skipped} />
-            <SummaryPill dot="#D58A84" label="Conflit" n={preview.summary.conflict} />
+            {FILTER_CHIPS.map((chip) => {
+              const n = chip.key === "all" ? lines.length : severityCounts[chip.key];
+              const active = genFilter === chip.key;
+              return (
+                <Box
+                  key={chip.key}
+                  component="button"
+                  onClick={() => setGenFilter(active ? "all" : chip.key)}
+                  sx={{
+                    display: "flex", alignItems: "center", gap: 0.9, px: 1.5, py: 0.75,
+                    border: `1px solid ${active ? planningV2Colors.textTitle : planningV2Colors.cardBorder}`,
+                    borderRadius: planningV2Radii.pill, fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+                    fontFamily: "inherit", bgcolor: active ? planningV2Colors.textTitle : "#fff",
+                    color: active ? "#fff" : planningV2Colors.textStrong,
+                  }}
+                >
+                  <Box sx={{ width: 8, height: 8, borderRadius: "999px", bgcolor: chip.dot }} />
+                  {chip.label}
+                  <Box component="span" sx={{ color: active ? "rgba(255,255,255,.75)" : planningV2Colors.textSecondary, fontVariantNumeric: "tabular-nums" }}>{n}</Box>
+                </Box>
+              );
+            })}
           </Stack>
 
-          {lines.length === 0 ? (
+          {filteredLines.length === 0 ? (
             <Box sx={{ bgcolor: "#fff", border: `1px solid ${planningV2Colors.cardBorder}`, borderRadius: planningV2Radii.cardLg, p: 4, textAlign: "center" }}>
               <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted }}>
-                Aucune occurrence pour cette période — vérifiez que des postes actifs existent.
+                {lines.length === 0
+                  ? "Aucune occurrence pour cette période — vérifiez que des postes actifs existent."
+                  : "Aucun poste dans ce filtre · Choisissez Tout pour revoir l'ensemble."}
               </Typography>
             </Box>
           ) : (
-            <Box sx={{ bgcolor: "#fff", border: `1px solid ${planningV2Colors.cardBorder}`, borderRadius: planningV2Radii.cardLg, overflow: "hidden", boxShadow: planningV2Shadows.card }}>
-              <Box sx={{
-                display: "grid", gridTemplateColumns: "108px 1.3fr 1fr 96px 1.1fr 150px", gap: 1.5,
-                px: 2.25, py: 1.4, bgcolor: "#F8FAFC", borderBottom: `1px solid ${planningV2Colors.cardBorder}`,
-                fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: planningV2Colors.textSecondary,
-              }}>
-                <span>Date</span><span>Chirurgien</span><span>Site</span><span>Période</span><span>Instrumentiste</span><span>État</span>
-              </Box>
-              <Box sx={{ maxHeight: 480, overflowY: "auto" }}>
-                {lines.map((line, idx) => {
-                  const tokens = STATUS_TOKENS[line.status];
-                  return (
-                    <Box
-                      key={idx}
-                      sx={{
-                        display: "grid", gridTemplateColumns: "108px 1.3fr 1fr 96px 1.1fr 150px", gap: 1.5,
-                        px: 2.25, py: 1.25, alignItems: "center",
-                        borderBottom: `1px solid ${planningV2Colors.divider}`,
-                        bgcolor: line.status === "CONFLICT" ? "#FBF2F1" : "transparent",
-                      }}
-                    >
-                      <Typography sx={{ fontSize: 12.5, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{line.date}</Typography>
-                      <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textStrong }} noWrap>{line.surgeonName}</Typography>
-                      <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textBody }} noWrap>{line.siteName ?? "—"}</Typography>
-                      <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textBody }}>{line.startTime}</Typography>
-                      <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textStrong }} noWrap>{line.instrumentistName || "Aucun"}</Typography>
-                      <Box sx={{
-                        display: "inline-flex", alignItems: "center", gap: 0.6, fontSize: 11.5, fontWeight: 700,
-                        color: tokens.fg, bgcolor: tokens.bg, px: 1, py: 0.4, borderRadius: planningV2Radii.pill, width: "fit-content",
-                      }}>
-                        <Box sx={{ width: 6, height: 6, borderRadius: "999px", bgcolor: tokens.dot }} />
-                        {tokens.label}
+            <Stack spacing={1.75}>
+              {dayGroups.map((day) => (
+                <Box key={day.dateKey}>
+                  <Stack direction="row" alignItems="center" spacing={1.25} sx={{ mb: 1 }}>
+                    <Typography sx={{ fontSize: 13, fontWeight: 700, color: planningV2Colors.textTitle, fontVariantNumeric: "tabular-nums" }}>
+                      {formatDayHeader(day.dateKey)}
+                    </Typography>
+                    <Box sx={{ flex: 1, height: "1px", bgcolor: planningV2Colors.divider }} />
+                    <Chip
+                      size="small"
+                      label={`${day.postsCount} poste${day.postsCount > 1 ? "s" : ""}`}
+                      sx={{ height: 22, fontSize: 11, fontWeight: 700, bgcolor: "#F1F4F7", color: planningV2Colors.textSecondary }}
+                    />
+                  </Stack>
+
+                  <Box sx={{ bgcolor: "#fff", border: `1px solid ${planningV2Colors.cardBorder}`, borderRadius: planningV2Radii.cardLg, overflow: "hidden", boxShadow: planningV2Shadows.card }}>
+                    {day.surgeons.map((surgeon, sIdx) => (
+                      <Box key={surgeon.surgeonId} sx={{ borderTop: sIdx > 0 ? `1px solid ${planningV2Colors.divider}` : "none" }}>
+                        <Stack direction="row" alignItems="center" spacing={1.1} sx={{ px: 2, py: 1.1, bgcolor: "#FAFBFC" }}>
+                          <Avatar name={surgeon.surgeonName} size={22} />
+                          <Typography sx={{ fontSize: 12.5, fontWeight: 700, color: planningV2Colors.textTitle }}>{surgeon.surgeonName}</Typography>
+                          <Typography sx={{ fontSize: 11.5, color: planningV2Colors.textSecondary }}>
+                            {surgeon.lines.length} poste{surgeon.lines.length > 1 ? "s" : ""}
+                          </Typography>
+                        </Stack>
+                        {surgeon.lines.map((line, lIdx) => {
+                          const tokens = STATUS_TOKENS[line.status];
+                          return (
+                            <Stack
+                              key={lIdx} direction="row" alignItems="center" spacing={1.5}
+                              sx={{
+                                px: 2, py: 1.1, borderTop: `1px solid ${planningV2Colors.divider}`,
+                                bgcolor: severityOf(line.status) === "crit" ? "#FBF2F1" : "transparent",
+                              }}
+                            >
+                              <Box sx={{ width: 6, height: 6, borderRadius: "999px", bgcolor: tokens.dot, flex: "none" }} />
+                              <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textBody, minWidth: 90 }} noWrap>{line.siteName ?? "—"}</Typography>
+                              <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textStrong, minWidth: 100, fontVariantNumeric: "tabular-nums" }}>
+                                {line.startTime}–{line.endTime}
+                              </Typography>
+                              <Stack direction="row" alignItems="center" spacing={0.9} sx={{ flex: 1, minWidth: 0 }}>
+                                {line.instrumentistName ? (
+                                  <>
+                                    <Avatar name={line.instrumentistName} size={22} />
+                                    <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textStrong }} noWrap>{line.instrumentistName}</Typography>
+                                  </>
+                                ) : (
+                                  <>
+                                    <EmptyAvatar size={22} />
+                                    <Typography sx={{ fontSize: 12, fontWeight: 600, fontStyle: "italic", color: planningV2Colors.warnFg }}>
+                                      À pourvoir
+                                    </Typography>
+                                  </>
+                                )}
+                              </Stack>
+                              <Box sx={{
+                                display: "inline-flex", alignItems: "center", gap: 0.6, fontSize: 11.5, fontWeight: 700,
+                                color: tokens.fg, bgcolor: tokens.bg, px: 1, py: 0.4, borderRadius: planningV2Radii.pill, width: "fit-content", flex: "none",
+                              }}>
+                                <Box sx={{ width: 6, height: 6, borderRadius: "999px", bgcolor: tokens.dot }} />
+                                {tokens.label}
+                              </Box>
+                            </Stack>
+                          );
+                        })}
                       </Box>
-                    </Box>
-                  );
-                })}
-              </Box>
-            </Box>
+                    ))}
+                  </Box>
+                </Box>
+              ))}
+            </Stack>
           )}
 
           <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1.5} flexWrap="wrap" sx={{ mt: 2.25 }}>
             <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textMuted }}>
-              {preview.summary.total} poste{preview.summary.total > 1 ? "s" : ""} analysé{preview.summary.total > 1 ? "s" : ""}
-              {preview.summary.uncovered + preview.summary.conflict > 0
-                ? ` · ${preview.summary.uncovered + preview.summary.conflict} à corriger avant déploiement`
+              {lines.length} poste{lines.length > 1 ? "s" : ""} analysé{lines.length > 1 ? "s" : ""}
+              {severityCounts.info + severityCounts.crit > 0
+                ? ` · ${severityCounts.info + severityCounts.crit} à corriger avant déploiement`
                 : ""}
             </Typography>
             <Stack direction="row" spacing={1.25}>
@@ -366,7 +488,7 @@ export function GeneratePlanningTab() {
           <Box sx={{ width: 52, height: 52, borderRadius: planningV2Radii.pill, bgcolor: "#EFFAF5", display: "flex", alignItems: "center", justifyContent: "center", mx: "auto", mb: 1.75 }}>
             <CheckCircleOutlinedIcon sx={{ fontSize: 26, color: "#2C7D5F" }} />
           </Box>
-          <Typography sx={{ fontSize: 16, fontWeight: 700 }}>Planning déployé pour {monthLabel}</Typography>
+          <Typography sx={{ fontSize: 16, fontWeight: 700 }}>Planning déployé pour {monthsLabel}</Typography>
           <Typography sx={{ fontSize: 13, color: planningV2Colors.textMuted, mt: 0.75, mb: 2, maxWidth: 420, mx: "auto" }}>
             Les missions sont publiées et les instrumentistes notifiées. Les postes sans instrumentiste sont ouverts en missions disponibles.
           </Typography>
@@ -374,7 +496,7 @@ export function GeneratePlanningTab() {
             onClick={resetGen}
             sx={{ height: 38, px: 2.25, borderRadius: planningV2Radii.button, bgcolor: planningV2Colors.textTitle, color: "#fff", textTransform: "none", fontWeight: 600, "&:hover": { bgcolor: "#243240" } }}
           >
-            Générer un autre mois
+            Générer d'autres mois
           </Button>
         </Box>
       )}
@@ -415,16 +537,6 @@ function Stepper({ stepIndex }: { stepIndex: number }) {
           </React.Fragment>
         );
       })}
-    </Stack>
-  );
-}
-
-function SummaryPill({ dot, label, n }: { dot: string; label: string; n: number }) {
-  return (
-    <Stack direction="row" alignItems="center" spacing={0.9} sx={{ px: 1.5, py: 0.75, bgcolor: "#fff", border: `1px solid ${planningV2Colors.cardBorder}`, borderRadius: planningV2Radii.pill, fontSize: 12.5, fontWeight: 600, color: planningV2Colors.textStrong }}>
-      <Box sx={{ width: 8, height: 8, borderRadius: "999px", bgcolor: dot }} />
-      {label}
-      <Box component="span" sx={{ color: planningV2Colors.textSecondary, fontVariantNumeric: "tabular-nums" }}>{n}</Box>
     </Stack>
   );
 }

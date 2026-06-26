@@ -34,28 +34,37 @@ export interface SiteRefV2 {
 export interface RecurrenceRuleV2 {
   frequency: RecurrenceFrequency;
   interval: number;
-  weekdays: number[]; // ISO 1=Monday..7=Sunday, empty for MONTHLY
+  weekdays: number[]; // ISO 1=Monday..7=Sunday — required for both WEEKLY and MONTHLY
   anchorDate: string; // YYYY-MM-DD
-  monthlyNthWeekday: number | null;
+  monthWeeks: number[]; // MONTHLY only: occurrence numbers in the month (1-5), empty for WEEKLY
 }
 
 const WEEKDAY_LABELS = ["", "lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
-const WEEKDAY_NTH_LABELS: Record<number, string> = { 1: "1er", 2: "2e", 3: "3e", 4: "4e" };
+const WEEKDAY_PLURAL_LABELS = ["", "lundis", "mardis", "mercredis", "jeudis", "vendredis", "samedis", "dimanches"];
+const WEEKDAY_NTH_PLURAL_LABELS: Record<number, string> = { 1: "1ers", 2: "2es", 3: "3es", 4: "4es", 5: "5es" };
+
+/** Joins items the French way: "a", "a et b", "a, b et c". */
+function joinFr(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} et ${items[items.length - 1]}`;
+}
 
 /**
- * Short human summary, e.g. "Toutes les semaines · lun" or "Une semaine sur 2 · mer".
- * `startDate` is only used to label MONTHLY+monthlyNthWeekday rules, since the actual
- * weekday for those is derived server-side from the post's startDate, not stored on
- * the rule itself (see PlanningGeneratorServiceV2::isOccurrenceActive).
+ * Short human summary, e.g. "Toutes les semaines · lun" or "Tous les 2es et 3es jeudis du mois".
+ * MONTHLY's weekday/occurrence are both explicit on the rule itself (weekdays + monthWeeks) —
+ * no longer derived from the post's startDate (see PlanningGeneratorServiceV2::isOccurrenceActive).
  */
-export function summarizeRecurrence(rule: RecurrenceRuleV2, startDate?: string): string {
+export function summarizeRecurrence(rule: RecurrenceRuleV2): string {
   const days = rule.weekdays.map((d) => WEEKDAY_LABELS[d]).filter(Boolean).join(", ");
   if (rule.frequency === "MONTHLY") {
-    if (rule.monthlyNthWeekday && startDate) {
-      const isoDay = new Date(startDate + "T00:00:00").getDay(); // 0=Sun..6=Sat
-      const iso1to7 = isoDay === 0 ? 7 : isoDay;
-      const nth = WEEKDAY_NTH_LABELS[rule.monthlyNthWeekday] ?? `${rule.monthlyNthWeekday}e`;
-      return `${nth} ${WEEKDAY_LABELS[iso1to7]} du mois`;
+    if (rule.weekdays.length > 0 && rule.monthWeeks.length > 0) {
+      const weeksLabel = joinFr(
+        [...rule.monthWeeks].sort((a, b) => a - b).map((w) => WEEKDAY_NTH_PLURAL_LABELS[w] ?? `${w}es`)
+      );
+      const daysLabel = joinFr(
+        [...rule.weekdays].sort((a, b) => a - b).map((d) => WEEKDAY_PLURAL_LABELS[d]).filter(Boolean)
+      );
+      return `Tous les ${weeksLabel} ${daysLabel} du mois`;
     }
     return rule.interval === 1 ? "Tous les mois" : `Tous les ${rule.interval} mois`;
   }
@@ -91,7 +100,7 @@ export interface SurgeonPostInput {
     interval: number;
     weekdays?: number[];
     anchorDate: string;
-    monthlyNthWeekday?: number | null;
+    monthWeeks?: number[];
   };
 }
 

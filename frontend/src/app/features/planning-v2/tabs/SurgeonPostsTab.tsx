@@ -23,8 +23,7 @@ import { PostCard } from "../components/PostCard";
 import { PostFormDialog } from "../components/PostFormDialog";
 import type { SearchableOption } from "../components/SearchableSelect";
 import { ExceptionsSheet } from "../components/ExceptionsSheet";
-import { EndingSoonAlertCard } from "../components/EndingSoonAlertCard";
-import { isEndingSoon, findEndingSoonPosts } from "../api/endingSoon";
+import { isEndingSoon } from "../api/endingSoon";
 import { avatarColorFor, initialsFor } from "../../../ui/avatar/avatarColor";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 
@@ -114,14 +113,6 @@ export function SurgeonPostsTab() {
 
   const selectedGroup = groups.find((g) => g.id === selectedSurgeonId) ?? null;
 
-  // Frontend-only "fin de poste proche" — not a PlanningAlert (see EndingSoonAlertCard).
-  // Lives here in Postes, not Alertes, so it can never be confused with a real backend
-  // alert requiring acknowledge/resolve/reassign/open-as-available (Batch 13 decision).
-  const endingSoonPosts = React.useMemo(
-    () => findEndingSoonPosts(postsQuery.data?.items ?? []),
-    [postsQuery.data],
-  );
-
   function openAddFor(surgeonId: number | null) {
     setEditingPost(null);
     setPreselectedSurgeonId(surgeonId);
@@ -145,14 +136,6 @@ export function SurgeonPostsTab() {
 
   return (
     <>
-      {endingSoonPosts.length > 0 && (
-        <Stack spacing={1} sx={{ mb: 2 }}>
-          {endingSoonPosts.map((post) => (
-            <EndingSoonAlertCard key={post.id} post={post} />
-          ))}
-        </Stack>
-      )}
-
       {layout === "split" ? (
         <Stack direction="row" sx={{ height: "calc(100vh - 230px)", minHeight: 480, mx: { xs: -2, md: -3 }, mt: { xs: -2, md: -3 } }}>
           <Box sx={{ width: 280, flex: "none", borderRight: `1px solid ${planningV2Colors.cardBorder}`, overflowY: "auto", p: 1.5 }}>
