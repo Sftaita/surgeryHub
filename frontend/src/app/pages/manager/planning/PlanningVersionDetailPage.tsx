@@ -266,7 +266,7 @@ export default function PlanningVersionDetailPage() {
     mutationFn: () => deletePlanningVersion(versionId),
     onSuccess: () => {
       toast.success("Planning supprimé.");
-      navigate("/app/m/planning/versions", { replace: true });
+      navigate("/app/m/planning/v2", { replace: true });
     },
     onError: (err) => toast.error(extractError(err)),
   });
@@ -300,7 +300,7 @@ export default function PlanningVersionDetailPage() {
       <Stack direction="row" alignItems="center" spacing={1}>
         <Button
           startIcon={<ArrowBackIcon />}
-          onClick={() => navigate("/app/m/planning/versions")}
+          onClick={() => navigate("/app/m/planning/v2")}
           color="inherit" size="small"
         >
           Plannings

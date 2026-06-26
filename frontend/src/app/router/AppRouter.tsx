@@ -49,13 +49,7 @@ const FirmInvoiceDetailPage             = React.lazy(() => import("../pages/mana
 const InstrumentistStatementsPage       = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementsPage"));
 const InstrumentistStatementDetailPage  = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementDetailPage"));
 const BillingConfigPage                 = React.lazy(() => import("../pages/manager/billing/BillingConfigPage"));
-const PlanningTemplatesPage             = React.lazy(() => import("../pages/manager/planning/PlanningTemplatesPage"));
-const PlanningTemplateEditorPage        = React.lazy(() => import("../pages/manager/planning/PlanningTemplateEditorPage"));
-const PlanningGeneratePage              = React.lazy(() => import("../pages/manager/planning/PlanningGeneratePage"));
-const PlanningSchedulePage              = React.lazy(() => import("../pages/manager/planning/PlanningSchedulePage"));
 const AbsencesPage                      = React.lazy(() => import("../pages/manager/planning/AbsencesPage"));
-const SpecialtiesPage                   = React.lazy(() => import("../pages/manager/planning/SpecialtiesPage"));
-const PlanningVersionsListPage          = React.lazy(() => import("../pages/manager/planning/PlanningVersionsListPage"));
 const PlanningVersionDetailPage         = React.lazy(() => import("../pages/manager/planning/PlanningVersionDetailPage"));
 const PlanningV2Page                    = React.lazy(() => import("../pages/manager/planning/PlanningV2Page"));
 
@@ -161,17 +155,8 @@ export function AppRouter() {
                 <Route path="m/billing/firm-invoices/:id" element={<FirmInvoiceDetailPage />} />
                 <Route path="m/billing/statements" element={<InstrumentistStatementsPage />} />
                 <Route path="m/billing/statements/:id" element={<InstrumentistStatementDetailPage />} />
-                <Route path="m/planning/templates" element={<PlanningTemplatesPage />} />
-                <Route path="m/planning/templates/:id" element={<PlanningTemplateEditorPage />} />
-                <Route path="m/planning/generate" element={<PlanningGeneratePage />} />
-                <Route path="m/planning/schedule" element={<PlanningSchedulePage />} />
                 <Route path="m/planning/absences" element={<AbsencesPage />} />
-                <Route path="m/planning/specialties" element={<SpecialtiesPage />} />
-                <Route path="m/planning/versions" element={<PlanningVersionsListPage />} />
                 <Route path="m/planning/versions/:id" element={<PlanningVersionDetailPage />} />
-                {/* Planning V2 (Batch 10) is now the official manager planning UI (Batch 13
-                    cutover) — V1 routes above are kept reachable by direct URL only, for
-                    admin fallback/rollback, no longer linked from the sidebar. */}
                 <Route path="m/planning" element={<Navigate to="/app/m/planning/v2" replace />} />
                 <Route path="m/planning/v2" element={<PlanningV2Page />} />
               </Route>
