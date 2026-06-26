@@ -12,6 +12,7 @@ import CalendarTodayOutlinedIcon from "@mui/icons-material/CalendarTodayOutlined
 import ChevronRightOutlinedIcon from "@mui/icons-material/ChevronRightOutlined";
 import CheckIcon from "@mui/icons-material/Check";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 
 import { fetchSites } from "../../sites/api/sites.api";
 import { getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2, extractErrorV2 } from "../api/planningV2.api";
@@ -56,6 +57,7 @@ function defaultYearMonth(): { year: number; month: number } {
 
 export function GeneratePlanningTab() {
   const toast = useToast();
+  const navigate = useNavigate();
   const { year: defYear, month: defMonth } = defaultYearMonth();
 
   const monthChipIds = React.useMemo(() => buildMonthChipIds({ year: defYear, month: defMonth }, 6), [defYear, defMonth]);
@@ -278,7 +280,13 @@ export function GeneratePlanningTab() {
                   return (
                     <Stack
                       key={v.id} direction="row" alignItems="center" spacing={2}
-                      sx={{ px: 2.25, py: 1.75, borderBottom: `1px solid ${planningV2Colors.divider}`, "&:last-child": { borderBottom: "none" } }}
+                      onClick={() => navigate(`/app/m/planning/versions/${v.id}`)}
+                      sx={{
+                        px: 2.25, py: 1.75, cursor: "pointer",
+                        borderBottom: `1px solid ${planningV2Colors.divider}`,
+                        "&:last-child": { borderBottom: "none" },
+                        "&:hover": { bgcolor: "#FAFBFC" },
+                      }}
                     >
                       <Box sx={{ width: 38, height: 38, borderRadius: planningV2Radii.button, flex: "none", bgcolor: planningV2Colors.infoBg, display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <CalendarTodayOutlinedIcon sx={{ fontSize: 17, color: planningV2Colors.brand }} />
