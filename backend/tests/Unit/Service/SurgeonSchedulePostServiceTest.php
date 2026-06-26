@@ -258,7 +258,7 @@ class SurgeonSchedulePostServiceTest extends TestCase
         $this->makeService()->create($input, $surgeon);
     }
 
-    public function test_create_accepts_monthly_recurrence_without_weekdays(): void
+    public function test_create_rejects_monthly_recurrence_without_weekdays(): void
     {
         $surgeon = $this->makeSurgeon();
         $site    = $this->makeSite();
@@ -266,13 +266,112 @@ class SurgeonSchedulePostServiceTest extends TestCase
         $input['recurrence'] = [
             'frequency'  => RecurrenceFrequency::MONTHLY,
             'interval'   => 1,
+            'weekdays'   => [],
+            'monthWeeks' => [1],
+            'anchorDate' => new \DateTimeImmutable('2026-01-05'),
+        ];
+
+        $this->expectException(BadRequestHttpException::class);
+        $this->makeService()->create($input, $surgeon);
+    }
+
+    public function test_create_rejects_monthly_recurrence_without_month_weeks(): void
+    {
+        $surgeon = $this->makeSurgeon();
+        $site    = $this->makeSite();
+        $input   = $this->validInput($surgeon->getId(), $site->getId());
+        $input['recurrence'] = [
+            'frequency'  => RecurrenceFrequency::MONTHLY,
+            'interval'   => 1,
+            'weekdays'   => [1],
+            'monthWeeks' => [],
+            'anchorDate' => new \DateTimeImmutable('2026-01-05'),
+        ];
+
+        $this->expectException(BadRequestHttpException::class);
+        $this->makeService()->create($input, $surgeon);
+    }
+
+    public function test_create_rejects_month_weeks_value_below_one(): void
+    {
+        $surgeon = $this->makeSurgeon();
+        $site    = $this->makeSite();
+        $input   = $this->validInput($surgeon->getId(), $site->getId());
+        $input['recurrence'] = [
+            'frequency'  => RecurrenceFrequency::MONTHLY,
+            'interval'   => 1,
+            'weekdays'   => [1],
+            'monthWeeks' => [0],
+            'anchorDate' => new \DateTimeImmutable('2026-01-05'),
+        ];
+
+        $this->expectException(BadRequestHttpException::class);
+        $this->makeService()->create($input, $surgeon);
+    }
+
+    public function test_create_rejects_month_weeks_value_above_five(): void
+    {
+        $surgeon = $this->makeSurgeon();
+        $site    = $this->makeSite();
+        $input   = $this->validInput($surgeon->getId(), $site->getId());
+        $input['recurrence'] = [
+            'frequency'  => RecurrenceFrequency::MONTHLY,
+            'interval'   => 1,
+            'weekdays'   => [1],
+            'monthWeeks' => [6],
+            'anchorDate' => new \DateTimeImmutable('2026-01-05'),
+        ];
+
+        $this->expectException(BadRequestHttpException::class);
+        $this->makeService()->create($input, $surgeon);
+    }
+
+    /** @dataProvider validMonthWeeksProvider */
+    public function test_create_accepts_valid_monthly_recurrence(array $weekdays, array $monthWeeks): void
+    {
+        $surgeon = $this->makeSurgeon();
+        $site    = $this->makeSite();
+        $input   = $this->validInput($surgeon->getId(), $site->getId());
+        $input['recurrence'] = [
+            'frequency'  => RecurrenceFrequency::MONTHLY,
+            'interval'   => 1,
+            'weekdays'   => $weekdays,
+            'monthWeeks' => $monthWeeks,
             'anchorDate' => new \DateTimeImmutable('2026-01-05'),
         ];
 
         $post = $this->makeService()->create($input, $surgeon);
 
         $this->assertSame(RecurrenceFrequency::MONTHLY, $post->getRecurrence()->getFrequency());
-        $this->assertSame([], $post->getRecurrence()->getWeekdays());
+        $this->assertSame($weekdays, $post->getRecurrence()->getWeekdays());
+        $this->assertSame($monthWeeks, $post->getRecurrence()->getMonthWeeks());
+    }
+
+    public static function validMonthWeeksProvider(): iterable
+    {
+        yield '1st Monday' => [[1], [1]];
+        yield '2nd Tuesday' => [[2], [2]];
+        yield '2nd and 3rd Thursday' => [[4], [2, 3]];
+        yield '1st and 4th Friday' => [[5], [1, 4]];
+        yield 'every occurrence including 5th' => [[1], [1, 2, 3, 4, 5]];
+    }
+
+    public function test_update_rejects_monthly_recurrence_without_weekdays_on_weekly_post(): void
+    {
+        $surgeon = $this->makeSurgeon();
+        $site    = $this->makeSite();
+        $post    = $this->makeService()->create($this->validInput($surgeon->getId(), $site->getId()), $surgeon);
+
+        $this->expectException(BadRequestHttpException::class);
+        $this->makeService()->update($post, [
+            'recurrence' => [
+                'frequency'  => RecurrenceFrequency::MONTHLY,
+                'interval'   => 1,
+                'weekdays'   => [],
+                'monthWeeks' => [1],
+                'anchorDate' => new \DateTimeImmutable('2026-01-05'),
+            ],
+        ]);
     }
 
     // ── Update ────────────────────────────────────────────────────────────────

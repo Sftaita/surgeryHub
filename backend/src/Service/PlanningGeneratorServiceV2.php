@@ -397,13 +397,15 @@ class PlanningGeneratorServiceV2
             return false;
         }
 
-        if ($rule->getMonthlyNthWeekday() === null) {
-            return (int) $date->format('j') === (int) $post->getStartDate()->format('j');
+        if (!in_array($isoDay, $rule->getWeekdays(), true)) {
+            return false;
         }
 
-        // Simplified nth-weekday-of-month match (not part of Batch 2's required test matrix).
+        // nth-occurrence-of-this-weekday-in-the-month: occurrences of a given weekday are
+        // always exactly 7 days apart, so ceil(dayOfMonth / 7) is the correct 1-5 index
+        // regardless of what weekday the month starts on (this is NOT "calendar week").
         $nth = (int) ceil(((int) $date->format('j')) / 7);
-        return $nth === $rule->getMonthlyNthWeekday() && $isoDay === (int) $post->getStartDate()->format('N');
+        return in_array($nth, $rule->getMonthWeeks(), true);
     }
 
     private function weekPhaseMatches(\DateTimeImmutable $date, \DateTimeImmutable $anchor, int $interval): bool

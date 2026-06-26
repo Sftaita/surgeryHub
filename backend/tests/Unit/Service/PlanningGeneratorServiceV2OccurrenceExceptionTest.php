@@ -117,6 +117,30 @@ class PlanningGeneratorServiceV2OccurrenceExceptionTest extends TestCase
         return $p;
     }
 
+    /** Monthly variant of makePost: 2nd+3rd Thursday of the month, weekdays read from the rule, not from startDate. */
+    private function makeMonthlyPost(User $surgeon, Hospital $site, ?User $instrumentist = null): SurgeonSchedulePost
+    {
+        $r = new RecurrenceRule();
+        $r->setFrequency(RecurrenceFrequency::MONTHLY);
+        $r->setInterval(1);
+        $r->setWeekdays([4]);
+        $r->setMonthWeeks([2, 3]);
+        $r->setAnchorDate(new \DateTimeImmutable('2026-01-01'));
+
+        $p = new SurgeonSchedulePost();
+        $p->setSurgeon($surgeon);
+        $p->setSite($site);
+        $p->setType(MissionType::BLOCK);
+        $p->setPeriod(ShiftPeriod::MATIN);
+        $p->setRecurrence($r);
+        $p->setInstrumentist($instrumentist);
+        $p->setStartDate(new \DateTimeImmutable('2026-01-01'));
+        $p->setCreatedBy($surgeon);
+        $rp = new \ReflectionProperty(SurgeonSchedulePost::class, 'id');
+        $rp->setValue($p, ++self::$idSeq);
+        return $p;
+    }
+
     private function makeException(SurgeonSchedulePost $post, string $occurrenceDate, OccurrenceExceptionType $type, User $createdBy): PlanningOccurrenceException
     {
         $e = new PlanningOccurrenceException();
@@ -292,5 +316,48 @@ class PlanningGeneratorServiceV2OccurrenceExceptionTest extends TestCase
         $this->assertSame($oneOffInst->getId(), $changed['instrumentistId']);
         $this->assertSame($defaultInst->getId(), $unchanged['instrumentistId'], 'Other occurrences must keep the post default instrumentist');
         $this->assertSame($defaultInst, $post->getInstrumentist(), 'The post default instrumentist must remain unchanged');
+    }
+
+    // ── Batch 14B: exceptions on a MONTHLY (nth-weekday) occurrence ─────────
+
+    public function test_cancelling_one_monthly_occurrence_removes_only_that_date(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00:00', '13:00:00');
+
+        // Jan 2026 2nd+3rd Thursday = Jan 8 and Jan 15.
+        $post        = $this->makeMonthlyPost($surgeon, $site);
+        $this->posts = [$post];
+        $this->occurrenceExceptions = [
+            $this->makeException($post, '2026-01-08', OccurrenceExceptionType::CANCELLED, $surgeon),
+        ];
+
+        $lines = $this->makeService()->preview(self::MONTH, $site->getId(), null, null);
+        $dates = array_map(fn (array $l) => $l['date'], $lines);
+
+        $this->assertNotContains('2026-01-08', $dates, 'Cancelled monthly occurrence must not appear');
+        $this->assertContains('2026-01-15', $dates, 'The other monthly occurrence must remain');
+    }
+
+    public function test_moving_one_monthly_occurrence_relocates_it_and_suppresses_the_original_date(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00:00', '13:00:00');
+
+        $post        = $this->makeMonthlyPost($surgeon, $site);
+        $this->posts = [$post];
+
+        $moved = $this->makeException($post, '2026-01-08', OccurrenceExceptionType::MOVED, $surgeon);
+        $moved->setOverrideDate(new \DateTimeImmutable('2026-01-09'));
+        $this->occurrenceExceptions = [$moved];
+
+        $lines = $this->makeService()->preview(self::MONTH, $site->getId(), null, null);
+        $dates = array_map(fn (array $l) => $l['date'], $lines);
+
+        $this->assertNotContains('2026-01-08', $dates, 'Original monthly occurrence date must be suppressed');
+        $this->assertContains('2026-01-09', $dates, 'Moved-to date must appear');
+        $this->assertContains('2026-01-15', $dates, 'Other monthly occurrence must remain untouched');
     }
 }

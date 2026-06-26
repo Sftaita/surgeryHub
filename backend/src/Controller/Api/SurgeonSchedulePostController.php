@@ -187,8 +187,8 @@ class SurgeonSchedulePostController extends AbstractController
         if (isset($data['anchorDate'])) {
             $recurrence['anchorDate'] = $this->parseDate($data['anchorDate'], 'recurrence.anchorDate');
         }
-        if (array_key_exists('monthlyNthWeekday', $data)) {
-            $recurrence['monthlyNthWeekday'] = $data['monthlyNthWeekday'] !== null ? (int) $data['monthlyNthWeekday'] : null;
+        if (isset($data['monthWeeks']) && is_array($data['monthWeeks'])) {
+            $recurrence['monthWeeks'] = array_map('intval', $data['monthWeeks']);
         }
 
         return $recurrence;
@@ -222,11 +222,11 @@ class SurgeonSchedulePostController extends AbstractController
             'endDate'    => $post->getEndDate()?->format('Y-m-d'),
             'active'     => $post->isActive(),
             'recurrence' => [
-                'frequency'         => $recurrence->getFrequency()->value,
-                'interval'          => $recurrence->getInterval(),
-                'weekdays'          => $recurrence->getWeekdays(),
-                'anchorDate'        => $recurrence->getAnchorDate()->format('Y-m-d'),
-                'monthlyNthWeekday' => $recurrence->getMonthlyNthWeekday(),
+                'frequency'   => $recurrence->getFrequency()->value,
+                'interval'    => $recurrence->getInterval(),
+                'weekdays'    => $recurrence->getWeekdays(),
+                'anchorDate'  => $recurrence->getAnchorDate()->format('Y-m-d'),
+                'monthWeeks'  => $recurrence->getMonthWeeks(),
             ],
         ];
     }

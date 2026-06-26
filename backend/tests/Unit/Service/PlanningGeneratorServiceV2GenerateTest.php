@@ -126,6 +126,17 @@ class PlanningGeneratorServiceV2GenerateTest extends TestCase
         return $r;
     }
 
+    private function makeMonthlyRecurrence(array $weekdays, array $monthWeeks, \DateTimeImmutable $anchorDate): RecurrenceRule
+    {
+        $r = new RecurrenceRule();
+        $r->setFrequency(RecurrenceFrequency::MONTHLY);
+        $r->setInterval(1);
+        $r->setWeekdays($weekdays);
+        $r->setMonthWeeks($monthWeeks);
+        $r->setAnchorDate($anchorDate);
+        return $r;
+    }
+
     private function makePost(User $surgeon, Hospital $site, RecurrenceRule $recurrence, ?User $instrumentist, string $startDate, string $endDate): SurgeonSchedulePost
     {
         $p = new SurgeonSchedulePost();
@@ -238,5 +249,34 @@ class PlanningGeneratorServiceV2GenerateTest extends TestCase
         $this->assertSame(1, $result['skipped']);
         $this->assertSame(0, $result['created']);
         $this->assertCount(0, array_filter($this->persisted, fn ($e) => $e instanceof Mission));
+    }
+
+    // ── Batch 14B: generate() for a MONTHLY (nth-weekday) post ───────────────
+
+    public function test_generate_creates_correct_missions_for_a_monthly_nth_weekday_post(): void
+    {
+        $manager       = $this->makeUser('manager@test.com');
+        $surgeon       = $this->makeUser('surgeon@test.com');
+        $instrumentist = $this->makeUser('inst@test.com');
+        $site          = $this->makeSite();
+        $this->addShiftConfig($site, '08:00:00', '13:00:00');
+
+        // Jan 2026 2nd+3rd Thursday = Jan 8 and Jan 15.
+        $recurrence = $this->makeMonthlyRecurrence([4], [2, 3], new \DateTimeImmutable('2026-01-01'));
+        $post       = $this->makePost($surgeon, $site, $recurrence, $instrumentist, '2026-01-01', '2026-01-31');
+        $this->posts = [$post];
+
+        $this->withFind($site, $post, $manager);
+
+        $result = $this->makeService()->generate(self::MONTH, $site->getId(), null, null, $manager);
+
+        $this->assertSame(2, $result['created']);
+
+        $missions = array_values(array_filter($this->persisted, fn ($e) => $e instanceof Mission));
+        $this->assertCount(2, $missions);
+
+        $dates = array_map(fn (Mission $m) => $m->getStartAt()->format('Y-m-d'), $missions);
+        sort($dates);
+        $this->assertSame(['2026-01-08', '2026-01-15'], $dates);
     }
 }

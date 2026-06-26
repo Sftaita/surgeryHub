@@ -65,7 +65,7 @@ class SurgeonSchedulePostService
      * @param array{
      *   surgeonId: int, siteId: int, type: MissionType, period: ShiftPeriod,
      *   instrumentistId?: int|null, startDate: \DateTimeImmutable, endDate?: \DateTimeImmutable|null,
-     *   recurrence: array{frequency: RecurrenceFrequency, interval?: int, weekdays?: int[], anchorDate: \DateTimeImmutable, monthlyNthWeekday?: int|null}
+     *   recurrence: array{frequency: RecurrenceFrequency, interval?: int, weekdays?: int[], anchorDate: \DateTimeImmutable, monthWeeks?: int[]}
      * } $input
      */
     public function create(array $input, User $createdBy): SurgeonSchedulePost
@@ -230,7 +230,7 @@ class SurgeonSchedulePostService
         }
     }
 
-    /** @param array{frequency?: mixed, interval?: mixed, weekdays?: mixed, anchorDate?: mixed, monthlyNthWeekday?: mixed} $data */
+    /** @param array{frequency?: mixed, interval?: mixed, weekdays?: mixed, anchorDate?: mixed, monthWeeks?: mixed} $data */
     private function buildRecurrence(array $data): RecurrenceRule
     {
         $frequency = $data['frequency'] ?? null;
@@ -244,14 +244,12 @@ class SurgeonSchedulePostService
         }
 
         $weekdays = $data['weekdays'] ?? [];
-        if ($frequency === RecurrenceFrequency::WEEKLY) {
-            if (!is_array($weekdays) || $weekdays === []) {
-                throw new BadRequestHttpException('recurrence.weekdays est requis pour une récurrence WEEKLY (au moins un jour 1-7).');
-            }
-            foreach ($weekdays as $day) {
-                if (!is_int($day) || $day < 1 || $day > 7) {
-                    throw new BadRequestHttpException('recurrence.weekdays doit contenir des entiers entre 1 (lundi) et 7 (dimanche).');
-                }
+        if (!is_array($weekdays) || $weekdays === []) {
+            throw new BadRequestHttpException('recurrence.weekdays est requis (au moins un jour 1-7).');
+        }
+        foreach ($weekdays as $day) {
+            if (!is_int($day) || $day < 1 || $day > 7) {
+                throw new BadRequestHttpException('recurrence.weekdays doit contenir des entiers entre 1 (lundi) et 7 (dimanche).');
             }
         }
 
@@ -260,17 +258,24 @@ class SurgeonSchedulePostService
             throw new BadRequestHttpException('recurrence.anchorDate est requis et doit être une date valide.');
         }
 
-        $monthlyNthWeekday = $data['monthlyNthWeekday'] ?? null;
-        if ($monthlyNthWeekday !== null && (!is_int($monthlyNthWeekday) || $monthlyNthWeekday < 1)) {
-            throw new BadRequestHttpException('recurrence.monthlyNthWeekday doit être un entier >= 1.');
+        $monthWeeks = $data['monthWeeks'] ?? [];
+        if ($frequency === RecurrenceFrequency::MONTHLY) {
+            if (!is_array($monthWeeks) || $monthWeeks === []) {
+                throw new BadRequestHttpException('recurrence.monthWeeks est requis pour une récurrence MONTHLY (au moins une occurrence 1-5).');
+            }
+            foreach ($monthWeeks as $week) {
+                if (!is_int($week) || $week < 1 || $week > 5) {
+                    throw new BadRequestHttpException('recurrence.monthWeeks doit contenir des entiers entre 1 et 5.');
+                }
+            }
         }
 
         $rule = new RecurrenceRule();
         $rule->setFrequency($frequency);
         $rule->setInterval($interval);
-        $rule->setWeekdays($frequency === RecurrenceFrequency::WEEKLY ? array_values(array_unique($weekdays)) : []);
+        $rule->setWeekdays(array_values(array_unique($weekdays)));
         $rule->setAnchorDate($anchorDate);
-        $rule->setMonthlyNthWeekday($frequency === RecurrenceFrequency::MONTHLY ? $monthlyNthWeekday : null);
+        $rule->setMonthWeeks($frequency === RecurrenceFrequency::MONTHLY ? array_values(array_unique($monthWeeks)) : []);
 
         return $rule;
     }

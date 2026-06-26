@@ -18,7 +18,7 @@ class RecurrenceRule
     #[Groups(['planning:read'])]
     private int $interval = 1;
 
-    /** ISO weekdays (1=Monday..7=Sunday). Required for WEEKLY, ignored for MONTHLY. */
+    /** ISO weekdays (1=Monday..7=Sunday). Required for both WEEKLY and MONTHLY. */
     #[ORM\Column(type: 'json')]
     #[Groups(['planning:read'])]
     private array $weekdays = [];
@@ -32,10 +32,14 @@ class RecurrenceRule
     #[Groups(['planning:read'])]
     private \DateTimeImmutable $anchorDate;
 
-    /** MONTHLY only: nth weekday of month (e.g. 1 = first occurrence of that weekday). Null = same day-of-month as post startDate. */
-    #[ORM\Column(type: 'smallint', nullable: true)]
+    /**
+     * MONTHLY only: occurrence numbers of the month for each selected weekday (1-5, e.g.
+     * [2,3] = 2nd and 3rd occurrence of that weekday). Ignored for WEEKLY. A month without
+     * an nth occurrence (e.g. no 5th Monday) simply produces no occurrence that month.
+     */
+    #[ORM\Column(type: 'json')]
     #[Groups(['planning:read'])]
-    private ?int $monthlyNthWeekday = null;
+    private array $monthWeeks = [];
 
     public function getFrequency(): RecurrenceFrequency { return $this->frequency; }
     public function setFrequency(RecurrenceFrequency $frequency): static { $this->frequency = $frequency; return $this; }
@@ -49,6 +53,6 @@ class RecurrenceRule
     public function getAnchorDate(): \DateTimeImmutable { return $this->anchorDate; }
     public function setAnchorDate(\DateTimeImmutable $anchorDate): static { $this->anchorDate = $anchorDate; return $this; }
 
-    public function getMonthlyNthWeekday(): ?int { return $this->monthlyNthWeekday; }
-    public function setMonthlyNthWeekday(?int $monthlyNthWeekday): static { $this->monthlyNthWeekday = $monthlyNthWeekday; return $this; }
+    public function getMonthWeeks(): array { return $this->monthWeeks; }
+    public function setMonthWeeks(array $monthWeeks): static { $this->monthWeeks = $monthWeeks; return $this; }
 }
