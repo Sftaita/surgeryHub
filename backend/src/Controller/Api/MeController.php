@@ -7,17 +7,28 @@ use App\Dto\Request\Response\InstrumentistProfileResponse;
 use App\Dto\Request\Response\MeResponse;
 use App\Entity\SiteMembership;
 use App\Entity\User;
+use App\Service\ProfilePictureStorage;
+use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestStack;
+use Symfony\Component\HttpFoundation\File\UploadedFile;
+use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
+use Symfony\Component\Validator\Constraints as Assert;
+use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 #[Route('/api')]
 final class MeController extends AbstractController
 {
     public function __construct(
         private readonly RequestStack $requestStack,
+        private readonly EntityManagerInterface $em,
+        private readonly ProfilePictureStorage $profilePictureStorage,
+        private readonly ValidatorInterface $validator,
     ) {
     }
 
@@ -26,6 +37,50 @@ final class MeController extends AbstractController
     {
         $this->denyAccessUnlessGranted('IS_AUTHENTICATED_FULLY');
 
+        return $this->json($this->buildMeResponse($user));
+    }
+
+    /**
+     * POST /api/me/profile-picture
+     * - Authentifié (IS_AUTHENTICATED_FULLY, via le catch-all /api de security.yaml).
+     * - multipart/form-data, champ "profilePicture".
+     * - Toujours "l'utilisateur courant" : aucune autorisation supplémentaire à vérifier
+     *   (pas de Voter dédié — on ne modifie jamais que sa propre ressource).
+     */
+    #[Route('/me/profile-picture', name: 'api_me_profile_picture_upload', methods: ['POST'])]
+    public function uploadProfilePicture(Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $this->denyAccessUnlessGranted('IS_AUTHENTICATED_FULLY');
+
+        $profilePicture = $request->files->get('profilePicture');
+        if ($profilePicture === null) {
+            throw new BadRequestHttpException('profilePicture file is required');
+        }
+        if (!$profilePicture instanceof UploadedFile) {
+            throw new BadRequestHttpException('Invalid profilePicture upload');
+        }
+
+        $fileErrors = $this->validator->validate($profilePicture, [
+            new Assert\Image(
+                maxSize: '5M',
+                mimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+                mimeTypesMessage: 'Only JPEG, PNG and WEBP images are allowed.',
+            ),
+        ]);
+
+        if (count($fileErrors) > 0) {
+            throw new UnprocessableEntityHttpException((string) $fileErrors);
+        }
+
+        $publicPath = $this->profilePictureStorage->replaceUserProfilePicture($user, $profilePicture);
+        $user->setProfilePicturePath($publicPath);
+        $this->em->flush();
+
+        return $this->json($this->buildMeResponse($user));
+    }
+
+    private function buildMeResponse(User $user): MeResponse
+    {
         $role = $this->extractBusinessRole($user->getRoles());
 
         $firstname = $this->nullIfBlank($user->getFirstname());
@@ -95,7 +150,7 @@ final class MeController extends AbstractController
             );
         }
 
-        $dto = new MeResponse(
+        return new MeResponse(
             id: (int) $user->getId(),
             email: (string) $user->getEmail(),
             firstname: $firstname,
@@ -106,8 +161,6 @@ final class MeController extends AbstractController
             sites: $sites,
             activeSiteId: $activeSiteId,
         );
-
-        return $this->json($dto);
     }
 
     /**
