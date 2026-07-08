@@ -24,7 +24,7 @@ import { PostFormDialog } from "../components/PostFormDialog";
 import type { SearchableOption } from "../components/SearchableSelect";
 import { ExceptionsSheet } from "../components/ExceptionsSheet";
 import { isEndingSoon } from "../api/endingSoon";
-import { avatarColorFor, initialsFor } from "../../../ui/avatar/avatarColor";
+import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 
 type Layout = "split" | "cards" | "rows";
@@ -154,7 +154,6 @@ export function SurgeonPostsTab() {
             <Stack spacing={0.25}>
               {filteredGroups.map((g) => {
                 const endingSoon = g.posts.some((p) => isEndingSoon(p.endDate));
-                const colors = avatarColorFor(g.label);
                 const selected = g.id === selectedSurgeonId;
                 return (
                   <Box
@@ -169,9 +168,7 @@ export function SurgeonPostsTab() {
                     }}
                   >
                     <Box sx={{ position: "relative", flex: "none" }}>
-                      <Box sx={{ width: 34, height: 34, borderRadius: "10px", bgcolor: colors.bg, color: colors.fg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12.5, fontWeight: 700 }}>
-                        {initialsFor(g.label)}
-                      </Box>
+                      <PersonAvatar name={g.label} size="sm" />
                       {endingSoon && (
                         <Box sx={{ position: "absolute", top: -2, right: -2, width: 9, height: 9, borderRadius: "999px", bgcolor: planningV2Colors.warnDot, border: "2px solid #fff" }} />
                       )}
@@ -194,13 +191,7 @@ export function SurgeonPostsTab() {
               <>
                 <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2.75 }}>
                   <Stack direction="row" spacing={1.75} alignItems="center">
-                    <Box sx={{
-                      width: 46, height: 46, borderRadius: "13px",
-                      bgcolor: avatarColorFor(selectedGroup.label).bg, color: avatarColorFor(selectedGroup.label).fg,
-                      display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700,
-                    }}>
-                      {initialsFor(selectedGroup.label)}
-                    </Box>
+                    <PersonAvatar name={selectedGroup.label} size="lg" />
                     <Box>
                       <Typography sx={{ fontSize: 21, fontWeight: 800, letterSpacing: "-0.02em" }}>{selectedGroup.label}</Typography>
                       <Typography sx={{ fontSize: 13, color: planningV2Colors.textMuted, mt: 0.4 }}>
@@ -249,9 +240,7 @@ export function SurgeonPostsTab() {
             groups.map((g) => (
               <Box key={g.id}>
                 <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mb: 1.5 }}>
-                  <Box sx={{ width: 38, height: 38, borderRadius: "11px", bgcolor: avatarColorFor(g.label).bg, color: avatarColorFor(g.label).fg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13.5, fontWeight: 700 }}>
-                    {initialsFor(g.label)}
-                  </Box>
+                  <PersonAvatar name={g.label} size="md" />
                   <Typography sx={{ fontSize: 15.5, fontWeight: 700 }}>{g.label}</Typography>
                   <Typography sx={{ fontSize: 12, fontWeight: 600, color: planningV2Colors.textMuted, bgcolor: "#F1F4F7", px: 1.25, py: 0.4, borderRadius: planningV2Radii.pill }}>
                     {g.posts.length} poste{g.posts.length > 1 ? "s" : ""}
@@ -287,9 +276,7 @@ export function SurgeonPostsTab() {
             groups.map((g) => (
               <Box key={g.id}>
                 <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mb: 1.25 }}>
-                  <Box sx={{ width: 38, height: 38, borderRadius: "11px", bgcolor: avatarColorFor(g.label).bg, color: avatarColorFor(g.label).fg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13.5, fontWeight: 700 }}>
-                    {initialsFor(g.label)}
-                  </Box>
+                  <PersonAvatar name={g.label} size="md" />
                   <Typography sx={{ fontSize: 15.5, fontWeight: 700 }}>{g.label}</Typography>
                   <Typography sx={{ fontSize: 12, fontWeight: 600, color: planningV2Colors.textMuted, bgcolor: "#F1F4F7", px: 1.25, py: 0.4, borderRadius: planningV2Radii.pill }}>
                     {g.posts.length} poste{g.posts.length > 1 ? "s" : ""}

@@ -11,7 +11,7 @@ import {
   type AbsenceReminderPerson, type EncodedAbsenceGroup,
 } from "../api/planning.api";
 import { useToast } from "../../../ui/toast/useToast";
-import { Avatar } from "../../../ui/avatar/Avatar";
+import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 
 const ROLE_LABELS: Record<string, string> = { INSTRUMENTIST: "Instrumentiste", SURGEON: "Chirurgien" };
 
@@ -172,7 +172,7 @@ export function AbsenceReminderDialog({ mode, open, onClose }: Props) {
                   {(missingPreview.data?.people ?? []).map((p: AbsenceReminderPerson) => (
                     <Stack key={p.id} direction="row" spacing={1} alignItems="center">
                       <Checkbox size="small" checked={selectedIds.has(p.id)} onChange={() => toggle(p.id)} />
-                      <Avatar name={p.name} size={26} />
+                      <PersonAvatar name={p.name} size="xs" />
                       <Box sx={{ minWidth: 0 }}>
                         <Typography sx={{ fontSize: 13, fontWeight: 600 }} noWrap>
                           {p.name} <Typography component="span" sx={{ fontSize: 12, color: "text.secondary", fontWeight: 500 }}>({ROLE_LABELS[p.role]})</Typography>
@@ -189,7 +189,7 @@ export function AbsenceReminderDialog({ mode, open, onClose }: Props) {
                       <Checkbox size="small" checked={selectedIds.has(g.user.id)} onChange={() => toggle(g.user.id)} sx={{ mt: -0.5 }} />
                       <Box sx={{ minWidth: 0 }}>
                         <Stack direction="row" spacing={1.25} alignItems="center" sx={{ mb: 0.5 }}>
-                          <Avatar name={g.user.name} size={24} />
+                          <PersonAvatar name={g.user.name} size="xs" />
                           <Typography sx={{ fontSize: 13, fontWeight: 600 }}>
                             {g.user.name} <Typography component="span" sx={{ fontSize: 11.5, color: "text.secondary", fontWeight: 500 }}>({ROLE_LABELS[g.user.role]})</Typography>
                           </Typography>

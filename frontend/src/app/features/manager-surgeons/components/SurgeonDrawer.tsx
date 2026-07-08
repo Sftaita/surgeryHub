@@ -1,6 +1,5 @@
 import {
   Alert,
-  Avatar,
   Box,
   Button,
   Chip,
@@ -18,6 +17,7 @@ import { SurgeonPlanningSection } from "./SurgeonPlanningSection";
 import ConfirmDeleteDialog from "../../encoding/components/ConfirmDeleteDialog";
 import { useSurgeonDrawer } from "../hooks/useSurgeonDrawer";
 import { buildProfilePictureUrl } from "../../manager-instrumentists/utils/instrumentists.utils";
+import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 
 type SurgeonDrawerProps = {
   open: boolean;
@@ -153,10 +153,10 @@ export function SurgeonDrawer({
                   <Box sx={{ p: 2 }}>
                     <Stack spacing={1.5}>
                       <Stack direction="row" spacing={2} alignItems="center">
-                        <Avatar
-                          src={buildProfilePictureUrl(surgeon.profilePicturePath)}
-                          alt={headerDisplayName}
-                          sx={{ width: 56, height: 56, flexShrink: 0 }}
+                        <PersonAvatar
+                          name={headerDisplayName}
+                          photoUrl={buildProfilePictureUrl(surgeon.profilePicturePath)}
+                          size="lg"
                         />
                         <Stack spacing={0.25}>
                           <Typography variant="h6" sx={{ lineHeight: 1.2 }}>

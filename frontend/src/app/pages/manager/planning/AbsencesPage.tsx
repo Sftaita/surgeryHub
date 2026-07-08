@@ -15,7 +15,7 @@ import {
   getAbsences, createAbsence, createIsolatedDayAbsences, deleteAbsence, type Absence, type PersonRole,
 } from "../../../features/planning-manager/api/planning.api";
 import { useToast } from "../../../ui/toast/useToast";
-import { Avatar } from "../../../ui/avatar/Avatar";
+import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 import {
   PersonSearchSelect, type PersonOption, personOptionsQueryKey, fetchActivePersonOptions,
 } from "../../../features/planning-manager/components/PersonSearchSelect";
@@ -333,7 +333,7 @@ export default function AbsencesPage() {
                   <TableRow key={abs.id} hover sx={{ opacity: abs.id < 0 ? 0.6 : 1 }}>
                     <TableCell>
                       <Stack direction="row" spacing={1.25} alignItems="center">
-                        <Avatar name={personDisplayName(abs.user)} size={30} />
+                        <PersonAvatar name={personDisplayName(abs.user)} size="sm" />
                         <Box sx={{ minWidth: 0 }}>
                           <Typography sx={{ fontWeight: 600, fontSize: 13.5 }} noWrap>
                             {personDisplayName(abs.user)}

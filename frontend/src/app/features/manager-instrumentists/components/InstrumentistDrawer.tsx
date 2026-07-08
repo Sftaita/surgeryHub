@@ -1,6 +1,5 @@
 import {
   Alert,
-  Avatar,
   Box,
   Button,
   Chip,
@@ -17,6 +16,7 @@ import {
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { updateUserSpecialties } from "../../../features/planning-manager/api/planning.api";
 import { useToast } from "../../../ui/toast/useToast";
+import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 
 import { DrawerSection } from "./DrawerSection";
 import { AddSiteMembershipDialog } from "./AddSiteMembershipDialog";
@@ -207,10 +207,10 @@ export function InstrumentistDrawer({
                   <Box sx={{ p: 2 }}>
                     <Stack spacing={1.5}>
                       <Stack direction="row" spacing={2} alignItems="center">
-                        <Avatar
-                          src={buildProfilePictureUrl(instrumentist.profilePicturePath)}
-                          alt={headerDisplayName}
-                          sx={{ width: 56, height: 56, flexShrink: 0 }}
+                        <PersonAvatar
+                          name={headerDisplayName}
+                          photoUrl={buildProfilePictureUrl(instrumentist.profilePicturePath)}
+                          size="lg"
                         />
                         <Stack spacing={0.25}>
                           <Typography variant="h6" sx={{ lineHeight: 1.2 }}>

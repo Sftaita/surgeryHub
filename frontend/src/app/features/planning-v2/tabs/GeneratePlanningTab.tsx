@@ -26,7 +26,7 @@ import {
 } from "../api/generatePreviewGrouping";
 import { useToast } from "../../../ui/toast/useToast";
 import { SearchableSelect, type SearchableOption } from "../components/SearchableSelect";
-import { Avatar, EmptyAvatar } from "../../../ui/avatar/Avatar";
+import { PersonAvatar, EmptyAvatar } from "../../../ui/avatar/PersonAvatar";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 
 const STATUS_TOKENS: Record<PreviewLineStatus, { label: string; fg: string; bg: string; dot: string; icon: React.ReactElement }> = {
@@ -395,7 +395,7 @@ export function GeneratePlanningTab() {
                     {day.surgeons.map((surgeon, sIdx) => (
                       <Box key={surgeon.surgeonId} sx={{ borderTop: sIdx > 0 ? `1px solid ${planningV2Colors.divider}` : "none" }}>
                         <Stack direction="row" alignItems="center" spacing={1.1} sx={{ px: 2, py: 1.1, bgcolor: "#FAFBFC" }}>
-                          <Avatar name={surgeon.surgeonName} size={22} />
+                          <PersonAvatar name={surgeon.surgeonName} size="xs" />
                           <Typography sx={{ fontSize: 12.5, fontWeight: 700, color: planningV2Colors.textTitle }}>{surgeon.surgeonName}</Typography>
                           <Typography sx={{ fontSize: 11.5, color: planningV2Colors.textSecondary }}>
                             {surgeon.lines.length} poste{surgeon.lines.length > 1 ? "s" : ""}
@@ -419,7 +419,7 @@ export function GeneratePlanningTab() {
                               <Stack direction="row" alignItems="center" spacing={0.9} sx={{ flex: 1, minWidth: 0 }}>
                                 {line.instrumentistName ? (
                                   <>
-                                    <Avatar name={line.instrumentistName} size={22} />
+                                    <PersonAvatar name={line.instrumentistName} size="xs" />
                                     <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textStrong }} noWrap>{line.instrumentistName}</Typography>
                                   </>
                                 ) : (

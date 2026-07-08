@@ -8,7 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import type { PlanningAlertV2 } from "../api/planningV2.types";
 import { getEligibleInstrumentists, extractErrorV2 } from "../api/planningV2.api";
-import { avatarColorFor, initialsFor } from "../../../ui/avatar/avatarColor";
+import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 
 type View = "list" | "compare";
@@ -78,7 +78,6 @@ export function ReassignDialog({ open, onClose, alert, onConfirm, submitting }: 
         ) : view === "list" ? (
           <Stack spacing={1.1}>
             {candidates.map((c) => {
-              const colors = avatarColorFor(c.name);
               const isSelected = c.id === selectedId;
               return (
                 <Stack
@@ -90,9 +89,7 @@ export function ReassignDialog({ open, onClose, alert, onConfirm, submitting }: 
                     bgcolor: isSelected ? planningV2Colors.selectedBg : "#fff",
                   }}
                 >
-                  <Box sx={{ width: 42, height: 42, borderRadius: planningV2Radii.button, flex: "none", bgcolor: colors.bg, color: colors.fg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700 }}>
-                    {initialsFor(c.name)}
-                  </Box>
+                  <PersonAvatar name={c.name} size="md" />
                   <Box sx={{ flex: 1, minWidth: 0 }}>
                     <Typography sx={{ fontSize: 14, fontWeight: 700, color: planningV2Colors.textTitle }}>{c.name}</Typography>
                     <Typography sx={{ fontSize: 12, color: planningV2Colors.textMuted, mt: 0.3 }}>
@@ -114,7 +111,6 @@ export function ReassignDialog({ open, onClose, alert, onConfirm, submitting }: 
         ) : (
           <Box sx={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 1.25 }}>
             {candidates.map((c) => {
-              const colors = avatarColorFor(c.name);
               const isSelected = c.id === selectedId;
               return (
                 <Box
@@ -125,8 +121,8 @@ export function ReassignDialog({ open, onClose, alert, onConfirm, submitting }: 
                     bgcolor: isSelected ? planningV2Colors.selectedBg : "#fff",
                   }}
                 >
-                  <Box sx={{ width: 46, height: 46, borderRadius: planningV2Radii.button, bgcolor: colors.bg, color: colors.fg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 700, mb: 1.25 }}>
-                    {initialsFor(c.name)}
+                  <Box sx={{ mb: 1.25 }}>
+                    <PersonAvatar name={c.name} size="md" />
                   </Box>
                   <Typography sx={{ fontSize: 13.5, fontWeight: 700 }}>{c.name}</Typography>
                   <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary, mt: 0.3, mb: 1 }}>

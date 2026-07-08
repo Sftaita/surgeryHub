@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getInstrumentists } from "../../manager-instrumentists/api/instrumentists.api";
 import { getSurgeons } from "../../manager-surgeons/api/surgeons.api";
-import { Avatar } from "../../../ui/avatar/Avatar";
+import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 import type { PersonRole } from "../api/planning.api";
 
 export interface PersonOption {
@@ -147,7 +147,7 @@ export function PersonSearchSelect({ label, value, onChange, scope = "all", disa
         noOptionsText="Aucun résultat"
         renderOption={(props, option) => (
           <Box component="li" {...props} key={`${option.role}-${option.id}`} sx={{ display: "flex", alignItems: "center !important", gap: 1 }}>
-            <Avatar name={option.name} size={26} />
+            <PersonAvatar name={option.name} size="xs" />
             <Box sx={{ minWidth: 0 }}>
               <Typography sx={{ fontSize: 13.5 }} noWrap>{option.name}</Typography>
               <Typography sx={{ fontSize: 11, color: "text.secondary" }} noWrap>{ROLE_LABELS[option.role]} · {option.email}</Typography>

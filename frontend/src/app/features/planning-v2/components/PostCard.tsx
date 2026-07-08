@@ -10,7 +10,7 @@ import type { SurgeonSchedulePostV2 } from "../api/planningV2.types";
 import { summarizeRecurrence } from "../api/planningV2.types";
 import { isEndingSoon } from "../api/endingSoon";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
-import { Avatar } from "../../../ui/avatar/Avatar";
+import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 
 const PERIOD_LABELS: Record<string, string> = { MATIN: "Matin", APRES_MIDI: "Après-midi", JOURNEE: "Journée" };
 const PERIOD_HOURS: Record<string, string> = { MATIN: "08h–13h", APRES_MIDI: "13h–18h", JOURNEE: "08h–18h" };
@@ -150,7 +150,7 @@ export function PostCard({ post, variant = "card", onEdit, onToggleActive, onMan
         <Stack direction="row" alignItems="center" spacing={1} sx={{ minWidth: 0 }}>
           {post.instrumentist ? (
             <>
-              <Avatar name={post.instrumentist.name ?? post.instrumentist.email} />
+              <PersonAvatar name={post.instrumentist.name ?? post.instrumentist.email} size="xs" />
               <Typography noWrap sx={{ fontSize: 12.5, fontWeight: 600, color: planningV2Colors.textStrong }}>
                 {post.instrumentist.name ?? post.instrumentist.email}
               </Typography>
