@@ -1,11 +1,14 @@
 import {
-  Avatar, Box, Chip, CircularProgress, Divider,
+  Box, Chip, CircularProgress, Divider,
   Paper, Stack, Typography,
 } from "@mui/material";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../../api/apiClient";
+import { uploadProfilePicture } from "../../features/me/api/me.api";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../../ui/toast/useToast";
+import { AvatarUploader } from "../../ui/avatar/AvatarUploader";
+import { buildProfilePictureUrl } from "../../features/manager-instrumentists/utils/instrumentists.utils";
 
 const ORTHO_SPECIALTIES = [
   { value: "EPAULE", label: "Épaule" },
@@ -26,7 +29,7 @@ async function patchSpecialties(userId: number, specialties: string[]) {
 }
 
 export default function ProfilePage() {
-  const { state } = useAuth();
+  const { state, refreshUser } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
 
@@ -43,6 +46,15 @@ export default function ProfilePage() {
       qc.invalidateQueries({ queryKey: ["me"] });
     },
     onError: () => toast.error("Erreur lors de la sauvegarde"),
+  });
+
+  const photoMutation = useMutation({
+    mutationFn: (file: File) => uploadProfilePicture(file),
+    onSuccess: async () => {
+      toast.success("Photo de profil mise à jour");
+      qc.invalidateQueries({ queryKey: ["me"] });
+      await refreshUser();
+    },
   });
 
   function toggle(value: string) {
@@ -69,12 +81,12 @@ export default function ProfilePage() {
       {/* Carte identité */}
       <Paper variant="outlined" sx={{ p: 2, borderRadius: 3 }}>
         <Stack direction="row" spacing={2} alignItems="center">
-          <Avatar
-            src={profile?.profilePicturePath ?? undefined}
-            sx={{ width: 56, height: 56, bgcolor: "primary.main", fontSize: 22, fontWeight: 700 }}
-          >
-            {displayName.charAt(0).toUpperCase()}
-          </Avatar>
+          <AvatarUploader
+            name={displayName}
+            photoUrl={buildProfilePictureUrl(profile?.profilePicturePath)}
+            size="lg"
+            onFileReady={async (file) => { await photoMutation.mutateAsync(file); }}
+          />
           <Box>
             <Typography variant="h6" fontWeight={700} sx={{ lineHeight: 1.2 }}>
               {displayName}

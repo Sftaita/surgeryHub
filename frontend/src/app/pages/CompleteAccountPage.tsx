@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Alert,
-  Avatar,
   Box,
   Button,
   CircularProgress,
@@ -17,9 +16,8 @@ import {
   checkInvitation,
   completeInvitation,
 } from "../features/invitation/api/invitation.api";
-
-const MAX_PHOTO_SIZE_BYTES = 5 * 1024 * 1024; // 5 Mo
-const ACCEPTED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
+import { AvatarUploader } from "../ui/avatar/AvatarUploader";
+import { markAccountJustActivated } from "../features/me/justActivatedAccountFlag";
 
 function validateForm(fields: {
   firstname: string;
@@ -27,7 +25,6 @@ function validateForm(fields: {
   phone: string;
   password: string;
   confirmPassword: string;
-  profilePicture: File | null;
 }): Record<string, string> {
   const errors: Record<string, string> = {};
 
@@ -47,15 +44,6 @@ function validateForm(fields: {
     errors.confirmPassword = "Les mots de passe ne correspondent pas.";
   }
 
-  if (fields.profilePicture) {
-    if (!ACCEPTED_MIME_TYPES.includes(fields.profilePicture.type)) {
-      errors.profilePicture =
-        "Format non accepté. Utilisez JPEG, PNG ou WebP.";
-    } else if (fields.profilePicture.size > MAX_PHOTO_SIZE_BYTES) {
-      errors.profilePicture = "La photo ne doit pas dépasser 5 Mo.";
-    }
-  }
-
   return errors;
 }
 
@@ -63,7 +51,7 @@ export default function CompleteAccountPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const token = searchParams.get("token") ?? "";
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const firstnameRef = useRef<HTMLInputElement>(null);
 
   const [firstname, setFirstname] = useState("");
   const [lastname, setLastname] = useState("");
@@ -73,9 +61,6 @@ export default function CompleteAccountPage() {
   const [companyName, setCompanyName] = useState("");
   const [vatNumber, setVatNumber] = useState("");
   const [profilePicture, setProfilePicture] = useState<File | null>(null);
-  const [profilePicturePreview, setProfilePicturePreview] = useState<
-    string | null
-  >(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -102,17 +87,10 @@ export default function CompleteAccountPage() {
     }
   }, [tokenCheckQuery.data, navigate]);
 
-  useEffect(() => {
-    return () => {
-      if (profilePicturePreview) {
-        URL.revokeObjectURL(profilePicturePreview);
-      }
-    };
-  }, [profilePicturePreview]);
-
   const completeMutation = useMutation({
     mutationFn: (formData: FormData) => completeInvitation(formData),
     onSuccess: () => {
+      markAccountJustActivated();
       setDone(true);
     },
     onError: (err: any) => {
@@ -132,27 +110,6 @@ export default function CompleteAccountPage() {
     },
   });
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0] ?? null;
-
-    if (profilePicturePreview) {
-      URL.revokeObjectURL(profilePicturePreview);
-    }
-
-    setProfilePicture(file);
-    setProfilePicturePreview(file ? URL.createObjectURL(file) : null);
-    setFieldErrors((prev) => ({ ...prev, profilePicture: "" }));
-    event.target.value = "";
-  };
-
-  const handleRemovePhoto = () => {
-    if (profilePicturePreview) {
-      URL.revokeObjectURL(profilePicturePreview);
-    }
-    setProfilePicture(null);
-    setProfilePicturePreview(null);
-  };
-
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     setSubmitError(null);
@@ -163,7 +120,6 @@ export default function CompleteAccountPage() {
       phone,
       password,
       confirmPassword,
-      profilePicture,
     });
 
     if (Object.keys(errors).length > 0) {
@@ -282,57 +238,55 @@ export default function CompleteAccountPage() {
 
       <Box component="form" onSubmit={handleSubmit} noValidate>
         <Stack spacing={2} sx={{ mt: 2 }}>
-          {/* Photo de profil */}
-          <Stack spacing={1}>
-            <Typography variant="subtitle2">Photo de profil</Typography>
-            <Stack direction="row" spacing={2} alignItems="center">
-              <Avatar
-                src={profilePicturePreview ?? undefined}
-                sx={{ width: 72, height: 72 }}
+          {/* Photo de profil — étape mise en avant */}
+          <Box
+            sx={{
+              p: 2,
+              borderRadius: 3,
+              border: "1px solid",
+              borderColor: "divider",
+              bgcolor: "grey.50",
+            }}
+          >
+            <Stack spacing={1.5} alignItems="center" textAlign="center">
+              <Typography variant="subtitle1" fontWeight={700}>
+                Ajoutez une photo de profil
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Elle aide les managers, chirurgiens et instrumentistes à vous identifier rapidement.
+              </Typography>
+
+              <AvatarUploader
+                name={[firstname, lastname].filter(Boolean).join(" ") || "Vous"}
+                size="xl"
+                disabled={isPending}
+                onFileReady={(file) => setProfilePicture(file)}
+                onRemove={() => setProfilePicture(null)}
               />
-              <Stack spacing={0.5}>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept={ACCEPTED_MIME_TYPES.join(",")}
-                  style={{ display: "none" }}
-                  onChange={handleFileChange}
-                />
+
+              {!profilePicture && (
                 <Button
-                  size="small"
-                  variant="outlined"
-                  onClick={() => fileInputRef.current?.click()}
+                  variant="text"
+                  color="inherit"
+                  onClick={() => firstnameRef.current?.focus()}
                   disabled={isPending}
                 >
-                  {profilePicture ? "Changer" : "Choisir une photo"}
+                  Continuer sans photo
                 </Button>
-                {profilePicture && (
-                  <Button
-                    size="small"
-                    color="error"
-                    onClick={handleRemovePhoto}
-                    disabled={isPending}
-                  >
-                    Supprimer
-                  </Button>
-                )}
-              </Stack>
-            </Stack>
-            {fieldErrors.profilePicture && (
-              <Typography variant="caption" color="error">
-                {fieldErrors.profilePicture}
+              )}
+
+              <Typography variant="caption" color="text.secondary">
+                JPEG, PNG ou WebP — 5 Mo max. Optionnel : vous pouvez l'ajouter plus tard depuis votre profil.
               </Typography>
-            )}
-            <Typography variant="caption" color="text.secondary">
-              JPEG, PNG ou WebP — 5 Mo max. Optionnel.
-            </Typography>
-          </Stack>
+            </Stack>
+          </Box>
 
           <Divider />
 
           {/* Identité */}
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
             <TextField
+              inputRef={firstnameRef}
               label="Prénom"
               value={firstname}
               onChange={(e) => {

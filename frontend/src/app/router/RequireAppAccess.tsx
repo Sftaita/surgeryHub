@@ -1,6 +1,7 @@
 import { Navigate, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { isMobileRole, isDesktopRole } from "../auth/roles";
+import { ProfilePhotoPromptGate } from "../features/me/ProfilePhotoPromptGate";
 
 export function RequireAppAccess() {
   const { state } = useAuth();
@@ -25,5 +26,10 @@ export function RequireAppAccess() {
   // Un site n’est pas obligatoire → on ne bloque pas l’accès à /app/*
   // (suppression de la redirection /app/no-site qui provoquait une boucle)
 
-  return <Outlet />;
+  return (
+    <>
+      <ProfilePhotoPromptGate />
+      <Outlet />
+    </>
+  );
 }
