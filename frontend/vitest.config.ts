@@ -8,5 +8,9 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
+    // Capped at ~25% of logical cores — measured to eliminate timeout flakiness
+    // entirely (10/10 clean runs) while also running faster than the
+    // unrestricted default. See frontend/CONTRIBUTING.md "Test infrastructure".
+    maxWorkers: "25%",
   },
 });

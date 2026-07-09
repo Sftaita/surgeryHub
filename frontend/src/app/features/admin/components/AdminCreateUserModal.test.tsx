@@ -84,7 +84,7 @@ describe("AdminCreateUserModal — règles d'affiliation aux sites", () => {
       expect.objectContaining({ role: "ROLE_MANAGER", siteIds: [] }),
       expect.anything()
     );
-  });
+  }, 10000);
 
   it("autorise la création d'un manager avec plusieurs sites", async () => {
     const user = userEvent.setup();
@@ -102,7 +102,7 @@ describe("AdminCreateUserModal — règles d'affiliation aux sites", () => {
       expect.objectContaining({ role: "ROLE_MANAGER", siteIds: [1, 2] }),
       expect.anything()
     );
-  });
+  }, 10000);
 
   it("autorise la création d'un chirurgien avec plusieurs sites", async () => {
     const user = userEvent.setup();
@@ -120,5 +120,5 @@ describe("AdminCreateUserModal — règles d'affiliation aux sites", () => {
       expect.objectContaining({ role: "ROLE_SURGEON", siteIds: [1, 2] }),
       expect.anything()
     );
-  });
+  }, 10000);
 });

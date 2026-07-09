@@ -52,6 +52,7 @@ const BillingConfigPage                 = React.lazy(() => import("../pages/mana
 const AbsencesPage                      = React.lazy(() => import("../pages/manager/planning/AbsencesPage"));
 const PlanningVersionDetailPage         = React.lazy(() => import("../pages/manager/planning/PlanningVersionDetailPage"));
 const PlanningV2Page                    = React.lazy(() => import("../pages/manager/planning/PlanningV2Page"));
+const PlanningSchedulePage              = React.lazy(() => import("../pages/manager/planning/PlanningSchedulePage"));
 
 // ─── Suspense fallback ───────────────────────────────────────────────────────
 
@@ -159,6 +160,7 @@ export function AppRouter() {
                 <Route path="m/planning/versions/:id" element={<PlanningVersionDetailPage />} />
                 <Route path="m/planning" element={<Navigate to="/app/m/planning/v2" replace />} />
                 <Route path="m/planning/v2" element={<PlanningV2Page />} />
+                <Route path="m/planning/living" element={<PlanningSchedulePage />} />
               </Route>
             </Route>
 

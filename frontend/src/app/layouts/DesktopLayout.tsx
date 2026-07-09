@@ -50,6 +50,10 @@ const NAV_ITEMS = [
     href: "/app/m/planning/v2",
   },
   {
+    label: "Planning publié",
+    href: "/app/m/planning/living",
+  },
+  {
     label: "Absences",
     href: "/app/m/planning/absences",
   },

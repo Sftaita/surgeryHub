@@ -16,6 +16,10 @@ vi.mock("../auth/AuthContext", () => ({
   }),
 }));
 
+vi.mock("../ui/toast/useToast", () => ({
+  useToast: () => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn() }),
+}));
+
 beforeEach(() => {
   loginMock.mockClear();
   sessionStorage.clear();
@@ -35,27 +39,27 @@ describe("LoginPage — Se souvenir de moi", () => {
     expect(screen.getByLabelText("Se souvenir de moi")).toBeInTheDocument();
   });
 
-  it("envoie rememberMe=false par défaut", async () => {
+  it("envoie rememberMe=true par défaut (cochée par défaut)", async () => {
     const user = userEvent.setup();
     renderLoginPage();
 
-    await user.type(screen.getByPlaceholderText("vous@surgeryhub.be"), "user@example.com");
+    await user.type(screen.getByPlaceholderText("votre@email.com"), "user@example.com");
     await user.type(screen.getByPlaceholderText("••••••••"), "secret123");
     await user.click(screen.getByRole("button", { name: /Se connecter/i }));
 
-    expect(loginMock).toHaveBeenCalledWith("user@example.com", "secret123", false);
+    expect(loginMock).toHaveBeenCalledWith("user@example.com", "secret123", true);
   });
 
-  it("envoie rememberMe=true si la checkbox est cochée", async () => {
+  it("envoie rememberMe=false si la checkbox est décochée", async () => {
     const user = userEvent.setup();
     renderLoginPage();
 
-    await user.type(screen.getByPlaceholderText("vous@surgeryhub.be"), "user@example.com");
+    await user.type(screen.getByPlaceholderText("votre@email.com"), "user@example.com");
     await user.type(screen.getByPlaceholderText("••••••••"), "secret123");
     await user.click(screen.getByLabelText("Se souvenir de moi"));
     await user.click(screen.getByRole("button", { name: /Se connecter/i }));
 
-    expect(loginMock).toHaveBeenCalledWith("user@example.com", "secret123", true);
+    expect(loginMock).toHaveBeenCalledWith("user@example.com", "secret123", false);
   });
 
   it("affiche un message discret si la session a expiré", () => {
