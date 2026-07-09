@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { GeneratePlanningTab } from "./GeneratePlanningTab";
 import type { PreviewLineV2, PreviewResponseV2 } from "../api/planningV2.types";
@@ -42,9 +43,11 @@ function line(overrides: Partial<PreviewLineV2>): PreviewLineV2 {
 function renderTab() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <GeneratePlanningTab />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <GeneratePlanningTab />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -89,6 +92,8 @@ describe("GeneratePlanningTab — sélection multi-mois", () => {
         line({ date: "2026-06-01", surgeonId: 2, surgeonName: "Dr Dupont", status: "CONFLICT", postId: 2 }),
       ],
       summary: { total: 2, covered: 1, uncovered: 0, skipped: 0, conflict: 1, modified: 0 },
+      previewVersion: "v-1",
+      generatedAt: "2026-06-01T00:00:00Z",
     };
     (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
 
@@ -112,6 +117,8 @@ describe("GeneratePlanningTab — sélection multi-mois", () => {
     const preview: PreviewResponseV2 = {
       lines: [line({ status: "COVERED" })],
       summary: { total: 1, covered: 1, uncovered: 0, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "v-1",
+      generatedAt: "2026-06-01T00:00:00Z",
     };
     (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
 

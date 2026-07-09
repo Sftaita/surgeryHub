@@ -1,17 +1,29 @@
 import * as React from "react";
 import {
-  Alert, Box, Button, Chip, CircularProgress, MenuItem, Paper, Select, Stack,
+  Alert, Box, Button, Chip, CircularProgress,
+  Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle,
+  MenuItem, Paper, Select, Stack, ToggleButton, ToggleButtonGroup,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField,
   Typography,
 } from "@mui/material";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import LockOpenIcon   from "@mui/icons-material/LockOpen";
+import BlockIcon      from "@mui/icons-material/Block";
+import SwapHorizIcon  from "@mui/icons-material/SwapHoriz";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchMissions } from "../../../features/missions/api/missions.api";
 import type { Mission, MissionStatus } from "../../../features/missions/api/missions.types";
 import { fetchSites } from "../../../features/sites/api/sites.api";
 import { useToast } from "../../../ui/toast/useToast";
 import { apiClient } from "../../../api/apiClient";
+import {
+  releaseMission, cancelMission, reassignMission,
+} from "../../../features/planning-v2/api/planningV2.api";
+import { CoverageBanner }      from "../../../features/planning-v2/components/CoverageBanner";
+import { MissionHistoryDrawer } from "../../../features/planning-v2/components/MissionHistoryDrawer";
+import { CancelMissionDialog }  from "../../../features/planning-v2/components/CancelMissionDialog";
+import { ReassignMissionDialog } from "../../../features/planning-v2/components/ReassignMissionDialog";
 
-// ── Helpers (idem generate page) ─────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function getISOWeek(dateStr: string): number {
   const d = new Date(Date.UTC(
@@ -46,20 +58,23 @@ function displayName(u: { firstname?: string | null; lastname?: string | null; e
   return n || u.email || "—";
 }
 
-// ── Mission → row conversion ──────────────────────────────────────────────────
+// ── Mission → row ─────────────────────────────────────────────────────────────
 
 interface ScheduleRow {
-  missionId:       number;
-  date:            string;
-  surgeonName:     string;
-  missionType:     "BLOCK" | "CONSULTATION";
-  startTime:       string;  // HH:MM
-  endTime:         string;
-  instrumentistId:   number | null;
-  instrumentistName: string | null;
-  siteName:        string | null;
-  status:          MissionStatus;
-  canEdit:         boolean;
+  missionId:          number;
+  date:               string;
+  surgeonName:        string;
+  missionType:        "BLOCK" | "CONSULTATION";
+  startTime:          string;
+  endTime:            string;
+  instrumentistId:    number | null;
+  instrumentistName:  string | null;
+  siteName:           string | null;
+  status:             MissionStatus;
+  canEdit:            boolean;
+  canRelease:         boolean;
+  canCancel:          boolean;
+  canReassign:        boolean;
 }
 
 function toRow(m: Mission): ScheduleRow {
@@ -68,21 +83,24 @@ function toRow(m: Mission): ScheduleRow {
   const endTime   = m.endAt.slice(11, 16);
   const status    = (m.status ?? "OPEN") as MissionStatus;
   return {
-    missionId:       m.id,
+    missionId:         m.id,
     date,
-    surgeonName:     displayName(m.surgeon),
-    missionType:     m.type,
+    surgeonName:       displayName(m.surgeon),
+    missionType:       m.type,
     startTime,
     endTime,
     instrumentistId:   m.instrumentist?.id ?? null,
     instrumentistName: m.instrumentist ? displayName(m.instrumentist) : null,
-    siteName:        m.site?.name ?? null,
+    siteName:          m.site?.name ?? null,
     status,
-    canEdit: status === "OPEN" || status === "ASSIGNED",
+    canEdit:    status === "OPEN",
+    canRelease: status === "ASSIGNED",
+    canCancel:  status === "OPEN",
+    canReassign: status === "ASSIGNED",
   };
 }
 
-// ── Grouping (identique generate page) ───────────────────────────────────────
+// ── Grouping ──────────────────────────────────────────────────────────────────
 
 interface DayGroup  { date: string; rows: ScheduleRow[] }
 interface WeekGroup { weekNumber: number; parity: "PAIR" | "IMPAIR"; label: string; days: DayGroup[] }
@@ -117,7 +135,11 @@ function groupRows(rows: ScheduleRow[]): WeekGroup[] {
 
 // ── Status config ─────────────────────────────────────────────────────────────
 
-const STATUS_LABEL: Record<string, { label: string; color: "default" | "info" | "success" | "warning" | "error" | "primary" | "secondary" }> = {
+const STATUS_LABEL: Record<string, {
+  label: string;
+  color: "default" | "info" | "success" | "warning" | "error" | "primary" | "secondary";
+  sx?: object;
+}> = {
   DRAFT:       { label: "Brouillon",  color: "default"   },
   OPEN:        { label: "À réserver", color: "info"      },
   ASSIGNED:    { label: "Assigné",    color: "success"   },
@@ -126,9 +148,10 @@ const STATUS_LABEL: Record<string, { label: string; color: "default" | "info" | 
   SUBMITTED:   { label: "Soumis",     color: "primary"   },
   VALIDATED:   { label: "Validé",     color: "secondary" },
   CLOSED:      { label: "Clôturé",    color: "default"   },
+  CANCELLED:   { label: "Annulé",     color: "default",  sx: { bgcolor: "#616161", color: "#fff" } },
 };
 
-// ── InstrumentistCell (pour schedule) ────────────────────────────────────────
+// ── InstrumentistCell ─────────────────────────────────────────────────────────
 
 interface Instrumentist { id: number; displayName: string }
 
@@ -192,16 +215,31 @@ function ScheduleInstrumentistCell({
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+type StatusFilter = "ALL" | "OPEN" | "ASSIGNED" | "CANCELLED";
+
 export default function PlanningSchedulePage() {
-  const [from, setFrom] = React.useState(() => {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+
+  const [from,         setFrom]         = React.useState(() => {
     const d = new Date(); d.setDate(d.getDate() - 7); return d.toISOString().slice(0, 10);
   });
-  const [to, setTo] = React.useState(() => {
+  const [to,           setTo]           = React.useState(() => {
     const d = new Date(); d.setMonth(d.getMonth() + 1); return d.toISOString().slice(0, 10);
   });
-  const [siteId,   setSiteId]   = React.useState<number | "">("");
-  const [rows,     setRows]     = React.useState<ScheduleRow[]>([]);
-  const [loaded,   setLoaded]   = React.useState(false);
+  const [siteId,       setSiteId]       = React.useState<number | "">("");
+  const [versionId,    setVersionId]    = React.useState<number | "">("");
+  const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("ALL");
+  const [rows,         setRows]         = React.useState<ScheduleRow[]>([]);
+  const [loaded,       setLoaded]       = React.useState(false);
+
+  // Drawer / dialog state
+  const [drawerMissionId, setDrawerMissionId]   = React.useState<number | null>(null);
+  const [drawerOpen,      setDrawerOpen]        = React.useState(false);
+
+  const [releaseTarget, setReleaseTarget]       = React.useState<number | null>(null);
+  const [cancelTarget,  setCancelTarget]        = React.useState<number | null>(null);
+  const [reassignTarget, setReassignTarget]     = React.useState<ScheduleRow | null>(null);
 
   const sitesQuery = useQuery({ queryKey: ["sites"], queryFn: fetchSites });
   const instrumentistsQuery = useQuery({
@@ -222,7 +260,7 @@ export default function PlanningSchedulePage() {
       });
       return (data.items ?? []) as Mission[];
     },
-    enabled: false, // manuel
+    enabled: false,
     staleTime: 0,
   });
 
@@ -245,50 +283,185 @@ export default function PlanningSchedulePage() {
     );
   }
 
-  const weeks = groupRows(rows);
+  function handleRowClick(row: ScheduleRow) {
+    setDrawerMissionId(row.missionId);
+    setDrawerOpen(true);
+  }
+
+  function invalidateCoverage() {
+    if (versionId !== "") {
+      queryClient.invalidateQueries({ queryKey: ["coverage-summary", versionId as number] });
+    }
+  }
+
+  // ── Release mutation ──────────────────────────────────────────────────────
+
+  const releaseMut = useMutation({
+    mutationFn: (missionId: number) => releaseMission(missionId),
+    onMutate: (missionId) => {
+      const prev = rows.find((r) => r.missionId === missionId);
+      // Optimistic: ASSIGNED → OPEN, remove instrumentist
+      setRows((r) =>
+        r.map((row) =>
+          row.missionId === missionId
+            ? { ...row, status: "OPEN" as MissionStatus, instrumentistId: null, instrumentistName: null,
+                canEdit: true, canRelease: false, canCancel: true, canReassign: false }
+            : row,
+        ),
+      );
+      return { prev };
+    },
+    onError: (_e, missionId, ctx) => {
+      // Rollback
+      if (ctx?.prev) {
+        setRows((r) =>
+          r.map((row) => (row.missionId === missionId ? ctx.prev! : row)),
+        );
+      }
+      toast.error("Erreur lors de la remise au pool");
+    },
+    onSuccess: () => {
+      toast.success("Mission remise au pool");
+      invalidateCoverage();
+    },
+    onSettled: () => setReleaseTarget(null),
+  });
+
+  // ── Cancel mutation ───────────────────────────────────────────────────────
+
+  const cancelMut = useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason?: string }) => cancelMission(id, reason),
+    onMutate: ({ id }) => {
+      const prev = rows.find((r) => r.missionId === id);
+      setRows((r) =>
+        r.map((row) =>
+          row.missionId === id
+            ? { ...row, status: "CANCELLED" as MissionStatus,
+                canEdit: false, canRelease: false, canCancel: false, canReassign: false }
+            : row,
+        ),
+      );
+      return { prev };
+    },
+    onError: (_e, { id }, ctx) => {
+      if (ctx?.prev) {
+        setRows((r) => r.map((row) => (row.missionId === id ? ctx.prev! : row)));
+      }
+      toast.error("Erreur lors de l'annulation");
+    },
+    onSuccess: () => {
+      toast.success("Mission annulée");
+      invalidateCoverage();
+    },
+    onSettled: () => setCancelTarget(null),
+  });
+
+  // ── Reassign mutation ─────────────────────────────────────────────────────
+
+  const reassignMut = useMutation({
+    mutationFn: ({ id, instrumentistId }: { id: number; instrumentistId: number; instrumentistName: string }) =>
+      reassignMission(id, instrumentistId),
+    onMutate: ({ id, instrumentistId, instrumentistName }) => {
+      const prev = rows.find((r) => r.missionId === id);
+      setRows((r) =>
+        r.map((row) =>
+          row.missionId === id
+            ? { ...row, instrumentistId, instrumentistName }
+            : row,
+        ),
+      );
+      return { prev };
+    },
+    onError: (_e, { id }, ctx) => {
+      if (ctx?.prev) {
+        setRows((r) => r.map((row) => (row.missionId === id ? ctx.prev! : row)));
+      }
+      toast.error("Erreur lors de la réassignation");
+    },
+    onSuccess: () => {
+      toast.success("Mission réassignée");
+      invalidateCoverage();
+    },
+    onSettled: () => setReassignTarget(null),
+  });
+
+  const filteredRows = statusFilter === "ALL" ? rows : rows.filter((r) => r.status === statusFilter);
+  const weeks = groupRows(filteredRows);
   const instrumentists = instrumentistsQuery.data ?? [];
 
   return (
     <Stack spacing={3}>
-      {/* ── Header ── */}
       <Typography variant="h6" fontWeight={700}>Planning publié</Typography>
 
-      {/* ── Filters ── */}
+      {/* Coverage banner — shown when a versionId is provided */}
+      {versionId !== "" && <CoverageBanner versionId={versionId as number} />}
+
+      {/* Filters */}
       <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
-        <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="flex-end">
-          <TextField
-            label="Du" type="date" size="small" value={from}
-            onChange={(e) => setFrom(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-          />
-          <TextField
-            label="Au" type="date" size="small" value={to}
-            onChange={(e) => setTo(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-          />
-          <Select
-            value={siteId} onChange={(e) => setSiteId(e.target.value as number | "")}
-            displayEmpty size="small" sx={{ minWidth: 160 }}
-          >
-            <MenuItem value="">Tous les sites</MenuItem>
-            {(sitesQuery.data ?? []).map((s: any) => (
-              <MenuItem key={s.id} value={s.id}>{s.name}</MenuItem>
-            ))}
-          </Select>
-          <Button
-            variant="contained" disableElevation
-            onClick={handleLoad}
-            disabled={!from || !to || missionsQuery.isFetching}
-          >
-            {missionsQuery.isFetching ? <CircularProgress size={16} /> : "Charger le planning"}
-          </Button>
+        <Stack spacing={2}>
+          <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="flex-end">
+            <TextField
+              label="Du" type="date" size="small" value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+            />
+            <TextField
+              label="Au" type="date" size="small" value={to}
+              onChange={(e) => setTo(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+            />
+            <Select
+              value={siteId} onChange={(e) => setSiteId(e.target.value as number | "")}
+              displayEmpty size="small" sx={{ minWidth: 160 }}
+            >
+              <MenuItem value="">Tous les sites</MenuItem>
+              {(sitesQuery.data ?? []).map((s: any) => (
+                <MenuItem key={s.id} value={s.id}>{s.name}</MenuItem>
+              ))}
+            </Select>
+            <TextField
+              label="Version (optionnel)"
+              type="number"
+              size="small"
+              value={versionId}
+              onChange={(e) => setVersionId(e.target.value === "" ? "" : Number(e.target.value))}
+              InputLabelProps={{ shrink: true }}
+              sx={{ width: 140 }}
+              inputProps={{ min: 1, "aria-label": "Numéro de version du planning" }}
+            />
+            <Button
+              variant="contained" disableElevation
+              onClick={handleLoad}
+              disabled={!from || !to || missionsQuery.isFetching}
+            >
+              {missionsQuery.isFetching ? <CircularProgress size={16} /> : "Charger le planning"}
+            </Button>
+          </Stack>
+
+          {/* Status filter */}
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+              Statut :
+            </Typography>
+            <ToggleButtonGroup
+              value={statusFilter}
+              exclusive
+              onChange={(_e, v) => v && setStatusFilter(v as StatusFilter)}
+              size="small"
+              aria-label="Filtre par statut"
+            >
+              <ToggleButton value="ALL"       sx={{ fontSize: 11, py: 0.3, px: 1.5 }}>Tous</ToggleButton>
+              <ToggleButton value="OPEN"      sx={{ fontSize: 11, py: 0.3, px: 1.5 }}>Ouverts</ToggleButton>
+              <ToggleButton value="ASSIGNED"  sx={{ fontSize: 11, py: 0.3, px: 1.5 }}>Assignés</ToggleButton>
+              <ToggleButton value="CANCELLED" sx={{ fontSize: 11, py: 0.3, px: 1.5 }}>Annulés</ToggleButton>
+            </ToggleButtonGroup>
+          </Stack>
         </Stack>
       </Paper>
 
-      {/* ── Empty state ── */}
+      {/* Empty states */}
       {!loaded && !missionsQuery.isFetching && (
         <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 8, gap: 2 }}>
-          <img src="https://cdn.undraw.co/illustration/online-calendar_ogka.svg" alt="" style={{ width: 200, opacity: 0.75 }} />
           <Typography variant="h6" fontWeight={600} color="text.secondary">Aucun planning chargé</Typography>
           <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ maxWidth: 360 }}>
             Sélectionnez une période et cliquez sur <strong>Charger le planning</strong>.
@@ -296,11 +469,15 @@ export default function PlanningSchedulePage() {
         </Box>
       )}
 
-      {loaded && rows.length === 0 && (
-        <Alert severity="info">Aucune mission publiée sur cette période.</Alert>
+      {loaded && filteredRows.length === 0 && (
+        <Alert severity="info">
+          {rows.length === 0
+            ? "Aucune mission publiée sur cette période."
+            : "Aucune mission ne correspond au filtre sélectionné."}
+        </Alert>
       )}
 
-      {/* ── Planning table ── */}
+      {/* Planning table */}
       {weeks.map((week) => (
         <Box key={week.weekNumber}>
           <Box sx={{
@@ -325,6 +502,7 @@ export default function PlanningSchedulePage() {
                   <TableCell sx={{ width: 160, fontWeight: 700, fontSize: 12 }}>Instrumentiste</TableCell>
                   <TableCell sx={{ width: 88,  fontWeight: 700, fontSize: 12 }}>Site</TableCell>
                   <TableCell sx={{ width: 110, fontWeight: 700, fontSize: 12 }}>Statut</TableCell>
+                  <TableCell sx={{ width: 120, fontWeight: 700, fontSize: 12 }}>Actions</TableCell>
                 </TableRow>
               </TableHead>
 
@@ -338,7 +516,10 @@ export default function PlanningSchedulePage() {
                     return (
                       <TableRow
                         key={row.missionId}
+                        onClick={() => handleRowClick(row)}
                         sx={{
+                          cursor: "pointer",
+                          "&:hover": { bgcolor: "grey.50" },
                           "& td": {
                             fontSize: 13, py: 0.7,
                             borderBottom: isLast ? "2px solid" : "1px solid",
@@ -360,7 +541,7 @@ export default function PlanningSchedulePage() {
                         <TableCell sx={{ fontWeight: 500 }}>{row.surgeonName}</TableCell>
                         <TableCell sx={{ color: "text.secondary" }}>{getPeriod(row.startTime)}</TableCell>
 
-                        <TableCell sx={{ py: "2px !important" }}>
+                        <TableCell sx={{ py: "2px !important" }} onClick={(e) => e.stopPropagation()}>
                           <ScheduleInstrumentistCell
                             row={row}
                             instrumentists={instrumentists}
@@ -376,8 +557,53 @@ export default function PlanningSchedulePage() {
                             size="small"
                             color={cfg.color}
                             variant={row.status === "OPEN" ? "outlined" : "filled"}
-                            sx={{ fontSize: 11, height: 20 }}
+                            sx={{ fontSize: 11, height: 20, ...(cfg.sx ?? {}) }}
                           />
+                        </TableCell>
+
+                        {/* Actions column — stop propagation so row click doesn't open drawer */}
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          <Stack direction="row" spacing={0.5}>
+                            {row.canRelease && (
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                color="warning"
+                                startIcon={<LockOpenIcon fontSize="small" />}
+                                aria-label="Remettre au pool"
+                                onClick={() => setReleaseTarget(row.missionId)}
+                                sx={{ fontSize: 11, py: 0.3, px: 1, minWidth: 0 }}
+                              >
+                                Pool
+                              </Button>
+                            )}
+                            {row.canCancel && (
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                color="error"
+                                startIcon={<BlockIcon fontSize="small" />}
+                                aria-label="Annuler la mission"
+                                onClick={() => setCancelTarget(row.missionId)}
+                                sx={{ fontSize: 11, py: 0.3, px: 1, minWidth: 0 }}
+                              >
+                                Annuler
+                              </Button>
+                            )}
+                            {row.canReassign && (
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                color="info"
+                                startIcon={<SwapHorizIcon fontSize="small" />}
+                                aria-label="Réassigner la mission"
+                                onClick={() => setReassignTarget(row)}
+                                sx={{ fontSize: 11, py: 0.3, px: 1, minWidth: 0 }}
+                              >
+                                ↔
+                              </Button>
+                            )}
+                          </Stack>
                         </TableCell>
                       </TableRow>
                     );
@@ -388,6 +614,60 @@ export default function PlanningSchedulePage() {
           </TableContainer>
         </Box>
       ))}
+
+      {/* Release confirm dialog */}
+      <Dialog open={releaseTarget !== null} onClose={() => setReleaseTarget(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Remettre au pool ?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            L'instrumentiste sera désengagé. La mission repassera en statut "À réserver".
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setReleaseTarget(null)} disabled={releaseMut.isPending}>
+            Annuler
+          </Button>
+          <Button
+            onClick={() => releaseTarget !== null && releaseMut.mutate(releaseTarget)}
+            disabled={releaseMut.isPending}
+            color="warning"
+            variant="contained"
+            disableElevation
+            aria-label="Remettre au pool"
+          >
+            {releaseMut.isPending ? "En cours…" : "Remettre au pool"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Cancel dialog */}
+      <CancelMissionDialog
+        open={cancelTarget !== null}
+        loading={cancelMut.isPending}
+        onClose={() => setCancelTarget(null)}
+        onConfirm={(reason) =>
+          cancelTarget !== null && cancelMut.mutate({ id: cancelTarget, reason })
+        }
+      />
+
+      {/* Reassign dialog */}
+      <ReassignMissionDialog
+        open={reassignTarget !== null}
+        loading={reassignMut.isPending}
+        missionId={reassignTarget?.missionId ?? null}
+        onClose={() => setReassignTarget(null)}
+        onConfirm={(instrumentistId, instrumentistName) =>
+          reassignTarget !== null &&
+          reassignMut.mutate({ id: reassignTarget.missionId, instrumentistId, instrumentistName })
+        }
+      />
+
+      {/* Mission history drawer */}
+      <MissionHistoryDrawer
+        missionId={drawerMissionId}
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+      />
     </Stack>
   );
 }

@@ -31,7 +31,8 @@ export type MissionStatus =
   | "SUBMITTED"
   | "VALIDATED"
   | "CLOSED"
-  | "IN_PROGRESS";
+  | "IN_PROGRESS"
+  | "CANCELLED";
 
 export type CreateMissionBody = {
   siteId: number;
@@ -92,6 +93,7 @@ export interface SiteRef {
   name?: string;
   address?: string;
   timezone?: string;
+  photoPath?: string | null;
 }
 
 export interface UserRef {

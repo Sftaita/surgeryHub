@@ -10,9 +10,13 @@ import type {
   PlanningAlertV2,
   PlanningAlertListResponse,
   EligibleInstrumentistV2,
+  PreviewLineV2,
   PreviewResponseV2,
   GeneratedPlanningV2,
   DeployResponseV2,
+  CoverageSummary,
+  MissionAuditEvent,
+  MissionEligibilityResponse,
 } from "./planningV2.types";
 
 /** Same pattern as every other page-local helper in this codebase (no shared util exists). */
@@ -201,7 +205,12 @@ export async function previewPlanningV2(data: GenerationTargetInput): Promise<Pr
   return res.data;
 }
 
-export async function generatePlanningV2(data: GenerationTargetInput): Promise<GeneratedPlanningV2> {
+export interface GeneratePlanningV2Input extends GenerationTargetInput {
+  previewVersion?: string;
+  lines?: PreviewLineV2[];
+}
+
+export async function generatePlanningV2(data: GeneratePlanningV2Input): Promise<GeneratedPlanningV2> {
   const res = await apiClient.post("/api/planning/v2/generate", data);
   return res.data;
 }
@@ -213,4 +222,33 @@ export async function deployPlanningV2(planningVersionId: number, sendPdf: boole
     { timeout: 30_000 },
   );
   return res.data;
+}
+
+// ── Living planning — Batch 15G ───────────────────────────────────────────────
+
+export async function fetchCoverageSummary(versionId: number): Promise<CoverageSummary> {
+  const res = await apiClient.get(`/api/planning/versions/${versionId}/coverage-summary`);
+  return res.data as CoverageSummary;
+}
+
+export async function releaseMission(id: number): Promise<void> {
+  await apiClient.post(`/api/missions/${id}/release`);
+}
+
+export async function cancelMission(id: number, reason?: string): Promise<void> {
+  await apiClient.post(`/api/missions/${id}/cancel`, reason ? { reason } : {});
+}
+
+export async function reassignMission(id: number, instrumentistId: number): Promise<void> {
+  await apiClient.post(`/api/missions/${id}/reassign`, { instrumentistId });
+}
+
+export async function fetchMissionAudit(id: number): Promise<MissionAuditEvent[]> {
+  const res = await apiClient.get(`/api/missions/${id}/audit`);
+  return res.data as MissionAuditEvent[];
+}
+
+export async function fetchMissionEligibleInstrumentists(missionId: number): Promise<MissionEligibilityResponse> {
+  const res = await apiClient.get(`/api/missions/${missionId}/eligible-instrumentists`);
+  return res.data as MissionEligibilityResponse;
 }

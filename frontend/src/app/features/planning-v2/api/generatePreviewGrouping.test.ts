@@ -45,21 +45,28 @@ describe("mergePreviewResponses()", () => {
     const june: PreviewResponseV2 = {
       lines: [line({ date: "2026-06-15" }), line({ date: "2026-06-01" })],
       summary: { total: 2, covered: 2, uncovered: 0, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "v-june",
+      generatedAt: "2026-06-01T00:00:00Z",
     };
     const july: PreviewResponseV2 = {
       lines: [line({ date: "2026-07-01", status: "CONFLICT" })],
       summary: { total: 1, covered: 0, uncovered: 0, skipped: 0, conflict: 1, modified: 0 },
+      previewVersion: "v-july",
+      generatedAt: "2026-07-01T00:00:00Z",
     };
 
     const merged = mergePreviewResponses([june, july]);
 
     expect(merged.lines.map((l) => l.date)).toEqual(["2026-06-01", "2026-06-15", "2026-07-01"]);
     expect(merged.summary).toEqual({ total: 3, covered: 2, uncovered: 0, skipped: 0, conflict: 1, modified: 0 });
+    expect(merged.previewVersion).toBe("v-june");
+    expect(merged.generatedAt).toBe("2026-06-01T00:00:00Z");
   });
 
   it("returns an empty merge for no responses", () => {
     expect(mergePreviewResponses([])).toEqual({
       lines: [], summary: { total: 0, covered: 0, uncovered: 0, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "", generatedAt: "",
     });
   });
 });

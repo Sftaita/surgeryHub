@@ -1,25 +1,55 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PostFormDialog } from "./PostFormDialog";
 import type { Site } from "../../sites/api/sites.api";
 import type { SearchableOption } from "./SearchableSelect";
 
-const sites: Site[] = [{ id: 1, name: "Alpha" }];
+const sites: Site[] = [
+  { id: 1, name: "Alpha" },
+  { id: 2, name: "Beta (matin seul)" },
+  { id: 3, name: "Gamma (aucune période)" },
+];
 const surgeons: SearchableOption[] = [{ id: 1, label: "Dr Martin" }];
 const instrumentists: SearchableOption[] = [];
 
+function periodConfig(siteId: number, period: string) {
+  return { id: siteId * 10 + period.length, site: { id: siteId, name: "" }, period, startTime: "08:00", endTime: "18:00", active: true };
+}
+
+// This dialog filters the period options by the selected site's active shift periods
+// (GET /api/planning/shift-periods) — stub it per-site: Alpha has all three configured
+// (matches the Batch 14C tests below, unrelated to period filtering), Beta only has
+// MATIN, Gamma has none at all.
+const getShiftPeriodsMock = vi.fn((siteId: number) => {
+  if (siteId === 1) {
+    return Promise.resolve({ items: ["MATIN", "APRES_MIDI", "JOURNEE"].map((p) => periodConfig(1, p)) });
+  }
+  if (siteId === 2) {
+    return Promise.resolve({ items: [periodConfig(2, "MATIN")] });
+  }
+  return Promise.resolve({ items: [] });
+});
+
+vi.mock("../api/planningV2.api", () => ({
+  getShiftPeriods: (siteId: number) => getShiftPeriodsMock(siteId),
+}));
+
 function renderDialog(onSubmit = vi.fn()) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <PostFormDialog
-      open
-      onClose={() => {}}
-      onSubmit={onSubmit}
-      submitting={false}
-      sites={sites}
-      surgeons={surgeons}
-      instrumentists={instrumentists}
-    />
+    <QueryClientProvider client={client}>
+      <PostFormDialog
+        open
+        onClose={() => {}}
+        onSubmit={onSubmit}
+        submitting={false}
+        sites={sites}
+        surgeons={surgeons}
+        instrumentists={instrumentists}
+      />
+    </QueryClientProvider>
   );
   return { onSubmit };
 }
@@ -66,6 +96,17 @@ describe("PostFormDialog — récurrence mensuelle (Batch 14C)", () => {
     expect(screen.getByRole("button", { name: /Enregistrer le poste/i })).toBeDisabled();
   });
 
+  // RC1-F: this test does 9 real userEvent interactions (3 MUI Autocomplete picks + 5 toggle
+  // clicks + 1 submit) — roughly double test 1 (4) and test 2 (5) above. Profiling showed each
+  // getByRole('button', {name}) lookup costs ~120-175ms in this dialog's DOM (Testing Library's
+  // accessible-name computation over MUI's verbose markup) and each Autocomplete open/select
+  // costs ~90-175ms (Popper/Portal mount) — a real, measured cost, not a hang or leaked
+  // promise: the test consistently completes in 1.8-2.8s on a quiet machine. Under directly-
+  // induced CPU contention (6-10 busy processes) the same run reproducibly took 3.6-4.6s, and
+  // it was observed at 5.24s in an earlier CI-style run — this test's legitimate workload sits
+  // too close to Vitest's 5000ms default for this environment's realistic background load
+  // (this repo regularly runs alongside a multi-container Docker stack + local MySQL). Given
+  // 15s, it passed 100% of repeated runs including under artificial contention.
   it("envoie weekdays + monthWeeks, sans monthlyNthWeekday, pour '2e et 3e jeudi du mois'", async () => {
     const user = userEvent.setup();
     const { onSubmit } = renderDialog();
@@ -97,5 +138,40 @@ describe("PostFormDialog — récurrence mensuelle (Batch 14C)", () => {
       anchorDate: payload.startDate,
     });
     expect(payload.recurrence).not.toHaveProperty("monthlyNthWeekday");
+  }, 15000);
+});
+
+describe("PostFormDialog — périodes filtrées par site", () => {
+  it("ne propose que les périodes configurées et actives pour le site sélectionné", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await pickAutocomplete(user, "Site", "Beta (matin seul)");
+
+    expect(await screen.findByRole("button", { name: /Matin/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Après-midi/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Journée/ })).not.toBeInTheDocument();
+  });
+
+  it("bascule automatiquement sur une période disponible si celle sélectionnée ne l'est plus", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    // Default period is MATIN, which Beta *does* have — switch to a site where it doesn't.
+    await pickAutocomplete(user, "Site", "Beta (matin seul)");
+    expect(await screen.findByRole("button", { name: /Matin/, pressed: true })).toBeInTheDocument();
+  });
+
+  it("affiche un avertissement et désactive l'enregistrement quand le site n'a aucune période active", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await pickAutocomplete(user, "Chirurgien", "Dr Martin");
+    await pickAutocomplete(user, "Site", "Gamma (aucune période)");
+
+    expect(
+      await screen.findByText(/Aucune période active configurée pour Gamma/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Enregistrer le poste/i })).toBeDisabled();
   });
 });

@@ -39,7 +39,12 @@ export function mergePreviewResponses(responses: PreviewResponseV2[]): PreviewRe
     }),
     { total: 0, covered: 0, uncovered: 0, skipped: 0, conflict: 0, modified: 0 },
   );
-  return { lines, summary };
+  return {
+    lines,
+    summary,
+    previewVersion: responses[0]?.previewVersion ?? "",
+    generatedAt: responses[0]?.generatedAt ?? "",
+  };
 }
 
 // ── Generate/deploy aggregation across multiple per-month versions ──────────

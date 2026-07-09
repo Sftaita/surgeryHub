@@ -514,11 +514,12 @@ describe("AbsencesPage — mode Jours isolés (Cas 3)", () => {
     await openCreateDialog(user);
     await user.click(screen.getByRole("button", { name: "Jours isolés" }));
 
+    // Use fireEvent.change for date inputs — faster than user.type char-by-char,
+    // same onChange signal the component listens to.
     const dateInput = screen.getByLabelText("Ajouter une date");
     for (const date of ["2026-07-04", "2026-07-09", "2026-07-18"]) {
-      await user.clear(dateInput);
-      await user.type(dateInput, date);
-      await user.click(screen.getByRole("button", { name: "Ajouter" }));
+      fireEvent.change(dateInput, { target: { value: date } });
+      fireEvent.click(screen.getByRole("button", { name: "Ajouter" }));
     }
 
     expect(screen.getByText("04/07/2026")).toBeInTheDocument();
@@ -534,7 +535,7 @@ describe("AbsencesPage — mode Jours isolés (Cas 3)", () => {
       userId: 1, dates: ["2026-07-04", "2026-07-09", "2026-07-18"], reason: undefined,
     });
     expect(planningApi.createAbsence).not.toHaveBeenCalled();
-  });
+  }, 10000);
 
   it("choisir une date puis cliquer directement Enregistrer sans cliquer Ajouter crée une absence dateStart=dateEnd", async () => {
     mockSearchablePerson();
@@ -594,11 +595,11 @@ describe("AbsencesPage — mode Jours isolés (Cas 3)", () => {
     await openCreateDialog(user);
     await user.click(screen.getByRole("button", { name: "Jours isolés" }));
 
+    // Use fireEvent.change for date inputs — faster than user.type char-by-char.
     const dateInput = screen.getByLabelText("Ajouter une date");
     for (const date of ["2026-07-04", "2026-07-09", "2026-07-18"]) {
-      await user.clear(dateInput);
-      await user.type(dateInput, date);
-      await user.click(screen.getByRole("button", { name: "Ajouter" }));
+      fireEvent.change(dateInput, { target: { value: date } });
+      fireEvent.click(screen.getByRole("button", { name: "Ajouter" }));
     }
 
     const chip09 = screen.getByText("09/07/2026").closest(".MuiChip-root")!;
@@ -607,5 +608,5 @@ describe("AbsencesPage — mode Jours isolés (Cas 3)", () => {
     expect(screen.queryByText("09/07/2026")).not.toBeInTheDocument();
     expect(screen.getByText("04/07/2026")).toBeInTheDocument();
     expect(screen.getByText("18/07/2026")).toBeInTheDocument();
-  });
+  }, 10000);
 });

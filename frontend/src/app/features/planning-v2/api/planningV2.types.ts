@@ -16,7 +16,7 @@ export type PlanningAlertStatus = "OPEN" | "ACKNOWLEDGED" | "RESOLVED" | "IGNORE
 export type PreviewLineStatus = "SKIPPED" | "UNCOVERED" | "COVERED" | "MODIFIED" | "CONFLICT";
 export type MissionStatus =
   | "DRAFT" | "OPEN" | "DECLARED" | "ASSIGNED" | "REJECTED"
-  | "SUBMITTED" | "VALIDATED" | "CLOSED" | "IN_PROGRESS";
+  | "SUBMITTED" | "VALIDATED" | "CLOSED" | "IN_PROGRESS" | "CANCELLED";
 
 export interface UserRefV2 {
   id: number;
@@ -228,6 +228,8 @@ export interface PreviewSummaryV2 {
 export interface PreviewResponseV2 {
   lines: PreviewLineV2[];
   summary: PreviewSummaryV2;
+  previewVersion: string;
+  generatedAt: string;
 }
 
 export interface GeneratedPlanningV2 {
@@ -246,3 +248,49 @@ export interface DeployResponseV2 {
 export type GenerationTarget =
   | { siteId: number; siteGroupId?: null }
   | { siteId?: null; siteGroupId: number };
+
+// ── Living planning — Batch 15F/15G ──────────────────────────────────────────
+
+export interface CoverageSummary {
+  versionId: number;
+  total: number;
+  covered: number;
+  open: number;
+  cancelled: number;
+  coveragePercent: number | null;
+}
+
+export interface MissionAuditEvent {
+  eventType: string;
+  occurredAt: string;
+  actorId: number | null;
+  actorName: string | null;
+  payload: Record<string, unknown> | null;
+}
+
+// ── Eligibility — Batch 15D/15G ───────────────────────────────────────────────
+
+export type EligibilityReason =
+  | "INACTIVE"
+  | "NO_SITE_MEMBERSHIP"
+  | "ABSENT"
+  | "SCHEDULE_CONFLICT"
+  | "ALREADY_ASSIGNED"
+  | "INCOMPATIBLE_STATUS";
+
+export interface EligibleCandidate {
+  id: number;
+  name: string;
+  email: string;
+}
+
+export interface IneligibleCandidate extends EligibleCandidate {
+  reasons: EligibilityReason[];
+}
+
+export interface MissionEligibilityResponse {
+  missionId: number;
+  missionStatus: string;
+  eligible: EligibleCandidate[];
+  ineligible: IneligibleCandidate[];
+}

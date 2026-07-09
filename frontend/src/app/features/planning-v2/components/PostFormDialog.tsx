@@ -1,15 +1,17 @@
 import * as React from "react";
 import {
-  Box, Button, Dialog, IconButton, Stack, ToggleButton, ToggleButtonGroup, Typography,
+  Alert, Box, Button, Dialog, IconButton, Stack, ToggleButton, ToggleButtonGroup, Typography,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import CalendarTodayOutlinedIcon from "@mui/icons-material/CalendarTodayOutlined";
 import RepeatOutlinedIcon from "@mui/icons-material/RepeatOutlined";
 import PersonOutlineOutlinedIcon from "@mui/icons-material/PersonOutlineOutlined";
 import PlaceOutlinedIcon from "@mui/icons-material/PlaceOutlined";
+import { useQuery } from "@tanstack/react-query";
 
 import type { SurgeonSchedulePostV2, SurgeonPostInput, MissionType, ShiftPeriod } from "../api/planningV2.types";
 import type { Site } from "../../sites/api/sites.api";
+import { getShiftPeriods } from "../api/planningV2.api";
 import { SearchableSelect, type SearchableOption } from "./SearchableSelect";
 import {
   RECURRENCE_PRESET_OPTIONS, LAUNCH_RECURRENCE_PRESET_OPTIONS, presetIsMonthly, presetToRecurrence, recurrenceToPreset,
@@ -100,9 +102,31 @@ export function PostFormDialog({
     }
   }, [open, editingPost, preselectedSurgeonId]);
 
+  // Only offer periods actually configured (and active) for the selected site —
+  // otherwise the manager can pick a valid-looking period that the backend will
+  // reject at submit time with a 422 (D-…: enforced in SurgeonSchedulePostService).
+  const shiftPeriodsQuery = useQuery({
+    queryKey: ["planning-v2", "shift-periods", siteId],
+    queryFn: () => getShiftPeriods(siteId as number),
+    enabled: open && siteId !== null,
+  });
+  const configuredPeriods = new Set(
+    (shiftPeriodsQuery.data?.items ?? []).filter((p) => p.active).map((p) => p.period),
+  );
+  const availablePeriods = siteId === null ? PERIODS : PERIODS.filter((p) => configuredPeriods.has(p.value));
+  const periodsLoaded = siteId === null || shiftPeriodsQuery.isSuccess;
+
+  React.useEffect(() => {
+    if (!periodsLoaded || availablePeriods.length === 0) return;
+    if (!availablePeriods.some((p) => p.value === period)) {
+      setPeriod(availablePeriods[0].value);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [periodsLoaded, availablePeriods.map((p) => p.value).join(",")]);
+
   const monthly = presetIsMonthly(preset);
   const canSubmit = surgeonId !== null && siteId !== null && startDate !== ""
-    && weekdays.length > 0 && (!monthly || monthWeeks.length > 0);
+    && weekdays.length > 0 && (!monthly || monthWeeks.length > 0) && availablePeriods.length > 0;
 
   const surgeonName = surgeons.find((s) => s.id === surgeonId)?.label ?? "";
   const siteName = sites.find((s) => s.id === siteId)?.name ?? "";
@@ -183,14 +207,20 @@ export function PostFormDialog({
 
         <Box>
           <Typography sx={{ fontSize: 12, fontWeight: 700, color: planningV2Colors.textBody, mb: 1 }}>Période</Typography>
-          <ToggleButtonGroup exclusive value={period} onChange={(_, v) => v && setPeriod(v)} size="small">
-            {PERIODS.map((p) => (
-              <ToggleButton key={p.value} value={p.value} sx={{ flexDirection: "column", lineHeight: 1.3, py: 0.75 }}>
-                <span>{p.label}</span>
-                <Typography component="span" sx={{ fontSize: 11, opacity: 0.7, fontVariantNumeric: "tabular-nums" }}>{p.sub}</Typography>
-              </ToggleButton>
-            ))}
-          </ToggleButtonGroup>
+          {siteId !== null && periodsLoaded && availablePeriods.length === 0 ? (
+            <Alert severity="warning" sx={{ fontSize: 12.5 }}>
+              Aucune période active configurée pour {siteName || "ce site"}. Configurez-les depuis Planning → Réglages avant de créer un poste.
+            </Alert>
+          ) : (
+            <ToggleButtonGroup exclusive value={period} onChange={(_, v) => v && setPeriod(v)} size="small">
+              {availablePeriods.map((p) => (
+                <ToggleButton key={p.value} value={p.value} sx={{ flexDirection: "column", lineHeight: 1.3, py: 0.75 }}>
+                  <span>{p.label}</span>
+                  <Typography component="span" sx={{ fontSize: 11, opacity: 0.7, fontVariantNumeric: "tabular-nums" }}>{p.sub}</Typography>
+                </ToggleButton>
+              ))}
+            </ToggleButtonGroup>
+          )}
         </Box>
 
         <SearchableSelect
