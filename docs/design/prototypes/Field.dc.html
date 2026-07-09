@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/fonts.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/colors.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/typography.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/spacing.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/effects.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/base.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/styles.css">
+<script src="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/_ds_bundle.js"></script>
+<style>
+  html,body{margin:0;padding:0}
+  body{font-family:var(--font-sans)}
+  input::placeholder{color:var(--gray-400)}
+</style>
+</helmet>
+
+<div style="display:flex;flex-direction:column;gap:7px;width:100%">
+  <label style="font-size:13px;font-weight:700;color:var(--gray-700);letter-spacing:.01em">{{ labelText }}</label>
+  <div style="position:relative;width:100%">
+    <sc-if value="{{ hasIcon }}" hint-placeholder-val="{{ true }}">
+      <span style="position:absolute;left:16px;top:50%;transform:translateY(-50%);display:flex;color:var(--green-600);pointer-events:none">
+        <sc-if value="{{ iconMail }}" hint-placeholder-val="{{ true }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"></rect><path d="m22 7-10 6L2 7"></path></svg></sc-if>
+        <sc-if value="{{ iconLock }}" hint-placeholder-val="{{ false }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg></sc-if>
+        <sc-if value="{{ iconUser }}" hint-placeholder-val="{{ false }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"></circle><path d="M20 21a8 8 0 0 0-16 0"></path></svg></sc-if>
+      </span>
+    </sc-if>
+    <input type="{{ inputType }}" placeholder="{{ placeholderText }}" onKeyDown="{{ onKey }}" style="{{ inputStyle }}" style-focus="border-color:var(--green-500);box-shadow:var(--focus-ring)">
+    <sc-if value="{{ isPassword }}" hint-placeholder-val="{{ false }}">
+      <button onClick="{{ togg }}" aria-label="Afficher le mot de passe" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);width:42px;height:42px;border:none;background:transparent;border-radius:11px;cursor:pointer;color:var(--gray-400);display:flex;align-items:center;justify-content:center" style-hover="background:var(--gray-75);color:var(--gray-600)">
+        <sc-if value="{{ pwHidden }}" hint-placeholder-val="{{ true }}"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"></path><circle cx="12" cy="12" r="3"></circle></svg></sc-if>
+        <sc-if value="{{ pwShown }}" hint-placeholder-val="{{ false }}"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"></path><circle cx="12" cy="12" r="3"></circle><path d="m4 4 16 16"></path></svg></sc-if>
+      </button>
+    </sc-if>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: 360, &quot;height&quot;: 92 },
+  &quot;label&quot;: { &quot;editor&quot;: &quot;text&quot;, &quot;default&quot;: &quot;Adresse email&quot;, &quot;tsType&quot;: &quot;string&quot; },
+  &quot;placeholder&quot;: { &quot;editor&quot;: &quot;text&quot;, &quot;default&quot;: &quot;prenom.nom@email.be&quot;, &quot;tsType&quot;: &quot;string&quot; },
+  &quot;type&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;text&quot;, &quot;email&quot;, &quot;password&quot;], &quot;default&quot;: &quot;email&quot;, &quot;tsType&quot;: &quot;'text' | 'email' | 'password'&quot; },
+  &quot;icon&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;none&quot;, &quot;mail&quot;, &quot;lock&quot;, &quot;user&quot;], &quot;default&quot;: &quot;mail&quot;, &quot;tsType&quot;: &quot;'none' | 'mail' | 'lock' | 'user'&quot; },
+  &quot;onEnter&quot;: { &quot;editor&quot;: null, &quot;tsType&quot;: &quot;() =&gt; void&quot; }
+}">
+class Component extends DCLogic {
+  state = { show: false };
+  renderVals() {
+    const p = this.props;
+    const icon = p.icon || 'mail';
+    const type = p.type || 'text';
+    const isPassword = type === 'password';
+    const padL = icon !== 'none' ? 46 : 16;
+    const padR = isPassword ? 52 : 16;
+    return {
+      labelText: p.label || 'Label',
+      placeholderText: p.placeholder || '',
+      inputType: isPassword ? (this.state.show ? 'text' : 'password') : type,
+      hasIcon: icon !== 'none',
+      iconMail: icon === 'mail',
+      iconLock: icon === 'lock',
+      iconUser: icon === 'user',
+      isPassword,
+      pwHidden: !this.state.show,
+      pwShown: this.state.show,
+      togg: () => this.setState({ show: !this.state.show }),
+      onKey: (e) => { if (e.key === 'Enter' && this.props.onEnter) this.props.onEnter(); },
+      inputStyle: 'height:54px;border:1.5px solid var(--border-default);border-radius:14px;padding:0 ' + padR + 'px 0 ' + padL + 'px;font-family:inherit;font-size:16px;color:var(--text-strong);background:#fff;outline:none;width:100%;transition:border-color .15s'
+    };
+  }
+}
+</script>
+</body>
+</html>

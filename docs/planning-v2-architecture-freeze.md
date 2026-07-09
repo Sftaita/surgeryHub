@@ -1,4 +1,4 @@
-# Planning V2 — Architecture Freeze (Batch 8, updated Batch 9, Batch 13)
+# Planning V2 — Architecture Freeze (Batch 8, updated Batch 9, Batch 13, design Batch 15)
 
 > **Batch 13 — LAUNCHED.** Planning V2 is now the official manager planning UI (see
 > `docs/decisions.md` D-048). Backend (Batches 1–9) and frontend (Batches 10–12) are both
@@ -593,3 +593,319 @@ Verifying Batch 7's design evolves cleanly to the requested granularity
    a full incident-free billing/encoding cycle on V2.
 5. **Recurrence split-pattern** (§E) and **exception type-collapse** (§F) — designed,
    not implemented; still future work, independent of the launch.
+
+---
+
+## L. Planning vivant — vie du planning après déploiement
+
+**Filosofie (ADR D-052)** : le déploiement crée la première version du planning. Tout ce
+qui suit — réassignations, prises de missions, ajouts, annulations, changements d'horaire —
+est la vie du planning et opère directement sur les entités `Mission`, jamais via un nouveau
+cycle generate/deploy.
+
+### L1. Transitions de statut post-déploiement
+
+```
+Mission ASSIGNED  →  OPEN      (release — manager ouvre au pool)
+Mission OPEN      →  ASSIGNED  (claim — instrumentiste, ou réassignation directe manager)
+Mission OPEN      →  CANCELLED (cancel — manager annule la mission)
+Mission [any]     →  nouvelle Mission DRAFT créée post-deploy (ajout manager)
+```
+
+### L2. Endpoints à créer (Batch 15)
+
+| Endpoint | Transition | Acteur |
+|---|---|---|
+| `POST /api/missions/{id}/release` | ASSIGNED → OPEN | Manager |
+| `POST /api/missions/{id}/cancel` | OPEN → CANCELLED | Manager |
+| `GET  /api/missions/{id}/audit` | — | Manager / Chirurgien |
+| `GET  /api/planning/versions/{id}/coverage-summary` | — | Manager |
+
+`POST /api/missions/{id}/claim` et `POST /api/missions/{id}/assign-instrumentist` existent
+déjà — étendus pour créer un `AuditEvent` et déclencher les notifications appropriées.
+
+### L3. Audit trail — nouveaux `AuditEventType` (à ajouter dans Batch 15)
+
+Chaque transition post-deploy crée un `AuditEvent` (actor + mission NOT NULL + payload
+snapshot). Les noms des personnes sont toujours snapshotés dans le payload pour garantir
+la lisibilité après modification ou désactivation d'un compte.
+
+`AuditEvent.eventType` est mappé avec `enumType: AuditEventType::class` sur une colonne
+VARCHAR — ajouter de nouveaux cases à l'enum PHP ne nécessite aucune migration DB. Le
+code PHP doit être déployé avant que de nouvelles valeurs soient écrites en base.
+
+```
+MISSION_RELEASED_TO_POOL         payload: { fromInstrumentistId, fromInstrumentistName }
+MISSION_CANCELLED_POST_DEPLOY    payload: { reason? }
+MISSION_REASSIGNED_POST_DEPLOY   payload: { fromInstrumentistId, fromInstrumentistName,
+                                            toInstrumentistId, toInstrumentistName }
+MISSION_TIME_CHANGED_POST_DEPLOY payload: { fromStartAt, fromEndAt, toStartAt, toEndAt }
+MISSION_ADDED_POST_DEPLOY        payload: { surgeonId, surgeonName, instrumentistId?, ... }
+MISSION_CLAIMED_FROM_POOL        payload: { instrumentistId, instrumentistName }
+```
+
+`MISSION_CLAIMED_FROM_POOL` est **la journalisation du claim existant** (`POST /api/missions/{id}/claim`),
+pas une nouvelle action. Le claim était déjà implémenté — Batch 15 ajoute uniquement la création
+de l'AuditEvent correspondant.
+
+### L4. Notifications — deux familles instrumentiste, une notification chirurgien par poste
+
+**Famille 1 (publication initiale)** : `PLANNING_DEPLOYED_INSTRUMENTIST` — déclenché une
+seule fois au déploiement, contient le résumé de la période et le PDF en pièce jointe.
+
+**Famille 2 (mises à jour)** : `PLANNING_MISSION_REASSIGNED`, `PLANNING_MISSION_CANCELLED`,
+`PLANNING_MISSION_ADDED`, `PLANNING_MISSION_UPDATED` — déclenché à chaque changement
+affectant la mission d'un instrumentiste, contenu ciblé (nature du changement + before/after),
+jamais de PDF. Ces types sont conçus maintenant, implémentés dans les batches futurs.
+
+**Notification chirurgien (`PLANNING_DEPLOYED_SURGEON`)** : payload `posts[]` — une entrée
+par poste du chirurgien (date, site, période, couvert/non couvert, nom instrumentiste ou
+motif). Jamais de compteurs agrégés. Voir D-053.
+
+**Couverture d'un poste** : `SURGEON_POST_COVERED` notifie le chirurgien lors d'OPEN →
+ASSIGNED avec la date, le site, la période, le nom de l'instrumentiste et l'heure de prise.
+`SURGEON_POST_UNCOVERED` notifie lors d'ASSIGNED → OPEN (relâché au pool).
+
+**`NotificationType` — catalogue complet post-Batch 15** :
+
+```
+PLANNING_DEPLOYED_INSTRUMENTIST  — publication initiale instrumentiste (avec PDF)
+PLANNING_DEPLOYED_SURGEON        — publication initiale chirurgien (par poste)
+PLANNING_DEPLOYED_MANAGER        — publication initiale manager
+OPEN_MISSION_AVAILABLE           — mission mise en pool (instrumentistes éligibles seulement)
+SURGEON_POST_COVERED             — OPEN → ASSIGNED sur un poste du chirurgien
+SURGEON_POST_UNCOVERED           — ASSIGNED → OPEN sur un poste du chirurgien
+PLANNING_MISSION_REASSIGNED      — instrumentiste changé (future)
+PLANNING_MISSION_CANCELLED       — mission annulée (future)
+PLANNING_MISSION_ADDED           — mission ajoutée post-deploy (future)
+PLANNING_MISSION_UPDATED         — horaire/période modifié (future)
+```
+
+Tous les canaux passent par `NotificationPreferenceResolver` — jamais de notification
+codée en dur. `NotificationEvent.eventType` est VARCHAR(100) : aucune migration DB pour
+les nouveaux types.
+
+### L5. Bilan de couverture
+
+`GET /api/planning/versions/{id}/coverage-summary` retourne en temps réel, pour la version
+ACTIVE d'une période/site :
+
+```json
+{
+  "total": 25,
+  "assigned": 22,
+  "open": 2,
+  "cancelled": 1,
+  "coveragePercent": 88
+}
+```
+
+Affiché comme bandeau dans `PlanningSchedulePage` — pas de nouvelle page, pas de nouveau
+item de navigation.
+
+### L7. MissionStatus::CANCELLED — nouveau statut (Batch 15B)
+
+La transition OPEN → CANCELLED (annulation manager) requiert l'ajout de `case CANCELLED = 'CANCELLED'`
+à `MissionStatus.php`. Pas de migration DB (colonne VARCHAR backing). Ce statut exclut la
+mission du `total` du coverage KPI — une mission annulée ne représente plus un besoin de
+couverture.
+
+### L8. Références
+
+- ADR D-052 — philosophie "planning vivant" + invariant "never regenerate" + pattern MissionChangedMessage
+- ADR D-039 note Batch 15A — simplification selectedUncoveredMissionIds pour V2
+- ADR D-053 — notification chirurgien par poste
+- ADR D-054 — deux familles de notifications instrumentiste
+- ADR D-055 — AuditEvent comme historique post-déploiement + PlanningVersion history
+- `docs/architecture.md` §7 "Planning vivant — vie du planning après déploiement"
+
+---
+
+## M. Batch 15 — Test strategy (design-only, pre-implementation)
+
+Tests are organized per sub-batch. All functional HTTP tests use the real EntityManager
+(never mocked — see D-042 for why mocks miss deploy-path bugs). Messenger transport is
+the in-memory test transport during tests.
+
+---
+
+### Batch 15A — Deploy simplification (all uncovered DRAFT → OPEN for V2)
+
+**Unit (`PlanningDeploymentServiceTest`)**
+- `test_v2_deploy_all_uncovered_draft_become_open_without_selection`
+- `test_v2_deploy_draft_with_instrumentist_become_assigned` — regression
+- `test_v1_deploy_legacy_fallback_still_uses_selected_ids` — V1 path unchanged
+
+**Functional HTTP**
+- `POST /api/planning/v2/deploy` → `{ missionCount, openPoolCount }` correct values
+- Deploy without versionId (V1 path) → `selectedUncoveredMissionIds` still honored
+
+---
+
+### Batch 15B — Release, Cancel endpoints + MissionStatus::CANCELLED
+
+**Unit (`MissionVoterTest`)**
+- `test_manager_can_release_assigned_mission`
+- `test_instrumentist_cannot_release_own_mission`
+- `test_manager_can_cancel_open_mission`
+
+**Unit (`MissionService` or dedicated service)**
+- `test_release_creates_audit_event_with_instrumentist_snapshot`
+- `test_cancel_creates_audit_event`
+- `test_release_dispatches_mission_changed_message`
+
+**Functional HTTP**
+- `POST /api/missions/{id}/release` on ASSIGNED → 200, status OPEN, AuditEvent in DB
+- `POST /api/missions/{id}/release` on OPEN → 422
+- `POST /api/missions/{id}/cancel` on OPEN → 200, status CANCELLED
+
+**Regression**
+- Billing (FirmInvoice, Statement) unaffected — CANCELLED missions not billable
+
+---
+
+### Batch 15C — Surgeon deployment notification (per-post payload)
+
+**Unit (`PlanningDeployPdfsMessageHandlerTest`)**
+- `test_surgeon_notification_payload_contains_posts_array_not_counts`
+- `test_surgeon_posts_sorted_chronologically`
+- `test_uncovered_post_has_reason_label_not_null`
+- `test_covered_post_has_instrumentist_name`
+- `test_no_patient_or_financial_data_in_payload`
+- `test_surgeon_only_sees_own_posts`
+
+**Functional**
+- Deploy → `NotificationEvent` PLANNING_DEPLOYED_SURGEON created per surgeon with `posts[]`
+
+---
+
+### Batch 15D — Instrumentist deployment notification (Famille 1)
+
+**Unit**
+- `test_each_assigned_instrumentist_receives_exactly_one_notification`
+- `test_notification_contains_only_own_missions`
+- `test_unassigned_instrumentist_receives_no_notification`
+- `test_preference_resolver_consulted_not_hardcoded`
+
+**Functional**
+- Deploy with 3 instrumentists → 3 PLANNING_DEPLOYED_INSTRUMENTIST NotificationEvents
+
+---
+
+### Batch 15E — OPEN pool eligibility filtering (OpenMissionEligibleInstrumentistResolver)
+
+**Unit**
+- `test_absent_instrumentist_excluded`
+- `test_inactive_instrumentist_excluded`
+- `test_instrumentist_at_different_site_excluded`
+- `test_instrumentist_with_conflicting_mission_excluded`
+- `test_eligible_instrumentist_included`
+- `test_uses_batch_query_not_per_mission_loop` — assert DB query count via SQL logger
+
+**Functional**
+- Deploy with OPEN missions → only eligible site-affiliated instrumentists notified
+- Non-affiliated → no OPEN_MISSION_AVAILABLE notification
+
+---
+
+### Batch 15F — SURGEON_POST_COVERED / SURGEON_POST_UNCOVERED
+
+**Unit**
+- `test_claim_triggers_surgeon_post_covered_notification`
+- `test_covered_payload_contains_date_site_period_instrumentist_coveredAt`
+- `test_release_triggers_surgeon_post_uncovered_notification`
+
+**Functional**
+- `POST /api/missions/{id}/claim` → SURGEON_POST_COVERED NotificationEvent for surgeon
+- `POST /api/missions/{id}/release` → SURGEON_POST_UNCOVERED NotificationEvent for surgeon
+
+---
+
+### Batch 15G — Audit trail completeness
+
+**Unit**
+- `test_release_payload_snapshots_instrumentist_name_at_action_time`
+- `test_cancel_audit_event_contains_actor_and_timestamp`
+- `test_reassign_payload_has_from_and_to_snapshot`
+- `test_audit_event_not_created_if_transition_fails`
+
+**Functional**
+- `GET /api/missions/{id}/audit` → 200, events sorted DESC
+- Payload contains no patient or financial data
+
+---
+
+### Batch 15H — Coverage summary endpoint
+
+**Unit (`PlanningCoverageServiceTest`)**
+- `test_cancelled_missions_excluded_from_total`
+- `test_open_missions_reduce_coverage_percent`
+- `test_coverage_uses_aggregate_query_no_entity_hydration`
+- `test_coverage_is_never_persisted`
+
+**Functional**
+- `GET /api/planning/versions/{id}/coverage-summary` → `{ total, covered, open, cancelled, coveragePercent }`
+- After claim: coveragePercent increases
+- After cancel: total decreases
+
+---
+
+### Batch 15I — PlanningVersion history endpoint
+
+**Unit**
+- `test_deployment_event_is_first_in_timeline`
+- `test_mission_audit_events_aggregated_chronologically`
+
+**Functional**
+- `GET /api/planning/versions/{id}/history` → deployment entry + mission change events in order
+
+---
+
+### Batch 15J — MissionChangedMessage dispatch pattern
+
+**Unit (`MissionChangedMessageHandlerTest`)**
+- `test_released_change_type_notifies_surgeon_only`
+- `test_reassigned_change_type_notifies_old_and_new_instrumentist_and_surgeon`
+- `test_preference_resolver_consulted_per_audience`
+- `test_email_not_sent_if_preference_email_disabled`
+
+**Integration (Messenger)**
+- `test_release_dispatches_message_to_async_transport` — not handled synchronously
+- `test_MissionChangedMessage_routing_present_in_messenger_yaml` — parse YAML (same pattern as D-043 regression test)
+
+---
+
+### Batch 15K — Failure handling and idempotence
+
+**Unit**
+- `test_pdf_failure_for_one_instrumentist_does_not_block_others`
+- `test_notification_failure_is_logged_not_rethrown`
+- `test_handler_skips_if_deployment_already_done` — idempotence re-entry
+- `test_handler_marks_failed_on_fatal_error`
+
+**Functional**
+- Handler retry does not create duplicate AuditEvents (count assertion in DB)
+
+---
+
+### Regression suite (every sub-batch, before merge)
+
+- `PlanningPreviewPerformanceTest::test_two_month_preview_uses_only_3_db_queries` — stays green
+- Existing `POST /api/missions/{id}/claim` flow unchanged
+- Instrumentist polling (`useInstrumentistMissionSync`) — OPEN missions still appear
+- Billing flows unaffected by CANCELLED status addition
+- Full backend PHPUnit suite green
+- Frontend build green if any frontend touched
+
+---
+
+### Manual smoke tests (staging, after deploy)
+
+1. Generate + deploy → surgeon and instrumentist receive email notifications
+2. Surgeon email: each post rendered as individual card, no aggregate counts
+3. Release a mission → surgeon notified "non couvert", eligible instrumentists see OPEN
+4. Claim the OPEN mission → surgeon notified "couvert" with instrumentist name and timestamp
+5. Coverage summary percentages update after each claim/release/cancel
+6. Version history: timeline shows deployment entry then subsequent events in order
+7. Cancel mission: coverage total decreases (not only covered count)
+8. Re-generate same month post-deploy: OPEN/ASSIGNED missions untouched (invariant check)

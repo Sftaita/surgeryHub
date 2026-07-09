@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/fonts.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/colors.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/typography.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/spacing.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/effects.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/base.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/styles.css">
+<script src="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/_ds_bundle.js"></script>
+<style>
+  html,body{margin:0;padding:0}
+  body{font-family:var(--font-sans);background:var(--surface-page);color:var(--text-strong);-webkit-font-smoothing:antialiased}
+</style>
+</helmet>
+
+<div style="background:#fff;border-radius:18px;box-shadow:var(--shadow-md);padding:20px;max-width:440px;margin:0 auto">
+  <h2 style="margin:0;font-size:20px;font-weight:800;letter-spacing:-.02em">{{ titleText }}</h2>
+  <sc-if value="{{ hasPlanned }}" hint-placeholder-val="{{ true }}">
+    <div style="display:flex;align-items:center;gap:11px;margin-top:14px;background:var(--gray-50);border-radius:12px;padding:12px 14px">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--gray-500)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><rect x="3" y="4" width="18" height="17" rx="2"></rect><path d="M16 2v4M8 2v4M3 10h18"></path></svg>
+      <span style="font-size:13.5px;color:var(--gray-600)">Horaire prévu : <span style="font-weight:700;color:var(--gray-800);font-variant-numeric:tabular-nums">{{ plannedText }}</span></span>
+    </div>
+  </sc-if>
+  <div style="display:flex;flex-direction:column;gap:14px;margin-top:18px">
+    <div style="display:flex;align-items:center;gap:12px">
+      <span style="width:74px;flex:none;font-size:13px;font-weight:700;color:var(--gray-700)">Début</span>
+      <button onClick="{{ startMinus }}" aria-label="Moins 15 minutes" style="width:46px;height:46px;border:1.5px solid var(--border-default);border-radius:12px;background:#fff;color:var(--gray-700);font-size:19px;font-weight:700;cursor:pointer;font-family:inherit;flex:none" style-hover="border-color:var(--green-500)">−</button>
+      <span style="flex:1;text-align:center;font-size:19px;font-weight:800;font-variant-numeric:tabular-nums">{{ startText }}</span>
+      <button onClick="{{ startPlus }}" aria-label="Plus 15 minutes" style="width:46px;height:46px;border:1.5px solid var(--border-default);border-radius:12px;background:#fff;color:var(--gray-700);font-size:19px;font-weight:700;cursor:pointer;font-family:inherit;flex:none" style-hover="border-color:var(--green-500)">+</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <span style="width:74px;flex:none;font-size:13px;font-weight:700;color:var(--gray-700)">Fin</span>
+      <button onClick="{{ endMinus }}" aria-label="Moins 15 minutes" style="width:46px;height:46px;border:1.5px solid var(--border-default);border-radius:12px;background:#fff;color:var(--gray-700);font-size:19px;font-weight:700;cursor:pointer;font-family:inherit;flex:none" style-hover="border-color:var(--green-500)">−</button>
+      <span style="flex:1;text-align:center;font-size:19px;font-weight:800;font-variant-numeric:tabular-nums">{{ endText }}</span>
+      <button onClick="{{ endPlus }}" aria-label="Plus 15 minutes" style="width:46px;height:46px;border:1.5px solid var(--border-default);border-radius:12px;background:#fff;color:var(--gray-700);font-size:19px;font-weight:700;cursor:pointer;font-family:inherit;flex:none" style-hover="border-color:var(--green-500)">+</button>
+    </div>
+    <sc-if value="{{ overnightAllowed }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;align-items:center;gap:10px;padding:2px 0 2px 86px">
+        <button onClick="{{ nextTogg }}" aria-label="Se termine le lendemain" style="{{ nextBox }}">
+          <sc-if value="{{ nextOn }}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg></sc-if>
+        </button>
+        <span onClick="{{ nextTogg }}" style="font-size:13.5px;font-weight:600;color:var(--gray-600);cursor:pointer">Se termine le lendemain <span style="color:var(--gray-400);font-weight:400">(après minuit)</span></span>
+      </div>
+    </sc-if>
+    <div style="display:flex;align-items:center;gap:12px">
+      <span style="width:74px;flex:none;font-size:13px;font-weight:700;color:var(--gray-700)">Pause</span>
+      <button onClick="{{ pauseMinus }}" aria-label="Moins 15 minutes" style="width:46px;height:46px;border:1.5px solid var(--border-default);border-radius:12px;background:#fff;color:var(--gray-700);font-size:19px;font-weight:700;cursor:pointer;font-family:inherit;flex:none" style-hover="border-color:var(--green-500)">−</button>
+      <span style="flex:1;text-align:center;font-size:19px;font-weight:800;font-variant-numeric:tabular-nums">{{ pauseText }}</span>
+      <button onClick="{{ pausePlus }}" aria-label="Plus 15 minutes" style="width:46px;height:46px;border:1.5px solid var(--border-default);border-radius:12px;background:#fff;color:var(--gray-700);font-size:19px;font-weight:700;cursor:pointer;font-family:inherit;flex:none" style-hover="border-color:var(--green-500)">+</button>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;margin-top:18px;background:var(--green-50);border-radius:13px;padding:14px 16px">
+    <span style="flex:1;font-size:14px;font-weight:700;color:var(--green-800)">Total presté</span>
+    <span style="font-size:22px;font-weight:800;color:var(--green-800);font-variant-numeric:tabular-nums">{{ totalText }}</span>
+  </div>
+  <button onClick="{{ save }}" style="margin-top:16px;width:100%;height:52px;border:none;border-radius:12px;background:var(--green-700);color:#fff;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer;box-shadow:0 5px 14px rgba(20,77,56,.3)" style-hover="background:var(--green-800)" style-active="transform:translateY(.5px)">{{ saveLabel }}</button>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: 480, &quot;height&quot;: 560 },
+  &quot;title&quot;: { &quot;editor&quot;: &quot;text&quot;, &quot;default&quot;: &quot;Heures prestées&quot;, &quot;tsType&quot;: &quot;string&quot; },
+  &quot;planned&quot;: { &quot;editor&quot;: &quot;text&quot;, &quot;default&quot;: &quot;07h30 → 15h30&quot;, &quot;tsType&quot;: &quot;string&quot; },
+  &quot;defaultStart&quot;: { &quot;editor&quot;: &quot;int&quot;, &quot;default&quot;: 450, &quot;min&quot;: 0, &quot;max&quot;: 1425, &quot;step&quot;: 15, &quot;unit&quot;: &quot;min&quot;, &quot;tsType&quot;: &quot;number&quot; },
+  &quot;defaultEnd&quot;: { &quot;editor&quot;: &quot;int&quot;, &quot;default&quot;: 930, &quot;min&quot;: 0, &quot;max&quot;: 1425, &quot;step&quot;: 15, &quot;unit&quot;: &quot;min&quot;, &quot;tsType&quot;: &quot;number&quot; },
+  &quot;overnight&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot; },
+  &quot;step&quot;: { &quot;editor&quot;: &quot;int&quot;, &quot;default&quot;: 15, &quot;min&quot;: 5, &quot;max&quot;: 30, &quot;step&quot;: 5, &quot;unit&quot;: &quot;min&quot;, &quot;tsType&quot;: &quot;number&quot; },
+  &quot;saveLabel&quot;: { &quot;editor&quot;: &quot;text&quot;, &quot;default&quot;: &quot;Enregistrer les heures&quot;, &quot;tsType&quot;: &quot;string&quot; },
+  &quot;onSave&quot;: { &quot;editor&quot;: null, &quot;tsType&quot;: &quot;(h: { start: number; end: number; pause: number; nextDay: boolean; totalMinutes: number }) =&gt; void&quot; }
+}">
+class Component extends DCLogic {
+  state = { d: null };
+  renderVals() {
+    const p = this.props;
+    const step = p.step ?? 15;
+    const init = { start: p.defaultStart ?? 450, end: p.defaultEnd ?? 930, pause: 0, nextDay: false };
+    const d = this.state.d || init;
+    const set = (patch) => this.setState({ d: Object.assign({}, d, patch) });
+    const fmtT = (m) => String(Math.floor(m / 60)).padStart(2, '0') + 'h' + String(m % 60).padStart(2, '0');
+    const fmtDur = (m) => Math.floor(m / 60) + 'h' + String(m % 60).padStart(2, '0');
+    const endEff = d.end + (d.nextDay ? 1440 : 0);
+    const total = Math.max(0, endEff - d.start - d.pause);
+    const overnightAllowed = p.overnight ?? true;
+    return {
+      titleText: p.title ?? 'Heures prestées',
+      hasPlanned: !!(p.planned ?? '07h30 → 15h30'),
+      plannedText: p.planned ?? '07h30 → 15h30',
+      startText: fmtT(d.start),
+      endText: fmtT(d.end) + (d.nextDay ? ' (+1j)' : ''),
+      pauseText: d.pause + ' min',
+      totalText: fmtDur(total),
+      startMinus: () => set({ start: Math.max(0, d.start - step) }),
+      startPlus: () => set({ start: Math.min(d.nextDay ? 1440 - step : d.end - step, d.start + step) }),
+      endMinus: () => set({ end: Math.max(d.nextDay ? 0 : d.start + step, d.end - step), pause: Math.min(d.pause, Math.max(0, endEff - step - d.start - step)) }),
+      endPlus: () => set({ end: Math.min(1440 - step, d.end + step) }),
+      pauseMinus: () => set({ pause: Math.max(0, d.pause - step) }),
+      pausePlus: () => set({ pause: Math.min(Math.max(0, endEff - d.start - step), d.pause + step) }),
+      overnightAllowed,
+      nextOn: !!d.nextDay,
+      nextTogg: () => set({ nextDay: !d.nextDay }),
+      nextBox: 'width:22px;height:22px;border-radius:6px;flex:none;display:flex;align-items:center;justify-content:center;cursor:pointer;border:none;padding:0;transition:all .15s;' + (d.nextDay ? 'background:var(--green-600)' : 'background:#fff;box-shadow:inset 0 0 0 1.5px var(--gray-300)'),
+      saveLabel: p.saveLabel ?? 'Enregistrer les heures',
+      save: () => { if (p.onSave) p.onSave({ start: d.start, end: d.end, pause: d.pause, nextDay: !!d.nextDay, totalMinutes: total }); }
+    };
+  }
+}
+</script>
+</body>
+</html>

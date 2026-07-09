@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/fonts.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/colors.css">
+<link rel="stylesheet" href="_ds/surgery-hub-design-system-d9910452-cae4-4658-bd1e-a9360bed9e01/tokens/effects.css">
+<style>
+html,body{margin:0;padding:0}body{font-family:var(--font-sans)}
+@keyframes sfPop{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:none}}
+</style>
+</helmet>
+<div style="display:flex;flex-direction:column;gap:7px;width:100%">
+  <label style="font-size:13px;font-weight:700;color:var(--gray-700)">{{ labelText }}</label>
+  <button onClick="{{ togg }}" style="{{ boxStyle }}">
+    <span style="{{ valStyle }}">{{ valueText }}</span>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="{{ chevStyle }}"><path d="m6 9 6 6 6-6"></path></svg>
+  </button>
+  <sc-if value="{{ isOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="background:#fff;border:1.5px solid var(--green-300);border-radius:14px;overflow:hidden;box-shadow:var(--shadow-md);animation:sfPop .18s cubic-bezier(.22,1,.36,1)">
+      <sc-for list="{{ rows }}" as="r" hint-placeholder-count="3">
+        <button onClick="{{ r.pick }}" style="{{ r.style }}">
+          <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.label }}</span>
+          <sc-if value="{{ r.sel }}" hint-placeholder-val="{{ false }}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--green-600)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M20 6 9 17l-5-5"></path></svg>
+          </sc-if>
+        </button>
+      </sc-for>
+    </div>
+  </sc-if>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: 420, &quot;height&quot;: 420 },
+  &quot;label&quot;: { &quot;editor&quot;: &quot;text&quot;, &quot;default&quot;: &quot;Site *&quot;, &quot;tsType&quot;: &quot;string&quot; },
+  &quot;placeholder&quot;: { &quot;editor&quot;: &quot;text&quot;, &quot;default&quot;: &quot;Sélectionner un site…&quot;, &quot;tsType&quot;: &quot;string&quot; },
+  &quot;value&quot;: { &quot;editor&quot;: &quot;text&quot;, &quot;default&quot;: &quot;&quot;, &quot;tsType&quot;: &quot;string&quot; },
+  &quot;options&quot;: { &quot;editor&quot;: null, &quot;tsType&quot;: &quot;string[]&quot; },
+  &quot;onChange&quot;: { &quot;editor&quot;: null, &quot;tsType&quot;: &quot;(value: string) =&gt; void&quot; }
+}">
+class Component extends DCLogic {
+  state = { open: false };
+  renderVals() {
+    const p = this.props;
+    const val = p.value || '';
+    const open = this.state.open;
+    const rows = (p.options || []).map((o, i, arr) => ({
+      label: o,
+      sel: o === val,
+      style: 'display:flex;align-items:center;gap:10px;width:100%;min-height:48px;padding:10px 14px;border:none;cursor:pointer;text-align:left;font-family:inherit;font-size:14.5px;' +
+        (i < arr.length - 1 ? 'border-bottom:1px solid var(--gray-100);' : '') +
+        (o === val ? 'background:var(--green-50);color:var(--green-800);font-weight:700' : 'background:transparent;color:var(--gray-700);font-weight:600'),
+      pick: () => { this.setState({ open: false }); if (p.onChange) p.onChange(o); }
+    }));
+    return {
+      labelText: p.label || 'Label',
+      valueText: val || (p.placeholder || 'Sélectionner…'),
+      valStyle: 'flex:1;min-width:0;text-align:left;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' + (val ? 'color:var(--text-strong);font-weight:600' : 'color:var(--gray-400)'),
+      togg: () => this.setState({ open: !open }),
+      isOpen: open,
+      chevStyle: 'flex:none;transition:transform .2s;color:var(--gray-400);transform:rotate(' + (open ? 180 : 0) + 'deg)',
+      boxStyle: 'display:flex;align-items:center;gap:10px;height:50px;padding:0 14px;border-radius:12px;background:#fff;cursor:pointer;font-family:inherit;width:100%;transition:border-color .15s;border:1.5px solid ' + (open ? 'var(--green-500)' : 'var(--border-default)'),
+      rows
+    };
+  }
+}
+</script>
+</body>
+</html>

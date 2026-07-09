@@ -113,11 +113,24 @@ Photos de profil stockées dans `public/uploads/profile-pictures/`.
 ```
 ProfilePictureStorage
 ├── upload_dir       → {project}/public/uploads/profile-pictures
-└── public_base_path → /uploads/profile-pictures
+├── public_base_path → /uploads/profile-pictures
+└── replaceUserProfilePicture(User, UploadedFile): string
+    ├── déplace le fichier uploadé, nom généré (user-{id}-{random}.{ext})
+    ├── supprime l'ancien fichier si l'utilisateur en avait déjà un (remplacement)
+    └── retourne le chemin public relatif (à absolutiser par l'appelant si besoin)
 ```
 
-`profilePicturePath` retourné par l'API est un chemin relatif au web root (`/uploads/profile-pictures/filename.jpg`).
-Le frontend construit l'URL complète : `VITE_API_BASE_URL + profilePicturePath`.
+Deux endpoints réutilisent ce service, avec la même validation (`Assert\Image`, jpeg/png/webp, 5 Mo max) :
+- `POST /api/invitations/complete` — upload optionnel pendant la complétion de compte.
+- `POST /api/me/profile-picture` — upload/remplacement pour l'utilisateur déjà actif (D-060).
+
+**Deux formats de retour selon l'endpoint** (attention en cas d'ajout d'un nouveau consommateur) :
+- `GET /api/me` / `POST /api/me/profile-picture` : `MeController::buildAbsoluteUrl()` construit une URL **absolue** (`profilePictureUrl` à la racine, `profilePicturePath` dans `instrumentistProfile` — même valeur absolue malgré le nom).
+- `GET /api/instrumentists`, `GET /api/surgeons` (listes manager) : `profilePicturePath` est le chemin **relatif** brut (`getProfilePicturePath()` sans transformation) ; le frontend construit l'URL complète lui-même (`VITE_API_BASE_URL + profilePicturePath`, cf. `buildProfilePictureUrl()` dans `InstrumentistDrawer.tsx`/`SurgeonDrawer.tsx`).
+
+### Prompt post-onboarding (D-060)
+
+La photo de profil reste optionnelle à la complétion de compte (`/complete-account`), mais un modal (`ProfilePhotoPromptModal`, monté une seule fois via `ProfilePhotoPromptGate` dans `RequireAppAccess` — couvre tous les rôles/layouts) invite l'utilisateur actif sans photo à en ajouter une après connexion. Dismiss stocké en `sessionStorage` par utilisateur (`surgicalhub.profilePhotoPrompt.dismissed.<userId>`) : ne bloque jamais la navigation, peut réapparaître à une session ultérieure.
 
 ### Emails transactionnels
 
@@ -657,6 +670,83 @@ La page `/app/m/planning/schedule` ("Planning" dans la sidebar) affiche les miss
 **Instrumentiste éditable inline :** `<Select>` pour OPEN et ASSIGNED → `POST /api/missions/{id}/assign-instrumentist`. Read-only pour SUBMITTED / VALIDATED / CLOSED.
 
 **Chargement manuel :** bouton "Charger le planning" — `useQuery({ enabled: false })` + `refetch()` explicite.
+
+---
+
+### Planning vivant — vie du planning après déploiement (D-052)
+
+Un planning déployé n'est pas figé. Chaque `Mission` publiée continue d'évoluer indépendamment de la `PlanningVersion` qui l'a créée.
+
+**Cycle de vie d'une Mission post-déploiement :**
+
+```
+  DRAFT → OPEN → ASSIGNED → SUBMITTED → VALIDATED → CLOSED
+              ↑        ↓
+          (release) (claim / réassignation)
+               ↓
+           CANCELLED  (Batch 15 — mission annulée par manager)
+```
+
+**Règle structurante** : toute modification post-déploiement opère via un endpoint Mission dédié, jamais par un nouveau cycle generate/deploy.
+
+**Endpoints post-déploiement (Batch 15) :**
+
+```
+POST /api/missions/{id}/release                 ASSIGNED → OPEN (manager ouvre au pool)
+POST /api/missions/{id}/cancel                  OPEN → CANCELLED (manager annule)
+POST /api/missions/{id}/claim                   OPEN → ASSIGNED (instrumentiste claim — existant)
+POST /api/missions/{id}/assign-instrumentist    Réassignation directe (manager — existant, étendu)
+GET  /api/missions/{id}/audit                   Historique des modifications
+GET  /api/planning/versions/{id}/coverage-summary  Bilan de couverture en temps réel
+```
+
+**Séparation des responsabilités post-déploiement (D-056) :**
+
+```
+Contrôleur / Alert handler
+        │
+        ▼
+MissionPostDeployService          — validation, mutation d'état, AuditEvent, dispatch message
+        │ dispatch (async)
+        ▼
+MissionLifecycleChangedMessage    — snapshot: missionId, changeType, actorId, payload, occurredAt
+        │
+        ▼
+MissionLifecycleChangedMessageHandler   — tous les effets de bord:
+        │  ├── CLAIMED  → NotificationEvent(SURGEON_POST_COVERED) + push chirurgien
+        │  ├── RELEASED → NotificationEvent(SURGEON_POST_UNCOVERED) + push chirurgien
+        │  ├── Autres changeTypes → log + skip (forward-compatible)
+        │  └── Future: coverage hook, history projection, webhooks, Slack, analytics
+        ▼
+EntityManager::flush()            — chaque effet de bord isolé dans try/catch
+```
+
+**Traçabilité** : chaque action post-deploy crée un `AuditEvent` (acteur, type, payload snapshot) et déclenche les `NotificationEvent` appropriés via `NotificationPreferenceResolver`. Les noms des personnes sont snapshotés dans le payload pour préserver la lisibilité à long terme.
+
+**Notifications post-déploiement :**
+
+| Acteur | Déclencheur | Type de notification | Handler |
+|---|---|---|---|
+| Chirurgien | Déploiement initial | `PLANNING_DEPLOYED_SURGEON` (email : compteurs agrégés ; in-app : par poste) | `PlanningDeployPdfsMessageHandler` |
+| Chirurgien | OPEN → ASSIGNED (claim) | `SURGEON_POST_COVERED` | `MissionLifecycleChangedMessageHandler` (Batch 15E) |
+| Chirurgien | ASSIGNED → OPEN (release) | `SURGEON_POST_UNCOVERED` | `MissionLifecycleChangedMessageHandler` (Batch 15E) |
+| Instrumentiste | Déploiement initial | `PLANNING_DEPLOYED_INSTRUMENTIST` (avec PDF) | `PlanningDeployPdfsMessageHandler` |
+| Instrumentiste éligible | Mission mise en OPEN au déploiement | `OPEN_MISSION_AVAILABLE` | `PlanningDeployPdfsMessageHandler` (Batch 15D) |
+| Instrumentiste | Changement post-deploy | `PLANNING_MISSION_REASSIGNED` / `CANCELLED` / `ADDED` / `UPDATED` | `MissionLifecycleChangedMessageHandler` (Batch 15F+) |
+| Manager (déployeur) | Déploiement initial | `PLANNING_DEPLOYED_MANAGER` (email + in-app, avec PDF global) | `PlanningDeployPdfsMessageHandler` |
+
+Exactement UN email de déploiement par destinataire (D-058) — `PlanningChangeSummaryService` (récapitulatif de changements) est décorrélé du déploiement initial, réservé à un futur déclencheur post-publication.
+
+Voir D-052, D-053, D-054, D-055, D-056, D-057, D-058, D-059 dans `docs/decisions.md` pour le détail des payloads et des règles.
+
+**Responsabilités — Mission / MissionClaim / AuditEvent / MissionEligibilityService (D-059) :**
+
+| Composant | Responsabilité | Ne fait jamais |
+|---|---|---|
+| `Mission` (entité) | Source de vérité unique et exclusive de l'état courant : `status`, `instrumentist`, horaires, site. Toute décision métier (claim/reassign/cancel possible ?) se base uniquement sur ces champs. | Conserver l'historique de ses propres transitions. |
+| `MissionClaim` (entité) | Enregistrement **append-only** du moment où une mission a été revendiquée (`mission`, `instrumentist`, `claimedAt`). Sert uniquement l'historique/reporting/statistiques de charge par instrumentiste. | Participer à une décision métier — plus jamais consultée comme garde d'état par `claim()` ou tout autre service. |
+| `AuditEvent` | Journal général et transverse de tous les changements post-déploiement (claim, release, reassign, cancel — D-055), avec acteur/horodatage/payload snapshot. Source de `GET /api/missions/{id}/audit` et de la timeline `GET /api/planning/versions/{id}/history`. | Remplacer `MissionClaim` pour des requêtes typées/structurées ciblées sur les claims (payload JSON générique, pas des colonnes dédiées). |
+| `MissionEligibilityService` | Seule source de vérité pour l'éligibilité (D-057), progressivement mission-centrique (D-059) : la question canonique est « qui est éligible pour **cette** mission ? », pas « pour ce site ». | Dupliquer sa logique ailleurs (Voter, handlers) — tout délègue à ce service. |
 
 ---
 

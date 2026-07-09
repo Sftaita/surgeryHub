@@ -1242,7 +1242,13 @@ Quand un manager génère une 2e fois sur la même période (pour ajouter un slo
 
 ## D-039 — Modal déploiement 2 étapes : selectedUncoveredMissionIds + sendChangeSummary
 
-Date : 30-04-2026
+Date : 30-04-2026 — Note Batch 15A (2026-06-27) : voir ci-dessous.
+
+> **⚠️ Amendée par D-058 (2026-07-04)** : `sendChangeSummary` a été retiré du backend
+> (`PlanningDeploymentService::deploy()`, `PlanningDeployPdfsMessage`, les deux endpoints
+> de déploiement) — l'"Étape 2" décrite ci-dessous n'a plus d'effet côté serveur. Le
+> modal V1 (`DeployModal.tsx`) envoie encore ce champ ; il est désormais silencieusement
+> ignoré. `selectedUncoveredMissionIds` (Étape 1) reste inchangé et fonctionnel.
 
 ### Décision
 
@@ -1269,6 +1275,21 @@ DRAFT + instrumentist IS NULL + non sélectionné → reste DRAFT
 ### Motivation
 
 Avant ce modal, toutes les missions DRAFT passaient OPEN en bloc, y compris les non-attribuées que le manager n'avait pas l'intention de publier en pool. La distinction ASSIGNED/OPEN n'existait pas.
+
+### Note Batch 15A — Simplification pour le déploiement V2
+
+Cette décision est **partiellement supersédée pour le chemin V2** à partir de Batch 15A.
+
+Pour un déploiement V2 (avec `versionId` présent), la sélection manuelle via `selectedUncoveredMissionIds` est supprimée. Le comportement simplifié :
+
+```
+DRAFT + instrumentist IS NOT NULL  → ASSIGNED  (inchangé)
+DRAFT + instrumentist IS NULL      → OPEN       (automatique, sans sélection)
+```
+
+Motivation : dans le flux V2, le manager résout les non-couverts avant de générer (instrumentistes libérés, suggestions, modal pré-génération). Au moment du déploiement, tout DRAFT restant sans instrumentiste doit aller au pool — la sélection manuelle ajoute de la friction sans valeur métier.
+
+Le chemin **V1 legacy** (sans `versionId`) conserve le comportement `selectedUncoveredMissionIds` inchangé.
 
 ---
 
@@ -1949,6 +1970,503 @@ développement, avant tout déploiement réel.
 
 ---
 
+## D-052 — Le planning publié est un objet vivant
+
+Date : 2026-06-27
+
+### Décision
+
+Un planning déployé n'est pas un instantané figé. C'est un objet vivant qui évolue jusqu'à la clôture de la période.
+
+**La génération sert uniquement à créer la première version.** Le déploiement la rend visible. Tout ce qui suit — réassignations, prises de missions, ajouts, annulations, changements d'horaire — constitue la vie du planning et s'exprime exclusivement sur les entités `Mission` existantes.
+
+### Flux complet
+
+```
+SurgeonSchedulePost
+       ↓
+  preview()         — sandbox, rien écrit en DB
+       ↓
+  generate()        — crée les Missions DRAFT + PlanningVersion
+       ↓
+  deploy()          — DRAFT → ASSIGNED ou OPEN, notifications initiales
+       ↓
+═══════════════════════════════════════════════════
+  LE PLANNING EST VIVANT
+  Toute modification opère directement sur les Missions
+═══════════════════════════════════════════════════
+       ↓
+  Prise de mission  — OPEN → ASSIGNED (instrumentiste)
+       ↓
+  Réassignation     — ASSIGNED → OPEN → ASSIGNED (manager)
+       ↓
+  Ouverture pool    — ASSIGNED → OPEN (manager)
+       ↓
+  Annulation        — OPEN → CANCELLED (manager)
+       ↓
+  Ajout             — nouvelle Mission post-deploy (manager)
+       ↓
+  Chaque action :   — AuditEvent + Notification(s)
+```
+
+### Règle structurante
+
+> Toute modification d'un planning publié s'appuie sur les endpoints Mission dédiés, jamais sur un nouveau cycle generate/deploy.
+
+### Invariant "never regenerate"
+
+> Une Mission publiée (statut ≠ DRAFT) ne peut jamais être écrasée par un appel ultérieur à `generate()`.
+>
+> Le générateur crée et modifie des missions **DRAFT uniquement**. Les statuts OPEN, ASSIGNED, SUBMITTED, VALIDATED, CLOSED, IN_PROGRESS, CANCELLED sont des états terminaux pour `generate()` — il les ignore silencieusement.
+
+Ce comportement est implémenté depuis D-029/D-034 (V1) et préservé en V2 : `preview()` marque MODIFIED toute mission existante hors DRAFT, et `generate()` ne touche que les MODIFIED dont le statut est encore DRAFT. Mais cet invariant est ici élevé au rang de contrat architectural : aucune implémentation future du générateur ne doit le rompre.
+
+**Cas concret :** si un manager régénère pour le même mois après déploiement (pour ajouter un poste oublié), les missions déjà OPEN ou ASSIGNED survivent intactes. Seules les nouvelles missions DRAFT créées par ce second `generate()` seront publiées au prochain `deploy()`.
+
+### Conséquences
+
+Chaque nouvelle feature post-publication doit :
+1. Opérer sur une `Mission` existante via un endpoint dédié
+2. Créer un `AuditEvent` (acteur, type, payload diff — snapshot des noms au moment de l'action)
+3. Déclencher les `NotificationEvent` appropriés via `NotificationPreferenceResolver`
+4. Ne jamais régénérer de `PlanningVersion`
+
+### Invariant Post/Mission
+
+> Après déploiement, toute modification opérationnelle s'effectue **sur les Missions uniquement**.
+>
+> Un `SurgeonSchedulePost` n'est **jamais modifié** pour résoudre un problème opérationnel sur un planning publié.
+>
+> **Les Posts décrivent le planning futur. Les Missions décrivent la réalité opérationnelle.**
+
+Conséquence : un manager qui veut "retirer" un créneau d'un planning publié annule la Mission (`CANCELLED`). Il ne désactive pas le Post correspondant. Les deux restent indépendants : le Post continue à générer des missions pour les mois suivants.
+
+### Pattern de dispatch pour les changements post-deploy
+
+Les changements post-déploiement (release, cancel, réassignation, etc.) suivent ce pattern, cohérent avec D-014 (emails async) et D-043 (IO async) :
+
+```
+Endpoint dédié (release / cancel / assign-instrumentist)
+  → MissionApplicationService::action()   ← service d'application obligatoire (voir D-056)
+     → mission.status = nouveau statut  (synchrone)
+     → AuditEvent créé + flush          (synchrone — ne doit pas échouer)
+     → bus.dispatch(MissionLifecycleChangedMessage(missionId, changeType, actorId, payload))
+               ↓  (async — worker Messenger)
+     MissionLifecycleChangedMessageHandler
+       → détermine les audiences selon changeType
+       → NotificationPreferenceResolver par audience
+       → NotificationEvent(s) créés + email dispatché si emailEnabled
+```
+
+`MissionLifecycleChangedMessage` est un message générique : un seul type de message, un seul handler, un seul routing dans `messenger.yaml`. Le `changeType` est un PHP enum (`MissionChangeType`). Tous les futurs changements post-deploy utilisent ce même pattern.
+
+### Motivation
+
+- La génération est coûteuse et destructive (elle réécrit les missions DRAFT). La réutiliser pour chaque ajustement casserait l'audit, l'historique et les missions déjà acceptées.
+- Les Missions sont l'unité atomique du planning. Leur cycle de vie complet (DRAFT → OPEN → ASSIGNED → SUBMITTED → VALIDATED → CLOSED) est déjà modélisé.
+- `AuditEvent` permet d'enregistrer chaque changement avec son acteur, son horodatage et un contexte lisible durablement.
+
+---
+
+## D-053 — Notification chirurgien : par poste, pas par statistique
+
+Date : 2026-06-27
+
+> **⚠️ Amendée par D-058 (2026-07-04)** : l'**email** de déploiement chirurgien contient
+> désormais des compteurs agrégés (total/couvertes/non couvertes) — voir D-058 pour le
+> rationale. Le détail poste-par-poste décrit ci-dessous reste valable pour la
+> **notification in-app** (`NotificationEvent.payload.posts[]`), inchangée.
+
+### Décision
+
+La notification de déploiement adressée au chirurgien (`PLANNING_DEPLOYED_SURGEON`) présente chaque poste individuellement, dans l'ordre chronologique. Elle ne contient jamais de compteurs agrégés du type "22 couverts / 3 non couverts".
+
+**Payload `posts[]` — une entrée par poste :**
+
+```json
+{
+  "periodLabel": "Juillet 2026",
+  "posts": [
+    {
+      "missionId": 42,
+      "date": "2026-07-14",
+      "dayLabel": "Mardi 14 juillet",
+      "siteName": "Delta",
+      "periodLabel": "Matin",
+      "covered": false,
+      "instrumentistName": null,
+      "uncoveredReasonLabel": "Aucune instrumentiste disponible"
+    },
+    {
+      "missionId": 43,
+      "dayLabel": "Jeudi 16 juillet",
+      "siteName": "Delta",
+      "periodLabel": "Après-midi",
+      "covered": true,
+      "instrumentistName": "Sophie Martin",
+      "uncoveredReasonLabel": null
+    }
+  ]
+}
+```
+
+**Email (`planning_surgeon.html.twig`)** : une carte par poste dans l'ordre chronologique — date + site + période + statut couvert/non couvert + instrumentiste ou motif.
+
+### Motivation
+
+Un chirurgien raisonne par journée opératoire, pas par quota. L'agrégation masque l'information actionnable (quel poste, quel jour) et oblige le chirurgien à consulter l'application pour comprendre ce qui se passe.
+
+### Règles
+
+- Le chirurgien ne voit que ses propres postes.
+- `uncoveredReasonLabel` est le libellé lisible de l'enum `UncoveredReason` (Batch 15A).
+- Les statistiques agrégées sont réservées au résumé manager (`PLANNING_DEPLOYED_MANAGER`).
+
+---
+
+## D-054 — Deux familles de notifications instrumentiste
+
+Date : 2026-06-27
+
+### Décision
+
+Les notifications de planning adressées à un instrumentiste sont séparées en deux familles distinctes, avec des types, des préférences et des contenus différents.
+
+**Famille 1 — Publication initiale (`PLANNING_DEPLOYED_INSTRUMENTIST`) :**
+- Déclencheur : déploiement initial, une seule fois par déploiement
+- Contenu : résumé de la période + nombre de missions + PDF en pièce jointe par email
+- Message : "Votre planning de juillet 2026 a été publié. Vous êtes affecté(e) à N missions."
+
+**Famille 2 — Mise à jour post-déploiement (`PLANNING_MISSION_REASSIGNED`, `PLANNING_MISSION_CANCELLED`, `PLANNING_MISSION_ADDED`, `PLANNING_MISSION_UPDATED`) :**
+- Déclencheur : toute modification d'une mission assignée à cet instrumentiste
+- Contenu : la mission spécifique + nature du changement + before/after
+- Message : "Votre planning a été modifié. La mission du mardi 14 juillet (Delta — Matin) vous a été retirée."
+- Pas de PDF (le PDF reste réservé à la publication initiale)
+
+### Invariant
+
+> Une notification de Famille 1 n'est jamais renvoyée lors d'une mise à jour. Une notification de Famille 2 n'est jamais envoyée lors du déploiement initial.
+
+### Catalogue de types (`NotificationType`) — état cible
+
+| Type | Famille | Audience | inApp | email |
+|---|---|---|---|---|
+| `PLANNING_DEPLOYED_INSTRUMENTIST` | Initiale | Instrumentiste assigné | true | true |
+| `PLANNING_DEPLOYED_SURGEON` | Initiale | Chirurgien | true | true |
+| `PLANNING_DEPLOYED_MANAGER` | Initiale | Manager/Admin | true | true |
+| `OPEN_MISSION_AVAILABLE` | Initiale | Instrumentiste éligible | true | false |
+| `SURGEON_POST_COVERED` | Suivi | Chirurgien | true | false |
+| `SURGEON_POST_UNCOVERED` | Suivi | Chirurgien | true | false |
+| `PLANNING_MISSION_REASSIGNED` | Mise à jour | Ancien + nouvel instrumentiste | true | false |
+| `PLANNING_MISSION_CANCELLED` | Mise à jour | Instrumentiste + Chirurgien | true | true |
+| `PLANNING_MISSION_ADDED` | Mise à jour | Instrumentiste (si assigné) | true | false |
+| `PLANNING_MISSION_UPDATED` | Mise à jour | Instrumentiste + Chirurgien | true | false |
+
+Les types "Mise à jour" sont conçus aujourd'hui, implémentés dans les batches futurs (Batch 15+).
+
+`NotificationEvent.eventType` étant VARCHAR(100) (pas une colonne enum en base), l'ajout de nouveaux types ne nécessite aucune migration — seule l'enum PHP `NotificationType` est à étendre.
+
+### Motivation
+
+Sans cette séparation, une mise à jour de planning pourrait déclencher une re-notification initiale complète (avec PDF) — comportement de spam. La séparation en familles garantit que le contenu, le canal et le déclencheur sont toujours cohérents.
+
+---
+
+## D-055 — AuditEvent comme historique des changements post-déploiement
+
+Date : 2026-06-27
+
+### Décision
+
+Toute modification d'un planning publié est historisée via l'entité `AuditEvent` existante (actor FK + mission FK NOT NULL + eventType + payload JSON).
+
+**Nouveaux `AuditEventType` post-déploiement :**
+
+| Valeur | Déclencheur | Payload |
+|---|---|---|
+| `MISSION_RELEASED_TO_POOL` | ASSIGNED → OPEN (manager relâche) | `{ fromInstrumentistId, fromInstrumentistName }` |
+| `MISSION_CANCELLED_POST_DEPLOY` | OPEN → CANCELLED | `{ reason? }` |
+| `MISSION_REASSIGNED_POST_DEPLOY` | Manager réassigne directement | `{ fromInstrumentistId, fromInstrumentistName, toInstrumentistId, toInstrumentistName }` |
+| `MISSION_TIME_CHANGED_POST_DEPLOY` | Modification des horaires | `{ fromStartAt, fromEndAt, toStartAt, toEndAt }` |
+| `MISSION_ADDED_POST_DEPLOY` | Mission créée post-deploy | `{ surgeonId, surgeonName, instrumentistId?, instrumentistName? }` |
+| `MISSION_CLAIMED_FROM_POOL` | OPEN → ASSIGNED (instrumentiste claim) | `{ instrumentistId, instrumentistName }` |
+
+**Convention de payload :** tout `AuditEvent` post-déploiement inclut un snapshot before/after avec les noms des personnes au moment de l'action. Ce snapshot garantit la lisibilité de l'historique même si un utilisateur change de nom ou est supprimé ultérieurement.
+
+```json
+{
+  "occurredAt": "2026-07-02T09:15:00+02:00",
+  "fromInstrumentistId": 5,
+  "fromInstrumentistName": "Françoise Dubois",
+  "toInstrumentistId": 7,
+  "toInstrumentistName": "Sophie Martin"
+}
+```
+
+**Endpoint exposition :** `GET /api/missions/{id}/audit` — retourne les AuditEvent de la mission, triés par date DESC.
+
+### Motivation
+
+- `AuditEvent` a `mission` FK NOT NULL — compatible avec tous les cas post-déploiement (toujours sur une mission existante).
+- Réutiliser l'infrastructure d'audit existante évite une nouvelle entité et un nouveau système de journalisation.
+- Le snapshot payload est la seule garantie de lisibilité durable : une entité `User` peut être renommée ou désactivée ; l'événement d'audit reste lisible.
+
+### Historique d'une PlanningVersion
+
+L'endpoint `GET /api/planning/versions/{id}/history` reconstruit la timeline de la version sans entité supplémentaire, en agrégeant deux sources :
+
+1. `PlanningDeployment` — événement racine : horodatage du déploiement, auteur, `missionCount`, `openPoolCount`
+2. `AuditEvent` sur les missions de la version — via la jointure `audit_event.mission_id → mission.planning_version_id = :versionId`
+
+Timeline résultante :
+
+```
+09:12  Publié — 25 missions (20 assignées, 5 au pool)   ← PlanningDeployment
+10:18  Mission couverte — Mar 14/07 · Delta · Sophie Martin  ← MISSION_CLAIMED_FROM_POOL
+11:02  Mission relâchée — Jeu 16/07 · Delta              ← MISSION_RELEASED_TO_POOL
+11:04  Mission réassignée — Jeu 16/07 · Delta            ← MISSION_REASSIGNED_POST_DEPLOY
+```
+
+Le statut "planning entièrement couvert" **n'est pas un événement historisé** — c'est un état dérivé du `coverage-summary` calculé en temps réel. Il ne doit pas être injecté dans le timeline comme un événement fictif.
+
+### Contraste avec `UserAuditEvent`
+
+`UserAuditEvent` (D-046) trace les actions d'administration (suspension, changement de rôle) avec `targetUser` nullable et sans FK mission. `AuditEvent` trace les actions opérationnelles sur les missions — les deux coexistent, distincts par conception.
+
+---
+
+## D-056 — Règle d'or : toute mutation de Mission passe par un service d'application
+
+Date : 2026-06-28
+
+### Décision
+
+Aucune feature n'est autorisée à modifier une entité `Mission` directement depuis un contrôleur ou un handler.
+
+Toute mutation de `Mission` — création post-deploy incluse — doit passer par un **service d'application** (`MissionPostDeployService` ou son successeur). Ce service est seul responsable de :
+
+1. **La validation métier** (transition de statut légale, permissions d'audience, cohérence des données)
+2. **La création de l'`AuditEvent`** (actor, mission FK, eventType, payload snapshot before/after)
+3. **Le flush synchrone** (AuditEvent en base avant tout dispatch)
+4. **Le dispatch de `MissionLifecycleChangedMessage`** (async, pour les notifications)
+
+### Règle
+
+> **Toute mutation de Mission passe par le service d'application. Jamais directement depuis un contrôleur. Jamais depuis un handler Messenger.**
+
+### Pourquoi
+
+Cette règle empêche les code paths futurs de bypasser l'audit ou les notifications.
+
+Sans cette contrainte, une feature ajoutée rapidement (e.g. "assigner instrumentiste depuis l'alert modal") peut muter une Mission et oublier de dispatcher `MissionLifecycleChangedMessage` — le chirurgien n'est pas notifié, l'historique a un trou.
+
+### Conséquences
+
+- Le contrôleur est un orchestrateur : il lit la requête, appelle le service, sérialise la réponse. Pas de `$em->persist` dans un contrôleur pour une Mission.
+- Le handler `MissionLifecycleChangedMessageHandler` ne mute **jamais** une Mission — il émet seulement des `NotificationEvent`. La séparation est stricte.
+- Un test sur un endpoint Mission **doit** vérifier la présence d'un `AuditEvent` en base et d'un `MissionLifecycleChangedMessage` dans le transport de test. C'est le critère minimum de la Définition of Done de chaque batch.
+- L'existant (`claimMission`, `assignInstrumentist`) doit être migré vers ce service dans Batch 15B.
+
+### Lien avec D-052
+
+D-052 définit le cycle de vie du planning vivant et le pattern de dispatch. D-056 rend ce pattern **non-optionnel** — c'est une règle de gouvernance du code, pas une recommandation.
+
+---
+
+## D-057 — MissionEligibilityService : source de vérité unique pour l'éligibilité
+
+Date : 2026-06-29
+
+> **Précisée par D-059 (2026-07-06)** : le tableau ci-dessous documente `findEligible()` comme
+> retournant `array<int, User[]>` agrégé par site. D-059 fige la cible mission-centrique
+> (`array<missionId, User[]>`) pour cette méthode — voir D-059 pour le rationale et la garantie
+> que cette évolution ne coûte aucune requête DB supplémentaire (D-036 préservé).
+
+### Décision
+
+Un service dédié `MissionEligibilityService` est la **seule** source de vérité pour décider si un instrumentiste peut revendiquer (claim) une mission OPEN.
+
+### Trois méthodes publiques
+
+| Méthode | Usage | Cardinalité DB |
+|---|---|---|
+| `evaluate(Mission, User): EligibilityResult` | Gate pré-lock dans `MissionPostDeployService::claim()` | ≤ 3 requêtes |
+| `evaluateAllCandidates(Mission): EligibilityResult[]` | Endpoint `GET /eligible-instrumentists` | ≤ 3 requêtes |
+| `findEligible(Mission[]): array<int, User[]>` | Notifications pool dans `PlanningDeployPdfsMessageHandler` | ≤ 3 requêtes |
+
+### EligibilityResult (DTO immutable)
+
+```php
+final readonly class EligibilityResult {
+    public bool $eligible;  // true si reasons est vide
+    public function __construct(public User $candidate, public array $reasons) {}
+}
+```
+
+### EligibilityReason (enum)
+
+Six raisons typées : `INACTIVE`, `NO_SITE_MEMBERSHIP`, `ABSENT`, `SCHEDULE_CONFLICT`, `ALREADY_ASSIGNED`, `INCOMPATIBLE_STATUS`.
+
+### Règles de performance (D-036)
+
+Chaque méthode effectue exactement 3 requêtes DB, indépendamment du nombre de missions ou de candidats. Les filtres fins (absence qui couvre exactement la mission, conflit horaire exact) sont appliqués en PHP après chargement batch.
+
+### Pourquoi un service dédié
+
+Sans ce service, la logique d'éligibilité était dupliquée : dans `MissionVoter`, dans `PlanningPreviewService`, dans `sendPoolNotifications()`. Chaque copie avait des règles légèrement différentes.
+
+Ce service devient le point d'entrée unique — le voter délègue, le handler délègue, le contrôleur délègue.
+
+### Fix MissionVoter (V2 OPEN)
+
+Les missions OPEN Planning V2 n'ont pas de `MissionPublication`. L'ancienne logique de `canClaim()` appelait `isEligibleInstrumentistForOpenMission()` qui itérait les publications → retournait `false` pour toutes les missions V2. Fix : guard `if ($mission->getPublications()->isEmpty()) { return true; }` — l'éligibilité réelle est déléguée à `MissionEligibilityService::evaluate()` appelé dans `claim()`.
+
+---
+
+## D-058 — Email policy redesign : un seul email de déploiement par destinataire
+
+Date : 2026-07-04
+
+### Contexte
+
+Un audit des emails de déploiement (surgeons/instrumentistes recevant des emails en double, contenu qui se recoupe, PDF partiellement en anglais, libellé `Laissé ouvert manuellement` peu clair) a révélé la cause racine : `PlanningV2GenerationController::deploy()` transmettait `sendPdf` (défaut `true`) directement au paramètre `sendChangeSummary` de `PlanningDeploymentService::deploy()` — **chaque déploiement V2 envoyait donc systématiquement l'email de récapitulatif de changements**, en plus de l'email "Planning" standard. Voir l'audit complet pour le détail des chemins de code.
+
+### Décision
+
+**Exactement UN email de déploiement par destinataire.** Cette décision **amende D-053** (qui interdisait les compteurs agrégés dans l'email chirurgien) et **précise D-054** (dont la Famille 1 instrumentiste, elle, était déjà correcte et reste inchangée).
+
+**Chirurgien** — un seul email `Planning du {from} au {to}` :
+- Salutation, période, compteurs agrégés (`totalCount`/`coveredCount`/`uncoveredCount`).
+- Si `uncoveredCount > 0` : paragraphe explicatif non technique ("déjà proposées aux instrumentistes disponibles, vous serez informé dès qu'une est acceptée").
+- Aucune mention du mécanisme interne (`UncoveredReasonResolver`, noms d'enum).
+- PDF personnel joint uniquement — **le PDF global n'est plus joint** (contenu réservé au manager).
+
+**Instrumentiste** — un seul email `Planning du {from} au {to}` (Famille 1 de D-054, inchangée) :
+- Salutation, période, nombre de missions assignées, PDF personnel joint.
+
+**Manager (déployeur)** — nouvel email `Déploiement confirmé — planning {from} au {to}` :
+- Confirmation, missions/assignées/ouvertes, PDF global joint.
+- S'ajoute à la notification in-app `PLANNING_DEPLOYED_MANAGER` existante (même type, canal email désormais également actif).
+
+**Email "récapitulatif de changements" (`planning_change_summary_*`)** : n'est **plus jamais envoyé pendant le déploiement initial**. La capacité n'est pas supprimée — elle est extraite dans `PlanningChangeSummaryService`, un service autonome non invoqué par `PlanningDeployPdfsMessageHandler`. Elle est réservée à un futur déclencheur sur un planning déjà publié qui change (réassignation, annulation, etc.) — ce déclencheur n'existe pas encore.
+
+### Pourquoi l'amendement de D-053
+
+D-053 interdisait les compteurs agrégés au motif qu'"un chirurgien raisonne par journée opératoire, pas par quota". En pratique, cette contrainte forçait un second email (le récapitulatif "postes non couverts") pour transmettre exactement l'information — total/couvert/non couvert — qu'un compteur agrégé aurait donné directement, créant la duplication à l'origine de ce ticket. Le compromis retenu : les compteurs suffisent pour l'email (le chirurgien sait qu'il faut vérifier), le détail poste-par-poste avec raison reste disponible **in-app** (`NotificationEvent.payload.posts[]`, inchangé) pour qui veut le détail.
+
+### Libellé `Laissé ouvert manuellement`
+
+Provenait de `UncoveredReason::MANUALLY_LEFT_OPEN` — en réalité le cas *fallback* du resolver (aucune des trois autres raisons détectées ne s'applique), pas une action manuelle avérée. Renommé `Recherche en cours` (`src/Enum/UncoveredReason.php`) — plus neutre, ne présuppose pas une décision spécifique, cohérent avec le message "déjà proposées aux instrumentistes".
+
+### Traductions PDF centralisées
+
+- `MissionStatus::label()` ajouté (`src/Enum/MissionStatus.php`) — remplace `mission.status.value` (anglais brut : `OPEN`, `ASSIGNED`, …) dans les 3 templates PDF (`pdf/planning_surgeon.html.twig`, `pdf/planning_instrumentist.html.twig`, `pdf/planning_global.html.twig`).
+- Filtre Twig `french_day` (`src/Twig/DateExtension.php`) — remplace `day|date("l")` (anglais brut : `Tuesday`) dans les mêmes 3 templates. PHP's `date("l")` est indépendant de la locale ; ce filtre centralise la traduction plutôt que de la dupliquer.
+
+### API
+
+`sendChangeSummary` retiré de `PlanningDeploymentService::deploy()`, `PlanningDeployPdfsMessage`, `POST /api/planning/deploy`. `sendPdf` retiré de `POST /api/planning/v2/deploy` (n'avait plus d'effet distinct une fois `sendChangeSummary` retiré du service partagé). Voir `docs/api.md` §26.6/§26.6 V2.
+
+> **Dette connue, hors scope de ce ticket** : le modal V1 `DeployModal.tsx` (frontend, `planning-manager`) envoie encore un champ `sendChangeSummary` dans sa requête — désormais silencieusement ignoré par le backend (pas d'erreur HTTP, juste sans effet). La case à cocher correspondante devient un no-op côté UI ; un ticket frontend de suivi est nécessaire pour la retirer/relabelliser.
+
+---
+
+## D-059 — MissionClaim historique seule + MissionEligibilityService mission-centrique
+
+Date : 2026-07-06
+
+### Contexte
+
+Suite au P0 découvert en validation (« une mission relâchée ne peut plus jamais être reprise ») et au P1 associé (« la notification `OPEN_MISSION_AVAILABLE` liste des missions que le destinataire ne peut pas réellement revendiquer »), une revue d'architecture complète a été menée sur `MissionClaim` et sur la forme de retour de `MissionEligibilityService::findEligible()`. Cette ADR fige les deux décisions qui en résultent. **Aucun code n'est modifié par cette ADR** — elle documente l'architecture cible ; l'implémentation des correctifs P0/P1 la suit.
+
+---
+
+### Décision 1 — MissionClaim devient une entité historique, jamais consultée pour une décision métier
+
+`MissionClaim` est désormais officiellement une entité **append-only** : elle enregistre qu'une revendication a eu lieu, à quel instant, par qui — et ne participe **plus jamais** à la détermination de l'état courant d'une mission.
+
+**L'état courant d'une mission est déterminé exclusivement par `Mission.status` et `Mission.instrumentist`.** Aucune autre source n'est consultée pour répondre à « cette mission est-elle actuellement revendicable / assignée ? ».
+
+#### Pourquoi l'usage de MissionClaim comme garde d'état a créé le P0
+
+`MissionPostDeployService::claim()` vérifiait trois conditions avant d'accepter une revendication : `mission.status === OPEN`, `mission.instrumentist === null`, et l'absence d'une ligne `MissionClaim` existante pour la mission. Les deux premières conditions sont **strictement suffisantes** — elles reflètent exactement l'état courant. La troisième condition interroge une table dont le cycle de vie n'est **pas synchronisé** avec celui de la mission : `release()` remet `mission.status` à `OPEN` et `mission.instrumentist` à `null`, mais ne supprime jamais la ligne `MissionClaim` créée par la revendication précédente. Résultat : une mission redevenue `OPEN` de manière parfaitement valide reste bloquée pour toujours par une ligne historique que plus rien ne rattache à son état réel. Le bug n'est pas un oubli de nettoyage isolé — c'est la conséquence directe d'avoir laissé une entité pensée comme un historique jouer aussi le rôle d'un verrou d'état.
+
+#### Investigation ayant motivé la décision
+
+- **Lecture** : un seul site de lecture dans tout le code (`MissionPostDeployService::claim()`, le garde-fou incriminé). `Mission::getClaims()` existe mais n'a aucun appelant en dehors de l'entité elle-même. Aucun DTO ne sérialise de données de claim dans une réponse API.
+- **Écriture** : un seul site de création (`claim()`), aucune mise à jour, aucune suppression explicite nulle part (la cascade `orphanRemoval: true` sur `Mission::$claims` existe mais n'est exercée par aucun code actuel).
+- **Contrainte DB** : aucune contrainte unique sur `mission_claim.mission_id` (vérifié via `information_schema.STATISTICS` — seuls des index de clé étrangère non-uniques existent). Le `catch (UniqueConstraintViolationException)` du service protège contre une contrainte qui n'existe pas.
+- Conclusion : rien dans la base de code ne dépend aujourd'hui de `MissionClaim` comme représentation de l'état courant. `Mission.status` + `Mission.instrumentist` suffisent déjà entièrement.
+
+#### Cas d'usage futurs rendus possibles
+
+Une fois `MissionClaim` traitée comme pur historique : historique des revendications par mission (« revendiquée par X, relâchée, revendiquée par Y »), statistiques de charge par instrumentiste (« N missions revendiquées ce mois-ci » — alimente directement l'idée de charge de travail déjà identifiée dans la roadmap UX), reporting/analytics (délai moyen avant revendication d'une mission ouverte, patterns par site/période), timelines historiques dédiées.
+
+#### Responsabilités respectives — Mission, MissionClaim, AuditEvent
+
+| Entité | Responsabilité | Ce qu'elle N'EST PAS |
+|---|---|---|
+| **Mission** | Source de vérité unique et exclusive de l'état courant (`status`, `instrumentist`, horaires, site). Toute décision métier (« peut-on revendiquer, réassigner, annuler ? ») se base uniquement sur ces champs. | Un journal — Mission ne conserve pas l'historique de ses propres transitions. |
+| **MissionClaim** | Enregistrement append-only, spécifique et typé, du moment où une mission a été revendiquée par un instrumentiste (`mission`, `instrumentist`, `claimedAt`). Sert exclusivement des besoins d'historique/reporting/statistiques ciblés sur l'événement « claim ». | Un garde d'état — plus jamais consultée par `claim()` ou tout autre service pour une décision métier. |
+| **AuditEvent** | Le journal général et transverse de **tous** les changements post-déploiement d'une Mission (claim, release, reassign, cancel — D-055), avec acteur, horodatage et payload snapshot lisible durablement. C'est la source utilisée par `GET /api/missions/{id}/audit` et par la timeline `GET /api/planning/versions/{id}/history`. | Un remplaçant de MissionClaim pour des requêtes structurées/typées sur les claims spécifiquement — AuditEvent stocke un payload JSON générique, pas des colonnes typées interrogeables efficacement pour des statistiques de charge par exemple. |
+
+**Chevauchement assumé, pas une redondance à supprimer :** `AuditEvent` enregistre déjà `MISSION_CLAIMED_FROM_POOL` pour chaque revendication — `MissionClaim` et `AuditEvent` racontent donc partiellement le même fait, à deux niveaux de granularité différents (log générique horodaté vs. table dédiée et typée). Les deux coexistent : `AuditEvent` reste le journal transverse de référence ; `MissionClaim` devient la vue spécialisée, requêtable efficacement, pour tout ce qui concerne spécifiquement les revendications (statistiques, charge, historique dédié).
+
+---
+
+### Décision 2 — MissionEligibilityService devient progressivement mission-centrique
+
+Le modèle métier canonique de l'éligibilité est **« qui est éligible pour CETTE mission ? »**, pas « qui est éligible pour CE site ? ». `findEligible(Mission[]): array<siteId, User[]>` doit évoluer vers une forme **mission-centrique** : `array<missionId, User[]>` (ou équivalent), exposée progressivement — sans réécriture brutale, au fil des correctifs qui la consomment (à commencer par le P1).
+
+#### Pourquoi
+
+- **Correctness** : la forme actuelle (agrégée par site) a produit un bug reproductible et confirmé — un utilisateur éligible pour au moins une mission d'un site reçoit la liste complète des missions ouvertes du site, y compris celles pour lesquelles il n'est individuellement pas éligible (absence, conflit). La forme mission-centrique élimine cette classe de bug par construction : chaque mission porte sa propre liste d'éligibles, sans reconstruction approximative côté appelant.
+- **Simplicité** : les deux appelants actuels de `findEligible()` (`PlanningDeployPdfsMessageHandler`, `MissionLifecycleChangedMessageHandler`) veulent tous les deux, in fine, la réponse mission-centrique — l'un la reconstruit (mal) depuis l'agrégat par site ; l'autre s'en sort uniquement parce qu'il n'appelle jamais la méthode avec plus d'une mission à la fois. Une forme mission-centrique est directement consommable par les deux, sans reconstruction.
+- **Living Planning** : le besoin de réassignation (« qui peut reprendre CETTE mission ») est déjà servi par `evaluateAllCandidates(Mission)`, déjà mission-centrique et déjà correct — cette décision aligne `findEligible()` sur le même principe directeur, pour toute future fonctionnalité Living Planning qui aurait besoin de « qui pourrait revendiquer cette mission ouverte précise ».
+- **Notifications** : élimine directement le P1 — chaque notification `OPEN_MISSION_AVAILABLE` peut porter la liste exacte des missions que SON destinataire peut réellement revendiquer.
+- **Réassignation** : aucun changement requis — `evaluateAllCandidates()` est un chemin séparé, déjà correct, non affecté par cette décision.
+- **Futur dashboard / analytics** : toute vue agrégée future (« combien de missions ouvertes ont au moins un candidat éligible », « temps moyen avant premier candidat éligible ») se construit plus naturellement à partir d'une carte mission→candidats que depuis un agrégat par site qui a déjà perdu l'information.
+
+#### Préservation de la garantie de performance D-036
+
+Cette évolution ne coûte **aucune requête supplémentaire**. L'inspection du code de `findEligible()` montre que le calcul d'éligibilité par candidat **par mission** (`isEligibleForMission($candidate, $mission, ...)`) est déjà effectué à l'intérieur de la boucle existante, pour chaque paire candidat × mission du site — la méthode s'arrête simplement (`break`) dès qu'une première mission correspond, et ne conserve que le fait agrégé « éligible pour au moins une ». Passer à une forme mission-centrique ne change ni Q1, ni Q2, ni Q3 (toujours exactement 3 requêtes, indépendamment du nombre de missions/candidats, conformément à D-036) — seule la dernière étape d'agrégation en PHP est concernée : conserver le résultat pour **chaque** mission qui correspond au lieu de s'arrêter à la première.
+
+#### Statut
+
+Architecture validée et gelée pour ces deux décisions. L'implémentation (fix P0 : suppression du garde `MissionClaim` dans `claim()` ; fix P1 : `findEligible()` mission-centrique et `sendPoolNotifications()`/`sendOpenMissionAvailableNotifications()` adaptés) suit dans un ticket séparé, une fois cette ADR revue.
+
+---
+
+## D-060 — Photo de profil : optionnelle à l'onboarding, rappel proactif après connexion
+
+Date : 2026-07-06
+
+### Décision
+
+La photo de profil reste **techniquement optionnelle** à la complétion de compte (`/complete-account`) — aucune validation ne bloque un compte sans photo. En complément, tout utilisateur **actif** (compte déjà complété, donc authentifié avec succès) qui n'a pas encore de photo de profil se voit proposer, après connexion, un modal de rappel non bloquant l'invitant à en ajouter une. Le modal est fermable sans conséquence et n'empêche jamais la navigation.
+
+### Pourquoi ne pas rendre la photo obligatoire
+
+Une contrainte obligatoire à l'onboarding aurait un coût réel (friction à l'inscription, blocage possible si l'utilisateur n'a pas de photo sous la main au moment de l'invitation) pour un bénéfice purement organisationnel (identification visuelle dans les plannings) — pas une exigence métier ou réglementaire. Le compromis retenu : demander explicitement au bon moment (onboarding), puis rappeler une fois le compte actif, sans jamais bloquer.
+
+### Pourquoi un rappel après connexion plutôt qu'un blocage
+
+- Le rappel cible précisément les comptes qui ont sauté l'étape (`profilePictureUrl` vide) — pas un rappel systématique à chaque connexion pour tout le monde.
+- Dismiss stocké en **session** (`surgicalhub.profilePhotoPrompt.dismissed.<userId>`), pas en permanent : un « Plus tard » ne supprime pas définitivement le rappel (il peut réapparaître à une session future), mais ne harcèle pas non plus l'utilisateur à chaque navigation dans la même session.
+- Un seul point de montage (`ProfilePhotoPromptGate` dans `RequireAppAccess`) couvre tous les rôles/layouts (`MobileLayout` : instrumentiste/chirurgien ; `DesktopLayout` : manager/admin) sans dupliquer la logique dans chaque shell.
+
+### Réutilisation de l'infrastructure existante
+
+Aucune nouvelle infrastructure de stockage : `ProfilePictureStorage` (déjà utilisé par `POST /api/invitations/complete`) est réutilisé tel quel par le nouvel endpoint `POST /api/me/profile-picture`, avec exactement la même validation (`Assert\Image`, jpeg/png/webp, 5 Mo max — cf. `docs/api.md` §21). Le remplacement d'une photo existante supprime l'ancien fichier (déjà géré par le service, non modifié).
+
+### Portée
+
+- Pas de données patient, pas de données financières impliquées.
+- RBAC inchangé : l'endpoint n'a pas de Voter dédié — un utilisateur ne modifie jamais que sa propre photo, aucune autorisation supplémentaire n'a de sens ici.
+- L'écran "Mon profil" (seul écran de profil existant à ce jour, côté instrumentiste) permet aussi le changement direct de la photo, indépendamment du modal.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -1998,3 +2516,12 @@ développement, avant tout déploiement réel.
 | 23-06-2026 | D-049 — Règles d'affiliation aux sites par rôle métier |
 | 24-06-2026 | D-050 — Absences "jours isolés" : N lignes `Absence` d'un jour, pas de nouveau champ |
 | 24-06-2026 | D-051 — Relances congés manager : preview backend, destinataire fixe, audit sans cible unique |
+| 27-06-2026 | D-052 — Le planning publié est un objet vivant (invariant Post/Mission + MissionLifecycleChangedMessage) |
+| 27-06-2026 | D-053 — Notification chirurgien : par poste, pas par statistique |
+| 27-06-2026 | D-054 — Deux familles de notifications instrumentiste |
+| 27-06-2026 | D-055 — AuditEvent comme historique des changements post-déploiement |
+| 28-06-2026 | D-056 — Règle d'or : toute mutation de Mission passe par un service d'application |
+| 29-06-2026 | D-057 — MissionEligibilityService : source de vérité unique pour l'éligibilité |
+| 04-07-2026 | D-058 — Email policy redesign : un seul email de déploiement par destinataire (amende D-053) |
+| 06-07-2026 | D-059 — MissionClaim historique seule + MissionEligibilityService mission-centrique (précise D-057) |
+| 06-07-2026 | D-060 — Photo de profil : optionnelle à l'onboarding, rappel proactif après connexion |

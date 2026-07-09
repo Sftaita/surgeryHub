@@ -47,6 +47,7 @@ Liste toutes les firmes actives, triées par nom.
 | `DRAFT` | Mission créée, non publiée |
 | `OPEN` | Publiée, disponible à la prise en charge |
 | `ASSIGNED` | Prise en charge par un instrumentiste |
+| `CANCELLED` | Annulée post-déploiement (manager) |
 | `DECLARED` | Activité imprévue déclarée |
 | `REJECTED` | Rejetée par le manager |
 | `SUBMITTED` | Soumise par l'instrumentiste |
@@ -79,9 +80,205 @@ Crée une mission planning classique (`DRAFT`).
 
 **Transition :** `OPEN → ASSIGNED`
 
-- Transactionnel
+- Transactionnel (verrouillage pessimiste)
 - Anti-double
-- `409` si déjà claimée
+- `409` si déjà claimée, non `OPEN`, ou instrumentiste non éligible (`MissionEligibilityService`) (Batch 15D)
+- Crée un `AuditEvent(MISSION_CLAIMED_FROM_POOL)` (Batch 15B)
+- Dispatche `MissionLifecycleChangedMessage(CLAIMED)` (Batch 15B)
+
+---
+
+### `GET /api/missions/{id}/eligible-instrumentists`
+
+**AuthZ :** `MANAGER` / `ADMIN` (`MissionVoter::VIEW_ELIGIBLE_INSTRUMENTISTS`)
+
+Retourne la liste de tous les instrumentistes du site de la mission, séparés en éligibles et inéligibles, avec les raisons de non-éligibilité.
+
+**Réponse — 200 :**
+
+```json
+{
+  "missionId": 42,
+  "missionStatus": "OPEN",
+  "eligible": [
+    { "id": 5, "name": "Alice Martin", "email": "alice@example.com" }
+  ],
+  "ineligible": [
+    {
+      "id": 7,
+      "name": "Bob Dupont",
+      "email": "bob@example.com",
+      "reasons": ["ABSENT", "SCHEDULE_CONFLICT"]
+    }
+  ]
+}
+```
+
+**Valeurs de `reasons` :**
+
+| Valeur | Signification |
+|---|---|
+| `INACTIVE` | Compte inactif |
+| `NO_SITE_MEMBERSHIP` | Pas d'affiliation au site |
+| `ABSENT` | Absent ce jour |
+| `SCHEDULE_CONFLICT` | Conflit d'horaire avec une autre mission |
+| `ALREADY_ASSIGNED` | Mission déjà attribuée à un autre |
+| `INCOMPATIBLE_STATUS` | Statut de la mission incompatible (non `OPEN`) |
+
+**Notes :**
+- Délégue à `MissionEligibilityService::evaluateAllCandidates()` (≤ 3 requêtes DB — D-036)
+- Ajouté en Batch 15D
+
+---
+
+### `GET /api/missions/{id}/audit`
+
+**AuthZ :** `MANAGER` / `ADMIN` ou chirurgien de la mission (`MissionVoter::VIEW_AUDIT`)
+
+Retourne le journal chronologique (DESC) des `AuditEvent` liés à une mission déployée.
+
+**Réponse — 200 :**
+
+```json
+[
+  {
+    "eventType": "MISSION_CLAIMED_FROM_POOL",
+    "occurredAt": "2026-06-05T10:30:00+00:00",
+    "actorId": 7,
+    "actorName": "Bob Dupont",
+    "payload": {}
+  }
+]
+```
+
+**Notes :**
+- Lecture seule — aucun effet de bord, aucun `flush`
+- Trié par `createdAt DESC`
+- Ajouté en Batch 15F
+
+---
+
+### `POST /api/missions/{id}/assign-instrumentist`
+
+**AuthZ :** `MANAGER` / `ADMIN` (`MissionVoter::ASSIGN_INSTRUMENTIST`) — corrigé en RC1-C (auparavant un check `ROLE_MANAGER` brut, qui excluait un compte `ADMIN` sans le rôle `MANAGER` explicite)
+
+**Précondition :** `mission.status = DRAFT` uniquement — c'est le chemin d'assignation pré-déploiement. Une mission déployée doit passer par `/release`, `/cancel` ou `/reassign` (R-04, D-056).
+
+**Body :**
+
+```json
+{ "instrumentistId": 12 }
+```
+
+`instrumentistId` peut être `null` pour retirer l'instrumentiste affecté.
+
+**Réponse — 200 :** Mission complète avec le nouvel instrumentiste (ou `instrumentist: null`)
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non autorisé (ni `MANAGER` ni `ADMIN`) |
+| `404` | Mission ou instrumentiste introuvable |
+| `409` `MISSION_NOT_DRAFT` | Mission non `DRAFT` — utiliser `/release`, `/cancel` ou `/reassign` |
+
+**Effets backend :**
+- `mission.instrumentist → newInstrumentist` (ou `null`)
+- Statut inchangé (reste `DRAFT`)
+- Pas d'`AuditEvent`, pas de `MissionLifecycleChangedMessage` — une mission `DRAFT` n'a aucune publication ni destinataire de notification, cohérent avec `create()`/`patch()` (RC1-C)
+- Délègue à `MissionService::assignInstrumentistDraft()` — plus de mutation directe dans le contrôleur
+
+---
+
+### `POST /api/missions/{id}/release`
+
+**AuthZ :** `MANAGER` / `ADMIN` (`MissionVoter::RELEASE`)
+
+**Transition :** `ASSIGNED → OPEN`
+
+Relâche la mission vers le pool. L'instrumentiste assigné est désengagé.
+
+**Body :** `{}` (vide)
+
+**Réponse — 200 :** Mission complète avec `status: "OPEN"`
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non autorisé |
+| `404` | Mission introuvable |
+| `409` | Mission non `ASSIGNED` |
+
+**Effets backend :**
+- `status → OPEN`, `instrumentist → null`
+- `AuditEvent(MISSION_RELEASED_TO_POOL)` créé avec snapshot `fromInstrumentistName`
+- `MissionLifecycleChangedMessage(RELEASED)` dispatché (async)
+
+---
+
+### `POST /api/missions/{id}/cancel`
+
+**AuthZ :** `MANAGER` / `ADMIN` (`MissionVoter::CANCEL`)
+
+**Transition :** `OPEN → CANCELLED`
+
+Annule une mission ouverte qui ne peut pas être couverte.
+
+**Body :**
+
+```json
+{ "reason": "Chirurgien absent" }
+```
+
+`reason` est optionnel.
+
+**Réponse — 200 :** Mission complète avec `status: "CANCELLED"`
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non autorisé |
+| `404` | Mission introuvable |
+| `409` | Mission non `OPEN` |
+
+**Effets backend :**
+- `status → CANCELLED`
+- `AuditEvent(MISSION_CANCELLED_POST_DEPLOY)` créé avec snapshot `reason` + `actorName`
+- `MissionLifecycleChangedMessage(CANCELLED)` dispatché (async)
+
+---
+
+### `POST /api/missions/{id}/reassign`
+
+**AuthZ :** `MANAGER` / `ADMIN` (`MissionVoter::REASSIGN`)
+
+**Transition :** `ASSIGNED → ASSIGNED` (nouvel instrumentiste)
+
+Réassigne une mission à un autre instrumentiste. Le statut reste `ASSIGNED`.
+
+**Body :**
+
+```json
+{ "instrumentistId": 12 }
+```
+
+**Réponse — 200 :** Mission complète avec `status: "ASSIGNED"` et le nouvel instrumentiste
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non autorisé |
+| `404` | Mission introuvable / instrumentiste cible introuvable |
+| `409` | Mission non `ASSIGNED` |
+| `422` | `instrumentistId` manquant ou invalide |
+
+**Effets backend :**
+- `mission.instrumentist → newInstrumentist`
+- `AuditEvent(MISSION_REASSIGNED_POST_DEPLOY)` avec snapshot `fromInstrumentistName` + `toInstrumentistName`
+- `MissionLifecycleChangedMessage(REASSIGNED)` dispatché (async)
 
 ---
 
@@ -1305,9 +1502,31 @@ Retourne le profil de l'utilisateur connecté, adapté à son rôle.
 ```
 
 **Notes :**
-- `profilePictureUrl` est l'URL complète (absolue) construite par le backend
-- `profilePicturePath` dans `instrumentistProfile` est le chemin relatif
+- `profilePictureUrl` (racine) et `profilePicturePath` (dans `instrumentistProfile`) sont tous les deux l'URL complète (absolue) construite par le backend à partir de `User.profilePicturePath` — malgré le nom `...Path`, `instrumentistProfile.profilePicturePath` n'est **pas** un chemin relatif.
 - Pour les rôles `MANAGER` / `ADMIN` / `SURGEON`, `instrumentistProfile` est `null`
+
+### `POST /api/me/profile-picture`
+
+**AuthZ :** Tout utilisateur authentifié — aucune autorisation supplémentaire : on ne modifie jamais que sa propre ressource, pas de Voter dédié.
+
+**Requête :** `multipart/form-data`, champ `profilePicture` (fichier).
+
+**Validation (source de vérité serveur) :**
+- Types acceptés : `image/jpeg`, `image/png`, `image/webp`
+- Taille max : 5 Mo
+- Fichier manquant → `400`
+- Type/taille invalide → `422`
+
+**Comportement :**
+- Stocke le fichier dans `/public/uploads/profile-pictures/` via `ProfilePictureStorage` (même service que `POST /api/invitations/complete`).
+- Si l'utilisateur avait déjà une photo, l'ancien fichier est supprimé du disque après le déplacement du nouveau (remplacement atomique côté service).
+- Persiste `User.profilePicturePath`.
+
+**Réponse — 200 :** le même objet `MeResponse` que `GET /api/me` (voir ci-dessus), avec `profilePictureUrl` à jour.
+
+**Erreurs :** `400` fichier manquant/invalide, `422` type/taille refusé, `401` non authentifié.
+
+**Usage produit :** utilisé à la fois par l'écran "Mon profil" (changement direct) et par le modal de rappel post-onboarding (`ProfilePhotoPromptModal`) affiché aux utilisateurs actifs sans photo — voir D-060 dans `docs/decisions.md`.
 
 ---
 
@@ -2470,8 +2689,7 @@ Publie les missions `DRAFT` de la version selon les règles ci-dessous, puis dis
   "to": "2026-03-27",
   "siteId": 2,
   "versionId": 5,
-  "selectedUncoveredMissionIds": [101, 102, 103],
-  "sendChangeSummary": true
+  "selectedUncoveredMissionIds": [101, 102, 103]
 }
 ```
 
@@ -2482,7 +2700,8 @@ Publie les missions `DRAFT` de la version selon les règles ci-dessous, puis dis
 | `siteId` | int \| null | — | Filtre par site (null = tous) |
 | `versionId` | int \| null | — | ID de la `PlanningVersion` DRAFT à déployer |
 | `selectedUncoveredMissionIds` | int[] | — | IDs des missions sans instrumentiste à publier en pool (défaut `[]`) |
-| `sendChangeSummary` | bool | — | Si `true`, le worker envoie un email de diff aux instrumentistes et chirurgiens concernés (défaut `false`) |
+
+> **Historique** : `sendChangeSummary` a été retiré de cet endpoint (email policy redesign, voir D-058). Le déploiement initial n'envoie plus jamais l'email de récapitulatif de changements — voir "Emails envoyés" ci-dessous.
 
 **Réponse — 200 (immédiate, avant la fin des PDFs) :**
 
@@ -2500,11 +2719,60 @@ Publie les missions `DRAFT` de la version selon les règles ci-dessous, puis dis
 | `missionCount` | Total de missions publiées (ASSIGNED + OPEN) |
 | `openPoolCount` | Missions publiées en pool (sans instrumentiste, cochées par le manager) |
 
-> **Async** : PDFs, emails, notifications et `sendChangeSummary` s'exécutent dans le worker Messenger (`PlanningDeployPdfsMessageHandler`). La réponse HTTP retourne immédiatement après le flush DB.
+> **Async** : PDFs, emails, notifications s'exécutent dans le worker Messenger (`PlanningDeployPdfsMessageHandler`). La réponse HTTP retourne immédiatement après le flush DB.
 >
 > **Idempotence** : si le worker reçoit le même message deux fois (retry Messenger), il vérifie `PlanningDeployment.status == DONE` avant d'agir — aucun double envoi dans ce cas.
 >
 > **Worker requis** : `php bin/console messenger:consume async`
+
+**Emails envoyés (email policy redesign, D-058) — exactement UN email de déploiement par destinataire :**
+
+| Destinataire | Email | Contenu | Pièce jointe |
+|---|---|---|---|
+| Instrumentiste | `Planning du {from} au {to}` | Salutation, période, nombre de missions assignées | PDF personnel uniquement |
+| Chirurgien | `Planning du {from} au {to}` | Salutation, période, total/couvertes/non couvertes ; si non couvertes > 0, explication non technique | PDF personnel uniquement (**pas** le PDF global) |
+| Manager (déployeur) | `Déploiement confirmé — planning {from} au {to}` | Confirmation, missions/assignées/ouvertes | PDF global (site complet) |
+
+Aucun email "récapitulatif de changements" (`planning_change_summary_*`) n'est envoyé lors du déploiement initial — voir §26.6c.
+
+**Notifications in-app créées par le worker (Batch 15C) :**
+
+Toutes les notifications in-app sont créées via `NotificationEvent` (channel `IN_APP`) et gérées par `NotificationPreferenceResolver`. Les emails et les notifications in-app sont désactivables par préférence utilisateur.
+
+| `eventType` | Destinataire | Payload |
+|---|---|---|
+| `PLANNING_DEPLOYED_INSTRUMENTIST` | Chaque instrumentiste avec au moins 1 mission | `{ periodLabel, missionCount, deployedAt }` |
+| `PLANNING_DEPLOYED_SURGEON` | Chaque chirurgien avec au moins 1 poste | `{ periodLabel, posts[] }` |
+| `PLANNING_DEPLOYED_MANAGER` | Le manager qui a déclenché le déploiement | `{ missionCount, assignedCount, openPoolCount, periodLabel }` |
+| `OPEN_MISSION_AVAILABLE` | Chaque instrumentiste du site (missions en pool uniquement) | `{ openMissionIds, missionCount, siteName, periodLabel }` |
+
+**Format d'un élément `posts[]` (payload `PLANNING_DEPLOYED_SURGEON`) :**
+
+```json
+{
+  "missionId": 101,
+  "date": "2026-03-24",
+  "dayLabel": "Monday",
+  "siteName": "Clinique Alpha",
+  "periodLabel": "Matin",
+  "covered": false,
+  "instrumentistName": null,
+  "uncoveredReasonLabel": "Tous les instrumentistes sont absents"
+}
+```
+
+| Champ | Description |
+|---|---|
+| `missionId` | ID de la mission |
+| `date` | Date au format `Y-m-d` |
+| `dayLabel` | Jour en anglais (p. ex. `Monday`) |
+| `siteName` | Nom du site opératoire |
+| `periodLabel` | `Matin` ou `Après-midi` |
+| `covered` | `true` si la mission est `ASSIGNED`, `false` si `OPEN` |
+| `instrumentistName` | Nom de l'instrumentiste (null si non couvert) |
+| `uncoveredReasonLabel` | Raison heuristique (null si couvert). Valeurs : `Aucun instrumentiste affilié au site`, `Tous les instrumentistes sont absents`, `Tous les instrumentistes ont un conflit`, `Recherche en cours` |
+
+> Ce payload `posts[]` reste **in-app uniquement** depuis le redesign D-058 — l'email chirurgien (`planning_surgeon.html.twig`) n'affiche plus le détail par poste, seulement des compteurs agrégés (total/couvertes/non couvertes). Voir D-058, qui remplace D-053 sur ce point.
 
 ---
 
@@ -2562,6 +2830,83 @@ Calcule le diff "planning visible" entre la version `{id}` et la version ACTIVE/
 L'arrondi de 15 min absorbe les micro-décalages (08:00 ↔ 08:07 → même slot) sans masquer les vrais changements (08:00 ↔ 08:30 → clés distinctes → add + remove).
 
 **Si diff vide :** `{ "added": [], "removed": [], "modified": [] }` — premier déploiement ou planning identique.
+
+---
+
+#### `GET /api/planning/versions/{id}/coverage-summary`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Retourne les KPI de couverture de la version (lecture seule, aucune persistance).
+
+**Réponse — 200 :**
+
+```json
+{
+  "versionId": 12,
+  "total": 40,
+  "covered": 30,
+  "open": 10,
+  "cancelled": 2,
+  "coveragePercent": 75.0
+}
+```
+
+**Sémantique :**
+- `total` = missions `OPEN + ASSIGNED + SUBMITTED + VALIDATED + CLOSED + IN_PROGRESS`
+- `covered` = missions `ASSIGNED + SUBMITTED + VALIDATED + CLOSED + IN_PROGRESS`
+- `open` = missions `OPEN` (pool, en attente de prise en charge)
+- `cancelled` = missions `CANCELLED` (informatif, exclus de `total`)
+- `coveragePercent` = `covered / total × 100` (arrondi 1 décimale) — `null` si `total = 0`
+
+**Réponse — 404 :** version inexistante.
+
+**Notes :**
+- Exécute 1 requête `GROUP BY` — aucun `flush`, aucune persistance
+- Ajouté en Batch 15F
+
+---
+
+#### `GET /api/planning/versions/{id}/history`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Retourne la timeline chronologique (ASC) de tous les événements d'une version déployée.
+
+**Réponse — 200 :**
+
+```json
+[
+  {
+    "type": "DEPLOYED",
+    "occurredAt": "2026-06-01T08:00:00+00:00",
+    "deployedById": 5,
+    "deployedByName": "Alice Martin",
+    "missionCount": 40,
+    "openPoolCount": 10
+  },
+  {
+    "type": "MISSION_CLAIMED_FROM_POOL",
+    "occurredAt": "2026-06-05T10:30:00+00:00",
+    "missionId": 55,
+    "actorId": 7,
+    "actorName": "Bob Dupont",
+    "payload": {}
+  }
+]
+```
+
+**Structure :**
+1. Entrée `DEPLOYED` (si `deployedAt` non nul) — dérivée de `PlanningVersion.deployedAt + generatedBy + summaryJson`
+2. Entrées `AuditEvent` liées aux missions de la version — triées `createdAt ASC`
+
+**Réponse — 404 :** version inexistante.
+
+**Notes :**
+- `PlanningDeployment` n'a pas de FK vers `PlanningVersion` — le déploiement est reconstitué depuis la version elle-même
+- 2 requêtes DB au total (find + DQL JOIN)
+- Lecture seule — aucun `flush`, aucune persistance
+- Ajouté en Batch 15F
 
 ---
 
@@ -2755,14 +3100,19 @@ incrémenté — comportement V1 inchangé).
 **Body :**
 
 ```json
-{ "planningVersionId": 7, "sendPdf": true }
+{ "planningVersionId": 7 }
 ```
 
 Réutilise **sans aucune logique V2-spécifique** `PlanningDeploymentService::deploy()` —
 le même service que V1 (section 26.6). `from`/`to`/`siteId` sont dérivés automatiquement
-de la `PlanningVersion` ciblée. `sendPdf` est transmis au paramètre existant
-`sendChangeSummary` (pas de levier "désactiver les PDFs" dans le service partagé — les
-PDFs standard par destinataire sont envoyés inconditionnellement, comme en V1).
+de la `PlanningVersion` ciblée.
+
+> **Historique (D-058)** : ce endpoint acceptait auparavant un champ `sendPdf`, transmis
+> au paramètre `sendChangeSummary` de `PlanningDeploymentService::deploy()` — en pratique
+> toujours `true` par défaut, donc l'email de récapitulatif de changements partait à
+> **chaque** déploiement V2. `sendChangeSummary` a été retiré du service partagé ; ce
+> comportement n'existe plus. Les PDFs standard par destinataire sont toujours envoyés
+> inconditionnellement (un seul email par destinataire, voir §26.6).
 
 **Réponse — 200 :** identique à 26.6 (`deploymentId`, `missionCount`, `openPoolCount`).
 

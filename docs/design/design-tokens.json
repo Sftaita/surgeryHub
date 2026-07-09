@@ -1,0 +1,94 @@
+{
+  "$schema": "https://design-tokens.org (informel)",
+  "meta": {
+    "brand": "SurgeryHub",
+    "source": "_ds/surgery-hub-design-system tokens/*.css — valeurs exactes, exportables telles quelles",
+    "breakpointDesktop": 900
+  },
+  "color": {
+    "gray": { "950": "#0B1320", "900": "#16202B", "800": "#243240", "700": "#3A4754", "600": "#566270", "500": "#727E8C", "400": "#98A2AE", "300": "#C2C9D1", "200": "#DDE2E8", "150": "#E7EBEF", "100": "#EFF2F5", "75": "#F1F4F7", "50": "#F5F7FA" },
+    "green": { "900": "#144D38", "800": "#1F6B4F", "700": "#2C7D5F", "600": "#338F6E", "500": "#42A882", "400": "#63C9A3", "300": "#8FDABF", "200": "#BCE9D6", "100": "#DDF4EA", "50": "#EFFAF5" },
+    "amber": { "700": "#B7791F", "600": "#D9920B", "500": "#F0A91B", "100": "#FBEACB", "50": "#FEF6E7" },
+    "red": { "700": "#C62F36", "600": "#E5484D", "500": "#F0676B", "100": "#FAD7D8", "50": "#FDEEEE" },
+    "blue": { "700": "#1B5FD0", "600": "#2D7FF9", "500": "#5598FB", "100": "#D6E6FE", "50": "#EDF4FF" },
+    "purple": { "700": "#7C4FCC", "50": "#F3EBFD" },
+    "slate": { "700": "#3B6296", "50": "#EFF4FB" },
+    "white": "#FFFFFF",
+    "extra": { "sunFreeDay": "#F6C56B", "freeDayGradientMid": "#EAF6F0" }
+  },
+  "semantic": {
+    "surface": { "page": "{color.gray.50}", "card": "{color.white}", "sunken": "{color.gray.75}", "inverse": "{color.gray.900}", "hover": "{color.gray.75}", "selected": "{color.green.50}" },
+    "text": { "strong": "{color.gray.900}", "body": "{color.gray.700}", "muted": "{color.gray.500}", "subtle": "{color.gray.400}", "inverse": "{color.white}", "link": "{color.green.700}" },
+    "border": { "subtle": "{color.gray.150}", "default": "{color.gray.200}", "strong": "{color.gray.300}", "focus": "{color.green.500}" },
+    "brand": { "default": "{color.green.500}", "hover": "{color.green.600}", "active": "{color.green.700}", "light": "{color.green.400}", "subtle": "{color.green.50}" },
+    "status": {
+      "proposee": { "fg": "{color.green.700}", "surface": "{color.green.100}", "tile": "{color.green.100}", "tileFg": "{color.green.900}" },
+      "confirmee": { "fg": "{color.green.700}", "surface": "{color.green.100}", "tile": "{color.green.50}", "tileFg": "{color.green.800}" },
+      "enCours": { "fg": "{color.green.700}", "surface": "{color.green.100}", "pulse": true },
+      "aEncoder": { "fg": "{color.amber.700}", "surface": "{color.amber.50}" },
+      "enAttente": { "fg": "{color.amber.700}", "surface": "{color.amber.50}" },
+      "aVenir": { "fg": "{color.blue.700}", "surface": "{color.blue.100}" },
+      "refusee": { "fg": "{color.gray.500}", "surface": "{color.gray.100}", "cardOpacity": 0.55 },
+      "alertBadge": { "bg": "{color.red.600}", "fg": "{color.white}" }
+    },
+    "avatarIdentity": {
+      "description": "Déterministe par hash du nom — même personne = même paire partout dans l'app. Utilisé comme repli initiales de PersonAvatar quand aucune photo n'est disponible.",
+      "palette": [
+        { "bg": "{color.blue.50}", "fg": "{color.blue.700}" },
+        { "bg": "{color.amber.50}", "fg": "{color.amber.700}" },
+        { "bg": "{color.purple.50}", "fg": "{color.purple.700}" },
+        { "bg": "{color.green.50}", "fg": "{color.green.700}" },
+        { "bg": "{color.red.50}", "fg": "{color.red.700}" },
+        { "bg": "{color.slate.50}", "fg": "{color.slate.700}" }
+      ]
+    },
+    "focusRing": "0 0 0 3px color-mix(in srgb, #42A882 32%, transparent)"
+  },
+  "gradient": {
+    "brandHeader": "linear-gradient(140deg, #1F6B4F 0%, #338F6E 62%, #42A882 118%)",
+    "login": "linear-gradient(155deg, #2E7D5F 0%, #1E634A 42%, #123F30 100%)",
+    "encodeHeader": "linear-gradient(150deg, #123F30 0%, #1E634A 55%, #2E7D5F 120%)",
+    "heroPhotoOverlay": "linear-gradient(180deg, rgba(11,19,32,.15) 0%, rgba(20,77,56,.82) 100%)",
+    "freeDayCard": "linear-gradient(160deg, #EFFAF5 0%, #EAF6F0 60%, #DDF4EA 100%)"
+  },
+  "font": {
+    "family": { "sans": "Inter, system-ui, -apple-system, 'Segoe UI', sans-serif" },
+    "size": { "2xs": 11, "xs": 12, "sm": 13, "base": 15, "md": 16, "lg": 18, "xl": 21, "2xl": 26, "3xl": 32, "4xl": 40 },
+    "weight": { "regular": 400, "medium": 500, "semibold": 600, "bold": 700, "extra": 800 },
+    "leading": { "tight": 1.15, "snug": 1.3, "normal": 1.5, "relaxed": 1.65 },
+    "tracking": { "tight": "-0.02em", "snug": "-0.01em", "caps": "0.06em", "capsWide": "0.08em" },
+    "numeric": "tabular-nums pour tout horaire, durée, date, compteur"
+  },
+  "space": { "base": 4, "scale": [0, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96], "screenGutter": 20, "contentMax": 720, "brandBandMaxDesktop": 760 },
+  "radius": { "xs": 4, "sm": 8, "md": 12, "lg": 16, "card": 18, "xl": 20, "band": 24, "sheet": 26, "bandMobile": 28, "pill": 999 },
+  "size": {
+    "tapMin": 44, "controlSm": 40, "controlMd": 48, "controlLg": 52, "ctaPrimary": 56,
+    "bottomNavItem": 58, "sidebarWidth": 248, "sidebarItem": 48,
+    "stepperButton": 46, "closeButton": 40, "checkbox": 22,
+    "dateTile": { "width": 54, "height": 58, "radius": 14 },
+    "dateTileSmall": { "width": 46, "height": 50, "radius": 12 },
+    "heroImage": 186, "heroCardTotal": 345, "weekChip": 66, "monthCell": 44,
+    "avatar": { "xs": 24, "sm": 32, "md": 40, "lg": 56, "xl": 88 }
+  },
+  "shadow": {
+    "xs": "0 1px 2px rgba(22,32,43,.05)",
+    "sm": "0 1px 2px rgba(22,32,43,.05), 0 2px 6px rgba(22,32,43,.06)",
+    "md": "0 2px 6px rgba(22,32,43,.06), 0 8px 20px rgba(22,32,43,.08)",
+    "lg": "0 6px 16px rgba(22,32,43,.08), 0 16px 40px rgba(22,32,43,.12)",
+    "xl": "0 10px 24px rgba(22,32,43,.10), 0 28px 60px rgba(22,32,43,.16)",
+    "bottomNav": "0 -8px 28px rgba(22,32,43,.14)",
+    "ctaGreen": "0 5px 14px rgba(20,77,56,.3)",
+    "ctaBrand": "0 6px 18px rgba(66,168,130,.38)",
+    "loginSheet": "0 -14px 40px rgba(0,0,0,.28)"
+  },
+  "motion": {
+    "easeBrand": "cubic-bezier(0.22, 1, 0.36, 1)",
+    "easeWave": "cubic-bezier(0.16, 1, 0.3, 1)",
+    "durFast": 120, "durBase": 200, "durSlow": 300,
+    "screenFade": 250, "titleEnter": 450, "titleSubDelay": 80,
+    "sheetUp": 300, "dialogPop": 220, "overlayFade": 200,
+    "waveMorph": [1100, 1350, 1600], "encodeWaveArrival": [1100, 1350],
+    "pulse": 1600, "spinner": 700, "toastAutoDismiss": 2800
+  },
+  "z": { "sticky": 100, "nav": 300, "dropdown": 400, "accountMenu": 500, "overlay": 800, "sheet": 810, "toast": 1000 }
+}
