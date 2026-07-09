@@ -3,3 +3,10 @@
 # React déployé (frontend/dist/) et l'entrée publique Symfony (backend/public/).
 # Voir docs/production-hostinger.md.
 /public_html/
+
+# Dossier de cache stray créé à la racine (le vrai node_modules vit dans frontend/).
+/node_modules/
+
+# Captures d'écran de travail personnelles, hors dépôt applicatif.
+/Visuel/
+/Erruer templates.png
