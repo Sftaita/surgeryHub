@@ -9,7 +9,9 @@ use App\Enum\MissionStatus;
 use App\Enum\PlanningVersionStatus;
 use App\Security\Voter\PlanningVoter;
 use App\Service\PdfService;
+use App\Service\PlanningCoverageService;
 use App\Service\PlanningDiffService;
+use App\Service\PlanningVersionHistoryService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -20,9 +22,11 @@ use Symfony\Component\Routing\Attribute\Route;
 class PlanningVersionController extends AbstractController
 {
     public function __construct(
-        private readonly EntityManagerInterface $em,
-        private readonly PlanningDiffService $diffService,
-        private readonly PdfService $pdfService,
+        private readonly EntityManagerInterface         $em,
+        private readonly PlanningDiffService            $diffService,
+        private readonly PdfService                     $pdfService,
+        private readonly PlanningCoverageService        $coverageService,
+        private readonly PlanningVersionHistoryService  $historyService,
     ) {}
 
     // ── List ──────────────────────────────────────────────────────────────────
@@ -135,6 +139,43 @@ class PlanningVersionController extends AbstractController
         }
 
         return $this->json($this->diffService->diff($version));
+    }
+
+    // ── Coverage KPI (Batch 15F) ──────────────────────────────────────────────
+
+    #[Route('/api/planning/versions/{id}/coverage-summary', name: 'api_planning_version_coverage_summary', methods: ['GET'])]
+    public function coverageSummary(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $summary = $this->coverageService->computeForVersion($id);
+        if ($summary === null) {
+            return $this->json(['error' => ['message' => 'PlanningVersion not found.']], 404);
+        }
+
+        return $this->json([
+            'versionId'       => $summary->versionId,
+            'total'           => $summary->total,
+            'covered'         => $summary->covered,
+            'open'            => $summary->open,
+            'cancelled'       => $summary->cancelled,
+            'coveragePercent' => $summary->coveragePercent,
+        ]);
+    }
+
+    // ── Version history timeline (Batch 15F) ──────────────────────────────────
+
+    #[Route('/api/planning/versions/{id}/history', name: 'api_planning_version_history', methods: ['GET'])]
+    public function history(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $timeline = $this->historyService->buildTimeline($id);
+        if ($timeline === null) {
+            return $this->json(['error' => ['message' => 'PlanningVersion not found.']], 404);
+        }
+
+        return $this->json($timeline);
     }
 
     // ── Delete ────────────────────────────────────────────────────────────────

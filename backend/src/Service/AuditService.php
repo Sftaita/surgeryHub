@@ -29,6 +29,28 @@ class AuditService
         $this->persist($mission, $actor, AuditEventType::MISSION_DECLARED_REJECTED);
     }
 
+    /**
+     * Generic record for post-deploy lifecycle events (Batch 15B+).
+     * $extraPayload must include name snapshots per R-12 (never rely on FK at read-time).
+     * flush() is the caller's responsibility (R-05: flush before dispatch).
+     */
+    public function record(Mission $mission, User $actor, AuditEventType $type, array $extraPayload = []): void
+    {
+        $evt = new AuditEvent();
+        $evt
+            ->setMission($mission)
+            ->setActor($actor)
+            ->setEventType($type)
+            ->setPayload(array_merge([
+                'missionId' => $mission->getId(),
+                'siteId'    => $mission->getSite()?->getId(),
+                'siteName'  => $mission->getSite()?->getName(),
+                'status'    => $mission->getStatus()->value,
+            ], $extraPayload));
+
+        $this->em->persist($evt);
+    }
+
     private function persist(Mission $mission, User $actor, AuditEventType $type): void
     {
         $evt = new AuditEvent();

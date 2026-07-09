@@ -8,12 +8,16 @@ use App\Dto\Request\MissionFilter;
 use App\Dto\Request\MissionPatchRequest;
 use App\Dto\Request\MissionPublishRequest;
 use App\Dto\Request\MissionSubmitRequest;
+use App\Entity\AuditEvent;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\EligibilityReason;
 use App\Security\Voter\MissionVoter;
+use App\Service\MissionEligibilityService;
 use App\Service\MissionEncodingGuard;
 use App\Service\MissionEncodingService;
 use App\Service\MissionMapper;
+use App\Service\MissionPostDeployService;
 use App\Service\MissionService;
 use App\Service\WebPushService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -31,14 +35,16 @@ use Symfony\Component\Validator\Validator\ValidatorInterface;
 class MissionController extends AbstractController
 {
     public function __construct(
-        private readonly MissionService $missionService,
-        private readonly MissionMapper $mapper,
-        private readonly MissionEncodingService $encodingService,
-        private readonly MissionEncodingGuard $encodingGuard,
-        private readonly SerializerInterface $serializer,
-        private readonly ValidatorInterface $validator,
-        private readonly WebPushService $webPushService,
-        private readonly EntityManagerInterface $em,
+        private readonly MissionService            $missionService,
+        private readonly MissionMapper             $mapper,
+        private readonly MissionEncodingService    $encodingService,
+        private readonly MissionEncodingGuard      $encodingGuard,
+        private readonly SerializerInterface       $serializer,
+        private readonly ValidatorInterface        $validator,
+        private readonly WebPushService            $webPushService,
+        private readonly EntityManagerInterface    $em,
+        private readonly MissionPostDeployService  $missionPostDeployService,
+        private readonly MissionEligibilityService $eligibilityService,
     ) {}
 
     #[Route(name: 'api_missions_create', methods: ['POST'])]
@@ -129,27 +135,17 @@ class MissionController extends AbstractController
         return new JsonResponse(null, JsonResponse::HTTP_NO_CONTENT);
     }
 
+    // Pre-deploy assignment only (DRAFT). Deployed missions must use /release or /reassign (R-04, D-056).
     #[Route(path: '/{id}/assign-instrumentist', name: 'api_missions_assign_instrumentist', methods: ['POST'])]
     public function assignInstrumentist(int $id, Request $request, #[CurrentUser] User $currentUser): JsonResponse
     {
-        $this->denyAccessUnlessGranted('ROLE_MANAGER');
-
         $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::ASSIGN_INSTRUMENTIST, $mission);
 
         $data = json_decode($request->getContent(), true) ?? [];
         $instrumentistId = $data['instrumentistId'] ?? null;
 
-        if ($instrumentistId === null) {
-            $mission->setInstrumentist(null);
-        } else {
-            $instrumentist = $this->em->find(User::class, $instrumentistId);
-            if (!$instrumentist) {
-                return $this->json(['error' => ['message' => 'Instrumentiste introuvable.']], 404);
-            }
-            $mission->setInstrumentist($instrumentist);
-        }
-
-        $this->em->flush();
+        $mission = $this->missionService->assignInstrumentistDraft($mission, $instrumentistId);
 
         return $this->json($this->mapper->toDetailDto($mission, $currentUser));
     }
@@ -160,7 +156,126 @@ class MissionController extends AbstractController
         $mission = $this->missionService->getOr404($id);
         $this->denyAccessUnlessGranted(MissionVoter::CLAIM, $mission);
 
-        $mission = $this->missionService->claim($mission, $user);
+        $this->missionPostDeployService->claim($mission, $user);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    // ── Eligibility (Batch 15D) ───────────────────────────────────────────────
+
+    #[Route(path: '/{id}/eligible-instrumentists', name: 'api_missions_eligible_instrumentists', methods: ['GET'])]
+    public function eligibleInstrumentists(int $id): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::VIEW_ELIGIBLE_INSTRUMENTISTS, $mission);
+
+        $results   = $this->eligibilityService->evaluateAllCandidates($mission);
+        $eligible  = [];
+        $ineligible = [];
+
+        foreach ($results as $result) {
+            $candidate = $result->candidate;
+            $entry = [
+                'id'    => $candidate->getId(),
+                'name'  => trim(($candidate->getFirstname() ?? '') . ' ' . ($candidate->getLastname() ?? '')),
+                'email' => $candidate->getEmail(),
+            ];
+
+            if ($result->eligible) {
+                $eligible[] = $entry;
+            } else {
+                $entry['reasons'] = array_map(
+                    fn (EligibilityReason $r) => $r->value,
+                    $result->reasons,
+                );
+                $ineligible[] = $entry;
+            }
+        }
+
+        return $this->json([
+            'missionId'     => $mission->getId(),
+            'missionStatus' => $mission->getStatus()->value,
+            'eligible'      => $eligible,
+            'ineligible'    => $ineligible,
+        ]);
+    }
+
+    // ── Audit history (Batch 15F) ─────────────────────────────────────────────
+
+    #[Route(path: '/{id}/audit', name: 'api_missions_audit', methods: ['GET'])]
+    public function audit(int $id): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::VIEW_AUDIT, $mission);
+
+        /** @var AuditEvent[] $events */
+        $events = $this->em->createQuery(
+            'SELECT a, actor FROM App\Entity\AuditEvent a
+             JOIN a.actor actor
+             WHERE a.mission = :mission
+             ORDER BY a.createdAt DESC'
+        )
+            ->setParameter('mission', $mission)
+            ->getResult();
+
+        $items = array_map(static function (AuditEvent $ae): array {
+            $actor = $ae->getActor();
+            return [
+                'eventType'  => $ae->getEventType()->value,
+                'occurredAt' => $ae->getCreatedAt()?->format(\DateTimeInterface::ATOM),
+                'actorId'    => $actor?->getId(),
+                'actorName'  => trim(($actor?->getFirstname() ?? '') . ' ' . ($actor?->getLastname() ?? '')),
+                'payload'    => $ae->getPayload(),
+            ];
+        }, $events);
+
+        return $this->json($items);
+    }
+
+    // ── Post-deploy lifecycle (Batch 15B) ─────────────────────────────────────
+
+    #[Route(path: '/{id}/release', name: 'api_missions_release', methods: ['POST'])]
+    public function release(int $id, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::RELEASE, $mission);
+
+        $this->missionPostDeployService->release($mission, $user);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    #[Route(path: '/{id}/cancel', name: 'api_missions_cancel', methods: ['POST'])]
+    public function cancel(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::CANCEL, $mission);
+
+        $data   = json_decode($request->getContent(), true) ?? [];
+        $reason = isset($data['reason']) && is_string($data['reason']) ? $data['reason'] : null;
+
+        $this->missionPostDeployService->cancel($mission, $user, $reason);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    #[Route(path: '/{id}/reassign', name: 'api_missions_reassign', methods: ['POST'])]
+    public function reassign(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::REASSIGN, $mission);
+
+        $data            = json_decode($request->getContent(), true) ?? [];
+        $instrumentistId = $data['instrumentistId'] ?? null;
+
+        if (!is_numeric($instrumentistId)) {
+            return $this->json(
+                ['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'instrumentistId is required', 'violations' => []]],
+                JsonResponse::HTTP_UNPROCESSABLE_ENTITY,
+            );
+        }
+
+        $this->missionPostDeployService->reassign($mission, $user, (int) $instrumentistId);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }

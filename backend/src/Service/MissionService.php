@@ -11,7 +11,6 @@ use App\Dto\Request\MissionPublishRequest;
 use App\Dto\Request\MissionSubmitRequest;
 use App\Entity\Hospital;
 use App\Entity\Mission;
-use App\Entity\MissionClaim;
 use App\Entity\MissionPublication;
 use App\Entity\SiteMembership;
 use App\Entity\User;
@@ -22,7 +21,7 @@ use App\Enum\PublicationChannel;
 use App\Enum\PublicationScope;
 use App\Enum\SchedulePrecision;
 use App\Enum\ServiceStatus;
-use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
+use App\Exception\MissionNotDraftException;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Tools\Pagination\Paginator;
@@ -287,6 +286,35 @@ class MissionService
         return $mission;
     }
 
+    /**
+     * Pre-deploy instrumentist assignment — DRAFT missions only (RC1-C, Cluster C fix).
+     *
+     * Mirrors patch()'s DRAFT-only guard. Deployed missions (OPEN/ASSIGNED/...) must go
+     * through MissionPostDeployService::release()/reassign()/assign() instead — those are
+     * the only paths that create an AuditEvent and dispatch MissionLifecycleChangedMessage
+     * (D-056). A DRAFT mission is not yet visible to anyone (no publication, no notification
+     * recipient), so — consistent with create() and patch() — this method intentionally does
+     * not audit or notify.
+     */
+    public function assignInstrumentistDraft(Mission $mission, ?int $instrumentistId): Mission
+    {
+        if ($mission->getStatus() !== MissionStatus::DRAFT) {
+            throw new MissionNotDraftException('Utilisez /release ou /reassign pour les missions déployées.');
+        }
+
+        if ($instrumentistId === null) {
+            $mission->setInstrumentist(null);
+        } else {
+            $instrumentist = $this->em->find(User::class, $instrumentistId)
+                ?? throw new NotFoundHttpException('Instrumentiste introuvable.');
+            $mission->setInstrumentist($instrumentist);
+        }
+
+        $this->em->flush();
+
+        return $mission;
+    }
+
     public function publish(Mission $mission, MissionPublishRequest $dto, User $publisher): MissionPublication
     {
         // ✅ strict B3: pas de publish si statut != DRAFT (donc DECLARED bloqué)
@@ -317,46 +345,6 @@ class MissionService
         $this->em->flush();
 
         return $publication;
-    }
-
-    public function claim(Mission $mission, User $instrumentist): Mission
-    {
-        try {
-            return $this->em->wrapInTransaction(function () use ($mission, $instrumentist): Mission {
-                $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
-
-                if ($mission->getStatus() !== MissionStatus::OPEN) {
-                    throw new ConflictHttpException('Mission not claimable');
-                }
-
-                if ($mission->getInstrumentist() !== null) {
-                    throw new ConflictHttpException('Mission already claimed');
-                }
-
-                $existingClaim = $this->em->getRepository(MissionClaim::class)->findOneBy(['mission' => $mission]);
-                if ($existingClaim) {
-                    throw new ConflictHttpException('Mission already claimed');
-                }
-
-                $claim = new MissionClaim();
-                $claim
-                    ->setMission($mission)
-                    ->setInstrumentist($instrumentist)
-                    ->setClaimedAt(new \DateTimeImmutable());
-
-                $mission->setInstrumentist($instrumentist);
-                $mission->setStatus(MissionStatus::ASSIGNED);
-
-                $this->em->persist($claim);
-                $this->em->persist($mission);
-
-                $this->em->flush();
-
-                return $mission;
-            });
-        } catch (UniqueConstraintViolationException) {
-            throw new ConflictHttpException('Mission already claimed');
-        }
     }
 
     public function submit(Mission $mission, MissionSubmitRequest $dto, User $actor): Mission
@@ -427,7 +415,8 @@ class MissionService
         if ($filter->eligibleToMe === true) {
             $qb->andWhere('m.status = :openStatus')->setParameter('openStatus', MissionStatus::OPEN);
 
-            $qb->innerJoin('m.publications', 'p');
+            // leftJoin so V2 OPEN missions (no MissionPublication rows) are not silently excluded.
+            $qb->leftJoin('m.publications', 'p');
 
             $qb->leftJoin(
                 SiteMembership::class,
@@ -440,12 +429,22 @@ class MissionService
 
             $qb->andWhere(
                 $qb->expr()->orX(
+                    // V1 TARGETED: mission was specifically targeted at this instrumentist
                     $qb->expr()->andX(
                         'p.scope = :scopeTargeted',
                         'p.targetInstrumentist = :me'
                     ),
+                    // V1 POOL: freelancer always eligible; employee needs site membership
                     $qb->expr()->andX(
                         'p.scope = :scopePool',
+                        $qb->expr()->orX(
+                            ':isFreelancer = true',
+                            'sm.id IS NOT NULL'
+                        )
+                    ),
+                    // V2 OPEN: no publications at all (same site-membership rule applies)
+                    $qb->expr()->andX(
+                        'p.id IS NULL',
                         $qb->expr()->orX(
                             ':isFreelancer = true',
                             'sm.id IS NOT NULL'
@@ -464,6 +463,18 @@ class MissionService
                     $qb->andWhere('m.status = :status')->setParameter('status', $statusList[0]);
                 } else {
                     $qb->andWhere('m.status IN (:statuses)')->setParameter('statuses', $statusList);
+                }
+            }
+
+            // W10-1: non-managers without an explicit pool or assignment scope cannot run
+            // unscoped queries — scope them to their own missions automatically.
+            if (!$this->isManagerUser($user) && $filter->assignedToMe !== true) {
+                if ($this->isInstrumentistUser($user)) {
+                    $qb->andWhere('m.instrumentist = :selfScoped')->setParameter('selfScoped', $user);
+                } elseif ($this->isSurgeonUser($user)) {
+                    $qb->andWhere('m.surgeon = :selfScoped')->setParameter('selfScoped', $user);
+                } else {
+                    throw new AccessDeniedHttpException('Insufficient role to list missions');
                 }
             }
         }
@@ -550,9 +561,19 @@ class MissionService
         return $m ?? throw new NotFoundHttpException('Mission not found');
     }
 
+    private function isManagerUser(User $user): bool
+    {
+        return in_array('ROLE_MANAGER', $user->getRoles(), true) || in_array('ROLE_ADMIN', $user->getRoles(), true);
+    }
+
     private function isInstrumentistUser(User $user): bool
     {
         return in_array('ROLE_INSTRUMENTIST', $user->getRoles(), true);
+    }
+
+    private function isSurgeonUser(User $user): bool
+    {
+        return in_array('ROLE_SURGEON', $user->getRoles(), true);
     }
 
     private function isFreelancerInstrumentist(User $user): bool

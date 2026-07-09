@@ -2,6 +2,7 @@
 
 namespace App\Tests\Functional;
 
+use App\Entity\AuditEvent;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningDeployment;
@@ -12,6 +13,7 @@ use App\Entity\SiteGroup;
 use App\Entity\SiteGroupMembership;
 use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
+use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PlanningVersionStatus;
@@ -50,6 +52,14 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            // AuditEvent has a FK to Mission — must be deleted before the mission itself.
+            // (claim()/release()/etc. all create one via MissionPostDeployService — D-055.)
+            foreach ($this->createdIds['missions'] as $id) {
+                foreach ($this->em->getRepository(AuditEvent::class)->findBy(['mission' => $id]) as $evt) {
+                    $this->em->remove($evt);
+                }
+            }
+            $this->em->flush();
             // Mission has a FK to PlanningVersion — missions must be deleted first.
             foreach ($this->createdIds['missions'] as $id) {
                 $e = $this->em->find(Mission::class, $id);
@@ -406,7 +416,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         $this->createdIds['versions'][] = $versionId;
 
         $deployResponse = $this->postJson($client, $token, '/api/planning/v2/deploy', [
-            'planningVersionId' => $versionId, 'sendPdf' => false,
+            'planningVersionId' => $versionId,
         ]);
         $deployBody = $this->json($deployResponse);
 
@@ -427,6 +437,124 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         foreach ($missions as $m) {
             $this->createdIds['missions'][] = $m->getId();
             self::assertSame(MissionStatus::ASSIGNED, $m->getStatus(), 'Mission with a pre-assigned instrumentist must become ASSIGNED on deploy');
+        }
+    }
+
+    // ── Batch 14.5: previewVersion + override lines ───────────────────────────
+
+    #[WithoutErrorHandler]
+    public function test_preview_response_includes_preview_version_and_generated_at(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site);
+
+        $response = $this->postJson($client, $token, '/api/planning/v2/preview', [
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+        ]);
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertArrayHasKey('previewVersion', $body, 'Preview response must include previewVersion');
+        self::assertArrayHasKey('generatedAt', $body, 'Preview response must include generatedAt');
+        self::assertMatchesRegularExpression('/^[0-9a-f]{64}$/', $body['previewVersion'], 'previewVersion must be a 64-char SHA-256 hex string');
+        self::assertNotEmpty($body['generatedAt']);
+    }
+
+    #[WithoutErrorHandler]
+    public function test_generate_with_valid_preview_version_succeeds(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site);
+
+        $target = ['siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH];
+
+        $previewResponse = $this->postJson($client, $token, '/api/planning/v2/preview', $target);
+        $previewVersion  = $this->json($previewResponse)['previewVersion'];
+
+        $generateResponse = $this->postJson($client, $token, '/api/planning/v2/generate', array_merge(
+            $target, ['previewVersion' => $previewVersion],
+        ));
+        $generateBody = $this->json($generateResponse);
+
+        self::assertSame(Response::HTTP_OK, $generateResponse->getStatusCode(), (string) $generateResponse->getContent());
+        self::assertArrayHasKey('versionId', $generateBody);
+        $this->createdIds['versions'][] = $generateBody['versionId'];
+
+        // Track missions for teardown
+        $this->em->clear();
+        $version  = $this->em->find(\App\Entity\PlanningVersion::class, $generateBody['versionId']);
+        $missions = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->setParameter('v', $version)
+            ->getQuery()->getResult();
+        foreach ($missions as $m) {
+            $this->createdIds['missions'][] = $m->getId();
+        }
+    }
+
+    #[WithoutErrorHandler]
+    public function test_generate_with_stale_preview_version_returns_409(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site);
+
+        $target = ['siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH];
+
+        $response = $this->postJson($client, $token, '/api/planning/v2/generate', array_merge(
+            $target, ['previewVersion' => str_repeat('0', 64)],
+        ));
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode());
+        self::assertSame('PREVIEW_EXPIRED', $body['code'], (string) $response->getContent());
+    }
+
+    #[WithoutErrorHandler]
+    public function test_generate_without_preview_version_skips_stale_check(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site);
+
+        $target   = ['siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH];
+        $response = $this->postJson($client, $token, '/api/planning/v2/generate', $target);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        $versionId = $this->json($response)['versionId'];
+        $this->createdIds['versions'][] = $versionId;
+
+        // Track missions for teardown
+        $this->em->clear();
+        $version  = $this->em->find(\App\Entity\PlanningVersion::class, $versionId);
+        $missions = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->setParameter('v', $version)
+            ->getQuery()->getResult();
+        foreach ($missions as $m) {
+            $this->createdIds['missions'][] = $m->getId();
         }
     }
 
@@ -458,5 +586,110 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         ]);
 
         self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
+    }
+
+    // ── RC1-A: OPEN Mission Pipeline regression ───────────────────────────────
+
+    /**
+     * End-to-end: deploy uncovered V2 missions → OPEN → instrumentist eligible
+     * → claim succeeds → ASSIGNED.  Also covers W10-1 role-scoped list.
+     *
+     * Fixes validated:
+     *   P0-1 — deploy creates OPEN missions (not just DRAFT limbo)
+     *   P0-2 — eligibleToMe=true returns V2 OPEN missions (leftJoin fix)
+     *   P0-2 — instrumentist can GET /api/missions/{id} for V2 OPEN (voter fix)
+     *   W10-1 — unscoped list for instrumentist returns only their own missions
+     */
+    #[WithoutErrorHandler]
+    public function test_open_mission_pipeline_v2_deploy_to_claim(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+
+        // ── Setup: manager deploys a planning with no pre-assigned instrumentist ──
+        ['token' => $managerToken] = $this->authenticate($client, 'ROLE_MANAGER');
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site, null); // null → no pre-assigned → mission will be OPEN
+
+        // FREELANCER bypasses the site-membership requirement for pool eligibility.
+        ['user' => $instrumentist, 'token' => $instrToken] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+        // authenticate() makes an HTTP request (login) internally, which detaches all
+        // entities from $this->em (Symfony resets the EntityManager identity map after each
+        // kernel request in the test environment). Re-fetch before mutating, otherwise this
+        // flush() silently does nothing and employmentType never reaches the DB.
+        $instrumentist = $this->em->find(User::class, $instrumentist->getId());
+        $instrumentist->setEmploymentType(EmploymentType::FREELANCER);
+        $this->em->flush();
+
+        // ── Generate + Deploy ─────────────────────────────────────────────────
+        $generateResponse = $this->postJson($client, $managerToken, '/api/planning/v2/generate', [
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+        ]);
+        self::assertSame(Response::HTTP_OK, $generateResponse->getStatusCode());
+        $versionId = $this->json($generateResponse)['versionId'];
+        $this->createdIds['versions'][] = $versionId;
+
+        $deployResponse = $this->postJson($client, $managerToken, '/api/planning/v2/deploy', [
+            'planningVersionId' => $versionId,
+        ]);
+        self::assertSame(Response::HTTP_OK, $deployResponse->getStatusCode(), (string) $deployResponse->getContent());
+
+        // Track missions for teardown.
+        $this->em->clear();
+        $version  = $this->em->find(PlanningVersion::class, $versionId);
+        $missions = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->setParameter('v', $version)
+            ->getQuery()->getResult();
+        foreach ($missions as $m) {
+            $this->createdIds['missions'][] = $m->getId();
+        }
+
+        // ── P0-1: verify at least one OPEN mission was created ────────────────
+        $openMissions = array_values(array_filter($missions, fn (Mission $m) => $m->getStatus() === MissionStatus::OPEN));
+        self::assertNotEmpty($openMissions, 'P0-1: uncovered missions must become OPEN on deploy');
+        $openMission = $openMissions[0];
+        $missionId   = $openMission->getId();
+
+        // ── P0-2 (list): eligibleToMe=true must return V2 OPEN missions ──────
+        $client->request('GET', '/api/missions?eligibleToMe=true', server: $this->auth($instrToken));
+        self::assertSame(Response::HTTP_OK, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+        $listBody  = $this->json($client->getResponse());
+        $listedIds = array_column($listBody['items'], 'id');
+        self::assertContains($missionId, $listedIds, 'P0-2: V2 OPEN mission must appear when eligibleToMe=true');
+
+        // ── P0-2 (voter): instrumentist can view the mission detail ───────────
+        $client->request('GET', "/api/missions/{$missionId}", server: $this->auth($instrToken));
+        self::assertSame(Response::HTTP_OK, $client->getResponse()->getStatusCode(), 'P0-2 voter: instrumentist must be able to GET V2 OPEN mission detail');
+
+        // ── W10-1: unfiltered list scopes instrumentist to their own missions ─
+        // Before claim: instrumentist has no assigned missions → the OPEN mission
+        // must NOT appear in an unscoped list (it has no instrumentist yet).
+        $client->request('GET', '/api/missions', server: $this->auth($instrToken));
+        self::assertSame(Response::HTTP_OK, $client->getResponse()->getStatusCode());
+        $unfilteredIds = array_column($this->json($client->getResponse())['items'], 'id');
+        self::assertNotContains($missionId, $unfilteredIds, 'W10-1: OPEN (unclaimed) mission must not appear in instrumentist unscoped list');
+
+        // ── Claim the mission ─────────────────────────────────────────────────
+        $claimResponse = $this->postJson($client, $instrToken, "/api/missions/{$missionId}/claim", []);
+        self::assertSame(Response::HTTP_OK, $claimResponse->getStatusCode(), 'Claim must succeed: ' . (string) $claimResponse->getContent());
+
+        // ── Verify ASSIGNED status and instrumentist link ─────────────────────
+        $this->em->clear();
+        $claimedMission = $this->em->find(Mission::class, $missionId);
+        self::assertSame(MissionStatus::ASSIGNED, $claimedMission->getStatus(), 'Mission must be ASSIGNED after claim');
+        self::assertSame($instrumentist->getId(), $claimedMission->getInstrumentist()?->getId(), 'Claimed mission must be linked to the claiming instrumentist');
+
+        // ── W10-1 post-claim: now instrumentist sees their assigned mission ───
+        $client->request('GET', '/api/missions', server: $this->auth($instrToken));
+        $postClaimIds = array_column($this->json($client->getResponse())['items'], 'id');
+        self::assertContains($missionId, $postClaimIds, 'W10-1: after claim, ASSIGNED mission must appear in instrumentist unscoped list');
+
+        // ── Manager can still see all missions ────────────────────────────────
+        $client->request('GET', '/api/missions', server: $this->auth($managerToken));
+        $managerIds = array_column($this->json($client->getResponse())['items'], 'id');
+        self::assertContains($missionId, $managerIds, 'Manager unscoped list must include all missions regardless of status');
     }
 }

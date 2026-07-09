@@ -42,23 +42,53 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
             'instrumentist' => $this->makeUser('instr@test.com', 'Carla'),
             'periodFrom'    => new \DateTimeImmutable('2026-08-01'),
             'periodTo'      => new \DateTimeImmutable('2026-08-31'),
+            'missionCount'  => 5,
         ]);
 
         $this->assertStringContainsString('Carla', $html);
         $this->assertStringContainsString('01/08/2026', $html);
+        $this->assertStringContainsString('5', $html);
     }
 
     public function test_planning_surgeon_email_renders(): void
     {
         $html = $this->twig()->render('emails/planning_surgeon.html.twig', [
-            'surgeon'    => $this->makeUser('surgeon@test.com', 'Alice'),
-            'periodFrom' => new \DateTimeImmutable('2026-08-01'),
-            'periodTo'   => new \DateTimeImmutable('2026-08-31'),
-            'hasGlobal'  => true,
+            'surgeon'        => $this->makeUser('surgeon@test.com', 'Alice'),
+            'periodFrom'     => new \DateTimeImmutable('2026-08-01'),
+            'periodTo'       => new \DateTimeImmutable('2026-08-31'),
+            'totalCount'     => 5,
+            'coveredCount'   => 3,
+            'uncoveredCount' => 2,
         ]);
 
         $this->assertStringContainsString('Alice', $html);
-        $this->assertStringContainsString('planning global', $html);
+        $this->assertStringContainsString('proposées aux instrumentistes', $html,
+            'When uncoveredCount > 0, the explanatory paragraph must render (no per-post table anymore, D-058).'
+        );
+
+        // UX wording pass (2026-07): natural business wording, not technical jargon.
+        $this->assertStringContainsString('Missions', $html);
+        $this->assertStringContainsString('Affectées', $html);
+        $this->assertStringContainsString("En attente d'affectation", $html);
+        $this->assertStringContainsString('nouvel email afin de vous laisser le temps', $html);
+        $this->assertStringNotContainsString('Séances', $html, 'Old label must no longer appear.');
+        $this->assertStringNotContainsString('Couvertes', $html, 'Old label must no longer appear (Affectées instead).');
+        $this->assertStringNotContainsString('Non couvertes', $html, "Old label must no longer appear (En attente d'affectation instead).");
+    }
+
+    public function test_planning_manager_email_renders(): void
+    {
+        $html = $this->twig()->render('emails/planning_manager.html.twig', [
+            'manager'       => $this->makeUser('mgr@test.com', 'Marc'),
+            'periodFrom'    => new \DateTimeImmutable('2026-08-01'),
+            'periodTo'      => new \DateTimeImmutable('2026-08-31'),
+            'missionCount'  => 10,
+            'assignedCount' => 8,
+            'openPoolCount' => 2,
+        ]);
+
+        $this->assertStringContainsString('Marc', $html);
+        $this->assertStringContainsString('Déploiement confirmé', $html);
     }
 
     public function test_planning_change_summary_instrumentist_email_renders(): void
@@ -158,6 +188,12 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
         ]);
 
         $this->assertStringContainsString('Alice', $html);
+
+        // UX wording pass (2026-07): natural business wording, not technical jargon.
+        $this->assertStringContainsString("Missions en attente d'affectation", $html);
+        $this->assertStringContainsString('sans instrumentiste affectée', $html);
+        $this->assertStringNotContainsString('Créneaux non couverts', $html, 'Old title must no longer appear.');
+        $this->assertStringNotContainsString('créneau(x)', $html, 'Old technical wording must no longer appear.');
     }
 
     public function test_planning_alert_email_renders(): void

@@ -15,6 +15,7 @@ body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height
 
   <p>Bonjour {% if instrumentist.firstname %}{{ instrumentist.firstname }}{% else %}{{ instrumentist.email }}{% endif %},</p>
   <p>Veuillez trouver ci-joint votre planning pour la période du <strong>{{ periodFrom|date('d/m/Y') }}</strong> au <strong>{{ periodTo|date('d/m/Y') }}</strong>.</p>
+  <p>Vous êtes affecté(e) à <strong>{{ missionCount }}</strong> mission{{ missionCount > 1 ? 's' : '' }} sur cette période.</p>
 
   <div class="footer">SurgicalHub — document confidentiel</div>
 </div>

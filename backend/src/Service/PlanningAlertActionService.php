@@ -31,9 +31,10 @@ class PlanningAlertActionService
     ];
 
     public function __construct(
-        private readonly EntityManagerInterface $em,
-        private readonly PlanningAlertService $alertService,
-        private readonly NotificationService $notificationService,
+        private readonly EntityManagerInterface    $em,
+        private readonly PlanningAlertService      $alertService,
+        private readonly NotificationService       $notificationService,
+        private readonly MissionPostDeployService  $missionPostDeployService,
     ) {}
 
     /** @return array{mission: Mission, alert: PlanningAlert} */
@@ -51,8 +52,17 @@ class PlanningAlertActionService
         $this->assertEligible($mission, $instrumentist);
 
         $oldInstrumentist = $mission->getInstrumentist();
-        $mission->setInstrumentist($instrumentist);
-        if (in_array($mission->getStatus(), [MissionStatus::DRAFT, MissionStatus::OPEN], true)) {
+
+        if (in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
+            // Post-deploy: delegate to MissionPostDeployService so R-04/R-05/R-07 are enforced
+            // (audit event + flush before dispatch + MissionLifecycleChangedMessage).
+            if ($actor === null) {
+                throw new \LogicException('Actor must not be null for post-deploy mission mutation');
+            }
+            $this->missionPostDeployService->assign($mission, $actor, $instrumentistId);
+        } else {
+            // DRAFT — pre-deploy setup; direct mutation is acceptable here (no lifecycle event).
+            $mission->setInstrumentist($instrumentist);
             $mission->setStatus(MissionStatus::ASSIGNED);
         }
 
@@ -73,8 +83,18 @@ class PlanningAlertActionService
         $mission = $alert->getMission();
         $this->assertMissionMutable($mission);
 
-        $mission->setInstrumentist(null);
-        $mission->setStatus(MissionStatus::OPEN);
+        if ($mission->getStatus() === MissionStatus::ASSIGNED) {
+            // Post-deploy: delegate so audit + flush + MissionLifecycleChangedMessage are emitted.
+            if ($actor === null) {
+                throw new \LogicException('Actor must not be null for post-deploy mission mutation');
+            }
+            $this->missionPostDeployService->release($mission, $actor);
+        } elseif ($mission->getStatus() !== MissionStatus::OPEN) {
+            // DRAFT — pre-deploy setup; direct mutation is acceptable here (no lifecycle event).
+            $mission->setInstrumentist(null);
+            $mission->setStatus(MissionStatus::OPEN);
+        }
+        // OPEN → already in the target state; no mutation needed.
 
         $resolvedNote = $note ?? 'Mission ouverte au pool des missions disponibles.';
         $this->alertService->resolve($alert, $actor, $resolvedNote);

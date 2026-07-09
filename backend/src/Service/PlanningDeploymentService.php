@@ -46,7 +46,6 @@ class PlanningDeploymentService
         User $deployedBy,
         ?int $versionId = null,
         array $selectedUncoveredMissionIds = [],
-        bool $sendChangeSummary = false,
     ): array {
         $fromDate = new \DateTimeImmutable($from);
         $toDate   = new \DateTimeImmutable($to);
@@ -81,8 +80,9 @@ class PlanningDeploymentService
         }
 
         // ── 4. Publish missions — two targeted bulk UPDATEs ──────────────────
+        $openMissionIds = [];
         if ($version !== null) {
-            // 4a. Pre-assigned missions (instrumentist already set) → ASSIGNED
+            // 4a. Pre-assigned missions (instrumentist already set) → ASSIGNED.
             //     These instrumentists own their mission immediately; no pool claim needed.
             $assignedCount = (int) $this->em->createQuery(
                 'UPDATE App\Entity\Mission m SET m.status = :assigned
@@ -93,22 +93,35 @@ class PlanningDeploymentService
                 ->setParameter('draft',    MissionStatus::DRAFT)
                 ->execute();
 
-            // 4b. Uncovered missions the manager explicitly selected → OPEN (pool)
-            //     Unselected uncovered missions stay DRAFT (not published).
-            $poolCount = 0;
-            if (!empty($selectedUncoveredMissionIds)) {
-                $poolCount = (int) $this->em->createQuery(
-                    'UPDATE App\Entity\Mission m SET m.status = :open
-                     WHERE m.id IN (:ids) AND m.status = :draft AND m.instrumentist IS NULL'
-                )
-                    ->setParameter('open',  MissionStatus::OPEN)
-                    ->setParameter('ids',   $selectedUncoveredMissionIds)
-                    ->setParameter('draft', MissionStatus::DRAFT)
-                    ->execute();
-            }
+            // 4b. V2 rule (Batch 15A): ALL uncovered DRAFT missions → OPEN automatically.
+            //     No manual selection required — the manager already reviewed assignments
+            //     in the Preview Editor. Every DRAFT without an instrumentist goes to pool.
+            //     $selectedUncoveredMissionIds is intentionally ignored for V2 path.
+            $poolCount = (int) $this->em->createQuery(
+                'UPDATE App\Entity\Mission m SET m.status = :open
+                 WHERE m.planningVersion = :v AND m.status = :draft AND m.instrumentist IS NULL'
+            )
+                ->setParameter('open',  MissionStatus::OPEN)
+                ->setParameter('v',     $version)
+                ->setParameter('draft', MissionStatus::DRAFT)
+                ->execute();
 
             $this->em->clear(Mission::class);
             $missionCount = $assignedCount + $poolCount;
+
+            // 4c. Capture the IDs of newly-opened missions so the async handler can
+            //     fan out OPEN_MISSION_AVAILABLE notifications to eligible instrumentists.
+            //     Must run after em->clear() because the bulk UPDATE bypassed Doctrine's map.
+            if ($poolCount > 0) {
+                $rows = $this->em->createQuery(
+                    'SELECT m.id FROM App\Entity\Mission m
+                     WHERE m.planningVersion = :v AND m.status = :open'
+                )
+                    ->setParameter('v',    $version)
+                    ->setParameter('open', MissionStatus::OPEN)
+                    ->getResult();
+                $openMissionIds = array_column($rows, 'id');
+            }
         } else {
             // Legacy fallback: no versionId — bulk UPDATE by date range.
             // All missions in the period that are DRAFT become OPEN (old behaviour preserved).
@@ -135,6 +148,7 @@ class PlanningDeploymentService
             $missionCount = (int) $q->execute();
             $poolCount    = $missionCount; // legacy: all published as "open"
             $this->em->clear(Mission::class);
+            $openMissionIds = $selectedUncoveredMissionIds; // V1: carry manager-selected IDs
         }
 
         // ── 5. Record the deployment (PENDING — worker will update to DONE/FAILED) ──
@@ -159,15 +173,16 @@ class PlanningDeploymentService
 
         // ── 6. Dispatch async PDF + email + notifications ─────────────────────
         // flush() above populates $deployment->getId() via Doctrine's identity map.
+        // V2 path: openUncoveredIds carries the IDs fetched in step 4c — non-empty when any
+        //   missions were auto-published to pool.  Enables OPEN_MISSION_AVAILABLE fan-out.
+        // V1 legacy path: openUncoveredIds carries the manager-selected IDs as before.
         $this->bus->dispatch(new PlanningDeployPdfsMessage(
             from:              $from,
             to:                $to,
             siteId:            $siteId,
             deployedById:      $deployedBy->getId(),
             deploymentId:      $deployment->getId(),
-            openUncoveredIds:  $selectedUncoveredMissionIds,
-            sendChangeSummary: $sendChangeSummary,
-            versionId:         $version?->getId(),
+            openUncoveredIds:  $openMissionIds,
         ));
 
         return [

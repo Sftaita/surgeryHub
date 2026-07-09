@@ -2,6 +2,7 @@
 
 namespace App\Tests\Unit\Config;
 
+use App\Message\MissionLifecycleChangedMessage;
 use App\Message\PlanningAlertRaisedMessage;
 use App\Message\PlanningDeployPdfsMessage;
 use App\Message\SendBillingEmailMessage;
@@ -95,6 +96,29 @@ class MessengerRoutingTest extends TestCase
             'async',
             self::$routing[PlanningAlertRaisedMessage::class],
             'PlanningAlertRaisedMessage must be routed to "async".'
+        );
+    }
+
+    // ── MissionLifecycleChangedMessage (Batch 15A / R-08) ────────────────────
+
+    /**
+     * R-08: MissionLifecycleChangedMessage MUST be routed to async.
+     * Synchronous handling would add notification fan-out to the HTTP request that
+     * triggered the mission mutation (release/cancel/claim), degrading latency.
+     */
+    public function test_mission_lifecycle_changed_message_is_routed_to_async(): void
+    {
+        $this->assertArrayHasKey(
+            MissionLifecycleChangedMessage::class,
+            self::$routing,
+            'MissionLifecycleChangedMessage has no transport routing (R-08). '
+            . 'Without an explicit routing it runs synchronously in the HTTP request — '
+            . 'notification fan-out would degrade latency on every mission mutation.'
+        );
+        $this->assertSame(
+            'async',
+            self::$routing[MissionLifecycleChangedMessage::class],
+            'MissionLifecycleChangedMessage must be routed to "async" (R-08).'
         );
     }
 

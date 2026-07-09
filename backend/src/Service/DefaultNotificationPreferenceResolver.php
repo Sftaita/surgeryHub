@@ -8,21 +8,29 @@ use App\Enum\NotificationType;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
- * Looks up a stored NotificationPreference row; falls back to the hardcoded product
- * defaults when none exists (no settings UI has been built yet, so no user has ever
- * had the chance to create one — this is expected, not a degraded state):
- *   - in-app: enabled
- *   - email: enabled (planning alerts are considered "important" — there is only one
- *     NotificationType today, so this is the blanket default; splitting into
- *     important/non-important categories is a future enum case, not a resolver change)
- *   - push: disabled until the user explicitly opts in (requires a device subscription
- *     anyway — see PushSubscription — so defaulting to on would be silently inert at best)
+ * Looks up a stored NotificationPreference row; falls back to per-type product defaults
+ * when none exists (Batch 15A — replaces the former blanket email=true default).
+ *
+ * Per-type defaults (roadmap §7 Notification Matrix):
+ *   - PLANNING_ALERT, PLANNING_DEPLOYED_*: inApp=true, email=true  (important / actionable)
+ *   - PLANNING_MISSION_CANCELLED:          inApp=true, email=true  (urgent — may require re-assignment)
+ *   - All others (pool, coverage, updates): inApp=true, email=false (informational)
+ *
+ * push: always false by default — requires an explicit device subscription (PushSubscription).
  */
 class DefaultNotificationPreferenceResolver implements NotificationPreferenceResolver
 {
-    private const DEFAULT_IN_APP = true;
-    private const DEFAULT_EMAIL  = true;
-    private const DEFAULT_PUSH   = false;
+    /**
+     * Types whose default is email=true (urgent / important per notification matrix).
+     * All other types default to email=false.
+     */
+    private const EMAIL_ON_BY_DEFAULT = [
+        NotificationType::PLANNING_ALERT,
+        NotificationType::PLANNING_DEPLOYED_INSTRUMENTIST,
+        NotificationType::PLANNING_DEPLOYED_SURGEON,
+        NotificationType::PLANNING_DEPLOYED_MANAGER,
+        NotificationType::PLANNING_MISSION_CANCELLED,
+    ];
 
     public function __construct(
         private readonly EntityManagerInterface $em,
@@ -34,7 +42,11 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
             ->findOneBy(['user' => $user, 'notificationType' => $type]);
 
         if ($preference === null) {
-            return new NotificationChannels(self::DEFAULT_IN_APP, self::DEFAULT_EMAIL, self::DEFAULT_PUSH);
+            return new NotificationChannels(
+                inApp: true,
+                email: in_array($type, self::EMAIL_ON_BY_DEFAULT, strict: true),
+                push:  false,
+            );
         }
 
         return new NotificationChannels(

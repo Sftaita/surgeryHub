@@ -250,14 +250,84 @@ class PlanningGeneratorServiceV2
     }
 
     /**
+     * Deterministic SHA-256 fingerprint of the planning inputs for the scope.
+     * Runs 3 queries independently of preview(). Used as previewVersion token.
+     */
+    public function computePreviewVersion(string $month, ?int $siteId, ?int $siteGroupId): string
+    {
+        [$periodStart, $periodEnd] = $this->monthRange($month);
+        $siteIds = $this->resolveSiteIds($siteId, $siteGroupId);
+        $from    = $periodStart->format('Y-m-d');
+        $to      = $periodEnd->format('Y-m-d');
+
+        $allPosts       = $this->loadActivePosts($siteIds, $from, $to, null);
+        $absencesByUser = $this->loadAbsencesMap($from, $to);
+        $shiftConfigs   = $this->loadShiftPeriodConfigs($siteIds);
+
+        return $this->hashPreviewInputs($allPosts, $absencesByUser, $shiftConfigs);
+    }
+
+    private function hashPreviewInputs(array $allPosts, array $absencesByUser, array $shiftConfigs): string
+    {
+        $postData = [];
+        foreach ($allPosts as $post) {
+            $rule       = $post->getRecurrence();
+            $weekdays   = $rule->getWeekdays();
+            sort($weekdays);
+            $monthWeeks = $rule->getMonthWeeks();
+            sort($monthWeeks);
+            $postData[] = [
+                'id'         => $post->getId(),
+                'surgeonId'  => $post->getSurgeon()->getId(),
+                'siteId'     => $post->getSite()->getId(),
+                'startDate'  => $post->getStartDate()->format('Y-m-d'),
+                'endDate'    => $post->getEndDate()?->format('Y-m-d'),
+                'frequency'  => $rule->getFrequency()->value,
+                'interval'   => $rule->getInterval(),
+                'anchorDate' => $rule->getAnchorDate()->format('Y-m-d'),
+                'weekdays'   => $weekdays,
+                'monthWeeks' => $monthWeeks,
+            ];
+        }
+        usort($postData, static fn (array $a, array $b) => $a['id'] <=> $b['id']);
+
+        $absenceData = [];
+        foreach ($absencesByUser as $userId => $ranges) {
+            foreach ($ranges as [$s, $e]) {
+                $absenceData[] = ['u' => $userId, 's' => $s, 'e' => $e];
+            }
+        }
+        usort($absenceData, static fn (array $a, array $b) => $a['u'] <=> $b['u'] ?: strcmp($a['s'], $b['s']));
+
+        $shiftData = [];
+        foreach ($shiftConfigs as $key => [$tStart, $tEnd]) {
+            $shiftData[$key] = [
+                's' => $tStart instanceof \DateTimeInterface ? $tStart->format('H:i') : (string) $tStart,
+                'e' => $tEnd instanceof \DateTimeInterface ? $tEnd->format('H:i') : (string) $tEnd,
+            ];
+        }
+        ksort($shiftData);
+
+        return hash('sha256', json_encode([$postData, $absenceData, $shiftData], \JSON_THROW_ON_ERROR));
+    }
+
+    /**
      * Generate: create/update missions and wrap them in a PlanningVersion DRAFT.
      * Reuses PlanningVersion and Mission exactly as V1's generate() does.
      *
+     * When $overrideLines is provided (Alternative A — Preview Editor), the caller
+     * supplies the final edited lines directly; the internal preview() call is skipped.
+     * R-01 (never touch non-DRAFT missions) is enforced in both modes.
+     *
      * @return array{versionId: int, created: int, updated: int, skipped: int}
      */
-    public function generate(string $month, ?int $siteId, ?int $siteGroupId, ?int $surgeonId, User $generatedBy): array
+    public function generate(string $month, ?int $siteId, ?int $siteGroupId, ?int $surgeonId, User $generatedBy, ?array $overrideLines = null): array
     {
-        $lines = $this->preview($month, $siteId, $siteGroupId, $surgeonId);
+        if ($overrideLines !== null) {
+            $lines = $overrideLines;
+        } else {
+            $lines = $this->preview($month, $siteId, $siteGroupId, $surgeonId);
+        }
         [$start, $end] = $this->monthRange($month);
 
         $version = new PlanningVersion();
@@ -283,6 +353,22 @@ class PlanningGeneratorServiceV2
         foreach ($lines as $line) {
             if ($line['status'] === 'SKIPPED') {
                 $skipped++;
+                continue;
+            }
+
+            // Override mode: the editor's explicit decision — always sync instrumentist, enforce R-01.
+            if ($overrideLines !== null && ($line['existingMissionId'] ?? null) !== null) {
+                $mission = $this->em->find(Mission::class, $line['existingMissionId']);
+                if ($mission === null || $mission->getStatus() !== MissionStatus::DRAFT) {
+                    $skipped++;
+                    continue;
+                }
+                $mission->setPlanningVersion($version);
+                $newInstrumentist = ($line['instrumentistId'] ?? null) !== null
+                    ? $this->em->find(User::class, $line['instrumentistId'])
+                    : null;
+                $mission->setInstrumentist($newInstrumentist);
+                $updated++;
                 continue;
             }
 

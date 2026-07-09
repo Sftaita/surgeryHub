@@ -23,7 +23,5 @@ final class PlanningDeployPdfsMessage
         public readonly int    $deployedById,
         public readonly ?int   $deploymentId,       // null = legacy (no idempotence guard)
         public readonly array  $openUncoveredIds,   // Mission IDs published as pool (no instrumentist)
-        public readonly bool   $sendChangeSummary,  // étape 2: send diff recap emails
-        public readonly ?int   $versionId = null,   // PlanningVersion.id — required for changeSummary diff
     ) {}
 }

@@ -49,6 +49,88 @@ class DefaultNotificationPreferenceResolverTest extends TestCase
         $this->assertFalse($channels->push, 'push must default to disabled until opt-in');
     }
 
+    // ── Per-type email defaults (Batch 15A) ───────────────────────────────────
+
+    public function test_resolver_open_mission_available_default_email_false(): void
+    {
+        $this->stored = null;
+        $channels = $this->makeResolver()->resolve($this->makeUser(), NotificationType::OPEN_MISSION_AVAILABLE);
+        $this->assertTrue($channels->inApp,  'in-app must be enabled for pool notifications');
+        $this->assertFalse($channels->email, 'email must default to false for informational pool notifications');
+        $this->assertFalse($channels->push);
+    }
+
+    public function test_resolver_planning_deployed_instrumentist_default_email_true(): void
+    {
+        $this->stored = null;
+        $channels = $this->makeResolver()->resolve($this->makeUser(), NotificationType::PLANNING_DEPLOYED_INSTRUMENTIST);
+        $this->assertTrue($channels->inApp);
+        $this->assertTrue($channels->email, 'email must default to true — deploy notification is important');
+        $this->assertFalse($channels->push);
+    }
+
+    public function test_resolver_planning_deployed_surgeon_default_email_true(): void
+    {
+        $this->stored = null;
+        $channels = $this->makeResolver()->resolve($this->makeUser(), NotificationType::PLANNING_DEPLOYED_SURGEON);
+        $this->assertTrue($channels->email, 'surgeon deploy notification defaults to email=true');
+    }
+
+    public function test_resolver_planning_deployed_manager_default_email_true(): void
+    {
+        $this->stored = null;
+        $channels = $this->makeResolver()->resolve($this->makeUser(), NotificationType::PLANNING_DEPLOYED_MANAGER);
+        $this->assertTrue($channels->email, 'manager deploy notification defaults to email=true');
+    }
+
+    public function test_resolver_planning_mission_cancelled_default_email_true(): void
+    {
+        $this->stored = null;
+        $channels = $this->makeResolver()->resolve($this->makeUser(), NotificationType::PLANNING_MISSION_CANCELLED);
+        $this->assertTrue($channels->inApp);
+        $this->assertTrue($channels->email, 'mission cancelled is urgent — email must default to true');
+        $this->assertFalse($channels->push);
+    }
+
+    public function test_resolver_surgeon_post_covered_default_email_false(): void
+    {
+        $this->stored = null;
+        $channels = $this->makeResolver()->resolve($this->makeUser(), NotificationType::SURGEON_POST_COVERED);
+        $this->assertTrue($channels->inApp);
+        $this->assertFalse($channels->email, 'coverage notification is informational — email defaults to false');
+    }
+
+    public function test_resolver_surgeon_post_uncovered_default_email_false(): void
+    {
+        $this->stored = null;
+        $channels = $this->makeResolver()->resolve($this->makeUser(), NotificationType::SURGEON_POST_UNCOVERED);
+        $this->assertFalse($channels->email);
+    }
+
+    public function test_resolver_planning_mission_reassigned_default_email_false(): void
+    {
+        $this->stored = null;
+        $channels = $this->makeResolver()->resolve($this->makeUser(), NotificationType::PLANNING_MISSION_REASSIGNED);
+        $this->assertFalse($channels->email);
+    }
+
+    public function test_notification_type_all_values_lte_32_chars(): void
+    {
+        foreach (NotificationType::cases() as $case) {
+            $this->assertLessThanOrEqual(
+                32,
+                strlen($case->value),
+                sprintf(
+                    'NotificationType::%s backing value "%s" is %d chars — exceeds the 32-char '
+                    . 'notification_preference.notification_type VARCHAR(32) column limit.',
+                    $case->name,
+                    $case->value,
+                    strlen($case->value),
+                ),
+            );
+        }
+    }
+
     public function test_uses_stored_preference_when_present(): void
     {
         $pref = new NotificationPreference();

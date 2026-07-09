@@ -65,7 +65,7 @@
   {% endfor %}
 
   {% for day, dayMissions in missionsByDay %}
-    <div class="section-title">{{ day|date("l d/m/Y") }}</div>
+    <div class="section-title">{{ day|french_day }} {{ day|date("d/m/Y") }}</div>
     <table>
       <thead>
         <tr>
@@ -94,7 +94,7 @@
             {{ surgeonName != '' ? surgeonName : mission.surgeon.email }}
           </td>
           <td>{{ mission.site ? mission.site.name : '—' }}</td>
-          <td>{{ mission.status.value }}</td>
+          <td>{{ mission.status.label }}</td>
         </tr>
         {% endfor %}
       </tbody>

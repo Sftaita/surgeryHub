@@ -8,6 +8,8 @@ final class PreviewResponse
     public function __construct(
         public array $lines,
         public PreviewSummaryResponse $summary,
+        public string $previewVersion,
+        public string $generatedAt,
     ) {
     }
 }

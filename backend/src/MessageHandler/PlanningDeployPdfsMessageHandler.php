@@ -4,16 +4,21 @@ namespace App\MessageHandler;
 
 use App\Entity\Hospital;
 use App\Entity\Mission;
+use App\Entity\NotificationEvent;
 use App\Entity\PlanningDeployment;
-use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\MissionStatus;
+use App\Enum\NotificationType;
 use App\Enum\PlanningDeploymentStatus;
+use App\Enum\PublicationChannel;
 use App\Message\PlanningDeployPdfsMessage;
 use App\Message\SendBillingEmailMessage;
+use App\Service\MissionEligibilityService;
+use App\Service\NotificationChannels;
+use App\Service\NotificationPreferenceResolver;
 use App\Service\NotificationService;
 use App\Service\PdfService;
-use App\Service\PlanningDiffService;
+use App\Service\UncoveredReasonResolver;
 use App\Service\WebPushServiceInterface;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -21,8 +26,9 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * Handles the heavy work of PDF generation and email sending after a planning deploy.
- * Runs in the Messenger worker — completely decoupled from the HTTP request.
+ * Handles the heavy work of PDF generation, email sending, and in-app notifications
+ * after a planning deploy. Runs in the Messenger worker — completely decoupled from
+ * the HTTP request.
  *
  * Idempotence (V1):
  *   - Checks PlanningDeployment.status == DONE at entry → returns immediately if already processed.
@@ -34,22 +40,27 @@ use Symfony\Component\Messenger\MessageBusInterface;
  *   - Only missions in $message->openUncoveredIds receive a pool notification.
  *   - Pre-existing OPEN missions (from earlier deploys) are never re-notified.
  *
- * Change summary emails:
- *   - Only sent when sendChangeSummary = true AND the planning diff is non-empty.
- *   - Per-instrumentist: changes that concern them, grouped by day + uncovered slots at their site.
- *   - Per-surgeon: list of uncovered days + global PDF attached.
- *   - These are separate emails from the planning PDF emails (steps 5/6).
+ * Email policy — exactly ONE deploy email per recipient (surgeon, instrumentist, manager).
+ * Change-summary "recap" emails (PlanningChangeSummaryService) are a separate, standalone
+ * capability that this handler never invokes — they are reserved for a future trigger on
+ * already-published plannings, not the initial deploy. See docs/decisions.md.
+ *
+ * Notification preferences:
+ *   - Every email and in-app notification is gated through NotificationPreferenceResolver.
+ *   - Push notifications for pool missions are kept as-is (not gated, existing behavior).
  */
 #[AsMessageHandler]
 final class PlanningDeployPdfsMessageHandler
 {
     public function __construct(
-        private readonly EntityManagerInterface $em,
-        private readonly PdfService $pdfService,
-        private readonly NotificationService $notificationService,
-        private readonly WebPushServiceInterface $webPushService,
-        private readonly MessageBusInterface $bus,
-        private readonly PlanningDiffService $diffService,
+        private readonly EntityManagerInterface       $em,
+        private readonly PdfService                  $pdfService,
+        private readonly NotificationService         $notificationService,
+        private readonly WebPushServiceInterface     $webPushService,
+        private readonly MessageBusInterface         $bus,
+        private readonly NotificationPreferenceResolver $preferenceResolver,
+        private readonly UncoveredReasonResolver        $uncoveredReasonResolver,
+        private readonly MissionEligibilityService      $eligibilityService,
         #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
         private readonly string $fromAddress,
         #[Autowire('%env(string:MAILER_FROM_NAME)%')]
@@ -136,122 +147,164 @@ final class PlanningDeployPdfsMessageHandler
                 } catch (\Throwable) {}
             }
 
-            // ── 5. Per-instrumentist: personal PDF + email ────────────────────
+            // ── 5. Per-instrumentist: personal PDF + email + in-app notification
             foreach ($byInstrumentist as $instrId => $instrMissions) {
                 $instrumentist = $this->em->find(User::class, $instrId);
-                if ($instrumentist === null || !$instrumentist->getEmail()) {
+                if ($instrumentist === null) {
                     continue;
                 }
-                try {
-                    $pdf = $this->pdfService->generateFromTemplate('pdf/planning_instrumentist.html.twig', [
-                        'instrumentist' => $instrumentist,
-                        'missions'      => $instrMissions,
-                        'periodFrom'    => $fromDate,
-                        'periodTo'      => $toDate,
-                    ]);
-                    $name     = $this->displayName($instrumentist);
-                    $filename = sprintf('planning-%s-%s-%s.pdf',
-                        strtolower(str_replace(' ', '-', $name)),
-                        $fromDate->format('Y-m-d'), $toDate->format('Y-m-d'));
 
-                    $this->bus->dispatch(new SendBillingEmailMessage(
-                        to: $instrumentist->getEmail(),
-                        cc: [],
-                        subject: sprintf('Planning du %s au %s', $fromDate->format('d/m/Y'), $toDate->format('d/m/Y')),
-                        fromAddress: $this->fromAddress,
-                        fromName: $this->fromName,
-                        htmlTemplate: 'emails/planning_instrumentist.html.twig',
-                        context: ['instrumentist' => $instrumentist, 'periodFrom' => $fromDate, 'periodTo' => $toDate],
-                        attachmentBase64: base64_encode($pdf),
-                        attachmentFilename: $filename,
-                    ));
-                } catch (\Throwable) {}
+                $channels = $this->resolveChannelsSafely($instrumentist, NotificationType::PLANNING_DEPLOYED_INSTRUMENTIST);
+
+                if ($channels->email && $instrumentist->getEmail()) {
+                    try {
+                        $pdf = $this->pdfService->generateFromTemplate('pdf/planning_instrumentist.html.twig', [
+                            'instrumentist' => $instrumentist,
+                            'missions'      => $instrMissions,
+                            'periodFrom'    => $fromDate,
+                            'periodTo'      => $toDate,
+                        ]);
+                        $name     = $this->displayName($instrumentist);
+                        $filename = sprintf('planning-%s-%s-%s.pdf',
+                            strtolower(str_replace(' ', '-', $name)),
+                            $fromDate->format('Y-m-d'), $toDate->format('Y-m-d'));
+
+                        $this->bus->dispatch(new SendBillingEmailMessage(
+                            to: $instrumentist->getEmail(),
+                            cc: [],
+                            subject: sprintf('Planning du %s au %s', $fromDate->format('d/m/Y'), $toDate->format('d/m/Y')),
+                            fromAddress: $this->fromAddress,
+                            fromName: $this->fromName,
+                            htmlTemplate: 'emails/planning_instrumentist.html.twig',
+                            context: [
+                                'instrumentist' => $instrumentist,
+                                'periodFrom'    => $fromDate,
+                                'periodTo'      => $toDate,
+                                'missionCount'  => count($instrMissions),
+                            ],
+                            attachmentBase64: base64_encode($pdf),
+                            attachmentFilename: $filename,
+                        ));
+                    } catch (\Throwable) {}
+                }
+
+                if ($channels->inApp) {
+                    try {
+                        $this->createNotificationEvent($instrumentist, NotificationType::PLANNING_DEPLOYED_INSTRUMENTIST, [
+                            'periodLabel'  => $this->periodLabel($fromDate, $toDate),
+                            'missionCount' => count($instrMissions),
+                            'deployedAt'   => (new \DateTimeImmutable())->format(\DateTimeInterface::ATOM),
+                        ]);
+                    } catch (\Throwable) {}
+                }
             }
 
-            // ── 6. Per-surgeon: personal PDF + global PDF + email ─────────────
+            // ── 6. Per-surgeon: personal PDF + global PDF + email + in-app notification
             $sentSurgeonIds = [];
             foreach ($bySurgeon as $surgeonId => $surgeonMissions) {
                 if (isset($sentSurgeonIds[$surgeonId])) {
                     continue;
                 }
                 $surgeon = $this->em->find(User::class, $surgeonId);
-                if ($surgeon === null || !$surgeon->getEmail()) {
+                if ($surgeon === null) {
                     continue;
                 }
-                try {
-                    $personalPdf = $this->pdfService->generateFromTemplate('pdf/planning_surgeon.html.twig', [
-                        'surgeon'    => $surgeon,
-                        'missions'   => $surgeonMissions,
-                        'periodFrom' => $fromDate,
-                        'periodTo'   => $toDate,
-                    ]);
-                    $name     = $this->displayName($surgeon);
-                    $filename = sprintf('planning-chirurgien-%s-%s-%s.pdf',
-                        strtolower(str_replace(' ', '-', $name)),
-                        $fromDate->format('Y-m-d'), $toDate->format('Y-m-d'));
 
-                    $this->bus->dispatch(new SendBillingEmailMessage(
-                        to: $surgeon->getEmail(),
-                        cc: [],
-                        subject: sprintf('Planning du %s au %s', $fromDate->format('d/m/Y'), $toDate->format('d/m/Y')),
-                        fromAddress: $this->fromAddress,
-                        fromName: $this->fromName,
-                        htmlTemplate: 'emails/planning_surgeon.html.twig',
-                        context: ['surgeon' => $surgeon, 'periodFrom' => $fromDate, 'periodTo' => $toDate, 'hasGlobal' => $globalPdf !== null],
-                        attachmentBase64: base64_encode($personalPdf),
-                        attachmentFilename: $filename,
-                        extraAttachments: $globalPdf !== null
-                            ? [['base64' => base64_encode($globalPdf), 'filename' => $globalFilename]]
-                            : [],
-                    ));
-                    $sentSurgeonIds[$surgeonId] = true;
-                } catch (\Throwable) {}
-            }
+                $channels = $this->resolveChannelsSafely($surgeon, NotificationType::PLANNING_DEPLOYED_SURGEON);
+                $posts    = $this->buildSurgeonPosts($surgeonMissions);
 
-            // ── 7. ASSIGNED notifications + push (one push per instrumentist) ──
-            /** @var array<int, array{user: User, count: int}> $assignedByInstr */
-            $assignedByInstr = [];
-            foreach ($missions as $mission) {
-                if ($mission->getInstrumentist() !== null && $mission->getStatus() === MissionStatus::ASSIGNED) {
+                if ($channels->email && $surgeon->getEmail()) {
                     try {
-                        $this->notificationService->planningMissionAssignedNotifyInstrumentist($mission);
+                        $personalPdf = $this->pdfService->generateFromTemplate('pdf/planning_surgeon.html.twig', [
+                            'surgeon'    => $surgeon,
+                            'missions'   => $surgeonMissions,
+                            'periodFrom' => $fromDate,
+                            'periodTo'   => $toDate,
+                        ]);
+                        $name     = $this->displayName($surgeon);
+                        $filename = sprintf('planning-chirurgien-%s-%s-%s.pdf',
+                            strtolower(str_replace(' ', '-', $name)),
+                            $fromDate->format('Y-m-d'), $toDate->format('Y-m-d'));
+
+                        $coveredCount = count(array_filter($posts, fn (array $p) => $p['covered']));
+
+                        $this->bus->dispatch(new SendBillingEmailMessage(
+                            to: $surgeon->getEmail(),
+                            cc: [],
+                            subject: sprintf('Planning du %s au %s', $fromDate->format('d/m/Y'), $toDate->format('d/m/Y')),
+                            fromAddress: $this->fromAddress,
+                            fromName: $this->fromName,
+                            htmlTemplate: 'emails/planning_surgeon.html.twig',
+                            context: [
+                                'surgeon'        => $surgeon,
+                                'periodFrom'     => $fromDate,
+                                'periodTo'       => $toDate,
+                                'totalCount'     => count($posts),
+                                'coveredCount'   => $coveredCount,
+                                'uncoveredCount' => count($posts) - $coveredCount,
+                            ],
+                            // Only the surgeon's own PDF is attached — the site-wide global
+                            // PDF is manager-only content and must not be duplicated here.
+                            attachmentBase64: base64_encode($personalPdf),
+                            attachmentFilename: $filename,
+                        ));
+                        $sentSurgeonIds[$surgeonId] = true;
                     } catch (\Throwable) {}
-                    $instr = $mission->getInstrumentist();
-                    $id    = $instr->getId();
-                    $assignedByInstr[$id] = [
-                        'user'  => $instr,
-                        'count' => ($assignedByInstr[$id]['count'] ?? 0) + 1,
-                    ];
+                }
+
+                if ($channels->inApp) {
+                    try {
+                        $this->createNotificationEvent($surgeon, NotificationType::PLANNING_DEPLOYED_SURGEON, [
+                            'periodLabel' => $this->periodLabel($fromDate, $toDate),
+                            'posts'       => $posts,
+                        ]);
+                    } catch (\Throwable) {}
                 }
             }
-            foreach ($assignedByInstr as ['user' => $instr, 'count' => $count]) {
-                try {
-                    $body = $count === 1
-                        ? 'Vous avez été assigné(e) à 1 mission.'
-                        : "Vous avez été assigné(e) à {$count} missions.";
-                    $this->webPushService->sendToUser($instr, 'Planning mis à jour', $body, [
-                        'type' => 'PLANNING_MISSION_ASSIGNED',
-                    ]);
-                } catch (\Throwable) {}
-            }
 
-            // ── 8. Pool notifications — only for openUncoveredIds ─────────────
-            $this->sendPoolNotifications($message, $missions);
+            // ── 7. Pool notifications — only for openUncoveredIds ─────────────
+            $this->sendPoolNotifications($message, $missions, $fromDate, $toDate);
 
-            // ── 9. Manager notification ───────────────────────────────────────
+            // ── 8. Manager: deployment confirmation email + in-app notification ──
             try {
-                $this->notificationService->planningDeployedNotifyManager(
-                    $deployedBy, count($missions), $message->from, $message->to
-                );
+                $mgrChannels   = $this->resolveChannelsSafely($deployedBy, NotificationType::PLANNING_DEPLOYED_MANAGER);
+                $assignedCount = count(array_filter($missions, fn (Mission $m) => $m->getStatus() === MissionStatus::ASSIGNED));
+                $openPoolCount = count(array_filter($missions, fn (Mission $m) => $m->getStatus() === MissionStatus::OPEN));
+
+                if ($mgrChannels->email && $deployedBy->getEmail() && $globalPdf !== null) {
+                    try {
+                        $this->bus->dispatch(new SendBillingEmailMessage(
+                            to: $deployedBy->getEmail(),
+                            cc: [],
+                            subject: sprintf('Déploiement confirmé — planning %s au %s', $fromDate->format('d/m/Y'), $toDate->format('d/m/Y')),
+                            fromAddress: $this->fromAddress,
+                            fromName: $this->fromName,
+                            htmlTemplate: 'emails/planning_manager.html.twig',
+                            context: [
+                                'manager'       => $deployedBy,
+                                'periodFrom'    => $fromDate,
+                                'periodTo'      => $toDate,
+                                'missionCount'  => count($missions),
+                                'assignedCount' => $assignedCount,
+                                'openPoolCount' => $openPoolCount,
+                            ],
+                            attachmentBase64: base64_encode($globalPdf),
+                            attachmentFilename: $globalFilename,
+                        ));
+                    } catch (\Throwable) {}
+                }
+
+                if ($mgrChannels->inApp) {
+                    $this->createNotificationEvent($deployedBy, NotificationType::PLANNING_DEPLOYED_MANAGER, [
+                        'missionCount'  => count($missions),
+                        'assignedCount' => $assignedCount,
+                        'openPoolCount' => $openPoolCount,
+                        'periodLabel'   => $this->periodLabel($fromDate, $toDate),
+                    ]);
+                }
             } catch (\Throwable) {}
 
             $this->em->flush();
-
-            // ── 10. Change summary emails (async, only when requested) ────────
-            $this->sendChangeSummaryEmails(
-                $message, $missions, $byInstrumentist, $bySurgeon,
-                $globalPdf, $globalFilename, $fromDate, $toDate,
-            );
 
             $this->markDone($deployment);
 
@@ -261,217 +314,77 @@ final class PlanningDeployPdfsMessageHandler
         }
     }
 
-    // ── Private — change summary ──────────────────────────────────────────────
+    // ── Private — pool notifications ──────────────────────────────────────────
 
-    /**
-     * Sends personalized diff recap emails to affected instrumentists and surgeons.
-     * Only executed when sendChangeSummary = true AND the diff is non-empty.
-     * Does NOT re-send the planning PDF emails (those are steps 5/6).
-     *
-     * @param Mission[]            $missions        All OPEN/ASSIGNED missions already loaded
-     * @param array<int,Mission[]> $byInstrumentist Missions grouped by instrumentist ID
-     * @param array<int,Mission[]> $bySurgeon       Missions grouped by surgeon ID
-     */
-    private function sendChangeSummaryEmails(
+    private function sendPoolNotifications(
         PlanningDeployPdfsMessage $message,
         array $missions,
-        array $byInstrumentist,
-        array $bySurgeon,
-        ?string $globalPdf,
-        ?string $globalFilename,
         \DateTimeImmutable $fromDate,
         \DateTimeImmutable $toDate,
     ): void {
-        if (!$message->sendChangeSummary || $message->versionId === null) {
-            return;
-        }
-
-        $version = $this->em->find(PlanningVersion::class, $message->versionId);
-        if ($version === null) {
-            return;
-        }
-
-        $diff = $this->diffService->diff($version);
-
-        // Skip entirely if the planning didn't change
-        if (empty($diff['added']) && empty($diff['removed']) && empty($diff['modified'])) {
-            return;
-        }
-
-        $subject = sprintf('Récapitulatif planning — %s au %s',
-            $fromDate->format('d/m/Y'), $toDate->format('d/m/Y'));
-
-        // ── Per-instrumentist: their changes + uncovered slots at their site ──
-        foreach ($byInstrumentist as $instrId => $instrMissions) {
-            $instrumentist = $this->em->find(User::class, $instrId);
-            if ($instrumentist === null || !$instrumentist->getEmail()) {
-                continue;
-            }
-
-            // Filter diff entries that concern this instrumentist (by ID)
-            $myAdded = array_values(array_filter(
-                $diff['added'],
-                fn(array $m) => ($m['instrumentistId'] ?? null) === $instrId,
-            ));
-            $myRemoved = array_values(array_filter(
-                $diff['removed'],
-                fn(array $m) => ($m['instrumentistId'] ?? null) === $instrId,
-            ));
-            $myModified = array_values(array_filter(
-                $diff['modified'],
-                fn(array $entry) =>
-                    ($entry['mission']['instrumentistId'] ?? null) === $instrId ||
-                    ($entry['changes']['instrumentist']['from']['id'] ?? null) === $instrId ||
-                    ($entry['changes']['instrumentist']['to']['id'] ?? null) === $instrId,
-            ));
-
-            // Uncovered pool slots at the instrumentist's site(s)
-            $instrSiteIds = array_unique(array_map(
-                fn(Mission $m) => $m->getSite()?->getId(),
-                $instrMissions,
-            ));
-            $uncoveredForSite = array_values(array_filter(
-                $missions,
-                fn(Mission $m) =>
-                    in_array($m->getId(), $message->openUncoveredIds, true) &&
-                    in_array($m->getSite()?->getId(), $instrSiteIds, true),
-            ));
-
-            if (empty($myAdded) && empty($myRemoved) && empty($myModified) && empty($uncoveredForSite)) {
-                continue;
-            }
-
-            try {
-                $this->bus->dispatch(new SendBillingEmailMessage(
-                    to: $instrumentist->getEmail(),
-                    cc: [],
-                    subject: $subject,
-                    fromAddress: $this->fromAddress,
-                    fromName: $this->fromName,
-                    htmlTemplate: 'emails/planning_change_summary_instrumentist.html.twig',
-                    context: [
-                        'instrumentist' => $instrumentist,
-                        'periodFrom'    => $fromDate,
-                        'periodTo'      => $toDate,
-                        'added'         => $myAdded,
-                        'removed'       => $myRemoved,
-                        'modified'      => $myModified,
-                        'uncovered'     => array_values(array_map(
-                            fn(Mission $m) => $this->serializeUncoveredMission($m),
-                            $uncoveredForSite,
-                        )),
-                    ],
-                ));
-            } catch (\Throwable) {}
-        }
-
-        // ── Per-surgeon: only THEIR OWN uncovered slots + global PDF ─────────
-        // Group pool missions by the surgeon they belong to.
-        // Each surgeon receives only their own uncovered slots — never another surgeon's.
-        $uncoveredBySurgeon = [];
-        foreach ($missions as $mission) {
-            if (
-                $mission->getSurgeon() !== null &&
-                in_array($mission->getId(), $message->openUncoveredIds, true)
-            ) {
-                $uncoveredBySurgeon[$mission->getSurgeon()->getId()][] = $mission;
-            }
-        }
-
-        if (empty($uncoveredBySurgeon)) {
-            return;
-        }
-
-        $sentSurgeonIds = [];
-        foreach ($bySurgeon as $surgeonId => $_surgeonMissions) {
-            if (isset($sentSurgeonIds[$surgeonId])) {
-                continue;
-            }
-
-            // Skip surgeons who have no uncovered slots in this deploy
-            $mySurgeonUncovered = $uncoveredBySurgeon[$surgeonId] ?? [];
-            if (empty($mySurgeonUncovered)) {
-                continue;
-            }
-
-            $surgeon = $this->em->find(User::class, $surgeonId);
-            if ($surgeon === null || !$surgeon->getEmail()) {
-                continue;
-            }
-
-            try {
-                $this->bus->dispatch(new SendBillingEmailMessage(
-                    to: $surgeon->getEmail(),
-                    cc: [],
-                    subject: sprintf('Postes non couverts — planning %s au %s',
-                        $fromDate->format('d/m/Y'), $toDate->format('d/m/Y')),
-                    fromAddress: $this->fromAddress,
-                    fromName: $this->fromName,
-                    htmlTemplate: 'emails/planning_change_summary_surgeon.html.twig',
-                    context: [
-                        'surgeon'    => $surgeon,
-                        'periodFrom' => $fromDate,
-                        'periodTo'   => $toDate,
-                        'uncovered'  => array_values(array_map(
-                            fn(Mission $m) => $this->serializeUncoveredMission($m),
-                            $mySurgeonUncovered,
-                        )),
-                    ],
-                    extraAttachments: $globalPdf !== null
-                        ? [['base64' => base64_encode($globalPdf), 'filename' => $globalFilename]]
-                        : [],
-                ));
-                $sentSurgeonIds[$surgeonId] = true;
-            } catch (\Throwable) {}
-        }
-    }
-
-    // ── Private — pool notifications ──────────────────────────────────────────
-
-    private function sendPoolNotifications(PlanningDeployPdfsMessage $message, array $missions): void
-    {
         if (empty($message->openUncoveredIds)) {
             return;
         }
 
+        // Filter to only the open missions selected for pool notification
+        $openMissions = array_values(array_filter(
+            $missions,
+            fn (Mission $m) => in_array($m->getId(), $message->openUncoveredIds, true),
+        ));
+
+        if (empty($openMissions)) {
+            return;
+        }
+
+        // Batch-resolve eligible instrumentists (≤ 3 queries, D-036)
+        try {
+            $eligibleBySiteId = $this->eligibilityService->findEligible($openMissions);
+        } catch (\Throwable) {
+            $eligibleBySiteId = [];
+        }
+
+        // Group open missions by site for per-site notifications
         $openBySite = [];
-        foreach ($missions as $mission) {
-            if (
-                $mission->getSite() !== null &&
-                in_array($mission->getId(), $message->openUncoveredIds, true)
-            ) {
-                $openBySite[$mission->getSite()->getId()][] = $mission;
+        foreach ($openMissions as $m) {
+            $siteId = $m->getSite()?->getId();
+            if ($siteId !== null) {
+                $openBySite[$siteId][] = $m;
             }
         }
 
+        $periodLabel = $this->periodLabel($fromDate, $toDate);
+
         foreach ($openBySite as $siteId => $siteMissions) {
-            $site = $siteMissions[0]->getSite();
-            try {
-                $siteInstrumentists = $this->em->createQuery(
-                    'SELECT u FROM App\Entity\User u
-                     JOIN u.siteMemberships sm
-                     WHERE sm.site = :siteId AND u.active = true AND u.roles LIKE :role'
-                )
-                    ->setParameter('siteId', $siteId)
-                    ->setParameter('role', '%ROLE_INSTRUMENTIST%')
-                    ->getResult();
+            $site         = $siteMissions[0]->getSite();
+            $count        = count($siteMissions);
+            $eligibleUsers = $eligibleBySiteId[$siteId] ?? [];
 
-                $this->notificationService->planningNewOpenMissionsNotifySite(
-                    $siteInstrumentists,
-                    count($siteMissions),
-                    $site->getName(),
-                    $message->from,
-                    $message->to,
-                );
+            if (empty($eligibleUsers)) {
+                continue;
+            }
 
-                $count = count($siteMissions);
-                $pushBody = $count === 1
-                    ? "1 nouvelle mission disponible à {$site->getName()}."
-                    : "{$count} nouvelles missions disponibles à {$site->getName()}.";
-                $this->webPushService->sendToUsers($siteInstrumentists, 'Nouvelles missions disponibles', $pushBody, [
-                    'type' => 'PLANNING_OPEN_MISSIONS_AVAILABLE',
-                ]);
-            } catch (\Throwable) {}
+            $openMissionIds = array_map(fn (Mission $m) => $m->getId(), $siteMissions);
+
+            foreach ($eligibleUsers as $instrumentist) {
+                try {
+                    $ch = $this->resolveChannelsSafely($instrumentist, NotificationType::OPEN_MISSION_AVAILABLE);
+                    if ($ch->inApp) {
+                        $this->createNotificationEvent($instrumentist, NotificationType::OPEN_MISSION_AVAILABLE, [
+                            'openMissionIds' => $openMissionIds,
+                            'missionCount'   => $count,
+                            'siteName'       => $site->getName(),
+                            'periodLabel'    => $periodLabel,
+                        ]);
+                    }
+                } catch (\Throwable) {}
+            }
+
+            $pushBody = $count === 1
+                ? "1 nouvelle mission disponible à {$site->getName()}."
+                : "{$count} nouvelles missions disponibles à {$site->getName()}.";
+            $this->webPushService->sendToUsers($eligibleUsers, 'Nouvelles missions disponibles', $pushBody, [
+                'type' => 'PLANNING_OPEN_MISSIONS_AVAILABLE',
+            ]);
         }
     }
 
@@ -499,20 +412,68 @@ final class PlanningDeployPdfsMessageHandler
         } catch (\Throwable) {}
     }
 
-    // ── Private — helpers ─────────────────────────────────────────────────────
+    // ── Private — notification helpers ───────────────────────────────────────
 
-    /** @return array<string, mixed> */
-    private function serializeUncoveredMission(Mission $m): array
+    private function resolveChannelsSafely(User $user, NotificationType $type): NotificationChannels
     {
-        return [
-            'date'        => $m->getStartAt()?->format('Y-m-d'),
-            'period'      => ((int) $m->getStartAt()?->format('G')) < 12 ? 'AM' : 'PM',
-            'startAt'     => $m->getStartAt()?->format('H:i'),
-            'endAt'       => $m->getEndAt()?->format('H:i'),
-            'surgeonName' => $this->displayName($m->getSurgeon()),
-            'siteName'    => $m->getSite()?->getName(),
-        ];
+        try {
+            return $this->preferenceResolver->resolve($user, $type);
+        } catch (\Throwable) {
+            return new NotificationChannels(inApp: true, email: true, push: false);
+        }
     }
+
+    private function createNotificationEvent(User $user, NotificationType $type, array $payload): void
+    {
+        $evt = (new NotificationEvent())
+            ->setUser($user)
+            ->setEventType($type->value)
+            ->setChannel(PublicationChannel::IN_APP)
+            ->setSentAt(new \DateTimeImmutable())
+            ->setPayload($payload);
+        $this->em->persist($evt);
+    }
+
+    /** @param Mission[] $missions */
+    private function buildSurgeonPosts(array $missions): array
+    {
+        $posts = [];
+        foreach ($missions as $mission) {
+            $covered = $mission->getStatus() === MissionStatus::ASSIGNED;
+            $instr   = $mission->getInstrumentist();
+
+            $uncoveredReasonLabel = null;
+            if (!$covered) {
+                try {
+                    $uncoveredReasonLabel = $this->uncoveredReasonResolver->resolveForMission($mission)->label();
+                } catch (\Throwable) {}
+            }
+
+            $posts[] = [
+                'missionId'            => $mission->getId(),
+                'date'                 => $mission->getStartAt()?->format('Y-m-d'),
+                'dayLabel'             => $mission->getStartAt()?->format('l'),
+                'siteName'             => $mission->getSite()?->getName(),
+                'periodLabel'          => $mission->getStartAt() !== null
+                    ? (((int) $mission->getStartAt()->format('G')) < 12 ? 'Matin' : 'Après-midi')
+                    : null,
+                'covered'              => $covered,
+                'instrumentistName'    => $covered && $instr !== null ? $this->displayName($instr) : null,
+                'uncoveredReasonLabel' => $uncoveredReasonLabel,
+            ];
+        }
+
+        usort($posts, fn (array $a, array $b) => ($a['date'] ?? '') <=> ($b['date'] ?? ''));
+
+        return $posts;
+    }
+
+    private function periodLabel(\DateTimeImmutable $from, \DateTimeImmutable $to): string
+    {
+        return sprintf('%s au %s', $from->format('d/m/Y'), $to->format('d/m/Y'));
+    }
+
+    // ── Private — helpers ─────────────────────────────────────────────────────
 
     private function displayName(?User $user): string
     {

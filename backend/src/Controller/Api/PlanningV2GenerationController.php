@@ -48,11 +48,14 @@ class PlanningV2GenerationController extends AbstractController
 
         [$siteId, $siteGroupId, $month] = $this->parseTargetAndMonth($request);
 
-        $lines = $this->generator->preview($month, $siteId, $siteGroupId, null);
+        $lines          = $this->generator->preview($month, $siteId, $siteGroupId, null);
+        $previewVersion = $this->generator->computePreviewVersion($month, $siteId, $siteGroupId);
 
         $response = new PreviewResponse(
             lines: array_map(PreviewLineResponse::fromLine(...), $lines),
             summary: PreviewSummaryResponse::fromLines($lines),
+            previewVersion: $previewVersion,
+            generatedAt: (new \DateTimeImmutable())->format(\DateTimeInterface::RFC3339),
         );
 
         return $this->json($response);
@@ -64,11 +67,30 @@ class PlanningV2GenerationController extends AbstractController
         $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
 
         [$siteId, $siteGroupId, $month] = $this->parseTargetAndMonth($request);
-        [$periodStart, $periodEnd] = $this->monthRange($month);
+        [$periodStart, $periodEnd]      = $this->monthRange($month);
 
         $this->assertNoUndeployedDraftExists($siteId, $periodStart, $periodEnd);
 
-        $result = $this->generator->generate($month, $siteId, $siteGroupId, null, $currentUser);
+        $data = json_decode($request->getContent() ?: '{}', true) ?? [];
+
+        // Validate previewVersion when the client sends one (stale-preview guard).
+        $clientVersion = isset($data['previewVersion']) && is_string($data['previewVersion'])
+            ? $data['previewVersion']
+            : null;
+
+        if ($clientVersion !== null) {
+            $serverVersion = $this->generator->computePreviewVersion($month, $siteId, $siteGroupId);
+            if ($clientVersion !== $serverVersion) {
+                return $this->json(
+                    ['code' => 'PREVIEW_EXPIRED', 'message' => "Le planning a changé depuis la prévisualisation. Veuillez régénérer l'aperçu."],
+                    409,
+                );
+            }
+        }
+
+        $overrideLines = isset($data['lines']) && is_array($data['lines']) ? $data['lines'] : null;
+
+        $result = $this->generator->generate($month, $siteId, $siteGroupId, null, $currentUser, $overrideLines);
 
         return $this->json(new GeneratedPlanningResponse(
             versionId: $result['versionId'],
@@ -94,12 +116,6 @@ class PlanningV2GenerationController extends AbstractController
             throw $this->createNotFoundException('PlanningVersion introuvable.');
         }
 
-        // sendPdf maps to the existing sendChangeSummary lever — PlanningDeploymentService has
-        // no separate "skip PDFs entirely" toggle, and adding one is out of this batch's scope
-        // ("no V2-specific deploy logic unless required"). The standard per-recipient planning
-        // PDFs are sent unconditionally either way, exactly as for a V1 deploy.
-        $sendPdf = (bool) ($data['sendPdf'] ?? true);
-
         $result = $this->deploymentService->deploy(
             from: $version->getPeriodStart()->format('Y-m-d'),
             to: $version->getPeriodEnd()->format('Y-m-d'),
@@ -107,7 +123,6 @@ class PlanningV2GenerationController extends AbstractController
             deployedBy: $currentUser,
             versionId: $version->getId(),
             selectedUncoveredMissionIds: [],
-            sendChangeSummary: $sendPdf,
         );
 
         return $this->json(new DeployResponse(

@@ -26,8 +26,6 @@ class PlanningDeployController extends AbstractController
         $siteId    = isset($data['siteId'])    ? (int) $data['siteId']    : null;
         $versionId = isset($data['versionId']) ? (int) $data['versionId'] : null;
 
-        $sendChangeSummary = (bool) ($data['sendChangeSummary'] ?? false);
-
         // Validate and sanitize selectedUncoveredMissionIds
         $rawIds    = $data['selectedUncoveredMissionIds'] ?? [];
         $selectedIds = is_array($rawIds)
@@ -41,7 +39,7 @@ class PlanningDeployController extends AbstractController
         try {
             $result = $this->deploymentService->deploy(
                 $from, $to, $siteId, $currentUser,
-                $versionId, $selectedIds, $sendChangeSummary,
+                $versionId, $selectedIds,
             );
         } catch (\Exception $e) {
             return $this->json(['error' => ['message' => $e->getMessage()]], 400);

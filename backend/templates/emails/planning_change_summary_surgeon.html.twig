@@ -16,18 +16,18 @@ li { margin-bottom: 6px; }
 <body>
 <div class="container">
   <div class="header">
-    <div class="title">SurgicalHub — Créneaux non couverts</div>
+    <div class="title">SurgicalHub — Missions en attente d'affectation</div>
   </div>
 
   <p>Bonjour Dr {% if surgeon.firstname %}{{ surgeon.firstname }} {{ surgeon.lastname }}{% else %}{{ surgeon.email }}{% endif %},</p>
 
   <div class="info-box">
     Votre planning du <strong>{{ periodFrom|date('d/m/Y') }}</strong> au <strong>{{ periodTo|date('d/m/Y') }}</strong>
-    comporte <strong>{{ uncovered|length }} créneau(x) sans instrumentiste</strong>.
+    comporte <strong>{{ uncovered|length }} mission(s) sans instrumentiste affectée</strong>.
   </div>
 
   <p>
-    Ces créneaux ont été proposés aux instrumentistes du site sous forme de missions disponibles.<br>
+    Ces missions ont été proposées aux instrumentistes du site sous forme de missions disponibles.<br>
     Dès qu'une mission est acceptée, vous serez automatiquement informé.
   </p>
 
@@ -35,7 +35,7 @@ li { margin-bottom: 6px; }
     En l'absence de prise en charge, il vous appartient d'organiser l'instrumentation avec la firme si nécessaire.
   </p>
 
-  <p class="section-title">Créneaux non couverts vous concernant :</p>
+  <p class="section-title">Missions en attente d'affectation vous concernant :</p>
   <ul>
     {% for m in uncovered %}
     <li>

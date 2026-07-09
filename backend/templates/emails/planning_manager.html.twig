@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><style>
+body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+.container { max-width: 600px; margin: 0 auto; padding: 24px; }
+.header { border-bottom: 2px solid #1565C0; padding-bottom: 12px; margin-bottom: 20px; }
+.title { color: #1565C0; font-size: 18px; font-weight: bold; }
+.stats { display: table; width: 100%; margin: 20px 0; border-collapse: collapse; }
+.stat { display: table-cell; text-align: center; padding: 12px 8px; background: #f5f7fa; }
+.stat + .stat { border-left: 1px solid #e0e0e0; }
+.stat-value { font-size: 22px; font-weight: bold; color: #1565C0; }
+.stat-label { font-size: 11px; color: #777; text-transform: uppercase; letter-spacing: 0.3px; margin-top: 2px; }
+.footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+</style></head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">SurgicalHub — Déploiement confirmé</div>
+  </div>
+
+  <p>Bonjour {% if manager.firstname %}{{ manager.firstname }}{% else %}{{ manager.email }}{% endif %},</p>
+  <p>Le planning pour la période du <strong>{{ periodFrom|date('d/m/Y') }}</strong> au <strong>{{ periodTo|date('d/m/Y') }}</strong> a bien été déployé.</p>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-value">{{ missionCount }}</div>
+      <div class="stat-label">Missions</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">{{ assignedCount }}</div>
+      <div class="stat-label">Assignées</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">{{ openPoolCount }}</div>
+      <div class="stat-label">Ouvertes (pool)</div>
+    </div>
+  </div>
+
+  <p>Le planning global de la période est joint à cet email en pièce jointe (PDF).</p>
+
+  <div class="footer">SurgicalHub — document confidentiel</div>
+</div>
+</body>
+</html>

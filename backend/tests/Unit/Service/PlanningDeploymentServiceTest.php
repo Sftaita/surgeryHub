@@ -32,7 +32,7 @@ use Symfony\Component\Messenger\MessageBusInterface;
  *   DRAFT + instrumentist IS NULL + selected → OPEN
  *   DRAFT + instrumentist IS NULL + unselected → stays DRAFT
  *
- * Async: PlanningDeployPdfsMessage dispatched with deploymentId + openUncoveredIds + sendChangeSummary.
+ * Async: PlanningDeployPdfsMessage dispatched with deploymentId + openUncoveredIds.
  * Idempotence guard: PlanningDeployment.status starts at PENDING; handler sets DONE on completion.
  */
 class PlanningDeploymentServiceTest extends TestCase
@@ -97,13 +97,17 @@ class PlanningDeploymentServiceTest extends TestCase
      *
      * DQL routing:
      *   UPDATE … IS NOT NULL  → execute() returns $assignedCount  (ASSIGNED bulk)
-     *   UPDATE … IN (:ids)    → execute() returns $poolCount      (OPEN bulk)
+     *   UPDATE … IS NULL      → execute() returns $poolCount      (OPEN bulk, all uncovered)
+     *   SELECT m.id …         → getResult() returns $openMissionIdRows (RC1-A: pool IDs)
      *   anything else         → execute()/getResult() return 0/[]
+     *
+     * @param array<int> $openMissionIds IDs the SELECT query should return (simulates DB rows).
      */
     private function setupEmForVersion(
         PlanningVersion $version,
         int $assignedCount = 0,
         int $poolCount = 0,
+        array $openMissionIds = [],
     ): void {
         $this->em->method('find')
             ->willReturnCallback(fn ($class, $id) => match ($class) {
@@ -111,8 +115,10 @@ class PlanningDeploymentServiceTest extends TestCase
                 default                => null,
             });
 
+        $openIdRows = array_map(fn (int $id) => ['id' => $id], $openMissionIds);
+
         $this->em->method('createQuery')
-            ->willReturnCallback(function (string $dql) use ($assignedCount, $poolCount): AbstractQuery {
+            ->willReturnCallback(function (string $dql) use ($assignedCount, $poolCount, $openIdRows): AbstractQuery {
                 $q = $this->createMock(Query::class);
                 $q->method('setParameter')->willReturnSelf();
                 $q->method('getOneOrNullResult')->willReturn(null);
@@ -120,9 +126,12 @@ class PlanningDeploymentServiceTest extends TestCase
                 if (str_contains($dql, 'UPDATE') && str_contains($dql, 'IS NOT NULL')) {
                     // Bulk ASSIGNED update (pre-assigned missions)
                     $q->method('execute')->willReturn($assignedCount);
-                } elseif (str_contains($dql, 'UPDATE') && str_contains($dql, 'IN (:ids)')) {
-                    // Bulk OPEN update (selected uncovered missions)
+                } elseif (str_contains($dql, 'UPDATE') && str_contains($dql, 'IS NULL')) {
+                    // Bulk OPEN update — all uncovered DRAFT missions
                     $q->method('execute')->willReturn($poolCount);
+                } elseif (str_contains($dql, 'SELECT') && str_contains($dql, 'm.id')) {
+                    // RC1-A step 4c: fetch IDs of newly-opened missions for pool notifications
+                    $q->method('getResult')->willReturn($openIdRows);
                 } else {
                     $q->method('execute')->willReturn(0);
                     $q->method('getResult')->willReturn([]);
@@ -210,41 +219,41 @@ class PlanningDeploymentServiceTest extends TestCase
         );
     }
 
-    // ── OPEN bulk UPDATE (selected uncovered missions) ─────────────────────────
+    // ── OPEN bulk UPDATE — V2: all uncovered DRAFT → OPEN (Batch 15A) ──────────
 
-    public function test_deploy_selected_uncovered_missions_become_open(): void
+    public function test_v2_deploy_all_uncovered_draft_become_open_without_selection(): void
     {
+        // Batch 15A: ALL DRAFT missions without an instrumentist become OPEN automatically.
+        // selectedUncoveredMissionIds is ignored for the V2 path.
         $version = $this->makeVersion();
-        $this->setupEmForVersion($version, assignedCount: 3, poolCount: 2);
+        $this->setupEmForVersion($version, assignedCount: 3, poolCount: 4);
 
         $result = $this->makeService()->deploy(
             '2026-03-23', '2026-03-27', null,
             $this->makeUser('mgr@test.com'), 42,
-            selectedUncoveredMissionIds: [101, 102], // 2 missions published as pool
+            selectedUncoveredMissionIds: [], // ignored in V2 — all uncovered auto-published
         );
 
-        $this->assertSame(5, $result['missionCount'],   '3 ASSIGNED + 2 OPEN');
-        $this->assertSame(2, $result['openPoolCount'],  '2 selected uncovered → OPEN');
+        $this->assertSame(7, $result['missionCount'],  '3 ASSIGNED + 4 auto-OPEN');
+        $this->assertSame(4, $result['openPoolCount'], 'all 4 uncovered DRAFT become OPEN');
     }
 
-    public function test_deploy_with_no_selected_uncovered_missions_skips_pool_update(): void
+    public function test_v2_deploy_draft_with_instrumentist_become_assigned(): void
     {
-        // When selectedUncoveredMissionIds is empty, no IN(:ids) UPDATE must be executed.
-        // The mock would return poolCount=99 if the UPDATE were called — but it won't be.
+        // Regression: pre-assigned missions (instrumentist set) must still become ASSIGNED.
         $version = $this->makeVersion();
-        $this->setupEmForVersion($version, assignedCount: 4, poolCount: 99);
+        $this->setupEmForVersion($version, assignedCount: 5, poolCount: 0);
 
         $result = $this->makeService()->deploy(
             '2026-03-23', '2026-03-27', null,
             $this->makeUser('mgr@test.com'), 42,
-            selectedUncoveredMissionIds: [],
         );
 
-        $this->assertSame(4, $result['missionCount'],  'No pool update → only assigned count');
-        $this->assertSame(0, $result['openPoolCount'], 'No IDs selected → pool count is 0');
+        $this->assertSame(5, $result['missionCount'],  '5 pre-assigned missions → ASSIGNED');
+        $this->assertSame(0, $result['openPoolCount'], 'no uncovered missions');
     }
 
-    public function test_deploy_returns_assigned_plus_pool_in_mission_count(): void
+    public function test_v2_deploy_returns_assigned_plus_pool_in_mission_count(): void
     {
         $version = $this->makeVersion();
         $this->setupEmForVersion($version, assignedCount: 10, poolCount: 4);
@@ -252,7 +261,6 @@ class PlanningDeploymentServiceTest extends TestCase
         $result = $this->makeService()->deploy(
             '2026-03-23', '2026-03-27', null,
             $this->makeUser('mgr@test.com'), 42,
-            selectedUncoveredMissionIds: [201, 202, 203, 204],
         );
 
         $this->assertArrayHasKey('missionCount',  $result);
@@ -283,38 +291,87 @@ class PlanningDeploymentServiceTest extends TestCase
         $this->assertSame($manager->getId(), $msg->deployedById);
     }
 
-    public function test_deploy_message_carries_open_uncovered_ids(): void
+    public function test_v2_deploy_message_carries_open_mission_ids_from_pool(): void
     {
+        // RC1-A P0-1: V2 deploy must populate openUncoveredIds with the IDs of newly-opened
+        // missions so the handler can fan out OPEN_MISSION_AVAILABLE notifications.
         $version = $this->makeVersion();
-        $this->setupEmForVersion($version, assignedCount: 2, poolCount: 2);
+        $this->setupEmForVersion($version, assignedCount: 2, poolCount: 2, openMissionIds: [101, 102]);
 
         $this->makeService()->deploy(
             '2026-03-23', '2026-03-27', null,
             $this->makeUser('mgr@test.com'), 42,
-            selectedUncoveredMissionIds: [55, 66],
+            selectedUncoveredMissionIds: [55, 66], // V2 ignores this — uses queried IDs instead
         );
 
         /** @var PlanningDeployPdfsMessage $msg */
         $msg = array_values(array_filter($this->dispatched, fn ($m) => $m instanceof PlanningDeployPdfsMessage))[0];
-        $this->assertSame([55, 66], $msg->openUncoveredIds,
-            'The message must carry exactly the selected uncovered IDs for pool notification.'
+        $this->assertSame([101, 102], $msg->openUncoveredIds,
+            'V2: openUncoveredIds must contain the IDs from the post-deploy SELECT query, not the manager selection.'
         );
     }
 
-    public function test_deploy_message_carries_send_change_summary_flag(): void
+    public function test_v2_deploy_message_carries_empty_ids_when_no_pool_missions(): void
     {
+        // When poolCount=0 (all missions pre-assigned), the SELECT query does not run
+        // and openUncoveredIds must be empty.
         $version = $this->makeVersion();
-        $this->setupEmForVersion($version);
+        $this->setupEmForVersion($version, assignedCount: 5, poolCount: 0);
 
         $this->makeService()->deploy(
             '2026-03-23', '2026-03-27', null,
             $this->makeUser('mgr@test.com'), 42,
-            sendChangeSummary: true,
         );
 
         /** @var PlanningDeployPdfsMessage $msg */
         $msg = array_values(array_filter($this->dispatched, fn ($m) => $m instanceof PlanningDeployPdfsMessage))[0];
-        $this->assertTrue($msg->sendChangeSummary);
+        $this->assertSame([], $msg->openUncoveredIds,
+            'No pool missions → openUncoveredIds must be empty (no SELECT query runs).'
+        );
+    }
+
+    public function test_v1_deploy_legacy_uses_selected_ids(): void
+    {
+        // V1 legacy path (no versionId): selectedUncoveredMissionIds still carried on the message.
+        $this->em->method('find')->willReturn(null);
+        $this->em->method('getReference')
+            ->willReturnCallback(fn ($class, $id) => match ($class) {
+                User::class => $this->makeUser('ref@test.com'),
+                default     => null,
+            });
+
+        $qb = $this->createMock(QueryBuilder::class);
+        $qb->method('select')->willReturnSelf();
+        $qb->method('from')->willReturnSelf();
+        $qb->method('where')->willReturnSelf();
+        $qb->method('andWhere')->willReturnSelf();
+        $qb->method('setParameter')->willReturnSelf();
+        $qb->method('setMaxResults')->willReturnSelf();
+        $q = $this->createMock(Query::class);
+        $q->method('getOneOrNullResult')->willReturn(null);
+        $q->method('getResult')->willReturn([]);
+        $qb->method('getQuery')->willReturn($q);
+        $this->em->method('createQueryBuilder')->willReturn($qb);
+        $this->em->method('createQuery')->willReturnCallback(function (): AbstractQuery {
+            $q = $this->createMock(Query::class);
+            $q->method('setParameter')->willReturnSelf();
+            $q->method('execute')->willReturn(3);
+            $q->method('getResult')->willReturn([]);
+            return $q;
+        });
+
+        $this->makeService()->deploy(
+            '2026-03-23', '2026-03-27', null,
+            $this->makeUser('mgr@test.com'),
+            null, // no versionId → V1 legacy path
+            selectedUncoveredMissionIds: [10, 20, 30],
+        );
+
+        /** @var PlanningDeployPdfsMessage $msg */
+        $msg = array_values(array_filter($this->dispatched, fn ($m) => $m instanceof PlanningDeployPdfsMessage))[0];
+        $this->assertSame([10, 20, 30], $msg->openUncoveredIds,
+            'V1 legacy path must still pass selectedUncoveredMissionIds to the message.'
+        );
     }
 
     public function test_deploy_does_not_generate_pdfs_synchronously(): void
@@ -375,7 +432,6 @@ class PlanningDeploymentServiceTest extends TestCase
         $this->assertSame([], $msg->openUncoveredIds,
             'Legacy path: openUncoveredIds is empty (no selection possible without versionId).'
         );
-        $this->assertFalse($msg->sendChangeSummary);
     }
 
     // ── REGRESSION — cascade persist after em->clear() ───────────────────────

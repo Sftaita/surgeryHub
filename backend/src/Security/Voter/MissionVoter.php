@@ -29,6 +29,20 @@ class MissionVoter extends Voter
     public const APPROVE_DECLARED = 'MISSION_APPROVE_DECLARED';
     public const REJECT_DECLARED = 'MISSION_REJECT_DECLARED';
 
+    // Post-deploy lifecycle (Batch 15B)
+    public const RELEASE  = 'MISSION_RELEASE';
+    public const CANCEL   = 'MISSION_CANCEL';
+    public const REASSIGN = 'MISSION_REASSIGN';
+
+    // Pre-deploy DRAFT instrumentist assignment (RC1-C, Cluster C fix)
+    public const ASSIGN_INSTRUMENTIST = 'MISSION_ASSIGN_INSTRUMENTIST';
+
+    // Manager support (Batch 15D)
+    public const VIEW_ELIGIBLE_INSTRUMENTISTS = 'MISSION_VIEW_ELIGIBLE_INSTRUMENTISTS';
+
+    // Audit history (Batch 15F) — MANAGER/ADMIN or mission surgeon
+    public const VIEW_AUDIT = 'MISSION_VIEW_AUDIT';
+
     protected function supports(string $attribute, mixed $subject): bool
     {
         if (!in_array($attribute, [
@@ -42,6 +56,12 @@ class MissionVoter extends Voter
             self::DECLARE,
             self::APPROVE_DECLARED,
             self::REJECT_DECLARED,
+            self::RELEASE,
+            self::CANCEL,
+            self::REASSIGN,
+            self::ASSIGN_INSTRUMENTIST,
+            self::VIEW_ELIGIBLE_INSTRUMENTISTS,
+            self::VIEW_AUDIT,
         ], true)) {
             return false;
         }
@@ -77,15 +97,21 @@ class MissionVoter extends Voter
         $mission = $subject;
 
         return match ($attribute) {
-            self::VIEW => $this->canView($mission, $user, $isManager),
-            self::PUBLISH => $isManager,
-            self::CLAIM => $this->canClaim($mission, $user),
-            self::SUBMIT => $this->canSubmit($mission, $user, $isManager),
-            self::EDIT => $this->canEdit($mission, $user, $isManager),
-            self::EDIT_ENCODING => $this->canEditEncoding($mission, $user, $isManager),
+            self::VIEW             => $this->canView($mission, $user, $isManager),
+            self::PUBLISH          => $isManager,
+            self::CLAIM            => $this->canClaim($mission, $user),
+            self::SUBMIT           => $this->canSubmit($mission, $user, $isManager),
+            self::EDIT             => $this->canEdit($mission, $user, $isManager),
+            self::EDIT_ENCODING    => $this->canEditEncoding($mission, $user, $isManager),
             self::APPROVE_DECLARED => $this->canApproveDeclared($mission, $isManager),
-            self::REJECT_DECLARED => $this->canRejectDeclared($mission, $isManager),
-            default => false,
+            self::REJECT_DECLARED  => $this->canRejectDeclared($mission, $isManager),
+            self::RELEASE                     => $isManager,
+            self::CANCEL                      => $isManager,
+            self::REASSIGN                    => $isManager,
+            self::ASSIGN_INSTRUMENTIST         => $isManager,
+            self::VIEW_ELIGIBLE_INSTRUMENTISTS => $isManager,
+            self::VIEW_AUDIT                  => $isManager || $mission->getSurgeon()?->getId() === $user->getId(),
+            default                           => false,
         };
     }
 
@@ -105,6 +131,11 @@ class MissionVoter extends Voter
 
         // instrumentiste peut voir les missions OPEN publiées (POOL/TARGETED) selon règles EMPLOYEE/FREELANCER
         if (in_array('ROLE_INSTRUMENTIST', $user->getRoles(), true) && $mission->getStatus() === MissionStatus::OPEN) {
+            // V2 OPEN missions have no publications — any instrumentist may view pre-claim.
+            // Full eligibility (absence, conflicts, site) is enforced at claim() time (D-057).
+            if ($mission->getPublications()->isEmpty()) {
+                return true;
+            }
             return $this->isEligibleInstrumentistForOpenMission($mission, $user);
         }
 
@@ -124,6 +155,13 @@ class MissionVoter extends Voter
         // sécurité: pas claimable si déjà affectée
         if ($mission->getInstrumentist() !== null) {
             return false;
+        }
+
+        // Planning V2 OPEN missions have no MissionPublication records.
+        // Business eligibility (absence, conflict, site membership) is enforced
+        // by MissionPostDeployService::claim() via MissionEligibilityService.
+        if ($mission->getPublications()->isEmpty()) {
+            return true;
         }
 
         return $this->isEligibleInstrumentistForOpenMission($mission, $user);

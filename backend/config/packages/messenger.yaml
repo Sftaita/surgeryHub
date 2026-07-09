@@ -15,10 +15,11 @@ framework:
             sync: "sync://"
 
         routing:
-            App\Message\SendTemplatedEmailMessage: async
-            App\Message\SendBillingEmailMessage:   async
-            App\Message\PlanningDeployPdfsMessage: async
-            App\Message\PlanningAlertRaisedMessage: async
+            App\Message\SendTemplatedEmailMessage:          async
+            App\Message\SendBillingEmailMessage:            async
+            App\Message\PlanningDeployPdfsMessage:          async
+            App\Message\PlanningAlertRaisedMessage:         async
+            App\Message\MissionLifecycleChangedMessage:     async
 
 when@test:
     framework:

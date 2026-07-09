@@ -36,7 +36,7 @@ class Hospital
     private ?string $timezone = null;
 
     #[ORM\Column(length: 500, nullable: true)]
-    #[Groups(['hospital:read', 'site:list'])]
+    #[Groups(['hospital:read', 'site:list', 'mission:read', 'mission:read_manager'])]
     private ?string $photoPath = null;
 
     /**

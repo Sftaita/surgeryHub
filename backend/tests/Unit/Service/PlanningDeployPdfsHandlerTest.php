@@ -4,19 +4,24 @@ namespace App\Tests\Unit\Service;
 
 use App\Entity\Hospital;
 use App\Entity\Mission;
+use App\Entity\NotificationEvent;
 use App\Entity\PlanningDeployment;
-use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Enum\NotificationType;
 use App\Enum\PlanningDeploymentStatus;
 use App\Enum\SchedulePrecision;
+use App\Enum\UncoveredReason;
 use App\Message\PlanningDeployPdfsMessage;
 use App\Message\SendBillingEmailMessage;
 use App\MessageHandler\PlanningDeployPdfsMessageHandler;
+use App\Service\MissionEligibilityService;
+use App\Service\NotificationChannels;
+use App\Service\NotificationPreferenceResolver;
 use App\Service\NotificationService;
 use App\Service\PdfService;
-use App\Service\PlanningDiffService;
+use App\Service\UncoveredReasonResolver;
 use App\Service\WebPushServiceInterface;
 use Doctrine\ORM\AbstractQuery;
 use Doctrine\ORM\EntityManagerInterface;
@@ -28,20 +33,26 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * Tests PlanningDeployPdfsMessageHandler:
- * - PDF generation for instrumentists and surgeons
- * - Global PDF attached to surgeon emails
- * - Push notifications dispatched
- * - Failures of individual PDFs do not abort the whole batch
+ * Tests PlanningDeployPdfsMessageHandler under the "exactly ONE deploy email per
+ * recipient" policy (Planning V2 deploy email redesign):
+ * - Surgeon: one email, aggregate counts (total/covered/uncovered), own PDF only —
+ *   no global PDF attached, no change-summary email ever sent during deploy.
+ * - Instrumentist: one email with missionCount + own PDF — no change-summary email.
+ * - Manager: one email (deployment confirmation + stats) with the global PDF attached,
+ *   plus the pre-existing in-app notification.
+ * - Change-summary emails (PlanningChangeSummaryService) are entirely decoupled from
+ *   this handler now — see PlanningChangeSummaryServiceTest for that capability.
  */
 class PlanningDeployPdfsHandlerTest extends TestCase
 {
-    private EntityManagerInterface&MockObject $em;
-    private PdfService&MockObject             $pdf;
-    private NotificationService&MockObject    $notif;
-    private WebPushServiceInterface&MockObject $webPush;
-    private MessageBusInterface&MockObject    $bus;
-    private PlanningDiffService&MockObject    $diffService;
+    private EntityManagerInterface&MockObject         $em;
+    private PdfService&MockObject                    $pdf;
+    private NotificationService&MockObject           $notif;
+    private WebPushServiceInterface&MockObject       $webPush;
+    private MessageBusInterface&MockObject           $bus;
+    private NotificationPreferenceResolver&MockObject $preferenceResolver;
+    private UncoveredReasonResolver&MockObject       $uncoveredReasonResolver;
+    private MissionEligibilityService&MockObject     $eligibilityService;
 
     private array $dispatched   = [];
     private array $pdfTemplates = [];
@@ -53,7 +64,17 @@ class PlanningDeployPdfsHandlerTest extends TestCase
         $this->notif       = $this->createMock(NotificationService::class);
         $this->webPush     = $this->createMock(WebPushServiceInterface::class);
         $this->bus         = $this->createMock(MessageBusInterface::class);
-        $this->diffService = $this->createMock(PlanningDiffService::class);
+
+        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
+        $this->preferenceResolver->method('resolve')
+            ->willReturn(new NotificationChannels(inApp: true, email: true, push: false));
+
+        $this->uncoveredReasonResolver = $this->createMock(UncoveredReasonResolver::class);
+        $this->uncoveredReasonResolver->method('resolveForMission')
+            ->willReturn(UncoveredReason::MANUALLY_LEFT_OPEN);
+
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('findEligible')->willReturn([]);
 
         $this->dispatched   = [];
         $this->pdfTemplates = [];
@@ -112,7 +133,9 @@ class PlanningDeployPdfsHandlerTest extends TestCase
             $this->notif,
             $this->webPush,
             $this->bus,
-            $this->diffService,
+            $this->preferenceResolver,
+            $this->uncoveredReasonResolver,
+            $this->eligibilityService,
             'noreply@test.com',
             'SurgicalHub',
         );
@@ -120,9 +143,7 @@ class PlanningDeployPdfsHandlerTest extends TestCase
 
     private function makeMessage(
         array $openUncoveredIds = [],
-        bool $sendChangeSummary = false,
         ?int $deploymentId = null,
-        ?int $versionId = null,
     ): PlanningDeployPdfsMessage {
         return new PlanningDeployPdfsMessage(
             from:              '2026-03-23',
@@ -131,8 +152,6 @@ class PlanningDeployPdfsHandlerTest extends TestCase
             deployedById:      99,
             deploymentId:      $deploymentId,
             openUncoveredIds:  $openUncoveredIds,
-            sendChangeSummary: $sendChangeSummary,
-            versionId:         $versionId,
         );
     }
 
@@ -195,7 +214,12 @@ class PlanningDeployPdfsHandlerTest extends TestCase
         $this->assertCount(1, $emailsToInstr, 'Instrumentist must receive exactly one email');
     }
 
-    public function test_handler_generates_global_pdf_for_surgeons(): void
+    /**
+     * REGRESSION (email policy redesign): the global PDF is generated (still needed
+     * for the manager email) but must NOT be attached to the surgeon's email anymore —
+     * only the surgeon's own personal PDF.
+     */
+    public function test_handler_generates_global_pdf_but_does_not_attach_it_to_surgeon_email(): void
     {
         $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'],      1);
         $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
@@ -213,7 +237,7 @@ class PlanningDeployPdfsHandlerTest extends TestCase
         $this->makeHandler()->__invoke($this->makeMessage());
 
         $this->assertContains('pdf/planning_global.html.twig', $this->pdfTemplates,
-            'Global PDF must be generated for surgeon email'
+            'Global PDF must still be generated (needed for the manager email)'
         );
         $this->assertContains('pdf/planning_surgeon.html.twig', $this->pdfTemplates,
             'Personal surgeon PDF must also be generated'
@@ -227,7 +251,9 @@ class PlanningDeployPdfsHandlerTest extends TestCase
 
         /** @var SendBillingEmailMessage $msg */
         $msg = array_values($surgeonEmails)[0];
-        $this->assertNotEmpty($msg->extraAttachments, 'Global PDF must be attached as extra attachment');
+        $this->assertEmpty($msg->extraAttachments,
+            'The global PDF must NOT be duplicated onto the surgeon email — manager-only content.'
+        );
     }
 
     public function test_handler_does_nothing_when_no_missions(): void
@@ -301,7 +327,10 @@ class PlanningDeployPdfsHandlerTest extends TestCase
         try {
             (new PlanningDeployPdfsMessageHandler(
                 $this->em, $this->pdf, $this->notif, $this->webPush,
-                $this->bus, $this->diffService, 'noreply@test.com', 'SurgicalHub'
+                $this->bus,
+                $this->preferenceResolver, $this->uncoveredReasonResolver,
+                $this->eligibilityService,
+                'noreply@test.com', 'SurgicalHub'
             ))->__invoke($this->makeMessage());
         } catch (\Throwable) {
             $threw = true;
@@ -397,8 +426,9 @@ class PlanningDeployPdfsHandlerTest extends TestCase
      */
     public function test_pool_notification_only_for_open_uncovered_ids(): void
     {
-        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
-        $mgr     = $this->makeUser('mgr@test.com',     ['ROLE_MANAGER'], 99);
+        $surgeon   = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $mgr       = $this->makeUser('mgr@test.com',     ['ROLE_MANAGER'], 99);
+        $poolInstr = $this->makeUser('pool@test.com',    ['ROLE_INSTRUMENTIST'], 5);
 
         $site = new Hospital();
         $site->setName('Alpha');
@@ -406,10 +436,12 @@ class PlanningDeployPdfsHandlerTest extends TestCase
 
         // Mission 101 — in openUncoveredIds → counts toward pool notification
         $m101 = $this->makeMission($surgeon, null, MissionStatus::OPEN);
+        $m101->setSite($site);
         (new \ReflectionProperty(Mission::class, 'id'))->setValue($m101, 101);
 
         // Mission 102 — NOT in openUncoveredIds → must not trigger a notification
         $m102 = $this->makeMission($surgeon, null, MissionStatus::OPEN);
+        $m102->setSite($site);
         (new \ReflectionProperty(Mission::class, 'id'))->setValue($m102, 102);
 
         $this->em->method('find')
@@ -437,474 +469,23 @@ class PlanningDeployPdfsHandlerTest extends TestCase
             return $q;
         });
 
-        // Notification must be called once, with missionCount=1 (only mission 101)
-        $this->notif->expects($this->once())
-            ->method('planningNewOpenMissionsNotifySite')
+        // Re-create the eligibility service mock to override setUp() default ([])
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('findEligible')
+            ->willReturn([10 => [$poolInstr]]);
+
+        // Push must be called exactly once with "1 nouvelle" (only mission 101, not 102)
+        $this->webPush->expects($this->once())
+            ->method('sendToUsers')
             ->with(
-                $this->anything(),   // site instrumentists (empty in test)
-                1,                   // only mission 101, not 102
-                $this->anything(),   // site name
-                '2026-03-23',        // from
-                '2026-03-27',        // to
+                $this->anything(),
+                'Nouvelles missions disponibles',
+                $this->stringContains('1 nouvelle'),
+                $this->anything(),
             );
 
         $this->makeHandler()->__invoke(
             $this->makeMessage(openUncoveredIds: [101]) // 101 selected, 102 not
-        );
-    }
-
-    // ── Change summary emails ─────────────────────────────────────────────────
-
-    /**
-     * When sendChangeSummary = false, diffService->diff() must never be called
-     * and no changeSummary email must be dispatched.
-     */
-    public function test_change_summary_not_sent_when_flag_is_false(): void
-    {
-        $this->diffService->expects($this->never())->method('diff');
-
-        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
-        $instr   = $this->makeUser('instr@test.com', ['ROLE_INSTRUMENTIST'], 2);
-        $mgr     = $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99);
-        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
-
-        $this->em->method('find')
-            ->willReturnCallback(fn ($class, $id) => match (true) {
-                $class === User::class && $id === 99 => $mgr,
-                $class === User::class && $id === 1  => $surgeon,
-                $class === User::class && $id === 2  => $instr,
-                default => null,
-            });
-
-        $qb = $this->createMock(QueryBuilder::class);
-        $qb->method('select')->willReturnSelf();
-        $qb->method('from')->willReturnSelf();
-        $qb->method('where')->willReturnSelf();
-        $qb->method('andWhere')->willReturnSelf();
-        $qb->method('setParameter')->willReturnSelf();
-        $q = $this->createMock(Query::class);
-        $q->method('getResult')->willReturn([$mission]);
-        $qb->method('getQuery')->willReturn($q);
-        $this->em->method('createQueryBuilder')->willReturn($qb);
-
-        $this->em->method('createQuery')->willReturnCallback(function (): AbstractQuery {
-            $q = $this->createMock(Query::class);
-            $q->method('setParameter')->willReturnSelf();
-            $q->method('getResult')->willReturn([]);
-            return $q;
-        });
-
-        // sendChangeSummary = false (default)
-        $this->makeHandler()->__invoke($this->makeMessage(sendChangeSummary: false));
-
-        $summaryEmails = array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage
-                && str_contains($m->htmlTemplate, 'change_summary'),
-        );
-        $this->assertEmpty($summaryEmails, 'No changeSummary emails when flag is false.');
-    }
-
-    /**
-     * When the diff is empty (no changes vs previous version), no changeSummary email must be sent.
-     */
-    public function test_change_summary_not_sent_when_diff_is_empty(): void
-    {
-        $version = new PlanningVersion();
-        $version->setPeriodStart(new \DateTimeImmutable('2026-03-23'));
-        $version->setPeriodEnd(new \DateTimeImmutable('2026-03-27'));
-        $version->setGeneratedBy($this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99));
-        (new \ReflectionProperty(PlanningVersion::class, 'id'))->setValue($version, 7);
-
-        $this->diffService->method('diff')->willReturn(['added' => [], 'removed' => [], 'modified' => []]);
-
-        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
-        $instr   = $this->makeUser('instr@test.com', ['ROLE_INSTRUMENTIST'], 2);
-        $mgr     = $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99);
-        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
-
-        $this->em->method('find')
-            ->willReturnCallback(fn ($class, $id) => match (true) {
-                $class === PlanningVersion::class && $id === 7 => $version,
-                $class === User::class && $id === 99 => $mgr,
-                $class === User::class && $id === 1  => $surgeon,
-                $class === User::class && $id === 2  => $instr,
-                default => null,
-            });
-
-        $qb = $this->createMock(QueryBuilder::class);
-        $qb->method('select')->willReturnSelf();
-        $qb->method('from')->willReturnSelf();
-        $qb->method('where')->willReturnSelf();
-        $qb->method('andWhere')->willReturnSelf();
-        $qb->method('setParameter')->willReturnSelf();
-        $q = $this->createMock(Query::class);
-        $q->method('getResult')->willReturn([$mission]);
-        $qb->method('getQuery')->willReturn($q);
-        $this->em->method('createQueryBuilder')->willReturn($qb);
-
-        $this->em->method('createQuery')->willReturnCallback(function (): AbstractQuery {
-            $q = $this->createMock(Query::class);
-            $q->method('setParameter')->willReturnSelf();
-            $q->method('getResult')->willReturn([]);
-            return $q;
-        });
-
-        $this->makeHandler()->__invoke($this->makeMessage(sendChangeSummary: true, versionId: 7));
-
-        $summaryEmails = array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage
-                && str_contains($m->htmlTemplate, 'change_summary'),
-        );
-        $this->assertEmpty($summaryEmails, 'No changeSummary email when diff is empty.');
-    }
-
-    /**
-     * An affected instrumentist must receive a changeSummary email when the diff concerns them.
-     */
-    public function test_change_summary_email_sent_to_affected_instrumentist(): void
-    {
-        $version = new PlanningVersion();
-        $version->setPeriodStart(new \DateTimeImmutable('2026-03-23'));
-        $version->setPeriodEnd(new \DateTimeImmutable('2026-03-27'));
-        $version->setGeneratedBy($this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99));
-        (new \ReflectionProperty(PlanningVersion::class, 'id'))->setValue($version, 7);
-
-        // Diff: instr (id=2) has a new added mission
-        $this->diffService->method('diff')->willReturn([
-            'added' => [[
-                'date' => '2026-03-24', 'period' => 'AM',
-                'startAt' => '08:00', 'endAt' => '13:00',
-                'missionType' => 'BLOCK',
-                'surgeonId' => 1, 'surgeonName' => 'Jean Dupont',
-                'instrumentistId' => 2, 'instrumentistName' => 'Test User',
-                'siteName' => 'Alpha',
-            ]],
-            'removed'  => [],
-            'modified' => [],
-        ]);
-
-        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
-        $instr   = $this->makeUser('instr@test.com', ['ROLE_INSTRUMENTIST'], 2);
-        $mgr     = $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99);
-        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
-
-        $this->em->method('find')
-            ->willReturnCallback(fn ($class, $id) => match (true) {
-                $class === PlanningVersion::class && $id === 7 => $version,
-                $class === User::class && $id === 99 => $mgr,
-                $class === User::class && $id === 1  => $surgeon,
-                $class === User::class && $id === 2  => $instr,
-                default => null,
-            });
-
-        $qb = $this->createMock(QueryBuilder::class);
-        $qb->method('select')->willReturnSelf();
-        $qb->method('from')->willReturnSelf();
-        $qb->method('where')->willReturnSelf();
-        $qb->method('andWhere')->willReturnSelf();
-        $qb->method('setParameter')->willReturnSelf();
-        $q = $this->createMock(Query::class);
-        $q->method('getResult')->willReturn([$mission]);
-        $qb->method('getQuery')->willReturn($q);
-        $this->em->method('createQueryBuilder')->willReturn($qb);
-
-        $this->em->method('createQuery')->willReturnCallback(function (): AbstractQuery {
-            $q = $this->createMock(Query::class);
-            $q->method('setParameter')->willReturnSelf();
-            $q->method('getResult')->willReturn([]);
-            return $q;
-        });
-
-        $this->makeHandler()->__invoke($this->makeMessage(sendChangeSummary: true, versionId: 7));
-
-        $summaryToInstr = array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage
-                && $m->to === 'instr@test.com'
-                && $m->htmlTemplate === 'emails/planning_change_summary_instrumentist.html.twig',
-        );
-        $this->assertCount(1, $summaryToInstr,
-            'Affected instrumentist must receive exactly one changeSummary email.'
-        );
-    }
-
-    /**
-     * When there are uncovered pool missions, surgeons must receive a changeSummary email
-     * with the global PDF attached.
-     */
-    public function test_change_summary_surgeon_email_has_global_pdf_when_uncovered_slots_exist(): void
-    {
-        $version = new PlanningVersion();
-        $version->setPeriodStart(new \DateTimeImmutable('2026-03-23'));
-        $version->setPeriodEnd(new \DateTimeImmutable('2026-03-27'));
-        $version->setGeneratedBy($this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99));
-        (new \ReflectionProperty(PlanningVersion::class, 'id'))->setValue($version, 7);
-
-        // Non-empty diff (so changeSummary is sent)
-        $this->diffService->method('diff')->willReturn([
-            'added' => [[
-                'date' => '2026-03-24', 'period' => 'AM',
-                'startAt' => '08:00', 'endAt' => '13:00',
-                'missionType' => 'BLOCK',
-                'surgeonId' => 1, 'surgeonName' => 'Jean Dupont',
-                'instrumentistId' => null, 'instrumentistName' => null,
-                'siteName' => 'Alpha',
-            ]],
-            'removed'  => [],
-            'modified' => [],
-        ]);
-
-        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
-        $mgr     = $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99);
-
-        // Pool mission (no instrumentist) with id=101
-        $poolMission = $this->makeMission($surgeon, null, MissionStatus::OPEN);
-        (new \ReflectionProperty(Mission::class, 'id'))->setValue($poolMission, 101);
-
-        $this->em->method('find')
-            ->willReturnCallback(fn ($class, $id) => match (true) {
-                $class === PlanningVersion::class && $id === 7 => $version,
-                $class === User::class && $id === 99 => $mgr,
-                $class === User::class && $id === 1  => $surgeon,
-                default => null,
-            });
-
-        $qb = $this->createMock(QueryBuilder::class);
-        $qb->method('select')->willReturnSelf();
-        $qb->method('from')->willReturnSelf();
-        $qb->method('where')->willReturnSelf();
-        $qb->method('andWhere')->willReturnSelf();
-        $qb->method('setParameter')->willReturnSelf();
-        $q = $this->createMock(Query::class);
-        $q->method('getResult')->willReturn([$poolMission]);
-        $qb->method('getQuery')->willReturn($q);
-        $this->em->method('createQueryBuilder')->willReturn($qb);
-
-        $this->em->method('createQuery')->willReturnCallback(function (): AbstractQuery {
-            $q = $this->createMock(Query::class);
-            $q->method('setParameter')->willReturnSelf();
-            $q->method('getResult')->willReturn([]);
-            return $q;
-        });
-
-        $this->makeHandler()->__invoke($this->makeMessage(
-            sendChangeSummary: true,
-            versionId: 7,
-            openUncoveredIds: [101],
-        ));
-
-        $surgeonSummary = array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage
-                && $m->to === 'surgeon@test.com'
-                && $m->htmlTemplate === 'emails/planning_change_summary_surgeon.html.twig',
-        );
-        $this->assertCount(1, $surgeonSummary,
-            'Surgeon must receive exactly one changeSummary email when uncovered slots exist.'
-        );
-
-        /** @var SendBillingEmailMessage $msg */
-        $msg = array_values($surgeonSummary)[0];
-        $this->assertNotEmpty($msg->extraAttachments,
-            'Global PDF must be attached to surgeon changeSummary email.'
-        );
-    }
-
-    /**
-     * REGRESSION — chaque chirurgien ne doit recevoir que SES créneaux non couverts.
-     * Avant le fix, tous les chirurgiens recevaient la liste globale de tous les uncovered slots.
-     *
-     * Scénario : chirurgien A (id=1) a le slot 101, chirurgien B (id=3) a le slot 102.
-     * Email de A → uncovered contient uniquement 101.
-     * Email de B → uncovered contient uniquement 102.
-     */
-    public function test_change_summary_each_surgeon_receives_only_own_uncovered_slots(): void
-    {
-        $version = new PlanningVersion();
-        $version->setPeriodStart(new \DateTimeImmutable('2026-03-23'));
-        $version->setPeriodEnd(new \DateTimeImmutable('2026-03-27'));
-        $version->setGeneratedBy($this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99));
-        (new \ReflectionProperty(PlanningVersion::class, 'id'))->setValue($version, 7);
-
-        $this->diffService->method('diff')->willReturn([
-            'added'    => [['date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
-                            'missionType' => 'BLOCK', 'surgeonId' => 1, 'surgeonName' => 'A',
-                            'instrumentistId' => null, 'instrumentistName' => null, 'siteName' => 'Alpha']],
-            'removed'  => [],
-            'modified' => [],
-        ]);
-
-        $surgeonA = $this->makeUser('surgeon-a@test.com', ['ROLE_SURGEON'], 1);
-        $surgeonB = $this->makeUser('surgeon-b@test.com', ['ROLE_SURGEON'], 3);
-        $mgr      = $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99);
-
-        // Uncovered pool mission 101 belongs to surgeon A
-        $poolA = $this->makeMission($surgeonA, null, MissionStatus::OPEN);
-        (new \ReflectionProperty(Mission::class, 'id'))->setValue($poolA, 101);
-
-        // Uncovered pool mission 102 belongs to surgeon B
-        $poolB = $this->makeMission($surgeonB, null, MissionStatus::OPEN);
-        (new \ReflectionProperty(Mission::class, 'id'))->setValue($poolB, 102);
-
-        $this->em->method('find')
-            ->willReturnCallback(fn ($class, $id) => match (true) {
-                $class === PlanningVersion::class && $id === 7 => $version,
-                $class === User::class && $id === 99 => $mgr,
-                $class === User::class && $id === 1  => $surgeonA,
-                $class === User::class && $id === 3  => $surgeonB,
-                default => null,
-            });
-
-        $qb = $this->createMock(QueryBuilder::class);
-        $qb->method('select')->willReturnSelf();
-        $qb->method('from')->willReturnSelf();
-        $qb->method('where')->willReturnSelf();
-        $qb->method('andWhere')->willReturnSelf();
-        $qb->method('setParameter')->willReturnSelf();
-        $q = $this->createMock(Query::class);
-        $q->method('getResult')->willReturn([$poolA, $poolB]);
-        $qb->method('getQuery')->willReturn($q);
-        $this->em->method('createQueryBuilder')->willReturn($qb);
-
-        $this->em->method('createQuery')->willReturnCallback(function (): AbstractQuery {
-            $q = $this->createMock(Query::class);
-            $q->method('setParameter')->willReturnSelf();
-            $q->method('getResult')->willReturn([]);
-            return $q;
-        });
-
-        $this->makeHandler()->__invoke($this->makeMessage(
-            sendChangeSummary: true,
-            versionId: 7,
-            openUncoveredIds: [101, 102],
-        ));
-
-        // Surgeon A must receive exactly 1 summary email
-        $emailsA = array_values(array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage
-                && $m->to === 'surgeon-a@test.com'
-                && $m->htmlTemplate === 'emails/planning_change_summary_surgeon.html.twig',
-        ));
-        $this->assertCount(1, $emailsA, 'Surgeon A must receive exactly one changeSummary email.');
-
-        // Surgeon A's email must contain only slot 101 (date = 2026-03-24)
-        $uncoveredA = $emailsA[0]->context['uncovered'];
-        $this->assertCount(1, $uncoveredA,
-            'Surgeon A must receive only 1 uncovered slot (their own), not surgeon B\'s.'
-        );
-        $this->assertSame('2026-03-24', $uncoveredA[0]['date'],
-            'The uncovered slot in A\'s email must be their own mission 101.'
-        );
-
-        // Surgeon B must receive exactly 1 summary email
-        $emailsB = array_values(array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage
-                && $m->to === 'surgeon-b@test.com'
-                && $m->htmlTemplate === 'emails/planning_change_summary_surgeon.html.twig',
-        ));
-        $this->assertCount(1, $emailsB, 'Surgeon B must receive exactly one changeSummary email.');
-
-        // Surgeon B's email must contain only slot 102
-        $uncoveredB = $emailsB[0]->context['uncovered'];
-        $this->assertCount(1, $uncoveredB,
-            'Surgeon B must receive only 1 uncovered slot (their own), not surgeon A\'s.'
-        );
-    }
-
-    /**
-     * Un chirurgien sans créneau non couvert ne doit pas recevoir d'email summary.
-     *
-     * Scénario : chirurgien A (id=1) a une mission ASSIGNED (pas de poste non couvert).
-     * Chirurgien B (id=3) a un poste non couvert (id=102).
-     * → Seul B reçoit un email summary. A n'en reçoit pas.
-     */
-    public function test_change_summary_surgeon_without_uncovered_slot_gets_no_email(): void
-    {
-        $version = new PlanningVersion();
-        $version->setPeriodStart(new \DateTimeImmutable('2026-03-23'));
-        $version->setPeriodEnd(new \DateTimeImmutable('2026-03-27'));
-        $version->setGeneratedBy($this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99));
-        (new \ReflectionProperty(PlanningVersion::class, 'id'))->setValue($version, 7);
-
-        $this->diffService->method('diff')->willReturn([
-            'added'    => [['date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
-                            'missionType' => 'BLOCK', 'surgeonId' => 3, 'surgeonName' => 'B',
-                            'instrumentistId' => null, 'instrumentistName' => null, 'siteName' => 'Alpha']],
-            'removed'  => [],
-            'modified' => [],
-        ]);
-
-        $surgeonA = $this->makeUser('surgeon-a@test.com', ['ROLE_SURGEON'], 1);
-        $surgeonB = $this->makeUser('surgeon-b@test.com', ['ROLE_SURGEON'], 3);
-        $instr    = $this->makeUser('instr@test.com', ['ROLE_INSTRUMENTIST'], 2);
-        $mgr      = $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99);
-
-        // Surgeon A has a covered (ASSIGNED) mission — no uncovered slot
-        $assignedA = $this->makeMission($surgeonA, $instr, MissionStatus::ASSIGNED);
-        (new \ReflectionProperty(Mission::class, 'id'))->setValue($assignedA, 100);
-
-        // Surgeon B has an uncovered pool mission
-        $poolB = $this->makeMission($surgeonB, null, MissionStatus::OPEN);
-        (new \ReflectionProperty(Mission::class, 'id'))->setValue($poolB, 102);
-
-        $this->em->method('find')
-            ->willReturnCallback(fn ($class, $id) => match (true) {
-                $class === PlanningVersion::class && $id === 7 => $version,
-                $class === User::class && $id === 99 => $mgr,
-                $class === User::class && $id === 1  => $surgeonA,
-                $class === User::class && $id === 2  => $instr,
-                $class === User::class && $id === 3  => $surgeonB,
-                default => null,
-            });
-
-        $qb = $this->createMock(QueryBuilder::class);
-        $qb->method('select')->willReturnSelf();
-        $qb->method('from')->willReturnSelf();
-        $qb->method('where')->willReturnSelf();
-        $qb->method('andWhere')->willReturnSelf();
-        $qb->method('setParameter')->willReturnSelf();
-        $q = $this->createMock(Query::class);
-        $q->method('getResult')->willReturn([$assignedA, $poolB]);
-        $qb->method('getQuery')->willReturn($q);
-        $this->em->method('createQueryBuilder')->willReturn($qb);
-
-        $this->em->method('createQuery')->willReturnCallback(function (): AbstractQuery {
-            $q = $this->createMock(Query::class);
-            $q->method('setParameter')->willReturnSelf();
-            $q->method('getResult')->willReturn([]);
-            return $q;
-        });
-
-        $this->makeHandler()->__invoke($this->makeMessage(
-            sendChangeSummary: true,
-            versionId: 7,
-            openUncoveredIds: [102], // only surgeon B's mission
-        ));
-
-        // Surgeon A must NOT receive a summary email (no uncovered slot for them)
-        $emailsA = array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage
-                && $m->to === 'surgeon-a@test.com'
-                && $m->htmlTemplate === 'emails/planning_change_summary_surgeon.html.twig',
-        );
-        $this->assertEmpty($emailsA,
-            'Surgeon A has no uncovered slot — must not receive a changeSummary email.'
-        );
-
-        // Surgeon B must receive exactly 1 summary email
-        $emailsB = array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage
-                && $m->to === 'surgeon-b@test.com'
-                && $m->htmlTemplate === 'emails/planning_change_summary_surgeon.html.twig',
-        );
-        $this->assertCount(1, $emailsB,
-            'Surgeon B has an uncovered slot — must receive exactly one changeSummary email.'
         );
     }
 
@@ -959,6 +540,578 @@ class PlanningDeployPdfsHandlerTest extends TestCase
         $this->assertNull($deployment->getCompletedAt(), 'completedAt must stay null on failure');
     }
 
+    // ── Batch 15C — Notification preference gating ───────────────────────────
+
+    /**
+     * When the resolver returns email=false for PLANNING_DEPLOYED_INSTRUMENTIST,
+     * the handler must not dispatch a planning email to the instrumentist.
+     */
+    public function test_instrumentist_email_skipped_when_email_disabled(): void
+    {
+        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
+        $this->preferenceResolver->method('resolve')
+            ->willReturnCallback(function (User $user, NotificationType $type): NotificationChannels {
+                if ($type === NotificationType::PLANNING_DEPLOYED_INSTRUMENTIST) {
+                    return new NotificationChannels(inApp: true, email: false, push: false);
+                }
+                return new NotificationChannels(inApp: true, email: true, push: false);
+            });
+
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
+        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                $class === User::class && $id === 2  => $instr,
+                default => null,
+            });
+        $this->setupMissionsQuery([$mission]);
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $emailsToInstr = array_filter(
+            $this->dispatched,
+            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com',
+        );
+        $this->assertEmpty($emailsToInstr,
+            'Instrumentist email must be suppressed when resolver returns email=false.'
+        );
+    }
+
+    /**
+     * The instrumentist email context must include missionCount.
+     */
+    public function test_instrumentist_email_context_includes_mission_count(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
+        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                $class === User::class && $id === 2  => $instr,
+                default => null,
+            });
+        $this->setupMissionsQuery([$mission]);
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $instrEmails = array_values(array_filter(
+            $this->dispatched,
+            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com',
+        ));
+        $this->assertCount(1, $instrEmails);
+        $this->assertSame(1, $instrEmails[0]->context['missionCount']);
+    }
+
+    /**
+     * When the resolver returns inApp=true for PLANNING_DEPLOYED_INSTRUMENTIST,
+     * the handler must persist a NotificationEvent with eventType=PLANNING_DEPLOYED_INSTRUMENTIST.
+     */
+    public function test_instrumentist_notification_event_created_when_inapp_enabled(): void
+    {
+        $persisted = [];
+        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
+            $persisted[] = $entity;
+        });
+
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
+        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                $class === User::class && $id === 2  => $instr,
+                default => null,
+            });
+        $this->setupMissionsQuery([$mission]);
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $instrEvents = array_values(array_filter(
+            $persisted,
+            fn ($e) => $e instanceof NotificationEvent
+                && $e->getEventType() === NotificationType::PLANNING_DEPLOYED_INSTRUMENTIST->value,
+        ));
+        $this->assertCount(1, $instrEvents,
+            'Handler must persist one PLANNING_DEPLOYED_INSTRUMENTIST event for the instrumentist.'
+        );
+        $this->assertSame($instr, $instrEvents[0]->getUser());
+        $payload = $instrEvents[0]->getPayload();
+        $this->assertArrayHasKey('missionCount', $payload);
+        $this->assertSame(1, $payload['missionCount']);
+    }
+
+    /**
+     * When the resolver returns inApp=false for PLANNING_DEPLOYED_INSTRUMENTIST,
+     * the handler must NOT persist a NotificationEvent of that type.
+     */
+    public function test_instrumentist_notification_event_not_created_when_inapp_disabled(): void
+    {
+        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
+        $this->preferenceResolver->method('resolve')
+            ->willReturn(new NotificationChannels(inApp: false, email: false, push: false));
+
+        $persisted = [];
+        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
+            $persisted[] = $entity;
+        });
+
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
+        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                $class === User::class && $id === 2  => $instr,
+                default => null,
+            });
+        $this->setupMissionsQuery([$mission]);
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $instrEvents = array_filter(
+            $persisted,
+            fn ($e) => $e instanceof NotificationEvent
+                && $e->getEventType() === NotificationType::PLANNING_DEPLOYED_INSTRUMENTIST->value,
+        );
+        $this->assertEmpty($instrEvents,
+            'Handler must not persist PLANNING_DEPLOYED_INSTRUMENTIST when inApp=false.'
+        );
+    }
+
+    /**
+     * REGRESSION: the surgeon EMAIL context must contain aggregate counts
+     * (total/covered/uncovered) — the old per-post posts[] table was removed from
+     * the email (it remains only in the in-app notification payload, see below).
+     */
+    public function test_surgeon_email_context_has_aggregate_counts_not_posts(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
+        $covered = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+        $uncovered = $this->makeMission($surgeon, null, MissionStatus::OPEN);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                $class === User::class && $id === 2  => $instr,
+                default => null,
+            });
+        $this->setupMissionsQuery([$covered, $uncovered]);
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $surgeonEmails = array_values(array_filter(
+            $this->dispatched,
+            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'surgeon@test.com'
+                && $m->htmlTemplate === 'emails/planning_surgeon.html.twig',
+        ));
+        $this->assertCount(1, $surgeonEmails, 'Surgeon must receive exactly one deploy email.');
+
+        $context = $surgeonEmails[0]->context;
+        $this->assertArrayNotHasKey('posts', $context,
+            'Surgeon email context must no longer expose the per-post table.'
+        );
+        $this->assertSame(2, $context['totalCount']);
+        $this->assertSame(1, $context['coveredCount']);
+        $this->assertSame(1, $context['uncoveredCount']);
+    }
+
+    /**
+     * When resolver returns inApp=true for PLANNING_DEPLOYED_SURGEON, the handler
+     * must persist a NotificationEvent with the posts[] payload (in-app only — unchanged).
+     */
+    public function test_surgeon_notification_event_created_with_posts(): void
+    {
+        $persisted = [];
+        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
+            $persisted[] = $entity;
+        });
+
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
+        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                $class === User::class && $id === 2  => $instr,
+                default => null,
+            });
+        $this->setupMissionsQuery([$mission]);
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $surgeonEvents = array_values(array_filter(
+            $persisted,
+            fn ($e) => $e instanceof NotificationEvent
+                && $e->getEventType() === NotificationType::PLANNING_DEPLOYED_SURGEON->value,
+        ));
+        $this->assertCount(1, $surgeonEvents,
+            'Handler must persist one PLANNING_DEPLOYED_SURGEON event per surgeon.'
+        );
+        $this->assertSame($surgeon, $surgeonEvents[0]->getUser());
+        $payload = $surgeonEvents[0]->getPayload();
+        $this->assertArrayHasKey('posts', $payload);
+        $this->assertIsArray($payload['posts']);
+        $this->assertCount(1, $payload['posts']);
+    }
+
+    /**
+     * The in-app notification's posts[] must still carry the per-mission
+     * covered/uncoveredReasonLabel detail — unchanged, only the email was simplified.
+     */
+    public function test_surgeon_posts_include_uncovered_reason_for_open_mission(): void
+    {
+        $this->uncoveredReasonResolver = $this->createMock(UncoveredReasonResolver::class);
+        $this->uncoveredReasonResolver->method('resolveForMission')
+            ->willReturn(UncoveredReason::ALL_ABSENT);
+
+        $persisted = [];
+        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
+            $persisted[] = $entity;
+        });
+
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $mission = $this->makeMission($surgeon, null, MissionStatus::OPEN);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                default => null,
+            });
+        $this->setupMissionsQuery([$mission]);
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $surgeonEvents = array_values(array_filter(
+            $persisted,
+            fn ($e) => $e instanceof NotificationEvent
+                && $e->getEventType() === NotificationType::PLANNING_DEPLOYED_SURGEON->value,
+        ));
+        $this->assertCount(1, $surgeonEvents);
+        $post = $surgeonEvents[0]->getPayload()['posts'][0];
+        $this->assertFalse($post['covered']);
+        $this->assertSame(UncoveredReason::ALL_ABSENT->label(), $post['uncoveredReasonLabel']);
+        $this->assertNull($post['instrumentistName']);
+    }
+
+    /**
+     * When resolver returns inApp=false for PLANNING_DEPLOYED_SURGEON, the handler
+     * must NOT persist a NotificationEvent of that type.
+     */
+    public function test_surgeon_notification_event_not_created_when_inapp_disabled(): void
+    {
+        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
+        $this->preferenceResolver->method('resolve')
+            ->willReturn(new NotificationChannels(inApp: false, email: false, push: false));
+
+        $persisted = [];
+        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
+            $persisted[] = $entity;
+        });
+
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $mission = $this->makeMission($surgeon, null, MissionStatus::OPEN);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                default => null,
+            });
+        $this->setupMissionsQuery([$mission]);
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $surgeonEvents = array_filter(
+            $persisted,
+            fn ($e) => $e instanceof NotificationEvent
+                && $e->getEventType() === NotificationType::PLANNING_DEPLOYED_SURGEON->value,
+        );
+        $this->assertEmpty($surgeonEvents,
+            'Handler must not persist PLANNING_DEPLOYED_SURGEON when inApp=false.'
+        );
+    }
+
+    /**
+     * When findEligible returns a site instrumentist and inApp=true for OPEN_MISSION_AVAILABLE,
+     * the handler must persist a NotificationEvent for that instrumentist.
+     */
+    public function test_pool_notification_event_created_per_site_instrumentist(): void
+    {
+        $siteInstrumentist = $this->makeUser('pool-instr@test.com', ['ROLE_INSTRUMENTIST'], 5);
+
+        $persisted = [];
+        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
+            $persisted[] = $entity;
+        });
+
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $mgr     = $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99);
+
+        $site = new Hospital();
+        $site->setName('Alpha');
+        (new \ReflectionProperty(Hospital::class, 'id'))->setValue($site, 10);
+
+        $mission = $this->makeMission($surgeon, null, MissionStatus::OPEN);
+        $mission->setSite($site);
+        (new \ReflectionProperty(Mission::class, 'id'))->setValue($mission, 101);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $mgr,
+                $class === User::class && $id === 1  => $surgeon,
+                default => null,
+            });
+
+        $qb = $this->createMock(QueryBuilder::class);
+        $qb->method('select')->willReturnSelf();
+        $qb->method('from')->willReturnSelf();
+        $qb->method('where')->willReturnSelf();
+        $qb->method('andWhere')->willReturnSelf();
+        $qb->method('setParameter')->willReturnSelf();
+        $q = $this->createMock(Query::class);
+        $q->method('getResult')->willReturn([$mission]);
+        $qb->method('getQuery')->willReturn($q);
+        $this->em->method('createQueryBuilder')->willReturn($qb);
+
+        $this->em->method('createQuery')->willReturnCallback(function (): AbstractQuery {
+            $q = $this->createMock(Query::class);
+            $q->method('setParameter')->willReturnSelf();
+            $q->method('getResult')->willReturn([]);
+            return $q;
+        });
+
+        // Re-create the eligibility service mock to override setUp() default ([])
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('findEligible')
+            ->willReturn([10 => [$siteInstrumentist]]);
+
+        $this->makeHandler()->__invoke(
+            $this->makeMessage(openUncoveredIds: [101])
+        );
+
+        $poolEvents = array_values(array_filter(
+            $persisted,
+            fn ($e) => $e instanceof NotificationEvent
+                && $e->getEventType() === NotificationType::OPEN_MISSION_AVAILABLE->value,
+        ));
+        $this->assertCount(1, $poolEvents,
+            'Handler must persist one OPEN_MISSION_AVAILABLE event per eligible site instrumentist.'
+        );
+        $this->assertSame($siteInstrumentist, $poolEvents[0]->getUser());
+        $payload = $poolEvents[0]->getPayload();
+        $this->assertSame(1, $payload['missionCount']);
+    }
+
+    /**
+     * When resolver returns inApp=false for OPEN_MISSION_AVAILABLE, no NotificationEvent
+     * of that type must be created.
+     */
+    public function test_pool_notification_event_not_created_when_inapp_disabled(): void
+    {
+        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
+        $this->preferenceResolver->method('resolve')
+            ->willReturn(new NotificationChannels(inApp: false, email: false, push: false));
+
+        $siteInstrumentist = $this->makeUser('pool-instr@test.com', ['ROLE_INSTRUMENTIST'], 5);
+
+        $persisted = [];
+        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
+            $persisted[] = $entity;
+        });
+
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $mgr     = $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99);
+
+        $site = new Hospital();
+        $site->setName('Alpha');
+        (new \ReflectionProperty(Hospital::class, 'id'))->setValue($site, 10);
+
+        $mission = $this->makeMission($surgeon, null, MissionStatus::OPEN);
+        $mission->setSite($site);
+        (new \ReflectionProperty(Mission::class, 'id'))->setValue($mission, 101);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $mgr,
+                $class === User::class && $id === 1  => $surgeon,
+                default => null,
+            });
+
+        $qb = $this->createMock(QueryBuilder::class);
+        $qb->method('select')->willReturnSelf();
+        $qb->method('from')->willReturnSelf();
+        $qb->method('where')->willReturnSelf();
+        $qb->method('andWhere')->willReturnSelf();
+        $qb->method('setParameter')->willReturnSelf();
+        $q = $this->createMock(Query::class);
+        $q->method('getResult')->willReturn([$mission]);
+        $qb->method('getQuery')->willReturn($q);
+        $this->em->method('createQueryBuilder')->willReturn($qb);
+
+        $this->em->method('createQuery')->willReturnCallback(function (): AbstractQuery {
+            $q = $this->createMock(Query::class);
+            $q->method('setParameter')->willReturnSelf();
+            $q->method('getResult')->willReturn([]);
+            return $q;
+        });
+
+        // Re-create the eligibility service mock to override setUp() default ([])
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('findEligible')
+            ->willReturn([10 => [$siteInstrumentist]]);
+
+        $this->makeHandler()->__invoke(
+            $this->makeMessage(openUncoveredIds: [101])
+        );
+
+        $poolEvents = array_filter(
+            $persisted,
+            fn ($e) => $e instanceof NotificationEvent
+                && $e->getEventType() === NotificationType::OPEN_MISSION_AVAILABLE->value,
+        );
+        $this->assertEmpty($poolEvents,
+            'No OPEN_MISSION_AVAILABLE event must be created when inApp=false.'
+        );
+    }
+
+    /**
+     * On successful deploy, a PLANNING_DEPLOYED_MANAGER event must be persisted
+     * for the deploying user, with missionCount, assignedCount, and openPoolCount.
+     */
+    public function test_manager_notification_event_created_with_summary(): void
+    {
+        $persisted = [];
+        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
+            $persisted[] = $entity;
+        });
+
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr    = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
+        $mgr      = $this->makeUser('mgr@test.com',     ['ROLE_MANAGER'], 99);
+
+        $assigned = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+        $open     = $this->makeMission($surgeon, null,  MissionStatus::OPEN);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $mgr,
+                $class === User::class && $id === 1  => $surgeon,
+                $class === User::class && $id === 2  => $instr,
+                default => null,
+            });
+        $this->setupMissionsQuery([$assigned, $open]);
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $mgrEvents = array_values(array_filter(
+            $persisted,
+            fn ($e) => $e instanceof NotificationEvent
+                && $e->getEventType() === NotificationType::PLANNING_DEPLOYED_MANAGER->value,
+        ));
+        $this->assertCount(1, $mgrEvents,
+            'Handler must persist one PLANNING_DEPLOYED_MANAGER event for the deploying manager.'
+        );
+        $this->assertSame($mgr, $mgrEvents[0]->getUser());
+        $payload = $mgrEvents[0]->getPayload();
+        $this->assertSame(2, $payload['missionCount']);
+        $this->assertSame(1, $payload['assignedCount']);
+        $this->assertSame(1, $payload['openPoolCount']);
+        $this->assertArrayHasKey('periodLabel', $payload);
+    }
+
+    /**
+     * When resolver returns inApp=false for PLANNING_DEPLOYED_MANAGER, no event is created.
+     */
+    public function test_manager_notification_event_not_created_when_inapp_disabled(): void
+    {
+        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
+        $this->preferenceResolver->method('resolve')
+            ->willReturn(new NotificationChannels(inApp: false, email: false, push: false));
+
+        $persisted = [];
+        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
+            $persisted[] = $entity;
+        });
+
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $mission = $this->makeMission($surgeon, null, MissionStatus::OPEN);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                default => null,
+            });
+        $this->setupMissionsQuery([$mission]);
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $mgrEvents = array_filter(
+            $persisted,
+            fn ($e) => $e instanceof NotificationEvent
+                && $e->getEventType() === NotificationType::PLANNING_DEPLOYED_MANAGER->value,
+        );
+        $this->assertEmpty($mgrEvents,
+            'No PLANNING_DEPLOYED_MANAGER event must be created when inApp=false.'
+        );
+    }
+
+    /**
+     * NEW (email policy redesign): the manager must also receive a deployment
+     * confirmation EMAIL with the global PDF attached, gated the same way as
+     * every other deploy email (email channel + a valid recipient address).
+     */
+    public function test_manager_receives_deployment_confirmation_email_with_global_pdf(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
+        $mgr     = $this->makeUser('mgr@test.com',     ['ROLE_MANAGER'], 99);
+
+        $assigned = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+        $open     = $this->makeMission($surgeon, null,  MissionStatus::OPEN);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $mgr,
+                $class === User::class && $id === 1  => $surgeon,
+                $class === User::class && $id === 2  => $instr,
+                default => null,
+            });
+        $this->setupMissionsQuery([$assigned, $open]);
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $mgrEmails = array_values(array_filter(
+            $this->dispatched,
+            fn ($m) => $m instanceof SendBillingEmailMessage
+                && $m->to === 'mgr@test.com'
+                && $m->htmlTemplate === 'emails/planning_manager.html.twig',
+        ));
+        $this->assertCount(1, $mgrEmails, 'Manager must receive exactly one deployment confirmation email.');
+
+        $msg = $mgrEmails[0];
+        $this->assertSame(2, $msg->context['missionCount']);
+        $this->assertSame(1, $msg->context['assignedCount']);
+        $this->assertSame(1, $msg->context['openPoolCount']);
+        $this->assertNotEmpty($msg->attachmentBase64, 'The global PDF must be attached to the manager email.');
+    }
+
     /**
      * If openUncoveredIds is empty, planningNewOpenMissionsNotifySite must never be called.
      */
@@ -993,10 +1146,77 @@ class PlanningDeployPdfsHandlerTest extends TestCase
             return $q;
         });
 
-        $this->notif->expects($this->never())
-            ->method('planningNewOpenMissionsNotifySite');
+        $this->notif->expects($this->never())->method('planningNewOpenMissionsNotifySite');
+        $this->webPush->expects($this->never())->method('sendToUsers');
 
-        // No IDs selected → no pool notification
+        // No IDs selected → no pool notification (sendPoolNotifications exits early)
         $this->makeHandler()->__invoke($this->makeMessage(openUncoveredIds: []));
+    }
+
+    // ── Email policy redesign — regression guarantees ────────────────────────
+
+    /**
+     * REGRESSION: exactly one deploy email per surgeon and one per instrumentist —
+     * no matter how many missions they have. This is the core invariant the
+     * duplicate-email bug report was about.
+     */
+    public function test_exactly_one_email_per_surgeon_and_per_instrumentist(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
+        $m1 = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+        $m2 = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+        $m2->setStartAt(new \DateTimeImmutable('2026-03-25 08:00:00'));
+        $m2->setEndAt(new \DateTimeImmutable('2026-03-25 13:00:00'));
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                $class === User::class && $id === 2  => $instr,
+                default => null,
+            });
+        $this->setupMissionsQuery([$m1, $m2]);
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $toSurgeon = array_filter($this->dispatched,
+            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'surgeon@test.com');
+        $toInstr = array_filter($this->dispatched,
+            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com');
+
+        $this->assertCount(1, $toSurgeon, 'Surgeon must receive exactly ONE email per deploy.');
+        $this->assertCount(1, $toInstr, 'Instrumentist must receive exactly ONE email per deploy.');
+    }
+
+    /**
+     * REGRESSION: no "uncovered posts" / change-summary email is ever dispatched
+     * during deployment — that capability moved out of this handler entirely.
+     */
+    public function test_no_change_summary_email_ever_sent_during_deploy(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $mission = $this->makeMission($surgeon, null, MissionStatus::OPEN);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                default => null,
+            });
+        $this->setupMissionsQuery([$mission]);
+
+        $this->makeHandler()->__invoke(
+            $this->makeMessage(openUncoveredIds: [$mission->getId()])
+        );
+
+        $summaryEmails = array_filter(
+            $this->dispatched,
+            fn ($m) => $m instanceof SendBillingEmailMessage
+                && str_contains($m->htmlTemplate, 'change_summary'),
+        );
+        $this->assertEmpty($summaryEmails,
+            'No change-summary email must ever be dispatched by the deploy handler.'
+        );
     }
 }

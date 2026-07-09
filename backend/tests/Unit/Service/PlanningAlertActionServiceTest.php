@@ -11,6 +11,7 @@ use App\Enum\MissionType;
 use App\Enum\PlanningAlertStatus;
 use App\Enum\PlanningAlertType;
 use App\Enum\SchedulePrecision;
+use App\Service\MissionPostDeployService;
 use App\Service\NotificationService;
 use App\Service\PlanningAlertActionService;
 use App\Service\PlanningAlertService;
@@ -25,9 +26,10 @@ use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 class PlanningAlertActionServiceTest extends TestCase
 {
-    private EntityManagerInterface&MockObject $em;
-    private PlanningAlertService&MockObject   $alertService;
-    private NotificationService&MockObject    $notificationService;
+    private EntityManagerInterface&MockObject  $em;
+    private PlanningAlertService&MockObject    $alertService;
+    private NotificationService&MockObject     $notificationService;
+    private MissionPostDeployService&MockObject $deployService;
 
     /** Toggle which eligibility check fails for the "instrumentist" query results. */
     private bool $affiliated   = true;
@@ -43,6 +45,7 @@ class PlanningAlertActionServiceTest extends TestCase
         $this->em                  = $this->createMock(EntityManagerInterface::class);
         $this->alertService        = $this->createMock(PlanningAlertService::class);
         $this->notificationService = $this->createMock(NotificationService::class);
+        $this->deployService       = $this->createMock(MissionPostDeployService::class);
         $this->affiliated    = true;
         $this->absent        = false;
         $this->conflicting   = false;
@@ -76,7 +79,7 @@ class PlanningAlertActionServiceTest extends TestCase
 
     private function makeService(): PlanningAlertActionService
     {
-        return new PlanningAlertActionService($this->em, $this->alertService, $this->notificationService);
+        return new PlanningAlertActionService($this->em, $this->alertService, $this->notificationService, $this->deployService);
     }
 
     private function makeUser(string $email, bool $active = true, array $roles = ['ROLE_INSTRUMENTIST']): User
@@ -129,43 +132,48 @@ class PlanningAlertActionServiceTest extends TestCase
 
     // ── Reassign: success ─────────────────────────────────────────────────────
 
-    public function test_reassign_success_sets_instrumentist_and_assigns_open_mission(): void
+    public function test_reassign_delegates_to_deploy_service_for_open_mission(): void
     {
         $site    = $this->makeSite();
         $mission = $this->makeMission($site, MissionStatus::OPEN);
         $alert   = $this->makeAlert($mission);
         $newInst = $this->makeUser('new-inst@test.com');
+        $actor   = $this->makeUser('manager@test.com', true, ['ROLE_MANAGER']);
         $this->foundUsers[$newInst->getId()] = $newInst;
 
-        $this->alertService->expects($this->once())->method('resolve')->with($alert, $this->anything(), $this->isType('string'));
+        $this->deployService->expects($this->once())->method('assign')
+            ->with($mission, $actor, $newInst->getId());
+
+        $this->alertService->expects($this->once())->method('resolve')
+            ->with($alert, $this->anything(), $this->isType('string'));
+
         $this->notificationService->expects($this->once())
             ->method('planningAlertReassignedNotify')
             ->with($mission, null, $newInst);
 
-        $result = $this->makeService()->reassign($alert, $newInst->getId(), $this->makeUser('manager@test.com', true, ['ROLE_MANAGER']), null);
+        $result = $this->makeService()->reassign($alert, $newInst->getId(), $actor, null);
 
-        $this->assertSame($newInst, $mission->getInstrumentist());
-        $this->assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
         $this->assertSame($mission, $result['mission']);
     }
 
-    public function test_reassign_keeps_assigned_status_when_already_assigned(): void
+    public function test_reassign_delegates_to_deploy_service_for_assigned_mission(): void
     {
         $site    = $this->makeSite();
         $oldInst = $this->makeUser('old-inst@test.com');
         $mission = $this->makeMission($site, MissionStatus::ASSIGNED, $oldInst);
         $alert   = $this->makeAlert($mission);
         $newInst = $this->makeUser('new-inst@test.com');
+        $actor   = $this->makeUser('manager@test.com', true, ['ROLE_MANAGER']);
         $this->foundUsers[$newInst->getId()] = $newInst;
+
+        $this->deployService->expects($this->once())->method('assign')
+            ->with($mission, $actor, $newInst->getId());
 
         $this->notificationService->expects($this->once())
             ->method('planningAlertReassignedNotify')
             ->with($mission, $oldInst, $newInst);
 
-        $this->makeService()->reassign($alert, $newInst->getId(), null, 'note');
-
-        $this->assertSame($newInst, $mission->getInstrumentist());
-        $this->assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
+        $this->makeService()->reassign($alert, $newInst->getId(), $actor, 'note');
     }
 
     public function test_reassign_does_not_dispatch_the_original_alert_raised_notification_again(): void
@@ -177,12 +185,13 @@ class PlanningAlertActionServiceTest extends TestCase
         $mission = $this->makeMission($site, MissionStatus::OPEN);
         $alert   = $this->makeAlert($mission);
         $newInst = $this->makeUser('new-inst@test.com');
+        $actor   = $this->makeUser('manager@test.com', true, ['ROLE_MANAGER']);
         $this->foundUsers[$newInst->getId()] = $newInst;
 
         $this->notificationService->expects($this->never())->method('planningAlertRaisedNotifyInApp');
         $this->notificationService->expects($this->once())->method('planningAlertReassignedNotify');
 
-        $this->makeService()->reassign($alert, $newInst->getId(), null, null);
+        $this->makeService()->reassign($alert, $newInst->getId(), $actor, null);
     }
 
     public function test_reassign_uses_provided_note(): void
@@ -191,11 +200,30 @@ class PlanningAlertActionServiceTest extends TestCase
         $mission = $this->makeMission($site, MissionStatus::OPEN);
         $alert   = $this->makeAlert($mission);
         $newInst = $this->makeUser('new-inst@test.com');
+        $actor   = $this->makeUser('manager@test.com', true, ['ROLE_MANAGER']);
         $this->foundUsers[$newInst->getId()] = $newInst;
 
-        $this->alertService->expects($this->once())->method('resolve')->with($alert, $this->anything(), 'Trouvé un remplaçant.');
+        $this->alertService->expects($this->once())->method('resolve')
+            ->with($alert, $this->anything(), 'Trouvé un remplaçant.');
 
-        $this->makeService()->reassign($alert, $newInst->getId(), null, 'Trouvé un remplaçant.');
+        $this->makeService()->reassign($alert, $newInst->getId(), $actor, 'Trouvé un remplaçant.');
+    }
+
+    public function test_reassign_direct_mutation_for_draft_mission(): void
+    {
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, MissionStatus::DRAFT);
+        $alert   = $this->makeAlert($mission);
+        $newInst = $this->makeUser('new-inst@test.com');
+        $this->foundUsers[$newInst->getId()] = $newInst;
+
+        // DRAFT missions skip MissionPostDeployService (pre-deploy setup).
+        $this->deployService->expects($this->never())->method('assign');
+
+        $this->makeService()->reassign($alert, $newInst->getId(), null, null);
+
+        $this->assertSame($newInst, $mission->getInstrumentist());
+        $this->assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
     }
 
     // ── Reassign: rejections ──────────────────────────────────────────────────
@@ -309,22 +337,23 @@ class PlanningAlertActionServiceTest extends TestCase
 
     // ── Open as available ─────────────────────────────────────────────────────
 
-    public function test_open_as_available_clears_instrumentist_and_sets_open(): void
+    public function test_open_as_available_delegates_to_deploy_service_for_assigned_mission(): void
     {
-        $site    = $this->makeSite();
-        $inst    = $this->makeUser('inst@test.com');
+        $site  = $this->makeSite();
+        $inst  = $this->makeUser('inst@test.com');
         $mission = $this->makeMission($site, MissionStatus::ASSIGNED, $inst);
-        $alert   = $this->makeAlert($mission);
+        $alert = $this->makeAlert($mission);
+        $actor = $this->makeUser('manager@test.com', true, ['ROLE_MANAGER']);
 
-        $this->alertService->expects($this->once())->method('resolve')->with($alert, $this->anything(), $this->isType('string'));
-        // Per Batch 7 scope: open-as-available does not notify the eligible pool yet
-        // ("later, but not now unless current infra supports it").
+        $this->deployService->expects($this->once())->method('release')
+            ->with($mission, $actor);
+
+        $this->alertService->expects($this->once())->method('resolve')
+            ->with($alert, $this->anything(), $this->isType('string'));
+
         $this->notificationService->expects($this->never())->method('planningAlertReassignedNotify');
 
-        $this->makeService()->openAsAvailable($alert, null, null);
-
-        $this->assertNull($mission->getInstrumentist());
-        $this->assertSame(MissionStatus::OPEN, $mission->getStatus());
+        $this->makeService()->openAsAvailable($alert, $actor, null);
     }
 
     #[DataProvider('lockedStatusesProvider')]

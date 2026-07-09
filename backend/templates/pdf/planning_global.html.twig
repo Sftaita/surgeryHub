@@ -50,11 +50,17 @@
     &nbsp;·&nbsp; {{ missions|length }} mission(s)
   </div>
 
-  {# Group missions by ISO week, then by day #}
+  {# Group missions by ISO week, then by day.
+     The week key is prefixed with a non-numeric character ("w36", not "36"): a purely
+     numeric-looking string key gets silently RENUMBERED by PHP's array_merge() (which
+     Twig's merge filter uses internally) — byWeek["36"] becomes byWeek[0] on the very
+     next merge, so every subsequent byWeek[week] lookup fails with a RuntimeError
+     ("Key ... does not exist"). Day keys ("2026-09-01") are never numeric, so they were
+     never affected — this is why only the week-grouped global PDF hit this. #}
   {% set byWeek = {} %}
   {% for mission in missions %}
     {% set day = mission.startAt|date("Y-m-d") %}
-    {% set week = mission.startAt|date("W")|number_format %}
+    {% set week = 'w' ~ mission.startAt|date("W") %}
     {% if byWeek[week] is not defined %}
       {% set byWeek = byWeek|merge({(week): {}}) %}
     {% endif %}
@@ -65,13 +71,14 @@
   {% endfor %}
 
   {% for week, days in byWeek %}
-    {% set parity = (week % 2 == 0) ? 'pair' : 'impair' %}
+    {% set weekNum = week|replace({'w': ''}) %}
+    {% set parity = (weekNum % 2 == 0) ? 'pair' : 'impair' %}
     <div class="week-header {{ parity }}">
-      Semaine {{ week }} &nbsp;({{ parity == 'pair' ? 'Paire' : 'Impaire' }})
+      Semaine {{ weekNum }} &nbsp;({{ parity == 'pair' ? 'Paire' : 'Impaire' }})
     </div>
 
     {% for day, dayMissions in days %}
-      <div class="day-title">{{ day|date("l d/m/Y")|capitalize }}</div>
+      <div class="day-title">{{ day|french_day }} {{ day|date("d/m/Y") }}</div>
       <table>
         <thead>
           <tr>
@@ -107,7 +114,7 @@
               {% endif %}
             </td>
             <td>{{ mission.site ? mission.site.name : '—' }}</td>
-            <td>{{ mission.status.value }}</td>
+            <td>{{ mission.status.label }}</td>
           </tr>
           {% endfor %}
         </tbody>

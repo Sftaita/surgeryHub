@@ -2,6 +2,7 @@
 
 namespace App\EventSubscriber;
 
+use App\Exception\MissionNotDraftException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -38,6 +39,10 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'CONFLICT';
             $message = $e->getMessage() ?: 'Conflict';
+        } elseif ($e instanceof MissionNotDraftException) {
+            $status = 409;
+            $code = 'MISSION_NOT_DRAFT';
+            $message = $e->getMessage() ?: 'Mission is not DRAFT';
         } elseif ($e instanceof HttpExceptionInterface) {
             $status = $e->getStatusCode();
             $message = $e->getMessage() ?: $message;
