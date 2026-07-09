@@ -151,6 +151,53 @@ export function groupLinesByDayAndSurgeon(lines: PreviewLineV2[]): DayGroup[] {
     });
 }
 
+// ── Line editing (Preview Editor — instrumentist reassignment before generate) ──
+
+/** Unique key for a preview line — date + postId (never slotId, which doesn't exist pre-generation). */
+export function lineKeyV2(line: PreviewLineV2): string {
+  return `${line.date}-${line.postId}`;
+}
+
+function timeToMin(t: string): number {
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + (m || 0);
+}
+
+export interface FreedInstrumentist { id: number; name: string; reason: string }
+
+/**
+ * Instrumentists freed up on the same day as `target` (their own post was SKIPPED —
+ * surgeon absent — and they have no other overlapping post that day), suggested as
+ * quick-assign candidates for an UNCOVERED/CONFLICT line.
+ */
+export function getFreedInstrumentists(lines: PreviewLineV2[], target: PreviewLineV2): FreedInstrumentist[] {
+  const tStart = timeToMin(target.startTime);
+  const tEnd = timeToMin(target.endTime);
+  const freed = new Map<number, FreedInstrumentist>();
+
+  for (const l of lines) {
+    if (l.date === target.date && l.status === "SKIPPED" && l.instrumentistId && l.instrumentistName) {
+      freed.set(l.instrumentistId, {
+        id: l.instrumentistId,
+        name: l.instrumentistName,
+        reason: `Libéré — ${l.surgeonName} est absent ce jour-là`,
+      });
+    }
+  }
+  for (const l of lines) {
+    if (
+      l.date === target.date &&
+      l.status !== "SKIPPED" &&
+      l.instrumentistId &&
+      timeToMin(l.startTime) < tEnd &&
+      timeToMin(l.endTime) > tStart
+    ) {
+      freed.delete(l.instrumentistId);
+    }
+  }
+  return Array.from(freed.values());
+}
+
 const DAY_NAMES = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
 const MONTH_SHORT = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
 

@@ -1,6 +1,6 @@
 import * as React from "react";
 import {
-  Box, Button, Checkbox, Chip, CircularProgress, FormControlLabel, Stack, Typography,
+  Box, Button, Checkbox, Chip, CircularProgress, FormControlLabel, Popover, Stack, Typography,
 } from "@mui/material";
 import RocketLaunchOutlinedIcon from "@mui/icons-material/RocketLaunchOutlined";
 import SearchOutlinedIcon from "@mui/icons-material/SearchOutlined";
@@ -11,6 +11,7 @@ import EventBusyOutlinedIcon from "@mui/icons-material/EventBusyOutlined";
 import CalendarTodayOutlinedIcon from "@mui/icons-material/CalendarTodayOutlined";
 import ChevronRightOutlinedIcon from "@mui/icons-material/ChevronRightOutlined";
 import CheckIcon from "@mui/icons-material/Check";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 
@@ -23,11 +24,13 @@ import {
   aggregateGenerated, aggregateDeploy, type AggregatedGenerated, type AggregatedDeploy,
   severityOf, filterLines, countBySeverity, type SeverityFilter,
   groupLinesByDayAndSurgeon, formatDayHeader,
+  lineKeyV2, getFreedInstrumentists,
 } from "../api/generatePreviewGrouping";
 import { useToast } from "../../../ui/toast/useToast";
 import { SearchableSelect, type SearchableOption } from "../components/SearchableSelect";
 import { PersonAvatar, EmptyAvatar } from "../../../ui/avatar/PersonAvatar";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
+import { apiClient } from "../../../api/apiClient";
 
 const STATUS_TOKENS: Record<PreviewLineStatus, { label: string; fg: string; bg: string; dot: string; icon: React.ReactElement }> = {
   COVERED:   { label: "OK",                   fg: "#2C7D5F", bg: "#EFFAF5", dot: "#5BBE96", icon: <CheckCircleOutlinedIcon sx={{ fontSize: 14 }} /> },
@@ -65,10 +68,32 @@ export function GeneratePlanningTab() {
   const [targetId, setTargetId] = React.useState<number | null>(null);
 
   const [preview, setPreview] = React.useState<PreviewResponseV2 | null>(null);
+  // Per-month raw responses, aligned with selectedMonthIds at the time of preview — each
+  // generate() call is scoped to one month and needs its own previewVersion token; the merged
+  // `preview` above only keeps the first month's token (see mergePreviewResponses), so it can't
+  // be reused for later months.
+  const [previewResponses, setPreviewResponses] = React.useState<PreviewResponseV2[]>([]);
   const [generated, setGenerated] = React.useState<AggregatedGenerated | null>(null);
   const [deployed, setDeployed] = React.useState<AggregatedDeploy | null>(null);
   const [sendPdf, setSendPdf] = React.useState(true);
   const [genFilter, setGenFilter] = React.useState<SeverityFilter>("all");
+
+  // ── Preview Editor: local instrumentist reassignment before generate ─────────
+  const [editedLines, setEditedLines] = React.useState<Map<string, Partial<PreviewLineV2>>>(new Map());
+  const [selectedKeys, setSelectedKeys] = React.useState<Set<string>>(new Set());
+  const [bulkInstrumentistId, setBulkInstrumentistId] = React.useState<number | "">("");
+  const [editPopover, setEditPopover] = React.useState<{ anchorEl: HTMLElement; key: string } | null>(null);
+
+  const instrumentistsQuery = useQuery({
+    queryKey: ["instrumentists-all"],
+    queryFn: async () => {
+      const r = await apiClient.get("/api/instrumentists", { params: { active: true } });
+      return r.data.items as { id: number; displayName: string }[];
+    },
+    staleTime: 5 * 60_000,
+  });
+  const instrumentists = instrumentistsQuery.data ?? [];
+  const instrumentistOptions: SearchableOption[] = instrumentists.map((i) => ({ id: i.id, label: i.displayName }));
 
   const sitesQuery = useQuery({ queryKey: ["sites"], queryFn: fetchSites });
   const groupsQuery = useQuery({ queryKey: ["planning-v2", "site-groups"], queryFn: getSiteGroups });
@@ -115,9 +140,17 @@ export function GeneratePlanningTab() {
       const responses = await Promise.all(
         months.map((ym) => previewPlanningV2({ siteId: target!.siteId, siteGroupId: target!.siteGroupId, ...ym })),
       );
-      return mergePreviewResponses(responses);
+      return { merged: mergePreviewResponses(responses), responses };
     },
-    onSuccess: (data) => { setPreview(data); setGenerated(null); setDeployed(null); setGenFilter("all"); },
+    onSuccess: ({ merged, responses }) => {
+      setPreview(merged);
+      setPreviewResponses(responses);
+      setEditedLines(new Map());
+      setSelectedKeys(new Set());
+      setGenerated(null);
+      setDeployed(null);
+      setGenFilter("all");
+    },
     onError: (err) => toast.error(extractErrorV2(err)),
   });
 
@@ -125,8 +158,17 @@ export function GeneratePlanningTab() {
     mutationFn: async () => {
       const months = selectedMonthIds.map(monthIdToYearMonth);
       const versions = [];
-      for (const ym of months) {
-        versions.push(await generatePlanningV2({ siteId: target!.siteId, siteGroupId: target!.siteGroupId, ...ym }));
+      for (let i = 0; i < months.length; i++) {
+        const ym = months[i];
+        const monthKey = `${ym.year}-${String(ym.month).padStart(2, "0")}`;
+        const monthLines = effectiveLines.filter((l) => l.date.startsWith(monthKey));
+        versions.push(await generatePlanningV2({
+          siteId: target!.siteId,
+          siteGroupId: target!.siteGroupId,
+          ...ym,
+          previewVersion: previewResponses[i]?.previewVersion,
+          lines: monthLines.length > 0 ? monthLines : undefined,
+        }));
       }
       return aggregateGenerated(versions);
     },
@@ -134,7 +176,14 @@ export function GeneratePlanningTab() {
       setGenerated(data);
       toast.success(`Brouillon créé — ${data.created} mission(s) créée(s)`);
     },
-    onError: (err) => toast.error(extractErrorV2(err)),
+    onError: (err: any) => {
+      if (err?.response?.status === 409 && err?.response?.data?.code === "PREVIEW_EXPIRED") {
+        toast.error("Le planning a changé depuis la prévisualisation — régénérez l'aperçu.");
+        resetGen();
+      } else {
+        toast.error(extractErrorV2(err));
+      }
+    },
   });
 
   const deployMutation = useMutation({
@@ -154,15 +203,104 @@ export function GeneratePlanningTab() {
 
   function resetGen() {
     setPreview(null);
+    setPreviewResponses([]);
     setGenerated(null);
     setDeployed(null);
     setGenFilter("all");
+    setEditedLines(new Map());
+    setSelectedKeys(new Set());
   }
 
   const lines: PreviewLineV2[] = preview?.lines ?? [];
-  const filteredLines = filterLines(lines, genFilter);
+
+  // Merge local instrumentist-reassignment edits over the raw preview lines for display and generate.
+  const effectiveLines = React.useMemo<PreviewLineV2[]>(
+    () => lines.map((line) => {
+      const patch = editedLines.get(lineKeyV2(line));
+      return patch ? { ...line, ...patch } : line;
+    }),
+    [lines, editedLines],
+  );
+
+  const filteredLines = filterLines(effectiveLines, genFilter);
   const dayGroups = groupLinesByDayAndSurgeon(filteredLines);
-  const severityCounts = countBySeverity(lines);
+  const severityCounts = countBySeverity(effectiveLines);
+  const dirtyCount = editedLines.size;
+
+  // ── Line edit helpers ──────────────────────────────────────────────────────
+
+  function handleEditLine(key: string, patch: Partial<PreviewLineV2>) {
+    setEditedLines((prev) => {
+      const next = new Map(prev);
+      next.set(key, { ...(next.get(key) ?? {}), ...patch });
+      return next;
+    });
+  }
+
+  function handleResetLine(key: string) {
+    setEditedLines((prev) => {
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+  }
+
+  function handleInstrumentistChange(line: PreviewLineV2, newId: number | null) {
+    const key = lineKeyV2(line);
+    if (newId === null) {
+      handleEditLine(key, { instrumentistId: null, instrumentistName: null, status: "UNCOVERED" });
+    } else {
+      const inst = instrumentists.find((i) => i.id === newId);
+      handleEditLine(key, {
+        instrumentistId: newId,
+        instrumentistName: inst?.displayName ?? null,
+        status: line.status === "SKIPPED" ? "UNCOVERED" : (line.status === "UNCOVERED" || line.status === "CONFLICT" ? "COVERED" : line.status),
+      });
+    }
+  }
+
+  function toggleSelected(key: string) {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }
+
+  function handleBulkAssign() {
+    if (bulkInstrumentistId === "") return;
+    const inst = instrumentists.find((i) => i.id === bulkInstrumentistId);
+    if (!inst) return;
+    setEditedLines((prev) => {
+      const next = new Map(prev);
+      for (const key of selectedKeys) {
+        const line = effectiveLines.find((l) => lineKeyV2(l) === key);
+        if (!line || line.status === "SKIPPED") continue;
+        next.set(key, {
+          ...(next.get(key) ?? {}),
+          instrumentistId: inst.id,
+          instrumentistName: inst.displayName,
+          status: line.status === "UNCOVERED" || line.status === "CONFLICT" ? "COVERED" : line.status,
+        });
+      }
+      return next;
+    });
+    setSelectedKeys(new Set());
+    setBulkInstrumentistId("");
+  }
+
+  function handleBulkSkip() {
+    setEditedLines((prev) => {
+      const next = new Map(prev);
+      for (const key of selectedKeys) {
+        next.set(key, { ...(next.get(key) ?? {}), status: "SKIPPED" as PreviewLineStatus });
+      }
+      return next;
+    });
+    setSelectedKeys(new Set());
+  }
+
+  const editPopoverLine = editPopover ? effectiveLines.find((l) => lineKeyV2(l) === editPopover.key) ?? null : null;
 
   const monthsLabel = selectedMonthIds.length === 0
     ? "Sélectionnez au moins un mois"
@@ -367,6 +505,51 @@ export function GeneratePlanningTab() {
             })}
           </Stack>
 
+          {/* Bulk action bar */}
+          {selectedKeys.size > 0 && (
+            <Stack
+              direction="row" alignItems="center" spacing={1.5} flexWrap="wrap"
+              sx={{ mb: 1.75, p: 1.25, borderRadius: planningV2Radii.cardLg, bgcolor: planningV2Colors.infoBg, border: `1px solid ${planningV2Colors.cardBorder}` }}
+            >
+              <Typography sx={{ fontSize: 12.5, fontWeight: 700, color: planningV2Colors.textStrong }}>
+                {selectedKeys.size} poste{selectedKeys.size > 1 ? "s" : ""} sélectionné{selectedKeys.size > 1 ? "s" : ""}
+              </Typography>
+              <Box sx={{ minWidth: 200 }}>
+                <SearchableSelect
+                  label="Assigner à" required
+                  options={instrumentistOptions}
+                  value={bulkInstrumentistId === "" ? null : bulkInstrumentistId}
+                  onChange={(id) => setBulkInstrumentistId(id ?? "")}
+                  placeholder="Choisir un instrumentiste…"
+                />
+              </Box>
+              <Button
+                size="small" variant="contained" disableElevation disabled={bulkInstrumentistId === ""}
+                onClick={handleBulkAssign}
+                sx={{ height: 36, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: planningV2Colors.brand, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
+              >
+                Assigner
+              </Button>
+              <Button size="small" color="inherit" onClick={handleBulkSkip} sx={{ textTransform: "none", fontWeight: 600 }}>
+                Ignorer la sélection
+              </Button>
+              <Button size="small" color="inherit" onClick={() => setSelectedKeys(new Set())} sx={{ textTransform: "none" }}>
+                Désélectionner
+              </Button>
+            </Stack>
+          )}
+
+          {dirtyCount > 0 && (
+            <Stack direction="row" alignItems="center" justifyContent="flex-end" spacing={1} sx={{ mb: 1.25 }}>
+              <Typography sx={{ fontSize: 12, fontWeight: 600, color: planningV2Colors.warnFg }}>
+                {dirtyCount} modification{dirtyCount > 1 ? "s" : ""} locale{dirtyCount > 1 ? "s" : ""} non générée{dirtyCount > 1 ? "s" : ""}
+              </Typography>
+              <Button size="small" color="inherit" onClick={() => setEditedLines(new Map())} sx={{ textTransform: "none" }}>
+                Tout réinitialiser
+              </Button>
+            </Stack>
+          )}
+
           {filteredLines.length === 0 ? (
             <Box sx={{ bgcolor: "#fff", border: `1px solid ${planningV2Colors.cardBorder}`, borderRadius: planningV2Radii.cardLg, p: 4, textAlign: "center" }}>
               <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted }}>
@@ -403,6 +586,8 @@ export function GeneratePlanningTab() {
                         </Stack>
                         {surgeon.lines.map((line, lIdx) => {
                           const tokens = STATUS_TOKENS[line.status];
+                          const key = lineKeyV2(line);
+                          const dirty = editedLines.has(key);
                           return (
                             <Stack
                               key={lIdx} direction="row" alignItems="center" spacing={1.5}
@@ -411,12 +596,21 @@ export function GeneratePlanningTab() {
                                 bgcolor: severityOf(line.status) === "crit" ? "#FBF2F1" : "transparent",
                               }}
                             >
+                              <Checkbox
+                                size="small"
+                                checked={selectedKeys.has(key)}
+                                onChange={() => toggleSelected(key)}
+                                sx={{ p: 0, flex: "none" }}
+                              />
                               <Box sx={{ width: 6, height: 6, borderRadius: "999px", bgcolor: tokens.dot, flex: "none" }} />
                               <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textBody, minWidth: 90 }} noWrap>{line.siteName ?? "—"}</Typography>
                               <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textStrong, minWidth: 100, fontVariantNumeric: "tabular-nums" }}>
                                 {line.startTime}–{line.endTime}
                               </Typography>
-                              <Stack direction="row" alignItems="center" spacing={0.9} sx={{ flex: 1, minWidth: 0 }}>
+                              <Stack
+                                direction="row" alignItems="center" spacing={0.9} sx={{ flex: 1, minWidth: 0, cursor: "pointer", borderRadius: planningV2Radii.button, px: 0.75, py: 0.4, mx: -0.75, "&:hover": { bgcolor: "#F1F4F7" } }}
+                                onClick={(e) => setEditPopover({ anchorEl: e.currentTarget, key })}
+                              >
                                 {line.instrumentistName ? (
                                   <>
                                     <PersonAvatar name={line.instrumentistName} size="xs" />
@@ -429,6 +623,14 @@ export function GeneratePlanningTab() {
                                       À pourvoir
                                     </Typography>
                                   </>
+                                )}
+                                <EditOutlinedIcon sx={{ fontSize: 13, color: planningV2Colors.textSecondary, flex: "none" }} />
+                                {dirty && (
+                                  <Chip
+                                    label="Édité" size="small"
+                                    onDelete={(e) => { e.stopPropagation(); handleResetLine(key); }}
+                                    sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: planningV2Colors.warnBg, color: planningV2Colors.warnFg, flex: "none" }}
+                                  />
                                 )}
                               </Stack>
                               <Box sx={{
@@ -465,7 +667,7 @@ export function GeneratePlanningTab() {
                   variant="contained" disableElevation disabled={generateMutation.isPending} onClick={() => generateMutation.mutate()}
                   sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: planningV2Colors.brand, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
                 >
-                  Générer les missions
+                  {dirtyCount > 0 ? "Générer avec modifications" : "Générer les missions"}
                 </Button>
               ) : (
                 <Button
@@ -508,6 +710,56 @@ export function GeneratePlanningTab() {
           </Button>
         </Box>
       )}
+
+      {/* Instrumentist edit popover — click a line's instrumentist to reassign before generating */}
+      <Popover
+        open={!!editPopover}
+        anchorEl={editPopover?.anchorEl ?? null}
+        onClose={() => setEditPopover(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+      >
+        {editPopoverLine && (
+          <Box sx={{ p: 2, width: 300 }}>
+            <SearchableSelect
+              label="Instrumentiste"
+              options={instrumentistOptions}
+              value={editPopoverLine.instrumentistId}
+              onChange={(id) => { handleInstrumentistChange(editPopoverLine, id); setEditPopover(null); }}
+              placeholder="Rechercher un instrumentiste…"
+            />
+            {(() => {
+              const freed = getFreedInstrumentists(effectiveLines, editPopoverLine);
+              if (freed.length === 0) return null;
+              return (
+                <Box sx={{ mt: 1.5 }}>
+                  <Typography sx={{ fontSize: 11, fontWeight: 700, color: planningV2Colors.textSecondary, mb: 0.5 }}>
+                    Libérés disponibles
+                  </Typography>
+                  <Stack spacing={0.75}>
+                    {freed.map((f) => (
+                      <Stack
+                        key={f.id} direction="row" alignItems="center" justifyContent="space-between"
+                        sx={{ px: 1, py: 0.75, bgcolor: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: planningV2Radii.button }}
+                      >
+                        <Box>
+                          <Typography sx={{ fontSize: 12, fontWeight: 600 }}>{f.name}</Typography>
+                          <Typography sx={{ fontSize: 10, color: "#2C7D5F" }}>{f.reason}</Typography>
+                        </Box>
+                        <Button
+                          size="small" variant="text" color="success"
+                          onClick={() => { handleInstrumentistChange(editPopoverLine, f.id); setEditPopover(null); }}
+                        >
+                          Assigner
+                        </Button>
+                      </Stack>
+                    ))}
+                  </Stack>
+                </Box>
+              );
+            })()}
+          </Box>
+        )}
+      </Popover>
     </Box>
   );
 }

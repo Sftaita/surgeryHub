@@ -4,6 +4,7 @@ import {
   mergePreviewResponses, aggregateGenerated, aggregateDeploy,
   severityOf, filterLines, countBySeverity,
   groupLinesByDayAndSurgeon, formatDayHeader,
+  lineKeyV2, getFreedInstrumentists,
 } from "./generatePreviewGrouping";
 import type { PreviewLineV2, PreviewResponseV2, GeneratedPlanningV2 } from "./planningV2.types";
 
@@ -152,5 +153,51 @@ describe("formatDayHeader()", () => {
 
   it("formats across a month boundary", () => {
     expect(formatDayHeader("2026-07-01")).toBe("Mercredi · 1 juil.");
+  });
+});
+
+describe("lineKeyV2()", () => {
+  it("keys by date + postId, not surgeon/instrumentist (stable across reassignment)", () => {
+    const a = line({ date: "2026-06-01", postId: 5, instrumentistId: 1 });
+    const b = { ...a, instrumentistId: 2, instrumentistName: "Someone else" };
+    expect(lineKeyV2(a)).toBe(lineKeyV2(b));
+    expect(lineKeyV2(a)).toBe("2026-06-01-5");
+  });
+
+  it("differs for the same date with a different postId", () => {
+    const a = line({ date: "2026-06-01", postId: 1 });
+    const b = line({ date: "2026-06-01", postId: 2 });
+    expect(lineKeyV2(a)).not.toBe(lineKeyV2(b));
+  });
+});
+
+describe("getFreedInstrumentists()", () => {
+  it("suggests an instrumentist whose own post was SKIPPED that day and doesn't overlap the target slot", () => {
+    const freedLine = line({
+      date: "2026-06-01", postId: 1, status: "SKIPPED",
+      instrumentistId: 7, instrumentistName: "Diane Lefebvre", surgeonName: "Dr Absent",
+      startTime: "08:00", endTime: "13:00",
+    });
+    const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED", startTime: "14:00", endTime: "18:00" });
+
+    const freed = getFreedInstrumentists([freedLine, target], target);
+    expect(freed).toHaveLength(1);
+    expect(freed[0]).toMatchObject({ id: 7, name: "Diane Lefebvre" });
+    expect(freed[0].reason).toContain("Dr Absent");
+  });
+
+  it("excludes a freed instrumentist who has another overlapping active post the same day", () => {
+    const freedLine = line({ date: "2026-06-01", postId: 1, status: "SKIPPED", instrumentistId: 7, instrumentistName: "Diane", startTime: "08:00", endTime: "13:00" });
+    const busyLine = line({ date: "2026-06-01", postId: 3, status: "COVERED", instrumentistId: 7, startTime: "09:00", endTime: "11:00" });
+    const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED", startTime: "10:00", endTime: "12:00" });
+
+    expect(getFreedInstrumentists([freedLine, busyLine, target], target)).toEqual([]);
+  });
+
+  it("ignores freed instrumentists from a different day", () => {
+    const freedLine = line({ date: "2026-06-02", postId: 1, status: "SKIPPED", instrumentistId: 7, instrumentistName: "Diane", startTime: "08:00", endTime: "13:00" });
+    const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED", startTime: "08:00", endTime: "13:00" });
+
+    expect(getFreedInstrumentists([freedLine, target], target)).toEqual([]);
   });
 });
