@@ -1,24 +1,29 @@
 import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  Box,
-  Button,
-  CircularProgress,
-  Divider,
-  Stack,
-  Typography,
-} from "@mui/material";
+import { Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import AccessTimeIcon from "@mui/icons-material/AccessTime";
-import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
-import { MobileCard } from "../../ui/mobile/MobileCard";
+import dayjs from "dayjs";
+import "dayjs/locale/fr";
 
 import { fetchMissionById } from "../../features/missions/api/missions.api";
 import { fetchMissionEncoding } from "../../features/encoding/api/encoding.api";
 import InterventionsSection from "../../features/encoding/components/InterventionsSection";
+import { EncodeHeader } from "../../features/encoding/components/EncodeHeader";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
+
+dayjs.locale("fr");
+
+const GREEN_50 = "#EFFAF5";
+const GREEN_500 = "#42A882";
+const GREEN_700 = "#2C7D5F";
+const GRAY_300 = "#C2C9D1";
+const GRAY_400 = "#98A2AE";
+const GRAY_700 = "#3A4754";
+const SHADOW_MD = "0 2px 6px rgba(22,32,43,.06), 0 8px 20px rgba(22,32,43,.08)";
+const SHADOW_XS = "0 1px 2px rgba(22,32,43,.05)";
+const SHADOW_SM = "0 1px 2px rgba(22,32,43,.05), 0 2px 6px rgba(22,32,43,.06)";
 
 function extractErrorMessage(err: any): string {
   return (
@@ -36,6 +41,25 @@ function formatHours(hours?: string | number | null): string {
   return `${n} h`;
 }
 
+function missionTypeLabel(type: string): string {
+  return type === "CONSULTATION" ? "Consultation" : "Bloc opératoire";
+}
+
+function ClockIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={GREEN_700} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+function ChevronRightIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={GRAY_300} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m9 18 6-6-6-6" />
+    </svg>
+  );
+}
+
 export default function MissionEncodingPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -43,6 +67,10 @@ export default function MissionEncodingPage() {
 
   const [openSubmit, setOpenSubmit] = React.useState(false);
   const [openEditHours, setOpenEditHours] = React.useState(false);
+  // Aucun timestamp de sauvegarde n'existe côté backend (MissionEncodingResponse
+  // n'en a pas) — reflète la dernière mutation réussie observée sur cet appareil,
+  // pas une donnée serveur.
+  const [lastSavedAt, setLastSavedAt] = React.useState<Date | null>(null);
 
   const missionId = Number(id);
   const isValidId = Number.isFinite(missionId) && missionId > 0;
@@ -124,97 +152,103 @@ export default function MissionEncodingPage() {
     false;
 
   const hoursLabel = formatHours(mission.service?.hours ?? null);
+  const surgeon = mission.surgeon;
+  const personLine = surgeon
+    ? `Dr. ${[surgeon.firstname, surgeon.lastname].filter(Boolean).join(" ").trim() || surgeon.displayName || surgeon.email}`
+    : null;
+
+  const interventionCount = encoding.interventions?.length ?? 0;
+  const materialCount = (encoding.interventions ?? []).reduce(
+    (sum, itv) => sum + (itv.materialLines?.length ?? 0), 0,
+  );
+  const countsLabel = `${interventionCount} intervention${interventionCount > 1 ? "s" : ""} · ${materialCount} matériel${materialCount > 1 ? "s" : ""}`;
 
   return (
-    <Stack spacing={2}>
-      {/* Header */}
-      <Stack direction="row" spacing={1} alignItems="center">
-        <Button
-          variant="text"
-          size="small"
-          startIcon={<ArrowBackIcon />}
-          onClick={() => navigate(-1)}
-          sx={{ minWidth: 0 }}
-        >
-          Mission
-        </Button>
-        <Typography variant="subtitle1" fontWeight={600} sx={{ flex: 1 }}>
-          Encodage #{mission.id}
-        </Typography>
-      </Stack>
+    <Box>
+      <EncodeHeader
+        missionId={mission.id}
+        siteName={mission.site?.name ?? "—"}
+        siteAddress={mission.site?.address}
+        personLine={personLine}
+        dateLabel={dayjs(mission.startAt).format("dddd D MMMM YYYY").replace(/^\w/, (c) => c.toUpperCase())}
+        typeLabel={missionTypeLabel(mission.type)}
+        onBack={() => navigate(-1)}
+      />
 
-      {/* Bandeau aide */}
-      <Stack
-        direction="row"
-        spacing={1}
-        alignItems="flex-start"
-        sx={{
-          px: 1.5,
-          py: 1.25,
-          bgcolor: "#EFF6FF",
-          borderRadius: 2,
-          border: "1px solid #DBEAFE",
-        }}
-      >
-        <InfoOutlinedIcon sx={{ fontSize: 16, color: "primary.main", mt: 0.1, flexShrink: 0 }} />
-        <Typography variant="caption" color="primary.dark">
-          Pour que les heures soient comptabilisées, l'encodage de la mission doit être terminé.
-        </Typography>
-      </Stack>
-
-      {/* Zone heures */}
-      <MobileCard>
+      <Box sx={{ px: "20px", mt: "-28px", position: "relative", display: "flex", flexDirection: "column", gap: "14px" }}>
+        {/* Barre brouillon */}
         <Stack
           direction="row"
           alignItems="center"
-          sx={{ px: 2, py: 1.5, borderBottom: "1px solid", borderColor: "divider" }}
+          spacing={1.5}
+          sx={{ background: "#fff", borderRadius: "14px", padding: "12px 15px", boxShadow: SHADOW_MD }}
         >
-          <Box sx={{ color: "primary.main", display: "flex", mr: 1 }}>
-            <AccessTimeIcon fontSize="small" />
+          <Box
+            sx={{
+              width: 9, height: 9, borderRadius: "999px", background: GREEN_500, flexShrink: 0,
+              animation: "shPulse 1.6s ease-in-out infinite",
+              "@keyframes shPulse": { "0%,100%": { opacity: 1 }, "50%": { opacity: 0.35 } },
+            }}
+          />
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Box sx={{ fontSize: 13.5, fontWeight: 700, color: GREEN_700 }}>Brouillon en cours</Box>
+            <Box sx={{ mt: "1px", fontSize: 12.5, color: GRAY_400, fontVariantNumeric: "tabular-nums" }}>{countsLabel}</Box>
           </Box>
-          <Typography variant="subtitle2" sx={{ flex: 1 }}>
-            Heures prestées
-          </Typography>
-          {canEditHours && (
-            <Button size="small" variant="text" onClick={() => setOpenEditHours(true)}>
-              Modifier
-            </Button>
+          {lastSavedAt && (
+            <Box sx={{ display: "flex", alignItems: "center", gap: "6px", fontSize: 12, color: GRAY_400, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
+              Enregistré à {dayjs(lastSavedAt).format("HH:mm")}
+            </Box>
           )}
         </Stack>
-        <Box sx={{ px: 2, py: 2 }}>
-          <Typography
-            variant="h4"
-            fontWeight={800}
-            color={hoursLabel === "Non renseigné" ? "text.disabled" : "primary.main"}
-          >
-            {hoursLabel}
-          </Typography>
-        </Box>
-      </MobileCard>
 
-      {/* Interventions */}
-      <InterventionsSection
-        missionId={mission.id}
-        canEdit={canEdit}
-        interventions={encoding.interventions ?? []}
-        catalog={encoding.catalog}
-      />
-
-      <Divider />
-
-      {/* Terminer l'encodage */}
-      {canSubmit && (
-        <Button
-          variant="contained"
-          disableElevation
-          fullWidth
-          size="large"
-          onClick={() => setOpenSubmit(true)}
-          sx={{ borderRadius: 2, fontWeight: 700 }}
+        {/* Heures prestées */}
+        <Box
+          component="button"
+          type="button"
+          onClick={() => canEditHours && setOpenEditHours(true)}
+          sx={{
+            display: "flex", alignItems: "center", gap: "12px", background: "#fff", border: "none", borderRadius: "16px",
+            padding: "14px 16px", boxShadow: SHADOW_XS, cursor: canEditHours ? "pointer" : "default", fontFamily: "inherit",
+            textAlign: "left", width: "100%", transition: "box-shadow 150ms",
+            "&:hover": canEditHours ? { boxShadow: SHADOW_SM } : undefined,
+          }}
         >
-          Terminer l'encodage
-        </Button>
-      )}
+          <Box sx={{ width: 38, height: 38, borderRadius: "999px", background: GREEN_50, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <ClockIcon />
+          </Box>
+          <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+            <Box sx={{ fontSize: 13, fontWeight: 700, color: GRAY_700 }}>Heures prestées</Box>
+            <Box sx={{ fontSize: 15, fontWeight: 800, color: hoursLabel === "Non renseigné" ? GRAY_400 : GREEN_700 }}>
+              {hoursLabel}
+            </Box>
+          </Box>
+          {canEditHours && <ChevronRightIcon />}
+        </Box>
+
+        {/* Interventions */}
+        <InterventionsSection
+          missionId={mission.id}
+          canEdit={canEdit}
+          interventions={encoding.interventions ?? []}
+          catalog={encoding.catalog}
+          onSaved={() => setLastSavedAt(new Date())}
+        />
+
+        {canSubmit && (
+          <Button
+            variant="contained"
+            disableElevation
+            fullWidth
+            onClick={() => setOpenSubmit(true)}
+            sx={{
+              height: 54, borderRadius: "13px", fontWeight: 700, fontSize: 15.5, textTransform: "none",
+              bgcolor: "#1F6B4F", boxShadow: "0 5px 14px rgba(20,77,56,.3)", "&:hover": { bgcolor: "#144D38" },
+            }}
+          >
+            Terminer l'encodage
+          </Button>
+        )}
+      </Box>
 
       <SubmitDialog
         open={openSubmit}
@@ -235,6 +269,6 @@ export default function MissionEncodingPage() {
           mission={mission}
         />
       )}
-    </Stack>
+    </Box>
   );
 }

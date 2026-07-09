@@ -4,14 +4,12 @@ import {
   Box,
   Button,
   Chip,
-  Divider,
   IconButton,
   Paper,
   Stack,
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
-import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import RemoveIcon from "@mui/icons-material/Remove";
 
@@ -48,7 +46,18 @@ type Props = {
   canEdit: boolean;
   interventions: EncodingIntervention[];
   catalog?: { items: CatalogItem[]; firms: CatalogFirm[] };
+  /** Called after any intervention/material mutation succeeds — drives the "Enregistré à" timestamp. */
+  onSaved?: () => void;
 };
+
+const GREEN_50 = "#EFFAF5";
+const GREEN_500 = "#42A882";
+const GREEN_700 = "#2C7D5F";
+const GRAY_500 = "#727E8C";
+const GRAY_800 = "#243240";
+const TEXT_STRONG = "#16202B";
+const TEXT_MUTED = "#727E8C";
+const SHADOW_XS = "0 1px 2px rgba(22,32,43,.05)";
 
 function extractErrorMessage(err: any): string {
   return (
@@ -74,7 +83,7 @@ function buildInterventionTitle(itv: EncodingIntervention, index: number): strin
   return `Intervention ${index + 1} — ${itv.label || itv.code}`;
 }
 
-export default function InterventionsSection({ missionId, canEdit, interventions, catalog }: Props) {
+export default function InterventionsSection({ missionId, canEdit, interventions, catalog, onSaved }: Props) {
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -87,6 +96,15 @@ export default function InterventionsSection({ missionId, canEdit, interventions
 
   const [openRequestDialog, setOpenRequestDialog] = React.useState(false);
   const [preferredRequestInterventionId, setPreferredRequestInterventionId] = React.useState<number | null>(null);
+
+  // Accordéon — la première intervention est ouverte par défaut (screens/encodage/README.md).
+  const [openIds, setOpenIds] = React.useState<Set<number> | null>(null);
+  const toggleOpen = (id: number) => setOpenIds((prev) => {
+    const base = prev ?? new Set(interventions.length ? [interventions[0].id] : []);
+    const next = new Set(base);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   const [editLineTarget, setEditLineTarget] = React.useState<{ line: EncodingMaterialLine } | null>(null);
   const [deleteLineTarget, setDeleteLineTarget] = React.useState<{ line: EncodingMaterialLine } | null>(null);
@@ -111,20 +129,20 @@ export default function InterventionsSection({ missionId, canEdit, interventions
   const createInterventionMutation = useMutation({
     mutationFn: (body: { code: string; label: string; orderIndex: number }) =>
       createMissionIntervention(missionId, body),
-    onSuccess: () => { toast.success("Intervention ajoutée"); setOpenAddIntervention(false); invalidate(); },
+    onSuccess: () => { toast.success("Intervention ajoutée"); setOpenAddIntervention(false); invalidate(); onSaved?.(); },
     onError: (err: any) => toast.error(extractErrorMessage(err)),
   });
 
   const patchInterventionMutation = useMutation({
     mutationFn: (args: { interventionId: number; body: { code?: string; label?: string; orderIndex?: number } }) =>
       patchMissionIntervention(missionId, args.interventionId, args.body),
-    onSuccess: () => { toast.success("Intervention mise à jour"); setEditIntervention(null); invalidate(); },
+    onSuccess: () => { toast.success("Intervention mise à jour"); setEditIntervention(null); invalidate(); onSaved?.(); },
     onError: (err: any) => toast.error(extractErrorMessage(err)),
   });
 
   const deleteInterventionMutation = useMutation({
     mutationFn: (interventionId: number) => deleteMissionIntervention(missionId, interventionId),
-    onSuccess: () => { toast.success("Intervention supprimée"); setDeleteInterventionTarget(null); invalidate(); },
+    onSuccess: () => { toast.success("Intervention supprimée"); setDeleteInterventionTarget(null); invalidate(); onSaved?.(); },
     onError: (err: any) => toast.error(extractErrorMessage(err)),
   });
 
@@ -173,6 +191,7 @@ export default function InterventionsSection({ missionId, canEdit, interventions
       }));
       toast.success("Matériel ajouté");
       invalidate();
+      onSaved?.();
     },
     onError: (err: any, _body, ctx) => {
       if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
@@ -208,6 +227,7 @@ export default function InterventionsSection({ missionId, canEdit, interventions
         }),
       }));
       invalidate();
+      onSaved?.();
     },
     onError: (err: any, _args, ctx) => {
       if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
@@ -230,7 +250,7 @@ export default function InterventionsSection({ missionId, canEdit, interventions
       }));
       return { previous };
     },
-    onSuccess: () => { toast.success("Matériel supprimé"); invalidate(); },
+    onSuccess: () => { toast.success("Matériel supprimé"); invalidate(); onSaved?.(); },
     onError: (err: any, _lineId, ctx) => {
       if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
       toast.error(extractErrorMessage(err));
@@ -249,6 +269,7 @@ export default function InterventionsSection({ missionId, canEdit, interventions
     patchLineMutation.isPending || deleteLineMutation.isPending || createRequestMutation.isPending;
 
   const sorted = (interventions ?? []).slice().sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
+  const isOpen = (id: number) => (openIds ?? new Set(sorted.length ? [sorted[0].id] : [])).has(id);
 
   // Inline qty handlers
   const handleQtyChange = (line: EncodingMaterialLine, delta: 1 | -1) => {
@@ -262,22 +283,17 @@ export default function InterventionsSection({ missionId, canEdit, interventions
   };
 
   return (
-    <Stack spacing={2}>
+    <Stack spacing={1.75}>
       {/* Header */}
-      <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Typography variant="subtitle1" fontWeight={600}>
-          Interventions
-        </Typography>
-        {canEdit && (
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<AddIcon />}
-            onClick={() => setOpenAddIntervention(true)}
-            disabled={isBusy}
-          >
-            Ajouter
-          </Button>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ gap: "12px" }}>
+        <Box sx={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.07em", color: GREEN_700, whiteSpace: "nowrap", flexShrink: 0 }}>
+          INTERVENTIONS
+        </Box>
+        <Box sx={{ flex: 1, borderTop: "1px dashed", borderColor: "grey.300" }} />
+        {canEdit && sorted.length > 0 && (
+          <IconButton size="small" disabled={isBusy} onClick={() => setOpenAddIntervention(true)} sx={{ flexShrink: 0 }}>
+            <AddIcon fontSize="small" />
+          </IconButton>
         )}
       </Stack>
 
@@ -306,158 +322,180 @@ export default function InterventionsSection({ missionId, canEdit, interventions
       ) : (
         sorted.map((itv, idx) => {
           const lines = itv.materialLines ?? [];
+          const open = isOpen(itv.id);
 
           return (
-            <Paper key={itv.id} variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
-              {/* Intervention header */}
-              <Stack
-                direction="row"
-                alignItems="center"
-                sx={{ px: 2, py: 1.25, borderBottom: "1px solid", borderColor: "divider", bgcolor: "grey.50" }}
+            <Box key={itv.id} sx={{ background: "#fff", borderRadius: "16px", boxShadow: SHADOW_XS, overflow: "hidden" }}>
+              {/* En-tête accordéon */}
+              <Box
+                component="button"
+                type="button"
+                onClick={() => toggleOpen(itv.id)}
+                sx={{
+                  width: "100%", display: "flex", alignItems: "center", gap: "11px", padding: "15px 16px",
+                  border: "none", background: "transparent", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                }}
               >
-                <Typography variant="subtitle2" fontWeight={700} sx={{ flex: 1 }}>
+                <Box sx={{ width: 8, height: 8, borderRadius: "999px", background: GREEN_500, flexShrink: 0 }} />
+                <Box sx={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 700, color: TEXT_STRONG, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                   {buildInterventionTitle(itv, idx)}
-                </Typography>
-                {canEdit && (
-                  <Stack direction="row" spacing={0.5}>
-                    <Button
-                      size="small"
-                      variant="text"
-                      onClick={() => { setPreferredInterventionId(itv.id); setOpenAddMaterial(true); }}
-                      disabled={isBusy}
+                </Box>
+                <Box sx={{ fontSize: 12.5, color: TEXT_MUTED, whiteSpace: "nowrap", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
+                  {lines.length} matériel{lines.length > 1 ? "s" : ""}
+                </Box>
+                <svg
+                  width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
+                  style={{ transition: "transform 200ms", transform: open ? "rotate(180deg)" : "none", flexShrink: 0 }}
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </Box>
+
+              {open && (
+                <Box sx={{ px: "16px" }}>
+                  {lines.map((l) => (
+                    <Stack
+                      key={l.id}
+                      direction="row"
+                      alignItems="center"
+                      spacing={1}
+                      sx={{ py: "10px", borderTop: "1px dashed", borderColor: "grey.150" }}
                     >
-                      + Matériel
-                    </Button>
-                    <IconButton size="small" disabled={isBusy} onClick={() => setEditIntervention(itv)}>
-                      <EditIcon fontSize="small" />
-                    </IconButton>
-                    <IconButton size="small" disabled={isBusy} onClick={() => setDeleteInterventionTarget(itv)}>
-                      <DeleteIcon fontSize="small" />
-                    </IconButton>
-                  </Stack>
-                )}
-              </Stack>
+                      <Stack sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography variant="body2" noWrap sx={{ color: GRAY_800 }}>
+                          {l.item?.label ?? "—"}
+                          {l.item?.isImplant && (
+                            <Chip label="implant" size="small" sx={{ ml: 0.75, fontSize: "0.65rem", height: 16 }} />
+                          )}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" noWrap>
+                          {l.item?.firm?.name ?? "—"}
+                          {l.item?.referenceCode ? ` · ${l.item.referenceCode}` : ""}
+                        </Typography>
+                        {l.comment ? (
+                          <Typography variant="caption" color="text.disabled">
+                            {l.comment}
+                          </Typography>
+                        ) : null}
+                      </Stack>
 
-              {/* Material lines */}
-              <Box sx={{ px: 2, py: lines.length === 0 ? 1.5 : 0.5 }}>
-                {lines.length === 0 ? (
-                  <Typography variant="body2" color="text.secondary">
-                    Aucun matériel encodé
-                    {canEdit && (
-                      <>
-                        {" — "}
-                        <Box
-                          component="span"
-                          sx={{ color: "primary.main", cursor: "pointer", textDecoration: "underline" }}
-                          onClick={() => { setPreferredInterventionId(itv.id); setOpenAddMaterial(true); }}
-                        >
-                          Ajouter
-                        </Box>
-                      </>
-                    )}
-                  </Typography>
-                ) : (
-                  <Stack divider={<Divider />}>
-                    {lines.map((l) => (
-                      <Stack
-                        key={l.id}
-                        direction="row"
-                        alignItems="center"
-                        spacing={1}
-                        py={1}
-                      >
-                        {/* Info matériel */}
-                        <Stack sx={{ flex: 1, minWidth: 0 }}>
-                          <Typography variant="body2" noWrap>
-                            {l.item?.label ?? "—"}
-                            {l.item?.isImplant && (
-                              <Chip label="implant" size="small" sx={{ ml: 0.75, fontSize: "0.65rem", height: 16 }} />
-                            )}
+                      {canEdit ? (
+                        <Stack direction="row" alignItems="center" spacing={0.5}>
+                          <IconButton
+                            size="small"
+                            disabled={isBusy}
+                            onClick={() => handleQtyChange(l, -1)}
+                            sx={{ bgcolor: "grey.100", borderRadius: 1, p: 0.5 }}
+                          >
+                            <RemoveIcon fontSize="small" />
+                          </IconButton>
+
+                          <Typography
+                            variant="body2"
+                            fontWeight={700}
+                            sx={{ minWidth: 24, textAlign: "center", color: GRAY_500, fontVariantNumeric: "tabular-nums" }}
+                          >
+                            {displayQty(l.quantity)}
                           </Typography>
-                          <Typography variant="caption" color="text.secondary" noWrap>
-                            {l.item?.firm?.name ?? "—"}
-                            {l.item?.referenceCode ? ` · ${l.item.referenceCode}` : ""}
-                          </Typography>
-                          {l.comment ? (
-                            <Typography variant="caption" color="text.disabled">
-                              {l.comment}
-                            </Typography>
-                          ) : null}
+
+                          <IconButton
+                            size="small"
+                            disabled={isBusy}
+                            onClick={() => handleQtyChange(l, 1)}
+                            sx={{ bgcolor: "grey.100", borderRadius: 1, p: 0.5 }}
+                          >
+                            <AddIcon fontSize="small" />
+                          </IconButton>
+
+                          <IconButton
+                            size="small"
+                            disabled={isBusy}
+                            onClick={() => setEditLineTarget({ line: l })}
+                            sx={{ ml: 0.5 }}
+                          >
+                            <EditIcon fontSize="small" />
+                          </IconButton>
                         </Stack>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                          {displayQty(l.quantity)} {l.item?.unit ?? ""}
+                        </Typography>
+                      )}
+                    </Stack>
+                  ))}
 
-                        {/* Contrôles quantité */}
-                        {canEdit ? (
-                          <Stack direction="row" alignItems="center" spacing={0.5}>
-                            <IconButton
-                              size="small"
-                              disabled={isBusy}
-                              onClick={() => handleQtyChange(l, -1)}
-                              sx={{ bgcolor: "grey.100", borderRadius: 1, p: 0.5 }}
-                            >
-                              <RemoveIcon fontSize="small" />
-                            </IconButton>
-
-                            <Typography
-                              variant="body2"
-                              fontWeight={600}
-                              sx={{ minWidth: 28, textAlign: "center" }}
-                            >
-                              {displayQty(l.quantity)}
-                            </Typography>
-
-                            <IconButton
-                              size="small"
-                              disabled={isBusy}
-                              onClick={() => handleQtyChange(l, 1)}
-                              sx={{ bgcolor: "grey.100", borderRadius: 1, p: 0.5 }}
-                            >
-                              <AddIcon fontSize="small" />
-                            </IconButton>
-
-                            <IconButton
-                              size="small"
-                              disabled={isBusy}
-                              onClick={() => setEditLineTarget({ line: l })}
-                              sx={{ ml: 0.5 }}
-                            >
-                              <EditIcon fontSize="small" />
-                            </IconButton>
-                          </Stack>
-                        ) : (
-                          <Typography variant="body2" color="text.secondary">
-                            {displayQty(l.quantity)} {l.item?.unit ?? ""}
+                  {/* Demandes en attente ("À préciser") */}
+                  {(itv.materialItemRequests ?? []).map((req) => (
+                    <Stack
+                      key={req.id}
+                      direction="row"
+                      spacing={1}
+                      alignItems="center"
+                      sx={{ py: "10px", borderTop: "1px dashed", borderColor: "grey.150" }}
+                    >
+                      <Stack sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography variant="body2" noWrap>{req.label}</Typography>
+                        {req.referenceCode && (
+                          <Typography variant="caption" color="text.secondary" noWrap>
+                            Réf : {req.referenceCode}
                           </Typography>
                         )}
                       </Stack>
-                    ))}
-                  </Stack>
-                )}
-              </Box>
+                      <Box sx={{ display: "inline-flex", alignItems: "center", height: 20, px: "8px", borderRadius: "999px", background: "#FEF6E7", color: "#B7791F", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+                        À préciser
+                      </Box>
+                    </Stack>
+                  ))}
 
-              {/* Material item requests */}
-              {(itv.materialItemRequests ?? []).length > 0 && (
-                <Box sx={{ px: 2, pb: 1.5, borderTop: "1px solid", borderColor: "divider" }}>
-                  <Typography variant="overline" color="text.secondary" display="block" mt={1} mb={0.5}>
-                    Demandes en attente
-                  </Typography>
-                  <Stack spacing={0.75}>
-                    {(itv.materialItemRequests ?? []).map((req) => (
-                      <Stack key={req.id} direction="row" spacing={1} alignItems="center">
-                        <Stack sx={{ flex: 1 }}>
-                          <Typography variant="body2">{req.label}</Typography>
-                          {req.referenceCode && (
-                            <Typography variant="caption" color="text.secondary">
-                              Réf : {req.referenceCode}
-                            </Typography>
-                          )}
-                        </Stack>
-                        <Chip label="En attente" size="small" color="warning" variant="outlined" />
-                      </Stack>
-                    ))}
-                  </Stack>
+                  {lines.length === 0 && (itv.materialItemRequests ?? []).length === 0 && (
+                    <Typography variant="body2" color="text.secondary" sx={{ py: "10px" }}>
+                      Aucun matériel encodé
+                    </Typography>
+                  )}
+
+                  {canEdit && (
+                    <Box
+                      component="button"
+                      type="button"
+                      onClick={() => { setPreferredInterventionId(itv.id); setOpenAddMaterial(true); }}
+                      disabled={isBusy}
+                      sx={{
+                        width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", height: 46,
+                        border: "none", borderTop: "1px dashed", borderColor: "grey.150", background: "transparent",
+                        color: GREEN_700, fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: "pointer",
+                        "&:hover": { background: GREEN_50 },
+                      }}
+                    >
+                      <AddIcon sx={{ fontSize: 16 }} />
+                      Ajouter du matériel
+                    </Box>
+                  )}
+
+                  {canEdit && (
+                    <Stack direction="row" spacing={2} sx={{ py: "10px", borderTop: "1px dashed", borderColor: "grey.150" }}>
+                      <Box
+                        component="button"
+                        type="button"
+                        onClick={() => setEditIntervention(itv)}
+                        disabled={isBusy}
+                        sx={{ border: "none", background: "none", p: 0, color: GRAY_500, fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, cursor: "pointer", textDecoration: "underline" }}
+                      >
+                        Modifier l'intervention
+                      </Box>
+                      <Box
+                        component="button"
+                        type="button"
+                        onClick={() => setDeleteInterventionTarget(itv)}
+                        disabled={isBusy}
+                        sx={{ border: "none", background: "none", p: 0, color: "error.main", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, cursor: "pointer", textDecoration: "underline" }}
+                      >
+                        Supprimer
+                      </Box>
+                    </Stack>
+                  )}
                 </Box>
               )}
-            </Paper>
+            </Box>
           );
         })
       )}
