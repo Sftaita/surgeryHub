@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -12,6 +12,7 @@ vi.mock("../../sites/api/sites.api", () => ({
 
 vi.mock("../../planning-manager/api/planning.api", () => ({
   listPlanningVersions: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 10 }),
+  getAbsences: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("../../../ui/toast/useToast", () => ({
@@ -39,6 +40,7 @@ vi.mock("../../../api/apiClient", () => ({
 }));
 
 import * as planningV2Api from "../api/planningV2.api";
+import * as planningManagerApi from "../../planning-manager/api/planning.api";
 
 function line(overrides: Partial<PreviewLineV2>): PreviewLineV2 {
   return {
@@ -217,5 +219,69 @@ describe("GeneratePlanningTab — réaffectation d'instrumentiste (Preview Edito
 
     await waitFor(() => expect(screen.getAllByText("Marc Petit").length).toBeGreaterThanOrEqual(2));
     expect(screen.getAllByText("Édité")).toHaveLength(2);
+  });
+});
+
+describe("GeneratePlanningTab — indicateurs congé / déjà affecté dans le sélecteur", () => {
+  it("affiche un badge 'En congé' pour un instrumentiste absent ce jour-là", async () => {
+    const user = userEvent.setup();
+    (planningManagerApi.getAbsences as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { id: 1, user: { id: 9, name: "Diane Lefebvre", role: "INSTRUMENTIST" }, dateStart: "2026-06-01", dateEnd: "2026-06-01", reason: null, createdAt: "2026-05-01" },
+    ]);
+    const preview: PreviewResponseV2 = {
+      lines: [line({ status: "UNCOVERED" })],
+      summary: { total: 1, covered: 0, uncovered: 1, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "v-1",
+      generatedAt: "2026-06-01T00:00:00Z",
+    };
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
+
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+    await screen.findByText("À pourvoir");
+    await user.click(screen.getByText("À pourvoir"));
+
+    const popoverLabel = await screen.findByText("Instrumentiste");
+    const input = popoverLabel.closest("div")!.querySelector("input")!;
+    await user.click(input);
+
+    const dianeOption = (await screen.findAllByRole("option")).find((o) => o.textContent?.includes("Diane Lefebvre"))!;
+    expect(within(dianeOption).getByText("En congé")).toBeInTheDocument();
+  });
+
+  it("affiche 'Déjà affecté ailleurs' et libère l'autre poste au moment de la réaffectation", async () => {
+    const user = userEvent.setup();
+    const preview: PreviewResponseV2 = {
+      lines: [
+        line({ postId: 1, status: "COVERED", instrumentistId: 9, instrumentistName: "Diane Lefebvre", startTime: "08:00", endTime: "13:00" }),
+        line({ postId: 2, status: "UNCOVERED", startTime: "14:00", endTime: "18:00" }),
+      ],
+      summary: { total: 2, covered: 1, uncovered: 1, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "v-1",
+      generatedAt: "2026-06-01T00:00:00Z",
+    };
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
+
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+    await screen.findByText("À pourvoir");
+
+    // Only the UNCOVERED line's trigger reads "À pourvoir" — the COVERED one already shows a name.
+    await user.click(screen.getByText("À pourvoir"));
+    const popoverLabel = await screen.findByText("Instrumentiste");
+    const input = popoverLabel.closest("div")!.querySelector("input")!;
+    await user.click(input);
+
+    const dianeOption = (await screen.findAllByRole("option")).find((o) => o.textContent?.includes("Diane Lefebvre"))!;
+    expect(within(dianeOption).getByText("Déjà affecté ailleurs")).toBeInTheDocument();
+    await user.click(dianeOption);
+
+    // Diane now covers the previously-uncovered slot; her original slot is freed instead of
+    // silently double-booking her, and both lines are marked as locally edited.
+    await waitFor(() => expect(screen.getAllByText("Édité")).toHaveLength(2));
+    expect(screen.getAllByText("À pourvoir")).toHaveLength(1);
+    expect(screen.getAllByText("Diane Lefebvre").length).toBeGreaterThanOrEqual(1);
   });
 });

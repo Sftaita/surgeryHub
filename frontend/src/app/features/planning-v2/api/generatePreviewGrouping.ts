@@ -198,6 +198,28 @@ export function getFreedInstrumentists(lines: PreviewLineV2[], target: PreviewLi
   return Array.from(freed.values());
 }
 
+/**
+ * The other active line (if any) on the same day where `instrumentistId` is already
+ * assigned — the reciprocal of getFreedInstrumentists(): picking this person for a new
+ * slot the same day means removing them from wherever they were already placed, since
+ * a person can't be in two places on the same day.
+ */
+export function findSameDayAssignmentElsewhere(
+  lines: PreviewLineV2[],
+  target: PreviewLineV2,
+  instrumentistId: number,
+): PreviewLineV2 | null {
+  return (
+    lines.find(
+      (l) =>
+        l.date === target.date &&
+        l.instrumentistId === instrumentistId &&
+        l.status !== "SKIPPED" &&
+        lineKeyV2(l) !== lineKeyV2(target),
+    ) ?? null
+  );
+}
+
 const DAY_NAMES = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
 const MONTH_SHORT = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
 

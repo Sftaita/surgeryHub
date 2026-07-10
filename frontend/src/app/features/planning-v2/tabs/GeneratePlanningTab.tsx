@@ -17,18 +17,19 @@ import { useNavigate } from "react-router-dom";
 
 import { fetchSites } from "../../sites/api/sites.api";
 import { getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2, extractErrorV2 } from "../api/planningV2.api";
-import { listPlanningVersions } from "../../planning-manager/api/planning.api";
+import { listPlanningVersions, getAbsences } from "../../planning-manager/api/planning.api";
 import type { PreviewLineStatus, PreviewLineV2, PreviewResponseV2 } from "../api/planningV2.types";
 import {
   buildMonthChipIds, monthIdToYearMonth, mergePreviewResponses,
   aggregateGenerated, aggregateDeploy, type AggregatedGenerated, type AggregatedDeploy,
   severityOf, filterLines, countBySeverity, type SeverityFilter,
   groupLinesByDayAndSurgeon, formatDayHeader,
-  lineKeyV2, getFreedInstrumentists,
+  lineKeyV2, getFreedInstrumentists, findSameDayAssignmentElsewhere,
 } from "../api/generatePreviewGrouping";
 import { useToast } from "../../../ui/toast/useToast";
 import { SearchableSelect, type SearchableOption } from "../components/SearchableSelect";
 import { PersonAvatar, EmptyAvatar } from "../../../ui/avatar/PersonAvatar";
+import { buildProfilePictureUrl } from "../../manager-instrumentists/utils/instrumentists.utils";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 import { apiClient } from "../../../api/apiClient";
 
@@ -82,18 +83,36 @@ export function GeneratePlanningTab() {
   const [editedLines, setEditedLines] = React.useState<Map<string, Partial<PreviewLineV2>>>(new Map());
   const [selectedKeys, setSelectedKeys] = React.useState<Set<string>>(new Set());
   const [bulkInstrumentistId, setBulkInstrumentistId] = React.useState<number | "">("");
-  const [editPopover, setEditPopover] = React.useState<{ anchorEl: HTMLElement; key: string } | null>(null);
+  const [editPopover, setEditPopover] = React.useState<{ anchorEl: HTMLElement; key: string; date: string } | null>(null);
 
   const instrumentistsQuery = useQuery({
     queryKey: ["instrumentists-all"],
     queryFn: async () => {
       const r = await apiClient.get("/api/instrumentists", { params: { active: true } });
-      return r.data.items as { id: number; displayName: string }[];
+      return r.data.items as { id: number; displayName: string; profilePicturePath?: string | null }[];
     },
     staleTime: 5 * 60_000,
   });
   const instrumentists = instrumentistsQuery.data ?? [];
-  const instrumentistOptions: SearchableOption[] = instrumentists.map((i) => ({ id: i.id, label: i.displayName }));
+  const instrumentistOptions: SearchableOption[] = instrumentists.map((i) => ({
+    id: i.id, label: i.displayName, avatarUrl: buildProfilePictureUrl(i.profilePicturePath) ?? null,
+  }));
+
+  // Absences overlapping the day of the line currently open in the reassignment popover —
+  // refetched per popover open since it's scoped to one specific date, not the whole preview.
+  const absencesQuery = useQuery({
+    queryKey: ["absences-on-day", editPopover?.date],
+    queryFn: () => getAbsences({ from: editPopover!.date, to: editPopover!.date }),
+    enabled: !!editPopover,
+    staleTime: 60_000,
+  });
+  const absentInstrumentistIds = React.useMemo(() => {
+    const ids = new Set<number>();
+    for (const a of absencesQuery.data ?? []) {
+      if (a.user.role === "INSTRUMENTIST") ids.add(a.user.id);
+    }
+    return ids;
+  }, [absencesQuery.data]);
 
   const sitesQuery = useQuery({ queryKey: ["sites"], queryFn: fetchSites });
   const groupsQuery = useQuery({ queryKey: ["planning-v2", "site-groups"], queryFn: getSiteGroups });
@@ -256,6 +275,13 @@ export function GeneratePlanningTab() {
         instrumentistName: inst?.displayName ?? null,
         status: line.status === "SKIPPED" ? "UNCOVERED" : (line.status === "UNCOVERED" || line.status === "CONFLICT" ? "COVERED" : line.status),
       });
+
+      // They can't be in two places the same day — clear their other slot instead of
+      // silently double-booking them (non-blocking: the reassignment itself still goes through).
+      const elsewhere = findSameDayAssignmentElsewhere(effectiveLines, line, newId);
+      if (elsewhere) {
+        handleEditLine(lineKeyV2(elsewhere), { instrumentistId: null, instrumentistName: null, status: "UNCOVERED" });
+      }
     }
   }
 
@@ -301,6 +327,21 @@ export function GeneratePlanningTab() {
   }
 
   const editPopoverLine = editPopover ? effectiveLines.find((l) => lineKeyV2(l) === editPopover.key) ?? null : null;
+
+  // Per-option annotations scoped to the line currently open in the popover — absence and
+  // same-day-elsewhere are both relative to *that* line's date, not a global property.
+  const popoverInstrumentistOptions: SearchableOption[] = React.useMemo(() => {
+    if (!editPopoverLine) return instrumentistOptions;
+    return instrumentistOptions.map((opt) => {
+      const absent = absentInstrumentistIds.has(opt.id);
+      const elsewhere = !absent && findSameDayAssignmentElsewhere(effectiveLines, editPopoverLine, opt.id);
+      return {
+        ...opt,
+        muted: absent,
+        badge: absent ? "En congé" : elsewhere ? "Déjà affecté ailleurs" : undefined,
+      };
+    });
+  }, [instrumentistOptions, editPopoverLine, absentInstrumentistIds, effectiveLines]);
 
   const monthsLabel = selectedMonthIds.length === 0
     ? "Sélectionnez au moins un mois"
@@ -609,7 +650,7 @@ export function GeneratePlanningTab() {
                               </Typography>
                               <Stack
                                 direction="row" alignItems="center" spacing={0.9} sx={{ flex: 1, minWidth: 0, cursor: "pointer", borderRadius: planningV2Radii.button, px: 0.75, py: 0.4, mx: -0.75, "&:hover": { bgcolor: "#F1F4F7" } }}
-                                onClick={(e) => setEditPopover({ anchorEl: e.currentTarget, key })}
+                                onClick={(e) => setEditPopover({ anchorEl: e.currentTarget, key, date: line.date })}
                               >
                                 {line.instrumentistName ? (
                                   <>
@@ -722,11 +763,16 @@ export function GeneratePlanningTab() {
           <Box sx={{ p: 2, width: 300 }}>
             <SearchableSelect
               label="Instrumentiste"
-              options={instrumentistOptions}
+              options={popoverInstrumentistOptions}
               value={editPopoverLine.instrumentistId}
               onChange={(id) => { handleInstrumentistChange(editPopoverLine, id); setEditPopover(null); }}
               placeholder="Rechercher un instrumentiste…"
             />
+            {absencesQuery.isLoading && (
+              <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary, mt: 0.5 }}>
+                Vérification des congés…
+              </Typography>
+            )}
             {(() => {
               const freed = getFreedInstrumentists(effectiveLines, editPopoverLine);
               if (freed.length === 0) return null;

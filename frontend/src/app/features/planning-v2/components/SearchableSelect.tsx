@@ -3,11 +3,18 @@ import { Autocomplete, Box, TextField, Typography } from "@mui/material";
 import SearchOutlinedIcon from "@mui/icons-material/SearchOutlined";
 
 import { planningV2Colors, planningV2Radii } from "../theme/tokens";
+import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 
 export interface SearchableOption {
   id: number;
   label: string;
   sub?: string;
+  /** Present (even if null, for "no photo") → renders a PersonAvatar before the label. */
+  avatarUrl?: string | null;
+  /** Greyed-out styling — e.g. on leave that day, still selectable, just visually deprioritized. */
+  muted?: boolean;
+  /** Small informational pill after the label — e.g. "En congé", "Déjà affecté ailleurs". */
+  badge?: string;
 }
 
 interface Props {
@@ -52,10 +59,24 @@ export function SearchableSelect({ label, placeholder, options, value, onChange,
         isOptionEqualToValue={(o, v) => o.id === v.id}
         noOptionsText="Aucun résultat"
         renderOption={(props, option) => (
-          <Box component="li" {...props} key={option.id} sx={{ display: "flex", flexDirection: "column", alignItems: "flex-start !important" }}>
-            <Typography sx={{ fontSize: 13.5 }}>{option.label}</Typography>
-            {option.sub && (
-              <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary }}>{option.sub}</Typography>
+          <Box component="li" {...props} key={option.id} sx={{ display: "flex", alignItems: "center", gap: 1, opacity: option.muted ? 0.5 : 1 }}>
+            {option.avatarUrl !== undefined && <PersonAvatar name={option.label} photoUrl={option.avatarUrl} size="xs" />}
+            <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-start", flex: 1, minWidth: 0 }}>
+              <Typography sx={{ fontSize: 13.5 }}>{option.label}</Typography>
+              {option.sub && (
+                <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary }}>{option.sub}</Typography>
+              )}
+            </Box>
+            {option.badge && (
+              <Typography
+                sx={{
+                  fontSize: 10, fontWeight: 700, flexShrink: 0, whiteSpace: "nowrap",
+                  color: planningV2Colors.warnFg, bgcolor: planningV2Colors.warnBg,
+                  px: 0.9, py: 0.3, borderRadius: planningV2Radii.pill,
+                }}
+              >
+                {option.badge}
+              </Typography>
             )}
           </Box>
         )}

@@ -4,7 +4,7 @@ import {
   mergePreviewResponses, aggregateGenerated, aggregateDeploy,
   severityOf, filterLines, countBySeverity,
   groupLinesByDayAndSurgeon, formatDayHeader,
-  lineKeyV2, getFreedInstrumentists,
+  lineKeyV2, getFreedInstrumentists, findSameDayAssignmentElsewhere,
 } from "./generatePreviewGrouping";
 import type { PreviewLineV2, PreviewResponseV2, GeneratedPlanningV2 } from "./planningV2.types";
 
@@ -199,5 +199,35 @@ describe("getFreedInstrumentists()", () => {
     const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED", startTime: "08:00", endTime: "13:00" });
 
     expect(getFreedInstrumentists([freedLine, target], target)).toEqual([]);
+  });
+});
+
+describe("findSameDayAssignmentElsewhere()", () => {
+  it("finds another active line the same day already using this instrumentist", () => {
+    const busyLine = line({ date: "2026-06-01", postId: 1, status: "COVERED", instrumentistId: 7 });
+    const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED" });
+
+    const found = findSameDayAssignmentElsewhere([busyLine, target], target, 7);
+    expect(found).not.toBeNull();
+    expect(found?.postId).toBe(1);
+  });
+
+  it("ignores a SKIPPED line even if it references the same instrumentist", () => {
+    const skippedLine = line({ date: "2026-06-01", postId: 1, status: "SKIPPED", instrumentistId: 7 });
+    const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED" });
+
+    expect(findSameDayAssignmentElsewhere([skippedLine, target], target, 7)).toBeNull();
+  });
+
+  it("ignores assignments on a different day", () => {
+    const otherDay = line({ date: "2026-06-02", postId: 1, status: "COVERED", instrumentistId: 7 });
+    const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED" });
+
+    expect(findSameDayAssignmentElsewhere([otherDay, target], target, 7)).toBeNull();
+  });
+
+  it("never matches the target line itself", () => {
+    const target = line({ date: "2026-06-01", postId: 2, status: "COVERED", instrumentistId: 7 });
+    expect(findSameDayAssignmentElsewhere([target], target, 7)).toBeNull();
   });
 });

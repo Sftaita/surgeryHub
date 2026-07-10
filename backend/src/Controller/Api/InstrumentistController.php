@@ -153,6 +153,7 @@ final class InstrumentistController extends AbstractController
                 defaultCurrency: $u->getDefaultCurrency(),
                 displayName: $displayName,
                 specialties: $u->getSpecialties() ?? [],
+                profilePicturePath: $u->getProfilePicturePath(),
             );
         }, $items);
 

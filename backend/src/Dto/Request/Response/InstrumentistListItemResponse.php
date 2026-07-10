@@ -14,6 +14,7 @@ final class InstrumentistListItemResponse
         public ?string $defaultCurrency,
         public string $displayName,
         public array $specialties = [],
+        public ?string $profilePicturePath = null,
     ) {
     }
 }
