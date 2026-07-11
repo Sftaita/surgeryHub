@@ -410,7 +410,23 @@ export function GeneratePlanningTab() {
   }
 
   function handleCancelMission(line: PreviewLineV2) {
-    handleEditLine(lineKeyV2(line), { status: "SKIPPED" });
+    // A line just drafted in this Modification session (existingMissionId null, staged in
+    // newLines — never persisted) has nothing to "cancel" server-side: remove it outright
+    // instead of marking it SKIPPED, which would still submit it to apply-modifications as
+    // a brand-new mission (createFromLine() branches only on existingMissionId, not status).
+    const key = lineKeyV2(line);
+    if (isModification && newLines.some((l) => lineKeyV2(l) === key)) {
+      setNewLines((prev) => prev.filter((l) => lineKeyV2(l) !== key));
+      setEditedLines((prev) => {
+        if (!prev.has(key)) return prev;
+        const next = new Map(prev);
+        next.delete(key);
+        return next;
+      });
+      setSelectedLineKey((prev) => (prev === key ? null : prev));
+      return;
+    }
+    handleEditLine(key, { status: "SKIPPED" });
   }
 
   function handleReleaseMission(line: PreviewLineV2) {

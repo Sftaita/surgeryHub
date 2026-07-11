@@ -305,6 +305,45 @@ final class PlanningModificationControllerTest extends WebTestCase
         self::assertSame($instr->getId(), $created[0]->getInstrumentist()?->getId());
     }
 
+    public function test_new_line_marked_skipped_is_not_created(): void
+    {
+        // A draft line the user removed client-side before submitting (frontend now strips it
+        // from the batch entirely — see GeneratePlanningTab::handleCancelMission) must never
+        // create a Mission even if a stale/buggy client still sends it with status SKIPPED.
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+
+        $withdrawnLine = [
+            'date' => '2026-09-18', 'postId' => -1, 'surgeonId' => $surgeon->getId(), 'surgeonName' => '',
+            'missionType' => 'BLOCK', 'startTime' => '08:00', 'endTime' => '13:00',
+            'siteId' => $site->getId(), 'siteName' => '', 'instrumentistId' => null,
+            'instrumentistName' => null, 'status' => 'SKIPPED', 'existingMissionId' => null,
+            'existingInstrumentistId' => null, 'existingInstrumentistName' => null, 'freedFrom' => false,
+        ];
+
+        $response = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            ['lines' => [$withdrawnLine]],
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame(1, $body['unchanged'] ?? null, json_encode($body));
+        self::assertSame(0, $body['created'] ?? null, json_encode($body));
+
+        $this->em->clear();
+        $created = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->setParameter('v', $version->getId())
+            ->getQuery()->getResult();
+        self::assertCount(0, $created, 'A withdrawn draft line must never create a Mission.');
+    }
+
     // ── No-op ─────────────────────────────────────────────────────────────────
 
     public function test_unchanged_line_is_reported_as_unchanged_and_writes_no_audit_event(): void

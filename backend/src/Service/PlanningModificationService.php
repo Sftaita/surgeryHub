@@ -58,6 +58,14 @@ class PlanningModificationService
             $existingMissionId = $line['existingMissionId'] ?? null;
 
             if ($existingMissionId === null) {
+                // A draft line withdrawn client-side before submission (never persisted) has
+                // no "existing" state to compare against — status alone (never assigned by
+                // createFromLine()) is the only signal available. Guards against ever
+                // creating a mission the user explicitly removed from the batch.
+                if (($line['status'] ?? null) === 'SKIPPED') {
+                    $counts['unchanged']++;
+                    continue;
+                }
                 // New mission added in Modification mode.
                 $mission = $this->createFromLine($version, $line, $actor);
                 $touchedMissionIds[$mission->getId()] = true;

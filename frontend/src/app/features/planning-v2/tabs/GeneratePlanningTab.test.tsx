@@ -392,6 +392,46 @@ describe("GeneratePlanningTab — Mode Modification (éditeur unifié)", () => {
     expect(lines[0]).toMatchObject({ existingMissionId: 501, startTime: "09:00" });
   });
 
+  it("supprime une mission fraîchement ajoutée en mode Modification au lieu de l'annuler (jamais envoyée au redéploiement)", { timeout: 10000 }, async () => {
+    mockHistoryWithOneVersion();
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+
+    const dateField = await screen.findByLabelText("Date");
+    await user.type(dateField, "2026-09-20");
+
+    const surgeonLabel = screen.getByText("Chirurgien");
+    const surgeonInput = surgeonLabel.closest("div")!.querySelector("input")!;
+    await user.click(surgeonInput);
+    await user.click(await screen.findByText("Dr Martin"));
+
+    // "Delta" also already appears as the existing mission's site badge in the background
+    // list, so scope the click to the dropdown option (role) rather than a plain text match.
+    const siteLabel = screen.getByText("Site");
+    const siteInput = siteLabel.closest("div")!.querySelector("input")!;
+    await user.click(siteInput);
+    await user.click(await screen.findByRole("option", { name: "Delta" }));
+
+    // Submit the draft — the "Ajouter" button inside the create form (not the toolbar one).
+    const submitButtons = screen.getAllByRole("button", { name: "Ajouter" });
+    await user.click(submitButtons[submitButtons.length - 1]);
+
+    // The new draft line is now selected in the inspector — its delete action reads
+    // "Supprimer" (never persisted server-side, nothing to "cancel").
+    const deleteBtn = await screen.findByRole("button", { name: "Supprimer" });
+    await user.click(deleteBtn);
+
+    // The line is gone entirely — not just crossed out (marking it SKIPPED instead would have
+    // left a stale edit behind, keeping "Redéployer" enabled with nothing genuine to submit).
+    expect(screen.queryByRole("button", { name: "Supprimer" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Redéployer" })).toBeDisabled();
+  });
+
   it("quitte le mode Modification et retrouve l'écran de génération", async () => {
     mockHistoryWithOneVersion();
     const user = userEvent.setup();

@@ -224,7 +224,9 @@ export function Inspector({
                 onClick={onCancelMission}
                 sx={{ justifyContent: "flex-start", textTransform: "none", fontSize: 12.5 }}
               >
-                {isModification ? "Annuler la mission" : "Ignorer cette ligne"}
+                {isModification
+                  ? (line.existingMissionId === null ? "Supprimer" : "Annuler la mission")
+                  : "Ignorer cette ligne"}
               </Button>
               <Button
                 size="small" color="inherit" disabled={!isDirty} startIcon={<CloseOutlinedIcon sx={{ fontSize: 15 }} />}
