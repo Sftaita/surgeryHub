@@ -5,49 +5,85 @@ body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height
 .container { max-width: 600px; margin: 0 auto; padding: 24px; }
 .header { border-bottom: 2px solid #1565C0; padding-bottom: 12px; margin-bottom: 20px; }
 .title { color: #1565C0; font-size: 18px; font-weight: bold; }
-.info-box { background: #fff8e1; border-left: 4px solid #f9a825; padding: 12px 16px; margin: 16px 0; border-radius: 0 4px 4px 0; }
-.section-title { font-size: 15px; font-weight: bold; margin: 20px 0 8px; color: #333; }
+h3 { font-size: 15px; margin: 20px 0 8px; }
+h3.added    { color: #2e7d32; }
+h3.removed  { color: #c62828; }
+h3.modified { color: #e65100; }
+h3.uncovered{ color: #555; }
 ul { margin: 0 0 12px; padding-left: 20px; }
 li { margin-bottom: 6px; }
 .sub { color: #666; font-size: 12px; margin-left: 4px; }
-.note { color: #555; font-style: italic; margin-top: 16px; }
 .footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
 </style></head>
 <body>
 <div class="container">
   <div class="header">
-    <div class="title">SurgicalHub — Missions en attente d'affectation</div>
+    <div class="title">SurgicalHub — Récapitulatif planning</div>
   </div>
 
   <p>Bonjour Dr {% if surgeon.firstname %}{{ surgeon.firstname }} {{ surgeon.lastname }}{% else %}{{ surgeon.email }}{% endif %},</p>
+  <p>Votre planning a été modifié. Voici les changements du <strong>{{ periodFrom|date('d/m/Y') }}</strong> au <strong>{{ periodTo|date('d/m/Y') }}</strong> qui concernent vos interventions.</p>
 
-  <div class="info-box">
-    Votre planning du <strong>{{ periodFrom|date('d/m/Y') }}</strong> au <strong>{{ periodTo|date('d/m/Y') }}</strong>
-    comporte <strong>{{ uncovered|length }} mission(s) sans instrumentiste affectée</strong>.
-  </div>
-
-  <p>
-    Ces missions ont été proposées aux instrumentistes du site sous forme de missions disponibles.<br>
-    Dès qu'une mission est acceptée, vous serez automatiquement informé.
-  </p>
-
-  <p class="note">
-    En l'absence de prise en charge, il vous appartient d'organiser l'instrumentation avec la firme si nécessaire.
-  </p>
-
-  <p class="section-title">Missions en attente d'affectation vous concernant :</p>
+  {% if added %}
+  <h3 class="added">✅ Nouvelle(s) intervention(s) ({{ added|length }})</h3>
   <ul>
-    {% for m in uncovered %}
+    {% for m in added %}
     <li>
       <strong>{{ m.date|date('d/m/Y') }}</strong>
-      — {{ m.period == 'AM' ? 'Matin' : 'Après-midi' }}
+      {{ m.period == 'AM' ? 'Matin' : 'Après-midi' }}
+      {% if m.siteName %}<span class="sub">— {{ m.siteName }}</span>{% endif %}
       <span class="sub">{{ m.startAt }}–{{ m.endAt }}</span>
+      {% if m.instrumentistName %}<br><span class="sub">Instrumentiste : {{ m.instrumentistName }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if modified %}
+  <h3 class="modified">🔄 Intervention(s) modifiée(s) ({{ modified|length }})</h3>
+  <ul>
+    {% for entry in modified %}
+    <li>
+      <strong>Intervention du {{ entry.mission.date|date('d/m/Y') }}</strong>
+      {% if entry.mission.siteName %}<span class="sub">({{ entry.mission.siteName }})</span>{% endif %}
+      {% if entry.changes.schedule is defined %}
+        <br><span class="sub">Horaire : {{ entry.changes.schedule.from.startAt }}–{{ entry.changes.schedule.from.endAt }} → {{ entry.changes.schedule.to.startAt }}–{{ entry.changes.schedule.to.endAt }}</span>
+      {% endif %}
+      {% if entry.changes.instrumentist is defined %}
+        <br><span class="sub">Instrumentiste : {{ entry.changes.instrumentist.from ? entry.changes.instrumentist.from.name : 'Aucun' }} → {{ entry.changes.instrumentist.to ? entry.changes.instrumentist.to.name : 'Aucun' }}</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if removed %}
+  <h3 class="removed">❌ Intervention(s) annulée(s) ({{ removed|length }})</h3>
+  <ul>
+    {% for m in removed %}
+    <li>
+      <strong>{{ m.date|date('d/m/Y') }}</strong>
+      {{ m.period == 'AM' ? 'Matin' : 'Après-midi' }}
       {% if m.siteName %}<span class="sub">— {{ m.siteName }}</span>{% endif %}
     </li>
     {% endfor %}
   </ul>
+  {% endif %}
 
-  <p>Le planning complet est joint à cet email en pièce jointe (PDF).</p>
+  {% if uncovered %}
+  <h3 class="uncovered">⚠️ En attente d'instrumentiste ({{ uncovered|length }})</h3>
+  <ul>
+    {% for m in uncovered %}
+    <li>
+      <strong>{{ m.date|date('d/m/Y') }}</strong>
+      {{ m.period == 'AM' ? 'Matin' : 'Après-midi' }}
+      {% if m.siteName %}<span class="sub">— {{ m.siteName }}</span>{% endif %}
+      <span class="sub">{{ m.startAt }}–{{ m.endAt }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="sub">Dès qu'un instrumentiste sera affecté, vous serez automatiquement informé.</p>
+  {% endif %}
 
   <div class="footer">SurgicalHub — document confidentiel</div>
 </div>

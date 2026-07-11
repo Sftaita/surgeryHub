@@ -732,10 +732,11 @@ EntityManager::flush()            — chaque effet de bord isolé dans try/catch
 | Chirurgien | ASSIGNED → OPEN (release) | `SURGEON_POST_UNCOVERED` | `MissionLifecycleChangedMessageHandler` (Batch 15E) |
 | Instrumentiste | Déploiement initial | `PLANNING_DEPLOYED_INSTRUMENTIST` (avec PDF) | `PlanningDeployPdfsMessageHandler` |
 | Instrumentiste éligible | Mission mise en OPEN au déploiement | `OPEN_MISSION_AVAILABLE` | `PlanningDeployPdfsMessageHandler` (Batch 15D) |
-| Instrumentiste | Changement post-deploy | `PLANNING_MISSION_REASSIGNED` / `CANCELLED` / `ADDED` / `UPDATED` | `MissionLifecycleChangedMessageHandler` (Batch 15F+) |
+| Instrumentiste | Changement post-deploy (action unitaire hors Mode Modification) | `PLANNING_MISSION_REASSIGNED` / `CANCELLED` / `ADDED` / `UPDATED` | `MissionLifecycleChangedMessageHandler` (Batch 15F+) |
+| Instrumentiste / Chirurgien réellement concernés | Redéploiement après Mode Modification (lot d'édits) | Un seul email récapitulatif ciblé, jamais de global resend | `PlanningModificationService` → `PlanningChangeSummaryService` (Batch 15K) |
 | Manager (déployeur) | Déploiement initial | `PLANNING_DEPLOYED_MANAGER` (email + in-app, avec PDF global) | `PlanningDeployPdfsMessageHandler` |
 
-Exactement UN email de déploiement par destinataire (D-058) — `PlanningChangeSummaryService` (récapitulatif de changements) est décorrélé du déploiement initial, réservé à un futur déclencheur post-publication.
+Exactement UN email de déploiement par destinataire (D-058). `PlanningChangeSummaryService` (récapitulatif de changements) était écrit mais non câblé jusqu'au Batch 15K, qui le déclenche depuis `PlanningModificationService` : un planning déjà déployé peut être édité dans l'éditeur unifié (§ ci-dessous), et son redéploiement calcule un diff avant/après pour n'envoyer un récapitulatif qu'aux personnes dont au moins une mission a réellement changé — jamais un renvoi global aux chirurgiens/instrumentistes non concernés.
 
 Voir D-052, D-053, D-054, D-055, D-056, D-057, D-058, D-059 dans `docs/decisions.md` pour le détail des payloads et des règles.
 
@@ -747,6 +748,34 @@ Voir D-052, D-053, D-054, D-055, D-056, D-057, D-058, D-059 dans `docs/decisions
 | `MissionClaim` (entité) | Enregistrement **append-only** du moment où une mission a été revendiquée (`mission`, `instrumentist`, `claimedAt`). Sert uniquement l'historique/reporting/statistiques de charge par instrumentiste. | Participer à une décision métier — plus jamais consultée comme garde d'état par `claim()` ou tout autre service. |
 | `AuditEvent` | Journal général et transverse de tous les changements post-déploiement (claim, release, reassign, cancel — D-055), avec acteur/horodatage/payload snapshot. Source de `GET /api/missions/{id}/audit` et de la timeline `GET /api/planning/versions/{id}/history`. | Remplacer `MissionClaim` pour des requêtes typées/structurées ciblées sur les claims (payload JSON générique, pas des colonnes dédiées). |
 | `MissionEligibilityService` | Seule source de vérité pour l'éligibilité (D-057), progressivement mission-centrique (D-059) : la question canonique est « qui est éligible pour **cette** mission ? », pas « pour ce site ». | Dupliquer sa logique ailleurs (Voter, handlers) — tout délègue à ce service. |
+
+---
+
+### Éditeur unifié Génération / Modification (Batch 15K)
+
+Planning V2 s'appuie sur **un seul composant éditeur** (`GeneratePlanningTab.tsx`) pour les
+deux usages : générer un nouveau planning et modifier un planning déjà déployé. L'état
+`PlanningEditorMode = "generation" | "modification"` est dérivé (`modificationVersionId
+!== null`), jamais un composant séparé — même liste groupée jour/chirurgien, même
+inspecteur permanent (panneau latéral toujours monté, pas de popover), même système de
+sélection/filtres/actions groupées des deux côtés.
+
+Seuls changent, selon le mode :
+- **Source des lignes** : Génération lit le `Preview` (calcul pur, rien en base) ; Modification
+  lit les vraies `Mission` de la `PlanningVersion` éditée (`GET /api/missions?planningVersionId=`),
+  adaptées dans la même forme `PreviewLineV2` — l'utilisateur retrouve exactement son planning.
+- **Palette et libellés** : bleu/"Générer"/"Déployer" en Génération, ambre/"Modifier"/"Redéployer"
+  en Modification. Les couleurs sémantiques de statut (couvert/non couvert/conflit) ne changent
+  jamais avec le mode.
+- **Action de soumission** : Génération passe par `preview()` → `generate()` → `deploy()`
+  (nouveau cycle, missions DRAFT). Modification envoie le lot d'édits à
+  `POST /api/planning/versions/{id}/apply-modifications`, qui mute les `Mission` existantes
+  directement via `MissionPostDeployService` (D-052/D-056 — jamais un nouveau cycle
+  generate/deploy pour une correction opérationnelle).
+
+Deux points d'entrée ouvrent le mode Modification dans le même composant : une ligne
+"Modifier" dans l'historique des plannings, ou un clic sur un chip de mois déjà généré.
+Voir `docs/planning-v2-architecture-freeze.md` §L9 et `docs/planning-v2-roadmap.md` Batch 15K.
 
 ---
 

@@ -87,13 +87,35 @@ class PlanningDiffService
     }
 
     /**
-     * Pure diff computation (no DB access) — directly testable.
+     * Pure diff computation (no DB access) — directly testable. Entity-based signature kept
+     * exactly as-is (existing contract, existing tests) — serializes then delegates to
+     * computeDiffFromSnapshots().
      *
      * @param Mission[] $oldMissions Missions from the previous (ACTIVE/ARCHIVED) version
      * @param Mission[] $newMissions Missions from the new DRAFT version
      * @return array{added: array<array>, removed: array<array>, modified: array<array>}
      */
     public function computeDiff(array $oldMissions, array $newMissions): array
+    {
+        return $this->computeDiffFromSnapshots(
+            array_map($this->serializeMission(...), $oldMissions),
+            array_map($this->serializeMission(...), $newMissions),
+        );
+    }
+
+    /**
+     * Pure diff computation over already-serialized mission arrays (see serializeMission()) —
+     * no entity/DB access, so this is reusable for before/after-edit-session diffing (Planning
+     * V2 Modification mode's apply-modifications endpoint, which snapshots the same shape
+     * before and after applying a batch of mutations to the *same* version — not two different
+     * versions, so it can't reuse the entity-based computeDiff() above: by the time you'd want
+     * to diff, "old" and "new" would be the same, already-mutated Doctrine entity instances).
+     *
+     * @param array<int,array<string,mixed>> $oldMissions Serialized snapshot before
+     * @param array<int,array<string,mixed>> $newMissions Serialized snapshot after
+     * @return array{added: array<array>, removed: array<array>, modified: array<array>}
+     */
+    public function computeDiffFromSnapshots(array $oldMissions, array $newMissions): array
     {
         $oldIndex = $this->buildIndex($oldMissions);
         $newIndex = $this->buildIndex($newMissions);
@@ -104,12 +126,12 @@ class PlanningDiffService
 
         foreach ($newIndex as $key => $newMission) {
             if (!isset($oldIndex[$key])) {
-                $added[] = $this->serializeMission($newMission);
+                $added[] = $newMission;
             } else {
                 $changes = $this->detectChanges($oldIndex[$key], $newMission);
                 if (!empty($changes)) {
                     $modified[] = [
-                        'mission' => $this->serializeMission($newMission),
+                        'mission' => $newMission,
                         'changes' => $changes,
                     ];
                 }
@@ -118,7 +140,7 @@ class PlanningDiffService
 
         foreach ($oldIndex as $key => $oldMission) {
             if (!isset($newIndex[$key])) {
-                $removed[] = $this->serializeMission($oldMission);
+                $removed[] = $oldMission;
             }
         }
 
@@ -182,36 +204,39 @@ class PlanningDiffService
      * Rounding startAt to 15-minute slots absorbs minor timing drift between versions
      * (e.g. 08:00 vs 08:05 are treated as the same slot) while preserving genuine
      * half-day granularity (08:00 vs 13:30 produce distinct keys).
+     *
+     * @param array<string,mixed> $m Serialized mission (see serializeMission())
      */
-    private function buildKey(Mission $m): string
+    private function buildKey(array $m): string
     {
-        $date   = $m->getStartAt()?->format('Y-m-d') ?? '0000-00-00';
-        $start  = $m->getStartAt() !== null ? $this->roundedTime($m->getStartAt()) : '00:00';
-        $siteId = $m->getSite()?->getId() ?? 0;
-        $surgId = $m->getSurgeon()?->getId() ?? 0;
-        $type   = $m->getType()?->value ?? '';
+        $date   = $m['date'] ?? '0000-00-00';
+        $start  = $m['startAt'] !== null ? $this->roundedTime($m['startAt']) : '00:00';
+        $siteId = $m['siteId'] ?? 0;
+        $surgId = $m['surgeonId'] ?? 0;
+        $type   = $m['missionType'] ?? '';
 
         return sprintf('%d_%d_%s_%s_%s', $siteId, $surgId, $type, $date, $start);
     }
 
     /**
-     * Rounds a datetime to the nearest N-minute slot, returning HH:MM string.
+     * Rounds an "H:i" time string to the nearest N-minute slot, returning HH:MM string.
      * Example: 08:07 → 08:00, 08:08 → 08:15 (with 15-min slots).
      */
-    private function roundedTime(\DateTimeImmutable $dt): string
+    private function roundedTime(string $hhmm): string
     {
-        $totalMins = (int) $dt->format('G') * 60 + (int) $dt->format('i');
+        [$h, $i]   = array_map('intval', explode(':', $hhmm) + [0, 0]);
+        $totalMins = $h * 60 + $i;
         $rounded   = (int) round($totalMins / self::ROUND_TO_MINUTES) * self::ROUND_TO_MINUTES;
         return sprintf('%02d:%02d', intdiv($rounded, 60) % 24, $rounded % 60);
     }
 
     /**
-     * Indexes missions by composite key.
+     * Indexes serialized missions by composite key.
      * Collision (identical key): append _1, _2… suffix.
      * Note: cross-version matching of collisions is order-dependent (V1 limit).
      *
-     * @param Mission[] $missions
-     * @return array<string, Mission>
+     * @param array<int,array<string,mixed>> $missions
+     * @return array<string, array<string,mixed>>
      */
     private function buildIndex(array $missions): array
     {
@@ -231,49 +256,54 @@ class PlanningDiffService
     // ── Private — change detection ────────────────────────────────────────────
 
     /**
-     * Compare two missions for the same slot and return only planning-visible changes.
-     * Excluded: status, notes, metadata, financial fields, timestamps.
+     * Compare two serialized missions for the same slot and return only planning-visible
+     * changes. Excluded: status, notes, metadata, financial fields, timestamps.
      *
+     * @param array<string,mixed> $old
+     * @param array<string,mixed> $new
      * @return array<string, array{from: mixed, to: mixed}>
      */
-    private function detectChanges(Mission $old, Mission $new): array
+    private function detectChanges(array $old, array $new): array
     {
         $changes = [];
 
         // Horaire — exact comparison (not rounded); we want to show genuine time changes
-        $oldStart = $old->getStartAt()?->format('H:i');
-        $oldEnd   = $old->getEndAt()?->format('H:i');
-        $newStart = $new->getStartAt()?->format('H:i');
-        $newEnd   = $new->getEndAt()?->format('H:i');
-
-        if ($oldStart !== $newStart || $oldEnd !== $newEnd) {
+        if ($old['startAt'] !== $new['startAt'] || $old['endAt'] !== $new['endAt']) {
             $changes['schedule'] = [
-                'from' => ['startAt' => $oldStart, 'endAt' => $oldEnd],
-                'to'   => ['startAt' => $newStart, 'endAt' => $newEnd],
+                'from' => ['startAt' => $old['startAt'], 'endAt' => $old['endAt']],
+                'to'   => ['startAt' => $new['startAt'], 'endAt' => $new['endAt']],
             ];
         }
 
         // Instrumentiste
-        if ($old->getInstrumentist()?->getId() !== $new->getInstrumentist()?->getId()) {
+        if ($old['instrumentistId'] !== $new['instrumentistId']) {
             $changes['instrumentist'] = [
-                'from' => $this->serializeUser($old->getInstrumentist()),
-                'to'   => $this->serializeUser($new->getInstrumentist()),
+                'from' => $old['instrumentistId'] !== null
+                    ? ['id' => $old['instrumentistId'], 'name' => $old['instrumentistName']]
+                    : null,
+                'to' => $new['instrumentistId'] !== null
+                    ? ['id' => $new['instrumentistId'], 'name' => $new['instrumentistName']]
+                    : null,
             ];
         }
 
         // Chirurgien (rare — key change would normally create add+remove, but guard anyway)
-        if ($old->getSurgeon()?->getId() !== $new->getSurgeon()?->getId()) {
+        if ($old['surgeonId'] !== $new['surgeonId']) {
             $changes['surgeon'] = [
-                'from' => $this->serializeUser($old->getSurgeon()),
-                'to'   => $this->serializeUser($new->getSurgeon()),
+                'from' => $old['surgeonId'] !== null
+                    ? ['id' => $old['surgeonId'], 'name' => $old['surgeonName']]
+                    : null,
+                'to' => $new['surgeonId'] !== null
+                    ? ['id' => $new['surgeonId'], 'name' => $new['surgeonName']]
+                    : null,
             ];
         }
 
         // Site
-        if ($old->getSite()?->getId() !== $new->getSite()?->getId()) {
+        if ($old['siteId'] !== $new['siteId']) {
             $changes['site'] = [
-                'from' => $old->getSite()?->getName(),
-                'to'   => $new->getSite()?->getName(),
+                'from' => $old['siteName'],
+                'to'   => $new['siteName'],
             ];
         }
 
@@ -282,10 +312,17 @@ class PlanningDiffService
 
     // ── Private — serialization ───────────────────────────────────────────────
 
-    /** @return array<string, mixed> */
-    private function serializeMission(Mission $m): array
+    /**
+     * Public: reused by callers that need to build their own before/after snapshots
+     * (e.g. Planning V2 Modification mode's apply-modifications endpoint) to pass into
+     * computeDiff() directly, without a DB round-trip through diff()/loadMissions().
+     *
+     * @return array<string, mixed>
+     */
+    public function serializeMission(Mission $m): array
     {
         return [
+            'missionId'         => $m->getId(),
             'date'              => $m->getStartAt()?->format('Y-m-d'),
             'period'            => ((int) $m->getStartAt()?->format('G')) < 12 ? 'AM' : 'PM',
             'startAt'           => $m->getStartAt()?->format('H:i'),
@@ -295,17 +332,9 @@ class PlanningDiffService
             'surgeonName'       => $this->displayName($m->getSurgeon()),
             'instrumentistId'   => $m->getInstrumentist()?->getId(),
             'instrumentistName' => $m->getInstrumentist() !== null ? $this->displayName($m->getInstrumentist()) : null,
+            'siteId'            => $m->getSite()?->getId(),
             'siteName'          => $m->getSite()?->getName(),
         ];
-    }
-
-    /** @return array{id: int|null, name: string|null}|null */
-    private function serializeUser(?User $u): ?array
-    {
-        if ($u === null) {
-            return null;
-        }
-        return ['id' => $u->getId(), 'name' => $this->displayName($u)];
     }
 
     private function displayName(?User $u): ?string

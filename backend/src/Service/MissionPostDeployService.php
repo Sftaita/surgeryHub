@@ -3,13 +3,17 @@
 namespace App\Service;
 
 use App\Dto\EligibilityResult;
+use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\MissionClaim;
+use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\EligibilityReason;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
+use App\Enum\MissionType;
+use App\Enum\SchedulePrecision;
 use App\Message\MissionLifecycleChangedMessage;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
@@ -42,8 +46,13 @@ class MissionPostDeployService
      * ASSIGNED → OPEN.
      * Releases the current instrumentist back to the pool.
      * Throws 409 if mission is not ASSIGNED.
+     *
+     * $notify=false skips the individual MissionLifecycleChangedMessage dispatch (status
+     * guard, mutation, audit event and flush still happen) — used by batch callers (e.g.
+     * Planning V2 Modification mode's apply-modifications) that consolidate many mutations
+     * into one targeted summary notification instead of one email per action.
      */
-    public function release(Mission $mission, User $actor): void
+    public function release(Mission $mission, User $actor, bool $notify = true): void
     {
         if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
             throw new ConflictHttpException('Mission must be ASSIGNED to release');
@@ -69,6 +78,10 @@ class MissionPostDeployService
 
         $this->em->flush();  // R-05: flush before dispatch
 
+        if (!$notify) {
+            return;
+        }
+
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
             missionId:  $mission->getId(),
             changeType: MissionChangeType::RELEASED,
@@ -81,8 +94,10 @@ class MissionPostDeployService
     /**
      * OPEN → CANCELLED.
      * Throws 409 if mission is not OPEN.
+     *
+     * $notify — see release() doc.
      */
-    public function cancel(Mission $mission, User $actor, ?string $reason = null): void
+    public function cancel(Mission $mission, User $actor, ?string $reason = null, bool $notify = true): void
     {
         if ($mission->getStatus() !== MissionStatus::OPEN) {
             throw new ConflictHttpException('Mission must be OPEN to cancel');
@@ -99,6 +114,10 @@ class MissionPostDeployService
         $this->audit->record($mission, $actor, AuditEventType::MISSION_CANCELLED_POST_DEPLOY, $payload);
 
         $this->em->flush();  // R-05: flush before dispatch
+
+        if (!$notify) {
+            return;
+        }
 
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
             missionId:  $mission->getId(),
@@ -187,7 +206,7 @@ class MissionPostDeployService
      * Assigns a specific instrumentist; transitions OPEN→ASSIGNED when needed.
      * Throws 409 if the mission is not in a mutable post-deploy state, 404 if target not found.
      */
-    public function assign(Mission $mission, User $actor, int $newInstrumentistId): void
+    public function assign(Mission $mission, User $actor, int $newInstrumentistId, bool $notify = true): void
     {
         if (!in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
             throw new ConflictHttpException('Mission must be OPEN or ASSIGNED to assign');
@@ -222,6 +241,10 @@ class MissionPostDeployService
 
         $this->em->flush();  // R-05: flush before dispatch
 
+        if (!$notify) {
+            return;
+        }
+
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
             missionId:  $mission->getId(),
             changeType: MissionChangeType::REASSIGNED,
@@ -235,8 +258,10 @@ class MissionPostDeployService
      * ASSIGNED → ASSIGNED (new instrumentist).
      * Manager reassigns a mission from one instrumentist to another.
      * Throws 409 if mission is not ASSIGNED, 404 if target instrumentist not found.
+     *
+     * $notify — see release() doc.
      */
-    public function reassign(Mission $mission, User $actor, int $newInstrumentistId): void
+    public function reassign(Mission $mission, User $actor, int $newInstrumentistId, bool $notify = true): void
     {
         if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
             throw new ConflictHttpException('Mission must be ASSIGNED to reassign');
@@ -269,6 +294,10 @@ class MissionPostDeployService
 
         $this->em->flush();  // R-05: flush before dispatch
 
+        if (!$notify) {
+            return;
+        }
+
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
             missionId:  $mission->getId(),
             changeType: MissionChangeType::REASSIGNED,
@@ -276,6 +305,142 @@ class MissionPostDeployService
             payload:    $payload,
             occurredAt: new \DateTimeImmutable(),
         ));
+    }
+
+    /**
+     * Post-deploy schedule change: startAt/endAt/site/type. Any ASSIGNED/OPEN mission
+     * (never DRAFT/CANCELLED/REJECTED — those go through other flows). Used by Planning V2
+     * Modification mode; the individual PATCH /api/missions/{id} endpoint stays DRAFT-only
+     * for its existing purpose, unrelated to this new post-deploy path.
+     *
+     * $notify — see release() doc.
+     */
+    public function updateSchedule(
+        Mission $mission,
+        User $actor,
+        ?\DateTimeImmutable $startAt,
+        ?\DateTimeImmutable $endAt,
+        ?Hospital $site,
+        ?MissionType $type,
+        bool $notify = true,
+    ): void {
+        if (!in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
+            throw new ConflictHttpException('Mission must be OPEN or ASSIGNED to change its schedule');
+        }
+
+        $fromStartAt = $mission->getStartAt();
+        $fromEndAt   = $mission->getEndAt();
+        $fromSite    = $mission->getSite();
+        $fromType    = $mission->getType();
+
+        if ($startAt !== null) {
+            $mission->setStartAt($startAt);
+        }
+        if ($endAt !== null) {
+            $mission->setEndAt($endAt);
+        }
+        if ($site !== null) {
+            $mission->setSite($site);
+        }
+        if ($type !== null) {
+            $mission->setType($type);
+        }
+
+        $payload = [
+            'fromStartAt' => $fromStartAt?->format(\DateTimeInterface::ATOM),
+            'fromEndAt'   => $fromEndAt?->format(\DateTimeInterface::ATOM),
+            'toStartAt'   => $mission->getStartAt()?->format(\DateTimeInterface::ATOM),
+            'toEndAt'     => $mission->getEndAt()?->format(\DateTimeInterface::ATOM),
+            'fromSiteId'  => $fromSite?->getId(),
+            'toSiteId'    => $mission->getSite()?->getId(),
+            'fromType'    => $fromType?->value,
+            'toType'      => $mission->getType()?->value,
+            'actorId'     => $actor->getId(),
+            'actorName'   => $this->displayName($actor),
+        ];
+
+        $this->audit->record($mission, $actor, AuditEventType::MISSION_TIME_CHANGED_POST_DEPLOY, $payload);
+
+        $this->em->flush();  // R-05: flush before dispatch
+
+        if (!$notify) {
+            return;
+        }
+
+        $this->bus->dispatch(new MissionLifecycleChangedMessage(
+            missionId:  $mission->getId(),
+            changeType: MissionChangeType::TIME_CHANGED,
+            actorId:    $actor->getId(),
+            payload:    $payload,
+            occurredAt: new \DateTimeImmutable(),
+        ));
+    }
+
+    /**
+     * Creates a new Mission directly against an already-deployed PlanningVersion (Planning V2
+     * Modification mode "add a mission" action) — distinct from MissionService::create(),
+     * which always creates a DRAFT unlinked to any version for the pre-deploy authoring flow.
+     * Status is ASSIGNED if an instrumentist is given, OPEN otherwise (never DRAFT — this
+     * mission is immediately live in an active/published version).
+     *
+     * $notify — see release() doc.
+     */
+    public function createPostDeploy(
+        PlanningVersion $planningVersion,
+        User $actor,
+        Hospital $site,
+        User $surgeon,
+        ?User $instrumentist,
+        MissionType $type,
+        \DateTimeImmutable $startAt,
+        \DateTimeImmutable $endAt,
+        bool $notify = true,
+    ): Mission {
+        if ($endAt <= $startAt) {
+            throw new ConflictHttpException('endAt must be after startAt');
+        }
+
+        $mission = new Mission();
+        $mission
+            ->setPlanningVersion($planningVersion)
+            ->setSite($site)
+            ->setType($type)
+            ->setSchedulePrecision(SchedulePrecision::EXACT)
+            ->setSurgeon($surgeon)
+            ->setInstrumentist($instrumentist)
+            ->setCreatedBy($actor)
+            ->setStatus($instrumentist !== null ? MissionStatus::ASSIGNED : MissionStatus::OPEN)
+            ->setStartAt($startAt)
+            ->setEndAt($endAt);
+
+        $this->em->persist($mission);
+
+        $payload = [
+            'surgeonId'         => $surgeon->getId(),
+            'surgeonName'       => $this->displayName($surgeon),
+            'instrumentistId'   => $instrumentist?->getId(),
+            'instrumentistName' => $instrumentist !== null ? $this->displayName($instrumentist) : null,
+            'actorId'           => $actor->getId(),
+            'actorName'         => $this->displayName($actor),
+        ];
+
+        $this->audit->record($mission, $actor, AuditEventType::MISSION_ADDED_POST_DEPLOY, $payload);
+
+        $this->em->flush();  // R-05: flush before dispatch
+
+        if (!$notify) {
+            return $mission;
+        }
+
+        $this->bus->dispatch(new MissionLifecycleChangedMessage(
+            missionId:  $mission->getId(),
+            changeType: MissionChangeType::ADDED,
+            actorId:    $actor->getId(),
+            payload:    $payload,
+            occurredAt: new \DateTimeImmutable(),
+        ));
+
+        return $mission;
     }
 
     private function displayName(User $user): string

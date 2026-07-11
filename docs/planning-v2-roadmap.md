@@ -1532,6 +1532,98 @@ All metrics computed from `Mission` statuses and `AuditEvent` data. Nothing new 
 
 ---
 
+### Batch 15K — Mode Modification (Unified Editor) + Targeted Redeploy Notifications ✅ DONE (2026-07-10)
+
+#### Objective
+
+**Business:** A manager editing an already-deployed planning must use the exact same editor they used to generate it — not a different page, not a read-only detail view. Editing must feel like "finding your planning again," not starting over. Redeploying an edited planning must never resend a full deployment email to every surgeon/instrumentist — only the people whose own missions actually changed should hear about it, with a plain-language summary of what changed for them.
+
+**Technical:** Introduce `PlanningEditorMode = "generation" | "modification"` as explicit state inside the existing `GeneratePlanningTab`. No fork, no second component. Modification mode sources its lines from the real `Mission` rows of a `PlanningVersion` (adapted into the same `PreviewLineV2` shape the Génération editor already renders/filters/selects) instead of from `previewPlanningV2()`. Edits are staged locally exactly like Génération mode, then submitted in one batch to a new `POST /api/planning/versions/{id}/apply-modifications` endpoint, which mutates `Mission` entities directly through the existing `MissionPostDeployService` (per D-052 "planning vivant" — no new generate/deploy cycle), computes a before/after diff, and sends exactly one consolidated "what changed" email per actually-affected recipient via the previously-unwired `PlanningChangeSummaryService`.
+
+**User value:** One "Modifier" click from the planning history (or a click on an already-generated month chip) reopens the manager's planning exactly as deployed. They reassign, reschedule, cancel, release, or add missions in place, using the same permanent inspector panel as Génération. On "Redéployer," only the surgeons and instrumentists whose own missions changed get a short recap email — nobody else hears a thing.
+
+#### Scope
+
+**Included:**
+- `PlanningEditorMode` state in `GeneratePlanningTab.tsx`; entry via history-row click or already-generated month-chip click (both call the same `enterModification(version)`)
+- `Inspector.tsx` — new permanent side-panel component (replaces the transient reassignment `Popover`), always mounted, shows an empty state when no line is selected; adds schedule editing (Modification only), Annuler/Ignorer, Remettre au pool, and a "Nouvelle mission" create form
+- `missionToPreviewLine()` adapter (`generatePreviewGrouping.ts`) — maps a real `Mission` to `PreviewLineV2` (ASSIGNED→COVERED, OPEN→UNCOVERED, CANCELLED→SKIPPED)
+- `lineKeyV2()` extended to key on `existingMissionId` when present (stable identity for Modification even if content changes), falling back to `${date}-${postId}` for Génération/new-draft lines (unchanged behavior there)
+- `MissionFilter.planningVersionId` (optional) → `GET /api/missions` — lists a PlanningVersion's real missions
+- `MissionPostDeployService`: `notify: bool = true` parameter added to `release()/cancel()/assign()/reassign()` (default preserves all existing call sites); new `updateSchedule()` (time/site/type on OPEN|ASSIGNED missions) and `createPostDeploy()` (new Mission linked to an existing `PlanningVersion`), both notify-gated the same way
+- `PlanningDiffService::computeDiffFromSnapshots()` — the comparison core extracted from `computeDiff()` to operate on plain serialized arrays instead of live entities, so it can diff a before/after snapshot pair of the *same* version (not just draft-vs-previous-version); `computeDiff()`'s entity-based signature and behavior are unchanged
+- `PlanningChangeSummaryService::sendChangeSummaryEmails()` — optional `precomputedDiff` parameter; when passed, skips its own `PlanningDiffService::diff()` call and uses the given diff directly
+- `PlanningModificationService` (new) — orchestrates one `apply-modifications` request: snapshot before → apply each line via `MissionPostDeployService` with `notify: false` → flush → snapshot touched missions after → `computeDiffFromSnapshots()` → if non-empty, call `PlanningChangeSummaryService::sendChangeSummaryEmails(..., precomputedDiff: $diff)`
+- `POST /api/planning/versions/{id}/apply-modifications` (manager-only, `PlanningVoter::PLANNING_MANAGE`)
+
+**Excluded:**
+- Push notifications for the modification recap (email + in-app only, same channels as the rest of the notification system)
+- A dedicated "diff preview" screen before redeploy (the dirty-count banner and "Édité" badges, already present in Génération mode, serve this purpose in both modes)
+
+#### Backend
+
+See `MissionPostDeployService`, `PlanningDiffService`, `PlanningModificationService`, `PlanningVersionController::applyModifications()` above. Key invariant: **every mutation still goes through `MissionPostDeployService`** (D-056) — the `notify: false` flag only suppresses the per-action `MissionLifecycleChangedMessage` dispatch inside methods that already do status guard + mutation + AuditEvent + flush identically to their `notify: true` callers. No parallel mutation path was introduced.
+
+**Diff mechanism.** `PlanningModificationService::apply()` serializes every non-REJECTED mission of the version *before* touching anything (via `PlanningDiffService::serializeMission()`, already used elsewhere). It applies all requested line changes, flushes once, then re-serializes only the missions it actually touched. `computeDiffFromSnapshots(before[], after[])` — the same comparison logic `PlanningDiffService::diff()` already used for draft-vs-previous-version comparisons — produces `{added, removed, modified}` against these two snapshots of the *same* version. This diff, not `diff()`'s own previous-version baseline, is what gets passed to `PlanningChangeSummaryService`.
+
+**Targeting rules.**
+- An **instrumentist** receives an email only if at least one mission where they are (or were) the assigned instrumentist appears in `added`, `removed`, or `modified` — covers: new mission assigned to them, one of their missions cancelled, released back to the pool, reassigned away from them, or its date/time/site/type changed.
+- A **surgeon** receives an email only if at least one of their missions appears in the diff — covers: instrumentist changed (either direction), schedule/site/type changed, a mission of theirs was added, cancelled, or released.
+- Anyone with zero diff entries touching them receives nothing — not even an in-app notification. Unaffected recipients are never enumerated; the loop only ever considers people already present in `added`/`removed`/`modified`.
+- Exactly one consolidated email per recipient per `apply-modifications` call — `PlanningChangeSummaryService` groups by recipient before sending, matching its pre-existing (previously unwired) behavior.
+- Idempotency: one synchronous HTTP call per "Redéployer" click; the button disables for the duration of the mutation (same pattern as the existing `deployMutation.isPending` guard), so there is no double-submit path to deduplicate.
+
+#### Frontend
+
+`GeneratePlanningTab.tsx` — one component, mode-derived (`mode = modificationVersionId !== null ? "modification" : "generation"`), reused everywhere:
+- **Data source**: Génération reads `preview?.lines`; Modification reads `fetchMissions(1, 500, { planningVersionId })` mapped through `missionToPreviewLine()`, plus any locally-drafted new lines not yet applied
+- **Selection/filters/bulk actions**: identical code path for both modes — `effectiveLines`, `filterLines()`, `groupLinesByDayAndSurgeon()`, `editedLines` Map, `selectedKeys` Set are all mode-agnostic
+- **Inspector**: one permanent panel, `accent`-themed; selecting a row just reloads its content — no popover open/close
+- **Palette**: `GENERATION_ACCENT` (existing Planning V2 blue, `planningV2Colors.brand`) vs `MODIFICATION_ACCENT` (`#B5761A` amber) — applied to the mode eyebrow badge, the selected-row highlight, the Redéployer button, and Inspector accents. Semantic status colors (COVERED/UNCOVERED/CONFLICT/SKIPPED tokens) are untouched by mode, per design principle "semantic color is separate from accent hue"
+- **Labels**: "Générer le planning" → "Modifier le planning — {mois} · {site}"; "Prévisualiser/Générer/Déployer" → (Modification skips straight to) "Redéployer"; added "Quitter la modification"
+- **Entry points**: clicking a history row, or clicking a month chip that matches an already-generated version for the selected site, both call `enterModification(version)`
+
+#### Database
+
+No new tables, no new columns, no migrations. `Mission.planningVersion` (existing FK) is reused as the query/link target throughout.
+
+#### API
+
+```
+GET /api/missions?planningVersionId=42        — existing endpoint, new optional filter
+
+POST /api/planning/versions/{id}/apply-modifications
+  Auth: MANAGER / ADMIN (PlanningVoter::PLANNING_MANAGE)
+  Body: { "lines": [ ...PreviewLineV2[] ] }    — same shape as generate()'s overrideLines
+  Response 200: { "created": 1, "updated": 2, "cancelled": 0, "released": 1, "unchanged": 4 }
+```
+
+#### Documentation
+
+- `docs/planning-v2-roadmap.md` — this section
+- `docs/planning-v2-architecture-freeze.md` §L/§K — Mode Modification and the diff/notification flow marked implemented
+- `docs/architecture.md` §7 — unified editor + targeted-notification flow described
+
+#### Tests
+
+**Backend (unit)** — `MissionPostDeployServiceTest` (+15: notify=false paths, `updateSchedule()`, `createPostDeploy()`), `PlanningDiffServiceTest` (+3: `computeDiffFromSnapshots()`), `PlanningChangeSummaryServiceTest` (+1: `precomputedDiff` bypass) — 538/538 green.
+
+**Backend (functional)** — `PlanningModificationControllerTest` (new, 5 tests): reassign persists; cancel on OPEN transitions to CANCELLED; a line with no `existingMissionId` creates a Mission linked to the version; an unchanged line is reported as unchanged and writes no AuditEvent; non-manager gets 403. 5/5 green.
+
+**Frontend** — `generatePreviewGrouping.test.ts` (+5: dual-mode `lineKeyV2`, `missionToPreviewLine`), `GeneratePlanningTab.test.tsx` (+3: enter Modification from history and load real missions; edit a real mission's schedule via the permanent inspector and redeploy calls `applyModifications` with the version id and edited lines; exit Modification returns to the Génération home). Full frontend suite: 361/361 green. `npx tsc --noEmit`: clean.
+
+#### Definition of Done ✅
+
+- [x] Same `GeneratePlanningTab` component serves both modes — zero forked page, zero duplicated editor
+- [x] Both entry points (history row, already-generated month chip) open Modification in place
+- [x] Modification mode loads real `Mission` rows, not a Preview
+- [x] Permanent Inspector — no popover — schedule edit, cancel, release-to-pool, create-mission
+- [x] Redeploy applies through `MissionPostDeployService` only (D-056), never a new generate/deploy cycle (D-052)
+- [x] Redeploy sends exactly one targeted email per actually-affected recipient, computed from a real before/after diff — unaffected users receive nothing
+- [x] Backend 538/538 unit + 5/5 new functional green; frontend 361/361 green; `tsc --noEmit` clean
+
+---
+
 ## 5. Preview Editor — Complete Functional Specification
 
 ### Architecture

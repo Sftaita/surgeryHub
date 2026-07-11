@@ -359,4 +359,57 @@ class PlanningDiffServiceTest extends TestCase
         $this->assertArrayNotHasKey('id',        $added);
         $this->assertArrayNotHasKey('createdAt', $added);
     }
+
+    // ── computeDiffFromSnapshots() — Planning V2 Modification mode ─────────────
+
+    public function test_snapshots_diff_detects_instrumentist_change_on_same_mission(): void
+    {
+        $service = $this->makeService();
+        $site     = $this->makeSite(1, 'Alpha');
+        $surgeon  = $this->makeUser(2, 'Jean', 'Dupont');
+        $before   = $this->makeUser(3, 'Marie', 'Martin');
+        $after    = $this->makeUser(4, 'Léa', 'Bernard');
+
+        $mission = $this->makeMission(['site' => $site, 'surgeon' => $surgeon, 'instrumentist' => $before, 'start' => '2026-03-24 08:00', 'end' => '2026-03-24 13:00']);
+        $beforeSnapshot = $service->serializeMission($mission);
+
+        $mission->setInstrumentist($after);
+        $afterSnapshot = $service->serializeMission($mission);
+
+        $diff = $service->computeDiffFromSnapshots([$beforeSnapshot], [$afterSnapshot]);
+
+        $this->assertEmpty($diff['added']);
+        $this->assertEmpty($diff['removed']);
+        $this->assertCount(1, $diff['modified']);
+        $this->assertSame('Marie Martin', $diff['modified'][0]['changes']['instrumentist']['from']['name']);
+        $this->assertSame('Léa Bernard',  $diff['modified'][0]['changes']['instrumentist']['to']['name']);
+    }
+
+    public function test_snapshots_diff_no_changes_produces_empty_diff(): void
+    {
+        $service = $this->makeService();
+        $site    = $this->makeSite(1, 'Alpha');
+        $surgeon = $this->makeUser(2, 'Jean', 'Dupont');
+        $mission = $this->makeMission(['site' => $site, 'surgeon' => $surgeon, 'start' => '2026-03-24 08:00', 'end' => '2026-03-24 13:00']);
+        $snapshot = $service->serializeMission($mission);
+
+        $diff = $service->computeDiffFromSnapshots([$snapshot], [$snapshot]);
+
+        $this->assertEmpty($diff['added']);
+        $this->assertEmpty($diff['removed']);
+        $this->assertEmpty($diff['modified']);
+    }
+
+    public function test_snapshots_diff_new_mission_appears_as_added(): void
+    {
+        $service = $this->makeService();
+        $site    = $this->makeSite(1, 'Alpha');
+        $surgeon = $this->makeUser(2, 'Jean', 'Dupont');
+        $mission = $this->makeMission(['site' => $site, 'surgeon' => $surgeon, 'start' => '2026-03-24 08:00', 'end' => '2026-03-24 13:00']);
+        $snapshot = $service->serializeMission($mission);
+
+        $diff = $service->computeDiffFromSnapshots([], [$snapshot]);
+
+        $this->assertCount(1, $diff['added']);
+    }
 }

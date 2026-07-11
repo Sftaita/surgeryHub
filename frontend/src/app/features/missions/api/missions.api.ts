@@ -32,6 +32,9 @@ export type MissionsFilters = {
   // Lot 3
   eligibleToMe?: boolean; // OPEN offers (si supporté backend)
   assignedToMe?: boolean; // my missions
+
+  // Planning V2 Modification mode — all missions of an already-deployed PlanningVersion
+  planningVersionId?: number;
 };
 
 export async function fetchMissions(

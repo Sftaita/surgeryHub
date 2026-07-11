@@ -106,6 +106,165 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
         $this->assertStringContainsString('Carla', $html);
     }
 
+    // ── Diff sections — planning_change_summary_instrumentist.html.twig ────────────────
+    // Real Twig rendering (strict_variables: true), real diff-shaped fixture data, matching
+    // exactly what PlanningDiffService::serializeMission()/detectChanges() and
+    // PlanningModificationService produce. Regression guard for the "aucun email reçu" bug:
+    // this template is rendered inside the async Messenger worker (SendBillingEmailMessageHandler),
+    // decoupled from the HTTP request — a rendering exception there is invisible to the user
+    // who triggered the redeploy, so every section must be proven to render without throwing.
+
+    private function addedMissionFixture(array $overrides = []): array
+    {
+        return array_merge([
+            'missionId'         => 501,
+            'date'              => '2026-09-18',
+            'period'            => 'PM',
+            'startAt'           => '13:00',
+            'endAt'             => '18:00',
+            'missionType'       => 'BLOCK',
+            'surgeonId'         => 10,
+            'surgeonName'       => 'Jean Dupont',
+            'instrumentistId'   => 20,
+            'instrumentistName' => 'Léa Martin',
+            'siteId'            => 5,
+            'siteName'          => 'Bloc opératoire Delta',
+        ], $overrides);
+    }
+
+    private function modifiedEntryFixture(array $missionOverrides = [], array $changes = []): array
+    {
+        return [
+            'mission' => $this->addedMissionFixture($missionOverrides),
+            'changes' => $changes,
+        ];
+    }
+
+    public function test_instrumentist_email_renders_added_only(): void
+    {
+        $html = $this->twig()->render('emails/planning_change_summary_instrumentist.html.twig', [
+            'instrumentist' => $this->makeUser('instr@test.com', 'Carla'),
+            'periodFrom'    => new \DateTimeImmutable('2026-09-01'),
+            'periodTo'      => new \DateTimeImmutable('2026-09-30'),
+            'added'         => [$this->addedMissionFixture()],
+            'removed'       => [],
+            'modified'      => [],
+            'uncovered'     => [],
+        ]);
+
+        $this->assertStringContainsString('Nouvelles missions', $html);
+        $this->assertStringContainsString('Jean Dupont', $html);
+        $this->assertStringContainsString('Bloc opératoire Delta', $html);
+        $this->assertStringContainsString('13:00', $html);
+        $this->assertStringContainsString('18:00', $html);
+        $this->assertStringNotContainsString('Modifications', $html);
+        $this->assertStringNotContainsString('Missions supprimées', $html);
+    }
+
+    public function test_instrumentist_email_renders_modified_only_with_schedule_and_instrumentist_change(): void
+    {
+        $html = $this->twig()->render('emails/planning_change_summary_instrumentist.html.twig', [
+            'instrumentist' => $this->makeUser('instr@test.com', 'Carla'),
+            'periodFrom'    => new \DateTimeImmutable('2026-09-01'),
+            'periodTo'      => new \DateTimeImmutable('2026-09-30'),
+            'added'         => [],
+            'removed'       => [],
+            'modified'      => [$this->modifiedEntryFixture([], [
+                'schedule' => [
+                    'from' => ['startAt' => '08:00', 'endAt' => '13:00'],
+                    'to'   => ['startAt' => '09:00', 'endAt' => '14:00'],
+                ],
+                'instrumentist' => [
+                    'from' => ['id' => 2, 'name' => 'Diane Morel'],
+                    'to'   => ['id' => 20, 'name' => 'Léa Martin'],
+                ],
+            ])],
+            'uncovered' => [],
+        ]);
+
+        $this->assertStringContainsString('Modifications', $html);
+        $this->assertStringContainsString('08:00', $html);
+        $this->assertStringContainsString('09:00', $html);
+        $this->assertStringContainsString('Diane Morel', $html);
+        $this->assertStringContainsString('Léa Martin', $html);
+    }
+
+    public function test_instrumentist_email_renders_removed_only(): void
+    {
+        $html = $this->twig()->render('emails/planning_change_summary_instrumentist.html.twig', [
+            'instrumentist' => $this->makeUser('instr@test.com', 'Carla'),
+            'periodFrom'    => new \DateTimeImmutable('2026-09-01'),
+            'periodTo'      => new \DateTimeImmutable('2026-09-30'),
+            'added'         => [],
+            'removed'       => [$this->addedMissionFixture(['instrumentistId' => null, 'instrumentistName' => null])],
+            'modified'      => [],
+            'uncovered'     => [],
+        ]);
+
+        $this->assertStringContainsString('Missions supprimées', $html);
+        $this->assertStringContainsString('Jean Dupont', $html);
+        $this->assertStringNotContainsString('Nouvelles missions', $html);
+    }
+
+    public function test_instrumentist_email_renders_added_modified_and_removed_together_in_one_email(): void
+    {
+        // The core "one recipient, one consolidated email, all their changes" requirement.
+        $html = $this->twig()->render('emails/planning_change_summary_instrumentist.html.twig', [
+            'instrumentist' => $this->makeUser('instr@test.com', 'Carla'),
+            'periodFrom'    => new \DateTimeImmutable('2026-09-01'),
+            'periodTo'      => new \DateTimeImmutable('2026-09-30'),
+            'added'         => [$this->addedMissionFixture(['missionId' => 601, 'surgeonName' => 'Nouveau Chirurgien'])],
+            'removed'       => [$this->addedMissionFixture(['missionId' => 602, 'surgeonName' => 'Ancien Chirurgien'])],
+            'modified'      => [$this->modifiedEntryFixture(
+                ['missionId' => 603, 'surgeonName' => 'Chirurgien Modifié'],
+                ['schedule' => ['from' => ['startAt' => '08:00', 'endAt' => '13:00'], 'to' => ['startAt' => '10:00', 'endAt' => '15:00']]],
+            )],
+            'uncovered' => [],
+        ]);
+
+        $this->assertStringContainsString('Nouveau Chirurgien', $html);
+        $this->assertStringContainsString('Ancien Chirurgien', $html);
+        $this->assertStringContainsString('Chirurgien Modifié', $html);
+        $this->assertStringContainsString('Nouvelles missions', $html);
+        $this->assertStringContainsString('Modifications', $html);
+        $this->assertStringContainsString('Missions supprimées', $html);
+    }
+
+    public function test_instrumentist_email_renders_open_mission_with_no_instrumentist_in_added(): void
+    {
+        // A mission added to the pool (no instrumentist yet) must not throw on the null field.
+        $html = $this->twig()->render('emails/planning_change_summary_instrumentist.html.twig', [
+            'instrumentist' => $this->makeUser('instr@test.com', 'Carla'),
+            'periodFrom'    => new \DateTimeImmutable('2026-09-01'),
+            'periodTo'      => new \DateTimeImmutable('2026-09-30'),
+            'added'         => [$this->addedMissionFixture(['instrumentistId' => null, 'instrumentistName' => null])],
+            'removed'       => [],
+            'modified'      => [],
+            'uncovered'     => [],
+        ]);
+
+        $this->assertStringContainsString('Jean Dupont', $html);
+    }
+
+    public function test_instrumentist_email_renders_modified_with_absent_old_and_new_instrumentist(): void
+    {
+        // changes.instrumentist.from === null (previously OPEN) and .to === null (now OPEN)
+        // must both render the "Aucun" fallback rather than throwing on ->name of null.
+        $html = $this->twig()->render('emails/planning_change_summary_instrumentist.html.twig', [
+            'instrumentist' => $this->makeUser('instr@test.com', 'Carla'),
+            'periodFrom'    => new \DateTimeImmutable('2026-09-01'),
+            'periodTo'      => new \DateTimeImmutable('2026-09-30'),
+            'added'         => [],
+            'removed'       => [],
+            'modified'      => [$this->modifiedEntryFixture([], [
+                'instrumentist' => ['from' => null, 'to' => null],
+            ])],
+            'uncovered' => [],
+        ]);
+
+        $this->assertStringContainsString('Aucun', $html);
+    }
+
     public function test_absences_request_missing_email_renders(): void
     {
         $instr = $this->makeUser('instr@test.com', 'Carla');
@@ -180,20 +339,119 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
 
     public function test_planning_change_summary_surgeon_email_renders(): void
     {
+        // Batch 15K rewrite: this template now mirrors the instrumentist one (added/modified/
+        // removed diff sections) instead of the old standalone "pool awareness" digest — see
+        // PlanningChangeSummaryService's surgeon-targeting fix (only a surgeon whose OWN
+        // intervention changed is notified; strict_variables:true means all 4 keys are required
+        // on every render, regardless of which sections are actually populated).
         $html = $this->twig()->render('emails/planning_change_summary_surgeon.html.twig', [
             'surgeon'    => $this->makeUser('surgeon@test.com', 'Alice'),
             'periodFrom' => new \DateTimeImmutable('2026-08-01'),
             'periodTo'   => new \DateTimeImmutable('2026-08-31'),
+            'added'      => [],
+            'removed'    => [],
+            'modified'   => [],
             'uncovered'  => [],
         ]);
 
         $this->assertStringContainsString('Alice', $html);
+        $this->assertStringContainsString('Votre planning a été modifié', $html);
+    }
 
-        // UX wording pass (2026-07): natural business wording, not technical jargon.
-        $this->assertStringContainsString("Missions en attente d'affectation", $html);
-        $this->assertStringContainsString('sans instrumentiste affectée', $html);
-        $this->assertStringNotContainsString('Créneaux non couverts', $html, 'Old title must no longer appear.');
-        $this->assertStringNotContainsString('créneau(x)', $html, 'Old technical wording must no longer appear.');
+    // ── Diff sections — planning_change_summary_surgeon.html.twig ──────────────────────
+
+    public function test_surgeon_email_renders_added_only(): void
+    {
+        $html = $this->twig()->render('emails/planning_change_summary_surgeon.html.twig', [
+            'surgeon'    => $this->makeUser('surgeon@test.com', 'Alice'),
+            'periodFrom' => new \DateTimeImmutable('2026-09-01'),
+            'periodTo'   => new \DateTimeImmutable('2026-09-30'),
+            'added'      => [$this->addedMissionFixture()],
+            'removed'    => [],
+            'modified'   => [],
+            'uncovered'  => [],
+        ]);
+
+        $this->assertStringContainsString('Nouvelle(s) intervention', $html);
+        $this->assertStringContainsString('Bloc opératoire Delta', $html);
+        $this->assertStringContainsString('Léa Martin', $html);
+        $this->assertStringNotContainsString('Intervention(s) modifiée', $html);
+        $this->assertStringNotContainsString('Intervention(s) annulée', $html);
+    }
+
+    public function test_surgeon_email_renders_modified_only_with_instrumentist_change(): void
+    {
+        $html = $this->twig()->render('emails/planning_change_summary_surgeon.html.twig', [
+            'surgeon'    => $this->makeUser('surgeon@test.com', 'Alice'),
+            'periodFrom' => new \DateTimeImmutable('2026-09-01'),
+            'periodTo'   => new \DateTimeImmutable('2026-09-30'),
+            'added'      => [],
+            'removed'    => [],
+            'modified'   => [$this->modifiedEntryFixture([], [
+                'instrumentist' => [
+                    'from' => ['id' => 2, 'name' => 'Diane Morel'],
+                    'to'   => ['id' => 20, 'name' => 'Léa Martin'],
+                ],
+            ])],
+            'uncovered' => [],
+        ]);
+
+        $this->assertStringContainsString('Intervention(s) modifiée', $html);
+        $this->assertStringContainsString('Diane Morel', $html);
+        $this->assertStringContainsString('Léa Martin', $html);
+    }
+
+    public function test_surgeon_email_renders_removed_only(): void
+    {
+        $html = $this->twig()->render('emails/planning_change_summary_surgeon.html.twig', [
+            'surgeon'    => $this->makeUser('surgeon@test.com', 'Alice'),
+            'periodFrom' => new \DateTimeImmutable('2026-09-01'),
+            'periodTo'   => new \DateTimeImmutable('2026-09-30'),
+            'added'      => [],
+            'removed'    => [$this->addedMissionFixture(['instrumentistId' => null, 'instrumentistName' => null])],
+            'modified'   => [],
+            'uncovered'  => [],
+        ]);
+
+        $this->assertStringContainsString('Intervention(s) annulée', $html);
+        $this->assertStringNotContainsString('Nouvelle(s) intervention', $html);
+    }
+
+    public function test_surgeon_email_renders_added_modified_and_removed_together_in_one_email(): void
+    {
+        $html = $this->twig()->render('emails/planning_change_summary_surgeon.html.twig', [
+            'surgeon'    => $this->makeUser('surgeon@test.com', 'Alice'),
+            'periodFrom' => new \DateTimeImmutable('2026-09-01'),
+            'periodTo'   => new \DateTimeImmutable('2026-09-30'),
+            'added'      => [$this->addedMissionFixture(['missionId' => 601])],
+            'removed'    => [$this->addedMissionFixture(['missionId' => 602])],
+            'modified'   => [$this->modifiedEntryFixture(
+                ['missionId' => 603],
+                ['schedule' => ['from' => ['startAt' => '08:00', 'endAt' => '13:00'], 'to' => ['startAt' => '10:00', 'endAt' => '15:00']]],
+            )],
+            'uncovered' => [],
+        ]);
+
+        $this->assertStringContainsString('Nouvelle(s) intervention', $html);
+        $this->assertStringContainsString('Intervention(s) modifiée', $html);
+        $this->assertStringContainsString('Intervention(s) annulée', $html);
+    }
+
+    public function test_surgeon_email_renders_open_mission_with_no_instrumentist_in_uncovered(): void
+    {
+        // A newly-added mission still without an instrumentist surfaces in the "uncovered"
+        // section (myStillUncovered in PlanningChangeSummaryService) — must not throw on null.
+        $html = $this->twig()->render('emails/planning_change_summary_surgeon.html.twig', [
+            'surgeon'    => $this->makeUser('surgeon@test.com', 'Alice'),
+            'periodFrom' => new \DateTimeImmutable('2026-09-01'),
+            'periodTo'   => new \DateTimeImmutable('2026-09-30'),
+            'added'      => [$this->addedMissionFixture(['instrumentistId' => null, 'instrumentistName' => null])],
+            'removed'    => [],
+            'modified'   => [],
+            'uncovered'  => [$this->addedMissionFixture(['instrumentistId' => null, 'instrumentistName' => null])],
+        ]);
+
+        $this->assertStringContainsString("En attente d'instrumentiste", $html);
     }
 
     public function test_planning_alert_email_renders(): void

@@ -5,8 +5,10 @@ import {
   severityOf, filterLines, countBySeverity,
   groupLinesByDayAndSurgeon, formatDayHeader,
   lineKeyV2, getFreedInstrumentists, findSameDayAssignmentElsewhere,
+  missionToPreviewLine,
 } from "./generatePreviewGrouping";
 import type { PreviewLineV2, PreviewResponseV2, GeneratedPlanningV2 } from "./planningV2.types";
+import type { Mission } from "../../missions/api/missions.types";
 
 function line(overrides: Partial<PreviewLineV2>): PreviewLineV2 {
   return {
@@ -229,5 +231,62 @@ describe("findSameDayAssignmentElsewhere()", () => {
   it("never matches the target line itself", () => {
     const target = line({ date: "2026-06-01", postId: 2, status: "COVERED", instrumentistId: 7 });
     expect(findSameDayAssignmentElsewhere([target], target, 7)).toBeNull();
+  });
+});
+
+describe("lineKeyV2() — dual mode (Génération vs Modification)", () => {
+  it("keys by existingMissionId when present (Modification mode) — stable even if date/postId change", () => {
+    const a = line({ date: "2026-06-01", postId: 5, existingMissionId: 42 });
+    const b = { ...a, date: "2026-07-15", postId: 999 };
+    expect(lineKeyV2(a)).toBe(lineKeyV2(b));
+    expect(lineKeyV2(a)).toBe("m42");
+  });
+
+  it("falls back to date-postId when existingMissionId is null (Génération mode)", () => {
+    const a = line({ date: "2026-06-01", postId: 5, existingMissionId: null });
+    expect(lineKeyV2(a)).toBe("2026-06-01-5");
+  });
+});
+
+describe("missionToPreviewLine()", () => {
+  function makeMission(overrides: Partial<Mission> = {}): Mission {
+    return {
+      id: 123,
+      type: "BLOCK",
+      schedulePrecision: "EXACT",
+      startAt: "2026-09-15T08:00:00+02:00",
+      endAt: "2026-09-15T13:00:00+02:00",
+      site: { id: 9, name: "Delta" },
+      status: "ASSIGNED",
+      surgeon: { id: 3, email: "dr@test.com", firstname: "Jean", lastname: "Dupont" },
+      instrumentist: { id: 4, email: "instr@test.com", firstname: "Diane", lastname: "Lefebvre" },
+      ...overrides,
+    } as Mission;
+  }
+
+  it("maps an ASSIGNED mission to a COVERED line with existingMissionId set", () => {
+    const result = missionToPreviewLine(makeMission());
+    expect(result).toMatchObject({
+      date: "2026-09-15", startTime: "08:00", endTime: "13:00",
+      siteId: 9, siteName: "Delta",
+      surgeonId: 3, surgeonName: "Jean Dupont",
+      instrumentistId: 4, instrumentistName: "Diane Lefebvre",
+      status: "COVERED",
+      existingMissionId: 123,
+      existingInstrumentistId: 4,
+      existingInstrumentistName: "Diane Lefebvre",
+    });
+  });
+
+  it("maps an OPEN mission (no instrumentist) to an UNCOVERED line", () => {
+    const result = missionToPreviewLine(makeMission({ status: "OPEN", instrumentist: null }));
+    expect(result.status).toBe("UNCOVERED");
+    expect(result.instrumentistId).toBeNull();
+    expect(result.instrumentistName).toBeNull();
+  });
+
+  it("maps a CANCELLED mission to a SKIPPED line", () => {
+    const result = missionToPreviewLine(makeMission({ status: "CANCELLED" }));
+    expect(result.status).toBe("SKIPPED");
   });
 });

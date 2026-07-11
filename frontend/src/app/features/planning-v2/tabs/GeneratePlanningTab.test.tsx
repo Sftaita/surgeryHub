@@ -25,14 +25,34 @@ vi.mock("../api/planningV2.api", () => ({
   previewPlanningV2: vi.fn(),
   generatePlanningV2: vi.fn(),
   deployPlanningV2: vi.fn(),
+  applyModifications: vi.fn(),
   extractErrorV2: (e: unknown) => String(e),
 }));
 
 vi.mock("../../../api/apiClient", () => ({
   apiClient: {
-    get: vi.fn((url: string) => {
+    get: vi.fn((url: string, config?: { params?: Record<string, unknown> }) => {
       if (url === "/api/instrumentists") {
         return Promise.resolve({ data: { items: [{ id: 9, displayName: "Diane Lefebvre" }, { id: 10, displayName: "Marc Petit" }] } });
+      }
+      if (url === "/api/surgeons") {
+        return Promise.resolve({ data: { items: [{ id: 1, displayName: "Dr Martin" }], total: 1 } });
+      }
+      if (url === "/api/missions" && config?.params?.planningVersionId) {
+        return Promise.resolve({
+          data: {
+            items: [
+              {
+                id: 501, type: "BLOCK", schedulePrecision: "EXACT",
+                startAt: "2026-06-15T08:00:00+02:00", endAt: "2026-06-15T13:00:00+02:00",
+                site: { id: 1, name: "Delta" }, status: "ASSIGNED",
+                surgeon: { id: 1, email: "martin@x.fr", firstname: "Jean", lastname: "Martin" },
+                instrumentist: { id: 9, email: "diane@x.fr", firstname: "Diane", lastname: "Lefebvre" },
+              },
+            ],
+            total: 1, page: 1, limit: 500,
+          },
+        });
       }
       return Promise.resolve({ data: { items: [] } });
     }),
@@ -283,5 +303,71 @@ describe("GeneratePlanningTab — indicateurs congé / déjà affecté dans le s
     await waitFor(() => expect(screen.getAllByText("Édité")).toHaveLength(2));
     expect(screen.getAllByText("À pourvoir")).toHaveLength(1);
     expect(screen.getAllByText("Diane Lefebvre").length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("GeneratePlanningTab — Mode Modification (éditeur unifié)", () => {
+  function mockHistoryWithOneVersion() {
+    (planningManagerApi.listPlanningVersions as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [{
+        id: 42, status: "ACTIVE", periodStart: "2026-06-01T00:00:00Z", deployedAt: "2026-06-02T00:00:00Z",
+        site: { id: 1, name: "Delta" }, summary: { total: 1, open: 0 },
+      }],
+      total: 1, page: 1, limit: 10,
+    });
+  }
+
+  it("ouvre le MÊME éditeur en mode Modification depuis la liste des plannings déjà générés, avec les missions réelles", async () => {
+    mockHistoryWithOneVersion();
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+
+    // Same component, amber "Modification" badge, real Mission (Jean Martin / Diane Lefebvre) loaded — not a Preview.
+    expect(await screen.findByText("Modification · Planning déployé")).toBeInTheDocument();
+    expect(await screen.findByText("Jean Martin")).toBeInTheDocument();
+    expect(screen.getByText("Diane Lefebvre")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Redéployer" })).toBeInTheDocument();
+  });
+
+  it("édite l'horaire d'une mission réelle via l'inspecteur permanent (pas de popup) puis redéploie", async () => {
+    mockHistoryWithOneVersion();
+    (planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mockResolvedValue({ created: 0, updated: 1, cancelled: 0, released: 0, unchanged: 0 });
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    // Click the mission row itself (via its instrumentist name, unique to that row — the
+    // surgeon name above belongs to the day/surgeon group header, not the clickable line).
+    await user.click(await screen.findByText("Diane Lefebvre"));
+
+    // The inspector is a permanent panel: selecting a row just reloads its content, no dialog opens.
+    const startField = await screen.findByLabelText("Début");
+    await user.clear(startField);
+    await user.type(startField, "09:00");
+
+    const redeployBtn = screen.getByRole("button", { name: "Redéployer" });
+    await waitFor(() => expect(redeployBtn).toBeEnabled());
+    await user.click(redeployBtn);
+
+    await waitFor(() => expect(planningV2Api.applyModifications).toHaveBeenCalled());
+    const [versionId, lines] = (planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(versionId).toBe(42);
+    expect(lines[0]).toMatchObject({ existingMissionId: 501, startTime: "09:00" });
+  });
+
+  it("quitte le mode Modification et retrouve l'écran de génération", async () => {
+    mockHistoryWithOneVersion();
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+
+    await user.click(screen.getByRole("button", { name: /Quitter la modification/ }));
+
+    expect(screen.queryByText("Modification · Planning déployé")).not.toBeInTheDocument();
+    expect(screen.getByText("Générer le planning")).toBeInTheDocument();
   });
 });

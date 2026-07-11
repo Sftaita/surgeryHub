@@ -5,12 +5,14 @@ namespace App\Controller\Api;
 use App\Entity\Mission;
 use App\Entity\PlanningDeployment;
 use App\Entity\PlanningVersion;
+use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\PlanningVersionStatus;
 use App\Security\Voter\PlanningVoter;
 use App\Service\PdfService;
 use App\Service\PlanningCoverageService;
 use App\Service\PlanningDiffService;
+use App\Service\PlanningModificationService;
 use App\Service\PlanningVersionHistoryService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -18,6 +20,7 @@ use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Security\Http\Attribute\CurrentUser;
 
 class PlanningVersionController extends AbstractController
 {
@@ -27,6 +30,7 @@ class PlanningVersionController extends AbstractController
         private readonly PdfService                     $pdfService,
         private readonly PlanningCoverageService        $coverageService,
         private readonly PlanningVersionHistoryService  $historyService,
+        private readonly PlanningModificationService    $modificationService,
     ) {}
 
     // ── List ──────────────────────────────────────────────────────────────────
@@ -139,6 +143,32 @@ class PlanningVersionController extends AbstractController
         }
 
         return $this->json($this->diffService->diff($version));
+    }
+
+    // ── Modification mode (Planning V2 unified editor) ────────────────────────
+
+    /**
+     * Applies a batch of editor-staged changes (reassign, release, cancel, schedule
+     * change, new mission) to an already-deployed PlanningVersion in one request, then
+     * sends exactly one targeted "what changed" email per actually-affected person.
+     * Never a global resend to everyone on the planning.
+     */
+    #[Route('/api/planning/versions/{id}/apply-modifications', name: 'api_planning_version_apply_modifications', methods: ['POST'])]
+    public function applyModifications(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $version = $this->em->find(PlanningVersion::class, $id);
+        if ($version === null) {
+            return $this->json(['error' => ['message' => 'PlanningVersion not found.']], 404);
+        }
+
+        $data  = $request->toArray();
+        $lines = isset($data['lines']) && is_array($data['lines']) ? $data['lines'] : [];
+
+        $result = $this->modificationService->apply($version, $lines, $user);
+
+        return $this->json($result);
     }
 
     // ── Coverage KPI (Batch 15F) ──────────────────────────────────────────────

@@ -605,4 +605,209 @@ final class MissionPostDeployServiceTest extends TestCase
             'Eligibility must be checked before acquiring the pessimistic lock.'
         );
     }
+
+    // ── notify=false (Planning V2 Modification mode batch apply) ────────────────
+
+    public function test_release_with_notify_false_skips_dispatch_but_still_mutates_and_audits(): void
+    {
+        $instrumentist = $this->makeInstrumentist();
+        $mission       = $this->makeMission(MissionStatus::ASSIGNED, $instrumentist);
+        $actor         = $this->makeActor();
+
+        $this->em->expects($this->once())->method('flush');
+        $this->audit->expects($this->once())->method('record');
+        $this->bus->expects($this->never())->method('dispatch');
+
+        $this->service->release($mission, $actor, notify: false);
+
+        $this->assertSame(MissionStatus::OPEN, $mission->getStatus());
+    }
+
+    public function test_cancel_with_notify_false_skips_dispatch_but_still_mutates(): void
+    {
+        $mission = $this->makeMission(MissionStatus::OPEN);
+        $actor   = $this->makeActor();
+
+        $this->em->method('flush');
+        $this->bus->expects($this->never())->method('dispatch');
+
+        $this->service->cancel($mission, $actor, notify: false);
+
+        $this->assertSame(MissionStatus::CANCELLED, $mission->getStatus());
+    }
+
+    public function test_reassign_with_notify_false_skips_dispatch_but_still_mutates(): void
+    {
+        $fromInstrumentist = $this->makeInstrumentist();
+        $toInstrumentist   = $this->makeInstrumentist('Jean', 'Martin');
+        $mission           = $this->makeMission(MissionStatus::ASSIGNED, $fromInstrumentist);
+        $actor             = $this->makeActor();
+
+        $this->em->method('flush');
+        $this->em->method('find')->willReturn($toInstrumentist);
+        $this->bus->expects($this->never())->method('dispatch');
+
+        $this->service->reassign($mission, $actor, 99, notify: false);
+
+        $this->assertSame($toInstrumentist, $mission->getInstrumentist());
+    }
+
+    // ── updateSchedule() ──────────────────────────────────────────────────────
+
+    public function test_update_schedule_changes_start_and_end_time(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ASSIGNED, $this->makeInstrumentist());
+        $mission->setStartAt(new \DateTimeImmutable('2026-09-15 08:00:00'));
+        $mission->setEndAt(new \DateTimeImmutable('2026-09-15 09:00:00'));
+        $actor = $this->makeActor();
+
+        $this->em->method('flush');
+
+        $newStart = new \DateTimeImmutable('2026-09-15 10:00:00');
+        $newEnd   = new \DateTimeImmutable('2026-09-15 11:00:00');
+        $this->service->updateSchedule($mission, $actor, $newStart, $newEnd, null, null);
+
+        $this->assertEquals($newStart, $mission->getStartAt());
+        $this->assertEquals($newEnd, $mission->getEndAt());
+    }
+
+    public function test_update_schedule_creates_time_changed_audit_event(): void
+    {
+        $mission = $this->makeMission(MissionStatus::OPEN);
+        $mission->setStartAt(new \DateTimeImmutable('2026-09-15 08:00:00'));
+        $mission->setEndAt(new \DateTimeImmutable('2026-09-15 09:00:00'));
+        $actor = $this->makeActor();
+
+        $this->em->method('flush');
+
+        $this->audit->expects($this->once())->method('record')
+            ->with($this->anything(), $this->anything(), AuditEventType::MISSION_TIME_CHANGED_POST_DEPLOY, $this->anything());
+
+        $this->service->updateSchedule(
+            $mission, $actor,
+            new \DateTimeImmutable('2026-09-15 10:00:00'),
+            new \DateTimeImmutable('2026-09-15 11:00:00'),
+            null, null,
+        );
+    }
+
+    public function test_update_schedule_with_notify_false_skips_dispatch(): void
+    {
+        $mission = $this->makeMission(MissionStatus::OPEN);
+        $mission->setStartAt(new \DateTimeImmutable('2026-09-15 08:00:00'));
+        $mission->setEndAt(new \DateTimeImmutable('2026-09-15 09:00:00'));
+        $actor = $this->makeActor();
+
+        $this->em->method('flush');
+        $this->bus->expects($this->never())->method('dispatch');
+
+        $this->service->updateSchedule(
+            $mission, $actor,
+            new \DateTimeImmutable('2026-09-15 10:00:00'),
+            null, null, null,
+            notify: false,
+        );
+    }
+
+    public function test_update_schedule_on_cancelled_mission_throws_conflict(): void
+    {
+        $mission = $this->makeMission(MissionStatus::CANCELLED);
+        $actor   = $this->makeActor();
+
+        $this->expectException(ConflictHttpException::class);
+
+        $this->service->updateSchedule($mission, $actor, new \DateTimeImmutable(), null, null, null);
+    }
+
+    // ── createPostDeploy() ────────────────────────────────────────────────────
+
+    public function test_create_post_deploy_with_instrumentist_is_assigned(): void
+    {
+        $site          = new \App\Entity\Hospital();
+        $site->setName('Delta');
+        $this->setId($site, 500);
+        $surgeon       = $this->makeActor('Dr', 'Surgeon');
+        $instrumentist = $this->makeInstrumentist();
+        $actor         = $this->makeActor('Manager', 'Actor');
+        $version       = new \App\Entity\PlanningVersion();
+        $this->setId($version, 700);
+
+        // Mimic Doctrine assigning the auto-increment PK on persist (unit test, no real EM).
+        $this->em->expects($this->once())->method('persist')
+            ->willReturnCallback(fn (object $m) => $this->setId($m, self::$nextId++));
+        $this->em->method('flush');
+
+        $mission = $this->service->createPostDeploy(
+            $version, $actor, $site, $surgeon, $instrumentist,
+            \App\Enum\MissionType::BLOCK,
+            new \DateTimeImmutable('2026-09-20 08:00:00'),
+            new \DateTimeImmutable('2026-09-20 13:00:00'),
+        );
+
+        $this->assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
+        $this->assertSame($instrumentist, $mission->getInstrumentist());
+        $this->assertSame($version, $mission->getPlanningVersion());
+    }
+
+    public function test_create_post_deploy_without_instrumentist_is_open(): void
+    {
+        $site    = new \App\Entity\Hospital();
+        $site->setName('Delta');
+        $this->setId($site, 501);
+        $surgeon = $this->makeActor('Dr', 'Surgeon');
+        $actor   = $this->makeActor('Manager', 'Actor');
+        $version = new \App\Entity\PlanningVersion();
+        $this->setId($version, 701);
+
+        $this->em->method('persist')->willReturnCallback(fn (object $m) => $this->setId($m, self::$nextId++));
+        $this->em->method('flush');
+
+        $mission = $this->service->createPostDeploy(
+            $version, $actor, $site, $surgeon, null,
+            \App\Enum\MissionType::CONSULTATION,
+            new \DateTimeImmutable('2026-09-20 08:00:00'),
+            new \DateTimeImmutable('2026-09-20 13:00:00'),
+        );
+
+        $this->assertSame(MissionStatus::OPEN, $mission->getStatus());
+    }
+
+    public function test_create_post_deploy_writes_added_audit_event(): void
+    {
+        $site    = new \App\Entity\Hospital();
+        $site->setName('Delta');
+        $surgeon = $this->makeActor('Dr', 'Surgeon');
+        $actor   = $this->makeActor('Manager', 'Actor');
+        $version = new \App\Entity\PlanningVersion();
+
+        $this->em->method('persist')->willReturnCallback(fn (object $m) => $this->setId($m, self::$nextId++));
+        $this->em->method('flush');
+
+        $this->audit->expects($this->once())->method('record')
+            ->with($this->anything(), $this->anything(), AuditEventType::MISSION_ADDED_POST_DEPLOY, $this->anything());
+
+        $this->service->createPostDeploy(
+            $version, $actor, $site, $surgeon, null,
+            \App\Enum\MissionType::BLOCK,
+            new \DateTimeImmutable('2026-09-20 08:00:00'),
+            new \DateTimeImmutable('2026-09-20 13:00:00'),
+        );
+    }
+
+    public function test_create_post_deploy_rejects_end_before_start(): void
+    {
+        $site    = new \App\Entity\Hospital();
+        $surgeon = $this->makeActor('Dr', 'Surgeon');
+        $actor   = $this->makeActor('Manager', 'Actor');
+        $version = new \App\Entity\PlanningVersion();
+
+        $this->expectException(ConflictHttpException::class);
+
+        $this->service->createPostDeploy(
+            $version, $actor, $site, $surgeon, null,
+            \App\Enum\MissionType::BLOCK,
+            new \DateTimeImmutable('2026-09-20 13:00:00'),
+            new \DateTimeImmutable('2026-09-20 08:00:00'),
+        );
+    }
 }

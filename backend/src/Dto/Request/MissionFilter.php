@@ -36,6 +36,9 @@ class MissionFilter
     #[Assert\Positive]
     public ?int $siteId = null;
 
+    #[Assert\Positive]
+    public ?int $planningVersionId = null;
+
     #[Assert\Type('string')]
     public ?string $status = null;
 
@@ -62,6 +65,7 @@ class MissionFilter
         $dto = new self();
 
         $dto->siteId = isset($q['siteId']) ? (int) $q['siteId'] : null;
+        $dto->planningVersionId = isset($q['planningVersionId']) ? (int) $q['planningVersionId'] : null;
 
         // Important: on normalise les strings vides en null (robuste Postman / clients)
         $status = isset($q['status']) ? trim((string) $q['status']) : null;

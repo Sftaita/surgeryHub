@@ -1,6 +1,6 @@
 import * as React from "react";
 import {
-  Box, Button, Checkbox, Chip, CircularProgress, FormControlLabel, Popover, Stack, Typography,
+  Box, Button, Checkbox, Chip, CircularProgress, FormControlLabel, Stack, Typography,
 } from "@mui/material";
 import RocketLaunchOutlinedIcon from "@mui/icons-material/RocketLaunchOutlined";
 import SearchOutlinedIcon from "@mui/icons-material/SearchOutlined";
@@ -12,11 +12,16 @@ import CalendarTodayOutlinedIcon from "@mui/icons-material/CalendarTodayOutlined
 import ChevronRightOutlinedIcon from "@mui/icons-material/ChevronRightOutlined";
 import CheckIcon from "@mui/icons-material/Check";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import ArrowBackOutlinedIcon from "@mui/icons-material/ArrowBackOutlined";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
 
 import { fetchSites } from "../../sites/api/sites.api";
-import { getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2, extractErrorV2 } from "../api/planningV2.api";
+import { getSurgeons } from "../../manager-surgeons/api/surgeons.api";
+import { fetchMissions } from "../../missions/api/missions.api";
+import {
+  getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2,
+  applyModifications, extractErrorV2,
+} from "../api/planningV2.api";
 import { listPlanningVersions, getAbsences } from "../../planning-manager/api/planning.api";
 import type { PreviewLineStatus, PreviewLineV2, PreviewResponseV2 } from "../api/planningV2.types";
 import {
@@ -24,14 +29,22 @@ import {
   aggregateGenerated, aggregateDeploy, type AggregatedGenerated, type AggregatedDeploy,
   severityOf, filterLines, countBySeverity, type SeverityFilter,
   groupLinesByDayAndSurgeon, formatDayHeader,
-  lineKeyV2, getFreedInstrumentists, findSameDayAssignmentElsewhere,
+  lineKeyV2, getFreedInstrumentists, findSameDayAssignmentElsewhere, missionToPreviewLine,
 } from "../api/generatePreviewGrouping";
 import { useToast } from "../../../ui/toast/useToast";
 import { SearchableSelect, type SearchableOption } from "../components/SearchableSelect";
+import { Inspector, type NewMissionDraft } from "../components/Inspector";
 import { PersonAvatar, EmptyAvatar } from "../../../ui/avatar/PersonAvatar";
 import { buildProfilePictureUrl } from "../../manager-instrumentists/utils/instrumentists.utils";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 import { apiClient } from "../../../api/apiClient";
+
+type PlanningEditorMode = "generation" | "modification";
+
+// Génération = medical blue (existing brand). Modification = amber — "attention, this is in
+// production; your changes only take effect after redeploy" (handoff: MODES-Generation-vs-Modification.md).
+const MODIFICATION_ACCENT = { main: "#B5761A", hover: "#7A4E12", bg: "#FBF6E9" };
+const GENERATION_ACCENT = { main: planningV2Colors.brand, hover: planningV2Colors.brandHover, bg: planningV2Colors.infoBg };
 
 const STATUS_TOKENS: Record<PreviewLineStatus, { label: string; fg: string; bg: string; dot: string; icon: React.ReactElement }> = {
   COVERED:   { label: "OK",                   fg: "#2C7D5F", bg: "#EFFAF5", dot: "#5BBE96", icon: <CheckCircleOutlinedIcon sx={{ fontSize: 14 }} /> },
@@ -61,7 +74,6 @@ function defaultYearMonth(): { year: number; month: number } {
 
 export function GeneratePlanningTab() {
   const toast = useToast();
-  const navigate = useNavigate();
   const { year: defYear, month: defMonth } = defaultYearMonth();
 
   const monthChipIds = React.useMemo(() => buildMonthChipIds({ year: defYear, month: defMonth }, 6), [defYear, defMonth]);
@@ -79,11 +91,26 @@ export function GeneratePlanningTab() {
   const [sendPdf, setSendPdf] = React.useState(true);
   const [genFilter, setGenFilter] = React.useState<SeverityFilter>("all");
 
-  // ── Preview Editor: local instrumentist reassignment before generate ─────────
+  // ── Mode Modification — editing an already-generated/deployed PlanningVersion in place ────
+  // Same editor, same state shape as Génération; only the data source, palette and CTAs differ.
+  // See handoff `MODES-Generation-vs-Modification.md` and docs/planning-v2-architecture-freeze.md §L
+  // ("planning vivant": post-deploy changes mutate Missions directly, never a new generate/deploy cycle).
+  const [modificationVersionId, setModificationVersionId] = React.useState<number | null>(null);
+  const [modificationLabel, setModificationLabel] = React.useState<string | null>(null);
+  const [newLines, setNewLines] = React.useState<PreviewLineV2[]>([]);
+  const [isCreatingMission, setIsCreatingMission] = React.useState(false);
+  const [modificationApplied, setModificationApplied] = React.useState<{ created: number; updated: number; cancelled: number; released: number; unchanged: number } | null>(null);
+  const nextDraftIdRef = React.useRef(-1);
+
+  const mode: PlanningEditorMode = modificationVersionId !== null ? "modification" : "generation";
+  const isModification = mode === "modification";
+  const accent = isModification ? MODIFICATION_ACCENT : GENERATION_ACCENT;
+
+  // ── Preview Editor: local instrumentist reassignment before generate/redeploy ────────────
   const [editedLines, setEditedLines] = React.useState<Map<string, Partial<PreviewLineV2>>>(new Map());
   const [selectedKeys, setSelectedKeys] = React.useState<Set<string>>(new Set());
   const [bulkInstrumentistId, setBulkInstrumentistId] = React.useState<number | "">("");
-  const [editPopover, setEditPopover] = React.useState<{ anchorEl: HTMLElement; key: string; date: string } | null>(null);
+  const [selectedLineKey, setSelectedLineKey] = React.useState<string | null>(null);
 
   const instrumentistsQuery = useQuery({
     queryKey: ["instrumentists-all"],
@@ -98,24 +125,27 @@ export function GeneratePlanningTab() {
     id: i.id, label: i.displayName, avatarUrl: buildProfilePictureUrl(i.profilePicturePath) ?? null,
   }));
 
-  // Absences overlapping the day of the line currently open in the reassignment popover —
-  // refetched per popover open since it's scoped to one specific date, not the whole preview.
-  const absencesQuery = useQuery({
-    queryKey: ["absences-on-day", editPopover?.date],
-    queryFn: () => getAbsences({ from: editPopover!.date, to: editPopover!.date }),
-    enabled: !!editPopover,
-    staleTime: 60_000,
-  });
-  const absentInstrumentistIds = React.useMemo(() => {
-    const ids = new Set<number>();
-    for (const a of absencesQuery.data ?? []) {
-      if (a.user.role === "INSTRUMENTIST") ids.add(a.user.id);
-    }
-    return ids;
-  }, [absencesQuery.data]);
+  // Absences/reassignment annotations for the line currently selected in the inspector are
+  // computed further below, once `selectedLine` is resolved from effectiveLines.
 
   const sitesQuery = useQuery({ queryKey: ["sites"], queryFn: fetchSites });
   const groupsQuery = useQuery({ queryKey: ["planning-v2", "site-groups"], queryFn: getSiteGroups });
+  const surgeonsQuery = useQuery({ queryKey: ["surgeons-all"], queryFn: () => getSurgeons({ active: true }), staleTime: 5 * 60_000 });
+  const surgeonOptions: SearchableOption[] = (surgeonsQuery.data?.items ?? []).map((s) => ({
+    id: s.id, label: s.displayName, avatarUrl: buildProfilePictureUrl(s.profilePicturePath) ?? null,
+  }));
+  const siteOptionsForCreate: SearchableOption[] = (sitesQuery.data ?? []).map((s) => ({ id: s.id, label: s.name }));
+
+  // Mode Modification — loads the real Missions of the PlanningVersion being edited, mapped
+  // to the same PreviewLineV2 shape so every render/filter/edit path below stays unchanged.
+  const modificationMissionsQuery = useQuery({
+    queryKey: ["planning-v2", "modification-missions", modificationVersionId],
+    queryFn: async () => {
+      const res = await fetchMissions(1, 500, { planningVersionId: modificationVersionId! });
+      return res.items.filter((m) => m.status !== "REJECTED").map(missionToPreviewLine);
+    },
+    enabled: modificationVersionId !== null,
+  });
 
   // Sites and site-groups share one searchable field — ids are offset for groups so
   // they stay distinguishable without inventing a second id namespace on the wire.
@@ -151,6 +181,34 @@ export function GeneratePlanningTab() {
 
   function toggleMonth(id: number) {
     setSelectedMonthIds((prev) => (prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]));
+  }
+
+  function enterModification(version: { id: number; periodStart: string; site?: { name: string } | null }) {
+    setPreview(null);
+    setPreviewResponses([]);
+    setGenerated(null);
+    setDeployed(null);
+    setGenFilter("all");
+    setEditedLines(new Map());
+    setSelectedKeys(new Set());
+    setSelectedLineKey(null);
+    setNewLines([]);
+    setIsCreatingMission(false);
+    setModificationApplied(null);
+    const d = new Date(version.periodStart);
+    setModificationLabel(`${MONTH_LABELS[d.getMonth()]} ${d.getFullYear()} · ${version.site?.name ?? "Tous sites"}`);
+    setModificationVersionId(version.id);
+  }
+
+  function exitModification() {
+    setModificationVersionId(null);
+    setModificationLabel(null);
+    setEditedLines(new Map());
+    setSelectedKeys(new Set());
+    setSelectedLineKey(null);
+    setNewLines([]);
+    setIsCreatingMission(false);
+    setModificationApplied(null);
   }
 
   const previewMutation = useMutation({
@@ -220,6 +278,21 @@ export function GeneratePlanningTab() {
     onError: (err) => toast.error(extractErrorV2(err)),
   });
 
+  const applyModsMutation = useMutation({
+    mutationFn: () => applyModifications(modificationVersionId!, effectiveLines),
+    onSuccess: (result) => {
+      const total = result.created + result.updated + result.cancelled + result.released;
+      toast.success(total > 0 ? `Planning mis à jour — ${total} changement(s) appliqué(s)` : "Aucun changement à appliquer");
+      setModificationApplied(result);
+      setEditedLines(new Map());
+      setNewLines([]);
+      setSelectedLineKey(null);
+      setIsCreatingMission(false);
+      modificationMissionsQuery.refetch();
+    },
+    onError: (err) => toast.error(extractErrorV2(err)),
+  });
+
   function resetGen() {
     setPreview(null);
     setPreviewResponses([]);
@@ -230,9 +303,13 @@ export function GeneratePlanningTab() {
     setSelectedKeys(new Set());
   }
 
-  const lines: PreviewLineV2[] = preview?.lines ?? [];
+  // Génération sources lines from the backend Preview; Modification sources them from the real
+  // Missions of the PlanningVersion being edited, plus any not-yet-applied local draft creations.
+  const lines: PreviewLineV2[] = isModification
+    ? [...(modificationMissionsQuery.data ?? []), ...newLines]
+    : (preview?.lines ?? []);
 
-  // Merge local instrumentist-reassignment edits over the raw preview lines for display and generate.
+  // Merge local edits (reassignment, schedule, cancel, release) over the base lines for display and submit.
   const effectiveLines = React.useMemo<PreviewLineV2[]>(
     () => lines.map((line) => {
       const patch = editedLines.get(lineKeyV2(line));
@@ -326,22 +403,90 @@ export function GeneratePlanningTab() {
     setSelectedKeys(new Set());
   }
 
-  const editPopoverLine = editPopover ? effectiveLines.find((l) => lineKeyV2(l) === editPopover.key) ?? null : null;
+  // ── Schedule / cancel / release / create — Inspector actions ─────────────────────────────
 
-  // Per-option annotations scoped to the line currently open in the popover — absence and
+  function handleScheduleChange(line: PreviewLineV2, patch: { startTime?: string; endTime?: string }) {
+    handleEditLine(lineKeyV2(line), patch);
+  }
+
+  function handleCancelMission(line: PreviewLineV2) {
+    handleEditLine(lineKeyV2(line), { status: "SKIPPED" });
+  }
+
+  function handleReleaseMission(line: PreviewLineV2) {
+    handleInstrumentistChange(line, null);
+  }
+
+  function handleStartCreate() {
+    setSelectedLineKey(null);
+    setIsCreatingMission(true);
+  }
+
+  function handleCancelCreate() {
+    setIsCreatingMission(false);
+  }
+
+  function handleSubmitCreate(draft: NewMissionDraft) {
+    const surgeon = surgeonsQuery.data?.items.find((s) => s.id === draft.surgeonId);
+    const site = sitesQuery.data?.find((s) => s.id === draft.siteId);
+    const instrumentist = draft.instrumentistId !== null ? instrumentists.find((i) => i.id === draft.instrumentistId) : undefined;
+    const draftId = nextDraftIdRef.current--;
+    const newLine: PreviewLineV2 = {
+      date: draft.date,
+      postId: draftId,
+      surgeonId: draft.surgeonId ?? 0,
+      surgeonName: surgeon?.displayName ?? "—",
+      missionType: draft.missionType,
+      startTime: draft.startTime,
+      endTime: draft.endTime,
+      siteId: draft.siteId,
+      siteName: site?.name ?? null,
+      instrumentistId: draft.instrumentistId,
+      instrumentistName: instrumentist?.displayName ?? null,
+      status: draft.instrumentistId !== null ? "COVERED" : "UNCOVERED",
+      existingMissionId: null,
+      existingInstrumentistId: null,
+      existingInstrumentistName: null,
+      freedFrom: false,
+    };
+    setNewLines((prev) => [...prev, newLine]);
+    setIsCreatingMission(false);
+    setSelectedLineKey(lineKeyV2(newLine));
+  }
+
+  const selectedLine = selectedLineKey ? effectiveLines.find((l) => lineKeyV2(l) === selectedLineKey) ?? null : null;
+
+  // Absences overlapping the day of the line currently selected in the inspector.
+  const absencesQuery = useQuery({
+    queryKey: ["absences-on-day", selectedLine?.date],
+    queryFn: () => getAbsences({ from: selectedLine!.date, to: selectedLine!.date }),
+    enabled: !!selectedLine,
+    staleTime: 60_000,
+  });
+  const absentInstrumentistIds = React.useMemo(() => {
+    const ids = new Set<number>();
+    for (const a of absencesQuery.data ?? []) {
+      if (a.user.role === "INSTRUMENTIST") ids.add(a.user.id);
+    }
+    return ids;
+  }, [absencesQuery.data]);
+
+  // Per-option annotations scoped to the line currently selected — absence and
   // same-day-elsewhere are both relative to *that* line's date, not a global property.
-  const popoverInstrumentistOptions: SearchableOption[] = React.useMemo(() => {
-    if (!editPopoverLine) return instrumentistOptions;
+  const instrumentistOptionsForSelected: SearchableOption[] = React.useMemo(() => {
+    if (!selectedLine) return instrumentistOptions;
     return instrumentistOptions.map((opt) => {
       const absent = absentInstrumentistIds.has(opt.id);
-      const elsewhere = !absent && findSameDayAssignmentElsewhere(effectiveLines, editPopoverLine, opt.id);
+      const elsewhere = !absent && findSameDayAssignmentElsewhere(effectiveLines, selectedLine, opt.id);
       return {
         ...opt,
         muted: absent,
         badge: absent ? "En congé" : elsewhere ? "Déjà affecté ailleurs" : undefined,
       };
     });
-  }, [instrumentistOptions, editPopoverLine, absentInstrumentistIds, effectiveLines]);
+  }, [instrumentistOptions, selectedLine, absentInstrumentistIds, effectiveLines]);
+
+  const freedForSelected = selectedLine ? getFreedInstrumentists(effectiveLines, selectedLine) : [];
 
   const monthsLabel = selectedMonthIds.length === 0
     ? "Sélectionnez au moins un mois"
@@ -353,79 +498,115 @@ export function GeneratePlanningTab() {
 
   return (
     <Box>
-      <Typography sx={{ fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" }}>Générer le planning</Typography>
-      <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted, mt: 0.5, mb: 3 }}>
-        Prévisualisez, vérifiez, puis déployez les missions des mois sélectionnés.
-      </Typography>
-
-      <Stepper stepIndex={stepIndex} />
-
-      <Box sx={{ mb: 2.75 }}>
-        <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 1 }}>
-          <Typography sx={{ fontSize: 12, fontWeight: 700, color: planningV2Colors.textBody }}>Mois</Typography>
-          <Typography sx={{ fontSize: 12, color: planningV2Colors.textSecondary }}>
-            {selectedMonthIds.length === 0
-              ? "Sélectionnez au moins un mois"
-              : `${selectedMonthIds.length} mois · ${activePostsCount} poste${activePostsCount > 1 ? "s" : ""}`}
+      <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={2} sx={{ mb: isModification ? 2.25 : 0 }}>
+        <Box>
+          {isModification && (
+            <Box sx={{
+              display: "inline-flex", alignItems: "center", gap: 0.6, fontSize: 11, fontWeight: 700,
+              letterSpacing: "0.04em", textTransform: "uppercase", color: accent.main, bgcolor: accent.bg,
+              px: 1.1, py: 0.35, borderRadius: planningV2Radii.pill, mb: 1,
+            }}>
+              Modification · Planning déployé
+            </Box>
+          )}
+          <Typography sx={{ fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" }}>
+            {isModification ? `Modifier le planning — ${modificationLabel}` : "Générer le planning"}
           </Typography>
-        </Stack>
-        <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }} useFlexGap>
-          {monthChipIds.map((id) => {
-            const ym = monthIdToYearMonth(id);
-            const selected = selectedMonthIds.includes(id);
-            return (
-              <Chip
-                key={id}
-                clickable
-                onClick={() => toggleMonth(id)}
-                icon={selected ? <CheckIcon sx={{ fontSize: 14, color: "#fff !important" }} /> : undefined}
-                label={`${MONTH_LABELS[ym.month - 1]} ${ym.year}`}
-                sx={{
-                  height: 36, fontSize: 13, fontWeight: 600, borderRadius: planningV2Radii.pill,
-                  bgcolor: selected ? planningV2Colors.brand : "#F8FAFC",
-                  color: selected ? "#fff" : planningV2Colors.textBody,
-                  border: `1px solid ${selected ? planningV2Colors.brand : "#E7EBEF"}`,
-                  "&:hover": { bgcolor: selected ? planningV2Colors.brandHover : "#F1F4F7" },
-                }}
-              />
-            );
-          })}
-        </Stack>
-      </Box>
-
-      <Stack direction="row" spacing={1.75} sx={{ mb: 2.75, flexWrap: "wrap" }} useFlexGap>
-        <Box sx={{ flex: 1, minWidth: 220 }}>
-          <SearchableSelect
-            label="Site ou groupe de sites"
-            required
-            icon={<SearchOutlinedIcon sx={{ fontSize: 16, color: planningV2Colors.textSecondary, mr: 0.5 }} />}
-            options={targetOptions}
-            value={targetId}
-            onChange={setTargetId}
-            placeholder="Rechercher un site ou groupe…"
-          />
+          <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted, mt: 0.5 }}>
+            {isModification
+              ? "Vous retrouvez exactement le planning déployé. Vos changements ne prennent effet qu'après redéploiement."
+              : "Prévisualisez, vérifiez, puis déployez les missions des mois sélectionnés."}
+          </Typography>
         </Box>
-        <Box sx={{ display: "flex", alignItems: "flex-end" }}>
+        {isModification && (
           <Button
-            variant="contained" disableElevation
-            disabled={!target || selectedMonthIds.length === 0 || previewMutation.isPending}
-            onClick={() => previewMutation.mutate()}
-            sx={{
-              height: 42, px: 2.5, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600,
-              bgcolor: !target || selectedMonthIds.length === 0 ? "#E7EBEF" : planningV2Colors.textTitle,
-              color: !target || selectedMonthIds.length === 0 ? "#98A2AE" : "#fff",
-              cursor: !target || selectedMonthIds.length === 0 ? "not-allowed" : "pointer",
-              "&:hover": { bgcolor: !target || selectedMonthIds.length === 0 ? "#E7EBEF" : "#243240" },
-              "&.Mui-disabled": { bgcolor: "#E7EBEF", color: "#98A2AE" },
-            }}
+            startIcon={<ArrowBackOutlinedIcon sx={{ fontSize: 16 }} />}
+            onClick={exitModification}
+            sx={{ height: 38, px: 2, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, color: planningV2Colors.textStrong, border: "1px solid #DDE2E8", flexShrink: 0 }}
           >
-            Prévisualiser
+            Quitter la modification
           </Button>
-        </Box>
+        )}
       </Stack>
 
+      {!isModification && (
+        <>
+          <Box sx={{ mt: 3 }} />
+          <Stepper stepIndex={stepIndex} />
+
+          <Box sx={{ mb: 2.75 }}>
+            <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 1 }}>
+              <Typography sx={{ fontSize: 12, fontWeight: 700, color: planningV2Colors.textBody }}>Mois</Typography>
+              <Typography sx={{ fontSize: 12, color: planningV2Colors.textSecondary }}>
+                {selectedMonthIds.length === 0
+                  ? "Sélectionnez au moins un mois"
+                  : `${selectedMonthIds.length} mois · ${activePostsCount} poste${activePostsCount > 1 ? "s" : ""}`}
+              </Typography>
+            </Stack>
+            <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }} useFlexGap>
+              {monthChipIds.map((id) => {
+                const ym = monthIdToYearMonth(id);
+                const selected = selectedMonthIds.includes(id);
+                const matchedVersion = historyQuery.data?.items.find((v) => {
+                  const d = new Date(v.periodStart);
+                  return d.getFullYear() === ym.year && d.getMonth() + 1 === ym.month
+                    && (targetId === null || targetId >= GROUP_ID_OFFSET || v.site?.id === targetId);
+                });
+                return (
+                  <Chip
+                    key={id}
+                    clickable
+                    onClick={() => (matchedVersion ? enterModification(matchedVersion) : toggleMonth(id))}
+                    icon={selected ? <CheckIcon sx={{ fontSize: 14, color: "#fff !important" }} /> : undefined}
+                    label={`${MONTH_LABELS[ym.month - 1]} ${ym.year}${matchedVersion ? " · déjà généré" : ""}`}
+                    sx={{
+                      height: 36, fontSize: 13, fontWeight: 600, borderRadius: planningV2Radii.pill,
+                      bgcolor: selected ? planningV2Colors.brand : "#F8FAFC",
+                      color: selected ? "#fff" : planningV2Colors.textBody,
+                      border: `1px solid ${matchedVersion ? MODIFICATION_ACCENT.main : selected ? planningV2Colors.brand : "#E7EBEF"}`,
+                      "&:hover": { bgcolor: selected ? planningV2Colors.brandHover : "#F1F4F7" },
+                    }}
+                  />
+                );
+              })}
+            </Stack>
+          </Box>
+
+          <Stack direction="row" spacing={1.75} sx={{ mb: 2.75, flexWrap: "wrap" }} useFlexGap>
+            <Box sx={{ flex: 1, minWidth: 220 }}>
+              <SearchableSelect
+                label="Site ou groupe de sites"
+                required
+                icon={<SearchOutlinedIcon sx={{ fontSize: 16, color: planningV2Colors.textSecondary, mr: 0.5 }} />}
+                options={targetOptions}
+                value={targetId}
+                onChange={setTargetId}
+                placeholder="Rechercher un site ou groupe…"
+              />
+            </Box>
+            <Box sx={{ display: "flex", alignItems: "flex-end" }}>
+              <Button
+                variant="contained" disableElevation
+                disabled={!target || selectedMonthIds.length === 0 || previewMutation.isPending}
+                onClick={() => previewMutation.mutate()}
+                sx={{
+                  height: 42, px: 2.5, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600,
+                  bgcolor: !target || selectedMonthIds.length === 0 ? "#E7EBEF" : planningV2Colors.textTitle,
+                  color: !target || selectedMonthIds.length === 0 ? "#98A2AE" : "#fff",
+                  cursor: !target || selectedMonthIds.length === 0 ? "not-allowed" : "pointer",
+                  "&:hover": { bgcolor: !target || selectedMonthIds.length === 0 ? "#E7EBEF" : "#243240" },
+                  "&.Mui-disabled": { bgcolor: "#E7EBEF", color: "#98A2AE" },
+                }}
+              >
+                Prévisualiser
+              </Button>
+            </Box>
+          </Stack>
+        </>
+      )}
+
       {/* Idle state: ready prompt + generation history */}
-      {!preview && !previewMutation.isPending && (
+      {!isModification && !preview && !previewMutation.isPending && (
         <>
           <Box sx={{ bgcolor: "#fff", border: "1px dashed #DDE2E8", borderRadius: planningV2Radii.cardLg, p: 7, textAlign: "center" }}>
             <Box sx={{ width: 52, height: 52, borderRadius: planningV2Radii.cardLg, bgcolor: planningV2Colors.infoBg, display: "flex", alignItems: "center", justifyContent: "center", mx: "auto", mb: 1.75 }}>
@@ -459,7 +640,7 @@ export function GeneratePlanningTab() {
                   return (
                     <Stack
                       key={v.id} direction="row" alignItems="center" spacing={2}
-                      onClick={() => navigate(`/app/m/planning/versions/${v.id}`)}
+                      onClick={() => enterModification(v)}
                       sx={{
                         px: 2.25, py: 1.75, cursor: "pointer",
                         borderBottom: `1px solid ${planningV2Colors.divider}`,
@@ -498,7 +679,10 @@ export function GeneratePlanningTab() {
                           color: isDeployed ? "#2C7D5F" : planningV2Colors.warnFg,
                         }}
                       />
-                      <ChevronRightOutlinedIcon sx={{ color: planningV2Colors.textSecondary }} />
+                      <Stack direction="row" alignItems="center" spacing={0.4} sx={{ color: MODIFICATION_ACCENT.main, flex: "none" }}>
+                        <Typography sx={{ fontSize: 12, fontWeight: 700 }}>Modifier</Typography>
+                        <ChevronRightOutlinedIcon sx={{ fontSize: 18 }} />
+                      </Stack>
                     </Stack>
                   );
                 })
@@ -517,10 +701,44 @@ export function GeneratePlanningTab() {
           </Typography>
         </Box>
       )}
+      {isModification && modificationMissionsQuery.isLoading && (
+        <Box sx={{ bgcolor: "#fff", border: `1px solid ${planningV2Colors.cardBorder}`, borderRadius: planningV2Radii.cardLg, p: 7, textAlign: "center", boxShadow: planningV2Shadows.card }}>
+          <CircularProgress size={34} sx={{ mb: 1.75, color: accent.main }} />
+          <Typography sx={{ fontSize: 14, fontWeight: 600, color: planningV2Colors.textBody }}>
+            Chargement du planning déployé…
+          </Typography>
+        </Box>
+      )}
 
-      {/* Preview results */}
-      {preview && !deployed && (
-        <Box>
+      {/* Modification applied — success recap */}
+      {isModification && modificationApplied && (
+        <Box sx={{ bgcolor: "#fff", border: "1px solid #BCE9D6", borderRadius: planningV2Radii.cardLg, p: 5, textAlign: "center", boxShadow: planningV2Shadows.card, mb: 2.75 }}>
+          <Box sx={{ width: 52, height: 52, borderRadius: planningV2Radii.pill, bgcolor: "#EFFAF5", display: "flex", alignItems: "center", justifyContent: "center", mx: "auto", mb: 1.75 }}>
+            <CheckCircleOutlinedIcon sx={{ fontSize: 26, color: "#2C7D5F" }} />
+          </Box>
+          <Typography sx={{ fontSize: 16, fontWeight: 700 }}>Planning redéployé</Typography>
+          <Typography sx={{ fontSize: 13, color: planningV2Colors.textMuted, mt: 0.75, mb: 2 }}>
+            {modificationApplied.created} créée{modificationApplied.created > 1 ? "s" : ""} · {modificationApplied.updated} modifiée{modificationApplied.updated > 1 ? "s" : ""} · {modificationApplied.cancelled} annulée{modificationApplied.cancelled > 1 ? "s" : ""} · {modificationApplied.released} libérée{modificationApplied.released > 1 ? "s" : ""}.
+            Seules les personnes concernées par un changement ont reçu un email récapitulatif.
+          </Typography>
+          <Stack direction="row" spacing={1.25} justifyContent="center">
+            <Button onClick={() => setModificationApplied(null)} sx={{ height: 38, px: 2.25, borderRadius: planningV2Radii.button, border: "1px solid #DDE2E8", color: planningV2Colors.textStrong, textTransform: "none", fontWeight: 600 }}>
+              Continuer la modification
+            </Button>
+            <Button
+              onClick={exitModification}
+              sx={{ height: 38, px: 2.25, borderRadius: planningV2Radii.button, bgcolor: planningV2Colors.textTitle, color: "#fff", textTransform: "none", fontWeight: 600, "&:hover": { bgcolor: "#243240" } }}
+            >
+              Terminer
+            </Button>
+          </Stack>
+        </Box>
+      )}
+
+      {/* Preview / Modification editor — same two-pane layout, same filters/selection/list for both modes */}
+      {(preview || (isModification && modificationMissionsQuery.data)) && !deployed && !modificationApplied && (
+        <Stack direction="row" spacing={2.5} alignItems="flex-start">
+        <Box sx={{ flex: 1, minWidth: 0 }}>
           <Stack direction="row" spacing={1.25} sx={{ mb: 1.75, flexWrap: "wrap" }} useFlexGap>
             {FILTER_CHIPS.map((chip) => {
               const n = chip.key === "all" ? lines.length : severityCounts[chip.key];
@@ -629,17 +847,21 @@ export function GeneratePlanningTab() {
                           const tokens = STATUS_TOKENS[line.status];
                           const key = lineKeyV2(line);
                           const dirty = editedLines.has(key);
+                          const isSelectedInInspector = selectedLineKey === key;
                           return (
                             <Stack
                               key={lIdx} direction="row" alignItems="center" spacing={1.5}
+                              onClick={() => { setSelectedLineKey(key); setIsCreatingMission(false); }}
                               sx={{
-                                px: 2, py: 1.1, borderTop: `1px solid ${planningV2Colors.divider}`,
-                                bgcolor: severityOf(line.status) === "crit" ? "#FBF2F1" : "transparent",
+                                px: 2, py: 1.1, borderTop: `1px solid ${planningV2Colors.divider}`, cursor: "pointer",
+                                bgcolor: isSelectedInInspector ? accent.bg : severityOf(line.status) === "crit" ? "#FBF2F1" : "transparent",
+                                borderLeft: isSelectedInInspector ? `3px solid ${accent.main}` : "3px solid transparent",
                               }}
                             >
                               <Checkbox
                                 size="small"
                                 checked={selectedKeys.has(key)}
+                                onClick={(e) => e.stopPropagation()}
                                 onChange={() => toggleSelected(key)}
                                 sx={{ p: 0, flex: "none" }}
                               />
@@ -649,8 +871,7 @@ export function GeneratePlanningTab() {
                                 {line.startTime}–{line.endTime}
                               </Typography>
                               <Stack
-                                direction="row" alignItems="center" spacing={0.9} sx={{ flex: 1, minWidth: 0, cursor: "pointer", borderRadius: planningV2Radii.button, px: 0.75, py: 0.4, mx: -0.75, "&:hover": { bgcolor: "#F1F4F7" } }}
-                                onClick={(e) => setEditPopover({ anchorEl: e.currentTarget, key, date: line.date })}
+                                direction="row" alignItems="center" spacing={0.9} sx={{ flex: 1, minWidth: 0 }}
                               >
                                 {line.instrumentistName ? (
                                   <>
@@ -700,10 +921,21 @@ export function GeneratePlanningTab() {
                 : ""}
             </Typography>
             <Stack direction="row" spacing={1.25}>
-              <Button onClick={resetGen} sx={{ height: 40, px: 2, borderRadius: planningV2Radii.button, border: "1px solid #DDE2E8", color: planningV2Colors.textStrong, textTransform: "none", fontWeight: 600 }}>
-                Recommencer
-              </Button>
-              {!generated ? (
+              {!isModification && (
+                <Button onClick={resetGen} sx={{ height: 40, px: 2, borderRadius: planningV2Radii.button, border: "1px solid #DDE2E8", color: planningV2Colors.textStrong, textTransform: "none", fontWeight: 600 }}>
+                  Recommencer
+                </Button>
+              )}
+              {isModification ? (
+                <Button
+                  variant="contained" disableElevation disabled={applyModsMutation.isPending || dirtyCount + newLines.length === 0}
+                  onClick={() => applyModsMutation.mutate()}
+                  startIcon={<RocketLaunchOutlinedIcon />}
+                  sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: accent.main, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: accent.hover } }}
+                >
+                  Redéployer
+                </Button>
+              ) : !generated ? (
                 <Button
                   variant="contained" disableElevation disabled={generateMutation.isPending} onClick={() => generateMutation.mutate()}
                   sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: planningV2Colors.brand, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
@@ -722,7 +954,7 @@ export function GeneratePlanningTab() {
             </Stack>
           </Stack>
 
-          {generated && (
+          {generated && !isModification && (
             <Stack direction="row" alignItems="center" spacing={1} sx={{ mt: 1.5 }}>
               <FormControlLabel
                 control={<Checkbox size="small" checked={sendPdf} onChange={(e) => setSendPdf(e.target.checked)} />}
@@ -731,6 +963,28 @@ export function GeneratePlanningTab() {
             </Stack>
           )}
         </Box>
+
+        <Inspector
+          line={selectedLine}
+          isDirty={!!selectedLineKey && editedLines.has(selectedLineKey)}
+          isModification={isModification}
+          instrumentistOptions={instrumentistOptionsForSelected}
+          freedInstrumentists={freedForSelected}
+          absencesLoading={absencesQuery.isLoading}
+          accent={accent}
+          onInstrumentistChange={(newId) => selectedLine && handleInstrumentistChange(selectedLine, newId)}
+          onScheduleChange={(patch) => selectedLine && handleScheduleChange(selectedLine, patch)}
+          onCancelMission={() => selectedLine && handleCancelMission(selectedLine)}
+          onReleaseMission={() => selectedLine && handleReleaseMission(selectedLine)}
+          onReset={() => selectedLineKey && handleResetLine(selectedLineKey)}
+          isCreating={isCreatingMission}
+          surgeonOptions={surgeonOptions}
+          siteOptions={siteOptionsForCreate}
+          onStartCreate={handleStartCreate}
+          onSubmitCreate={handleSubmitCreate}
+          onCancelCreate={handleCancelCreate}
+        />
+        </Stack>
       )}
 
       {/* Deployed success */}
@@ -752,60 +1006,6 @@ export function GeneratePlanningTab() {
         </Box>
       )}
 
-      {/* Instrumentist edit popover — click a line's instrumentist to reassign before generating */}
-      <Popover
-        open={!!editPopover}
-        anchorEl={editPopover?.anchorEl ?? null}
-        onClose={() => setEditPopover(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-      >
-        {editPopoverLine && (
-          <Box sx={{ p: 2, width: 300 }}>
-            <SearchableSelect
-              label="Instrumentiste"
-              options={popoverInstrumentistOptions}
-              value={editPopoverLine.instrumentistId}
-              onChange={(id) => { handleInstrumentistChange(editPopoverLine, id); setEditPopover(null); }}
-              placeholder="Rechercher un instrumentiste…"
-            />
-            {absencesQuery.isLoading && (
-              <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary, mt: 0.5 }}>
-                Vérification des congés…
-              </Typography>
-            )}
-            {(() => {
-              const freed = getFreedInstrumentists(effectiveLines, editPopoverLine);
-              if (freed.length === 0) return null;
-              return (
-                <Box sx={{ mt: 1.5 }}>
-                  <Typography sx={{ fontSize: 11, fontWeight: 700, color: planningV2Colors.textSecondary, mb: 0.5 }}>
-                    Libérés disponibles
-                  </Typography>
-                  <Stack spacing={0.75}>
-                    {freed.map((f) => (
-                      <Stack
-                        key={f.id} direction="row" alignItems="center" justifyContent="space-between"
-                        sx={{ px: 1, py: 0.75, bgcolor: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: planningV2Radii.button }}
-                      >
-                        <Box>
-                          <Typography sx={{ fontSize: 12, fontWeight: 600 }}>{f.name}</Typography>
-                          <Typography sx={{ fontSize: 10, color: "#2C7D5F" }}>{f.reason}</Typography>
-                        </Box>
-                        <Button
-                          size="small" variant="text" color="success"
-                          onClick={() => { handleInstrumentistChange(editPopoverLine, f.id); setEditPopover(null); }}
-                        >
-                          Assigner
-                        </Button>
-                      </Stack>
-                    ))}
-                  </Stack>
-                </Box>
-              );
-            })()}
-          </Box>
-        )}
-      </Popover>
     </Box>
   );
 }

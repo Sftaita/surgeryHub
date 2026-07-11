@@ -719,6 +719,31 @@ couverture.
 - ADR D-055 — AuditEvent comme historique post-déploiement + PlanningVersion history
 - `docs/architecture.md` §7 "Planning vivant — vie du planning après déploiement"
 
+### L9. Mode Modification — éditeur unifié (Batch 15K) ✅ DONE (2026-07-10)
+
+Le handoff design (`MODES-Generation-vs-Modification.md`) décrivait un second mode pour
+`GeneratePlanningTab` permettant d'éditer un planning déjà déployé dans le **même** éditeur
+que la génération, jamais un fork. Implémenté en Batch 15K : `PlanningEditorMode =
+"generation" | "modification"`, dérivé d'un seul état (`modificationVersionId`), même
+composant, même inspecteur permanent, même système de sélection/filtres — seuls la source
+de données (Missions réelles au lieu du Preview), la palette (ambre au lieu de bleu) et les
+libellés de CTA changent. Deux points d'entrée : ligne "Modifier" dans l'historique des
+plannings, ou clic sur un chip de mois déjà généré.
+
+**Redéploiement et notifications ciblées.** Le "Redéployer" de ce mode n'emprunte **pas**
+le chemin `PLANNING_MISSION_REASSIGNED`/`CANCELLED`/`ADDED`/`UPDATED` de L4 (ces types
+restent le mécanisme des actions unitaires post-deploy hors mode Modification — release,
+cancel, reassign, assign appelés individuellement continuent de dispatcher
+`MissionLifecycleChangedMessage` normalement). À l'intérieur d'un lot Modification, chaque
+mutation est appliquée avec `notify: false` pour ne pas déclencher ces notifications
+unitaires ; à la place, `PlanningModificationService` calcule un diff avant/après sur
+l'ensemble du lot (`PlanningDiffService::computeDiffFromSnapshots()`) et déclenche **une
+seule fois** `PlanningChangeSummaryService::sendChangeSummaryEmails()` — jusque-là écrit
+mais jamais câblé — pour envoyer exactement un email récapitulatif par personne réellement
+concernée (instrumentiste ou chirurgien dont au moins une mission apparaît dans le diff).
+Personne d'autre ne reçoit rien. Voir `docs/planning-v2-roadmap.md` Batch 15K pour le détail
+technique complet (endpoint, tests, fichiers).
+
 ---
 
 ## M. Batch 15 — Test strategy (design-only, pre-implementation)

@@ -1,4 +1,5 @@
 import type { GeneratedPlanningV2, PreviewLineStatus, PreviewLineV2, PreviewResponseV2 } from "./planningV2.types";
+import type { Mission } from "../../missions/api/missions.types";
 
 // ── Month chip selection ─────────────────────────────────────────────────────
 // Months are encoded as a single int id = year*12 + (month-1), matching the
@@ -153,9 +154,59 @@ export function groupLinesByDayAndSurgeon(lines: PreviewLineV2[]): DayGroup[] {
 
 // ── Line editing (Preview Editor — instrumentist reassignment before generate) ──
 
-/** Unique key for a preview line — date + postId (never slotId, which doesn't exist pre-generation). */
+/**
+ * Unique key for a preview line. Génération mode (no mission exists yet): date + postId
+ * (never slotId, which doesn't exist pre-generation). Modification mode (editing an
+ * already-deployed version): existingMissionId — stable even if the line's own date/site/
+ * surgeon fields are edited, which date-postId would not survive.
+ */
 export function lineKeyV2(line: PreviewLineV2): string {
-  return `${line.date}-${line.postId}`;
+  return line.existingMissionId != null ? `m${line.existingMissionId}` : `${line.date}-${line.postId}`;
+}
+
+// ── Modification mode — Mission → editor line adapter ───────────────────────
+
+function displayNameOf(u: { firstname?: string | null; lastname?: string | null; email: string } | null | undefined): string {
+  if (!u) return "";
+  const name = `${u.firstname ?? ""} ${u.lastname ?? ""}`.trim();
+  return name !== "" ? name : u.email;
+}
+
+const MISSION_STATUS_TO_PREVIEW_STATUS: Record<string, PreviewLineStatus> = {
+  ASSIGNED: "COVERED",
+  OPEN: "UNCOVERED",
+  CANCELLED: "SKIPPED",
+};
+
+/**
+ * Adapts a real, already-deployed Mission into the same PreviewLineV2 shape the editor
+ * already knows how to render/group/edit — so Modification mode reuses every bit of
+ * GeneratePlanningTab's existing rendering, filtering and selection logic unchanged.
+ */
+export function missionToPreviewLine(mission: Mission): PreviewLineV2 {
+  const [date] = mission.startAt.split("T");
+  const startTime = mission.startAt.slice(11, 16);
+  const endTime = mission.endAt.slice(11, 16);
+  const instrumentistName = mission.instrumentist ? displayNameOf(mission.instrumentist) : null;
+
+  return {
+    date,
+    postId: mission.id,
+    surgeonId: mission.surgeon?.id ?? 0,
+    surgeonName: displayNameOf(mission.surgeon),
+    missionType: mission.type,
+    startTime,
+    endTime,
+    siteId: mission.site?.id ?? null,
+    siteName: mission.site?.name ?? null,
+    instrumentistId: mission.instrumentist?.id ?? null,
+    instrumentistName,
+    status: MISSION_STATUS_TO_PREVIEW_STATUS[mission.status ?? ""] ?? "UNCOVERED",
+    existingMissionId: mission.id,
+    existingInstrumentistId: mission.instrumentist?.id ?? null,
+    existingInstrumentistName: instrumentistName,
+    freedFrom: false,
+  };
 }
 
 function timeToMin(t: string): number {

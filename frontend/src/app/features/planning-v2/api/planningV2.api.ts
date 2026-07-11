@@ -224,6 +224,33 @@ export async function deployPlanningV2(planningVersionId: number, sendPdf: boole
   return res.data;
 }
 
+// ── Modification mode (Planning V2 unified editor) — Batch 16 ────────────────
+
+export interface ApplyModificationsResult {
+  created: number;
+  updated: number;
+  cancelled: number;
+  released: number;
+  unchanged: number;
+}
+
+/**
+ * Applies a batch of editor-staged changes to an already-deployed PlanningVersion —
+ * "Redéployer" in Modification mode. Triggers exactly one targeted, diff-based summary
+ * email per actually-affected person server-side; never a global resend.
+ */
+export async function applyModifications(
+  versionId: number,
+  lines: PreviewLineV2[],
+): Promise<ApplyModificationsResult> {
+  const res = await apiClient.post(
+    `/api/planning/versions/${versionId}/apply-modifications`,
+    { lines },
+    { timeout: 30_000 },
+  );
+  return res.data;
+}
+
 // ── Living planning — Batch 15G ───────────────────────────────────────────────
 
 export async function fetchCoverageSummary(versionId: number): Promise<CoverageSummary> {

@@ -412,6 +412,11 @@ class MissionService
             $qb->andWhere('s.id = :siteId')->setParameter('siteId', $filter->siteId);
         }
 
+        if ($filter->planningVersionId) {
+            $qb->andWhere('m.planningVersion = :planningVersionId')
+                ->setParameter('planningVersionId', $filter->planningVersionId);
+        }
+
         if ($filter->eligibleToMe === true) {
             $qb->andWhere('m.status = :openStatus')->setParameter('openStatus', MissionStatus::OPEN);
 
