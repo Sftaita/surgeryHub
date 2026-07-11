@@ -280,7 +280,7 @@ export function GeneratePlanningTab() {
 
   const applyModsMutation = useMutation({
     mutationFn: () => applyModifications(modificationVersionId!, effectiveLines),
-    onSuccess: (result) => {
+    onSuccess: async (result) => {
       const total = result.created + result.updated + result.cancelled + result.released;
       toast.success(total > 0 ? `Planning mis à jour — ${total} changement(s) appliqué(s)` : "Aucun changement à appliquer");
       setModificationApplied(result);
@@ -288,7 +288,15 @@ export function GeneratePlanningTab() {
       setNewLines([]);
       setSelectedLineKey(null);
       setIsCreatingMission(false);
-      modificationMissionsQuery.refetch();
+      // The mutation itself is already confirmed applied server-side above — but the list
+      // still shows what was on screen *before* the redeploy until this refetch lands. If it
+      // fails (session expired between the two requests, network blip…), that stale view
+      // would otherwise look identical to "nothing was saved" — surface it explicitly rather
+      // than leaving the user staring at pre-edit data with no explanation.
+      const refreshed = await modificationMissionsQuery.refetch();
+      if (refreshed.isError) {
+        toast.error("Les changements sont enregistrés, mais l'affichage n'a pas pu être actualisé — rechargez la page.");
+      }
     },
     onError: (err) => toast.error(extractErrorV2(err)),
   });
