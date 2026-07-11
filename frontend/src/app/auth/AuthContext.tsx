@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { apiClient } from "../api/apiClient";
 import { clearAuth, readAuth, writeAuth } from "./authStorage";
 import { loginRequest, logoutRequest } from "./authApi";
+import { SESSION_EXPIRED_EVENT } from "./sessionExpiredEvent";
 
 /* ======================
    Types
@@ -62,6 +63,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         clearAuth();
         setState({ status: "anonymous" });
       });
+  }, []);
+
+  /**
+   * SESSION EXPIRY (background)
+   * apiClient's interceptor clears tokens from storage the moment a session is definitively
+   * expired, but that alone doesn't touch this component's in-memory state — nothing else
+   * re-renders RequireAuth on its own. Flipping to "anonymous" here is what actually makes
+   * RequireAuth redirect to /login on the next render, wherever in the app this happened.
+   */
+  useEffect(() => {
+    function handleSessionExpired() {
+      setState((prev) => (prev.status === "anonymous" ? prev : { status: "anonymous" }));
+    }
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
   }, []);
 
   /**

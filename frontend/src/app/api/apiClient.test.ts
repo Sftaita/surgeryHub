@@ -8,6 +8,7 @@ vi.mock("../auth/authApi", () => ({
 import { apiClient } from "./apiClient";
 import { refreshTokens } from "../auth/authApi";
 import { writeAuth, readAuth } from "../auth/authStorage";
+import { SESSION_EXPIRED_EVENT } from "../auth/sessionExpiredEvent";
 
 function axiosError(status: number, url: string, config: Record<string, unknown> = {}): AxiosError {
   const error = new Error(`Request failed with status ${status}`) as AxiosError;
@@ -57,12 +58,20 @@ describe("apiClient — 401 refresh flow", () => {
     });
     apiClient.defaults.adapter = adapter;
 
+    const onSessionExpired = vi.fn();
+    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+
     await expect(apiClient.get("/api/me")).rejects.toBeTruthy();
 
     // Un seul appel réseau pour la requête initiale : pas de retry storm.
     expect(adapter).toHaveBeenCalledTimes(1);
     expect(readAuth()).toBeNull();
     expect(sessionStorage.getItem("surgicalhub.auth.sessionExpired")).toBe("1");
+    // AuthContext listens for this to flip to "anonymous" immediately — without it, a
+    // background mutation's definitive 401 clears tokens but nothing redirects to /login.
+    expect(onSessionExpired).toHaveBeenCalledTimes(1);
+
+    window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
   });
 
   it("ne tente pas de refresh si le 401 provient de l'endpoint de refresh lui-même", async () => {
@@ -70,9 +79,32 @@ describe("apiClient — 401 refresh flow", () => {
       throw axiosError(401, "/api/auth/refresh", config);
     });
 
+    const onSessionExpired = vi.fn();
+    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+
     await expect(apiClient.post("/api/auth/refresh", {})).rejects.toBeTruthy();
 
     expect(refreshTokens).not.toHaveBeenCalled();
     expect(readAuth()).toBeNull();
+    expect(onSessionExpired).toHaveBeenCalledTimes(1);
+
+    window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+  });
+
+  it("émet l'événement de session expirée quand aucun refresh token n'est disponible", async () => {
+    localStorage.clear(); // no stored refresh token at all
+    apiClient.defaults.adapter = vi.fn(async (config: any) => {
+      throw axiosError(401, "/api/me", config);
+    });
+
+    const onSessionExpired = vi.fn();
+    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+
+    await expect(apiClient.get("/api/me")).rejects.toBeTruthy();
+
+    expect(refreshTokens).not.toHaveBeenCalled();
+    expect(onSessionExpired).toHaveBeenCalledTimes(1);
+
+    window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
   });
 });

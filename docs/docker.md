@@ -156,6 +156,33 @@ restart: unless-stopped
   make messenger
   ```
 
+### ⚠️ Redémarrage obligatoire après modification d'un handler ou d'un template
+
+Le container `messenger` est un **process PHP-CLI long-running** : les classes
+qu'il a chargées au démarrage (`MessageHandler/*`, les services qu'ils
+injectent, et — pour tout handler qui rend un email — les templates Twig
+utilisés) restent en mémoire pour toute la durée de vie du process. Modifier
+un de ces fichiers sur disque **ne change rien** à ce que le worker exécute
+tant qu'il n'a pas été redémarré — contrairement à `php`/`nginx` (une requête
+HTTP = un process PHP-FPM frais, qui relit toujours l'état actuel des
+fichiers).
+
+**Concrètement** : après avoir modifié `PlanningModificationService`,
+`PlanningChangeSummaryService`, `MissionPostDeployService`, n'importe quel
+`src/MessageHandler/*.php`, ou un template email (`templates/emails/*.twig`,
+`templates/pdf/*.twig`) — redémarrer le worker avant de tester un email ou
+une notification en conditions réelles :
+
+```bash
+make messenger-restart
+```
+
+Sans ce redémarrage, un test manuel peut sembler "ne pas prendre en compte"
+un changement de sujet, de contenu email ou de logique de notification alors
+que le code sur disque est pourtant correct — piège rencontré et documenté
+pendant Batch 16 (le worker envoyait encore l'ancien design d'email après
+plusieurs commits de modification du template, jusqu'au redémarrage).
+
 ## 10. phpMyAdmin
 
 phpMyAdmin **n'est pas démarré par défaut** — il est placé derrière le

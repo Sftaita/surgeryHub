@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import { AuthProvider, useAuth } from "./AuthContext";
 import { writeAuth, readAuth } from "./authStorage";
+import { dispatchSessionExpired } from "./sessionExpiredEvent";
 
 vi.mock("../api/apiClient", () => ({
   apiClient: {
@@ -93,5 +94,22 @@ describe("AuthContext", () => {
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("anonymous"));
     expect(logoutRequest).toHaveBeenCalledWith("r");
     expect(readAuth()).toBeNull();
+  });
+
+  it("passe à anonyme dès que le SESSION_EXPIRED_EVENT est émis en arrière-plan (401 définitif sur une mutation)", async () => {
+    // apiClient's interceptor clears storage and dispatches this event on its own, from
+    // wherever in the app a background mutation hit a definitive 401 — AuthContext must react
+    // immediately (not on next reload) so RequireAuth redirects to /login right away.
+    writeAuth({ accessToken: "a", refreshToken: "r" });
+    (apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: { id: 1, role: "ADMIN", sites: [] } });
+
+    renderProbe();
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("authenticated"));
+
+    act(() => {
+      dispatchSessionExpired();
+    });
+
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("anonymous"));
   });
 });

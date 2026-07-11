@@ -29,7 +29,7 @@ CONSOLE := $(PHP) php bin/console
         fixtures dev-user \
         test-backend test-frontend \
         phpstan lint clear-cache \
-        messenger messenger-stop messenger-logs \
+        messenger messenger-restart messenger-stop messenger-logs \
         redis-ping mysql-shell \
         tools-up phpmyadmin-url \
         doctor \
@@ -163,6 +163,9 @@ clear-cache: ## Clear Symfony application cache
 
 messenger: ## Run Messenger consumer interactively  (async transport, verbose)
 	$(CONSOLE) messenger:consume async -vv
+
+messenger-restart: ## Restart the background messenger worker — required after editing any Messenger handler or Twig template it renders (see docs/docker.md §9)
+	$(DC) restart messenger
 
 messenger-stop: ## Stop the background messenger Docker service
 	$(DC) stop messenger

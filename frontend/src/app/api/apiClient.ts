@@ -8,6 +8,7 @@ import {
 import { refreshTokens } from "../auth/authApi";
 import { getRefreshPromise, setRefreshPromise } from "../auth/refreshMutex";
 import { markSessionExpired } from "../auth/authStorage";
+import { dispatchSessionExpired } from "../auth/sessionExpiredEvent";
 
 export const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL,
@@ -40,6 +41,7 @@ apiClient.interceptors.response.use(
       setRefreshPromise(null);
       markSessionExpired();
       clearTokens();
+      dispatchSessionExpired();
       throw error;
     }
 
@@ -52,7 +54,8 @@ apiClient.interceptors.response.use(
     const rt = getRefreshToken();
     if (!rt) {
       clearTokens();
-      // La redirection sera gérée par AuthProvider/Guard ensuite
+      markSessionExpired();
+      dispatchSessionExpired();
       throw error;
     }
 
@@ -76,6 +79,7 @@ apiClient.interceptors.response.use(
       setRefreshPromise(null);
       markSessionExpired();
       clearTokens();
+      dispatchSessionExpired();
       throw error;
     }
   }

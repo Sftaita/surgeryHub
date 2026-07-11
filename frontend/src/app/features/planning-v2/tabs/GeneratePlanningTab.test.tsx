@@ -15,8 +15,13 @@ vi.mock("../../planning-manager/api/planning.api", () => ({
   getAbsences: vi.fn().mockResolvedValue([]),
 }));
 
+// Stable references (not a fresh vi.fn() per render) so tests can assert on calls — the
+// component calls useToast() again on every render, but must always get back the SAME
+// success/error spies for assertions like "no success toast fired" to be meaningful.
+const toastSuccess = vi.fn();
+const toastError = vi.fn();
 vi.mock("../../../ui/toast/useToast", () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn() }),
+  useToast: () => ({ success: toastSuccess, error: toastError }),
 }));
 
 vi.mock("../api/planningV2.api", () => ({
@@ -27,7 +32,15 @@ vi.mock("../api/planningV2.api", () => ({
   deployPlanningV2: vi.fn(),
   applyModifications: vi.fn(),
   cancelAllMissions: vi.fn(),
-  extractErrorV2: (e: unknown) => String(e),
+  // Real logic (not a dumb String(e) stub) — the 401 special-case is exactly what the
+  // session-expiry tests below exercise, and a stub here would silently bypass it.
+  extractErrorV2: (err: unknown) => {
+    const e = err as any;
+    if (e?.response?.status === 401) {
+      return "Votre session a expiré. Reconnectez-vous pour enregistrer vos modifications.";
+    }
+    return e?.response?.data?.error?.message ?? e?.message ?? String(err);
+  },
 }));
 
 vi.mock("../../../api/apiClient", () => ({
@@ -418,6 +431,44 @@ describe("GeneratePlanningTab — Mode Modification (éditeur unifié)", () => {
     const [versionId, lines] = (planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(versionId).toBe(42);
     expect(lines[0]).toMatchObject({ existingMissionId: 501, startTime: "09:00" });
+  });
+
+  it("un 401 définitif sur Redéployer n'affiche jamais de succès, ne perd pas l'édition locale, et affiche le message de session expirée", async () => {
+    mockHistoryWithOneVersion();
+    const sessionExpiredError = { response: { status: 401, data: { message: "Expired JWT Token" } } };
+    (planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mockRejectedValue(sessionExpiredError);
+    toastSuccess.mockClear();
+    toastError.mockClear();
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await user.click(await screen.findByText("Diane Lefebvre"));
+
+    const startField = await screen.findByLabelText("Début");
+    await user.clear(startField);
+    await user.type(startField, "09:00");
+
+    const redeployBtn = screen.getByRole("button", { name: "Redéployer" });
+    await waitFor(() => expect(redeployBtn).toBeEnabled());
+    await user.click(redeployBtn);
+
+    await waitFor(() => expect(planningV2Api.applyModifications).toHaveBeenCalled());
+
+    // apiClient's interceptor already retried once via refresh before this reached the
+    // mutation's onError — extractErrorV2() turns any 401 that gets this far into the
+    // session-expired message, never the raw/generic backend error text.
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Votre session a expiré. Reconnectez-vous pour enregistrer vos modifications."));
+    expect(toastSuccess).not.toHaveBeenCalled();
+
+    // Nothing about the failed save is treated as if it had succeeded: the edited start time
+    // is still shown (onSuccess's setEditedLines(new Map()) never ran), and Redéployer stays
+    // enabled — there is still a real, unsaved change to retry once reconnected.
+    expect(screen.getByLabelText("Début")).toHaveValue("09:00");
+    expect(screen.getByRole("button", { name: "Redéployer" })).toBeEnabled();
+    // Still in Modification mode — a failed redeploy must not silently drop the user back to
+    // the Génération screen, which would look like nothing was ever open to begin with.
+    expect(screen.getByText("Modification · Planning déployé")).toBeInTheDocument();
   });
 
   it("supprime une mission fraîchement ajoutée en mode Modification au lieu de l'annuler (jamais envoyée au redéploiement)", { timeout: 10000 }, async () => {

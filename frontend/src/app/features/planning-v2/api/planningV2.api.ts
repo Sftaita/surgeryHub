@@ -22,6 +22,15 @@ import type {
 /** Same pattern as every other page-local helper in this codebase (no shared util exists). */
 export function extractErrorV2(err: unknown): string {
   const e = err as any;
+  // apiClient's response interceptor already retries once via refresh-token before a 401 ever
+  // reaches here — a 401 surfacing at this point means the session is genuinely, definitively
+  // expired (refresh itself failed, or there was no refresh token to try). Every planning
+  // mutation (preview/generate/deploy/apply-modifications/cancel-all) routes its errors
+  // through this function, so this is the single place that guarantees none of them can ever
+  // show a generic/misleading message for this specific case.
+  if (e?.response?.status === 401) {
+    return "Votre session a expiré. Reconnectez-vous pour enregistrer vos modifications.";
+  }
   return e?.response?.data?.error?.message ?? e?.message ?? String(err);
 }
 
