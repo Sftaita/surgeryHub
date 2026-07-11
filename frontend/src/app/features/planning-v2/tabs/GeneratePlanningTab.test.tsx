@@ -367,6 +367,33 @@ describe("GeneratePlanningTab — Mode Modification (éditeur unifié)", () => {
     expect(screen.getByRole("button", { name: "Redéployer" })).toBeInTheDocument();
   });
 
+  it("un planning DRAFT ou ARCHIVED n'est pas ouvrable en mode Modification — seul un ACTIVE l'est", async () => {
+    (planningManagerApi.listPlanningVersions as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [
+        { id: 90, status: "DRAFT", periodStart: "2026-06-01T00:00:00Z", deployedAt: null, site: { id: 1, name: "Delta (historique)" }, summary: { total: 1, open: 0 } },
+        { id: 91, status: "ARCHIVED", periodStart: "2026-07-01T00:00:00Z", deployedAt: "2026-07-02T00:00:00Z", site: { id: 1, name: "Delta (historique)" }, summary: { total: 1, open: 0 } },
+      ],
+      total: 2, page: 1, limit: 10,
+    });
+    const user = userEvent.setup();
+    renderTab();
+    await selectSite(user);
+
+    // Neither row exposes the "Modifier" affordance or the amber "déjà généré" month chip —
+    // apply-modifications/cancel-all both reject anything that isn't ACTIVE server-side, so
+    // the entry points into Modification mode must not be offered for these two statuses.
+    await screen.findByText("Brouillon");
+    expect(screen.getByText("Archivé")).toBeInTheDocument();
+    expect(screen.queryByText("Modifier")).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d{4} · déjà généré/)).not.toBeInTheDocument();
+
+    // Clicking the DRAFT/ARCHIVED row itself does nothing (no onClick wired).
+    await user.click(screen.getByText("Brouillon"));
+    expect(screen.queryByText("Modification · Planning déployé")).not.toBeInTheDocument();
+
+    (planningManagerApi.listPlanningVersions as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], total: 0, page: 1, limit: 10 });
+  });
+
   it("édite l'horaire d'une mission réelle via l'inspecteur permanent (pas de popup) puis redéploie", async () => {
     mockHistoryWithOneVersion();
     (planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mockResolvedValue({ created: 0, updated: 1, cancelled: 0, released: 0, unchanged: 0 });

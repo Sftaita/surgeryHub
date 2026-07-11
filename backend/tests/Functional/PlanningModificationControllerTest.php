@@ -451,6 +451,7 @@ final class PlanningModificationControllerTest extends WebTestCase
         self::assertCount(1, $toNew, 'New instrumentist must be informed the mission was assigned to them.');
         self::assertCount(1, $toSurgeon, 'Surgeon must be informed their intervention\'s instrumentist changed.');
         self::assertCount(0, $toUnrelated, 'Instrumentist with an untouched mission in the same version must receive nothing.');
+        self::assertSame('Modification de votre planning – Septembre 2026', $toOld[0]->subject, 'Redeploy subject must never read as an initial-deploy email.');
 
         // One consolidated email per recipient, not one per mutated field.
         self::assertStringContainsString($oldInstr->getFirstname() ?? '', $toOld[0]->context['instrumentist']->getFirstname() ?? '');

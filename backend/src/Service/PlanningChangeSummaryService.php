@@ -6,6 +6,7 @@ use App\Entity\Mission;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Message\SendBillingEmailMessage;
+use App\Twig\DateExtension;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -31,6 +32,7 @@ class PlanningChangeSummaryService
         private readonly PlanningDiffService $diffService,
         private readonly PdfService $pdfService,
         private readonly LoggerInterface $logger,
+        private readonly DateExtension $dateExtension,
         #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
         private readonly string $fromAddress,
         #[Autowire('%env(string:MAILER_FROM_NAME)%')]
@@ -73,8 +75,12 @@ class PlanningChangeSummaryService
             return;
         }
 
-        $subject = sprintf('Récapitulatif planning — %s au %s',
-            $fromDate->format('d/m/Y'), $toDate->format('d/m/Y'));
+        // Deliberately distinct from the initial-deploy subject ("Planning du {from} au {to}",
+        // PlanningDeployPdfsMessageHandler, D-058) — this is a redeploy-after-edit recap, and
+        // the subject must tell the recipient that upfront, before they open the email. Same
+        // wording for surgeons and instrumentists (one consistent "what happened" signal).
+        $subject = sprintf('Modification de votre planning – %s %s',
+            $this->dateExtension->frenchMonthLong($fromDate), $fromDate->format('Y'));
 
         // Correlates every log line produced by this single sendChangeSummaryEmails() call
         // (one per redeploy/change-summary trigger) — there is no PlanningDeployment record

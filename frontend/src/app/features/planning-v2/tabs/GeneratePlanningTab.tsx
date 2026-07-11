@@ -619,9 +619,14 @@ export function GeneratePlanningTab() {
               {monthChipIds.map((id) => {
                 const ym = monthIdToYearMonth(id);
                 const selected = selectedMonthIds.includes(id);
+                // Only an ACTIVE (currently live) version is eligible for Modification mode —
+                // a DRAFT was never deployed (nothing to redeploy against post-deploy), and an
+                // ARCHIVED one is already superseded by a newer ACTIVE version for this same
+                // period+site (editing it would be a dead end: apply-modifications/cancel-all
+                // both reject anything that isn't ACTIVE server-side).
                 const matchedVersion = historyQuery.data?.items.find((v) => {
                   const d = new Date(v.periodStart);
-                  return d.getFullYear() === ym.year && d.getMonth() + 1 === ym.month
+                  return v.status === "ACTIVE" && d.getFullYear() === ym.year && d.getMonth() + 1 === ym.month
                     && (targetId === null || targetId >= GROUP_ID_OFFSET || v.site?.id === targetId);
                 });
                 return (
@@ -724,16 +729,20 @@ export function GeneratePlanningTab() {
                 </Typography>
               ) : (
                 historyQuery.data!.items.map((v) => {
-                  const isDeployed = v.status !== "DRAFT";
+                  // Only an ACTIVE version can enter Modification mode — see the month-chip
+                  // comment above for why DRAFT/ARCHIVED are dead ends (apply-modifications/
+                  // cancel-all both reject non-ACTIVE server-side).
+                  const isEditable = v.status === "ACTIVE";
+                  const statusLabel = v.status === "ACTIVE" ? "Déployé" : v.status === "ARCHIVED" ? "Archivé" : "Brouillon";
                   return (
                     <Stack
                       key={v.id} direction="row" alignItems="center" spacing={2}
-                      onClick={() => enterModification(v)}
+                      onClick={isEditable ? () => enterModification(v) : undefined}
                       sx={{
-                        px: 2.25, py: 1.75, cursor: "pointer",
+                        px: 2.25, py: 1.75, cursor: isEditable ? "pointer" : "default",
                         borderBottom: `1px solid ${planningV2Colors.divider}`,
                         "&:last-child": { borderBottom: "none" },
-                        "&:hover": { bgcolor: "#FAFBFC" },
+                        "&:hover": isEditable ? { bgcolor: "#FAFBFC" } : undefined,
                       }}
                     >
                       <Box sx={{ width: 38, height: 38, borderRadius: planningV2Radii.button, flex: "none", bgcolor: planningV2Colors.infoBg, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -760,17 +769,19 @@ export function GeneratePlanningTab() {
                       </Stack>
                       <Chip
                         size="small"
-                        label={isDeployed ? "Déployé" : "Brouillon"}
+                        label={statusLabel}
                         sx={{
                           height: 24, fontSize: 11.5, fontWeight: 700,
-                          bgcolor: isDeployed ? "#EFFAF5" : planningV2Colors.warnBg,
-                          color: isDeployed ? "#2C7D5F" : planningV2Colors.warnFg,
+                          bgcolor: v.status === "ACTIVE" ? "#EFFAF5" : v.status === "ARCHIVED" ? "#F1F4F7" : planningV2Colors.warnBg,
+                          color: v.status === "ACTIVE" ? "#2C7D5F" : v.status === "ARCHIVED" ? planningV2Colors.textSecondary : planningV2Colors.warnFg,
                         }}
                       />
-                      <Stack direction="row" alignItems="center" spacing={0.4} sx={{ color: MODIFICATION_ACCENT.main, flex: "none" }}>
-                        <Typography sx={{ fontSize: 12, fontWeight: 700 }}>Modifier</Typography>
-                        <ChevronRightOutlinedIcon sx={{ fontSize: 18 }} />
-                      </Stack>
+                      {isEditable && (
+                        <Stack direction="row" alignItems="center" spacing={0.4} sx={{ color: MODIFICATION_ACCENT.main, flex: "none" }}>
+                          <Typography sx={{ fontSize: 12, fontWeight: 700 }}>Modifier</Typography>
+                          <ChevronRightOutlinedIcon sx={{ fontSize: 18 }} />
+                        </Stack>
+                      )}
                     </Stack>
                   );
                 })

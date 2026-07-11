@@ -13,6 +13,7 @@ use App\Message\SendBillingEmailMessage;
 use App\Service\PdfService;
 use App\Service\PlanningChangeSummaryService;
 use App\Service\PlanningDiffService;
+use App\Twig\DateExtension;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
@@ -24,10 +25,10 @@ use Symfony\Component\Messenger\MessageBusInterface;
 /**
  * PlanningChangeSummaryService — extracted from PlanningDeployPdfsMessageHandler during
  * the deploy email policy redesign. This capability is NOT invoked during initial
- * deploy anymore (see PlanningDeployPdfsHandlerTest::test_no_change_summary_email_ever_sent_during_deploy).
- * It remains a standalone, callable service for a future trigger on already-published
- * plannings (reassignment, cancellation, etc. — no such trigger is wired up yet).
- * These tests prove the capability itself still works correctly when invoked directly.
+ * deploy (see PlanningDeployPdfsHandlerTest::test_no_change_summary_email_ever_sent_during_deploy)
+ * — that flow keeps its own distinct subject ("Planning du {from} au {to}"). Wired up
+ * since Batch 15K by PlanningModificationService (Planning V2 Modification mode's
+ * apply-modifications/cancel-all endpoints), the only caller.
  */
 class PlanningChangeSummaryServiceTest extends TestCase
 {
@@ -59,6 +60,7 @@ class PlanningChangeSummaryServiceTest extends TestCase
     {
         return new PlanningChangeSummaryService(
             $this->em, $this->bus, $this->diffService, $this->pdfService, $this->logger,
+            new DateExtension(),
             'noreply@test.com', 'SurgicalHub',
         );
     }
@@ -161,6 +163,52 @@ class PlanningChangeSummaryServiceTest extends TestCase
         $this->assertNotNull($toInstr[0]->attachmentBase64, 'The recap email must carry the instrumentist\'s own up-to-date planning PDF.');
         $this->assertSame(base64_encode('%PDF-1.4 fake pdf bytes'), $toInstr[0]->attachmentBase64);
         $this->assertStringStartsWith('planning-', $toInstr[0]->attachmentFilename);
+        $this->assertSame('Modification de votre planning – Mars 2026', $toInstr[0]->subject);
+    }
+
+    public function test_subject_is_identical_for_surgeon_and_instrumentist_and_distinct_from_initial_deploy(): void
+    {
+        // The initial-deploy subject ("Planning du {from} au {to}", PlanningDeployPdfsMessageHandler,
+        // D-058) must never be confused with this one — a recipient opening their inbox has to
+        // immediately tell "here's your new planning" apart from "your planning changed".
+        $version  = $this->makeVersion(9);
+        $surgeon  = $this->makeUser('surgeon@test.com', 3);
+        $instr    = $this->makeUser('instr@test.com', 4);
+        $mission  = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED, 60);
+
+        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
+            $class === PlanningVersion::class && $id === 9 => $version,
+            $class === User::class && $id === 4 => $instr,
+            $class === User::class && $id === 3 => $surgeon,
+            default => null,
+        });
+        $this->diffService->method('diff')->willReturn([
+            'added' => [[
+                'date' => '2026-09-06', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
+                'missionType' => 'BLOCK', 'surgeonId' => 3, 'surgeonName' => 'Test User',
+                'instrumentistId' => 4, 'instrumentistName' => 'Test User', 'siteName' => 'Alpha',
+            ]],
+            'removed' => [], 'modified' => [],
+        ]);
+
+        $this->makeService()->sendChangeSummaryEmails(
+            versionId: 9,
+            missions: [$mission],
+            byInstrumentist: [4 => [$mission]],
+            bySurgeon: [3 => [$mission]],
+            openUncoveredIds: [],
+            globalPdf: null, globalFilename: null,
+            fromDate: new \DateTimeImmutable('2026-09-01'), toDate: new \DateTimeImmutable('2026-09-30'),
+        );
+
+        $subjects = array_map(
+            fn (SendBillingEmailMessage $m) => $m->subject,
+            array_filter($this->dispatched, fn ($m) => $m instanceof SendBillingEmailMessage),
+        );
+        $this->assertNotEmpty($subjects);
+        $this->assertSame(['Modification de votre planning – Septembre 2026'], array_unique($subjects));
+        $this->assertStringNotContainsString('Récapitulatif', $subjects[0]);
+        $this->assertStringNotContainsString('Planning du', $subjects[0], 'Must never collide with the initial-deploy subject.');
     }
 
     public function test_pdf_generation_failure_is_logged_and_email_still_sent_without_attachment(): void
