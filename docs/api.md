@@ -2910,6 +2910,101 @@ Retourne la timeline chronologique (ASC) de tous les événements d'une version 
 
 ---
 
+### 26.6c Mode Modification — édition d'un planning déjà déployé (Batch 15K)
+
+#### `POST /api/planning/versions/{id}/apply-modifications`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Applique en un seul lot des changements édités (réassignation, libération, annulation,
+changement d'horaire/site/type, nouvelle mission) à une `PlanningVersion` **déjà
+déployée** — jamais un nouveau cycle `generate`/`deploy`. Mute directement les `Mission`
+existantes via `MissionPostDeployService` (D-052/D-056), chaque appel avec `notify:
+false` — les notifications unitaires `PLANNING_MISSION_*` (§26.4, L4) ne sont **pas**
+déclenchées ligne par ligne ; voir "Emails envoyés" ci-dessous.
+
+**Body JSON :**
+
+```json
+{
+  "lines": [
+    {
+      "date": "2026-09-15",
+      "postId": 42,
+      "surgeonId": 10,
+      "surgeonName": "Jean Dupont",
+      "missionType": "BLOCK",
+      "startTime": "08:00",
+      "endTime": "13:00",
+      "siteId": 3,
+      "siteName": "CHIREC",
+      "instrumentistId": 20,
+      "instrumentistName": "Marie Martin",
+      "status": "COVERED",
+      "existingMissionId": 501,
+      "existingInstrumentistId": 19,
+      "existingInstrumentistName": "Ancien Instrumentiste",
+      "freedFrom": false
+    }
+  ]
+}
+```
+
+| Champ | Type | Description |
+|---|---|---|
+| `lines[]` | array | Même forme que `PreviewLineV2` (l'éditeur unifié Génération/Modification, voir `docs/architecture.md` "Éditeur unifié Génération / Modification") |
+| `existingMissionId` | int \| null | `null` = nouvelle mission à créer (`MissionPostDeployService::createPostDeploy()`). Sinon, ID de la `Mission` existante à muter. |
+| `status` | string | `"SKIPPED"` = annuler la mission (`release()` si `ASSIGNED`, `cancel()` si `OPEN`). Toute autre valeur = pas d'annulation. |
+| `instrumentistId` | int \| null | Comparé à l'instrumentiste courant de la mission — `null`→valeur = `assign()`, valeur→`null` = `release()`, valeur→autre valeur = `reassign()`. |
+| `date`/`startTime`/`endTime`/`siteId`/`missionType` | — | Comparés à l'état courant ; tout écart sur une mission `OPEN`/`ASSIGNED` déclenche `updateSchedule()`. |
+
+Une ligne dont l'`existingMissionId` référence une mission déjà mutée ailleurs (ou étrangère à cette version) est **silencieusement ignorée** (pas d'échec du lot entier).
+
+**Réponse — 200 :**
+
+```json
+{ "created": 1, "updated": 2, "cancelled": 1, "released": 0, "unchanged": 3 }
+```
+
+**Réponse — 404 :** `PlanningVersion` inexistante.
+
+**Emails envoyés — un seul récapitulatif ciblé par personne réellement affectée :**
+
+À la fin du lot, `PlanningModificationService` calcule un diff avant/après sur
+l'ensemble des missions de la version (`PlanningDiffService::computeDiffFromSnapshots()`
+— pas `diff()`, qui compare deux versions différentes) et appelle **une seule fois**
+`PlanningChangeSummaryService::sendChangeSummaryEmails()` avec ce diff précalculé.
+
+| Destinataire | Condition d'envoi | Template |
+|---|---|---|
+| Instrumentiste | Au moins une mission le concernant apparaît dans le diff (ajoutée, modifiée, ou dont il a perdu/gagné l'affectation) | `emails/planning_change_summary_instrumentist.html.twig` |
+| Chirurgien | Au moins une de ses propres interventions apparaît dans le diff | `emails/planning_change_summary_surgeon.html.twig` |
+
+Chaque email contient une liste unifiée "Modifications (N)" (une carte par changement,
+quel que soit le type — ajout/modification/annulation) et le PDF planning personnel à
+jour en pièce jointe (même mécanisme que le déploiement initial, §26.6). **Jamais de
+renvoi global** aux chirurgiens/instrumentistes non concernés — un utilisateur avec une
+mission non modifiée ailleurs dans la même version ne reçoit rien.
+
+Si le lot ne produit aucun changement effectif (toutes les lignes `unchanged`), le diff
+est vide et **aucun email n'est envoyé**.
+
+**Notes :**
+- Aucune notification in-app `PLANNING_MISSION_*` (celles-ci restent réservées aux
+  actions unitaires post-déploiement hors mode Modification — release/cancel/reassign/
+  assign appelés individuellement, §26.4).
+- Envoi synchrone (`MessageBusInterface::dispatch`, transport `async`) — une erreur de
+  rendu PDF ou de dispatch pour un destinataire est loguée (`logger->error`, jamais
+  silencieuse) et n'empêche ni la mutation déjà persistée, ni l'envoi aux autres
+  destinataires.
+- Aucune nouvelle migration — cette capacité mute uniquement des `Mission` déjà
+  existantes en base.
+- Voir D-058 (`docs/decisions.md`) pour la politique email de déploiement initial, dont
+  ce mode est explicitement le "futur déclencheur" annoncé ; `docs/planning-v2-architecture-freeze.md`
+  §L9 pour le détail architecture de l'éditeur unifié.
+
+---
+
 ### 26.7 Instrumentistes suggérés
 
 #### `GET /api/missions/{missionId}/suggested-instrumentists`

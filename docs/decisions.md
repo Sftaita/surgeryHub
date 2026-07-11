@@ -2350,6 +2350,15 @@ Un audit des emails de déploiement (surgeons/instrumentistes recevant des email
 
 **Email "récapitulatif de changements" (`planning_change_summary_*`)** : n'est **plus jamais envoyé pendant le déploiement initial**. La capacité n'est pas supprimée — elle est extraite dans `PlanningChangeSummaryService`, un service autonome non invoqué par `PlanningDeployPdfsMessageHandler`. Elle est réservée à un futur déclencheur sur un planning déjà publié qui change (réassignation, annulation, etc.) — ce déclencheur n'existe pas encore.
 
+> **✅ Déclencheur câblé depuis Batch 15K (2026-07-11)** : le mode Modification de
+> l'éditeur unifié Planning V2 (`POST /api/planning/versions/{id}/apply-modifications`)
+> est ce futur déclencheur — `PlanningModificationService` calcule un diff avant/après
+> sur le lot d'édits et appelle `PlanningChangeSummaryService::sendChangeSummaryEmails()`
+> une seule fois, un email ciblé par personne réellement affectée. Les deux templates
+> (`planning_change_summary_instrumentist.html.twig`/`_surgeon.html.twig`) ont aussi été
+> refondus visuellement à cette occasion (liste unifiée "Modifications (N)" par carte,
+> au lieu de sections ✅/🔄/❌ séparées). Voir `docs/api.md` §26.6c.
+
 ### Pourquoi l'amendement de D-053
 
 D-053 interdisait les compteurs agrégés au motif qu'"un chirurgien raisonne par journée opératoire, pas par quota". En pratique, cette contrainte forçait un second email (le récapitulatif "postes non couverts") pour transmettre exactement l'information — total/couvert/non couvert — qu'un compteur agrégé aurait donné directement, créant la duplication à l'origine de ce ticket. Le compromis retenu : les compteurs suffisent pour l'email (le chirurgien sait qu'il faut vérifier), le détail poste-par-poste avec raison reste disponible **in-app** (`NotificationEvent.payload.posts[]`, inchangé) pour qui veut le détail.

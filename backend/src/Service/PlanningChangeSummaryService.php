@@ -15,12 +15,13 @@ use Symfony\Component\Messenger\MessageBusInterface;
  * Sends personalized "what changed" recap emails to affected instrumentists and
  * surgeons, comparing a PlanningVersion's current state against its diff baseline.
  *
- * This is a standalone, on-demand capability — NOT part of the initial deploy flow.
- * Initial deploy sends exactly one email per recipient (see PlanningDeployPdfsMessageHandler);
- * this service exists for a *later* trigger, once a published planning changes
- * (reassignment, cancellation, added mission, etc.). No such trigger is wired up yet —
- * this service is kept ready and callable so that capability isn't lost, per the
- * "Planning Change Summary" policy: never sent during initial deployment, only after.
+ * This is a standalone capability — NOT part of the initial deploy flow. Initial deploy
+ * sends exactly one email per recipient (see PlanningDeployPdfsMessageHandler); this
+ * service is for a *later* trigger, once a published planning changes (reassignment,
+ * cancellation, added mission, etc.), per the "Planning Change Summary" policy: never
+ * sent during initial deployment, only after. Wired up since Batch 15K by
+ * PlanningModificationService, the only caller — Planning V2 Modification mode's
+ * apply-modifications endpoint. See docs/api.md §26.6c.
  */
 class PlanningChangeSummaryService
 {

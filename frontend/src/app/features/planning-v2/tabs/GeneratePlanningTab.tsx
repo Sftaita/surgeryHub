@@ -1,6 +1,6 @@
 import * as React from "react";
 import {
-  Box, Button, Checkbox, Chip, CircularProgress, FormControlLabel, Stack, Typography,
+  Box, Button, Checkbox, Chip, CircularProgress, FormControlLabel, IconButton, Stack, Tooltip, Typography,
 } from "@mui/material";
 import RocketLaunchOutlinedIcon from "@mui/icons-material/RocketLaunchOutlined";
 import SearchOutlinedIcon from "@mui/icons-material/SearchOutlined";
@@ -553,20 +553,36 @@ export function GeneratePlanningTab() {
                     && (targetId === null || targetId >= GROUP_ID_OFFSET || v.site?.id === targetId);
                 });
                 return (
-                  <Chip
-                    key={id}
-                    clickable
-                    onClick={() => (matchedVersion ? enterModification(matchedVersion) : toggleMonth(id))}
-                    icon={selected ? <CheckIcon sx={{ fontSize: 14, color: "#fff !important" }} /> : undefined}
-                    label={`${MONTH_LABELS[ym.month - 1]} ${ym.year}${matchedVersion ? " · déjà généré" : ""}`}
-                    sx={{
-                      height: 36, fontSize: 13, fontWeight: 600, borderRadius: planningV2Radii.pill,
-                      bgcolor: selected ? planningV2Colors.brand : "#F8FAFC",
-                      color: selected ? "#fff" : planningV2Colors.textBody,
-                      border: `1px solid ${matchedVersion ? MODIFICATION_ACCENT.main : selected ? planningV2Colors.brand : "#E7EBEF"}`,
-                      "&:hover": { bgcolor: selected ? planningV2Colors.brandHover : "#F1F4F7" },
-                    }}
-                  />
+                  <Stack key={id} direction="row" alignItems="center" spacing={0.5}>
+                    <Chip
+                      clickable
+                      onClick={() => toggleMonth(id)}
+                      icon={selected ? <CheckIcon sx={{ fontSize: 14, color: "#fff !important" }} /> : undefined}
+                      label={`${MONTH_LABELS[ym.month - 1]} ${ym.year}${matchedVersion ? " · déjà généré" : ""}`}
+                      sx={{
+                        height: 36, fontSize: 13, fontWeight: 600, borderRadius: planningV2Radii.pill,
+                        bgcolor: selected ? planningV2Colors.brand : "#F8FAFC",
+                        color: selected ? "#fff" : planningV2Colors.textBody,
+                        border: `1px solid ${matchedVersion ? MODIFICATION_ACCENT.main : selected ? planningV2Colors.brand : "#E7EBEF"}`,
+                        "&:hover": { bgcolor: selected ? planningV2Colors.brandHover : "#F1F4F7" },
+                      }}
+                    />
+                    {matchedVersion && (
+                      <Tooltip title="Modifier ce mois déjà généré">
+                        <IconButton
+                          size="small"
+                          aria-label="Modifier ce mois déjà généré"
+                          onClick={() => enterModification(matchedVersion)}
+                          sx={{
+                            width: 30, height: 30, border: `1px solid ${MODIFICATION_ACCENT.main}`,
+                            color: MODIFICATION_ACCENT.main, "&:hover": { bgcolor: MODIFICATION_ACCENT.bg },
+                          }}
+                        >
+                          <EditOutlinedIcon sx={{ fontSize: 15 }} />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                  </Stack>
                 );
               })}
             </Stack>

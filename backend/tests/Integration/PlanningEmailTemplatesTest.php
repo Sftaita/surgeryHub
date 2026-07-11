@@ -152,13 +152,10 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
             'uncovered'     => [],
         ]);
 
-        $this->assertStringContainsString('Nouvelles missions', $html);
+        $this->assertStringContainsString('Modifications (1)', $html);
         $this->assertStringContainsString('Jean Dupont', $html);
         $this->assertStringContainsString('Bloc opératoire Delta', $html);
-        $this->assertStringContainsString('13:00', $html);
-        $this->assertStringContainsString('18:00', $html);
-        $this->assertStringNotContainsString('Modifications', $html);
-        $this->assertStringNotContainsString('Missions supprimées', $html);
+        $this->assertStringContainsString('Léa Martin', $html);
     }
 
     public function test_instrumentist_email_renders_modified_only_with_schedule_and_instrumentist_change(): void
@@ -201,9 +198,9 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
             'uncovered'     => [],
         ]);
 
-        $this->assertStringContainsString('Missions supprimées', $html);
+        $this->assertStringContainsString('Modifications (1)', $html);
         $this->assertStringContainsString('Jean Dupont', $html);
-        $this->assertStringNotContainsString('Nouvelles missions', $html);
+        $this->assertStringContainsString('Annulée', $html);
     }
 
     public function test_instrumentist_email_renders_added_modified_and_removed_together_in_one_email(): void
@@ -225,9 +222,7 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
         $this->assertStringContainsString('Nouveau Chirurgien', $html);
         $this->assertStringContainsString('Ancien Chirurgien', $html);
         $this->assertStringContainsString('Chirurgien Modifié', $html);
-        $this->assertStringContainsString('Nouvelles missions', $html);
-        $this->assertStringContainsString('Modifications', $html);
-        $this->assertStringContainsString('Missions supprimées', $html);
+        $this->assertStringContainsString('Modifications (3)', $html, 'One consolidated list — added + modified + removed all count towards the same header.');
     }
 
     public function test_instrumentist_email_renders_open_mission_with_no_instrumentist_in_added(): void
@@ -372,11 +367,9 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
             'uncovered'  => [],
         ]);
 
-        $this->assertStringContainsString('Nouvelle(s) intervention', $html);
+        $this->assertStringContainsString('Modifications (1)', $html);
         $this->assertStringContainsString('Bloc opératoire Delta', $html);
         $this->assertStringContainsString('Léa Martin', $html);
-        $this->assertStringNotContainsString('Intervention(s) modifiée', $html);
-        $this->assertStringNotContainsString('Intervention(s) annulée', $html);
     }
 
     public function test_surgeon_email_renders_modified_only_with_instrumentist_change(): void
@@ -396,7 +389,7 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
             'uncovered' => [],
         ]);
 
-        $this->assertStringContainsString('Intervention(s) modifiée', $html);
+        $this->assertStringContainsString('Modifications (1)', $html);
         $this->assertStringContainsString('Diane Morel', $html);
         $this->assertStringContainsString('Léa Martin', $html);
     }
@@ -413,8 +406,8 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
             'uncovered'  => [],
         ]);
 
-        $this->assertStringContainsString('Intervention(s) annulée', $html);
-        $this->assertStringNotContainsString('Nouvelle(s) intervention', $html);
+        $this->assertStringContainsString('Modifications (1)', $html);
+        $this->assertStringContainsString('Annulée', $html);
     }
 
     public function test_surgeon_email_renders_added_modified_and_removed_together_in_one_email(): void
@@ -432,9 +425,7 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
             'uncovered' => [],
         ]);
 
-        $this->assertStringContainsString('Nouvelle(s) intervention', $html);
-        $this->assertStringContainsString('Intervention(s) modifiée', $html);
-        $this->assertStringContainsString('Intervention(s) annulée', $html);
+        $this->assertStringContainsString('Modifications (3)', $html, 'One consolidated list — added + modified + removed all count towards the same header.');
     }
 
     public function test_surgeon_email_renders_open_mission_with_no_instrumentist_in_uncovered(): void
@@ -451,7 +442,7 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
             'uncovered'  => [$this->addedMissionFixture(['instrumentistId' => null, 'instrumentistName' => null])],
         ]);
 
-        $this->assertStringContainsString("En attente d'instrumentiste", $html);
+        $this->assertStringContainsString('À pourvoir', $html);
     }
 
     public function test_planning_alert_email_renders(): void

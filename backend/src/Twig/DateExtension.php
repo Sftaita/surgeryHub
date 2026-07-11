@@ -22,10 +22,16 @@ class DateExtension extends AbstractExtension
         'Sunday'    => 'Dimanche',
     ];
 
+    private const MONTHS_FR_SHORT = [
+        1 => 'janv.', 2 => 'févr.', 3 => 'mars', 4 => 'avr.', 5 => 'mai', 6 => 'juin',
+        7 => 'juil.', 8 => 'août', 9 => 'sept.', 10 => 'oct.', 11 => 'nov.', 12 => 'déc.',
+    ];
+
     public function getFilters(): array
     {
         return [
             new TwigFilter('french_day', [$this, 'frenchDay']),
+            new TwigFilter('french_month_short', [$this, 'frenchMonthShort']),
         ];
     }
 
@@ -35,5 +41,13 @@ class DateExtension extends AbstractExtension
         $d = $date instanceof \DateTimeInterface ? $date : new \DateTimeImmutable((string) $date);
 
         return self::DAYS_FR[$d->format('l')] ?? $d->format('l');
+    }
+
+    /** @param \DateTimeInterface|string $date */
+    public function frenchMonthShort($date): string
+    {
+        $d = $date instanceof \DateTimeInterface ? $date : new \DateTimeImmutable((string) $date);
+
+        return self::MONTHS_FR_SHORT[(int) $d->format('n')] ?? $d->format('M');
     }
 }

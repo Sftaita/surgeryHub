@@ -163,6 +163,41 @@ describe("GeneratePlanningTab — sélection multi-mois", () => {
     await user.click(screen.getByText("Conflits"));
     expect(await screen.findByText(/Aucun poste dans ce filtre/)).toBeInTheDocument();
   });
+
+  it("un mois déjà généré reste sélectionnable pour un nouveau lot — seule l'icône dédiée ouvre la Modification", async () => {
+    const now = new Date();
+    (planningManagerApi.listPlanningVersions as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [{
+        id: 77, status: "ACTIVE",
+        periodStart: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01T00:00:00Z`,
+        // Same site id as "Delta" (so matchedVersion resolves — matching is by id, not name) but
+        // a distinct label, to avoid an ambiguous "Delta" text match against the site dropdown
+        // option once this version renders in the history sidebar.
+        deployedAt: "2026-06-02T00:00:00Z", site: { id: 1, name: "Delta (historique)" }, summary: { total: 1, open: 0 },
+      }],
+      total: 1, page: 1, limit: 10,
+    });
+    const user = userEvent.setup();
+    renderTab();
+    await selectSite(user);
+
+    const chip = await screen.findByText(/\d{4} · déjà généré/);
+    // Clicking the chip itself must toggle month selection (so it can still be included in a
+    // new multi-month batch for this hospital/group) — never jump into Modification mode.
+    await user.click(chip);
+    expect(screen.queryByText("Modification · Planning déployé")).not.toBeInTheDocument();
+    // The Prévisualiser button reacts to selectedMonthIds — deselecting the only selected
+    // (current) month disables it, proving the click really toggled selection.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Prévisualiser" })).toBeDisabled());
+
+    // The dedicated edit icon next to the chip is the only way into Modification mode.
+    await user.click(screen.getByRole("button", { name: "Modifier ce mois déjà généré" }));
+    expect(await screen.findByText("Modification · Planning déployé")).toBeInTheDocument();
+
+    // Restore the shared mock's default (empty history) so later tests in this file aren't
+    // contaminated — vi.fn().mockResolvedValue persists across tests, unlike mockResolvedValueOnce.
+    (planningManagerApi.listPlanningVersions as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], total: 0, page: 1, limit: 10 });
+  });
 });
 
 describe("GeneratePlanningTab — réaffectation d'instrumentiste (Preview Editor)", () => {
