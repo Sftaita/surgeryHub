@@ -251,6 +251,21 @@ export async function applyModifications(
   return res.data;
 }
 
+/**
+ * "Supprimer ce mois" — cancels every cancellable mission (ASSIGNED/OPEN) of an
+ * already-deployed PlanningVersion in one batch. Never a hard delete: the version and its
+ * audit history are preserved, missions become CANCELLED, and exactly one targeted summary
+ * email is sent per actually-affected person — same guarantees as applyModifications.
+ */
+export async function cancelAllMissions(versionId: number): Promise<ApplyModificationsResult> {
+  const res = await apiClient.post(
+    `/api/planning/versions/${versionId}/cancel-all`,
+    {},
+    { timeout: 30_000 },
+  );
+  return res.data;
+}
+
 // ── Living planning — Batch 15G ───────────────────────────────────────────────
 
 export async function fetchCoverageSummary(versionId: number): Promise<CoverageSummary> {

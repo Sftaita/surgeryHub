@@ -171,6 +171,41 @@ class PlanningVersionController extends AbstractController
         return $this->json($result);
     }
 
+    /**
+     * "Delete this generated month" — cancels every cancellable mission (ASSIGNED/OPEN) of an
+     * already-deployed PlanningVersion in one batch. Never a hard delete: audit trail (D-055)
+     * and the PlanningVersion itself are preserved, missions transition to CANCELLED through
+     * the same post-deploy chain as an individual "Annuler la mission", and exactly one
+     * targeted summary email is sent per actually-affected person. Only ACTIVE versions are
+     * eligible — a DRAFT version has its own hard-delete endpoint (DELETE .../{id} above);
+     * ARCHIVED means already superseded, nothing left to meaningfully cancel.
+     */
+    #[Route('/api/planning/versions/{id}/cancel-all', name: 'api_planning_version_cancel_all', methods: ['POST'])]
+    public function cancelAll(int $id, #[CurrentUser] User $user): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $version = $this->em->find(PlanningVersion::class, $id);
+        if ($version === null) {
+            return $this->json(['error' => ['message' => 'PlanningVersion not found.']], 404);
+        }
+
+        if ($version->getStatus() !== PlanningVersionStatus::ACTIVE) {
+            return $this->json([
+                'error' => [
+                    'message' => sprintf(
+                        'Impossible d\'annuler les missions d\'une version %s. Seule une version ACTIVE peut être annulée en masse.',
+                        $version->getStatus()->value,
+                    ),
+                ],
+            ], 400);
+        }
+
+        $result = $this->modificationService->cancelAll($version, $user);
+
+        return $this->json($result);
+    }
+
     // ── Coverage KPI (Batch 15F) ──────────────────────────────────────────────
 
     #[Route('/api/planning/versions/{id}/coverage-summary', name: 'api_planning_version_coverage_summary', methods: ['GET'])]

@@ -577,4 +577,96 @@ final class PlanningModificationControllerTest extends WebTestCase
         $instrContext = $toInstr[0]->context;
         self::assertNotEmpty($instrContext['modified'], 'Cancellation currently surfaces via the modified[] section, not removed[] — see comment above.');
     }
+
+    // ── Cancel-all ("delete this generated month") ──────────────────────────────
+
+    public function test_cancel_all_cancels_every_assigned_and_open_mission(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+        $assigned = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $instr);
+        $open     = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::OPEN);
+        $alreadyCancelled = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::CANCELLED);
+
+        $response = $this->postJson($client, $token, '/api/planning/versions/' . $version->getId() . '/cancel-all', []);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame(2, $body['cancelled'] ?? null, json_encode($body));
+
+        $this->em->clear();
+        self::assertSame(MissionStatus::CANCELLED, $this->em->find(Mission::class, $assigned->getId())->getStatus());
+        self::assertSame(MissionStatus::CANCELLED, $this->em->find(Mission::class, $open->getId())->getStatus());
+        self::assertSame(MissionStatus::CANCELLED, $this->em->find(Mission::class, $alreadyCancelled->getId())->getStatus(), 'Untouched — was already cancelled.');
+    }
+
+    public function test_cancel_all_notifies_every_affected_person_once_each(): void
+    {
+        $client   = $this->boot();
+        $manager  = $this->createUser('ROLE_MANAGER');
+        $token    = $this->login($client, $manager);
+        $surgeon1 = $this->createUser('ROLE_SURGEON');
+        $surgeon2 = $this->createUser('ROLE_SURGEON');
+        $instr1   = $this->createUser('ROLE_INSTRUMENTIST');
+        $instr2   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site     = $this->makeSite();
+        $version  = $this->makeVersion($site, $manager);
+        $this->makeMission($version, $site, $surgeon1, $manager, MissionStatus::ASSIGNED, $instr1);
+        $this->makeMission($version, $site, $surgeon2, $manager, MissionStatus::OPEN);
+        // $instr2 has no mission in this version at all — must receive nothing.
+
+        /** @var InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+
+        $response = $this->postJson($client, $token, '/api/planning/versions/' . $version->getId() . '/cancel-all', []);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        // The ASSIGNED mission's instrumentist changes (instr1 → null), a real diff entry —
+        // both its surgeon and instrumentist are notified. The OPEN mission's instrumentist
+        // was already null and stays null: PlanningDiffService::detectChanges() only compares
+        // schedule/instrumentist/surgeon/site (status is excluded, same documented quirk as
+        // test_cancellation_of_assigned_mission_notifies_surgeon_and_instrumentist_only above)
+        // — cancelling it produces no diff entry at all, so surgeon2 receives nothing either.
+        $sent = $this->drainSentMessages($transport);
+        self::assertCount(2, $sent);
+        self::assertCount(1, $this->emailsTo($sent, $surgeon1->getEmail()));
+        self::assertCount(1, $this->emailsTo($sent, $instr1->getEmail()));
+        self::assertCount(0, $this->emailsTo($sent, $surgeon2->getEmail()));
+        self::assertCount(0, $this->emailsTo($sent, $instr2->getEmail()));
+    }
+
+    public function test_cancel_all_rejects_non_active_version(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+        $version->setStatus(PlanningVersionStatus::DRAFT);
+        $this->em->flush();
+
+        $response = $this->postJson($client, $token, '/api/planning/versions/' . $version->getId() . '/cancel-all', []);
+
+        self::assertSame(Response::HTTP_BAD_REQUEST, $response->getStatusCode(), $response->getContent());
+    }
+
+    public function test_cancel_all_returns_403_for_instrumentist(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $token   = $this->login($client, $instr);
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+
+        $response = $this->postJson($client, $token, '/api/planning/versions/' . $version->getId() . '/cancel-all', []);
+
+        self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
+    }
 }

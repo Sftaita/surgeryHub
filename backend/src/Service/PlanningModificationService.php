@@ -117,6 +117,35 @@ class PlanningModificationService
         return $counts;
     }
 
+    /**
+     * Cancels every currently-cancellable mission in an already-deployed PlanningVersion —
+     * "delete this generated month" without touching audit/history (D-055): each mission goes
+     * through the exact same release→cancel post-deploy chain as a single SKIPPED line in
+     * apply() (never a hard delete), and exactly one consolidated diff-based summary email is
+     * sent per actually-affected person, same as any other batch. The PlanningVersion itself
+     * is left ACTIVE — a hollow version with every mission CANCELLED is a legitimate, fully
+     * auditable end state, not a special status.
+     *
+     * @return array{created:int,updated:int,cancelled:int,released:int,unchanged:int}
+     */
+    public function cancelAll(PlanningVersion $version, User $actor): array
+    {
+        // Only ASSIGNED/OPEN are actually cancellable server-side (applyLineToMission()'s
+        // SKIPPED branch only transitions those two) — a mission already past that point
+        // (SUBMITTED/VALIDATED/CLOSED/IN_PROGRESS) is left untouched rather than silently
+        // miscounted as "cancelled" for a mutation that never happened.
+        $missions = $version->getMissions()->filter(
+            fn (Mission $m) => in_array($m->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::OPEN], true),
+        );
+
+        $lines = [];
+        foreach ($missions as $mission) {
+            $lines[] = ['existingMissionId' => $mission->getId(), 'status' => 'SKIPPED'];
+        }
+
+        return $this->apply($version, $lines, $actor);
+    }
+
     // ── Private — per-line application ──────────────────────────────────────────────
 
     /**

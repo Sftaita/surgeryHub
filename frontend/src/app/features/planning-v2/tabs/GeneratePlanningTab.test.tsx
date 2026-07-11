@@ -26,6 +26,7 @@ vi.mock("../api/planningV2.api", () => ({
   generatePlanningV2: vi.fn(),
   deployPlanningV2: vi.fn(),
   applyModifications: vi.fn(),
+  cancelAllMissions: vi.fn(),
   extractErrorV2: (e: unknown) => String(e),
 }));
 
@@ -444,5 +445,48 @@ describe("GeneratePlanningTab — Mode Modification (éditeur unifié)", () => {
 
     expect(screen.queryByText("Modification · Planning déployé")).not.toBeInTheDocument();
     expect(screen.getByText("Générer le planning")).toBeInTheDocument();
+  });
+
+  it("supprime le mois — demande confirmation puis annule tout et quitte le mode Modification", async () => {
+    mockHistoryWithOneVersion();
+    (planningV2Api.cancelAllMissions as ReturnType<typeof vi.fn>).mockResolvedValue({ created: 0, updated: 0, cancelled: 2, released: 0, unchanged: 0 });
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+
+    await user.click(screen.getByRole("button", { name: "Supprimer ce mois" }));
+
+    // Confirmation dialog — the destructive action must not fire on the first click.
+    expect(await screen.findByText(/Toutes les missions assignées ou ouvertes/)).toBeInTheDocument();
+    expect(planningV2Api.cancelAllMissions).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Confirmer la suppression" }));
+
+    await waitFor(() => expect(planningV2Api.cancelAllMissions).toHaveBeenCalledWith(42));
+    // Success returns straight to Génération — there's nothing left to modify.
+    await waitFor(() => expect(screen.queryByText("Modification · Planning déployé")).not.toBeInTheDocument());
+    expect(screen.getByText("Générer le planning")).toBeInTheDocument();
+  });
+
+  it("annuler dans la boîte de dialogue de suppression ne fait rien", async () => {
+    mockHistoryWithOneVersion();
+    (planningV2Api.cancelAllMissions as ReturnType<typeof vi.fn>).mockClear();
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+
+    await user.click(screen.getByRole("button", { name: "Supprimer ce mois" }));
+    await screen.findByText(/Toutes les missions assignées ou ouvertes/);
+
+    await user.click(screen.getByRole("button", { name: "Annuler" }));
+
+    // MUI Dialog unmounts its content only after its close transition finishes.
+    await waitFor(() => expect(screen.queryByText(/Toutes les missions assignées ou ouvertes/)).not.toBeInTheDocument());
+    expect(planningV2Api.cancelAllMissions).not.toHaveBeenCalled();
+    expect(screen.getByText("Modification · Planning déployé")).toBeInTheDocument();
   });
 });

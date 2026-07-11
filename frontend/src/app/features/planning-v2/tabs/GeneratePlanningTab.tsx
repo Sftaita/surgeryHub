@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
-  Box, Button, Checkbox, Chip, CircularProgress, FormControlLabel, IconButton, Stack, Tooltip, Typography,
+  Box, Button, Checkbox, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle,
+  FormControlLabel, IconButton, Stack, Tooltip, Typography,
 } from "@mui/material";
 import RocketLaunchOutlinedIcon from "@mui/icons-material/RocketLaunchOutlined";
 import SearchOutlinedIcon from "@mui/icons-material/SearchOutlined";
@@ -13,6 +14,7 @@ import ChevronRightOutlinedIcon from "@mui/icons-material/ChevronRightOutlined";
 import CheckIcon from "@mui/icons-material/Check";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import ArrowBackOutlinedIcon from "@mui/icons-material/ArrowBackOutlined";
+import DeleteOutlineOutlinedIcon from "@mui/icons-material/DeleteOutlineOutlined";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { fetchSites } from "../../sites/api/sites.api";
@@ -20,7 +22,7 @@ import { getSurgeons } from "../../manager-surgeons/api/surgeons.api";
 import { fetchMissions } from "../../missions/api/missions.api";
 import {
   getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2,
-  applyModifications, extractErrorV2,
+  applyModifications, cancelAllMissions, extractErrorV2,
 } from "../api/planningV2.api";
 import { listPlanningVersions, getAbsences } from "../../planning-manager/api/planning.api";
 import type { PreviewLineStatus, PreviewLineV2, PreviewResponseV2 } from "../api/planningV2.types";
@@ -100,6 +102,7 @@ export function GeneratePlanningTab() {
   const [newLines, setNewLines] = React.useState<PreviewLineV2[]>([]);
   const [isCreatingMission, setIsCreatingMission] = React.useState(false);
   const [modificationApplied, setModificationApplied] = React.useState<{ created: number; updated: number; cancelled: number; released: number; unchanged: number } | null>(null);
+  const [deleteMonthConfirmOpen, setDeleteMonthConfirmOpen] = React.useState(false);
   const nextDraftIdRef = React.useRef(-1);
 
   const mode: PlanningEditorMode = modificationVersionId !== null ? "modification" : "generation";
@@ -299,6 +302,19 @@ export function GeneratePlanningTab() {
       }
     },
     onError: (err) => toast.error(extractErrorV2(err)),
+  });
+
+  const cancelAllMutation = useMutation({
+    mutationFn: () => cancelAllMissions(modificationVersionId!),
+    onSuccess: (result) => {
+      setDeleteMonthConfirmOpen(false);
+      toast.success(result.cancelled > 0 ? `${result.cancelled} mission(s) annulée(s) — mois supprimé` : "Rien à annuler, ce mois était déjà vide");
+      exitModification();
+    },
+    onError: (err) => {
+      setDeleteMonthConfirmOpen(false);
+      toast.error(extractErrorV2(err));
+    },
   });
 
   function resetGen() {
@@ -543,15 +559,47 @@ export function GeneratePlanningTab() {
           </Typography>
         </Box>
         {isModification && (
-          <Button
-            startIcon={<ArrowBackOutlinedIcon sx={{ fontSize: 16 }} />}
-            onClick={exitModification}
-            sx={{ height: 38, px: 2, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, color: planningV2Colors.textStrong, border: "1px solid #DDE2E8", flexShrink: 0 }}
-          >
-            Quitter la modification
-          </Button>
+          <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
+            <Button
+              startIcon={<DeleteOutlineOutlinedIcon sx={{ fontSize: 16 }} />}
+              onClick={() => setDeleteMonthConfirmOpen(true)}
+              sx={{ height: 38, px: 2, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, color: "#B42318", border: "1px solid #FDA29B", "&:hover": { bgcolor: "#FEF3F2" } }}
+            >
+              Supprimer ce mois
+            </Button>
+            <Button
+              startIcon={<ArrowBackOutlinedIcon sx={{ fontSize: 16 }} />}
+              onClick={exitModification}
+              sx={{ height: 38, px: 2, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, color: planningV2Colors.textStrong, border: "1px solid #DDE2E8" }}
+            >
+              Quitter la modification
+            </Button>
+          </Stack>
         )}
       </Stack>
+
+      <Dialog open={deleteMonthConfirmOpen} onClose={() => setDeleteMonthConfirmOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>Supprimer {modificationLabel} ?</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted }}>
+            Toutes les missions assignées ou ouvertes de ce mois seront <strong>annulées</strong>.
+            Les chirurgiens et instrumentistes concernés en seront informés par email. Cette action
+            n&apos;efface rien de l&apos;historique et n&apos;est pas automatiquement réversible.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button onClick={() => setDeleteMonthConfirmOpen(false)} sx={{ textTransform: "none", fontWeight: 600 }}>
+            Annuler
+          </Button>
+          <Button
+            variant="contained" disableElevation color="error" disabled={cancelAllMutation.isPending}
+            onClick={() => cancelAllMutation.mutate()}
+            sx={{ textTransform: "none", fontWeight: 600 }}
+          >
+            {cancelAllMutation.isPending ? "Suppression…" : "Confirmer la suppression"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {!isModification && (
         <>

@@ -3005,6 +3005,46 @@ est vide et **aucun email n'est envoyé**.
 
 ---
 
+### 26.6d Suppression d'un mois généré (Batch 16B)
+
+#### `POST /api/planning/versions/{id}/cancel-all`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+"Supprimer ce mois" côté UI — annule en un seul lot toutes les missions annulables
+(`ASSIGNED`/`OPEN`) d'une `PlanningVersion` **déjà déployée** (`ACTIVE`). **Jamais une
+suppression physique** : l'historique (`AuditEvent`, D-055) et la `PlanningVersion`
+elle-même sont conservés — chaque mission passe par la même chaîne post-déploiement
+`release()`→`cancel()` qu'une ligne individuelle marquée `SKIPPED` dans
+`apply-modifications` (§26.6c). Une version "vidée" (toutes ses missions `CANCELLED`)
+reste `ACTIVE` et consultable — ce n'est pas un statut spécial.
+
+Les missions déjà au-delà de `ASSIGNED`/`OPEN` (`SUBMITTED`, `VALIDATED`, `CLOSED`,
+`IN_PROGRESS`) ne sont **pas** annulables par cet endpoint — elles ne sont même pas
+tentées (évite un comptage trompeur d'une "annulation" qui ne mute rien).
+
+**Body :** aucun (POST sans payload).
+
+**Réponse — 200 :** même forme que `apply-modifications` :
+```json
+{ "created": 0, "updated": 0, "cancelled": 12, "released": 0, "unchanged": 0 }
+```
+
+**Réponse — 400 :** version non `ACTIVE`. Une `DRAFT` a son propre endpoint de
+suppression physique (`DELETE /api/planning/versions/{id}`, §26.6 ci-dessus) ; une
+`ARCHIVED` est déjà remplacée par une version plus récente, rien à annuler dessus dans
+ce flux.
+
+**Réponse — 404 :** version inexistante.
+
+**Emails envoyés :** identique à `apply-modifications` — un seul récapitulatif ciblé par
+personne réellement affectée, calculé via le même diff avant/après. Une mission `OPEN`
+sans instrumentiste qui est annulée ne produit **aucune entrée de diff** (son
+instrumentiste reste `null` avant/après — `PlanningDiffService::detectChanges()` ignore
+le statut) : son chirurgien ne reçoit donc rien pour cette mission-là spécifiquement.
+
+---
+
 ### 26.7 Instrumentistes suggérés
 
 #### `GET /api/missions/{missionId}/suggested-instrumentists`
