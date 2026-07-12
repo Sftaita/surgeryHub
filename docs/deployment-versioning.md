@@ -259,7 +259,10 @@ génériques ci-dessus) :
 - **Obligatoire dès que le test touche, même indirectement, un flux qui
   envoie un email** (déploiement de planning, modification, facturation,
   invitations, relances…) : activer `MAIL_SAFE_MODE=on` (ajouter la ligne à
-  `.env.prod.local`, puis `docker compose up -d` — un simple `docker restart`
+  `/opt/stack/apps/surgicalhub/.env` — **pas** `.env.prod.local`, qui n'est
+  pas lu par ce stack ; c'est `docker-compose.yml` qui injecte ce `.env`
+  au niveau du stack via `env_file:`, voir `backend/.env.prod.local.example`
+  pour le détail — puis `docker compose up -d` — un simple `docker restart`
   ne relit pas le fichier) **avant** d'exécuter le moindre test, et le
   retirer (`docker compose up -d` à nouveau) juste après. Voir
   `docs/mail-safe-mode.md` §3.3 pour la procédure complète. **Ne jamais
