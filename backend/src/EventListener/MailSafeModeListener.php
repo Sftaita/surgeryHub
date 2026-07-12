@@ -113,6 +113,16 @@ final class MailSafeModeListener
             'kernelEnvironment' => $this->kernelEnvironment,
         ];
 
+        // Clear the message's own recipient headers in both branches below — not just when
+        // some are kept. reject() alone stops actual delivery, but leaves $message untouched;
+        // a caller reading $email->getTo() straight after send() (exactly what
+        // SendBillingEmailMessageHandler/SendTemplatedEmailMessageHandler do, to log what
+        // really happened) would otherwise still see the blocked address and could log
+        // "sent" for a message that was, in fact, fully rejected.
+        $message->to(...$keptTo);
+        $message->cc(...$keptCc);
+        $message->bcc(...$keptBcc);
+
         if (empty($keptTo) && empty($keptCc) && empty($keptBcc)) {
             $this->logger->warning('MAIL_SAFE_MODE: rejected an email with no allow-listed recipient left', $context);
             $event->reject();
@@ -120,9 +130,6 @@ final class MailSafeModeListener
         }
 
         $this->logger->warning('MAIL_SAFE_MODE: stripped non-allow-listed recipient(s) from an outgoing email', $context);
-        $message->to(...$keptTo);
-        $message->cc(...$keptCc);
-        $message->bcc(...$keptBcc);
 
         // Belt-and-suspenders: the default Envelope (DelayedEnvelope) re-reads the message's
         // To/Cc/Bcc headers lazily at send time, so the mutation above is already sufficient

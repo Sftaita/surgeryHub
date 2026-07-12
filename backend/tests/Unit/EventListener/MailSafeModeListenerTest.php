@@ -65,6 +65,11 @@ final class MailSafeModeListenerTest extends TestCase
         $listener($event);
 
         self::assertTrue($event->isRejected(), 'The only recipient was not allow-listed — nothing left to send to.');
+        // Regression guard: reject() alone stops delivery but does not touch $message — a
+        // caller reading $email->getTo() straight after send() (exactly what
+        // SendBillingEmailMessageHandler does to log the real outcome) must see it empty,
+        // never the blocked address, or a fully-rejected send would still log as "sent".
+        self::assertSame([], $email->getTo(), 'The message\'s own To header must be cleared on full rejection too, not just when partially stripped.');
     }
 
     public function test_enabled_in_test_env_by_default(): void
