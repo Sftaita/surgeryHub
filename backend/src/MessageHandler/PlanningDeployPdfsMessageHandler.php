@@ -8,6 +8,7 @@ use App\Entity\NotificationEvent;
 use App\Entity\PlanningDeployment;
 use App\Entity\User;
 use App\Enum\MissionStatus;
+use App\Enum\MissionType;
 use App\Enum\NotificationType;
 use App\Enum\PlanningDeploymentStatus;
 use App\Enum\PublicationChannel;
@@ -65,6 +66,8 @@ final class PlanningDeployPdfsMessageHandler
         private readonly string $fromAddress,
         #[Autowire('%env(string:MAILER_FROM_NAME)%')]
         private readonly string $fromName,
+        #[Autowire('%env(string:FRONTEND_URL)%')]
+        private readonly string $frontendUrl,
     ) {}
 
     public function __invoke(PlanningDeployPdfsMessage $message): void
@@ -147,6 +150,15 @@ final class PlanningDeployPdfsMessageHandler
                 } catch (\Throwable) {}
             }
 
+            // ── 4b. OPEN missions in this period — source list for the "missions disponibles"
+            // section added to each instrumentist email below (step 5). Never shown in the
+            // PDF (which only ever lists a recipient's own assigned missions) — this is
+            // additive, not a duplicate of anything already attached.
+            $openMissions = array_values(array_filter(
+                $missions,
+                fn (Mission $m) => $m->getStatus() === MissionStatus::OPEN && $m->getInstrumentist() === null,
+            ));
+
             // ── 5. Per-instrumentist: personal PDF + email + in-app notification
             foreach ($byInstrumentist as $instrId => $instrMissions) {
                 $instrumentist = $this->em->find(User::class, $instrId);
@@ -169,6 +181,17 @@ final class PlanningDeployPdfsMessageHandler
                             strtolower(str_replace(' ', '-', $name)),
                             $fromDate->format('Y-m-d'), $toDate->format('Y-m-d'));
 
+                        // "Missions disponibles" section (email body only, never the PDF) —
+                        // OPEN missions from this same deploy period that this specific
+                        // instrumentist is actually eligible to claim, per the same
+                        // MissionEligibilityService::evaluate() used by claim()'s pre-lock
+                        // gate (D-057) — never re-derived/recomputed here.
+                        $availableMissions = array_values(array_filter(
+                            $openMissions,
+                            fn (Mission $m) => $this->eligibilityService->evaluate($m, $instrumentist)->eligible,
+                        ));
+                        usort($availableMissions, fn (Mission $a, Mission $b) => $a->getStartAt() <=> $b->getStartAt());
+
                         $this->bus->dispatch(new SendBillingEmailMessage(
                             to: $instrumentist->getEmail(),
                             cc: [],
@@ -177,10 +200,12 @@ final class PlanningDeployPdfsMessageHandler
                             fromName: $this->fromName,
                             htmlTemplate: 'emails/planning_instrumentist.html.twig',
                             context: [
-                                'instrumentist' => $instrumentist,
-                                'periodFrom'    => $fromDate,
-                                'periodTo'      => $toDate,
-                                'missionCount'  => count($instrMissions),
+                                'instrumentist'     => $instrumentist,
+                                'periodFrom'        => $fromDate,
+                                'periodTo'          => $toDate,
+                                'missionCount'      => count($instrMissions),
+                                'availableMissions' => $this->buildAvailableMissionsData($availableMissions),
+                                'availableMissionsUrl' => rtrim($this->frontendUrl, '/') . '/app/i/offers',
                             ],
                             attachmentBase64: base64_encode($pdf),
                             attachmentFilename: $filename,
@@ -466,6 +491,32 @@ final class PlanningDeployPdfsMessageHandler
         usort($posts, fn (array $a, array $b) => ($a['date'] ?? '') <=> ($b['date'] ?? ''));
 
         return $posts;
+    }
+
+    /**
+     * Formats OPEN missions for the instrumentist email's "missions disponibles" section —
+     * presentation-only mapping (date/time formatting, Bloc/Consultation label), same
+     * convention as buildSurgeonPosts() above. The eligibility filtering itself already
+     * happened in the caller via MissionEligibilityService::evaluate() — nothing here
+     * re-derives or duplicates that decision.
+     *
+     * @param Mission[] $missions
+     */
+    private function buildAvailableMissionsData(array $missions): array
+    {
+        return array_map(fn (Mission $m) => [
+            'missionId'   => $m->getId(),
+            'date'        => $m->getStartAt()?->format('d/m/Y'),
+            'moment'      => $m->getStartAt() !== null
+                ? (((int) $m->getStartAt()->format('G')) < 12 ? 'Matin' : 'Après-midi')
+                : null,
+            'horaire'     => $m->getStartAt() !== null && $m->getEndAt() !== null
+                ? $m->getStartAt()->format('H:i') . '–' . $m->getEndAt()->format('H:i')
+                : null,
+            'siteName'    => $m->getSite()?->getName(),
+            'surgeonName' => $this->displayName($m->getSurgeon()),
+            'typeLabel'   => $m->getType() === MissionType::BLOCK ? 'Bloc' : 'Consultation',
+        ], $missions);
     }
 
     private function periodLabel(\DateTimeImmutable $from, \DateTimeImmutable $to): string

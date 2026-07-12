@@ -2,11 +2,13 @@
 
 namespace App\Tests\Unit\Service;
 
+use App\Dto\EligibilityResult;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\NotificationEvent;
 use App\Entity\PlanningDeployment;
 use App\Entity\User;
+use App\Enum\EligibilityReason;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\NotificationType;
@@ -75,6 +77,14 @@ class PlanningDeployPdfsHandlerTest extends TestCase
 
         $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
         $this->eligibilityService->method('findEligible')->willReturn([]);
+        // Default: nobody is eligible for any OPEN mission via evaluate() either — keeps
+        // the "missions disponibles" section empty for every test that doesn't explicitly
+        // exercise it. Without this stub, PHPUnit's auto-generated mock would return null
+        // for the (non-nullable) EligibilityResult return type, which the handler's own
+        // try/catch would silently swallow — silently dropping every instrumentist email
+        // in every test in this file, not just the eligibility-specific ones.
+        $this->eligibilityService->method('evaluate')
+            ->willReturn(new EligibilityResult($this->makeUser('unused@test.com', ['ROLE_INSTRUMENTIST'], 0), [EligibilityReason::INCOMPATIBLE_STATUS]));
 
         $this->dispatched   = [];
         $this->pdfTemplates = [];
@@ -138,6 +148,7 @@ class PlanningDeployPdfsHandlerTest extends TestCase
             $this->eligibilityService,
             'noreply@test.com',
             'SurgicalHub',
+            'https://app.surgicalhub.test',
         );
     }
 
@@ -330,7 +341,7 @@ class PlanningDeployPdfsHandlerTest extends TestCase
                 $this->bus,
                 $this->preferenceResolver, $this->uncoveredReasonResolver,
                 $this->eligibilityService,
-                'noreply@test.com', 'SurgicalHub'
+                'noreply@test.com', 'SurgicalHub', 'https://app.surgicalhub.test',
             ))->__invoke($this->makeMessage());
         } catch (\Throwable) {
             $threw = true;
@@ -1218,5 +1229,137 @@ class PlanningDeployPdfsHandlerTest extends TestCase
         $this->assertEmpty($summaryEmails,
             'No change-summary email must ever be dispatched by the deploy handler.'
         );
+    }
+
+    // ── "Missions disponibles" section (initial-deploy visual redesign) ─────
+
+    /**
+     * An OPEN mission in the deployed period that this instrumentist is eligible for
+     * (per MissionEligibilityService::evaluate() — the same check claim() uses) must
+     * appear in the instrumentist email's availableMissions context, formatted for
+     * display, with the CTA URL pointing at the offers page.
+     */
+    public function test_instrumentist_email_includes_eligible_open_mission_in_available_missions(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
+        $assigned = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+
+        $openSurgeon = $this->makeUser('open-surgeon@test.com', ['ROLE_SURGEON'], 3);
+        $openMission = $this->makeMission($openSurgeon, null, MissionStatus::OPEN);
+        $openMission->setSite($assigned->getSite());
+        (new \ReflectionProperty(Mission::class, 'id'))->setValue($openMission, 555);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                $class === User::class && $id === 2  => $instr,
+                $class === User::class && $id === 3  => $openSurgeon,
+                default => null,
+            });
+        $this->setupMissionsQuery([$assigned, $openMission]);
+
+        // Re-create the eligibility service mock to override setUp()'s default (always
+        // ineligible) — matches the established pattern elsewhere in this file (see
+        // test_pool_notification_only_for_open_uncovered_ids), since PHPUnit uses the
+        // FIRST configured `method()` stub, not the last, when there's no `with()`
+        // constraint to disambiguate multiple stubs on the same method.
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('findEligible')->willReturn([]);
+        $this->eligibilityService->method('evaluate')
+            ->willReturnCallback(fn (Mission $m, User $u) => $m === $openMission && $u === $instr
+                ? new EligibilityResult($u, [])
+                : new EligibilityResult($u, [EligibilityReason::INCOMPATIBLE_STATUS]));
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $instrEmails = array_values(array_filter(
+            $this->dispatched,
+            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com',
+        ));
+        $this->assertCount(1, $instrEmails);
+
+        $context = $instrEmails[0]->context;
+        $this->assertArrayHasKey('availableMissions', $context);
+        $this->assertCount(1, $context['availableMissions']);
+        $this->assertSame(555, $context['availableMissions'][0]['missionId']);
+        $this->assertSame('Alpha', $context['availableMissions'][0]['siteName']);
+        $this->assertSame('Bloc', $context['availableMissions'][0]['typeLabel']);
+        $this->assertStringEndsWith('/app/i/offers', $context['availableMissionsUrl']);
+    }
+
+    /**
+     * An OPEN mission this instrumentist is NOT eligible for (e.g. no site membership,
+     * absence, conflict — any reason evaluate() reports) must never appear in their
+     * availableMissions list, even though it is a real OPEN mission in the same deploy.
+     */
+    public function test_instrumentist_email_excludes_open_mission_they_are_not_eligible_for(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
+        $assigned = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+
+        $openSurgeon = $this->makeUser('open-surgeon@test.com', ['ROLE_SURGEON'], 3);
+        $openMission = $this->makeMission($openSurgeon, null, MissionStatus::OPEN);
+        (new \ReflectionProperty(Mission::class, 'id'))->setValue($openMission, 556);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                $class === User::class && $id === 2  => $instr,
+                $class === User::class && $id === 3  => $openSurgeon,
+                default => null,
+            });
+        $this->setupMissionsQuery([$assigned, $openMission]);
+        // setUp()'s default stub already makes evaluate() report ineligible for everyone.
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $instrEmails = array_values(array_filter(
+            $this->dispatched,
+            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com',
+        ));
+        $this->assertCount(1, $instrEmails);
+        $this->assertSame([], $instrEmails[0]->context['availableMissions'],
+            'A mission the instrumentist is not eligible for must never appear in their available-missions list.'
+        );
+    }
+
+    /**
+     * REGRESSION guard for "no duplication with the PDF": the instrumentist's own
+     * (already-assigned) missions must never be considered as "available" — only
+     * genuinely OPEN, unassigned missions can appear in availableMissions.
+     */
+    public function test_instrumentist_own_assigned_missions_never_appear_in_available_missions(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
+        $assigned = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+
+        $this->em->method('find')
+            ->willReturnCallback(fn ($class, $id) => match (true) {
+                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
+                $class === User::class && $id === 1  => $surgeon,
+                $class === User::class && $id === 2  => $instr,
+                default => null,
+            });
+        $this->setupMissionsQuery([$assigned]);
+
+        // Even if evaluate() were (incorrectly) called against the assigned mission and
+        // returned eligible, it must never reach availableMissions — it is not OPEN.
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('findEligible')->willReturn([]);
+        $this->eligibilityService->method('evaluate')->willReturn(new EligibilityResult($instr, []));
+
+        $this->makeHandler()->__invoke($this->makeMessage());
+
+        $instrEmails = array_values(array_filter(
+            $this->dispatched,
+            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com',
+        ));
+        $this->assertCount(1, $instrEmails);
+        $this->assertSame([], $instrEmails[0]->context['availableMissions']);
     }
 }

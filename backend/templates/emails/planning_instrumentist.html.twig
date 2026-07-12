@@ -1,23 +1,137 @@
 <!DOCTYPE html>
 <html lang="fr">
-<head><meta charset="UTF-8"><style>
-body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
-.container { max-width: 600px; margin: 0 auto; padding: 24px; }
-.header { border-bottom: 2px solid #1565C0; padding-bottom: 12px; margin-bottom: 20px; }
-.title { color: #1565C0; font-size: 18px; font-weight: bold; }
-.footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
-</style></head>
-<body>
-<div class="container">
-  <div class="header">
-    <div class="title">SurgicalHub — Planning</div>
-  </div>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>SurgicalHub — Planning</title>
+<!--[if mso]>
+<style>table{border-collapse:collapse;} div,td{font-family:Arial,sans-serif;}</style>
+<noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+<![endif]-->
+<style>
+  @media (max-width:620px){
+    .sh-container{width:100% !important;}
+    .sh-pad{padding-left:20px !important;padding-right:20px !important;}
+  }
+</style>
+</head>
+{% set recipientName = instrumentist.firstname ? instrumentist.firstname : instrumentist.email %}
+{% set availableMissions = availableMissions|default([]) %}
+{% set availableCount = availableMissions|length %}
 
-  <p>Bonjour {% if instrumentist.firstname %}{{ instrumentist.firstname }}{% else %}{{ instrumentist.email }}{% endif %},</p>
-  <p>Veuillez trouver ci-joint votre planning pour la période du <strong>{{ periodFrom|date('d/m/Y') }}</strong> au <strong>{{ periodTo|date('d/m/Y') }}</strong>.</p>
-  <p>Vous êtes affecté(e) à <strong>{{ missionCount }}</strong> mission{{ missionCount > 1 ? 's' : '' }} sur cette période.</p>
-
-  <div class="footer">SurgicalHub — document confidentiel</div>
+{% macro missionCard(m) %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E7EBEF;border-left:4px solid #F0A91B;border-radius:10px;margin-bottom:10px;">
+<tr><td style="padding:16px 18px;">
+<div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;color:#16202B;">{{ m.date }} · {{ m.moment }}{% if m.horaire %} · {{ m.horaire }}{% endif %}</div>
+<div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#3A4754;margin-top:3px;">{{ m.surgeonName }}</div>
+{% if m.siteName %}
+<div style="margin-top:8px;">
+<span style="display:inline-block;background-color:#EFFAF5;color:#1F6B4F;font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;padding:4px 10px;border-radius:100px;">{{ m.siteName }}</span>
+<span style="display:inline-block;background-color:#F1F4F7;color:#566270;font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;padding:4px 10px;border-radius:100px;margin-left:6px;">{{ m.typeLabel }}</span>
 </div>
+{% endif %}
+</td></tr>
+</table>
+{% endmacro %}
+{% import _self as m %}
+
+<body style="margin:0;padding:0;background-color:#F5F7FA;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
+<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#F5F7FA;">{{ recipientName }}, votre planning du {{ periodFrom|date('d/m/Y') }} au {{ periodTo|date('d/m/Y') }} est disponible{{ availableCount > 0 ? ' — ' ~ availableCount ~ ' mission' ~ (availableCount > 1 ? 's' : '') ~ ' disponible' ~ (availableCount > 1 ? 's' : '') : '' }}.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F5F7FA;">
+<tr><td align="center" style="padding:40px 16px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" class="sh-container" style="width:600px;max-width:600px;background-color:#FFFFFF;border-radius:12px;border:1px solid #E7EBEF;">
+
+<!-- Header -->
+<tr><td class="sh-pad" style="padding:26px 32px;border-bottom:1px solid #E7EBEF;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+<td style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:18px;font-weight:800;color:#144D38;letter-spacing:-0.2px;">
+<span style="display:inline-block;width:9px;height:9px;border-radius:3px;background-color:#42A882;margin-right:9px;"></span><span>SurgicalHub</span>
+</td>
+<td align="right" style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#727E8C;">Planning</td>
+</tr></table>
+</td></tr>
+
+<!-- Title -->
+<tr><td class="sh-pad" style="padding:28px 32px 6px 32px;">
+<div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:23px;font-weight:800;color:#16202B;line-height:1.3;">Votre planning est disponible</div>
+</td></tr>
+<tr><td class="sh-pad" style="padding:0 32px 20px 32px;">
+<span style="display:inline-block;background-color:#EDF4FF;color:#1B5FD0;font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:13px;font-weight:700;padding:6px 13px;border-radius:100px;">{{ periodFrom|date('d/m/Y') }} → {{ periodTo|date('d/m/Y') }}</span>
+</td></tr>
+
+<!-- Greeting -->
+<tr><td class="sh-pad" style="padding:0 32px 22px 32px;font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#3A4754;">
+Bonjour {{ recipientName }},<br><br>
+Veuillez trouver ci-joint votre planning pour la période du {{ periodFrom|date('d/m/Y') }} au {{ periodTo|date('d/m/Y') }}.
+</td></tr>
+
+<!-- Stats -->
+<tr><td class="sh-pad" style="padding:0 32px 4px 32px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+<td width="33%" style="background-color:#F1F4F7;border-radius:10px;padding:18px 8px;text-align:center;">
+<div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:26px;font-weight:800;color:#16202B;line-height:1.1;font-variant-numeric:tabular-nums;">{{ missionCount }}</div>
+<div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:#727E8C;margin-top:4px;">Missions</div>
+</td>
+<td width="8"></td>
+<td width="33%" style="background-color:#EFFAF5;border-radius:10px;padding:18px 8px;text-align:center;">
+<div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:26px;font-weight:800;color:#144D38;line-height:1.1;font-variant-numeric:tabular-nums;">{{ missionCount }}</div>
+<div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:#1F6B4F;margin-top:4px;">Affectées</div>
+</td>
+<td width="8"></td>
+<td width="33%" style="background-color:#F1F4F7;border-radius:10px;padding:18px 8px;text-align:center;">
+<div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:26px;font-weight:800;color:#98A2AE;line-height:1.1;font-variant-numeric:tabular-nums;">0</div>
+<div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:#98A2AE;margin-top:4px;">En attente d'affectation</div>
+</td>
+</tr></table>
+</td></tr>
+
+{% if availableCount > 0 %}
+<!-- Missions disponibles -->
+<tr><td class="sh-pad" style="padding:22px 32px 10px 32px;">
+<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:13px;font-weight:700;letter-spacing:0.2px;color:#B7791F;">
+<span style="display:inline-block;width:7px;height:7px;border-radius:2px;background-color:#F0A91B;margin-right:8px;"></span>Missions disponibles ({{ availableCount }})
+</td>
+</tr></table>
+</td></tr>
+<tr><td class="sh-pad" style="padding:0 32px 4px 32px;font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:13.5px;color:#3A4754;line-height:1.5;">
+D'autres missions sont ouvertes sur cette période et correspondent à votre profil.
+</td></tr>
+<tr><td class="sh-pad" style="padding:12px 32px 4px 32px;">
+{% for available in availableMissions %}
+  {{ m.missionCard(available) }}
+{% endfor %}
+</td></tr>
+<tr><td class="sh-pad" style="padding:6px 32px 4px 32px;">
+<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="border-radius:8px;background-color:#42A882;">
+<a href="{{ availableMissionsUrl }}" style="display:inline-block;padding:11px 20px;font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;font-weight:700;color:#FFFFFF;text-decoration:none;border-radius:8px;">Voir les missions disponibles</a>
+</td>
+</tr></table>
+</td></tr>
+{% endif %}
+
+<!-- Attachment -->
+<tr><td class="sh-pad" style="padding:22px 32px 4px 32px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F1F4F7;border-radius:10px;"><tr>
+<td style="width:1%;white-space:nowrap;padding:12px 0 12px 14px;">
+<span style="display:inline-block;background-color:#DDE2E8;color:#566270;font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:10px;font-weight:800;letter-spacing:0.3px;padding:5px 8px;border-radius:6px;">PDF</span>
+</td>
+<td style="padding:12px 14px 12px 10px;font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:13px;color:#3A4754;">Planning complet — {{ periodFrom|date('d/m') }} au {{ periodTo|date('d/m/Y') }}, en pièce jointe.</td>
+</tr></table>
+</td></tr>
+
+<!-- Footer -->
+<tr><td class="sh-pad" style="padding:28px 32px 30px 32px;">
+<div style="border-top:1px solid #E7EBEF;padding-top:20px;font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:#98A2AE;line-height:1.7;">
+SurgicalHub — document confidentiel, destiné uniquement à {{ recipientName }}.<br>
+Cet e-mail est généré automatiquement, merci de ne pas y répondre.
+</div>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
 </body>
 </html>

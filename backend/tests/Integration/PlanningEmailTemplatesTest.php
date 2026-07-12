@@ -38,6 +38,8 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
 
     public function test_planning_instrumentist_email_renders(): void
     {
+        // No availableMissions/availableMissionsUrl passed — must still render via the
+        // template's `|default([])` fallback (defensive, in case a future caller forgets them).
         $html = $this->twig()->render('emails/planning_instrumentist.html.twig', [
             'instrumentist' => $this->makeUser('instr@test.com', 'Carla'),
             'periodFrom'    => new \DateTimeImmutable('2026-08-01'),
@@ -47,6 +49,39 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
 
         $this->assertStringContainsString('Carla', $html);
         $this->assertStringContainsString('01/08/2026', $html);
+        $this->assertStringContainsString('5', $html);
+        $this->assertStringNotContainsString('Missions disponibles', $html, 'No available missions passed — the section must not render at all.');
+    }
+
+    public function test_planning_instrumentist_email_renders_available_missions_section(): void
+    {
+        $html = $this->twig()->render('emails/planning_instrumentist.html.twig', [
+            'instrumentist' => $this->makeUser('instr@test.com', 'Carla'),
+            'periodFrom'    => new \DateTimeImmutable('2026-08-01'),
+            'periodTo'      => new \DateTimeImmutable('2026-08-31'),
+            'missionCount'  => 5,
+            'availableMissions' => [
+                [
+                    'missionId'   => 42,
+                    'date'        => '12/08/2026',
+                    'moment'      => 'Matin',
+                    'horaire'     => '08:00–13:00',
+                    'siteName'    => 'Bloc opératoire Delta',
+                    'surgeonName' => 'Jean Dupont',
+                    'typeLabel'   => 'Bloc',
+                ],
+            ],
+            'availableMissionsUrl' => 'https://app.surgicalhub.be/app/i/offers',
+        ]);
+
+        $this->assertStringContainsString('Missions disponibles (1)', $html);
+        $this->assertStringContainsString('12/08/2026', $html);
+        $this->assertStringContainsString('Jean Dupont', $html);
+        $this->assertStringContainsString('Bloc opératoire Delta', $html);
+        $this->assertStringContainsString('Voir les missions disponibles', $html);
+        $this->assertStringContainsString('https://app.surgicalhub.be/app/i/offers', $html);
+        // The PDF only ever lists this recipient's own (assigned) missions — the available-
+        // missions section must never restate the personal "Missions"/"Affectées" tile values.
         $this->assertStringContainsString('5', $html);
     }
 
@@ -74,6 +109,7 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
         $this->assertStringNotContainsString('Séances', $html, 'Old label must no longer appear.');
         $this->assertStringNotContainsString('Couvertes', $html, 'Old label must no longer appear (Affectées instead).');
         $this->assertStringNotContainsString('Non couvertes', $html, "Old label must no longer appear (En attente d'affectation instead).");
+        $this->assertStringNotContainsString('Missions disponibles', $html, 'The "missions disponibles" section is instrumentist-only — must never appear in the surgeon email.');
     }
 
     public function test_planning_manager_email_renders(): void
