@@ -37,8 +37,13 @@ final class SendTemplatedEmailMessageHandler
 
         $this->mailer->send($email);
 
-        $this->logger->info('Email sent', [
-            'to' => $message->to,
+        // Read back $email's own To *after* send() — see SendBillingEmailMessageHandler
+        // for why $message->to (the pre-filter intent) would be misleading here whenever
+        // App\EventListener\MailSafeModeListener stripped or rejected the recipient.
+        $actualTo = array_map(static fn ($a) => $a->getAddress(), $email->getTo());
+
+        $this->logger->info(empty($actualTo) ? 'Email blocked (no recipient left)' : 'Email sent', [
+            'to' => $actualTo,
             'subject' => $message->subject,
             'htmlTemplate' => $message->htmlTemplate,
         ]);

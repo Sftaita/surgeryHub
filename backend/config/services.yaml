@@ -46,3 +46,10 @@ services:
     App\Command\CreateDevUserCommand:
         arguments:
             $appEnv: "%kernel.environment%"
+
+    App\EventListener\MailSafeModeListener:
+        arguments:
+            $kernelEnvironment: "%kernel.environment%"
+            $mailSafeMode: "%env(MAIL_SAFE_MODE)%"
+            $allowedDomainsRaw: "%env(MAIL_SAFE_ALLOWED_DOMAINS)%"
+            $allowedRecipientsRaw: "%env(MAIL_SAFE_ALLOWED_RECIPIENTS)%"

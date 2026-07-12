@@ -254,19 +254,32 @@ génériques ci-dessus) :
 
 - Utiliser des comptes de test jetables créés via
   `app:user:create` (console, pas l'API admin — pas d'email envoyé), jamais
-  des comptes réels d'utilisateurs.
+  des comptes réels d'utilisateurs. Domaine `@surgicalhub.internal`
+  obligatoire (autorisé par défaut par `MAIL_SAFE_MODE`, voir point suivant).
+- **Obligatoire dès que le test touche, même indirectement, un flux qui
+  envoie un email** (déploiement de planning, modification, facturation,
+  invitations, relances…) : activer `MAIL_SAFE_MODE=on` (ajouter la ligne à
+  `.env.prod.local`, puis `docker compose up -d` — un simple `docker restart`
+  ne relit pas le fichier) **avant** d'exécuter le moindre test, et le
+  retirer (`docker compose up -d` à nouveau) juste après. Voir
+  `docs/mail-safe-mode.md` §3.3 pour la procédure complète. **Ne jamais
+  supposer** qu'utiliser des comptes jetables suffit à elle seule — c'est
+  exactement l'hypothèse qui a échoué lors de l'incident du 2026-07-12
+  (`docs/production.md`, historique des incidents) : une manipulation
+  utilisant par erreur de vraies missions/personnes reste possible malgré la
+  discipline, `MAIL_SAFE_MODE=on` la rend inoffensive même dans ce cas.
 - Exécuter le scénario réel via l'API publique (`https://api.surgicalhub.be`),
   pas seulement `docker exec` à l'intérieur du container — pour vérifier
   aussi Nginx/Traefik/CORS, pas que Symfony.
 - **Toujours nettoyer** les comptes/données de test créés à la fin
   (utilisateurs, refresh tokens associés, ressources métier créées) et
   vérifier que le nettoyage a réussi (requête de confirmation vide).
-- Si le test de référence implique un envoi d'email réel ou une action non
-  réversible (ex: création de compte via `POST /api/admin/users`, qui ne
-  peut pas être supprimée — aucun endpoint `DELETE` n'existe), **ne pas
-  l'exécuter en chemin de succès** : valider le chemin d'erreur/validation
-  à la place (ex: vérifier qu'une règle métier renvoie bien 400) et le
-  documenter comme limite assumée dans le rapport final.
+- Pour une action non réversible et indépendante des emails (ex: création de
+  compte via `POST /api/admin/users`, qui ne peut pas être supprimée — aucun
+  endpoint `DELETE` n'existe), **ne pas l'exécuter en chemin de succès** :
+  valider le chemin d'erreur/validation à la place (ex: vérifier qu'une
+  règle métier renvoie bien 400) et le documenter comme limite assumée dans
+  le rapport final.
 
 ---
 

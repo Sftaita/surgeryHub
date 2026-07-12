@@ -2476,6 +2476,88 @@ Aucune nouvelle infrastructure de stockage : `ProfilePictureStorage` (déjà uti
 
 ---
 
+## D-061 — MAIL_SAFE_MODE : garde-fou centralisé contre l'envoi accidentel d'emails réels
+
+Date : 2026-07-12
+
+### Contexte — incident du 2026-07-12
+
+Pendant la validation post-déploiement de `v2026.07.11-prod-3`, le tout premier test manuel
+(déploiement initial de planning) a été exécuté directement en production avec de
+**vraies données** (chirurgiens/instrumentistes réels d'un site réel) au lieu de comptes
+jetables — parce que le MAILER_DSN de production pointe vers un vrai relais SMTP
+(Hostinger), contrairement au MAILER_DSN local qui pointe vers un catcher (Mailpit).
+**16 emails réels** ont été envoyés à de vraies personnes, avec le sujet "Planning du
+01/02/2027 au 28/02/2027" — un planning fictif de test. Le code testé était correct ; la
+cause était strictement procédurale (voir l'entrée d'incident dans `docs/production.md`).
+
+### Décision
+
+Ajout de `App\EventListener\MailSafeModeListener`, écouteur sur
+`Symfony\Component\Mailer\Event\MessageEvent` — le point bas-niveau par lequel **tout**
+email sortant de l'application transite, quel que soit le flux métier qui l'a déclenché
+(invitations, reset, déploiement planning, modification planning, facturation, relances
+absences, alertes). Audit exhaustif (2026-07-12) : seuls deux handlers appellent
+`MailerInterface::send()` dans tout le repo (`SendTemplatedEmailMessageHandler`,
+`SendBillingEmailMessageHandler`) — `MessageEvent` les couvre tous les deux sans
+exception, et toute future voie d'envoi les couvrira aussi automatiquement (le point
+d'interception est le composant Mailer lui-même, pas un des appelants).
+
+**Comportement** : quand le mode sûr est actif, tout destinataire (`To`/`Cc`/`Bcc`) dont
+l'adresse n'est ni explicitement autorisée (`MAIL_SAFE_ALLOWED_RECIPIENTS`) ni sur un
+domaine autorisé (`MAIL_SAFE_ALLOWED_DOMAINS`, défaut `surgicalhub.internal`) est retiré
+du message **et** de l'`Envelope` SMTP réellement utilisé à l'envoi (voir "Pourquoi
+l'Envelope" ci-dessous). Si plus aucun destinataire ne reste, l'envoi est purement et
+simplement annulé (`MessageEvent::reject()` — mécanisme officiel Symfony, jamais un
+`throw` qui casserait le flux appelant).
+
+**Activation** (`MAIL_SAFE_MODE`, défaut `auto`) :
+- `auto` — actif partout sauf si `kernel.environment === 'prod'`. Aucune configuration
+  requise pour le cas courant : chaque environnement non-prod est protégé par défaut.
+- `on` — forcé actif, y compris en prod — c'est le mécanisme qui aurait empêché
+  l'incident du 2026-07-12 : une session de test manuel contre la vraie prod peut
+  activer ceci temporairement (voir `docs/mail-safe-mode.md`), sans toucher au
+  `MAILER_DSN` ni changer quoi que ce soit d'autre.
+- `off` — forcé inactif, y compris hors prod (réservé à un futur environnement staging
+  qui devrait légitimement envoyer de vrais emails — jamais activé à la légère).
+
+### Pourquoi l'Envelope, pas seulement les en-têtes du message
+
+Une première version ne modifiait que `Email::to()/cc()/bcc()`. Le composant Mailer de
+Symfony envoie en réalité via un `Envelope` (liste RCPT TO SMTP), qui peut être un
+`DelayedEnvelope` recalculé paresseusement depuis les en-têtes du message — donc
+correcte dans ce repo puisque personne ne construit d'`Envelope` explicite — mais rien
+ne garantit que ça reste vrai indéfiniment. Le listener reconstruit désormais aussi
+explicitement l'`Envelope` avec la liste filtrée, pour que la garantie ne dépende jamais
+d'un détail d'implémentation interne de Symfony. Couvert par un test dédié
+(`test_mixed_recipients_strips_only_the_non_allow_listed_ones_from_message_and_envelope`)
+qui aurait échoué avec la première version.
+
+### Pourquoi un `EventListener` bas-niveau plutôt qu'une vérification dans chaque handler
+
+Une vérification dupliquée dans les deux handlers existants aurait été concrètement
+suffisante aujourd'hui, mais silencieusement contournable par tout futur appelant qui
+injecterait `MailerInterface` ailleurs (un nouveau handler, une commande console, un
+script ponctuel) sans savoir qu'il doit répliquer la vérification. Un listener sur
+l'événement du composant Mailer lui-même ferme cette classe de bug par construction :
+impossible d'envoyer un email dans cette application sans passer par lui.
+
+### Documentation
+
+`docs/mail-safe-mode.md` (nouveau) — fonctionnement complet, activation/désactivation,
+test avec Mailpit, variables d'environnement. `docs/deployment-versioning.md` mis à jour
+avec une étape obligatoire (§5, tests ciblés) : toute vérification manuelle d'un flux
+email en production doit d'abord activer `MAIL_SAFE_MODE=on`.
+
+### Statut
+
+Implémenté et testé (11 tests unitaires `MailSafeModeListenerTest` couvrant la matrice
+de décision complète + 2 tests d'intégration `MailSafeModeIntegrationTest` prouvant le
+câblage réel dans le conteneur — un test unitaire seul ne peut pas détecter une erreur
+de câblage `services.yaml`/attribut `#[AsEventListener]`).
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -2534,3 +2616,4 @@ Aucune nouvelle infrastructure de stockage : `ProfilePictureStorage` (déjà uti
 | 04-07-2026 | D-058 — Email policy redesign : un seul email de déploiement par destinataire (amende D-053) |
 | 06-07-2026 | D-059 — MissionClaim historique seule + MissionEligibilityService mission-centrique (précise D-057) |
 | 06-07-2026 | D-060 — Photo de profil : optionnelle à l'onboarding, rappel proactif après connexion |
+| 12-07-2026 | D-061 — MAIL_SAFE_MODE : garde-fou centralisé contre l'envoi accidentel d'emails réels |

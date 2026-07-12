@@ -325,6 +325,74 @@ mais le "dernier tag prod" reste celui d'avant le déploiement raté.
 
 ---
 
+## Historique des incidents
+
+_Traçabilité complète — ne jamais réécrire une entrée existante. Chaque
+incident documente : date, version déployée, description, cause racine,
+impact, actions correctives, actions préventives._
+
+### 2026-07-12 — Envoi de 16 emails réels lors d'un test post-déploiement
+
+**Version déployée** : `v2026.07.11-prod-3` (commit `0036906`).
+
+**Description** : lors du tout premier test fonctionnel post-déploiement
+(validation du flux "déploiement initial de planning"), le test a été exécuté
+directement contre la base de production avec de **vraies données** —
+chirurgiens et instrumentistes réels d'un site réel — au lieu de comptes
+jetables dédiés aux tests. Le `MAILER_DSN` de production pointant vers un
+vrai relais SMTP (Hostinger, contrairement au `MAILER_DSN` local qui pointe
+vers un catcher Mailpit), le déploiement de ce planning fictif (période
+février 2027, jamais réelle) a réellement envoyé **16 emails** aux adresses
+suivantes, avec le sujet `Planning du 01/02/2027 au 28/02/2027` :
+
+```text
+salvedecorte@gmail.com, cvanmess@gmail.com, dianedemoor@gmail.com,
+sophie.gillard@surgeryhub.be, sophie@hospiathome.be,
+fdetrembleur@surgery-supports-solutions.be, perrine.pineux@gmail.com,
+ewillemart@yahoo.fr, lejeuneetienne@yahoo.fr, jdemuylder23@hotmail.com,
+seapetronilia@hotmail.com, berger.yorick@gmail.com,
+philippe.schiepers@hotmail.com, arnauddeltour@hotmail.com,
+urgyanstephane@gmail.com, samy.ftaita@hotmail.com
+```
+
+**Cause racine** : purement procédurale — aucun défaut du code déployé. La
+procédure de test post-déploiement (`docs/deployment-versioning.md` §5)
+demandait déjà des "comptes et données de test jetables", mais rien ne
+l'imposait techniquement : rien n'empêchait un test de réutiliser des
+missions/comptes réels par erreur, dans un environnement (la production) où
+le mailer envoie réellement.
+
+**Impact** : 16 personnes réelles (chirurgiens et instrumentistes) ont reçu
+un email annonçant un planning fictif pour février 2027. Aucune donnée
+personnelle exposée au-delà de ce qui figure normalement dans un email de
+planning légitime (nom, créneaux). Aucun email correctif renvoyé (décision
+explicite de l'équipe) — la date manifestement future (2027) rend l'email
+identifiable comme anomalie par les destinataires.
+
+**Actions correctives réalisées** :
+- Toutes les données créées pour ce test (`PlanningVersion`, missions,
+  `PlanningDeployment`) supprimées de la base immédiatement après détection.
+- Tous les tests fonctionnels restants de cette session basculés sur des
+  comptes 100 % jetables (`@surgicalhub.internal`), jamais de données réelles.
+- Toutes les données de test (comptes, `PlanningVersion`, missions,
+  `AuditEvent`, `notification_event`) nettoyées et confirmées absentes en fin
+  de déploiement.
+
+**Actions préventives** :
+- **`MAIL_SAFE_MODE`** (D-061, `docs/mail-safe-mode.md`) — garde-fou
+  technique centralisé (`App\EventListener\MailSafeModeListener`, sur
+  `Symfony\Component\Mailer\Event\MessageEvent`, le point par lequel *tout*
+  email sortant transite) bloquant tout destinataire non explicitement
+  autorisé, actif par défaut dans tout environnement non-production, et
+  activable temporairement en production (`MAIL_SAFE_MODE=on`) pour toute
+  session de test manuel — c'est précisément le mécanisme qui aurait empêché
+  cet incident.
+- `docs/deployment-versioning.md` §5 mis à jour : activer `MAIL_SAFE_MODE=on`
+  est désormais une étape **obligatoire**, non optionnelle, avant tout test
+  fonctionnel touchant un flux email en production.
+
+---
+
 ## Infrastructure complète
 
 | Élément | Détail |
