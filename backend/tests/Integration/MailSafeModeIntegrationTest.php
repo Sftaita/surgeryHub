@@ -39,10 +39,15 @@ final class MailSafeModeIntegrationTest extends KernelTestCase
         self::assertTrue($found, 'MailSafeModeListener must be registered on Symfony\Component\Mailer\Event\MessageEvent — check the #[AsEventListener] attribute and config/services.yaml wiring.');
     }
 
-    public function test_the_container_resolved_listener_blocks_a_real_looking_recipient_in_the_test_environment(): void
+    public function test_the_container_resolved_listener_captures_a_real_looking_recipient_in_the_test_environment(): void
     {
-        // kernel.environment is "test" here — MAIL_SAFE_MODE=auto (the committed .env
-        // default, untouched by .env.test) must resolve to enabled, exactly like dev.
+        // kernel.environment is "test" here — MAIL_SAFE_MODE=auto resolves to enabled
+        // (same as dev), and the committed MAILER_DSN (smtp://127.0.0.1:1025) matches
+        // the committed MAIL_SAFE_LOCAL_SINKS default — so MAIL_SAFE_DELIVERY_MODE=auto
+        // resolves to CAPTURE, not allowlist: a real-looking recipient must be left
+        // untouched (visible in Mailpit for real testing) rather than rejected, because
+        // this transport cannot deliver externally regardless (2026-07-12 redesign —
+        // see MailSafeModeListener's class docblock).
         self::bootKernel();
         /** @var MailSafeModeListener $listener */
         $listener = self::getContainer()->get(MailSafeModeListener::class);
@@ -53,6 +58,8 @@ final class MailSafeModeIntegrationTest extends KernelTestCase
 
         $listener($event);
 
-        self::assertTrue($event->isRejected(), 'The real container-resolved service must behave the same as the unit-tested one — auto-enabled outside prod.');
+        self::assertFalse($event->isRejected(), 'A verified local-sink transport must capture, not reject.');
+        self::assertSame(['arnauddeltour@hotmail.com'], array_map(fn (Address $a) => $a->getAddress(), $email->getTo()));
+        self::assertTrue($email->getHeaders()->has('X-SurgicalHub-Mail-Safe-Mode'));
     }
 }

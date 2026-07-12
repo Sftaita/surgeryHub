@@ -2556,6 +2556,46 @@ de décision complète + 2 tests d'intégration `MailSafeModeIntegrationTest` pr
 câblage réel dans le conteneur — un test unitaire seul ne peut pas détecter une erreur
 de câblage `services.yaml`/attribut `#[AsEventListener]`).
 
+### Amendement 2026-07-12 (même jour) — mode `capture` pour Mailpit
+
+Le tout premier usage réel du garde-fou en développement local (déploiement testé
+contre une copie de données de production) a révélé un second problème : le mode
+d'origine n'avait qu'un seul comportement, filtrer/rejeter tout destinataire non
+autorisé — ce qui bloquait **aussi** les emails en local, où `MAILER_DSN` pointe déjà
+vers Mailpit, un simple capteur SMTP incapable de livrer quoi que ce soit vers
+Internet. Résultat : plus aucun email visible dans Mailpit dès qu'un test utilisait de
+vraies adresses, y compris pour un usage parfaitement légitime (vérifier le rendu réel
+d'un template avec des données réalistes).
+
+**Décision** : ajout d'un second mode de délivrance, `capture`, choisi via la nouvelle
+variable `MAIL_SAFE_DELIVERY_MODE` (défaut `auto`). En mode `capture` — actif
+automatiquement quand `MAILER_DSN` correspond à un sink local vérifié
+(`MAIL_SAFE_LOCAL_SINKS`, ex. `mailer:1025`) — les destinataires sont laissés intacts
+(visibles dans Mailpit) et un en-tête `X-SurgicalHub-Mail-Safe-Mode: captured-locally`
+est ajouté ; la garantie de sécurité vient du **transport vérifié incapable de livrer
+en dehors de la machine**, pas du filtrage des destinataires. Le mode `allowlist`
+(comportement d'origine, décrit ci-dessus) reste utilisé partout où le transport
+configuré peut réellement atteindre Internet (staging avec relais SMTP, production).
+
+**Garde-fou obligatoire** : `MAIL_SAFE_DELIVERY_MODE=capture` explicite est **refusé**
+(repli automatique sur `allowlist`, log `critical`) si `MAILER_DSN` ne correspond à
+aucun sink local reconnu — une variable mal positionnée ne peut donc jamais désactiver
+le filtrage par accident contre un vrai relais. La décision ne repose jamais sur
+`APP_ENV`/`kernel.environment` seul, uniquement sur ces deux faits vérifiables
+(garde-fou actif + transport vérifié).
+
+Vérifié en conditions réelles : redéploiement local du même scénario qui avait échoué
+(données de copie de production, période réelle) — les 16 emails initialement
+silencieusement bloqués apparaissent désormais dans Mailpit avec leurs vrais
+destinataires et l'en-tête de diagnostic, confirmé via l'API Mailpit
+(`http://localhost:8026`) et la source brute du message.
+
+`docs/mail-safe-mode.md` mis à jour en conséquence (§1, §2, §3.1, §6). 8 nouveaux tests
+ajoutés à `MailSafeModeListenerTest` (capture/allowlist/auto, refus de capture contre
+un relais externe, transport `null://`), `MailSafeModeIntegrationTest` mis à jour pour
+refléter le nouveau comportement attendu en environnement `test` (capture, pas rejet,
+puisque le DSN committé y est aussi Mailpit).
+
 ---
 
 ## Historique

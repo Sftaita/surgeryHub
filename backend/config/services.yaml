@@ -53,3 +53,6 @@ services:
             $mailSafeMode: "%env(MAIL_SAFE_MODE)%"
             $allowedDomainsRaw: "%env(MAIL_SAFE_ALLOWED_DOMAINS)%"
             $allowedRecipientsRaw: "%env(MAIL_SAFE_ALLOWED_RECIPIENTS)%"
+            $mailerDsn: "%env(MAILER_DSN)%"
+            $deliveryModeRaw: "%env(MAIL_SAFE_DELIVERY_MODE)%"
+            $localSinksRaw: "%env(MAIL_SAFE_LOCAL_SINKS)%"
