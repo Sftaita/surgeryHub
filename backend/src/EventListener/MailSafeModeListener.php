@@ -33,6 +33,18 @@ use Symfony\Component\Mime\Email;
  * (MAIL_SAFE_ALLOWED_DOMAINS, default surgicalhub.internal) is stripped from the
  * message; if that leaves zero recipients, the send is rejected outright rather than
  * silently going out to nobody in a way that could be mistaken for "it worked".
+ *
+ * MessageEvent fires TWICE per email in this app (Mailer is wired to Messenger for async
+ * delivery — see Symfony\Component\Mailer\Mailer::send() and ...\Transport\
+ * AbstractTransport::send()): once "queued" against a throwaway clone right when a
+ * handler calls MailerInterface::send() (that handler's own $email reference is never
+ * mutated by this — don't expect its logs to reflect filtering), and once for real,
+ * asynchronously, against a *different* clone, right before the transport would
+ * otherwise hit the network — this second pass is what actually determines delivery,
+ * and it's covered exactly the same way, since this listener reacts to whatever
+ * MessageEvent it's given without needing to know which pass it is. **This listener's
+ * own "MAIL_SAFE_MODE: ..." log lines are the only authoritative record of what was
+ * actually blocked** — no caller's "email sent/dispatched" log can be, by construction.
  */
 #[AsEventListener(event: MessageEvent::class)]
 final class MailSafeModeListener

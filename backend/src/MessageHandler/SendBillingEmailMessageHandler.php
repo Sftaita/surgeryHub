@@ -53,17 +53,18 @@ final class SendBillingEmailMessageHandler
 
         $this->mailer->send($email);
 
-        // Read back $email's own To/Cc *after* send() — Mailer's MessageEvent listeners
-        // (in particular App\EventListener\MailSafeModeListener) run synchronously inside
-        // send() and may have stripped recipients or rejected the send outright before
-        // this line. Logging $message->to/cc (the pre-filter intent) here would silently
-        // claim delivery to someone who, in fact, never received anything.
-        $actualTo = array_map(static fn ($a) => $a->getAddress(), $email->getTo());
-        $actualCc = array_map(static fn ($a) => $a->getAddress(), $email->getCc());
-
-        $this->logger->info(empty($actualTo) && empty($actualCc) ? 'Billing email blocked (no recipient left)' : 'Billing email sent', [
-            'to' => $actualTo,
-            'cc' => $actualCc,
+        // "Sent" here means "handed off" — not a delivery confirmation. When Mailer is
+        // wired to Messenger (the case in this app), send() clones $email, dispatches a
+        // *queued* MessageEvent against the clone, then queues the *original*, still-
+        // unmodified $email for a later, separate MessageEvent + transport send (itself
+        // against yet another clone) — this call returns long before that actually
+        // happens, so $email is never mutated here regardless of what any MessageEvent
+        // listener decided. For whether App\EventListener\MailSafeModeListener actually
+        // blocked/stripped this specific email, its own "MAIL_SAFE_MODE: ..." log lines
+        // are the only authoritative source — never this one.
+        $this->logger->info('Billing email dispatched', [
+            'to' => $message->to,
+            'cc' => $message->cc,
             'subject' => $message->subject,
         ]);
     }

@@ -36,6 +36,20 @@ Quand le mode sûr est **actif** :
 Quand le mode sûr est **inactif** (production normale), le listener ne fait strictement
 rien — comportement identique à avant son introduction.
 
+### ⚠️ Où lire la preuve qu'un envoi a été bloqué
+
+Le Mailer de Symfony est câblé sur Messenger dans cette application (envoi async). En
+conséquence, `MessageEvent` se déclenche **deux fois** par email : une première fois
+("queued") sur un clone jetable au moment où un handler appelle
+`MailerInterface::send()` — le `$email` du handler lui-même n'est **jamais modifié**,
+ne pas chercher la preuve du filtrage dans les logs `SendBillingEmailMessageHandler`/
+`SendTemplatedEmailMessageHandler` (ils logguent l'intention avant filtrage, pas
+l'issue réelle — c'est documenté explicitement dans leur code) — puis une seconde fois,
+plus tard, de façon asynchrone, sur un autre clone, juste avant l'envoi réseau réel :
+c'est cette seconde passe qui détermine la livraison effective, et le listener la
+couvre exactement de la même façon. **Seules les lignes de log `MAIL_SAFE_MODE: ...`
+émises par le listener lui-même font foi** de ce qui a réellement été bloqué.
+
 ---
 
 ## 2. Variables d'environnement

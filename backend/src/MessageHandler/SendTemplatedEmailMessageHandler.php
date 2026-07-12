@@ -37,13 +37,16 @@ final class SendTemplatedEmailMessageHandler
 
         $this->mailer->send($email);
 
-        // Read back $email's own To *after* send() — see SendBillingEmailMessageHandler
-        // for why $message->to (the pre-filter intent) would be misleading here whenever
-        // App\EventListener\MailSafeModeListener stripped or rejected the recipient.
-        $actualTo = array_map(static fn ($a) => $a->getAddress(), $email->getTo());
-
-        $this->logger->info(empty($actualTo) ? 'Email blocked (no recipient left)' : 'Email sent', [
-            'to' => $actualTo,
+        // "Sent" here means "handed off" — not a delivery confirmation. See
+        // SendBillingEmailMessageHandler for why: Mailer's Messenger integration clones
+        // $email before any MessageEvent listener (e.g. App\EventListener\
+        // MailSafeModeListener) ever sees it, and the real transport-level send happens
+        // later, on yet another clone, well after this call returns — $email is never
+        // mutated here regardless of what happened. That listener's own "MAIL_SAFE_MODE:
+        // ..." log lines are the only authoritative source for whether this was actually
+        // blocked/stripped.
+        $this->logger->info('Email dispatched', [
+            'to' => $message->to,
             'subject' => $message->subject,
             'htmlTemplate' => $message->htmlTemplate,
         ]);
