@@ -103,6 +103,7 @@ POST /api/admin/users/{id}/change-role
 POST /api/admin/users/{id}/resend-invitation
 POST /api/admin/users/{id}/site-memberships
 DELETE /api/admin/users/{id}/site-memberships/{membershipId}
+PATCH /api/users/{id}/email
 ```
 
 
@@ -126,7 +127,33 @@ Deux endpoints réutilisent ce service, avec la même validation (`Assert\Image`
 
 **Deux formats de retour selon l'endpoint** (attention en cas d'ajout d'un nouveau consommateur) :
 - `GET /api/me` / `POST /api/me/profile-picture` : `MeController::buildAbsoluteUrl()` construit une URL **absolue** (`profilePictureUrl` à la racine, `profilePicturePath` dans `instrumentistProfile` — même valeur absolue malgré le nom).
-- `GET /api/instrumentists`, `GET /api/surgeons` (listes manager) : `profilePicturePath` est le chemin **relatif** brut (`getProfilePicturePath()` sans transformation) ; le frontend construit l'URL complète lui-même (`VITE_API_BASE_URL + profilePicturePath`, cf. `buildProfilePictureUrl()` dans `InstrumentistDrawer.tsx`/`SurgeonDrawer.tsx`).
+- `GET /api/instrumentists`, `GET /api/surgeons` (listes manager) : `profilePicturePath` est le chemin **relatif** brut (`getProfilePicturePath()` sans transformation) ; le frontend construit l'URL complète lui-même (`VITE_API_BASE_URL + profilePicturePath`, `buildProfilePictureUrl()` dans `manager-instrumentists/utils/instrumentists.utils.ts`, réutilisé par `InstrumentistDrawer`/`SurgeonDrawer` et par les deux `DataGrid` des listes, jamais recréé).
+
+### Modification sécurisée de l'adresse email (D-063)
+
+`PATCH /api/users/{id}/email` (`UserController`, générique — jamais dupliqué dans
+`InstrumentistController`/`SurgeonController`, l'email appartenant au même agrégat
+`User` quel que soit le rôle) — RBAC via `UserAdministrationVoter::UPDATE_EMAIL`
+(MANAGER ou ADMIN, distinct de `UPDATE` qui reste ADMIN-only pour `/api/admin/users`).
+Logique intégralement dans `UserEmailChangeService` : validation → mutation → audit
+(`UserAuditEventType::USER_EMAIL_CHANGED`) → `flush()` → dispatch de deux
+`SendTemplatedEmailMessage` indépendants (ancienne puis nouvelle adresse), chacun catché
+séparément (`warnings[]` dans la réponse, jamais un échec de la requête). Emails envoyés
+même à un compte suspendu — leur objet est la sécurité du compte, jamais gaté par
+`NotificationPreference`.
+
+**Risque JWT documenté (non corrigé, comportement voulu)** : le provider Doctrine
+(`security.yaml`) charge l'utilisateur par `email`, et le firewall `api` recharge
+l'utilisateur à chaque requête via le claim `username` du JWT (figé à l'ancienne adresse
+au moment de l'émission) — après un changement d'email, la session en cours et son
+refresh token (`RefreshToken.username`, même provider) cessent de fonctionner au prochain
+appel, forçant une reconnexion. Conséquence structurelle du provider (même mécanisme que
+la suspension via `UserChecker`), jamais une invalidation codée en dur — volontairement
+non contournée. **Risque Google OAuth documenté (non corrigé)** :
+`AuthGoogleController` retrouve l'utilisateur par email Google réel ; `User::$googleId`
+n'est jamais renseigné en pratique, donc une divergence entre la nouvelle adresse et
+l'email Google réel peut créer un compte dupliqué à la prochaine connexion Google — voir
+D-063 dans `docs/decisions.md` pour le détail complet.
 
 ### Prompt post-onboarding (D-060)
 

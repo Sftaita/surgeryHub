@@ -694,7 +694,8 @@ Alimente la liste _Ressources > Instrumentistes_.
       "employmentType": null,
       "defaultCurrency": "EUR",
       "displayName": "Ole Salve",
-      "specialties": ["GENOU", "EPAULE"]
+      "specialties": ["GENOU", "EPAULE"],
+      "profilePicturePath": "/uploads/profile-pictures/user-12-abc123.jpg"
     }
   ],
   "total": 1
@@ -707,6 +708,7 @@ Alimente la liste _Ressources > Instrumentistes_.
 - Pas d'affiliations détaillées ni de tarifs dans la réponse
 - `displayName` : `firstname + lastname` si disponible, sinon `email`
 - `specialties` : tableau de codes spécialité (voir module planning pour les valeurs possibles)
+- `profilePicturePath` : chemin relatif au web root du backend (ou `null`), même convention que `GET /api/instrumentists/{id}` — construire l'URL complète avec `VITE_API_BASE_URL + profilePicturePath`
 
 **Erreurs possibles :**
 
@@ -3101,6 +3103,76 @@ Met à jour les spécialités d'un utilisateur (instrumentiste ou chirurgien).
 **Réponse — 204 :** Pas de corps
 
 **Erreurs :** `404` si utilisateur introuvable, `422` si valeurs invalides
+
+---
+
+### 26.8b Email utilisateur (D-063)
+
+#### `PATCH /api/users/{id}/email`
+
+**AuthZ :** `MANAGER` / `ADMIN` (`UserAdministrationVoter::UPDATE_EMAIL` — distinct de
+`UserAdministrationVoter::UPDATE`, réservé `ADMIN` seul sur `/api/admin/users/{id}`)
+
+Modifie l'adresse email de connexion d'un instrumentiste ou d'un chirurgien (utilisé
+depuis les drawers `/app/m/instrumentists` et `/app/m/surgeons`, endpoint générique
+partagé, jamais dupliqué par rôle). Envoie systématiquement deux emails transactionnels
+(ancienne et nouvelle adresse), y compris si le compte est suspendu — voir D-063 pour le
+détail complet (session JWT, refresh token, risque Google OAuth documentés).
+
+**Body JSON :**
+
+```json
+{ "email": "nouvelle.adresse@example.com" }
+```
+
+**Réponse — 200 :**
+
+```json
+{
+  "user": {
+    "id": 123,
+    "email": "nouvelle.adresse@example.com",
+    "firstname": "Prénom",
+    "lastname": "Nom",
+    "displayName": "Prénom Nom",
+    "profilePicturePath": "/uploads/profile-pictures/user-123.jpg"
+  },
+  "warnings": []
+}
+```
+
+**Réponse avec échec de mise en file d'un email — 200 :**
+
+```json
+{
+  "user": { "id": 123, "email": "nouvelle.adresse@example.com" },
+  "warnings": [
+    {
+      "code": "EMAIL_CHANGE_NOTIFICATION_NOT_QUEUED",
+      "recipient": "old",
+      "message": "The email address was changed, but the notification to the previous address could not be queued."
+    }
+  ]
+}
+```
+
+**Erreurs :**
+
+| Code | Cas |
+|---|---|
+| `400` | `email` manquant/non-string, vide après trim, ou identique à l'adresse actuelle |
+| `403` | rôle non autorisé |
+| `404` | utilisateur introuvable |
+| `409` | adresse déjà utilisée par un autre compte (comparaison insensible à la casse) |
+| `422` | format d'adresse invalide (`Assert\Email`) |
+
+Format d'erreur normalisé (§13) — `error.code` parmi `BAD_REQUEST`/`NOT_FOUND`/
+`CONFLICT`/`VALIDATION_FAILED`.
+
+**Notes :**
+- Un échec de mise en file d'email (Messenger) ne fait jamais échouer la requête —
+  la mutation est déjà persistée avant tout dispatch, remontée via `warnings[]`.
+- Aucune donnée patient, aucun token ni secret dans les emails envoyés.
 
 ---
 

@@ -2736,6 +2736,118 @@ livraison externe possible).
 
 ---
 
+## D-063 — Modification sécurisée de l'adresse email par un manager/admin + double notification
+
+Date : 2026-07-13
+
+### Contexte
+
+Un manager n'avait aucun moyen de corriger l'adresse email d'un instrumentiste ou d'un
+chirurgien depuis les fiches `/app/m/instrumentists` et `/app/m/surgeons` — l'email
+n'était modifiable nulle part après création du compte (`AdminUserController::patch()`,
+ADMIN seul, gère explicitement `firstname`/`lastname`/`phone`, jamais `email`).
+
+### Décision
+
+Nouvel endpoint générique `PATCH /api/users/{id}/email` sur `UserController`
+(collaborateur déjà existant, jusqu'ici limité à `PATCH /{id}/specialties`) — volontairement
+**pas** dupliqué dans `InstrumentistController`/`SurgeonController`, l'email appartenant au
+même agrégat `User` quel que soit le rôle. Toute la logique métier vit dans
+`App\Service\UserEmailChangeService` (jamais dans le contrôleur, conformément au RBAC
+strict du projet) :
+
+`validation (vide / format Assert\Email / identique / doublon casse-insensible) →
+mutation User → UserAuditService::userEmailChanged() (nouveau
+UserAuditEventType::USER_EMAIL_CHANGED) → flush() → dispatch de 2×
+SendTemplatedEmailMessage (ancienne adresse, puis nouvelle adresse)`.
+
+**Autorisation** : nouvel attribut `UserAdministrationVoter::UPDATE_EMAIL`, ouvert à
+`ROLE_MANAGER` **ou** `ROLE_ADMIN` — distinct de `UserAdministrationVoter::UPDATE`
+(réservé `ROLE_ADMIN` seul, utilisé par `/api/admin/users/{id}`), pour ne jamais élargir
+silencieusement le périmètre de cette dernière surface admin-only.
+
+**Double notification, jamais couplée à `NotificationPreference`** : contrairement au
+pipeline `NotificationType`/`DefaultNotificationPreferenceResolver` (préférences
+utilisateur, désactivables), les deux emails de changement d'adresse sont **toujours**
+envoyés — y compris à un compte suspendu — puisque leur unique objet est la sécurité du
+compte, jamais une préférence de confort. Ancienne adresse capturée **avant** toute
+mutation (jamais reconstruite après `flush()`). Chaque dispatch (`EmailService::
+sendTemplatedEmail()`, qui encapsule `SendTemplatedEmailMessage`) est catché
+indépendamment par le service : un échec de mise en file vers une adresse ne bloque
+jamais l'autre, ni la mutation déjà flushée — remonté comme `warnings[]` dans la réponse
+(`{code: "EMAIL_CHANGE_NOTIFICATION_NOT_QUEUED", recipient: "old"|"new", message}`),
+jamais comme un échec de la requête elle-même.
+
+**Templates** : `user_email_changed_{old,new}_address.{html,txt}.twig`, isolés,
+volontairement minimaux — aucun design définitif appliqué (en attente du chemin de
+référence à fournir), structure prête à être reskinnée sans changer les variables de
+contexte (`displayName`, `oldEmail`/`newEmail`, `changedAt`).
+
+**Erreurs** : réutilise les exceptions HTTP génériques déjà auto-mappées par
+`ApiExceptionSubscriber` vers le format normalisé (`BadRequestHttpException`→400,
+`NotFoundHttpException`→404, `ConflictHttpException`→409,
+`UnprocessableEntityHttpException`→422) — aucune nouvelle classe d'exception nécessaire.
+
+### Sessions JWT / refresh tokens — risque documenté, assumé, non contourné
+
+`security.yaml` : le provider Doctrine charge l'utilisateur par `email`
+(`property: email`). Le firewall `api` (`jwt: ~`) **recharge l'utilisateur à chaque
+requête** via ce provider avec le claim `username` du JWT — capturé au moment de
+l'émission, donc figé à l'ancienne adresse. `gesdinet_jwt_refresh_token` utilise le même
+provider ; `RefreshToken.username` (colonne string, pas de FK `user_id`) souffre du même
+figement. **Conséquence factuelle, pas un choix de code** : après un changement d'email,
+la personne concernée perd sa session au prochain appel authentifié (rechargement par
+l'ancien email → introuvable → 401) et son refresh échoue pour la même raison — une
+reconnexion avec la nouvelle adresse est nécessaire. Exactement le même mécanisme que la
+suspension d'un compte (`UserChecker`) : ce n'est jamais une invalidation codée en dur ici,
+c'est une conséquence structurelle du provider. **Stratégie retenue : accepter et
+documenter ce comportement, ne rien coder pour le contourner** — le préserver artificiellement
+irait à l'encontre de l'objectif sécurité de la fonctionnalité (l'email est l'identifiant de
+connexion).
+
+### Google OAuth — risque identifié, non corrigé (hors périmètre)
+
+`AuthGoogleController::__invoke()` retrouve l'utilisateur par
+`findOneBy(['email' => $googleEmail])`. `User::$googleId` existe en colonne mais n'est
+**jamais réellement renseigné** (ligne de code laissée commentée). Si la nouvelle adresse
+saisie par le manager diverge de l'adresse réelle du compte Google de la personne, la
+prochaine tentative de connexion Google ne retrouvera plus l'utilisateur et **créera un
+second compte** au lieu d'échouer proprement. Risque réel, documenté ici et dans l'audit
+de ce lot — corriger nécessiterait de réellement lier `googleId`, chantier distinct non
+entrepris.
+
+### DTO photos de profil — gap documentaire, pas de code
+
+Audit du contrat de `GET /api/instrumentists` : `profilePicturePath` était déjà renvoyé
+par `InstrumentistListItemResponse` (et déjà consommé côté `GET /api/surgeons`/
+`{id}`) — seul `docs/api.md` §16.1 ne le montrait pas dans son exemple JSON. Corrigé
+(ajout au JSON + note frontend), sans aucun changement de sérialiseur backend.
+`InstrumentistListItemDTO` (frontend) complété à l'identique (additif).
+
+### Frontend
+
+`UserEmailEditor` (nouveau, partagé) — vue lecture (`email + bouton Modifier`) / vue
+édition (champ + confirmation listant explicitement les deux destinataires notifiés) —
+intégré dans `InstrumentistDrawer` et `SurgeonDrawer` à la place de la ligne email statique
+de la section "Informations générales", jamais dupliqué. `buildProfilePictureUrl` (déjà
+existant, déjà réutilisé par les deux drawers) étendu — pas recréé — pour préserver une URL
+déjà absolue et éviter les doubles slashs. `PersonAvatar` (déjà générique) réutilisé tel
+quel dans les deux `DataGrid` (`InstrumentistsTable`/`SurgeonsTable`) : la colonne "Nom"
+combine désormais avatar + nom + email empilés dans une seule cellule, la colonne "Email"
+séparée est retirée (redondante).
+
+### Statut
+
+Implémenté et testé : `UserEmailChangeServiceTest` (12 tests unitaires), 4 tests voter
+(`UserAdministrationVoterTest`), `UserEmailControllerTest` (9 tests fonctionnels HTTP réels,
+DB réelle), `PlanningEmailTemplatesTest` (+4, les 2 nouveaux templates html+txt).
+860/860 tests backend verts. Frontend : `UserEmailEditor` (8 tests), tables avatar (3+3
+tests), drawers avatar (2+2 tests), `buildProfilePictureUrl` (7 tests) — voir
+`docs/api.md`/`docs/architecture.md` pour le détail du contrat. Templates volontairement
+non finalisés visuellement — design de référence à fournir séparément.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -2796,3 +2908,4 @@ livraison externe possible).
 | 06-07-2026 | D-060 — Photo de profil : optionnelle à l'onboarding, rappel proactif après connexion |
 | 12-07-2026 | D-061 — MAIL_SAFE_MODE : garde-fou centralisé contre l'envoi accidentel d'emails réels |
 | 12-07-2026 | D-062 — Réaction automatique aux absences sur les missions déjà déployées (libération/annulation) |
+| 13-07-2026 | D-063 — Modification sécurisée de l'adresse email par un manager/admin + double notification |

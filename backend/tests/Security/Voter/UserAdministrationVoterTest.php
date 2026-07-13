@@ -62,6 +62,38 @@ final class UserAdministrationVoterTest extends TestCase
         self::assertSame(VoterInterface::ACCESS_ABSTAIN, $result);
     }
 
+    public function testAdminIsGrantedUpdateEmail(): void
+    {
+        $token = $this->tokenForUser(['ROLE_ADMIN']);
+        $result = $this->voter->vote($token, null, [UserAdministrationVoter::UPDATE_EMAIL]);
+
+        self::assertSame(VoterInterface::ACCESS_GRANTED, $result);
+    }
+
+    public function testManagerIsGrantedUpdateEmail(): void
+    {
+        $token = $this->tokenForUser(['ROLE_MANAGER']);
+        $result = $this->voter->vote($token, null, [UserAdministrationVoter::UPDATE_EMAIL]);
+
+        self::assertSame(VoterInterface::ACCESS_GRANTED, $result);
+    }
+
+    public function testInstrumentistIsDeniedUpdateEmail(): void
+    {
+        $token = $this->tokenForUser(['ROLE_INSTRUMENTIST']);
+        $result = $this->voter->vote($token, null, [UserAdministrationVoter::UPDATE_EMAIL]);
+
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    public function testSurgeonIsDeniedUpdateEmail(): void
+    {
+        $token = $this->tokenForUser(['ROLE_SURGEON']);
+        $result = $this->voter->vote($token, null, [UserAdministrationVoter::UPDATE_EMAIL]);
+
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
     public static function adminAttributesProvider(): array
     {
         return [

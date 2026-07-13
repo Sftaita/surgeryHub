@@ -112,6 +112,17 @@ class UserAuditService
         );
     }
 
+    public function userEmailChanged(User $actor, User $target, string $oldEmail, string $newEmail): void
+    {
+        $this->persist(
+            actor: $actor,
+            target: $target,
+            type: UserAuditEventType::USER_EMAIL_CHANGED,
+            description: sprintf('Email de %s changé vers %s', $oldEmail, $newEmail),
+            payload: ['oldEmail' => $oldEmail, 'newEmail' => $newEmail],
+        );
+    }
+
     /** No single target — concerns N people at once, listed in the payload. */
     public function absencesRequestSent(User $actor, int $recipientCount): void
     {

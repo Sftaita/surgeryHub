@@ -11,6 +11,7 @@ export type InstrumentistListItemDTO = {
   employmentType: EmploymentTypeDTO;
   defaultCurrency: string;
   displayName: string;
+  profilePicturePath?: string | null;
 };
 
 export type InstrumentistsListResponseDTO = {

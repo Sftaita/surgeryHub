@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Adresse email modifiée — SurgicalHub</title>
+</head>
+
+<body style="margin:0;padding:0;background-color:#f4f7fb;font-family:Arial,Helvetica,sans-serif;color:#1f2937;">
+
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f4f7fb;padding:24px 0;">
+<tr>
+<td align="center">
+
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:640px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,0.08);">
+
+<tr>
+<td style="background:#0f172a;padding:24px 32px;">
+<h1 style="margin:0;font-size:24px;color:#ffffff;font-weight:700;">
+SurgicalHub
+</h1>
+
+<p style="margin:8px 0 0 0;font-size:14px;color:#cbd5e1;">
+Sécurité du compte
+</p>
+</td>
+</tr>
+
+<tr>
+<td style="padding:32px;">
+
+<p style="margin:0 0 16px 0;font-size:16px;">
+Bonjour {{ displayName }},
+</p>
+
+<p style="margin:0 0 16px 0;font-size:16px;color:#374151;">
+L'adresse email associée à votre compte SurgicalHub a été remplacée.
+</p>
+
+<div style="padding:16px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:12px;margin-bottom:24px;">
+<p style="margin:0 0 8px 0;font-size:14px;">
+<strong>Ancienne adresse :</strong> {{ oldEmail }}
+</p>
+<p style="margin:0;font-size:14px;">
+<strong>Nouvelle adresse :</strong> {{ newEmail }}
+</p>
+</div>
+
+<p style="margin:0 0 16px 0;font-size:14px;color:#6b7280;">
+Changement effectué le {{ changedAt|date('d/m/Y à H:i') }}.
+</p>
+
+<p style="margin:0;font-size:14px;color:#b91c1c;">
+Si vous n'êtes pas à l'origine de ce changement, contactez immédiatement votre responsable.
+</p>
+
+</td>
+</tr>
+
+<tr>
+<td style="padding:20px 32px;background:#f8fafc;border-top:1px solid #e5e7eb;">
+<p style="margin:0;font-size:12px;color:#94a3b8;">
+Email envoyé automatiquement par SurgicalHub.
+</p>
+</td>
+</tr>
+
+</table>
+
+</td>
+</tr>
+</table>
+
+</body>
+</html>

@@ -19,6 +19,8 @@ import type {
   InstrumentistsListResponseDTO,
 } from "../api/instrumentists.types";
 import type { InstrumentistsListQuery } from "../api/instrumentists.requests";
+import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
+import { buildProfilePictureUrl } from "../utils/instrumentists.utils";
 
 function buildDisplayName(row: InstrumentistListItemDTO): string {
   if (row.displayName && row.displayName.trim() !== "") {
@@ -100,9 +102,29 @@ export function InstrumentistsTable({
       {
         field: "displayName",
         headerName: "Nom",
-        flex: 1.2,
+        flex: 1.6,
         sortable: false,
         valueGetter: (_value, row) => buildDisplayName(row),
+        renderCell: ({ row }) => {
+          const name = buildDisplayName(row);
+          return (
+            <Stack direction="row" spacing={1.25} alignItems="center" sx={{ py: 0.5 }}>
+              <PersonAvatar
+                name={name}
+                photoUrl={buildProfilePictureUrl(row.profilePicturePath)}
+                size="sm"
+              />
+              <Stack spacing={0} sx={{ minWidth: 0 }}>
+                <Typography variant="body2" noWrap>
+                  {name}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" noWrap>
+                  {row.email}
+                </Typography>
+              </Stack>
+            </Stack>
+          );
+        },
       },
       {
         field: "active",
@@ -127,12 +149,6 @@ export function InstrumentistsTable({
           getEmploymentTypeLabel(
             value as InstrumentistListItemDTO["employmentType"],
           ),
-      },
-      {
-        field: "email",
-        headerName: "Email",
-        flex: 1.4,
-        sortable: false,
       },
       {
         field: "actions",

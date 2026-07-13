@@ -21,8 +21,10 @@ import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 import { DrawerSection } from "./DrawerSection";
 import { AddSiteMembershipDialog } from "./AddSiteMembershipDialog";
 import { InstrumentistPlanningSection } from "./InstrumentistPlanningSection";
+import { UserEmailEditor } from "./UserEmailEditor";
 import ConfirmDeleteDialog from "../../encoding/components/ConfirmDeleteDialog";
 import { useInstrumentistDrawer } from "../hooks/useInstrumentistDrawer";
+import type { InstrumentistDetailDTO } from "../api/instrumentists.types";
 
 const ORTHO_SPECIALTIES = [
   { value: "EPAULE", label: "Épaule" },
@@ -347,14 +349,18 @@ export function InstrumentistDrawer({
                         </Typography>
                       </Box>
 
-                      <Box>
-                        <Typography variant="caption" color="text.secondary">
-                          Email
-                        </Typography>
-                        <Typography variant="body2">
-                          {instrumentist.email}
-                        </Typography>
-                      </Box>
+                      <UserEmailEditor
+                        userId={instrumentist.id}
+                        currentEmail={instrumentist.email}
+                        onChanged={(user) => {
+                          qc.setQueryData<InstrumentistDetailDTO | undefined>(
+                            ["instrumentist-detail", instrumentistId],
+                            (current) =>
+                              current ? { ...current, email: user.email } : current,
+                          );
+                          qc.invalidateQueries({ queryKey: ["instrumentists"] });
+                        }}
+                      />
 
                       <Box>
                         <Typography variant="caption" color="text.secondary">

@@ -10,14 +10,17 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { DrawerSection } from "../../manager-instrumentists/components/DrawerSection";
 import { AddSurgeonSiteMembershipDialog } from "./AddSurgeonSiteMembershipDialog";
 import { SurgeonPlanningSection } from "./SurgeonPlanningSection";
+import { UserEmailEditor } from "../../manager-instrumentists/components/UserEmailEditor";
 import ConfirmDeleteDialog from "../../encoding/components/ConfirmDeleteDialog";
 import { useSurgeonDrawer } from "../hooks/useSurgeonDrawer";
 import { buildProfilePictureUrl } from "../../manager-instrumentists/utils/instrumentists.utils";
 import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
+import type { SurgeonProfileDTO } from "../api/surgeons.types";
 
 type SurgeonDrawerProps = {
   open: boolean;
@@ -55,6 +58,8 @@ export function SurgeonDrawer({
     sitesSectionRef,
     planningSectionRef,
   } = useSurgeonDrawer(surgeonId, open);
+
+  const qc = useQueryClient();
 
   return (
     <>
@@ -273,14 +278,18 @@ export function SurgeonDrawer({
                         </Typography>
                       </Box>
 
-                      <Box>
-                        <Typography variant="caption" color="text.secondary">
-                          Email
-                        </Typography>
-                        <Typography variant="body2">
-                          {surgeon.email}
-                        </Typography>
-                      </Box>
+                      <UserEmailEditor
+                        userId={surgeon.id}
+                        currentEmail={surgeon.email}
+                        onChanged={(user) => {
+                          qc.setQueryData<SurgeonProfileDTO | undefined>(
+                            ["surgeon-detail", surgeonId],
+                            (current) =>
+                              current ? { ...current, email: user.email } : current,
+                          );
+                          qc.invalidateQueries({ queryKey: ["surgeons"] });
+                        }}
+                      />
 
                       <Box>
                         <Typography variant="caption" color="text.secondary">

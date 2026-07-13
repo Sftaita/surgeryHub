@@ -18,8 +18,10 @@ final class UserAdministrationVoter extends Voter
     public const RESEND_INVITATION  = 'USER_RESEND_INVITATION';
     public const ADD_SITE           = 'USER_ADD_SITE_MEMBERSHIP';
     public const REMOVE_SITE        = 'USER_REMOVE_SITE_MEMBERSHIP';
+    public const UPDATE_EMAIL       = 'USER_UPDATE_EMAIL';
 
-    private const ATTRIBUTES = [
+    /** Attributes gated to ROLE_ADMIN only — the /api/admin/users surface. */
+    private const ADMIN_ONLY_ATTRIBUTES = [
         self::LIST,
         self::VIEW,
         self::UPDATE,
@@ -32,9 +34,15 @@ final class UserAdministrationVoter extends Voter
         self::REMOVE_SITE,
     ];
 
+    /** Attributes open to MANAGER or ADMIN — the manager-facing instrumentist/surgeon drawers. */
+    private const MANAGER_OR_ADMIN_ATTRIBUTES = [
+        self::UPDATE_EMAIL,
+    ];
+
     protected function supports(string $attribute, mixed $subject): bool
     {
-        return in_array($attribute, self::ATTRIBUTES, true);
+        return in_array($attribute, self::ADMIN_ONLY_ATTRIBUTES, true)
+            || in_array($attribute, self::MANAGER_OR_ADMIN_ATTRIBUTES, true);
     }
 
     protected function voteOnAttribute(string $attribute, mixed $subject, TokenInterface $token): bool
@@ -44,6 +52,12 @@ final class UserAdministrationVoter extends Voter
             return false;
         }
 
-        return in_array('ROLE_ADMIN', $user->getRoles(), true);
+        $roles = $user->getRoles();
+
+        if (in_array($attribute, self::MANAGER_OR_ADMIN_ATTRIBUTES, true)) {
+            return in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true);
+        }
+
+        return in_array('ROLE_ADMIN', $roles, true);
     }
 }

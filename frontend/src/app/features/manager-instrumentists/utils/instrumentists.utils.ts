@@ -84,8 +84,13 @@ export function normalizeRateValue(value: string | null | undefined): string {
 
 export function buildProfilePictureUrl(path: string | null | undefined): string | undefined {
   if (!path) return undefined;
+
+  if (/^https?:\/\//i.test(path)) {
+    return path;
+  }
+
   const base = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
-  return `${base}${path}`;
+  return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 }
 
 export function parseRateInput(value: string): number | null {

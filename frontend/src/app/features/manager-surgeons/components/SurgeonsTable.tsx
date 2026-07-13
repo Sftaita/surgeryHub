@@ -13,6 +13,8 @@ import {
 
 import { getSurgeons } from "../api/surgeons.api";
 import type { SurgeonListItemDTO } from "../api/surgeons.types";
+import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
+import { buildProfilePictureUrl } from "../../manager-instrumentists/utils/instrumentists.utils";
 
 function buildDisplayName(row: SurgeonListItemDTO): string {
   if (row.displayName && row.displayName.trim() !== "") {
@@ -70,15 +72,29 @@ export function SurgeonsTable({ onOpenSurgeon }: SurgeonsTableProps) {
       {
         field: "displayName",
         headerName: "Nom",
-        flex: 1.2,
+        flex: 1.6,
         sortable: false,
         valueGetter: (_value, row) => buildDisplayName(row),
-      },
-      {
-        field: "email",
-        headerName: "Email",
-        flex: 1.4,
-        sortable: false,
+        renderCell: ({ row }) => {
+          const name = buildDisplayName(row);
+          return (
+            <Stack direction="row" spacing={1.25} alignItems="center" sx={{ py: 0.5 }}>
+              <PersonAvatar
+                name={name}
+                photoUrl={buildProfilePictureUrl(row.profilePicturePath)}
+                size="sm"
+              />
+              <Stack spacing={0} sx={{ minWidth: 0 }}>
+                <Typography variant="body2" noWrap>
+                  {name}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" noWrap>
+                  {row.email}
+                </Typography>
+              </Stack>
+            </Stack>
+          );
+        },
       },
       {
         field: "actions",

@@ -596,4 +596,54 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
 
         $this->assertStringContainsString('Missions annulées', $html);
     }
+
+    // ── User email change ────────────────────────────────────────────────────
+
+    private function userEmailChangeContext(array $overrides = []): array
+    {
+        return array_merge([
+            'displayName' => 'Jean Martin',
+            'oldEmail'    => 'ancienne@example.com',
+            'newEmail'    => 'nouvelle@example.com',
+            'changedAt'   => new \DateTimeImmutable('2026-07-13 08:30:00'),
+        ], $overrides);
+    }
+
+    public function test_user_email_changed_old_address_html_renders(): void
+    {
+        $html = $this->twig()->render('emails/user_email_changed_old_address.html.twig', $this->userEmailChangeContext());
+
+        $this->assertStringContainsString('Jean Martin', $html);
+        $this->assertStringContainsString('ancienne@example.com', $html);
+        $this->assertStringContainsString('nouvelle@example.com', $html);
+        $this->assertStringContainsString('13/07/2026', $html);
+    }
+
+    public function test_user_email_changed_old_address_txt_renders(): void
+    {
+        $text = $this->twig()->render('emails/user_email_changed_old_address.txt.twig', $this->userEmailChangeContext());
+
+        $this->assertStringContainsString('Jean Martin', $text);
+        $this->assertStringContainsString('ancienne@example.com', $text);
+        $this->assertStringContainsString('nouvelle@example.com', $text);
+    }
+
+    public function test_user_email_changed_new_address_html_renders(): void
+    {
+        $html = $this->twig()->render('emails/user_email_changed_new_address.html.twig', $this->userEmailChangeContext());
+
+        $this->assertStringContainsString('Jean Martin', $html);
+        $this->assertStringContainsString('nouvelle@example.com', $html);
+        $this->assertStringContainsString('13/07/2026', $html);
+        $this->assertStringNotContainsString('ancienne@example.com', $html, 'The new-address email must never mention the old address.');
+    }
+
+    public function test_user_email_changed_new_address_txt_renders(): void
+    {
+        $text = $this->twig()->render('emails/user_email_changed_new_address.txt.twig', $this->userEmailChangeContext());
+
+        $this->assertStringContainsString('Jean Martin', $text);
+        $this->assertStringContainsString('nouvelle@example.com', $text);
+        $this->assertStringNotContainsString('ancienne@example.com', $text);
+    }
 }
