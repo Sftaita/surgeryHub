@@ -6,6 +6,7 @@ use App\Entity\Absence;
 use App\Entity\User;
 use App\Security\Voter\PlanningVoter;
 use App\Service\AbsenceImpactService;
+use App\Service\AbsenceMissionReactionService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -19,6 +20,7 @@ class AbsenceController extends AbstractController
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly AbsenceImpactService $absenceImpactService,
+        private readonly AbsenceMissionReactionService $absenceMissionReactionService,
     ) {}
 
     #[Route('', name: 'api_absences_list', methods: ['GET'])]
@@ -89,13 +91,19 @@ class AbsenceController extends AbstractController
         $this->em->persist($absence);
         $this->em->flush();
 
+        // Mission auto-mutation MUST run before alert detection — AbsenceImpactService's own
+        // overlap query naturally excludes whatever this just released/cancelled (instrumentist
+        // now null, or status now CANCELLED), so it never raises a stale alert asking the
+        // manager to do what was already done automatically. See AbsenceMissionReactionService's
+        // class docblock for the full reasoning.
+        $this->absenceMissionReactionService->onAbsenceCreated($absence, $currentUser);
         $this->absenceImpactService->onAbsenceCreated($absence);
 
         return $this->json($this->serialize($absence), 201);
     }
 
     #[Route('/{id}', name: 'api_absences_update', methods: ['PATCH'])]
-    public function update(int $id, Request $request): JsonResponse
+    public function update(int $id, Request $request, #[CurrentUser] User $currentUser): JsonResponse
     {
         $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
 
@@ -135,13 +143,15 @@ class AbsenceController extends AbstractController
 
         $this->em->flush();
 
+        // See create() — same ordering reasoning.
+        $this->absenceMissionReactionService->onAbsenceUpdated($absence, $currentUser);
         $this->absenceImpactService->onAbsenceUpdated($absence);
 
         return $this->json($this->serialize($absence));
     }
 
     #[Route('/{id}', name: 'api_absences_delete', methods: ['DELETE'])]
-    public function delete(int $id): JsonResponse
+    public function delete(int $id, #[CurrentUser] User $currentUser): JsonResponse
     {
         $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
 
@@ -154,6 +164,7 @@ class AbsenceController extends AbstractController
         // ON DELETE SET NULL so history survives, but resolution must happen while
         // the association still exists for findActiveAlertsForAbsence() to find them.
         $this->absenceImpactService->onAbsenceDeleted($absence);
+        $this->absenceMissionReactionService->onAbsenceDeleted($absence, $currentUser);
 
         $this->em->remove($absence);
         $this->em->flush();

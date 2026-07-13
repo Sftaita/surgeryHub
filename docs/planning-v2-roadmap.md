@@ -2312,6 +2312,43 @@ release() → status OPEN → findEligible() (no error) → OPEN_MISSION_AVAILAB
 
 ---
 
+### Batch 15L — Absence-Driven Mission Reaction ✅ DONE (2026-07-12)
+
+#### Objective
+
+**Business:** A published planning must react automatically when a surgeon or instrumentist declares an absence after generation/deployment — never touching the recurring `SurgeonSchedulePost` definition, only the concrete `Mission` occurrences the absence actually overlaps. Instrumentist absent on an `ASSIGNED` mission → released back to the pool (`OPEN`). Surgeon absent on an `OPEN`/`ASSIGNED` mission → cancelled. Everyone genuinely affected gets a targeted email; nobody gets a duplicate from two different pipelines.
+
+**Technical:** `AbsenceImpactService` keeps its pre-existing, tested "never mutates a Mission" contract completely unchanged — a new collaborator, `AbsenceMissionReactionService`, is called by `AbsenceController` *in addition*, and *before*, `AbsenceImpactService`. Mutation reuses the existing `MissionPostDeployService::release()`/`cancel()` (the latter extended to accept `ASSIGNED`, not just `OPEN`) — same status guard, `AuditEvent`, flush-before-dispatch discipline as every other post-deploy mutator (D-056). A second async message, `AbsenceMissionsReactedMessage` (one per absence-processing run, never one per mission), feeds a new handler that sends exactly one batched recap email per affected recipient — the piece the existing `MissionLifecycleChangedMessage` pipeline never had, since that pipeline is in-app/push only for every change type.
+
+**User value:** A manager declaring an instrumentist's or surgeon's absence no longer has to manually hunt down and reassign/cancel every affected mission on an already-published planning — it happens immediately, with the right people notified by email, and the pre-existing alert system never shows a stale "reassignment required" for a mission that was just auto-resolved.
+
+#### Scope
+
+**Included:**
+- `AbsenceMissionReactionService` (new) — `onAbsenceCreated()`/`onAbsenceUpdated()` find missions overlapping the absence for the actionable status subset only (`ASSIGNED` for instrumentist absence; `OPEN`/`ASSIGNED` for surgeon absence), mutate via `MissionPostDeployService`, dispatch one `AbsenceMissionsReactedMessage` covering every mission processed. `onAbsenceDeleted()` never restores anything — only a generic in-app notice to managers/admins to reassess manually.
+- `MissionPostDeployService::cancel()` extended: `OPEN → CANCELLED` becomes `OPEN|ASSIGNED → CANCELLED`, clearing the instrumentist in the `ASSIGNED` case. `release()` gains an optional `?string $reason` (audit context only, no behavior change).
+- `AbsenceMissionsReactedMessage` + `AbsenceMissionsReactedMessageHandler` (new) — groups by recipient, sends one recap email (`SendBillingEmailMessage`) per person per processing run; in-app notifications stay one per mission (explicitly allowed by spec).
+- 3 new `NotificationType` cases (`ABSENCE_INSTRUMENTIST_RELEASED`, `ABSENCE_SURGEON_MISSION_OPENED`, `ABSENCE_MISSION_CANCELLED`), added to `DefaultNotificationPreferenceResolver::EMAIL_ON_BY_DEFAULT` (same urgency tier as `PLANNING_MISSION_CANCELLED`).
+- 3 new email templates (`absence_instrumentist_released`, `absence_surgeon_mission_opened`, `absence_mission_cancelled`), reusing the visual system already established for the initial-deploy/modification email redesign.
+- `AbsenceController::create()/update()/delete()` — call `AbsenceMissionReactionService` before `AbsenceImpactService`, and pass `#[CurrentUser]` (newly added to `update()`/`delete()`, which didn't need it before).
+
+**Excluded:**
+- No mutation ever for `DRAFT`/`SUBMITTED`/`VALIDATED`/`IN_PROGRESS`/`DECLARED` missions — `AbsenceImpactService`'s existing alert remains the only reaction for those, unchanged.
+- No automatic restoration on absence deletion (a released mission may already be claimed by someone else; a cancelled mission has already notified people — reconstructing the prior state would silently overwrite what happened since).
+- No push notifications for the new absence-specific emails (in-app + email only, consistent with the rest of the notification system).
+
+#### Backend
+
+See D-062 in `docs/decisions.md` for the full status-by-status table, the ordering argument for why `AbsenceImpactService` needed zero changes, idempotency (query-based — a mutated mission naturally falls out of the overlap query, no tracking table), and concurrency (pessimistic lock + transaction, dispatch after commit — same pattern as `MissionPostDeployService::claim()`, the one prior high-contention case).
+
+**Key invariant preserved:** every mutation still goes through `MissionPostDeployService` (D-056) — `AbsenceMissionReactionService` never mutates a `Mission` directly, and `SurgeonSchedulePost` is never touched (proven by a dedicated functional test snapshotting a post's fields before/after).
+
+#### Tests
+
+`MissionPostDeployServiceTest` (+3, `cancel()` extension), `AbsenceMissionReactionServiceTest` (13 unit), `AbsenceMissionsReactedMessageHandlerTest` (8 unit), `AbsenceMissionReactionFunctionalTest` (7 functional, real DB — multiple missions, out-of-period exclusion, terminal-status exclusion, `AuditEvent`/`NotificationEvent` persistence, idempotency on repeated `PATCH`, one message per run, `SurgeonSchedulePost` untouched), `AbsenceControllerTest` (2 rewritten for the new behavior + no-stale-alert composition with `AbsenceImpactService`), `PlanningEmailTemplatesTest` (+7, the 3 new templates). 831/831 backend green. Verified against real Mailpit (throwaway `@surgicalhub.internal` accounts, local dev): both scenarios produce exactly the expected emails, no duplicates, `MAIL_SAFE_MODE` unaffected.
+
+---
+
 ### Stabilization — QA validation, RCA, and architecture freeze ✅ ARCHITECTURE FROZEN (2026-07-06)
 
 A full production-readiness validation pass (real API/DB/Mailpit end-to-end testing, all 4 roles, V1 regression) found one P0 and one P1 defect, both root-caused before any fix was written:

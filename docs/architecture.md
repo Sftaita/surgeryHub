@@ -735,6 +735,9 @@ EntityManager::flush()            — chaque effet de bord isolé dans try/catch
 | Instrumentiste | Changement post-deploy (action unitaire hors Mode Modification) | `PLANNING_MISSION_REASSIGNED` / `CANCELLED` / `ADDED` / `UPDATED` | `MissionLifecycleChangedMessageHandler` (Batch 15F+) |
 | Instrumentiste / Chirurgien réellement concernés | Redéploiement après Mode Modification (lot d'édits) | Un seul email récapitulatif ciblé, jamais de global resend | `PlanningModificationService` → `PlanningChangeSummaryService` (Batch 15K) |
 | Manager (déployeur) | Déploiement initial | `PLANNING_DEPLOYED_MANAGER` (email + in-app, avec PDF global) | `PlanningDeployPdfsMessageHandler` |
+| Instrumentiste retiré | Absence instrumentiste → mission `ASSIGNED` libérée | `ABSENCE_INSTRUMENTIST_RELEASED` (email récap + in-app par mission) | `AbsenceMissionsReactedMessageHandler` (D-062) |
+| Chirurgien concerné | Absence instrumentiste → mission désormais `OPEN` | `ABSENCE_SURGEON_MISSION_OPENED` (email récap + in-app par mission) | `AbsenceMissionsReactedMessageHandler` (D-062) |
+| Instrumentiste concerné | Absence chirurgien → mission annulée | `ABSENCE_MISSION_CANCELLED` (email récap + in-app par mission) | `AbsenceMissionsReactedMessageHandler` (D-062) |
 
 Exactement UN email de déploiement par destinataire (D-058). `PlanningChangeSummaryService` (récapitulatif de changements) était écrit mais non câblé jusqu'au Batch 15K, qui le déclenche depuis `PlanningModificationService` : un planning déjà déployé peut être édité dans l'éditeur unifié (§ ci-dessous), et son redéploiement calcule un diff avant/après pour n'envoyer un récapitulatif qu'aux personnes dont au moins une mission a réellement changé — jamais un renvoi global aux chirurgiens/instrumentistes non concernés.
 
@@ -841,6 +844,21 @@ pas encore déclenchés — le détecteur de conflit actuel (preview, en mémoir
 au site/groupe d'un seul appel de génération ; un instrumentiste multi-site doublement
 réservé via deux générations séparées sur des sites différents n'est jamais détecté
 aujourd'hui (gap documenté dans le freeze §G, pas corrigé).
+
+**Réaction automatique aux absences (D-062)** : `AbsenceImpactService` conserve
+intégralement son contrat "jamais de mutation" — `AbsenceController` appelle en plus,
+et **avant**, `App\Service\AbsenceMissionReactionService`, qui mute directement les
+missions déjà déployées pour le sous-ensemble non ambigu : instrumentiste absent sur
+une mission `ASSIGNED` → libérée (`MissionPostDeployService::release()`, `OPEN`,
+instrumentiste retiré) ; chirurgien absent sur une mission `OPEN`/`ASSIGNED` → annulée
+(`MissionPostDeployService::cancel()`, étendu pour accepter `ASSIGNED`). `DRAFT`,
+`SUBMITTED`, `VALIDATED`, `IN_PROGRESS`, `DECLARED` restent hors périmètre — l'alerte
+manuelle existante d'`AbsenceImpactService` continue de les couvrir sans changement.
+L'ordre d'appel (mutation avant détection d'alerte) suffit à empêcher toute alerte
+obsolète : la requête de chevauchement d'`AbsenceImpactService` exclut naturellement
+une mission déjà mutée (FK/statut ne correspondent plus). Jamais de mutation sur
+`SurgeonSchedulePost`. Voir D-062 dans `docs/decisions.md` pour le détail complet
+(statuts, idempotence, concurrence, notifications).
 
 **Notifications (Batch 7)** : `PlanningAlertRaisedMessage` (Messenger, routé `async`)
 fan-out vers manager/admin + personne concernée, chaque canal (in-app/email/push) gated

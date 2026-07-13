@@ -2362,6 +2362,15 @@ Utilisé notamment pour les déplacements drag & drop (changement de `dayOfWeek`
 
 ### 26.3 Absences
 
+> ⚠️ **Effet de bord (D-062)** : `POST`/`PATCH`/`DELETE /api/absences[/{id}]` déclenchent
+> désormais, en plus de la détection d'alertes existante (`PlanningAlertService`), une
+> réaction automatique sur les **missions déjà déployées** qui chevauchent la période
+> (`AbsenceMissionReactionService`) : une mission `ASSIGNED` dont l'instrumentiste devient
+> absent est libérée (`OPEN`, instrumentiste retiré) ; une mission `OPEN`/`ASSIGNED` dont le
+> chirurgien devient absent est annulée (`CANCELLED`). Voir D-062 pour le détail complet
+> (statuts concernés, notifications, idempotence). La forme de la requête/réponse de ces
+> endpoints n'a pas changé — seul cet effet de bord est nouveau.
+
 **Modèle Absence :**
 
 | Champ | Type | Description |

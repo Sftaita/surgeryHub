@@ -271,15 +271,60 @@ final class MissionPostDeployServiceTest extends TestCase
         $this->assertSame(MissionChangeType::CANCELLED, $dispatched->changeType);
     }
 
-    public function test_cancel_on_non_open_mission_throws_conflict(): void
+    public function test_cancel_on_draft_mission_throws_conflict(): void
     {
-        $mission = $this->makeMission(MissionStatus::ASSIGNED);
+        $mission = $this->makeMission(MissionStatus::DRAFT);
         $actor   = $this->makeActor();
 
         $this->expectException(ConflictHttpException::class);
-        $this->expectExceptionMessage('Mission must be OPEN to cancel');
+        $this->expectExceptionMessage('Mission must be OPEN or ASSIGNED to cancel');
 
         $this->service->cancel($mission, $actor);
+    }
+
+    /**
+     * REGRESSION guard: cancel() originally only accepted OPEN. Extended to also accept
+     * ASSIGNED (AbsenceMissionReactionService — surgeon absence cancels a mission that may
+     * already have an instrumentist). Non-cancellable statuses (DRAFT above, and by the same
+     * guard: SUBMITTED/VALIDATED/CLOSED/IN_PROGRESS/CANCELLED/REJECTED/DECLARED) must still
+     * be rejected — only OPEN and ASSIGNED are in the allowlist.
+     */
+    public function test_cancel_on_assigned_mission_transitions_to_cancelled_and_clears_instrumentist(): void
+    {
+        $instrumentist = $this->makeInstrumentist();
+        $mission       = $this->makeMission(MissionStatus::ASSIGNED, $instrumentist);
+        $actor         = $this->makeActor();
+
+        $this->em->expects($this->once())->method('flush');
+
+        $this->service->cancel($mission, $actor, 'Absence chirurgien');
+
+        $this->assertSame(MissionStatus::CANCELLED, $mission->getStatus());
+        $this->assertNull($mission->getInstrumentist(), 'A cancelled mission must have no assignee.');
+    }
+
+    public function test_cancel_on_assigned_mission_audits_the_removed_instrumentist(): void
+    {
+        $instrumentist = $this->makeInstrumentist('Ole', 'Salve');
+        $mission       = $this->makeMission(MissionStatus::ASSIGNED, $instrumentist);
+        $actor         = $this->makeActor();
+
+        $this->em->method('flush');
+
+        $this->audit
+            ->expects($this->once())
+            ->method('record')
+            ->with(
+                $this->identicalTo($mission),
+                $this->identicalTo($actor),
+                AuditEventType::MISSION_CANCELLED_POST_DEPLOY,
+                $this->callback(fn (array $p): bool =>
+                    $p['fromInstrumentistId'] === $instrumentist->getId()
+                    && $p['fromInstrumentistName'] === 'Ole Salve'
+                ),
+            );
+
+        $this->service->cancel($mission, $actor, 'Absence chirurgien');
     }
 
     public function test_cancel_flushes_before_dispatch(): void

@@ -236,7 +236,16 @@ final class MissionLifecycleControllerTest extends WebTestCase
         self::assertNotEmpty($events, 'AuditEvent must be created on cancel');
     }
 
-    public function test_cancel_on_assigned_mission_returns_409(): void
+    /**
+     * REGRESSION (feature added after this test was first written): MissionPostDeployService
+     * ::cancel() originally only accepted OPEN, so cancelling an ASSIGNED mission via this
+     * endpoint returned 409. Extended to also accept ASSIGNED (AbsenceMissionReactionService
+     * needs it for surgeon-absence cancellation) — the guard is shared, single-source-of-truth
+     * logic, so the general manager-facing endpoint gains the same capability as a deliberate
+     * side effect: cancelling an ASSIGNED mission is not itself dangerous, it now also clears
+     * the instrumentist as part of the transition.
+     */
+    public function test_cancel_on_assigned_mission_succeeds_and_clears_instrumentist(): void
     {
         $client  = $this->boot();
         $manager = $this->createUser('ROLE_MANAGER');
@@ -248,7 +257,12 @@ final class MissionLifecycleControllerTest extends WebTestCase
 
         $response = $this->postJson($client, $token, '/api/missions/' . $mission->getId() . '/cancel');
 
-        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode());
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::CANCELLED, $reloaded->getStatus());
+        self::assertNull($reloaded->getInstrumentist());
     }
 
     public function test_get_mission_after_cancel_shows_cancelled_status(): void

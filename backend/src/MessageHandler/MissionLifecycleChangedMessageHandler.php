@@ -437,8 +437,10 @@ final class MissionLifecycleChangedMessageHandler
             }
         }
 
-        // ── Instrumentist (defensive — cancel() currently requires OPEN status,
-        //    so getInstrumentist() is null in all current code paths) ────────────
+        // ── Instrumentist (defensive — cancel() clears the instrumentist as part of the
+        //    transition regardless of source status, so getInstrumentist() is null here in
+        //    every current code path; kept as a safety net in case a future caller changes
+        //    that) ─────────────────────────────────────────────────────────────────────────
         $instrumentist = $mission->getInstrumentist();
         if ($instrumentist !== null) {
             $ch = $this->resolveChannelsSafely($instrumentist, NotificationType::PLANNING_MISSION_CANCELLED);

@@ -29,4 +29,13 @@ enum NotificationType: string
     case PLANNING_MISSION_CANCELLED  = 'PLANNING_MISSION_CANCELLED';
     case PLANNING_MISSION_ADDED      = 'PLANNING_MISSION_ADDED';
     case PLANNING_MISSION_UPDATED    = 'PLANNING_MISSION_UPDATED';
+
+    // ── Absence-driven mission reactions (post-deploy absence auto-mutation) ─
+    // None of the cases above carry "this happened because of an absence you/they just
+    // declared" framing, and none are wired to email today (in-app/push only) — these three
+    // are recipient-perspective-specific, mirroring the SURGEON_POST_COVERED vs
+    // PLANNING_MISSION_REASSIGNED split above for the same underlying event.
+    case ABSENCE_INSTRUMENTIST_RELEASED = 'ABSENCE_INSTRUMENTIST_RELEASED'; // to the removed instrumentist
+    case ABSENCE_SURGEON_MISSION_OPENED = 'ABSENCE_SURGEON_MISSION_OPENED'; // to the surgeon, instrumentist absence
+    case ABSENCE_MISSION_CANCELLED      = 'ABSENCE_MISSION_CANCELLED';      // to the instrumentist, surgeon absence
 }

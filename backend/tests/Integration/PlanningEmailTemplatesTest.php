@@ -494,4 +494,106 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
 
         $this->assertStringContainsString('Manager Test', $html);
     }
+
+    // ── Absence-driven mission reaction emails ──────────────────────────────
+
+    private function absenceMissionRowFixture(array $overrides = []): array
+    {
+        return array_merge([
+            'missionId'         => 10,
+            'changeType'        => 'RELEASED',
+            'date'              => '10/09/2026',
+            'moment'            => 'Matin',
+            'horaire'           => '08:00–13:00',
+            'siteName'          => 'Bloc opératoire Delta',
+            'surgeonId'         => 5,
+            'surgeonName'       => 'Jean Dupont',
+            'instrumentistId'   => 20,
+            'instrumentistName' => 'Léa Martin',
+        ], $overrides);
+    }
+
+    public function test_absence_instrumentist_released_email_renders_multiple_missions(): void
+    {
+        $html = $this->twig()->render('emails/absence_instrumentist_released.html.twig', [
+            'recipientName' => 'Léa',
+            'missions'      => [
+                $this->absenceMissionRowFixture(['missionId' => 10]),
+                $this->absenceMissionRowFixture(['missionId' => 11, 'date' => '12/09/2026', 'surgeonName' => 'Alice Martin']),
+            ],
+            'missionCount'  => 2,
+        ]);
+
+        $this->assertStringContainsString('Missions retirées', $html);
+        $this->assertStringContainsString('10/09/2026', $html);
+        $this->assertStringContainsString('12/09/2026', $html);
+        $this->assertStringContainsString('Jean Dupont', $html);
+        $this->assertStringContainsString('Alice Martin', $html);
+    }
+
+    public function test_absence_instrumentist_released_email_singular_wording_for_one_mission(): void
+    {
+        $html = $this->twig()->render('emails/absence_instrumentist_released.html.twig', [
+            'recipientName' => 'Léa',
+            'missions'      => [$this->absenceMissionRowFixture()],
+            'missionCount'  => 1,
+        ]);
+
+        $this->assertStringContainsString('Mission retirée', $html);
+        $this->assertStringNotContainsString('Missions retirées', $html);
+    }
+
+    public function test_absence_surgeon_mission_opened_email_renders(): void
+    {
+        $html = $this->twig()->render('emails/absence_surgeon_mission_opened.html.twig', [
+            'recipientName' => 'Jean',
+            'missions'      => [$this->absenceMissionRowFixture()],
+            'missionCount'  => 1,
+        ]);
+
+        $this->assertStringContainsString('désormais à pourvoir', $html);
+        $this->assertStringContainsString('Léa Martin', $html);
+        $this->assertStringContainsString('À pourvoir', $html);
+    }
+
+    public function test_absence_surgeon_mission_opened_email_handles_null_instrumentist_name(): void
+    {
+        // Defensive: the released mission's own former instrumentist is always known in
+        // practice, but the template must not throw if it were ever absent.
+        $html = $this->twig()->render('emails/absence_surgeon_mission_opened.html.twig', [
+            'recipientName' => 'Jean',
+            'missions'      => [$this->absenceMissionRowFixture(['instrumentistId' => null, 'instrumentistName' => null])],
+            'missionCount'  => 1,
+        ]);
+
+        $this->assertStringContainsString('Aucun', $html);
+    }
+
+    public function test_absence_mission_cancelled_email_renders(): void
+    {
+        $html = $this->twig()->render('emails/absence_mission_cancelled.html.twig', [
+            'recipientName' => 'Léa',
+            'missions'      => [$this->absenceMissionRowFixture(['changeType' => 'CANCELLED'])],
+            'missionCount'  => 1,
+        ]);
+
+        $this->assertStringContainsString('Mission annulée', $html);
+        $this->assertStringContainsString('absence chirurgien', $html);
+        $this->assertStringContainsString('Jean Dupont', $html);
+        $this->assertStringContainsString('Annulée', $html);
+    }
+
+    public function test_absence_mission_cancelled_email_plural_wording_for_multiple_missions(): void
+    {
+        $html = $this->twig()->render('emails/absence_mission_cancelled.html.twig', [
+            'recipientName' => 'Léa',
+            'missions'      => [
+                $this->absenceMissionRowFixture(['missionId' => 10, 'changeType' => 'CANCELLED']),
+                $this->absenceMissionRowFixture(['missionId' => 11, 'changeType' => 'CANCELLED']),
+            ],
+            'missionCount'  => 2,
+        ]);
+
+        $this->assertStringContainsString('Missions annulées', $html);
+    }
 }

@@ -3,8 +3,10 @@
 namespace App\Tests\Functional;
 
 use App\Entity\Absence;
+use App\Entity\AuditEvent;
 use App\Entity\Hospital;
 use App\Entity\Mission;
+use App\Entity\NotificationEvent;
 use App\Entity\PlanningAlert;
 use App\Entity\User;
 use App\Enum\MissionStatus;
@@ -53,6 +55,29 @@ final class AbsenceControllerTest extends WebTestCase
                     ->where('a.mission = :m')->setParameter('m', $mission)
                     ->getQuery()->getResult();
                 foreach ($alerts as $alert) { $this->em->remove($alert); }
+            }
+            $this->em->flush();
+            // AuditEvent.mission/actor and NotificationEvent.user/mission have no ON DELETE
+            // SET NULL either — AbsenceMissionReactionService's release()/cancel() calls
+            // (via MissionPostDeployService) and its own manager notification-on-delete
+            // create rows referencing the test's missions/users, which must go before them.
+            foreach ($this->createdIds['missions'] as $id) {
+                $mission = $this->em->find(Mission::class, $id);
+                if ($mission === null) { continue; }
+                $events = $this->em->createQueryBuilder()
+                    ->select('e')->from(AuditEvent::class, 'e')
+                    ->where('e.mission = :m')->setParameter('m', $mission)
+                    ->getQuery()->getResult();
+                foreach ($events as $event) { $this->em->remove($event); }
+            }
+            foreach ($this->createdIds['users'] as $id) {
+                $user = $this->em->find(User::class, $id);
+                if ($user === null) { continue; }
+                $notifications = $this->em->createQueryBuilder()
+                    ->select('n')->from(NotificationEvent::class, 'n')
+                    ->where('n.user = :u')->setParameter('u', $user)
+                    ->getQuery()->getResult();
+                foreach ($notifications as $notification) { $this->em->remove($notification); }
             }
             $this->em->flush();
             foreach ($this->createdIds['missions'] as $id) {
@@ -197,8 +222,17 @@ final class AbsenceControllerTest extends WebTestCase
 
     // ── Create: surgeon absence ──────────────────────────────────────────────
 
+    /**
+     * REGRESSION (feature added after this test was first written): a surgeon absence over
+     * an ASSIGNED mission used to only raise a SURGEON_ABSENCE alert and leave the mission
+     * untouched. AbsenceMissionReactionService now auto-cancels it — see that service's class
+     * docblock. Because the mission transitions to CANCELLED (not one of
+     * AbsenceImpactService::ALERTABLE_STATUSES), no SURGEON_ABSENCE alert is raised either —
+     * the two services compose correctly given AbsenceController's call order, with no
+     * changes needed to AbsenceImpactService itself.
+     */
     #[WithoutErrorHandler]
-    public function test_creating_surgeon_absence_over_assigned_mission_creates_surgeon_absence_alert(): void
+    public function test_creating_surgeon_absence_over_assigned_mission_cancels_it_and_raises_no_stale_alert(): void
     {
         $client = static::createClient();
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
@@ -218,16 +252,23 @@ final class AbsenceControllerTest extends WebTestCase
 
         $this->em->clear();
         $mission = $this->em->find(Mission::class, $mission->getId());
-        $alerts  = $this->findAlertsForMission($mission);
-        self::assertCount(1, $alerts);
-        self::assertSame('SURGEON_ABSENCE', $alerts[0]->getType()->value);
-        self::assertSame(MissionStatus::ASSIGNED, $mission->getStatus(), 'Mission must never be mutated by absence impact detection');
+        self::assertSame(MissionStatus::CANCELLED, $mission->getStatus(), 'Surgeon absence must auto-cancel an ASSIGNED mission');
+        self::assertNull($mission->getInstrumentist(), 'A cancelled mission must have no assignee');
+        self::assertCount(0, $this->findAlertsForMission($mission), 'No SURGEON_ABSENCE alert once the mission is already auto-cancelled — would be a stale duplicate of the automatic action');
     }
 
     // ── Create: instrumentist absence on ASSIGNED mission ───────────────────
 
+    /**
+     * REGRESSION (feature added after this test was first written): an instrumentist absence
+     * over an ASSIGNED mission used to only raise a REASSIGNMENT_REQUIRED alert and leave the
+     * mission untouched. AbsenceMissionReactionService now auto-releases it back to the pool —
+     * see that service's class docblock. Because the mission's instrumentist FK is cleared
+     * (no longer matches "m.instrumentist = :absentUser"), AbsenceImpactService's own
+     * unmodified query no longer raises REASSIGNMENT_REQUIRED either.
+     */
     #[WithoutErrorHandler]
-    public function test_creating_instrumentist_absence_over_assigned_mission_creates_reassignment_required_alert(): void
+    public function test_creating_instrumentist_absence_over_assigned_mission_releases_it_and_raises_no_stale_alert(): void
     {
         $client = static::createClient();
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
@@ -247,10 +288,9 @@ final class AbsenceControllerTest extends WebTestCase
 
         $this->em->clear();
         $mission = $this->em->find(Mission::class, $mission->getId());
-        $alerts  = $this->findAlertsForMission($mission);
-        self::assertCount(1, $alerts);
-        self::assertSame('REASSIGNMENT_REQUIRED', $alerts[0]->getType()->value);
-        self::assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
+        self::assertSame(MissionStatus::OPEN, $mission->getStatus(), 'Instrumentist absence must auto-release an ASSIGNED mission back to OPEN');
+        self::assertNull($mission->getInstrumentist());
+        self::assertCount(0, $this->findAlertsForMission($mission), 'No REASSIGNMENT_REQUIRED alert once the mission is already auto-released — would be a stale duplicate of the automatic action');
     }
 
     // ── SUBMITTED/VALIDATED missions: alert only, no mutation ───────────────

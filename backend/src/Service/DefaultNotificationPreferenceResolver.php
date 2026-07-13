@@ -14,6 +14,9 @@ use Doctrine\ORM\EntityManagerInterface;
  * Per-type defaults (roadmap §7 Notification Matrix):
  *   - PLANNING_ALERT, PLANNING_DEPLOYED_*: inApp=true, email=true  (important / actionable)
  *   - PLANNING_MISSION_CANCELLED:          inApp=true, email=true  (urgent — may require re-assignment)
+ *   - ABSENCE_*:                           inApp=true, email=true  (urgent — same "your mission just
+ *                                           changed" urgency as PLANNING_MISSION_CANCELLED, just
+ *                                           triggered by an absence instead of a manual action)
  *   - All others (pool, coverage, updates): inApp=true, email=false (informational)
  *
  * push: always false by default — requires an explicit device subscription (PushSubscription).
@@ -30,6 +33,9 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::PLANNING_DEPLOYED_SURGEON,
         NotificationType::PLANNING_DEPLOYED_MANAGER,
         NotificationType::PLANNING_MISSION_CANCELLED,
+        NotificationType::ABSENCE_INSTRUMENTIST_RELEASED,
+        NotificationType::ABSENCE_SURGEON_MISSION_OPENED,
+        NotificationType::ABSENCE_MISSION_CANCELLED,
     ];
 
     public function __construct(

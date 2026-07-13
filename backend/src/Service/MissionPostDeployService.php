@@ -49,10 +49,15 @@ class MissionPostDeployService
      *
      * $notify=false skips the individual MissionLifecycleChangedMessage dispatch (status
      * guard, mutation, audit event and flush still happen) — used by batch callers (e.g.
-     * Planning V2 Modification mode's apply-modifications) that consolidate many mutations
-     * into one targeted summary notification instead of one email per action.
+     * Planning V2 Modification mode's apply-modifications, or AbsenceMissionReactionService
+     * which dispatches its own consolidated recap message after the loop instead of one
+     * MissionLifecycleChangedMessage per mission) that consolidate many mutations into one
+     * targeted summary notification instead of one email per action.
+     *
+     * $reason — free-text audit context (e.g. "Absence instrumentiste enregistrée"). Purely
+     * informational, stored in the AuditEvent payload; does not change the transition itself.
      */
-    public function release(Mission $mission, User $actor, bool $notify = true): void
+    public function release(Mission $mission, User $actor, bool $notify = true, ?string $reason = null): void
     {
         if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
             throw new ConflictHttpException('Mission must be ASSIGNED to release');
@@ -70,6 +75,7 @@ class MissionPostDeployService
         $payload = [
             'fromInstrumentistId'   => $fromInstrumentistId,
             'fromInstrumentistName' => $fromInstrumentistName,
+            'reason'                => $reason,
             'actorId'               => $actor->getId(),
             'actorName'             => $this->displayName($actor),
         ];
@@ -92,23 +98,41 @@ class MissionPostDeployService
     }
 
     /**
-     * OPEN → CANCELLED.
-     * Throws 409 if mission is not OPEN.
+     * OPEN|ASSIGNED → CANCELLED.
+     * Throws 409 if mission is not OPEN or ASSIGNED.
+     *
+     * If the mission was ASSIGNED, its instrumentist is cleared as part of the transition
+     * (a cancelled mission has no assignee) — this is a deliberate extension beyond the
+     * original OPEN-only contract, added for AbsenceMissionReactionService (surgeon absence
+     * → cancel, regardless of whether an instrumentist had already been assigned). Because
+     * the instrumentist is already null by the time MissionLifecycleChangedMessageHandler
+     * reloads the mission, its own "defensive" instrumentist-notification branch stays a
+     * no-op here by construction — AbsenceMissionReactionService sends its own dedicated
+     * absence email to the removed instrumentist instead, avoiding a duplicate.
      *
      * $notify — see release() doc.
      */
     public function cancel(Mission $mission, User $actor, ?string $reason = null, bool $notify = true): void
     {
-        if ($mission->getStatus() !== MissionStatus::OPEN) {
-            throw new ConflictHttpException('Mission must be OPEN to cancel');
+        if (!in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
+            throw new ConflictHttpException('Mission must be OPEN or ASSIGNED to cancel');
         }
 
+        $fromInstrumentist     = $mission->getInstrumentist();
+        $fromInstrumentistId   = $fromInstrumentist?->getId();
+        $fromInstrumentistName = $fromInstrumentist !== null
+            ? $this->displayName($fromInstrumentist)
+            : null;
+
         $mission->setStatus(MissionStatus::CANCELLED);
+        $mission->setInstrumentist(null);
 
         $payload = [
-            'reason'   => $reason,
-            'actorId'  => $actor->getId(),
-            'actorName'=> $this->displayName($actor),
+            'reason'                => $reason,
+            'fromInstrumentistId'   => $fromInstrumentistId,
+            'fromInstrumentistName' => $fromInstrumentistName,
+            'actorId'               => $actor->getId(),
+            'actorName'             => $this->displayName($actor),
         ];
 
         $this->audit->record($mission, $actor, AuditEventType::MISSION_CANCELLED_POST_DEPLOY, $payload);

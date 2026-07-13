@@ -2598,6 +2598,144 @@ puisque le DSN committé y est aussi Mailpit).
 
 ---
 
+## D-062 — Réaction automatique aux absences sur les missions déjà déployées
+
+Date : 2026-07-12
+
+### Contexte
+
+Jusqu'ici, `AbsenceImpactService` était la seule réaction du système à une absence
+créée/modifiée/supprimée sur une mission déjà générée — et son contrat, documenté et
+testé explicitement, était de **ne jamais muter une Mission** ("Hard rule: this service
+NEVER mutates a Mission"), se limitant à créer/résoudre des `PlanningAlert` pour qu'un
+manager traite chaque cas à la main. Le besoin métier : un planning publié doit réagir
+automatiquement à une absence déclarée après coup, sans attendre une action manuelle
+pour les cas non ambigus.
+
+### Décision
+
+Ajout d'un nouveau collaborateur, `App\Service\AbsenceMissionReactionService`, appelé par
+`AbsenceController` **en plus de** (jamais à la place de) `AbsenceImpactService` — dont le
+contrat "jamais de mutation" reste intégralement vrai et inchangé. Portée :
+
+- **Absence instrumentiste** — missions `ASSIGNED` dont l'instrumentiste est la personne
+  absente → `MissionPostDeployService::release()` (`ASSIGNED` → `OPEN`, instrumentiste
+  retiré).
+- **Absence chirurgien** — missions `OPEN`/`ASSIGNED` dont le chirurgien est la personne
+  absente → `MissionPostDeployService::cancel()` (→ `CANCELLED`, instrumentiste retiré le
+  cas échéant).
+
+**Règle par statut (audit exhaustif, `MissionStatus` complet) :**
+
+| Statut | Absence instrumentiste | Absence chirurgien |
+|---|---|---|
+| `DRAFT` | Jamais touché — pas encore déployé, hors périmètre de cette fonctionnalité | Idem |
+| `OPEN` | Sans objet (un `OPEN` n'a jamais d'instrumentiste) | **`CANCELLED`** |
+| `ASSIGNED` | **`OPEN`, instrumentiste retiré** | **`CANCELLED`, instrumentiste retiré** |
+| `SUBMITTED` | Jamais touché — déclaration déjà en cours, alerte existante conservée | Idem |
+| `VALIDATED` | Jamais touché — déjà validée par le manager, alerte existante conservée | Idem |
+| `IN_PROGRESS` | Jamais touché — intervention en cours, alerte existante conservée | Idem |
+| `DECLARED` | Jamais touché (déjà hors périmètre de `AbsenceImpactService` aujourd'hui — comportement préexistant non modifié) | Idem |
+| `CLOSED`, `REJECTED`, `CANCELLED` | Terminaux, jamais retraités | Idem |
+
+`SurgeonSchedulePost` (définition récurrente) n'est **jamais** touché — seules les
+occurrences `Mission` déjà matérialisées le sont, conformément à la distinction du
+cahier des charges. Prouvé par test fonctionnel dédié comparant un snapshot complet du
+post avant/après traitement d'une absence sur une de ses missions.
+
+### Ordonnancement — pourquoi `AbsenceImpactService` n'a nécessité aucune modification
+
+`AbsenceController` appelle `AbsenceMissionReactionService` **avant**
+`AbsenceImpactService`. La requête de chevauchement de `AbsenceImpactService`
+(`(m.surgeon = :user OR m.instrumentist = :user) AND m.status IN (alertable)`) exclut
+naturellement toute mission déjà mutée : l'instrumentiste est désormais `null` (ne
+correspond plus à `m.instrumentist = :user`), ou le statut est `CANCELLED` (jamais dans
+la liste des statuts alertables). Résultat : aucune alerte `REASSIGNMENT_REQUIRED` ou
+`SURGEON_ABSENCE` obsolète n'est jamais créée pour une mission déjà auto-traitée, sans
+avoir touché une seule ligne d'`AbsenceImpactService`. Les deux services composent
+correctement du seul fait de l'ordre d'appel.
+
+### Idempotence
+
+Aucune table de suivi "déjà traité" — la requête de chevauchement elle-même exclut une
+mission une fois mutée (son FK/statut ne correspond plus aux critères), donc rejouer le
+traitement (mise à jour de l'absence sans changement de période, ou changement qui ne
+couvre plus une mission déjà traitée) ne retraite jamais rien. Prouvé par test
+fonctionnel avec re-`PATCH` répété sur les mêmes dates : un seul `AuditEvent`, jamais de
+doublon.
+
+### Concurrence
+
+Chaque mutation acquiert un verrou pessimiste (`LockMode::PESSIMISTIC_WRITE`) dans une
+transaction, avec re-vérification du statut sous verrou avant mutation — même schéma que
+`MissionPostDeployService::claim()`, seul autre point de forte contention préexistant
+dans le code. `MissionLifecycleChangedMessage` est dispatché **après** le commit de la
+transaction, jamais depuis l'intérieur (dispatcher avant commit exposerait un worker à
+un état pas encore visible sur une autre connexion).
+
+### Notifications — pourquoi 3 nouveaux `NotificationType`
+
+Le pipeline existant (`MissionLifecycleChangedMessageHandler`, déclenché par
+`MissionPostDeployService::release()`/`cancel()`) est **exclusivement in-app/push** — il
+n'envoie d'email pour aucun type de changement aujourd'hui. C'est le vrai manque que
+cette fonctionnalité comble. `AbsenceMissionReactionService` dispatche un second message,
+`AbsenceMissionsReactedMessage` (un seul par traitement d'absence, jamais un par
+mission), traité par `AbsenceMissionsReactedMessageHandler`, qui ajoute :
+
+- `ABSENCE_INSTRUMENTIST_RELEASED` — à l'instrumentiste retiré.
+- `ABSENCE_SURGEON_MISSION_OPENED` — à chaque chirurgien concerné.
+- `ABSENCE_MISSION_CANCELLED` — à chaque instrumentiste dont la mission est annulée.
+
+Les trois sont ajoutés à `DefaultNotificationPreferenceResolver::EMAIL_ON_BY_DEFAULT`
+(même urgence que `PLANNING_MISSION_CANCELLED`). Aucun des types existants ne convenait :
+tous manquaient soit le cadrage "à cause d'une absence", soit tout simplement le canal
+email. Le pipeline existant continue de fonctionner sans changement en parallèle
+(`SURGEON_POST_UNCOVERED`, `OPEN_MISSION_AVAILABLE`, `PLANNING_MISSION_CANCELLED` — tous
+in-app/push, jamais dupliqués avec les nouveaux emails).
+
+**Anti-doublon** : l'email est groupé par destinataire (un seul email récapitulatif par
+personne et par traitement d'absence, listant toutes les missions concernées) ; les
+notifications in-app restent unitaires (une par mission), explicitement autorisé par le
+cahier des charges. Une mission `OPEN` déjà sans instrumentiste au moment de son
+annulation (absence chirurgien) n'a simplement aucun destinataire instrumentiste — pas
+un email vide.
+
+### Extension de `MissionPostDeployService::cancel()`
+
+`cancel()` n'acceptait que `OPEN → CANCELLED`. Étendu à `OPEN|ASSIGNED → CANCELLED`,
+avec retrait de l'instrumentiste dans le second cas. Effet de bord assumé et documenté :
+l'endpoint manager générique `POST /api/missions/{id}/cancel` (qui appelle la même
+méthode) peut désormais aussi annuler une mission `ASSIGNED` — capacité jugée saine en
+soi (aucune règle métier existante ne l'interdisait, c'était une limitation initiale non
+délibérée), test fonctionnel `MissionLifecycleControllerTest` mis à jour en conséquence.
+
+### Suppression d'une absence — jamais de restauration automatique
+
+`onAbsenceDeleted()` ne mute jamais une mission (une mission libérée a pu être reprise
+par quelqu'un d'autre entre-temps ; une mission annulée a déjà généré ses propres
+notifications — reconstruire l'état antérieur écraserait silencieusement ce qui s'est
+passé depuis). À la place : une notification in-app (`PLANNING_ALERT`, réutilisé) à
+chaque manager/admin, invitant à réévaluer manuellement. Délibérément générique — aucun
+lien durable n'existe entre une `Absence` et les missions qu'elle a un jour mutées, et en
+construire un pour ce seul cas d'usage aurait été disproportionné.
+
+### Statut
+
+Implémenté et testé : `MissionPostDeployServiceTest` (+3 tests pour l'extension de
+`cancel()`), `AbsenceMissionReactionServiceTest` (13 tests unitaires),
+`AbsenceMissionsReactedMessageHandlerTest` (8 tests unitaires — groupement par
+destinataire, gating des préférences), `AbsenceMissionReactionFunctionalTest` (7 tests
+fonctionnels réels — DB réelle, idempotence, `SurgeonSchedulePost` inchangé),
+`AbsenceControllerTest` (2 tests réécrits pour le nouveau comportement + non-régression
+de la composition avec `AbsenceImpactService`), `PlanningEmailTemplatesTest` (+7 tests
+pour les 3 nouveaux templates). 831/831 tests backend verts. Vérifié en conditions
+réelles contre Mailpit local (comptes jetables `@surgicalhub.internal`) : les deux
+scénarios (absence instrumentiste, absence chirurgien) produisent exactement les emails
+attendus, aucun doublon, `MAIL_SAFE_MODE` toujours actif (mode `capture`, aucune
+livraison externe possible).
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -2657,3 +2795,4 @@ puisque le DSN committé y est aussi Mailpit).
 | 06-07-2026 | D-059 — MissionClaim historique seule + MissionEligibilityService mission-centrique (précise D-057) |
 | 06-07-2026 | D-060 — Photo de profil : optionnelle à l'onboarding, rappel proactif après connexion |
 | 12-07-2026 | D-061 — MAIL_SAFE_MODE : garde-fou centralisé contre l'envoi accidentel d'emails réels |
+| 12-07-2026 | D-062 — Réaction automatique aux absences sur les missions déjà déployées (libération/annulation) |
