@@ -605,7 +605,6 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
             'displayName' => 'Jean Martin',
             'oldEmail'    => 'ancienne@example.com',
             'newEmail'    => 'nouvelle@example.com',
-            'changedAt'   => new \DateTimeImmutable('2026-07-13 08:30:00'),
         ], $overrides);
     }
 
@@ -616,7 +615,8 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
         $this->assertStringContainsString('Jean Martin', $html);
         $this->assertStringContainsString('ancienne@example.com', $html);
         $this->assertStringContainsString('nouvelle@example.com', $html);
-        $this->assertStringContainsString('13/07/2026', $html);
+        $this->assertStringContainsString('Votre adresse email a été modifiée', $html);
+        $this->assertStringContainsString('support@surgicalhub.be', $html);
     }
 
     public function test_user_email_changed_old_address_txt_renders(): void
@@ -634,7 +634,8 @@ final class PlanningEmailTemplatesTest extends KernelTestCase
 
         $this->assertStringContainsString('Jean Martin', $html);
         $this->assertStringContainsString('nouvelle@example.com', $html);
-        $this->assertStringContainsString('13/07/2026', $html);
+        $this->assertStringContainsString('Votre adresse email est confirmée', $html);
+        $this->assertStringContainsString('support@surgicalhub.be', $html);
         $this->assertStringNotContainsString('ancienne@example.com', $html, 'The new-address email must never mention the old address.');
     }
 

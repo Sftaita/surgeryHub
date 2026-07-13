@@ -2778,10 +2778,16 @@ jamais l'autre, ni la mutation déjà flushée — remonté comme `warnings[]` d
 (`{code: "EMAIL_CHANGE_NOTIFICATION_NOT_QUEUED", recipient: "old"|"new", message}`),
 jamais comme un échec de la requête elle-même.
 
-**Templates** : `user_email_changed_{old,new}_address.{html,txt}.twig`, isolés,
-volontairement minimaux — aucun design définitif appliqué (en attente du chemin de
-référence à fournir), structure prête à être reskinnée sans changer les variables de
-contexte (`displayName`, `oldEmail`/`newEmail`, `changedAt`).
+**Templates** : `user_email_changed_{old,new}_address.{html,twig}` — design final appliqué
+le 2026-07-13 depuis le handoff `design_handoff_email_recap_planning` (même système
+visuel que les emails de planning : table-based/CSS inline, wordmark + eyebrow "SÉCURITÉ"/
+"COMPTE", carte `ancienne → nouvelle adresse` pour l'email ancienne adresse, bannière verte
+de confirmation pour l'email nouvelle adresse). Variables de contexte : `displayName`,
+`oldEmail`/`newEmail`. **La date/heure du changement n'apparaît volontairement pas dans le
+corps de l'email** — absente du design fourni (fidélité totale retenue plutôt qu'un ajout
+hors design), déjà tracée indépendamment dans `UserAuditEvent.createdAt` (accessible à un
+admin via `/api/admin/audit`). Versions `.txt.twig` dérivées du même contenu (non fournies
+par le design, celui-ci ne livrant que du HTML final).
 
 **Erreurs** : réutilise les exceptions HTTP génériques déjà auto-mappées par
 `ApiExceptionSubscriber` vers le format normalisé (`BadRequestHttpException`→400,
@@ -2843,8 +2849,9 @@ Implémenté et testé : `UserEmailChangeServiceTest` (12 tests unitaires), 4 te
 DB réelle), `PlanningEmailTemplatesTest` (+4, les 2 nouveaux templates html+txt).
 860/860 tests backend verts. Frontend : `UserEmailEditor` (8 tests), tables avatar (3+3
 tests), drawers avatar (2+2 tests), `buildProfilePictureUrl` (7 tests) — voir
-`docs/api.md`/`docs/architecture.md` pour le détail du contrat. Templates volontairement
-non finalisés visuellement — design de référence à fournir séparément.
+`docs/api.md`/`docs/architecture.md` pour le détail du contrat. Design final des 2
+templates appliqué le 2026-07-13, `PlanningEmailTemplatesTest` mis à jour en conséquence
+(831/831 → toujours 860/860, contenu revu, aucun test supplémentaire).
 
 ---
 

@@ -63,19 +63,17 @@ class UserEmailChangeService
         $this->userAuditService->userEmailChanged($actor, $target, $oldEmail, $newEmail);
         $this->em->flush();
 
-        $changedAt = new \DateTimeImmutable();
         $warnings = [];
 
         try {
             $this->emailService->sendTemplatedEmail(
                 to: $oldEmail,
-                subject: 'Votre adresse email SurgicalHub a été modifiée',
+                subject: 'SurgicalHub — Votre adresse email a été modifiée',
                 htmlTemplate: 'emails/user_email_changed_old_address.html.twig',
                 context: [
                     'displayName' => $displayName,
                     'oldEmail' => $oldEmail,
                     'newEmail' => $newEmail,
-                    'changedAt' => $changedAt,
                 ],
                 textTemplate: 'emails/user_email_changed_old_address.txt.twig',
             );
@@ -90,12 +88,11 @@ class UserEmailChangeService
         try {
             $this->emailService->sendTemplatedEmail(
                 to: $newEmail,
-                subject: 'Cette adresse est désormais associée à votre compte SurgicalHub',
+                subject: 'SurgicalHub — Votre adresse email est confirmée',
                 htmlTemplate: 'emails/user_email_changed_new_address.html.twig',
                 context: [
                     'displayName' => $displayName,
                     'newEmail' => $newEmail,
-                    'changedAt' => $changedAt,
                 ],
                 textTemplate: 'emails/user_email_changed_new_address.txt.twig',
             );
