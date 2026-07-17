@@ -688,8 +688,21 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         self::assertContains($missionId, $postClaimIds, 'W10-1: after claim, ASSIGNED mission must appear in instrumentist unscoped list');
 
         // ── Manager can still see all missions ────────────────────────────────
-        $client->request('GET', '/api/missions', server: $this->auth($managerToken));
+        // Scoped to this deploy's planningVersionId rather than relying on the
+        // unfiltered list's default page (limit=20, sorted startAt DESC): the manager
+        // list is intentionally NOT auto-scoped like the instrumentist one above (W10-1
+        // only restricts non-managers), so an unfiltered query here depends on how many
+        // OTHER Mission rows already exist with a startAt at or after this test's own
+        // fixture (self::YEAR/self::MONTH) — a real, pre-existing condition in a shared,
+        // persistent test database (confirmed: 20 unrelated leftover missions from other
+        // test runs, unrelated to D-064/D-066, present at investigation time), not
+        // something this test can control. planningVersionId narrows the query to
+        // exactly what this test created, independent of any other data's volume or
+        // dates — the assertion becomes both stronger (asserts on the right scope) and
+        // immune to pagination.
+        $client->request('GET', '/api/missions?planningVersionId=' . $versionId, server: $this->auth($managerToken));
+        self::assertSame(Response::HTTP_OK, $client->getResponse()->getStatusCode());
         $managerIds = array_column($this->json($client->getResponse())['items'], 'id');
-        self::assertContains($missionId, $managerIds, 'Manager unscoped list must include all missions regardless of status');
+        self::assertContains($missionId, $managerIds, 'Manager list scoped to this deploy must include all its missions regardless of status');
     }
 }
