@@ -50,6 +50,8 @@ function makeIntervention(overrides: Partial<EncodingIntervention> = {}): Encodi
     primaryFirm: null,
     materialLines: [],
     materialItemRequests: [],
+    suggestedMaterials: [],
+    coherence: { hasNoMaterialLines: true, unusedSuggestedMaterialItemIds: [], unexpectedMaterialItemIds: [], materialLineIdsFromOtherFirm: [] },
     ...overrides,
   };
 }
@@ -174,6 +176,54 @@ describe("InterventionsSection — bouton persistant Nouvelle intervention", () 
 
     await screen.findByText("Réparation coiffe des rotateurs");
     expect(screen.getAllByRole("button", { name: /nouvelle intervention/i })).toHaveLength(1);
+  });
+});
+
+describe("InterventionsSection — matériels suggérés (Lot 6)", () => {
+  const withSuggestion = () =>
+    makeIntervention({
+      primaryFirm: { id: 10, name: "Arthrex" },
+      suggestedMaterials: [
+        { id: 100, label: "FiberWire n°2", referenceCode: "FW-2", unit: "unité", isImplant: false, firm: { id: 10, name: "Arthrex" } },
+      ],
+      coherence: { hasNoMaterialLines: true, unusedSuggestedMaterialItemIds: [100], unexpectedMaterialItemIds: [], materialLineIdsFromOtherFirm: [] },
+    });
+
+  it("affiche un matériel suggéré non encore ajouté avec un bouton Ajouter direct", async () => {
+    renderSection([withSuggestion()]);
+
+    expect(await screen.findByText("Suggéré — Arthrex")).toBeInTheDocument();
+  });
+
+  it("ajouter un matériel suggéré appelle directement material-lines, sans passer par l'assistant", async () => {
+    const user = userEvent.setup();
+    renderSection([withSuggestion()]);
+
+    await screen.findByText("Suggéré — Arthrex");
+    const addButtons = screen.getAllByRole("button", { name: "Ajouter" });
+    await user.click(addButtons[0]);
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith(
+        `/api/missions/${MISSION_ID}/material-lines`,
+        expect.objectContaining({ missionInterventionId: 1, itemId: 100, quantity: "1" }),
+      );
+    });
+  });
+
+  it("un matériel suggéré déjà ajouté (coherence.unusedSuggestedMaterialItemIds vide) ne réapparaît pas en suggestion", async () => {
+    renderSection([
+      makeIntervention({
+        primaryFirm: { id: 10, name: "Arthrex" },
+        suggestedMaterials: [
+          { id: 100, label: "FiberWire n°2", referenceCode: "FW-2", unit: "unité", isImplant: false, firm: { id: 10, name: "Arthrex" } },
+        ],
+        coherence: { hasNoMaterialLines: false, unusedSuggestedMaterialItemIds: [], unexpectedMaterialItemIds: [], materialLineIdsFromOtherFirm: [] },
+      }),
+    ]);
+
+    await screen.findByText("Réparation coiffe des rotateurs");
+    expect(screen.queryByText("Suggéré — Arthrex")).not.toBeInTheDocument();
   });
 });
 
