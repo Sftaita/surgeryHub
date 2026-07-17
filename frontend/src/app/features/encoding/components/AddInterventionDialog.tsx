@@ -2,93 +2,61 @@ import * as React from "react";
 import {
   Autocomplete,
   Button,
-  Chip,
-  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Select,
+  SelectChangeEvent,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
-import { getFirmPricingRules } from "../../../features/billing-firm/api/firmBilling.api";
-
-type FirmRef = { id: number; name: string };
-
-type InterventionOption = {
-  code: string;
-  firms: FirmRef[];
-};
+import type { CatalogFirm, CatalogInterventionType } from "../api/encoding.types";
 
 type Values = {
-  code: string;
-  label: string;
+  interventionTypeId: number;
+  primaryFirmId?: number;
   orderIndex: number;
 };
 
 type Props = {
   open:          boolean;
   loading:       boolean;
-  firms:         FirmRef[];          // catalog firms for this mission
-  existingCount: number;             // used to auto-assign orderIndex
+  interventionTypes: CatalogInterventionType[]; // catalogue actif (Lot 5)
+  firms:         CatalogFirm[];                 // catalog firms for this mission
+  existingCount: number;                        // used to auto-assign orderIndex
   onClose:       () => void;
   onSubmit:      (values: Values) => void;
+  /** Aucun type ne correspond au besoin — ouvre la demande de nouveau type (D-068). */
+  onRequestNewType: () => void;
 };
 
 export default function AddInterventionDialog({
-  open, loading, firms, existingCount, onClose, onSubmit,
+  open, loading, interventionTypes, firms, existingCount, onClose, onSubmit, onRequestNewType,
 }: Props) {
-  const [options,        setOptions]        = React.useState<InterventionOption[]>([]);
-  const [loadingOptions, setLoadingOptions] = React.useState(false);
-  const [selected,       setSelected]       = React.useState<InterventionOption | null>(null);
-  const [customCode,     setCustomCode]     = React.useState("");
-  const [label,          setLabel]          = React.useState("");
+  const [type, setType] = React.useState<CatalogInterventionType | null>(null);
+  const [firmId, setFirmId] = React.useState<number | "">("");
 
-  // Fetch intervention codes from pricing rules of catalog firms
   React.useEffect(() => {
     if (!open) return;
-    // Reset form
-    setSelected(null);
-    setCustomCode("");
-    setLabel("");
-    if (!firms.length) return;
+    setType(null);
+    setFirmId("");
+  }, [open]);
 
-    setLoadingOptions(true);
-    Promise.all(firms.map((f) => getFirmPricingRules(f.id).catch(() => [])))
-      .then((results) => {
-        const map = new Map<string, FirmRef[]>();
-        results.forEach((rules, i) => {
-          const firm = firms[i];
-          rules
-            .filter((r) => r.ruleType === "INTERVENTION_FEE" && r.active && r.interventionType)
-            .forEach((r) => {
-              // Lot 1 : interventionCode (texte libre) a été remplacé par interventionType
-              // (référentiel fermé) — cet écran d'encodage n'est pas encore branché dessus
-              // (Lot 5), on garde ici une simple adaptation mécanique pour rester compilable.
-              const code = r.interventionType!.code;
-              if (!map.has(code)) map.set(code, []);
-              map.get(code)!.push({ id: firm.id, name: firm.name });
-            });
-        });
-        setOptions(Array.from(map.entries()).map(([code, firmList]) => ({ code, firms: firmList })));
-      })
-      .finally(() => setLoadingOptions(false));
-  }, [open, firms]);
-
-  const effectiveCode = selected ? selected.code : customCode.trim().toUpperCase();
-  const canSubmit = !!effectiveCode && !loading;
+  const canSubmit = !!type && !loading;
 
   function handleSubmit() {
-    if (!effectiveCode) return;
+    if (!type) return;
     onSubmit({
-      code:       effectiveCode,
-      label:      label.trim() || effectiveCode,
-      orderIndex: existingCount, // auto-assign (0-indexed array position)
+      interventionTypeId: type.id,
+      primaryFirmId: firmId === "" ? undefined : Number(firmId),
+      orderIndex: existingCount,
     });
   }
-
-  const associatedFirms = selected?.firms ?? [];
 
   return (
     <Dialog open={open} onClose={loading ? undefined : onClose} fullWidth maxWidth="xs">
@@ -97,93 +65,64 @@ export default function AddInterventionDialog({
       <DialogContent>
         <Stack spacing={2.5} sx={{ mt: 1 }}>
 
-          {/* Intervention selector */}
-          <Autocomplete<InterventionOption, false, false, true>
-            freeSolo
-            options={options}
-            loading={loadingOptions}
-            getOptionLabel={(opt) => (typeof opt === "string" ? opt : opt.code)}
-            value={selected}
-            inputValue={selected ? selected.code : customCode}
-            onInputChange={(_, v, reason) => {
-              if (reason === "input") {
-                setCustomCode(v.toUpperCase());
-                setSelected(null);
-              }
-            }}
-            onChange={(_, v) => {
-              if (v && typeof v !== "string") {
-                setSelected(v);
-                setCustomCode(v.code);
-              } else if (typeof v === "string") {
-                setCustomCode(v.toUpperCase());
-                setSelected(null);
-              } else {
-                setSelected(null);
-                setCustomCode("");
-              }
-            }}
+          {/* Référentiel fermé (Lot 5) — plus de code libre. */}
+          <Autocomplete<CatalogInterventionType, false, false, false>
+            options={interventionTypes}
+            getOptionLabel={(opt) => `${opt.code} — ${opt.label}`}
+            isOptionEqualToValue={(a, b) => a.id === b.id}
+            value={type}
+            onChange={(_, v) => setType(v)}
+            disabled={loading}
             renderInput={(params) => (
-              <TextField
-                {...params}
-                label="Type d'intervention *"
-                size="small"
-                InputProps={{
-                  ...params.InputProps,
-                  endAdornment: (
-                    <>
-                      {loadingOptions && <CircularProgress size={14} />}
-                      {params.InputProps.endAdornment}
-                    </>
-                  ),
-                }}
-                helperText={options.length === 0 && !loadingOptions ? "Aucune règle tarifaire configurée — saisissez un code libre" : " "}
-              />
+              <TextField {...params} label="Type d'intervention *" size="small" />
             )}
-            renderOption={(props, opt) => (
-              <li {...props} key={opt.code}>
-                <Stack>
-                  <Typography variant="body2" fontWeight={600}>{opt.code}</Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {opt.firms.map((f) => f.name).join(", ")}
-                  </Typography>
-                </Stack>
-              </li>
-            )}
-            noOptionsText="Aucune intervention disponible"
+            noOptionsText="Aucun type actif dans le catalogue"
           />
 
-          {/* Associated firms — informational */}
-          {associatedFirms.length > 0 && (
-            <Stack spacing={0.5}>
-              <Typography variant="caption" color="text.secondary">
-                Facturation via :
-              </Typography>
-              <Stack direction="row" spacing={0.75} flexWrap="wrap">
-                {associatedFirms.map((f) => (
-                  <Chip key={f.id} label={f.name} size="small" variant="outlined" color="primary" />
-                ))}
-              </Stack>
-            </Stack>
+          {interventionTypes.length === 0 && (
+            <Typography variant="caption" color="text.secondary">
+              Le catalogue est vide pour le moment.
+            </Typography>
           )}
 
-          {/* Optional label */}
-          <TextField
-            label="Libellé (optionnel)"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            disabled={loading}
-            size="small"
-            fullWidth
-            helperText="Laissez vide pour utiliser le code comme libellé"
-          />
+          <Typography variant="caption" color="text.secondary">
+            Type introuvable ?{" "}
+            <Typography
+              component="button"
+              type="button"
+              variant="caption"
+              onClick={onRequestNewType}
+              sx={{ border: "none", background: "none", p: 0, color: "primary.main", cursor: "pointer", textDecoration: "underline", font: "inherit" }}
+            >
+              Faire une demande au manager
+            </Typography>
+          </Typography>
+
+          {/* Firme principale — facultative */}
+          <FormControl fullWidth size="small" disabled={loading}>
+            <InputLabel id="add-itv-firm-label">Firme principale (optionnel)</InputLabel>
+            <Select
+              labelId="add-itv-firm-label"
+              value={firmId === "" ? "" : String(firmId)}
+              label="Firme principale (optionnel)"
+              onChange={(e: SelectChangeEvent<string>) => {
+                const v = e.target.value;
+                setFirmId(v === "" ? "" : Number(v));
+              }}
+            >
+              <MenuItem value="">—</MenuItem>
+              {firms.map((f) => (
+                <MenuItem key={f.id} value={String(f.id)}>{f.name}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
         </Stack>
       </DialogContent>
 
       <DialogActions>
         <Button onClick={onClose} disabled={loading}>Annuler</Button>
-        <Button variant="contained" onClick={handleSubmit} disabled={!canSubmit || loading}>
-          {loading ? <CircularProgress size={16} /> : "Ajouter"}
+        <Button variant="contained" onClick={handleSubmit} disabled={!canSubmit}>
+          {loading ? "..." : "Ajouter"}
         </Button>
       </DialogActions>
     </Dialog>

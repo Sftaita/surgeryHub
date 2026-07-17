@@ -244,6 +244,7 @@ export default function MissionEncodingPage() {
           missionId={mission.id}
           canEdit={canEdit}
           interventions={encoding.interventions ?? []}
+          interventionTypeRequests={encoding.interventionTypeRequests ?? []}
           catalog={encoding.catalog}
           onSaved={() => setLastSavedAt(new Date())}
         />

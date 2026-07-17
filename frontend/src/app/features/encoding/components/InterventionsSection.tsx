@@ -11,13 +11,18 @@ import AddIcon from "@mui/icons-material/Add";
 
 import type {
   EncodingIntervention,
+  EncodingInterventionTypeRequest,
   CatalogFirm,
   CatalogItem,
+  CatalogInterventionType,
   CreateMaterialLineBody,
   PatchMaterialLineBody,
   EncodingMaterialLine,
   MissionEncodingResponse,
   CreateMaterialItemRequestBody,
+  CreateInterventionBody,
+  PatchInterventionBody,
+  CreateInterventionTypeRequestBody,
 } from "../api/encoding.types";
 import { useToast } from "../../../ui/toast/useToast";
 import {
@@ -28,6 +33,7 @@ import {
   patchMissionMaterialLine,
   deleteMissionMaterialLine,
   createMissionMaterialItemRequest,
+  createMissionInterventionTypeRequest,
 } from "../api/encoding.api";
 
 import AddInterventionDialog from "./AddInterventionDialog";
@@ -36,12 +42,14 @@ import ConfirmDeleteDialog from "./ConfirmDeleteDialog";
 import MaterialWizard from "./MaterialWizard";
 import EditMaterialLineDialog from "./EditMaterialLineDialog";
 import MaterialItemRequestDialog from "./MaterialItemRequestDialog";
+import InterventionTypeRequestDialog from "./InterventionTypeRequestDialog";
 
 type Props = {
   missionId: number;
   canEdit: boolean;
   interventions: EncodingIntervention[];
-  catalog?: { items: CatalogItem[]; firms: CatalogFirm[] };
+  interventionTypeRequests?: EncodingInterventionTypeRequest[];
+  catalog?: { items: CatalogItem[]; firms: CatalogFirm[]; interventionTypes: CatalogInterventionType[] };
   /** Called after any intervention/material mutation succeeds — drives the "Enregistré à" timestamp. */
   onSaved?: () => void;
 };
@@ -76,7 +84,7 @@ function interventionTitle(itv: EncodingIntervention): string {
   return itv.label || itv.code;
 }
 
-export default function InterventionsSection({ missionId, canEdit, interventions, catalog, onSaved }: Props) {
+export default function InterventionsSection({ missionId, canEdit, interventions, interventionTypeRequests, catalog, onSaved }: Props) {
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -89,6 +97,8 @@ export default function InterventionsSection({ missionId, canEdit, interventions
 
   const [openRequestDialog, setOpenRequestDialog] = React.useState(false);
   const [preferredRequestInterventionId, setPreferredRequestInterventionId] = React.useState<number | null>(null);
+
+  const [openTypeRequestDialog, setOpenTypeRequestDialog] = React.useState(false);
 
   // Accordéon — la première intervention est ouverte par défaut (screens/encodage/README.md).
   const [openIds, setOpenIds] = React.useState<Set<number> | null>(null);
@@ -128,16 +138,22 @@ export default function InterventionsSection({ missionId, canEdit, interventions
   // ── Mutations: Interventions ──────────────────────────────────────
 
   const createInterventionMutation = useMutation({
-    mutationFn: (body: { code: string; label: string; orderIndex: number }) =>
+    mutationFn: (body: CreateInterventionBody) =>
       createMissionIntervention(missionId, body),
     onSuccess: () => { toast.success("Intervention ajoutée"); setOpenAddIntervention(false); invalidate(); onSaved?.(); },
     onError: (err: any) => toast.error(extractErrorMessage(err)),
   });
 
   const patchInterventionMutation = useMutation({
-    mutationFn: (args: { interventionId: number; body: { code?: string; label?: string; orderIndex?: number } }) =>
+    mutationFn: (args: { interventionId: number; body: PatchInterventionBody }) =>
       patchMissionIntervention(missionId, args.interventionId, args.body),
     onSuccess: () => { toast.success("Intervention mise à jour"); setEditIntervention(null); invalidate(); onSaved?.(); },
+    onError: (err: any) => toast.error(extractErrorMessage(err)),
+  });
+
+  const createTypeRequestMutation = useMutation({
+    mutationFn: (body: CreateInterventionTypeRequestBody) => createMissionInterventionTypeRequest(missionId, body),
+    onSuccess: () => { toast.success("Demande envoyée au manager."); setOpenTypeRequestDialog(false); setOpenAddIntervention(false); invalidate(); },
     onError: (err: any) => toast.error(extractErrorMessage(err)),
   });
 
@@ -278,7 +294,8 @@ export default function InterventionsSection({ missionId, canEdit, interventions
   const isBusy =
     createInterventionMutation.isPending || patchInterventionMutation.isPending ||
     deleteInterventionMutation.isPending || createLineMutation.isPending ||
-    patchLineMutation.isPending || deleteLineMutation.isPending || createRequestMutation.isPending;
+    patchLineMutation.isPending || deleteLineMutation.isPending || createRequestMutation.isPending ||
+    createTypeRequestMutation.isPending;
 
   const sorted = (interventions ?? []).slice().sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
   const isOpen = (id: number) => (openIds ?? new Set(sorted.length ? [sorted[0].id] : [])).has(id);
@@ -304,6 +321,24 @@ export default function InterventionsSection({ missionId, canEdit, interventions
         </Box>
         <Box sx={{ flex: 1, borderTop: "1px dashed", borderColor: "grey.300" }} />
       </Stack>
+
+      {/* Demandes de nouveau type en attente (Lot 5, D-068) — pas rattachées à une
+          intervention : le manager doit d'abord les résoudre pour qu'une intervention
+          existe. */}
+      {(interventionTypeRequests ?? []).length > 0 && (
+        <Paper variant="outlined" sx={{ borderRadius: 2, borderStyle: "dashed", borderColor: "#F0C36D", background: "#FEF6E7", p: 1.5 }}>
+          <Typography variant="caption" sx={{ fontWeight: 700, color: "#B7791F" }}>
+            En attente de validation manager
+          </Typography>
+          <Stack spacing={0.5} sx={{ mt: 0.5 }}>
+            {(interventionTypeRequests ?? []).map((req) => (
+              <Typography key={req.id} variant="body2" color="text.secondary">
+                {req.label}{req.suggestedCode ? ` (${req.suggestedCode})` : ""}
+              </Typography>
+            ))}
+          </Stack>
+        </Paper>
+      )}
 
       {/* Empty state — un seul point d'entrée pour ajouter (le bouton persistant plein-largeur
           ci-dessous), jamais un second bouton concurrent ici. */}
@@ -502,21 +537,32 @@ export default function InterventionsSection({ missionId, canEdit, interventions
       <AddInterventionDialog
         open={openAddIntervention}
         loading={createInterventionMutation.isPending}
+        interventionTypes={catalog?.interventionTypes ?? []}
         firms={catalog?.firms ?? []}
         existingCount={sorted.length}
         onClose={() => (isBusy ? null : setOpenAddIntervention(false))}
         onSubmit={(values) => createInterventionMutation.mutate(values)}
+        onRequestNewType={() => setOpenTypeRequestDialog(true)}
       />
 
       <EditInterventionDialog
         open={!!editIntervention}
         loading={patchInterventionMutation.isPending}
         intervention={editIntervention}
+        interventionTypes={catalog?.interventionTypes ?? []}
+        firms={catalog?.firms ?? []}
         onClose={() => (isBusy ? null : setEditIntervention(null))}
         onSubmit={(values) => {
           if (!editIntervention) return;
           patchInterventionMutation.mutate({ interventionId: editIntervention.id, body: values });
         }}
+      />
+
+      <InterventionTypeRequestDialog
+        open={openTypeRequestDialog}
+        loading={createTypeRequestMutation.isPending}
+        onClose={() => (isBusy ? null : setOpenTypeRequestDialog(false))}
+        onSubmit={(values) => createTypeRequestMutation.mutate(values)}
       />
 
       <ConfirmDeleteDialog

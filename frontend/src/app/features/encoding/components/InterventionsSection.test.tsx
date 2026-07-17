@@ -37,6 +37,7 @@ const CATALOG = {
       firm: { id: 10, name: "Arthrex" },
     },
   ],
+  interventionTypes: [{ id: 1, code: "GEN01", label: "Réparation coiffe des rotateurs" }],
 };
 
 function makeIntervention(overrides: Partial<EncodingIntervention> = {}): EncodingIntervention {
@@ -45,6 +46,8 @@ function makeIntervention(overrides: Partial<EncodingIntervention> = {}): Encodi
     code: "GEN01",
     label: "Réparation coiffe des rotateurs",
     orderIndex: 0,
+    interventionType: { id: 1, code: "GEN01", label: "Réparation coiffe des rotateurs" },
+    primaryFirm: null,
     materialLines: [],
     materialItemRequests: [],
     ...overrides,

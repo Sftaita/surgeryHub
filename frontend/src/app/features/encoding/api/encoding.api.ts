@@ -9,6 +9,7 @@ import type {
   MaterialLineDto,
   CreateMaterialItemRequestBody,
   MaterialItemRequestDto,
+  CreateInterventionTypeRequestBody,
 } from "./encoding.types";
 
 export async function fetchMissionEncoding(
@@ -32,11 +33,7 @@ export async function createMissionIntervention(
 ): Promise<MissionInterventionDto> {
   const { data } = await apiClient.post<MissionInterventionDto>(
     `/api/missions/${missionId}/interventions`,
-    {
-      code: body.code,
-      label: body.label,
-      orderIndex: body.orderIndex,
-    },
+    body,
   );
   return data;
 }
@@ -108,6 +105,21 @@ export async function createMissionMaterialItemRequest(
 ): Promise<MaterialItemRequestDto> {
   const { data } = await apiClient.post<MaterialItemRequestDto>(
     `/api/missions/${missionId}/material-item-requests`,
+    body,
+  );
+  return data;
+}
+
+/**
+ * "Demande de nouveau type" (Lot 5, D-068)
+ * - POST /api/missions/{missionId}/intervention-type-requests
+ */
+export async function createMissionInterventionTypeRequest(
+  missionId: number,
+  body: CreateInterventionTypeRequestBody,
+): Promise<{ id: number }> {
+  const { data } = await apiClient.post<{ id: number }>(
+    `/api/missions/${missionId}/intervention-type-requests`,
     body,
   );
   return data;

@@ -50,13 +50,37 @@ export type EncodingMaterialItemRequest = {
   comment: string; // backend: "Optionnel"
 };
 
+/** Référentiel fermé (Lot 1) — voir intervention-types feature. */
+export type CatalogInterventionType = {
+  id: number;
+  code: string;
+  label: string;
+};
+
+/**
+ * Lot 5 (D-068) : `code`/`label` restent l'instantané figé à la création (jamais relu
+ * depuis le référentiel) — inchangés même si `interventionType` est ensuite renommé ou
+ * désactivé ailleurs. `interventionType` est `null` uniquement pour les lignes
+ * historiques antérieures au Lot 5 (non mappées, ex: mission #529).
+ */
 export type EncodingIntervention = {
   id: number;
   code: string;
   label: string;
   orderIndex: number;
+  interventionType: CatalogInterventionType | null;
+  primaryFirm: { id: number; name: string } | null;
   materialLines: EncodingMaterialLine[];
   materialItemRequests?: EncodingMaterialItemRequest[];
+};
+
+/** "Demande de nouveau type" (Lot 5, D-068) — pas rattachée à une intervention : elle
+ *  précède toujours sa création (aucune intervention ne peut exister sans type valide). */
+export type EncodingInterventionTypeRequest = {
+  id: number;
+  label: string;
+  suggestedCode: string | null;
+  comment: string | null;
 };
 
 export type MissionEncodingResponse = {
@@ -67,33 +91,53 @@ export type MissionEncodingResponse = {
     allowedActions: string[];
   };
   interventions: EncodingIntervention[];
+  interventionTypeRequests: EncodingInterventionTypeRequest[];
   catalog?: {
     items: CatalogItem[];
     firms: CatalogFirm[];
+    interventionTypes: CatalogInterventionType[];
   };
 };
 
 /**
  * DTO retourné par:
- * - POST /api/missions/{missionId}/interventions  (201)
- * - PATCH /api/missions/{missionId}/interventions/{interventionId} (200)
+ * - POST /api/missions/{missionId}/interventions  (201, {id} seulement)
+ * - PATCH /api/missions/{missionId}/interventions/{interventionId} (204, pas de corps)
  */
 export type MissionInterventionDto = {
   id: number;
-  missionId: number;
-  code: string;
-  label: string;
-  orderIndex: number;
-  // le détail (materialLines) vient de GET /api/missions/{id}/encoding
 };
 
+/**
+ * Lot 5 (D-068) : `interventionTypeId` obligatoire (référentiel fermé) remplace
+ * l'ancien `code`/`label` texte libre — le nom/code affichés sont dérivés côté serveur.
+ * `primaryFirmId` reste facultatif.
+ */
 export type CreateInterventionBody = {
-  code: string;
-  label: string;
+  interventionTypeId: number;
+  primaryFirmId?: number;
   orderIndex: number;
 };
 
-export type PatchInterventionBody = Partial<CreateInterventionBody>;
+/**
+ * `primaryFirmId` supporte le retrait explicite : omettre la clé = ne pas toucher à la
+ * firme actuelle ; `primaryFirmId: null` = la retirer.
+ */
+export type PatchInterventionBody = {
+  interventionTypeId?: number;
+  primaryFirmId?: number | null;
+  orderIndex?: number;
+};
+
+/**
+ * "Demande de nouveau type" (Lot 5, D-068)
+ * - POST /api/missions/{missionId}/intervention-type-requests
+ */
+export type CreateInterventionTypeRequestBody = {
+  label: string;
+  suggestedCode?: string;
+  comment?: string;
+};
 
 /**
  * Material lines
