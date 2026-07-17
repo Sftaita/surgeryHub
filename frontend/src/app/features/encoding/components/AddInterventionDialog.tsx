@@ -61,9 +61,12 @@ export default function AddInterventionDialog({
         results.forEach((rules, i) => {
           const firm = firms[i];
           rules
-            .filter((r) => r.ruleType === "INTERVENTION_FEE" && r.active && r.interventionCode)
+            .filter((r) => r.ruleType === "INTERVENTION_FEE" && r.active && r.interventionType)
             .forEach((r) => {
-              const code = r.interventionCode!;
+              // Lot 1 : interventionCode (texte libre) a été remplacé par interventionType
+              // (référentiel fermé) — cet écran d'encodage n'est pas encore branché dessus
+              // (Lot 5), on garde ici une simple adaptation mécanique pour rester compilable.
+              const code = r.interventionType!.code;
               if (!map.has(code)) map.set(code, []);
               map.get(code)!.push({ id: firm.id, name: firm.name });
             });

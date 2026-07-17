@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
@@ -21,471 +22,601 @@ import {
   TableHead,
   TableRow,
   TextField,
-  ToggleButton,
-  ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from "@mui/material";
-import AddIcon      from "@mui/icons-material/Add";
-import DeleteIcon   from "@mui/icons-material/Delete";
-import WarningAmberIcon from "@mui/icons-material/WarningAmber";
-import HelpOutlineIcon  from "@mui/icons-material/HelpOutline";
+import AddIcon from "@mui/icons-material/Add";
+import DeleteIcon from "@mui/icons-material/Delete";
+import EditIcon from "@mui/icons-material/Edit";
+import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
+import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getFirmPricingRules,
   createPricingRule,
-  deletePricingRule,
   updatePricingRule,
+  deletePricingRule,
   updateFirmBillingContact,
+  getFirmServiceOfferings,
+  createFirmServiceOffering,
+  updateFirmServiceOffering,
+  addSuggestedMaterial,
+  reorderSuggestedMaterials,
+  deleteSuggestedMaterial,
   type PricingRule,
+  type FirmServiceOffering,
 } from "../../../features/billing-firm/api/firmBilling.api";
+import {
+  getInterventionTypes,
+  createInterventionType,
+  type InterventionType,
+} from "../../../features/intervention-types/api/interventionTypes.api";
 import { useToast } from "../../../ui/toast/useToast";
+import { apiClient } from "../../../api/apiClient";
 
 function extractError(err: unknown): string {
   const e = err as any;
   return e?.response?.data?.error?.message ?? e?.message ?? String(err);
 }
 
-// ── Add-rule dialog ───────────────────────────────────────────────────────────
-function AddRuleDialog({
-  open,
-  onClose,
-  firmId,
-  existingRules,
-  onCreated,
+type MaterialItemRow = { id: number; label: string; referenceCode: string | null };
+
+// ── Dialog : ajouter une prestation ─────────────────────────────────────────
+function AddOfferingDialog({
+  open, onClose, firmId, existingTypeIds, onCreated,
 }: {
-  open:          boolean;
-  onClose:       () => void;
-  firmId:        number;
-  existingRules: PricingRule[];
-  onCreated:     () => void;
+  open: boolean;
+  onClose: () => void;
+  firmId: number;
+  existingTypeIds: number[];
+  onCreated: () => void;
 }) {
   const toast = useToast();
-  const [ruleType,          setRuleType]          = React.useState<"INTERVENTION_FEE" | "IMPLANT_FEE">("INTERVENTION_FEE");
-  const [interventionCode,  setInterventionCode]  = React.useState("");
-  const [materialItemId,    setMaterialItemId]    = React.useState<number | "">("");
-  const [unitPrice,         setUnitPrice]         = React.useState("");
+  const qc = useQueryClient();
+  const [interventionTypeId, setInterventionTypeId] = React.useState<number | "">("");
+  const [creatingNewType, setCreatingNewType] = React.useState(false);
+  const [newCode, setNewCode] = React.useState("");
+  const [newLabel, setNewLabel] = React.useState("");
 
-  // Reset form on open
   React.useEffect(() => {
     if (open) {
-      setRuleType("INTERVENTION_FEE");
-      setInterventionCode("");
-      setMaterialItemId("");
-      setUnitPrice("");
+      setInterventionTypeId("");
+      setCreatingNewType(false);
+      setNewCode("");
+      setNewLabel("");
     }
   }, [open]);
 
-  // Material items for this firm
-  const itemsQuery = useQuery({
-    queryKey: ["material-items-firm", firmId],
-    queryFn: async () => {
-      const { apiClient } = await import("../../../api/apiClient");
-      const res = await apiClient.get("/api/material-items", {
-        params: { firmId, implantOnly: true, limit: 200 },
-      });
-      return res.data.items as { id: number; label: string; referenceCode: string | null }[];
+  const typesQuery = useQuery({ queryKey: ["intervention-types", "active"], queryFn: () => getInterventionTypes(true), enabled: open });
+  const availableTypes = (typesQuery.data ?? []).filter((t) => !existingTypeIds.includes(t.id));
+
+  const createTypeMutation = useMutation({
+    mutationFn: createInterventionType,
+    onSuccess: (created) => {
+      qc.invalidateQueries({ queryKey: ["intervention-types"] });
+      setInterventionTypeId(created.id);
+      setCreatingNewType(false);
     },
-    enabled: open && ruleType === "IMPLANT_FEE",
+    onError: (e) => toast.error(extractError(e)),
   });
 
-  // ── Duplicate detection ───────────────────────────────────────────────────
-  const isDuplicate = React.useMemo(() => {
-    if (ruleType === "INTERVENTION_FEE") {
-      if (!interventionCode.trim()) return false;
-      return existingRules.some(
-        (r) =>
-          r.ruleType === "INTERVENTION_FEE" &&
-          r.interventionCode?.toUpperCase() === interventionCode.trim().toUpperCase(),
-      );
-    } else {
-      if (!materialItemId) return false;
-      return existingRules.some(
-        (r) => r.ruleType === "IMPLANT_FEE" && r.materialItem?.id === materialItemId,
-      );
-    }
-  }, [ruleType, interventionCode, materialItemId, existingRules]);
-
-  const canSubmit =
-    !!unitPrice &&
-    Number(unitPrice) >= 0 &&
-    !isDuplicate &&
-    (ruleType === "INTERVENTION_FEE"
-      ? !!interventionCode.trim()
-      : !!materialItemId);
-
-  const qc = useQueryClient();
-  const createMut = useMutation({
-    mutationFn: () =>
-      createPricingRule(firmId, {
-        ruleType,
-        unitPrice:         Number(unitPrice),
-        interventionCode:  ruleType === "INTERVENTION_FEE" ? interventionCode.trim().toUpperCase() : undefined,
-        materialItemId:    ruleType === "IMPLANT_FEE" && materialItemId ? materialItemId : undefined,
-      }),
-    onSuccess: () => {
-      toast.success("Règle ajoutée");
-      qc.invalidateQueries({ queryKey: ["pricing-rules", firmId] });
-      onCreated();
-      onClose();
-    },
-    onError: (err) => toast.error(extractError(err)),
+  const createOfferingMutation = useMutation({
+    mutationFn: () => createFirmServiceOffering(firmId, { interventionTypeId: interventionTypeId as number }),
+    onSuccess: () => { toast.success("Prestation créée"); onCreated(); onClose(); },
+    onError: (e) => toast.error(extractError(e)),
   });
-
-  // Duplicate label for the warning
-  const duplicateExisting = isDuplicate
-    ? existingRules.find((r) =>
-        ruleType === "INTERVENTION_FEE"
-          ? r.ruleType === "INTERVENTION_FEE" &&
-            r.interventionCode?.toUpperCase() === interventionCode.trim().toUpperCase()
-          : r.ruleType === "IMPLANT_FEE" && r.materialItem?.id === materialItemId,
-      )
-    : null;
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
-      <DialogTitle fontWeight={700} sx={{ pb: 0.5 }}>
-        Ajouter une règle tarifaire
-      </DialogTitle>
-
+      <DialogTitle fontWeight={700}>Ajouter une prestation</DialogTitle>
       <DialogContent>
-        <Stack spacing={2.5} sx={{ pt: 1.5 }}>
-
-          {/* ── Step 1: Type ── */}
-          <Box>
-            <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ letterSpacing: .5, textTransform: "uppercase", display: "block", mb: 1 }}>
-              1 · Type de forfait
-            </Typography>
-            <ToggleButtonGroup
-              value={ruleType}
-              exclusive
-              onChange={(_, v) => { if (v) { setRuleType(v); setInterventionCode(""); setMaterialItemId(""); } }}
-              size="small"
-              fullWidth
-            >
-              <ToggleButton value="INTERVENTION_FEE" sx={{ fontWeight: 600, fontSize: ".8rem", textTransform: "none" }}>
-                Par intervention
-              </ToggleButton>
-              <ToggleButton value="IMPLANT_FEE" sx={{ fontWeight: 600, fontSize: ".8rem", textTransform: "none" }}>
-                Par implant
-              </ToggleButton>
-            </ToggleButtonGroup>
-          </Box>
-
-          {/* ── Step 2: Condition ── */}
-          <Box>
-            <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ letterSpacing: .5, textTransform: "uppercase", display: "block", mb: 1 }}>
-              2 · {ruleType === "INTERVENTION_FEE" ? "Code intervention" : "Implant concerné"}
-            </Typography>
-
-            {ruleType === "INTERVENTION_FEE" ? (
-              <TextField
-                fullWidth
-                size="small"
-                label="Ex : LCA, PTG, PTE…"
-                value={interventionCode}
-                onChange={(e) => setInterventionCode(e.target.value.toUpperCase())}
-                inputProps={{ style: { fontFamily: "monospace", fontWeight: 700, letterSpacing: 1 } }}
-                error={isDuplicate}
-              />
-            ) : (
+        <Stack spacing={2} sx={{ pt: 1 }}>
+          {!creatingNewType ? (
+            <>
               <Select
-                fullWidth
-                size="small"
-                value={materialItemId}
-                onChange={(e) => setMaterialItemId(Number(e.target.value))}
-                displayEmpty
-                error={isDuplicate}
+                fullWidth size="small" displayEmpty
+                value={interventionTypeId}
+                onChange={(e) => setInterventionTypeId(Number(e.target.value))}
               >
                 <MenuItem value="" disabled>
-                  {itemsQuery.isLoading ? "Chargement…" : "Sélectionner un implant"}
+                  {typesQuery.isLoading ? "Chargement…" : "Sélectionner un type d'intervention"}
                 </MenuItem>
-                {(itemsQuery.data ?? []).map((item) => (
-                  <MenuItem key={item.id} value={item.id}>
-                    {item.label}
-                    {item.referenceCode && (
-                      <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                        ({item.referenceCode})
-                      </Typography>
-                    )}
-                  </MenuItem>
+                {availableTypes.map((t) => (
+                  <MenuItem key={t.id} value={t.id}>{t.label} <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>({t.code})</Typography></MenuItem>
                 ))}
               </Select>
-            )}
-
-            {/* Duplicate warning */}
-            {isDuplicate && duplicateExisting && (
-              <Alert
-                severity="warning"
-                icon={<WarningAmberIcon fontSize="small" />}
-                sx={{ mt: 1, py: 0.5, fontSize: ".78rem", borderRadius: 1.5 }}
-              >
-                Cette règle existe déjà pour cette firme ({Number(duplicateExisting.unitPrice).toFixed(2)} €).
-                Supprimez-la d'abord si vous souhaitez la modifier.
-              </Alert>
-            )}
-          </Box>
-
-          {/* ── Step 3: Price ── */}
-          <Box>
-            <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ letterSpacing: .5, textTransform: "uppercase", display: "block", mb: 1 }}>
-              3 · Tarif contractuel
-            </Typography>
-            <TextField
-              fullWidth
-              size="small"
-              label="Montant (€)"
-              type="number"
-              value={unitPrice}
-              onChange={(e) => setUnitPrice(e.target.value)}
-              inputProps={{ min: 0, step: "0.01" }}
-              InputProps={{ endAdornment: <Typography color="text.secondary" sx={{ pl: 0.5 }}>€</Typography> }}
-            />
-          </Box>
+              <Button size="small" onClick={() => setCreatingNewType(true)} sx={{ alignSelf: "flex-start" }}>
+                + Nouveau type d'intervention
+              </Button>
+            </>
+          ) : (
+            <>
+              <TextField
+                label="Code *" size="small" value={newCode}
+                onChange={(e) => setNewCode(e.target.value.toUpperCase())}
+                inputProps={{ style: { fontFamily: "monospace", fontWeight: 700 } }}
+                placeholder="Ex : LCA-PRIMAIRE"
+              />
+              <TextField label="Libellé *" size="small" value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder="Ex : LCA primaire" />
+              <Stack direction="row" spacing={1}>
+                <Button size="small" onClick={() => setCreatingNewType(false)}>Annuler</Button>
+                <Button
+                  size="small" variant="contained" disableElevation
+                  disabled={!newCode.trim() || !newLabel.trim() || createTypeMutation.isPending}
+                  onClick={() => createTypeMutation.mutate({ code: newCode.trim(), label: newLabel.trim() })}
+                >
+                  {createTypeMutation.isPending ? <CircularProgress size={14} /> : "Créer le type"}
+                </Button>
+              </Stack>
+            </>
+          )}
         </Stack>
       </DialogContent>
-
       <DialogActions sx={{ px: 3, pb: 2.5 }}>
         <Button onClick={onClose} color="inherit">Annuler</Button>
         <Button
-          variant="contained"
-          disableElevation
-          onClick={() => createMut.mutate()}
-          disabled={!canSubmit || createMut.isPending}
-          sx={{ borderRadius: 2 }}
+          variant="contained" disableElevation
+          disabled={!interventionTypeId || createOfferingMutation.isPending}
+          onClick={() => createOfferingMutation.mutate()}
         >
-          {createMut.isPending ? <CircularProgress size={16} /> : "Ajouter"}
+          {createOfferingMutation.isPending ? <CircularProgress size={16} /> : "Créer"}
         </Button>
       </DialogActions>
     </Dialog>
   );
 }
 
-// ── Main page ─────────────────────────────────────────────────────────────────
-export default function BillingConfigPage() {
+// ── Dialog : forfait d'intervention (créer/modifier) ────────────────────────
+function ForfaitDialog({
+  open, onClose, firmId, interventionTypeId, existingRule,
+}: {
+  open: boolean;
+  onClose: () => void;
+  firmId: number;
+  interventionTypeId: number;
+  existingRule: PricingRule | null;
+}) {
   const toast = useToast();
-  const qc    = useQueryClient();
+  const qc = useQueryClient();
+  const [unitPrice, setUnitPrice] = React.useState("");
+  const [validFrom, setValidFrom] = React.useState("");
+  const [validTo, setValidTo] = React.useState("");
 
-  const [tutorialOpen,   setTutorialOpen]   = React.useState(false);
-  const [addRuleOpen,    setAddRuleOpen]    = React.useState(false);
-  const [selectedFirmId, setSelectedFirmId] = React.useState<number | "">("");
+  React.useEffect(() => {
+    if (open) {
+      setUnitPrice(existingRule?.unitPrice ?? "");
+      setValidFrom(existingRule?.validFrom ?? "");
+      setValidTo(existingRule?.validTo ?? "");
+    }
+  }, [open, existingRule]);
 
-  // Firm list
-  const firmsQuery = useQuery({
-    queryKey: ["firms"],
-    queryFn: async () => {
-      const { apiClient } = await import("../../../api/apiClient");
-      const res = await apiClient.get("/api/firms");
-      return res.data as { id: number; name: string; billingEmail?: string | null }[];
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      const payload = {
+        unitPrice: Number(unitPrice),
+        validFrom: validFrom || null,
+        validTo: validTo || null,
+      };
+      return existingRule
+        ? updatePricingRule(firmId, existingRule.id, payload)
+        : createPricingRule(firmId, { ruleType: "INTERVENTION_FEE", interventionTypeId, ...payload });
     },
+    onSuccess: () => {
+      toast.success("Forfait enregistré");
+      qc.invalidateQueries({ queryKey: ["pricing-rules", firmId] });
+      onClose();
+    },
+    onError: (e) => toast.error(extractError(e)),
   });
 
-  // Pricing rules for selected firm
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+      <DialogTitle fontWeight={700}>{existingRule ? "Modifier le forfait" : "Définir un forfait"}</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ pt: 1 }}>
+          <TextField
+            label="Montant (€) *" type="number" size="small" value={unitPrice}
+            onChange={(e) => setUnitPrice(e.target.value)}
+            inputProps={{ min: 0, step: "0.01" }}
+          />
+          <Stack direction="row" spacing={1.5}>
+            <TextField
+              label="Valide à partir de" type="date" size="small" fullWidth
+              value={validFrom} onChange={(e) => setValidFrom(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+              helperText="Vide = depuis toujours"
+            />
+            <TextField
+              label="Valide jusqu'à" type="date" size="small" fullWidth
+              value={validTo} onChange={(e) => setValidTo(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+              helperText="Vide = sans fin"
+            />
+          </Stack>
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2.5 }}>
+        <Button onClick={onClose} color="inherit">Annuler</Button>
+        <Button
+          variant="contained" disableElevation
+          disabled={!unitPrice || Number(unitPrice) < 0 || saveMutation.isPending}
+          onClick={() => saveMutation.mutate()}
+        >
+          {saveMutation.isPending ? <CircularProgress size={16} /> : "Enregistrer"}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// ── Dialog : matériels suggérés d'une prestation ────────────────────────────
+function SuggestedMaterialsDialog({
+  open, onClose, firmId, offering, firmMaterials,
+}: {
+  open: boolean;
+  onClose: () => void;
+  firmId: number;
+  offering: FirmServiceOffering | null;
+  firmMaterials: MaterialItemRow[];
+}) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [search, setSearch] = React.useState("");
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["service-offerings", firmId] });
+
+  const addMutation = useMutation({
+    mutationFn: (materialItemId: number) => addSuggestedMaterial(firmId, offering!.id, materialItemId),
+    onSuccess: invalidate,
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const reorderMutation = useMutation({
+    mutationFn: (orderedIds: number[]) => reorderSuggestedMaterials(firmId, offering!.id, orderedIds),
+    onSuccess: invalidate,
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const removeMutation = useMutation({
+    mutationFn: (suggestionId: number) => deleteSuggestedMaterial(firmId, offering!.id, suggestionId),
+    onSuccess: invalidate,
+    onError: (e) => toast.error(extractError(e)),
+  });
+
+  if (!offering) return null;
+
+  const suggestions = [...offering.suggestedMaterials].sort((a, b) => a.displayOrder - b.displayOrder);
+  const suggestedIds = new Set(suggestions.map((s) => s.materialItem.id));
+  const results = search.trim()
+    ? firmMaterials.filter((m) => !suggestedIds.has(m.id) && m.label.toLowerCase().includes(search.trim().toLowerCase()))
+    : [];
+
+  function move(index: number, direction: -1 | 1) {
+    const next = [...suggestions];
+    const target = index + direction;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    reorderMutation.mutate(next.map((s) => s.id));
+  }
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+      <DialogTitle fontWeight={700}>Matériels suggérés — {offering.interventionType.label}</DialogTitle>
+      <DialogContent>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Accélère l'encodage — ne restreint jamais le matériel réellement utilisable.
+        </Typography>
+
+        <TextField
+          fullWidth size="small" placeholder="Rechercher un matériel de cette firme…"
+          value={search} onChange={(e) => setSearch(e.target.value)}
+          sx={{ mb: 1.5 }}
+        />
+        {results.length > 0 && (
+          <Paper variant="outlined" sx={{ mb: 2, maxHeight: 160, overflowY: "auto" }}>
+            {results.map((m) => (
+              <Box
+                key={m.id}
+                onClick={() => { addMutation.mutate(m.id); setSearch(""); }}
+                sx={{ px: 1.5, py: 1, cursor: "pointer", "&:hover": { bgcolor: "grey.50" }, borderBottom: "1px solid", borderColor: "grey.100" }}
+              >
+                <Typography variant="body2">{m.label}</Typography>
+                {m.referenceCode && <Typography variant="caption" color="text.secondary">{m.referenceCode}</Typography>}
+              </Box>
+            ))}
+          </Paper>
+        )}
+
+        <Divider sx={{ my: 1.5 }} />
+
+        {suggestions.length === 0 ? (
+          <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: "center" }}>
+            Aucun matériel suggéré pour l'instant.
+          </Typography>
+        ) : (
+          <Stack spacing={1}>
+            {suggestions.map((s, index) => (
+              <Stack key={s.id} direction="row" alignItems="center" spacing={1} sx={{ p: 1, border: "1px solid", borderColor: "grey.150", borderRadius: 1.5 }}>
+                <Stack sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="body2" noWrap>{s.materialItem.label}</Typography>
+                  {!s.materialItem.active && <Chip label="Matériel désactivé" size="small" color="default" sx={{ fontSize: ".65rem", height: 18, alignSelf: "flex-start" }} />}
+                </Stack>
+                <IconButton size="small" disabled={index === 0} onClick={() => move(index, -1)}><ArrowUpwardIcon fontSize="small" /></IconButton>
+                <IconButton size="small" disabled={index === suggestions.length - 1} onClick={() => move(index, 1)}><ArrowDownwardIcon fontSize="small" /></IconButton>
+                <IconButton size="small" color="error" onClick={() => removeMutation.mutate(s.id)}><DeleteIcon fontSize="small" /></IconButton>
+              </Stack>
+            ))}
+          </Stack>
+        )}
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2.5 }}>
+        <Button onClick={onClose} variant="contained" disableElevation>Fermer</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// ── Dialog : ajouter un tarif matériel ───────────────────────────────────────
+function AddMaterialRuleDialog({
+  open, onClose, firmId, firmMaterials, existingRules,
+}: {
+  open: boolean;
+  onClose: () => void;
+  firmId: number;
+  firmMaterials: MaterialItemRow[];
+  existingRules: PricingRule[];
+}) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [materialItemId, setMaterialItemId] = React.useState<number | "">("");
+  const [unitPrice, setUnitPrice] = React.useState("");
+
+  React.useEffect(() => {
+    if (open) { setMaterialItemId(""); setUnitPrice(""); }
+  }, [open]);
+
+  const isDuplicate = materialItemId !== "" && existingRules.some(
+    (r) => r.ruleType === "MATERIAL_FEE" && r.materialItem?.id === materialItemId && r.active,
+  );
+
+  const createMutation = useMutation({
+    mutationFn: () => createPricingRule(firmId, { ruleType: "MATERIAL_FEE", materialItemId: materialItemId as number, unitPrice: Number(unitPrice) }),
+    onSuccess: () => {
+      toast.success("Tarif ajouté");
+      qc.invalidateQueries({ queryKey: ["pricing-rules", firmId] });
+      onClose();
+    },
+    onError: (e) => toast.error(extractError(e)),
+  });
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+      <DialogTitle fontWeight={700}>Ajouter un tarif matériel</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ pt: 1 }}>
+          <Autocomplete
+            options={firmMaterials}
+            getOptionLabel={(m) => m.label}
+            onChange={(_, v) => setMaterialItemId(v ? v.id : "")}
+            renderInput={(params) => <TextField {...params} label="Matériel *" size="small" />}
+          />
+          {isDuplicate && (
+            <Alert severity="warning" sx={{ py: 0.5, fontSize: ".8rem" }}>
+              Une règle active existe déjà pour ce matériel.
+            </Alert>
+          )}
+          <TextField
+            label="Montant (€) *" type="number" size="small" value={unitPrice}
+            onChange={(e) => setUnitPrice(e.target.value)}
+            inputProps={{ min: 0, step: "0.01" }}
+          />
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2.5 }}>
+        <Button onClick={onClose} color="inherit">Annuler</Button>
+        <Button
+          variant="contained" disableElevation
+          disabled={!materialItemId || !unitPrice || Number(unitPrice) < 0 || isDuplicate || createMutation.isPending}
+          onClick={() => createMutation.mutate()}
+        >
+          {createMutation.isPending ? <CircularProgress size={16} /> : "Ajouter"}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// ── Page principale ───────────────────────────────────────────────────────────
+export default function BillingConfigPage() {
+  const toast = useToast();
+  const qc = useQueryClient();
+
+  const [selectedFirmId, setSelectedFirmId] = React.useState<number | "">("");
+  const [addOfferingOpen, setAddOfferingOpen] = React.useState(false);
+  const [forfaitTarget, setForfaitTarget] = React.useState<{ interventionTypeId: number; rule: PricingRule | null } | null>(null);
+  const [suggestionsTargetId, setSuggestionsTargetId] = React.useState<number | null>(null);
+  const [addMaterialRuleOpen, setAddMaterialRuleOpen] = React.useState(false);
+
+  const firmsQuery = useQuery({
+    queryKey: ["firms"],
+    queryFn: async () => (await apiClient.get("/api/firms")).data as { id: number; name: string }[],
+  });
+
   const rulesQuery = useQuery({
     queryKey: ["pricing-rules", selectedFirmId],
     queryFn: () => getFirmPricingRules(selectedFirmId as number),
     enabled: !!selectedFirmId,
   });
 
-  // Billing contact form
-  const [billingEmail,   setBillingEmail]   = React.useState("");
-  const [billingEmailCc, setBillingEmailCc] = React.useState("");
-
-  React.useEffect(() => {
-    if (!selectedFirmId) return;
-    const firm = (firmsQuery.data ?? []).find((f) => f.id === selectedFirmId);
-    if (firm) setBillingEmail(firm.billingEmail ?? "");
-  }, [selectedFirmId, firmsQuery.data]);
-
-  const saveBillingMut = useMutation({
-    mutationFn: () =>
-      updateFirmBillingContact(selectedFirmId as number, {
-        billingEmail:   billingEmail || null,
-        billingEmailCc: billingEmailCc.split(",").map((e) => e.trim()).filter(Boolean),
-      }),
-    onSuccess: () => { toast.success("Contact sauvegardé"); qc.invalidateQueries({ queryKey: ["firms"] }); },
-    onError:   (err) => toast.error(extractError(err)),
+  const offeringsQuery = useQuery({
+    queryKey: ["service-offerings", selectedFirmId],
+    queryFn: () => getFirmServiceOfferings(selectedFirmId as number),
+    enabled: !!selectedFirmId,
   });
 
-  const deleteMut = useMutation({
+  const materialsQuery = useQuery({
+    queryKey: ["material-items-firm", selectedFirmId],
+    queryFn: async () => {
+      const res = await apiClient.get("/api/material-items", { params: { firmId: selectedFirmId, limit: 200 } });
+      return (res.data.items as { id: number; label: string; referenceCode: string | null }[]);
+    },
+    enabled: !!selectedFirmId,
+  });
+
+  const toggleOfferingMutation = useMutation({
+    mutationFn: ({ id, active }: { id: number; active: boolean }) => updateFirmServiceOffering(selectedFirmId as number, id, { active }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["service-offerings", selectedFirmId] }),
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const deleteRuleMutation = useMutation({
     mutationFn: (ruleId: number) => deletePricingRule(selectedFirmId as number, ruleId),
     onSuccess: () => { toast.success("Règle supprimée"); qc.invalidateQueries({ queryKey: ["pricing-rules", selectedFirmId] }); },
-    onError:   (err) => toast.error(extractError(err)),
+    onError: (e) => toast.error(extractError(e)),
   });
 
-  const toggleMut = useMutation({
-    mutationFn: ({ ruleId, active }: { ruleId: number; active: boolean }) =>
-      updatePricingRule(selectedFirmId as number, ruleId, { active }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["pricing-rules", selectedFirmId] }),
-    onError:   (err) => toast.error(extractError(err)),
-  });
+  const rules = rulesQuery.data ?? [];
+  const offerings = offeringsQuery.data ?? [];
+  const materialRules = rules.filter((r) => r.ruleType === "MATERIAL_FEE");
+  const materials = materialsQuery.data ?? [];
+  // Dérivé en direct de la liste rafraîchie plutôt qu'une copie figée au clic — sinon le
+  // dialogue afficherait une liste de suggestions périmée après un ajout/suppression.
+  const suggestionsTarget = offerings.find((o) => o.id === suggestionsTargetId) ?? null;
 
-  const rules         = rulesQuery.data ?? [];
-  const selectedFirm  = (firmsQuery.data ?? []).find((f) => f.id === selectedFirmId);
+  function forfaitFor(interventionTypeId: number): PricingRule | null {
+    return rules.find((r) => r.ruleType === "INTERVENTION_FEE" && r.interventionType?.id === interventionTypeId) ?? null;
+  }
 
   return (
-    <Stack spacing={3}>
+    <Stack spacing={3} sx={{ p: 3, maxWidth: 1100 }}>
+      <Typography variant="h5" fontWeight={700}>Règles de facturation firmes</Typography>
 
-      {/* ── Title ── */}
-      <Stack direction="row" alignItems="center" spacing={1}>
-        <Typography variant="h6" fontWeight={700}>Configuration facturation</Typography>
-        <IconButton size="small" onClick={() => setTutorialOpen(true)} color="primary" sx={{ opacity: 0.7 }}>
-          <HelpOutlineIcon fontSize="small" />
-        </IconButton>
-      </Stack>
-
-      {/* ── Firm selector ── */}
       <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
         <Stack direction="row" spacing={2} alignItems="center">
           <Typography variant="subtitle2" fontWeight={700} sx={{ minWidth: 48 }}>Firme</Typography>
           <Select
             value={selectedFirmId}
-            onChange={(e) => {
-              setSelectedFirmId(Number(e.target.value));
-              setBillingEmailCc("");
-            }}
-            displayEmpty
-            size="small"
-            sx={{ minWidth: 240 }}
+            onChange={(e) => setSelectedFirmId(Number(e.target.value))}
+            displayEmpty size="small" sx={{ minWidth: 240 }}
           >
             <MenuItem value="" disabled>Sélectionner une firme…</MenuItem>
-            {(firmsQuery.data ?? []).map((f) => (
-              <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>
-            ))}
+            {(firmsQuery.data ?? []).map((f) => <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>)}
           </Select>
-          {selectedFirm && (
-            <Typography variant="caption" color="text.secondary">
-              {rules.length} règle{rules.length !== 1 ? "s" : ""} tarifaire{rules.length !== 1 ? "s" : ""}
-            </Typography>
-          )}
         </Stack>
       </Paper>
 
-      {/* ── Empty state ── */}
-      {selectedFirmId === "" && (
+      {selectedFirmId === "" ? (
         <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 8, gap: 2 }}>
-          <Typography variant="h6" fontWeight={600} color="text.secondary">
-            Sélectionnez une firme pour commencer
-          </Typography>
-          <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ maxWidth: 380 }}>
-            Configurez le contact de facturation et les tarifs contractuels (par intervention ou par implant)
-            propres à chaque firme.
+          <Typography variant="h6" fontWeight={600} color="text.secondary">Sélectionnez une firme pour commencer</Typography>
+          <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ maxWidth: 420 }}>
+            Prestations (accélérateurs de saisie) et tarifs contractuels restent deux
+            choses indépendantes — le contact de facturation reste géré depuis la fiche Firme.
           </Typography>
         </Box>
-      )}
-
-      {selectedFirmId !== "" && (
+      ) : (
         <>
-          {/* ── Billing contact ── */}
-          <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
-            <Typography variant="subtitle1" fontWeight={700} mb={2}>Contact de facturation</Typography>
-            <Stack spacing={1.5}>
-              <TextField
-                label="Email principal"
-                value={billingEmail}
-                onChange={(e) => setBillingEmail(e.target.value)}
-                size="small"
-                sx={{ maxWidth: 400 }}
-                placeholder="facturation@firme.com"
-              />
-              <TextField
-                label="CC (séparés par virgule)"
-                value={billingEmailCc}
-                onChange={(e) => setBillingEmailCc(e.target.value)}
-                size="small"
-                sx={{ maxWidth: 500 }}
-                placeholder="cc1@firme.com, cc2@firme.com"
-              />
-              <Button
-                variant="contained"
-                disableElevation
-                onClick={() => saveBillingMut.mutate()}
-                disabled={saveBillingMut.isPending}
-                sx={{ alignSelf: "flex-start" }}
-              >
-                {saveBillingMut.isPending ? <CircularProgress size={16} /> : "Sauvegarder"}
-              </Button>
-            </Stack>
-          </Paper>
-
-          {/* ── Pricing rules ── */}
+          {/* ── Prestations ── */}
           <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
             <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
-              <Typography variant="subtitle1" fontWeight={700}>Règles tarifaires</Typography>
-              <Button
-                variant="outlined"
-                size="small"
-                startIcon={<AddIcon />}
-                onClick={() => setAddRuleOpen(true)}
-                sx={{ borderRadius: 999, fontWeight: 600 }}
-              >
-                Ajouter une règle
+              <Typography variant="subtitle1" fontWeight={700}>Prestations</Typography>
+              <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={() => setAddOfferingOpen(true)} sx={{ borderRadius: 999, fontWeight: 600 }}>
+                Ajouter une prestation
               </Button>
             </Stack>
+            <Divider sx={{ mb: 2 }} />
 
+            {offeringsQuery.isLoading ? (
+              <CircularProgress size={20} />
+            ) : offerings.length === 0 ? (
+              <Typography color="text.secondary" variant="body2">Aucune prestation configurée pour cette firme.</Typography>
+            ) : (
+              <Stack spacing={1.5}>
+                {offerings.map((o) => {
+                  const forfait = forfaitFor(o.interventionType.id);
+                  return (
+                    <Paper key={o.id} variant="outlined" sx={{ p: 1.75, borderRadius: 2 }}>
+                      <Stack direction="row" alignItems="center" spacing={1.5}>
+                        <Stack sx={{ flex: 1, minWidth: 0 }}>
+                          <Stack direction="row" alignItems="center" spacing={1}>
+                            <Typography fontWeight={700} variant="body2">{o.interventionType.label}</Typography>
+                            <Chip label={o.interventionType.code} size="small" variant="outlined" sx={{ fontFamily: "monospace", fontSize: ".68rem" }} />
+                            <Chip
+                              label={o.active ? "Active" : "Inactive"} size="small"
+                              color={o.active ? "success" : "default"}
+                              onClick={() => toggleOfferingMutation.mutate({ id: o.id, active: !o.active })}
+                              sx={{ cursor: "pointer" }}
+                            />
+                          </Stack>
+                          <Typography variant="caption" color="text.secondary">
+                            {o.suggestedMaterials.length} matériel{o.suggestedMaterials.length !== 1 ? "s" : ""} suggéré{o.suggestedMaterials.length !== 1 ? "s" : ""}
+                          </Typography>
+                        </Stack>
+
+                        <Button size="small" onClick={() => setSuggestionsTargetId(o.id)}>
+                          Matériels suggérés
+                        </Button>
+
+                        {forfait ? (
+                          <Chip
+                            icon={<EditIcon sx={{ fontSize: 14 }} />}
+                            label={`${Number(forfait.unitPrice).toFixed(2)} €`}
+                            onClick={() => setForfaitTarget({ interventionTypeId: o.interventionType.id, rule: forfait })}
+                            color="primary" variant="outlined" sx={{ cursor: "pointer", fontWeight: 700 }}
+                          />
+                        ) : (
+                          <Button size="small" variant="outlined" onClick={() => setForfaitTarget({ interventionTypeId: o.interventionType.id, rule: null })}>
+                            Définir un forfait
+                          </Button>
+                        )}
+                      </Stack>
+                    </Paper>
+                  );
+                })}
+              </Stack>
+            )}
+          </Paper>
+
+          {/* ── Matériel facturable ── */}
+          <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
+              <Typography variant="subtitle1" fontWeight={700}>Matériel facturable</Typography>
+              <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={() => setAddMaterialRuleOpen(true)} sx={{ borderRadius: 999, fontWeight: 600 }}>
+                Ajouter un tarif matériel
+              </Button>
+            </Stack>
             <Divider sx={{ mb: 2 }} />
 
             {rulesQuery.isLoading ? (
               <CircularProgress size={20} />
-            ) : rules.length === 0 ? (
-              <Typography color="text.secondary" variant="body2">
-                Aucune règle configurée pour {selectedFirm?.name}.
-              </Typography>
+            ) : materialRules.length === 0 ? (
+              <Typography color="text.secondary" variant="body2">Aucun tarif matériel configuré pour cette firme.</Typography>
             ) : (
               <Table size="small">
                 <TableHead>
                   <TableRow sx={{ bgcolor: "grey.50" }}>
-                    <TableCell>Type</TableCell>
-                    <TableCell>Condition</TableCell>
+                    <TableCell>Matériel</TableCell>
                     <TableCell align="right">Tarif</TableCell>
+                    <TableCell>Validité</TableCell>
                     <TableCell>Statut</TableCell>
                     <TableCell align="right">Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {rules.map((rule: PricingRule) => (
+                  {materialRules.map((rule) => (
                     <TableRow key={rule.id} hover>
                       <TableCell>
-                        <Chip
-                          label={rule.ruleType === "INTERVENTION_FEE" ? "Intervention" : "Implant"}
-                          size="small"
-                          color={rule.ruleType === "INTERVENTION_FEE" ? "primary" : "secondary"}
-                          variant="outlined"
-                        />
+                        <Typography variant="body2">{rule.materialItem?.label}</Typography>
+                        {rule.materialItem?.referenceCode && <Typography variant="caption" color="text.secondary">({rule.materialItem.referenceCode})</Typography>}
+                      </TableCell>
+                      <TableCell align="right"><Typography fontWeight={700}>{Number(rule.unitPrice).toFixed(2)} {rule.currency}</Typography></TableCell>
+                      <TableCell>
+                        <Typography variant="caption" color="text.secondary">
+                          {rule.validFrom ?? "…"} → {rule.validTo ?? "…"}
+                        </Typography>
                       </TableCell>
                       <TableCell>
-                        {rule.ruleType === "INTERVENTION_FEE" ? (
-                          <Typography component="span" sx={{ fontFamily: "monospace", fontWeight: 700, fontSize: ".85rem" }}>
-                            {rule.interventionCode}
-                          </Typography>
-                        ) : (
-                          <Stack direction="row" spacing={0.75} alignItems="center">
-                            <Typography variant="body2">{rule.materialItem?.label}</Typography>
-                            {rule.materialItem?.referenceCode && (
-                              <Typography variant="caption" color="text.secondary">
-                                ({rule.materialItem.referenceCode})
-                              </Typography>
-                            )}
-                          </Stack>
-                        )}
+                        <Chip label={rule.active ? "Actif" : "Inactif"} size="small" color={rule.active ? "success" : "default"} />
                       </TableCell>
                       <TableCell align="right">
-                        <Typography fontWeight={700}>{Number(rule.unitPrice).toFixed(2)} €</Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Chip
-                          label={rule.active ? "Actif" : "Inactif"}
-                          size="small"
-                          color={rule.active ? "success" : "default"}
-                          onClick={() => toggleMut.mutate({ ruleId: rule.id, active: !rule.active })}
-                          sx={{ cursor: "pointer" }}
-                        />
-                      </TableCell>
-                      <TableCell align="right">
-                        <IconButton
-                          size="small" color="error"
-                          onClick={() => deleteMut.mutate(rule.id)}
-                          disabled={deleteMut.isPending}
-                        >
+                        <IconButton size="small" color="error" onClick={() => deleteRuleMutation.mutate(rule.id)} disabled={deleteRuleMutation.isPending}>
                           <DeleteIcon fontSize="small" />
                         </IconButton>
                       </TableCell>
@@ -498,49 +629,38 @@ export default function BillingConfigPage() {
         </>
       )}
 
-      {/* ── Add rule dialog ── */}
       {selectedFirmId !== "" && (
-        <AddRuleDialog
-          open={addRuleOpen}
-          onClose={() => setAddRuleOpen(false)}
-          firmId={selectedFirmId as number}
-          existingRules={rules}
-          onCreated={() => setAddRuleOpen(false)}
-        />
+        <>
+          <AddOfferingDialog
+            open={addOfferingOpen}
+            onClose={() => setAddOfferingOpen(false)}
+            firmId={selectedFirmId as number}
+            existingTypeIds={offerings.map((o) => o.interventionType.id)}
+            onCreated={() => qc.invalidateQueries({ queryKey: ["service-offerings", selectedFirmId] })}
+          />
+          <ForfaitDialog
+            open={forfaitTarget !== null}
+            onClose={() => setForfaitTarget(null)}
+            firmId={selectedFirmId as number}
+            interventionTypeId={forfaitTarget?.interventionTypeId ?? 0}
+            existingRule={forfaitTarget?.rule ?? null}
+          />
+          <SuggestedMaterialsDialog
+            open={suggestionsTargetId !== null}
+            onClose={() => setSuggestionsTargetId(null)}
+            firmId={selectedFirmId as number}
+            offering={suggestionsTarget}
+            firmMaterials={materials}
+          />
+          <AddMaterialRuleDialog
+            open={addMaterialRuleOpen}
+            onClose={() => setAddMaterialRuleOpen(false)}
+            firmId={selectedFirmId as number}
+            firmMaterials={materials}
+            existingRules={rules}
+          />
+        </>
       )}
-
-      {/* ── Tutorial dialog ── */}
-      <Dialog open={tutorialOpen} onClose={() => setTutorialOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle fontWeight={700}>Comment configurer la facturation ?</DialogTitle>
-        <DialogContent dividers>
-          <Stack spacing={2.5}>
-            {[
-              { n: 1, title: "Sélectionnez une firme", desc: "Choisissez la firme à configurer. Chaque firme a ses propres tarifs contractuels, indépendamment des autres." },
-              { n: 2, title: "Configurez le contact de facturation", desc: "Email principal et CC pour l'envoi automatique des factures." },
-              { n: 3, title: "Ajoutez des règles tarifaires", desc: "Deux types : par intervention (ex. LCA = 140 € chez Smith) ou par implant spécifique. Une même intervention peut avoir des tarifs différents selon la firme." },
-              { n: 4, title: "Doublons bloqués automatiquement", desc: "Il est impossible d'ajouter deux règles pour le même code intervention ou le même implant au sein d'une même firme. Supprimez l'ancienne règle avant d'en créer une nouvelle." },
-            ].map(({ n, title, desc }) => (
-              <Stack key={n} direction="row" spacing={2} alignItems="flex-start">
-                <Box sx={{
-                  minWidth: 32, height: 32, borderRadius: "50%",
-                  bgcolor: "primary.main", color: "white",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontWeight: 700, fontSize: 14, flexShrink: 0,
-                }}>
-                  {n}
-                </Box>
-                <Box>
-                  <Typography variant="subtitle2" fontWeight={700}>{title}</Typography>
-                  <Typography variant="body2" color="text.secondary">{desc}</Typography>
-                </Box>
-              </Stack>
-            ))}
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setTutorialOpen(false)} variant="contained" disableElevation>J'ai compris</Button>
-        </DialogActions>
-      </Dialog>
     </Stack>
   );
 }
