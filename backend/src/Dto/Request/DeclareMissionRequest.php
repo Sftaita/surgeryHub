@@ -32,6 +32,6 @@ class DeclareMissionRequest
     #[Assert\Positive]
     public ?int $surgeonUserId = null;
 
-    // ✅ plus obligatoire
-    public ?string $declaredComment = null;
+    // ✅ plus obligatoire — nom de champ aligné sur docs/api.md ("comment")
+    public ?string $comment = null;
 }

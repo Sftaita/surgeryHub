@@ -86,7 +86,7 @@ class MissionService
         }
 
         // declaredComment: optionnel (nullable en DB). On normalise la string vide en null.
-        $comment = $dto->declaredComment;
+        $comment = $dto->comment;
         if ($comment !== null) {
             $comment = trim($comment);
             if ($comment === '') {
