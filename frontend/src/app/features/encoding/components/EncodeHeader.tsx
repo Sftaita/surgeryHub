@@ -35,7 +35,6 @@ function CalendarIcon() {
 interface EncodeHeaderProps {
   missionId: number;
   siteName: string;
-  siteAddress?: string | null;
   personLine?: string | null;
   dateLabel: string;
   typeLabel: string;
@@ -48,7 +47,7 @@ interface EncodeHeaderProps {
  * qui masque BrandBand sur cette route). Vague fixe animée une seule fois à
  * l'arrivée, pas de morphing par onglet.
  */
-export function EncodeHeader({ missionId, siteName, siteAddress, personLine, dateLabel, typeLabel, onBack }: EncodeHeaderProps) {
+export function EncodeHeader({ missionId, siteName, personLine, dateLabel, typeLabel, onBack }: EncodeHeaderProps) {
   return (
     <Box
       sx={{
@@ -97,6 +96,7 @@ export function EncodeHeader({ missionId, siteName, siteAddress, personLine, dat
             width: 40, height: 40, border: "none", background: "rgba(255,255,255,.12)", borderRadius: "12px",
             cursor: "pointer", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
             transition: "background 150ms", "&:hover": { background: "rgba(255,255,255,.2)" },
+            "&:active": { transform: "scale(.96)" },
           }}
         >
           <BackIcon />
@@ -111,7 +111,7 @@ export function EncodeHeader({ missionId, siteName, siteAddress, personLine, dat
           Mission #{missionId}
         </Box>
         <Box sx={{ mt: "5px", fontSize: 15, fontWeight: 600, color: "rgba(255,255,255,.92)" }}>
-          {siteName}{siteAddress ? ` — ${siteAddress}` : ""}
+          {siteName}
         </Box>
         {personLine && (
           <Box sx={{ mt: "2px", fontSize: 13.5, color: "rgba(255,255,255,.7)" }}>

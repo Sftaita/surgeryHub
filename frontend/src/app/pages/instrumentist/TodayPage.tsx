@@ -11,7 +11,9 @@ import {
   fetchMissions,
   fetchInstrumentistOffersWithFallback,
 } from "../../features/missions/api/missions.api";
-import type { Mission } from "../../features/missions/api/missions.types";
+import type { Mission, MissionStatus } from "../../features/missions/api/missions.types";
+import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
+import { SPECIALTIES } from "../../features/planning-manager/api/planning.api";
 
 dayjs.extend(calendar);
 dayjs.locale("fr");
@@ -39,6 +41,8 @@ const AMBER_100 = "#FBEACB";
 const SHADOW_MD = "0 2px 6px rgba(22,32,43,.06), 0 8px 20px rgba(22,32,43,.08)";
 const SHADOW_XS = "0 1px 2px rgba(22,32,43,.05)";
 const SHADOW_SM = "0 1px 2px rgba(22,32,43,.05), 0 2px 6px rgba(22,32,43,.06)";
+// docs/design/components/mission-hero.md — repli sans photo : dégradé encodeHeader, jamais un autre.
+const ENCODE_HEADER_GRADIENT = "linear-gradient(150deg, #123F30 0%, #1E634A 55%, #2E7D5F 120%)";
 
 const TODAY_STATUSES = "ASSIGNED,DECLARED,IN_PROGRESS,SUBMITTED,VALIDATED";
 const ENCODING_PENDING_STATUSES = "ASSIGNED,IN_PROGRESS,DECLARED";
@@ -62,14 +66,55 @@ function formatTime(iso?: string): string {
   return dayjs(iso).format("HH[h]mm");
 }
 
+/**
+ * Aucune notion de "spécialité principale" n'existe dans le modèle (User.specialties
+ * est un tableau plat, sans ordre de priorité) — on prend donc la première renvoyée
+ * par l'API, jamais une sélection arbitraire. Cf. MissionEncodingPage.surgeonSpecialtyLabel.
+ */
+function surgeonSpecialtyLabel(mission: Mission): string | null {
+  const value = mission.surgeon?.specialties?.[0];
+  if (!value) return null;
+  return SPECIALTIES.find((s) => s.value === value)?.label ?? value;
+}
+
 function surgeonLabel(mission: Mission): string | null {
   const s = mission.surgeon;
   if (!s) return null;
   const fn = (s.firstname ?? "").trim();
   const ln = (s.lastname ?? "").trim();
   const full = `${fn} ${ln}`.trim();
-  if (full) return `Dr. ${full}`;
-  return (s as any).displayName?.trim() || null;
+  const name = full ? `Dr. ${full}` : (s as any).displayName?.trim() || null;
+  if (!name) return null;
+  const specialty = surgeonSpecialtyLabel(mission);
+  return specialty ? `${name} · ${specialty}` : name;
+}
+
+/**
+ * "En cours" est un affichage dérivé du temps réel, pas du statut serveur seul — le
+ * statut IN_PROGRESS n'est écrit en base que par une commande cron (~5min), donc s'y
+ * fier exclusivement ferait retarder la pastille jusqu'au prochain passage du cron.
+ * Règle : statut réel ASSIGNED ou IN_PROGRESS ET now ∈ [startAt, endAt[. Le cron reste
+ * la source de vérité pour tout le reste (absences, réassignation, remise au pool) —
+ * ceci ne mute jamais le statut, ça choisit seulement un libellé d'affichage.
+ */
+const IN_PROGRESS_ELIGIBLE_STATUSES: ReadonlySet<MissionStatus> = new Set(["ASSIGNED", "IN_PROGRESS"]);
+
+function isMissionCurrentlyInProgress(mission: Mission, now: dayjs.Dayjs): boolean {
+  if (!mission.status || !IN_PROGRESS_ELIGIBLE_STATUSES.has(mission.status)) return false;
+  if (!mission.startAt || !mission.endAt) return false;
+  const start = dayjs(mission.startAt);
+  const end = dayjs(mission.endAt);
+  return !now.isBefore(start) && now.isBefore(end);
+}
+
+/** Ticking clock so "En cours" apparaît/disparaît sans dépendre d'un refetch React Query. */
+function useNow(intervalMs: number): dayjs.Dayjs {
+  const [now, setNow] = React.useState(() => dayjs());
+  React.useEffect(() => {
+    const id = setInterval(() => setNow(dayjs()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
 }
 
 // ── Icons (Lucide-style outline, mirrors handoff) ────────────────────────────
@@ -101,6 +146,30 @@ function PlusCircleIcon() {
     </svg>
   );
 }
+/**
+ * `background: url(...)` on a plain Box has no built-in load-error handling (unlike
+ * MUI's <Avatar>, which falls back to its children automatically) — a stored photoPath
+ * that 404s (deleted file, stale URL) would otherwise leave the hero card with a blank/
+ * broken background. Preload the image ourselves and only use it once it has actually
+ * decoded; any failure keeps the design's gradient fallback.
+ */
+function useImageLoadOk(url: string | null | undefined): boolean {
+  const [ok, setOk] = React.useState(false);
+  React.useEffect(() => {
+    if (!url) {
+      setOk(false);
+      return;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => { if (!cancelled) setOk(true); };
+    img.onerror = () => { if (!cancelled) setOk(false); };
+    img.src = url;
+    return () => { cancelled = true; };
+  }, [url]);
+  return ok;
+}
+
 function AlertClockIcon() {
   return (
     <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke={AMBER_700} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -128,19 +197,24 @@ function TodayMissionHero({ mission }: { mission: Mission }) {
       })()
     : "";
   const surgeon = surgeonLabel(mission);
-  const inProgress = mission.status === "IN_PROGRESS";
+  const now = useNow(30_000);
+  const inProgress = isMissionCurrentlyInProgress(mission, now);
   const start = mission.startAt ? dayjs(mission.startAt) : null;
-  const photo = mission.site?.photoPath ?? null;
+  const photo = resolveApiAssetUrl(mission.site?.photoPath) ?? null;
+  const photoOk = useImageLoadOk(photo);
+  const showPhoto = photo && photoOk;
 
   return (
-    <Box sx={{ background: "#fff", borderRadius: "18px", overflow: "hidden", boxShadow: SHADOW_MD }}>
+    <Box sx={{ background: "#fff", borderRadius: "18px", overflow: "hidden", boxShadow: SHADOW_MD, height: 345, display: "flex", flexDirection: "column" }}>
       <Box
+        data-testid="mission-hero-photo"
         sx={{
           position: "relative",
           height: 186,
-          background: photo
+          flexShrink: 0,
+          background: showPhoto
             ? `url('${photo}') center/cover no-repeat`
-            : `linear-gradient(140deg, ${GREEN_800}, ${GREEN_500})`,
+            : ENCODE_HEADER_GRADIENT,
         }}
       >
         <Box sx={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(11,19,32,.15) 0%, rgba(20,77,56,.82) 100%)" }} />
@@ -185,7 +259,7 @@ function TodayMissionHero({ mission }: { mission: Mission }) {
         </Box>
       </Box>
 
-      <Box sx={{ p: "16px 18px 18px" }}>
+      <Box sx={{ p: "14px 18px 18px", flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: "11px" }}>
           <ClockIcon />
           <Box sx={{ fontSize: 21, fontWeight: 800, letterSpacing: "-0.02em", fontVariantNumeric: "tabular-nums" }}>{timeLine}</Box>
@@ -204,7 +278,8 @@ function TodayMissionHero({ mission }: { mission: Mission }) {
             navigate(canEncoding ? `/app/i/missions/${mission.id}/encoding` : `/app/i/missions/${mission.id}`)
           }
           sx={{
-            mt: "16px",
+            mt: "auto",
+            flexShrink: 0,
             width: "100%",
             height: 52,
             border: "none",
@@ -235,23 +310,130 @@ function TodayMissionHero({ mission }: { mission: Mission }) {
   );
 }
 
-// ── No mission state ─────────────────────────────────────────────────────────
-function NoMissionCard() {
+// ── No mission state ("journée libre") ───────────────────────────────────────
+// docs/design/components/mission-hero.md — même hauteur totale (345px) que l'état
+// avec mission ; illustration animée (parasol, soleil, vagues, oiseaux) + CTA réel.
+function FreeDayIllustration() {
   return (
-    <Box sx={{ background: "#fff", borderRadius: "18px", boxShadow: SHADOW_XS, p: "28px", textAlign: "center" }}>
-      <Box sx={{ fontSize: 15, fontWeight: 600, color: GRAY_500 }}>Aucune mission aujourd'hui</Box>
-      <Box sx={{ mt: "4px", fontSize: 13, color: GRAY_400 }}>Consultez les offres disponibles ci-dessous</Box>
+    <Box component="svg" width={300} height={150} viewBox="0 0 300 150" fill="none" aria-hidden="true">
+      <Box
+        component="circle"
+        cx={228} cy={38} r={20} fill="#F6C56B"
+        sx={{
+          transformOrigin: "228px 38px",
+          animation: "shFloat 4.5s ease-in-out infinite",
+          "@keyframes shFloat": { "0%,100%": { transform: "translateY(0)" }, "50%": { transform: "translateY(-5px)" } },
+        }}
+      />
+      <Box
+        component="path"
+        d="M0 118 C 60 100, 120 128, 190 112 S 280 96, 300 108"
+        stroke={GREEN_300} strokeWidth={2.5} strokeLinecap="round" fill="none" strokeDasharray="16 14"
+        sx={{
+          animation: "shWaveSlide1 6s linear infinite",
+          "@keyframes shWaveSlide1": { from: { strokeDashoffset: 0 }, to: { strokeDashoffset: -60 } },
+        }}
+      />
+      <Box
+        component="path"
+        d="M20 134 C 80 120, 150 142, 220 128 S 290 118, 300 124"
+        stroke={GREEN_100} strokeWidth={2} strokeLinecap="round" fill="none" strokeDasharray="8 7"
+        sx={{
+          animation: "shWaveSlide2 9s linear infinite reverse",
+          "@keyframes shWaveSlide2": { from: { strokeDashoffset: 0 }, to: { strokeDashoffset: -60 } },
+        }}
+      />
+      <Box
+        component="g"
+        sx={{
+          transformOrigin: "152px 118px",
+          animation: "shSway 5s ease-in-out infinite",
+          "@keyframes shSway": { "0%,100%": { transform: "rotate(-1.6deg)" }, "50%": { transform: "rotate(1.6deg)" } },
+        }}
+      >
+        <path d="M118 118 L 150 44 L 156 44 L 152 118 Z" fill={GREEN_700} />
+        <path d="M150 44 C 118 48, 100 70, 104 96 C 122 82, 140 66, 150 44 Z" fill={GREEN_500} />
+        <path d="M150 44 C 176 52, 188 76, 182 100 C 168 84, 156 64, 150 44 Z" fill={GREEN_400} />
+      </Box>
+      <rect x={96} y={112} width={88} height={9} rx={4.5} fill={GREEN_800} />
+      <Box
+        component="path"
+        d="M60 92 q7 -14 14 0 q7 -14 14 0"
+        stroke={GREEN_300} strokeWidth={2.2} strokeLinecap="round" fill="none"
+        sx={{
+          animation: "shBird1 6s ease-in-out infinite",
+          "@keyframes shBird1": { "0%,100%": { transform: "translate(0,0)" }, "50%": { transform: "translate(7px,-4px)" } },
+        }}
+      />
+      <Box
+        component="path"
+        d="M226 78 q6 -12 12 0 q6 -12 12 0"
+        stroke={GREEN_300} strokeWidth={2.2} strokeLinecap="round" fill="none"
+        sx={{
+          animation: "shBird2 7.5s ease-in-out .8s infinite reverse",
+          "@keyframes shBird2": { "0%,100%": { transform: "translate(0,0)" }, "50%": { transform: "translate(7px,-4px)" } },
+        }}
+      />
+    </Box>
+  );
+}
+
+function NoMissionCard() {
+  const navigate = useNavigate();
+  return (
+    <Box sx={{ background: "#fff", borderRadius: "18px", boxShadow: SHADOW_MD, overflow: "hidden", height: 345, display: "flex", flexDirection: "column" }}>
+      <Box
+        sx={{
+          position: "relative", height: 186, flexShrink: 0,
+          background: `linear-gradient(160deg, ${GREEN_50} 0%, #EAF6F0 60%, ${GREEN_100} 100%)`,
+          display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden",
+        }}
+      >
+        <FreeDayIllustration />
+      </Box>
+      <Box sx={{ p: "14px 18px 18px", textAlign: "center", flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <Box sx={{ fontSize: 17, fontWeight: 800, letterSpacing: "-0.01em" }}>Aucune mission aujourd'hui</Box>
+        <Box sx={{ mt: "5px", mx: "auto", fontSize: 13, color: GRAY_500, lineHeight: 1.45, maxWidth: 320 }}>
+          Profitez de votre journée libre — ou jetez un œil aux offres disponibles.
+        </Box>
+        <Box
+          component="button"
+          type="button"
+          onClick={() => navigate("/app/i/offers")}
+          sx={{
+            mt: "auto", flexShrink: 0, width: "100%", height: 52, border: "none", borderRadius: "13px",
+            background: GREEN_800, color: "#fff", fontFamily: "inherit", fontSize: 15, fontWeight: 700, cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center", gap: "9px",
+            boxShadow: "0 5px 14px rgba(20,77,56,.3)", transition: "background 150ms",
+            "&:hover": { background: GREEN_900 }, "&:active": { transform: "translateY(0.5px)" },
+          }}
+        >
+          Voir les offres disponibles
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+        </Box>
+      </Box>
     </Box>
   );
 }
 
 // ── "À venir" card ────────────────────────────────────────────────────────────
+// docs/design/prototypes (upcomingHome) : la pastille dépend du statut réel —
+// "Confirmée" (assignée par le manager) vs "En attente" (auto-déclarée par
+// l'instrumentiste, pas encore validée) — jamais figée sur un seul état.
+function upcomingStatusPill(status: Mission["status"]): { label: string; bg: string; fg: string } {
+  if (status === "DECLARED") return { label: "En attente", bg: AMBER_50, fg: AMBER_700 };
+  return { label: "Confirmée", bg: GREEN_100, fg: GREEN_800 };
+}
+
 function UpcomingCard({ mission }: { mission: Mission }) {
   const navigate = useNavigate();
   const start = mission.startAt ? dayjs(mission.startAt) : null;
   const timeLine = mission.startAt && mission.endAt
     ? `${formatTime(mission.startAt)} → ${formatTime(mission.endAt)}`
     : "—";
+  const statusPill = upcomingStatusPill(mission.status);
 
   return (
     <Box
@@ -291,8 +473,8 @@ function UpcomingCard({ mission }: { mission: Mission }) {
         <Box sx={{ mt: "7px", display: "flex", alignItems: "center", gap: "10px" }}>
           <Box sx={{ fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{timeLine}</Box>
           <Box sx={{ flex: 1 }} />
-          <Box sx={{ display: "inline-flex", alignItems: "center", height: 22, px: "9px", borderRadius: "999px", background: GREEN_100, color: GREEN_800, fontSize: 11.5, fontWeight: 700 }}>
-            Confirmée
+          <Box sx={{ display: "inline-flex", alignItems: "center", height: 22, px: "9px", borderRadius: "999px", background: statusPill.bg, color: statusPill.fg, fontSize: 11.5, fontWeight: 700 }}>
+            {statusPill.label}
           </Box>
         </Box>
       </Box>
@@ -340,6 +522,7 @@ function ToEncodeCard({ mission }: { mission: Mission }) {
           height: 40, px: "16px", border: "none", borderRadius: "11px", background: AMBER_600, color: "#fff",
           fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, cursor: "pointer", flexShrink: 0,
           transition: "background 150ms", "&:hover": { background: AMBER_700 },
+          "&:active": { transform: "translateY(0.5px)" },
         }}
       >
         Encoder
@@ -395,7 +578,7 @@ export default function TodayPage() {
 
   const { data: upcomingData } = useQuery({
     queryKey: ["missions", "upcoming", { upFrom, upTo }],
-    queryFn: () => fetchMissions(1, 6, { assignedToMe: true, status: "ASSIGNED,DECLARED", from: upFrom, to: upTo }),
+    queryFn: () => fetchMissions(1, 10, { assignedToMe: true, status: "ASSIGNED,DECLARED", from: upFrom, to: upTo }),
     refetchInterval: 60_000,
   });
 
@@ -412,7 +595,16 @@ export default function TodayPage() {
   });
 
   const todayMissions = todayData?.items ?? [];
-  const upcomingMissions = upcomingData?.items ?? [];
+  // Aperçu des 3 missions à venir les plus proches dans le temps — le reste se
+  // consulte via "Voir tout" (redirige vers Offres, décision produit explicite).
+  const upcomingMissions = React.useMemo(
+    () =>
+      (upcomingData?.items ?? [])
+        .slice()
+        .sort((a, b) => (a.startAt ?? "").localeCompare(b.startAt ?? ""))
+        .slice(0, 3),
+    [upcomingData],
+  );
   const offers = offersData?.items ?? [];
   const mainMission = todayMissions[0] ?? null;
 
@@ -435,10 +627,10 @@ export default function TodayPage() {
             <Box
               component="button"
               type="button"
-              onClick={() => navigate("/app/i/planning")}
+              onClick={() => navigate("/app/i/offers")}
               sx={{ border: "none", background: "none", p: 0, fontSize: 13.5, fontWeight: 700, color: GREEN_700, cursor: "pointer", textDecoration: "none", fontFamily: "inherit" }}
             >
-              Voir tout le planning
+              Voir tout
             </Box>
           </Box>
           <Box
@@ -467,6 +659,7 @@ export default function TodayPage() {
           border: `1.5px dashed ${GREEN_400}`, borderRadius: "14px", background: GREEN_50, color: GREEN_800,
           fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
           transition: "background 150ms", "&:hover": { background: GREEN_100 },
+          "&:active": { transform: "translateY(0.5px)" },
         }}
       >
         <PlusCircleIcon />
@@ -491,7 +684,7 @@ export default function TodayPage() {
           </Box>
           <Box
             sx={{
-              display: "flex", gap: "12px", overflowX: "auto", mx: "-20px", px: "20px", pb: "6px",
+              display: "flex", gap: "12px", overflowX: "auto", mx: "-20px", px: "20px", pt: "2px", pb: "6px",
               scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" },
             }}
           >

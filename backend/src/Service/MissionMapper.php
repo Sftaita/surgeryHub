@@ -19,6 +19,8 @@ final class MissionMapper
         return new MissionListDto(
             id: (int) $m->getId(),
             site: $this->toHospitalSlim($m->getSite()),
+            // D-066: Mission.startAt/endAt use business_datetime_immutable — already
+            // correctly Europe/Brussels-labeled at hydration, no relabel needed here.
             startAt: $m->getStartAt()?->format(\DateTimeInterface::ATOM),
             endAt: $m->getEndAt()?->format(\DateTimeInterface::ATOM),
             schedulePrecision: (string) $m->getSchedulePrecision()?->value,
@@ -35,6 +37,8 @@ final class MissionMapper
         return new MissionDetailDto(
             id: (int) $m->getId(),
             site: $this->toHospitalSlim($m->getSite()),
+            // D-066: Mission.startAt/endAt use business_datetime_immutable — already
+            // correctly Europe/Brussels-labeled at hydration, no relabel needed here.
             startAt: $m->getStartAt()?->format(\DateTimeInterface::ATOM),
             endAt: $m->getEndAt()?->format(\DateTimeInterface::ATOM),
             schedulePrecision: (string) $m->getSchedulePrecision()?->value,
@@ -57,6 +61,8 @@ final class MissionMapper
             id: (int) $h->getId(),
             name: (string) $h->getName(),
             timezone: $h->getTimezone(), // getter fallback Europe/Brussels
+            address: $h->getAddress(),
+            photoPath: $h->getPhotoPath(),
         );
     }
 
@@ -74,6 +80,7 @@ final class MissionMapper
             lastname: $u->getLastname(),
             active: $u->isActive(),
             employmentType: $u->getEmploymentType()?->value,
+            specialties: $u->getSpecialties(),
         );
     }
 }

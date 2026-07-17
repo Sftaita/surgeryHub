@@ -7,11 +7,13 @@ import dayjs from "dayjs";
 import "dayjs/locale/fr";
 
 import { fetchMissionById } from "../../features/missions/api/missions.api";
+import type { UserRef } from "../../features/missions/api/missions.types";
 import { fetchMissionEncoding } from "../../features/encoding/api/encoding.api";
 import InterventionsSection from "../../features/encoding/components/InterventionsSection";
 import { EncodeHeader } from "../../features/encoding/components/EncodeHeader";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
+import { SPECIALTIES } from "../../features/planning-manager/api/planning.api";
 
 dayjs.locale("fr");
 
@@ -43,6 +45,18 @@ function formatHours(hours?: string | number | null): string {
 
 function missionTypeLabel(type: string): string {
   return type === "CONSULTATION" ? "Consultation" : "Bloc opératoire";
+}
+
+/**
+ * Aucune notion de "spécialité principale" n'existe dans le modèle (User.specialties
+ * est un tableau plat, sans ordre de priorité ni champ dédié) — on prend donc la
+ * première spécialité renvoyée par l'API, jamais une sélection arbitraire. Absence de
+ * spécialité => pas de suffixe (jamais "· undefined").
+ */
+function surgeonSpecialtyLabel(surgeon: UserRef | null | undefined): string | null {
+  const value = surgeon?.specialties?.[0];
+  if (!value) return null;
+  return SPECIALTIES.find((s) => s.value === value)?.label ?? value;
 }
 
 function ClockIcon() {
@@ -153,8 +167,9 @@ export default function MissionEncodingPage() {
 
   const hoursLabel = formatHours(mission.service?.hours ?? null);
   const surgeon = mission.surgeon;
+  const specialtyLabel = surgeonSpecialtyLabel(surgeon);
   const personLine = surgeon
-    ? `Dr. ${[surgeon.firstname, surgeon.lastname].filter(Boolean).join(" ").trim() || surgeon.displayName || surgeon.email}`
+    ? `Dr. ${[surgeon.firstname, surgeon.lastname].filter(Boolean).join(" ").trim() || surgeon.displayName || surgeon.email}${specialtyLabel ? ` · ${specialtyLabel}` : ""}`
     : null;
 
   const interventionCount = encoding.interventions?.length ?? 0;
@@ -168,7 +183,6 @@ export default function MissionEncodingPage() {
       <EncodeHeader
         missionId={mission.id}
         siteName={mission.site?.name ?? "—"}
-        siteAddress={mission.site?.address}
         personLine={personLine}
         dateLabel={dayjs(mission.startAt).format("dddd D MMMM YYYY").replace(/^\w/, (c) => c.toUpperCase())}
         typeLabel={missionTypeLabel(mission.type)}

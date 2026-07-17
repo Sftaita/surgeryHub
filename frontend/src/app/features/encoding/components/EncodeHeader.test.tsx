@@ -4,13 +4,12 @@ import userEvent from "@testing-library/user-event";
 import { EncodeHeader } from "./EncodeHeader";
 
 describe("EncodeHeader", () => {
-  it("affiche le numéro de mission, le site et les tags date/type", () => {
+  it("affiche le numéro de mission, le site (sans adresse) et les tags date/type", () => {
     render(
       <EncodeHeader
         missionId={529}
-        siteName="CHU Brugmann"
-        siteAddress="Site Victor Horta"
-        personLine="Dr. Anouk Peeters"
+        siteName="CHU Brugmann — Site Victor Horta"
+        personLine="Dr. Anouk Peeters · Orthopédie"
         dateLabel="Dimanche 5 juillet 2026"
         typeLabel="Bloc opératoire"
         onBack={vi.fn()}
@@ -18,8 +17,8 @@ describe("EncodeHeader", () => {
     );
 
     expect(screen.getByText("Mission #529")).toBeInTheDocument();
-    expect(screen.getByText(/CHU Brugmann — Site Victor Horta/)).toBeInTheDocument();
-    expect(screen.getByText("Dr. Anouk Peeters")).toBeInTheDocument();
+    expect(screen.getByText("CHU Brugmann — Site Victor Horta")).toBeInTheDocument();
+    expect(screen.getByText("Dr. Anouk Peeters · Orthopédie")).toBeInTheDocument();
     expect(screen.getByText("Dimanche 5 juillet 2026")).toBeInTheDocument();
     expect(screen.getByText("Bloc opératoire")).toBeInTheDocument();
   });

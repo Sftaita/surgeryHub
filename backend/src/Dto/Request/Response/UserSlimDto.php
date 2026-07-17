@@ -4,6 +4,9 @@ namespace App\Dto\Request\Response;
 
 final class UserSlimDto
 {
+    /**
+     * @param string[] $specialties
+     */
     public function __construct(
         public readonly int $id,
         public readonly string $email,
@@ -11,6 +14,7 @@ final class UserSlimDto
         public readonly ?string $lastname,
         public readonly ?bool $active = null,
         public readonly ?string $employmentType = null,
+        public readonly array $specialties = [],
     ) {}
 
     public function displayName(): string

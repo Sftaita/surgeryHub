@@ -104,6 +104,7 @@ export interface UserRef {
   active?: boolean;
   employmentType?: string | null;
   displayName?: string | null;
+  specialties?: string[];
 }
 
 /**
