@@ -252,7 +252,7 @@ export default function MissionEncodingPage() {
 
       <SubmitDialog
         open={openSubmit}
-        missionId={mission.id}
+        mission={mission}
         onClose={() => setOpenSubmit(false)}
         onSubmitted={() => {
           queryClient.invalidateQueries({ queryKey: ["mission", mission.id] });

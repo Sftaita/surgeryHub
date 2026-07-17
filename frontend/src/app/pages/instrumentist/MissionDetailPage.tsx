@@ -309,7 +309,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
       {/* Dialogs */}
       <SubmitDialog
         open={openSubmit}
-        missionId={mission.id}
+        mission={mission}
         onClose={() => setOpenSubmit(false)}
         onSubmitted={() => {
           queryClient.invalidateQueries({ queryKey: ["mission", mission.id] });

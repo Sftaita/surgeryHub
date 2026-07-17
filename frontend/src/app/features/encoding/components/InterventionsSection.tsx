@@ -2,16 +2,12 @@ import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Box,
-  Button,
   Chip,
-  IconButton,
   Paper,
   Stack,
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
-import EditIcon from "@mui/icons-material/Edit";
-import RemoveIcon from "@mui/icons-material/Remove";
 
 import type {
   EncodingIntervention,
@@ -37,7 +33,7 @@ import {
 import AddInterventionDialog from "./AddInterventionDialog";
 import EditInterventionDialog from "./EditInterventionDialog";
 import ConfirmDeleteDialog from "./ConfirmDeleteDialog";
-import AddMaterialLineDialog from "./AddMaterialLineDialog";
+import MaterialWizard from "./MaterialWizard";
 import EditMaterialLineDialog from "./EditMaterialLineDialog";
 import MaterialItemRequestDialog from "./MaterialItemRequestDialog";
 
@@ -51,8 +47,10 @@ type Props = {
 };
 
 const GREEN_50 = "#EFFAF5";
+const GREEN_100 = "#DDF4EA";
 const GREEN_500 = "#42A882";
 const GREEN_700 = "#2C7D5F";
+const GREEN_800 = "#1F6B4F";
 const GRAY_500 = "#727E8C";
 const GRAY_800 = "#243240";
 const TEXT_STRONG = "#16202B";
@@ -68,19 +66,14 @@ function extractErrorMessage(err: any): string {
   );
 }
 
-function parseQty(qty: string): number {
-  const n = parseFloat(qty);
-  return Number.isFinite(n) ? n : 1;
-}
-
 function displayQty(qty: string): string {
   const n = parseFloat(qty);
   if (!Number.isFinite(n)) return qty;
   return n % 1 === 0 ? String(Math.round(n)) : String(n);
 }
 
-function buildInterventionTitle(itv: EncodingIntervention, index: number): string {
-  return `Intervention ${index + 1} — ${itv.label || itv.code}`;
+function interventionTitle(itv: EncodingIntervention): string {
+  return itv.label || itv.code;
 }
 
 export default function InterventionsSection({ missionId, canEdit, interventions, catalog, onSaved }: Props) {
@@ -108,6 +101,14 @@ export default function InterventionsSection({ missionId, canEdit, interventions
 
   const [editLineTarget, setEditLineTarget] = React.useState<{ line: EncodingMaterialLine } | null>(null);
   const [deleteLineTarget, setDeleteLineTarget] = React.useState<{ line: EncodingMaterialLine } | null>(null);
+
+  // Badge "Nouveau" (screens/encodage) : aucun champ backend ne marque une ligne comme
+  // "ajoutée récemment" — c'est un état 100% local à cette session de brouillon (jamais
+  // persisté, jamais dérivé de l'ordre de la liste). Rempli uniquement par un ajout réussi
+  // pendant ce montage du composant ; se réinitialise donc naturellement à la reprise d'un
+  // brouillon existant (rechargement de page) — les lignes déjà enregistrées ne portent
+  // jamais le badge.
+  const [newLineIds, setNewLineIds] = React.useState<Set<number>>(new Set());
 
   const invalidate = React.useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] });
@@ -189,6 +190,7 @@ export default function InterventionsSection({ missionId, canEdit, interventions
           return { ...itv, materialLines: (itv.materialLines ?? []).map((l) => l.id === ctx.tempId ? created : l) };
         }),
       }));
+      setNewLineIds((prev) => new Set(prev).add(created.id));
       toast.success("Matériel ajouté");
       invalidate();
       onSaved?.();
@@ -250,7 +252,17 @@ export default function InterventionsSection({ missionId, canEdit, interventions
       }));
       return { previous };
     },
-    onSuccess: () => { toast.success("Matériel supprimé"); invalidate(); onSaved?.(); },
+    onSuccess: (_data, lineId) => {
+      setNewLineIds((prev) => {
+        if (!prev.has(lineId)) return prev;
+        const next = new Set(prev);
+        next.delete(lineId);
+        return next;
+      });
+      toast.success("Matériel supprimé");
+      invalidate();
+      onSaved?.();
+    },
     onError: (err: any, _lineId, ctx) => {
       if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
       toast.error(extractErrorMessage(err));
@@ -271,56 +283,41 @@ export default function InterventionsSection({ missionId, canEdit, interventions
   const sorted = (interventions ?? []).slice().sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
   const isOpen = (id: number) => (openIds ?? new Set(sorted.length ? [sorted[0].id] : [])).has(id);
 
-  // Inline qty handlers
-  const handleQtyChange = (line: EncodingMaterialLine, delta: 1 | -1) => {
-    const current = parseQty(line.quantity);
-    const next = current + delta;
-    if (next <= 0) {
-      deleteLineMutation.mutate(line.id);
-    } else {
-      patchLineMutation.mutate({ lineId: line.id, body: { quantity: String(next) } });
+  // "Marques récentes" du wizard — dérivé des marques déjà utilisées ailleurs dans
+  // cette mission (données réelles), jamais une liste inventée.
+  const recentFirmIds = React.useMemo(() => {
+    const ids = new Set<number>();
+    for (const itv of sorted) {
+      for (const line of itv.materialLines ?? []) {
+        if (line.item?.firm?.id != null) ids.add(line.item.firm.id);
+      }
     }
-  };
+    return Array.from(ids);
+  }, [sorted]);
 
   return (
     <Stack spacing={1.75}>
       {/* Header */}
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ gap: "12px" }}>
+      <Stack direction="row" alignItems="center" sx={{ gap: "12px" }}>
         <Box sx={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.07em", color: GREEN_700, whiteSpace: "nowrap", flexShrink: 0 }}>
           INTERVENTIONS
         </Box>
         <Box sx={{ flex: 1, borderTop: "1px dashed", borderColor: "grey.300" }} />
-        {canEdit && sorted.length > 0 && (
-          <IconButton size="small" disabled={isBusy} onClick={() => setOpenAddIntervention(true)} sx={{ flexShrink: 0 }}>
-            <AddIcon fontSize="small" />
-          </IconButton>
-        )}
       </Stack>
 
-      {/* Empty state */}
+      {/* Empty state — un seul point d'entrée pour ajouter (le bouton persistant plein-largeur
+          ci-dessous), jamais un second bouton concurrent ici. */}
       {sorted.length === 0 ? (
         <Paper
           variant="outlined"
           sx={{ borderRadius: 2, py: 4, textAlign: "center", borderStyle: "dashed" }}
         >
-          <Typography color="text.secondary" mb={1.5}>
+          <Typography color="text.secondary">
             Aucune intervention encodée
           </Typography>
-          {canEdit && (
-            <Button
-              variant="contained"
-              disableElevation
-              size="small"
-              startIcon={<AddIcon />}
-              onClick={() => setOpenAddIntervention(true)}
-              disabled={isBusy}
-            >
-              Ajouter une intervention
-            </Button>
-          )}
         </Paper>
       ) : (
-        sorted.map((itv, idx) => {
+        sorted.map((itv) => {
           const lines = itv.materialLines ?? [];
           const open = isOpen(itv.id);
 
@@ -338,7 +335,7 @@ export default function InterventionsSection({ missionId, canEdit, interventions
               >
                 <Box sx={{ width: 8, height: 8, borderRadius: "999px", background: GREEN_500, flexShrink: 0 }} />
                 <Box sx={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 700, color: TEXT_STRONG, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {buildInterventionTitle(itv, idx)}
+                  {interventionTitle(itv)}
                 </Box>
                 <Box sx={{ fontSize: 12.5, color: TEXT_MUTED, whiteSpace: "nowrap", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
                   {lines.length} matériel{lines.length > 1 ? "s" : ""}
@@ -354,19 +351,23 @@ export default function InterventionsSection({ missionId, canEdit, interventions
               {open && (
                 <Box sx={{ px: "16px" }}>
                   {lines.map((l) => (
-                    <Stack
+                    <Box
                       key={l.id}
-                      direction="row"
-                      alignItems="center"
-                      spacing={1}
-                      sx={{ py: "10px", borderTop: "1px dashed", borderColor: "grey.150" }}
+                      component={canEdit ? "button" : "div"}
+                      type={canEdit ? "button" : undefined}
+                      onClick={canEdit ? () => setEditLineTarget({ line: l }) : undefined}
+                      disabled={canEdit ? isBusy : undefined}
+                      aria-label={canEdit ? `Modifier ${l.item?.label ?? "ce matériel"}` : undefined}
+                      sx={{
+                        width: "100%", display: "flex", alignItems: "center", gap: "8px", py: "10px",
+                        border: "none", borderTop: "1px dashed", borderColor: "grey.150", background: "transparent",
+                        fontFamily: "inherit", textAlign: "left", cursor: canEdit ? "pointer" : "default",
+                        "&:hover": canEdit ? { background: GREEN_50 } : undefined,
+                      }}
                     >
                       <Stack sx={{ flex: 1, minWidth: 0 }}>
                         <Typography variant="body2" noWrap sx={{ color: GRAY_800 }}>
                           {l.item?.label ?? "—"}
-                          {l.item?.isImplant && (
-                            <Chip label="implant" size="small" sx={{ ml: 0.75, fontSize: "0.65rem", height: 16 }} />
-                          )}
                         </Typography>
                         <Typography variant="caption" color="text.secondary" noWrap>
                           {l.item?.firm?.name ?? "—"}
@@ -379,49 +380,24 @@ export default function InterventionsSection({ missionId, canEdit, interventions
                         ) : null}
                       </Stack>
 
-                      {canEdit ? (
-                        <Stack direction="row" alignItems="center" spacing={0.5}>
-                          <IconButton
-                            size="small"
-                            disabled={isBusy}
-                            onClick={() => handleQtyChange(l, -1)}
-                            sx={{ bgcolor: "grey.100", borderRadius: 1, p: 0.5 }}
-                          >
-                            <RemoveIcon fontSize="small" />
-                          </IconButton>
-
-                          <Typography
-                            variant="body2"
-                            fontWeight={700}
-                            sx={{ minWidth: 24, textAlign: "center", color: GRAY_500, fontVariantNumeric: "tabular-nums" }}
-                          >
-                            {displayQty(l.quantity)}
-                          </Typography>
-
-                          <IconButton
-                            size="small"
-                            disabled={isBusy}
-                            onClick={() => handleQtyChange(l, 1)}
-                            sx={{ bgcolor: "grey.100", borderRadius: 1, p: 0.5 }}
-                          >
-                            <AddIcon fontSize="small" />
-                          </IconButton>
-
-                          <IconButton
-                            size="small"
-                            disabled={isBusy}
-                            onClick={() => setEditLineTarget({ line: l })}
-                            sx={{ ml: 0.5 }}
-                          >
-                            <EditIcon fontSize="small" />
-                          </IconButton>
-                        </Stack>
-                      ) : (
-                        <Typography variant="body2" color="text.secondary" sx={{ fontVariantNumeric: "tabular-nums" }}>
-                          {displayQty(l.quantity)} {l.item?.unit ?? ""}
-                        </Typography>
+                      {l.item?.isImplant && (
+                        <Chip label="implant" size="small" sx={{ fontSize: "0.65rem", height: 16, flexShrink: 0 }} />
                       )}
-                    </Stack>
+
+                      {newLineIds.has(l.id) && (
+                        <Box sx={{ display: "inline-flex", alignItems: "center", height: 20, px: "8px", borderRadius: "999px", background: GREEN_100, color: GREEN_800, fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+                          Nouveau
+                        </Box>
+                      )}
+
+                      <Typography
+                        variant="body2"
+                        fontWeight={700}
+                        sx={{ color: GRAY_500, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}
+                      >
+                        {canEdit ? `x${displayQty(l.quantity)}` : `${displayQty(l.quantity)} ${l.item?.unit ?? ""}`}
+                      </Typography>
+                    </Box>
                   ))}
 
                   {/* Demandes en attente ("À préciser") */}
@@ -464,6 +440,7 @@ export default function InterventionsSection({ missionId, canEdit, interventions
                         border: "none", borderTop: "1px dashed", borderColor: "grey.150", background: "transparent",
                         color: GREEN_700, fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: "pointer",
                         "&:hover": { background: GREEN_50 },
+                        "&:active": { transform: "translateY(0.5px)" },
                       }}
                     >
                       <AddIcon sx={{ fontSize: 16 }} />
@@ -500,6 +477,27 @@ export default function InterventionsSection({ missionId, canEdit, interventions
         })
       )}
 
+      {/* Bouton persistant — visible liste vide ou non (screens/encodage), seul point
+          d'entrée pour ajouter une intervention (l'icône "+" d'en-tête a été retirée). */}
+      {canEdit && (
+        <Box
+          component="button"
+          type="button"
+          onClick={() => setOpenAddIntervention(true)}
+          disabled={isBusy}
+          sx={{
+            height: 50, border: "1.5px solid", borderColor: GREEN_500, borderRadius: "13px",
+            background: "#fff", color: GREEN_700, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700,
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "9px",
+            "&:hover": { background: GREEN_50 },
+            "&:active": { transform: "translateY(0.5px)" },
+          }}
+        >
+          <AddIcon sx={{ fontSize: 17 }} />
+          Nouvelle intervention
+        </Box>
+      )}
+
       {/* Dialogs */}
       <AddInterventionDialog
         open={openAddIntervention}
@@ -530,21 +528,14 @@ export default function InterventionsSection({ missionId, canEdit, interventions
         onConfirm={() => { if (!deleteInterventionTarget) return; deleteInterventionMutation.mutate(deleteInterventionTarget.id); }}
       />
 
-      <AddMaterialLineDialog
+      <MaterialWizard
         open={openAddMaterial}
         loading={createLineMutation.isPending}
-        interventions={sorted}
+        interventionId={preferredInterventionId}
         catalog={catalog}
-        preferredInterventionId={preferredInterventionId}
+        recentFirmIds={recentFirmIds}
         onClose={() => (isBusy ? null : setOpenAddMaterial(false))}
-        onSubmit={(values) => {
-          createLineMutation.mutate({
-            missionInterventionId: values.missionInterventionId,
-            itemId: values.itemId,
-            quantity: String(values.quantity),
-            comment: values.comment ?? "",
-          });
-        }}
+        onSubmit={(values) => createLineMutation.mutate(values)}
         onNotFound={(itvId) => {
           setPreferredRequestInterventionId(itvId || preferredInterventionId);
           setOpenRequestDialog(true);
@@ -565,6 +556,11 @@ export default function InterventionsSection({ missionId, canEdit, interventions
               comment: values.comment,
             },
           });
+        }}
+        onDelete={() => {
+          if (!editLineTarget) return;
+          setDeleteLineTarget({ line: editLineTarget.line });
+          setEditLineTarget(null);
         }}
       />
 

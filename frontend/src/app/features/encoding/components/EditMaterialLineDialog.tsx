@@ -21,6 +21,8 @@ type Props = {
   line: EncodingMaterialLine | null;
   onClose: () => void;
   onSubmit: (values: PatchMaterialLineBody) => void;
+  /** Ouvre la confirmation de suppression (ConfirmDeleteDialog) — jamais de suppression directe ici. */
+  onDelete: () => void;
 };
 
 export default function EditMaterialLineDialog({
@@ -29,6 +31,7 @@ export default function EditMaterialLineDialog({
   line,
   onClose,
   onSubmit,
+  onDelete,
 }: Props) {
   const [quantity, setQuantity] = React.useState<string>("");
   const [comment, setComment] = React.useState<string>("");
@@ -97,17 +100,22 @@ export default function EditMaterialLineDialog({
         </Stack>
       </DialogContent>
 
-      <DialogActions>
-        <Button onClick={onClose} disabled={loading}>
-          Annuler
+      <DialogActions sx={{ justifyContent: "space-between" }}>
+        <Button color="error" onClick={onDelete} disabled={loading}>
+          Supprimer
         </Button>
-        <Button
-          variant="contained"
-          onClick={submit}
-          disabled={loading || !canSubmit}
-        >
-          {loading ? "..." : "Enregistrer"}
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <Button onClick={onClose} disabled={loading}>
+            Annuler
+          </Button>
+          <Button
+            variant="contained"
+            onClick={submit}
+            disabled={loading || !canSubmit}
+          >
+            {loading ? "..." : "Enregistrer"}
+          </Button>
+        </Stack>
       </DialogActions>
     </Dialog>
   );

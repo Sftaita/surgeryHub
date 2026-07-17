@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Encodage mission — SurgeryHub (référence code)</title>
+<style>
+/* =========================================================================
+   DESIGN TOKENS — copiés de docs/design/design-tokens.json
+   Ne jamais coder de couleur/espacement en dur ailleurs que dans ce bloc.
+   ========================================================================= */
+:root{
+  --gray-900:#16202B; --gray-800:#243240; --gray-700:#3A4754; --gray-600:#566270;
+  --gray-500:#727E8C; --gray-400:#98A2AE; --gray-300:#C2C9D1; --gray-200:#DDE2E8;
+  --gray-150:#E7EBEF; --gray-100:#EFF2F5; --gray-75:#F1F4F7; --gray-50:#F5F7FA;
+  --green-900:#144D38; --green-800:#1F6B4F; --green-700:#2C7D5F; --green-600:#338F6E;
+  --green-500:#42A882; --green-400:#63C9A3; --green-300:#8FDABF; --green-200:#BCE9D6;
+  --green-100:#DDF4EA; --green-50:#EFFAF5;
+  --amber-700:#B7791F; --amber-600:#D9920B; --amber-500:#F0A91B; --amber-100:#FBEACB; --amber-50:#FEF6E7;
+  --blue-700:#1B5FD0; --blue-100:#D6E6FE; --blue-50:#EDF4FF;
+  --red-600:#E5484D; --red-50:#FDEEEE;
+  --white:#FFFFFF;
+
+  --surface-page: var(--gray-50);
+  --surface-card: var(--white);
+  --text-strong: var(--gray-900);
+  --text-body: var(--gray-700);
+  --text-muted: var(--gray-500);
+  --border-subtle: var(--gray-150);
+  --border-default: var(--gray-200);
+  --focus-ring: 0 0 0 3px rgba(66,168,130,.32);
+
+  --gradient-encode-header: linear-gradient(150deg,#123F30 0%,#1E634A 55%,#2E7D5F 120%);
+
+  --shadow-xs: 0 1px 2px rgba(22,32,43,.05);
+  --shadow-sm: 0 1px 2px rgba(22,32,43,.05), 0 2px 6px rgba(22,32,43,.06);
+  --shadow-md: 0 2px 6px rgba(22,32,43,.06), 0 8px 20px rgba(22,32,43,.08);
+  --shadow-xl: 0 10px 24px rgba(22,32,43,.10), 0 28px 60px rgba(22,32,43,.16);
+  --shadow-cta-green: 0 5px 14px rgba(20,77,56,.3);
+
+  --radius-sm: 12px; --radius-md: 16px; --radius-lg: 22px; --radius-band: 26px;
+  --ease-brand: cubic-bezier(.22,1,.36,1);
+  --ease-wave: cubic-bezier(.16,1,.3,1);
+}
+
+/* =========================================================================
+   RESET & BASE
+   ========================================================================= */
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:Inter,system-ui,-apple-system,'Segoe UI',sans-serif;
+  background:var(--surface-page);
+  color:var(--text-strong);
+  -webkit-font-smoothing:antialiased;
+}
+button{font-family:inherit;cursor:pointer}
+input{font-family:inherit}
+.tabular{font-variant-numeric:tabular-nums}
+
+/* App shell: on mobile this is 100vw; ≥900px a sidebar would sit to the left
+   (not included here — this file is scoped to the encoding screen only). */
+#app{max-width:760px;margin:0 auto;padding-bottom:110px}
+
+/* =========================================================================
+   ENCODE HEADER
+   ========================================================================= */
+.encode-header{
+  position:relative;
+  overflow:hidden;
+  background:var(--gradient-encode-header);
+  padding:12px 18px 46px;
+  border-radius:0 0 var(--radius-band) var(--radius-band);
+}
+@media (min-width:900px){
+  .encode-header{ border-radius:24px; margin:22px 20px 0; padding:20px 22px 46px; }
+}
+.encode-header__wave{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+/* Wave arrives with a settle animation — see JS: class is added on mount, removed after */
+.encode-header__wave path{ transition:d 1.1s var(--ease-wave); }
+.encode-header__wave path:nth-child(2){ transition-duration:1.35s; }
+
+.encode-header__top{display:flex;align-items:center;gap:11px;position:relative}
+.encode-header__back{
+  width:40px;height:40px;border:none;border-radius:12px;cursor:pointer;
+  background:rgba(255,255,255,.12);color:#fff;
+  display:flex;align-items:center;justify-content:center;flex:none;
+  transition:background .15s;
+}
+.encode-header__back:hover{background:rgba(255,255,255,.2)}
+.encode-header__eyebrow{font-size:12px;font-weight:800;letter-spacing:.07em;color:var(--green-300)}
+.encode-header__body{margin-top:14px;position:relative}
+.encode-header__title{margin:0;font-size:24px;font-weight:800;letter-spacing:-.02em;color:#fff}
+.encode-header__site{margin-top:5px;font-size:15px;font-weight:600;color:rgba(255,255,255,.92)}
+.encode-header__sub{margin-top:2px;font-size:13.5px;color:rgba(255,255,255,.7)}
+.encode-header__tags{display:flex;gap:8px;margin-top:13px;flex-wrap:wrap}
+.encode-header__tag{
+  display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 12px;
+  border-radius:999px;background:rgba(255,255,255,.14);color:#fff;
+  font-size:12.5px;font-weight:600;
+}
+
+/* =========================================================================
+   CONTENT — chevauche le header de -28px (signature du design)
+   ========================================================================= */
+.encode-content{
+  padding:0 20px; margin-top:-28px; position:relative;
+  display:flex; flex-direction:column; gap:14px;
+}
+
+/* Draft bar */
+.draft-bar{
+  background:#fff;border-radius:14px;padding:12px 15px;box-shadow:var(--shadow-md);
+  display:flex;align-items:center;gap:11px;
+}
+.draft-bar__dot{
+  width:9px;height:9px;border-radius:999px;background:var(--green-500);flex:none;
+  animation:pulse 1.6s ease-in-out infinite;
+}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.draft-bar__label{font-size:13.5px;font-weight:700;color:var(--green-700)}
+.draft-bar__counts{margin-top:1px;font-size:12.5px;color:var(--text-muted)}
+.draft-bar__saved{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--gray-400);flex:none}
+
+/* Hours card (trigger button opening the sheet) */
+.hours-card{
+  display:flex;align-items:center;gap:12px;background:#fff;border:none;border-radius:var(--radius-md);
+  padding:14px 16px;box-shadow:var(--shadow-xs);cursor:pointer;text-align:left;width:100%;
+  transition:box-shadow .15s;
+}
+.hours-card:hover{box-shadow:var(--shadow-sm)}
+.hours-card__icon{
+  width:38px;height:38px;border-radius:999px;background:var(--green-50);
+  display:flex;align-items:center;justify-content:center;flex:none;color:var(--green-700);
+}
+.hours-card__label{font-size:13px;font-weight:700;color:var(--gray-700)}
+.hours-card__value{margin-top:2px;font-size:16px;font-weight:700}
+.hours-card__value.is-empty{color:var(--gray-400)}
+.hours-card__value.is-set{color:var(--text-strong)}
+.hours-card__chevron{flex:none;color:var(--gray-300)}
+
+/* Section eyebrow with dashed rule */
+.eyebrow-row{display:flex;align-items:center;gap:12px;margin-top:4px}
+.eyebrow-row__label{font-size:12px;font-weight:800;letter-spacing:.07em;color:var(--green-700);white-space:nowrap;flex:none}
+.eyebrow-row__rule{flex:1;border-top:1px dashed var(--gray-200)}
+
+/* Intervention accordion */
+.intervention{background:#fff;border-radius:var(--radius-md);box-shadow:var(--shadow-xs);overflow:hidden}
+.intervention__head{
+  width:100%;display:flex;align-items:center;gap:11px;padding:15px 16px;border:none;
+  background:transparent;text-align:left;
+}
+.intervention__dot{width:8px;height:8px;border-radius:999px;background:var(--green-500);flex:none}
+.intervention__name{flex:1;min-width:0;font-size:15px;font-weight:700;color:var(--text-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.intervention__count{font-size:12.5px;color:var(--text-muted);white-space:nowrap;flex:none}
+.intervention__chevron{flex:none;color:var(--gray-400);transition:transform .2s}
+.intervention.is-open .intervention__chevron{transform:rotate(180deg)}
+.intervention__body{padding:0 16px;display:none}
+.intervention.is-open .intervention__body{display:block}
+.material-row{
+  display:flex;align-items:center;gap:8px;padding:10px 0;border-top:1px dashed var(--gray-150);
+}
+.material-row__name{flex:1;min-width:0;font-size:14px;color:var(--gray-800);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.material-row__qty{font-size:13.5px;font-weight:700;color:var(--gray-500);flex:none}
+.badge{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:700;flex:none}
+.badge--new{background:var(--green-100);color:var(--green-800)}
+.badge--nf{background:var(--amber-50);color:var(--amber-700)}
+.intervention__add{
+  width:100%;display:flex;align-items:center;justify-content:center;gap:8px;height:46px;border:none;
+  border-top:1px dashed var(--gray-150);background:transparent;color:var(--green-700);
+  font-size:14px;font-weight:700;
+}
+.intervention__add:hover{background:var(--green-50)}
+
+/* Buttons */
+.btn-outline-green{
+  height:50px;border:1.5px solid var(--green-500);border-radius:13px;background:#fff;color:var(--green-700);
+  font-size:14.5px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:9px;width:100%;
+}
+.btn-outline-green:hover{background:var(--green-50)}
+.btn-primary-dark{
+  height:54px;border:none;border-radius:13px;background:var(--green-800);color:#fff;
+  font-size:15.5px;font-weight:700;box-shadow:var(--shadow-cta-green);width:100%;
+  transition:background .15s, transform .1s;
+}
+.btn-primary-dark:hover{background:var(--green-900)}
+.btn-primary-dark:active{transform:translateY(.5px)}
+
+/* =========================================================================
+   SHEET MODAL PATTERN — used by: Heures prestées, Ajouter du matériel,
+   Nouvelle intervention, Récapitulatif. ALWAYS this shell.
+   ========================================================================= */
+.overlay{
+  position:fixed;inset:0;z-index:800;background:rgba(11,19,32,.52);backdrop-filter:blur(3px);
+  opacity:0;pointer-events:none;transition:opacity .2s ease-out;
+}
+.overlay.is-open{opacity:1;pointer-events:auto}
+.sheet-wrap{
+  position:fixed;inset:0;z-index:810;display:flex;pointer-events:none;
+  align-items:flex-end; /* mobile: bottom sheet */
+}
+@media (min-width:900px){
+  .sheet-wrap{align-items:center;justify-content:center;padding:24px}
+}
+.sheet{
+  pointer-events:auto;background:#fff;box-shadow:var(--shadow-xl);
+  max-height:80vh;overflow-y:auto;
+  width:100%;border-radius:var(--radius-band) var(--radius-band) 0 0;
+  padding:20px 20px calc(24px + env(safe-area-inset-bottom));
+  transform:translateY(100%); transition:transform .3s var(--ease-brand);
+}
+.sheet-wrap.is-open .sheet{transform:translateY(0)}
+@media (min-width:900px){
+  .sheet{
+    width:min(480px,100%); border-radius:var(--radius-lg); padding:24px;
+    transform:translateY(10px) scale(.98); opacity:0;
+    transition:transform .22s var(--ease-brand), opacity .22s var(--ease-brand);
+  }
+  .sheet-wrap.is-open .sheet{transform:none;opacity:1}
+}
+.sheet__header{display:flex;align-items:center;gap:12px}
+.sheet__title{margin:0;flex:1;font-size:20px;font-weight:800;letter-spacing:-.02em}
+.close-btn{
+  width:40px;height:40px;border:none;border-radius:12px;cursor:pointer;flex:none;
+  background:var(--gray-75);color:var(--gray-600);display:flex;align-items:center;justify-content:center;
+}
+.close-btn:hover{background:var(--gray-100)}
+.sheet__rule{border-top:1px dashed var(--gray-200);margin:16px 0}
+.ctx-box{display:flex;align-items:center;gap:10px;background:var(--gray-50);border-radius:12px;padding:12px 14px}
+
+/* Stepper row (Début / Fin / Pause / Date / Quantité) — THE reusable pattern */
+.stepper-row{display:flex;align-items:center;gap:12px}
+.stepper-row__label{width:74px;flex:none;font-size:13px;font-weight:700;color:var(--gray-700)}
+.stepper-row__btn{
+  width:46px;height:46px;border:1.5px solid var(--border-default);border-radius:12px;background:#fff;
+  color:var(--gray-700);font-size:19px;font-weight:700;flex:none;
+}
+.stepper-row__btn:hover{border-color:var(--green-500)}
+.stepper-row__value{flex:1;text-align:center;font-size:19px;font-weight:800}
+
+/* Checkbox (overnight toggle) */
+.check-row{display:flex;align-items:center;gap:10px}
+.checkbox{
+  width:22px;height:22px;border-radius:6px;flex:none;border:none;padding:0;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:background .15s;
+  background:#fff;box-shadow:inset 0 0 0 1.5px var(--gray-300);
+}
+.checkbox.is-checked{background:var(--green-600);box-shadow:none}
+.check-row__label{font-size:13.5px;font-weight:600;color:var(--gray-600);cursor:pointer}
+
+.total-box{
+  display:flex;align-items:center;gap:12px;background:var(--green-50);border-radius:13px;padding:14px 16px;
+}
+.total-box__label{flex:1;font-size:14px;font-weight:700;color:var(--green-800)}
+.total-box__value{font-size:22px;font-weight:800;color:var(--green-800)}
+
+.btn-ghost{
+  height:44px;border:none;background:transparent;color:var(--gray-500);font-size:14px;font-weight:600;width:100%;
+}
+
+.field{display:flex;flex-direction:column;gap:7px}
+.field__label{font-size:13px;font-weight:700;color:var(--gray-700)}
+.field__input{
+  height:50px;border:1.5px solid var(--border-default);border-radius:12px;padding:0 14px;
+  font-size:15px;color:var(--text-strong);background:#fff;outline:none;width:100%;
+}
+.field__input:focus{border-color:var(--green-500);box-shadow:var(--focus-ring)}
+
+/* Wizard step indicator */
+.wizard-steps{display:flex;align-items:flex-start;margin-top:18px}
+.wizard-step{width:76px;flex:none;display:flex;flex-direction:column;align-items:center;gap:6px}
+.wizard-step__circle{
+  width:30px;height:30px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:800;background:#fff;color:var(--gray-400);
+  box-shadow:inset 0 0 0 1.5px var(--gray-200);
+}
+.wizard-step.is-active .wizard-step__circle,
+.wizard-step.is-done .wizard-step__circle{background:var(--green-600);color:#fff;box-shadow:none}
+.wizard-step__label{font-size:12px;font-weight:600;color:var(--gray-500)}
+.wizard-connector{flex:1;height:2px;margin-top:14px;border-radius:2px;background:var(--gray-200)}
+.wizard-connector.is-done{background:var(--green-600)}
+
+.search-input-wrap{position:relative;margin-top:12px}
+.search-input-wrap svg{position:absolute;left:14px;top:14px;pointer-events:none;color:var(--gray-400)}
+.search-input{
+  height:46px;border:1.5px solid var(--border-default);border-radius:12px;padding:0 14px 0 42px;
+  font-size:15px;color:var(--text-strong);background:#fff;outline:none;width:100%;
+}
+.search-input:focus{border-color:var(--green-500);box-shadow:var(--focus-ring)}
+
+.chip-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:9px}
+.chip{
+  height:34px;padding:0 13px;border-radius:999px;border:1px solid var(--border-default);background:#fff;
+  color:var(--gray-700);font-size:13px;font-weight:600;
+}
+.chip:hover{border-color:var(--green-500);background:var(--green-50)}
+
+.list-row{
+  display:flex;align-items:center;gap:10px;height:50px;border:none;border-bottom:1px solid var(--gray-100);
+  background:transparent;font-size:14.5px;font-weight:600;color:var(--gray-800);width:100%;text-align:left;
+  padding:0 4px;
+}
+.list-row:hover{background:var(--gray-50)}
+
+.result-row{display:flex;align-items:center;gap:10px;padding:11px 4px;border-bottom:1px solid var(--gray-100)}
+.result-row__name{font-size:14px;font-weight:600;color:var(--gray-800)}
+.result-row__brand{margin-top:1px;font-size:12px;color:var(--gray-400)}
+.add-round{
+  width:34px;height:34px;border:1.5px solid var(--green-500);border-radius:999px;background:#fff;
+  color:var(--green-700);flex:none;display:flex;align-items:center;justify-content:center;
+}
+.add-round:hover{background:var(--green-50)}
+
+.btn-outline-amber{
+  height:48px;border:1.5px solid var(--border-default);border-radius:12px;background:#fff;color:var(--gray-700);
+  font-size:14px;font-weight:600;width:100%;
+}
+.btn-outline-amber:hover{border-color:var(--amber-600);color:var(--amber-700);background:var(--amber-50)}
+
+.btn-primary-green{
+  height:52px;border:none;border-radius:12px;background:var(--green-700);color:#fff;
+  font-size:15px;font-weight:700;box-shadow:var(--shadow-cta-green);width:100%;
+}
+.btn-primary-green:hover{background:var(--green-800)}
+
+.qty-row{display:flex;align-items:center;gap:12px;margin-top:8px}
+.qty-btn{
+  width:48px;height:48px;border:1.5px solid var(--border-default);border-radius:12px;background:#fff;
+  color:var(--gray-700);font-size:20px;font-weight:700;
+}
+.qty-btn:hover{border-color:var(--green-500)}
+.qty-value{flex:1;text-align:center;font-size:19px;font-weight:800}
+
+/* Recap rows */
+.recap-row{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px dashed var(--gray-150)}
+.recap-row__icon{width:36px;height:36px;border-radius:999px;display:flex;align-items:center;justify-content:center;flex:none}
+.recap-row__icon--ok{background:var(--green-50);color:var(--green-700)}
+.recap-row__icon--warn{background:var(--amber-50);color:var(--amber-700)}
+.recap-row__label{flex:1;font-size:14px;font-weight:600;color:var(--gray-700)}
+.recap-row__value{font-size:14px;font-weight:700}
+.recap-row__value--warn{color:var(--amber-700)}
+
+/* Toast */
+.toast{
+  position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:1000;
+  max-width:min(420px,calc(100vw - 40px));background:var(--gray-900);color:#fff;border-radius:12px;
+  padding:13px 18px;font-size:14px;font-weight:600;box-shadow:var(--shadow-xl);text-align:center;
+  opacity:0;pointer-events:none;transition:opacity .2s;
+}
+.toast.is-visible{opacity:1}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- ================= ENCODE HEADER ================= -->
+  <header class="encode-header" id="encodeHeader">
+    <svg class="encode-header__wave" viewBox="0 0 400 190" preserveAspectRatio="none" fill="none">
+      <path d="M0 96 C 90 152, 200 94, 300 152 S 380 128, 400 136 L400 190 L0 190 Z" fill="rgba(255,255,255,.05)"></path>
+      <path d="M0 154 C 100 104, 210 164, 310 116 S 385 134, 400 140" stroke="rgba(255,255,255,.16)" stroke-width="1.5" stroke-dasharray="10 9"></path>
+    </svg>
+    <div class="encode-header__top">
+      <button class="encode-header__back" id="btnBack" aria-label="Retour">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+      </button>
+      <span class="encode-header__eyebrow">ENCODAGE MISSION</span>
+    </div>
+    <div class="encode-header__body">
+      <h1 class="encode-header__title">Mission #<span id="missionNum">529</span></h1>
+      <div class="encode-header__site" id="missionSite">CHU Brugmann — Site Victor Horta</div>
+      <div class="encode-header__sub" id="missionSub">Dr. Anouk Peeters · Orthopédie</div>
+      <div class="encode-header__tags">
+        <span class="encode-header__tag">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+          <span id="missionDate">Dimanche 5 juillet 2026</span>
+        </span>
+        <span class="encode-header__tag" id="missionType">Bloc opératoire</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ================= CONTENT ================= -->
+  <main class="encode-content">
+
+    <!-- Draft bar: auto-save indicator, timestamp updates on every edit -->
+    <div class="draft-bar">
+      <span class="draft-bar__dot"></span>
+      <div style="flex:1;min-width:0">
+        <div class="draft-bar__label">Brouillon en cours</div>
+        <div class="draft-bar__counts tabular" id="draftCounts">3 interventions · 12 matériels</div>
+      </div>
+      <div class="draft-bar__saved tabular">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19a4.5 4.5 0 1 0-.9-8.9 6 6 0 1 0-11.1 3"/><path d="m9 15 3 3 5-5"/></svg>
+        Enregistré à <span id="savedAt">10:32</span>
+      </div>
+    </div>
+
+    <!-- Hours card: opens the Heures prestées sheet -->
+    <button class="hours-card" id="btnOpenHours">
+      <span class="hours-card__icon">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      </span>
+      <span style="flex:1;min-width:0;display:flex;flex-direction:column">
+        <span class="hours-card__label">Heures prestées</span>
+        <span class="hours-card__value is-empty tabular" id="hoursValue">Non renseignées</span>
+      </span>
+      <svg class="hours-card__chevron" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+    </button>
+
+    <div class="eyebrow-row">
+      <span class="eyebrow-row__label">INTERVENTIONS</span>
+      <span class="eyebrow-row__rule"></span>
+    </div>
+
+    <!-- Interventions list — rendered by JS from state.interventions -->
+    <div id="interventionsList"></div>
+
+    <button class="btn-outline-green" id="btnNewIntervention">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+      Nouvelle intervention
+    </button>
+
+    <button class="btn-primary-dark" id="btnFinish">Terminer l'encodage</button>
+  </main>
+</div>
+
+<!-- ================= OVERLAY (shared by all sheets) ================= -->
+<div class="overlay" id="overlay"></div>
+
+<!-- ================= SHEET: Heures prestées ================= -->
+<div class="sheet-wrap" id="hoursSheetWrap">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="hoursTitle">
+    <div class="sheet__header">
+      <h2 class="sheet__title" id="hoursTitle">Heures prestées</h2>
+      <button class="close-btn" data-close="hours" aria-label="Fermer">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="ctx-box" style="margin-top:14px">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--gray-500)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+      <span style="font-size:13.5px;color:var(--gray-600)">Horaire prévu : <span class="tabular" style="font-weight:700;color:var(--gray-800)">07h30 → 15h30</span></span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-top:18px">
+      <div class="stepper-row">
+        <span class="stepper-row__label">Début</span>
+        <button class="stepper-row__btn" data-h-action="start-minus" aria-label="Moins 15 minutes">−</button>
+        <span class="stepper-row__value tabular" id="hStart">07h30</span>
+        <button class="stepper-row__btn" data-h-action="start-plus" aria-label="Plus 15 minutes">+</button>
+      </div>
+      <div class="stepper-row">
+        <span class="stepper-row__label">Fin</span>
+        <button class="stepper-row__btn" data-h-action="end-minus" aria-label="Moins 15 minutes">−</button>
+        <span class="stepper-row__value tabular" id="hEnd">15h30</span>
+        <button class="stepper-row__btn" data-h-action="end-plus" aria-label="Plus 15 minutes">+</button>
+      </div>
+      <div class="check-row" style="padding-left:86px">
+        <button class="checkbox" id="hOvernightBox" aria-label="Se termine le lendemain">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M20 6 9 17l-5-5"/></svg>
+        </button>
+        <span class="check-row__label" id="hOvernightLabel">Se termine le lendemain <span style="font-weight:400;color:var(--gray-400)">(après minuit)</span></span>
+      </div>
+      <div class="stepper-row">
+        <span class="stepper-row__label">Pause</span>
+        <button class="stepper-row__btn" data-h-action="pause-minus" aria-label="Moins 15 minutes">−</button>
+        <span class="stepper-row__value tabular" id="hPause">0 min</span>
+        <button class="stepper-row__btn" data-h-action="pause-plus" aria-label="Plus 15 minutes">+</button>
+      </div>
+    </div>
+    <div class="total-box" style="margin-top:18px">
+      <span class="total-box__label">Total presté</span>
+      <span class="total-box__value tabular" id="hTotal">8h00</span>
+    </div>
+    <button class="btn-primary-green" style="margin-top:16px" id="btnSaveHours">Enregistrer les heures</button>
+    <button class="btn-ghost" style="margin-top:8px" data-close="hours">Annuler</button>
+  </div>
+</div>
+
+<!-- ================= SHEET: Nouvelle intervention ================= -->
+<div class="sheet-wrap" id="newIntSheetWrap">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="newIntTitle">
+    <div class="sheet__header">
+      <h2 class="sheet__title" id="newIntTitle">Nouvelle intervention</h2>
+      <button class="close-btn" data-close="newInt" aria-label="Fermer">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="field" style="margin-top:18px">
+      <label class="field__label" for="newIntName">Nom de l'intervention</label>
+      <input class="field__input" id="newIntName" placeholder="Ex. Ménisque médial">
+    </div>
+    <button class="btn-primary-green" style="margin-top:18px" id="btnAddIntervention">Ajouter l'intervention</button>
+  </div>
+</div>
+
+<!-- ================= SHEET: Ajouter du matériel (wizard 3 étapes) ================= -->
+<div class="sheet-wrap" id="wizardSheetWrap">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="wizTitle">
+    <div class="sheet__header">
+      <h2 class="sheet__title" id="wizTitle">Ajouter du matériel</h2>
+      <button class="close-btn" data-close="wizard" aria-label="Fermer">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+
+    <div class="wizard-steps">
+      <div class="wizard-step" id="wizStepDot1"><span class="wizard-step__circle">1</span><span class="wizard-step__label">Marque</span></div>
+      <div class="wizard-connector" id="wizConn1"></div>
+      <div class="wizard-step" id="wizStepDot2"><span class="wizard-step__circle">2</span><span class="wizard-step__label">Matériel</span></div>
+      <div class="wizard-connector" id="wizConn2"></div>
+      <div class="wizard-step" id="wizStepDot3"><span class="wizard-step__circle">3</span><span class="wizard-step__label">Détails</span></div>
+    </div>
+
+    <!-- Step 1: brand -->
+    <section id="wizStep1" class="wiz-step">
+      <div style="margin-top:20px;font-size:14.5px;font-weight:700">Étape 1/3 – Choisir une marque</div>
+      <div class="search-input-wrap">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input class="search-input" id="brandSearch" placeholder="Rechercher une marque…">
+      </div>
+      <div style="margin-top:16px;font-size:12px;font-weight:800;letter-spacing:.06em;color:var(--gray-500)">MARQUES RÉCENTES</div>
+      <div class="chip-row" id="recentBrands"></div>
+      <div style="margin-top:18px;font-size:12px;font-weight:800;letter-spacing:.06em;color:var(--gray-500)">TOUTES LES MARQUES</div>
+      <div id="allBrands"></div>
+      <button class="btn-ghost" style="margin-top:14px" data-close="wizard">Annuler</button>
+    </section>
+
+    <!-- Step 2: material search -->
+    <section id="wizStep2" class="wiz-step" style="display:none">
+      <div style="margin-top:20px;font-size:14.5px;font-weight:700">Étape 2/3 – Rechercher un matériel</div>
+      <div class="ctx-box" style="margin-top:12px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:11.5px;color:var(--gray-500)">Marque sélectionnée</div>
+          <div style="margin-top:1px;font-size:15px;font-weight:700" id="selectedBrandName"></div>
+        </div>
+        <a href="#" style="font-size:13.5px;font-weight:700;color:var(--green-700);text-decoration:none" id="btnChangeBrand">Changer</a>
+      </div>
+      <div class="search-input-wrap">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input class="search-input" id="matSearch" placeholder="Rechercher un matériel…">
+      </div>
+      <div style="margin-top:14px;font-size:12px;font-weight:800;letter-spacing:.06em;color:var(--gray-500)">RÉSULTATS</div>
+      <div id="matResults"></div>
+      <div id="matNoResults" style="display:none;padding:16px 4px;font-size:13.5px;color:var(--gray-400)">Aucun résultat pour cette recherche.</div>
+      <button class="btn-outline-amber" style="margin-top:14px" id="btnNotFound">Je ne trouve pas le matériel</button>
+    </section>
+
+    <!-- Step 3: quantity + comment -->
+    <section id="wizStep3" class="wiz-step" style="display:none">
+      <div style="margin-top:20px;font-size:14.5px;font-weight:700">Étape 3/3 – Détails du matériel</div>
+      <div class="ctx-box" style="margin-top:12px;padding:13px 14px">
+        <span style="width:44px;height:44px;border-radius:11px;background:var(--green-100);display:flex;align-items:center;justify-content:center;flex:none">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--green-800)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></svg>
+        </span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:11.5px;color:var(--gray-500)">Matériel sélectionné</div>
+          <div style="margin-top:1px;font-size:15px;font-weight:700" id="selectedMatName"></div>
+          <div style="font-size:12.5px;color:var(--gray-500)" id="selectedMatBrand"></div>
+        </div>
+      </div>
+      <div style="margin-top:16px;font-size:13px;font-weight:700;color:var(--gray-700)">Quantité *</div>
+      <div class="qty-row">
+        <button class="qty-btn" id="qtyMinus" aria-label="Moins">−</button>
+        <span class="qty-value tabular" id="qtyValue">1</span>
+        <button class="qty-btn" id="qtyPlus" aria-label="Plus">+</button>
+      </div>
+      <div style="margin-top:16px;font-size:13px;font-weight:700;color:var(--gray-700)">Commentaire <span style="font-weight:400;color:var(--gray-400)">(optionnel)</span></div>
+      <input class="field__input" style="margin-top:8px" id="matComment" placeholder="Ex. utilisé pour fixation tibiale">
+      <button class="btn-primary-green" style="margin-top:18px" id="btnAddMaterial">Ajouter à l'intervention</button>
+      <button class="btn-ghost" style="margin-top:8px" id="btnWizBack">Retour</button>
+    </section>
+  </div>
+</div>
+
+<!-- ================= SHEET: Récapitulatif ================= -->
+<div class="sheet-wrap" id="recapSheetWrap">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="recapTitle">
+    <div class="sheet__header">
+      <h2 class="sheet__title" id="recapTitle">Récapitulatif avant validation</h2>
+      <button class="close-btn" data-close="recap" aria-label="Fermer">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div style="margin-top:14px;display:flex;flex-direction:column" id="recapRows"></div>
+    <p style="margin:14px 0 0;font-size:13px;color:var(--text-muted);line-height:1.5">Vérifiez les informations, encodez vos heures prestées et validez pour clôturer la mission.</p>
+    <button class="btn-primary-dark" style="margin-top:16px" id="btnValidate">Valider et clôturer la mission</button>
+    <button class="btn-ghost" style="margin-top:8px" data-close="recap">Continuer l'encodage</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* =========================================================================
+   STATE — this is the whole data model for the encoding module.
+   In React: this becomes useState/useReducer in <EncodeScreen>.
+   =========================================================================
+*/
+const state = {
+  mission: {
+    num: '529',
+    site: 'CHU Brugmann — Site Victor Horta',
+    sub: 'Dr. Anouk Peeters · Orthopédie',
+    date: 'Dimanche 5 juillet 2026',
+    type: 'Bloc opératoire'
+  },
+  savedAt: '10:32',
+  hours: null, // { start, end, pause, nextDay } in minutes-from-midnight, or null if unset
+  interventions: [
+    { id: 1, name: 'LCA — reconstruction', open: true, materials: [
+      { name: 'Vis Biosure HA 7x23 mm', qty: 1 },
+      { name: 'FiberWire n°2', qty: 2 },
+      { name: 'TightRope ABS', qty: 1 },
+      { name: 'Ancillaire de vissage', qty: 1 }
+    ]},
+    { id: 2, name: 'Ménisque médial', open: false, materials: [
+      { name: 'Lame shaver 4.2 mm', qty: 1 },
+      { name: 'Pince basket', qty: 1 },
+      { name: 'FiberWire n°2', qty: 1 },
+      { name: 'Canule 6 mm', qty: 1 }
+    ]},
+    { id: 3, name: 'Chondroplastie patellaire', open: false, materials: [] }
+  ],
+  nextInterventionId: 4,
+
+  // transient wizard state (reset each time the wizard opens)
+  wizard: { step: 1, interventionId: null, brand: null, brandQuery: '', matQuery: '', material: null, qty: 1, comment: '' },
+  // transient hours-sheet draft (only committed to state.hours on "Enregistrer")
+  hoursDraft: { start: 450, end: 930, pause: 0, nextDay: false }
+};
+
+/* Material catalog — in production this comes from an API (GET /materials?brand=) */
+const CATALOG = {
+  'Arthrex': ['Vis Biosure HA 7x23 mm', 'Vis Biosure HA 7x28 mm', 'Vis PEEK 7x23 mm', 'Anchor SwiveLock 4.75 mm', 'TightRope ABS', 'Bouton Cortical 15 mm'],
+  'DePuy Synthes': ['Vis corticale 3.5 mm', 'Plaque LCP 3.5 mm', 'Broche de Kirschner 1.6 mm', 'Vis spongieuse 4.0 mm'],
+  'Smith+Nephew': ['Endobutton CL Ultra', 'Vis RCI 8x25 mm', 'FastFix 360', 'Lame shaver Dyonics 4.5 mm'],
+  'Stryker': ['Vis Asnis III 4.0 mm', 'Clou Gamma3 180 mm', 'Agrafe EasyClip 10 mm'],
+  'Zimmer Biomet': ['Vis Gentle Thread 7x25 mm', 'Ancre JuggerKnot 1.4 mm'],
+  'Conmed': ['Ancre PopLok 4.5 mm', 'Vis Matryx 7x25 mm'],
+  'Linvatec': ['Vis BioScrew 7x25 mm', 'Ancre Impact 2.8 mm']
+};
+const RECENT_BRANDS = ['Arthrex', 'Smith+Nephew', 'Stryker', 'DePuy Synthes'];
+
+/* =========================================================================
+   HELPERS
+   ========================================================================= */
+function fmtTime(minutes){
+  const h = String(Math.floor(minutes / 60)).padStart(2, '0');
+  const m = String(minutes % 60).padStart(2, '0');
+  return h + 'h' + m;
+}
+function fmtDuration(minutes){
+  return Math.floor(minutes / 60) + 'h' + String(minutes % 60).padStart(2, '0');
+}
+function touchSavedAt(){
+  const d = new Date();
+  state.savedAt = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+  document.getElementById('savedAt').textContent = state.savedAt;
+}
+let toastTimer;
+function showToast(msg){
+  clearTimeout(toastTimer);
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('is-visible');
+  toastTimer = setTimeout(() => el.classList.remove('is-visible'), 2800);
+}
+
+/* =========================================================================
+   RENDER — pure functions, re-run after every state mutation.
+   In React each of these becomes a component re-rendering from state/props.
+   ========================================================================= */
+function renderDraftBar(){
+  const totalInts = state.interventions.length;
+  const totalMats = state.interventions.reduce((a, i) => a + i.materials.reduce((b, m) => b + m.qty, 0), 0);
+  document.getElementById('draftCounts').textContent =
+    totalInts + ' interventions · ' + totalMats + ' matériels';
+}
+
+function renderHoursCard(){
+  const el = document.getElementById('hoursValue');
+  if (state.hours) {
+    const h = state.hours;
+    const endEff = h.end + (h.nextDay ? 1440 : 0);
+    const total = Math.max(0, endEff - h.start - h.pause);
+    el.textContent = fmtTime(h.start) + ' → ' + fmtTime(h.end) + (h.nextDay ? ' (+1j)' : '') + ' · ' + fmtDuration(total);
+    el.classList.remove('is-empty'); el.classList.add('is-set');
+  } else {
+    el.textContent = 'Non renseignées';
+    el.classList.add('is-empty'); el.classList.remove('is-set');
+  }
+}
+
+function renderInterventions(){
+  const root = document.getElementById('interventionsList');
+  root.innerHTML = '';
+  root.style.display = 'flex'; root.style.flexDirection = 'column'; root.style.gap = '14px';
+  state.interventions.forEach((it) => {
+    const count = it.materials.reduce((a, m) => a + m.qty, 0);
+    const card = document.createElement('div');
+    card.className = 'intervention' + (it.open ? ' is-open' : '');
+    card.innerHTML = `
+      <button class="intervention__head" data-toggle-int="${it.id}">
+        <span class="intervention__dot"></span>
+        <span class="intervention__name">${it.name}</span>
+        <span class="intervention__count tabular">${count} matériel${count > 1 ? 's' : ''}</span>
+        <svg class="intervention__chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="intervention__body">
+        ${it.materials.map((m) => `
+          <div class="material-row">
+            <span class="material-row__name">${m.name}</span>
+            ${m.isNew ? '<span class="badge badge--new">Nouveau</span>' : ''}
+            ${m.notFound ? '<span class="badge badge--nf">À préciser</span>' : ''}
+            <span class="material-row__qty tabular">x${m.qty}</span>
+          </div>`).join('')}
+        <button class="intervention__add" data-add-material="${it.id}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          Ajouter du matériel
+        </button>
+      </div>`;
+    root.appendChild(card);
+  });
+}
+
+function renderAll(){
+  renderDraftBar();
+  renderHoursCard();
+  renderInterventions();
+}
+
+/* =========================================================================
+   WAVE ARRIVAL ANIMATION — plays once on mount (~1.1s / 1.35s settle).
+   The paths start at an "amplitude high" shape and settle to the resting
+   shape. See docs/design/animations/animations.md #5.
+   ========================================================================= */
+function playHeaderWaveArrival(){
+  const paths = document.querySelectorAll('#encodeHeader .encode-header__wave path');
+  const restingD = [
+    "M0 128 C 90 88, 200 168, 300 118 S 380 96, 400 104 L400 190 L0 190 Z",
+    "M0 132 C 100 128, 210 128, 310 132 S 385 122, 400 126"
+  ];
+  const startD = [
+    "M0 96 C 90 152, 200 94, 300 152 S 380 128, 400 136 L400 190 L0 190 Z",
+    "M0 154 C 100 104, 210 164, 310 116 S 385 134, 400 140"
+  ];
+  paths.forEach((p, i) => { p.setAttribute('d', startD[i]); });
+  // Force reflow so the transition (declared in CSS) actually animates
+  void document.getElementById('encodeHeader').offsetHeight;
+  requestAnimationFrame(() => {
+    paths.forEach((p, i) => { p.setAttribute('d', restingD[i]); });
+  });
+}
+
+/* =========================================================================
+   SHEET OPEN/CLOSE — shared plumbing for all 4 sheets.
+   ========================================================================= */
+const overlay = document.getElementById('overlay');
+const sheets = {
+  hours: document.getElementById('hoursSheetWrap'),
+  newInt: document.getElementById('newIntSheetWrap'),
+  wizard: document.getElementById('wizardSheetWrap'),
+  recap: document.getElementById('recapSheetWrap')
+};
+function openSheet(name){
+  overlay.classList.add('is-open');
+  sheets[name].classList.add('is-open');
+}
+function closeSheet(name){
+  overlay.classList.remove('is-open');
+  sheets[name].classList.remove('is-open');
+}
+overlay.addEventListener('click', () => {
+  Object.keys(sheets).forEach((k) => sheets[k].classList.contains('is-open') && closeSheet(k));
+});
+document.querySelectorAll('[data-close]').forEach((btn) => {
+  btn.addEventListener('click', () => closeSheet(btn.dataset.close));
+});
+
+/* =========================================================================
+   HEURES PRESTÉES — steppers ±15min, overnight toggle, live total
+   ========================================================================= */
+function renderHoursSheet(){
+  const d = state.hoursDraft;
+  document.getElementById('hStart').textContent = fmtTime(d.start);
+  document.getElementById('hEnd').textContent = fmtTime(d.end) + (d.nextDay ? ' (+1j)' : '');
+  document.getElementById('hPause').textContent = d.pause + ' min';
+  const endEff = d.end + (d.nextDay ? 1440 : 0);
+  const total = Math.max(0, endEff - d.start - d.pause);
+  document.getElementById('hTotal').textContent = fmtDuration(total);
+  const box = document.getElementById('hOvernightBox');
+  box.classList.toggle('is-checked', d.nextDay);
+  box.querySelector('svg').style.display = d.nextDay ? 'block' : 'none';
+}
+document.getElementById('btnOpenHours').addEventListener('click', () => {
+  state.hoursDraft = state.hours ? Object.assign({}, state.hours) : { start: 450, end: 930, pause: 0, nextDay: false };
+  renderHoursSheet();
+  openSheet('hours');
+});
+const STEP = 15; // minutes — matches design token motion/step; expose as a prop if you need finer control
+document.querySelectorAll('[data-h-action]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const d = state.hoursDraft;
+    switch (btn.dataset.hAction) {
+      case 'start-minus': d.start = Math.max(0, d.start - STEP); break;
+      case 'start-plus':  d.start = Math.min(d.nextDay ? 1440 - STEP : d.end - STEP, d.start + STEP); break;
+      case 'end-minus':   d.end = Math.max(d.nextDay ? 0 : d.start + STEP, d.end - STEP); break;
+      case 'end-plus':    d.end = Math.min(1440 - STEP, d.end + STEP); break;
+      case 'pause-minus': d.pause = Math.max(0, d.pause - STEP); break;
+      case 'pause-plus': {
+        const endEff = d.end + (d.nextDay ? 1440 : 0);
+        d.pause = Math.min(Math.max(0, endEff - d.start - STEP), d.pause + STEP);
+        break;
+      }
+    }
+    renderHoursSheet();
+  });
+});
+document.getElementById('hOvernightBox').addEventListener('click', () => {
+  state.hoursDraft.nextDay = !state.hoursDraft.nextDay;
+  renderHoursSheet();
+});
+document.getElementById('btnSaveHours').addEventListener('click', () => {
+  state.hours = Object.assign({}, state.hoursDraft);
+  closeSheet('hours');
+  renderAll();
+  touchSavedAt();
+  showToast('Heures prestées enregistrées.');
+});
+
+/* =========================================================================
+   NOUVELLE INTERVENTION
+   ========================================================================= */
+document.getElementById('btnNewIntervention').addEventListener('click', () => {
+  document.getElementById('newIntName').value = '';
+  openSheet('newInt');
+});
+document.getElementById('btnAddIntervention').addEventListener('click', () => {
+  const name = document.getElementById('newIntName').value.trim() || 'Nouvelle intervention';
+  state.interventions.push({ id: state.nextInterventionId++, name, open: true, materials: [] });
+  closeSheet('newInt');
+  renderAll();
+  touchSavedAt();
+});
+
+/* =========================================================================
+   ACCORDION toggle + "add material" entry point (event delegation)
+   ========================================================================= */
+document.getElementById('interventionsList').addEventListener('click', (e) => {
+  const toggleBtn = e.target.closest('[data-toggle-int]');
+  if (toggleBtn) {
+    const id = Number(toggleBtn.dataset.toggleInt);
+    const it = state.interventions.find((x) => x.id === id);
+    it.open = !it.open;
+    renderInterventions();
+    return;
+  }
+  const addBtn = e.target.closest('[data-add-material]');
+  if (addBtn) {
+    openWizardFor(Number(addBtn.dataset.addMaterial));
+  }
+});
+
+/* =========================================================================
+   WIZARD — Ajouter du matériel (3 steps)
+   ========================================================================= */
+function openWizardFor(interventionId){
+  state.wizard = { step: 1, interventionId, brand: null, brandQuery: '', matQuery: '', material: null, qty: 1, comment: '' };
+  renderWizard();
+  openSheet('wizard');
+}
+function setWizStep(step){
+  state.wizard.step = step;
+  renderWizard();
+}
+function renderWizardSteps(){
+  const w = state.wizard;
+  [1, 2, 3].forEach((n) => {
+    const dot = document.getElementById('wizStepDot' + n);
+    dot.classList.toggle('is-active', w.step === n);
+    dot.classList.toggle('is-done', w.step > n);
+    const circle = dot.querySelector('.wizard-step__circle');
+    circle.innerHTML = w.step > n
+      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>'
+      : String(n);
+  });
+  document.getElementById('wizConn1').classList.toggle('is-done', w.step > 1);
+  document.getElementById('wizConn2').classList.toggle('is-done', w.step > 2);
+  document.getElementById('wizStep1').style.display = w.step === 1 ? 'block' : 'none';
+  document.getElementById('wizStep2').style.display = w.step === 2 ? 'block' : 'none';
+  document.getElementById('wizStep3').style.display = w.step === 3 ? 'block' : 'none';
+}
+function renderBrandLists(){
+  const q = state.wizard.brandQuery.toLowerCase();
+  const allBrandNames = Object.keys(CATALOG).concat(['Autres marques']);
+
+  const recentEl = document.getElementById('recentBrands');
+  recentEl.innerHTML = '';
+  RECENT_BRANDS.forEach((b) => {
+    const chip = document.createElement('button');
+    chip.className = 'chip'; chip.textContent = b;
+    chip.addEventListener('click', () => pickBrand(b));
+    recentEl.appendChild(chip);
+  });
+
+  const allEl = document.getElementById('allBrands');
+  allEl.innerHTML = '';
+  allBrandNames.filter((b) => b.toLowerCase().includes(q)).forEach((b) => {
+    const row = document.createElement('button');
+    row.className = 'list-row';
+    row.innerHTML = `<span style="flex:1">${b}</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--gray-300)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`;
+    row.addEventListener('click', () => pickBrand(b));
+    allEl.appendChild(row);
+  });
+}
+function pickBrand(brand){
+  state.wizard.brand = brand;
+  state.wizard.matQuery = '';
+  setWizStep(2);
+}
+document.getElementById('brandSearch').addEventListener('input', (e) => {
+  state.wizard.brandQuery = e.target.value;
+  renderBrandLists();
+});
+document.getElementById('btnChangeBrand').addEventListener('click', (e) => {
+  e.preventDefault();
+  state.wizard.brand = null;
+  setWizStep(1);
+});
+function renderMatResults(){
+  const w = state.wizard;
+  document.getElementById('selectedBrandName').textContent = w.brand || '';
+  const q = w.matQuery.toLowerCase();
+  const list = (CATALOG[w.brand] || []).filter((m) => m.toLowerCase().includes(q));
+  const root = document.getElementById('matResults');
+  root.innerHTML = '';
+  list.forEach((m) => {
+    const row = document.createElement('div');
+    row.className = 'result-row';
+    row.innerHTML = `
+      <div style="flex:1;min-width:0">
+        <div class="result-row__name">${m}</div>
+        <div class="result-row__brand">${w.brand}</div>
+      </div>
+      <button class="add-round" aria-label="Ajouter">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+      </button>`;
+    row.querySelector('.add-round').addEventListener('click', () => {
+      w.material = m; w.qty = 1;
+      setWizStep(3);
+    });
+    root.appendChild(row);
+  });
+  document.getElementById('matNoResults').style.display = list.length === 0 ? 'block' : 'none';
+}
+document.getElementById('matSearch').addEventListener('input', (e) => {
+  state.wizard.matQuery = e.target.value;
+  renderMatResults();
+});
+/* "Je ne trouve pas le matériel" — commits a generic placeholder line immediately */
+document.getElementById('btnNotFound').addEventListener('click', () => {
+  commitMaterial({ notFound: true });
+});
+function renderStep3(){
+  const w = state.wizard;
+  document.getElementById('selectedMatName').textContent = w.material || '';
+  document.getElementById('selectedMatBrand').textContent = w.brand || '';
+  document.getElementById('qtyValue').textContent = String(w.qty);
+}
+document.getElementById('qtyMinus').addEventListener('click', () => {
+  state.wizard.qty = Math.max(1, state.wizard.qty - 1);
+  renderStep3();
+});
+document.getElementById('qtyPlus').addEventListener('click', () => {
+  state.wizard.qty = state.wizard.qty + 1;
+  renderStep3();
+});
+document.getElementById('matComment').addEventListener('input', (e) => { state.wizard.comment = e.target.value; });
+document.getElementById('btnWizBack').addEventListener('click', () => setWizStep(2));
+document.getElementById('btnAddMaterial').addEventListener('click', () => commitMaterial({ notFound: false }));
+
+function commitMaterial({ notFound }){
+  const w = state.wizard;
+  const it = state.interventions.find((x) => x.id === w.interventionId);
+  it.open = true;
+  it.materials.push({
+    name: notFound ? 'Matériel non trouvé — à préciser' : w.material,
+    qty: notFound ? 1 : w.qty,
+    isNew: true,
+    notFound
+  });
+  closeSheet('wizard');
+  renderAll();
+  touchSavedAt();
+  showToast(notFound
+    ? "Ligne ajoutée — précisez le matériel avec l'établissement."
+    : "Matériel ajouté à l'intervention.");
+}
+function renderWizard(){
+  renderWizardSteps();
+  renderBrandLists();
+  renderMatResults();
+  renderStep3();
+}
+
+/* =========================================================================
+   RÉCAPITULATIF
+   ========================================================================= */
+document.getElementById('btnFinish').addEventListener('click', () => {
+  renderRecap();
+  openSheet('recap');
+});
+function renderRecap(){
+  const totalInts = state.interventions.length;
+  const totalLines = state.interventions.reduce((a, i) => a + i.materials.length, 0);
+  const nfLines = state.interventions.reduce((a, i) => a + i.materials.filter((m) => m.notFound).length, 0);
+  const rows = [];
+  if (state.hours) {
+    const h = state.hours;
+    const endEff = h.end + (h.nextDay ? 1440 : 0);
+    const total = Math.max(0, endEff - h.start - h.pause);
+    rows.push({ icon: 'ok', label: 'Heures', value: fmtTime(h.start) + ' → ' + fmtTime(h.end) + (h.nextDay ? ' (+1j)' : '') + ' · ' + fmtDuration(total), warn: false });
+  } else {
+    rows.push({ icon: 'warn', label: 'Heures', value: 'Non renseignées', warn: true });
+  }
+  rows.push({ icon: 'ok', label: 'Interventions', value: String(totalInts), warn: false });
+  rows.push({ icon: 'ok', label: 'Matériel encodé', value: totalLines + ' lignes', warn: false });
+  if (nfLines > 0) rows.push({ icon: 'warn', label: 'Matériel non trouvé', value: nfLines + (nfLines > 1 ? ' lignes' : ' ligne'), warn: true });
+
+  const root = document.getElementById('recapRows');
+  root.innerHTML = rows.map((r) => `
+    <div class="recap-row">
+      <span class="recap-row__icon recap-row__icon--${r.icon === 'ok' ? 'ok' : 'warn'}">
+        ${r.icon === 'ok'
+          ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>'
+          : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>'}
+      </span>
+      <span class="recap-row__label">${r.label}</span>
+      <span class="recap-row__value${r.warn ? ' recap-row__value--warn' : ''}">${r.value}</span>
+    </div>`).join('');
+}
+document.getElementById('btnValidate').addEventListener('click', () => {
+  closeSheet('recap');
+  showToast("Mission clôturée. Encodage transmis à l'établissement.");
+  // In production: POST /missions/:id/encodage/validate then navigate back to "/"
+});
+
+/* =========================================================================
+   BACK BUTTON — replace with your router's back navigation
+   ========================================================================= */
+document.getElementById('btnBack').addEventListener('click', () => {
+  showToast('Retour (brancher sur la navigation de l\'app).');
+});
+
+/* =========================================================================
+   INIT
+   ========================================================================= */
+renderAll();
+playHeaderWaveArrival();
+</script>
+</body>
+</html>
