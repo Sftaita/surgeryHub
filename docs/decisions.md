@@ -3295,6 +3295,86 @@ aurait démontré l'absence de verrou ; un timeout MySQL déterministe démontre
 
 ---
 
+## D-068 — Rattachement de l'encodage au référentiel InterventionType (Lot 5)
+
+Date : 2026-07-17
+
+### Clarification de numérotation des lots
+
+Le découpage technique initial du catalogue financier prévoyait 7 lots distincts
+(1 — MaterialItem, 2 — InterventionType, 3 — PricingRule, 4 — FirmServiceOffering +
+SuggestedMaterial, 5 — MissionIntervention, 6 — écran manager + encodage instrumentiste,
+7 — moteur de facturation). **Les lots techniques 1 à 4 ont été regroupés dans le
+déploiement historiquement nommé « Lot 1 »** (D-067, `v2026.07.17-prod`). Le présent
+D-068 est donc la première évolution du **modèle persistant** de l'encodage (Lot 5) ;
+le Lot 6 sera la première évolution **UX** complète visible par l'instrumentiste
+(parcours guidé, suggestions, nouvelle interface de catalogue fermé) — non commencé ici.
+
+### Audit préalable (vérifié sur le code vivant, pas sur les noms de commits)
+
+Confirmé avant toute implémentation : les 5 éléments du Lot 1 (`MaterialItem`,
+`InterventionType`, `PricingRule`, `FirmServiceOffering`, `SuggestedMaterial`) sont
+présents et complets (entités, migrations, contrôleurs manager, tests). `MissionIntervention`
+n'avait aucune relation vers `InterventionType` ni de notion de firme principale — seul
+un couple `code`/`label` texte libre, rapproché du référentiel `PricingRule` par
+convention de code partagée (`FirmInvoiceService::findInterventionRule()`), jamais par
+intégrité référentielle. Une seule ligne historique : mission #529, `code="LCA"`,
+`label="csd"` — donnée de test manifeste, déjà signalée par `Version20260716120000`,
+non mappable (`intervention_type` totalement vide au moment de l'audit, aucun
+candidat de rapprochement).
+
+### Décision
+
+`MissionIntervention` gagne `interventionType` (FK, **obligatoire pour tout nouvel
+encodage** — imposé par `InterventionService::create()`, pas par une contrainte NOT
+NULL en base, pour ne pas casser la ligne historique non mappée) et `primaryFirm` (FK,
+toujours facultative). `code`/`label` ne sont plus fournis par le client : ils
+deviennent un **instantané figé à la création**, copié depuis
+`interventionType.code`/`.label` — jamais recalculé ensuite, même si le manager renomme
+ou désactive le type ailleurs dans la configuration. C'est ce qui garantit que
+l'affichage d'une intervention déjà encodée ne change jamais rétroactivement (même
+invariant d'esprit que le "firm snapshot" de `FirmInvoiceLine`).
+
+**Politique retenue pour un catalogue incomplet** (le référentiel `intervention_type`
+était vide en production au moment de ce lot) : miroir exact de `MaterialItemRequest`
+(D-016), pas un fallback texte ni un blocage sec. Nouvelle entité `InterventionTypeRequest`
+(`PENDING`/`RESOLVED`/`IGNORED`) : l'instrumentiste soumet une demande quand aucun type
+actif ne correspond ; le manager la résout en choisissant/créant un `InterventionType`,
+ce qui crée la `MissionIntervention` réelle (impossible de l'avoir créée avant, faute de
+type valide) via `InterventionService::create()` — mêmes validations, même instantané.
+**Différence avec `MaterialItemRequest`** : pas de `missionInterventionId` sur la
+demande, puisqu'aucune intervention ne peut exister avant sa résolution.
+
+**Choix explicitement écarté** : ne pas contraindre `primaryFirm` par l'existence d'une
+`FirmServiceOffering` pour le type choisi — cela aurait transformé une "prestation"
+(accélérateur de saisie non liant, invariant central de D-067) en une contrainte de
+validation bloquante par la bande. Le code `PRIMARY_FIRM_NOT_AVAILABLE_FOR_INTERVENTION_TYPE`
+n'est donc pas implémenté.
+
+**Erreurs métier stables** (`ApiExceptionSubscriber`) : `INTERVENTION_TYPE_NOT_FOUND`,
+`INTERVENTION_TYPE_INACTIVE`, `PRIMARY_FIRM_NOT_FOUND`, `PRIMARY_FIRM_INACTIVE`.
+`MISSION_ENCODING_NOT_ALLOWED` n'a pas de classe d'exception dédiée : déjà couvert en
+amont par `MissionEncodingGuard::assertEncodingAllowed()`, appelé avant toute validation
+Lot 5 dans les contrôleurs concernés — une classe séparée aurait dupliqué une protection
+déjà exhaustive.
+
+**Migration** (`Version20260717210000`) : colonnes nullables (voir ci-dessus), aucun
+backfill automatique — la seule ligne historique (mission #529) reste non mappée,
+signalée, jamais mutée. `up→down→up` vérifié sur base fraîche.
+
+**Aucun verrou de concurrence supplémentaire** : la création d'une `MissionIntervention`
+n'a pas de cible mutable partagée en situation de check-then-act (contrairement à
+`PricingRule` ou `claim()`) — chaque création est indépendante, `orderIndex` n'est qu'un
+ordre d'affichage cosmétique, jamais une contrainte d'unicité. Pas de risque réel
+démontré, donc pas de verrou ajouté (cohérent avec le principe déjà appliqué au Lot 1).
+
+**Portée non traitée ici (Lots 6/7)** : refonte UX de l'écran d'encodage (parcours
+guidé, suggestions automatiques pilotées par `FirmServiceOffering`), rebranchement du
+moteur de facturation sur la relation directe `MissionIntervention.interventionType`
+(le rapprochement reste par convention de code partagée dans ce lot, inchangé).
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -3360,3 +3440,4 @@ aurait démontré l'absence de verrou ; un timeout MySQL déterministe démontre
 | 15-07-2026 | D-065 — Timezone : l'API renvoyait un offset faux pour startAt/endAt (superseded par D-066) |
 | 15-07-2026 | D-066 — Correction structurelle du timezone à l'hydratation Doctrine (business_datetime_immutable) |
 | 16-07-2026 | D-067 — Catalogue financier des firmes : prestations non liantes, moteur indépendant (Lot 1) |
+| 17-07-2026 | D-068 — Rattachement de l'encodage au référentiel InterventionType (Lot 5) + InterventionTypeRequest |

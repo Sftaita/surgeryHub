@@ -426,24 +426,76 @@ DECLARED → REJECTED
 
 **Inclut :**
 - `mission` (id, type, status, allowedActions)
-- `interventions`
+- `interventions` (voir §8 — `interventionType`/`primaryFirm` depuis Lot 5)
+- `interventionTypeRequests` (Lot 5, D-068 — demandes `PENDING` uniquement, voir §23)
 - `materialLines`
-- `catalog`
+- `catalog` (`items`, `firms`, `interventionTypes` — actifs uniquement, Lot 5)
 
 > Fonctionne aussi pour les missions `DECLARED`.
 
 > **materialItemRequests dans l'encoding :** seules les demandes avec `status = PENDING` sont incluses. Les demandes RESOLVED ou IGNORED n'apparaissent pas (la RESOLVED génère une MaterialLine visible dans `materialLines`).
 
+> **interventionTypeRequests dans l'encoding :** même règle (`PENDING` uniquement), mais au niveau mission — pas rattachées à une intervention, puisqu'aucune intervention ne peut exister sans type valide (voir §8 et §23).
+
 ---
 
 ## 8. Interventions
 
-_(Inchangé)_
+**Lot 5 (D-068)** — `MissionIntervention` rattachée au référentiel fermé `InterventionType` : `interventionTypeId` obligatoire, `primaryFirmId` facultatif. `code`/`label` texte libre (client) ont disparu du payload — ce sont désormais un **instantané figé côté serveur** au moment de la création (copié depuis `interventionType.code`/`.label`), jamais recalculé ensuite même si le manager renomme ou désactive le type. Les lignes créées avant ce lot restent `interventionType: null` (non mappées, ex: mission #529) — legacy, non recalculées.
 
-**AuthZ :** Instrumentiste assigné
+**AuthZ :** `MissionVoter::EDIT_ENCODING` (instrumentiste assigné)
 
 - Autorisé également si `mission.status = DECLARED`
 - Interdit si `mission.status = REJECTED`
+
+### `POST /api/missions/{missionId}/interventions`
+
+**Body JSON :**
+
+```json
+{
+  "interventionTypeId": 12,
+  "primaryFirmId": 4,
+  "orderIndex": 0
+}
+```
+
+| Champ | Requis | Description |
+|---|---|---|
+| `interventionTypeId` | ✓ | Doit exister et être `active` |
+| `primaryFirmId` | — | Doit exister et être `active` si fourni |
+| `orderIndex` | ✓ | Position d'affichage |
+
+**Réponse — 201 :** `{ "id": 88 }`
+
+**Erreurs (codes stables, voir `ApiExceptionSubscriber`) :**
+
+| Code | Status | Description |
+|---|---|---|
+| `INTERVENTION_TYPE_NOT_FOUND` | 404 | `interventionTypeId` inexistant |
+| `INTERVENTION_TYPE_INACTIVE` | 422 | Type désactivé |
+| `PRIMARY_FIRM_NOT_FOUND` | 404 | `primaryFirmId` inexistant |
+| `PRIMARY_FIRM_INACTIVE` | 422 | Firme désactivée |
+
+### `PATCH /api/missions/{missionId}/interventions/{interventionId}`
+
+**Body JSON (tous les champs optionnels) :**
+
+```json
+{
+  "interventionTypeId": 15,
+  "primaryFirmId": null,
+  "orderIndex": 2
+}
+```
+
+- `interventionTypeId`, si fourni, ré-dérive aussi le snapshot `code`/`label` depuis le nouveau type (jamais de retrait — un type reste toujours obligatoire).
+- `primaryFirmId` supporte le **tri-état** : clé absente = inchangé ; `null` explicite = retrait ; valeur = définit/remplace. C'est le seul champ de ce payload à avoir ce comportement.
+- Réponse — **204** (pas de corps).
+
+### `DELETE /api/missions/{missionId}/interventions/{interventionId}`
+
+_(Inchangé.)_
 
 ---
 
@@ -3910,5 +3962,87 @@ modifiée chevauche, en dates, une autre règle active déjà posée sur la mêm
 Accepte désormais `active` (auparavant présent en base mais jamais exposé). Le
 changement de `firmId` est refusé (`409`) dès qu'une `MaterialLine` réelle référence ce
 matériel.
+
+---
+
+## 31. Rattachement de l'encodage au catalogue — MissionIntervention (Lot 5, D-068)
+
+Voir D-068 (`docs/decisions.md`). Ferme l'écart entre le texte libre historique d'une
+intervention encodée et le référentiel `InterventionType` posé par le Lot 1. Payloads
+et erreurs détaillés en §8 (`POST`/`PATCH /api/missions/{missionId}/interventions`).
+
+**Historisation :** `MissionIntervention.code`/`.label` sont un instantané figé au
+moment de la création (copié depuis `interventionType.code`/`.label`), jamais relu
+depuis le référentiel ensuite — renommer ou désactiver un `InterventionType` ailleurs
+dans la configuration ne change jamais l'affichage d'une intervention déjà encodée.
+Le moteur financier (`FirmInvoiceService`) continue de rapprocher par
+`InterventionType.code === MissionIntervention.code` (convention de code partagée,
+inchangée dans ce lot) — le rebranchement sur la relation directe appartient au Lot 7.
+
+### Demandes de nouveau type d'intervention ("InterventionTypeRequest")
+
+Miroir structurel des demandes matériel (§20/§22) : quand aucun type actif ne
+correspond au besoin de l'instrumentiste, `interventionTypeId` étant obligatoire à la
+création d'une `MissionIntervention`, il soumet une demande plutôt qu'un texte libre
+accepté comme catalogué. **Différence avec `MaterialItemRequest`** : pas de
+`missionInterventionId` sur la demande — par construction, aucune intervention ne peut
+exister sans type valide après ce lot, la demande précède donc toujours la création de
+l'intervention (jamais l'inverse).
+
+#### `POST /api/missions/{missionId}/intervention-type-requests`
+
+**AuthZ :** `MissionVoter::EDIT_ENCODING` (instrumentiste assigné)
+
+**Body JSON :**
+
+```json
+{
+  "label": "Prothèse épaule inversée",
+  "suggestedCode": "PTE-INV",
+  "comment": "Pas encore dans le catalogue"
+}
+```
+
+| Champ | Requis | Description |
+|---|---|---|
+| `label` | ✓ | Nom du type souhaité |
+| `suggestedCode` | — | Code suggéré (le manager reste libre de choisir un autre code au moment de créer le type) |
+| `comment` | — | Informations complémentaires |
+
+**Réponse — 201 :** `{ "id": 7 }`
+
+#### `GET /api/intervention-type-requests`
+
+**AuthZ :** `BillingVoter::MANAGE` (`MANAGER`/`ADMIN`)
+
+**Query params :** `status` (`PENDING`\|`RESOLVED`\|`IGNORED`, optionnel).
+
+**Réponse — 200 :** `{ "items": [...], "total": N }` — chaque item :
+`{ id, status, label, suggestedCode, comment, createdAt, mission: {id, site}, requestedBy: {id, displayName}, resolvedInterventionType }`.
+
+#### `POST /api/intervention-type-requests/{id}/resolve`
+
+**AuthZ :** `BillingVoter::MANAGE` — **Précondition :** `status = PENDING`
+
+**Body JSON :** `{ "interventionTypeId": 12, "primaryFirmId": 4 }` (`primaryFirmId` optionnel) —
+`interventionTypeId` peut référencer un type déjà existant ou un type que le manager
+vient de créer via `POST /api/intervention-types` pour cette demande.
+
+**Effets backend :**
+1. Crée la `MissionIntervention` réelle sur la mission d'origine (`InterventionService::create()` —
+   mêmes validations et le même instantané `code`/`label` qu'une création directe).
+2. Lie la demande au type choisi (`resolvedInterventionType`), passe `status → RESOLVED`.
+
+**Réponse — 200 :** `{ "request": {...}, "intervention": { "id": 55 } }`
+
+**Erreurs :** mêmes codes stables qu'en §8 (`INTERVENTION_TYPE_NOT_FOUND`,
+`INTERVENTION_TYPE_INACTIVE`, `PRIMARY_FIRM_NOT_FOUND`, `PRIMARY_FIRM_INACTIVE`), plus
+`404` demande introuvable, `409` demande non `PENDING`.
+
+#### `POST /api/intervention-type-requests/{id}/ignore`
+
+**AuthZ :** `BillingVoter::MANAGE` — **Précondition :** `status = PENDING` — body vide.
+
+**Réponse — 200 :** la demande avec `status: "IGNORED"`. **Erreurs :** `404`, `409`.
 
 ---

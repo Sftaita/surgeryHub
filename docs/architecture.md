@@ -504,8 +504,23 @@ Mission
 └── MissionIntervention[]
 
 MissionIntervention
+├── code, label (instantané figé à la création, copié depuis interventionType — Lot 5,
+│   jamais recalculé si le type est renommé/désactivé ensuite ; seule source de vérité
+│   pour les lignes historiques pré-Lot 5 non mappées, ex: mission #529)
+├── interventionType → InterventionType (nullable — null uniquement pour les lignes
+│   pré-Lot 5 ; obligatoire pour tout nouvel encodage, imposé par InterventionService,
+│   pas par une contrainte NOT NULL en base — voir D-068)
+├── primaryFirm → Firm (nullable, toujours facultative)
 ├── MaterialLine[]
 └── MaterialItemRequest[]
+
+InterventionTypeRequest (Lot 5, D-068 — miroir de MaterialItemRequest)
+├── mission → Mission (pas de missionIntervention : la demande précède toujours la
+│   création de l'intervention, aucune ne peut exister sans type valide)
+├── label, suggestedCode (nullable), comment (nullable)
+├── status: 'PENDING' | 'RESOLVED' | 'IGNORED'
+├── resolvedInterventionType → InterventionType (nullable, renseigné à la résolution)
+└── createdBy → User
 
 MaterialLine
 ├── mission → Mission
@@ -658,9 +673,28 @@ Moteur financier (PricingRuleResolver) :
   (ne lit jamais FirmServiceOffering ni SuggestedMaterial — invariant vérifié par test)
 ```
 
-`MissionIntervention.interventionTypeId`/`.primaryFirmId` et le rebranchement de
-`FirmInvoiceService` sur ce modèle appartiennent aux lots suivants (encodage
-instrumentiste, génération de factures) — non implémentés dans ce lot.
+`MissionIntervention.interventionType`/`.primaryFirm` sont implémentés depuis le Lot 5
+(D-068) — voir flux dédié ci-dessous. Le rebranchement de `FirmInvoiceService` sur cette
+relation directe (au lieu du rapprochement par convention de code partagée,
+`InterventionType.code === MissionIntervention.code`, inchangé dans ce lot) appartient
+au Lot 7.
+
+### Flux encodage — rattachement au catalogue fermé (Lot 5, D-068)
+
+```
+Instrumentiste → encodage → sélectionne un InterventionType actif (+ firme principale, optionnel)
+              → POST /api/missions/{id}/interventions {interventionTypeId, primaryFirmId?}
+              → code/label dérivés côté serveur (instantané), jamais fournis par le client
+
+Type introuvable → "Faire une demande au manager"
+                 → POST /api/missions/{id}/intervention-type-requests (PENDING, pas de MissionIntervention créée)
+
+Manager → GET /api/intervention-type-requests?status=PENDING
+        → [Créer/choisir un type] → POST /api/intervention-types (si besoin)
+                                   → POST /api/intervention-type-requests/{id}/resolve (interventionTypeId, primaryFirmId?)
+                                   → status=RESOLVED + MissionIntervention créée sur la mission d'origine
+        ou [Ignorer]              → POST /api/intervention-type-requests/{id}/ignore → status=IGNORED
+```
 
 ---
 
