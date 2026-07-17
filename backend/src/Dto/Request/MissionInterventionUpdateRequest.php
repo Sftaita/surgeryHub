@@ -2,16 +2,21 @@
 
 namespace App\Dto\Request;
 
-use Symfony\Component\Validator\Constraints as Assert;
-
-class MissionInterventionUpdateRequest
+/**
+ * Lot 5 (D-068) : construit manuellement par InterventionController::update() depuis le
+ * corps JSON brut (pas par le serializer Symfony) — `primaryFirmId` a besoin d'un vrai
+ * tri-état (absent / explicitement null pour retirer / valeur pour définir) qu'un DTO
+ * désérialisé automatiquement ne peut pas distinguer proprement sur une propriété
+ * nullable. `interventionTypeId` ne supporte pas le retrait (un type reste toujours
+ * obligatoire une fois l'intervention créée) : absent = inchangé, présent = nouvelle
+ * valeur (jamais null).
+ */
+final class MissionInterventionUpdateRequest
 {
-    #[Assert\Length(max: 100)]
-    public ?string $code = null;
+    public ?int $interventionTypeId = null;
 
-    #[Assert\Length(max: 255)]
-    public ?string $label = null;
+    public bool $primaryFirmIdProvided = false;
+    public ?int $primaryFirmId = null;
 
-    #[Assert\PositiveOrZero]
     public ?int $orderIndex = null;
 }

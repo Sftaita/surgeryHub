@@ -2,7 +2,11 @@
 
 namespace App\EventSubscriber;
 
+use App\Exception\InterventionTypeInactiveException;
+use App\Exception\InterventionTypeNotFoundException;
 use App\Exception\MissionNotDraftException;
+use App\Exception\PrimaryFirmInactiveException;
+use App\Exception\PrimaryFirmNotFoundException;
 use App\Exception\PricingRulePeriodOverlapException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
@@ -48,6 +52,22 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'PRICING_RULE_PERIOD_OVERLAP';
             $message = $e->getMessage() ?: 'Une règle tarifaire existe déjà pour cette période.';
+        } elseif ($e instanceof InterventionTypeNotFoundException) {
+            $status = 404;
+            $code = 'INTERVENTION_TYPE_NOT_FOUND';
+            $message = $e->getMessage() ?: 'Type d\'intervention introuvable.';
+        } elseif ($e instanceof InterventionTypeInactiveException) {
+            $status = 422;
+            $code = 'INTERVENTION_TYPE_INACTIVE';
+            $message = $e->getMessage() ?: 'Ce type d\'intervention est désactivé.';
+        } elseif ($e instanceof PrimaryFirmNotFoundException) {
+            $status = 404;
+            $code = 'PRIMARY_FIRM_NOT_FOUND';
+            $message = $e->getMessage() ?: 'Firme introuvable.';
+        } elseif ($e instanceof PrimaryFirmInactiveException) {
+            $status = 422;
+            $code = 'PRIMARY_FIRM_INACTIVE';
+            $message = $e->getMessage() ?: 'Cette firme est désactivée.';
         } elseif ($e instanceof HttpExceptionInterface) {
             $status = $e->getStatusCode();
             $message = $e->getMessage() ?: $message;

@@ -3,12 +3,16 @@
 namespace App\Service;
 
 use App\Dto\Request\Response\FirmSlimDto;
+use App\Dto\Request\Response\InterventionTypeSlimDto;
 use App\Dto\Request\Response\MissionEncodingCatalogDto;
 use App\Dto\Request\Response\MissionEncodingDto;
 use App\Dto\Request\Response\MissionEncodingInterventionDto;
+use App\Dto\Request\Response\MissionEncodingInterventionTypeRequestDto;
 use App\Dto\Request\Response\MissionEncodingMaterialItemRequestDto;
 use App\Dto\Request\Response\MissionEncodingMaterialLineDto;
 use App\Entity\Firm;
+use App\Entity\InterventionType;
+use App\Entity\InterventionTypeRequest;
 use App\Entity\MaterialItem;
 use App\Entity\MaterialItemRequest;
 use App\Entity\MaterialLine;
@@ -41,6 +45,19 @@ final class MissionEncodingService
                 => [$a->orderIndex, $a->id] <=> [$b->orderIndex, $b->id]
         );
 
+        $interventionTypeRequests = [];
+        foreach ($mission->getInterventionTypeRequests() as $req) {
+            if ($req->getStatus() !== InterventionTypeRequest::STATUS_PENDING) {
+                continue;
+            }
+            $interventionTypeRequests[] = new MissionEncodingInterventionTypeRequestDto(
+                id: (int) $req->getId(),
+                label: (string) $req->getLabel(),
+                suggestedCode: $req->getSuggestedCode(),
+                comment: $req->getComment(),
+            );
+        }
+
         $catalog = $this->buildCatalogDto();
 
         $allowedActions = $this->actionsService->allowedActions($mission, $viewer);
@@ -53,6 +70,7 @@ final class MissionEncodingService
                 'allowedActions' => $allowedActions,
             ],
             interventions: $interventions,
+            interventionTypeRequests: $interventionTypeRequests,
             catalog: $catalog,
         );
     }
@@ -79,9 +97,24 @@ final class MissionEncodingService
             $itemDtos[] = $this->itemMapper->toSlim($it);
         }
 
+        $types = $this->em->getRepository(InterventionType::class)->createQueryBuilder('it')
+            ->andWhere('it.active = :a')->setParameter('a', true)
+            ->orderBy('it.label', 'ASC')
+            ->getQuery()->getResult();
+
+        $typeDtos = [];
+        foreach ($types as $t) {
+            $typeDtos[] = new InterventionTypeSlimDto(
+                id: (int) $t->getId(),
+                code: (string) $t->getCode(),
+                label: (string) $t->getLabel(),
+            );
+        }
+
         return new MissionEncodingCatalogDto(
             items: $itemDtos,
             firms: $firmDtos,
+            interventionTypes: $typeDtos,
         );
     }
 
@@ -89,10 +122,13 @@ final class MissionEncodingService
     {
         $qb = $this->em->getRepository(Mission::class)->createQueryBuilder('m')
             ->leftJoin('m.interventions', 'i')->addSelect('i')
+            ->leftJoin('i.interventionType', 'it')->addSelect('it')
+            ->leftJoin('i.primaryFirm', 'pf')->addSelect('pf')
             ->leftJoin('m.materialLines', 'ml')->addSelect('ml')
             ->leftJoin('ml.item', 'item')->addSelect('item')
             ->leftJoin('item.firm', 'firm')->addSelect('firm')
             ->leftJoin('m.materialItemRequests', 'mir')->addSelect('mir')
+            ->leftJoin('m.interventionTypeRequests', 'itr')->addSelect('itr')
             ->andWhere('m.id = :id')->setParameter('id', $missionId);
 
         $mission = $qb->getQuery()->getOneOrNullResult();
@@ -135,11 +171,26 @@ final class MissionEncodingService
             static fn (MissionEncodingMaterialItemRequestDto $a, MissionEncodingMaterialItemRequestDto $b): int => $a->id <=> $b->id
         );
 
+        $type = $i->getInterventionType();
+        $typeDto = $type ? new InterventionTypeSlimDto(
+            id: (int) $type->getId(),
+            code: (string) $type->getCode(),
+            label: (string) $type->getLabel(),
+        ) : null;
+
+        $primaryFirm = $i->getPrimaryFirm();
+        $primaryFirmDto = $primaryFirm ? new FirmSlimDto(
+            id: (int) $primaryFirm->getId(),
+            name: (string) $primaryFirm->getName(),
+        ) : null;
+
         return new MissionEncodingInterventionDto(
             id: (int) $i->getId(),
             code: (string) $i->getCode(),
             label: (string) $i->getLabel(),
             orderIndex: (int) ($i->getOrderIndex() ?? 0),
+            interventionType: $typeDto,
+            primaryFirm: $primaryFirmDto,
             materialLines: $lines,
             materialItemRequests: $requests,
         );

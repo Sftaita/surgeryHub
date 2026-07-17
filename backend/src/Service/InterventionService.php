@@ -6,11 +6,17 @@ use App\Dto\Request\MaterialLineCreateRequest;
 use App\Dto\Request\MaterialLineUpdateRequest;
 use App\Dto\Request\MissionInterventionCreateRequest;
 use App\Dto\Request\MissionInterventionUpdateRequest;
+use App\Entity\Firm;
+use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
 use App\Entity\User;
+use App\Exception\InterventionTypeInactiveException;
+use App\Exception\InterventionTypeNotFoundException;
+use App\Exception\PrimaryFirmInactiveException;
+use App\Exception\PrimaryFirmNotFoundException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -21,13 +27,23 @@ class InterventionService
         private readonly EntityManagerInterface $em,
     ) {}
 
+    /**
+     * Lot 5 (D-068) : `interventionTypeId` obligatoire (référentiel fermé) — `code`/`label`
+     * ne sont plus fournis par le client, ils sont dérivés (instantané figé) depuis le
+     * type résolu. `primaryFirmId` reste facultatif.
+     */
     public function create(Mission $mission, MissionInterventionCreateRequest $dto): MissionIntervention
     {
+        $type = $this->resolveActiveInterventionType((int) $dto->interventionTypeId);
+        $firm = $dto->primaryFirmId !== null ? $this->resolveActiveFirm($dto->primaryFirmId) : null;
+
         $intervention = new MissionIntervention();
         $intervention
             ->setMission($mission)
-            ->setCode($dto->code)
-            ->setLabel($dto->label)
+            ->setInterventionType($type)
+            ->setPrimaryFirm($firm)
+            ->setCode($type->getCode())
+            ->setLabel($type->getLabel())
             ->setOrderIndex($dto->orderIndex);
 
         $this->em->persist($intervention);
@@ -36,14 +52,24 @@ class InterventionService
         return $intervention;
     }
 
+    /**
+     * `interventionTypeId`, si fourni, re-dérive aussi le snapshot `code`/`label` (l'action
+     * de changer explicitement le type sur CETTE intervention n'est pas la même chose que le
+     * référentiel qui change ailleurs — voir MissionIntervention). `primaryFirmId` supporte
+     * le retrait explicite (`primaryFirmIdProvided=true` + `primaryFirmId=null`).
+     */
     public function update(MissionIntervention $intervention, MissionInterventionUpdateRequest $dto): void
     {
-        if ($dto->code !== null) {
-            $intervention->setCode($dto->code);
+        if ($dto->interventionTypeId !== null) {
+            $type = $this->resolveActiveInterventionType($dto->interventionTypeId);
+            $intervention->setInterventionType($type);
+            $intervention->setCode($type->getCode());
+            $intervention->setLabel($type->getLabel());
         }
 
-        if ($dto->label !== null) {
-            $intervention->setLabel($dto->label);
+        if ($dto->primaryFirmIdProvided) {
+            $firm = $dto->primaryFirmId !== null ? $this->resolveActiveFirm($dto->primaryFirmId) : null;
+            $intervention->setPrimaryFirm($firm);
         }
 
         if ($dto->orderIndex !== null) {
@@ -51,6 +77,30 @@ class InterventionService
         }
 
         $this->em->flush();
+    }
+
+    private function resolveActiveInterventionType(int $interventionTypeId): InterventionType
+    {
+        $type = $this->em->find(InterventionType::class, $interventionTypeId);
+        if (!$type instanceof InterventionType) {
+            throw new InterventionTypeNotFoundException('Type d\'intervention introuvable.');
+        }
+        if (!$type->isActive()) {
+            throw new InterventionTypeInactiveException('Ce type d\'intervention est désactivé.');
+        }
+        return $type;
+    }
+
+    private function resolveActiveFirm(int $firmId): Firm
+    {
+        $firm = $this->em->find(Firm::class, $firmId);
+        if (!$firm instanceof Firm) {
+            throw new PrimaryFirmNotFoundException('Firme introuvable.');
+        }
+        if (!$firm->isActive()) {
+            throw new PrimaryFirmInactiveException('Cette firme est désactivée.');
+        }
+        return $firm;
     }
 
     public function delete(MissionIntervention $intervention): void

@@ -67,8 +67,26 @@ class InterventionController extends AbstractController
         $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
         $this->encodingGuard->assertEncodingAllowed($mission, $user);
 
-        /** @var MissionInterventionUpdateRequest $dto */
-        $dto = $this->deserializeAndValidate($request->getContent(), MissionInterventionUpdateRequest::class);
+        // Lot 5 (D-068) : json_decode brut + array_key_exists (pas le serializer) — voir
+        // le docblock de MissionInterventionUpdateRequest, `primaryFirmId` a besoin d'un
+        // vrai tri-état (absent / null explicite pour retirer / valeur) que la
+        // désérialisation automatique sur une propriété nullable ne peut pas distinguer.
+        $body = json_decode($request->getContent(), true) ?? [];
+
+        $dto = new MissionInterventionUpdateRequest();
+
+        if (array_key_exists('interventionTypeId', $body) && $body['interventionTypeId'] !== null) {
+            $dto->interventionTypeId = (int) $body['interventionTypeId'];
+        }
+
+        if (array_key_exists('primaryFirmId', $body)) {
+            $dto->primaryFirmIdProvided = true;
+            $dto->primaryFirmId = $body['primaryFirmId'] !== null ? (int) $body['primaryFirmId'] : null;
+        }
+
+        if (array_key_exists('orderIndex', $body) && $body['orderIndex'] !== null) {
+            $dto->orderIndex = (int) $body['orderIndex'];
+        }
 
         $this->service->update($intervention, $dto);
 

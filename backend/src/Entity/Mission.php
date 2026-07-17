@@ -120,6 +120,9 @@ class Mission
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MaterialItemRequest::class, orphanRemoval: true)]
     private Collection $materialItemRequests;
 
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: InterventionTypeRequest::class, orphanRemoval: true)]
+    private Collection $interventionTypeRequests;
+
     public function __construct()
     {
         $this->claims = new ArrayCollection();
@@ -131,6 +134,7 @@ class Mission
         $this->interventions = new ArrayCollection();
         $this->materialLines = new ArrayCollection();
         $this->materialItemRequests = new ArrayCollection();
+        $this->interventionTypeRequests = new ArrayCollection();
     }
 
     public function getId(): ?int { return $this->id; }
@@ -193,6 +197,9 @@ class Mission
 
     /** @return Collection<int, MaterialItemRequest> */
     public function getMaterialItemRequests(): Collection { return $this->materialItemRequests; }
+
+    /** @return Collection<int, InterventionTypeRequest> */
+    public function getInterventionTypeRequests(): Collection { return $this->interventionTypeRequests; }
 
     /** @return Collection<int, ImplantSubMission> */
     public function getImplantSubMissions(): Collection { return $this->implantSubMissions; }
