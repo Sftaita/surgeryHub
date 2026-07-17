@@ -162,6 +162,7 @@ class MaterialLineController extends AbstractController
                 label: (string) $item?->getLabel(),
                 unit: (string) $item?->getUnit(),
                 isImplant: (bool) $item?->isImplant(),
+                active: (bool) $item?->isActive(),
             ),
             quantity: (string) $line->getQuantity(),
             comment: $line->getComment(),
