@@ -505,8 +505,12 @@ final class PlanningV2CrudControllerTest extends WebTestCase
         $mission->setType(MissionType::BLOCK);
         $mission->setSurgeon($surgeon);
         $mission->setSite($site);
-        $mission->setStartAt(new \DateTimeImmutable('2026-01-12 08:00:00'));
-        $mission->setEndAt(new \DateTimeImmutable('2026-01-12 13:00:00'));
+        // D-066: Mission.startAt/endAt is business_datetime_immutable — construct with
+        // an explicit Europe/Brussels timezone, matching real callers (client-submitted
+        // requests always carry a real offset; a naive/container-UTC construction here
+        // would get shifted on write, which is not what this test is about).
+        $mission->setStartAt(new \DateTimeImmutable('2026-01-12 08:00:00', new \DateTimeZone('Europe/Brussels')));
+        $mission->setEndAt(new \DateTimeImmutable('2026-01-12 13:00:00', new \DateTimeZone('Europe/Brussels')));
         $mission->setCreatedBy($surgeon);
         $mission->setSchedulePrecision(SchedulePrecision::EXACT);
         $this->em->persist($mission);

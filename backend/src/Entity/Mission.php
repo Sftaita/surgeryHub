@@ -57,11 +57,14 @@ class Mission
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
     private ?Hospital $site = null;
 
-    #[ORM\Column(type: 'datetime_immutable')]
+    // D-066: business_datetime_immutable, not datetime_immutable — see
+    // App\Doctrine\Type\BusinessDateTimeImmutableType. Same underlying DATETIME column;
+    // only the PHP-side hydration is timezone-correct (Europe/Brussels, not container UTC).
+    #[ORM\Column(type: 'business_datetime_immutable')]
     #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
     private ?\DateTimeImmutable $startAt = null;
 
-    #[ORM\Column(type: 'datetime_immutable')]
+    #[ORM\Column(type: 'business_datetime_immutable')]
     #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
     private ?\DateTimeImmutable $endAt = null;
 

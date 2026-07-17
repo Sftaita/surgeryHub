@@ -420,7 +420,12 @@ class PlanningGeneratorServiceV2
                 ? $this->em->find(User::class, $line['instrumentistId'])
                 : null;
 
-            $day = new \DateTimeImmutable($line['date']);
+            // D-066: Mission.startAt/endAt are business_datetime_immutable — the type
+            // converts whatever timezone the incoming DateTimeImmutable carries to its
+            // true Europe/Brussels wall-clock equivalent before storing. $day must
+            // therefore be explicitly Brussels-labeled, or a naive (container-default
+            // UTC) construction would get shifted by the DST offset on write.
+            $day = new \DateTimeImmutable($line['date'], new \DateTimeZone(\App\Doctrine\Type\BusinessDateTimeImmutableType::BUSINESS_TIMEZONE));
             [$h1, $m1] = explode(':', $line['startTime']);
             [$h2, $m2] = explode(':', $line['endTime']);
 

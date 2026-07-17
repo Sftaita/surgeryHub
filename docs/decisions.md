@@ -2966,6 +2966,205 @@ préexistant et non corrigé ici (hors-scope de cette session, signalé mais pas
 
 ---
 
+## D-065 — Timezone : l'API renvoyait un offset faux pour startAt/endAt
+
+Date : 2026-07-15
+
+### Contexte
+
+Découvert en vérifiant en navigateur réel que la pastille "En cours" fonctionnait sans
+le cron (D-064, amendement) : une mission insérée avec une heure de début connue
+("10h11" heure de Bruxelles) s'affichait "12h11" côté instrumentiste — décalage de +2h.
+
+### Cause racine
+
+Deux mécanismes indépendants se combinent :
+1. **Stockage** : Doctrine persiste `Mission.startAt`/`endAt` sans conversion — la
+   valeur stockée est le cadran (wall-clock) tel que soumis par le client, jamais
+   normalisée en UTC (déjà établi en D-064).
+2. **Lecture** : le conteneur PHP tourne avec `date.timezone = UTC`. Quand Doctrine
+   relit la chaîne brute stockée (sans info de fuseau) pour reconstruire l'objet
+   `DateTimeImmutable`, il l'étiquette avec le fuseau par défaut de PHP — UTC — alors que
+   les chiffres représentent en réalité l'heure de Bruxelles. `format(ATOM)` expose donc
+   un `+00:00` mensonger au lieu du vrai `+01:00`/`+02:00`.
+
+Le navigateur du testeur étant lui-même en `Europe/Brussels`, l'affichage appliquait
+*une deuxième* conversion (correcte, mais sur une valeur déjà fausse), doublant l'écart
+perçu (+2h au lieu de +0h) — c'est ce qui a rendu le bug visible aussi nettement.
+
+**Ampleur réelle auditée** : 21 entités backend utilisent `DateTimeImmutable`, mais la
+plupart (`created_at`/`updated_at` via `TimestampableTrait`) ne sont jamais formatées en
+`ATOM`/`c` — elles ne sont donc pas affectées (`format('H:i')`/`format('Y-m-d')` lisent
+le cadran brut correctement, peu importe l'étiquette de fuseau). Les endroits qui
+appellent réellement `format(\DateTimeInterface::ATOM)` sur `Mission::getStartAt()/
+getEndAt()` et exposent donc l'offset faux : `MissionMapper` (corrigé ici — c'est ce qui
+pilote `/api/missions`, donc Aujourd'hui/Planning/Détail côté instrumentiste),
+`ExportService`, `NotificationService` (emails), `PlanningAlertService`,
+`InstrumentistServiceManager`, `SurgeonServiceManager`, `MissionPostDeployService`
+(payload d'audit `updateSchedule`) — **non corrigés dans cette session**, signalés à
+l'utilisateur qui a explicitement choisi de ne traiter que le cas prouvé/testé
+aujourd'hui plutôt que d'étendre sans validation individuelle (risque particulier sur
+`NotificationService`, qui alimente des emails réels — voir D-061 MAIL_SAFE_MODE).
+
+### Décision
+
+Nouveau `App\Service\AppTimezone::relabel(?DateTimeImmutable): ?DateTimeImmutable` —
+reconstruit l'objet à partir de son propre `format('Y-m-d H:i:s')` sous
+`Europe/Brussels` explicite. Ne **shift** jamais le cadran, corrige seulement
+l'étiquette. Appliqué dans `MissionMapper::toListDto()`/`toDetailDto()` avant le
+`format(ATOM)`.
+
+**Délibérément une correction à la couche de sérialisation, pas au stockage** (option
+retenue parmi 3 proposées — cf. discussion) : ne touche ni `date.timezone` du conteneur
+(qui aurait changé la sémantique de "now"/logs/audit dans tout le système), ni un type
+Doctrine sur mesure par colonne. Rayon d'impact minimal, un seul point de correction,
+corrige tous les écrans consommant `/api/missions` d'un coup — y compris ceux qui
+n'appellent pas `.tz()` côté frontend (incohérence déjà présente : `MissionCardMobile.tsx`/
+`MissionCreateWizard.tsx` forcent `.tz("Europe/Brussels")`, `TodayPage.tsx`/`OffersPage.tsx`/
+`MissionEncodingPage.tsx` non — les deux étaient faux avant ce fix, pour des raisons
+différentes).
+
+### Statut
+
+Implémenté et testé : `AppTimezoneTest` (5 tests unitaires — préservation du cadran, DST
+été/hiver, idempotence, passthrough `null`), `MissionMapperTest` (+4 : offset DST réel
+été/hiver, `null` passthrough). 892/892 tests backend verts. Vérifié en conditions
+réelles : mission avec heure connue insérée en base, `curl` direct sur `/api/missions/{id}`
+confirme `+02:00` (au lieu du `+00:00` faux avant fix), navigateur réel confirme
+l'affichage correct ("10h11" au lieu de "12h11") et la pastille "En cours" fonctionnelle
+en combinaison avec l'amendement D-064.
+
+**Reste non corrigé, documenté ci-dessus** : `ExportService`, `NotificationService`,
+`PlanningAlertService`, `InstrumentistServiceManager`, `SurgeonServiceManager`,
+`MissionPostDeployService` (payload d'audit). `MissionVoter::hasMissionStarted()` a le
+même piège timezone mais dans l'autre sens (compare à `now()` en UTC nu) — signalé, pas
+corrigé.
+
+**⚠️ Superseded 2026-07-15 — voir D-066.** La correction applicative décrite ci-dessus
+(`AppTimezone::relabel()`, appliqué uniquement dans `MissionMapper`) a été remplacée par
+une correction structurelle à l'hydratation Doctrine (`business_datetime_immutable`,
+D-066), à la demande explicite de l'utilisateur après un audit complet ayant confirmé 9
+endroits non corrigés par cette approche applicative. `App\Service\AppTimezone` a été
+**supprimée** (plus aucun appelant). Les 6 endroits listés ci-dessus comme "non corrigés"
+sont désormais corrigés automatiquement par D-066, sans modification individuelle — voir
+`MissionBusinessTimezoneIntegrationTest` pour la preuve par test de chacun. Cette section
+D-065 reste comme trace historique du diagnostic (toujours exact) et de la première
+tentative de correction (remplacée, pas fausse).
+
+---
+
+## D-066 — Correction structurelle du timezone à l'hydratation Doctrine
+
+Date : 2026-07-15
+
+### Contexte
+
+D-065 corrigeait le mensonge de fuseau (`+00:00` au lieu du vrai offset Bruxelles) au
+niveau applicatif, un seul appel `AppTimezone::relabel()` dans `MissionMapper`. Un audit
+exhaustif de toutes les sorties `DateTime` du backend (demandé explicitement après D-065)
+a trouvé **9 autres endroits** exposant le même offset faux, chacun nécessitant sa propre
+correction si l'approche restait applicative — exports, emails, alertes manager, deux API
+de planning déjà en production. L'utilisateur a validé la stratégie alternative proposée
+dans ce rapport d'audit : corriger une seule fois, à la source (hydratation Doctrine),
+plutôt que neuf fois en aval.
+
+### Décision
+
+Nouveau type DBAL `App\Doctrine\Type\BusinessDateTimeImmutableType`
+(`business_datetime_immutable`), appliqué uniquement à `Mission.startAt`/`endAt` :
+
+- **Lecture** (`convertToPHPValue`) : parse la chaîne brute stockée avec
+  `Europe/Brussels` explicite au lieu du fuseau par défaut du conteneur (UTC) — les
+  chiffres ne bougent jamais, seule l'étiquette change.
+- **Écriture** (`convertToDatabaseValue`) : convertit la valeur reçue (quel que soit son
+  offset d'origine — `+02:00` client, `+00:00` UTC explicite, etc.) vers son équivalent
+  réel en `Europe/Brussels`, puis stocke le cadran local sans offset.
+- **Même déclaration SQL que le type intégré** (`DATETIME`) — vérifié directement
+  (`getSQLDeclaration()` comparé programmatiquement, identique), donc **aucune
+  migration**. Seul le comportement PHP change.
+- Enregistré dans `config/packages/doctrine.yaml` (`dbal.types`), appliqué via
+  `#[ORM\Column(type: 'business_datetime_immutable')]` sur les deux propriétés.
+
+**Conséquence directe** : les deux appels `AppTimezone::relabel()` dans `MissionMapper`
+sont devenus redondants et ont été retirés — l'entité hydratée porte déjà le bon
+étiquetage. `App\Service\AppTimezone` n'avait plus aucun appelant ailleurs dans le
+backend (vérifié) ; supprimée entièrement plutôt que laissée comme code mort, cohérent
+avec le principe validé "un seul point de correction" plutôt que deux mécanismes
+parallèles invitant à la confusion future.
+
+### Piège découvert pendant l'implémentation : les constructions "naïves" existantes
+
+La suite complète de tests a révélé une régression réelle avant d'être corrigée :
+`PlanningGeneratorService`/`PlanningGeneratorServiceV2` (les générateurs de planning en
+production, à partir des gabarits) construisaient `Mission.startAt`/`endAt` via
+`(new \DateTimeImmutable($dateString))->setTime($h, $m)` — une construction **naïve**,
+sans fuseau explicite, donc implicitement étiquetée UTC par le conteneur. Avant D-066,
+cette approche fonctionnait "par accident" : l'ancien type ne faisait aucune conversion
+à l'écriture, se contentant de stocker le cadran tel quel. Avec le nouveau type,
+`convertToDatabaseValue()` convertit **réellement** vers `Europe/Brussels` — appliqué à
+une valeur naïvement UTC, ça décale le cadran de l'offset DST (+1h l'hiver testé,
+`PlanningV2CrudControllerTest` a détecté l'écart : `08:00:00` stocké devenait `09:00:00`).
+
+**Corrigé** : les deux générateurs construisent désormais leur `$day` avec
+`new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE)` explicite, rendant
+leur intention (cadran Bruxelles) conforme à ce que le type attend réellement. Un test
+d'intégration dédié (`test_naive_construction_without_explicit_timezone_would_have_drifted_regression_guard`)
+documente délibérément le comportement inverse (décalage) pour qu'un futur lecteur
+comprenne pourquoi l'explicite est obligatoire — ce n'est pas un bug du type, c'est le
+type qui convertit fidèlement ce qu'on lui donne : à l'appelant de dire la vérité sur le
+fuseau de ce qu'il construit.
+
+**Règle établie pour tout code futur construisant `Mission.startAt`/`endAt`** : ne
+jamais construire un `\DateTimeImmutable` "métier" sans fuseau explicite. Soit il vient
+déjà d'un client HTTP (désérialisé par Symfony avec son offset réel, correct tel quel),
+soit il est construit en interne — dans ce cas, toujours
+`new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE)` explicite.
+
+### Garde-fou : test d'architecture
+
+Aucun PHPStan/Psalm n'est configuré dans ce projet (vérifié : absent de `composer.json`)
+— `tests/Architecture/BusinessDateTimeColumnConventionTest.php` remplit ce rôle en
+PHPUnit pur : réflexion sur toutes les entités sous `src/Entity`, toute colonne
+`DateTimeImmutable` (hors `createdAt`/`updatedAt` via `TimestampableTrait`, exemptées par
+convention) doit être soit sur `business_datetime_immutable`, soit listée explicitement
+dans une allowlist commentée (raison obligatoire, vérifiée pendant l'audit du
+2026-07-15). Toute nouvelle colonne métier ajoutée sans décision consciente fait échouer
+ce test avec un message explicite. Vérifié empiriquement : suppression temporaire d'une
+entrée de l'allowlist → le test échoue avec le message attendu ; restauration → repasse.
+
+### Statut
+
+Implémenté et testé :
+- `BusinessDateTimeImmutableTypeTest` (18 tests unitaires — lecture/écriture été/hiver,
+  round-trip, idempotence sur 5 cycles, cas DST documentés empiriquement : le passage
+  heure d'hiver→été avec une heure locale inexistante "roule" en avant de la durée du
+  saut ; le passage été→hiver avec une heure ambiguë résout vers l'heure standard —
+  comportement PHP natif déterministe, verrouillé en test de non-régression).
+- `MissionMapperTest` (fixtures ajustées pour construire avec un fuseau explicite,
+  simulant une vraie hydratation — le mapper lui-même ne fait plus rien de spécial).
+- `MissionBusinessTimezoneIntegrationTest` (15 tests, DB réelle) : lecture été/hiver,
+  écriture offset et UTC-équivalent, round-trip sans dérive sur plusieurs cycles,
+  `MissionMapper` via vraie hydratation, **les deux API de planning**
+  (`SurgeonServiceManager`, `InstrumentistServiceManager`), payload d'audit
+  manuellement formaté (`MissionPostDeployService::updateSchedule`),
+  `PlanningAlertService::serializeMission()`, `ExportService::exportSurgeonActivity()`,
+  snapshot `AbsenceImpactService` (`PlanningAlert.snapshotJson`),
+  `NotificationService` (payload in-app) — **les 9 endroits de l'audit D-065 confirmés
+  corrigés automatiquement, aucun modifié individuellement** — et le motif exact
+  générateur-de-planning (jour + heure) avec son garde-fou de régression.
+- `BusinessDateTimeColumnConventionTest` (2 tests — scan général + verrou spécifique
+  Mission.startAt/endAt).
+
+**922/922 tests backend verts** (869 avant D-064, +53 cumulées D-064/D-065/D-066).
+Aucune migration générée (`getSQLDeclaration()` identique au type intégré, vérifié
+programmatiquement). Vérifié en conditions réelles sur la base de dev : mission créée via
+l'API réelle avec offset `+02:00`, comparaison à trois — valeur brute MySQL
+(`2026-07-15 10:11:00`), hydratation PHP réelle via `doctrine:query:dql`
+(`Europe/Brussels`, `+02:00`), sortie JSON de `GET /api/missions/{id}`
+(`2026-07-15T10:11:00+02:00`) — les trois concordent exactement.
+
+---
+
 ## D-067 — Catalogue financier des firmes : prestations non liantes, moteur indépendant (Lot 1)
 
 Date : 2026-07-16
@@ -3158,4 +3357,6 @@ aurait démontré l'absence de verrou ; un timeout MySQL déterministe démontre
 | 12-07-2026 | D-062 — Réaction automatique aux absences sur les missions déjà déployées (libération/annulation) |
 | 13-07-2026 | D-063 — Modification sécurisée de l'adresse email par un manager/admin + double notification |
 | 15-07-2026 | D-064 — Démarrage automatique des missions (ASSIGNED → IN_PROGRESS) sur startAt |
+| 15-07-2026 | D-065 — Timezone : l'API renvoyait un offset faux pour startAt/endAt (superseded par D-066) |
+| 15-07-2026 | D-066 — Correction structurelle du timezone à l'hydratation Doctrine (business_datetime_immutable) |
 | 16-07-2026 | D-067 — Catalogue financier des firmes : prestations non liantes, moteur indépendant (Lot 1) |

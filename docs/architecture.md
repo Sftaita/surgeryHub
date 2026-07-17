@@ -107,6 +107,62 @@ PATCH /api/users/{id}/email
 ```
 
 
+### Stockage des dates métier — convention timezone (D-066)
+
+`Mission.startAt`/`Mission.endAt` sont mappés sur un type Doctrine sur mesure,
+`business_datetime_immutable` (`App\Doctrine\Type\BusinessDateTimeImmutableType`), et
+non le type intégré `datetime_immutable` — **c'est la seule différence** : la colonne
+SQL reste un `DATETIME` MySQL classique, aucune migration n'est requise pour l'utiliser.
+
+**Pourquoi** : une colonne `datetime_immutable` classique reçoit une chaîne brute
+`Y-m-d H:i:s` sans information de fuseau (MySQL `DATETIME` ne stocke pas d'offset).
+`date.timezone` du conteneur PHP étant `UTC`, Doctrine hydrate cette chaîne comme si elle
+représentait un instant UTC — alors qu'en pratique ces chiffres représentent l'heure
+locale de Bruxelles. Résultat : `format(ATOM)` expose un faux `+00:00` au lieu du vrai
+`+01:00`/`+02:00`. Voir `docs/decisions.md` D-065 (diagnostic complet, audit des 9
+endroits affectés) et D-066 (la correction structurelle elle-même).
+
+**Comportement du type** :
+- **Lecture** : le cadran stocké est réétiqueté `Europe/Brussels` (jamais UTC) — les
+  chiffres ne bougent jamais, seule l'interprétation du fuseau change.
+- **Écriture** : la valeur PHP reçue (quel que soit son offset d'origine) est
+  **convertie** vers son équivalent réel en `Europe/Brussels` avant d'être stockée sous
+  forme de cadran local sans offset. Un `DateTimeImmutable` client soumis en `+02:00` et
+  un autre soumis en `+00:00` représentant le même instant réel produisent **la même**
+  valeur stockée.
+
+**Règle de construction obligatoire pour tout code interne** (générateurs de planning,
+scripts, imports…) qui construit un `Mission.startAt`/`endAt` sans passer par une
+requête HTTP client : toujours fournir un fuseau explicite —
+
+```php
+// ❌ Ne jamais faire — naïf, implicitement étiqueté UTC par le conteneur, sera
+//    décalé de l'offset DST à l'écriture (converti comme si c'était un instant UTC réel).
+$day = new \DateTimeImmutable($dateString);
+
+// ✅ Toujours faire — l'intention (cadran Bruxelles) est explicite, le type n'a
+//    rien à convertir.
+$day = new \DateTimeImmutable(
+    $dateString,
+    new \DateTimeZone(App\Doctrine\Type\BusinessDateTimeImmutableType::BUSINESS_TIMEZONE),
+);
+```
+
+`PlanningGeneratorService`/`PlanningGeneratorServiceV2` (génération à partir des
+gabarits) suivent cette convention. Un test d'architecture,
+`tests/Architecture/BusinessDateTimeColumnConventionTest.php`, scanne toutes les
+entités par réflexion et échoue si une nouvelle colonne `DateTimeImmutable` métier est
+ajoutée sans décision explicite (soit `business_datetime_immutable`, soit une entrée
+d'allowlist justifiée pour les colonnes date-only ou toujours `new
+\DateTimeImmutable()` côté serveur) — voir D-066 pour le détail.
+
+**Périmètre volontairement restreint à `Mission.startAt`/`endAt`** : c'est la seule
+colonne du schéma qui reçoit aujourd'hui des valeurs client avec un offset réel et
+significatif (déclaration de mission, création/modification standard). Les autres
+colonnes candidates (`Absence.dateStart/dateEnd`, `PlanningVersion.periodStart/periodEnd`,
+etc.) sont toutes date-only (`Y-m-d`, jamais d'heure ni d'offset) — voir l'allowlist
+commentée du test d'architecture pour la justification colonne par colonne.
+
 ### Stockage des fichiers
 
 Photos de profil stockées dans `public/uploads/profile-pictures/`.

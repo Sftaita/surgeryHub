@@ -385,7 +385,10 @@ class PlanningGeneratorService
                 ? $this->em->find(User::class, $line['instrumentistId'])
                 : null;
 
-            $day       = new \DateTimeImmutable($line['date']);
+            // D-066: Mission.startAt/endAt are business_datetime_immutable — see the
+            // matching comment in PlanningGeneratorServiceV2.php for why $day must be
+            // explicitly Brussels-labeled here rather than naively constructed.
+            $day       = new \DateTimeImmutable($line['date'], new \DateTimeZone(\App\Doctrine\Type\BusinessDateTimeImmutableType::BUSINESS_TIMEZONE));
             $startTime = $slot->getStartTime();
             $endTime   = $slot->getEndTime();
 

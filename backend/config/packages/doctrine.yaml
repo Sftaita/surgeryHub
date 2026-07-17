@@ -8,6 +8,11 @@ doctrine:
 
         profiling_collect_backtrace: '%kernel.debug%'
         use_savepoints: true
+        types:
+            # D-066: Mission.startAt/endAt only — see BusinessDateTimeImmutableType's
+            # own docblock. Same underlying DATETIME column as datetime_immutable, no
+            # migration involved — this only changes PHP-side hydration/persistence.
+            business_datetime_immutable: App\Doctrine\Type\BusinessDateTimeImmutableType
     orm:
         auto_generate_proxy_classes: true
         enable_lazy_ghost_objects: true
