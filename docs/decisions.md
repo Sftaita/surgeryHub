@@ -2861,6 +2861,111 @@ templates appliqué le 2026-07-13, `PlanningEmailTemplatesTest` mis à jour en c
 
 ---
 
+## D-064 — Démarrage automatique des missions (ASSIGNED → IN_PROGRESS) sur startAt
+
+Date : 2026-07-15
+
+### Contexte
+
+`MissionStatus::IN_PROGRESS` existe dans l'enum et est déjà référencé par
+`MissionVoter`, `PlanningCoverageService`, `MissionActionsService`, etc. — mais rien
+dans le code n'a jamais transitionné une mission vers ce statut. Conséquence directe :
+le `StatusPill « En cours »` du `MissionHero` (`docs/design/components/mission-hero.md`)
+n'apparaissait jamais sur des données réelles, alors que le composant frontend est
+correct et conforme au design (repéré en recomparant l'écran Aujourd'hui contre la
+maquette — le code n'avait pas de bug, la transition manquait côté backend).
+
+### Décision
+
+Nouvelle commande planifiée `app:missions:start-due` (`MissionStartDueCommand`),
+recommandée en cron toutes les ~5 minutes — pas d'endpoint HTTP, ce n'est pas une
+action utilisateur. Trouve les missions `ASSIGNED` dont `startAt <= now` et
+`endAt > now`, et appelle `MissionPostDeployService::start()` (nouvelle méthode, même
+patron que `release()`/`cancel()`/`reassign()` — garde de statut, `AuditEvent`
+(`MISSION_STARTED`), `flush()` avant dispatch, R-05/D-056).
+
+**Acteur système** : toute mutation de `Mission` exige un `actor` `User` non-nul
+(`AuditEvent.actor_id` est `NOT NULL`, D-056) — mais cette transition n'a **aucun**
+humain derrière elle, seulement l'horloge. Plutôt que d'affaiblir la contrainte du
+schéma (utilisée par tout le reste du système), migration `Version20260715064809` sème
+une ligne `User` technique dédiée (`system@surgicalhub.internal`) : `password` `NULL`
+(authentification structurellement impossible), `roles: []` (invisible de tout listing
+filtré par rôle), `active: false`. `MissionStartDueCommand` la résout par email au
+démarrage et échoue explicitement (`Command::FAILURE`, message clair) si elle est
+absente plutôt que de créer un acteur ad-hoc à la volée.
+
+**`notify` par défaut `false`** : contrairement aux autres transitions
+`MissionPostDeployService`, celle-ci ne dispatche pas `MissionLifecycleChangedMessage`
+par défaut — passer d'`ASSIGNED` à `IN_PROGRESS` au moment prévu n'est pas une
+information qui justifie un email à quiconque ; c'est un simple changement d'affichage
+(le badge "En cours"). Le paramètre existe et un `MissionChangeType::STARTED` est bien
+défini si un besoin de notification apparaît plus tard, mais rien ne l'exerce
+aujourd'hui côté handler.
+
+**Bornage `endAt > now`** : volontairement absent la logique inverse
+(IN_PROGRESS → autre chose à `endAt`). Une mission `ASSIGNED` dont la fenêtre est déjà
+entièrement passée sans jamais avoir été soumise reste `ASSIGNED` — c'est un souci
+distinct (encodage en retard/oublié), pas traité ici. La commande ne fait qu'entrer
+dans `IN_PROGRESS`, jamais en sortir automatiquement ; la sortie normale reste l'action
+humaine `submit`.
+
+### Piège découvert : timezone du stockage de `startAt`/`endAt`
+
+Vérifié empiriquement (mission déclarée via l'API réelle avec un `startAt` explicite
+`+02:00`) : Doctrine persiste `DateTimeImmutable` sans normalisation — la valeur stockée
+est `format('Y-m-d H:i:s')` de l'objet PHP tel quel, donc le cadran (wall-clock) de
+l'offset fourni, jamais converti en UTC. C'est exactement l'hypothèse déjà faite
+ailleurs (`MissionService::DEFAULT_TIMEZONE = 'Europe/Brussels'` pour ses propres calculs
+de bornes "aujourd'hui"), mais **jusqu'ici aucun code ne comparait `startAt`/`endAt` à un
+"maintenant" calculé côté serveur** — `MissionStartDueCommand` est la première requête
+DQL à le faire. Le conteneur PHP tourne en UTC
+(`date_default_timezone_get()`) ; un `new \DateTimeImmutable()` nu y aurait comparé un
+"maintenant" UTC contre des valeurs stockées en cadran Bruxelles — décalage systématique
+de l'offset DST (+1h/+2h), les missions auraient semblé démarrer 1 à 2h en retard. La
+commande construit donc explicitement son "maintenant" en `Europe/Brussels`
+(`MISSION_TIMEZONE` const). Couvert par un test d'intégration réel-DB dédié
+(`MissionStartDueCommandIntegrationTest`) qui aurait échoué sans ce fix — un test avec
+`EntityManager` mocké ne l'aurait jamais détecté.
+
+### Statut
+
+Implémenté et testé : `MissionPostDeployServiceTest` (+6, méthode `start()`),
+`MissionStartDueCommandTest` (+3, unitaire, collaborateurs mockés),
+`MissionStartDueCommandIntegrationTest` (+5, DB réelle, coïncidences timezone
+explicitement couvertes). 883/883 tests backend verts. Vérifié en conditions réelles :
+missions réelles de la copie locale de prod transitionnées correctement (`08:00` →
+`IN_PROGRESS` une fois l'heure de Bruxelles dépassée, mission de l'après-midi restée
+`ASSIGNED`), pastille "En cours" confirmée à l'écran sur `/app/i/today`.
+
+**Amendement 2026-07-15 (voir D-065 ci-dessous)** : la pastille "En cours" a finalement
+été rendue indépendante du cron côté frontend — elle se calcule maintenant à l'affichage
+(`statut ∈ {ASSIGNED, IN_PROGRESS}` et `now ∈ [startAt, endAt[`), sans attendre le
+passage de `app:missions:start-due`. Le statut `IN_PROGRESS` persisté reste la source de
+vérité pour les vrais comportements métier (classification d'alerte absence, garde-fou de
+remise au pool) — voir §"Quelle partie a réellement besoin du statut persisté" ci-dessous.
+Le cron continue de tourner pour ces usages-là ; il ne conditionne plus l'affichage.
+
+**Quelle partie a réellement besoin du statut persisté vs un calcul à l'affichage** —
+audit fait le 2026-07-15 en répondant à cette question précise :
+- **A besoin du statut persisté** (comportement différent selon `ASSIGNED` vs
+  `IN_PROGRESS`) : `AbsenceImpactService::classify()` (type d'alerte —
+  `REASSIGNMENT_REQUIRED` si `ASSIGNED`, sinon informatif) et
+  `AbsenceMissionReactionService` (n'auto-libère vers le pool que les missions
+  `ASSIGNED`, jamais `IN_PROGRESS` — garde-fou de sécurité).
+- **N'en a pas besoin** (`IN_PROGRESS` traité à l'identique d'`ASSIGNED`, la persistance
+  ne change aucun comportement) : `MissionVoter` (le vrai verrou d'accès encodage est
+  `hasMissionStarted()`, une comparaison horaire indépendante — voir piège timezone
+  ci-dessous), `MissionActionsService::allowedActions()` (même liste
+  `[ASSIGNED, IN_PROGRESS]`), `PlanningCoverageService` (compté à l'identique dans
+  `total` ET `covered` — pourcentage mathématiquement inchangé).
+
+**Découverte annexe** : `MissionVoter::hasMissionStarted()` (garde-fou d'accès à
+l'encodage) compare `startAt` à un `new \DateTimeImmutable('now', new
+DateTimeZone('UTC'))` — exactement le même piège que celui décrit dans D-064, mais
+préexistant et non corrigé ici (hors-scope de cette session, signalé mais pas touché).
+
+---
+
 ## D-067 — Catalogue financier des firmes : prestations non liantes, moteur indépendant (Lot 1)
 
 Date : 2026-07-16
@@ -3052,4 +3157,5 @@ aurait démontré l'absence de verrou ; un timeout MySQL déterministe démontre
 | 12-07-2026 | D-061 — MAIL_SAFE_MODE : garde-fou centralisé contre l'envoi accidentel d'emails réels |
 | 12-07-2026 | D-062 — Réaction automatique aux absences sur les missions déjà déployées (libération/annulation) |
 | 13-07-2026 | D-063 — Modification sécurisée de l'adresse email par un manager/admin + double notification |
+| 15-07-2026 | D-064 — Démarrage automatique des missions (ASSIGNED → IN_PROGRESS) sur startAt |
 | 16-07-2026 | D-067 — Catalogue financier des firmes : prestations non liantes, moteur indépendant (Lot 1) |

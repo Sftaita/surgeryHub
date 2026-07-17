@@ -98,6 +98,47 @@ class MissionPostDeployService
     }
 
     /**
+     * ASSIGNED → IN_PROGRESS (D-064).
+     * Auto-started by MissionStartDueCommand once startAt has passed — $actor is the
+     * system technical user (see Version20260715064809 migration), never a real human,
+     * since nothing decided this transition beyond the clock. Throws 409 if mission is
+     * not ASSIGNED.
+     *
+     * $notify defaults to false: this is a silent, non-actionable status flip (purely
+     * cosmetic today — it only drives the "En cours" pill on the instrumentist's
+     * Aujourd'hui hero card) and not something worth emailing anyone about.
+     */
+    public function start(Mission $mission, User $actor, bool $notify = false): void
+    {
+        if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
+            throw new ConflictHttpException('Mission must be ASSIGNED to start');
+        }
+
+        $mission->setStatus(MissionStatus::IN_PROGRESS);
+
+        $payload = [
+            'actorId'   => $actor->getId(),
+            'actorName' => $this->displayName($actor),
+        ];
+
+        $this->audit->record($mission, $actor, AuditEventType::MISSION_STARTED, $payload);
+
+        $this->em->flush();  // R-05: flush before dispatch
+
+        if (!$notify) {
+            return;
+        }
+
+        $this->bus->dispatch(new MissionLifecycleChangedMessage(
+            missionId:  $mission->getId(),
+            changeType: MissionChangeType::STARTED,
+            actorId:    $actor->getId(),
+            payload:    $payload,
+            occurredAt: new \DateTimeImmutable(),
+        ));
+    }
+
+    /**
      * OPEN|ASSIGNED → CANCELLED.
      * Throws 409 if mission is not OPEN or ASSIGNED.
      *

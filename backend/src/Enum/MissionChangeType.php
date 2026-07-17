@@ -20,4 +20,5 @@ enum MissionChangeType: string
     case ADDED        = 'ADDED';         // new Mission created post-deploy
     case REMOVED      = 'REMOVED';       // Mission deleted post-deploy (future)
     case UPDATED      = 'UPDATED';       // generic update (fallback)
+    case STARTED      = 'STARTED';       // ASSIGNED → IN_PROGRESS (D-064, automated on startAt)
 }

@@ -53,6 +53,20 @@ Liste toutes les firmes actives, triées par nom.
 | `SUBMITTED` | Soumise par l'instrumentiste |
 | `VALIDATED` | Validée |
 | `CLOSED` | Fermée |
+| `IN_PROGRESS` | Mission en cours (voir §3.1) |
+
+---
+
+### 3.1 `ASSIGNED → IN_PROGRESS` — démarrage automatique (D-064)
+
+Pas un endpoint : une commande planifiée, `app:missions:start-due`, transitionne toute mission `ASSIGNED` dès que `startAt` est atteint (tant que `endAt` n'est pas déjà dépassé). Recommandé en cron toutes les ~5 minutes.
+
+- Acteur : utilisateur technique `system@surgicalhub.internal` (aucun humain n'a déclenché la transition) — voir migration `Version20260715064809`.
+- `notify` par défaut à `false` : pas d'email, transition silencieuse.
+- Audit `MISSION_STARTED`.
+- Idempotent : une mission déjà `IN_PROGRESS` n'est jamais retraitée (garde de statut dans `MissionPostDeployService::start()`).
+- **Piège timezone** : `Mission.startAt`/`endAt` sont persistés par Doctrine sans conversion — la valeur stockée est le cadran (wall-clock) tel que soumis, jamais normalisée en UTC (même hypothèse que `MissionService::DEFAULT_TIMEZONE`). La commande calcule donc son "maintenant" en `Europe/Brussels`, jamais en UTC (qui est le fuseau par défaut du conteneur) — une régression vers `new \DateTimeImmutable()` nu décale toute la logique de l'offset DST.
+- **Le badge « En cours » côté instrumentiste ne dépend plus de cette commande** (amendement 2026-07-15) : il se calcule à l'affichage (`statut ∈ {ASSIGNED, IN_PROGRESS}` et `now ∈ [startAt, endAt[`), donc apparaît immédiatement sans attendre le prochain passage du cron. `IN_PROGRESS` persisté reste la source de vérité pour `AbsenceImpactService`/`AbsenceMissionReactionService` — voir `docs/decisions.md` D-064/D-065.
 
 ---
 

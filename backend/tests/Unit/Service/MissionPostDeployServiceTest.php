@@ -839,6 +839,92 @@ final class MissionPostDeployServiceTest extends TestCase
         );
     }
 
+    // ── start() — D-064, ASSIGNED → IN_PROGRESS (system-triggered) ─────────────
+
+    public function test_start_transitions_status_to_in_progress(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ASSIGNED, $this->makeInstrumentist());
+        $systemActor = $this->makeActor('Système', '');
+
+        $this->em->expects($this->once())->method('flush');
+
+        $this->service->start($mission, $systemActor);
+
+        $this->assertSame(MissionStatus::IN_PROGRESS, $mission->getStatus());
+    }
+
+    public function test_start_creates_mission_started_audit_event(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ASSIGNED, $this->makeInstrumentist());
+        $systemActor = $this->makeActor('Système', '');
+
+        $this->em->method('flush');
+
+        $this->audit->expects($this->once())->method('record')
+            ->with(
+                $this->identicalTo($mission),
+                $this->identicalTo($systemActor),
+                AuditEventType::MISSION_STARTED,
+                $this->callback(fn (array $p): bool => $p['actorId'] === $systemActor->getId()),
+            );
+
+        $this->service->start($mission, $systemActor);
+    }
+
+    public function test_start_defaults_to_notify_false_and_skips_dispatch(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ASSIGNED, $this->makeInstrumentist());
+        $systemActor = $this->makeActor('Système', '');
+
+        $this->em->method('flush');
+        $this->bus->expects($this->never())->method('dispatch');
+
+        $this->service->start($mission, $systemActor);
+
+        $this->assertSame(MissionStatus::IN_PROGRESS, $mission->getStatus());
+    }
+
+    public function test_start_with_notify_true_dispatches_started_change_type(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ASSIGNED, $this->makeInstrumentist());
+        $systemActor = $this->makeActor('Système', '');
+
+        $this->em->method('flush');
+
+        $dispatched = null;
+        $this->bus->expects($this->once())->method('dispatch')
+            ->willReturnCallback(static function (object $msg) use (&$dispatched): Envelope {
+                $dispatched = $msg;
+                return new Envelope($msg);
+            });
+
+        $this->service->start($mission, $systemActor, notify: true);
+
+        $this->assertInstanceOf(MissionLifecycleChangedMessage::class, $dispatched);
+        $this->assertSame(MissionChangeType::STARTED, $dispatched->changeType);
+    }
+
+    public function test_start_on_non_assigned_mission_throws_conflict(): void
+    {
+        $mission = $this->makeMission(MissionStatus::OPEN);
+        $systemActor = $this->makeActor('Système', '');
+
+        $this->expectException(ConflictHttpException::class);
+        $this->expectExceptionMessage('Mission must be ASSIGNED to start');
+
+        $this->service->start($mission, $systemActor);
+    }
+
+    public function test_start_on_already_in_progress_mission_throws_conflict(): void
+    {
+        $mission = $this->makeMission(MissionStatus::IN_PROGRESS);
+        $systemActor = $this->makeActor('Système', '');
+
+        $this->expectException(ConflictHttpException::class);
+
+        $this->service->start($mission, $systemActor);
+    }
+
     public function test_create_post_deploy_rejects_end_before_start(): void
     {
         $site    = new \App\Entity\Hospital();

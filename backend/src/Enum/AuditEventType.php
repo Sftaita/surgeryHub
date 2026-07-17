@@ -35,4 +35,7 @@ enum AuditEventType: string
     case MISSION_TIME_CHANGED_POST_DEPLOY  = 'MISSION_TIME_CHANGED_POST_DEPLOY';
     case MISSION_ADDED_POST_DEPLOY         = 'MISSION_ADDED_POST_DEPLOY';
     case MISSION_CLAIMED_FROM_POOL         = 'MISSION_CLAIMED_FROM_POOL';
+
+    // Automated (D-064) — MissionStartDueCommand, ASSIGNED -> IN_PROGRESS on startAt.
+    case MISSION_STARTED = 'MISSION_STARTED';
 }
