@@ -3,6 +3,7 @@
 namespace App\EventSubscriber;
 
 use App\Exception\MissionNotDraftException;
+use App\Exception\PricingRulePeriodOverlapException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -43,6 +44,10 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'MISSION_NOT_DRAFT';
             $message = $e->getMessage() ?: 'Mission is not DRAFT';
+        } elseif ($e instanceof PricingRulePeriodOverlapException) {
+            $status = 409;
+            $code = 'PRICING_RULE_PERIOD_OVERLAP';
+            $message = $e->getMessage() ?: 'Une règle tarifaire existe déjà pour cette période.';
         } elseif ($e instanceof HttpExceptionInterface) {
             $status = $e->getStatusCode();
             $message = $e->getMessage() ?: $message;
