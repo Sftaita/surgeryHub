@@ -33,7 +33,7 @@ class FirmInvoiceLine
     private ?MissionIntervention $missionIntervention = null;
 
     /**
-     * FK anti-doublon pour les lignes IMPLANT_FEE.
+     * FK anti-doublon pour les lignes MATERIAL_FEE (renommé depuis IMPLANT_FEE, Lot 1).
      * Une MaterialLine ne peut apparaître que dans une seule facture GENERATED+.
      */
     #[ORM\ManyToOne]

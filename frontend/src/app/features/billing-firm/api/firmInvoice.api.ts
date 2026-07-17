@@ -25,7 +25,7 @@ export interface FirmInvoiceLine {
   missionDate: string;
   interventionId: number | null;
   materialLineId: number | null;
-  lineType: "INTERVENTION_FEE" | "IMPLANT_FEE";
+  lineType: "INTERVENTION_FEE" | "MATERIAL_FEE";
   descriptionSnapshot: string;
   firmNameSnapshot: string;
   unitPrice: string;
@@ -38,7 +38,7 @@ export interface PreviewLine {
   missionDate: string;
   interventionId: number | null;
   materialLineId: number | null;
-  lineType: "INTERVENTION_FEE" | "IMPLANT_FEE";
+  lineType: "INTERVENTION_FEE" | "MATERIAL_FEE";
   descriptionSnapshot: string;
   firmNameSnapshot: string;
   unitPrice: number;

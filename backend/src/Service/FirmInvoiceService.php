@@ -14,6 +14,17 @@ use App\Enum\MissionStatus;
 use App\Enum\PricingRuleType;
 use Doctrine\ORM\EntityManagerInterface;
 
+/**
+ * Lot 1 — adaptation minimale (Stratégie A, contrôle final du 2026-07-16) : ce service
+ * appelait encore PricingRuleType::IMPLANT_FEE et PricingRule::getInterventionCode(),
+ * tous deux supprimés par l'évolution du modèle. Le rapprochement se fait désormais via
+ * InterventionType.code (recherché depuis MissionIntervention.code, inchangé — Lot 5
+ * ajoutera une vraie relation) et PricingRuleType::MATERIAL_FEE. isImplant() n'est plus
+ * un filtre financier (voir docs/decisions.md D-067) : un matériel non-implant peut
+ * désormais être facturé si une règle existe. Le pipeline complet de facturation
+ * (génération réelle, statut VALIDATED atteignable) reste un chantier séparé — cette
+ * adaptation ne fait que réparer la compilation/l'exécution sur le nouveau modèle.
+ */
 class FirmInvoiceService
 {
     public function __construct(private readonly EntityManagerInterface $em) {}
@@ -40,7 +51,7 @@ class FirmInvoiceService
                 if (in_array($intervention->getId(), $alreadyBilledInterventionIds, true)) {
                     continue;
                 }
-                $rule = $this->findInterventionRule($rules, $intervention->getCode());
+                $rule = $this->findInterventionRule($rules, $intervention->getCode(), $mission->getStartAt());
                 if ($rule === null) {
                     continue;
                 }
@@ -48,20 +59,18 @@ class FirmInvoiceService
             }
 
             foreach ($mission->getMaterialLines() as $materialLine) {
-                if (!$materialLine->getItem()->isImplant()) {
-                    continue;
-                }
+                // isImplant() n'est plus un filtre financier (D-067) — retiré ici.
                 if ($materialLine->getItem()->getFirm()->getId() !== $firm->getId()) {
                     continue;
                 }
                 if (in_array($materialLine->getId(), $alreadyBilledMaterialLineIds, true)) {
                     continue;
                 }
-                $rule = $this->findImplantRule($rules, $materialLine->getItem()->getId());
+                $rule = $this->findMaterialRule($rules, $materialLine->getItem()->getId(), $mission->getStartAt());
                 if ($rule === null) {
                     continue;
                 }
-                $lines[] = $this->buildImplantPreviewLine($mission, $materialLine, $rule);
+                $lines[] = $this->buildMaterialPreviewLine($mission, $materialLine, $rule);
             }
         }
 
@@ -109,7 +118,7 @@ class FirmInvoiceService
                 if (in_array($intervention->getId(), $alreadyBilledInterventionIds, true)) {
                     continue;
                 }
-                $rule = $this->findInterventionRule($rules, $intervention->getCode());
+                $rule = $this->findInterventionRule($rules, $intervention->getCode(), $mission->getStartAt());
                 if ($rule === null) {
                     continue;
                 }
@@ -125,21 +134,19 @@ class FirmInvoiceService
                 if (!in_array($materialLine->getId(), $selectedMaterialLineIds, true)) {
                     continue;
                 }
-                if (!$materialLine->getItem()->isImplant()) {
-                    continue;
-                }
+                // isImplant() n'est plus un filtre financier (D-067) — retiré ici.
                 if ($materialLine->getItem()->getFirm()->getId() !== $firm->getId()) {
                     continue;
                 }
                 if (in_array($materialLine->getId(), $alreadyBilledMaterialLineIds, true)) {
                     continue;
                 }
-                $rule = $this->findImplantRule($rules, $materialLine->getItem()->getId());
+                $rule = $this->findMaterialRule($rules, $materialLine->getItem()->getId(), $mission->getStartAt());
                 if ($rule === null) {
                     continue;
                 }
 
-                $lineData = $this->buildImplantPreviewLine($mission, $materialLine, $rule);
+                $lineData = $this->buildMaterialPreviewLine($mission, $materialLine, $rule);
                 $line = $this->createLine($mission, $lineData);
                 $line->setMaterialLine($materialLine);
                 $invoice->addLine($line);
@@ -249,12 +256,19 @@ class FirmInvoiceService
         return array_column($rows, 'mlId');
     }
 
-    private function findInterventionRule(array $rules, string $code): ?PricingRule
+    /**
+     * Rapproche par InterventionType.code (via MissionIntervention.code, texte libre
+     * inchangé jusqu'au Lot 5) plutôt que par l'ancien PricingRule.interventionCode
+     * supprimé. Filtre aussi par date de validité (coversDate) — absent avant l'ajout de
+     * validFrom/validTo dans ce lot, corrigé au passage.
+     */
+    private function findInterventionRule(array $rules, string $code, \DateTimeImmutable $missionDate): ?PricingRule
     {
         foreach ($rules as $rule) {
             if (
                 $rule->getRuleType() === PricingRuleType::INTERVENTION_FEE
-                && $rule->getInterventionCode() === $code
+                && $rule->getInterventionType()?->getCode() === $code
+                && $rule->coversDate($missionDate)
             ) {
                 return $rule;
             }
@@ -262,12 +276,13 @@ class FirmInvoiceService
         return null;
     }
 
-    private function findImplantRule(array $rules, int $materialItemId): ?PricingRule
+    private function findMaterialRule(array $rules, int $materialItemId, \DateTimeImmutable $missionDate): ?PricingRule
     {
         foreach ($rules as $rule) {
             if (
-                $rule->getRuleType() === PricingRuleType::IMPLANT_FEE
+                $rule->getRuleType() === PricingRuleType::MATERIAL_FEE
                 && $rule->getMaterialItem()?->getId() === $materialItemId
+                && $rule->coversDate($missionDate)
             ) {
                 return $rule;
             }
@@ -293,7 +308,7 @@ class FirmInvoiceService
         ];
     }
 
-    private function buildImplantPreviewLine(Mission $mission, MaterialLine $materialLine, PricingRule $rule): array
+    private function buildMaterialPreviewLine(Mission $mission, MaterialLine $materialLine, PricingRule $rule): array
     {
         $qty = (float) $materialLine->getQuantity();
         $unitPrice = (float) $rule->getUnitPrice();
@@ -302,7 +317,7 @@ class FirmInvoiceService
             'missionDate' => $mission->getStartAt()->format('Y-m-d'),
             'interventionId' => null,
             'materialLineId' => $materialLine->getId(),
-            'lineType' => PricingRuleType::IMPLANT_FEE->value,
+            'lineType' => PricingRuleType::MATERIAL_FEE->value,
             'descriptionSnapshot' => sprintf(
                 '%s — %s (Réf: %s)',
                 $materialLine->getItem()->getLabel(),

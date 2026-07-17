@@ -256,7 +256,7 @@ export default function FirmInvoicesPage() {
                             <TableCell>{line.descriptionSnapshot}</TableCell>
                             <TableCell>
                               <Chip
-                                label={line.lineType === "INTERVENTION_FEE" ? "Intervention" : "Implant"}
+                                label={line.lineType === "INTERVENTION_FEE" ? "Intervention" : "Matériel"}
                                 size="small"
                                 color={line.lineType === "INTERVENTION_FEE" ? "primary" : "secondary"}
                                 variant="outlined"
