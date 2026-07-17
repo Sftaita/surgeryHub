@@ -543,6 +543,12 @@ Le manager peut créer et gérer des chirurgiens via l'interface, avec le même 
 
 Date : 18-03-2026
 
+> **Modèle de tarification partiellement remplacé par [D-067](#d-067--catalogue-financier-des-firmes--prestations-non-liantes-moteur-indépendant-lot-1)
+> (16-07-2026) :** `IMPLANT_FEE` a été renommé `MATERIAL_FEE` et `PricingRule::interventionCode`
+> (texte libre) remplacé par `PricingRule::interventionType` (référentiel fermé
+> `InterventionType`). Le reste de cette décision (anti-doublon, numérotation, PDF,
+> email) reste valable tel quel.
+
 ### Décision
 
 Le manager peut générer des factures pour les firmes partenaires à partir des missions `VALIDATED`.
@@ -2855,6 +2861,136 @@ templates appliqué le 2026-07-13, `PlanningEmailTemplatesTest` mis à jour en c
 
 ---
 
+## D-067 — Catalogue financier des firmes : prestations non liantes, moteur indépendant (Lot 1)
+
+Date : 2026-07-16
+
+### Contexte
+
+Six audits successifs (interventions/matériel/firmes/tarification, modèle « profil
+opératoire », architecture V1, UX de configuration manager, clarification firmes vs
+règles de facturation, décision finale) ont précédé ce lot. Point de départ vérifié
+avant toute implémentation : `firm`=3, `material_item`=16, et **zéro** ligne dans
+`material_line`, `pricing_rule`, `firm_invoice`, `firm_invoice_line` — seule
+`mission_intervention` avait une ligne, manifestement une donnée de test (mission #529,
+`label="csd"`), volontairement non touchée par ce lot.
+
+### Décision
+
+Introduction de `InterventionType` (référentiel médical fermé, `code` unique et
+immuable), `FirmServiceOffering` (« Prestation » à l'écran — `firm` + `interventionType`,
+`UNIQUE(firm_id, intervention_type_id)`) et `SuggestedMaterial` (liste ordonnée,
+suppression toujours physique).
+
+**Invariant central, non négociable :** le moteur financier (`PricingRuleResolver`) ne
+lit jamais `FirmServiceOffering` ni `SuggestedMaterial`. Il ne lit que `PricingRule`,
+elle-même indexée directement sur `(firmId, interventionTypeId)` ou `(firmId,
+materialItemId)` — jamais au travers d'une prestation. Critère de vérification retenu :
+supprimer entièrement `firm_service_offering`/`suggested_material` ne doit changer aucun
+montant déjà calculable. Un test d'intégration dédié (`PricingRuleResolverTest`) exerce
+littéralement ce scénario (création d'une prestation + suggestions, suppression
+complète, nouvelle résolution identique).
+
+`isImplant` (`MaterialItem`) redevient une information médicale pure — la seule source
+de vérité du caractère facturable d'un matériel est désormais l'existence d'une
+`PricingRule` active (`MATERIAL_FEE`, renommé depuis `IMPLANT_FEE`), quel que soit ce
+flag. `PricingRule` gagne `currency` (défaut EUR), `validFrom`/`validTo` (nullables,
+`null` = borne ouverte) ; un chevauchement de périodes actives sur la même cible est un
+refus bloquant à l'écriture, jamais un choix silencieux à la lecture.
+
+`MaterialItem.firm` devient obligatoire et immuable dès qu'une `MaterialLine` réelle
+existe (contrôle applicatif dans `MaterialCatalogController`, pas seulement une
+convention) ; unicité `(firm_id, reference_code)` ajoutée. Un matériel suggéré doit
+appartenir à la même firme que sa prestation — garanti en base par une clé étrangère
+composée `(firm_id, material_item_id) → material_item(firm_id, id)`, pas seulement par
+un contrôle applicatif contournable par un futur chemin de code oublié.
+
+Aucune donnée réelle n'a nécessité de migration conservatrice au-delà d'un
+resserrement de contraintes déjà vraies (0 conflit constaté) sur `firm` (3 lignes) et
+`material_item` (16 lignes) — voir `Version20260716120000`.
+
+### Contrôle final (2026-07-16) — FirmInvoiceService adapté, Stratégie A
+
+Un contrôle final avant commit a identifié que `FirmInvoiceService` référençait encore
+`IMPLANT_FEE` et `PricingRule::interventionCode`, tous deux supprimés par ce lot — code
+mort avec les données réelles actuelles (0 `pricing_rule`), mais un code mort qui
+compile en apparence et casserait au premier `pricing_rule` réel. Choix retenu :
+**Stratégie A**, adaptation minimale plutôt que neutralisation (`BILLING_ENGINE_NOT_READY`).
+Le rapprochement `INTERVENTION_FEE` passe déjà par `InterventionType.code` comparé au
+champ texte libre `MissionIntervention.code` (aucune nouvelle colonne nécessaire) ;
+`findImplantRule`/`buildImplantPreviewLine` sont devenus `findMaterialRule`/
+`buildMaterialPreviewLine` (`MATERIAL_FEE`) ; les deux méthodes de rapprochement
+respectent désormais `PricingRule::coversDate()` (`validFrom`/`validTo`), ce que
+l'ancien code ne faisait pas du tout — un vrai correctif, pas seulement un renommage.
+Caractérisé par deux tests qui appellent réellement `preview()`/`generate()` contre une
+vraie base (`FirmInvoiceServiceLot1AdaptationTest`,
+`FirmInvoiceControllerLot1AdaptationTest`, HTTP inclus) plutôt que par un simple grep.
+
+**Limite réellement restante (Lot 5) :** `MissionIntervention.code` demeure un champ
+texte libre non contraint par une clé étrangère vers `InterventionType` — le
+rapprochement fonctionne par convention de code partagée, pas par intégrité
+référentielle. Le déblocage du statut `VALIDATED` reste également hors périmètre
+(constat du tout premier audit de cette série).
+
+### Correctif final (2026-07-17) — atomicité des règles tarifaires
+
+Le risque de concurrence identifié au contrôle du 2026-07-16 (`hasOverlap()` en
+check-then-act sans verrou, prouvé contournable par `PricingRuleConcurrencyTest`) est
+désormais corrigé.
+
+**Centralisation :** toute écriture de `PricingRule` (création, modification,
+suppression) passe exclusivement par `PricingRuleWriteService` — `FirmBillingController`
+ne fait plus lui-même ni `hasOverlap()`, ni `persist()`, ni `flush()`. Le contrôleur se
+limite à lire/valider le payload HTTP et sérialiser le résultat.
+
+**Verrouillage pessimiste déterministe :** `create()`/`update()` s'exécutent dans une
+transaction (`EntityManager::wrapInTransaction()`) qui verrouille d'abord la *cible*
+tarifaire — `Firm`, puis `InterventionType` (INTERVENTION_FEE) ou `MaterialItem`
+(MATERIAL_FEE), toujours dans cet ordre, jamais l'inverse — **avant** de relire les
+`PricingRule` existantes et vérifier le chevauchement. Verrouiller la cible (pas les
+`PricingRule` elles-mêmes) est ce qui protège aussi la toute première règle d'un couple
+firme + type d'intervention : `Firm` et `InterventionType`/`MaterialItem` existent
+toujours avant qu'une `PricingRule` ne puisse être créée (contrainte FK), donc deux
+créations concurrentes sur la même cible se sérialisent réellement même quand 0
+`PricingRule` n'existe encore pour cette cible.
+
+**Ordre de verrouillage et interblocages :** l'ordre `Firm` puis `InterventionType`/
+`MaterialItem` est fixe dans tout le code — aucun chemin de ce service ni d'ailleurs
+dans l'application ne verrouille l'un de ces types après l'autre dans l'ordre inverse
+(vérifié : les autres usages de verrous pessimistes du code, `AbsenceMissionReactionService`,
+`MissionPostDeployService`, `MissionService`, verrouillent uniquement `Mission`, jamais
+`Firm`/`InterventionType`/`MaterialItem`). Un interblocage classique (A verrouille X puis
+attend Y pendant que B verrouille Y puis attend X) est donc structurellement impossible
+ici. Contrepartie assumée : deux écritures concurrentes sur la **même firme** mais des
+cibles différentes (ex. LCA et PTE pour Smith & Nephew) se sérialisent l'une après
+l'autre au niveau du verrou `Firm`, même si elles ne se chevauchent pas — un coût de
+performance jugé acceptable (écritures manager, rares, jamais un chemin chaud) et prouvé
+ne PAS s'étendre à des firmes différentes (cas D, aucun blocage inter-firmes).
+
+**Erreur métier :** un chevauchement détecté lève `PricingRulePeriodOverlapException`
+(`ConflictHttpException`), normalisée par `ApiExceptionSubscriber` en `HTTP 409` /
+`code: PRICING_RULE_PERIOD_OVERLAP` / message « Une règle tarifaire existe déjà pour
+cette période. ». Le frontend l'affiche sans changement de code : `BillingConfigPage`
+utilise déjà un extracteur générique (`error.message`) branché sur tous ses `onError`.
+La `\LogicException` défensive de `PricingRuleResolver::resolveInterventionFee()`/
+`resolveMaterialFee()` reste en place comme garde ultime si des données incohérentes
+existaient déjà (ambiguïté détectée en lecture), mais le chemin normal d'écriture
+produit désormais systématiquement cette erreur métier contrôlée, jamais une exception
+technique brute.
+
+**Preuve, pas supposition :** `PricingRuleConcurrencyTest` — qui prouvait la
+vulnérabilité avant ce correctif — a été transformé en suite de non-régression à 6 cas
+(A : deux créations identiques concurrentes, une seule réussit ; B : périodes
+chevauchantes, une seule réussit ; C : périodes adjacentes non chevauchantes, les deux
+réussissent ; D : cibles différentes, aucun blocage inter-cibles ; E : création et
+modification concurrentes ne peuvent pas produire de chevauchement ; F : même protection
+sur une cible `MATERIAL_FEE`). Chaque cas prouve le blocage réel (pas supposé) en tenant
+un verrou sur une connexion DBAL indépendante pendant qu'une seconde connexion tente son
+écriture sous un `innodb_lock_wait_timeout` volontairement court — un succès immédiat
+aurait démontré l'absence de verrou ; un timeout MySQL déterministe démontre l'inverse.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -2916,3 +3052,4 @@ templates appliqué le 2026-07-13, `PlanningEmailTemplatesTest` mis à jour en c
 | 12-07-2026 | D-061 — MAIL_SAFE_MODE : garde-fou centralisé contre l'envoi accidentel d'emails réels |
 | 12-07-2026 | D-062 — Réaction automatique aux absences sur les missions déjà déployées (libération/annulation) |
 | 13-07-2026 | D-063 — Modification sécurisée de l'adresse email par un manager/admin + double notification |
+| 16-07-2026 | D-067 — Catalogue financier des firmes : prestations non liantes, moteur indépendant (Lot 1) |

@@ -415,9 +415,28 @@ Firm
 
 MaterialItem
 ├── id
+├── firm → Firm (obligatoire, immuable dès qu'une MaterialLine réelle existe)
+├── label, referenceCode (unique par firme), unit, active: bool
+└── isImplant: bool (information médicale pure — sans rôle financier, voir D-067)
+
+InterventionType (Lot 1 — référentiel médical fermé)
+├── id, code (unique, immuable), label
+├── specialty (nullable)
+└── active: bool
+
+FirmServiceOffering ("Prestation" à l'écran — Lot 1)
 ├── firm → Firm
-├── label, referenceCode, unit
-└── isImplant: bool
+├── interventionType → InterventionType
+├── UNIQUE(firm, interventionType)
+├── label (nullable), active: bool
+└── SuggestedMaterial[] (ordonnée par displayOrder)
+    — jamais lue par le moteur financier (invariant D-067) : accélère la saisie
+      manager uniquement, aucune donnée facturante n'y est stockée.
+
+SuggestedMaterial (Lot 1)
+├── firmServiceOffering → FirmServiceOffering
+├── materialItem → MaterialItem (même firme, garanti par FK composée en base)
+└── displayOrder
 
 Mission
 ├── id, status, type, schedulePrecision
@@ -449,9 +468,11 @@ MaterialItemRequest
 
 PricingRule
 ├── firm → Firm
-├── ruleType: 'INTERVENTION_FEE' | 'IMPLANT_FEE'
-├── interventionCode (string nullable — matche MissionIntervention.code)
-└── materialItem → MaterialItem (nullable)
+├── ruleType: 'INTERVENTION_FEE' | 'MATERIAL_FEE' (renommé depuis IMPLANT_FEE, Lot 1)
+├── interventionType → InterventionType (nullable — Lot 1, remplace interventionCode texte libre)
+├── materialItem → MaterialItem (nullable)
+├── currency (défaut EUR), validFrom/validTo (nullables, null = borne ouverte — Lot 1)
+└── anti-chevauchement bloquant à l'écriture sur (firm, ruleType, cible) — voir PricingRuleResolver
 
 FirmInvoice
 ├── firm, number (FIRM-YYYY-NNN), status (DRAFT|GENERATED|SENT|PAID)
@@ -460,7 +481,7 @@ FirmInvoice
 └── FirmInvoiceLine[]
 
 FirmInvoiceLine
-├── invoice, mission, lineType (INTERVENTION_FEE|IMPLANT_FEE)
+├── invoice, mission, lineType (INTERVENTION_FEE|MATERIAL_FEE)
 ├── missionIntervention (nullable FK — anti-doublon)
 ├── materialLine (nullable FK — anti-doublon)
 └── descriptionSnapshot, unitPrice (snapshot), quantity, totalAmount
@@ -564,6 +585,26 @@ Matériel absent → "Matériel non trouvé ?" → modal
                → Manager résout → MaterialLine créée automatiquement
                → Request disparaît de l'encoding (filtre PENDING uniquement)
 ```
+
+### Flux catalogue financier — prestations firmes (Lot 1, voir D-067)
+
+```
+Manager → InterventionType (référentiel médical fermé, indépendant des firmes)
+        → Firm.pricing-rules / service-offerings (par firme)
+
+Prestation ("FirmServiceOffering") = firm + interventionType (UNIQUE)
+  ├── matériels suggérés (SuggestedMaterial, ordonnés) — accélèrent l'encodage, ne le limitent jamais
+  └── forfait éventuel — une PricingRule INTERVENTION_FEE indépendante, jamais rattachée à la prestation
+
+Moteur financier (PricingRuleResolver) :
+  MissionIntervention.interventionTypeId + .primaryFirmId  →  PricingRule(INTERVENTION_FEE)
+  MaterialLine.materialItemId                              →  PricingRule(MATERIAL_FEE)
+  (ne lit jamais FirmServiceOffering ni SuggestedMaterial — invariant vérifié par test)
+```
+
+`MissionIntervention.interventionTypeId`/`.primaryFirmId` et le rebranchement de
+`FirmInvoiceService` sur ce modèle appartiennent aux lots suivants (encodage
+instrumentiste, génération de factures) — non implémentés dans ce lot.
 
 ---
 

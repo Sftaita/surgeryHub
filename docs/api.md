@@ -1798,6 +1798,12 @@ Le `title` de chaque événement est le nom de l'instrumentiste assigné (ou l'e
 
 ### 24.2 Règles tarifaires — CRUD
 
+> Modèle évolué par le Lot 1 (voir D-067, `docs/decisions.md`, et §30) :
+> `interventionCode` (texte libre) → `interventionType` (référentiel fermé
+> `InterventionType`) ; `IMPLANT_FEE` → `MATERIAL_FEE`. `isImplant` sur `MaterialItem`
+> n'a plus aucun rôle dans la décision de facturabilité — seule l'existence d'une
+> `PricingRule` active fait foi.
+
 #### `GET /api/firms/{id}/pricing-rules`
 
 Retourne toutes les règles (actives + inactives) pour la firme.
@@ -1809,17 +1815,23 @@ Retourne toutes les règles (actives + inactives) pour la firme.
   {
     "id": 1,
     "ruleType": "INTERVENTION_FEE",
-    "interventionCode": "LCA",
+    "interventionType": { "id": 3, "code": "LCA", "label": "Ligamentoplastie" },
     "materialItem": null,
     "unitPrice": "100.00",
+    "currency": "EUR",
+    "validFrom": null,
+    "validTo": null,
     "active": true
   },
   {
     "id": 2,
-    "ruleType": "IMPLANT_FEE",
-    "interventionCode": null,
+    "ruleType": "MATERIAL_FEE",
+    "interventionType": null,
     "materialItem": { "id": 45, "label": "Anchor 5.5mm", "referenceCode": "SN-001", "firm": { "id": 1, "name": "S&N" } },
     "unitPrice": "35.00",
+    "currency": "EUR",
+    "validFrom": null,
+    "validTo": null,
     "active": true
   }
 ]
@@ -1832,24 +1844,31 @@ Retourne toutes les règles (actives + inactives) pour la firme.
 ```json
 {
   "ruleType": "INTERVENTION_FEE",
-  "interventionCode": "LCA",
-  "unitPrice": 100
+  "interventionTypeId": 3,
+  "unitPrice": 100,
+  "currency": "EUR",
+  "validFrom": null,
+  "validTo": null
 }
 ```
 
-**Body JSON (IMPLANT_FEE) :**
+**Body JSON (MATERIAL_FEE) :**
 
 ```json
 {
-  "ruleType": "IMPLANT_FEE",
+  "ruleType": "MATERIAL_FEE",
   "materialItemId": 45,
   "unitPrice": 35
 }
 ```
 
 **Contraintes :**
-- `materialItem` doit appartenir à la même firme que la règle (`IMPLANT_FEE`)
-- `interventionCode` est sensible à la casse (matche `MissionIntervention.code` exactement)
+- `materialItem` doit appartenir à la même firme que la règle (`MATERIAL_FEE`)
+- `currency` : défaut `EUR` si omis
+- `validFrom`/`validTo` : nullables, `null` = borne ouverte (date au format `Y-m-d`)
+- `409` si la règle créée ou modifiée chevauche, en dates, une autre règle active déjà
+  posée sur la même cible (firme + type d'intervention, ou firme + matériel) — refus
+  bloquant, jamais un choix silencieux à la lecture (voir `PricingRuleResolver::hasOverlap()`)
 
 **Réponse — 201 :** PricingRule complète (même format que GET)
 
@@ -1860,11 +1879,12 @@ Retourne toutes les règles (actives + inactives) pour la firme.
 ```json
 {
   "unitPrice": 110,
+  "validTo": "2026-12-31",
   "active": false
 }
 ```
 
-**Réponse — 200 :** PricingRule mise à jour
+**Réponse — 200 :** PricingRule mise à jour (même contrôle anti-chevauchement que POST)
 
 #### `DELETE /api/firms/{id}/pricing-rules/{ruleId}`
 
@@ -3813,5 +3833,66 @@ Invalide (supprime) le refresh token correspondant en base. Idempotent : si le t
 ```
 
 **400** si `refresh_token` est manquant dans le corps de la requête.
+
+---
+
+## 30. Catalogue financier — types d'intervention, prestations firmes, règles tarifaires (Lot 1)
+
+Voir D-067 (`docs/decisions.md`) pour l'invariant central : les prestations et leurs matériels
+suggérés accélèrent la saisie mais ne sont **jamais** lus par le moteur financier.
+`MANAGER`/`ADMIN` uniquement pour toute mutation (voir `BillingVoter::MANAGE`).
+
+### `GET|POST /api/intervention-types`
+
+Référentiel médical fermé. `code` unique et immuable après création (aucun champ `code`
+dans le body de `PATCH`). `POST` : `{ code, label, specialty? }`.
+
+### `PATCH /api/intervention-types/{id}`
+
+`{ label?, specialty?, active? }` — jamais `code`.
+
+### `DELETE /api/intervention-types/{id}`
+
+`409` si référencé par une prestation ou une règle tarifaire (désactiver plutôt).
+
+### `GET|POST /api/firms/{firmId}/service-offerings`
+
+« Prestations » à l'écran (nom technique `FirmServiceOffering`). `POST` :
+`{ interventionTypeId, label? }`. `409` si une prestation existe déjà pour ce couple
+firme + type d'intervention (`UNIQUE(firm_id, intervention_type_id)`).
+
+### `PATCH /api/firms/{firmId}/service-offerings/{offeringId}`
+
+`{ label?, active? }`.
+
+### `POST /api/firms/{firmId}/service-offerings/{offeringId}/suggested-materials`
+
+`{ materialItemId }` — `422` si le matériel n'appartient pas à la même firme que la
+prestation (doublé par une contrainte FK composée en base, voir migration
+`Version20260716120000`).
+
+### `PATCH .../suggested-materials/reorder`
+
+`{ orderedIds: number[] }` — réordonnancement complet, pas de mise à jour partielle
+d'un seul `displayOrder`.
+
+### `DELETE .../suggested-materials/{suggestionId}`
+
+Suppression toujours physique — aucune incidence historique.
+
+### `GET|POST|PATCH|DELETE /api/firms/{firmId}/pricing-rules` (évolution)
+
+`ruleType`: `INTERVENTION_FEE` (nécessite `interventionTypeId`) ou `MATERIAL_FEE`
+(nécessite `materialItemId`, renommé depuis `IMPLANT_FEE` — `isImplant` n'a plus aucun
+rôle dans la décision de facturabilité). Nouveaux champs : `currency` (défaut `EUR`),
+`validFrom`/`validTo` (nullables, `null` = borne ouverte). `409` si la règle créée ou
+modifiée chevauche, en dates, une autre règle active déjà posée sur la même cible
+(refus bloquant, jamais un choix silencieux — voir `PricingRuleResolver`).
+
+### `PATCH /api/material-items/{id}` (évolution)
+
+Accepte désormais `active` (auparavant présent en base mais jamais exposé). Le
+changement de `firmId` est refusé (`409`) dès qu'une `MaterialLine` réelle référence ce
+matériel.
 
 ---
