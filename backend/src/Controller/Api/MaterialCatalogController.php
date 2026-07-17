@@ -5,8 +5,11 @@ namespace App\Controller\Api;
 use App\Dto\Request\MaterialItemFilter;
 use App\Entity\Firm;
 use App\Entity\MaterialItem;
+use App\Entity\MaterialLine;
+use App\Security\Voter\BillingVoter;
 use App\Service\MaterialCatalogService;
 use App\Service\MaterialItemMapper;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -110,6 +113,8 @@ final class MaterialCatalogController extends AbstractController
     #[Route(name: 'api_material_items_create', methods: ['POST'])]
     public function create(Request $request): JsonResponse
     {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
         $body   = json_decode($request->getContent(), true) ?? [];
         $firmId = $body['firmId'] ?? null;
         $label  = trim((string) ($body['label'] ?? ''));
@@ -135,7 +140,15 @@ final class MaterialCatalogController extends AbstractController
         $mi->setIsImplant((bool) ($body['isImplant'] ?? false));
 
         $this->em->persist($mi);
-        $this->em->flush();
+
+        try {
+            $this->em->flush();
+        } catch (UniqueConstraintViolationException) {
+            return $this->json(
+                ['message' => 'Une référence identique existe déjà pour cette firme.'],
+                Response::HTTP_CONFLICT
+            );
+        }
 
         return $this->json($this->mapper->toSlim($mi), Response::HTTP_CREATED);
     }
@@ -146,6 +159,8 @@ final class MaterialCatalogController extends AbstractController
     #[Route('/{id}', name: 'api_material_items_update', methods: ['PATCH'], requirements: ['id' => '\d+'])]
     public function update(int $id, Request $request): JsonResponse
     {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
         $mi = $this->em->getRepository(MaterialItem::class)->find($id);
         if (!$mi instanceof MaterialItem) {
             throw new NotFoundHttpException('Material item not found');
@@ -154,6 +169,22 @@ final class MaterialCatalogController extends AbstractController
         $body = json_decode($request->getContent(), true) ?? [];
 
         if (array_key_exists('firmId', $body)) {
+            // La firme d'un matériel devient immuable dès qu'une ligne de mission réelle
+            // le référence — sinon une ré-affectation silencieuse fausserait rétroactivement
+            // la firme d'un matériel déjà encodé mais pas encore facturé (docs/decisions.md).
+            $usageCount = (int) $this->em->getRepository(MaterialLine::class)
+                ->createQueryBuilder('ml')
+                ->select('COUNT(ml.id)')
+                ->andWhere('ml.item = :item')->setParameter('item', $mi)
+                ->getQuery()->getSingleScalarResult();
+
+            if ($usageCount > 0) {
+                return $this->json(
+                    ['message' => 'La firme de ce matériel ne peut plus être modifiée : il est déjà utilisé dans au moins une mission.'],
+                    Response::HTTP_CONFLICT
+                );
+            }
+
             $firm = $this->em->getRepository(Firm::class)->find((int) $body['firmId']);
             if (!$firm instanceof Firm) {
                 return $this->json(['message' => 'Firm not found'], Response::HTTP_UNPROCESSABLE_ENTITY);
@@ -185,7 +216,18 @@ final class MaterialCatalogController extends AbstractController
             $mi->setIsImplant((bool) $body['isImplant']);
         }
 
-        $this->em->flush();
+        if (array_key_exists('active', $body)) {
+            $mi->setActive((bool) $body['active']);
+        }
+
+        try {
+            $this->em->flush();
+        } catch (UniqueConstraintViolationException) {
+            return $this->json(
+                ['message' => 'Une référence identique existe déjà pour cette firme.'],
+                Response::HTTP_CONFLICT
+            );
+        }
 
         return $this->json($this->mapper->toSlim($mi));
     }

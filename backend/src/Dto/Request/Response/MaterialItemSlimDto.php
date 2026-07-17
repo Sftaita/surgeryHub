@@ -11,5 +11,6 @@ final class MaterialItemSlimDto
         public readonly string $label,
         public readonly string $unit,
         public readonly bool $isImplant,
+        public readonly bool $active,
     ) {}
 }

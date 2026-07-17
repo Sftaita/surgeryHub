@@ -7,6 +7,16 @@ use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
 
 #[ORM\Entity]
+#[ORM\Table(
+    name: 'material_item',
+    uniqueConstraints: [
+        // Compagne de la FK composée posée par la migration sur suggested_material
+        // (firm_id, material_item_id) -> material_item(firm_id, id) : nécessite un
+        // index unique sur (firm_id, id) en plus de celui, déjà unique seul, sur id.
+        new ORM\UniqueConstraint(name: 'uniq_material_item_firm_reference', columns: ['firm_id', 'reference_code']),
+        new ORM\UniqueConstraint(name: 'uniq_material_item_firm_id', columns: ['firm_id', 'id']),
+    ],
+)]
 #[ORM\HasLifecycleCallbacks]
 class MaterialItem
 {
@@ -19,7 +29,7 @@ class MaterialItem
     private ?int $id = null;
 
     #[ORM\ManyToOne]
-    #[ORM\JoinColumn(nullable: true)]
+    #[ORM\JoinColumn(nullable: false)]
     #[Groups(['mission:read', 'mission:read_manager'])]
     private ?Firm $firm = null;
 
@@ -65,7 +75,14 @@ class MaterialItem
         return $this->firm;
     }
 
-    public function setFirm(?Firm $firm): static
+    /**
+     * IMPORTANT : la firme d'un matériel devient immuable dès qu'une MaterialLine
+     * réelle le référence — ce n'est pas imposé ici (l'entité reste un simple setter)
+     * mais dans MaterialCatalogService::update(), seul point d'entrée applicatif.
+     * Voir docs/decisions.md — évite qu'une ré-affectation silencieuse ne fausse
+     * rétroactivement la firme d'un matériel déjà encodé mais pas encore facturé.
+     */
+    public function setFirm(Firm $firm): static
     {
         $this->firm = $firm;
         return $this;

@@ -27,6 +27,7 @@ final class MaterialItemMapper
             label: (string) $mi->getLabel(),
             unit: (string) $mi->getUnit(),
             isImplant: (bool) $mi->isImplant(),
+            active: (bool) $mi->isActive(),
         );
     }
 }
