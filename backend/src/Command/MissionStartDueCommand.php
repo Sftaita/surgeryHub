@@ -12,6 +12,7 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 
 /**
  * D-064: transitions ASSIGNED missions to IN_PROGRESS once their startAt has passed.
@@ -89,11 +90,25 @@ class MissionStartDueCommand extends Command
             return Command::SUCCESS;
         }
 
+        $started = 0;
+        $skipped = 0;
+
         foreach ($due as $mission) {
-            $this->missionPostDeployService->start($mission, $systemActor);
+            try {
+                $this->missionPostDeployService->start($mission, $systemActor);
+                $started++;
+            } catch (ConflictHttpException) {
+                // start()'s pessimistic lock re-check found the mission no longer
+                // ASSIGNED — an overlapping invocation of this same command already
+                // started it first. Not a real error: skip and keep processing the
+                // rest of this run's batch instead of aborting it entirely.
+                $skipped++;
+            }
         }
 
-        $io->success(sprintf('Started %d mission(s).', count($due)));
+        $io->success($skipped > 0
+            ? sprintf('Started %d mission(s), %d already started by a concurrent run.', $started, $skipped)
+            : sprintf('Started %d mission(s).', $started));
 
         return Command::SUCCESS;
     }

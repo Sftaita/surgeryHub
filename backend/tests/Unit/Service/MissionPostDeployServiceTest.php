@@ -841,11 +841,27 @@ final class MissionPostDeployServiceTest extends TestCase
 
     // ── start() — D-064, ASSIGNED → IN_PROGRESS (system-triggered) ─────────────
 
+    /**
+     * start() now wraps its body in $em->wrapInTransaction() + $em->lock() (same
+     * pattern as claim(), added to protect against two overlapping automated
+     * app:missions:start-due cron runs) — the mock must actually invoke the closure,
+     * exactly like the existing claim() tests below.
+     */
+    private function mockTransactionalLock(): void
+    {
+        $this->em->method('wrapInTransaction')
+            ->willReturnCallback(function (callable $fn) {
+                return $fn();
+            });
+        $this->em->method('lock');
+    }
+
     public function test_start_transitions_status_to_in_progress(): void
     {
         $mission = $this->makeMission(MissionStatus::ASSIGNED, $this->makeInstrumentist());
         $systemActor = $this->makeActor('Système', '');
 
+        $this->mockTransactionalLock();
         $this->em->expects($this->once())->method('flush');
 
         $this->service->start($mission, $systemActor);
@@ -858,6 +874,7 @@ final class MissionPostDeployServiceTest extends TestCase
         $mission = $this->makeMission(MissionStatus::ASSIGNED, $this->makeInstrumentist());
         $systemActor = $this->makeActor('Système', '');
 
+        $this->mockTransactionalLock();
         $this->em->method('flush');
 
         $this->audit->expects($this->once())->method('record')
@@ -876,6 +893,7 @@ final class MissionPostDeployServiceTest extends TestCase
         $mission = $this->makeMission(MissionStatus::ASSIGNED, $this->makeInstrumentist());
         $systemActor = $this->makeActor('Système', '');
 
+        $this->mockTransactionalLock();
         $this->em->method('flush');
         $this->bus->expects($this->never())->method('dispatch');
 
@@ -889,6 +907,7 @@ final class MissionPostDeployServiceTest extends TestCase
         $mission = $this->makeMission(MissionStatus::ASSIGNED, $this->makeInstrumentist());
         $systemActor = $this->makeActor('Système', '');
 
+        $this->mockTransactionalLock();
         $this->em->method('flush');
 
         $dispatched = null;
@@ -909,6 +928,7 @@ final class MissionPostDeployServiceTest extends TestCase
         $mission = $this->makeMission(MissionStatus::OPEN);
         $systemActor = $this->makeActor('Système', '');
 
+        $this->mockTransactionalLock();
         $this->expectException(ConflictHttpException::class);
         $this->expectExceptionMessage('Mission must be ASSIGNED to start');
 
@@ -920,6 +940,7 @@ final class MissionPostDeployServiceTest extends TestCase
         $mission = $this->makeMission(MissionStatus::IN_PROGRESS);
         $systemActor = $this->makeActor('Système', '');
 
+        $this->mockTransactionalLock();
         $this->expectException(ConflictHttpException::class);
 
         $this->service->start($mission, $systemActor);

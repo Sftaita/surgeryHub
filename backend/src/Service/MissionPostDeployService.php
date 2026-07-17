@@ -107,23 +107,38 @@ class MissionPostDeployService
      * $notify defaults to false: this is a silent, non-actionable status flip (purely
      * cosmetic today — it only drives the "En cours" pill on the instrumentist's
      * Aujourd'hui hero card) and not something worth emailing anyone about.
+     *
+     * Uses the same pessimistic write lock as claim() — MissionStartDueCommand is now
+     * run on an automated ~5min schedule (D-064), so two overlapping invocations (a slow
+     * previous run still in flight when the next tick fires) could otherwise both read
+     * the same mission as ASSIGNED before either commits, producing two MISSION_STARTED
+     * audit events for the same mission. The lock forces the second invocation to wait,
+     * then re-read the now-committed status and throw ConflictHttpException instead of
+     * double-recording — MissionStartDueCommand treats that as "already started by a
+     * concurrent run", not a real error.
      */
     public function start(Mission $mission, User $actor, bool $notify = false): void
     {
-        if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
-            throw new ConflictHttpException('Mission must be ASSIGNED to start');
-        }
+        $payload = null;
 
-        $mission->setStatus(MissionStatus::IN_PROGRESS);
+        $this->em->wrapInTransaction(function () use ($mission, $actor, &$payload): void {
+            $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
 
-        $payload = [
-            'actorId'   => $actor->getId(),
-            'actorName' => $this->displayName($actor),
-        ];
+            if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
+                throw new ConflictHttpException('Mission must be ASSIGNED to start');
+            }
 
-        $this->audit->record($mission, $actor, AuditEventType::MISSION_STARTED, $payload);
+            $mission->setStatus(MissionStatus::IN_PROGRESS);
 
-        $this->em->flush();  // R-05: flush before dispatch
+            $payload = [
+                'actorId'   => $actor->getId(),
+                'actorName' => $this->displayName($actor),
+            ];
+
+            $this->audit->record($mission, $actor, AuditEventType::MISSION_STARTED, $payload);
+
+            $this->em->flush();  // R-05: flush before dispatch
+        });
 
         if (!$notify) {
             return;
