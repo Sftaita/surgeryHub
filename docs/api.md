@@ -426,10 +426,17 @@ DECLARED → REJECTED
 
 **Inclut :**
 - `mission` (id, type, status, allowedActions)
-- `interventions` (voir §8 — `interventionType`/`primaryFirm` depuis Lot 5)
+- `interventions` (voir §8 — `interventionType`/`primaryFirm` depuis Lot 5,
+  `suggestedMaterials`/`coherence` depuis Lot 6)
 - `interventionTypeRequests` (Lot 5, D-068 — demandes `PENDING` uniquement, voir §23)
 - `materialLines`
 - `catalog` (`items`, `firms`, `interventionTypes` — actifs uniquement, Lot 5)
+
+> **Lot 6 — un seul aller-retour, jamais N+1 :** `suggestedMaterials`/`coherence` de
+> **toutes** les interventions de la mission sont calculés à partir d'une seule requête
+> supplémentaire groupée par couples `(interventionType, primaryFirm)` réellement
+> présents — jamais une requête par intervention (voir `MissionEncodingService::
+> loadSuggestedMaterialsByTypeAndFirm()`).
 
 > Fonctionne aussi pour les missions `DECLARED`.
 
@@ -496,6 +503,73 @@ DECLARED → REJECTED
 ### `DELETE /api/missions/{missionId}/interventions/{interventionId}`
 
 _(Inchangé.)_
+
+### Champs Lot 6 (D-069) dans chaque intervention de `GET .../encoding`
+
+```json
+{
+  "id": 88,
+  "code": "PTG", "label": "Prothèse totale de genou",
+  "interventionType": { "id": 12, "code": "PTG", "label": "Prothèse totale de genou" },
+  "primaryFirm": { "id": 4, "name": "Zimmer Biomet" },
+  "suggestedMaterials": [
+    { "id": 45, "firm": { "id": 4, "name": "Zimmer Biomet" }, "label": "Anchor suture 5.5mm", "referenceCode": "AR-1234", "unit": "pièce", "isImplant": false, "active": true }
+  ],
+  "coherence": {
+    "hasNoMaterialLines": false,
+    "unusedSuggestedMaterialItemIds": [45],
+    "unexpectedMaterialItemIds": [],
+    "materialLineIdsFromOtherFirm": []
+  }
+}
+```
+
+- `suggestedMaterials` : matériels suggérés par la prestation (`FirmServiceOffering`)
+  couvrant `(interventionType, primaryFirm)` — **vide** si `primaryFirm` n'est pas
+  défini ou si aucune prestation ne couvre ce couple (jamais une agrégation
+  ambiguë toutes firmes confondues).
+- `coherence` : signaux **informationnels, jamais bloquants** — préparent de futurs
+  contrôles qualité manager, l'UX des avertissements n'est pas de ce lot.
+  - `hasNoMaterialLines` : aucune ligne matériel sur cette intervention.
+  - `unusedSuggestedMaterialItemIds` : suggérés mais pas encore ajoutés.
+  - `unexpectedMaterialItemIds` : ajoutés mais absents de la liste suggérée (y compris
+    ceux d'une autre firme — ne pas être suggéré et venir d'ailleurs sont deux faits
+    distincts, tous deux vrais pour un même matériel).
+  - `materialLineIdsFromOtherFirm` : lignes dont la firme diffère de `primaryFirm`.
+
+### `GET /api/intervention-types/{id}/encoding-context` (Lot 6, D-069)
+
+**AuthZ :** Tout utilisateur authentifié (comme `GET /api/intervention-types`) — c'est
+l'instrumentiste, pas seulement le manager, qui en a besoin pendant l'encodage.
+
+Réponse riche renvoyée quand l'instrumentiste sélectionne un `InterventionType` :
+regroupe prestations, matériels suggérés et firme principale suggérée en un seul appel
+plutôt que d'enchaîner plusieurs requêtes pour ouvrir une intervention.
+
+**Réponse — 200 :**
+
+```json
+{
+  "interventionType": { "id": 12, "code": "PTG", "label": "Prothèse totale de genou" },
+  "suggestedPrimaryFirm": { "id": 4, "name": "Zimmer Biomet" },
+  "offerings": [
+    {
+      "offeringId": 7,
+      "firm": { "id": 4, "name": "Zimmer Biomet" },
+      "label": null,
+      "suggestedMaterials": [
+        { "id": 45, "firm": { "id": 4, "name": "Zimmer Biomet" }, "label": "Anchor suture 5.5mm", "referenceCode": "AR-1234", "unit": "pièce", "isImplant": false, "active": true }
+      ]
+    }
+  ]
+}
+```
+
+- `suggestedPrimaryFirm` : non nul **seulement** s'il existe exactement une prestation
+  active pour ce type (aucune ambiguïté à résoudre) — sinon `null`, et `offerings`
+  liste toutes les prestations actives pour que l'instrumentiste choisisse.
+- `offerings` : toutes les prestations actives pour ce type, chacune avec ses propres
+  matériels suggérés (jamais fusionnées entre firmes).
 
 ---
 
@@ -1338,18 +1412,22 @@ Si l'instrumentiste se crée lui-même un compte, un flux séparé devra exiger 
 
 ---
 
-### 19.2 `GET /api/material-items/quick-search?q=fiber`
+### 19.2 `GET /api/material-items/quick-search?q=fiber&firmId=4`
 
 **AuthZ :** Tous rôles authentifiés
 
-Autocomplete ultra-rapide (mobile-first, max 20 résultats).
+Autocomplete ultra-rapide (mobile-first, max 20 résultats). **Point d'entrée unique**
+de recherche matériel (Lot 6) — la logique de filtrage vit dans
+`MaterialCatalogService::quickSearch()`, jamais dupliquée. `firmId` (optionnel) scope
+la recherche à une firme déjà connue (ex : firme principale de l'intervention en cours
+d'encodage) plutôt que de filtrer côté client.
 
 **Réponse — 200 :**
 
 ```json
 {
   "items": [
-    { "id": 1, "firm": { "id": 1, "name": "Arthrex" }, "label": "FiberTape", "referenceCode": "AR-7234", "unit": "pièce", "isImplant": true }
+    { "id": 1, "firm": { "id": 1, "name": "Arthrex" }, "label": "FiberTape", "referenceCode": "AR-7234", "unit": "pièce", "isImplant": true, "active": true }
   ]
 }
 ```

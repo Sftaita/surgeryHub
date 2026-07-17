@@ -696,6 +696,48 @@ Manager → GET /api/intervention-type-requests?status=PENDING
         ou [Ignorer]              → POST /api/intervention-type-requests/{id}/ignore → status=IGNORED
 ```
 
+### Flux encodage intelligent — le catalogue pilote l'encodage (Lot 6, D-069)
+
+Toute l'intelligence (résolution de firme, matériels suggérés, signaux de cohérence)
+reste côté backend — le frontend affiche/sélectionne/valide, il ne recalcule rien.
+`suggestedMaterials`/`coherence` sont des champs **calculés à la lecture**, jamais
+persistés sur `MissionIntervention` (pas de colonne, pas de migration) : ils dérivent de
+`(interventionType, primaryFirm)` au moment de la requête, donc toujours à jour même si
+la configuration change entre deux lectures.
+
+```
+Instrumentiste → sélectionne un InterventionType
+              → GET /api/intervention-types/{id}/encoding-context
+                 → offerings actives (toutes firmes) + matériels suggérés par offering
+                 → suggestedPrimaryFirm non nul SEULEMENT si une seule offering active
+                   (aucune ambiguïté à deviner sinon)
+              → POST /api/missions/{id}/interventions (inchangé, Lot 5)
+
+GET /api/missions/{id}/encoding → chaque intervention porte désormais :
+  suggestedMaterials  = matériels de l'offering (interventionType, primaryFirm) de CETTE intervention
+  coherence           = { hasNoMaterialLines, unusedSuggestedMaterialItemIds,
+                           unexpectedMaterialItemIds, materialLineIdsFromOtherFirm }
+                         — informationnel uniquement, ne bloque jamais l'encodage ;
+                           prépare de futurs contrôles qualité manager (UX pas encore développée)
+
+Recherche matériel : un seul point d'entrée, GET /api/material-items/quick-search
+  (logique dans MaterialCatalogService::quickSearch(), plus de duplication) ; firmId
+  optionnel pour scoper à la firme principale déjà connue.
+
+Matériel introuvable : même principe que "demande de nouveau type" — jamais de
+  MaterialItem créé directement par l'instrumentiste (MaterialItemRequest, D-016,
+  déjà en place et vérifié inchangé par ce lot).
+```
+
+**Performance :** `suggestedMaterials`/`coherence` de toutes les interventions d'une
+mission sont résolus par **une seule requête groupée** sur les couples
+`(interventionType, primaryFirm)` réellement présents (`MissionEncodingService::
+loadSuggestedMaterialsByTypeAndFirm()`), jamais une requête par intervention.
+
+**Compatibilité :** une intervention pré-Lot 5 (`interventionType = null`, ex: mission
+#529) reçoit `suggestedMaterials: []` et un `coherence` toujours valide — jamais
+d'erreur, jamais de donnée devinée.
+
 ---
 
 ## 7. Flux planning
