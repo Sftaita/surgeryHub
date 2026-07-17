@@ -67,6 +67,14 @@ async function pickAutocomplete(user: ReturnType<typeof userEvent.setup>, labelT
 }
 
 describe("PostFormDialog — récurrence mensuelle (Batch 14C)", () => {
+  // Same reasoning as the third test below (see its comment for the profiling detail):
+  // 3 Autocomplete picks + 1 toggle click, each carrying a real ~90-175ms Popper/
+  // accessible-name cost in this dialog's DOM under CPU contention. Confirmed failing
+  // under full-suite load (5000ms default) even though this is the lightest of the
+  // three monthly-recurrence tests — full-suite contention here was heavier than the
+  // 6-10-busy-process scenario originally profiled (this run coincided with a ~3+
+  // minute backend PHPUnit suite on the same host). Same fix: an explicit, generous,
+  // justified timeout on this one test — not a global Vitest setting.
   it("désactive l'enregistrement tant qu'aucun jour de la semaine n'est sélectionné en mode mensuel", async () => {
     const user = userEvent.setup();
     renderDialog();
@@ -79,7 +87,7 @@ describe("PostFormDialog — récurrence mensuelle (Batch 14C)", () => {
     await user.click(screen.getByRole("button", { name: "Lundi" }));
 
     expect(screen.getByRole("button", { name: /Enregistrer le poste/i })).toBeDisabled();
-  });
+  }, 15000);
 
   it("désactive l'enregistrement tant qu'aucune occurrence (1er..5e) n'est sélectionnée en mode mensuel", async () => {
     const user = userEvent.setup();
@@ -94,7 +102,7 @@ describe("PostFormDialog — récurrence mensuelle (Batch 14C)", () => {
     await user.click(screen.getByRole("button", { name: "Jeudi" }));
 
     expect(screen.getByRole("button", { name: /Enregistrer le poste/i })).toBeDisabled();
-  });
+  }, 15000);
 
   // RC1-F: this test does 9 real userEvent interactions (3 MUI Autocomplete picks + 5 toggle
   // clicks + 1 submit) — roughly double test 1 (4) and test 2 (5) above. Profiling showed each
