@@ -301,6 +301,127 @@ synchronisés sur Google Drive. Voir [`docs/backup-and-restore.md`](backup-and-r
 
 ---
 
+## Tâche planifiée — démarrage automatique des missions (D-064)
+
+`app:missions:start-due` (`MissionStartDueCommand`) transitionne les missions
+`ASSIGNED` en `IN_PROGRESS` une fois leur `startAt` passé. Déployée avec
+`v2026.07.17-prod` mais sans planification (voir la limite documentée sur
+cette ligne du tableau de version) — activée le 2026-07-17 via **cron
+utilisateur `deploy`** (mécanisme déjà en place pour les sauvegardes, aucun
+timer systemd ni scheduler applicatif n'existait sur ce serveur).
+
+### Mécanisme
+
+| | |
+|---|---|
+| Planificateur | cron utilisateur `deploy` (pas de service dédié) |
+| Fréquence | toutes les 5 minutes (`*/5 * * * *`) |
+| Script | `/home/deploy/scripts/missions_start_due.sh` |
+| Commande exécutée | `docker compose exec -T php php bin/console app:missions:start-due --env=prod` |
+| Répertoire d'exécution | `/opt/stack/apps/surgicalhub` |
+| Journal | `/home/deploy/logs/missions-start-due.log` |
+| Verrou anti-chevauchement (shell) | `flock -n` sur `/home/deploy/locks/missions-start-due.lock` |
+| Verrou anti-concurrence (applicatif) | `MissionPostDeployService::start()` — verrou pessimiste Doctrine (`LockMode::PESSIMISTIC_WRITE`), même schéma que `claim()` |
+
+Entrée crontab (ajoutée après les 4 jobs de sauvegarde existants, jamais réécrits) :
+
+```
+# D-064 — Démarrage automatique des missions ASSIGNED échues (toutes les 5 min)
+*/5 * * * * /home/deploy/scripts/missions_start_due.sh >> /home/deploy/logs/missions-start-due.log 2>&1
+```
+
+Le script suit le style déjà établi par `backup_mysql.sh`
+(`docs/backup-and-restore.md`) : `set -uo pipefail` (pas de `-e` — le code de
+sortie de la commande Symfony est capturé et loggué explicitement plutôt que
+de faire quitter le script avant d'avoir pu logguer un échec), helper `log()`,
+vérification `docker inspect` que `surgicalhub-php` tourne avant d'agir, garde
+`flock -n` (`exec 200>"$LOCK"; flock -n 200 || exit 0`) qui fait sortir
+proprement (code 0, ligne `SKIP` logguée) une exécution qui chevaucherait la
+précédente encore en cours.
+
+### Double protection anti-concurrence
+
+Deux couches indépendantes, pour deux risques différents :
+
+1. **Shell (`flock`)** — empêche deux instances du *script cron* de tourner
+   en même temps (ex : un run lent encore actif quand le tick suivant arrive).
+2. **Applicatif (verrou pessimiste Doctrine)** — empêche deux *transitions
+   métier* concurrentes sur la même mission, même si le verrou shell était
+   contourné (exécution manuelle en parallèle du cron, par exemple). Avant
+   cette activation, `start()` n'avait aucune protection (contrairement à
+   `claim()`, déjà protégé après une course au double-claim déjà connue) —
+   corrigé par le commit `62898e9` (`fix(missions): prevent concurrent
+   automatic mission starts`), avec test d'intégration dédié
+   (`MissionStartDueConcurrencyTest`, preuve par timeout MySQL déterministe
+   `innodb_lock_wait_timeout`, jamais une course sur le timing). Sur conflit,
+   `start()` lève `ConflictHttpException` ; `MissionStartDueCommand` la
+   catche par mission et continue le lot plutôt que d'abandonner
+   l'exécution entière.
+
+### Anomalie trouvée et corrigée pendant l'activation — doublons de log sous cron
+
+Le premier tick automatique (18:00 UTC) a produit chaque ligne de log en
+double. Cause : le helper `log()` utilisait `tee -a "$LOG"` (écrit dans le
+fichier **et** sur stdout), et l'entrée crontab redirige elle-même
+stdout+stderr du script vers ce même fichier (`>> ... 2>&1`) — la sortie déjà
+tee-ée était donc réinjectée une seconde fois par cron. **Ce n'est pas une
+double exécution** : aucun chevauchement de process, un seul appel à la
+commande Symfony par tick, un seul événement métier. Confirmé pré-existant et
+non spécifique à ce script : le même motif produit déjà des lignes dupliquées
+dans `backup.log` pour les jobs de sauvegarde déclenchés par cron (ex.
+`rotate_backups.sh` à 04h00) — non corrigé ici, hors périmètre (scripts déjà
+déployés, non touchés par cette activation).
+
+**Correctif appliqué** (uniquement dans `missions_start_due.sh`, créé pendant
+cette activation — pas un script pré-existant) : `log()` écrit désormais
+directement dans le fichier (`>> "$LOG"`, sans `tee`), donc plus rien ne fuit
+sur stdout en fonctionnement normal ; la redirection `2>&1` de la crontab
+reste comme filet de sécurité pour un crash survenant avant que `log()` ne
+soit disponible. Revérifié par une invocation manuelle avec la redirection
+exacte de la crontab (`... >> missions-start-due.log 2>&1`) puis par deux
+cycles automatiques réels (18:05 et 18:10 UTC) — une seule ligne `Démarrage`
+et une seule ligne `OK — exit=0` par tick.
+
+### Vérification
+
+```bash
+# Dernières lignes du journal dédié
+tail -50 /home/deploy/logs/missions-start-due.log
+
+# Aucun chevauchement de process
+ps aux | grep missions:start-due
+
+# Erreurs Docker/Symfony récentes
+cd /opt/stack/apps/surgicalhub && docker compose logs --since=15m php worker | grep -iE 'error|critical|exception'
+
+# Entrée crontab active
+crontab -l | grep missions_start_due
+```
+
+### Désactivation
+
+```bash
+crontab -l | grep -v 'missions_start_due.sh' | crontab -
+crontab -l   # confirmer l'absence de la ligne, les 4 jobs de sauvegarde intacts
+```
+
+### Rollback de la planification
+
+Sauvegarde de la crontab prise avant modification :
+`/home/deploy/backups/cron/crontab_before_mission_start_20260717_175553.txt`
+(4 jobs de sauvegarde, aucune entrée D-064 — état d'avant activation).
+
+```bash
+crontab /home/deploy/backups/cron/crontab_before_mission_start_20260717_175553.txt
+crontab -l   # confirmer le retour à l'état d'origine
+```
+
+Le fix de concurrence applicatif (`62898e9`) n'est **pas** concerné par ce
+rollback — il reste en place indépendamment de la planification (protection
+utile même en exécution manuelle).
+
+---
+
 ## Rollback
 
 Le tag `*-prod` précédent (voir "Historique des versions déployées"
