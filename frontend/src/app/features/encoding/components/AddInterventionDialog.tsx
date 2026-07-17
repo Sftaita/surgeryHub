@@ -16,6 +16,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { CatalogFirm, CatalogInterventionType } from "../api/encoding.types";
+import { fetchInterventionTypeEncodingContext } from "../api/encoding.api";
 
 type Values = {
   interventionTypeId: number;
@@ -40,12 +41,30 @@ export default function AddInterventionDialog({
 }: Props) {
   const [type, setType] = React.useState<CatalogInterventionType | null>(null);
   const [firmId, setFirmId] = React.useState<number | "">("");
+  const [firmAutoSuggested, setFirmAutoSuggested] = React.useState(false);
 
   React.useEffect(() => {
     if (!open) return;
     setType(null);
     setFirmId("");
+    setFirmAutoSuggested(false);
   }, [open]);
+
+  // Lot 6 : dès qu'un type est choisi, le backend dit tout ce qu'il y a à savoir — si une
+  // seule prestation active existe pour ce type, sa firme est pré-sélectionnée (jamais
+  // devinée côté frontend). L'instrumentiste reste libre de la changer.
+  React.useEffect(() => {
+    if (!type) return;
+    let cancelled = false;
+    fetchInterventionTypeEncodingContext(type.id)
+      .then((ctx) => {
+        if (cancelled || !ctx.suggestedPrimaryFirm) return;
+        setFirmId(ctx.suggestedPrimaryFirm.id);
+        setFirmAutoSuggested(true);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [type]);
 
   const canSubmit = !!type && !loading;
 
@@ -108,6 +127,7 @@ export default function AddInterventionDialog({
               onChange={(e: SelectChangeEvent<string>) => {
                 const v = e.target.value;
                 setFirmId(v === "" ? "" : Number(v));
+                setFirmAutoSuggested(false);
               }}
             >
               <MenuItem value="">—</MenuItem>
@@ -116,6 +136,12 @@ export default function AddInterventionDialog({
               ))}
             </Select>
           </FormControl>
+
+          {firmAutoSuggested && (
+            <Typography variant="caption" color="text.secondary">
+              Firme suggérée automatiquement (seule prestation active pour ce type).
+            </Typography>
+          )}
         </Stack>
       </DialogContent>
 

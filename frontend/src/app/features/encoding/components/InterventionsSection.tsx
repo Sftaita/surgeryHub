@@ -458,6 +458,41 @@ export default function InterventionsSection({ missionId, canEdit, interventions
                     </Stack>
                   ))}
 
+                  {/* Matériels suggérés non encore ajoutés (Lot 6) — jamais obligatoires,
+                      un clic les ajoute directement (mêmes item/firme déjà connus, pas
+                      besoin de repasser par l'assistant 3 étapes). */}
+                  {canEdit && (itv.suggestedMaterials ?? [])
+                    .filter((sm) => (itv.coherence?.unusedSuggestedMaterialItemIds ?? []).includes(sm.id))
+                    .map((sm) => (
+                      <Stack
+                        key={`suggested-${sm.id}`}
+                        direction="row"
+                        spacing={1}
+                        alignItems="center"
+                        sx={{ py: "10px", borderTop: "1px dashed", borderColor: "grey.150" }}
+                      >
+                        <Stack sx={{ flex: 1, minWidth: 0 }}>
+                          <Typography variant="body2" noWrap>{sm.label}</Typography>
+                          <Typography variant="caption" color="text.secondary" noWrap>
+                            Suggéré — {sm.firm.name}
+                          </Typography>
+                        </Stack>
+                        <Box
+                          component="button"
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => createLineMutation.mutate({ missionInterventionId: itv.id, itemId: sm.id, quantity: "1" })}
+                          sx={{
+                            border: "1px solid", borderColor: GREEN_500, borderRadius: "999px", background: "#fff",
+                            color: GREEN_700, fontSize: 12, fontWeight: 700, px: "10px", py: "4px", cursor: "pointer",
+                            fontFamily: "inherit", flexShrink: 0, "&:hover": { background: GREEN_50 },
+                          }}
+                        >
+                          Ajouter
+                        </Box>
+                      </Stack>
+                    ))}
+
                   {lines.length === 0 && (itv.materialItemRequests ?? []).length === 0 && (
                     <Typography variant="body2" color="text.secondary" sx={{ py: "10px" }}>
                       Aucun matériel encodé

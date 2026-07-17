@@ -10,6 +10,7 @@ import type {
   CreateMaterialItemRequestBody,
   MaterialItemRequestDto,
   CreateInterventionTypeRequestBody,
+  InterventionTypeEncodingContext,
 } from "./encoding.types";
 
 export async function fetchMissionEncoding(
@@ -17,6 +18,20 @@ export async function fetchMissionEncoding(
 ): Promise<MissionEncodingResponse> {
   const { data } = await apiClient.get<MissionEncodingResponse>(
     `/api/missions/${missionId}/encoding`,
+  );
+  return data;
+}
+
+/**
+ * Lot 6 — contexte riche pour l'encodage : prestations, firme principale suggérée,
+ * matériels suggérés, en un seul appel quand l'instrumentiste sélectionne un type.
+ * GET /api/intervention-types/{id}/encoding-context
+ */
+export async function fetchInterventionTypeEncodingContext(
+  interventionTypeId: number,
+): Promise<InterventionTypeEncodingContext> {
+  const { data } = await apiClient.get<InterventionTypeEncodingContext>(
+    `/api/intervention-types/${interventionTypeId}/encoding-context`,
   );
   return data;
 }

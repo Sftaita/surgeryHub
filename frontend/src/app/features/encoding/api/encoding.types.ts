@@ -63,6 +63,18 @@ export type CatalogInterventionType = {
  * désactivé ailleurs. `interventionType` est `null` uniquement pour les lignes
  * historiques antérieures au Lot 5 (non mappées, ex: mission #529).
  */
+/**
+ * Lot 6 — signaux de cohérence, informationnels uniquement (jamais bloquants). L'UX des
+ * avertissements viendra plus tard ; ces champs existent pour que le backend puisse déjà
+ * les calculer et les exposer.
+ */
+export type MissionInterventionCoherence = {
+  hasNoMaterialLines: boolean;
+  unusedSuggestedMaterialItemIds: number[];
+  unexpectedMaterialItemIds: number[];
+  materialLineIdsFromOtherFirm: number[];
+};
+
 export type EncodingIntervention = {
   id: number;
   code: string;
@@ -72,6 +84,10 @@ export type EncodingIntervention = {
   primaryFirm: { id: number; name: string } | null;
   materialLines: EncodingMaterialLine[];
   materialItemRequests?: EncodingMaterialItemRequest[];
+  /** Matériels suggérés par la prestation (firme principale × type) — Lot 6. Vide si
+   *  primaryFirm n'est pas défini ou si aucune prestation ne couvre ce couple. */
+  suggestedMaterials: CatalogItem[];
+  coherence: MissionInterventionCoherence;
 };
 
 /** "Demande de nouveau type" (Lot 5, D-068) — pas rattachée à une intervention : elle
@@ -81,6 +97,25 @@ export type EncodingInterventionTypeRequest = {
   label: string;
   suggestedCode: string | null;
   comment: string | null;
+};
+
+/**
+ * Lot 6 — réponse riche de GET /api/intervention-types/{id}/encoding-context. Toute
+ * l'intelligence (firme suggérée, matériels suggérés par prestation) est calculée
+ * côté backend ; le frontend n'a qu'à afficher/sélectionner.
+ */
+export type FirmServiceOfferingEncodingContext = {
+  offeringId: number;
+  firm: CatalogFirm;
+  label: string | null;
+  suggestedMaterials: CatalogItem[];
+};
+
+export type InterventionTypeEncodingContext = {
+  interventionType: CatalogInterventionType;
+  /** Non nul seulement si une seule prestation active existe pour ce type (non ambigu). */
+  suggestedPrimaryFirm: CatalogFirm | null;
+  offerings: FirmServiceOfferingEncodingContext[];
 };
 
 export type MissionEncodingResponse = {
