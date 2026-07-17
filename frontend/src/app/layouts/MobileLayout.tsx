@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Box, Popover, useMediaQuery } from "@mui/material";
+import type { SxProps, Theme } from "@mui/material";
 
 import { useQuery } from "@tanstack/react-query";
 import { usePushNotifications } from "../features/push/usePushNotifications";
@@ -189,6 +190,7 @@ function BrandBand({
   waveKick,
   title,
   subtitle,
+  titleKey,
   initials,
   hasUnread,
   onBell,
@@ -199,6 +201,8 @@ function BrandBand({
   waveKick: boolean;
   title: string;
   subtitle: string;
+  /** Changes on every navigation — forces shTitleA/B to replay (docs/design/animations §2). */
+  titleKey: string;
   initials: string;
   hasUnread: boolean;
   onBell: () => void;
@@ -250,6 +254,7 @@ function BrandBand({
               justifyContent: "center",
               transition: "background 150ms",
               "&:hover": { background: "rgba(255,255,255,.2)" },
+              "&:active": { transform: "scale(.96)" },
             }}
           >
             <BellIcon />
@@ -284,16 +289,31 @@ function BrandBand({
               fontSize: 13,
               fontWeight: 800,
               cursor: "pointer",
+              "&:active": { transform: "scale(.96)" },
             }}
           >
             {initials}
           </Box>
         </Box>
-        <Box sx={{ mt: "18px", position: "relative" }}>
-          <Box component="h1" sx={{ m: 0, fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em", color: "#fff" }}>
+        <Box key={titleKey} sx={{ mt: "18px", position: "relative" }}>
+          <Box
+            component="h1"
+            sx={{
+              m: 0, fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em", color: "#fff",
+              animation: "shTitleA 450ms cubic-bezier(.22,1,.36,1) both",
+              "@keyframes shTitleA": { from: { opacity: 0, transform: "translateY(10px)" }, to: { opacity: 1, transform: "none" } },
+            }}
+          >
             {title}
           </Box>
-          <Box component="p" sx={{ m: "6px 0 0", fontSize: 14.5, color: GREEN_300, fontVariantNumeric: "tabular-nums" }}>
+          <Box
+            component="p"
+            sx={{
+              m: "6px 0 0", fontSize: 14.5, color: GREEN_300, fontVariantNumeric: "tabular-nums",
+              animation: "shTitleB 450ms cubic-bezier(.22,1,.36,1) 80ms both",
+              "@keyframes shTitleB": { from: { opacity: 0, transform: "translateY(10px)" }, to: { opacity: 1, transform: "none" } },
+            }}
+          >
             {subtitle}
           </Box>
         </Box>
@@ -324,7 +344,7 @@ function DesktopSidebar({
   onNotifications: () => void;
   onProfile: () => void;
 }) {
-  const railItem = (active: boolean): React.CSSProperties => ({
+  const railItem = (active: boolean): SxProps<Theme> => ({
     display: "flex",
     alignItems: "center",
     gap: 12,
@@ -341,11 +361,12 @@ function DesktopSidebar({
     background: active ? GREEN_50 : "transparent",
     color: active ? GREEN_800 : GRAY_600,
     fontWeight: active ? 800 : 600,
+    "&:active": { transform: "translateY(0.5px)" },
   });
 
   // "Idle" rail items (Messages/Notifications/Profil) — never highlighted as an
   // active tab, only a hover background, per handoff (ri.idle style).
-  const idleItem: React.CSSProperties = {
+  const idleItem: SxProps<Theme> = {
     display: "flex",
     alignItems: "center",
     gap: 12,
@@ -362,6 +383,7 @@ function DesktopSidebar({
     background: "transparent",
     color: GRAY_600,
     fontWeight: 600,
+    "&:active": { transform: "translateY(0.5px)" },
   };
 
   const name = `${firstname ?? ""} ${lastname ?? ""}`.trim() || "Instrumentiste";
@@ -452,6 +474,7 @@ function DesktopSidebar({
           width: "100%",
           transition: "background 150ms",
           "&:hover": { background: GRAY_75 },
+          "&:active": { transform: "translateY(0.5px)" },
         }}
       >
         <Box sx={{ width: 38, height: 38, borderRadius: "999px", background: GREEN_100, color: GREEN_800, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, flexShrink: 0 }}>
@@ -523,6 +546,7 @@ function MobileBottomNav({
               color: active ? "#fff" : GRAY_500,
               fontWeight: active ? 700 : 600,
               boxShadow: active ? "0 5px 14px rgba(20,77,56,.4)" : "none",
+              "&:active": { transform: "scale(.96)" },
             }}
           >
             <Box sx={{ position: "relative", display: "flex" }}>
@@ -591,6 +615,7 @@ function AccountMenu({
     fontSize: 14,
     fontWeight: 600,
     textAlign: "left" as const,
+    "&:active": { transform: "translateY(0.5px)" },
   };
 
   return (
@@ -815,6 +840,7 @@ export function MobileLayout() {
             waveKick={waveKick}
             title={title}
             subtitle={subtitle}
+            titleKey={pathname}
             initials={initialsOf(firstname, lastname)}
             hasUnread={!!badgeLabel}
             onBell={() => navigate("/app/i/notifications")}
