@@ -35,10 +35,10 @@ const ORTHO_SPECIALTIES = [
   { value: "PIED",   label: "Pied" },
 ];
 import {
-  buildProfilePictureUrl,
   getEmploymentTypeLabel,
   normalizeRateValue,
 } from "../utils/instrumentists.utils";
+import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 
 type InstrumentistDrawerProps = {
   open: boolean;
@@ -211,7 +211,7 @@ export function InstrumentistDrawer({
                       <Stack direction="row" spacing={2} alignItems="center">
                         <PersonAvatar
                           name={headerDisplayName}
-                          photoUrl={buildProfilePictureUrl(instrumentist.profilePicturePath)}
+                          photoUrl={resolveApiAssetUrl(instrumentist.profilePicturePath)}
                           size="lg"
                         />
                         <Stack spacing={0.25}>

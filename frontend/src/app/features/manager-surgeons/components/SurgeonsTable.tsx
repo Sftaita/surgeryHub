@@ -14,7 +14,7 @@ import {
 import { getSurgeons } from "../api/surgeons.api";
 import type { SurgeonListItemDTO } from "../api/surgeons.types";
 import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
-import { buildProfilePictureUrl } from "../../manager-instrumentists/utils/instrumentists.utils";
+import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 
 function buildDisplayName(row: SurgeonListItemDTO): string {
   if (row.displayName && row.displayName.trim() !== "") {
@@ -81,7 +81,7 @@ export function SurgeonsTable({ onOpenSurgeon }: SurgeonsTableProps) {
             <Stack direction="row" spacing={1.25} alignItems="center" sx={{ py: 0.5 }}>
               <PersonAvatar
                 name={name}
-                photoUrl={buildProfilePictureUrl(row.profilePicturePath)}
+                photoUrl={resolveApiAssetUrl(row.profilePicturePath)}
                 size="sm"
               />
               <Stack spacing={0} sx={{ minWidth: 0 }}>

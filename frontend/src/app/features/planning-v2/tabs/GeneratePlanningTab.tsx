@@ -37,7 +37,7 @@ import { useToast } from "../../../ui/toast/useToast";
 import { SearchableSelect, type SearchableOption } from "../components/SearchableSelect";
 import { Inspector, type NewMissionDraft } from "../components/Inspector";
 import { PersonAvatar, EmptyAvatar } from "../../../ui/avatar/PersonAvatar";
-import { buildProfilePictureUrl } from "../../manager-instrumentists/utils/instrumentists.utils";
+import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 import { apiClient } from "../../../api/apiClient";
 
@@ -125,7 +125,7 @@ export function GeneratePlanningTab() {
   });
   const instrumentists = instrumentistsQuery.data ?? [];
   const instrumentistOptions: SearchableOption[] = instrumentists.map((i) => ({
-    id: i.id, label: i.displayName, avatarUrl: buildProfilePictureUrl(i.profilePicturePath) ?? null,
+    id: i.id, label: i.displayName, avatarUrl: resolveApiAssetUrl(i.profilePicturePath) ?? null,
   }));
 
   // Absences/reassignment annotations for the line currently selected in the inspector are
@@ -135,7 +135,7 @@ export function GeneratePlanningTab() {
   const groupsQuery = useQuery({ queryKey: ["planning-v2", "site-groups"], queryFn: getSiteGroups });
   const surgeonsQuery = useQuery({ queryKey: ["surgeons-all"], queryFn: () => getSurgeons({ active: true }), staleTime: 5 * 60_000 });
   const surgeonOptions: SearchableOption[] = (surgeonsQuery.data?.items ?? []).map((s) => ({
-    id: s.id, label: s.displayName, avatarUrl: buildProfilePictureUrl(s.profilePicturePath) ?? null,
+    id: s.id, label: s.displayName, avatarUrl: resolveApiAssetUrl(s.profilePicturePath) ?? null,
   }));
   const siteOptionsForCreate: SearchableOption[] = (sitesQuery.data ?? []).map((s) => ({ id: s.id, label: s.name }));
 

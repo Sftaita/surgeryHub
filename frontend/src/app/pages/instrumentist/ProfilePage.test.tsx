@@ -84,7 +84,7 @@ afterEach(() => {
 });
 
 describe("ProfilePage — photo de profil", () => {
-  it("résout l'URL de la photo via buildProfilePictureUrl (régression du bug d'URL relative)", async () => {
+  it("résout l'URL de la photo via resolveApiAssetUrl (régression du bug d'URL relative)", async () => {
     renderPage();
 
     const avatarImg = await screen.findByRole("img", { name: "Jane Doe" });

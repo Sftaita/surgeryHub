@@ -18,7 +18,7 @@ import { SurgeonPlanningSection } from "./SurgeonPlanningSection";
 import { UserEmailEditor } from "../../manager-instrumentists/components/UserEmailEditor";
 import ConfirmDeleteDialog from "../../encoding/components/ConfirmDeleteDialog";
 import { useSurgeonDrawer } from "../hooks/useSurgeonDrawer";
-import { buildProfilePictureUrl } from "../../manager-instrumentists/utils/instrumentists.utils";
+import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 import type { SurgeonProfileDTO } from "../api/surgeons.types";
 
@@ -160,7 +160,7 @@ export function SurgeonDrawer({
                       <Stack direction="row" spacing={2} alignItems="center">
                         <PersonAvatar
                           name={headerDisplayName}
-                          photoUrl={buildProfilePictureUrl(surgeon.profilePicturePath)}
+                          photoUrl={resolveApiAssetUrl(surgeon.profilePicturePath)}
                           size="lg"
                         />
                         <Stack spacing={0.25}>

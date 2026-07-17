@@ -20,7 +20,7 @@ import type {
 } from "../api/instrumentists.types";
 import type { InstrumentistsListQuery } from "../api/instrumentists.requests";
 import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
-import { buildProfilePictureUrl } from "../utils/instrumentists.utils";
+import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 
 function buildDisplayName(row: InstrumentistListItemDTO): string {
   if (row.displayName && row.displayName.trim() !== "") {
@@ -111,7 +111,7 @@ export function InstrumentistsTable({
             <Stack direction="row" spacing={1.25} alignItems="center" sx={{ py: 0.5 }}>
               <PersonAvatar
                 name={name}
-                photoUrl={buildProfilePictureUrl(row.profilePicturePath)}
+                photoUrl={resolveApiAssetUrl(row.profilePicturePath)}
                 size="sm"
               />
               <Stack spacing={0} sx={{ minWidth: 0 }}>

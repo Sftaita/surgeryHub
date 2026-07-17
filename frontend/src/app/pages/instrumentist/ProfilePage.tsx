@@ -8,7 +8,7 @@ import { uploadProfilePicture } from "../../features/me/api/me.api";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../../ui/toast/useToast";
 import { AvatarUploader } from "../../ui/avatar/AvatarUploader";
-import { buildProfilePictureUrl } from "../../features/manager-instrumentists/utils/instrumentists.utils";
+import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 
 const ORTHO_SPECIALTIES = [
   { value: "EPAULE", label: "Épaule" },
@@ -83,7 +83,7 @@ export default function ProfilePage() {
         <Stack direction="row" spacing={2} alignItems="center">
           <AvatarUploader
             name={displayName}
-            photoUrl={buildProfilePictureUrl(profile?.profilePicturePath)}
+            photoUrl={resolveApiAssetUrl(profile?.profilePicturePath)}
             size="lg"
             onFileReady={async (file) => { await photoMutation.mutateAsync(file); }}
           />

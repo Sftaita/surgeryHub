@@ -12,6 +12,7 @@ import BusinessIcon     from "@mui/icons-material/Business";
 import PhotoCameraIcon  from "@mui/icons-material/PhotoCamera";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../../api/apiClient";
+import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { useToast } from "../../ui/toast/useToast";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -39,9 +40,6 @@ function extractError(err: unknown): string {
   return e?.response?.data?.error?.message ?? e?.message ?? "Erreur inconnue";
 }
 
-function photoUrl(path: string | null): string | null {
-  return path ?? null;
-}
 
 // ── Timezones ──────────────────────────────────────────────────────────────────
 const TIMEZONES = [
@@ -115,7 +113,7 @@ export default function HospitalsPage() {
     setEditing(h);
     setForm({ name: h.name, address: h.address ?? "", timezone: h.timezone });
     setPendingPhoto(null);
-    setPendingPhotoUrl(photoUrl(h.photoPath));
+    setPendingPhotoUrl(resolveApiAssetUrl(h.photoPath) ?? null);
     setDialogOpen(true);
   }
   function closeDialog() {
@@ -184,7 +182,7 @@ export default function HospitalsPage() {
             </TableHead>
             <TableBody>
               {sites.map((h) => {
-                const url = photoUrl(h.photoPath);
+                const url = resolveApiAssetUrl(h.photoPath) ?? null;
                 return (
                   <TableRow key={h.id} hover sx={{ "&:last-child td": { borderBottom: 0 } }}>
                     <TableCell>
