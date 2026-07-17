@@ -65,6 +65,46 @@ final class MaterialCatalogService
     }
 
     /**
+     * Lot 6 — point d'entrée unique de recherche rapide (autocomplete instrumentiste),
+     * consolidé depuis MaterialCatalogController::quickSearch() pour qu'il n'existe
+     * qu'une seule implémentation de la logique de filtrage matériel, réutilisable
+     * partout (encodage, suggestions). `firmId` permet de scoper la recherche à la
+     * firme principale déjà connue d'une intervention plutôt que de filtrer côté client.
+     *
+     * @return list<MaterialItem>
+     */
+    public function quickSearch(string $q, ?int $firmId = null, int $limit = 20): array
+    {
+        if ($q === '') {
+            return [];
+        }
+
+        $limit = min(20, max(1, $limit));
+
+        $qb = $this->em->getRepository(MaterialItem::class)->createQueryBuilder('mi');
+
+        $qb
+            ->andWhere('mi.active = true')
+            ->andWhere(
+                '(mi.referenceCode = :exact
+                  OR LOWER(mi.referenceCode) LIKE :like
+                  OR LOWER(mi.label) LIKE :like)'
+            )
+            ->setParameter('exact', $q)
+            ->setParameter('like', '%' . mb_strtolower($q) . '%')
+            ->addOrderBy('CASE WHEN mi.referenceCode = :exact THEN 0 ELSE 1 END', 'ASC')
+            ->addOrderBy('mi.label', 'ASC')
+            ->setMaxResults($limit);
+
+        if ($firmId !== null) {
+            $qb->leftJoin('mi.firm', 'f')
+                ->andWhere('f.id = :firmId')->setParameter('firmId', $firmId);
+        }
+
+        return $qb->getQuery()->getResult();
+    }
+
+    /**
      * Catalog “embarqué” pour l’encodage : firms actives + items actifs.
      * Pas de logique métier côté frontend : tout est livré prêt à consommer.
      *

@@ -6,6 +6,7 @@ use App\Entity\FirmServiceOffering;
 use App\Entity\InterventionType;
 use App\Entity\PricingRule;
 use App\Security\Voter\BillingVoter;
+use App\Service\InterventionEncodingContextService;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -22,7 +23,10 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route('/api/intervention-types')]
 final class InterventionTypeController extends AbstractController
 {
-    public function __construct(private readonly EntityManagerInterface $em) {}
+    public function __construct(
+        private readonly EntityManagerInterface $em,
+        private readonly InterventionEncodingContextService $encodingContextService,
+    ) {}
 
     #[Route('', name: 'api_intervention_types_list', methods: ['GET'])]
     public function list(Request $request): JsonResponse
@@ -68,6 +72,23 @@ final class InterventionTypeController extends AbstractController
         }
 
         return $this->json($this->serialize($type), Response::HTTP_CREATED);
+    }
+
+    /**
+     * Lot 6 — réponse riche pour l'encodage : évite d'enchaîner GET prestations +
+     * matériels suggérés + résolution de firme en plusieurs appels quand l'instrumentiste
+     * sélectionne un type. Ouvert à tout utilisateur authentifié (comme list()) — c'est
+     * l'instrumentiste, pas seulement le manager, qui en a besoin pendant l'encodage.
+     */
+    #[Route('/{id}/encoding-context', name: 'api_intervention_types_encoding_context', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function encodingContext(int $id): JsonResponse
+    {
+        $type = $this->getTypeOr404($id);
+        if ($type instanceof JsonResponse) {
+            return $type;
+        }
+
+        return $this->json($this->encodingContextService->buildContext($type));
     }
 
     /**

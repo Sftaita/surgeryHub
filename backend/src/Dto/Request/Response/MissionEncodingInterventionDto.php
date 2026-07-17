@@ -7,6 +7,9 @@ final class MissionEncodingInterventionDto
     /**
      * @param MissionEncodingMaterialLineDto[] $materialLines
      * @param MissionEncodingMaterialItemRequestDto[] $materialItemRequests
+     * @param MaterialItemSlimDto[] $suggestedMaterials matériels suggérés par la
+     *        prestation (firme principale × type) — vide si `primaryFirm` n'est pas
+     *        défini ou si aucune prestation ne couvre ce couple (Lot 6)
      *
      * `code`/`label` restent l'instantané figé à la création (voir MissionIntervention) —
      * inchangés même si `interventionType` est ensuite renommé/désactivé. `interventionType`
@@ -21,5 +24,7 @@ final class MissionEncodingInterventionDto
         public readonly ?FirmSlimDto $primaryFirm,
         public readonly array $materialLines,
         public readonly array $materialItemRequests,
+        public readonly array $suggestedMaterials,
+        public readonly MissionInterventionCoherenceDto $coherence,
     ) {}
 }

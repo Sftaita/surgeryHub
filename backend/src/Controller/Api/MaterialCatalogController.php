@@ -55,34 +55,22 @@ final class MaterialCatalogController extends AbstractController
     }
 
     /**
-     * GET /api/material-items/quick-search?q=abc
+     * GET /api/material-items/quick-search?q=abc&firmId=4
+     *
+     * Point d'entrée unique de recherche rapide (Lot 6) — logique déléguée à
+     * MaterialCatalogService::quickSearch(), jamais dupliquée ici. `firmId` optionnel
+     * scope la recherche à une firme déjà connue (ex : firme principale de
+     * l'intervention en cours d'encodage).
      */
     #[Route('/quick-search', name: 'api_material_items_quick_search', methods: ['GET'])]
     public function quickSearch(Request $request): JsonResponse
     {
         $q = trim((string) $request->query->get('q', ''));
-        if ($q === '') {
-            return $this->json(['items' => []]);
-        }
+        $limit = (int) $request->query->get('limit', 20);
+        $firmIdParam = $request->query->get('firmId');
+        $firmId = $firmIdParam !== null ? (int) $firmIdParam : null;
 
-        $limit = min(20, max(1, (int) $request->query->get('limit', 20)));
-
-        $qb = $this->em->getRepository(MaterialItem::class)->createQueryBuilder('mi');
-
-        $qb
-            ->andWhere('mi.active = true')
-            ->andWhere(
-                '(mi.referenceCode = :exact
-                  OR LOWER(mi.referenceCode) LIKE :like
-                  OR LOWER(mi.label) LIKE :like)'
-            )
-            ->setParameter('exact', $q)
-            ->setParameter('like', '%' . mb_strtolower($q) . '%')
-            ->addOrderBy('CASE WHEN mi.referenceCode = :exact THEN 0 ELSE 1 END', 'ASC')
-            ->addOrderBy('mi.label', 'ASC')
-            ->setMaxResults($limit);
-
-        $items = $qb->getQuery()->getResult();
+        $items = $this->catalog->quickSearch($q, $firmId, $limit);
 
         return $this->json([
             'items' => array_map(

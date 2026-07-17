@@ -11,6 +11,7 @@ use App\Dto\Request\Response\MissionEncodingInterventionTypeRequestDto;
 use App\Dto\Request\Response\MissionEncodingMaterialItemRequestDto;
 use App\Dto\Request\Response\MissionEncodingMaterialLineDto;
 use App\Entity\Firm;
+use App\Entity\FirmServiceOffering;
 use App\Entity\InterventionType;
 use App\Entity\InterventionTypeRequest;
 use App\Entity\MaterialItem;
@@ -28,15 +29,22 @@ final class MissionEncodingService
         private readonly MaterialCatalogService $catalogService,
         private readonly MaterialItemMapper $itemMapper,
         private readonly MissionActionsService $actionsService,
+        private readonly MissionInterventionCoherenceService $coherenceService,
     ) {}
 
     public function buildEncodingDto(Mission $mission, User $viewer): MissionEncodingDto
     {
         $mission = $this->reloadForEncoding((int) ($mission->getId() ?? 0));
 
+        // Lot 6 — un seul aller-retour DB pour les matériels suggérés de TOUTES les
+        // interventions de cette mission (pas une requête par intervention) : on
+        // rassemble d'abord les couples (interventionType, primaryFirm) réellement
+        // présents, puis on charge en une fois les FirmServiceOffering correspondantes.
+        $suggestedMaterialsByPair = $this->loadSuggestedMaterialsByTypeAndFirm($mission->getInterventions());
+
         $interventions = [];
         foreach ($mission->getInterventions() as $intervention) {
-            $interventions[] = $this->mapIntervention($mission, $intervention);
+            $interventions[] = $this->mapIntervention($mission, $intervention, $suggestedMaterialsByPair);
         }
 
         usort(
@@ -140,14 +148,74 @@ final class MissionEncodingService
         return $mission;
     }
 
-    private function mapIntervention(Mission $mission, MissionIntervention $i): MissionEncodingInterventionDto
+    /**
+     * @param iterable<MissionIntervention> $interventions
+     * @return array<string, list<\App\Dto\Request\Response\MaterialItemSlimDto>> matériels
+     *         suggérés, clé "typeId:firmId"
+     */
+    private function loadSuggestedMaterialsByTypeAndFirm(iterable $interventions): array
+    {
+        $typeIds = [];
+        $firmIds = [];
+        foreach ($interventions as $i) {
+            $type = $i->getInterventionType();
+            $firm = $i->getPrimaryFirm();
+            if ($type !== null && $firm !== null) {
+                $typeIds[] = $type->getId();
+                $firmIds[] = $firm->getId();
+            }
+        }
+
+        if (empty($typeIds)) {
+            return [];
+        }
+
+        // Alias "of" évité volontairement : c'est un token réservé par le parseur DQL
+        // (erreur de syntaxe "Expected ... got 'of'") — d'où "off" ci-dessous.
+        $offerings = $this->em->createQueryBuilder()
+            ->select('o')
+            ->from(FirmServiceOffering::class, 'o')
+            ->leftJoin('o.interventionType', 'ot')->addSelect('ot')
+            ->leftJoin('o.firm', 'off')->addSelect('off')
+            ->leftJoin('o.suggestedMaterials', 'sm')->addSelect('sm')
+            ->leftJoin('sm.materialItem', 'mi')->addSelect('mi')
+            ->leftJoin('mi.firm', 'mif')->addSelect('mif')
+            ->andWhere('ot.id IN (:types)')->setParameter('types', array_unique($typeIds))
+            ->andWhere('off.id IN (:firms)')->setParameter('firms', array_unique($firmIds))
+            ->andWhere('o.active = true')
+            ->getQuery()
+            ->getResult();
+
+        $map = [];
+        /** @var FirmServiceOffering $o */
+        foreach ($offerings as $o) {
+            $key = $o->getInterventionType()->getId() . ':' . $o->getFirm()->getId();
+            $items = [];
+            foreach ($o->getSuggestedMaterials() as $sm) {
+                $item = $sm->getMaterialItem();
+                if ($item !== null && $item->isActive()) {
+                    $items[] = $this->itemMapper->toSlim($item);
+                }
+            }
+            $map[$key] = $items;
+        }
+
+        return $map;
+    }
+
+    /**
+     * @param array<string, list<\App\Dto\Request\Response\MaterialItemSlimDto>> $suggestedMaterialsByPair
+     */
+    private function mapIntervention(Mission $mission, MissionIntervention $i, array $suggestedMaterialsByPair = []): MissionEncodingInterventionDto
     {
         $lines = [];
+        $rawLines = [];
         foreach ($mission->getMaterialLines() as $line) {
             if ($line->getMissionIntervention()?->getId() !== $i->getId()) {
                 continue;
             }
             $lines[] = $this->mapMaterialLine($line);
+            $rawLines[] = $line;
         }
 
         usort(
@@ -184,6 +252,15 @@ final class MissionEncodingService
             name: (string) $primaryFirm->getName(),
         ) : null;
 
+        $suggestedMaterials = [];
+        if ($type !== null && $primaryFirm !== null) {
+            $key = $type->getId() . ':' . $primaryFirm->getId();
+            $suggestedMaterials = $suggestedMaterialsByPair[$key] ?? [];
+        }
+        $suggestedMaterialItemIds = array_map(static fn ($m) => $m->id, $suggestedMaterials);
+
+        $coherence = $this->coherenceService->analyze($i, $rawLines, $suggestedMaterialItemIds);
+
         return new MissionEncodingInterventionDto(
             id: (int) $i->getId(),
             code: (string) $i->getCode(),
@@ -193,6 +270,8 @@ final class MissionEncodingService
             primaryFirm: $primaryFirmDto,
             materialLines: $lines,
             materialItemRequests: $requests,
+            suggestedMaterials: $suggestedMaterials,
+            coherence: $coherence,
         );
     }
 
