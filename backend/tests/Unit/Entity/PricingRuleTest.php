@@ -38,18 +38,21 @@ final class PricingRuleTest extends TestCase
 
     public function testCoversDateRespectsValidToBoundary(): void
     {
+        // D-072 : validTo EXCLUSIF — le jour validTo lui-même n'est déjà plus couvert.
         $rule = $this->makeRule(null, '2026-12-31');
-        self::assertTrue($rule->coversDate(new \DateTimeImmutable('2026-12-31')));
+        self::assertTrue($rule->coversDate(new \DateTimeImmutable('2026-12-30')));
+        self::assertFalse($rule->coversDate(new \DateTimeImmutable('2026-12-31')));
         self::assertFalse($rule->coversDate(new \DateTimeImmutable('2027-01-01')));
     }
 
     public function testCoversDateExactBoundaries(): void
     {
+        // D-072 : validFrom INCLUSIF, validTo EXCLUSIF.
         $rule = $this->makeRule('2026-01-01', '2026-12-31');
         self::assertTrue($rule->coversDate(new \DateTimeImmutable('2026-01-01')));
-        self::assertTrue($rule->coversDate(new \DateTimeImmutable('2026-12-31')));
+        self::assertTrue($rule->coversDate(new \DateTimeImmutable('2026-12-30')));
+        self::assertFalse($rule->coversDate(new \DateTimeImmutable('2026-12-31')));
         self::assertFalse($rule->coversDate(new \DateTimeImmutable('2025-12-31')));
-        self::assertFalse($rule->coversDate(new \DateTimeImmutable('2027-01-01')));
     }
 
     // ── overlapsWith ────────────────────────────────────────────────
@@ -77,11 +80,14 @@ final class PricingRuleTest extends TestCase
         self::assertTrue($a->overlapsWith($b));
     }
 
-    public function testAdjacentPeriodsSameDayOverlap(): void
+    public function testAdjacentPeriodsTouchingBoundaryDoNotOverlap(): void
     {
-        // Bornes inclusives des deux côtés : le même jour dans les deux fenêtres = chevauchement.
+        // D-072 : validTo EXCLUSIF — deux périodes qui se touchent exactement à la même
+        // date (a.validTo === b.validFrom) ne se chevauchent jamais ; c'est exactement
+        // le résultat produit par PricingRuleVersioningService::replaceCurrentRuleFrom().
         $a = $this->makeRule(null, '2026-12-31');
         $b = $this->makeRule('2026-12-31', null);
-        self::assertTrue($a->overlapsWith($b));
+        self::assertFalse($a->overlapsWith($b));
+        self::assertFalse($b->overlapsWith($a));
     }
 }

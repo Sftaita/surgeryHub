@@ -59,6 +59,8 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\PlanningVersion::periodEnd' => 'date-only (Y-m-d)',
         'App\Entity\PricingRule::validFrom' => 'date-only (Y-m-d) — Lot 1, jamais un instant client à décalage horaire',
         'App\Entity\PricingRule::validTo' => 'date-only (Y-m-d) — Lot 1, jamais un instant client à décalage horaire',
+        'App\Entity\InstrumentistRate::validFrom' => 'date-only (Y-m-d) — Lot 2 (D-072), même convention que PricingRule',
+        'App\Entity\InstrumentistRate::validTo' => 'date-only (Y-m-d) — Lot 2 (D-072), même convention que PricingRule',
         'App\Entity\RecurrenceRule::anchorDate' => 'date-only (Y-m-d)',
         'App\Entity\ShiftPeriodConfig::startTime' => 'time-of-day only (H:i)',
         'App\Entity\ShiftPeriodConfig::endTime' => 'time-of-day only (H:i)',

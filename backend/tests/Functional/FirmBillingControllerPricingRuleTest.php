@@ -2,6 +2,7 @@
 
 namespace App\Tests\Functional;
 
+use App\Entity\AuditEvent;
 use App\Entity\Firm;
 use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
@@ -55,6 +56,15 @@ final class FirmBillingControllerPricingRuleTest extends WebTestCase
                 $e = $this->em->find(Firm::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
             }
+            // D-072 (Lot 2) — createRule()/replaceRule() émettent désormais des
+            // AuditEvent globaux (recordGlobal(), actor = manager de test) : à purger
+            // avant de supprimer les utilisateurs de test (FK actor_id).
+            foreach ($this->createdUserIds as $id) {
+                foreach ($this->em->getRepository(AuditEvent::class)->findBy(['actor' => $id]) as $evt) {
+                    $this->em->remove($evt);
+                }
+            }
+            $this->em->flush();
             foreach ($this->createdUserIds as $id) {
                 $e = $this->em->find(User::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
@@ -259,9 +269,11 @@ final class FirmBillingControllerPricingRuleTest extends WebTestCase
         $body = json_decode($created->getContent(), true);
         $this->createdRuleIds[] = $body['id'];
 
+        // D-072 : validFrom inclusif, validTo exclusif.
         $rule = $this->em->find(PricingRule::class, $body['id']);
         self::assertTrue($rule->coversDate(new \DateTimeImmutable('2026-01-01')));
-        self::assertTrue($rule->coversDate(new \DateTimeImmutable('2026-12-31')));
+        self::assertTrue($rule->coversDate(new \DateTimeImmutable('2026-12-30')));
+        self::assertFalse($rule->coversDate(new \DateTimeImmutable('2026-12-31')));
         self::assertFalse($rule->coversDate(new \DateTimeImmutable('2027-01-01')));
     }
 
