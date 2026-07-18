@@ -8,18 +8,26 @@ use App\Enum\DisputeStatus;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
 
-// Unique constraint combined with status ensures only one OPEN dispute exists per service; service layer should enforce status transition semantics.
+/**
+ * Lot 1 (Exécution & Valorisation) — renommage de ServiceHoursDispute, workflow
+ * inchangé : le chirurgien concerné par la mission conteste le réalisé déclaré, le
+ * manager traite et résout. Voir MissionExecutionVoter pour les permissions exactes
+ * (inchangées) et MissionExecutionService pour la mécanique (inchangée).
+ *
+ * Contrainte combinée avec le statut : une seule contestation OPEN à la fois par
+ * MissionExecution (appliquée en code, voir MissionExecutionService::openDispute()).
+ */
 #[ORM\Entity]
 #[ORM\Table(
-    name: 'service_hours_dispute',
-    uniqueConstraints: [new ORM\UniqueConstraint(name: 'uniq_service_status', columns: ['service_id', 'status'])],
+    name: 'mission_execution_dispute',
+    uniqueConstraints: [new ORM\UniqueConstraint(name: 'uniq_execution_status', columns: ['mission_execution_id', 'status'])],
     indexes: [
-        new ORM\Index(name: 'idx_dispute_mission', columns: ['mission_id']),
-        new ORM\Index(name: 'idx_dispute_service', columns: ['service_id']),
+        new ORM\Index(name: 'idx_execution_dispute_mission', columns: ['mission_id']),
+        new ORM\Index(name: 'idx_execution_dispute_execution', columns: ['mission_execution_id']),
     ]
 )]
 #[ORM\HasLifecycleCallbacks]
-class ServiceHoursDispute
+class MissionExecutionDispute
 {
     use TimestampableTrait;
 
@@ -34,10 +42,10 @@ class ServiceHoursDispute
     #[Groups(['dispute:read', 'dispute:read_manager'])]
     private ?Mission $mission = null;
 
-    #[ORM\ManyToOne]
-    #[ORM\JoinColumn(nullable: false)]
+    #[ORM\ManyToOne(inversedBy: 'disputes')]
+    #[ORM\JoinColumn(name: 'mission_execution_id', nullable: false)]
     #[Groups(['dispute:read', 'dispute:read_manager'])]
-    private ?InstrumentistService $service = null;
+    private ?MissionExecution $missionExecution = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
@@ -73,19 +81,17 @@ class ServiceHoursDispute
     public function setMission(Mission $mission): static
     {
         $this->mission = $mission;
-
         return $this;
     }
 
-    public function getService(): ?InstrumentistService
+    public function getMissionExecution(): ?MissionExecution
     {
-        return $this->service;
+        return $this->missionExecution;
     }
 
-    public function setService(InstrumentistService $service): static
+    public function setMissionExecution(MissionExecution $missionExecution): static
     {
-        $this->service = $service;
-
+        $this->missionExecution = $missionExecution;
         return $this;
     }
 
@@ -97,7 +103,6 @@ class ServiceHoursDispute
     public function setRaisedBy(User $raisedBy): static
     {
         $this->raisedBy = $raisedBy;
-
         return $this;
     }
 
@@ -109,7 +114,6 @@ class ServiceHoursDispute
     public function setReasonCode(DisputeReasonCode $reasonCode): static
     {
         $this->reasonCode = $reasonCode;
-
         return $this;
     }
 
@@ -121,7 +125,6 @@ class ServiceHoursDispute
     public function setComment(?string $comment): static
     {
         $this->comment = $comment;
-
         return $this;
     }
 
@@ -133,7 +136,6 @@ class ServiceHoursDispute
     public function setStatus(DisputeStatus $status): static
     {
         $this->status = $status;
-
         return $this;
     }
 
@@ -145,7 +147,6 @@ class ServiceHoursDispute
     public function setResolutionComment(?string $resolutionComment): static
     {
         $this->resolutionComment = $resolutionComment;
-
         return $this;
     }
 }

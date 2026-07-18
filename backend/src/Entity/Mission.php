@@ -105,8 +105,13 @@ class Mission
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionPublication::class, orphanRemoval: true)]
     private Collection $publications;
 
-    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: InstrumentistService::class, orphanRemoval: true)]
-    private Collection $services;
+    /**
+     * Lot 1 (Exécution & Valorisation) — le RÉALISÉ, distinct de ce bloc "planifié".
+     * 0..1 : peut ne pas encore exister (voir MissionExecutionService::resolveEffectiveDuration()
+     * pour le repli sur le planifié dans ce cas).
+     */
+    #[ORM\OneToOne(mappedBy: 'mission', targetEntity: MissionExecution::class, orphanRemoval: true)]
+    private ?MissionExecution $execution = null;
 
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: SurgeonRatingByInstrumentist::class, orphanRemoval: true)]
     private Collection $surgeonRatings;
@@ -138,7 +143,6 @@ class Mission
     {
         $this->claims = new ArrayCollection();
         $this->publications = new ArrayCollection();
-        $this->services = new ArrayCollection();
         $this->surgeonRatings = new ArrayCollection();
         $this->instrumentistRatings = new ArrayCollection();
         $this->implantSubMissions = new ArrayCollection();
@@ -228,8 +232,8 @@ class Mission
     /** @return Collection<int, MissionPublication> */
     public function getPublications(): Collection { return $this->publications; }
 
-    /** @return Collection<int, InstrumentistService> */
-    public function getServices(): Collection { return $this->services; }
+    public function getExecution(): ?MissionExecution { return $this->execution; }
+    public function setExecution(?MissionExecution $execution): static { $this->execution = $execution; return $this; }
 
     /** @return Collection<int, SurgeonRatingByInstrumentist> */
     public function getSurgeonRatings(): Collection { return $this->surgeonRatings; }

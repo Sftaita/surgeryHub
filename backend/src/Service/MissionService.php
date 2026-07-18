@@ -20,7 +20,6 @@ use App\Enum\MissionType;
 use App\Enum\PublicationChannel;
 use App\Enum\PublicationScope;
 use App\Enum\SchedulePrecision;
-use App\Enum\ServiceStatus;
 use App\Exception\MissionNotDraftException;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
@@ -219,18 +218,16 @@ class MissionService
             ->setParameter('mission', $mission)
             ->execute();
 
-        // 5) Heures / service instrumentiste: remise à zéro (modèle réel InstrumentistService)
+        // 5) Réalisé (MissionExecution, Lot 1 — Exécution & Valorisation) : remise à zéro
         $this->em->createQuery(<<<'DQL'
-            UPDATE App\Entity\InstrumentistService s
-               SET s.hours = NULL,
-                   s.consultationFeeApplied = NULL,
-                   s.hoursSource = NULL,
-                   s.computedAmount = NULL,
-                   s.status = :status
-             WHERE s.mission = :mission
+            UPDATE App\Entity\MissionExecution e
+               SET e.actualStartAt = NULL,
+                   e.actualEndAt = NULL,
+                   e.actualDurationMinutes = NULL,
+                   e.hoursSource = NULL
+             WHERE e.mission = :mission
         DQL)
             ->setParameter('mission', $mission)
-            ->setParameter('status', ServiceStatus::CALCULATED)
             ->execute();
     }
 

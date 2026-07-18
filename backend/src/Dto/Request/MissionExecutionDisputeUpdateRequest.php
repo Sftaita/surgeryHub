@@ -5,7 +5,7 @@ namespace App\Dto\Request;
 use App\Enum\DisputeStatus;
 use Symfony\Component\Validator\Constraints as Assert;
 
-class ServiceDisputeUpdateRequest
+class MissionExecutionDisputeUpdateRequest
 {
     #[Assert\NotBlank]
     #[Assert\Choice(callback: [DisputeStatus::class, 'cases'])]
