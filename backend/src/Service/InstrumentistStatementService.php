@@ -138,13 +138,36 @@ class InstrumentistStatementService
         return $statement;
     }
 
-    public function markSent(InstrumentistStatement $statement): InstrumentistStatement
+    /**
+     * Conservé pour compatibilité (POST /{id}/send, existant) — délègue à issue()
+     * (Lot 5, D-075).
+     */
+    public function markSent(InstrumentistStatement $statement, User $actor): InstrumentistStatement
+    {
+        return $this->issue($statement, $actor);
+    }
+
+    /**
+     * EPIC Exécution & Valorisation, Lot 5 (D-075) — §12 du lot, miroir exact de
+     * FirmInvoiceService::issue(). Pas de numérotation ici : InstrumentistStatement
+     * n'a jamais eu de champ `number` (contrairement à FirmInvoice), rien à attribuer.
+     */
+    public function issue(InstrumentistStatement $statement, User $actor): InstrumentistStatement
     {
         if ($statement->getStatus() !== InvoiceStatus::GENERATED) {
             throw new \DomainException('Le décompte doit être en statut GENERATED pour être envoyé.');
         }
+
         $statement->setStatus(InvoiceStatus::SENT);
         $statement->setSentAt(new \DateTimeImmutable());
+
+        $this->audit->recordGlobal($actor, AuditEventType::INSTRUMENTIST_STATEMENT_ISSUED, [
+            'instrumentistStatementId' => $statement->getId(),
+            'instrumentistId' => $statement->getInstrumentist()?->getId(),
+            'previousStatus' => InvoiceStatus::GENERATED->value,
+            'newStatus' => InvoiceStatus::SENT->value,
+        ]);
+
         $this->em->flush();
         return $statement;
     }

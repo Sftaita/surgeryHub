@@ -4,6 +4,7 @@ namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
 use App\Enum\InvoiceStatus;
+use App\Enum\PaymentDocumentType;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
@@ -14,7 +15,7 @@ use Doctrine\ORM\Mapping as ORM;
     new ORM\Index(name: 'idx_firm_invoice_status', columns: ['status']),
 ])]
 #[ORM\HasLifecycleCallbacks]
-class FirmInvoice
+class FirmInvoice implements PayableDocument
 {
     use TimestampableTrait;
 
@@ -141,5 +142,10 @@ class FirmInvoice
     public function isLocked(): bool
     {
         return $this->status !== InvoiceStatus::DRAFT;
+    }
+
+    public function getPaymentDocumentType(): PaymentDocumentType
+    {
+        return PaymentDocumentType::FIRM_INVOICE;
     }
 }

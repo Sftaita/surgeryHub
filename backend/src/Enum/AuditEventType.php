@@ -98,4 +98,14 @@ enum AuditEventType: string
     case INSTRUMENTIST_STATEMENT_CREATED_FROM_CALCULATION = 'INSTRUMENTIST_STATEMENT_CREATED_FROM_CALCULATION';
     case INSTRUMENTIST_STATEMENT_ISSUED                    = 'INSTRUMENTIST_STATEMENT_ISSUED';
     case INSTRUMENTIST_STATEMENT_CANCELLED                 = 'INSTRUMENTIST_STATEMENT_CANCELLED';
+
+    // Exécution & Valorisation, Lot 5 (D-075) — DocumentPaymentService, générique aux
+    // deux types de document (Payment.documentType les distingue dans le payload). Pas
+    // de DOCUMENT_SENT séparé : la transition GENERATED → SENT réutilise
+    // FIRM_INVOICE_ISSUED/INSTRUMENTIST_STATEMENT_ISSUED (Lot 4) — créés pour ce fait
+    // précis mais jamais câblés jusqu'ici, câblés dans ce lot (voir issue()) plutôt que
+    // de dupliquer un événement pour la même transition.
+    case DOCUMENT_PAYMENT_RECORDED  = 'DOCUMENT_PAYMENT_RECORDED';
+    case DOCUMENT_PARTIALLY_PAID    = 'DOCUMENT_PARTIALLY_PAID';
+    case DOCUMENT_FULLY_PAID        = 'DOCUMENT_FULLY_PAID';
 }

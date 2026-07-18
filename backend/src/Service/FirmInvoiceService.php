@@ -189,13 +189,44 @@ class FirmInvoiceService
         return $invoice;
     }
 
-    public function markSent(FirmInvoice $invoice): FirmInvoice
+    /**
+     * Conservé pour compatibilité (POST /{id}/send, existant) — délègue à issue()
+     * (Lot 5, D-075) pour la transition elle-même ; le contrôleur reste responsable de
+     * l'envoi de l'email (inchangé).
+     */
+    public function markSent(FirmInvoice $invoice, User $actor): FirmInvoice
+    {
+        return $this->issue($invoice, $actor);
+    }
+
+    /**
+     * EPIC Exécution & Valorisation, Lot 5 (D-075) — §12 du lot : émission explicite.
+     * GENERATED → SENT uniquement ; attribue un numéro si celui-ci manque encore
+     * (défensif — déjà assigné à la création dans ce système, legacy ET nouveau
+     * chemin), date l'émission, audite, et empêche toute nouvelle modification
+     * documentaire (SENT est un point de non-retour — voir cancel(), Lot 4).
+     */
+    public function issue(FirmInvoice $invoice, User $actor): FirmInvoice
     {
         if ($invoice->getStatus() !== InvoiceStatus::GENERATED) {
             throw new \DomainException('La facture doit être en statut GENERATED pour être envoyée.');
         }
+
+        if ($invoice->getNumber() === null) {
+            $invoice->setNumber($this->generateNumber($invoice->getPeriodStart()));
+        }
+
         $invoice->setStatus(InvoiceStatus::SENT);
         $invoice->setSentAt(new \DateTimeImmutable());
+
+        $this->audit->recordGlobal($actor, AuditEventType::FIRM_INVOICE_ISSUED, [
+            'firmInvoiceId' => $invoice->getId(),
+            'firmId' => $invoice->getFirm()?->getId(),
+            'number' => $invoice->getNumber(),
+            'previousStatus' => InvoiceStatus::GENERATED->value,
+            'newStatus' => InvoiceStatus::SENT->value,
+        ]);
+
         $this->em->flush();
         return $invoice;
     }

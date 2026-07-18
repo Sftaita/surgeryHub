@@ -3,9 +3,12 @@
 namespace App\Controller\Api;
 
 use App\Entity\InstrumentistStatement;
+use App\Entity\Payment;
 use App\Entity\User;
 use App\Enum\InvoiceStatus;
+use App\Enum\PaymentMethod;
 use App\Security\Voter\BillingVoter;
+use App\Service\DocumentPaymentService;
 use App\Service\InstrumentistStatementService;
 use App\Service\NotificationService;
 use App\Service\PdfService;
@@ -22,6 +25,7 @@ class InstrumentistStatementController extends AbstractController
 {
     public function __construct(
         private readonly InstrumentistStatementService $statementService,
+        private readonly DocumentPaymentService $paymentService,
         private readonly PdfService $pdfService,
         private readonly EntityManagerInterface $em,
         private readonly NotificationService $notificationService,
@@ -196,6 +200,8 @@ class InstrumentistStatementController extends AbstractController
 
         $pdf = $this->pdfService->generateFromTemplate('pdf/instrumentist_statement.html.twig', [
             'statement' => $statement,
+            'balance' => $this->paymentService->computeBalance($statement),
+            'payments' => $this->paymentService->getPaymentsFor($statement),
         ]);
 
         $filename = sprintf('decompte-%s-%02d-%d.pdf',
@@ -210,8 +216,8 @@ class InstrumentistStatementController extends AbstractController
         ]);
     }
 
-    #[Route('/{id}/send', name: 'api_statements_send', methods: ['POST'])]
-    public function send(int $id, Request $request): JsonResponse
+    #[Route('/{id}/send', name: 'api_statements_send', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function send(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
 
@@ -228,7 +234,7 @@ class InstrumentistStatementController extends AbstractController
         }
 
         try {
-            $statement = $this->statementService->markSent($statement);
+            $statement = $this->statementService->markSent($statement, $actor);
         } catch (\DomainException $e) {
             return $this->json(['error' => ['status' => 409, 'code' => 'CONFLICT', 'message' => $e->getMessage()]], 409);
         }
@@ -240,7 +246,7 @@ class InstrumentistStatementController extends AbstractController
         return $this->json($this->serializeStatementDetail($statement));
     }
 
-    #[Route('/{id}/mark-paid', name: 'api_statements_mark_paid', methods: ['POST'])]
+    #[Route('/{id}/mark-paid', name: 'api_statements_mark_paid', methods: ['POST'], requirements: ['id' => '\d+'])]
     public function markPaid(int $id): JsonResponse
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
@@ -254,10 +260,86 @@ class InstrumentistStatementController extends AbstractController
         return $this->json($this->serializeStatementDetail($statement));
     }
 
+    // ── EPIC Exécution & Valorisation, Lot 5 (D-075) — émission + paiements ───
+
+    #[Route('/{id}/issue', name: 'api_statements_issue', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function issue(int $id, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $statement = $this->em->find(InstrumentistStatement::class, $id);
+        if (!$statement) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Décompte introuvable.']], 404);
+        }
+
+        try {
+            $statement = $this->statementService->issue($statement, $actor);
+        } catch (\DomainException $e) {
+            return $this->json(['error' => ['status' => 409, 'code' => 'CONFLICT', 'message' => $e->getMessage()]], 409);
+        }
+
+        return $this->json($this->serializeStatementDetail($statement));
+    }
+
+    #[Route('/{id}/payments', name: 'api_statements_payments_list', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function listPayments(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $statement = $this->em->find(InstrumentistStatement::class, $id);
+        if (!$statement) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Décompte introuvable.']], 404);
+        }
+
+        return $this->json(array_map($this->serializePayment(...), $this->paymentService->getPaymentsFor($statement)));
+    }
+
+    #[Route('/{id}/payments', name: 'api_statements_payments_create', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function createPayment(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $statement = $this->em->find(InstrumentistStatement::class, $id);
+        if (!$statement) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Décompte introuvable.']], 404);
+        }
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $amount = $data['amount'] ?? null;
+        $currency = $data['currency'] ?? $statement->getCurrency();
+        $paidAtRaw = $data['paidAt'] ?? null;
+        $methodRaw = $data['method'] ?? null;
+
+        if ($amount === null || $paidAtRaw === null || $methodRaw === null) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'amount, paidAt et method sont requis.']], 422);
+        }
+
+        try {
+            $method = PaymentMethod::from($methodRaw);
+        } catch (\ValueError) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'method invalide (BANK_TRANSFER, CASH, OTHER).']], 422);
+        }
+
+        try {
+            $paidAt = new \DateTimeImmutable($paidAtRaw);
+        } catch (\Exception) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Format de paidAt invalide (Y-m-d attendu).']], 422);
+        }
+
+        $payment = $this->paymentService->recordPayment(
+            $statement, (string) $amount, (string) $currency, $paidAt, $method,
+            $data['reference'] ?? null, $data['comment'] ?? null, $actor,
+        );
+
+        return $this->json($this->serializePayment($payment), 201);
+    }
+
     // ── Serializers ───────────────────────────────────────────────────
 
     private function serializeStatement(InstrumentistStatement $s): array
     {
+        $balance = $this->paymentService->computeBalance($s);
+
         return [
             'id' => $s->getId(),
             'instrumentist' => [
@@ -274,7 +356,7 @@ class InstrumentistStatementController extends AbstractController
             'sentAt' => $s->getSentAt()?->format(\DateTimeInterface::ATOM),
             'paidAt' => $s->getPaidAt()?->format(\DateTimeInterface::ATOM),
             'createdAt' => $s->getCreatedAt()?->format(\DateTimeInterface::ATOM),
-        ];
+        ] + $balance->toArray();
     }
 
     private function serializeStatementDetail(InstrumentistStatement $s): array
@@ -298,6 +380,25 @@ class InstrumentistStatementController extends AbstractController
             'financialCalculationVersion' => $l->getFinancialCalculationLine()?->getFinancialCalculation()->getVersion(),
             'legacy' => $l->isLegacy(),
         ], $s->getLines()->toArray());
+        $base['payments'] = array_map($this->serializePayment(...), $this->paymentService->getPaymentsFor($s));
         return $base;
+    }
+
+    private function serializePayment(Payment $p): array
+    {
+        return [
+            'id' => $p->getId(),
+            'documentType' => $p->getDocumentType()->value,
+            'documentId' => $p->getDocumentId(),
+            'amount' => $p->getAmount(),
+            'currency' => $p->getCurrency(),
+            'paidAt' => $p->getPaidAt()?->format('Y-m-d'),
+            'recordedAt' => $p->getRecordedAt()?->format(\DateTimeInterface::ATOM),
+            'recordedBy' => $p->getRecordedBy()?->getId(),
+            'reference' => $p->getReference(),
+            'method' => $p->getMethod()->value,
+            'comment' => $p->getComment(),
+            'createdAt' => $p->getCreatedAt()?->format(\DateTimeInterface::ATOM),
+        ];
     }
 }

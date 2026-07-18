@@ -16,6 +16,9 @@ use App\Exception\FinancialCalculationAnomaliesException;
 use App\Exception\DocumentLineSelectionException;
 use App\Exception\DocumentAlreadyIssuedException;
 use App\Exception\DocumentCannotReleaseLinesException;
+use App\Exception\DocumentNotIssuedException;
+use App\Exception\PaymentExceedsRemainingException;
+use App\Exception\PaymentCurrencyMismatchException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -94,6 +97,18 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'DOCUMENT_CANNOT_RELEASE_LINES';
             $message = $e->getMessage() ?: 'Les lignes de ce document ne peuvent pas être libérées.';
+        } elseif ($e instanceof DocumentNotIssuedException) {
+            $status = 409;
+            $code = 'DOCUMENT_NOT_ISSUED';
+            $message = $e->getMessage() ?: 'Ce document doit être émis avant de pouvoir recevoir un paiement.';
+        } elseif ($e instanceof PaymentExceedsRemainingException) {
+            $status = 422;
+            $code = 'PAYMENT_EXCEEDS_REMAINING';
+            $message = $e->getMessage() ?: 'Le montant du paiement dépasse le solde restant dû.';
+        } elseif ($e instanceof PaymentCurrencyMismatchException) {
+            $status = 422;
+            $code = 'PAYMENT_CURRENCY_MISMATCH';
+            $message = $e->getMessage() ?: 'La devise du paiement ne correspond pas à celle du document.';
         } elseif ($e instanceof InterventionTypeNotFoundException) {
             $status = 404;
             $code = 'INTERVENTION_TYPE_NOT_FOUND';
@@ -125,7 +140,12 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             };
         }
 
-        if ($status === 422 && !$e instanceof FinancialCalculationAnomaliesException && !$e instanceof DocumentLineSelectionException) {
+        if ($status === 422
+            && !$e instanceof FinancialCalculationAnomaliesException
+            && !$e instanceof DocumentLineSelectionException
+            && !$e instanceof PaymentExceedsRemainingException
+            && !$e instanceof PaymentCurrencyMismatchException
+        ) {
             $violations = $this->extractViolationsFromMessage($message);
             if (count($violations) > 0) {
                 $message = 'Validation failed';

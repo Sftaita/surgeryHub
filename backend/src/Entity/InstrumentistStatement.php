@@ -4,6 +4,7 @@ namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
 use App\Enum\InvoiceStatus;
+use App\Enum\PaymentDocumentType;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
@@ -14,7 +15,7 @@ use Doctrine\ORM\Mapping as ORM;
     new ORM\Index(name: 'idx_stmt_status', columns: ['status']),
 ])]
 #[ORM\HasLifecycleCallbacks]
-class InstrumentistStatement
+class InstrumentistStatement implements PayableDocument
 {
     use TimestampableTrait;
 
@@ -113,5 +114,10 @@ class InstrumentistStatement
             $line->setStatement($this);
         }
         return $this;
+    }
+
+    public function getPaymentDocumentType(): PaymentDocumentType
+    {
+        return PaymentDocumentType::INSTRUMENTIST_STATEMENT;
     }
 }

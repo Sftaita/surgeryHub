@@ -4,9 +4,12 @@ namespace App\Controller\Api;
 
 use App\Entity\Firm;
 use App\Entity\FirmInvoice;
+use App\Entity\Payment;
 use App\Entity\User;
 use App\Enum\InvoiceStatus;
+use App\Enum\PaymentMethod;
 use App\Security\Voter\BillingVoter;
+use App\Service\DocumentPaymentService;
 use App\Service\FirmInvoiceService;
 use App\Service\NotificationService;
 use App\Service\PdfService;
@@ -23,6 +26,7 @@ class FirmInvoiceController extends AbstractController
 {
     public function __construct(
         private readonly FirmInvoiceService $invoiceService,
+        private readonly DocumentPaymentService $paymentService,
         private readonly PdfService $pdfService,
         private readonly EntityManagerInterface $em,
         private readonly NotificationService $notificationService,
@@ -221,7 +225,11 @@ class FirmInvoiceController extends AbstractController
             return new JsonResponse(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
         }
 
-        $pdf = $this->pdfService->generateFromTemplate('pdf/firm_invoice.html.twig', ['invoice' => $invoice]);
+        $pdf = $this->pdfService->generateFromTemplate('pdf/firm_invoice.html.twig', [
+            'invoice' => $invoice,
+            'balance' => $this->paymentService->computeBalance($invoice),
+            'payments' => $this->paymentService->getPaymentsFor($invoice),
+        ]);
 
         $filename = sprintf('facture-%s-%s.pdf',
             strtolower(str_replace(' ', '-', $invoice->getFirm()->getName())),
@@ -234,8 +242,8 @@ class FirmInvoiceController extends AbstractController
         ]);
     }
 
-    #[Route('/{id}/send', name: 'api_firm_invoices_send', methods: ['POST'])]
-    public function send(int $id, Request $request): JsonResponse
+    #[Route('/{id}/send', name: 'api_firm_invoices_send', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function send(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
 
@@ -257,7 +265,7 @@ class FirmInvoiceController extends AbstractController
         $invoice->setBillingEmailCc($emailCc ?: null);
 
         try {
-            $invoice = $this->invoiceService->markSent($invoice);
+            $invoice = $this->invoiceService->markSent($invoice, $actor);
         } catch (\DomainException $e) {
             return $this->json(['error' => ['status' => 409, 'code' => 'CONFLICT', 'message' => $e->getMessage()]], 409);
         }
@@ -268,7 +276,7 @@ class FirmInvoiceController extends AbstractController
         return $this->json($this->serializeInvoiceDetail($invoice));
     }
 
-    #[Route('/{id}/mark-paid', name: 'api_firm_invoices_mark_paid', methods: ['POST'])]
+    #[Route('/{id}/mark-paid', name: 'api_firm_invoices_mark_paid', methods: ['POST'], requirements: ['id' => '\d+'])]
     public function markPaid(int $id): JsonResponse
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
@@ -282,10 +290,86 @@ class FirmInvoiceController extends AbstractController
         return $this->json($this->serializeInvoiceDetail($invoice));
     }
 
+    // ── EPIC Exécution & Valorisation, Lot 5 (D-075) — émission + paiements ───
+
+    #[Route('/{id}/issue', name: 'api_firm_invoices_issue', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function issue(int $id, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $invoice = $this->em->find(FirmInvoice::class, $id);
+        if (!$invoice) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+
+        try {
+            $invoice = $this->invoiceService->issue($invoice, $actor);
+        } catch (\DomainException $e) {
+            return $this->json(['error' => ['status' => 409, 'code' => 'CONFLICT', 'message' => $e->getMessage()]], 409);
+        }
+
+        return $this->json($this->serializeInvoiceDetail($invoice));
+    }
+
+    #[Route('/{id}/payments', name: 'api_firm_invoices_payments_list', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function listPayments(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $invoice = $this->em->find(FirmInvoice::class, $id);
+        if (!$invoice) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+
+        return $this->json(array_map($this->serializePayment(...), $this->paymentService->getPaymentsFor($invoice)));
+    }
+
+    #[Route('/{id}/payments', name: 'api_firm_invoices_payments_create', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function createPayment(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $invoice = $this->em->find(FirmInvoice::class, $id);
+        if (!$invoice) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $amount = $data['amount'] ?? null;
+        $currency = $data['currency'] ?? $invoice->getCurrency();
+        $paidAtRaw = $data['paidAt'] ?? null;
+        $methodRaw = $data['method'] ?? null;
+
+        if ($amount === null || $paidAtRaw === null || $methodRaw === null) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'amount, paidAt et method sont requis.']], 422);
+        }
+
+        try {
+            $method = PaymentMethod::from($methodRaw);
+        } catch (\ValueError) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'method invalide (BANK_TRANSFER, CASH, OTHER).']], 422);
+        }
+
+        try {
+            $paidAt = new \DateTimeImmutable($paidAtRaw);
+        } catch (\Exception) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Format de paidAt invalide (Y-m-d attendu).']], 422);
+        }
+
+        $payment = $this->paymentService->recordPayment(
+            $invoice, (string) $amount, (string) $currency, $paidAt, $method,
+            $data['reference'] ?? null, $data['comment'] ?? null, $actor,
+        );
+
+        return $this->json($this->serializePayment($payment), 201);
+    }
+
     // ── Serializers ───────────────────────────────────────────────────
 
     private function serializeInvoice(FirmInvoice $i): array
     {
+        $balance = $this->paymentService->computeBalance($i);
+
         return [
             'id' => $i->getId(),
             'number' => $i->getNumber(),
@@ -300,7 +384,7 @@ class FirmInvoiceController extends AbstractController
             'sentAt' => $i->getSentAt()?->format(\DateTimeInterface::ATOM),
             'paidAt' => $i->getPaidAt()?->format(\DateTimeInterface::ATOM),
             'createdAt' => $i->getCreatedAt()?->format(\DateTimeInterface::ATOM),
-        ];
+        ] + $balance->toArray();
     }
 
     private function serializeInvoiceDetail(FirmInvoice $i): array
@@ -326,6 +410,25 @@ class FirmInvoiceController extends AbstractController
             'financialCalculationVersion' => $l->getFinancialCalculationLine()?->getFinancialCalculation()->getVersion(),
             'legacy' => $l->isLegacy(),
         ], $i->getLines()->toArray());
+        $base['payments'] = array_map($this->serializePayment(...), $this->paymentService->getPaymentsFor($i));
         return $base;
+    }
+
+    private function serializePayment(Payment $p): array
+    {
+        return [
+            'id' => $p->getId(),
+            'documentType' => $p->getDocumentType()->value,
+            'documentId' => $p->getDocumentId(),
+            'amount' => $p->getAmount(),
+            'currency' => $p->getCurrency(),
+            'paidAt' => $p->getPaidAt()?->format('Y-m-d'),
+            'recordedAt' => $p->getRecordedAt()?->format(\DateTimeInterface::ATOM),
+            'recordedBy' => $p->getRecordedBy()?->getId(),
+            'reference' => $p->getReference(),
+            'method' => $p->getMethod()->value,
+            'comment' => $p->getComment(),
+            'createdAt' => $p->getCreatedAt()?->format(\DateTimeInterface::ATOM),
+        ];
     }
 }
