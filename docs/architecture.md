@@ -605,6 +605,10 @@ FinancialCalculation (EPIC Exécution & Valorisation, Lot 3, D-073)
 │   supersededAt/supersededByCalculation (self-FK, renseigné uniquement sur l'ancien)
 ├── append-only : jamais réécrit en place une fois CALCULATED — un recalcul crée une
 │   nouvelle version, l'ancienne passe SUPERSEDED
+├── hasUnassignedFirmLines()/hasUnassignedInstrumentistLines()/isFullyDocumented()
+│   (Lot 4, D-074 — méthodes dérivées depuis les lignes, jamais un booléen stocké en
+│   doublon : un calcul peut être partiellement documenté, verrouillé dès la première
+│   ligne facturée/décomptée sans empêcher l'affectation des autres)
 └── FinancialCalculationLine[] — jamais un total opaque, toujours détaillé
 
 FinancialCalculationLine
@@ -618,31 +622,47 @@ FinancialCalculationLine
 │   navigation uniquement — le snapshot JSON reste la source de vérité historique)
 ├── descriptionSnapshot, quantity (decimal 10,4), durationMinutes (nullable, HOURLY
 │   uniquement), unitAmount/totalAmount (decimal 10,2), currency, effectiveAt
+├── firmInvoiceLine / instrumentistStatementLine (Lot 4, D-074 — côté INVERSE de la
+│   relation 1—0..1 vers le document qui a consommé cette ligne ; isAssigned() = true
+│   si l'un des deux est non-null — jamais les deux à la fois, voir beneficiaryType)
 └── snapshot (JSON) — nom firme/instrumentiste/intervention/matériel au moment du
     calcul ; une suppression/modification future du catalogue ne rend jamais un ancien
     calcul incompréhensible
 
 FirmInvoice
-├── firm, number (FIRM-YYYY-NNN), status (DRAFT|GENERATED|SENT|PAID)
+├── firm, number (FIRM-YYYY-NNN), status (DRAFT|GENERATED|SENT|PAID|CANCELLED — Lot 4)
 ├── periodStart, periodEnd, totalAmount
+├── currency (Lot 4, D-074, défaut EUR), legacySource (Lot 4 — true si créé avant ce
+│   lot ou via le chemin legacy recalculant, false via createFromEligibleLines())
 ├── billingEmailTo (snapshot), billingEmailCc (snapshot JSON)
 └── FirmInvoiceLine[]
 
 FirmInvoiceLine
 ├── invoice, mission, lineType (INTERVENTION_FEE|MATERIAL_FEE)
-├── missionIntervention (nullable FK — anti-doublon)
-├── materialLine (nullable FK — anti-doublon)
-└── descriptionSnapshot, unitPrice (snapshot), quantity, totalAmount
+├── missionIntervention (nullable FK — anti-doublon, legacy)
+├── materialLine (nullable FK — anti-doublon, legacy)
+├── financialCalculationLine (Lot 4, D-074 — FK nullable, UNIQUE en base : côté
+│   propriétaire de la relation 1—0..1 vers la ligne financière figée dont cette ligne
+│   provient ; NULL = ligne legacy, voir FirmInvoiceLine::isLegacy())
+├── currency, unitSnapshot, sourceSnapshot (Lot 4 — copie intégrale de
+│   FinancialCalculationLine.snapshot, NULL pour les lignes legacy), createdAt
+└── descriptionSnapshot, unitPrice (snapshot — = unitAmount pour une ligne nouvelle,
+    copié exactement depuis FinancialCalculationLine, jamais recalculé), quantity,
+    totalAmount
 
 InstrumentistStatement
 ├── instrumentist, periodYear, periodMonth
-├── status (DRAFT|GENERATED|SENT|PAID), totalAmount
+├── status (DRAFT|GENERATED|SENT|PAID|CANCELLED — Lot 4), totalAmount
+├── currency, legacySource (Lot 4, D-074 — même contrat que FirmInvoice)
 └── InstrumentistStatementLine[]
 
 InstrumentistStatementLine
 ├── statement, mission, lineType (BLOC|CONSULTATION)
 ├── durationMinutesRaw, durationMinutesRounded
-├── rateSnapshot (snapshot hourlyRate ou consultationFee)
+├── rateSnapshot (snapshot hourlyRate/consultationFee legacy, ou unitAmount de
+│   FinancialCalculationLine pour une ligne nouvelle — jamais recalculé)
+├── financialCalculationLine, currency, unitSnapshot, sourceSnapshot, createdAt
+│   (Lot 4, D-074 — même contrat que FirmInvoiceLine)
 └── quantity, totalAmount, surgeonNameSnapshot, siteNameSnapshot, missionDateSnapshot
 
 PlanningTemplate
@@ -1126,6 +1146,75 @@ concurrence à connexions DBAL réellement distinctes.
 `InstrumentistStatementService` vers les lignes figées de `FinancialCalculation`, tout
 paiement, toute correction financière additive, table `Settlement`, conversion de
 devises.
+
+---
+
+### Flux bascule des documents financiers (EPIC Exécution & Valorisation, Lot 4, D-074)
+
+```
+FinancialCalculation (APPROVED ou LOCKED) + FinancialCalculationLine[] (FIRM_*/INSTRUMENTIST_*)
+                              │
+                              ▼  previewEligibleLines(cible, devise, période) — lecture seule
+                    lignes non assignées, devise/bénéficiaire/période/statut filtrés
+                              │
+                              ▼  createFromEligibleLines(cible, devise, période, lineIds, actor)
+                    verrou pessimiste sur chaque FinancialCalculation distinct (id croissant)
+                    revérifie CHAQUE ligne sous verrou (jamais confiance dans le preview)
+                              │
+              ┌───────────────┴────────────────┐
+              ▼ une ligne inéligible            ▼ toutes éligibles
+    DocumentLineSelectionException        FirmInvoice/InstrumentistStatement (GENERATED)
+    (toutes les anomalies, un seul       + lignes documentaires (snapshots copiés,
+     rapport) — RIEN persisté             financialCalculationLine rattachée, UNIQUE)
+                                           FinancialCalculationService::lock() par calcul
+                                           (APPROVED → LOCKED, idempotent si déjà LOCKED)
+                                                       │
+                                          markSent() (existant, inchangé) → SENT
+                                          audit FIRM_INVOICE_ISSUED / _STATEMENT_ISSUED
+                                                       │
+                                          cancel() : GENERATED → CANCELLED uniquement,
+                                          libère les lignes documentaires (jamais le calcul)
+```
+
+`FinancialCalculationLine` = vérité monétaire ; `FirmInvoiceLine`/
+`InstrumentistStatementLine` = présentation documentaire et affectation. Les services ne
+résolvent plus jamais `PricingRule`/`InstrumentistRate`, ne relisent plus
+`User.hourlyRate`/`consultationFee`, ne recalculent plus de durée/quantité/prix
+unitaire/total — montants et snapshots copiés exactement depuis
+`FinancialCalculationLine`.
+
+**Deux chemins coexistent (§18 du lot)** : `preview()`/`generate()` (legacy, recalcule
+encore lui-même depuis `PricingRule` — seul chemin utilisé par le frontend actuel,
+jamais retouché) et `previewEligibleLines()`/`createFromEligibleLines()` (nouveau,
+consomme `FinancialCalculationLine`). `FirmInvoiceLine.financialCalculationLine`/
+`InstrumentistStatementLine.financialCalculationLine` distinguent les deux
+(`isLegacy()`). Un même document ne mélange jamais les deux chemins.
+
+**Pas de nouvel état DRAFT observable** : les deux chemins produisent un document
+`GENERATED` en un seul appel atomique — même raisonnement que "pas de DRAFT" pour
+`FinancialCalculation` (D-073). `SENT` (transition `markSent()` existante, inchangée)
+reste le vrai point d'engagement vis-à-vis du tiers.
+
+**Calcul partiellement documenté (§11/§30)** : une mission produit typiquement plusieurs
+lignes (intervention firme, matériel firme, prestation instrumentiste) sur le **même**
+`FinancialCalculation` — verrouillé dès la première ligne facturée/décomptée, les autres
+restent sélectionnables tant qu'elles ne sont pas elles-mêmes affectées
+(`hasUnassignedFirmLines()`/`hasUnassignedInstrumentistLines()`/`isFullyDocumented()`).
+Annuler un document **ne déverrouille jamais** le calcul (politique explicite, jamais
+automatique).
+
+**Anti-double facturation — trois niveaux** : applicatif (revérification sous verrou
+avant rattachement), base de données (`UNIQUE(financial_calculation_line_id)` sur les
+deux tables de lignes), transaction (sélection + création + rattachement + verrouillage,
+atomique). Concurrence prouvée par `FirmInvoiceConcurrencyTest` (connexions DBAL
+réellement distinctes, même méthode que le Lot 3).
+
+**PDF inchangés** : les templates ne lisaient déjà que des champs snapshot — aucune
+modification nécessaire (confirmé, pas de refonte graphique).
+
+**Hors périmètre de ce lot** : gestion des documents `SENT`/`PAID`, paiements,
+rapprochement bancaire, corrections financières additives, notes de crédit, table
+`Settlement`, conversion de devises, refonte UX.
 
 ---
 

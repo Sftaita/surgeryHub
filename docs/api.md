@@ -4610,3 +4610,100 @@ totaux par devise ; `_FAILED` porte la liste structurée des anomalies ; `_RECAL
 porte l'id du calcul précédent.
 
 ---
+
+## 36. Bascule des documents financiers vers FinancialCalculation (EPIC Exécution & Valorisation, Lot 4, D-074)
+
+Voir D-074 (`docs/decisions.md`) et `docs/architecture.md` pour le modèle complet. Les
+endpoints legacy (§30/§34 ci-dessus : `POST /api/firm-invoices/preview`,
+`POST /api/firm-invoices`, `POST /api/instrumentist-statements/preview`,
+`POST /api/instrumentist-statements`, ainsi que `/send`/`/mark-paid`) restent **inchangés,
+seul chemin utilisé par le frontend actuel** — recalculent toujours eux-mêmes depuis
+`PricingRule`/`User.hourlyRate`. Cette section documente les endpoints **additifs** du
+nouveau chemin, qui consomme exclusivement des `FinancialCalculationLine` déjà
+valorisées (Lot 3).
+
+**AuthZ (toutes routes) :** `BillingVoter::MANAGE` — manager/admin uniquement, même
+périmètre que §34/§35.
+
+### Factures firmes
+
+#### `GET /api/firm-invoices/eligible-lines`
+
+**Query params :** `firmId` (requis), `currency` (défaut `EUR`), `periodStart`,
+`periodEnd` (requis, `Y-m-d`). Lecture seule, ne réserve rien. Filtre sur
+`FinancialCalculationLine.effectiveAt`, calculs `APPROVED`/`LOCKED` uniquement, lignes
+`FIRM_INTERVENTION_FEE`/`FIRM_MATERIAL_FEE` non encore rattachées.
+
+**Réponse — 200 :**
+
+```json
+{
+  "firm": { "id": 5, "name": "Medacta" },
+  "currency": "EUR",
+  "period": { "start": "2026-06-01", "end": "2026-06-30" },
+  "lines": [
+    { "id": 49, "financialCalculationId": 39, "financialCalculationVersion": 1, "missionId": 257, "lineType": "FIRM_INTERVENTION_FEE", "descriptionSnapshot": "[LCA] LCA primaire", "quantity": "1.0000", "unitAmount": "180.00", "totalAmount": "180.00", "currency": "EUR", "effectiveAt": "2026-06-15" }
+  ],
+  "totalAmount": "180.00"
+}
+```
+
+#### `POST /api/firm-invoices/from-financial-calculations`
+
+**Body JSON :** `{ "firmId": 5, "currency": "EUR", "periodStart": "2026-06-01", "periodEnd": "2026-06-30", "selectedFinancialCalculationLineIds": [49, 52] }`
+
+Ne fait jamais confiance à `eligible-lines` : reverrouille et revérifie chaque ligne sous
+verrou (§14/§22 du lot). Verrouille automatiquement chaque `FinancialCalculation`
+concerné (`APPROVED → LOCKED`, idempotent si déjà `LOCKED`).
+
+**Réponse — 201 :** la facture créée (`status: "GENERATED"`, `legacySource: false`).
+
+**Erreurs :** `422 DOCUMENT_LINE_SELECTION_FAILED` — une ou plusieurs lignes ne sont
+plus éligibles (aucune facture créée, aucune ligne rattachée, aucun calcul verrouillé) ;
+`violations` structuré, codes : `FINANCIAL_LINE_ALREADY_ASSIGNED`,
+`FINANCIAL_LINE_NOT_ELIGIBLE`, `FINANCIAL_LINE_BENEFICIARY_MISMATCH`,
+`FINANCIAL_LINE_CURRENCY_MISMATCH`, `FINANCIAL_CALCULATION_NOT_APPROVED`.
+
+#### `POST /api/firm-invoices/{id}/cancel`
+
+**Body JSON (optionnel) :** `{ "reason": "..." }`
+
+`GENERATED → CANCELLED` uniquement — libère physiquement les lignes documentaires
+rattachées (la `FinancialCalculationLine` redevient sélectionnable dans un nouveau
+document) mais **ne déverrouille jamais** le calcul associé. `SENT`/`PAID` : refusé.
+
+**Réponse — 200 :** la facture annulée (`lines: []`). **Erreurs :**
+`409 DOCUMENT_ALREADY_ISSUED` si `SENT`/`PAID`.
+
+### Décomptes instrumentistes
+
+Même principe, symétrique :
+
+- `GET /api/instrumentist-statements/eligible-lines?instrumentistId=&currency=&year=&month=`
+- `POST /api/instrumentist-statements/from-financial-calculations` — body :
+  `{ "instrumentistId": 12, "currency": "EUR", "year": 2026, "month": 6, "selectedFinancialCalculationLineIds": [51] }`
+- `POST /api/instrumentist-statements/{id}/cancel`
+
+Période = mois calendaire (même granularité que le chemin legacy), filtrée sur
+`FinancialCalculationLine.effectiveAt`. Lignes `INSTRUMENTIST_HOURLY`/
+`INSTRUMENTIST_CONSULTATION_FEE` uniquement — aucun accès à `User.hourlyRate`/
+`consultationFee`, aucune relecture de `MissionExecution`.
+
+### Champs additionnels (factures et décomptes, réponses `list`/`get`/`create`)
+
+Documents : `currency`, `legacySource`. Lignes : `currency`, `unitSnapshot`,
+`financialCalculationLineId` (`null` si legacy), `financialCalculationVersion`,
+`legacy` (bool).
+
+### Audit
+
+`FIRM_INVOICE_CREATED_FROM_CALCULATION`/`_ISSUED`/`_CANCELLED` et
+`INSTRUMENTIST_STATEMENT_CREATED_FROM_CALCULATION`/`_ISSUED`/`_CANCELLED` —
+`AuditService::recordGlobal()` (document multi-mission, pas d'AuditEvent mission-scopé).
+`_ISSUED` est émis sur la transition `SENT` existante (`markSent()`, chemins legacy et
+nouveau confondus) — c'est le vrai point d'engagement vis-à-vis du tiers dans ce
+produit, pas la création (voir D-074). Payload : id document, bénéficiaire, devise,
+période, ids de lignes/calculs financiers consommés ou libérés, total, motif
+d'annulation le cas échéant.
+
+---

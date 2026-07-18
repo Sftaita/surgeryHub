@@ -3873,6 +3873,154 @@ refonte UX.
 
 ---
 
+## D-074 — Les documents financiers ne calculent aucun montant. Ils consomment exclusivement les lignes figées de FinancialCalculation. Une ligne financière ne peut être intégrée qu'une seule fois dans son flux documentaire (EPIC Exécution & Valorisation, Lot 4)
+
+Date : 2026-07-18
+
+### Décision
+
+`FirmInvoice`/`InstrumentistStatement` deviennent des documents construits à partir de
+`FinancialCalculationLine` déjà valorisées (Lot 3) — plus jamais de résolution de
+`PricingRule`/`InstrumentistRate`, de relecture de `User.hourlyRate`/`consultationFee`,
+ni de recalcul de durée/quantité/prix unitaire/total côté document.
+`FinancialCalculationLine` = vérité monétaire ; `FirmInvoiceLine`/
+`InstrumentistStatementLine` = présentation documentaire et affectation.
+
+### Deux chemins coexistent — pas de bascule forcée du frontend
+
+`FirmInvoiceService::preview()`/`generate()`/`InstrumentistStatementService::preview()`/
+`generate()` (chemin LEGACY, seul chemin utilisé par le frontend actuel — voir
+`FirmInvoiceServiceLot1AdaptationTest`, jamais retouché) recalculent toujours eux-mêmes
+depuis `PricingRule`. Deux nouvelles méthodes par service —
+`previewEligibleLines()`/`createFromEligibleLines()` — consomment exclusivement des
+`FinancialCalculationLine`. `FirmInvoiceLine.financialCalculationLine`/
+`InstrumentistStatementLine.financialCalculationLine` (FK nullable, UNIQUE) distinguent
+les deux : `null` = ligne legacy, non-null = ligne nouvelle
+(`FirmInvoiceLine::isLegacy()`/`InstrumentistStatementLine::isLegacy()`). Un même
+document ne mélange jamais les deux. `FirmInvoice.legacySource`/
+`InstrumentistStatement.legacySource` marquent le document entier (`true` pour tout
+document existant avant ce lot, backfillé par la migration ; `false` uniquement pour un
+document créé via le nouveau chemin).
+
+### Statuts — pas de nouvelle machine à états
+
+`InvoiceStatus` (`DRAFT`/`GENERATED`/`SENT`/`PAID`) gagne un seul nouveau cas,
+`CANCELLED` — les autres restent inchangés dans leur sémantique produit existante.
+**`GENERATED` joue le rôle du "DRAFT/document définitif non encore engagé" du lot** : les
+deux chemins de création (legacy et nouveau) produisent déjà un document `GENERATED`
+en un seul appel atomique, jamais un `DRAFT` visible/transitoire — exactement le même
+raisonnement que "pas de statut DRAFT" pour `FinancialCalculation` (D-073) : un document
+est construit entièrement en mémoire puis persisté en un bloc, ou pas du tout. `SENT`
+(transition existante `markSent()`, inchangée) est le vrai point de bascule "engagé vis-
+à-vis du tiers" dans ce produit — c'est là qu'est auditée `FIRM_INVOICE_ISSUED`/
+`INSTRUMENTIST_STATEMENT_ISSUED` (§27 du lot), pas à la création. Aucun endpoint
+`/issue` séparé n'a donc été ajouté : il n'existerait aucun `DRAFT` observable sur lequel
+l'appeler.
+
+### Éligibilité d'une ligne (identique firme/instrumentiste, symétrique)
+
+Une `FinancialCalculationLine` n'est sélectionnable que si : son `beneficiaryType`/
+bénéficiaire correspond exactement à la cible du document (firme ou instrumentiste) ;
+son calcul est `APPROVED` **ou** `LOCKED` (jamais `CALCULATED`/`SUPERSEDED`/`CANCELLED`)
+— `LOCKED` est accepté car un calcul verrouillé par l'affectation d'une première ligne
+doit continuer à pouvoir fournir ses autres lignes (§30 du lot, voir plus bas) ; sa
+devise correspond exactement à celle demandée ; elle n'est pas déjà rattachée à un
+document (`isLineAlreadyAssigned()`, requête SQL fraîche — jamais l'association inverse
+potentiellement périmée en mémoire) ; sa date effective (`FinancialCalculationLine.
+effectiveAt`, jamais `createdAt`/la date de génération/`now()`) tombe dans la période
+demandée. Filtrage identique et documenté une seule fois pour les deux services.
+
+### Regroupement — 1 document = 1 bénéficiaire + 1 devise
+
+Une mission peut produire des lignes pour plusieurs firmes (intervention vs matériel) —
+la facture se base exclusivement sur `FinancialCalculationLine.beneficiaryFirm`, jamais
+sur l'hypothèse que toute la mission appartient à la firme principale. Une firme/un
+instrumentiste avec des lignes dans deux devises reçoit deux documents distincts (aucune
+conversion, aucune addition inter-devises) — le manager fournit explicitement la devise
+cible à `previewEligibleLines()`/`createFromEligibleLines()`, qui ne renvoient/ne
+consomment que les lignes de cette devise.
+
+### Rattachement — atomique, jamais de confiance dans la prévisualisation
+
+`createFromEligibleLines()` ne fait jamais confiance à `previewEligibleLines()`
+(lecture seule, ne réserve rien) : elle reverrouille (`PESSIMISTIC_WRITE`, ordre
+croissant d'id — §22, évite les deadlocks entre générations concurrentes dont les
+ensembles de lignes se recoupent) chaque `FinancialCalculation` DISTINCT référencé par
+les lignes sélectionnées, puis revérifie individuellement chacune sous ce verrou. Une
+seule ligne devenue inéligible (déjà assignée, mauvaise devise, mauvais bénéficiaire,
+calcul non `APPROVED`/`LOCKED`, ou introuvable) fait échouer toute la création — aucun
+document partiel, aucune ligne rattachée, aucun calcul verrouillé
+(`DocumentLineSelectionException`, miroir exact de
+`FinancialCalculationAnomaliesException` du Lot 3 : toutes les anomalies collectées en
+un seul rapport, jamais un échec sur la première ligne).
+
+**Piège de transaction reproduit et corrigé comme au Lot 3** : `$invoice`/`$statement`
+doivent être `persist()`-és **avant** la boucle qui appelle
+`FinancialCalculationService::lock()` (celui-ci `flush()` en interne à chaque itération)
+— sinon Doctrine refuse la cascade de persistance des lignes qui référencent un document
+encore inconnu de l'UnitOfWork. Trouvé par un test d'intégration réel, pas par
+inspection.
+
+### Verrouillage du calcul — dès la première ligne intégrée, jamais un déverrouillage automatique
+
+Dès qu'une ligne d'un calcul `APPROVED` est intégrée à un document, le calcul passe
+`LOCKED` dans la **même transaction** (réutilise `FinancialCalculationService::lock()`,
+idempotent si déjà `LOCKED`). `hasUnassignedFirmLines()`/
+`hasUnassignedInstrumentistLines()`/`isFullyDocumented()` (méthodes dérivées sur
+`FinancialCalculation`, jamais un booléen stocké en doublon) permettent de représenter un
+calcul **partiellement** documenté : une mission produit typiquement une ligne firme
+(intervention), une ligne firme (matériel) et une ligne instrumentiste sur le **même**
+calcul — verrouillé dès que la première est facturée/décomptée, les deux autres restent
+sélectionnables tant qu'elles ne sont pas elles-mêmes affectées. Annuler un document
+(voir plus bas) **ne déverrouille jamais** le calcul — politique explicite, jamais
+automatique.
+
+### Annulation — DRAFT/GENERATED libère, SENT/PAID jamais
+
+`cancel()` (nouveau sur les deux services, symétrique) : `GENERATED → CANCELLED`
+autorisé — supprime physiquement les `FirmInvoiceLine`/`InstrumentistStatementLine`
+(libère la contrainte `UNIQUE(financial_calculation_line_id)`, la ligne redevient
+sélectionnable dans un nouveau document) mais conserve le document lui-même comme trace
+historique (`CANCELLED`, jamais une suppression physique du document). `SENT`/`PAID` →
+refusé (`DocumentAlreadyIssuedException`, 409) : un document déjà engagé vis-à-vis du
+tiers ne peut plus être annulé dans ce lot — une correction future passera par une note
+de crédit / un document compensatoire, explicitement hors périmètre ici (§12/§37).
+
+### Anti-double facturation — trois niveaux
+
+Applicatif (revérification sous verrou avant rattachement, ci-dessus) ; base de données
+(`UNIQUE(financial_calculation_line_id)` sur les deux tables de lignes — dernier
+rempart, prouvé par insertion directe rejetée) ; transaction (sélection + création +
+rattachement + verrouillage du calcul, atomique). Concurrence prouvée par
+`FirmInvoiceConcurrencyTest` — deux connexions DBAL réellement distinctes, un
+`createFromEligibleLines()` concurrent sur la même ligne est réellement bloqué (timeout
+MySQL déterministe), jamais une réussite silencieuse ni un doublon.
+
+### PDF — aucun changement nécessaire
+
+Les templates `firm_invoice.html.twig`/`instrumentist_statement.html.twig` ne lisaient
+déjà que des champs snapshot (`descriptionSnapshot`, `unitPrice`/`rateSnapshot`,
+`totalAmount`, `quantity`, `missionDateSnapshot`/`mission.startAt`) — `hydrateFromFinancialLine()`
+peuple exactement les mêmes champs pour les nouvelles lignes. Confirmé sans modification
+de template (§21/§33 du lot).
+
+### Migration — conservatrice, aucune reconstruction rétroactive
+
+Colonnes nullables uniquement (`financial_calculation_line_id`, `currency`,
+`unit_snapshot`, `source_snapshot`, `created_at` sur les deux tables de lignes ;
+`currency`/`legacy_source` sur les deux documents). Aucun rapprochement approximatif par
+montant/date/description tenté pour les documents existants — `financial_calculation_line_id`
+reste `NULL` pour toute ligne créée avant ce lot, `legacy_source = true` par défaut.
+Aucune perte de facture/décompte existant, testé par round-trip up→down→up.
+
+### Portée non traitée ici (Lot 5+)
+
+Gestion des documents `SENT`/`PAID`, paiements, rapprochement bancaire, corrections
+financières additives après règlement externe, notes de crédit, table `Settlement`,
+conversion de devises, refonte UX.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -3943,3 +4091,4 @@ refonte UX.
 | 18-07-2026 | D-071 — Modèle Mission/MissionExecution/FinancialCalculation ; InstrumentistService → MissionExecution (Exécution & Valorisation, Lot 1) |
 | 18-07-2026 | D-072 — Historisation des tarifs : PricingRule append-only, validTo exclusif, InstrumentistRate (Exécution & Valorisation, Lot 2) |
 | 18-07-2026 | D-073 — FinancialCalculation : valorisation figée, append-only, versionnée par mission (Exécution & Valorisation, Lot 3) |
+| 18-07-2026 | D-074 — Bascule des documents financiers vers FinancialCalculationLine, anti-double facturation, legacy coexistant (Exécution & Valorisation, Lot 4) |
