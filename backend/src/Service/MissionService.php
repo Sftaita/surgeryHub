@@ -39,6 +39,7 @@ class MissionService
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly AuditService $auditService,
         private readonly NotificationService $notificationService,
+        private readonly MissionEncodingWorkflowService $encodingWorkflowService,
     ) {}
 
     public function create(MissionCreateRequest $dto, User $creator): Mission
@@ -347,14 +348,16 @@ class MissionService
         return $publication;
     }
 
+    /**
+     * Lot 7 (D-070) : delegates to MissionEncodingWorkflowService::complete(), the real
+     * implementation shared with POST /api/missions/{id}/encoding/complete — this legacy
+     * route (`$dto->noMaterial`/`$dto->comment` still accepted but unused, unchanged from
+     * before this lot) is kept working for existing frontend callers, never a second
+     * business-logic path.
+     */
     public function submit(Mission $mission, MissionSubmitRequest $dto, User $actor): Mission
     {
-        $this->encodingGuard->assertEncodingAllowed($mission, $actor);
-
-        $mission->setStatus(MissionStatus::SUBMITTED);
-        $this->em->flush();
-
-        return $mission;
+        return $this->encodingWorkflowService->complete($mission, $actor);
     }
 
     /**

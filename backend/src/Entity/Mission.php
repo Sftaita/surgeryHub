@@ -76,6 +76,12 @@ class Mission
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
     private ?\DateTimeImmutable $encodingLockedAt = null;
 
+    /** Lot 7 (D-070) — instant du POST .../encoding/start le plus récent (rafraîchi si
+     *  un reject/reopen renvoie la mission en ENCODING_IN_PROGRESS puis qu'elle redémarre). */
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
+    private ?\DateTimeImmutable $encodingStartedAt = null;
+
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
     private ?\DateTimeImmutable $invoiceGeneratedAt = null;
@@ -123,6 +129,11 @@ class Mission
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: InterventionTypeRequest::class, orphanRemoval: true)]
     private Collection $interventionTypeRequests;
 
+    /** Lot 7 (D-070) — commentaires manager historisés (reject/reopen), jamais perdus. */
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionEncodingComment::class, orphanRemoval: true)]
+    #[ORM\OrderBy(['createdAt' => 'ASC'])]
+    private Collection $encodingComments;
+
     public function __construct()
     {
         $this->claims = new ArrayCollection();
@@ -135,6 +146,7 @@ class Mission
         $this->materialLines = new ArrayCollection();
         $this->materialItemRequests = new ArrayCollection();
         $this->interventionTypeRequests = new ArrayCollection();
+        $this->encodingComments = new ArrayCollection();
     }
 
     public function getId(): ?int { return $this->id; }
@@ -172,6 +184,9 @@ class Mission
     public function getEncodingLockedAt(): ?\DateTimeImmutable { return $this->encodingLockedAt; }
     public function setEncodingLockedAt(?\DateTimeImmutable $encodingLockedAt): static { $this->encodingLockedAt = $encodingLockedAt; return $this; }
 
+    public function getEncodingStartedAt(): ?\DateTimeImmutable { return $this->encodingStartedAt; }
+    public function setEncodingStartedAt(?\DateTimeImmutable $encodingStartedAt): static { $this->encodingStartedAt = $encodingStartedAt; return $this; }
+
     public function getInvoiceGeneratedAt(): ?\DateTimeImmutable { return $this->invoiceGeneratedAt; }
     public function setInvoiceGeneratedAt(?\DateTimeImmutable $invoiceGeneratedAt): static { $this->invoiceGeneratedAt = $invoiceGeneratedAt; return $this; }
 
@@ -200,6 +215,9 @@ class Mission
 
     /** @return Collection<int, InterventionTypeRequest> */
     public function getInterventionTypeRequests(): Collection { return $this->interventionTypeRequests; }
+
+    /** @return Collection<int, MissionEncodingComment> */
+    public function getEncodingComments(): Collection { return $this->encodingComments; }
 
     /** @return Collection<int, ImplantSubMission> */
     public function getImplantSubMissions(): Collection { return $this->implantSubMissions; }

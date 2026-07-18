@@ -5,6 +5,8 @@ namespace App\Service;
 use App\Dto\Request\Response\FirmSlimDto;
 use App\Dto\Request\Response\InterventionTypeSlimDto;
 use App\Dto\Request\Response\MissionEncodingCatalogDto;
+use App\Dto\Request\Response\MissionEncodingCoherenceSummaryDto;
+use App\Dto\Request\Response\MissionEncodingCommentDto;
 use App\Dto\Request\Response\MissionEncodingDto;
 use App\Dto\Request\Response\MissionEncodingInterventionDto;
 use App\Dto\Request\Response\MissionEncodingInterventionTypeRequestDto;
@@ -18,6 +20,7 @@ use App\Entity\MaterialItem;
 use App\Entity\MaterialItemRequest;
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
+use App\Entity\MissionEncodingComment;
 use App\Entity\MissionIntervention;
 use App\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
@@ -70,6 +73,13 @@ final class MissionEncodingService
 
         $allowedActions = $this->actionsService->allowedActions($mission, $viewer);
 
+        $coherenceSummary = $this->buildCoherenceSummary($interventions);
+
+        $encodingComments = [];
+        foreach ($mission->getEncodingComments() as $comment) {
+            $encodingComments[] = $this->mapEncodingComment($comment);
+        }
+
         return new MissionEncodingDto(
             mission: [
                 'id' => (int) $mission->getId(),
@@ -80,6 +90,61 @@ final class MissionEncodingService
             interventions: $interventions,
             interventionTypeRequests: $interventionTypeRequests,
             catalog: $catalog,
+            coherenceSummary: $coherenceSummary,
+            encodingComments: $encodingComments,
+        );
+    }
+
+    /**
+     * Lot 7 (D-070) — agrégation mission-level des signaux Lot 6 déjà calculés par
+     * intervention : aucune requête supplémentaire, pure lecture en mémoire.
+     *
+     * @param MissionEncodingInterventionDto[] $interventions
+     */
+    private function buildCoherenceSummary(array $interventions): MissionEncodingCoherenceSummaryDto
+    {
+        $hasNoInterventions = count($interventions) === 0;
+        $hasInterventionsWithNoMaterial = false;
+        $hasUnusedSuggestions = false;
+        $hasMaterialFromOtherFirm = false;
+        $hasMissingPrimaryFirm = false;
+
+        foreach ($interventions as $i) {
+            if ($i->coherence->hasNoMaterialLines) {
+                $hasInterventionsWithNoMaterial = true;
+            }
+            if (!empty($i->coherence->unusedSuggestedMaterialItemIds)) {
+                $hasUnusedSuggestions = true;
+            }
+            if (!empty($i->coherence->materialLineIdsFromOtherFirm)) {
+                $hasMaterialFromOtherFirm = true;
+            }
+            if ($i->primaryFirm === null) {
+                $hasMissingPrimaryFirm = true;
+            }
+        }
+
+        return new MissionEncodingCoherenceSummaryDto(
+            hasNoInterventions: $hasNoInterventions,
+            hasInterventionsWithNoMaterial: $hasInterventionsWithNoMaterial,
+            hasUnusedSuggestions: $hasUnusedSuggestions,
+            hasMaterialFromOtherFirm: $hasMaterialFromOtherFirm,
+            hasMissingPrimaryFirm: $hasMissingPrimaryFirm,
+        );
+    }
+
+    private function mapEncodingComment(MissionEncodingComment $c): MissionEncodingCommentDto
+    {
+        $author = $c->getAuthor();
+        $authorName = $author !== null
+            ? trim(($author->getFirstname() ?? '') . ' ' . ($author->getLastname() ?? ''))
+            : '';
+
+        return new MissionEncodingCommentDto(
+            id: (int) $c->getId(),
+            comment: (string) $c->getComment(),
+            authorDisplayName: $authorName,
+            createdAt: (string) $c->getCreatedAt()?->format(\DateTimeInterface::ATOM),
         );
     }
 
@@ -137,6 +202,8 @@ final class MissionEncodingService
             ->leftJoin('item.firm', 'firm')->addSelect('firm')
             ->leftJoin('m.materialItemRequests', 'mir')->addSelect('mir')
             ->leftJoin('m.interventionTypeRequests', 'itr')->addSelect('itr')
+            ->leftJoin('m.encodingComments', 'ec')->addSelect('ec')
+            ->leftJoin('ec.author', 'eca')->addSelect('eca')
             ->andWhere('m.id = :id')->setParameter('id', $missionId);
 
         $mission = $qb->getQuery()->getOneOrNullResult();

@@ -38,7 +38,10 @@ final class MissionActionsService
                 MissionStatus::DRAFT => ['view', 'edit', 'publish'],
                 MissionStatus::OPEN => ['view', 'view_publications', 'cancel'],
                 MissionStatus::ASSIGNED => ['view', 'cancel', 'reassign', 'view_claim'],
-                MissionStatus::SUBMITTED => ['view', 'validate', 'reopen'],
+                // Lot 7 (D-070) : corrigé — 'reopen' n'est valide que depuis VALIDATED
+                // (une mission SUBMITTED n'a jamais été validée, donc rien à "rouvrir").
+                MissionStatus::SUBMITTED => ['view', 'validate', 'reject'],
+                MissionStatus::VALIDATED => ['view', 'reopen'],
                 MissionStatus::DECLARED => ['view', 'approve', 'reject', 'edit'],
                 default => ['view'],
             };
@@ -59,6 +62,17 @@ final class MissionActionsService
             && $this->isEncodingAllowedNow($mission, $viewer)
         ) {
             if (in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true)) {
+                $actions[] = 'edit_encoding';
+                // Lot 7 (D-070) : 'start_encoding' est une invite optionnelle — 'submit'
+                // (= "complete") reste directement atteignable sans être passé par start()
+                // (comportement préexistant conservé, voir MissionEncodingWorkflowService::complete()).
+                $actions[] = 'start_encoding';
+                $actions[] = 'submit';
+            }
+
+            // Lot 7 (D-070) : encodage explicitement démarré — mêmes actions que ci-dessus
+            // moins 'start_encoding' (déjà fait), 'submit' = "terminer l'encodage".
+            if ($mission->getStatus() === MissionStatus::ENCODING_IN_PROGRESS) {
                 $actions[] = 'edit_encoding';
                 $actions[] = 'submit';
             }

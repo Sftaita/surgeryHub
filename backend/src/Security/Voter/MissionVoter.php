@@ -43,6 +43,12 @@ class MissionVoter extends Voter
     // Audit history (Batch 15F) — MANAGER/ADMIN or mission surgeon
     public const VIEW_AUDIT = 'MISSION_VIEW_AUDIT';
 
+    // Encoding workflow (Lot 7, D-070) — SUBMIT reused as "complete", see canSubmit().
+    public const ENCODING_START    = 'MISSION_ENCODING_START';
+    public const ENCODING_VALIDATE = 'MISSION_ENCODING_VALIDATE';
+    public const ENCODING_REJECT   = 'MISSION_ENCODING_REJECT';
+    public const ENCODING_REOPEN   = 'MISSION_ENCODING_REOPEN';
+
     protected function supports(string $attribute, mixed $subject): bool
     {
         if (!in_array($attribute, [
@@ -62,6 +68,10 @@ class MissionVoter extends Voter
             self::ASSIGN_INSTRUMENTIST,
             self::VIEW_ELIGIBLE_INSTRUMENTISTS,
             self::VIEW_AUDIT,
+            self::ENCODING_START,
+            self::ENCODING_VALIDATE,
+            self::ENCODING_REJECT,
+            self::ENCODING_REOPEN,
         ], true)) {
             return false;
         }
@@ -111,6 +121,10 @@ class MissionVoter extends Voter
             self::ASSIGN_INSTRUMENTIST         => $isManager,
             self::VIEW_ELIGIBLE_INSTRUMENTISTS => $isManager,
             self::VIEW_AUDIT                  => $isManager || $mission->getSurgeon()?->getId() === $user->getId(),
+            self::ENCODING_START              => $this->canEncodingStart($mission, $user),
+            self::ENCODING_VALIDATE           => $isManager && $mission->getStatus() === MissionStatus::SUBMITTED,
+            self::ENCODING_REJECT             => $isManager && $mission->getStatus() === MissionStatus::SUBMITTED,
+            self::ENCODING_REOPEN             => $isManager && $mission->getStatus() === MissionStatus::VALIDATED,
             default                           => false,
         };
     }
@@ -190,12 +204,33 @@ class MissionVoter extends Voter
 
         // ✅ SUBMITTED autorisé (idempotent + liberté instrumentiste)
         // ✅ DECLARED autorisé (mission déclarée, encodage possible)
+        // ✅ ENCODING_IN_PROGRESS autorisé (Lot 7 — "complete" atteignable directement,
+        //    start() reste optionnel/conseillé, jamais un préalable obligatoire)
         return in_array($mission->getStatus(), [
             MissionStatus::DECLARED,
             MissionStatus::ASSIGNED,
             MissionStatus::IN_PROGRESS,
+            MissionStatus::ENCODING_IN_PROGRESS,
             MissionStatus::SUBMITTED,
         ], true);
+    }
+
+    /** Lot 7 (D-070) — ASSIGNED|IN_PROGRESS → ENCODING_IN_PROGRESS, instrumentiste assigné seulement. */
+    private function canEncodingStart(Mission $mission, User $user): bool
+    {
+        if (!in_array('ROLE_INSTRUMENTIST', $user->getRoles(), true)) {
+            return false;
+        }
+
+        if ($mission->getInstrumentist()?->getId() !== $user->getId()) {
+            return false;
+        }
+
+        if (!$this->hasMissionStarted($mission)) {
+            return false;
+        }
+
+        return in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true);
     }
 
     private function canEdit(Mission $mission, User $user, bool $managerContext): bool
@@ -231,10 +266,12 @@ class MissionVoter extends Voter
 
         // ✅ DECLARED autorisé
         // ✅ SUBMITTED autorisé (liberté instrumentiste)
+        // ✅ ENCODING_IN_PROGRESS autorisé (Lot 7)
         return in_array($mission->getStatus(), [
             MissionStatus::DECLARED,
             MissionStatus::ASSIGNED,
             MissionStatus::IN_PROGRESS,
+            MissionStatus::ENCODING_IN_PROGRESS,
             MissionStatus::SUBMITTED,
         ], true);
     }
