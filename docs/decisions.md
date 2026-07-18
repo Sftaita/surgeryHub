@@ -3736,6 +3736,143 @@ de l'endpoint legacy `PATCH /instrumentists/{id}/rates` avec `InstrumentistRate`
 
 ---
 
+## D-073 — FinancialCalculation est append-only. Chaque calcul fige les données tarifaires et métier utilisées. Toute nouvelle valorisation crée une nouvelle version (EPIC Exécution & Valorisation, Lot 3)
+
+Date : 2026-07-18
+
+### Décision
+
+Construire le cœur déterministe de la valorisation financière : `FinancialCalculation`
+fige la valeur économique d'une mission à une date donnée (`effectiveAt`), à partir de
+la mission, son exécution réelle (`MissionExecution`, D-071), ses interventions/lignes
+de matériel, les règles tarifaires firmes et instrumentistes historisées (`PricingRule`/
+`InstrumentistRate`, D-072). Le résultat est déterministe (deux appels avec les mêmes
+données produisent le même montant), historisé (jamais réécrit en place), reproductible
+(indépendant de toute modification tarifaire future — tout est snapshoté), append-only,
+auditable, et exploitable plus tard par `FirmInvoice`/`InstrumentistStatement` — sans
+encore basculer ni l'un ni l'autre dans ce lot.
+
+### Modèle retenu — pas de statut DRAFT
+
+`FinancialCalculationStatus` : `CALCULATED → APPROVED → LOCKED`, plus `SUPERSEDED`
+(ancienne version remplacée par un recalcul) et `CANCELLED` (annulation explicite).
+**Délibérément aucun statut `DRAFT`** : un calcul est construit entièrement en mémoire
+puis persisté en un seul bloc ou pas du tout (voir anomalies ci-dessous) — un `DRAFT`
+n'aurait jamais eu de transition observable, un statut sans comportement réel que le lot
+interdit explicitement d'introduire.
+
+Relation `Mission` 1 — 0..n `FinancialCalculation` (plusieurs versions successives
+possibles), unicité `(mission_id, version)` en base, un seul calcul actif
+(`CALCULATED`/`APPROVED`/`LOCKED`, jamais `SUPERSEDED`/`CANCELLED`) à la fois par
+mission. `FinancialCalculationLine` porte le détail (jamais un total opaque) : firme
+**et** instrumentiste via deux FK nullables explicites (`beneficiaryFirm`/
+`beneficiaryInstrumentist`) plutôt qu'un discriminateur générique — même pattern déjà
+en place sur `FirmInvoiceLine`. Quatre types de ligne minimaux, pas de système universel
+abstrait prématuré : `FIRM_INTERVENTION_FEE`, `FIRM_MATERIAL_FEE`,
+`INSTRUMENTIST_HOURLY`, `INSTRUMENTIST_CONSULTATION_FEE`.
+
+### Date effective — jamais now() implicitement
+
+`FinancialCalculationService::resolveEffectiveAt(Mission)` centralise l'unique règle :
+`MissionExecution.actualStartAt` si disponible (réalisé, D-071), sinon `Mission.startAt`
+(planifié). Le calcul stocke la valeur retenue (`FinancialCalculation.effectiveAt`) —
+jamais recalculée après coup. Durée instrumentiste exclusivement via
+`MissionExecutionService::resolveEffectiveDuration()` (D-071, Lot 1) — jamais dupliquée,
+seule source de vérité pour la durée réelle/déclarée/planifiée.
+
+### Politique d'arrondi — decimal-string, jamais float
+
+Cohérente avec la convention déjà en place dans tout le projet (`FirmInvoiceService`/
+`InstrumentistStatementService`, aucun usage de `bcmath` nulle part dans le code
+existant) : colonnes `decimal` mappées en chaînes PHP, arithmétique interne en `float`
+puis `round()`/`number_format()`. Heures arrondies à 4 décimales
+(`round($minutes / 60, 4)`), montant total arrondi à 2 décimales — **une seule fois**,
+jamais en cascade (`roundMoney()`, point d'arrondi unique documenté). Testé
+explicitement sur 1 min, 30 min, 90 min et un tarif non divisible par 60.
+
+### Tarifs manquants — jamais inventés, jamais un échec au premier élément
+
+`buildAndPersist()` résout **toutes** les lignes possibles et collecte **toutes** les
+anomalies avant de décider — jamais un échec dès la première règle manquante. Codes
+stables : `MISSING_PRIMARY_FIRM`, `MISSING_INTERVENTION_TYPE` (legacy pré-Lot 5),
+`MISSING_FIRM_INTERVENTION_RATE`, `MISSING_FIRM_MATERIAL_RATE`,
+`MISSING_INSTRUMENTIST_RATE`, `INVALID_EFFECTIVE_DURATION`. En cas d'anomalie : **aucun**
+`FinancialCalculation` n'est persisté (zéro persistance partielle), seul un audit
+`FINANCIAL_CALCULATION_FAILED` structuré (liste complète des anomalies) est conservé.
+
+**Piège découvert et corrigé pendant le lot** : auditer l'échec puis lever l'exception
+*à l'intérieur* du même `wrapInTransaction()` provoque le rollback de l'audit lui-même —
+`EntityManager::wrapInTransaction()` appelle `close()` sur l'EntityManager dès qu'une
+exception le traverse (voir son code source), rendant tout audit ultérieur sur ce même
+EntityManager impossible. Corrigé : `buildAndPersist()` ne lève plus jamais d'exception
+elle-même (retourne `null` + anomalies par référence) ; `calculate()`/`recalculate()`
+auditent l'échec **à l'intérieur** de la transaction (qui se termine alors normalement,
+committant l'audit) puis lèvent `FinancialCalculationAnomaliesException` **après** la fin
+de `wrapInTransaction()`. Découvert par un test d'intégration réel (pas un mock) qui
+vérifiait la présence de l'AuditEvent après l'échec — jamais visible sans exécuter le
+code contre une vraie base.
+
+### Recalcul et verrouillage
+
+Recalcul explicite uniquement (jamais déclenché implicitement par une lecture) tant que
+le calcul actif n'est pas `LOCKED` : l'ancien passe `SUPERSEDED` (`supersededAt` +
+`supersededByCalculation` pointant vers le nouveau), jamais muté ni supprimé ; le nouveau
+devient `CALCULATED` avec `version + 1`. Deux faits distincts, deux audits
+(`FINANCIAL_CALCULATION_SUPERSEDED` sur l'ancien, `FINANCIAL_CALCULATION_RECALCULATED`
+sur le nouveau) — jamais un double audit du même fait. `LOCKED` : callable seulement
+depuis `APPROVED`, un calcul `LOCKED` ne peut plus être superseded ni cancelled.
+
+### Intégration avec le Lot 7 — garde de réouverture
+
+Seule exception sanctionnée à "ne pas toucher les lots précédents sans nécessité
+démontrée" : `MissionEncodingWorkflowService::reopen()` (D-070) gagne une garde
+supplémentaire — une mission avec un `FinancialCalculation` `LOCKED` ne peut plus être
+réouverte (409). Volontairement **pas** de dépendance au `FinancialCalculationService`
+complet (`final`, dépendances profondes elles-mêmes `final` — `PricingRuleResolver`/
+`InstrumentistRateResolver`/`MissionExecutionService` — aurait compliqué inutilement le
+test unitaire existant) : une requête directe via l'`EntityManager` déjà injecté suffit
+pour ce seul contrôle booléen. `FinancialCalculationService::hasLockedCalculation()`
+reste exposée publiquement pour les futurs consommateurs API/UI ; les deux requêtes
+doivent rester synchronisées si la logique évolue (documenté dans les deux docblocks).
+Aucun mécanisme de correction développé dans ce lot (D-073 §20) — seulement le blocage.
+
+### Concurrence
+
+Verrou pessimiste sur la `Mission` (`LockMode::PESSIMISTIC_WRITE`), même mécanisme que
+`PricingRuleWriteService`/`InstrumentistRateService` (D-072) — relecture de l'état sous
+verrou, jamais de fenêtre de course entre la vérification d'éligibilité et la
+persistance. Prouvé par un test de concurrence utilisant deux connexions DBAL réellement
+distinctes (pas de mock, pas de simulation) : un `calculate()` concurrent est réellement
+bloqué (timeout MySQL déterministe), jamais une réussite silencieuse ni un doublon.
+
+### Permissions et API
+
+Réutilise `BillingVoter::MANAGE` (manager/admin), même périmètre que
+`/pricing-rules`/`/instrumentists/{id}/rates` — pas de nouveau Voter redondant, pas
+d'exposition aux instrumentistes/chirurgiens. Six endpoints (`POST`
+`/api/missions/{id}/financial-calculations`, `POST .../recalculate`, `.../approve`,
+`.../lock`, `GET /api/missions/{id}/financial-calculations`,
+`GET /api/financial-calculations/{id}`) — `cancel()` existe au niveau service mais
+n'est volontairement pas exposé en HTTP dans ce lot (non listé dans la spec API du lot).
+
+### Contraintes base de données ajoutées
+
+`financial_calculation` : unicité `(mission_id, version)`, `CHECK (version > 0)`.
+`financial_calculation_line` : `CHECK (quantity > 0)`, `CHECK (unit_amount >= 0)`,
+`CHECK (total_amount >= 0)`, `CHECK (duration_minutes IS NULL OR duration_minutes > 0)`.
+Toutes vérifiées manuellement à l'exécution de la migration (insertion rejetée dans
+chaque cas) — MySQL 8.3 les applique réellement (contrairement à MySQL < 8.0.16).
+
+### Portée non traitée ici (Lot 4+)
+
+Bascule de `FirmInvoiceService`/`InstrumentistStatementService` vers les lignes figées de
+`FinancialCalculation`, tout paiement, toute correction financière additive après
+verrouillage, table `Settlement`, conversion de devises entre lignes de devises
+différentes (`totalsByCurrency()` les regroupe séparément, ne les additionne jamais),
+refonte UX.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -3805,3 +3942,4 @@ de l'endpoint legacy `PATCH /instrumentists/{id}/rates` avec `InstrumentistRate`
 | 17-07-2026 | D-070 — Workflow métier de l'encodage : cycle de vie explicite, verrouillage backend, commentaires historisés (Lot 7) |
 | 18-07-2026 | D-071 — Modèle Mission/MissionExecution/FinancialCalculation ; InstrumentistService → MissionExecution (Exécution & Valorisation, Lot 1) |
 | 18-07-2026 | D-072 — Historisation des tarifs : PricingRule append-only, validTo exclusif, InstrumentistRate (Exécution & Valorisation, Lot 2) |
+| 18-07-2026 | D-073 — FinancialCalculation : valorisation figée, append-only, versionnée par mission (Exécution & Valorisation, Lot 3) |

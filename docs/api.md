@@ -4513,3 +4513,100 @@ Payload : acteur, ancien/nouveau montant, devise, date d'effet, périmètre mét
 (firme+cible ou instrumentiste+type).
 
 ---
+
+## 35. Valorisation financière — FinancialCalculation (EPIC Exécution & Valorisation, Lot 3, D-073)
+
+Voir D-073 (`docs/decisions.md`) et `docs/architecture.md` pour le modèle complet,
+la machine à états, la politique d'arrondi et la résolution des tarifs. Ce lot ne
+bascule ni `FirmInvoice` ni `InstrumentistStatement` — le moteur fonctionne en
+parallèle, aucun document financier existant n'est affecté.
+
+**AuthZ (toutes routes) :** `BillingVoter::MANAGE` — manager/admin uniquement, même
+périmètre que §34. Jamais exposé à l'instrumentiste ni au chirurgien.
+
+### `POST /api/missions/{missionId}/financial-calculations`
+
+Premier calcul d'une mission. Verrouille la mission (pessimiste), vérifie l'éligibilité
+(`VALIDATED`, instrumentiste assigné, aucun calcul actif existant), résout tous les
+tarifs, construit les lignes.
+
+**Réponse — 201 :** le calcul créé (`version: 1`, `status: "CALCULATED"`).
+
+**Erreurs :**
+- `409 FINANCIAL_CALCULATION_INELIGIBLE` — mission pas `VALIDATED`, pas d'instrumentiste,
+  ou un calcul actif existe déjà (utiliser `/recalculate`).
+- `422 FINANCIAL_CALCULATION_ANOMALIES` — un ou plusieurs tarifs manquants ; `violations`
+  contient chaque anomalie (`code`/`message`/`context`) : `MISSING_PRIMARY_FIRM`,
+  `MISSING_INTERVENTION_TYPE`, `MISSING_FIRM_INTERVENTION_RATE`,
+  `MISSING_FIRM_MATERIAL_RATE`, `MISSING_INSTRUMENTIST_RATE`,
+  `INVALID_EFFECTIVE_DURATION`. Aucun calcul persisté dans ce cas.
+
+### `GET /api/missions/{missionId}/financial-calculations`
+
+Liste tous les calculs de la mission (toutes versions, triées croissant) — historique
+complet, y compris `SUPERSEDED`/`CANCELLED`.
+
+### `GET /api/financial-calculations/{id}`
+
+Détail d'un calcul : statut, version, date effective, lignes complètes (snapshots
+inclus), totaux par devise.
+
+### `POST /api/financial-calculations/{id}/recalculate`
+
+Recalcul explicite (jamais implicite) tant que le calcul actif de la mission n'est pas
+`LOCKED`. L'ancien calcul passe `SUPERSEDED` (jamais muté), le nouveau `CALCULATED`
+avec `version + 1`.
+
+**Réponse — 201 :** le nouveau calcul. **Erreurs :** `409 FINANCIAL_CALCULATION_INELIGIBLE`
+(pas de calcul existant, ou calcul actif déjà `LOCKED`) ; `422 FINANCIAL_CALCULATION_ANOMALIES`
+(mêmes codes que ci-dessus — l'ancien calcul reste actif, inchangé, si le recalcul échoue).
+
+### `POST /api/financial-calculations/{id}/approve`
+
+`CALCULATED → APPROVED`. **Erreurs :** `409 FINANCIAL_CALCULATION_INELIGIBLE` si le
+calcul n'est pas `CALCULATED`.
+
+### `POST /api/financial-calculations/{id}/lock`
+
+`APPROVED → LOCKED`. Un calcul `LOCKED` ne peut plus être recalculé ni annulé — et bloque
+désormais la réouverture de l'encodage de la mission (`POST .../encoding/reopen`, §32,
+`409` si un calcul `LOCKED` existe). **Erreurs :** `409 FINANCIAL_CALCULATION_INELIGIBLE`
+si le calcul n'est pas `APPROVED`.
+
+### Forme d'un calcul (toutes réponses)
+
+```json
+{
+  "id": 39, "missionId": 257, "version": 1, "status": "CALCULATED",
+  "effectiveAt": "2026-06-01", "currencyPolicy": "PER_CURRENCY_NO_CONVERSION",
+  "calculatedAt": "2026-06-01T12:00:00+00:00", "calculatedBy": 12,
+  "approvedAt": null, "approvedBy": null, "lockedAt": null,
+  "cancelledAt": null, "cancelledBy": null,
+  "supersededAt": null, "supersededByCalculationId": null,
+  "totalsByCurrency": { "EUR": { "FIRM": "340.00", "INSTRUMENTIST": "90.00" } },
+  "lines": [
+    {
+      "id": 49, "beneficiaryType": "FIRM", "beneficiaryFirmId": 5, "beneficiaryInstrumentistId": null,
+      "lineType": "FIRM_INTERVENTION_FEE", "sourceType": "MISSION_INTERVENTION",
+      "descriptionSnapshot": "[LCA] LCA primaire", "quantity": "1.0000", "durationMinutes": null,
+      "unitAmount": "180.00", "totalAmount": "180.00", "currency": "EUR", "effectiveAt": "2026-06-01",
+      "snapshot": { "pricingRuleId": 727, "ruleType": "INTERVENTION_FEE", "firmId": 5, "firmNameSnapshot": "…", "interventionTypeId": 8, "interventionCodeSnapshot": "LCA", "interventionLabelSnapshot": "LCA primaire" }
+    }
+  ]
+}
+```
+
+`totalsByCurrency` regroupe par devise puis par type de bénéficiaire — jamais d'addition
+entre devises différentes (D-073). `snapshot` porte la vérité historique complète (nom de
+firme/instrumentiste/intervention au moment du calcul) — une suppression/modification
+future du catalogue ne rend jamais un ancien calcul incompréhensible.
+
+### Audit
+
+`FINANCIAL_CALCULATION_CREATED`/`_RECALCULATED`/`_APPROVED`/`_LOCKED`/`_SUPERSEDED`/
+`_CANCELLED`/`_FAILED` — mission-scopés (`AuditService::record()`, contrairement aux
+événements tarifaires du Lot 2). Payload : id calcul, version, statut, date effective,
+totaux par devise ; `_FAILED` porte la liste structurée des anomalies ; `_RECALCULATED`
+porte l'id du calcul précédent.
+
+---

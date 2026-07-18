@@ -593,6 +593,35 @@ InstrumentistRate (EPIC Exécution & Valorisation, Lot 2, D-072)
 │   nouveau code financier ne doit plus s'y brancher
 └── ne contient jamais de durée ni de montant calculé — uniquement la règle tarifaire
 
+FinancialCalculation (EPIC Exécution & Valorisation, Lot 3, D-073)
+├── mission → Mission (1 — 0..n, plusieurs versions successives possibles)
+├── version (int, séquentiel par mission, unicité (mission_id, version))
+├── status: CALCULATED | APPROVED | LOCKED | SUPERSEDED | CANCELLED — pas de DRAFT
+│   (construit entièrement en mémoire puis persisté en un bloc ou pas du tout)
+├── effectiveAt (date retenue pour la résolution des tarifs — jamais now() implicite,
+│   voir FinancialCalculationService::resolveEffectiveAt())
+├── currencyPolicy: PER_CURRENCY_NO_CONVERSION (pas de taux de change)
+├── calculatedAt/calculatedBy, approvedAt/approvedBy, lockedAt, cancelledAt/cancelledBy,
+│   supersededAt/supersededByCalculation (self-FK, renseigné uniquement sur l'ancien)
+├── append-only : jamais réécrit en place une fois CALCULATED — un recalcul crée une
+│   nouvelle version, l'ancienne passe SUPERSEDED
+└── FinancialCalculationLine[] — jamais un total opaque, toujours détaillé
+
+FinancialCalculationLine
+├── financialCalculation, beneficiaryType: FIRM | INSTRUMENTIST
+├── beneficiaryFirm / beneficiaryInstrumentist (FK nullables explicites, polymorphe
+│   mais explicite — même pattern que FirmInvoiceLine)
+├── lineType: FIRM_INTERVENTION_FEE | FIRM_MATERIAL_FEE | INSTRUMENTIST_HOURLY |
+│   INSTRUMENTIST_CONSULTATION_FEE
+├── sourceType: MISSION_INTERVENTION | MATERIAL_LINE | MISSION_EXECUTION
+├── missionIntervention/materialLine/pricingRule/instrumentistRate (FK nullables,
+│   navigation uniquement — le snapshot JSON reste la source de vérité historique)
+├── descriptionSnapshot, quantity (decimal 10,4), durationMinutes (nullable, HOURLY
+│   uniquement), unitAmount/totalAmount (decimal 10,2), currency, effectiveAt
+└── snapshot (JSON) — nom firme/instrumentiste/intervention/matériel au moment du
+    calcul ; une suppression/modification future du catalogue ne rend jamais un ancien
+    calcul incompréhensible
+
 FirmInvoice
 ├── firm, number (FIRM-YYYY-NNN), status (DRAFT|GENERATED|SENT|PAID)
 ├── periodStart, periodEnd, totalAmount
@@ -1029,6 +1058,74 @@ depuis toujours", délibérée et correcte — pas une donnée ambiguë à devin
 **Hors périmètre de ce lot** : `FinancialCalculation`, `RemunerationLine`, toute
 bascule de `FirmInvoiceService`/`InstrumentistStatementService`, tout paiement, toute
 correction financière.
+
+---
+
+### Flux valorisation financière (EPIC Exécution & Valorisation, Lot 3, D-073)
+
+```
+Mission (VALIDATED) + MissionExecution (réalisé, Lot 1)
+       + MissionIntervention[]/MaterialLine[] (interventions/matériel encodés)
+       + PricingRule/InstrumentistRate (tarifs historisés, Lot 2)
+                              │
+                              ▼  FinancialCalculationService::calculate(mission, actor)
+                    verrou pessimiste sur Mission
+                    assertEligible() : VALIDATED + instrumentiste assigné
+                    aucun calcul actif existant (sinon 409, utiliser recalculate())
+                              │
+                    résout TOUS les tarifs, collecte TOUTES les anomalies
+                              │
+              ┌───────────────┴────────────────┐
+              ▼ anomalies                       ▼ aucune anomalie
+    audit FINANCIAL_CALCULATION_FAILED    FinancialCalculation (CALCULATED, v1)
+    (committé — voir piège ci-dessous)    + FinancialCalculationLine[]
+    422 FINANCIAL_CALCULATION_ANOMALIES   audit FINANCIAL_CALCULATION_CREATED
+    aucun calcul persisté                          │
+                                          approve() → APPROVED → lock() → LOCKED
+                                                       │
+                                          recalculate() tant que non LOCKED :
+                                          ancien → SUPERSEDED, nouveau → CALCULATED (v+1)
+```
+
+`FinancialCalculationService` — seul point d'entrée métier ; les contrôleurs ne
+construisent jamais les lignes. `resolveEffectiveAt(Mission)` centralise l'unique règle
+de date : `MissionExecution.actualStartAt` si connu, sinon `Mission.startAt` — jamais
+`now()`. Durée instrumentiste exclusivement via
+`MissionExecutionService::resolveEffectiveDuration()` (Lot 1) — jamais dupliquée.
+
+**Pas de statut DRAFT** : un calcul est construit entièrement en mémoire (résolution de
+tous les tarifs, collecte de toutes les anomalies) puis persisté en un seul bloc, ou pas
+du tout — un `DRAFT` n'aurait jamais eu de transition observable.
+
+**Piège de transaction découvert et corrigé pendant ce lot** : auditer un échec puis
+lever l'exception *à l'intérieur* du même `wrapInTransaction()` provoque le rollback de
+l'audit lui-même (`EntityManager::wrapInTransaction()` appelle `close()` sur
+l'EntityManager dès qu'une exception le traverse). `buildAndPersist()` ne lève donc plus
+jamais d'exception elle-même — elle retourne `null` + les anomalies par référence ;
+`calculate()`/`recalculate()` auditent l'échec **à l'intérieur** de la transaction (qui
+se termine alors normalement, committant l'audit), puis lèvent
+`FinancialCalculationAnomaliesException` **après** la fin de `wrapInTransaction()`.
+Trouvé par un test d'intégration réel (pas un mock) vérifiant la présence de l'AuditEvent
+après l'échec.
+
+**Politique d'arrondi** : convention decimal-string du projet (jamais de float), comme
+`FirmInvoiceService`/`InstrumentistStatementService`. Heures arrondies à 4 décimales,
+montant total à 2 décimales — une seule fois, jamais en cascade.
+
+**Intégration Lot 7** : `MissionEncodingWorkflowService::reopen()` (D-070) gagne une
+garde — une mission avec un `FinancialCalculation` `LOCKED` ne peut plus être réouverte
+(409). Requête directe via l'`EntityManager` déjà injecté, pas de dépendance au
+`FinancialCalculationService` complet (seule exception sanctionnée à "ne pas toucher les
+lots précédents sans nécessité démontrée").
+
+**Concurrence** : verrou pessimiste sur `Mission`, même mécanisme que
+`PricingRuleWriteService`/`InstrumentistRateService` (Lot 2) — prouvé par un test de
+concurrence à connexions DBAL réellement distinctes.
+
+**Hors périmètre de ce lot** : bascule de `FirmInvoiceService`/
+`InstrumentistStatementService` vers les lignes figées de `FinancialCalculation`, tout
+paiement, toute correction financière additive, table `Settlement`, conversion de
+devises.
 
 ---
 
