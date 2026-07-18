@@ -103,6 +103,20 @@ class FinancialCalculationLine
     #[ORM\Column(name: 'created_at', type: 'datetime_immutable')]
     private ?\DateTimeImmutable $createdAt = null;
 
+    /**
+     * EPIC Exécution & Valorisation, Lot 4 (D-074) — côté inverse de la relation 1—0..1
+     * vers le document financier qui a consommé cette ligne (§3 du lot). FK propriétaire
+     * sur FirmInvoiceLine/InstrumentistStatementLine (UNIQUE en base — §14, anti-double
+     * facturation). Une ligne FIRM_* n'est jamais reliée qu'à l'un des deux, jamais les
+     * deux (voir beneficiaryType) — isAssigned() ne suppose pas cette exclusivité pour
+     * autant, elle vérifie les deux côtés par défense en profondeur.
+     */
+    #[ORM\OneToOne(mappedBy: 'financialCalculationLine')]
+    private ?FirmInvoiceLine $firmInvoiceLine = null;
+
+    #[ORM\OneToOne(mappedBy: 'financialCalculationLine')]
+    private ?InstrumentistStatementLine $instrumentistStatementLine = null;
+
     public function __construct()
     {
         $this->createdAt = new \DateTimeImmutable();
@@ -167,4 +181,14 @@ class FinancialCalculationLine
     public function setSnapshot(array $snapshot): static { $this->snapshot = $snapshot; return $this; }
 
     public function getCreatedAt(): ?\DateTimeImmutable { return $this->createdAt; }
+
+    public function getFirmInvoiceLine(): ?FirmInvoiceLine { return $this->firmInvoiceLine; }
+
+    public function getInstrumentistStatementLine(): ?InstrumentistStatementLine { return $this->instrumentistStatementLine; }
+
+    /** §29 du lot — état dérivé depuis la relation, jamais un statut stocké en doublon. */
+    public function isAssigned(): bool
+    {
+        return $this->firmInvoiceLine !== null || $this->instrumentistStatementLine !== null;
+    }
 }

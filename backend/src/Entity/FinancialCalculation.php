@@ -3,6 +3,7 @@
 namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
+use App\Enum\FinancialBeneficiaryType;
 use App\Enum\FinancialCalculationStatus;
 use App\Enum\FinancialCurrencyPolicy;
 use Doctrine\Common\Collections\ArrayCollection;
@@ -188,5 +189,41 @@ class FinancialCalculation
     private function addDecimalStrings(string $a, string $b): string
     {
         return number_format((float) $a + (float) $b, 2, '.', '');
+    }
+
+    /**
+     * EPIC Exécution & Valorisation, Lot 4 (D-074) — §11/§29 du lot : un calcul peut être
+     * PARTIELLEMENT documenté (certaines lignes déjà facturées/décomptées, d'autres
+     * encore libres) — jamais modélisé par un seul booléen "entièrement facturé". États
+     * dérivés depuis les relations des lignes, jamais stockés en doublon.
+     */
+    public function hasUnassignedFirmLines(): bool
+    {
+        foreach ($this->lines as $line) {
+            if ($line->getBeneficiaryType() === FinancialBeneficiaryType::FIRM && !$line->isAssigned()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public function hasUnassignedInstrumentistLines(): bool
+    {
+        foreach ($this->lines as $line) {
+            if ($line->getBeneficiaryType() === FinancialBeneficiaryType::INSTRUMENTIST && !$line->isAssigned()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public function isFullyDocumented(): bool
+    {
+        foreach ($this->lines as $line) {
+            if (!$line->isAssigned()) {
+                return false;
+            }
+        }
+        return true;
     }
 }

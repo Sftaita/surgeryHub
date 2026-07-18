@@ -106,7 +106,7 @@ class InstrumentistStatementController extends AbstractController
         return $this->json($this->serializeStatementDetail($statement), 201);
     }
 
-    #[Route('/{id}', name: 'api_statements_get', methods: ['GET'])]
+    #[Route('/{id}', name: 'api_statements_get', methods: ['GET'], requirements: ['id' => '\d+'])]
     public function get(int $id): JsonResponse
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
@@ -115,6 +115,71 @@ class InstrumentistStatementController extends AbstractController
         if (!$statement) {
             return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Décompte introuvable.']], 404);
         }
+
+        return $this->json($this->serializeStatementDetail($statement));
+    }
+
+    // ── EPIC Exécution & Valorisation, Lot 4 (D-074) — chemin NOUVEAU ───
+
+    #[Route('/eligible-lines', name: 'api_statements_eligible_lines', methods: ['GET'])]
+    public function eligibleLines(Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $instrumentistId = $request->query->getInt('instrumentistId');
+        $currency = $request->query->get('currency', 'EUR');
+        $year = $request->query->getInt('year');
+        $month = $request->query->getInt('month');
+
+        if (!$instrumentistId || !$year || !$month || $month < 1 || $month > 12) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'instrumentistId, year et month sont requis.']], 422);
+        }
+
+        $instrumentist = $this->em->find(User::class, $instrumentistId);
+        if (!$instrumentist || !in_array('ROLE_INSTRUMENTIST', $instrumentist->getRoles(), true)) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Instrumentiste introuvable.']], 404);
+        }
+
+        return $this->json($this->statementService->previewEligibleLines($instrumentist, $currency, $year, $month));
+    }
+
+    #[Route('/from-financial-calculations', name: 'api_statements_create_from_calculations', methods: ['POST'])]
+    public function createFromFinancialCalculations(Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $instrumentistId = $data['instrumentistId'] ?? null;
+        $currency = $data['currency'] ?? 'EUR';
+        $year = (int) ($data['year'] ?? 0);
+        $month = (int) ($data['month'] ?? 0);
+        $selectedLineIds = $data['selectedFinancialCalculationLineIds'] ?? [];
+
+        if (!$instrumentistId || !$year || !$month || empty($selectedLineIds)) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'instrumentistId, year, month et selectedFinancialCalculationLineIds sont requis.']], 422);
+        }
+
+        $instrumentist = $this->em->find(User::class, $instrumentistId);
+        if (!$instrumentist || !in_array('ROLE_INSTRUMENTIST', $instrumentist->getRoles(), true)) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Instrumentiste introuvable.']], 404);
+        }
+
+        $statement = $this->statementService->createFromEligibleLines($instrumentist, $currency, $year, $month, $selectedLineIds, $actor);
+        return $this->json($this->serializeStatementDetail($statement), 201);
+    }
+
+    #[Route('/{id}/cancel', name: 'api_statements_cancel', methods: ['POST'])]
+    public function cancel(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $statement = $this->em->find(InstrumentistStatement::class, $id);
+        if (!$statement) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Décompte introuvable.']], 404);
+        }
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $statement = $this->statementService->cancel($statement, $actor, $data['reason'] ?? null);
 
         return $this->json($this->serializeStatementDetail($statement));
     }
@@ -203,6 +268,8 @@ class InstrumentistStatementController extends AbstractController
             'periodYear' => $s->getPeriodYear(),
             'periodMonth' => $s->getPeriodMonth(),
             'status' => $s->getStatus()->value,
+            'currency' => $s->getCurrency(),
+            'legacySource' => $s->isLegacySource(),
             'totalAmount' => $s->getTotalAmount(),
             'sentAt' => $s->getSentAt()?->format(\DateTimeInterface::ATOM),
             'paidAt' => $s->getPaidAt()?->format(\DateTimeInterface::ATOM),
@@ -223,8 +290,13 @@ class InstrumentistStatementController extends AbstractController
             'rateSnapshot' => $l->getRateSnapshot(),
             'quantity' => $l->getQuantity(),
             'totalAmount' => $l->getTotalAmount(),
+            'currency' => $l->getCurrency(),
+            'unitSnapshot' => $l->getUnitSnapshot(),
             'surgeonName' => $l->getSurgeonNameSnapshot(),
             'siteName' => $l->getSiteNameSnapshot(),
+            'financialCalculationLineId' => $l->getFinancialCalculationLine()?->getId(),
+            'financialCalculationVersion' => $l->getFinancialCalculationLine()?->getFinancialCalculation()->getVersion(),
+            'legacy' => $l->isLegacy(),
         ], $s->getLines()->toArray());
         return $base;
     }

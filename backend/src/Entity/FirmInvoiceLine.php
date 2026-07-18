@@ -5,6 +5,15 @@ namespace App\Entity;
 use App\Enum\PricingRuleType;
 use Doctrine\ORM\Mapping as ORM;
 
+/**
+ * EPIC Exécution & Valorisation, Lot 4 (D-074) — deux chemins de création coexistent
+ * (§18 du lot) : `financialCalculationLine === null` = ligne LEGACY (FirmInvoiceService::
+ * generate(), calcule elle-même le montant depuis PricingRule — chemin conservé
+ * inchangé) ; `financialCalculationLine !== null` = ligne NOUVELLE
+ * (FirmInvoiceService::createFromEligibleLines(), montants copiés exactement depuis
+ * FinancialCalculationLine, jamais recalculés). Un même document ne mélange jamais les
+ * deux (voir FirmInvoice::isLegacySource()).
+ */
 #[ORM\Entity]
 #[ORM\Table(indexes: [
     new ORM\Index(name: 'idx_firm_invoice_line_invoice', columns: ['invoice_id']),
@@ -23,6 +32,16 @@ class FirmInvoiceLine
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
     private ?Mission $mission = null;
+
+    /**
+     * Côté propriétaire de la relation 1—0..1 vers la ligne financière figée dont cette
+     * ligne provient (§3 du lot) — NULL pour les lignes legacy. UNIQUE en base (§14,
+     * anti-double facturation) : une FinancialCalculationLine ne peut jamais appartenir
+     * à deux FirmInvoiceLine.
+     */
+    #[ORM\OneToOne(inversedBy: 'firmInvoiceLine')]
+    #[ORM\JoinColumn(name: 'financial_calculation_line_id', nullable: true, unique: true)]
+    private ?FinancialCalculationLine $financialCalculationLine = null;
 
     /**
      * FK anti-doublon pour les lignes INTERVENTION_FEE.
@@ -58,7 +77,36 @@ class FirmInvoiceLine
     #[ORM\Column(type: 'decimal', precision: 10, scale: 2)]
     private ?string $totalAmount = null;
 
+    /** Devise de la ligne — 'EUR' pour toute ligne legacy (voir migration). */
+    #[ORM\Column(length: 3, options: ['default' => 'EUR'])]
+    private string $currency = 'EUR';
+
+    /** Libellé d'unité pour la présentation (ex: "pièce", "forfait") — legacy : NULL. */
+    #[ORM\Column(length: 50, nullable: true)]
+    private ?string $unitSnapshot = null;
+
+    /**
+     * Copie intégrale de FinancialCalculationLine.snapshot au moment du rattachement
+     * (§5/§8 du lot) — jamais relu depuis le catalogue actuel. NULL pour les lignes
+     * legacy (qui portent déjà leur propre firmNameSnapshot/descriptionSnapshot).
+     *
+     * @var array<string, mixed>|null
+     */
+    #[ORM\Column(type: 'json', nullable: true)]
+    private ?array $sourceSnapshot = null;
+
+    #[ORM\Column(name: 'created_at', type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $createdAt = null;
+
+    public function __construct()
+    {
+        $this->createdAt = new \DateTimeImmutable();
+    }
+
     public function getId(): ?int { return $this->id; }
+
+    public function getFinancialCalculationLine(): ?FinancialCalculationLine { return $this->financialCalculationLine; }
+    public function setFinancialCalculationLine(?FinancialCalculationLine $financialCalculationLine): static { $this->financialCalculationLine = $financialCalculationLine; return $this; }
 
     public function getInvoice(): ?FirmInvoice { return $this->invoice; }
     public function setInvoice(?FirmInvoice $invoice): static { $this->invoice = $invoice; return $this; }
@@ -89,4 +137,23 @@ class FirmInvoiceLine
 
     public function getTotalAmount(): ?string { return $this->totalAmount; }
     public function setTotalAmount(string $totalAmount): static { $this->totalAmount = $totalAmount; return $this; }
+
+    public function getCurrency(): string { return $this->currency; }
+    public function setCurrency(string $currency): static { $this->currency = strtoupper($currency); return $this; }
+
+    public function getUnitSnapshot(): ?string { return $this->unitSnapshot; }
+    public function setUnitSnapshot(?string $unitSnapshot): static { $this->unitSnapshot = $unitSnapshot; return $this; }
+
+    /** @return array<string, mixed>|null */
+    public function getSourceSnapshot(): ?array { return $this->sourceSnapshot; }
+    /** @param array<string, mixed>|null $sourceSnapshot */
+    public function setSourceSnapshot(?array $sourceSnapshot): static { $this->sourceSnapshot = $sourceSnapshot; return $this; }
+
+    public function getCreatedAt(): ?\DateTimeImmutable { return $this->createdAt; }
+
+    /** §18 du lot — legacy = jamais reliée à une FinancialCalculationLine. */
+    public function isLegacy(): bool
+    {
+        return $this->financialCalculationLine === null;
+    }
 }

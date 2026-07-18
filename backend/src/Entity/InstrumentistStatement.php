@@ -39,6 +39,14 @@ class InstrumentistStatement
     #[ORM\Column(type: 'decimal', precision: 10, scale: 2, options: ['default' => '0.00'])]
     private string $totalAmount = '0.00';
 
+    /** EPIC Exécution & Valorisation, Lot 4 (D-074) — voir FirmInvoice::$currency, même contrat. */
+    #[ORM\Column(length: 3, options: ['default' => 'EUR'])]
+    private string $currency = 'EUR';
+
+    /** Voir FirmInvoice::$legacySource, même contrat. */
+    #[ORM\Column(options: ['default' => true])]
+    private bool $legacySource = true;
+
     #[ORM\Column(length: 255, nullable: true)]
     private ?string $instrumentistNameSnapshot = null;
 
@@ -76,6 +84,12 @@ class InstrumentistStatement
 
     public function getTotalAmount(): string { return $this->totalAmount; }
     public function setTotalAmount(string $totalAmount): static { $this->totalAmount = $totalAmount; return $this; }
+
+    public function getCurrency(): string { return $this->currency; }
+    public function setCurrency(string $currency): static { $this->currency = strtoupper($currency); return $this; }
+
+    public function isLegacySource(): bool { return $this->legacySource; }
+    public function setLegacySource(bool $legacySource): static { $this->legacySource = $legacySource; return $this; }
 
     public function getInstrumentistNameSnapshot(): ?string { return $this->instrumentistNameSnapshot; }
     public function setInstrumentistNameSnapshot(?string $name): static { $this->instrumentistNameSnapshot = $name; return $this; }

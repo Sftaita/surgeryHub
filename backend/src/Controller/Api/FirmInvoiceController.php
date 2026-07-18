@@ -119,7 +119,7 @@ class FirmInvoiceController extends AbstractController
         return $this->json($this->serializeInvoiceDetail($invoice), 201);
     }
 
-    #[Route('/{id}', name: 'api_firm_invoices_get', methods: ['GET'])]
+    #[Route('/{id}', name: 'api_firm_invoices_get', methods: ['GET'], requirements: ['id' => '\d+'])]
     public function get(int $id): JsonResponse
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
@@ -128,6 +128,85 @@ class FirmInvoiceController extends AbstractController
         if (!$invoice) {
             return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
         }
+
+        return $this->json($this->serializeInvoiceDetail($invoice));
+    }
+
+    // ── EPIC Exécution & Valorisation, Lot 4 (D-074) — chemin NOUVEAU ───
+
+    #[Route('/eligible-lines', name: 'api_firm_invoices_eligible_lines', methods: ['GET'])]
+    public function eligibleLines(Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $firmId = $request->query->getInt('firmId');
+        $currency = $request->query->get('currency', 'EUR');
+        $periodStart = $request->query->get('periodStart');
+        $periodEnd = $request->query->get('periodEnd');
+
+        if (!$firmId || !$periodStart || !$periodEnd) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'firmId, periodStart et periodEnd sont requis.']], 422);
+        }
+
+        $firm = $this->em->find(Firm::class, $firmId);
+        if (!$firm) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Firme introuvable.']], 404);
+        }
+
+        try {
+            $start = new \DateTimeImmutable($periodStart);
+            $end = new \DateTimeImmutable($periodEnd);
+        } catch (\Exception) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Format de date invalide (ISO 8601 attendu).']], 422);
+        }
+
+        return $this->json($this->invoiceService->previewEligibleLines($firm, $currency, $start, $end));
+    }
+
+    #[Route('/from-financial-calculations', name: 'api_firm_invoices_create_from_calculations', methods: ['POST'])]
+    public function createFromFinancialCalculations(Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $firmId = $data['firmId'] ?? null;
+        $currency = $data['currency'] ?? 'EUR';
+        $periodStart = $data['periodStart'] ?? null;
+        $periodEnd = $data['periodEnd'] ?? null;
+        $selectedLineIds = $data['selectedFinancialCalculationLineIds'] ?? [];
+
+        if (!$firmId || !$periodStart || !$periodEnd || empty($selectedLineIds)) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'firmId, periodStart, periodEnd et selectedFinancialCalculationLineIds sont requis.']], 422);
+        }
+
+        $firm = $this->em->find(Firm::class, $firmId);
+        if (!$firm) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Firme introuvable.']], 404);
+        }
+
+        try {
+            $start = new \DateTimeImmutable($periodStart);
+            $end = new \DateTimeImmutable($periodEnd);
+        } catch (\Exception) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Format de date invalide.']], 422);
+        }
+
+        $invoice = $this->invoiceService->createFromEligibleLines($firm, $currency, $start, $end, $selectedLineIds, $actor);
+        return $this->json($this->serializeInvoiceDetail($invoice), 201);
+    }
+
+    #[Route('/{id}/cancel', name: 'api_firm_invoices_cancel', methods: ['POST'])]
+    public function cancel(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $invoice = $this->em->find(FirmInvoice::class, $id);
+        if (!$invoice) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $invoice = $this->invoiceService->cancel($invoice, $actor, $data['reason'] ?? null);
 
         return $this->json($this->serializeInvoiceDetail($invoice));
     }
@@ -212,6 +291,8 @@ class FirmInvoiceController extends AbstractController
             'number' => $i->getNumber(),
             'firm' => ['id' => $i->getFirm()->getId(), 'name' => $i->getFirm()->getName()],
             'status' => $i->getStatus()->value,
+            'currency' => $i->getCurrency(),
+            'legacySource' => $i->isLegacySource(),
             'periodStart' => $i->getPeriodStart()?->format('Y-m-d'),
             'periodEnd' => $i->getPeriodEnd()?->format('Y-m-d'),
             'totalAmount' => $i->getTotalAmount(),
@@ -239,6 +320,11 @@ class FirmInvoiceController extends AbstractController
             'unitPrice' => $l->getUnitPrice(),
             'quantity' => $l->getQuantity(),
             'totalAmount' => $l->getTotalAmount(),
+            'currency' => $l->getCurrency(),
+            'unitSnapshot' => $l->getUnitSnapshot(),
+            'financialCalculationLineId' => $l->getFinancialCalculationLine()?->getId(),
+            'financialCalculationVersion' => $l->getFinancialCalculationLine()?->getFinancialCalculation()->getVersion(),
+            'legacy' => $l->isLegacy(),
         ], $i->getLines()->toArray());
         return $base;
     }

@@ -42,6 +42,23 @@ class FirmInvoice
     #[ORM\Column(type: 'decimal', precision: 10, scale: 2, options: ['default' => '0.00'])]
     private string $totalAmount = '0.00';
 
+    /**
+     * EPIC Exécution & Valorisation, Lot 4 (D-074) — §23 du lot : 1 document = 1 devise,
+     * jamais d'agrégation entre devises différentes. 'EUR' par défaut (backfill des
+     * documents existants — seule devise utilisée dans ce projet jusqu'ici).
+     */
+    #[ORM\Column(length: 3, options: ['default' => 'EUR'])]
+    private string $currency = 'EUR';
+
+    /**
+     * §18 du lot — true pour tout document créé avant ce lot ou via le chemin
+     * FirmInvoiceService::generate() legacy (calcule lui-même les montants) ; false pour
+     * un document créé via createFromEligibleLines() (lignes issues de
+     * FinancialCalculationLine). Jamais mélangé au sein d'un même document.
+     */
+    #[ORM\Column(options: ['default' => true])]
+    private bool $legacySource = true;
+
     /** Email snapshot — adresse principale au moment de l'envoi */
     #[ORM\Column(length: 255, nullable: true)]
     private ?string $billingEmailTo = null;
@@ -87,6 +104,12 @@ class FirmInvoice
 
     public function getTotalAmount(): string { return $this->totalAmount; }
     public function setTotalAmount(string $totalAmount): static { $this->totalAmount = $totalAmount; return $this; }
+
+    public function getCurrency(): string { return $this->currency; }
+    public function setCurrency(string $currency): static { $this->currency = strtoupper($currency); return $this; }
+
+    public function isLegacySource(): bool { return $this->legacySource; }
+    public function setLegacySource(bool $legacySource): static { $this->legacySource = $legacySource; return $this; }
 
     public function getBillingEmailTo(): ?string { return $this->billingEmailTo; }
     public function setBillingEmailTo(?string $billingEmailTo): static { $this->billingEmailTo = $billingEmailTo; return $this; }

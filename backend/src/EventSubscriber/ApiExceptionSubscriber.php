@@ -13,6 +13,9 @@ use App\Exception\InstrumentistRateImmutableException;
 use App\Exception\InstrumentistRatePeriodOverlapException;
 use App\Exception\FinancialCalculationIneligibleException;
 use App\Exception\FinancialCalculationAnomaliesException;
+use App\Exception\DocumentLineSelectionException;
+use App\Exception\DocumentAlreadyIssuedException;
+use App\Exception\DocumentCannotReleaseLinesException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -78,6 +81,19 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $code = 'FINANCIAL_CALCULATION_ANOMALIES';
             $message = $e->getMessage();
             $violations = array_map(static fn ($a) => $a->toArray(), $e->getAnomalies());
+        } elseif ($e instanceof DocumentLineSelectionException) {
+            $status = 422;
+            $code = 'DOCUMENT_LINE_SELECTION_FAILED';
+            $message = $e->getMessage();
+            $violations = array_map(static fn ($a) => $a->toArray(), $e->getAnomalies());
+        } elseif ($e instanceof DocumentAlreadyIssuedException) {
+            $status = 409;
+            $code = 'DOCUMENT_ALREADY_ISSUED';
+            $message = $e->getMessage() ?: 'Ce document a déjà été émis.';
+        } elseif ($e instanceof DocumentCannotReleaseLinesException) {
+            $status = 409;
+            $code = 'DOCUMENT_CANNOT_RELEASE_LINES';
+            $message = $e->getMessage() ?: 'Les lignes de ce document ne peuvent pas être libérées.';
         } elseif ($e instanceof InterventionTypeNotFoundException) {
             $status = 404;
             $code = 'INTERVENTION_TYPE_NOT_FOUND';
@@ -109,7 +125,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             };
         }
 
-        if ($status === 422 && !$e instanceof FinancialCalculationAnomaliesException) {
+        if ($status === 422 && !$e instanceof FinancialCalculationAnomaliesException && !$e instanceof DocumentLineSelectionException) {
             $violations = $this->extractViolationsFromMessage($message);
             if (count($violations) > 0) {
                 $message = 'Validation failed';

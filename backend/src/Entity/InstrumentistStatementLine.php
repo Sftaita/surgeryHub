@@ -5,6 +5,15 @@ namespace App\Entity;
 use App\Enum\StatementLineType;
 use Doctrine\ORM\Mapping as ORM;
 
+/**
+ * EPIC Exécution & Valorisation, Lot 4 (D-074) — même coexistence legacy/nouveau que
+ * FirmInvoiceLine (voir son docblock) : `financialCalculationLine === null` = ligne
+ * LEGACY (InstrumentistStatementService::generate(), relit User.hourlyRate/
+ * consultationFee et recalcule la durée — chemin conservé inchangé) ;
+ * `financialCalculationLine !== null` = ligne NOUVELLE (createFromEligibleLines(),
+ * montants copiés depuis FinancialCalculationLine, aucune relecture de User.hourlyRate
+ * ni de MissionExecution).
+ */
 #[ORM\Entity]
 #[ORM\Table(indexes: [
     new ORM\Index(name: 'idx_stmt_line_statement', columns: ['statement_id']),
@@ -23,6 +32,11 @@ class InstrumentistStatementLine
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
     private ?Mission $mission = null;
+
+    /** Voir FirmInvoiceLine::$financialCalculationLine — même contrat, même UNIQUE (§14). */
+    #[ORM\OneToOne(inversedBy: 'instrumentistStatementLine')]
+    #[ORM\JoinColumn(name: 'financial_calculation_line_id', nullable: true, unique: true)]
+    private ?FinancialCalculationLine $financialCalculationLine = null;
 
     #[ORM\Column(enumType: StatementLineType::class, length: 20)]
     private ?StatementLineType $lineType = null;
@@ -55,7 +69,35 @@ class InstrumentistStatementLine
     #[ORM\Column(type: 'date_immutable', nullable: true)]
     private ?\DateTimeImmutable $missionDateSnapshot = null;
 
+    /** Devise de la ligne — 'EUR' pour toute ligne legacy (voir migration). */
+    #[ORM\Column(length: 3, options: ['default' => 'EUR'])]
+    private string $currency = 'EUR';
+
+    /** Libellé d'unité pour la présentation (ex: "heure", "consultation") — legacy : NULL. */
+    #[ORM\Column(length: 50, nullable: true)]
+    private ?string $unitSnapshot = null;
+
+    /**
+     * Copie intégrale de FinancialCalculationLine.snapshot au moment du rattachement —
+     * voir FirmInvoiceLine::$sourceSnapshot. NULL pour les lignes legacy.
+     *
+     * @var array<string, mixed>|null
+     */
+    #[ORM\Column(type: 'json', nullable: true)]
+    private ?array $sourceSnapshot = null;
+
+    #[ORM\Column(name: 'created_at', type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $createdAt = null;
+
+    public function __construct()
+    {
+        $this->createdAt = new \DateTimeImmutable();
+    }
+
     public function getId(): ?int { return $this->id; }
+
+    public function getFinancialCalculationLine(): ?FinancialCalculationLine { return $this->financialCalculationLine; }
+    public function setFinancialCalculationLine(?FinancialCalculationLine $financialCalculationLine): static { $this->financialCalculationLine = $financialCalculationLine; return $this; }
 
     public function getStatement(): ?InstrumentistStatement { return $this->statement; }
     public function setStatement(?InstrumentistStatement $statement): static { $this->statement = $statement; return $this; }
@@ -89,4 +131,23 @@ class InstrumentistStatementLine
 
     public function getMissionDateSnapshot(): ?\DateTimeImmutable { return $this->missionDateSnapshot; }
     public function setMissionDateSnapshot(?\DateTimeImmutable $missionDateSnapshot): static { $this->missionDateSnapshot = $missionDateSnapshot; return $this; }
+
+    public function getCurrency(): string { return $this->currency; }
+    public function setCurrency(string $currency): static { $this->currency = strtoupper($currency); return $this; }
+
+    public function getUnitSnapshot(): ?string { return $this->unitSnapshot; }
+    public function setUnitSnapshot(?string $unitSnapshot): static { $this->unitSnapshot = $unitSnapshot; return $this; }
+
+    /** @return array<string, mixed>|null */
+    public function getSourceSnapshot(): ?array { return $this->sourceSnapshot; }
+    /** @param array<string, mixed>|null $sourceSnapshot */
+    public function setSourceSnapshot(?array $sourceSnapshot): static { $this->sourceSnapshot = $sourceSnapshot; return $this; }
+
+    public function getCreatedAt(): ?\DateTimeImmutable { return $this->createdAt; }
+
+    /** §18 du lot — legacy = jamais reliée à une FinancialCalculationLine. */
+    public function isLegacy(): bool
+    {
+        return $this->financialCalculationLine === null;
+    }
 }

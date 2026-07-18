@@ -81,4 +81,21 @@ enum AuditEventType: string
     case FINANCIAL_CALCULATION_SUPERSEDED    = 'FINANCIAL_CALCULATION_SUPERSEDED';
     case FINANCIAL_CALCULATION_CANCELLED     = 'FINANCIAL_CALCULATION_CANCELLED';
     case FINANCIAL_CALCULATION_FAILED        = 'FINANCIAL_CALCULATION_FAILED';
+
+    // Exécution & Valorisation, Lot 4 (D-074) — bascule des documents financiers vers
+    // les lignes figées de FinancialCalculation. CREATED_FROM_CALCULATION est émis
+    // uniquement par le nouveau chemin (createFromEligibleLines()) — le chemin legacy
+    // (generate()) n'émettait déjà aucun audit avant ce lot, comportement inchangé.
+    // ISSUED est émis sur la transition GENERATED → SENT existante (markSent()), pour
+    // les documents legacy ET nouveaux : c'est le vrai point de bascule "engagé vis-à-vis
+    // du tiers" dans ce produit, pas la création. Pas d'événements FINANCIAL_LINES_
+    // RESERVED/RELEASED séparés : CREATED_FROM_CALCULATION/CANCELLED portent déjà la
+    // liste des lignes consommées/libérées dans leur payload (éviter un audit redondant).
+    case FIRM_INVOICE_CREATED_FROM_CALCULATION = 'FIRM_INVOICE_CREATED_FROM_CALCULATION';
+    case FIRM_INVOICE_ISSUED                   = 'FIRM_INVOICE_ISSUED';
+    case FIRM_INVOICE_CANCELLED                = 'FIRM_INVOICE_CANCELLED';
+
+    case INSTRUMENTIST_STATEMENT_CREATED_FROM_CALCULATION = 'INSTRUMENTIST_STATEMENT_CREATED_FROM_CALCULATION';
+    case INSTRUMENTIST_STATEMENT_ISSUED                    = 'INSTRUMENTIST_STATEMENT_ISSUED';
+    case INSTRUMENTIST_STATEMENT_CANCELLED                 = 'INSTRUMENTIST_STATEMENT_CANCELLED';
 }
