@@ -350,6 +350,22 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
         $this->service->reopen($mission, $actor);
     }
 
+    /** EPIC Exécution & Valorisation, Lot 3 (D-073) — politique de réouverture à seuil. */
+    public function test_reopen_rejects_mission_with_locked_financial_calculation(): void
+    {
+        $mission = $this->makeMission(MissionStatus::VALIDATED);
+        $actor   = $this->makeManager();
+
+        $repo = $this->createMock(\Doctrine\ORM\EntityRepository::class);
+        $repo->method('findOneBy')->willReturn(new \App\Entity\FinancialCalculation());
+        $this->em->method('getRepository')->with(\App\Entity\FinancialCalculation::class)->willReturn($repo);
+
+        $this->expectException(ConflictHttpException::class);
+        $this->expectExceptionMessage('LOCKED financial calculation');
+
+        $this->service->reopen($mission, $actor);
+    }
+
     // ── isBillable() / findMissionsReadyForBilling() ────────────────────────
 
     public function test_is_billable_true_only_for_validated(): void

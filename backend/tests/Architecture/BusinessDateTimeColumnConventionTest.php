@@ -104,6 +104,16 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\User::invitationLastSentAt' => 'set from new \DateTimeImmutable()',
         'App\Entity\UserAuditEvent::createdAt' => 'set from new \DateTimeImmutable() in the constructor',
         'App\Entity\Absence::createdAt' => 'not covered by TimestampableTrait on this entity; set from new \DateTimeImmutable()',
+
+        // Exécution & Valorisation, Lot 3 (D-073) — FinancialCalculation/Line.
+        'App\Entity\FinancialCalculation::effectiveAt' => 'date-only (date_immutable, Y-m-d) — FinancialCalculationService::resolveEffectiveAt(), jamais un instant client à décalage horaire',
+        'App\Entity\FinancialCalculation::calculatedAt' => 'set from new \DateTimeImmutable() in FinancialCalculationService, never client input',
+        'App\Entity\FinancialCalculation::approvedAt' => 'set from new \DateTimeImmutable() in FinancialCalculationService::approve(), never client input',
+        'App\Entity\FinancialCalculation::lockedAt' => 'set from new \DateTimeImmutable() in FinancialCalculationService::lock(), never client input',
+        'App\Entity\FinancialCalculation::cancelledAt' => 'set from new \DateTimeImmutable() in FinancialCalculationService::cancel(), never client input',
+        'App\Entity\FinancialCalculation::supersededAt' => 'set from new \DateTimeImmutable() in FinancialCalculationService::recalculate(), never client input',
+        'App\Entity\FinancialCalculationLine::effectiveAt' => 'date-only (date_immutable, Y-m-d) — copied from the owning FinancialCalculation.effectiveAt, never a client instant',
+        'App\Entity\FinancialCalculationLine::createdAt' => 'set from new \DateTimeImmutable() in the constructor, never client input',
     ];
 
     /** Exempt by name, not by allowlist entry — the project-wide TimestampableTrait convention. */
