@@ -572,8 +572,26 @@ PricingRule
 ├── ruleType: 'INTERVENTION_FEE' | 'MATERIAL_FEE' (renommé depuis IMPLANT_FEE, Lot 1)
 ├── interventionType → InterventionType (nullable — Lot 1, remplace interventionCode texte libre)
 ├── materialItem → MaterialItem (nullable)
-├── currency (défaut EUR), validFrom/validTo (nullables, null = borne ouverte — Lot 1)
+├── currency (défaut EUR)
+├── validFrom (nullable — null = "valide depuis toujours", legacy D-067, conservé) /
+│   validTo (nullable = borne ouverte) — INCLUSIF/EXCLUSIF depuis D-072 (Lot 2, voir
+│   PricingRule::coversDate()/overlapsWith())
+├── append-only depuis D-072 : jamais réécrite en place une fois validFrom <= aujourd'hui
+│   — seul PricingRuleVersioningService peut muter (jamais un contrôleur directement)
 └── anti-chevauchement bloquant à l'écriture sur (firm, ruleType, cible) — voir PricingRuleResolver
+
+InstrumentistRate (EPIC Exécution & Valorisation, Lot 2, D-072)
+├── instrumentist → User · rateType: 'HOURLY_RATE' | 'CONSULTATION_FEE'
+├── amount, currency (défaut EUR)
+├── validFrom (NOT NULL, contrairement à PricingRule — table neuve, aucune donnée
+│   historique à préserver, donc aucune raison de reproduire l'ambiguïté "null =
+│   toujours") / validTo (nullable = ouvert), même convention INCLUSIF/EXCLUSIF
+├── append-only, même discipline que PricingRule — seul InstrumentistRateService écrit
+├── remplace progressivement User.hourlyRate/consultationFee comme source de vérité
+│   financière — ces deux champs restent en place (compatibilité legacy explicite,
+│   endpoint PATCH /api/instrumentists/{id}/rates inchangé dans ce lot) mais aucun
+│   nouveau code financier ne doit plus s'y brancher
+└── ne contient jamais de durée ni de montant calculé — uniquement la règle tarifaire
 
 FirmInvoice
 ├── firm, number (FIRM-YYYY-NNN), status (DRAFT|GENERATED|SENT|PAID)
@@ -924,6 +942,93 @@ construira réellement — jamais piloté ni lu par aucun code de production.
 **Hors périmètre de ce lot** (fondation structurelle uniquement) : `FinancialCalculation`
 elle-même, tout montant, tout tarif, la bascule de `InstrumentistStatementService`/
 `FirmInvoiceService` vers ce nouveau modèle.
+
+### Flux historisation des tarifs (EPIC Exécution & Valorisation, Lot 2, D-072)
+
+Objectif du lot : garantir qu'une modification future d'un tarif ne puisse jamais
+modifier rétroactivement la valeur financière d'une mission déjà calculée. Répond de
+façon déterministe à "quel tarif était applicable à cette date, pour cette
+firme/instrumentiste/intervention/matériel ?" — sans encore construire
+`FinancialCalculation` (Lot 3+).
+
+**Append-only — le principe non négociable :** un tarif dont `validFrom` est déjà
+atteint (aujourd'hui ou passé) n'est **jamais** réécrit en place — ni le montant, ni la
+devise, ni le périmètre. La seule façon de "changer un tarif actif" est
+`replaceCurrentRuleFrom()`/`replaceCurrentRateFrom()` : ferme l'ancienne période
+(`validTo = effectiveFrom`) et ouvre une nouvelle règle, dans **une seule transaction**
+— jamais d'état intermédiaire avec deux règles ouvertes, aucune règle active, ou un
+chevauchement.
+
+```
+Tarif actuel : 250 EUR, validFrom=2026-01-01, validTo=null
+Remplacement : 275 EUR à partir du 2026-08-01
+  →  ancienne règle : validFrom=2026-01-01, validTo=2026-08-01 (montant inchangé : 250)
+     nouvelle règle : validFrom=2026-08-01, validTo=null, amount=275
+Le 1er août 2026 n'utilise QUE la nouvelle règle (validTo EXCLUSIF, voir ci-dessous).
+```
+
+**Convention temporelle centralisée** : `validFrom` INCLUSIF, `validTo` EXCLUSIF — le
+jour `validTo` lui-même n'appartient déjà plus à cette règle, il appartient à la
+suivante. Implémentée une seule fois dans `PricingRule::coversDate()`/`overlapsWith()`
+et `InstrumentistRate::coversDate()`/`overlapsWith()` (miroirs exacts). C'est un
+changement de comportement assumé par rapport à Lot 1/D-067 (qui traitait `validTo`
+comme inclusif) — les tests existants ont été mis à jour en conséquence, jamais
+silencieusement laissés à décrire l'ancien comportement.
+
+**Opérations métier disponibles** (`PricingRuleVersioningService`/
+`InstrumentistRateService`, seuls points d'écriture — les contrôleurs ne mutent jamais
+l'entité directement) :
+
+| Opération | Quand | Ce qu'elle permet |
+|---|---|---|
+| `createInitialRule()`/`createInitialRate()` | Première règle sur une cible | Toute date (passée documentée, aujourd'hui, future) |
+| `scheduleRule()`/`scheduleRate()` | Pré-provisionner avant une entrée en vigueur | `validFrom` strictement future exigée |
+| `replaceCurrentRuleFrom()`/`replaceCurrentRateFrom()` | Le cas principal | Ferme l'actuelle + ouvre la nouvelle, atomique |
+| `updateFutureRule()`/`updateFutureRate()` | Corriger une erreur de saisie | Seulement si `validFrom` pas encore atteint |
+| `cancelFutureRule()`/`cancelFutureRate()` | Annuler avant l'entrée en vigueur | Seule suppression physique légitime |
+| `resolveAt()` | Lecture | Date explicite obligatoire, jamais `now()` implicite |
+
+**Immutabilité historique — dès que `validFrom <= aujourd'hui`, la règle appartient à
+l'histoire.** "Jamais utilisée" ne suffit pas à autoriser une réécriture rétroactive —
+seule la date compte. `PricingRuleWriteService::delete()`/`InstrumentistRateWriteService::
+delete()` portent eux-mêmes ce garde-fou (défense en profondeur, pas seulement au niveau
+métier) : une suppression physique d'une règle déjà applicable est refusée même en cas
+d'appel direct au service bas niveau.
+
+**Résolution par relations métier réelles, jamais par code libre** : une règle
+`INTERVENTION_FEE` référence `InterventionType` par FK (pas par
+`MissionIntervention.code`, un simple instantané figé à l'affichage) ; une règle
+`MATERIAL_FEE` référence `MaterialItem` par FK, dont la firme est celle du catalogue —
+une intervention d'une firme peut contenir du matériel d'autres firmes, chaque ligne se
+résout indépendamment. `PricingRuleResolver`/`InstrumentistRateResolver` restent
+inchangés dans leur signature (déjà conformes : date explicite, jamais `now()`).
+
+**Concurrence** : verrouillage pessimiste déterministe réutilisé tel quel
+(`PricingRuleWriteService`, prouvé par `PricingRuleConcurrencyTest` — inchangé) ;
+`InstrumentistRateWriteService` en est le miroir exact, verrou posé sur l'instrumentiste
+lui-même (seule entité garantie présente avant qu'une `InstrumentistRate` ne puisse
+exister). `replaceCurrentRuleFrom()`/`replaceCurrentRateFrom()` orchestrent
+`update()`+`create()` dans une transaction imbriquée unique (Doctrine DBAL gère
+nativement le nesting via son compteur de transactions — le commit réel n'a lieu qu'à
+la sortie de la méthode orchestratrice).
+
+**Audit sans Mission à rattacher** : `AuditEvent.mission` devient nullable (élargissement
+de contrainte, aucune donnée existante affectée) — `AuditService::recordGlobal()`
+couvre les événements catalogue/tarifaires (`PRICING_RULE_*`, `INSTRUMENTIST_RATE_*`),
+`AuditService::record()` reste inchangé pour tout événement de cycle de vie mission.
+
+**Legacy `User.hourlyRate`/`consultationFee`** : conservés tels quels, endpoint
+`PATCH /api/instrumentists/{id}/rates` inchangé dans ce lot (autosave manager existant).
+Backfill : une première `InstrumentistRate` créée pour chaque utilisateur ayant
+actuellement un tarif, `validFrom = DATE(User.createdAt)` (meilleure date métier-
+compatible réellement disponible dans le schéma actuel — voir migration
+`Version20260718121937` pour la justification complète). Aucun backfill appliqué aux
+`PricingRule` existantes : une règle `validFrom = null` est la sémantique D-067 "valide
+depuis toujours", délibérée et correcte — pas une donnée ambiguë à deviner.
+
+**Hors périmètre de ce lot** : `FinancialCalculation`, `RemunerationLine`, toute
+bascule de `FirmInvoiceService`/`InstrumentistStatementService`, tout paiement, toute
+correction financière.
 
 ---
 

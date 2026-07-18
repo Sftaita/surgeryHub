@@ -3597,6 +3597,145 @@ l'historisation des tarifs instrumentistes, la bascule de `InstrumentistStatemen
 
 ---
 
+## D-072 — Les tarifs sont versionnés par périodes de validité. Aucun tarif applicable ou passé n'est modifié en place (EPIC Exécution & Valorisation, Lot 2)
+
+Date : 2026-07-18
+
+### Décision
+
+Garantir qu'une modification future d'un tarif ne puisse jamais modifier
+rétroactivement la valeur financière d'une mission déjà calculée — fondation tarifaire
+nécessaire avant `FinancialCalculation` (Lot 3+, non implémentée ici). Le système
+répond désormais de façon déterministe à "quel tarif était applicable à cette date,
+pour cette firme/instrumentiste/intervention/matériel ?".
+
+**Append-only, sans exception pour une règle "jamais utilisée" :** dès que
+`validFrom <= aujourd'hui`, la règle appartient à l'historique — le critère est
+purement temporel, jamais "a-t-elle déjà servi à une facture". Seule
+`replaceCurrentRuleFrom()`/`replaceCurrentRateFrom()` peut faire évoluer un tarif actif :
+ferme l'ancienne période + ouvre la nouvelle, **dans une seule transaction** (Doctrine
+DBAL imbrique nativement les `wrapInTransaction()` de `PricingRuleWriteService::update()`
++ `::create()` via son compteur de nesting — le commit réel n'a lieu qu'à la sortie de
+la méthode orchestratrice, jamais d'état intermédiaire avec deux règles ouvertes,
+aucune règle active, ou un chevauchement).
+
+### Convention temporelle — changement assumé par rapport à Lot 1/D-067
+
+`validFrom` **inclusif**, `validTo` **exclusif** — le jour `validTo` lui-même
+n'appartient déjà plus à cette règle. Avant ce lot, `PricingRule::coversDate()`/
+`overlapsWith()` traitaient `validTo` comme inclusif (un ancien tarif se terminant le
+2026-07-01 ET un nouveau démarrant le 2026-07-01 se seraient chevauchés, et le
+2026-07-01 aurait été couvert par les deux). **Trois tests existants encodaient cette
+ancienne sémantique** (`PricingRuleTest::testCoversDateRespectsValidToBoundary`,
+`testCoversDateExactBoundaries`, `testAdjacentPeriodsSameDayOverlap`,
+`FirmBillingControllerPricingRuleTest::test_exact_boundary_date_is_covered_by_the_rule`)
+— mis à jour pour refléter la nouvelle convention, jamais laissés à décrire un
+comportement révolu. Centralisée une seule fois dans `PricingRule`/`InstrumentistRate`,
+identique dans les deux entités.
+
+### Modèle retenu — évolution de PricingRule plutôt qu'une refonte
+
+`PricingRule` garde son schéma actuel (Lot 1/D-067) — la seule vraie évolution est la
+discipline d'écriture, pas la forme. `PricingRuleWriteService::create()`/`update()`
+restent inchangés dans leur signature exacte : ce sont des primitifs bas niveau
+(verrouillage pessimiste + anti-chevauchement) déjà prouvés par
+`PricingRuleConcurrencyTest` (7 tests, dont un cas `update()` sous verrou concurrent) —
+les casser aurait été un coût sans bénéfice. `PricingRuleVersioningService` (nouveau)
+orchestre par-dessus les opérations métier (`createInitialRule`/`scheduleRule`/
+`replaceCurrentRuleFrom`/`updateFutureRule`/`cancelFutureRule`/`resolveAt`) — seul point
+d'écriture autorisé pour les contrôleurs désormais. `PricingRuleWriteService::delete()`
+gagne un garde-fou défensif (`validFrom <= aujourd'hui` → refus) directement au niveau
+bas niveau, pas seulement dans le service métier — en cas de futur appelant direct.
+
+`validFrom` reste **nullable** sur `PricingRule` (contrairement à la recommandation
+littérale du lot) : c'est la sémantique délibérée de D-067 ("valide depuis toujours"),
+pas une donnée ambiguë ou incomplète — la changer aurait silencieusement modifié le
+résultat de résolution de règles existantes, exactement ce que ce lot interdit. Le
+nouveau `PricingRuleVersioningService` exige néanmoins un `validFrom` explicite pour
+toute règle future (`scheduleRule()`), seul l'ancien chemin d'écriture legacy
+(`POST /pricing-rules`, inchangé) permet encore `null`.
+
+### InstrumentistRate — nouveau modèle, `validFrom` obligatoire
+
+Contrairement à `PricingRule`, `InstrumentistRate.validFrom` est **NOT NULL** : table
+neuve créée par ce lot, aucune donnée historique préexistante à cette contrainte, donc
+aucune raison de reproduire l'ambiguïté "null = toujours". Types couverts :
+`HOURLY_RATE`/`CONSULTATION_FEE` — les deux seuls réellement utilisés par
+`InstrumentistStatementService::buildPreviewLine()` (BLOC/CONSULTATION), aucun type
+inventé prématurément. Ne stocke ni durée ni montant calculé — uniquement la règle.
+`InstrumentistRateResolver`/`InstrumentistRateWriteService`/`InstrumentistRateService`
+sont des miroirs exacts de leurs équivalents `PricingRule` — même verrouillage
+(cible = l'instrumentiste lui-même, seule entité garantie présente avant qu'une
+`InstrumentistRate` ne puisse exister), même garde-fous, même découpage d'opérations.
+
+**`User.hourlyRate`/`consultationFee` non supprimés** (compatibilité legacy explicite) :
+l'endpoint `PATCH /api/instrumentists/{id}/rates` (autosave manager, préexistant, non
+touché par ce lot) continue de les écrire directement. Aucun nouveau code financier ne
+s'y branche — la nouvelle source de vérité pour tout futur calcul est
+`InstrumentistRate`. **Risque connu, documenté, non traité ici** : un manager utilisant
+l'ancien endpoint après ce lot fait diverger `User.hourlyRate` du modèle historisé sans
+qu'aucune `InstrumentistRate` ne soit créée — accepté délibérément (le lot autorise
+explicitement à laisser le legacy fonctionner tel quel), à trancher dans un lot futur
+(rediriger l'endpoint legacy vers `InstrumentistRateService::replaceCurrentRateFrom()`,
+ou le déprécier une fois le frontend basculé sur les nouveaux endpoints). Chevauchement
+d'URL assumé également : `PATCH /instrumentists/{id}/rates` (legacy) et
+`GET`/`POST /instrumentists/{id}/rates` (nouveaux) partagent un préfixe — aucune
+collision de routage réelle (Symfony résout sans ambiguïté par méthode+forme exacte),
+mais une confusion de nommage à résoudre plus tard.
+
+### Backfill
+
+**`InstrumentistRate`** : une première ligne par utilisateur ayant actuellement un
+`hourlyRate`/`consultationFee`, valeur préservée telle quelle, `currency = User.
+defaultCurrency`, `validFrom = DATE(User.createdAt)` — priorité documentée : (1) date
+historique fiable si disponible (aucune n'existe dans le schéma actuel, option jamais
+atteignable) ; (2) date de création de l'utilisateur (retenue — la meilleure option
+métier-compatible réellement disponible) ; (3) date de migration en dernier recours
+(non utilisée, (2) toujours disponible). Assumé comme approximation : le tarif réel
+aurait pu changer entre la création du compte et aujourd'hui sans laisser de trace —
+c'est un cas de "donnée passée ambiguë conservée sans deviner une relation incorrecte",
+pas une reconstruction d'historique réel.
+
+**`PricingRule`** : aucun backfill appliqué. Vérifié avant d'écrire la migration : 0
+ligne en production au moment de ce lot. Si une ligne `validFrom = null` existe un
+jour, ce n'est **pas** une donnée ambiguë — c'est la sémantique D-067 délibérée, jamais
+touchée par ce lot.
+
+### Audit sans Mission à rattacher
+
+`AuditEvent.mission` devient **nullable** (élargissement de contrainte, migration
+`ALTER TABLE ... MODIFY mission_id INT DEFAULT NULL`, aucune donnée existante
+affectée) — les événements catalogue/tarifaires n'ont structurellement aucune Mission à
+rattacher. Nouveau `AuditService::recordGlobal(User $actor, AuditEventType $type,
+array $payload)`, `AuditService::record()` (Mission-scopé) reste inchangé. Choix
+délibéré de réutiliser `AuditEvent` plutôt qu'un troisième mécanisme d'audit à côté des
+deux déjà existants (`AuditEvent` mission-centrique, `UserAuditEvent` administration
+utilisateurs) — c'était l'entité déjà la plus générale (payload JSON libre, déjà
+utilisée pour de nombreux types d'événements au-delà du cycle de vie mission).
+
+### Contraintes base de données ajoutées
+
+`instrumentist_rate` : `CHECK (amount >= 0)`, `CHECK (valid_to IS NULL OR
+valid_to > valid_from)`, FK `instrumentist_id` obligatoire, index composite
+`(instrumentist_id, rate_type, valid_from, valid_to)` pour la résolution. Vérifiées
+manuellement à l'exécution de la migration (insertion rejetée dans les deux cas).
+
+### Permissions
+
+Réutilise `BillingVoter::MANAGE` (manager/admin) pour les tarifs instrumentistes plutôt
+qu'un nouveau Voter redondant — même périmètre déjà appliqué à `/pricing-rules`,
+cohérent avec "les tarifs relèvent uniquement du manager/admin" (aucune notion de
+propriété instrumentiste sur son propre tarif).
+
+### Portée non traitée ici (Lot 3+)
+
+`FinancialCalculation`, `RemunerationLine`, toute bascule de `FirmInvoiceService`/
+`InstrumentistStatementService` vers `PricingRuleVersioningService`/
+`InstrumentistRateService`, tout paiement, toute correction financière, la réconciliation
+de l'endpoint legacy `PATCH /instrumentists/{id}/rates` avec `InstrumentistRate`.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -3665,3 +3804,4 @@ l'historisation des tarifs instrumentistes, la bascule de `InstrumentistStatemen
 | 17-07-2026 | D-068 — Rattachement de l'encodage au référentiel InterventionType (Lot 5) + InterventionTypeRequest |
 | 17-07-2026 | D-070 — Workflow métier de l'encodage : cycle de vie explicite, verrouillage backend, commentaires historisés (Lot 7) |
 | 18-07-2026 | D-071 — Modèle Mission/MissionExecution/FinancialCalculation ; InstrumentistService → MissionExecution (Exécution & Valorisation, Lot 1) |
+| 18-07-2026 | D-072 — Historisation des tarifs : PricingRule append-only, validTo exclusif, InstrumentistRate (Exécution & Valorisation, Lot 2) |

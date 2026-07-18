@@ -2035,23 +2035,58 @@ Retourne toutes les règles (actives + inactives) pour la firme.
 
 **Réponse — 201 :** PricingRule complète (même format que GET)
 
-#### `PATCH /api/firms/{id}/pricing-rules/{ruleId}`
+#### `PATCH /api/firms/{id}/pricing-rules/{ruleId}` (D-072, Lot 2 — restreint)
+
+> **Changement de comportement (D-072) :** n'est plus autorisé que sur une règle
+> **future** (`validFrom` strictement postérieure à aujourd'hui). Une règle déjà
+> applicable ou passée renvoie **409 `PRICING_RULE_IMMUTABLE`** — pour changer un tarif
+> déjà en vigueur, utiliser `POST .../pricing-rules/{ruleId}/replace` ci-dessous. Le
+> champ `active` n'est plus modifiable par ce endpoint (retiré, jamais lu par
+> `updateFutureRule()`).
 
 **Body JSON :**
 
 ```json
 {
   "unitPrice": 110,
-  "validTo": "2026-12-31",
-  "active": false
+  "validFrom": "2027-01-01",
+  "validTo": "2027-12-31"
 }
 ```
 
 **Réponse — 200 :** PricingRule mise à jour (même contrôle anti-chevauchement que POST)
+**Erreurs :** `409 PRICING_RULE_IMMUTABLE` si la règle n'est pas future ; `409 PRICING_RULE_PERIOD_OVERLAP` si le nouveau chevauche une autre règle.
 
-#### `DELETE /api/firms/{id}/pricing-rules/{ruleId}`
+#### `DELETE /api/firms/{id}/pricing-rules/{ruleId}` (D-072, Lot 2 — restreint)
+
+> **Changement de comportement (D-072) :** n'est plus autorisé que sur une règle
+> **future**, jamais une règle déjà applicable ou passée — `409 PRICING_RULE_IMMUTABLE`
+> sinon. Une règle déjà applicable ne doit jamais être supprimée physiquement.
 
 **Réponse — 200 :** `{ "id": 1, "deleted": true }`
+
+#### `POST /api/firms/{id}/pricing-rules/{ruleId}/replace` (D-072, Lot 2 — nouveau)
+
+Le cas principal : remplacer le tarif **actuellement en vigueur** à partir d'une date.
+Ferme l'ancienne règle (`validTo = effectiveFrom`) et ouvre la nouvelle
+(`validFrom = effectiveFrom`, `validTo = null`) — **atomique**, aucun état intermédiaire
+avec deux règles ouvertes, aucune règle active, ou un chevauchement.
+
+**Body JSON :**
+
+```json
+{ "unitPrice": 275, "currency": "EUR", "effectiveFrom": "2026-08-01" }
+```
+
+**Contraintes :** `{ruleId}` doit référencer une règle **actuellement active**
+(`validFrom <= aujourd'hui`, `validTo` null ou future) ; `effectiveFrom` ne peut jamais
+être dans le passé, ni antérieure ou égale au `validFrom` de la règle actuelle.
+
+**Réponse — 201 :** la **nouvelle** PricingRule (même format que GET).
+
+**Erreurs :** `409 PRICING_RULE_IMMUTABLE` (règle pas actuellement active, ou date
+d'effet invalide) ; `409 PRICING_RULE_PERIOD_OVERLAP` (cas normalement impossible par
+construction, gardé en défense).
 
 ---
 
@@ -4052,6 +4087,11 @@ rôle dans la décision de facturabilité). Nouveaux champs : `currency` (défau
 modifiée chevauche, en dates, une autre règle active déjà posée sur la même cible
 (refus bloquant, jamais un choix silencieux — voir `PricingRuleResolver`).
 
+**D-072 (Lot 2) — voir §34 pour le détail complet :** `PATCH`/`DELETE` restreints aux
+règles futures (`409 PRICING_RULE_IMMUTABLE` sinon) ; `validTo` devient EXCLUSIF
+(changement de convention) ; nouveau `POST .../pricing-rules/{ruleId}/replace` pour
+remplacer un tarif actuellement actif.
+
 ### `PATCH /api/material-items/{id}` (évolution)
 
 Accepte désormais `active` (auparavant présent en base mais jamais exposé). Le
@@ -4382,5 +4422,94 @@ La permission est vérifiée **avant** toute création paresseuse de `MissionExe
 (la durée effective change), `MISSION_EXECUTION_DISPUTE_OPENED`,
 `MISSION_EXECUTION_DISPUTE_RESOLVED`, `MISSION_EXECUTION_DISPUTE_REJECTED`. Idempotent :
 un `PATCH` sans changement réel n'écrit aucun `AuditEvent` supplémentaire.
+
+---
+
+## 34. Historisation des tarifs (EPIC Exécution & Valorisation, Lot 2, D-072)
+
+Voir D-072 (`docs/decisions.md`) et `docs/architecture.md` (§6, "Flux historisation des
+tarifs") pour le modèle complet et la convention temporelle
+(`validFrom` inclusif / `validTo` exclusif — **changement de convention** par rapport à
+Lot 1). Résumé des changements sur `/api/firms/{id}/pricing-rules` en §30 ci-dessus ;
+cette section documente en détail les endpoints nouveaux/modifiés.
+
+### `POST /api/firms/{id}/pricing-rules/{ruleId}/replace`
+
+Voir §24.2 pour le détail complet (body, contraintes, erreurs) — c'est là qu'il vit
+historiquement dans la doc facturation firmes.
+
+### Tarifs instrumentistes historisés — `/api/instrumentists/{userId}/rates`
+
+**AuthZ (toutes routes) :** `BillingVoter::MANAGE` — manager/admin uniquement (§11 du
+lot : "les tarifs relèvent uniquement du manager/admin", jamais l'instrumentiste
+lui-même). Réutilise le voter existant plutôt qu'un nouveau, même périmètre que les
+règles tarifaires firmes.
+
+> **Coexistence avec l'endpoint legacy** `PATCH /api/instrumentists/{id}/rates`
+> (inchangé, écrit directement `User.hourlyRate`/`consultationFee`, autosave manager) :
+> chevauchement de préfixe d'URL assumé et documenté (`PATCH .../rates` légexistant vs
+> `GET`/`POST .../rates` nouveaux, `PATCH .../rates/{id}` nouveau avec segment
+> supplémentaire) — aucune collision de routage réelle (Symfony résout sans ambiguïté),
+> mais source de confusion potentielle à résoudre dans un futur lot (voir "Risque connu"
+> dans D-072).
+
+#### `GET /api/instrumentists/{userId}/rates`
+
+**Query params :** `?rateType=HOURLY_RATE|CONSULTATION_FEE` (optionnel, sinon tout
+l'historique). Trié par `validFrom` décroissant.
+
+**Réponse — 200 :**
+
+```json
+[
+  { "id": 5, "instrumentist": { "id": 12 }, "rateType": "HOURLY_RATE", "amount": "50.00", "currency": "EUR", "validFrom": "2026-08-01", "validTo": null },
+  { "id": 3, "instrumentist": { "id": 12 }, "rateType": "HOURLY_RATE", "amount": "45.00", "currency": "EUR", "validFrom": "2026-01-01", "validTo": "2026-08-01" }
+]
+```
+
+#### `POST /api/instrumentists/{userId}/rates`
+
+Crée la première règle sur une cible (ou une règle future). Bascule automatiquement
+entre `createInitialRate()` (`validFrom` absent, aujourd'hui, ou passé) et
+`scheduleRate()` (`validFrom` strictement future) selon la date fournie.
+
+**Body JSON :**
+
+```json
+{ "rateType": "HOURLY_RATE", "amount": 45, "currency": "EUR", "validFrom": "2026-01-01", "validTo": null }
+```
+
+`validFrom` par défaut : aujourd'hui si omis. `currency` par défaut : `EUR`.
+
+**Réponse — 201 :** la règle créée. **Erreurs :** `409 INSTRUMENTIST_RATE_PERIOD_OVERLAP` si chevauchement.
+
+#### `PATCH /api/instrumentists/{userId}/rates/{id}`
+
+Restreint aux tarifs **futurs** (`validFrom` strictement postérieure à aujourd'hui) —
+`409 INSTRUMENTIST_RATE_IMMUTABLE` sinon.
+
+**Body JSON (tous champs optionnels) :** `{ "amount": 48, "currency": "EUR", "validFrom": "2026-09-01", "validTo": null }`
+
+#### `DELETE /api/instrumentists/{userId}/rates/{id}`
+
+Restreint aux tarifs futurs — `409 INSTRUMENTIST_RATE_IMMUTABLE` sinon. Seule
+suppression physique légitime (le tarif n'a jamais été applicable).
+
+#### `POST /api/instrumentists/{userId}/rates/{id}/replace`
+
+Le cas principal — même mécanique atomique que `.../pricing-rules/{id}/replace`.
+
+**Body JSON :** `{ "amount": 50, "currency": "EUR", "effectiveFrom": "2026-08-01" }`
+
+**Réponse — 201 :** le nouveau tarif.
+
+### Audit
+
+`PRICING_RULE_CREATED`/`_SCHEDULED`/`_REPLACED`/`_FUTURE_UPDATED`/`_FUTURE_CANCELLED`
+et `INSTRUMENTIST_RATE_CREATED`/`_SCHEDULED`/`_REPLACED`/`_FUTURE_UPDATED`/
+`_FUTURE_CANCELLED` — via `AuditService::recordGlobal()` (nouveau : `AuditEvent.mission`
+est désormais nullable pour ces événements catalogue, sans Mission à rattacher).
+Payload : acteur, ancien/nouveau montant, devise, date d'effet, périmètre métier
+(firme+cible ou instrumentiste+type).
 
 ---
