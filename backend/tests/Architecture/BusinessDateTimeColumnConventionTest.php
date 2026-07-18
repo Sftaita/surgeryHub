@@ -114,6 +114,10 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\FinancialCalculation::supersededAt' => 'set from new \DateTimeImmutable() in FinancialCalculationService::recalculate(), never client input',
         'App\Entity\FinancialCalculationLine::effectiveAt' => 'date-only (date_immutable, Y-m-d) — copied from the owning FinancialCalculation.effectiveAt, never a client instant',
         'App\Entity\FinancialCalculationLine::createdAt' => 'set from new \DateTimeImmutable() in the constructor, never client input',
+
+        // Exécution & Valorisation, Lot 4 (D-074) — FirmInvoiceLine/InstrumentistStatementLine.
+        'App\Entity\FirmInvoiceLine::createdAt' => 'set from new \DateTimeImmutable() in the constructor, never client input; nullable only for pre-Lot-4 legacy rows never backfilled',
+        'App\Entity\InstrumentistStatementLine::createdAt' => 'set from new \DateTimeImmutable() in the constructor, never client input; nullable only for pre-Lot-4 legacy rows never backfilled',
     ];
 
     /** Exempt by name, not by allowlist entry — the project-wide TimestampableTrait convention. */
