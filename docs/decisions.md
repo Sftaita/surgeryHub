@@ -4021,6 +4021,134 @@ conversion de devises, refonte UX.
 
 ---
 
+## D-075 — Les paiements sont des événements append-only. Ils ne modifient jamais les montants historiques. Le solde est toujours dérivé des paiements enregistrés (EPIC Exécution & Valorisation, Lot 5)
+
+Date : 2026-07-18
+
+### Décision
+
+Cycle de vie financier complet après génération : émission (`GENERATED → SENT`),
+paiement (unique, multiple, partiel), solde, historique — sans jamais modifier
+`FinancialCalculation`/`FinancialCalculationLine` ni les montants documentaires
+(`FirmInvoice.totalAmount`/`InstrumentistStatement.totalAmount` restent le montant BRUT,
+gelé depuis la création du document, Lot 4). Un `Payment` est un événement, jamais
+modifié ni supprimé une fois créé — le solde (`paidAmount`/`remainingAmount`/
+`PaymentStatus`) est systématiquement recalculé en sommant les `Payment` existants,
+jamais stocké en doublon (§7 du lot).
+
+### Deux dimensions distinctes — sans explosion d'enum
+
+`InvoiceStatus` (documentaire : `DRAFT`/`GENERATED`/`SENT`/`PAID`/`CANCELLED`) reste
+inchangé pour compatibilité legacy (`markPaid()`, Lot 1, continue d'écrire `PAID`
+directement — chemin non touché). Pour le **nouveau** flux de paiement, `PAID` n'est
+plus jamais une valeur de `InvoiceStatus` : la dimension financière (`UNPAID`/
+`PARTIALLY_PAID`/`PAID`) est portée par un nouvel enum `PaymentStatus`, **jamais
+persisté** — uniquement retourné par `DocumentPaymentService::computeBalance()`. Une
+facture payée intégralement via le nouveau chemin reste `InvoiceStatus::SENT` :
+documentairement, elle a été émise et n'a jamais été ré-émise ; financièrement, elle
+est soldée. Les deux dimensions ne se contaminent jamais.
+
+### Compatibilité legacy — un document PAID sans aucun Payment
+
+Un document marqué `PAID` avant ce lot via l'ancien `markPaid()` (Lot 1) n'a par
+définition aucune ligne `Payment` (le modèle n'existait pas). `computeBalance()` le
+traite comme intégralement soldé pour l'affichage (`paidAmount = grossAmount`) **sans**
+reconstruire de `Payment` rétroactif — aucun rapprochement approximatif par montant/date
+n'est tenté (cohérent avec la politique déjà appliquée aux lignes documentaires au
+Lot 4, D-074 §19).
+
+### Modèle Payment — table unique, polymorphe
+
+Une seule entité `Payment` sert `FirmInvoice` **et** `InstrumentistStatement` (§3/§4 du
+lot : "il ne doit pas être spécifique aux factures", "sans duplication"). Discriminant
+explicite `documentType`/`documentId` (pas de FK Doctrine directe — impossible
+nativement vers deux tables ; validé au niveau applicatif par `DocumentPaymentService`,
+jamais deviné). Chaque entité déclare son propre `PaymentDocumentType` via l'interface
+partagée `PayableDocument` (`getId()`/`getStatus()`/`setStatus()`/`getCurrency()`/
+`getTotalAmount()`/`getPaymentDocumentType()`), implémentée par `FirmInvoice` et
+`InstrumentistStatement` — même principe que la coexistence à deux agrégats distincts
+du Lot 4, jamais fusionnés en un modèle générique.
+
+Champs minimaux du lot tous présents : `documentType`, `documentId`, `amount`,
+`currency`, `paidAt` (date réelle du paiement, date-only — un manager peut saisir une
+date passée, mais aucune heure n'a de sens métier ici, donc aucun risque d'offset à
+mal étiqueter, D-066 non applicable), `recordedAt` (horodatage serveur de la saisie,
+toujours `new \DateTimeImmutable()`), `recordedBy`, `reference`, `method`
+(`BANK_TRANSFER`/`CASH`/`OTHER` — pas de passerelle Stripe/SEPA inventée), `comment`,
+`createdAt`.
+
+### Solde et paiement partiel/complet
+
+`DocumentBalance` (`grossAmount`/`paidAmount`/`remainingAmount`/`status`) — toujours
+calculé, jamais stocké (§7). `paidAmount` = somme des `Payment` (ou `grossAmount` si
+legacy `PAID` sans `Payment`, voir plus haut). `PaymentStatus::PAID` dès que
+`remainingAmount <= 0` — transition automatique par construction (aucun champ à muter,
+c'est une conséquence directe du calcul, §9 du lot). Paiement partiel testé avec
+plusieurs paiements successifs qui s'accumulent correctement.
+
+### Protection contre le surpaiement
+
+`recordPayment()` recalcule le solde **sous verrou** juste avant d'accepter le nouveau
+paiement (`(float) $amount > (float) $before->remainingAmount` → 422
+`PAYMENT_EXCEEDS_REMAINING`) — jamais un paiement partiellement accepté. Devise
+strictement égale à celle du document, jamais de conversion (422
+`PAYMENT_CURRENCY_MISMATCH`). Montant strictement positif exigé.
+
+### Concurrence
+
+Même mécanisme que les Lots 2-4 : verrou pessimiste sur le **document** (`FirmInvoice`/
+`InstrumentistStatement`, l'aggregate root — pas de verrou possible sur `Payment`
+lui-même côté agrégat, il n'existe pas encore au moment de la validation), `refresh()`
+sous verrou avant de relire le solde. Deux enregistrements concurrents sur le même
+document se sérialisent — prouvé par `DocumentPaymentConcurrencyTest` (connexions DBAL
+réellement distinctes, timeout MySQL déterministe, jamais un pari sur l'ordonnancement).
+
+### Émission (issue())
+
+`FirmInvoiceService::issue()`/`InstrumentistStatementService::issue()` (nouveau) :
+`GENERATED → SENT`, attribue un numéro si absent (défensif — déjà assigné à la création
+dans ce système), date l'émission, audite, actor obligatoire.
+`markSent()` (existant, `POST /{id}/send`) délègue désormais à `issue()` pour la
+transition elle-même, en conservant sa responsabilité propre (envoi de l'email, gérée
+par le contrôleur) — **aucune rupture du contrat existant**, uniquement l'ajout d'un
+paramètre `$actor` obligatoire (tous les appelants mis à jour : les deux contrôleurs et
+le seul test qui appelait `markSent()` directement).
+
+Pas de `DOCUMENT_SENT` séparé : réutilise `FIRM_INVOICE_ISSUED`/
+`INSTRUMENTIST_STATEMENT_ISSUED` (créés au Lot 4 pour cette transition précise mais
+jamais câblés jusqu'ici) plutôt que de dupliquer un événement pour le même fait.
+
+### Numérotation
+
+Stratégie inchangée (D-074) : `generateNumber()` reste `COUNT(...) + 1`, la contrainte
+`UNIQUE` en base reste le filet de sécurité contre une collision concurrente
+(`UniqueConstraintViolationException` → 409, déjà mappé). `issue()` n'attribue un
+numéro que s'il manque encore — jamais de réservation anticipée sur une simple
+prévisualisation.
+
+### Annulation
+
+Politique inchangée du Lot 4 (D-074 §12/§14) : `GENERATED → CANCELLED` autorisé (libère
+les lignes), `SENT`/`PAID` refusé (`DocumentAlreadyIssuedException`). Un paiement ne
+change jamais cette politique — un document `SENT` avec des paiements enregistrés reste
+aussi peu annulable qu'un document `SENT` sans paiement.
+
+### Endpoints, permissions, audit
+
+`POST /{id}/issue`, `POST/GET /{id}/payments` — factures et décomptes, symétriques.
+`BillingVoter::MANAGE` uniquement (aucun accès instrumentiste à la saisie ni à la
+lecture des paiements — aucun droit de consultation personnelle préexistant à
+préserver, vérifié). `DOCUMENT_PAYMENT_RECORDED` (systématique) +
+`DOCUMENT_PARTIALLY_PAID`/`DOCUMENT_FULLY_PAID` (selon le solde résultant) —
+`recordGlobal()`, document multi-mission.
+
+### Portée non traitée ici (Lot 6+)
+
+Notes de crédit, corrections financières additives après paiement, recalcul de montants
+existants, rapprochement bancaire automatisé, conversion de devises, refonte UX.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -4092,3 +4220,4 @@ conversion de devises, refonte UX.
 | 18-07-2026 | D-072 — Historisation des tarifs : PricingRule append-only, validTo exclusif, InstrumentistRate (Exécution & Valorisation, Lot 2) |
 | 18-07-2026 | D-073 — FinancialCalculation : valorisation figée, append-only, versionnée par mission (Exécution & Valorisation, Lot 3) |
 | 18-07-2026 | D-074 — Bascule des documents financiers vers FinancialCalculationLine, anti-double facturation, legacy coexistant (Exécution & Valorisation, Lot 4) |
+| 18-07-2026 | D-075 — Paiements append-only, solde toujours dérivé, émission explicite, Payment polymorphe (Exécution & Valorisation, Lot 5) |

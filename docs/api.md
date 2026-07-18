@@ -4707,3 +4707,76 @@ période, ids de lignes/calculs financiers consommés ou libérés, total, motif
 d'annulation le cas échéant.
 
 ---
+
+## 37. Émission et paiement des documents financiers (EPIC Exécution & Valorisation, Lot 5, D-075)
+
+Voir D-075 (`docs/decisions.md`) et `docs/architecture.md` pour le modèle complet. Les
+endpoints existants (`/preview`, `POST` racine (generate), `GET /{id}`, `/send`, `/mark-paid`,
+`/eligible-lines`, `/from-financial-calculations`, `/cancel` — §30-36 ci-dessus) restent
+tous inchangés. Cette section documente les endpoints **additifs** du cycle de vie
+financier après génération.
+
+**AuthZ (toutes routes) :** `BillingVoter::MANAGE` — manager/admin uniquement. Aucun
+accès instrumentiste (ni lecture, ni saisie) : aucun droit de consultation personnelle
+n'existait avant ce lot sur ces documents.
+
+### `POST /api/firm-invoices/{id}/issue` · `POST /api/instrumentist-statements/{id}/issue`
+
+`GENERATED → SENT` explicite — miroir exact de `POST .../send` pour la transition
+(numéro attribué si absent, `sentAt`, audit `FIRM_INVOICE_ISSUED`/
+`INSTRUMENTIST_STATEMENT_ISSUED`) mais **sans envoi d'email** : `issue()` finalise le
+document, `/send` finalise **et** notifie le tiers par email.
+
+**Réponse — 200 :** le document (`status: "SENT"`). **Erreurs :** `409 CONFLICT` si le
+document n'est pas `GENERATED`.
+
+### `GET /api/firm-invoices/{id}/payments` · `GET /api/instrumentist-statements/{id}/payments`
+
+Historique complet des paiements enregistrés (jamais modifiés, jamais supprimés),
+triés par `paidAt` croissant.
+
+### `POST /api/firm-invoices/{id}/payments` · `POST /api/instrumentist-statements/{id}/payments`
+
+**Body JSON :** `{ "amount": "300.00", "currency": "EUR", "paidAt": "2026-06-20", "method": "BANK_TRANSFER", "reference": "REF-XYZ", "comment": "..." }`
+
+`currency` par défaut : celle du document. `method` : `BANK_TRANSFER`/`CASH`/`OTHER`.
+Revérifie tout sous verrou pessimiste sur le document (§19 du lot) — jamais de
+confiance dans un solde lu avant l'appel.
+
+**Réponse — 201 :** le paiement créé.
+
+**Erreurs :**
+- `409 DOCUMENT_NOT_ISSUED` — le document n'est pas `SENT`.
+- `422 PAYMENT_EXCEEDS_REMAINING` — le montant dépasse le solde restant dû (aucun
+  paiement partiel accepté en compensation).
+- `422 PAYMENT_CURRENCY_MISMATCH` — devise différente de celle du document (aucune
+  conversion).
+
+### Champs additionnels (factures et décomptes, réponses `list`/`get`/`create`/`issue`)
+
+`grossAmount` (= `totalAmount`, montant brut gelé), `paidAmount`, `remainingAmount`,
+`paymentStatus` (`UNPAID`/`PARTIALLY_PAID`/`PAID` — **jamais** une valeur de `status`,
+voir D-075 pour la séparation documentaire/financière). Détail (`get`) : `payments[]`
+(voir forme ci-dessous).
+
+### Forme d'un paiement
+
+```json
+{
+  "id": 12, "documentType": "FIRM_INVOICE", "documentId": 39,
+  "amount": "300.00", "currency": "EUR",
+  "paidAt": "2026-06-20", "recordedAt": "2026-06-20T14:32:00+00:00", "recordedBy": 7,
+  "reference": "REF-XYZ", "method": "BANK_TRANSFER", "comment": null,
+  "createdAt": "2026-06-20T14:32:00+00:00"
+}
+```
+
+### Audit
+
+`DOCUMENT_PAYMENT_RECORDED` (systématique, un par paiement) + `DOCUMENT_PARTIALLY_PAID`
+ou `DOCUMENT_FULLY_PAID` (selon le solde résultant, jamais les deux) —
+`AuditService::recordGlobal()`, générique aux deux types de document
+(`Payment.documentType` les distingue dans le payload). Contenu : acteur, montant,
+devise, référence, méthode, document, ancien/nouveau `PaymentStatus`.
+
+---
