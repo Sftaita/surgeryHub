@@ -627,7 +627,7 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         ));
 
         $invoice->setBillingEmailTo('firm@example.test');
-        $invoice = $this->invoiceService->markSent($invoice);
+        $invoice = $this->invoiceService->markSent($invoice, $actor);
         self::assertSame(InvoiceStatus::SENT, $invoice->getStatus());
 
         $this->expectException(DocumentAlreadyIssuedException::class);

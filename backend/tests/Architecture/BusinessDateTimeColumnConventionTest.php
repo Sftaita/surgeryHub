@@ -118,6 +118,11 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         // Exécution & Valorisation, Lot 4 (D-074) — FirmInvoiceLine/InstrumentistStatementLine.
         'App\Entity\FirmInvoiceLine::createdAt' => 'set from new \DateTimeImmutable() in the constructor, never client input; nullable only for pre-Lot-4 legacy rows never backfilled',
         'App\Entity\InstrumentistStatementLine::createdAt' => 'set from new \DateTimeImmutable() in the constructor, never client input; nullable only for pre-Lot-4 legacy rows never backfilled',
+
+        // Exécution & Valorisation, Lot 5 (D-075) — Payment.
+        'App\Entity\Payment::paidAt' => 'date-only (date_immutable, Y-m-d) — may be client-submitted (a manager enters a past payment date) but never carries a time-of-day/offset component, so there is nothing to mislabel',
+        'App\Entity\Payment::recordedAt' => 'set from new \DateTimeImmutable() in DocumentPaymentService::recordPayment(), never client input',
+        'App\Entity\Payment::createdAt' => 'set from new \DateTimeImmutable() in the constructor, never client input',
     ];
 
     /** Exempt by name, not by allowlist entry — the project-wide TimestampableTrait convention. */
