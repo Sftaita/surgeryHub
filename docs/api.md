@@ -4290,3 +4290,97 @@ chemins métier distincts.
     commentaires manager historisés (reject/reopen), jamais filtrés/tronqués.
 
 ---
+
+## 33. Exécution & Valorisation — le réalisé (EPIC, Lot 1, D-071)
+
+Voir D-071 (`docs/decisions.md`) et `docs/architecture.md` (§6, "Flux exécution &
+valorisation") pour le modèle complet. `MissionExecution` remplace `InstrumentistService`
+(renommage de table, migration `Version20260718065425`) — aucun montant, aucun tarif,
+aucun statut financier : uniquement le RÉALISÉ (heures réelles, source, contestations).
+
+### `GET /api/missions/{id}/execution`
+
+**AuthZ :** `MissionExecutionVoter::VIEW` — manager/admin, instrumentiste assigné, ou
+chirurgien de la mission.
+
+**Toujours 200**, même sans `MissionExecution` persistée :
+
+```json
+{
+  "missionId": 123,
+  "hasExecutionRecord": false,
+  "actualStartAt": null,
+  "actualEndAt": null,
+  "actualDurationMinutes": null,
+  "hoursSource": null,
+  "effectiveDurationMinutes": 120,
+  "effectiveDurationSource": "PLANNED",
+  "disputes": []
+}
+```
+
+`effectiveDurationSource` ∈ `ACTUAL_TIMES` (horaires réels connus) \|
+`ACTUAL_EXPLICIT` (durée déclarée sans horaires) \| `PLANNED` (repli sur
+`Mission.startAt`/`endAt`, aucun réalisé connu).
+
+### `PATCH /api/missions/{id}/execution`
+
+**AuthZ :** `MissionExecutionVoter::UPDATE` — manager/admin ou instrumentiste assigné.
+La permission est vérifiée **avant** toute création paresseuse de `MissionExecution`
+(voir §"Correction de sécurité" dans architecture.md).
+
+**Body JSON (tous champs optionnels, sémantique PATCH) :**
+
+```json
+{
+  "actualStartAt": "2026-09-01T08:05:00+02:00",
+  "actualEndAt": "2026-09-01T10:20:00+02:00",
+  "actualDurationMinutes": null,
+  "hoursSource": "INSTRUMENTIST"
+}
+```
+
+**Règle de cohérence (backend seul garant, jamais côté frontend) :**
+- `actualStartAt`/`actualEndAt` doivent être fournis **ensemble** (dans l'état résultant
+  après application du PATCH) — un seul des deux sans l'autre est un `422`.
+- Si les deux sont connus, `actualDurationMinutes` est **toujours dérivée**
+  (`round((end - start) / 60)`) — jamais deux sources de vérité.
+- Fournir en plus une `actualDurationMinutes` explicite qui contredit cette dérivation
+  est un `422`, jamais une acceptation silencieuse.
+
+**Réponse — 200 :** même forme que le `GET`.
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non autorisé |
+| `422` | Horaires incomplets, `actualEndAt ≤ actualStartAt`, ou durée contradictoire |
+
+### Endpoints legacy conservés (mêmes URLs, délégués au nouveau modèle)
+
+| Endpoint | Notes |
+|---|---|
+| `PATCH /api/missions/{id}/service` | `hours` (décimal, heures) converti en `actualDurationMinutes` (entier, minutes) à l'entrée. `consultationFeeApplied`/`status` acceptés sans erreur (compatibilité payload) mais ignorés — champs financiers morts. |
+| `POST /api/services/{serviceId}/disputes` | `serviceId` = id de `MissionExecution` (renommage interne, URL inchangée). `403` si `serviceId` introuvable. `400` si une contestation `OPEN` existe déjà. |
+| `GET /api/disputes` | Manager/admin uniquement. Filtrage `?status=`. |
+| `PATCH /api/disputes/{id}` | Manager/admin uniquement — traite/résout. |
+
+### Permissions (`MissionExecutionVoter`)
+
+| Rôle | VIEW | UPDATE | DISPUTE_CREATE | DISPUTE_MANAGE |
+|---|---|---|---|---|
+| Manager/Admin | ✓ | ✓ | — | ✓ |
+| Instrumentiste assigné | ✓ | ✓ | — | — |
+| Chirurgien de la mission | ✓ | — | ✓ | — |
+| Autre | — | — | — | — |
+
+### Audit
+
+`MISSION_EXECUTION_CREATED` (première déclaration), `MISSION_EXECUTION_UPDATED`
+(changement hors durée — ex. `hoursSource` seul), `MISSION_EXECUTION_DURATION_CHANGED`
+(la durée effective change), `MISSION_EXECUTION_DISPUTE_OPENED`,
+`MISSION_EXECUTION_DISPUTE_RESOLVED`, `MISSION_EXECUTION_DISPUTE_REJECTED`. Idempotent :
+un `PATCH` sans changement réel n'écrit aucun `AuditEvent` supplémentaire.
+
+---

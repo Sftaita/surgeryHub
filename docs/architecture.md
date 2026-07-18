@@ -506,13 +506,32 @@ Mission
 ├── invoiceGeneratedAt (nullable — verrou définitif, hors périmètre Lot 7)
 ├── allowedActions[] (calculé dynamiquement)
 ├── MissionIntervention[]
-└── MissionEncodingComment[] (Lot 7 — commentaires manager reject/reopen, historisés)
+├── MissionEncodingComment[] (Lot 7 — commentaires manager reject/reopen, historisés)
+└── execution → MissionExecution (nullable — EPIC Exécution & Valorisation, Lot 1, D-071 : le RÉALISÉ, absent tant que rien n'a été déclaré)
 
 MissionEncodingComment (Lot 7, D-070)
 ├── mission → Mission
 ├── author → User (toujours un manager/admin — reject/reopen)
 ├── comment (text, obligatoire au reject, optionnel au reopen)
 └── createdAt (TimestampableTrait) — jamais mis à jour, une ligne par reject/reopen
+
+MissionExecution (EPIC Exécution & Valorisation, Lot 1, D-071 — le RÉALISÉ)
+├── mission → Mission (1—0..1, UNIQUE — remplace InstrumentistService, renommage de
+│   table, pas une nouvelle table + copie)
+├── actualStartAt, actualEndAt (nullable, business_datetime_immutable — D-066 : peuvent
+│   être soumis par un client, jamais un simple now() serveur)
+├── actualDurationMinutes (nullable — toujours dérivée de actualStartAt/actualEndAt
+│   quand les deux sont connus ; sinon durée explicite déclarée seule)
+├── hoursSource (nullable — INSTRUMENTIST | MANAGER | SYSTEM, qui a déterminé le réalisé)
+└── MissionExecutionDispute[] — jamais de montant, tarif, ou statut financier ici (voir
+    docs/decisions.md D-071 pour la séparation planifié/réalisé/valorisation)
+
+MissionExecutionDispute (EPIC Exécution & Valorisation, Lot 1, D-071)
+├── mission → Mission · missionExecution → MissionExecution
+├── raisedBy → User (le chirurgien concerné par la mission, jamais un autre acteur)
+├── reasonCode (DURATION_INCOHERENT | WRONG_DATE | DUPLICATE | OTHER), comment (nullable)
+├── status (OPEN | IN_REVIEW | RESOLVED | REJECTED) — une seule OPEN à la fois par MissionExecution
+└── resolutionComment (nullable, renseigné par le manager)
 
 MissionIntervention
 ├── code, label (instantané figé à la création, copié depuis interventionType — Lot 5,
@@ -836,6 +855,75 @@ le **même jeu de statuts autorisés** pour chaque transition (défense en profo
 appel HTTP hors statut est donc toujours refusé au niveau du Voter (`403`), jamais du
 service (`409`) — ce dernier ne reste atteignable qu'en cas d'appel direct au service
 (tests unitaires, futur appelant interne).
+
+### Flux exécution & valorisation — le réalisé (EPIC Exécution & Valorisation, Lot 1, D-071)
+
+Trois réalités distinctes, jamais fusionnées dans une seule entité :
+
+```
+Mission            — le PLANIFIÉ + le cycle de vie du processus (statut, encodage Lot 7)
+      │
+MissionExecution   — le RÉALISÉ : heures réelles, source, contestations. Aucun montant,
+      │                aucun tarif, aucune règle financière, aucun statut financier.
+      ▼
+FinancialCalculation — la VALORISATION FINANCIÈRE (non implémentée dans ce lot — fondation
+                        structurelle uniquement, voir resolveEffectiveDuration() ci-dessous)
+```
+
+**MissionExecution remplace InstrumentistService** — renommage de table + colonnes
+(migration `Version20260718065425`), jamais une nouvelle table + copie. Relation
+`Mission` 1 — 0..1 `MissionExecution` : une mission peut ne pas encore avoir de réalisé
+déclaré. Nommage délibérément non-ambigu (`actualStartAt`/`actualEndAt`/
+`actualDurationMinutes`, jamais `startAt`/`endAt`/`hours`) pour ne jamais pouvoir être
+confondu avec le planifié — voir docs/decisions.md D-071 pour l'analyse complète ayant
+mené à cette séparation (challengée et tranchée sur deux tours : d'abord "migrer vers
+Mission ?", puis "à quel niveau exactement ?").
+
+**Règle de résolution du réalisé — `MissionExecutionService::resolveEffectiveDuration()` :**
+centralisée, déterministe, seul point que le futur moteur financier devra appeler.
+
+```
+MissionExecution existe ?
+  ├── actualStartAt ET actualEndAt renseignés → durée = end - start (ACTUAL_TIMES)
+  ├── sinon, actualDurationMinutes renseigné  → durée = cette valeur (ACTUAL_EXPLICIT)
+  └── sinon                                    → repli sur Mission.startAt/endAt (PLANNED)
+MissionExecution absente                       → repli direct sur Mission.startAt/endAt (PLANNED)
+```
+
+**Cohérence actualStartAt/actualEndAt/actualDurationMinutes** — une seule règle,
+appliquée par `MissionExecutionService::updateActuals()`, jamais côté frontend : si les
+deux horaires réels sont fournis (dans l'état résultant, pas seulement dans la requête
+courante), la durée est **toujours dérivée** des deux — jamais deux sources de vérité.
+Fournir les deux horaires ET une durée explicite contradictoire est un `422`, jamais une
+acceptation silencieuse. Fournir un seul horaire sans l'autre est également un `422` (un
+horaire seul ne décrit aucune durée).
+
+**Contestations (`MissionExecutionDispute`, ex-`ServiceHoursDispute`)** — workflow
+inchangé : le chirurgien concerné ouvre, le manager traite et résout. Une seule
+contestation `OPEN` à la fois par `MissionExecution` (contrainte unique en base +
+vérifiée en code).
+
+**Endpoints legacy conservés** (`ServiceController`, `PATCH /api/missions/{id}/service`,
+`POST /api/services/{id}/disputes`, `GET`/`PATCH /api/disputes`) — mêmes URLs, même
+forme de payload, désormais délégués à `MissionExecutionService`. `hours` (décimal,
+legacy) converti en `actualDurationMinutes` (entier) à l'entrée ; `consultationFeeApplied`/
+`status` acceptés sans erreur mais ignorés (champs financiers morts retirés par ce lot).
+Nouveaux endpoints additifs `GET`/`PATCH /api/missions/{id}/execution` — la forme cible.
+
+**Correction de sécurité au passage** : l'ancien flux créait une `InstrumentistService`
+vide *avant* de vérifier la permission (`findOrCreateService()` appelé avant
+`denyAccessUnlessGranted()`). `MissionExecutionVoter::UPDATE`/`VIEW` sont désormais
+évalués sur `Mission` — la permission est vérifiée avant toute création paresseuse.
+
+**Champs financiers morts supprimés** (vérifié : aucun chemin de production n'en
+dépendait) : `serviceType`, `employmentTypeSnapshot`, `consultationFeeApplied`,
+`computedAmount`, statut financier `CALCULATED`/`APPROVED`/`PAID`. Ce dernier était un
+vestige d'une tentative antérieure de construire ce que `FinancialCalculation`
+construira réellement — jamais piloté ni lu par aucun code de production.
+
+**Hors périmètre de ce lot** (fondation structurelle uniquement) : `FinancialCalculation`
+elle-même, tout montant, tout tarif, la bascule de `InstrumentistStatementService`/
+`FirmInvoiceService` vers ce nouveau modèle.
 
 ---
 

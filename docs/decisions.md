@@ -3484,6 +3484,119 @@ Design à venir).
 
 ---
 
+## D-071 — Modèle de domaine Mission / MissionExecution / FinancialCalculation ; InstrumentistService devient MissionExecution (EPIC Exécution & Valorisation, Lot 1)
+
+Date : 2026-07-18
+
+### Le modèle de domaine (figé après deux tours de discussion)
+
+Trois réalités distinctes, jamais fusionnées :
+
+```
+Mission              — le PLANIFIÉ + le cycle de vie du processus (statut, encodage Lot 7)
+MissionExecution     — le RÉALISÉ (heures réelles, source, contestations)
+FinancialCalculation — la VALORISATION FINANCIÈRE (Lot 2+, non implémentée ici)
+```
+
+**Pourquoi pas "Mission absorbe tout" (option écartée) :** Mission accumule déjà un
+champ plat par préoccupation (`declaredAt`, `submittedAt`, `encodingLockedAt`,
+`encodingStartedAt`, `invoiceGeneratedAt`...). Y ajouter les faits d'exécution
+(déclarés par l'instrumentiste, contestés par le chirurgien, résolus par le manager —
+trois acteurs sans rapport avec les acteurs qui mutent le planning) aurait reproduit,
+au moment même où on corrige le premier symptôme (`InstrumentistService` orphelin), le
+mécanisme exact qui l'a produit. Le triptyque retenu correspond au découpage standard
+d'un ERP de gestion de missions/temps : ressource planifiée → feuille de temps réelle →
+pièce de coût, jamais fusionnés.
+
+**Nuance assumée :** `Mission.status` n'est pas *purement* planifié — le cycle Lot 7
+(`ENCODING_IN_PROGRESS`/`SUBMITTED`/`VALIDATED`) est un état de *processus*, pas un fait
+de planning. Ça ne remet pas en cause la séparation : le statut reste légitimement sur
+Mission (chaque entité porte son propre cycle de vie), `MissionExecution` porte le
+*contenu* factuel de ce qui s'est passé pendant ce cycle.
+
+**Nommage** — jamais `startAt`/`endAt`/`hours` sur `MissionExecution` (ambiguïté avec
+le planifié) : `actualStartAt`, `actualEndAt`, `actualDurationMinutes` (en MINUTES,
+cohérent avec `InstrumentistStatementLine.durationMinutesRaw/Rounded` existant — l'ancien
+`InstrumentistService.hours` était en heures décimales, converti à la migration).
+
+### InstrumentistService → MissionExecution
+
+Pas une nouvelle table : renommage (`instrumentist_service` → `mission_execution`,
+`service_hours_dispute` → `mission_execution_dispute`, migration `Version20260718065425`,
+vérifié réversible up→down→up avec conservation exacte des données via un test manuel
+en base). Ses deux responsabilités réellement vivantes migrent :
+- `hours`/`hoursSource` → `actualDurationMinutes`/`hoursSource` sur `MissionExecution`
+- `ServiceHoursDispute` → `MissionExecutionDispute`, workflow et permissions inchangés
+  (le chirurgien concerné ouvre, le manager résout)
+
+Ses responsabilités mortes sont supprimées (vérifié avant suppression : aucun chemin de
+production, backend ou frontend, n'en dépendait) :
+- `serviceType` (dupliquait `Mission.type`), `employmentTypeSnapshot` (jamais lu)
+- `consultationFeeApplied` (jamais lu — `InstrumentistStatementService` relit
+  `User.consultationFee` en direct au moment de la génération du décompte)
+- `computedAmount` (jamais écrit par aucun code — absent même du DTO de mise à jour) et
+  le statut financier `CALCULATED`/`APPROVED`/`PAID` : un vestige d'une tentative
+  antérieure de construire exactement ce que `FinancialCalculation` construira
+  proprement — confirmation que la direction retenue était la bonne, pas une régression.
+
+**mission_id devient UNIQUE** (contrainte ajoutée) : la relation `Mission` 1—0..1
+`MissionExecution` n'était qu'implicite avant (simple index), jamais garantie par le
+schéma.
+
+### `resolveEffectiveDuration()` — le seul point d'extension pour le futur moteur
+
+`MissionExecutionService::resolveEffectiveDuration(Mission): EffectiveDuration` —
+horaires réels si connus (`ACTUAL_TIMES`), sinon durée explicite déclarée
+(`ACTUAL_EXPLICIT`), sinon repli sur `Mission.startAt/endAt` (`PLANNED`). Centralisé,
+déterministe, ne calcule jamais de montant — un simple calcul de durée. Une
+`MissionExecution` peut exister sans aucune donnée (créée mais tout `null`) : dans ce
+cas aussi, repli sur `PLANNED`.
+
+**Cohérence actualStartAt/actualEndAt/actualDurationMinutes** — une seule règle,
+appliquée par `updateActuals()`, jamais côté frontend : si les deux horaires sont
+connus (état résultant, pas seulement la requête courante), la durée est **toujours**
+dérivée d'eux — jamais deux sources de vérité en parallèle. Une durée explicite fournie
+dans la même requête qui contredirait cette dérivation est un `422`, jamais une
+acceptation silencieuse. Un seul horaire sans l'autre est également un `422`.
+
+### Settlement — resté un concept d'architecture, pas une nouvelle table
+
+Challengé et confirmé dans ce même tour : Firm-side et Instrumentist-side (destinataire
+Firme vs User, cadence période-libre vs mois calendaire, numérotation séquentielle
+uniquement côté firme) sont deux réalités différentes. Les fusionner dans une table
+`Settlement` générique aurait reproduit, à l'identique, l'anti-pattern qu'on vient
+d'écarter pour Mission — sans compter le coût et le risque de migrer deux tables déjà
+porteuses d'historique légal externe (factures envoyées, décomptes payés).
+`FirmInvoice`/`InstrumentistStatement` restent les deux implémentations concrètes ; le
+futur `RemunerationLine`/`FinancialCalculation` (Lot 2+) sera la couche qui les
+alimentera, pas une troisième table qui les remplace.
+
+### Correction de sécurité trouvée en migrant
+
+L'ancien flux (`ServiceController::findOrCreateService()` appelé avant
+`denyAccessUnlessGranted()`) persistait une `InstrumentistService` vide **avant** de
+refuser l'accès en cas d'appel non autorisé. `MissionExecutionVoter::VIEW`/`UPDATE`
+sont désormais évalués sur `Mission` (jamais sur l'entité pas-encore-créée) — la
+permission est vérifiée avant toute création paresseuse. Testé explicitement
+(`ServiceControllerTest::test_legacy_patch_service_denied_does_not_create_a_row`).
+
+### Compatibilité API
+
+Endpoints legacy (`PATCH /api/missions/{id}/service`, `POST /api/services/{id}/disputes`,
+`GET`/`PATCH /api/disputes`) conservés à l'identique — même URL, même forme de payload
+— délégués au nouveau modèle. Vérifié qu'aucun consommateur frontend ne lit les champs
+financiers morts dans la réponse (`EditServiceHoursDialog.tsx` n'envoie que `hours`/
+`hoursSource` et ignore la réponse). Nouveaux endpoints additifs
+`GET`/`PATCH /api/missions/{id}/execution`.
+
+### Portée non traitée ici (Lot 2+)
+
+`FinancialCalculation`/`RemunerationLine` elles-mêmes, tout montant, tout tarif,
+l'historisation des tarifs instrumentistes, la bascule de `InstrumentistStatementService`/
+`FirmInvoiceService` vers le nouveau modèle.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -3551,3 +3664,4 @@ Design à venir).
 | 16-07-2026 | D-067 — Catalogue financier des firmes : prestations non liantes, moteur indépendant (Lot 1) |
 | 17-07-2026 | D-068 — Rattachement de l'encodage au référentiel InterventionType (Lot 5) + InterventionTypeRequest |
 | 17-07-2026 | D-070 — Workflow métier de l'encodage : cycle de vie explicite, verrouillage backend, commentaires historisés (Lot 7) |
+| 18-07-2026 | D-071 — Modèle Mission/MissionExecution/FinancialCalculation ; InstrumentistService → MissionExecution (Exécution & Valorisation, Lot 1) |
