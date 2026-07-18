@@ -48,11 +48,25 @@ class PricingRule
     #[ORM\Column(length: 3, options: ['default' => 'EUR'])]
     private string $currency = 'EUR';
 
-    /** null = valide depuis toujours (voir docs/decisions.md — choix délibéré, pas un oubli). */
+    /**
+     * null = valide depuis toujours (voir docs/decisions.md D-067 — choix délibéré,
+     * pas un oubli ; conservé pour compatibilité avec les règles créées avant D-072).
+     * Convention centralisée depuis D-072 : INCLUSIF (le tarif s'applique dès ce jour).
+     * PricingRuleVersioningService exige désormais un validFrom explicite pour toute
+     * nouvelle règle créée via son API — seul l'ancien chemin d'écriture legacy
+     * (FirmBillingController::createRule(), inchangé pour compatibilité) permet encore
+     * null.
+     */
     #[ORM\Column(type: 'date_immutable', nullable: true)]
     private ?\DateTimeImmutable $validFrom = null;
 
-    /** null = sans date de fin. */
+    /**
+     * null = sans date de fin (ouvert). Convention centralisée depuis D-072 : EXCLUSIF
+     * — le jour de validTo lui-même n'est déjà plus couvert par cette règle, il
+     * appartient à la règle suivante (voir coversDate()/overlapsWith() ci-dessous et
+     * D-072 pour l'exemple complet : ancien validTo=2026-07-01, nouveau
+     * validFrom=2026-07-01, le 1er juillet n'utilise QUE le nouveau tarif).
+     */
     #[ORM\Column(type: 'date_immutable', nullable: true)]
     private ?\DateTimeImmutable $validTo = null;
 
@@ -163,19 +177,27 @@ class PricingRule
         return $this;
     }
 
-    /** Vrai si $date tombe dans [validFrom, validTo] (bornes nulles = ouvertes). */
+    /**
+     * Vrai si $date tombe dans [validFrom, validTo[ — validFrom INCLUSIF, validTo
+     * EXCLUSIF (D-072, convention centralisée). Bornes nulles = ouvertes.
+     */
     public function coversDate(\DateTimeImmutable $date): bool
     {
         if ($this->validFrom !== null && $date < $this->validFrom) {
             return false;
         }
-        if ($this->validTo !== null && $date > $this->validTo) {
+        if ($this->validTo !== null && $date >= $this->validTo) {
             return false;
         }
         return true;
     }
 
-    /** Vrai si les fenêtres de validité de $this et $other se recouvrent (bornes nulles = infinies). */
+    /**
+     * Vrai si les fenêtres [validFrom, validTo[ de $this et $other se recouvrent
+     * (bornes nulles = infinies). Deux périodes qui se touchent exactement
+     * (this.validTo === other.validFrom) ne se chevauchent JAMAIS — D-072 : le jour
+     * validTo n'appartient déjà plus à cette règle.
+     */
     public function overlapsWith(self $other): bool
     {
         $aStart = $this->validFrom;
@@ -183,8 +205,8 @@ class PricingRule
         $bStart = $other->validFrom;
         $bEnd   = $other->validTo;
 
-        $startsBeforeOtherEnds = $bEnd === null || $aStart === null || $aStart <= $bEnd;
-        $endsAfterOtherStarts  = $aEnd === null || $bStart === null || $aEnd >= $bStart;
+        $startsBeforeOtherEnds = $bEnd === null || $aStart === null || $aStart < $bEnd;
+        $endsAfterOtherStarts  = $aEnd === null || $bStart === null || $aEnd > $bStart;
 
         return $startsBeforeOtherEnds && $endsAfterOtherStarts;
     }

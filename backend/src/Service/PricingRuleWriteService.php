@@ -7,6 +7,7 @@ use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
 use App\Entity\PricingRule;
 use App\Enum\PricingRuleType;
+use App\Exception\PricingRuleImmutableException;
 use App\Exception\PricingRulePeriodOverlapException;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
@@ -94,9 +95,23 @@ final class PricingRuleWriteService
      * Une suppression ne peut jamais CRÉER de chevauchement — aucun verrou de cible
      * n'est nécessaire pour la correction ; centralisé ici uniquement pour que toutes
      * les écritures de PricingRule passent par un seul et même service.
+     *
+     * D-072 (Lot 2) — garde-fou défensif : une règle déjà applicable (validFrom <= now)
+     * ne doit jamais être supprimée physiquement, quel que soit l'appelant. La politique
+     * métier complète (quand une annulation est légitime) vit dans
+     * PricingRuleVersioningService::cancelFutureRule() ; ce contrôle bas niveau existe
+     * en plus, pas à sa place, pour qu'aucun futur appelant direct de ce service ne
+     * puisse contourner l'invariant par erreur.
      */
     public function delete(PricingRule $rule): void
     {
+        $validFrom = $rule->getValidFrom();
+        if ($validFrom !== null && $validFrom <= new \DateTimeImmutable('today')) {
+            throw new PricingRuleImmutableException(
+                'Une règle déjà applicable ne peut pas être supprimée physiquement.',
+            );
+        }
+
         $this->em->wrapInTransaction(function () use ($rule): void {
             $this->em->remove($rule);
             $this->em->flush();

@@ -25,8 +25,14 @@ class AuditEvent
     #[ORM\JoinColumn(nullable: false)]
     private ?User $actor = null;
 
+    /**
+     * Nullable depuis D-072 (Lot 2, Exécution & Valorisation) : les événements
+     * catalogue/tarifaires (PricingRule, InstrumentistRate) n'ont aucune Mission à
+     * rattacher — voir AuditService::recordGlobal(). Reste obligatoire en pratique pour
+     * tous les événements de cycle de vie mission (AuditService::record()).
+     */
     #[ORM\ManyToOne]
-    #[ORM\JoinColumn(nullable: false)]
+    #[ORM\JoinColumn(nullable: true)]
     private ?Mission $mission = null;
 
     #[ORM\Column(enumType: AuditEventType::class)]
@@ -56,7 +62,7 @@ class AuditEvent
         return $this->mission;
     }
 
-    public function setMission(Mission $mission): static
+    public function setMission(?Mission $mission): static
     {
         $this->mission = $mission;
         return $this;

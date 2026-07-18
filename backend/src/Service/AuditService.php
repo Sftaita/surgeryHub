@@ -51,6 +51,25 @@ class AuditService
         $this->em->persist($evt);
     }
 
+    /**
+     * D-072 (Lot 2) — pour les événements sans Mission à rattacher (catalogue tarifaire :
+     * PricingRule, InstrumentistRate). $payload doit être auto-suffisant (acteur, ancien/
+     * nouveau tarif, devise, date d'effet, périmètre métier) puisqu'aucune Mission ne
+     * fournit de contexte implicite ici. flush() reste la responsabilité de l'appelant
+     * (R-05, même convention que record()).
+     */
+    public function recordGlobal(User $actor, AuditEventType $type, array $payload = []): void
+    {
+        $evt = new AuditEvent();
+        $evt
+            ->setMission(null)
+            ->setActor($actor)
+            ->setEventType($type)
+            ->setPayload($payload);
+
+        $this->em->persist($evt);
+    }
+
     private function persist(Mission $mission, User $actor, AuditEventType $type): void
     {
         $evt = new AuditEvent();

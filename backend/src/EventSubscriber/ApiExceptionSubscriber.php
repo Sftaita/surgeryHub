@@ -7,7 +7,10 @@ use App\Exception\InterventionTypeNotFoundException;
 use App\Exception\MissionNotDraftException;
 use App\Exception\PrimaryFirmInactiveException;
 use App\Exception\PrimaryFirmNotFoundException;
+use App\Exception\PricingRuleImmutableException;
 use App\Exception\PricingRulePeriodOverlapException;
+use App\Exception\InstrumentistRateImmutableException;
+use App\Exception\InstrumentistRatePeriodOverlapException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -52,6 +55,18 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'PRICING_RULE_PERIOD_OVERLAP';
             $message = $e->getMessage() ?: 'Une règle tarifaire existe déjà pour cette période.';
+        } elseif ($e instanceof PricingRuleImmutableException) {
+            $status = 409;
+            $code = 'PRICING_RULE_IMMUTABLE';
+            $message = $e->getMessage() ?: 'Cette règle tarifaire est déjà applicable ou passée — elle ne peut plus être modifiée.';
+        } elseif ($e instanceof InstrumentistRatePeriodOverlapException) {
+            $status = 409;
+            $code = 'INSTRUMENTIST_RATE_PERIOD_OVERLAP';
+            $message = $e->getMessage() ?: 'Un tarif existe déjà pour cette période.';
+        } elseif ($e instanceof InstrumentistRateImmutableException) {
+            $status = 409;
+            $code = 'INSTRUMENTIST_RATE_IMMUTABLE';
+            $message = $e->getMessage() ?: 'Ce tarif est déjà applicable ou passé — il ne peut plus être modifié.';
         } elseif ($e instanceof InterventionTypeNotFoundException) {
             $status = 404;
             $code = 'INTERVENTION_TYPE_NOT_FOUND';
