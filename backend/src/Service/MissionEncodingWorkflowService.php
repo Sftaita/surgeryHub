@@ -2,10 +2,12 @@
 
 namespace App\Service;
 
+use App\Entity\FinancialCalculation;
 use App\Entity\Mission;
 use App\Entity\MissionEncodingComment;
 use App\Entity\User;
 use App\Enum\AuditEventType;
+use App\Enum\FinancialCalculationStatus;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Message\MissionLifecycleChangedMessage;
@@ -151,6 +153,12 @@ final class MissionEncodingWorkflowService
      * VALIDATED → ENCODING_IN_PROGRESS, commentaire optionnel. Déverrouille explicitement
      * (encodingLockedAt = null) — c'est le seul chemin qui le fait ; jamais depuis CLOSED
      * (terminal, message d'erreur dédié pour ne pas confondre avec un simple mauvais état).
+     *
+     * EPIC Exécution & Valorisation, Lot 3 (D-073) — politique de réouverture à seuil :
+     * un FinancialCalculation LOCKED (intégré à un document financier interne) bloque
+     * désormais aussi la réouverture, en plus du statut CLOSED. Pas encore de calcul
+     * seulement CALCULATED/APPROVED (jamais LOCKED) : la réouverture reste libre comme
+     * avant ce lot — rien ne change tant qu'aucun engagement financier n'existe.
      */
     public function reopen(Mission $mission, User $actor, ?string $comment = null): Mission
     {
@@ -160,6 +168,10 @@ final class MissionEncodingWorkflowService
 
         if ($mission->getStatus() !== MissionStatus::VALIDATED) {
             throw new ConflictHttpException('Mission must be VALIDATED to reopen its encoding');
+        }
+
+        if ($this->hasLockedFinancialCalculation($mission)) {
+            throw new ConflictHttpException('This mission has a LOCKED financial calculation and can no longer be reopened — a future correction workflow will be needed.');
         }
 
         $mission->setStatus(MissionStatus::ENCODING_IN_PROGRESS);
@@ -195,6 +207,15 @@ final class MissionEncodingWorkflowService
     public function findMissionsReadyForBilling(): array
     {
         return $this->em->getRepository(Mission::class)->findBy(['status' => MissionStatus::VALIDATED]);
+    }
+
+    /** D-073 (Lot 3) — requête directe, pas de dépendance au FinancialCalculationService complet pour ce seul contrôle. */
+    private function hasLockedFinancialCalculation(Mission $mission): bool
+    {
+        return $this->em->getRepository(FinancialCalculation::class)->findOneBy([
+            'mission' => $mission,
+            'status' => FinancialCalculationStatus::LOCKED,
+        ]) !== null;
     }
 
     private function addComment(Mission $mission, User $author, string $comment): void

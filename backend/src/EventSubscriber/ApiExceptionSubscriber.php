@@ -11,6 +11,8 @@ use App\Exception\PricingRuleImmutableException;
 use App\Exception\PricingRulePeriodOverlapException;
 use App\Exception\InstrumentistRateImmutableException;
 use App\Exception\InstrumentistRatePeriodOverlapException;
+use App\Exception\FinancialCalculationIneligibleException;
+use App\Exception\FinancialCalculationAnomaliesException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -67,6 +69,15 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'INSTRUMENTIST_RATE_IMMUTABLE';
             $message = $e->getMessage() ?: 'Ce tarif est déjà applicable ou passé — il ne peut plus être modifié.';
+        } elseif ($e instanceof FinancialCalculationIneligibleException) {
+            $status = 409;
+            $code = 'FINANCIAL_CALCULATION_INELIGIBLE';
+            $message = $e->getMessage() ?: 'Cette mission ne peut pas être valorisée dans son état actuel.';
+        } elseif ($e instanceof FinancialCalculationAnomaliesException) {
+            $status = 422;
+            $code = 'FINANCIAL_CALCULATION_ANOMALIES';
+            $message = $e->getMessage();
+            $violations = array_map(static fn ($a) => $a->toArray(), $e->getAnomalies());
         } elseif ($e instanceof InterventionTypeNotFoundException) {
             $status = 404;
             $code = 'INTERVENTION_TYPE_NOT_FOUND';
@@ -98,7 +109,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             };
         }
 
-        if ($status === 422) {
+        if ($status === 422 && !$e instanceof FinancialCalculationAnomaliesException) {
             $violations = $this->extractViolationsFromMessage($message);
             if (count($violations) > 0) {
                 $message = 'Validation failed';

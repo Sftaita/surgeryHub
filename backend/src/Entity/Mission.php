@@ -139,6 +139,16 @@ class Mission
     #[ORM\OrderBy(['createdAt' => 'ASC'])]
     private Collection $encodingComments;
 
+    /**
+     * EPIC Exécution & Valorisation, Lot 3 (D-073) — 1—0..n : plusieurs calculs
+     * successifs possibles (recalcul avant verrouillage). orphanRemoval=false : un
+     * FinancialCalculation append-only n'est jamais supprimé au retrait de la
+     * collection (jamais un chemin de code qui le fait de toute façon).
+     */
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: FinancialCalculation::class, orphanRemoval: false)]
+    #[ORM\OrderBy(['version' => 'ASC'])]
+    private Collection $financialCalculations;
+
     public function __construct()
     {
         $this->claims = new ArrayCollection();
@@ -151,6 +161,7 @@ class Mission
         $this->materialItemRequests = new ArrayCollection();
         $this->interventionTypeRequests = new ArrayCollection();
         $this->encodingComments = new ArrayCollection();
+        $this->financialCalculations = new ArrayCollection();
     }
 
     public function getId(): ?int { return $this->id; }
@@ -233,6 +244,9 @@ class Mission
     public function getPublications(): Collection { return $this->publications; }
 
     public function getExecution(): ?MissionExecution { return $this->execution; }
+
+    /** @return Collection<int, FinancialCalculation> */
+    public function getFinancialCalculations(): Collection { return $this->financialCalculations; }
     public function setExecution(?MissionExecution $execution): static { $this->execution = $execution; return $this; }
 
     /** @return Collection<int, SurgeonRatingByInstrumentist> */
