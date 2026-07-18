@@ -3375,6 +3375,115 @@ moteur de facturation sur la relation directe `MissionIntervention.interventionT
 
 ---
 
+## D-070 — Workflow métier de l'encodage : cycle de vie explicite, verrouillage backend, commentaires historisés (Lot 7)
+
+Date : 2026-07-17
+
+### Problème
+
+Avant ce lot, une `Mission` restait modifiable tant qu'elle n'était pas dans un statut
+"fermé" au sens large — suffisant pour un formulaire, pas pour la facturation. Le futur
+moteur financier (Lot 8+) a besoin d'un état **définitif et sans ambiguïté** : une
+facture ne doit jamais être générée à partir d'une mission simplement "encodée", elle
+doit l'être à partir d'une mission **contrôlée par un manager et validée**.
+
+### Décision — cycle de vie retenu
+
+```
+ASSIGNED ──┐
+           ├──start()────▶ ENCODING_IN_PROGRESS ──complete()────▶ SUBMITTED
+IN_PROGRESS┘                        ▲                                 │
+                                     │                      ┌─validate()──┐
+                          reject()   │                      │             │
+                    (commentaire     │                      ▼             ▼
+                     obligatoire) ◀──┴──────────────── (refus)      VALIDATED
+                                                                          │
+                                                                   reopen()
+                                                              (commentaire optionnel)
+                                                                          │
+                                                                          ▼
+                                                              ENCODING_IN_PROGRESS
+```
+
+L'exemple fourni en spécification proposait un statut linéaire strict. Écarté
+délibérément : `start()` (`ENCODING_IN_PROGRESS`) est une **invite optionnelle**, pas un
+préalable obligatoire — `complete()` (`SUBMITTED`) reste atteignable directement depuis
+`ASSIGNED`/`IN_PROGRESS`/`DECLARED`, préservant à l'identique un comportement déjà établi
+avant ce lot (liberté instrumentiste). `POST /api/missions/{id}/submit` (legacy) et
+`POST /api/missions/{id}/encoding/complete` (nouveau) délèguent donc au **même**
+`MissionEncodingWorkflowService::complete()` — jamais deux implémentations métier pour
+la même transition.
+
+**Verrouillage** — champ existant réutilisé, pas de nouveau concept : `encodingLockedAt`
+existait déjà en base (jamais réellement renseigné avant ce lot). Seul
+`POST .../encoding/validate` le renseigne désormais (`SUBMITTED → VALIDATED`) ; seul
+`POST .../encoding/reopen` le remet à `null`. `MissionEncodingGuard` (partagé avec les
+endpoints d'écriture Lot 5/6) applique ce verrou à toute mutation, quel que soit
+l'acteur — **le backend reste l'unique garant**, jamais le frontend. `CLOSED` est un
+statut terminal explicite : `reopen()` le rejette avec un message dédié
+(*"A CLOSED mission can never be reopened"*), jamais confondu avec un simple mauvais
+état transitoire.
+
+**Commentaires manager** — nouvelle entité `MissionEncodingComment` (mission, author,
+comment, createdAt) plutôt qu'un champ unique sur `Mission` : chaque reject/reopen avec
+commentaire crée une **nouvelle ligne**, jamais une mise à jour qui écraserait
+l'historique. Distincte de l'`AuditEvent` de la même transition par construction : l'un
+trace le fait technique (payload générique, `MissionLifecycleChangedMessage`), l'autre
+porte le contenu métier pensé pour être lu par un manager (matériel manquant, quantité
+incorrecte, mauvaise firme, intervention incomplète…). Obligatoire au reject
+(`NotBlank`), optionnel au reopen — cohérent avec le fait qu'un reject est toujours une
+critique à motiver, un reopen peut être une simple réouverture administrative.
+
+**Contrôles métier (`coherenceSummary`)** — agrégation mission-level, en mémoire, des
+signaux déjà calculés par intervention (Lot 6, D-069) : aucune interventions,
+interventions sans matériel, suggestions ignorées, firme absente, matériel d'une autre
+firme. Délibérément **informationnel, jamais bloquant** — la spec demande de préparer
+ces indicateurs pour le manager, pas d'empêcher une transition sur leur base ; un
+manager reste libre de valider une mission imparfaite s'il juge que c'est correct.
+
+**Notifications** — chaque transition dispatche `MissionLifecycleChangedMessage` avec un
+nouveau `MissionChangeType` dédié (`ENCODING_STARTED`/`_COMPLETED`/`_VALIDATED`/
+`_REJECTED`/`_REOPENED`, D-056). Le handler existant les reçoit tous via sa branche par
+défaut déjà documentée "unhandled changeType — forward-compatible skip" : le mécanisme
+est prêt (en particulier pour notifier l'instrumentiste au reopen, demandé
+explicitement), aucune notification réelle n'est câblée dans ce lot — le contenu/l'UX
+des notifications sera décidé avec les maquettes, pas avant.
+
+**Permissions (`MissionVoter`)** — `ENCODING_START` est strictement instrumentiste
+(spec : manager "consulte / valide / refuse / rouvre", jamais "démarre"). Pour chaque
+transition, le Voter impose **le même jeu de statuts autorisés** que le service
+(défense en profondeur) : un appel HTTP hors statut est donc toujours refusé au niveau
+du Voter (`403`), le `ConflictHttpException` (`409`) du service ne restant atteignable
+qu'en cas d'appel direct (tests unitaires, futur appelant interne) — comportement
+délibéré, pas une lacune de test.
+
+**Point d'entrée facturation (Lot 8+, non implémenté ici)** :
+`MissionEncodingWorkflowService::isBillable(Mission): bool` (vrai ⇔ `VALIDATED`) et
+`findMissionsReadyForBilling(): Mission[]`. Aucune autre logique financière dans ce
+service — le découpage garde la validation opérationnelle et le calcul financier
+strictement séparés, le futur moteur n'aura qu'une seule question à se poser.
+
+**Migration** (`Version20260717220000`) : une seule colonne ajoutée,
+`mission.encoding_started_at` (nullable, server-generated — voir
+`BusinessDateTimeColumnConventionTest`/D-066) — `submittedAt`/`encodingLockedAt`
+existaient déjà en base sans jamais être renseignés. Plus la table
+`mission_encoding_comment`. `ENCODING_IN_PROGRESS` (nouveau cas de `MissionStatus`) ne
+nécessite aucune migration : `mission.status` est un `VARCHAR(255)` libre, la validité
+des valeurs est garantie côté PHP par le type d'enum, jamais par une contrainte SQL.
+
+**Aucun verrou de concurrence supplémentaire** : ces transitions sont des actions
+humaines explicites (clic manager/instrumentiste), pas une tâche planifiée qui se
+chevauche (contrairement à `claim()`/`start()` automatique, D-064) — la vérification de
+l'état de départ protège déjà contre un double traitement silencieux, une seconde
+tentative concurrente trouve un statut qui ne correspond plus et échoue proprement
+en `409`.
+
+**Portée non traitée ici (Lot 8+)** : moteur de facturation réel, contenu/branchement
+des notifications (email/push), UX de l'écran manager de contrôle (maquettes Claude
+Design à venir).
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -3441,3 +3550,4 @@ moteur de facturation sur la relation directe `MissionIntervention.interventionT
 | 15-07-2026 | D-066 — Correction structurelle du timezone à l'hydratation Doctrine (business_datetime_immutable) |
 | 16-07-2026 | D-067 — Catalogue financier des firmes : prestations non liantes, moteur indépendant (Lot 1) |
 | 17-07-2026 | D-068 — Rattachement de l'encodage au référentiel InterventionType (Lot 5) + InterventionTypeRequest |
+| 17-07-2026 | D-070 — Workflow métier de l'encodage : cycle de vie explicite, verrouillage backend, commentaires historisés (Lot 7) |

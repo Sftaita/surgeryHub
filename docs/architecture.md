@@ -500,8 +500,19 @@ Mission
 ├── site → Hospital
 ├── surgeon → User
 ├── instrumentist → User (nullable)
+├── submittedAt (nullable — "encodage terminé" instrumentiste, ne verrouille pas)
+├── encodingStartedAt (nullable — Lot 7, D-070 : instant du dernier POST .../encoding/start)
+├── encodingLockedAt (nullable — Lot 7 : non-null ⇔ status VALIDATED, seul reopen() le remet à null)
+├── invoiceGeneratedAt (nullable — verrou définitif, hors périmètre Lot 7)
 ├── allowedActions[] (calculé dynamiquement)
-└── MissionIntervention[]
+├── MissionIntervention[]
+└── MissionEncodingComment[] (Lot 7 — commentaires manager reject/reopen, historisés)
+
+MissionEncodingComment (Lot 7, D-070)
+├── mission → Mission
+├── author → User (toujours un manager/admin — reject/reopen)
+├── comment (text, obligatoire au reject, optionnel au reopen)
+└── createdAt (TimestampableTrait) — jamais mis à jour, une ligne par reject/reopen
 
 MissionIntervention
 ├── code, label (instantané figé à la création, copié depuis interventionType — Lot 5,
@@ -737,6 +748,94 @@ loadSuggestedMaterialsByTypeAndFirm()`), jamais une requête par intervention.
 **Compatibilité :** une intervention pré-Lot 5 (`interventionType = null`, ex: mission
 #529) reçoit `suggestedMaterials: []` et un `coherence` toujours valide — jamais
 d'erreur, jamais de donnée devinée.
+
+### Flux workflow de l'encodage — cycle de vie métier (Lot 7, D-070)
+
+Avant ce lot, une mission restait modifiable tant qu'elle était "ouverte" — insuffisant
+pour la facturation, qui a besoin d'un état *définitif*. Le cycle de vie de l'encodage
+introduit une distinction stricte entre "l'instrumentiste dit avoir fini" (`SUBMITTED`,
+ne verrouille rien) et "le manager a contrôlé et figé" (`VALIDATED`, verrouille tout).
+
+```
+ASSIGNED ──┐
+           ├──start()────▶ ENCODING_IN_PROGRESS ──complete()────▶ SUBMITTED
+IN_PROGRESS┘                        ▲                                 │
+                                     │                      ┌─validate()──┐
+                          reject()   │                      │             │
+                    (commentaire     │                      ▼             ▼
+                     obligatoire) ◀──┴──────────────── (refus)      VALIDATED
+                                                                          │
+                                                                   reopen()
+                                                              (commentaire optionnel)
+                                                                          │
+                                                                          ▼
+                                                              ENCODING_IN_PROGRESS
+```
+
+**Pourquoi pas un statut linéaire strict :** `start()` est une invite optionnelle, pas un
+préalable obligatoire — `complete()` reste atteignable directement depuis `ASSIGNED`,
+`IN_PROGRESS` ou `DECLARED` (comportement préexistant conservé à l'identique, liberté
+instrumentiste établie avant ce lot). `POST /api/missions/{id}/submit` (legacy) et
+`POST /api/missions/{id}/encoding/complete` (Lot 7) sont donc **le même point d'entrée
+métier** — `MissionEncodingWorkflowService::complete()` — jamais deux implémentations.
+
+**Endpoints** (`MissionEncodingWorkflowController`, préfixe `/api/missions/{id}/encoding`) :
+
+| Endpoint | Transition | Acteur |
+|---|---|---|
+| `POST .../start` | `ASSIGNED\|IN_PROGRESS → ENCODING_IN_PROGRESS` | Instrumentiste assigné |
+| `POST .../complete` | `DECLARED\|ASSIGNED\|IN_PROGRESS\|ENCODING_IN_PROGRESS\|SUBMITTED → SUBMITTED` | Instrumentiste assigné |
+| `POST .../validate` | `SUBMITTED → VALIDATED` (verrouille — `encodingLockedAt`) | Manager/Admin |
+| `POST .../reject` | `SUBMITTED → ENCODING_IN_PROGRESS`, commentaire **obligatoire** | Manager/Admin |
+| `POST .../reopen` | `VALIDATED → ENCODING_IN_PROGRESS`, commentaire optionnel, déverrouille | Manager/Admin |
+
+**Verrouillage — le backend est l'unique garant :** `MissionEncodingGuard` (partagé avec
+les endpoints d'écriture Lot 5/6) bloque toute mutation dès que `encodingLockedAt` ou
+`invoiceGeneratedAt` est non-null, quel que soit l'acteur. Seul `reopen()` remet
+`encodingLockedAt` à `null` — c'est le seul chemin qui le fait. `CLOSED` est un statut
+terminal : `reopen()` le rejette explicitement (`ConflictHttpException` dédiée, jamais un
+message générique de "mauvais état"). Le frontend ne décide jamais — il reflète
+`allowedActions[]`.
+
+**Commentaires manager (`MissionEncodingComment`) :** un reject/reopen avec commentaire
+crée une **nouvelle ligne**, jamais une mise à jour d'un champ unique — rien n'est jamais
+écrasé ni perdu. Distinct de l'`AuditEvent` de la même transition : l'AuditEvent trace
+*que* la transition a eu lieu (fait technique) ; le commentaire porte le *contenu* métier
+(matériel manquant, quantité incorrecte, mauvaise firme, intervention incomplète…), pensé
+pour être lu par un manager. Exposé dans `GET .../encoding` (`encodingComments[]`).
+
+**Contrôles de cohérence (`coherenceSummary`) :** agrégation mission-level, en mémoire,
+des signaux déjà calculés par intervention (Lot 6, D-069) — aucune requête
+supplémentaire. Purement informationnel, ne bloque jamais une transition : sert
+uniquement au manager pour décider lui-même de valider/refuser.
+
+**Audit — une transition, un événement, jamais sans trace :**
+`MISSION_ENCODING_STARTED` / `_COMPLETED` / `_VALIDATED` / `_REJECTED` / `_REOPENED`,
+tous écrits par `AuditService::record()` avant le `flush()` (R-05), donc jamais un statut
+muté sans audit correspondant.
+
+**Notifications — événement préparé, pas branché :** chaque transition dispatche
+`MissionLifecycleChangedMessage` avec un nouveau `MissionChangeType`
+(`ENCODING_STARTED`/`_COMPLETED`/`_VALIDATED`/`_REJECTED`/`_REOPENED`, D-056). Le handler
+existant (`MissionLifecycleChangedMessageHandler`) les reçoit tous via sa branche par
+défaut documentée "unhandled changeType — forward-compatible skip" : le mécanisme
+d'instrumentiste-notifié-au-reopen est prêt, aucune notification réelle n'est câblée dans
+ce lot (délibéré — l'UX/le contenu des notifications sera décidé avec les maquettes).
+
+**Point d'entrée facturation (Lot 8+, non implémenté ici) :**
+`MissionEncodingWorkflowService::isBillable(Mission $mission): bool` — vrai uniquement
+si `status === VALIDATED`. `findMissionsReadyForBilling(): Mission[]` — la seule requête
+que le futur moteur financier doit poser. Aucune autre logique de facturation n'existe
+dans ce service : le découpage garde la validation opérationnelle et le calcul financier
+strictement séparés (une facture ne se génère jamais sur une mission "juste encodée").
+
+**Permissions (`MissionVoter`) :** `ENCODING_START` est **instrumentiste-only** — un
+manager n'a jamais besoin de "démarrer" l'encodage de quelqu'un d'autre (spec : "manager
+consulte / valide / refuse / rouvre", jamais "démarre"). Le Voter et le service imposent
+le **même jeu de statuts autorisés** pour chaque transition (défense en profondeur) : un
+appel HTTP hors statut est donc toujours refusé au niveau du Voter (`403`), jamais du
+service (`409`) — ce dernier ne reste atteignable qu'en cas d'appel direct au service
+(tests unitaires, futur appelant interne).
 
 ---
 

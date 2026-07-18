@@ -50,10 +50,11 @@ Liste toutes les firmes actives, triées par nom.
 | `CANCELLED` | Annulée post-déploiement (manager) |
 | `DECLARED` | Activité imprévue déclarée |
 | `REJECTED` | Rejetée par le manager |
-| `SUBMITTED` | Soumise par l'instrumentiste |
-| `VALIDATED` | Validée |
-| `CLOSED` | Fermée |
+| `SUBMITTED` | Soumise par l'instrumentiste — "encodage terminé", ne verrouille rien |
+| `VALIDATED` | Contrôlée et validée par le manager — verrouille l'encodage (Lot 7, D-070) |
+| `CLOSED` | Fermée — terminal, ne peut plus jamais être rouverte |
 | `IN_PROGRESS` | Mission en cours (voir §3.1) |
+| `ENCODING_IN_PROGRESS` | L'instrumentiste a explicitement démarré son encodage (Lot 7, D-070, §7.1) |
 
 ---
 
@@ -302,11 +303,13 @@ Réassigne une mission à un autre instrumentiste. Le statut reste `ASSIGNED`.
 
 **AuthZ :** `MissionVoter::SUBMIT`
 
-**Transition :** `ASSIGNED → SUBMITTED`
+**Transition :** `DECLARED\|ASSIGNED\|IN_PROGRESS\|ENCODING_IN_PROGRESS\|SUBMITTED → SUBMITTED`
 
 **Règles :**
-- Autorisé aussi si `status = DECLARED`
 - Ne verrouille pas l'encodage
+- **Legacy, inchangé pour compatibilité frontend** (Lot 7, D-070) : délègue à
+  `MissionEncodingWorkflowService::complete()`, le même point d'entrée métier que
+  `POST /api/missions/{id}/encoding/complete` (§7.1) — jamais deux implémentations.
 
 ---
 
@@ -431,6 +434,8 @@ DECLARED → REJECTED
 - `interventionTypeRequests` (Lot 5, D-068 — demandes `PENDING` uniquement, voir §23)
 - `materialLines`
 - `catalog` (`items`, `firms`, `interventionTypes` — actifs uniquement, Lot 5)
+- `coherenceSummary` (Lot 7, D-070 — voir §32, informationnel uniquement)
+- `encodingComments[]` (Lot 7, D-070 — commentaires manager historisés, voir §32)
 
 > **Lot 6 — un seul aller-retour, jamais N+1 :** `suggestedMaterials`/`coherence` de
 > **toutes** les interventions de la mission sont calculés à partir d'une seule requête
@@ -676,11 +681,17 @@ Supprimer une ligne matériel.
 ## 10. Verrouillage encodage
 
 - `submittedAt` indique que l'instrumentiste s'est déclaré "fini" — **ne verrouille PAS l'encodage**
+- `encodingLockedAt` est renseigné uniquement par `POST .../encoding/validate` (Lot 7,
+  D-070, §32) — c'est `VALIDATED` qui verrouille, jamais `SUBMITTED`. Seul
+  `POST .../encoding/reopen` le remet à `null`.
 
 **Encodage modifiable tant que :**
 - `encodingLockedAt IS NULL`
 - `invoiceGeneratedAt IS NULL`
 - `mission.status ≠ REJECTED`
+
+**Une mission `CLOSED` ne peut plus jamais être rouverte** — `POST .../encoding/reopen`
+le rejette explicitement (§32), quel que soit l'état de `encodingLockedAt`.
 
 ---
 
@@ -703,6 +714,12 @@ Calculé dynamiquement. **Le frontend ne déduit jamais les droits.**
 | Instrumentiste (owner) | `view`, `encoding`, `submit`, `edit_hours` |
 | Manager / Admin | `approve`, `reject`, `edit` |
 | Surgeon | `view` |
+
+**Cycle de vie de l'encodage (Lot 7, D-070 — voir §32) :** `ASSIGNED`/`IN_PROGRESS`
+ajoutent `start_encoding` (instrumentiste, optionnel) + `edit_encoding` + `submit` ;
+`ENCODING_IN_PROGRESS` ajoute `edit_encoding` + `submit` (pas `start_encoding`, déjà
+fait) ; `SUBMITTED` ajoute `validate` + `reject` (manager) ; `VALIDATED` ajoute
+`reopen` (manager) uniquement — plus aucune action d'édition, l'encodage est verrouillé.
 
 ---
 
@@ -4122,5 +4139,154 @@ vient de créer via `POST /api/intervention-types` pour cette demande.
 **AuthZ :** `BillingVoter::MANAGE` — **Précondition :** `status = PENDING` — body vide.
 
 **Réponse — 200 :** la demande avec `status: "IGNORED"`. **Erreurs :** `404`, `409`.
+
+---
+
+## 32. Cycle de vie de l'encodage — workflow métier (Lot 7, D-070)
+
+Voir D-070 (`docs/decisions.md`) et le diagramme complet dans `docs/architecture.md`
+(§6, "Flux workflow de l'encodage"). Introduit un état d'encodage explicite —
+`SUBMITTED` ("l'instrumentiste dit avoir fini", ne verrouille rien) puis `VALIDATED`
+("le manager a contrôlé et figé", verrouille tout) — indispensable pour que le futur
+moteur de facturation (Lot 8+) n'ait qu'une seule question à se poser : la mission
+est-elle `VALIDATED` ?
+
+Tous les endpoints ci-dessous : préfixe `/api/missions/{missionId}/encoding`,
+contrôleur `MissionEncodingWorkflowController`, service
+`MissionEncodingWorkflowService`. Réponse — 200 : la mission complète
+(`MissionDetailDto`, même forme que les autres endpoints d'action mission).
+
+### `POST .../start`
+
+**AuthZ :** `MissionVoter::ENCODING_START` — **instrumentiste assigné uniquement**, un
+manager n'a jamais besoin de démarrer l'encodage de quelqu'un d'autre.
+
+**Transition :** `ASSIGNED\|IN_PROGRESS → ENCODING_IN_PROGRESS`
+
+**Effets backend :**
+- `mission.encodingStartedAt = now()`
+- Audit `MISSION_ENCODING_STARTED`
+- `MissionLifecycleChangedMessage(ENCODING_STARTED)` dispatché (async, pas de
+  notification branchée dans ce lot)
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non autorisé (mauvais rôle, pas l'instrumentiste assigné, avant `startAt`) |
+| `409` | Mission ni `ASSIGNED` ni `IN_PROGRESS` (atteignable uniquement hors HTTP — le Voter impose déjà le même jeu de statuts, voir architecture.md) |
+
+**Optionnel :** cet appel n'est jamais un préalable obligatoire — `.../complete` reste
+atteignable directement depuis `ASSIGNED`/`IN_PROGRESS`/`DECLARED`.
+
+---
+
+### `POST .../complete`
+
+**AuthZ :** `MissionVoter::SUBMIT` (même règle que le endpoint legacy §4)
+
+**Transition :** `DECLARED\|ASSIGNED\|IN_PROGRESS\|ENCODING_IN_PROGRESS\|SUBMITTED → SUBMITTED`
+
+**Même implémentation que `POST /api/missions/{id}/submit`** (§4, legacy conservé pour
+compatibilité frontend) — `MissionEncodingWorkflowService::complete()`, jamais deux
+chemins métier distincts.
+
+**Effets backend :**
+- `mission.submittedAt = now()` — **ne verrouille pas l'encodage**
+- Audit `MISSION_ENCODING_COMPLETED`
+- `MissionLifecycleChangedMessage(ENCODING_COMPLETED)` dispatché
+
+**Erreurs :** `403` non autorisé · `409` mission dans un statut non soumissible.
+
+---
+
+### `POST .../validate`
+
+**AuthZ :** `MissionVoter::ENCODING_VALIDATE` — Manager/Admin uniquement.
+
+**Transition :** `SUBMITTED → VALIDATED`
+
+**Effets backend :**
+- `mission.encodingLockedAt = now()` — **verrouille l'encodage** (voir §10)
+- Audit `MISSION_ENCODING_VALIDATED`
+- `MissionLifecycleChangedMessage(ENCODING_VALIDATED)` dispatché
+- Rend la mission éligible à `MissionEncodingWorkflowService::isBillable()` (Lot 8+)
+
+**Erreurs :** `403` non manager · `409` mission ≠ `SUBMITTED`.
+
+---
+
+### `POST .../reject`
+
+**AuthZ :** `MissionVoter::ENCODING_REJECT` — Manager/Admin uniquement.
+
+**Transition :** `SUBMITTED → ENCODING_IN_PROGRESS`
+
+**Body JSON :**
+
+```json
+{ "comment": "Matériel manquant sur l'intervention n°2" }
+```
+
+| Champ | Requis | Description |
+|---|---|---|
+| `comment` | ✓ (`NotBlank`) | Motif du refus — matériel manquant, quantité incorrecte, mauvaise firme, intervention incomplète… |
+
+**Effets backend :**
+- Crée une `MissionEncodingComment` (auteur = manager) — **jamais perdue**, exposée
+  ensuite dans `GET .../encoding` → `encodingComments[]`
+- Audit `MISSION_ENCODING_REJECTED` (payload inclut le commentaire)
+- `MissionLifecycleChangedMessage(ENCODING_REJECTED)` dispatché
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non manager |
+| `409` | Mission ≠ `SUBMITTED` |
+| `422` | `comment` manquant ou vide |
+
+---
+
+### `POST .../reopen`
+
+**AuthZ :** `MissionVoter::ENCODING_REOPEN` — Manager/Admin uniquement.
+
+**Transition :** `VALIDATED → ENCODING_IN_PROGRESS`
+
+**Body JSON (commentaire optionnel) :**
+
+```json
+{ "comment": "Merci de vérifier la quantité de vis" }
+```
+
+**Effets backend :**
+- `mission.encodingLockedAt = null` — **seul chemin qui déverrouille une mission validée**
+- Crée une `MissionEncodingComment` seulement si `comment` non vide
+- Audit `MISSION_ENCODING_REOPENED`
+- `MissionLifecycleChangedMessage(ENCODING_REOPENED)` dispatché — mécanisme de
+  notification instrumentiste préparé, pas encore branché
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non manager |
+| `409` (`CLOSED`) | *"A CLOSED mission can never be reopened"* — message dédié, jamais confondu avec un simple mauvais état |
+| `409` | Mission ≠ `VALIDATED` (autre cas) |
+
+---
+
+### Historique et cohérence
+
+- **Audit :** chaque transition ci-dessus écrit un `AuditEvent` avant tout `flush()`
+  (R-05) — `MISSION_ENCODING_STARTED`/`_COMPLETED`/`_VALIDATED`/`_REJECTED`/`_REOPENED`.
+  Consultable via `GET /api/missions/{id}/audit` (§14, `MissionVoter::VIEW_AUDIT`).
+- **`GET .../encoding`** (§7) expose désormais aussi :
+  - `coherenceSummary` — agrégation mission-level des signaux Lot 6 (`hasNoInterventions`,
+    `hasInterventionsWithNoMaterial`, `hasUnusedSuggestions`, `hasMaterialFromOtherFirm`,
+    `hasMissingPrimaryFirm`). Informationnel uniquement, ne bloque jamais une transition.
+  - `encodingComments[]` — `{ id, comment, authorDisplayName, createdAt }`, tous les
+    commentaires manager historisés (reject/reopen), jamais filtrés/tronqués.
 
 ---
