@@ -74,6 +74,7 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\Mission::encodingLockedAt' => 'set from new \DateTimeImmutable(), never client input',
         'App\Entity\Mission::invoiceGeneratedAt' => 'set from new \DateTimeImmutable(), never client input',
         'App\Entity\Mission::declaredAt' => 'set from new \DateTimeImmutable() at declare time, never client input',
+        'App\Entity\Mission::encodingStartedAt' => 'set from new \DateTimeImmutable() at encoding/start time (Lot 7, D-070), never client input',
         'App\Entity\FirmInvoice::generatedAt' => 'set from new \DateTimeImmutable()',
         'App\Entity\FirmInvoice::sentAt' => 'set from new \DateTimeImmutable()',
         'App\Entity\FirmInvoice::paidAt' => 'set from new \DateTimeImmutable()',

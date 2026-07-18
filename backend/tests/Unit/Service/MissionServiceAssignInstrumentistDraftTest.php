@@ -8,12 +8,14 @@ use App\Enum\MissionStatus;
 use App\Exception\MissionNotDraftException;
 use App\Service\AuditService;
 use App\Service\MissionEncodingGuard;
+use App\Service\MissionEncodingWorkflowService;
 use App\Service\MissionService;
 use App\Service\NotificationService;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
  * RC1-C, Cluster C fix: MissionService::assignInstrumentistDraft() is the DRAFT-only
@@ -35,6 +37,12 @@ final class MissionServiceAssignInstrumentistDraftTest extends TestCase
             new MissionEncodingGuard(), // final, stateless — not exercised by assignInstrumentistDraft()
             $this->createMock(AuditService::class),
             $this->createMock(NotificationService::class),
+            new MissionEncodingWorkflowService( // final — not exercised by assignInstrumentistDraft()
+                $this->em,
+                new MissionEncodingGuard(),
+                $this->createMock(AuditService::class),
+                $this->createMock(MessageBusInterface::class),
+            ),
         );
     }
 

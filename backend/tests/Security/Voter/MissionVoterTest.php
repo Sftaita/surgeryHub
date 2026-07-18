@@ -284,4 +284,184 @@ final class MissionVoterTest extends TestCase
         $ref->setAccessible(true);
         $ref->setValue($user, $id);
     }
+
+    // ── ENCODING_START (Lot 7, D-070) ───────────────────────────────────────────
+
+    private function makeInstrumentist(int $id): User
+    {
+        $user = new User();
+        $user->setEmail("instr{$id}@test.com");
+        $user->setRoles(['ROLE_INSTRUMENTIST']);
+        $this->setId($user, $id);
+        return $user;
+    }
+
+    private function makeAssignedMission(MissionStatus $status, User $instrumentist, ?\DateTimeImmutable $startAt = null): Mission
+    {
+        $mission = $this->makeMission($status);
+        $mission->setInstrumentist($instrumentist);
+        $mission->setStartAt($startAt ?? new \DateTimeImmutable('-1 hour'));
+        return $mission;
+    }
+
+    public function test_assigned_instrumentist_can_start_encoding_on_assigned_mission(): void
+    {
+        $instrumentist = $this->makeInstrumentist(1);
+        $mission = $this->makeAssignedMission(MissionStatus::ASSIGNED, $instrumentist);
+        $token = new UsernamePasswordToken($instrumentist, 'main', ['ROLE_INSTRUMENTIST']);
+
+        $result = $this->voter->vote($token, $mission, [MissionVoter::ENCODING_START]);
+        self::assertSame(VoterInterface::ACCESS_GRANTED, $result);
+    }
+
+    public function test_assigned_instrumentist_can_start_encoding_on_in_progress_mission(): void
+    {
+        $instrumentist = $this->makeInstrumentist(1);
+        $mission = $this->makeAssignedMission(MissionStatus::IN_PROGRESS, $instrumentist);
+        $token = new UsernamePasswordToken($instrumentist, 'main', ['ROLE_INSTRUMENTIST']);
+
+        $result = $this->voter->vote($token, $mission, [MissionVoter::ENCODING_START]);
+        self::assertSame(VoterInterface::ACCESS_GRANTED, $result);
+    }
+
+    public function test_other_instrumentist_cannot_start_encoding(): void
+    {
+        $instrumentist = $this->makeInstrumentist(1);
+        $stranger = $this->makeInstrumentist(2);
+        $mission = $this->makeAssignedMission(MissionStatus::ASSIGNED, $instrumentist);
+        $token = new UsernamePasswordToken($stranger, 'main', ['ROLE_INSTRUMENTIST']);
+
+        $result = $this->voter->vote($token, $mission, [MissionVoter::ENCODING_START]);
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    public function test_instrumentist_cannot_start_encoding_before_mission_start_time(): void
+    {
+        $instrumentist = $this->makeInstrumentist(1);
+        $mission = $this->makeAssignedMission(MissionStatus::ASSIGNED, $instrumentist, new \DateTimeImmutable('+1 hour'));
+        $token = new UsernamePasswordToken($instrumentist, 'main', ['ROLE_INSTRUMENTIST']);
+
+        $result = $this->voter->vote($token, $mission, [MissionVoter::ENCODING_START]);
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    public function test_instrumentist_cannot_start_encoding_on_submitted_mission(): void
+    {
+        $instrumentist = $this->makeInstrumentist(1);
+        $mission = $this->makeAssignedMission(MissionStatus::SUBMITTED, $instrumentist);
+        $token = new UsernamePasswordToken($instrumentist, 'main', ['ROLE_INSTRUMENTIST']);
+
+        $result = $this->voter->vote($token, $mission, [MissionVoter::ENCODING_START]);
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    public function test_manager_cannot_start_encoding(): void
+    {
+        // Manager permissions are "consulte / valide / refuse / rouvre" (D-070) — never "démarre".
+        $instrumentist = $this->makeInstrumentist(1);
+        $mission = $this->makeAssignedMission(MissionStatus::ASSIGNED, $instrumentist);
+
+        $result = $this->voter->vote(
+            $this->tokenForUser(['ROLE_MANAGER']),
+            $mission,
+            [MissionVoter::ENCODING_START],
+        );
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    // ── ENCODING_VALIDATE (Lot 7, D-070) ────────────────────────────────────────
+
+    public function test_manager_can_validate_submitted_mission(): void
+    {
+        $result = $this->voter->vote(
+            $this->tokenForUser(['ROLE_MANAGER']),
+            $this->makeMission(MissionStatus::SUBMITTED),
+            [MissionVoter::ENCODING_VALIDATE],
+        );
+        self::assertSame(VoterInterface::ACCESS_GRANTED, $result);
+    }
+
+    public function test_manager_cannot_validate_non_submitted_mission(): void
+    {
+        $result = $this->voter->vote(
+            $this->tokenForUser(['ROLE_MANAGER']),
+            $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS),
+            [MissionVoter::ENCODING_VALIDATE],
+        );
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    public function test_instrumentist_cannot_validate_submitted_mission(): void
+    {
+        $result = $this->voter->vote(
+            $this->tokenForUser(['ROLE_INSTRUMENTIST']),
+            $this->makeMission(MissionStatus::SUBMITTED),
+            [MissionVoter::ENCODING_VALIDATE],
+        );
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    // ── ENCODING_REJECT (Lot 7, D-070) ──────────────────────────────────────────
+
+    public function test_manager_can_reject_submitted_mission(): void
+    {
+        $result = $this->voter->vote(
+            $this->tokenForUser(['ROLE_MANAGER']),
+            $this->makeMission(MissionStatus::SUBMITTED),
+            [MissionVoter::ENCODING_REJECT],
+        );
+        self::assertSame(VoterInterface::ACCESS_GRANTED, $result);
+    }
+
+    public function test_manager_cannot_reject_non_submitted_mission(): void
+    {
+        $result = $this->voter->vote(
+            $this->tokenForUser(['ROLE_MANAGER']),
+            $this->makeMission(MissionStatus::VALIDATED),
+            [MissionVoter::ENCODING_REJECT],
+        );
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    public function test_instrumentist_cannot_reject_submitted_mission(): void
+    {
+        $result = $this->voter->vote(
+            $this->tokenForUser(['ROLE_INSTRUMENTIST']),
+            $this->makeMission(MissionStatus::SUBMITTED),
+            [MissionVoter::ENCODING_REJECT],
+        );
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    // ── ENCODING_REOPEN (Lot 7, D-070) ──────────────────────────────────────────
+
+    public function test_manager_can_reopen_validated_mission(): void
+    {
+        $result = $this->voter->vote(
+            $this->tokenForUser(['ROLE_MANAGER']),
+            $this->makeMission(MissionStatus::VALIDATED),
+            [MissionVoter::ENCODING_REOPEN],
+        );
+        self::assertSame(VoterInterface::ACCESS_GRANTED, $result);
+    }
+
+    public function test_manager_cannot_reopen_closed_mission(): void
+    {
+        $result = $this->voter->vote(
+            $this->tokenForUser(['ROLE_MANAGER']),
+            $this->makeMission(MissionStatus::CLOSED),
+            [MissionVoter::ENCODING_REOPEN],
+        );
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    public function test_instrumentist_cannot_reopen_validated_mission(): void
+    {
+        $result = $this->voter->vote(
+            $this->tokenForUser(['ROLE_INSTRUMENTIST']),
+            $this->makeMission(MissionStatus::VALIDATED),
+            [MissionVoter::ENCODING_REOPEN],
+        );
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
 }
