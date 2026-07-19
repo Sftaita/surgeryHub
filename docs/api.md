@@ -4780,3 +4780,114 @@ ou `DOCUMENT_FULLY_PAID` (selon le solde résultant, jamais les deux) —
 devise, référence, méthode, document, ancien/nouveau `PaymentStatus`.
 
 ---
+
+## 38. Corrections financières additives (EPIC Exécution & Valorisation, Lot 6, D-076)
+
+Voir D-076 (`docs/decisions.md`) et `docs/architecture.md` pour le modèle complet. Tous
+les endpoints des §36-37 ci-dessus restent inchangés. Cette section documente les
+endpoints **additifs** pour corriger un document déjà `SENT`/`PAID` sans jamais le
+réécrire.
+
+**AuthZ (toutes routes) :** `BillingVoter::MANAGE` — manager/admin uniquement.
+
+### `POST /api/firm-invoices/{id}/credit-notes` · `POST /api/instrumentist-statements/{id}/credit-notes`
+
+Crée une note de crédit (`documentType: "CREDIT_NOTE"`) rattachée au document
+`{id}` (doit être `STANDARD` et `SENT`/`PAID`). Reste `GENERATED` (brouillon, sans
+numéro, sans effet sur le solde) jusqu'à son émission explicite (voir plus bas).
+
+**Body JSON :**
+```json
+{
+  "lines": [
+    {
+      "originalDocumentLineId": 145,
+      "reasonCode": "WRONG_QUANTITY",
+      "description": "Quantité corrigée de 3 à 2",
+      "quantity": "1",
+      "unitAmount": "100.00"
+    }
+  ],
+  "comment": "ajustement demandé par le client"
+}
+```
+
+`originalDocumentLineId` nullable — absent pour un ajustement documentaire global (rare,
+toujours soumis à la limite §22). `reasonCode` : `WRONG_QUANTITY`/`WRONG_RATE`/
+`WRONG_DURATION`/`DUPLICATE_LINE`/`OMITTED_LINE`/`WRONG_BENEFICIARY`/
+`COMMERCIAL_ADJUSTMENT`/`OTHER` (`OTHER` exige un `comment` non vide sur la ligne).
+`missionId`/`financialCalculationLineId` optionnels par ligne (traçabilité — jamais de
+recalcul, jamais de réutilisation d'une ligne financière déjà consommée).
+
+**Réponse — 201 :** la note de crédit créée (détail complet, `status: "GENERATED"`,
+`number: null`).
+
+**Erreurs :**
+- `409 CORRECTION_NOT_ELIGIBLE` — document racine `GENERATED` (utiliser `/cancel`),
+  document déjà une correction, ou statut non `SENT`/`PAID`.
+- `422 CORRECTION_VALIDATION_FAILED` — une ou plusieurs lignes invalides (`violations[]`
+  détaille chaque anomalie : `CREDIT_EXCEEDS_ORIGINAL_LINE`, `NET_AMOUNT_NEGATIVE`,
+  `MISSING_OTHER_COMMENT`, `INVALID_QUANTITY`, `INVALID_UNIT_AMOUNT`,
+  `ORIGINAL_LINE_NOT_FOUND`, `ORIGINAL_LINE_NOT_IN_ROOT`, `MISSING_MISSION`,
+  `FINANCIAL_CALCULATION_LINE_NOT_FOUND`, `FINANCIAL_CALCULATION_LINE_ALREADY_ASSIGNED`,
+  `EMPTY_CORRECTION`) — aucun document partiel créé.
+
+### `POST /api/firm-invoices/{id}/debit-notes` · `POST /api/instrumentist-statements/{id}/debit-notes`
+
+Même contrat que `/credit-notes` (`documentType: "DEBIT_NOTE"`) — aucune limite liée au
+montant d'une ligne d'origine (§23 du lot), mais une ligne sans
+`originalDocumentLineId` doit fournir `missionId` (§10 : ligne oubliée).
+
+### `GET /api/firm-invoices/{id}/corrections` · `GET /api/instrumentist-statements/{id}/corrections`
+
+Liste toutes les corrections (`CREDIT_NOTE`/`DEBIT_NOTE`, tout statut) rattachées au
+document `{id}`, triées par `createdAt` croissant. Réponse : détail complet de chaque
+correction (même forme que `GET /{id}`).
+
+### `POST /api/firm-invoice-corrections/{id}/issue` · `POST /api/instrumentist-statement-corrections/{id}/issue`
+
+Émet une correction : `GENERATED → SENT`, attribue son numéro définitif
+(`FIRM-CN-YYYY-NNN`/`FIRM-DN-YYYY-NNN`/`STMT-CN-YYYY-NNN`/`STMT-DN-YYYY-NNN`), et
+c'est **seulement à partir de ce moment** qu'elle influence le solde net du document
+racine (voir §12/§17 de D-076). Contrôleurs dédiés — la ressource "correction" n'est
+pas adressable sous `/api/firm-invoices`/`/api/instrumentist-statements` (id partagé
+avec le document racine).
+
+**Réponse — 200 :** la correction émise (`status: "SENT"`, `number` non `null`).
+**Erreurs :** `404 NOT_FOUND` si `{id}` n'est pas une correction existante.
+
+### `POST /api/firm-invoices/{id}/refunds` · `POST /api/instrumentist-statements/{id}/refunds`
+
+Enregistre un remboursement (nouveau `Payment` `direction: "OUTBOUND"`, append-only —
+jamais une modification d'un paiement existant) sur le document racine `{id}`.
+
+**Body JSON :** identique à `POST .../payments` (§37) — `{ "amount", "currency",
+"paidAt", "method", "reference", "comment" }`.
+
+**Réponse — 201 :** le remboursement créé (même forme qu'un paiement, voir §37, avec
+`direction: "OUTBOUND"`).
+
+**Erreurs :**
+- `422 REFUND_EXCEEDS_OVERPAID` — le montant dépasse le trop-perçu réel
+  (`overpaidAmount`, recalculé sous verrou).
+- `422 PAYMENT_CURRENCY_MISMATCH` — devise différente de celle du document.
+
+### Champs additionnels (factures et décomptes, toutes réponses)
+
+`documentType` (`STANDARD`/`CREDIT_NOTE`/`DEBIT_NOTE`), `correctsDocumentId` (`null`
+pour un document `STANDARD`). Modèle financier étendu (remplace `grossAmount`/
+`paidAmount`/`remainingAmount` du §37, rétrocompatibles — `grossAmount` reste un alias
+de `originalGrossAmount`) : `originalGrossAmount`, `creditNotesAmount`,
+`debitNotesAmount`, `netDocumentAmount`, `paidAmount`, `refundedAmount`,
+`remainingAmount`, `overpaidAmount`, `paymentStatus`. Détail (`get`) : chaque ligne
+expose en plus `reasonCode`/`originalDocumentLineId` ; un document `STANDARD` expose en
+plus `corrections[]` (résumé : `id`/`documentType`/`status`/`number`/`totalAmount`).
+
+### Audit
+
+`CREDIT_NOTE_CREATED`/`DEBIT_NOTE_CREATED` (création), `FINANCIAL_CORRECTION_ISSUED`
+(émission, en plus de `FIRM_INVOICE_ISSUED`/`INSTRUMENTIST_STATEMENT_ISSUED` déjà émis
+par la transition elle-même), `DOCUMENT_NET_BALANCE_CHANGED` (uniquement si le solde
+net change réellement à l'émission), `REFUND_RECORDED`.
+
+---

@@ -630,10 +630,15 @@ FinancialCalculationLine
     calcul incompréhensible
 
 FirmInvoice
-├── firm, number (FIRM-YYYY-NNN), status (DRAFT|GENERATED|SENT|PAID|CANCELLED — Lot 4)
+├── firm, number (FIRM-YYYY-NNN standard ; FIRM-CN-YYYY-NNN / FIRM-DN-YYYY-NNN pour une
+│   correction — Lot 6, D-076, null tant que non émise), status
+│   (DRAFT|GENERATED|SENT|PAID|CANCELLED — Lot 4)
 ├── periodStart, periodEnd, totalAmount
 ├── currency (Lot 4, D-074, défaut EUR), legacySource (Lot 4 — true si créé avant ce
 │   lot ou via le chemin legacy recalculant, false via createFromEligibleLines())
+├── documentType: STANDARD | CREDIT_NOTE | DEBIT_NOTE (Lot 6, D-076, défaut STANDARD)
+├── correctsDocument (Lot 6 — self-FK nullable, toujours vers un document STANDARD
+│   racine, jamais une correction de correction — voir §6 de D-076)
 ├── billingEmailTo (snapshot), billingEmailCc (snapshot JSON)
 └── FirmInvoiceLine[]
 
@@ -646,14 +651,22 @@ FirmInvoiceLine
 │   provient ; NULL = ligne legacy, voir FirmInvoiceLine::isLegacy())
 ├── currency, unitSnapshot, sourceSnapshot (Lot 4 — copie intégrale de
 │   FinancialCalculationLine.snapshot, NULL pour les lignes legacy), createdAt
-└── descriptionSnapshot, unitPrice (snapshot — = unitAmount pour une ligne nouvelle,
-    copié exactement depuis FinancialCalculationLine, jamais recalculé), quantity,
-    totalAmount
+├── descriptionSnapshot, unitPrice (snapshot — = unitAmount pour une ligne nouvelle,
+│   copié exactement depuis FinancialCalculationLine, jamais recalculé), quantity,
+│   totalAmount
+├── reasonCode (Lot 6, D-076 — nullable, motif de correction, NULL sur une ligne
+│   STANDARD)
+└── originalDocumentLine (Lot 6 — self-FK nullable, SANS contrainte d'unicité
+    contrairement à financialCalculationLine : une même ligne d'origine peut être
+    référencée par plusieurs corrections successives)
 
 InstrumentistStatement
 ├── instrumentist, periodYear, periodMonth
+├── number (Lot 6, D-076 — nullable, UNIQUE ; **jamais** attribué à un décompte
+│   STANDARD, uniquement STMT-CN-YYYY-NNN / STMT-DN-YYYY-NNN pour une correction émise)
 ├── status (DRAFT|GENERATED|SENT|PAID|CANCELLED — Lot 4), totalAmount
 ├── currency, legacySource (Lot 4, D-074 — même contrat que FirmInvoice)
+├── documentType, correctsDocument (Lot 6 — même contrat que FirmInvoice)
 └── InstrumentistStatementLine[]
 
 InstrumentistStatementLine
@@ -663,25 +676,32 @@ InstrumentistStatementLine
 │   FinancialCalculationLine pour une ligne nouvelle — jamais recalculé)
 ├── financialCalculationLine, currency, unitSnapshot, sourceSnapshot, createdAt
 │   (Lot 4, D-074 — même contrat que FirmInvoiceLine)
-└── quantity, totalAmount, surgeonNameSnapshot, siteNameSnapshot, missionDateSnapshot
+├── quantity, totalAmount, surgeonNameSnapshot, siteNameSnapshot, missionDateSnapshot
+├── descriptionSnapshot (Lot 6, D-076 — nullable, NULL pour toute ligne STANDARD,
+│   n'existait pas avant ce lot contrairement à FirmInvoiceLine)
+└── reasonCode, originalDocumentLine (Lot 6 — même contrat que FirmInvoiceLine)
 
-Payment (EPIC Exécution & Valorisation, Lot 5, D-075)
+Payment (EPIC Exécution & Valorisation, Lot 5, D-075 ; direction ajoutée Lot 6, D-076)
 ├── documentType: FIRM_INVOICE | INSTRUMENTIST_STATEMENT, documentId (int — pas de FK
 │   Doctrine directe, table polymorphe unique servant les deux types de document ;
-│   documentId validé au niveau applicatif par DocumentPaymentService, jamais deviné)
+│   documentId validé au niveau applicatif par DocumentPaymentService, jamais deviné —
+│   toujours l'id du document STANDARD racine, jamais celui d'une correction, Lot 6)
+├── direction: INBOUND | OUTBOUND (Lot 6, D-076, défaut INBOUND — un remboursement est
+│   un Payment OUTBOUND, jamais une modification d'un Payment INBOUND existant)
 ├── amount (decimal 10,2, CHECK > 0), currency (doit être strictement celle du document)
 ├── paidAt (date réelle du paiement, date-only), recordedAt (horodatage serveur de la
 │   saisie), recordedBy → User
 ├── reference (nullable), method: BANK_TRANSFER | CASH | OTHER, comment (nullable)
 ├── createdAt
-└── append-only : jamais modifié ni supprimé une fois créé (seul point d'écriture :
-    DocumentPaymentService::recordPayment())
+└── append-only : jamais modifié ni supprimé une fois créé (seuls points d'écriture :
+    DocumentPaymentService::recordPayment()/recordRefund())
 
-FirmInvoice/InstrumentistStatement implémentent PayableDocument (Lot 5) :
-getId()/getStatus()/setStatus()/getCurrency()/getTotalAmount()/getPaymentDocumentType()
-— contrat minimal partagé pour que DocumentPaymentService reste unique (§18 du lot)
-sans dupliquer sa logique par type de document ; les deux restent deux agrégats et deux
-tables distinctes (même principe que leur coexistence au Lot 4).
+FirmInvoice/InstrumentistStatement implémentent PayableDocument (Lot 5, étendu Lot 6) :
+getId()/getStatus()/setStatus()/getCurrency()/getTotalAmount()/getPaymentDocumentType()/
+getDocumentType()/getCorrectsDocument()/getLines() — contrat minimal partagé pour que
+DocumentPaymentService/FinancialCorrectionService restent uniques (§18/§20 des lots)
+sans dupliquer leur logique par type de document ; les deux restent deux agrégats et
+deux tables distinctes (même principe que leur coexistence au Lot 4).
 
 PlanningTemplate
 ├── id
@@ -1301,6 +1321,101 @@ d'introduire un `DOCUMENT_SENT` redondant.
 **Hors périmètre de ce lot** : notes de crédit, corrections financières additives après
 paiement, recalcul de montants existants, rapprochement bancaire automatisé, conversion
 de devises, refonte UX.
+
+---
+
+### Flux corrections financières additives (EPIC Exécution & Valorisation, Lot 6, D-076)
+
+```
+FirmInvoice/InstrumentistStatement STANDARD (SENT ou PAID)
+                              │
+                              ▼  FinancialCorrectionService::createCreditNote()/createDebitNote()
+                    verrou pessimiste sur le document RACINE, refresh() sous verrou
+                    assertRootEligible() — STANDARD + SENT/PAID uniquement
+                    validation de CHAQUE ligne (anomalies collectées, jamais un échec
+                    sur la première trouvée)
+                              │
+              ┌───────────────┴────────────────────┐
+              ▼ racine GENERATED / déjà une         ▼ toutes les lignes valides
+                correction                    Note de crédit/débit créée (GENERATED,
+    CORRECTION_NOT_ELIGIBLE (409)             sans numéro, sans effet sur le solde)
+              ▼ ≥1 ligne invalide              audit CREDIT_NOTE_CREATED/DEBIT_NOTE_CREATED
+    CORRECTION_VALIDATION_FAILED (422)                    │
+    aucun document créé                                   ▼  FinancialCorrectionService::issueCorrection()
+                                                  délègue à FirmInvoiceService::issue()/
+                                                  InstrumentistStatementService::issue()
+                                                  (numéro définitif, sentAt, audit *_ISSUED)
+                                                  + FINANCIAL_CORRECTION_ISSUED
+                                                  + DOCUMENT_NET_BALANCE_CHANGED (si le
+                                                    solde net racine change réellement)
+                                                             │
+                                                  (GENERATED → SENT — c'est SEULEMENT
+                                                   maintenant qu'elle compte dans
+                                                   computeBalance() du document racine)
+```
+
+**Modèle retenu — extension, jamais de nouvelle entité "Settlement"** :
+`FirmInvoice`/`InstrumentistStatement` gagnent `documentType`
+(`STANDARD`/`CREDIT_NOTE`/`DEBIT_NOTE`) + `correctsDocument` (self-FK, toujours vers la
+racine `STANDARD`, jamais une correction de correction). Les lignes documentaires
+gagnent `reasonCode` + `originalDocumentLine` (self-FK **sans** contrainte d'unicité,
+contrairement à `financialCalculationLine` — une même ligne d'origine peut être
+référencée par plusieurs corrections).
+
+**Convention de signe centralisée** : montants toujours positifs en base ;
+`FinancialDocumentType::signCoefficient()` porte seul le signe économique
+(`CREDIT_NOTE` = -1, sinon +1) — jamais de double convention.
+
+**Seules les corrections `ISSUED` comptent** : `DocumentPaymentService::computeBalance()`
+(étendu Lot 6) ignore toute correction encore `GENERATED` dans `creditNotesAmount`/
+`debitNotesAmount` — une correction en brouillon reste annulable sans jamais influencer
+silencieusement ce qui est dû. `netDocumentAmount = originalGrossAmount -
+creditNotesAmount + debitNotesAmount` ; `remainingAmount`/`overpaidAmount` en dérivent
+(voir D-076 pour les formules complètes).
+
+**Deux garde-fous cumulés (notes de crédit)** : par ligne d'origine (crédits cumulés
+`GENERATED`/`SENT`/`PAID`, jamais `CANCELLED`, ≤ montant original de la ligne) et pour
+le document entier (`netDocumentAmount` projeté jamais négatif) —
+`FinancialCorrectionService::assertCreditLimits()`, exécuté sous le même verrou
+pessimiste que la création elle-même.
+
+**Paiements et remboursements — toujours rattachés à la racine** : politique explicite
+retenue parmi les deux proposées par le lot — `DocumentPaymentService::resolveRoot()`
+(`$document->getCorrectsDocument() ?? $document`) garantit qu'un paiement/remboursement
+n'est jamais rattaché à une correction, même si l'appelant lui en passe une par erreur.
+`Payment` (Lot 5, append-only, inchangé) étend uniquement avec `direction`
+(`INBOUND`/`OUTBOUND`) — un remboursement est un nouveau `Payment` `OUTBOUND`, jamais
+une modification d'un `Payment` existant. `recordRefund()` reverrouille le document
+racine et relit `overpaidAmount` sous ce verrou avant d'accepter — même mécanisme
+anti-dépassement que `recordPayment()` (Lot 5), prouvé par
+`FinancialCorrectionConcurrencyTest` (connexions DBAL réellement distinctes).
+
+**Numérotation — préfixe distinct, même stratégie** : `FIRM-CN-YYYY-NNN`/
+`FIRM-DN-YYYY-NNN` (factures), `STMT-CN-YYYY-NNN`/`STMT-DN-YYYY-NNN` (décomptes,
+`InstrumentistStatement.number` — champ nouveau, un décompte STANDARD n'a jamais reçu
+de numéro et continue de ne pas en recevoir). Attribué uniquement à l'émission, jamais
+sur un brouillon — même garantie `COUNT(...) + 1` + `UNIQUE` en base que les Lots 4/5.
+
+**Endpoints dédiés pour l'émission** : `POST /api/firm-invoice-corrections/{id}/issue`
+et `POST /api/instrumentist-statement-corrections/{id}/issue` vivent dans deux
+contrôleurs séparés (`FirmInvoiceCorrectionController`/
+`InstrumentistStatementCorrectionController`) — la ressource "correction" partage l'id
+de sa table avec le document racine et n'est donc pas adressable sous le préfixe de
+route existant (`/api/firm-invoices/{id}`, déjà pris par le document lui-même).
+
+**Legacy — aucune reconstruction** : une correction sur un document `legacySource =
+true` référence uniquement la ligne documentaire legacy ; aucune
+`FinancialCalculationLine` n'est jamais reconstruite rétroactivement (§24 du lot, même
+politique que D-074 §19).
+
+**Atomicité** : toute la construction d'une correction (validation de toutes les
+lignes, limites cumulées, persistance, numérotation, audit) tient dans une seule
+transaction — une ligne invalide annule tout, aucun document partiel, prouvé par
+`test_invalid_correction_line_creates_no_partial_document`.
+
+**Hors périmètre de ce lot** : rapprochement bancaire automatisé, conversion de
+devises, refonte UX, modification/suppression d'un paiement existant (toujours
+interdite).
 
 ---
 

@@ -4149,6 +4149,182 @@ existants, rapprochement bancaire automatisé, conversion de devises, refonte UX
 
 ---
 
+## D-076 — Toute correction financière postérieure à l'émission est additive. Aucun document, calcul, ligne financière ou paiement historique n'est modifié ou supprimé. Les notes de crédit, notes de débit et remboursements sont des mouvements distincts, traçables et append-only (EPIC Exécution & Valorisation, Lot 6)
+
+Date : 2026-07-18
+
+### Décision
+
+Corriger une erreur financière détectée après émission (`SENT`/`PAID`) ne modifie
+jamais : le document d'origine, ses lignes, le `FinancialCalculation`/
+`FinancialCalculationLine` d'origine, ni un `Payment` existant. Toute correction est un
+nouveau mouvement financier — document correctif (note de crédit/débit) ou paiement
+append-only (remboursement) — jamais une réécriture du passé.
+
+### Modèle retenu — extension, pas de nouvelle entité
+
+Stratégie recommandée du lot appliquée telle quelle : `FirmInvoice`/
+`InstrumentistStatement` gagnent un `documentType` (`STANDARD`/`CREDIT_NOTE`/
+`DEBIT_NOTE`, défaut `STANDARD`) et un lien `correctsDocument` (self-FK, nullable). Les
+lignes documentaires (`FirmInvoiceLine`/`InstrumentistStatementLine`) gagnent
+`reasonCode` et `originalDocumentLine` (self-FK, nullable, **sans** contrainte
+d'unicité — contrairement à `financialCalculationLine`, une même ligne d'origine peut
+être référencée par plusieurs corrections successives). Aucune entité
+`FirmInvoiceCorrection`/`Settlement` séparée : l'extension reste cohérente, la
+duplication de modèle aurait été gratuite (§3 du lot).
+
+### Convention de signe
+
+Montants stockés **toujours positifs** dans les lignes. Le signe économique est porté
+exclusivement par `documentType`, centralisé dans
+`FinancialDocumentType::signCoefficient()` (`CREDIT_NOTE` = -1, `STANDARD`/
+`DEBIT_NOTE` = +1) — une seule source de vérité, jamais de montant négatif stocké.
+
+### Lien avec le document d'origine — toujours la racine STANDARD
+
+Une correction référence toujours directement le document `STANDARD` racine, jamais une
+autre correction (`assertRootEligible()` refuse explicitement `documentType !==
+STANDARD` avec `CorrectionNotEligibleException`, 409 `CORRECTION_NOT_ELIGIBLE`) — simplifie
+l'audit et le calcul net (§6 du lot), pas de chaîne de corrections à parcourir.
+
+### Lignes correctives
+
+Champs minimaux du lot tous présents : `originalDocumentLine` (nullable — `null` pour
+une ligne oubliée, §10), `reasonCode`, `descriptionSnapshot`, `quantity`, `unitAmount`
+(`unitPrice`/`rateSnapshot` selon l'entité), `totalAmount`, `currency`, `createdAt`, et
+`financialCalculationLine` optionnel (traçabilité uniquement — **ne signifie jamais**
+que la ligne financière est consommée une deuxième fois ; toujours vérifié
+`!isAssigned()` avant rattachement, jamais de réutilisation, §7/§34 du lot).
+`CorrectionReasonCode` limité aux besoins réels (8 cas) ; `OTHER` exige un commentaire
+(`MISSING_OTHER_COMMENT` sinon).
+
+### Source des montants correctifs — jamais de recalcul
+
+`FinancialCorrectionService` n'invoque jamais `PricingRuleResolver`/
+`InstrumentistRateResolver`, ne recalcule aucune durée, n'accède jamais à
+`User.hourlyRate` (§11/§34 du lot). Un montant correctif est soit explicite (saisi et
+validé par le manager, avec ligne d'origine + motif obligatoires), soit repris tel quel
+d'une `FinancialCalculationLine` déjà valorisée par le Lot 3.
+
+### Politique avant/après émission
+
+`GENERATED` → correction refusée (`CorrectionNotEligibleException`), le chemin correct
+reste `cancel()` (§2/§21 du lot, inchangé du Lot 4). `SENT`/`PAID` → correction
+additive uniquement. Une correction elle-même suit `GENERATED → SENT` — réutilise
+`FirmInvoiceService::issue()`/`InstrumentistStatementService::issue()` (Lot 5) plutôt
+que de dupliquer la transition, la numérotation et l'audit `*_ISSUED`.
+
+### Notes de crédit — limites cumulées
+
+Deux garde-fous dans `assertCreditLimits()` : (1) par ligne d'origine, la somme des
+crédits déjà liés (statuts `GENERATED`/`SENT`/`PAID`, jamais `CANCELLED` — un crédit
+encore brouillon compte déjà contre la limite pour empêcher un double-crédit créé sous
+le même verrou avant émission) ne peut dépasser le montant original de cette ligne
+(`CREDIT_EXCEEDS_ORIGINAL_LINE`) ; (2) le montant net projeté du document ne peut
+jamais devenir négatif (`NET_AMOUNT_NEGATIVE`, recommandation §22 :
+`netDocumentAmount >= 0`). Toute anomalie de ligne est collectée (jamais un échec sur
+la première ligne trouvée) puis levée en un seul `CorrectionValidationException` (422
+`CORRECTION_VALIDATION_FAILED`) — aucun document partiel, aucune ligne persistée, aucun
+numéro attribué (§30 du lot).
+
+### Notes de débit — augmentation justifiée
+
+Aucune limite liée à une ligne d'origine (une note de débit peut porter sur une
+prestation entièrement oubliée, `originalDocumentLine = null` + `missionId`
+obligatoire, §10/§23 du lot) — uniquement les mêmes contraintes générales (motif,
+montant strictement positif, devise/bénéficiaire du document racine).
+
+### Montant net — toujours dérivé, jamais stocké
+
+`DocumentBalance` (Lot 5) étendu à 9 champs dérivés :
+`originalGrossAmount`/`creditNotesAmount`/`debitNotesAmount`/`netDocumentAmount`/
+`paidAmount`/`refundedAmount`/`remainingAmount`/`overpaidAmount`/`status`. Formules :
+`netDocumentAmount = originalGrossAmount - creditNotesAmount + debitNotesAmount` ;
+`remainingAmount = max(0, netDocumentAmount - paidAmount + refundedAmount)` ;
+`overpaidAmount = max(0, paidAmount - refundedAmount - netDocumentAmount)`. **Seules
+les corrections `ISSUED` (`SENT`/`PAID`) comptent** dans `creditNotesAmount`/
+`debitNotesAmount` (`sumIssuedCorrections()`) — une correction encore `GENERATED` reste
+modifiable/annulable et ne doit jamais influencer silencieusement ce qui est dû (§17 du
+lot).
+
+### Paiements et remboursements — toujours rattachés à la racine
+
+Politique retenue explicitement parmi les deux proposées par le lot (§17/§18) :
+paiements **et** remboursements sont toujours rattachés au document `STANDARD` racine,
+jamais à un document correctif — un seul compte financier par famille documentaire,
+les corrections restent de purs mouvements documentaires.
+`DocumentPaymentService::resolveRoot()` (`$document->getCorrectsDocument() ??
+$document`) garantit cette règle même si l'appelant passe une note de crédit/débit par
+erreur. `Payment` (Lot 5, append-only, inchangé) étend uniquement avec `direction`
+(`PaymentDirection::INBOUND`/`OUTBOUND`) — un remboursement est un nouveau `Payment`
+`OUTBOUND`, jamais une modification/suppression d'un `Payment` existant.
+
+### Protection contre le remboursement excessif
+
+`recordRefund()` recalcule le solde **sous verrou** juste avant d'accepter
+(`(float) $amount > (float) $before->overpaidAmount` → 422
+`REFUND_EXCEEDS_OVERPAID`) — même mécanisme que `PAYMENT_EXCEEDS_REMAINING` (Lot 5).
+Deux remboursements concurrents ne peuvent jamais dépasser le trop-perçu réel (prouvé
+par `FinancialCorrectionConcurrencyTest`, connexions DBAL distinctes).
+
+### Legacy — aucune reconstruction
+
+Une correction sur un document `legacySource = true` est autorisée dès lors que
+bénéficiaire/devise/montant/statut émis sont exploitables — aucune
+`FinancialCalculationLine` n'est jamais reconstruite rétroactivement, la ligne
+corrective référence uniquement la ligne documentaire legacy (§24 du lot, même
+politique que D-074 §19).
+
+### Numérotation
+
+Préfixe distinct par type documentaire, même stratégie `COUNT(...) + 1` +
+`UNIQUE` en base (D-074/D-075 inchangés) : `FIRM-YYYY-NNN` (STANDARD, inchangé),
+`FIRM-CN-YYYY-NNN`/`FIRM-DN-YYYY-NNN` pour les factures ; `STMT-CN-YYYY-NNN`/
+`STMT-DN-YYYY-NNN` pour les décomptes (`InstrumentistStatement.number` est un champ
+**nouveau** — un décompte STANDARD n'a jamais eu de numéro et n'en reçoit toujours pas,
+seules ses corrections en reçoivent un, à l'émission uniquement, jamais sur un
+brouillon).
+
+### Endpoints, permissions
+
+`POST /{id}/credit-notes`, `POST /{id}/debit-notes`, `GET /{id}/corrections`,
+`POST /{id}/refunds` sous les préfixes existants (`/api/firm-invoices`,
+`/api/instrumentist-statements`) ; `POST /api/firm-invoice-corrections/{id}/issue` et
+`POST /api/instrumentist-statement-corrections/{id}/issue` dans deux contrôleurs dédiés
+(la famille de ressource "correction" n'est pas adressable sous le préfixe de classe
+existant). `BillingVoter::MANAGE` uniquement pour toutes les opérations d'écriture —
+aucun accès instrumentiste préservé au-delà de ce qui existait déjà (aucun droit de
+lecture personnelle sur son propre décompte n'existait avant ce lot, rien à préserver).
+
+### Audit — sans doublon
+
+`CREDIT_NOTE_CREATED`/`DEBIT_NOTE_CREATED` (création, `createCorrection()`),
+`FINANCIAL_CORRECTION_ISSUED` (émission, en plus de `FIRM_INVOICE_ISSUED`/
+`INSTRUMENTIST_STATEMENT_ISSUED` déjà émis par `issue()` — contexte propre à la
+correction : document racine, type, lignes d'origine), `DOCUMENT_NET_BALANCE_CHANGED`
+(uniquement si le solde net du document racine change réellement entre avant/après
+émission), `REFUND_RECORDED`. Pas de `DOCUMENT_SENT` séparé — même principe de
+non-duplication que D-075.
+
+### Concurrence et atomicité
+
+Même mécanisme que les Lots 2-5 : verrou pessimiste sur le document **racine** (jamais
+sur la correction elle-même, qui n'existe pas encore au moment de la validation),
+`refresh()` sous verrou avant de revalider les limites. Toute la construction d'une
+correction (validation de toutes les lignes, calcul des limites, persistance,
+numérotation, audit) est enveloppée dans une seule transaction
+(`wrapInTransaction()`) : une seule ligne invalide annule tout — aucun document
+partiel, aucune ligne persistée, aucun numéro attribué, aucun audit mensonger, aucun
+changement de solde observable (§30 du lot, prouvé par
+`test_invalid_correction_line_creates_no_partial_document`).
+
+### Portée non traitée ici
+
+Rapprochement bancaire automatisé, conversion de devises, refonte UX, modification/
+suppression d'un paiement existant (toujours interdite, §34 du lot).
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -4221,3 +4397,4 @@ existants, rapprochement bancaire automatisé, conversion de devises, refonte UX
 | 18-07-2026 | D-073 — FinancialCalculation : valorisation figée, append-only, versionnée par mission (Exécution & Valorisation, Lot 3) |
 | 18-07-2026 | D-074 — Bascule des documents financiers vers FinancialCalculationLine, anti-double facturation, legacy coexistant (Exécution & Valorisation, Lot 4) |
 | 18-07-2026 | D-075 — Paiements append-only, solde toujours dérivé, émission explicite, Payment polymorphe (Exécution & Valorisation, Lot 5) |
+| 19-07-2026 | D-076 — Corrections financières additives : notes de crédit/débit, remboursements append-only, jamais de réécriture (Exécution & Valorisation, Lot 6) |
