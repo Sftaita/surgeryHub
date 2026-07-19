@@ -2,13 +2,17 @@
 
 namespace App\Controller\Api;
 
+use App\Dto\CorrectionLineInput;
 use App\Entity\InstrumentistStatement;
 use App\Entity\Payment;
 use App\Entity\User;
+use App\Enum\CorrectionReasonCode;
+use App\Enum\FinancialDocumentType;
 use App\Enum\InvoiceStatus;
 use App\Enum\PaymentMethod;
 use App\Security\Voter\BillingVoter;
 use App\Service\DocumentPaymentService;
+use App\Service\FinancialCorrectionService;
 use App\Service\InstrumentistStatementService;
 use App\Service\NotificationService;
 use App\Service\PdfService;
@@ -26,6 +30,7 @@ class InstrumentistStatementController extends AbstractController
     public function __construct(
         private readonly InstrumentistStatementService $statementService,
         private readonly DocumentPaymentService $paymentService,
+        private readonly FinancialCorrectionService $correctionService,
         private readonly PdfService $pdfService,
         private readonly EntityManagerInterface $em,
         private readonly NotificationService $notificationService,
@@ -334,6 +339,138 @@ class InstrumentistStatementController extends AbstractController
         return $this->json($this->serializePayment($payment), 201);
     }
 
+    // ── EPIC Exécution & Valorisation, Lot 6 (D-076) — corrections + remboursements ───
+
+    #[Route('/{id}/credit-notes', name: 'api_statements_credit_notes_create', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function createCreditNote(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $root = $this->em->find(InstrumentistStatement::class, $id);
+        if (!$root) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Décompte introuvable.']], 404);
+        }
+
+        [$lineInputs, $comment, $error] = $this->parseCorrectionRequest($request);
+        if ($error !== null) {
+            return $this->json($error, 422);
+        }
+
+        $correction = $this->correctionService->createCreditNote($root, $lineInputs, $comment, $actor);
+        return $this->json($this->serializeStatementDetail($correction), 201);
+    }
+
+    #[Route('/{id}/debit-notes', name: 'api_statements_debit_notes_create', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function createDebitNote(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $root = $this->em->find(InstrumentistStatement::class, $id);
+        if (!$root) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Décompte introuvable.']], 404);
+        }
+
+        [$lineInputs, $comment, $error] = $this->parseCorrectionRequest($request);
+        if ($error !== null) {
+            return $this->json($error, 422);
+        }
+
+        $correction = $this->correctionService->createDebitNote($root, $lineInputs, $comment, $actor);
+        return $this->json($this->serializeStatementDetail($correction), 201);
+    }
+
+    #[Route('/{id}/corrections', name: 'api_statements_corrections_list', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function listCorrections(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $root = $this->em->find(InstrumentistStatement::class, $id);
+        if (!$root) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Décompte introuvable.']], 404);
+        }
+
+        return $this->json(array_map($this->serializeStatementDetail(...), $this->findCorrectionsFor($root)));
+    }
+
+    #[Route('/{id}/refunds', name: 'api_statements_refunds_create', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function createRefund(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $root = $this->em->find(InstrumentistStatement::class, $id);
+        if (!$root) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Décompte introuvable.']], 404);
+        }
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $amount = $data['amount'] ?? null;
+        $currency = $data['currency'] ?? $root->getCurrency();
+        $paidAtRaw = $data['paidAt'] ?? null;
+        $methodRaw = $data['method'] ?? null;
+
+        if ($amount === null || $paidAtRaw === null || $methodRaw === null) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'amount, paidAt et method sont requis.']], 422);
+        }
+
+        try {
+            $method = PaymentMethod::from($methodRaw);
+        } catch (\ValueError) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'method invalide (BANK_TRANSFER, CASH, OTHER).']], 422);
+        }
+
+        try {
+            $paidAt = new \DateTimeImmutable($paidAtRaw);
+        } catch (\Exception) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Format de paidAt invalide (Y-m-d attendu).']], 422);
+        }
+
+        $refund = $this->correctionService->recordRefund(
+            $root, (string) $amount, (string) $currency, $paidAt, $method,
+            $data['reference'] ?? null, $data['comment'] ?? null, $actor,
+        );
+
+        return $this->json($this->serializePayment($refund), 201);
+    }
+
+    /** @return InstrumentistStatement[] */
+    private function findCorrectionsFor(InstrumentistStatement $root): array
+    {
+        return $this->em->getRepository(InstrumentistStatement::class)->findBy(['correctsDocument' => $root], ['createdAt' => 'ASC']);
+    }
+
+    /** @return array{0: CorrectionLineInput[], 1: ?string, 2: ?array} */
+    private function parseCorrectionRequest(Request $request): array
+    {
+        $data = json_decode($request->getContent(), true) ?? [];
+        $rawLines = $data['lines'] ?? [];
+        $comment = $data['comment'] ?? null;
+
+        if (empty($rawLines)) {
+            return [[], null, ['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Au moins une ligne corrective (lines[]) est requise.']]];
+        }
+
+        $lineInputs = [];
+        foreach ($rawLines as $raw) {
+            try {
+                $reasonCode = CorrectionReasonCode::from($raw['reasonCode'] ?? '');
+            } catch (\ValueError) {
+                return [[], null, ['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'reasonCode invalide.']]];
+            }
+            if (!isset($raw['description'], $raw['quantity'], $raw['unitAmount'])) {
+                return [[], null, ['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'description, quantity et unitAmount sont requis pour chaque ligne.']]];
+            }
+
+            $lineInputs[] = new CorrectionLineInput(
+                originalDocumentLineId: isset($raw['originalDocumentLineId']) ? (int) $raw['originalDocumentLineId'] : null,
+                reasonCode: $reasonCode,
+                description: (string) $raw['description'],
+                quantity: (string) $raw['quantity'],
+                unitAmount: (string) $raw['unitAmount'],
+                comment: $raw['comment'] ?? null,
+                missionId: isset($raw['missionId']) ? (int) $raw['missionId'] : null,
+                financialCalculationLineId: isset($raw['financialCalculationLineId']) ? (int) $raw['financialCalculationLineId'] : null,
+            );
+        }
+
+        return [$lineInputs, $comment, null];
+    }
+
     // ── Serializers ───────────────────────────────────────────────────
 
     private function serializeStatement(InstrumentistStatement $s): array
@@ -342,6 +479,7 @@ class InstrumentistStatementController extends AbstractController
 
         return [
             'id' => $s->getId(),
+            'number' => $s->getNumber(),
             'instrumentist' => [
                 'id' => $s->getInstrumentist()->getId(),
                 'displayName' => $s->getInstrumentistNameSnapshot(),
@@ -350,6 +488,8 @@ class InstrumentistStatementController extends AbstractController
             'periodYear' => $s->getPeriodYear(),
             'periodMonth' => $s->getPeriodMonth(),
             'status' => $s->getStatus()->value,
+            'documentType' => $s->getDocumentType()->value,
+            'correctsDocumentId' => $s->getCorrectsDocument()?->getId(),
             'currency' => $s->getCurrency(),
             'legacySource' => $s->isLegacySource(),
             'totalAmount' => $s->getTotalAmount(),
@@ -367,6 +507,7 @@ class InstrumentistStatementController extends AbstractController
             'missionId' => $l->getMission()->getId(),
             'missionDate' => $l->getMissionDateSnapshot()?->format('Y-m-d'),
             'lineType' => $l->getLineType()->value,
+            'descriptionSnapshot' => $l->getDescriptionSnapshot(),
             'durationMinutesRaw' => $l->getDurationMinutesRaw(),
             'durationMinutesRounded' => $l->getDurationMinutesRounded(),
             'rateSnapshot' => $l->getRateSnapshot(),
@@ -379,8 +520,19 @@ class InstrumentistStatementController extends AbstractController
             'financialCalculationLineId' => $l->getFinancialCalculationLine()?->getId(),
             'financialCalculationVersion' => $l->getFinancialCalculationLine()?->getFinancialCalculation()->getVersion(),
             'legacy' => $l->isLegacy(),
+            'reasonCode' => $l->getReasonCode()?->value,
+            'originalDocumentLineId' => $l->getOriginalDocumentLine()?->getId(),
         ], $s->getLines()->toArray());
         $base['payments'] = array_map($this->serializePayment(...), $this->paymentService->getPaymentsFor($s));
+        if ($s->getDocumentType() === FinancialDocumentType::STANDARD) {
+            $base['corrections'] = array_map(fn (InstrumentistStatement $c) => [
+                'id' => $c->getId(),
+                'documentType' => $c->getDocumentType()->value,
+                'status' => $c->getStatus()->value,
+                'number' => $c->getNumber(),
+                'totalAmount' => $c->getTotalAmount(),
+            ], $this->findCorrectionsFor($s));
+        }
         return $base;
     }
 

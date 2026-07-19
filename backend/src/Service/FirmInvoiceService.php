@@ -15,6 +15,7 @@ use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\FinancialBeneficiaryType;
 use App\Enum\FinancialCalculationStatus;
+use App\Enum\FinancialDocumentType;
 use App\Enum\FinancialLineType;
 use App\Enum\InvoiceStatus;
 use App\Enum\MissionStatus;
@@ -213,7 +214,7 @@ class FirmInvoiceService
         }
 
         if ($invoice->getNumber() === null) {
-            $invoice->setNumber($this->generateNumber($invoice->getPeriodStart()));
+            $invoice->setNumber($this->generateNumber($invoice->getPeriodStart(), $invoice->getDocumentType()));
         }
 
         $invoice->setStatus(InvoiceStatus::SENT);
@@ -401,19 +402,31 @@ class FirmInvoiceService
         return $line;
     }
 
-    private function generateNumber(\DateTimeImmutable $periodStart): string
+    /**
+     * EPIC Exécution & Valorisation, Lot 6 (D-076) — §19 du lot : préfixe distinct par
+     * type documentaire (traçabilité — un numéro doit permettre de distinguer une
+     * facture d'une note de crédit/débit d'un coup d'œil), même stratégie de comptage
+     * COUNT(...)+1 filtrée par préfixe (le filet de sécurité reste la contrainte
+     * UNIQUE en base, inchangée — voir D-074/D-075).
+     */
+    private function generateNumber(\DateTimeImmutable $periodStart, FinancialDocumentType $type = FinancialDocumentType::STANDARD): string
     {
         $year = (int) $periodStart->format('Y');
+        $prefix = match ($type) {
+            FinancialDocumentType::STANDARD => 'FIRM',
+            FinancialDocumentType::CREDIT_NOTE => 'FIRM-CN',
+            FinancialDocumentType::DEBIT_NOTE => 'FIRM-DN',
+        };
 
         $count = (int) $this->em->createQueryBuilder()
             ->select('COUNT(i.id)')
             ->from(FirmInvoice::class, 'i')
             ->where('i.number LIKE :pattern')
-            ->setParameter('pattern', sprintf('FIRM-%d-%%', $year))
+            ->setParameter('pattern', sprintf('%s-%d-%%', $prefix, $year))
             ->getQuery()
             ->getSingleScalarResult();
 
-        return sprintf('FIRM-%d-%03d', $year, $count + 1);
+        return sprintf('%s-%d-%03d', $prefix, $year, $count + 1);
     }
 
     // ═══════════════════════════════════════════════════════════════════════

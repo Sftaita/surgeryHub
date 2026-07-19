@@ -12,6 +12,7 @@ use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\FinancialBeneficiaryType;
 use App\Enum\FinancialCalculationStatus;
+use App\Enum\FinancialDocumentType;
 use App\Enum\FinancialLineType;
 use App\Enum\InvoiceStatus;
 use App\Enum\MissionStatus;
@@ -158,18 +159,47 @@ class InstrumentistStatementService
             throw new \DomainException('Le décompte doit être en statut GENERATED pour être envoyé.');
         }
 
+        // EPIC Exécution & Valorisation, Lot 6 (D-076) — §19 du lot : un décompte
+        // STANDARD reste sans numéro (comportement inchangé) ; seule une note de
+        // crédit/débit (correction) en reçoit un à l'émission.
+        if ($statement->getDocumentType() !== FinancialDocumentType::STANDARD && $statement->getNumber() === null) {
+            $statement->setNumber($this->generateNumber($statement->getDocumentType()));
+        }
+
         $statement->setStatus(InvoiceStatus::SENT);
         $statement->setSentAt(new \DateTimeImmutable());
 
         $this->audit->recordGlobal($actor, AuditEventType::INSTRUMENTIST_STATEMENT_ISSUED, [
             'instrumentistStatementId' => $statement->getId(),
             'instrumentistId' => $statement->getInstrumentist()?->getId(),
+            'number' => $statement->getNumber(),
             'previousStatus' => InvoiceStatus::GENERATED->value,
             'newStatus' => InvoiceStatus::SENT->value,
         ]);
 
         $this->em->flush();
         return $statement;
+    }
+
+    /** EPIC Exécution & Valorisation, Lot 6 (D-076) — §19 du lot : réservé aux notes de crédit/débit (voir issue()). */
+    private function generateNumber(FinancialDocumentType $type): string
+    {
+        $year = (int) (new \DateTimeImmutable())->format('Y');
+        $prefix = match ($type) {
+            FinancialDocumentType::CREDIT_NOTE => 'STMT-CN',
+            FinancialDocumentType::DEBIT_NOTE => 'STMT-DN',
+            FinancialDocumentType::STANDARD => throw new \LogicException('Un décompte STANDARD ne doit jamais recevoir de numéro.'),
+        };
+
+        $count = (int) $this->em->createQueryBuilder()
+            ->select('COUNT(s.id)')
+            ->from(InstrumentistStatement::class, 's')
+            ->where('s.number LIKE :pattern')
+            ->setParameter('pattern', sprintf('%s-%d-%%', $prefix, $year))
+            ->getQuery()
+            ->getSingleScalarResult();
+
+        return sprintf('%s-%d-%03d', $prefix, $year, $count + 1);
     }
 
     public function markPaid(InstrumentistStatement $statement): InstrumentistStatement

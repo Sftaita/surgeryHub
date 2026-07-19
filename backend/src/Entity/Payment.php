@@ -2,6 +2,7 @@
 
 namespace App\Entity;
 
+use App\Enum\PaymentDirection;
 use App\Enum\PaymentDocumentType;
 use App\Enum\PaymentMethod;
 use Doctrine\ORM\Mapping as ORM;
@@ -37,6 +38,15 @@ class Payment
 
     #[ORM\Column(name: 'document_id')]
     private ?int $documentId = null;
+
+    /**
+     * EPIC Exécution & Valorisation, Lot 6 (D-076) — §13 du lot : INBOUND (paiement
+     * reçu, seul cas possible avant ce lot — backfillé sur tous les Payment existants
+     * par la migration) ou OUTBOUND (remboursement, nouveau). Le montant reste
+     * toujours strictement positif ; la direction porte seule le sens du mouvement.
+     */
+    #[ORM\Column(enumType: PaymentDirection::class, length: 20, options: ['default' => 'INBOUND'])]
+    private PaymentDirection $direction = PaymentDirection::INBOUND;
 
     #[ORM\Column(type: 'decimal', precision: 10, scale: 2)]
     private ?string $amount = null;
@@ -84,6 +94,9 @@ class Payment
 
     public function getDocumentId(): int { return $this->documentId; }
     public function setDocumentId(int $documentId): static { $this->documentId = $documentId; return $this; }
+
+    public function getDirection(): PaymentDirection { return $this->direction; }
+    public function setDirection(PaymentDirection $direction): static { $this->direction = $direction; return $this; }
 
     public function getAmount(): string { return $this->amount; }
     public function setAmount(string $amount): static { $this->amount = $amount; return $this; }

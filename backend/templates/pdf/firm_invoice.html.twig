@@ -44,10 +44,27 @@
       <div class="logo">SurgicalHub</div>
     </div>
     <div class="header-right">
-      <div class="invoice-title">FACTURE</div>
+      <div class="invoice-title">
+        {% if invoice.documentType.value == 'CREDIT_NOTE' %}NOTE DE CRÉDIT
+        {% elseif invoice.documentType.value == 'DEBIT_NOTE' %}NOTE DE DÉBIT
+        {% else %}FACTURE
+        {% endif %}
+      </div>
       <div class="invoice-number">{{ invoice.number ?? ('F-' ~ invoice.id) }}</div>
     </div>
   </div>
+
+  {% if invoice.documentType.value != 'STANDARD' and invoice.correctsDocument %}
+  <div class="meta-grid">
+    <div class="meta-col" style="width:100%;">
+      <div class="meta-label">Document d'origine corrigé</div>
+      <div class="meta-value">{{ invoice.correctsDocument.number ?? ('F-' ~ invoice.correctsDocument.id) }}</div>
+      {% if invoice.correctsDocument.sentAt %}
+        <div style="font-size:10px;color:#555;margin-top:4px;">Émis le {{ invoice.correctsDocument.sentAt|date('d/m/Y') }}</div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
 
   <div class="meta-grid">
     <div class="meta-col">
@@ -77,13 +94,14 @@
     </div>
   </div>
 
-  <div class="section-title">Lignes facturables</div>
+  <div class="section-title">{{ invoice.documentType.value != 'STANDARD' ? 'Lignes correctives' : 'Lignes facturables' }}</div>
   <table>
     <thead>
       <tr>
         <th>Date</th>
         <th>Description</th>
         <th>Type</th>
+        {% if invoice.documentType.value != 'STANDARD' %}<th>Motif</th>{% endif %}
         <th class="right">Qté</th>
         <th class="right">P.U.</th>
         <th class="right">Total</th>
@@ -95,12 +113,13 @@
         <td>{{ line.mission.startAt|date('d/m/Y') }}</td>
         <td>{{ line.descriptionSnapshot }}</td>
         <td>{{ line.lineType.value == 'INTERVENTION_FEE' ? 'Intervention' : 'Implant' }}</td>
+        {% if invoice.documentType.value != 'STANDARD' %}<td>{{ line.reasonCode ? line.reasonCode.value : '—' }}</td>{% endif %}
         <td class="right">{{ line.quantity|number_format(2, ',', ' ') }}</td>
         <td class="right">{{ line.unitPrice|number_format(2, ',', ' ') }} €</td>
         <td class="right"><strong>{{ line.totalAmount|number_format(2, ',', ' ') }} €</strong></td>
       </tr>
       {% else %}
-      <tr><td colspan="6" style="text-align:center;color:#aaa;padding:16px;">Aucune ligne</td></tr>
+      <tr><td colspan="{{ invoice.documentType.value != 'STANDARD' ? 7 : 6 }}" style="text-align:center;color:#aaa;padding:16px;">Aucune ligne</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -108,13 +127,18 @@
   <div class="total-row">
     <div class="total-row-inner">
       <div class="total-box">
-        <div class="total-label">Total HTVA</div>
-        <div class="total-amount">{{ invoice.totalAmount|number_format(2, ',', ' ') }} €</div>
+        <div class="total-label">
+          {% if invoice.documentType.value == 'CREDIT_NOTE' %}Total correctif (crédit)
+          {% elseif invoice.documentType.value == 'DEBIT_NOTE' %}Total correctif (débit)
+          {% else %}Total HTVA
+          {% endif %}
+        </div>
+        <div class="total-amount">{{ invoice.documentType.value == 'CREDIT_NOTE' ? '-' : '' }}{{ invoice.totalAmount|number_format(2, ',', ' ') }} €</div>
       </div>
     </div>
   </div>
 
-  {% if payments is defined and payments|length > 0 %}
+  {% if invoice.documentType.value == 'STANDARD' and payments is defined and payments|length > 0 %}
   <div class="section-title">Paiements</div>
   <table>
     <thead>

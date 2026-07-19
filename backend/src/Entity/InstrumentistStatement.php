@@ -3,6 +3,7 @@
 namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
+use App\Enum\FinancialDocumentType;
 use App\Enum\InvoiceStatus;
 use App\Enum\PaymentDocumentType;
 use Doctrine\Common\Collections\ArrayCollection;
@@ -23,6 +24,15 @@ class InstrumentistStatement implements PayableDocument
     #[ORM\GeneratedValue]
     #[ORM\Column]
     private ?int $id = null;
+
+    /**
+     * EPIC Exécution & Valorisation, Lot 6 (D-076) — jamais attribué à un décompte
+     * STANDARD (ce champ n'existait pas avant ce lot, comportement inchangé pour tout
+     * décompte standard) : uniquement pour un CREDIT_NOTE/DEBIT_NOTE, à l'émission
+     * (§19 du lot). Voir FirmInvoice::$number, même contrat d'unicité.
+     */
+    #[ORM\Column(length: 20, unique: true, nullable: true)]
+    private ?string $number = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
@@ -48,6 +58,15 @@ class InstrumentistStatement implements PayableDocument
     #[ORM\Column(options: ['default' => true])]
     private bool $legacySource = true;
 
+    /** EPIC Exécution & Valorisation, Lot 6 (D-076) — voir FirmInvoice::$documentType, même contrat. */
+    #[ORM\Column(name: 'document_type', enumType: FinancialDocumentType::class, length: 20, options: ['default' => 'STANDARD'])]
+    private FinancialDocumentType $documentType = FinancialDocumentType::STANDARD;
+
+    /** Voir FirmInvoice::$correctsDocument, même contrat (pointe toujours vers le décompte STANDARD racine). */
+    #[ORM\ManyToOne(targetEntity: self::class)]
+    #[ORM\JoinColumn(name: 'corrects_document_id', nullable: true)]
+    private ?self $correctsDocument = null;
+
     #[ORM\Column(length: 255, nullable: true)]
     private ?string $instrumentistNameSnapshot = null;
 
@@ -71,6 +90,9 @@ class InstrumentistStatement implements PayableDocument
 
     public function getId(): ?int { return $this->id; }
 
+    public function getNumber(): ?string { return $this->number; }
+    public function setNumber(?string $number): static { $this->number = $number; return $this; }
+
     public function getInstrumentist(): ?User { return $this->instrumentist; }
     public function setInstrumentist(?User $instrumentist): static { $this->instrumentist = $instrumentist; return $this; }
 
@@ -91,6 +113,12 @@ class InstrumentistStatement implements PayableDocument
 
     public function isLegacySource(): bool { return $this->legacySource; }
     public function setLegacySource(bool $legacySource): static { $this->legacySource = $legacySource; return $this; }
+
+    public function getDocumentType(): FinancialDocumentType { return $this->documentType; }
+    public function setDocumentType(FinancialDocumentType $documentType): static { $this->documentType = $documentType; return $this; }
+
+    public function getCorrectsDocument(): ?self { return $this->correctsDocument; }
+    public function setCorrectsDocument(?self $correctsDocument): static { $this->correctsDocument = $correctsDocument; return $this; }
 
     public function getInstrumentistNameSnapshot(): ?string { return $this->instrumentistNameSnapshot; }
     public function setInstrumentistNameSnapshot(?string $name): static { $this->instrumentistNameSnapshot = $name; return $this; }

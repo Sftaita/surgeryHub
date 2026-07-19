@@ -19,6 +19,9 @@ use App\Exception\DocumentCannotReleaseLinesException;
 use App\Exception\DocumentNotIssuedException;
 use App\Exception\PaymentExceedsRemainingException;
 use App\Exception\PaymentCurrencyMismatchException;
+use App\Exception\CorrectionValidationException;
+use App\Exception\CorrectionNotEligibleException;
+use App\Exception\RefundExceedsOverpaidException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -109,6 +112,19 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 422;
             $code = 'PAYMENT_CURRENCY_MISMATCH';
             $message = $e->getMessage() ?: 'La devise du paiement ne correspond pas à celle du document.';
+        } elseif ($e instanceof CorrectionValidationException) {
+            $status = 422;
+            $code = 'CORRECTION_VALIDATION_FAILED';
+            $message = $e->getMessage();
+            $violations = array_map(static fn ($a) => $a->toArray(), $e->getAnomalies());
+        } elseif ($e instanceof CorrectionNotEligibleException) {
+            $status = 409;
+            $code = 'CORRECTION_NOT_ELIGIBLE';
+            $message = $e->getMessage() ?: 'Ce document ne peut pas recevoir de correction dans son état actuel.';
+        } elseif ($e instanceof RefundExceedsOverpaidException) {
+            $status = 422;
+            $code = 'REFUND_EXCEEDS_OVERPAID';
+            $message = $e->getMessage() ?: 'Le montant du remboursement dépasse le trop-perçu du document.';
         } elseif ($e instanceof InterventionTypeNotFoundException) {
             $status = 404;
             $code = 'INTERVENTION_TYPE_NOT_FOUND';
@@ -145,6 +161,8 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             && !$e instanceof DocumentLineSelectionException
             && !$e instanceof PaymentExceedsRemainingException
             && !$e instanceof PaymentCurrencyMismatchException
+            && !$e instanceof CorrectionValidationException
+            && !$e instanceof RefundExceedsOverpaidException
         ) {
             $violations = $this->extractViolationsFromMessage($message);
             if (count($violations) > 0) {

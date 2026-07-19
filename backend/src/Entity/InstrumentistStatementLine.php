@@ -2,6 +2,7 @@
 
 namespace App\Entity;
 
+use App\Enum\CorrectionReasonCode;
 use App\Enum\StatementLineType;
 use Doctrine\ORM\Mapping as ORM;
 
@@ -40,6 +41,16 @@ class InstrumentistStatementLine
 
     #[ORM\Column(enumType: StatementLineType::class, length: 20)]
     private ?StatementLineType $lineType = null;
+
+    /**
+     * EPIC Exécution & Valorisation, Lot 6 (D-076) — §7 du lot exige descriptionSnapshot
+     * sur toute ligne corrective ; ce champ n'existait pas sur ce modèle avant ce lot
+     * (contrairement à FirmInvoiceLine, Lot 4) — NULL pour toute ligne STANDARD
+     * (existante et future), qui continue de s'appuyer sur lineType/surgeonNameSnapshot/
+     * siteNameSnapshot pour l'affichage, comportement inchangé.
+     */
+    #[ORM\Column(length: 500, nullable: true)]
+    private ?string $descriptionSnapshot = null;
 
     /** Durée réelle de la mission en minutes (BLOC uniquement) */
     #[ORM\Column(type: 'integer', nullable: true)]
@@ -89,6 +100,15 @@ class InstrumentistStatementLine
     #[ORM\Column(name: 'created_at', type: 'datetime_immutable', nullable: true)]
     private ?\DateTimeImmutable $createdAt = null;
 
+    /** EPIC Exécution & Valorisation, Lot 6 (D-076) — voir FirmInvoiceLine::$reasonCode, même contrat. */
+    #[ORM\Column(name: 'reason_code', enumType: CorrectionReasonCode::class, length: 30, nullable: true)]
+    private ?CorrectionReasonCode $reasonCode = null;
+
+    /** Voir FirmInvoiceLine::$originalDocumentLine, même contrat (self-FK, sans contrainte unique). */
+    #[ORM\ManyToOne(targetEntity: self::class)]
+    #[ORM\JoinColumn(name: 'original_document_line_id', nullable: true)]
+    private ?self $originalDocumentLine = null;
+
     public function __construct()
     {
         $this->createdAt = new \DateTimeImmutable();
@@ -99,6 +119,12 @@ class InstrumentistStatementLine
     public function getFinancialCalculationLine(): ?FinancialCalculationLine { return $this->financialCalculationLine; }
     public function setFinancialCalculationLine(?FinancialCalculationLine $financialCalculationLine): static { $this->financialCalculationLine = $financialCalculationLine; return $this; }
 
+    public function getReasonCode(): ?CorrectionReasonCode { return $this->reasonCode; }
+    public function setReasonCode(?CorrectionReasonCode $reasonCode): static { $this->reasonCode = $reasonCode; return $this; }
+
+    public function getOriginalDocumentLine(): ?self { return $this->originalDocumentLine; }
+    public function setOriginalDocumentLine(?self $originalDocumentLine): static { $this->originalDocumentLine = $originalDocumentLine; return $this; }
+
     public function getStatement(): ?InstrumentistStatement { return $this->statement; }
     public function setStatement(?InstrumentistStatement $statement): static { $this->statement = $statement; return $this; }
 
@@ -107,6 +133,9 @@ class InstrumentistStatementLine
 
     public function getLineType(): ?StatementLineType { return $this->lineType; }
     public function setLineType(StatementLineType $lineType): static { $this->lineType = $lineType; return $this; }
+
+    public function getDescriptionSnapshot(): ?string { return $this->descriptionSnapshot; }
+    public function setDescriptionSnapshot(?string $descriptionSnapshot): static { $this->descriptionSnapshot = $descriptionSnapshot; return $this; }
 
     public function getDurationMinutesRaw(): ?int { return $this->durationMinutesRaw; }
     public function setDurationMinutesRaw(?int $durationMinutesRaw): static { $this->durationMinutesRaw = $durationMinutesRaw; return $this; }

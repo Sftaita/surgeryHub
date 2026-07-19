@@ -3,6 +3,7 @@
 namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
+use App\Enum\FinancialDocumentType;
 use App\Enum\InvoiceStatus;
 use App\Enum\PaymentDocumentType;
 use Doctrine\Common\Collections\ArrayCollection;
@@ -60,6 +61,25 @@ class FirmInvoice implements PayableDocument
     #[ORM\Column(options: ['default' => true])]
     private bool $legacySource = true;
 
+    /**
+     * EPIC Exécution & Valorisation, Lot 6 (D-076) — §3 du lot : extension du modèle
+     * existant plutôt qu'un agrégat Settlement générique. STANDARD pour tout document
+     * racine (legacy et nouveau flux, backfillé par la migration) ; CREDIT_NOTE/
+     * DEBIT_NOTE pour un document correctif — voir $correctsDocument.
+     */
+    #[ORM\Column(name: 'document_type', enumType: FinancialDocumentType::class, length: 20, options: ['default' => 'STANDARD'])]
+    private FinancialDocumentType $documentType = FinancialDocumentType::STANDARD;
+
+    /**
+     * Renseigné uniquement pour CREDIT_NOTE/DEBIT_NOTE — pointe TOUJOURS vers le
+     * document STANDARD racine (§6 du lot : "recommandation initiale : correction
+     * toujours rattachée au document STANDARD racine", jamais une correction de
+     * correction, simplifie l'audit et le calcul net). NULL pour un document STANDARD.
+     */
+    #[ORM\ManyToOne(targetEntity: self::class)]
+    #[ORM\JoinColumn(name: 'corrects_document_id', nullable: true)]
+    private ?self $correctsDocument = null;
+
     /** Email snapshot — adresse principale au moment de l'envoi */
     #[ORM\Column(length: 255, nullable: true)]
     private ?string $billingEmailTo = null;
@@ -111,6 +131,12 @@ class FirmInvoice implements PayableDocument
 
     public function isLegacySource(): bool { return $this->legacySource; }
     public function setLegacySource(bool $legacySource): static { $this->legacySource = $legacySource; return $this; }
+
+    public function getDocumentType(): FinancialDocumentType { return $this->documentType; }
+    public function setDocumentType(FinancialDocumentType $documentType): static { $this->documentType = $documentType; return $this; }
+
+    public function getCorrectsDocument(): ?self { return $this->correctsDocument; }
+    public function setCorrectsDocument(?self $correctsDocument): static { $this->correctsDocument = $correctsDocument; return $this; }
 
     public function getBillingEmailTo(): ?string { return $this->billingEmailTo; }
     public function setBillingEmailTo(?string $billingEmailTo): static { $this->billingEmailTo = $billingEmailTo; return $this; }

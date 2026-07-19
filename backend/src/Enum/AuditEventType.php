@@ -108,4 +108,16 @@ enum AuditEventType: string
     case DOCUMENT_PAYMENT_RECORDED  = 'DOCUMENT_PAYMENT_RECORDED';
     case DOCUMENT_PARTIALLY_PAID    = 'DOCUMENT_PARTIALLY_PAID';
     case DOCUMENT_FULLY_PAID        = 'DOCUMENT_FULLY_PAID';
+
+    // Exécution & Valorisation, Lot 6 (D-076) — FinancialCorrectionService, générique
+    // aux deux familles de document. FINANCIAL_CORRECTION_ISSUED est distinct de
+    // FIRM_INVOICE_ISSUED/INSTRUMENTIST_STATEMENT_ISSUED (Lot 4/5, toujours émis en
+    // parallèle sur la transition GENERATED→SENT du document correctif lui-même) :
+    // celui-ci porte le contexte propre à la correction (document racine, solde avant/
+    // après) — pas un doublon, deux faits liés mais distincts.
+    case CREDIT_NOTE_CREATED            = 'CREDIT_NOTE_CREATED';
+    case DEBIT_NOTE_CREATED             = 'DEBIT_NOTE_CREATED';
+    case FINANCIAL_CORRECTION_ISSUED    = 'FINANCIAL_CORRECTION_ISSUED';
+    case REFUND_RECORDED                = 'REFUND_RECORDED';
+    case DOCUMENT_NET_BALANCE_CHANGED   = 'DOCUMENT_NET_BALANCE_CHANGED';
 }

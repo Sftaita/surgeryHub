@@ -2,6 +2,7 @@
 
 namespace App\Entity;
 
+use App\Enum\CorrectionReasonCode;
 use App\Enum\PricingRuleType;
 use Doctrine\ORM\Mapping as ORM;
 
@@ -98,6 +99,27 @@ class FirmInvoiceLine
     #[ORM\Column(name: 'created_at', type: 'datetime_immutable', nullable: true)]
     private ?\DateTimeImmutable $createdAt = null;
 
+    /**
+     * EPIC Exécution & Valorisation, Lot 6 (D-076) — §7/§8 du lot : renseigné
+     * uniquement sur une ligne d'un document CREDIT_NOTE/DEBIT_NOTE. OTHER exige un
+     * commentaire (validé par FinancialCorrectionService — pas de colonne dédiée,
+     * $descriptionSnapshot porte le motif en clair sur la ligne corrective).
+     */
+    #[ORM\Column(name: 'reason_code', enumType: CorrectionReasonCode::class, length: 30, nullable: true)]
+    private ?CorrectionReasonCode $reasonCode = null;
+
+    /**
+     * Ligne d'origine que cette ligne corrective ajuste — self-FK, volontairement SANS
+     * contrainte unique (§7 : une même ligne d'origine peut être référencée par
+     * plusieurs corrections successives, ex. deux crédits partiels ; ne signifie
+     * jamais qu'une FinancialCalculationLine est "consommée" une deuxième fois — cette
+     * sémantique reste exclusive à $financialCalculationLine, Lot 4). NULL pour un
+     * ajustement documentaire global sans ligne d'origine précise (ex. ligne oubliée).
+     */
+    #[ORM\ManyToOne(targetEntity: self::class)]
+    #[ORM\JoinColumn(name: 'original_document_line_id', nullable: true)]
+    private ?self $originalDocumentLine = null;
+
     public function __construct()
     {
         $this->createdAt = new \DateTimeImmutable();
@@ -107,6 +129,12 @@ class FirmInvoiceLine
 
     public function getFinancialCalculationLine(): ?FinancialCalculationLine { return $this->financialCalculationLine; }
     public function setFinancialCalculationLine(?FinancialCalculationLine $financialCalculationLine): static { $this->financialCalculationLine = $financialCalculationLine; return $this; }
+
+    public function getReasonCode(): ?CorrectionReasonCode { return $this->reasonCode; }
+    public function setReasonCode(?CorrectionReasonCode $reasonCode): static { $this->reasonCode = $reasonCode; return $this; }
+
+    public function getOriginalDocumentLine(): ?self { return $this->originalDocumentLine; }
+    public function setOriginalDocumentLine(?self $originalDocumentLine): static { $this->originalDocumentLine = $originalDocumentLine; return $this; }
 
     public function getInvoice(): ?FirmInvoice { return $this->invoice; }
     public function setInvoice(?FirmInvoice $invoice): static { $this->invoice = $invoice; return $this; }
