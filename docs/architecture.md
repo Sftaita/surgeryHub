@@ -1419,6 +1419,95 @@ interdite).
 
 ---
 
+### Flux statistiques financières manager (EPIC Pilotage financier, Lot 7, D-077)
+
+```
+GET /api/financial-statistics/overview?from=...&to=...&firmId=...
+                              │
+                              ▼  FinancialStatisticsRequestParser::parseFilter()
+                    résolution période (timezone métier D-066, jamais now()),
+                    validation stricte (422 si incohérente)
+                              │
+                              ▼  FinancialStatisticsQueryService::overview()
+        ┌─────────────┬───────────────┬────────────────┬──────────────────┐
+        ▼             ▼               ▼                ▼                  ▼
+   activityRow() generatedValue  documentedValue   cashFlowByCurrency  openBalance
+   (Mission/     ByCurrency()    ByCurrency()      ()                  ByCurrency()
+   MissionExec.) (FinancialCalc  (FirmInvoice/     (Payment,           (documentBalance
+                 ulationLine,    InstrumentistStmt sens réel dérivé    DerivedTable(),
+                 calcul ACTIF)   + corrections     de (documentType,   même formule que
+                                 ISSUED, même       direction) —       DocumentPayment
+                                 formule que        D-077)             Service::compute
+                                 computeBalance())                     Balance())
+        └─────────────┴───────────────┴────────────────┴──────────────────┘
+                              │  fusion par devise en PHP (union des clés, jamais un
+                              ▼  total artificiel entre devises différentes — §5 du lot)
+                    FinancialOverviewDto { activity, currencies[] }
+```
+
+**Sources de vérité disjointes, jamais mélangées (§2 du lot, D-077)** : activité
+(Mission/MissionExecution, sans devise propre), valeur générée
+(FinancialCalculationLine d'un calcul ACTIF — CALCULATED/APPROVED/LOCKED, jamais
+SUPERSEDED/CANCELLED), valeur documentée (FirmInvoice/InstrumentistStatement STANDARD
+émis + corrections ISSUED, jamais GENERATED), flux monétaires (Payment append-only).
+Chaque service (`FinancialStatisticsQueryService` pour overview/timeseries/pipeline,
+`FinancialStatisticsRankingService` pour les classements,
+`FinancialStatisticsDrilldownService` pour missions/calculations/documents) agrège en
+SQL natif (DBAL, jamais DQL avec hydratation complète) — §22 du lot.
+
+**Table dérivée `documentBalanceDerivedTable()` — formule unique, jamais dupliquée en
+PHP** : réplique exactement `DocumentPaymentService::computeBalance()` (Lot 5/6) en SQL
+pour chaque document racine STANDARD (crédits/débits ISSUED, paiements/remboursements,
+compatibilité legacy PAID-sans-Payment) — réutilisée par `invoicedNetAmount`/
+`statementNetAmount`, `openFirmBalance`/`openInstrumentistBalance`, et les compteurs du
+pipeline (`issuedInvoicesWithOpenBalance`, `overpaidDocumentsAwaitingRefund`) — jamais
+un appel PHP par document, jamais une seconde formule qui pourrait diverger de Lot 6.
+
+**Cash flow réel ≠ Payment.direction seul (§20 du lot, piège identifié et documenté)** :
+`direction=INBOUND` signifie "règle le document", pas "argent entrant en caisse" — sur
+un `InstrumentistStatement`, `INBOUND` est un décaissement réel (l'entreprise paie
+l'instrumentiste). `paymentsIn`/`paymentsOut` dérivent donc de
+`(Payment.documentType, Payment.direction)` combinés :
+```
+paymentsIn  = (FIRM_INVOICE, INBOUND) + (INSTRUMENTIST_STATEMENT, OUTBOUND)
+paymentsOut = (INSTRUMENTIST_STATEMENT, INBOUND) + (FIRM_INVOICE, OUTBOUND)
+```
+Un bug réel de ce type (`documentPopulationClause()` ne propageait `instrumentistId`
+que vers `InstrumentistStatement`, jamais vers `FirmInvoice`, contrairement à `firmId`
+qui était propagé symétriquement) a été détecté et corrigé pendant le développement de
+ce lot — voir `test_instrumentist_statement_inbound_payment_counts_as_cash_out`.
+
+**Classements (`by-firm`/`by-instrumentist`/`by-surgeon`/`by-intervention`/
+`top-materials`)** : agrégation SQL groupée par (bénéficiaire, devise) — un résultat
+borné par le nombre de firmes/instrumentistes/chirurgiens/types d'intervention/matériels
+distincts, jamais par le volume de missions ou de lignes financières brutes — puis
+tri/pagination en PHP sur cet ensemble déjà réduit (§22 : ce n'est pas l'agrégation PHP
+interdite). Libellés toujours issus des snapshots de `FinancialCalculationLine` (jamais
+le catalogue actuel) sauf deux limites documentées (D-077) : `surgeonNameSnapshot`
+(aucun snapshot chirurgien n'existe dans le modèle, lu en direct via `Mission.surgeon`)
+et `materialReferenceSnapshot` (idem, lu en direct via `MaterialItem.referenceCode`,
+donnée d'identification jamais tarifaire).
+
+**Pipeline financier** : neuf compteurs disjoints construits sur les mêmes tables,
+jamais un double comptage (ex. "calcul approuvé sans document" et "calcul partiellement
+documenté" utilisent des `EXISTS`/`NOT EXISTS` structurellement exclusifs sur les mêmes
+lignes financières).
+
+**Drill-down** : `FinancialStatisticsDrilldownService` réutilise exactement les mêmes
+filtres de population/période que les agrégats (mêmes noms de query params) — un
+manager retrouve toujours la liste source exacte d'un chiffre affiché.
+
+**Index ajoutés (Lot 7 uniquement, aucune colonne/contrainte nouvelle)** :
+`financial_calculation_line(effective_at, line_type)`, `firm_invoice`/
+`instrumentist_statement(sent_at, status, document_type, currency)`,
+`payment(paid_at, direction, document_type, document_id)`, `mission(start_at, status)`,
+`mission_execution(actual_start_at)` — voir migration `Version20260719065527`.
+
+**Hors périmètre de ce lot** : export comptable, prévisionnel financier, rapprochement
+bancaire, graphiques frontend complexes, refonte UX complète.
+
+---
+
 ## 7. Flux planning
 
 ### Génération du planning

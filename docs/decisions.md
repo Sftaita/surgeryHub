@@ -4325,6 +4325,151 @@ suppression d'un paiement existant (toujours interdite, §34 du lot).
 
 ---
 
+## D-077 — Les statistiques financières utilisent les événements financiers immuables comme sources de vérité. L'activité provient des missions et exécutions. La valeur générée provient des FinancialCalculationLine actives. La valeur documentée provient des documents émis et de leurs corrections. Les flux monétaires proviennent exclusivement des Payment append-only (EPIC Pilotage financier, Lot 7)
+
+Date : 2026-07-19
+
+### Décision
+
+Chaque indicateur statistique déclare une source métier explicite et unique — jamais
+un mélange, jamais une déduction depuis un statut seul (sauf compatibilité legacy déjà
+formalisée au Lot 5). Aucun recalcul tarifaire : `FinancialStatisticsQueryService`/
+`FinancialStatisticsRankingService` n'invoquent jamais `PricingRuleResolver`/
+`InstrumentistRateResolver`/`User.hourlyRate` — les montants proviennent exclusivement
+des lignes déjà valorisées (Lot 3) et des documents déjà émis (Lots 4-6).
+
+### Sources de vérité par catégorie
+
+| Catégorie | Source | Champs typiques |
+|---|---|---|
+| Activité opérationnelle | `Mission`/`MissionExecution` | missionCount, executedMissionCount, validatedMissionCount |
+| Valeur générée | `FinancialCalculationLine` (calcul ACTIF) | generatedFirmRevenue, generatedInstrumentistCompensation |
+| Valeur documentée | `FirmInvoice`/`InstrumentistStatement` + corrections ISSUED | invoicedNetAmount, statementNetAmount |
+| Flux monétaires | `Payment` (append-only) | paymentsIn, paymentsOut, netCashFlow |
+
+### Convention temporelle (§3/§4 du lot)
+
+`from` inclusif, `to` exclusif. Jamais `now()` comme borne fonctionnelle — un filtre
+`from`/`to` absent est résolu vers un sentinel fixe (1970-01-01 / 9999-12-31), jamais la
+date du jour. Date de rattachement par catégorie :
+
+- Missions : `COALESCE(MissionExecution.actualStartAt, Mission.startAt)`.
+- `FinancialCalculationLine` : `effectiveAt`.
+- Documents : `sentAt` — **un document `GENERATED` n'est jamais compté comme émis**
+  (seul `SENT`/`PAID` compte), sa date de rattachement pour le pipeline
+  (`generatedInvoicesNotIssued`) est `createdAt`.
+- Paiements/remboursements : `Payment.paidAt`.
+
+Timezone métier (D-066, Europe/Brussels) : `Mission.startAt`/`MissionExecution.
+actualStartAt` sont stockées en digits Europe/Brussels littéraux
+(`BusinessDateTimeImmutableType`) — comparées directement, aucune conversion SQL. `
+FinancialCalculationLine.effectiveAt`/`Payment.paidAt` sont des `DATE` pures (aucune
+heure, D-066 non applicable). `FirmInvoice`/`InstrumentistStatement.sentAt` sont de
+simples `datetime_immutable` (digits UTC nus). **Limite documentée** : le
+regroupement par bucket de série temporelle sur `sentAt` n'applique pas de conversion
+Europe/Brussels — `CONVERT_TZ` avec zones nommées est indisponible sur cette instance
+MySQL (zoneinfo non chargée, vérifié). Un document émis très tôt/tard dans la journée
+peut apparaître dans le bucket UTC plutôt que le bucket Bruxelles adjacent ; impact
+mineur, sans rapport avec la règle D-066 (qui ne couvre que `Mission.startAt/endAt`).
+
+### Convention de devise (§5)
+
+Jamais de conversion. Tout agrégat monétaire est regroupé par devise
+(`currency` explicite sur chaque ligne de résultat) ; s'il existe plusieurs devises sur
+une période, plusieurs entrées sont retournées — jamais un total artificiel qui les
+mélangerait. `missionCount`/`averageExecutionDurationMinutes` (non-monétaires) ne sont
+jamais dupliqués par devise (voir `FinancialOverviewActivityDto`).
+
+### Chiffre d'affaires généré et rémunération instrumentiste (§8/§9)
+
+`generatedFirmRevenue` = somme des lignes `FIRM_INTERVENTION_FEE`/`FIRM_MATERIAL_FEE`
+d'un `FinancialCalculation` **actif** (`CALCULATED`/`APPROVED`/`LOCKED` — le modèle
+garantit qu'au plus une version est active par mission à tout instant, voir
+`FinancialCalculationService::calculate()`, donc aucune déduplication de version
+supplémentaire n'est nécessaire). `generatedInstrumentistCompensation` = somme des
+lignes `INSTRUMENTIST_HOURLY`/`INSTRUMENTIST_CONSULTATION_FEE`. `SUPERSEDED`/
+`CANCELLED` toujours exclus.
+
+### Contribution margin (§10)
+
+`generatedContributionMargin = generatedFirmRevenue - generatedInstrumentistCompensation`.
+Nommée explicitement "contribution margin", jamais "bénéfice net" — elle n'intègre ni
+charges sociales, ni TVA, ni coûts administratifs, ni matériel non valorisé, ni impôts,
+ni frais généraux.
+
+### Paiements et flux de trésorerie réels (§20)
+
+`Payment.direction` seul ne suffit pas : `INBOUND` signifie "règle le document", pas
+"argent entrant en caisse". Sur un `FirmInvoice`, `INBOUND` est un encaissement réel.
+Sur un `InstrumentistStatement`, `INBOUND` est un **décaissement** réel (l'entreprise
+règle l'instrumentiste) — la même valeur de colonne porte un sens économique inversé
+selon le type de document. `paymentsIn`/`paymentsOut` dérivent donc de
+`(documentType, direction)` combinés, jamais de `direction` seule :
+
+```
+paymentsIn  = FirmInvoice.INBOUND + InstrumentistStatement.OUTBOUND
+paymentsOut = InstrumentistStatement.INBOUND + FirmInvoice.OUTBOUND
+netCashFlow = paymentsIn - paymentsOut
+```
+
+Prouvé par `test_instrumentist_statement_inbound_payment_counts_as_cash_out`.
+
+### Corrections dans les statistiques (§19)
+
+Convention identique à D-076 : `STANDARD`/`DEBIT_NOTE` = +montant, `CREDIT_NOTE` =
+-montant, uniquement pour les corrections **ISSUED** (`SENT`/`PAID`) — une correction
+`GENERATED` ne modifie jamais un agrégat. `invoicedNetAmount`/`statementNetAmount`
+répliquent en SQL la même formule que `DocumentPaymentService::computeBalance()` (Lot
+5/6), jamais un appel PHP par document (§22 — voir `documentBalanceDerivedTable()`).
+
+### Legacy (§21)
+
+Un document `legacySource = true` reste visible dans les statistiques documentaires et
+de paiement si ses données sont exploitables — aucune reconstruction de
+`FinancialCalculation`/snapshot/ligne financière historique. Les métriques générées
+(issues de `FinancialCalculationLine`, qui n'existe pas pour ces documents) peuvent
+donc différer des métriques documentaires legacy — différence normale et attendue.
+
+### Pipeline financier (§17)
+
+Neuf compteurs disjoints (jamais de double comptage) : missions `VALIDATED` sans
+calcul, calculs `CALCULATED` en attente d'approbation, calculs `APPROVED`/`LOCKED`
+totalement non documentés, calculs partiellement documentés (au moins une ligne
+assignée ET au moins une libre — exclusif du précédent par construction NOT
+EXISTS/EXISTS opposés), factures/décomptes `GENERATED` non émis, factures/décomptes
+émis avec solde ouvert, documents en trop-perçu en attente de remboursement.
+
+### Performance (§22)
+
+Toute agrégation lourde (missions/lignes financières/documents/paiements, potentiellement
+des milliers de lignes) est faite en SQL (DBAL natif, jamais DQL avec hydratation
+complète). Le tri/pagination des classements (by-firm/by-instrumentist/by-surgeon/
+by-intervention/top-materials) se fait en PHP **après** l'agrégation SQL — la
+population résultante est bornée par le nombre de firmes/instrumentistes/chirurgiens/
+types d'intervention/matériels distincts, jamais par le nombre de missions ou de
+lignes financières brutes (ce n'est donc pas l'"agrégation PHP sur des milliers de
+lignes" interdite par le lot). Index ajoutés : voir migration
+`Version20260719065527`.
+
+### Limites documentées (autres qu'exposées ci-dessus)
+
+`FinancialCalculationLine` ne porte aucun snapshot du chirurgien — `surgeonNameSnapshot`
+est lu en direct via `Mission.surgeon` (FK vivante), jamais un vrai instantané
+historique (aucune alternative n'existe dans le modèle actuel). `materialReferenceSnapshot`
+n'est pas non plus dans `FinancialCalculationLine.snapshot` — lu en direct via
+`MaterialItem.referenceCode` (donnée d'identification, jamais tarifaire). Le
+regroupement `by-intervention` attribue `instrumentistCompensation` (qui n'a aucun lien
+direct à une intervention précise) à l'intervention **primaire** de la mission
+(`order_index` minimal) — un choix explicite documenté plutôt qu'une répartition
+proportionnelle non demandée par le lot.
+
+### Portée non traitée ici
+
+Export comptable, prévisionnel financier, rapprochement bancaire, graphiques frontend
+complexes, refonte UX complète (§34 du lot).
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -4398,3 +4543,4 @@ suppression d'un paiement existant (toujours interdite, §34 du lot).
 | 18-07-2026 | D-074 — Bascule des documents financiers vers FinancialCalculationLine, anti-double facturation, legacy coexistant (Exécution & Valorisation, Lot 4) |
 | 18-07-2026 | D-075 — Paiements append-only, solde toujours dérivé, émission explicite, Payment polymorphe (Exécution & Valorisation, Lot 5) |
 | 19-07-2026 | D-076 — Corrections financières additives : notes de crédit/débit, remboursements append-only, jamais de réécriture (Exécution & Valorisation, Lot 6) |
+| 19-07-2026 | D-077 — Statistiques financières : sources de vérité par catégorie, convention temporelle/devise, cash flow réel dérivé de (documentType, direction) (Pilotage financier, Lot 7) |

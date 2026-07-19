@@ -4891,3 +4891,163 @@ par la transition elle-même), `DOCUMENT_NET_BALANCE_CHANGED` (uniquement si le 
 net change réellement à l'émission), `REFUND_RECORDED`.
 
 ---
+
+## 39. Statistiques financières manager (EPIC Pilotage financier, Lot 7, D-077)
+
+Voir D-077 (`docs/decisions.md`) et `docs/architecture.md` pour le modèle complet.
+Socle en lecture seule — aucun endpoint existant modifié.
+
+**AuthZ (toutes routes) :** `BillingVoter::MANAGE` — manager/admin uniquement.
+**Audit :** aucun (§28 du lot — la consultation ne pollue pas le journal d'audit).
+
+### Filtres communs (§6 du lot)
+
+Query params partagés par tous les endpoints ci-dessous :
+
+| Paramètre | Type | Défaut | Note |
+|---|---|---|---|
+| `from` | ISO 8601 | `1970-01-01` (timezone métier) | inclusif |
+| `to` | ISO 8601 | `9999-12-31` (timezone métier) | exclusif |
+| `siteId` | int | absent = tous | |
+| `surgeonId` | int | absent = tous | |
+| `instrumentistId` | int | absent = tous | |
+| `firmId` | int | absent = tous | |
+| `interventionTypeId` | int | absent = tous | |
+| `currency` | ISO 4217 (3 lettres) | absent = toutes | |
+
+Un filtre absent signifie "tous". Un filtre invalide (période incohérente, id non
+numérique, devise malformée) retourne `422 VALIDATION_FAILED`.
+
+**Pagination/tri** (endpoints de classement et drill-down uniquement, §30 du lot) :
+`page` (défaut 1), `limit` (défaut 20, max 100, ou 100 pour `/top-materials`),
+`sortBy` (whitelist stricte par endpoint, voir ci-dessous), `sortDirection`
+(`ASC`/`DESC`, défaut `DESC`). Une valeur `sortBy`/`sortDirection`/`granularity` hors
+whitelist retourne `422 VALIDATION_FAILED`.
+
+### `GET /api/financial-statistics/overview`
+
+Vue d'ensemble par devise (§7 du lot).
+
+**Réponse — 200 :**
+```json
+{
+  "from": "1970-01-01T00:00:00+01:00",
+  "to": "9999-12-31T00:00:00+01:00",
+  "activity": {
+    "missionCount": 42, "executedMissionCount": 38, "validatedMissionCount": 40,
+    "averageExecutionDurationMinutes": 95
+  },
+  "currencies": [
+    {
+      "currency": "EUR",
+      "generatedFirmRevenue": "12500.00", "generatedInstrumentistCompensation": "3200.00",
+      "generatedTotalValue": "15700.00", "generatedContributionMargin": "9300.00",
+      "invoicedGrossAmount": "12500.00", "invoiceCreditNotesAmount": "200.00",
+      "invoiceDebitNotesAmount": "0.00", "invoicedNetAmount": "12300.00",
+      "statementGrossAmount": "3200.00", "statementCreditNotesAmount": "0.00",
+      "statementDebitNotesAmount": "0.00", "statementNetAmount": "3200.00",
+      "paymentsIn": "10000.00", "paymentsOut": "3200.00", "netCashFlow": "6800.00",
+      "openFirmBalance": "2300.00", "openInstrumentistBalance": "0.00",
+      "averageMissionValue": "373.80"
+    }
+  ]
+}
+```
+
+`activity` n'est jamais dupliqué par devise (une mission n'a pas de devise propre).
+`generatedContributionMargin` — voir D-077, jamais un "bénéfice net" (n'intègre ni
+charges, ni TVA, ni frais généraux). `paymentsIn`/`paymentsOut` dérivent de
+`(documentType, direction)`, jamais de `direction` seule (voir D-077 §20).
+
+### `GET /api/financial-statistics/timeseries`
+
+Série temporelle (§11 du lot). Query param additionnel : `granularity`
+(`DAY`/`WEEK`/`MONTH`, défaut `DAY`).
+
+**Réponse — 200 :**
+```json
+{
+  "granularity": "DAY",
+  "points": [
+    {
+      "periodStart": "2026-05-01T00:00:00+02:00", "periodEnd": "2026-05-02T00:00:00+02:00",
+      "missionCount": 2,
+      "currencies": [
+        { "currency": "EUR", "generatedFirmRevenue": "400.00", "generatedInstrumentistCompensation": "80.00",
+          "invoicedNetAmount": "0.00", "statementNetAmount": "0.00", "paymentsIn": "0.00", "paymentsOut": "0.00" }
+      ]
+    }
+  ]
+}
+```
+
+Les buckets sans donnée sont présents avec des valeurs à zéro, jamais omis. Fenêtre
+limitée à 730 buckets (`422 VALIDATION_FAILED` au-delà — réduire `from`/`to` ou
+augmenter la granularité).
+
+### `GET /api/financial-statistics/pipeline`
+
+Éléments bloqués du pipeline financier (§17 du lot), neuf compteurs disjoints.
+
+**Réponse — 200 :**
+```json
+{
+  "validatedMissionsWithoutCalculation": 3,
+  "calculationsAwaitingApproval": 2,
+  "approvedCalculationsWithoutDocuments": 1,
+  "partiallyDocumentedCalculations": 0,
+  "generatedInvoicesNotIssued": 1,
+  "generatedStatementsNotIssued": 0,
+  "issuedInvoicesWithOpenBalance": 4,
+  "issuedStatementsWithOpenBalance": 1,
+  "overpaidDocumentsAwaitingRefund": 1
+}
+```
+
+### `GET /api/financial-statistics/by-firm`, `.../by-instrumentist`, `.../by-surgeon`, `.../by-intervention`, `.../top-materials`
+
+Classements (§12-16 du lot). Réponse commune : `{ "items": [...], "total": N, "page": N, "limit": N }`.
+`sortBy` whitelisté par endpoint :
+
+| Endpoint | `sortBy` autorisés (défaut en gras) |
+|---|---|
+| `/by-firm` | **generatedRevenue**, invoicedNetAmount, remainingAmount, missionCount, firmNameSnapshot |
+| `/by-instrumentist` | **generatedCompensation**, statementNetAmount, remainingAmount, missionCount, instrumentistNameSnapshot |
+| `/by-surgeon` | **generatedFirmRevenue**, generatedInstrumentistCompensation, missionCount, surgeonNameSnapshot |
+| `/by-intervention` | **interventionRevenue**, materialRevenue, missionCount, interventionCodeSnapshot |
+| `/top-materials` | **generatedRevenue**, quantity, missionCount, averageUnitRevenue |
+
+Chaque ligne expose un champ `currency` explicite — un même bénéficiaire actif dans
+plusieurs devises produit plusieurs lignes, jamais un total mélangé (§5 du lot).
+Libellés (`firmNameSnapshot`, `instrumentistNameSnapshot`, `interventionCodeSnapshot`/
+`interventionNameSnapshot`, `materialNameSnapshot`/`firmSnapshot`) proviennent des
+snapshots historiques de `FinancialCalculationLine` — jamais du catalogue actuel (une
+firme renommée/supprimée ne modifie jamais l'historique). Exceptions documentées
+(D-077) : `surgeonNameSnapshot` (aucun snapshot n'existe pour le chirurgien, lu en
+direct) et `materialReferenceSnapshot` (idem, lu en direct via `MaterialItem.
+referenceCode`). `/by-surgeon` n'expose jamais `paidAmount`/`remainingAmount` — le
+chirurgien est un axe analytique, jamais un bénéficiaire financier (§14 du lot).
+
+### `GET /api/financial-statistics/missions`, `.../calculations`, `.../documents`
+
+Drill-down (§18 du lot) — même filtres que les agrégats, pour retrouver la liste
+source d'un chiffre affiché. `sortBy` unique autorisé : `date`.
+
+**Réponse — 200 :**
+```json
+{
+  "items": [
+    { "id": 4821, "date": "2026-05-15T09:00:00+02:00", "beneficiary": "Dr. Martin",
+      "currency": null, "amount": null, "status": "VALIDATED",
+      "sourceType": "MISSION", "sourceId": 4821 }
+  ],
+  "total": 1, "page": 1, "limit": 20
+}
+```
+
+`currency`/`amount` sont `null` pour `.../missions` et `.../calculations` (une mission/
+un calcul n'a pas de montant unique — voir les lignes détaillées via les autres
+endpoints). `.../documents` couvre uniquement les documents `STANDARD` (une correction
+a sa propre forme, voir `GET .../corrections`, Lot 6).
+
+---
