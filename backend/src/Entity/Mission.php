@@ -15,6 +15,9 @@ use Symfony\Component\Serializer\Attribute\Groups;
 #[ORM\HasLifecycleCallbacks]
 #[ORM\Index(columns: ['updated_at'], name: 'IDX_MISSION_UPDATED_AT')]
 #[ORM\Index(columns: ['start_at', 'end_at'], name: 'idx_mission_start_end')]
+// EPIC Pilotage financier, Lot 7 (D-077) — période d'activité filtrée par statut
+// (overview/pipeline "missions VALIDATED sans calcul").
+#[ORM\Index(columns: ['start_at', 'status'], name: 'idx_mission_start_status')]
 class Mission
 {
     use TimestampableTrait;

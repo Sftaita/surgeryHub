@@ -30,7 +30,11 @@ use Symfony\Component\Serializer\Attribute\Groups;
  * jamais startAt/endAt/hours) pour ne jamais pouvoir être confondu avec le planifié.
  */
 #[ORM\Entity]
-#[ORM\Table(name: 'mission_execution')]
+#[ORM\Table(name: 'mission_execution', indexes: [
+    // EPIC Pilotage financier, Lot 7 (D-077) — date de rattachement de l'activité
+    // (COALESCE(actual_start_at, mission.start_at)) sur tous les endpoints statistiques.
+    new ORM\Index(name: 'idx_mission_execution_actual_start', columns: ['actual_start_at']),
+])]
 #[ORM\HasLifecycleCallbacks]
 class MissionExecution
 {

@@ -24,6 +24,9 @@ use Doctrine\ORM\Mapping as ORM;
     name: 'payment',
     indexes: [
         new ORM\Index(name: 'idx_payment_document', columns: ['document_type', 'document_id']),
+        // EPIC Pilotage financier, Lot 7 (D-077) — flux monétaires par période, filtrés
+        // par direction/document (overview/timeseries/pipeline cash flow).
+        new ORM\Index(name: 'idx_payment_paid_direction_doc', columns: ['paid_at', 'direction', 'document_type', 'document_id']),
     ],
 )]
 class Payment

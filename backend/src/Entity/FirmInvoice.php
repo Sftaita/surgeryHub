@@ -14,6 +14,13 @@ use Doctrine\ORM\Mapping as ORM;
 #[ORM\Table(indexes: [
     new ORM\Index(name: 'idx_firm_invoice_firm', columns: ['firm_id']),
     new ORM\Index(name: 'idx_firm_invoice_status', columns: ['status']),
+    // Lot 6 (D-076) — présents en base depuis Version20260718191717 mais jamais
+    // reportés ici (drift pré-existant, hors périmètre du Lot 7) :
+    // idx_firm_invoice_corrects (corrects_document_id), idx_firm_invoice_doc_type_status
+    // (document_type, status).
+    // EPIC Pilotage financier, Lot 7 (D-077) — valeur documentée par période d'émission,
+    // filtrée par statut/type/devise (overview/timeseries/by-firm/pipeline).
+    new ORM\Index(name: 'idx_firm_invoice_sent_status_type_currency', columns: ['sent_at', 'status', 'document_type', 'currency']),
 ])]
 #[ORM\HasLifecycleCallbacks]
 class FirmInvoice implements PayableDocument

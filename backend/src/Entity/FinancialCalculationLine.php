@@ -27,6 +27,10 @@ use Doctrine\ORM\Mapping as ORM;
         new ORM\Index(name: 'idx_fcl_calculation', columns: ['financial_calculation_id']),
         new ORM\Index(name: 'idx_fcl_beneficiary_firm', columns: ['beneficiary_firm_id']),
         new ORM\Index(name: 'idx_fcl_beneficiary_instrumentist', columns: ['beneficiary_instrumentist_id']),
+        // EPIC Pilotage financier, Lot 7 (D-077) — filtre de période (effective_at) +
+        // ventilation firm/instrumentist (line_type) sur toutes les agrégations
+        // statistiques (overview/timeseries/by-firm/by-instrumentist/etc.).
+        new ORM\Index(name: 'idx_fcl_effective_line_type', columns: ['effective_at', 'line_type']),
     ],
 )]
 class FinancialCalculationLine

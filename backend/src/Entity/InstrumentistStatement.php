@@ -14,6 +14,8 @@ use Doctrine\ORM\Mapping as ORM;
 #[ORM\Table(indexes: [
     new ORM\Index(name: 'idx_stmt_instrumentist', columns: ['instrumentist_id']),
     new ORM\Index(name: 'idx_stmt_status', columns: ['status']),
+    // EPIC Pilotage financier, Lot 7 (D-077) — voir FirmInvoice::idx_firm_invoice_sent_status_type_currency, même contrat.
+    new ORM\Index(name: 'idx_stmt_sent_status_type_currency', columns: ['sent_at', 'status', 'document_type', 'currency']),
 ])]
 #[ORM\HasLifecycleCallbacks]
 class InstrumentistStatement implements PayableDocument
