@@ -139,3 +139,31 @@ export async function createMissionInterventionTypeRequest(
   );
   return data;
 }
+
+/**
+ * Cycle de vie de l'encodage (Lot 7, D-070).
+ * `complete` n'est pas ici : "Terminer l'encodage" utilise toujours l'alias legacy
+ * `POST /api/missions/{id}/submit` (submitMission dans missions.api.ts) — le backend
+ * délègue au même MissionEncodingWorkflowService::complete(), jamais deux implémentations.
+ */
+export async function startMissionEncoding(missionId: number): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/encoding/start`);
+}
+
+export async function validateMissionEncoding(missionId: number): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/encoding/validate`);
+}
+
+export async function rejectMissionEncoding(
+  missionId: number,
+  comment: string,
+): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/encoding/reject`, { comment });
+}
+
+export async function reopenMissionEncoding(
+  missionId: number,
+  comment?: string,
+): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/encoding/reopen`, { comment });
+}

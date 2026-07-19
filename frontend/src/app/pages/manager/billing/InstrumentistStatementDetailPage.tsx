@@ -28,12 +28,13 @@ import {
 } from "../../../features/billing-instrumentist/api/statement.api";
 import type { InvoiceStatus } from "../../../features/billing-firm/api/firmInvoice.api";
 import { useToast } from "../../../ui/toast/useToast";
+import DocumentFinancePanel from "../../../features/billing-shared/components/DocumentFinancePanel";
 
-const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success"> = {
-  DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success",
+const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {
+  DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success", CANCELLED: "error",
 };
 function statusLabel(s: InvoiceStatus) {
-  return { DRAFT: "Brouillon", GENERATED: "Généré", SENT: "Envoyé", PAID: "Payé" }[s];
+  return { DRAFT: "Brouillon", GENERATED: "Généré", SENT: "Envoyé", PAID: "Payé", CANCELLED: "Annulé" }[s];
 }
 function extractError(err: unknown): string {
   const e = err as any;
@@ -168,6 +169,15 @@ export default function InstrumentistStatementDetailPage() {
           </TableBody>
         </Table>
       </Paper>
+
+      {/* Solde, paiements, remboursements, notes de crédit/débit (EPIC Exécution & Valorisation, Lots 4-6) */}
+      <DocumentFinancePanel
+        resource="instrumentist-statements"
+        document={stmt}
+        lines={(stmt.lines ?? []).map((l) => ({ id: l.id, descriptionSnapshot: l.descriptionSnapshot ?? `${l.lineType === "BLOC" ? "Bloc" : "Consultation"} — ${l.surgeonName ?? ""}`, totalAmount: l.totalAmount }))}
+        correctionsBasePath="/app/m/billing/instrumentist-statement-corrections"
+        onChanged={() => qc.invalidateQueries({ queryKey: ["instrumentist-statement", Number(id)] })}
+      />
 
       <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
         <Stack spacing={2}>

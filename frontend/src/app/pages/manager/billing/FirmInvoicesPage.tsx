@@ -1,5 +1,6 @@
 import * as React from "react";
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -37,6 +38,7 @@ import {
   type InvoiceStatus,
   type PreviewLine,
 } from "../../../features/billing-firm/api/firmInvoice.api";
+import EligibleLinesInvoiceWizard from "../../../features/billing-firm/components/EligibleLinesInvoiceWizard";
 import { useToast } from "../../../ui/toast/useToast";
 
 const MONTHS = [
@@ -44,15 +46,16 @@ const MONTHS = [
   "Juillet","Août","Septembre","Octobre","Novembre","Décembre",
 ];
 
-const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success"> = {
+const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {
   DRAFT: "default",
   GENERATED: "info",
   SENT: "warning",
   PAID: "success",
+  CANCELLED: "error",
 };
 
 function statusLabel(s: InvoiceStatus) {
-  return { DRAFT: "Brouillon", GENERATED: "Générée", SENT: "Envoyée", PAID: "Payée" }[s];
+  return { DRAFT: "Brouillon", GENERATED: "Générée", SENT: "Envoyée", PAID: "Payée", CANCELLED: "Annulée" }[s];
 }
 
 function extractError(err: unknown): string {
@@ -68,6 +71,7 @@ export default function FirmInvoicesPage() {
   // ── Wizard state ──────────────────────────────────────────────────
   const [tutorialOpen, setTutorialOpen] = React.useState(false);
   const [showWizard, setShowWizard] = React.useState(false);
+  const [wizardMode, setWizardMode] = React.useState<"calculations" | "legacy">("calculations");
   const [firmId, setFirmId] = React.useState("");
   const [periodYear, setPeriodYear] = React.useState(new Date().getFullYear());
   const [periodMonth, setPeriodMonth] = React.useState(new Date().getMonth() + 1);
@@ -179,9 +183,39 @@ export default function FirmInvoicesPage() {
       {/* ── Wizard ── */}
       {showWizard && (
         <Paper variant="outlined" sx={{ p: 3, borderRadius: 2 }}>
-          <Typography variant="subtitle1" fontWeight={700} mb={2}>Générer une facture</Typography>
+          <Typography variant="subtitle1" fontWeight={700} mb={1}>Générer une facture</Typography>
 
+          <Stack direction="row" spacing={1} mb={2}>
+            <Button
+              size="small"
+              variant={wizardMode === "calculations" ? "contained" : "outlined"}
+              disableElevation
+              onClick={() => setWizardMode("calculations")}
+            >
+              Nouveau flux (recommandé)
+            </Button>
+            <Button
+              size="small"
+              variant={wizardMode === "legacy" ? "contained" : "outlined"}
+              disableElevation
+              onClick={() => setWizardMode("legacy")}
+            >
+              Flux classique
+            </Button>
+          </Stack>
+
+          {wizardMode === "calculations" ? (
+            <EligibleLinesInvoiceWizard
+              onCreated={(invoice) => { setShowWizard(false); navigate(`/app/m/billing/firm-invoices/${invoice.id}`); }}
+              onCancel={() => setShowWizard(false)}
+            />
+          ) : (
           <Stack spacing={2}>
+            <Alert severity="warning">
+              Flux classique : relit les tarifs actuellement en vigueur au moment de la génération, sans passer par un
+              calcul financier figé. Conservé pour compatibilité — préférez le nouveau flux ci-dessus dès qu'un calcul
+              financier existe pour les missions concernées.
+            </Alert>
             <Stack direction="row" spacing={2} alignItems="center">
               <Select
                 value={firmId}
@@ -293,6 +327,7 @@ export default function FirmInvoicesPage() {
               </>
             )}
           </Stack>
+          )}
         </Paper>
       )}
 

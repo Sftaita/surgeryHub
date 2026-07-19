@@ -542,6 +542,7 @@ class InstrumentistStatementController extends AbstractController
             'id' => $p->getId(),
             'documentType' => $p->getDocumentType()->value,
             'documentId' => $p->getDocumentId(),
+            'direction' => $p->getDirection()->value,
             'amount' => $p->getAmount(),
             'currency' => $p->getCurrency(),
             'paidAt' => $p->getPaidAt()?->format('Y-m-d'),

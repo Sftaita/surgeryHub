@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import dayjs from "dayjs";
@@ -8,12 +8,14 @@ import "dayjs/locale/fr";
 
 import { fetchMissionById } from "../../features/missions/api/missions.api";
 import type { UserRef } from "../../features/missions/api/missions.types";
-import { fetchMissionEncoding } from "../../features/encoding/api/encoding.api";
+import { fetchMissionEncoding, startMissionEncoding } from "../../features/encoding/api/encoding.api";
 import InterventionsSection from "../../features/encoding/components/InterventionsSection";
 import { EncodeHeader } from "../../features/encoding/components/EncodeHeader";
+import { EncodingStatusPanel } from "../../features/encoding/components/EncodingStatusPanel";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
 import { SPECIALTIES } from "../../features/planning-manager/api/planning.api";
+import { useToast } from "../../ui/toast/useToast";
 
 dayjs.locale("fr");
 
@@ -78,6 +80,7 @@ export default function MissionEncodingPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const toast = useToast();
 
   const [openSubmit, setOpenSubmit] = React.useState(false);
   const [openEditHours, setOpenEditHours] = React.useState(false);
@@ -105,6 +108,17 @@ export default function MissionEncodingPage() {
 
   const canSubmit = mission?.allowedActions?.includes("submit") ?? false;
   const canEditHours = mission?.allowedActions?.includes("edit_hours") ?? false;
+  /** Lot 7 (D-070) — invite optionnelle : passer explicitement en ENCODING_IN_PROGRESS. */
+  const canStart = mission?.allowedActions?.includes("start_encoding") ?? false;
+
+  const startMutation = useMutation({
+    mutationFn: () => startMissionEncoding(missionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
+      queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] });
+    },
+    onError: (err: any) => toast.error(extractErrorMessage(err)),
+  });
 
   const {
     data: encoding,
@@ -205,7 +219,9 @@ export default function MissionEncodingPage() {
             }}
           />
           <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Box sx={{ fontSize: 13.5, fontWeight: 700, color: GREEN_700 }}>Brouillon en cours</Box>
+            <Box sx={{ fontSize: 13.5, fontWeight: 700, color: GREEN_700 }}>
+              {mission.status === "ENCODING_IN_PROGRESS" ? "Encodage en cours" : "Brouillon"}
+            </Box>
             <Box sx={{ mt: "1px", fontSize: 12.5, color: GRAY_400, fontVariantNumeric: "tabular-nums" }}>{countsLabel}</Box>
           </Box>
           {lastSavedAt && (
@@ -214,6 +230,26 @@ export default function MissionEncodingPage() {
             </Box>
           )}
         </Stack>
+
+        {/* Cycle de vie de l'encodage (Lot 7, D-070) : statut réel, signaux de cohérence
+            informationnels, et commentaires manager si la mission a déjà été rejetée. */}
+        <EncodingStatusPanel
+          status={String(mission.status)}
+          coherenceSummary={encoding.coherenceSummary}
+          comments={encoding.encodingComments}
+        />
+
+        {canStart && (
+          <Button
+            variant="outlined"
+            fullWidth
+            onClick={() => startMutation.mutate()}
+            disabled={startMutation.isPending}
+            sx={{ height: 48, borderRadius: "13px", fontWeight: 700, textTransform: "none", borderColor: GREEN_700, color: GREEN_700 }}
+          >
+            Démarrer l'encodage
+          </Button>
+        )}
 
         {/* Heures prestées */}
         <Box

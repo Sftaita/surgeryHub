@@ -79,6 +79,20 @@ export async function deletePricingRule(firmId: number, ruleId: number): Promise
   await apiClient.delete(`/api/firms/${firmId}/pricing-rules/${ruleId}`);
 }
 
+/**
+ * D-072 §7 — remplace le tarif actuellement en vigueur à partir d'une date : ferme la
+ * règle actuelle et en ouvre une nouvelle, atomique. Seul moyen de changer un tarif déjà
+ * applicable (PATCH/DELETE sont désormais restreints aux règles futures, 409 sinon).
+ */
+export async function replacePricingRule(
+  firmId: number,
+  ruleId: number,
+  body: { unitPrice: number; currency?: string; effectiveFrom: string }
+): Promise<PricingRule> {
+  const res = await apiClient.post(`/api/firms/${firmId}/pricing-rules/${ruleId}/replace`, body);
+  return res.data;
+}
+
 // ── Billing contact ──────────────────────────────────────────────────────────
 
 export async function updateFirmBillingContact(

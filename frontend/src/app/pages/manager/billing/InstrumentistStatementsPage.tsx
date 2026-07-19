@@ -1,5 +1,6 @@
 import * as React from "react";
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -35,6 +36,7 @@ import {
   type InstrumentistStatement,
   type StatementPreviewLine,
 } from "../../../features/billing-instrumentist/api/statement.api";
+import EligibleLinesStatementWizard from "../../../features/billing-instrumentist/components/EligibleLinesStatementWizard";
 import type { InvoiceStatus } from "../../../features/billing-firm/api/firmInvoice.api";
 import { useToast } from "../../../ui/toast/useToast";
 
@@ -43,12 +45,12 @@ const MONTHS = [
   "Juillet","Août","Septembre","Octobre","Novembre","Décembre",
 ];
 
-const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success"> = {
-  DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success",
+const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {
+  DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success", CANCELLED: "error",
 };
 
 function statusLabel(s: InvoiceStatus) {
-  return { DRAFT: "Brouillon", GENERATED: "Généré", SENT: "Envoyé", PAID: "Payé" }[s];
+  return { DRAFT: "Brouillon", GENERATED: "Généré", SENT: "Envoyé", PAID: "Payé", CANCELLED: "Annulé" }[s];
 }
 
 function extractError(err: unknown): string {
@@ -63,6 +65,7 @@ export default function InstrumentistStatementsPage() {
 
   const [tutorialOpen, setTutorialOpen] = React.useState(false);
   const [showWizard, setShowWizard] = React.useState(false);
+  const [wizardMode, setWizardMode] = React.useState<"calculations" | "legacy">("calculations");
   const [instrumentistId, setInstrumentistId] = React.useState("");
   const [periodYear, setPeriodYear] = React.useState(new Date().getFullYear());
   const [periodMonth, setPeriodMonth] = React.useState(new Date().getMonth() + 1);
@@ -142,9 +145,39 @@ export default function InstrumentistStatementsPage() {
       {/* ── Wizard ── */}
       {showWizard && (
         <Paper variant="outlined" sx={{ p: 3, borderRadius: 2 }}>
-          <Typography variant="subtitle1" fontWeight={700} mb={2}>Générer un décompte</Typography>
+          <Typography variant="subtitle1" fontWeight={700} mb={1}>Générer un décompte</Typography>
 
+          <Stack direction="row" spacing={1} mb={2}>
+            <Button
+              size="small"
+              variant={wizardMode === "calculations" ? "contained" : "outlined"}
+              disableElevation
+              onClick={() => setWizardMode("calculations")}
+            >
+              Nouveau flux (recommandé)
+            </Button>
+            <Button
+              size="small"
+              variant={wizardMode === "legacy" ? "contained" : "outlined"}
+              disableElevation
+              onClick={() => setWizardMode("legacy")}
+            >
+              Flux classique
+            </Button>
+          </Stack>
+
+          {wizardMode === "calculations" ? (
+            <EligibleLinesStatementWizard
+              onCreated={(statement) => { setShowWizard(false); navigate(`/app/m/billing/statements/${statement.id}`); }}
+              onCancel={() => setShowWizard(false)}
+            />
+          ) : (
           <Stack spacing={2}>
+            <Alert severity="warning">
+              Flux classique : relit les tarifs actuellement en vigueur au moment de la génération, sans passer par un
+              calcul financier figé. Conservé pour compatibilité — préférez le nouveau flux ci-dessus dès qu'un calcul
+              financier existe pour les missions concernées.
+            </Alert>
             <Stack direction="row" spacing={2} alignItems="center">
               <Select
                 value={instrumentistId}
@@ -274,6 +307,7 @@ export default function InstrumentistStatementsPage() {
               </>
             )}
           </Stack>
+          )}
         </Paper>
       )}
 

@@ -13,7 +13,11 @@ export type AllowedAction =
   | "edit_hours"
   | "declare"
   // compat éventuelle si backend renvoie "encoding" (reste piloté par allowedActions)
-  | "encoding";
+  | "encoding"
+  // Lot 7 (D-070) — cycle de vie de l'encodage
+  | "start_encoding"
+  | "validate"
+  | "reopen";
 
 export type SchedulePrecision = "APPROXIMATE" | "EXACT";
 export type MissionType = "BLOCK" | "CONSULTATION";
@@ -32,6 +36,7 @@ export type MissionStatus =
   | "VALIDATED"
   | "CLOSED"
   | "IN_PROGRESS"
+  | "ENCODING_IN_PROGRESS"
   | "CANCELLED";
 
 export type CreateMissionBody = {

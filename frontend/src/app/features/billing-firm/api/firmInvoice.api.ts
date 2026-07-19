@@ -1,12 +1,16 @@
 import { apiClient } from "../../../api/apiClient";
+import type { CorrectionSummary, DocumentType, PaymentStatus } from "../../billing-shared/api/documentFinance.api";
 
-export type InvoiceStatus = "DRAFT" | "GENERATED" | "SENT" | "PAID";
+export type InvoiceStatus = "DRAFT" | "GENERATED" | "SENT" | "PAID" | "CANCELLED";
 
 export interface FirmInvoice {
   id: number;
   number: string | null;
   firm: { id: number; name: string };
   status: InvoiceStatus;
+  /** EPIC Exécution & Valorisation, Lot 6 — STANDARD pour un document racine, CREDIT_NOTE/DEBIT_NOTE pour une correction. */
+  documentType: DocumentType;
+  correctsDocumentId: number | null;
   periodStart: string;
   periodEnd: string;
   totalAmount: string;
@@ -16,7 +20,22 @@ export interface FirmInvoice {
   sentAt: string | null;
   paidAt: string | null;
   createdAt: string | null;
+  currency: string;
+  legacySource: boolean;
   lines?: FirmInvoiceLine[];
+  /** Modèle financier net dérivé (Lot 5-6) — jamais stocké, toujours recalculé côté backend. */
+  grossAmount: string;
+  originalGrossAmount: string;
+  creditNotesAmount: string;
+  debitNotesAmount: string;
+  netDocumentAmount: string;
+  paidAmount: string;
+  refundedAmount: string;
+  remainingAmount: string;
+  overpaidAmount: string;
+  paymentStatus: PaymentStatus;
+  /** Uniquement présent sur un document STANDARD (jamais sur une correction elle-même). */
+  corrections?: CorrectionSummary[];
 }
 
 export interface FirmInvoiceLine {
@@ -31,6 +50,11 @@ export interface FirmInvoiceLine {
   unitPrice: string;
   quantity: string;
   totalAmount: string;
+  currency?: string;
+  financialCalculationLineId?: number | null;
+  legacy?: boolean;
+  reasonCode?: string | null;
+  originalDocumentLineId?: number | null;
 }
 
 export interface PreviewLine {
@@ -79,6 +103,52 @@ export async function generateFirmInvoice(body: {
   selectedMaterialLineIds: number[];
 }): Promise<FirmInvoice> {
   const res = await apiClient.post("/api/firm-invoices", body);
+  return res.data;
+}
+
+// ── EPIC Exécution & Valorisation, Lot 4 (D-074) — nouveau flux, sourcé sur
+// FinancialCalculationLine (calcul verrouillé) plutôt que recalculé à la volée. ────
+
+export interface EligibleCalculationLine {
+  id: number;
+  financialCalculationId: number;
+  financialCalculationVersion: number;
+  missionId: number;
+  lineType: "FIRM_INTERVENTION_FEE" | "FIRM_MATERIAL_FEE";
+  descriptionSnapshot: string;
+  quantity: string;
+  unitAmount: string;
+  totalAmount: string;
+  currency: string;
+  effectiveAt: string | null;
+}
+
+export interface FirmEligibleLinesPreview {
+  firm: { id: number; name: string };
+  currency: string;
+  period: { start: string; end: string };
+  lines: EligibleCalculationLine[];
+  totalAmount: string;
+}
+
+export async function getFirmEligibleLines(params: {
+  firmId: number;
+  currency: string;
+  periodStart: string;
+  periodEnd: string;
+}): Promise<FirmEligibleLinesPreview> {
+  const res = await apiClient.get("/api/firm-invoices/eligible-lines", { params });
+  return res.data;
+}
+
+export async function createFirmInvoiceFromCalculations(body: {
+  firmId: number;
+  currency: string;
+  periodStart: string;
+  periodEnd: string;
+  selectedFinancialCalculationLineIds: number[];
+}): Promise<FirmInvoice> {
+  const res = await apiClient.post("/api/firm-invoices/from-financial-calculations", body);
   return res.data;
 }
 

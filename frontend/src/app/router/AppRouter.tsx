@@ -50,6 +50,8 @@ const FirmInvoiceDetailPage             = React.lazy(() => import("../pages/mana
 const InstrumentistStatementsPage       = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementsPage"));
 const InstrumentistStatementDetailPage  = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementDetailPage"));
 const BillingConfigPage                 = React.lazy(() => import("../pages/manager/billing/BillingConfigPage"));
+const CorrectionDetailPage              = React.lazy(() => import("../pages/manager/billing/CorrectionDetailPage"));
+const FinancialStatisticsPage           = React.lazy(() => import("../pages/manager/FinancialStatisticsPage"));
 const AbsencesPage                      = React.lazy(() => import("../pages/manager/planning/AbsencesPage"));
 const PlanningVersionDetailPage         = React.lazy(() => import("../pages/manager/planning/PlanningVersionDetailPage"));
 const PlanningV2Page                    = React.lazy(() => import("../pages/manager/planning/PlanningV2Page"));
@@ -158,6 +160,9 @@ export function AppRouter() {
                 <Route path="m/billing/firm-invoices/:id" element={<FirmInvoiceDetailPage />} />
                 <Route path="m/billing/statements" element={<InstrumentistStatementsPage />} />
                 <Route path="m/billing/statements/:id" element={<InstrumentistStatementDetailPage />} />
+                <Route path="m/billing/firm-invoice-corrections/:id" element={<CorrectionDetailPage resource="firm-invoices" />} />
+                <Route path="m/billing/instrumentist-statement-corrections/:id" element={<CorrectionDetailPage resource="instrumentist-statements" />} />
+                <Route path="m/finance/statistics" element={<FinancialStatisticsPage />} />
                 <Route path="m/planning/absences" element={<AbsencesPage />} />
                 <Route path="m/planning/versions/:id" element={<PlanningVersionDetailPage />} />
                 <Route path="m/planning" element={<Navigate to="/app/m/planning/v2" replace />} />

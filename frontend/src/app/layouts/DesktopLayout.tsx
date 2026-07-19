@@ -63,6 +63,7 @@ const NAV_ITEMS = [
       { label: "Configuration", href: "/app/m/billing/config" },
       { label: "Factures Firmes", href: "/app/m/billing/firm-invoices" },
       { label: "Décomptes", href: "/app/m/billing/statements" },
+      { label: "Statistiques financières", href: "/app/m/finance/statistics" },
     ],
   },
 ] as const;

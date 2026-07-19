@@ -22,7 +22,6 @@ import {
   TableHead,
   TableRow,
   TextField,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
@@ -30,14 +29,13 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getFirmPricingRules,
   createPricingRule,
   updatePricingRule,
   deletePricingRule,
-  updateFirmBillingContact,
+  replacePricingRule,
   getFirmServiceOfferings,
   createFirmServiceOffering,
   updateFirmServiceOffering,
@@ -47,10 +45,10 @@ import {
   type PricingRule,
   type FirmServiceOffering,
 } from "../../../features/billing-firm/api/firmBilling.api";
+import RateVersionManager, { getActiveVersion } from "../../../features/billing-shared/components/RateVersionManager";
 import {
   getInterventionTypes,
   createInterventionType,
-  type InterventionType,
 } from "../../../features/intervention-types/api/interventionTypes.api";
 import { useToast } from "../../../ui/toast/useToast";
 import { apiClient } from "../../../api/apiClient";
@@ -167,84 +165,132 @@ function AddOfferingDialog({
   );
 }
 
-// ── Dialog : forfait d'intervention (créer/modifier) ────────────────────────
+// ── Dialog : forfait d'intervention (historique de tarifs versionné) ────────
 function ForfaitDialog({
-  open, onClose, firmId, interventionTypeId, existingRule,
+  open, onClose, firmId, interventionTypeId, rules,
 }: {
   open: boolean;
   onClose: () => void;
   firmId: number;
   interventionTypeId: number;
-  existingRule: PricingRule | null;
+  rules: PricingRule[];
 }) {
   const toast = useToast();
   const qc = useQueryClient();
-  const [unitPrice, setUnitPrice] = React.useState("");
-  const [validFrom, setValidFrom] = React.useState("");
-  const [validTo, setValidTo] = React.useState("");
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["pricing-rules", firmId] });
 
-  React.useEffect(() => {
-    if (open) {
-      setUnitPrice(existingRule?.unitPrice ?? "");
-      setValidFrom(existingRule?.validFrom ?? "");
-      setValidTo(existingRule?.validTo ?? "");
-    }
-  }, [open, existingRule]);
-
-  const saveMutation = useMutation({
-    mutationFn: () => {
-      const payload = {
-        unitPrice: Number(unitPrice),
-        validFrom: validFrom || null,
-        validTo: validTo || null,
-      };
-      return existingRule
-        ? updatePricingRule(firmId, existingRule.id, payload)
-        : createPricingRule(firmId, { ruleType: "INTERVENTION_FEE", interventionTypeId, ...payload });
-    },
-    onSuccess: () => {
-      toast.success("Forfait enregistré");
-      qc.invalidateQueries({ queryKey: ["pricing-rules", firmId] });
-      onClose();
-    },
+  const createMutation = useMutation({
+    mutationFn: (body: { amount: number; currency: string; validFrom: string | null; validTo: string | null }) =>
+      createPricingRule(firmId, {
+        ruleType: "INTERVENTION_FEE", interventionTypeId,
+        unitPrice: body.amount, currency: body.currency, validFrom: body.validFrom, validTo: body.validTo,
+      }),
+    onSuccess: () => { toast.success("Tarif créé"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const replaceMutation = useMutation({
+    mutationFn: ({ id, body }: { id: number; body: { amount: number; currency: string; effectiveFrom: string } }) =>
+      replacePricingRule(firmId, id, { unitPrice: body.amount, currency: body.currency, effectiveFrom: body.effectiveFrom }),
+    onSuccess: () => { toast.success("Tarif remplacé à partir de la date choisie"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const editMutation = useMutation({
+    mutationFn: ({ id, body }: { id: number; body: { amount?: number; currency?: string; validFrom?: string | null; validTo?: string | null } }) =>
+      updatePricingRule(firmId, id, { unitPrice: body.amount, currency: body.currency, validFrom: body.validFrom, validTo: body.validTo }),
+    onSuccess: () => { toast.success("Tarif programmé modifié"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const cancelMutation = useMutation({
+    mutationFn: (id: number) => deletePricingRule(firmId, id),
+    onSuccess: () => { toast.success("Tarif programmé annulé"); invalidate(); },
     onError: (e) => toast.error(extractError(e)),
   });
 
+  const isSaving = createMutation.isPending || replaceMutation.isPending || editMutation.isPending || cancelMutation.isPending;
+
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
-      <DialogTitle fontWeight={700}>{existingRule ? "Modifier le forfait" : "Définir un forfait"}</DialogTitle>
+    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+      <DialogTitle fontWeight={700}>Forfait d'intervention</DialogTitle>
       <DialogContent>
-        <Stack spacing={2} sx={{ pt: 1 }}>
-          <TextField
-            label="Montant (€) *" type="number" size="small" value={unitPrice}
-            onChange={(e) => setUnitPrice(e.target.value)}
-            inputProps={{ min: 0, step: "0.01" }}
+        <Box sx={{ pt: 1 }}>
+          <RateVersionManager
+            versions={rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo }))}
+            onCreateFirst={(b) => createMutation.mutate(b)}
+            onReplaceActive={(id, b) => replaceMutation.mutate({ id, body: b })}
+            onEditFuture={(id, b) => editMutation.mutate({ id, body: b })}
+            onCancelFuture={(id) => cancelMutation.mutate(id)}
+            isSaving={isSaving}
           />
-          <Stack direction="row" spacing={1.5}>
-            <TextField
-              label="Valide à partir de" type="date" size="small" fullWidth
-              value={validFrom} onChange={(e) => setValidFrom(e.target.value)}
-              InputLabelProps={{ shrink: true }}
-              helperText="Vide = depuis toujours"
-            />
-            <TextField
-              label="Valide jusqu'à" type="date" size="small" fullWidth
-              value={validTo} onChange={(e) => setValidTo(e.target.value)}
-              InputLabelProps={{ shrink: true }}
-              helperText="Vide = sans fin"
-            />
-          </Stack>
-        </Stack>
+        </Box>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5 }}>
-        <Button onClick={onClose} color="inherit">Annuler</Button>
-        <Button
-          variant="contained" disableElevation
-          disabled={!unitPrice || Number(unitPrice) < 0 || saveMutation.isPending}
-          onClick={() => saveMutation.mutate()}
-        >
-          {saveMutation.isPending ? <CircularProgress size={16} /> : "Enregistrer"}
-        </Button>
+        <Button onClick={onClose} variant="contained" disableElevation>Fermer</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// ── Dialog : tarif matériel (historique de tarifs versionné) ────────────────
+function MaterialRateDialog({
+  open, onClose, firmId, materialItemId, materialLabel, rules,
+}: {
+  open: boolean;
+  onClose: () => void;
+  firmId: number;
+  materialItemId: number;
+  materialLabel: string;
+  rules: PricingRule[];
+}) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["pricing-rules", firmId] });
+
+  const createMutation = useMutation({
+    mutationFn: (body: { amount: number; currency: string; validFrom: string | null; validTo: string | null }) =>
+      createPricingRule(firmId, {
+        ruleType: "MATERIAL_FEE", materialItemId,
+        unitPrice: body.amount, currency: body.currency, validFrom: body.validFrom, validTo: body.validTo,
+      }),
+    onSuccess: () => { toast.success("Tarif créé"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const replaceMutation = useMutation({
+    mutationFn: ({ id, body }: { id: number; body: { amount: number; currency: string; effectiveFrom: string } }) =>
+      replacePricingRule(firmId, id, { unitPrice: body.amount, currency: body.currency, effectiveFrom: body.effectiveFrom }),
+    onSuccess: () => { toast.success("Tarif remplacé à partir de la date choisie"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const editMutation = useMutation({
+    mutationFn: ({ id, body }: { id: number; body: { amount?: number; currency?: string; validFrom?: string | null; validTo?: string | null } }) =>
+      updatePricingRule(firmId, id, { unitPrice: body.amount, currency: body.currency, validFrom: body.validFrom, validTo: body.validTo }),
+    onSuccess: () => { toast.success("Tarif programmé modifié"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const cancelMutation = useMutation({
+    mutationFn: (id: number) => deletePricingRule(firmId, id),
+    onSuccess: () => { toast.success("Tarif programmé annulé"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+
+  const isSaving = createMutation.isPending || replaceMutation.isPending || editMutation.isPending || cancelMutation.isPending;
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+      <DialogTitle fontWeight={700}>Tarifs — {materialLabel}</DialogTitle>
+      <DialogContent>
+        <Box sx={{ pt: 1 }}>
+          <RateVersionManager
+            versions={rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo }))}
+            onCreateFirst={(b) => createMutation.mutate(b)}
+            onReplaceActive={(id, b) => replaceMutation.mutate({ id, body: b })}
+            onEditFuture={(id, b) => editMutation.mutate({ id, body: b })}
+            onCancelFuture={(id) => cancelMutation.mutate(id)}
+            isSaving={isSaving}
+          />
+        </Box>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2.5 }}>
+        <Button onClick={onClose} variant="contained" disableElevation>Fermer</Button>
       </DialogActions>
     </Dialog>
   );
@@ -432,9 +478,10 @@ export default function BillingConfigPage() {
 
   const [selectedFirmId, setSelectedFirmId] = React.useState<number | "">("");
   const [addOfferingOpen, setAddOfferingOpen] = React.useState(false);
-  const [forfaitTarget, setForfaitTarget] = React.useState<{ interventionTypeId: number; rule: PricingRule | null } | null>(null);
+  const [forfaitTarget, setForfaitTarget] = React.useState<number | null>(null);
   const [suggestionsTargetId, setSuggestionsTargetId] = React.useState<number | null>(null);
   const [addMaterialRuleOpen, setAddMaterialRuleOpen] = React.useState(false);
+  const [materialRateTarget, setMaterialRateTarget] = React.useState<{ id: number; label: string } | null>(null);
 
   const firmsQuery = useQuery({
     queryKey: ["firms"],
@@ -467,23 +514,37 @@ export default function BillingConfigPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["service-offerings", selectedFirmId] }),
     onError: (e) => toast.error(extractError(e)),
   });
-  const deleteRuleMutation = useMutation({
-    mutationFn: (ruleId: number) => deletePricingRule(selectedFirmId as number, ruleId),
-    onSuccess: () => { toast.success("Règle supprimée"); qc.invalidateQueries({ queryKey: ["pricing-rules", selectedFirmId] }); },
-    onError: (e) => toast.error(extractError(e)),
-  });
-
   const rules = rulesQuery.data ?? [];
   const offerings = offeringsQuery.data ?? [];
-  const materialRules = rules.filter((r) => r.ruleType === "MATERIAL_FEE");
   const materials = materialsQuery.data ?? [];
   // Dérivé en direct de la liste rafraîchie plutôt qu'une copie figée au clic — sinon le
   // dialogue afficherait une liste de suggestions périmée après un ajout/suppression.
   const suggestionsTarget = offerings.find((o) => o.id === suggestionsTargetId) ?? null;
 
-  function forfaitFor(interventionTypeId: number): PricingRule | null {
-    return rules.find((r) => r.ruleType === "INTERVENTION_FEE" && r.interventionType?.id === interventionTypeId) ?? null;
+  function rulesForIntervention(interventionTypeId: number): PricingRule[] {
+    return rules.filter((r) => r.ruleType === "INTERVENTION_FEE" && r.interventionType?.id === interventionTypeId);
   }
+  function forfaitFor(interventionTypeId: number): PricingRule | null {
+    const lineage = rulesForIntervention(interventionTypeId);
+    const activeVersion = getActiveVersion(lineage.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo })));
+    return activeVersion ? lineage.find((r) => r.id === activeVersion.id) ?? null : null;
+  }
+
+  // Un matériel peut avoir plusieurs PricingRule au fil du temps (append-only, D-072) —
+  // regroupées par matériel pour n'afficher qu'une ligne par matériel dans le tableau.
+  type MaterialGroup = { materialItemId: number; label: string; referenceCode: string | null; rules: PricingRule[] };
+  const materialGroups: MaterialGroup[] = React.useMemo(() => {
+    const map = new Map<number, MaterialGroup>();
+    for (const r of rules) {
+      if (r.ruleType !== "MATERIAL_FEE" || !r.materialItem) continue;
+      const key = r.materialItem.id;
+      if (!map.has(key)) {
+        map.set(key, { materialItemId: key, label: r.materialItem.label, referenceCode: r.materialItem.referenceCode, rules: [] });
+      }
+      map.get(key)!.rules.push(r);
+    }
+    return Array.from(map.values());
+  }, [rules]);
 
   return (
     <Stack spacing={3} sx={{ p: 3, maxWidth: 1100 }}>
@@ -558,11 +619,11 @@ export default function BillingConfigPage() {
                           <Chip
                             icon={<EditIcon sx={{ fontSize: 14 }} />}
                             label={`${Number(forfait.unitPrice).toFixed(2)} €`}
-                            onClick={() => setForfaitTarget({ interventionTypeId: o.interventionType.id, rule: forfait })}
+                            onClick={() => setForfaitTarget(o.interventionType.id)}
                             color="primary" variant="outlined" sx={{ cursor: "pointer", fontWeight: 700 }}
                           />
                         ) : (
-                          <Button size="small" variant="outlined" onClick={() => setForfaitTarget({ interventionTypeId: o.interventionType.id, rule: null })}>
+                          <Button size="small" variant="outlined" onClick={() => setForfaitTarget(o.interventionType.id)}>
                             Définir un forfait
                           </Button>
                         )}
@@ -586,42 +647,47 @@ export default function BillingConfigPage() {
 
             {rulesQuery.isLoading ? (
               <CircularProgress size={20} />
-            ) : materialRules.length === 0 ? (
+            ) : materialGroups.length === 0 ? (
               <Typography color="text.secondary" variant="body2">Aucun tarif matériel configuré pour cette firme.</Typography>
             ) : (
               <Table size="small">
                 <TableHead>
                   <TableRow sx={{ bgcolor: "grey.50" }}>
                     <TableCell>Matériel</TableCell>
-                    <TableCell align="right">Tarif</TableCell>
-                    <TableCell>Validité</TableCell>
-                    <TableCell>Statut</TableCell>
+                    <TableCell align="right">Tarif en vigueur</TableCell>
+                    <TableCell>Historique</TableCell>
                     <TableCell align="right">Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {materialRules.map((rule) => (
-                    <TableRow key={rule.id} hover>
-                      <TableCell>
-                        <Typography variant="body2">{rule.materialItem?.label}</Typography>
-                        {rule.materialItem?.referenceCode && <Typography variant="caption" color="text.secondary">({rule.materialItem.referenceCode})</Typography>}
-                      </TableCell>
-                      <TableCell align="right"><Typography fontWeight={700}>{Number(rule.unitPrice).toFixed(2)} {rule.currency}</Typography></TableCell>
-                      <TableCell>
-                        <Typography variant="caption" color="text.secondary">
-                          {rule.validFrom ?? "…"} → {rule.validTo ?? "…"}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Chip label={rule.active ? "Actif" : "Inactif"} size="small" color={rule.active ? "success" : "default"} />
-                      </TableCell>
-                      <TableCell align="right">
-                        <IconButton size="small" color="error" onClick={() => deleteRuleMutation.mutate(rule.id)} disabled={deleteRuleMutation.isPending}>
-                          <DeleteIcon fontSize="small" />
-                        </IconButton>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {materialGroups.map((g) => {
+                    const activeVersion = getActiveVersion(g.rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo })));
+                    return (
+                      <TableRow key={g.materialItemId} hover>
+                        <TableCell>
+                          <Typography variant="body2">{g.label}</Typography>
+                          {g.referenceCode && <Typography variant="caption" color="text.secondary">({g.referenceCode})</Typography>}
+                        </TableCell>
+                        <TableCell align="right">
+                          {activeVersion ? (
+                            <Typography fontWeight={700}>{Number(activeVersion.amount).toFixed(2)} {activeVersion.currency}</Typography>
+                          ) : (
+                            <Chip label="Aucun tarif actif" size="small" color="default" />
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="caption" color="text.secondary">
+                            {g.rules.length} version{g.rules.length > 1 ? "s" : ""}
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Button size="small" onClick={() => setMaterialRateTarget({ id: g.materialItemId, label: g.label })}>
+                            Gérer les tarifs
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             )}
@@ -642,8 +708,8 @@ export default function BillingConfigPage() {
             open={forfaitTarget !== null}
             onClose={() => setForfaitTarget(null)}
             firmId={selectedFirmId as number}
-            interventionTypeId={forfaitTarget?.interventionTypeId ?? 0}
-            existingRule={forfaitTarget?.rule ?? null}
+            interventionTypeId={forfaitTarget ?? 0}
+            rules={forfaitTarget !== null ? rulesForIntervention(forfaitTarget) : []}
           />
           <SuggestedMaterialsDialog
             open={suggestionsTargetId !== null}
@@ -658,6 +724,14 @@ export default function BillingConfigPage() {
             firmId={selectedFirmId as number}
             firmMaterials={materials}
             existingRules={rules}
+          />
+          <MaterialRateDialog
+            open={materialRateTarget !== null}
+            onClose={() => setMaterialRateTarget(null)}
+            firmId={selectedFirmId as number}
+            materialItemId={materialRateTarget?.id ?? 0}
+            materialLabel={materialRateTarget?.label ?? ""}
+            rules={materialRateTarget ? materialGroups.find((g) => g.materialItemId === materialRateTarget.id)?.rules ?? [] : []}
           />
         </>
       )}

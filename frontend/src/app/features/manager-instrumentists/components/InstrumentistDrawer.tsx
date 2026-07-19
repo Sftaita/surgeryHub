@@ -22,6 +22,7 @@ import { DrawerSection } from "./DrawerSection";
 import { AddSiteMembershipDialog } from "./AddSiteMembershipDialog";
 import { InstrumentistPlanningSection } from "./InstrumentistPlanningSection";
 import { UserEmailEditor } from "./UserEmailEditor";
+import InstrumentistVersionedRates from "./InstrumentistVersionedRates";
 import ConfirmDeleteDialog from "../../encoding/components/ConfirmDeleteDialog";
 import { useInstrumentistDrawer } from "../hooks/useInstrumentistDrawer";
 import type { InstrumentistDetailDTO } from "../api/instrumentists.types";
@@ -489,6 +490,7 @@ export function InstrumentistDrawer({
                 <Box ref={ratesSectionRef}>
                   <DrawerSection title="Tarifs">
                     <Stack spacing={2}>
+                      <Typography variant="subtitle2" fontWeight={700}>Ancien flux (décompte classique)</Typography>
                       <Typography variant="body2" color="text.secondary">
                         Modifiez les tarifs puis enregistrez uniquement les
                         changements.
@@ -586,6 +588,11 @@ export function InstrumentistDrawer({
                             : "Enregistrer"}
                         </Button>
                       </Stack>
+
+                      <Divider />
+
+                      <Typography variant="subtitle2" fontWeight={700}>Nouveau flux (calcul financier)</Typography>
+                      {instrumentistId && <InstrumentistVersionedRates instrumentistId={instrumentistId} />}
                     </Stack>
                   </DrawerSection>
                 </Box>

@@ -90,6 +90,8 @@ export function formatMissionStatus(value?: string | null): string {
       return "Publiée";
     case "IN_PROGRESS":
       return "En cours";
+    case "ENCODING_IN_PROGRESS":
+      return "Encodage en cours";
     case "ASSIGNED":
       return "Assignée";
     case "SUBMITTED":

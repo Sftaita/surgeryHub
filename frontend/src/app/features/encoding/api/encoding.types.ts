@@ -118,6 +118,31 @@ export type InterventionTypeEncodingContext = {
   offerings: FirmServiceOfferingEncodingContext[];
 };
 
+/**
+ * Lot 7 (D-070) — commentaire manager historisé (reject/reopen), jamais perdu ni
+ * écrasé : une entrée par action. Pas de champ distinguant reject/reopen, l'API ne
+ * l'expose pas — affiché comme un historique chronologique plat.
+ */
+export type EncodingComment = {
+  id: number;
+  comment: string;
+  authorDisplayName: string;
+  createdAt: string;
+};
+
+/**
+ * Lot 7 (D-070) — agrégation mission-level des signaux de cohérence (Lot 6).
+ * Informationnel uniquement, jamais bloquant : aide le manager à décider, ne
+ * conditionne aucune règle serveur.
+ */
+export type MissionEncodingCoherenceSummary = {
+  hasNoInterventions: boolean;
+  hasInterventionsWithNoMaterial: boolean;
+  hasUnusedSuggestions: boolean;
+  hasMaterialFromOtherFirm: boolean;
+  hasMissingPrimaryFirm: boolean;
+};
+
 export type MissionEncodingResponse = {
   mission: {
     id: number;
@@ -132,6 +157,8 @@ export type MissionEncodingResponse = {
     firms: CatalogFirm[];
     interventionTypes: CatalogInterventionType[];
   };
+  coherenceSummary: MissionEncodingCoherenceSummary;
+  encodingComments: EncodingComment[];
 };
 
 /**

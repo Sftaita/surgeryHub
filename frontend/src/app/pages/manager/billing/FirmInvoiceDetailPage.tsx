@@ -28,13 +28,14 @@ import {
   type InvoiceStatus,
 } from "../../../features/billing-firm/api/firmInvoice.api";
 import { useToast } from "../../../ui/toast/useToast";
+import DocumentFinancePanel from "../../../features/billing-shared/components/DocumentFinancePanel";
 
-const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success"> = {
-  DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success",
+const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {
+  DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success", CANCELLED: "error",
 };
 
 function statusLabel(s: InvoiceStatus) {
-  return { DRAFT: "Brouillon", GENERATED: "Générée", SENT: "Envoyée", PAID: "Payée" }[s];
+  return { DRAFT: "Brouillon", GENERATED: "Générée", SENT: "Envoyée", PAID: "Payée", CANCELLED: "Annulée" }[s];
 }
 
 function extractError(err: unknown): string {
@@ -179,6 +180,15 @@ export default function FirmInvoiceDetailPage() {
           </TableBody>
         </Table>
       </Paper>
+
+      {/* Solde, paiements, remboursements, notes de crédit/débit (EPIC Exécution & Valorisation, Lots 4-6) */}
+      <DocumentFinancePanel
+        resource="firm-invoices"
+        document={inv}
+        lines={(inv.lines ?? []).map((l) => ({ id: l.id, descriptionSnapshot: l.descriptionSnapshot, totalAmount: l.totalAmount }))}
+        correctionsBasePath="/app/m/billing/firm-invoice-corrections"
+        onChanged={() => qc.invalidateQueries({ queryKey: ["firm-invoice", Number(id)] })}
+      />
 
       {/* Actions */}
       <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>

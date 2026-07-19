@@ -313,3 +313,31 @@ export async function publishMission(
 ): Promise<void> {
   await apiClient.post(`/api/missions/${id}/publish`, body);
 }
+
+/** EPIC Exécution & Valorisation, Lot 1 — le RÉALISÉ, distinct du planifié (Mission.startAt/endAt) et du chemin legacy (ServiceController/patchMissionService). */
+export interface MissionExecutionDispute {
+  id: number;
+  reasonCode: string;
+  comment: string | null;
+  status: string;
+  resolutionComment: string | null;
+  raisedByDisplayName: string;
+  createdAt: string;
+}
+
+export interface MissionExecutionInfo {
+  missionId: number;
+  hasExecutionRecord: boolean;
+  actualStartAt: string | null;
+  actualEndAt: string | null;
+  actualDurationMinutes: number | null;
+  hoursSource: string | null;
+  effectiveDurationMinutes: number;
+  effectiveDurationSource: string;
+  disputes: MissionExecutionDispute[];
+}
+
+export async function getMissionExecution(id: number): Promise<MissionExecutionInfo> {
+  const { data } = await apiClient.get<MissionExecutionInfo>(`/api/missions/${id}/execution`);
+  return data;
+}
