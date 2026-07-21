@@ -69,6 +69,15 @@ class InterventionTypeRequest
     #[Groups(['intervention_type_request:read'])]
     private ?InterventionType $resolvedInterventionType = null;
 
+    /**
+     * EPIC Revue instrumentiste, Lot 3 — côté inverse du draft créé avec cette demande
+     * (toujours 1:1, créés ensemble). Simple lecture de navigation ; aucune mutation de
+     * statut ne doit passer par ce champ, voir MissionInterventionDraft.
+     */
+    #[ORM\OneToOne(mappedBy: 'interventionTypeRequest', targetEntity: MissionInterventionDraft::class)]
+    #[Groups(['intervention_type_request:read'])]
+    private ?MissionInterventionDraft $draft = null;
+
     public function getId(): ?int
     {
         return $this->id;
@@ -149,5 +158,10 @@ class InterventionTypeRequest
     {
         $this->resolvedInterventionType = $resolvedInterventionType;
         return $this;
+    }
+
+    public function getDraft(): ?MissionInterventionDraft
+    {
+        return $this->draft;
     }
 }

@@ -98,6 +98,28 @@ class Mission
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
     private ?string $declaredComment = null;
 
+    /**
+     * Lot 7 (D-070) suite — justification instrumentiste requise à la clôture si aucune
+     * ligne de matériel active n'a été encodée (voir
+     * MissionEncodingWorkflowService::complete()). Conservé pour traçabilité même après
+     * une resoumission ultérieure avec matériel — ne jamais effacer automatiquement,
+     * seulement conditionner son affichage manager à $submittedWithoutMaterial.
+     */
+    #[ORM\Column(type: 'text', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
+    private ?string $noMaterialComment = null;
+
+    /**
+     * Fige, à CHAQUE clôture (complete()), si CETTE soumission avait 0 ligne de matériel
+     * active. Sans ce flag distinct du commentaire, impossible de savoir après une
+     * resoumission avec matériel si $noMaterialComment est encore une justification
+     * active ou un vestige d'une soumission précédente — jamais dérivé après coup d'un
+     * comptage live (qui peut devenir inaccessible une fois la mission verrouillée).
+     */
+    #[ORM\Column(type: 'boolean', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
+    private ?bool $submittedWithoutMaterial = null;
+
     #[ORM\ManyToOne(inversedBy: 'missions')]
     #[ORM\JoinColumn(nullable: true)]
     private ?PlanningVersion $planningVersion = null;
@@ -137,6 +159,14 @@ class Mission
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: InterventionTypeRequest::class, orphanRemoval: true)]
     private Collection $interventionTypeRequests;
 
+    /**
+     * EPIC Revue instrumentiste, Lot 3 — orphanRemoval=false : un MissionInterventionDraft
+     * n'est jamais supprimé au retrait de la collection (jamais un chemin de code qui le
+     * fait de toute façon), même principe que FinancialCalculation (Lot 3, D-073).
+     */
+    #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionInterventionDraft::class, orphanRemoval: false)]
+    private Collection $missionInterventionDrafts;
+
     /** Lot 7 (D-070) — commentaires manager historisés (reject/reopen), jamais perdus. */
     #[ORM\OneToMany(mappedBy: 'mission', targetEntity: MissionEncodingComment::class, orphanRemoval: true)]
     #[ORM\OrderBy(['createdAt' => 'ASC'])]
@@ -163,6 +193,7 @@ class Mission
         $this->materialLines = new ArrayCollection();
         $this->materialItemRequests = new ArrayCollection();
         $this->interventionTypeRequests = new ArrayCollection();
+        $this->missionInterventionDrafts = new ArrayCollection();
         $this->encodingComments = new ArrayCollection();
         $this->financialCalculations = new ArrayCollection();
     }
@@ -214,6 +245,12 @@ class Mission
     public function getDeclaredComment(): ?string { return $this->declaredComment; }
     public function setDeclaredComment(?string $declaredComment): static { $this->declaredComment = $declaredComment; return $this; }
 
+    public function getNoMaterialComment(): ?string { return $this->noMaterialComment; }
+    public function setNoMaterialComment(?string $noMaterialComment): static { $this->noMaterialComment = $noMaterialComment; return $this; }
+
+    public function isSubmittedWithoutMaterial(): ?bool { return $this->submittedWithoutMaterial; }
+    public function setSubmittedWithoutMaterial(?bool $submittedWithoutMaterial): static { $this->submittedWithoutMaterial = $submittedWithoutMaterial; return $this; }
+
     public function getPlanningVersion(): ?PlanningVersion { return $this->planningVersion; }
     public function setPlanningVersion(?PlanningVersion $planningVersion): static { $this->planningVersion = $planningVersion; return $this; }
 
@@ -233,6 +270,9 @@ class Mission
 
     /** @return Collection<int, InterventionTypeRequest> */
     public function getInterventionTypeRequests(): Collection { return $this->interventionTypeRequests; }
+
+    /** @return Collection<int, MissionInterventionDraft> */
+    public function getMissionInterventionDrafts(): Collection { return $this->missionInterventionDrafts; }
 
     /** @return Collection<int, MissionEncodingComment> */
     public function getEncodingComments(): Collection { return $this->encodingComments; }

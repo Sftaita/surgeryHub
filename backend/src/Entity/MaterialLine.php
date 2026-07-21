@@ -26,10 +26,30 @@ class MaterialLine
     #[Groups(['mission:read', 'mission:read_manager'])]
     private ?Mission $mission = null;
 
+    /**
+     * `null` signifie "non rattaché à une intervention précise" (facturation, cf.
+     * FinancialCalculationLine) — sens inchangé par l'ajout de $interventionDraft
+     * ci-dessous. Ne signifie JAMAIS "rattaché à un draft" : le rattachement à un draft
+     * est exclusivement porté par $interventionDraft, jamais déduit de l'absence de
+     * missionIntervention. Les deux champs ne sont jamais renseignés simultanément
+     * (invariant appliqué en service, pas en contrainte DB — voir MissionInterventionDraftService).
+     */
     #[ORM\ManyToOne(inversedBy: 'materialLines')]
     #[ORM\JoinColumn(nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager'])]
     private ?MissionIntervention $missionIntervention = null;
+
+    /**
+     * EPIC Revue instrumentiste, Lot 3 — rattachement à une intervention provisoire de
+     * mission (ligne hors catalogue en attente de résolution manager), en alternative à
+     * $missionIntervention ci-dessus, jamais les deux à la fois. Consommateurs métier :
+     * passer par attachmentTarget() (introduit avec MaterialAttachmentTarget, pas encore
+     * à ce stade), jamais lire ce champ directement en dehors de l'entité/du résolveur dédié.
+     */
+    #[ORM\ManyToOne(inversedBy: 'materialLines')]
+    #[ORM\JoinColumn(name: 'intervention_draft_id', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
+    private ?MissionInterventionDraft $interventionDraft = null;
 
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
@@ -78,6 +98,17 @@ class MaterialLine
     public function setMissionIntervention(?MissionIntervention $missionIntervention): static
     {
         $this->missionIntervention = $missionIntervention;
+        return $this;
+    }
+
+    public function getInterventionDraft(): ?MissionInterventionDraft
+    {
+        return $this->interventionDraft;
+    }
+
+    public function setInterventionDraft(?MissionInterventionDraft $interventionDraft): static
+    {
+        $this->interventionDraft = $interventionDraft;
         return $this;
     }
 

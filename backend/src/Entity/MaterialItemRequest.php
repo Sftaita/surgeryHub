@@ -31,10 +31,25 @@ class MaterialItemRequest
     #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
     private ?Mission $mission = null;
 
+    /**
+     * `null` signifie "non rattaché à une intervention précise" — sens inchangé par
+     * l'ajout de $interventionDraft ci-dessous. Ne signifie JAMAIS "rattaché à un
+     * draft" : voir docblock équivalent sur MaterialLine::$missionIntervention.
+     */
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
     private ?MissionIntervention $missionIntervention = null;
+
+    /**
+     * EPIC Revue instrumentiste, Lot 3 — rattachement à une intervention provisoire de
+     * mission, en alternative à $missionIntervention, jamais les deux à la fois. Voir
+     * docblock équivalent sur MaterialLine::$interventionDraft.
+     */
+    #[ORM\ManyToOne(inversedBy: 'materialItemRequests')]
+    #[ORM\JoinColumn(name: 'intervention_draft_id', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
+    private ?MissionInterventionDraft $interventionDraft = null;
 
     #[ORM\Column(length: 255)]
     #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
@@ -86,6 +101,17 @@ class MaterialItemRequest
     public function setMissionIntervention(?MissionIntervention $missionIntervention): static
     {
         $this->missionIntervention = $missionIntervention;
+        return $this;
+    }
+
+    public function getInterventionDraft(): ?MissionInterventionDraft
+    {
+        return $this->interventionDraft;
+    }
+
+    public function setInterventionDraft(?MissionInterventionDraft $interventionDraft): static
+    {
+        $this->interventionDraft = $interventionDraft;
         return $this;
     }
 
