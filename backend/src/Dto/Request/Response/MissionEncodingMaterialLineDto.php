@@ -10,5 +10,7 @@ final class MissionEncodingMaterialLineDto
         public readonly MaterialItemSlimDto $item,
         public readonly string $quantity,
         public readonly ?string $comment,
+        /** EPIC Revue instrumentiste, Lot 3, commit 4. */
+        public readonly ?int $interventionDraftId = null,
     ) {}
 }

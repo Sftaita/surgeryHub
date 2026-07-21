@@ -47,6 +47,13 @@ class MaterialItemRequestController extends AbstractController
 
         $req = $this->service->create($mission, $dto, $user);
 
-        return $this->json(['id' => $req->getId()], Response::HTTP_CREATED);
+        // missionInterventionId/interventionDraftId confirment la cible réellement
+        // utilisée (jamais le draft initial en cas de redirection silencieuse depuis un
+        // draft CONVERTED/MATERIAL_REASSIGNED — voir MaterialAttachmentResolver).
+        return $this->json([
+            'id' => $req->getId(),
+            'missionInterventionId' => $req->getMissionIntervention()?->getId(),
+            'interventionDraftId' => $req->getInterventionDraft()?->getId(),
+        ], Response::HTTP_CREATED);
     }
 }

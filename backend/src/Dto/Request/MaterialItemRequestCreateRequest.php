@@ -18,4 +18,11 @@ class MaterialItemRequestCreateRequest
 
     #[Assert\Positive]
     public ?int $missionInterventionId = null;
+
+    /**
+     * EPIC Revue instrumentiste, Lot 3, commit 4 — alternative à missionInterventionId,
+     * jamais les deux à la fois (voir MaterialAttachmentResolver).
+     */
+    #[Assert\Positive]
+    public ?int $interventionDraftId = null;
 }

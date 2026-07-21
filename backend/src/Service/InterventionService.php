@@ -11,6 +11,7 @@ use App\Entity\MaterialItem;
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
+use App\Entity\MissionInterventionDraft;
 use App\Entity\User;
 use App\Exception\InterventionTypeInactiveException;
 use App\Exception\InterventionTypeNotFoundException;
@@ -24,6 +25,7 @@ class InterventionService
         private readonly EntityManagerInterface $em,
         private readonly MissionEntryOrderAllocator $orderAllocator,
         private readonly ActiveFirmResolver $firmResolver,
+        private readonly MaterialAttachmentResolver $attachmentResolver,
     ) {}
 
     /**
@@ -112,6 +114,14 @@ class InterventionService
     // Material Lines (encodage instrumentiste) — firm dérivée via item->firm
     // ---------------------------------------------------------------------
 
+    /**
+     * EPIC Revue instrumentiste, Lot 3, commit 4 — la résolution de la cible
+     * (missionInterventionId OU interventionDraftId, jamais les deux) passe désormais
+     * par MaterialAttachmentResolver, seul endroit qui interprète le statut d'un draft
+     * (redirection silencieuse CONVERTED/MATERIAL_REASSIGNED, 409 KEPT_AS_HISTORY).
+     * Résolution + persistance dans une seule transaction : le verrou pessimiste posé
+     * sur un draft éventuel l'exige.
+     */
     public function createMaterialLine(Mission $mission, MaterialLineCreateRequest $dto, User $createdBy): MaterialLine
     {
         $item = $this->em->find(MaterialItem::class, $dto->itemId);
@@ -119,34 +129,27 @@ class InterventionService
             throw new NotFoundHttpException('Material item not found');
         }
 
-        $intervention = null;
-        if ($dto->missionInterventionId !== null) {
-            $intervention = $this->em->find(MissionIntervention::class, $dto->missionInterventionId);
-            if (!$intervention) {
-                throw new NotFoundHttpException('Mission intervention not found');
+        $line = null;
+        $this->em->wrapInTransaction(function () use (&$line, $mission, $dto, $item, $createdBy): void {
+            $target = $this->attachmentResolver->resolve($mission, $dto->missionInterventionId, $dto->interventionDraftId);
+
+            $line = new MaterialLine();
+            $line
+                ->setMission($mission)
+                ->setItem($item)
+                ->setQuantity($dto->getQuantityAsString() ?? '1.00')
+                ->setComment($dto->comment)
+                ->setCreatedBy($createdBy);
+
+            if ($target instanceof MissionIntervention) {
+                $line->setMissionIntervention($target);
+            } elseif ($target instanceof MissionInterventionDraft) {
+                $line->setInterventionDraft($target);
             }
-            if ($intervention->getMission()?->getId() !== $mission->getId()) {
-                throw new BadRequestHttpException('Intervention does not belong to mission');
-            }
-        }
 
-        $line = new MaterialLine();
-        $line
-            ->setMission($mission)
-            ->setMissionIntervention($intervention)
-            ->setItem($item)
-            ->setCreatedBy($createdBy);
-
-        if ($dto->quantity !== null) {
-            $line->setQuantity($dto->quantity);
-        }
-
-        if ($dto->comment !== null) {
-            $line->setComment($dto->comment);
-        }
-
-        $this->em->persist($line);
-        $this->em->flush();
+            $this->em->persist($line);
+            $this->em->flush();
+        });
 
         return $line;
     }

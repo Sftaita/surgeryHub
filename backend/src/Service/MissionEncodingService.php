@@ -349,6 +349,9 @@ final class MissionEncodingService
         $missionInterventionId = $l->getMissionIntervention()?->getId();
         $missionInterventionId = $missionInterventionId !== null ? (int) $missionInterventionId : null;
 
+        $interventionDraftId = $l->getInterventionDraft()?->getId();
+        $interventionDraftId = $interventionDraftId !== null ? (int) $interventionDraftId : null;
+
         $rawQty = $l->getQuantity();
         $qty = $rawQty === null ? '1.00' : number_format((float) $rawQty, 2, '.', '');
 
@@ -358,6 +361,7 @@ final class MissionEncodingService
             item: $itemDto,
             quantity: $qty,
             comment: $l->getComment(),
+            interventionDraftId: $interventionDraftId,
         );
     }
 

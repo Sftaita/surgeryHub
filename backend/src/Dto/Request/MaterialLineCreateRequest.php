@@ -14,6 +14,14 @@ class MaterialLineCreateRequest
     public ?int $missionInterventionId = null;
 
     /**
+     * EPIC Revue instrumentiste, Lot 3, commit 4 — alternative à missionInterventionId,
+     * jamais les deux à la fois (voir MaterialAttachmentResolver, qui rejette
+     * explicitement cette combinaison au lieu d'une priorité silencieuse).
+     */
+    #[Assert\Positive]
+    public ?int $interventionDraftId = null;
+
+    /**
      * On accepte int|float|string pour ne pas forcer le frontend.
      * Normalisation à faire via ->getQuantityAsString().
      */

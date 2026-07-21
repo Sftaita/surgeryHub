@@ -7,12 +7,12 @@ use App\Dto\Request\MaterialLineUpdateRequest;
 use App\Dto\Request\Response\FirmSlimDto;
 use App\Dto\Request\Response\MaterialItemSlimDto;
 use App\Dto\Request\Response\MissionEncodingMaterialLineDto;
-use App\Entity\MaterialItem;
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
 use App\Entity\User;
 use App\Security\Voter\MissionVoter;
+use App\Service\InterventionService;
 use App\Service\MissionEncodingGuard;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -23,11 +23,19 @@ use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 use Symfony\Component\Serializer\SerializerInterface;
 
+/**
+ * EPIC Revue instrumentiste, Lot 3, commit 4 — create() ne résout plus l'item/la cible
+ * lui-même : délègue entièrement à InterventionService::createMaterialLine(), qui
+ * consomme MaterialAttachmentResolver pour interventionDraftId (jamais interprété ici).
+ * update()/delete() restent inchangés — interventionDraftId n'est pas encore supporté
+ * pour un repointage (hors périmètre de ce commit).
+ */
 #[Route('/api/missions/{missionId}/material-lines')]
 class MaterialLineController extends AbstractController
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
+        private readonly InterventionService $service,
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
     ) {}
@@ -50,33 +58,7 @@ class MaterialLineController extends AbstractController
             'json',
         );
 
-        $item = $this->em->find(MaterialItem::class, $dto->itemId);
-        if (!$item) {
-            return $this->json(['message' => 'Material item not found'], Response::HTTP_NOT_FOUND);
-        }
-
-        $intervention = null;
-        if ($dto->missionInterventionId !== null) {
-            $intervention = $this->em->find(MissionIntervention::class, $dto->missionInterventionId);
-            if (!$intervention || $intervention->getMission()?->getId() !== $mission->getId()) {
-                return $this->json(['message' => 'Intervention not found on this mission'], Response::HTTP_NOT_FOUND);
-            }
-        }
-
-        $line = new MaterialLine();
-        $line
-            ->setMission($mission)
-            ->setItem($item)
-            ->setQuantity($dto->getQuantityAsString() ?? '1.00')
-            ->setComment($dto->comment)
-            ->setCreatedBy($user);
-
-        if ($intervention !== null) {
-            $line->setMissionIntervention($intervention);
-        }
-
-        $this->em->persist($line);
-        $this->em->flush();
+        $line = $this->service->createMaterialLine($mission, $dto, $user);
 
         return $this->json($this->toDto($line), Response::HTTP_CREATED);
     }
@@ -166,6 +148,7 @@ class MaterialLineController extends AbstractController
             ),
             quantity: (string) $line->getQuantity(),
             comment: $line->getComment(),
+            interventionDraftId: $line->getInterventionDraft()?->getId(),
         );
     }
 }

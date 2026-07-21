@@ -20,8 +20,11 @@ use App\Exception\DocumentNotIssuedException;
 use App\Exception\PaymentExceedsRemainingException;
 use App\Exception\PaymentCurrencyMismatchException;
 use App\Exception\CorrectionValidationException;
+use App\Exception\ConflictingMaterialAttachmentInputException;
 use App\Exception\CorrectionNotEligibleException;
 use App\Exception\DraftAlreadyExistsException;
+use App\Exception\MaterialAttachmentTargetClosedException;
+use App\Exception\MaterialAttachmentTargetNotFoundException;
 use App\Exception\RefundExceedsOverpaidException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
@@ -146,6 +149,18 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'DRAFT_ALREADY_EXISTS';
             $message = $e->getMessage() ?: 'Cette demande a déjà une intervention provisoire associée.';
+        } elseif ($e instanceof ConflictingMaterialAttachmentInputException) {
+            $status = 422;
+            $code = 'CONFLICTING_MATERIAL_ATTACHMENT_INPUT';
+            $message = $e->getMessage() ?: 'missionInterventionId et interventionDraftId ne peuvent pas être fournis simultanément.';
+        } elseif ($e instanceof MaterialAttachmentTargetNotFoundException) {
+            $status = 404;
+            $code = 'MATERIAL_ATTACHMENT_TARGET_NOT_FOUND';
+            $message = $e->getMessage() ?: 'Cible introuvable sur cette mission.';
+        } elseif ($e instanceof MaterialAttachmentTargetClosedException) {
+            $status = 409;
+            $code = 'MATERIAL_ATTACHMENT_TARGET_CLOSED';
+            $message = $e->getMessage() ?: 'Cette intervention provisoire est close et n\'accepte plus de nouveau matériel.';
         } elseif ($e instanceof HttpExceptionInterface) {
             $status = $e->getStatusCode();
             $message = $e->getMessage() ?: $message;
