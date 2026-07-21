@@ -3,11 +3,13 @@
 namespace App\Controller\Api;
 
 use App\Dto\Request\InterventionTypeRequestCreateRequest;
+use App\Entity\InterventionTypeRequest;
 use App\Entity\Mission;
 use App\Entity\User;
 use App\Security\Voter\MissionVoter;
-use App\Service\InterventionTypeRequestService;
+use App\Service\ActiveFirmResolver;
 use App\Service\MissionEncodingGuard;
+use App\Service\MissionInterventionDraftService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -22,13 +24,21 @@ use Symfony\Component\Serializer\SerializerInterface;
  * Aucune MissionIntervention n'est créée ici : c'est le manager qui, en résolvant la
  * demande (InterventionTypeRequestManagerController::resolve), crée l'intervention
  * réelle avec le type choisi/créé.
+ *
+ * EPIC Revue instrumentiste, Lot 3 — create() ne construit plus qu'un
+ * InterventionTypeRequest en mémoire (jamais persisté séparément) puis délègue
+ * l'intégralité de la création atomique (demande + MissionInterventionDraft, un seul
+ * flush transactionnel, audit inclus) à MissionInterventionDraftService::
+ * createForRequest() — remplace l'ancien InterventionTypeRequestService (deux flush()
+ * indépendants, aucun draft, supprimé dans ce lot).
  */
 #[Route('/api/missions/{missionId}/intervention-type-requests')]
 class InterventionTypeRequestController extends AbstractController
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly InterventionTypeRequestService $service,
+        private readonly MissionInterventionDraftService $draftService,
+        private readonly ActiveFirmResolver $firmResolver,
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
     ) {}
@@ -51,7 +61,23 @@ class InterventionTypeRequestController extends AbstractController
             'json'
         );
 
-        $req = $this->service->create($mission, $dto, $user);
+        // Résolue AVANT la transaction de MissionInterventionDraftService::createForRequest() :
+        // simple lecture, rien n'est encore persisté si la firme est invalide.
+        $requestedFirm = $dto->requestedFirmId !== null
+            ? $this->firmResolver->resolveActive($dto->requestedFirmId)
+            : null;
+
+        $req = new InterventionTypeRequest();
+        $req
+            ->setMission($mission)
+            ->setLabel($dto->label)
+            ->setSuggestedCode($dto->suggestedCode)
+            ->setComment($dto->comment)
+            ->setCreatedBy($user);
+
+        // Réponse volontairement inchangée ({id}) : les DTO complets de lecture du
+        // draft sont hors périmètre de ce commit (voir découpage validé).
+        $this->draftService->createForRequest($req, $requestedFirm, $user);
 
         return $this->json(['id' => $req->getId()], Response::HTTP_CREATED);
     }

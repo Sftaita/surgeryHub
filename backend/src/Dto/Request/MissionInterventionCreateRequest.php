@@ -20,6 +20,17 @@ class MissionInterventionCreateRequest
     #[Assert\Positive]
     public ?int $primaryFirmId = null;
 
+    /**
+     * @deprecated EPIC Revue instrumentiste, Lot 3 — n'est plus utilisé par
+     * InterventionService::create() : le serveur alloue seul la position via
+     * MissionEntryOrderAllocator (voir son docblock). Le champ reste accepté en entrée
+     * pour ne pas casser le contrat HTTP existant tant que le frontend l'envoie encore,
+     * mais toute valeur fournie ici est silencieusement ignorée à la création — la
+     * réponse contient l'index réellement alloué (`orderIndex` dans le corps de
+     * POST /api/missions/{id}/interventions). Encore utilisé pour PATCH (réordonnancement
+     * manuel explicite, voir MissionInterventionUpdateRequest — non concerné par cette
+     * dépréciation).
+     */
     #[Assert\NotNull]
     #[Assert\PositiveOrZero]
     public ?int $orderIndex = 0;

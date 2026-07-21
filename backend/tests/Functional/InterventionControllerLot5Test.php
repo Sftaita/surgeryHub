@@ -2,12 +2,14 @@
 
 namespace App\Tests\Functional;
 
+use App\Entity\AuditEvent;
 use App\Entity\Firm;
 use App\Entity\Hospital;
 use App\Entity\InterventionType;
 use App\Entity\InterventionTypeRequest;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
+use App\Entity\MissionInterventionDraft;
 use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
@@ -43,6 +45,25 @@ final class InterventionControllerLot5Test extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            // EPIC Revue instrumentiste, Lot 3 — POST intervention-type-requests crée
+            // désormais aussi un MissionInterventionDraft (FK vers la demande, jamais
+            // supprimé automatiquement — voir MissionInterventionDraft, "jamais
+            // supprimée") et un AuditEvent (FK vers la mission) : les deux doivent être
+            // retirés avant la demande/la mission elles-mêmes, sinon violation de
+            // contrainte FK.
+            foreach ($this->createdIds['missions'] as $missionId) {
+                foreach ($this->em->getRepository(AuditEvent::class)->findBy(['mission' => $missionId]) as $evt) {
+                    $this->em->remove($evt);
+                }
+            }
+            $this->em->flush();
+            foreach ($this->createdIds['requests'] as $id) {
+                $req = $this->em->find(InterventionTypeRequest::class, $id);
+                if ($req !== null && $req->getDraft() !== null) {
+                    $this->em->remove($req->getDraft());
+                }
+            }
+            $this->em->flush();
             foreach ($this->createdIds['requests'] as $id) {
                 $e = $this->em->find(InterventionTypeRequest::class, $id);
                 if ($e !== null) { $this->em->remove($e); }

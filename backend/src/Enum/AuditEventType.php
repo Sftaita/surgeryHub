@@ -120,4 +120,17 @@ enum AuditEventType: string
     case FINANCIAL_CORRECTION_ISSUED    = 'FINANCIAL_CORRECTION_ISSUED';
     case REFUND_RECORDED                = 'REFUND_RECORDED';
     case DOCUMENT_NET_BALANCE_CHANGED   = 'DOCUMENT_NET_BALANCE_CHANGED';
+
+    /**
+     * EPIC Revue instrumentiste, Lot 3 — MissionInterventionDraftService::
+     * createForRequest(). Un seul événement pour toute l'action utilisateur (créer une
+     * InterventionTypeRequest ET son MissionInterventionDraft, atomique) — pas de
+     * INTERVENTION_TYPE_REQUEST_CREATED distinct : aucune obligation d'audit
+     * pré-existante ne portait sur la création d'une InterventionTypeRequest avant ce
+     * lot (ni InterventionTypeRequestService ni MaterialItemRequestService — son
+     * miroir structurel — n'auditaient leur création), donc rien à préserver en
+     * doublon ici. Le payload porte interventionTypeRequestId ET draftId : les deux
+     * identifiants sont retrouvables depuis ce seul événement.
+     */
+    case MISSION_INTERVENTION_DRAFT_CREATED = 'MISSION_INTERVENTION_DRAFT_CREATED';
 }

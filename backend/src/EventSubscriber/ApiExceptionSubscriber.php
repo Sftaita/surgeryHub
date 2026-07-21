@@ -21,6 +21,7 @@ use App\Exception\PaymentExceedsRemainingException;
 use App\Exception\PaymentCurrencyMismatchException;
 use App\Exception\CorrectionValidationException;
 use App\Exception\CorrectionNotEligibleException;
+use App\Exception\DraftAlreadyExistsException;
 use App\Exception\RefundExceedsOverpaidException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
@@ -141,6 +142,10 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 422;
             $code = 'PRIMARY_FIRM_INACTIVE';
             $message = $e->getMessage() ?: 'Cette firme est désactivée.';
+        } elseif ($e instanceof DraftAlreadyExistsException) {
+            $status = 409;
+            $code = 'DRAFT_ALREADY_EXISTS';
+            $message = $e->getMessage() ?: 'Cette demande a déjà une intervention provisoire associée.';
         } elseif ($e instanceof HttpExceptionInterface) {
             $status = $e->getStatusCode();
             $message = $e->getMessage() ?: $message;

@@ -15,4 +15,13 @@ class InterventionTypeRequestCreateRequest
 
     #[Assert\Type('string')]
     public ?string $comment = null;
+
+    /**
+     * EPIC Revue instrumentiste, Lot 3 — firme demandée par l'instrumentiste pour le
+     * MissionInterventionDraft créé en même temps que cette demande. Toujours
+     * facultative, résolue et validée (existence + active) côté serveur par
+     * ActiveFirmResolver — jamais créée automatiquement.
+     */
+    #[Assert\Positive]
+    public ?int $requestedFirmId = null;
 }

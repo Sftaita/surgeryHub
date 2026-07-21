@@ -48,7 +48,9 @@ class InterventionController extends AbstractController
 
         $intervention = $this->service->create($mission, $dto);
 
-        return $this->json(['id' => $intervention->getId()], Response::HTTP_CREATED);
+        // orderIndex : l'index réellement alloué par le serveur (MissionEntryOrderAllocator),
+        // jamais celui envoyé par le client — voir MissionInterventionCreateRequest::$orderIndex.
+        return $this->json(['id' => $intervention->getId(), 'orderIndex' => $intervention->getOrderIndex()], Response::HTTP_CREATED);
     }
 
     #[Route('/{interventionId}', methods: ['PATCH'])]

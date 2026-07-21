@@ -6,6 +6,7 @@ use App\Entity\Firm;
 use App\Entity\InterventionTypeRequest;
 use App\Entity\MissionInterventionDraft;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Exception\DraftAlreadyExistsException;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -24,19 +25,19 @@ final class MissionInterventionDraftService
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly MissionEntryOrderAllocator $orderAllocator,
+        private readonly AuditService $audit,
     ) {}
 
     /**
      * $request est construit par l'appelant (label/mission/createdBy déjà renseignés)
      * mais pas nécessairement encore persisté — cette méthode persiste la demande ET le
-     * draft dans une seule transaction qu'elle ouvre elle-même : pas encore de
-     * contrôleur HTTP qui l'appelle dans ce commit, donc pas de transaction ambiante à
-     * réutiliser. Le commit qui branche InterventionTypeRequestController::create()
-     * devra composer avec cette transaction unique plutôt que d'en ouvrir une seconde.
+     * draft dans une seule transaction qu'elle ouvre elle-même (InterventionTypeRequestController
+     * ne fait plus deux flush() indépendants : la création de la demande et celle du
+     * draft sont atomiques — si l'une échoue, ni l'une ni l'autre ne subsiste).
      *
-     * N'écrit pas d'AuditEvent ici : ajouté dans le commit qui branche cette méthode au
-     * workflow HTTP réel, pour ne pas introduire un événement d'audit consommé par rien
-     * avant que le flux existe.
+     * Un seul AuditEvent (MISSION_INTERVENTION_DRAFT_CREATED) couvre toute l'action —
+     * voir le docblock du cas d'enum : aucune obligation d'audit distincte ne
+     * pré-existait pour la création d'une InterventionTypeRequest seule.
      */
     public function createForRequest(
         InterventionTypeRequest $request,
@@ -76,6 +77,19 @@ final class MissionInterventionDraftService
 
             $this->em->persist($request);
             $this->em->persist($draft);
+            // Flush intermédiaire : draft/request doivent avoir un id avant de pouvoir
+            // les référencer dans le payload d'audit ci-dessous. Toujours dans la même
+            // transaction (un seul commit) — flush() synchronise, ne valide pas.
+            $this->em->flush();
+
+            $this->audit->record($mission, $actor, AuditEventType::MISSION_INTERVENTION_DRAFT_CREATED, [
+                'interventionTypeRequestId' => $request->getId(),
+                'draftId' => $draft->getId(),
+                'label' => $draft->getLabel(),
+                'requestedFirmId' => $requestedFirm?->getId(),
+                'requestedFirmNameSnapshot' => $draft->getRequestedFirmNameSnapshot(),
+                'orderIndex' => $draft->getOrderIndex(),
+            ]);
             $this->em->flush();
         });
 

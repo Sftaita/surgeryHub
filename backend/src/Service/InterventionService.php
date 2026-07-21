@@ -6,7 +6,6 @@ use App\Dto\Request\MaterialLineCreateRequest;
 use App\Dto\Request\MaterialLineUpdateRequest;
 use App\Dto\Request\MissionInterventionCreateRequest;
 use App\Dto\Request\MissionInterventionUpdateRequest;
-use App\Entity\Firm;
 use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
 use App\Entity\MaterialLine;
@@ -15,8 +14,6 @@ use App\Entity\MissionIntervention;
 use App\Entity\User;
 use App\Exception\InterventionTypeInactiveException;
 use App\Exception\InterventionTypeNotFoundException;
-use App\Exception\PrimaryFirmInactiveException;
-use App\Exception\PrimaryFirmNotFoundException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -25,29 +22,43 @@ class InterventionService
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
+        private readonly MissionEntryOrderAllocator $orderAllocator,
+        private readonly ActiveFirmResolver $firmResolver,
     ) {}
 
     /**
      * Lot 5 (D-068) : `interventionTypeId` obligatoire (référentiel fermé) — `code`/`label`
      * ne sont plus fournis par le client, ils sont dérivés (instantané figé) depuis le
      * type résolu. `primaryFirmId` reste facultatif.
+     *
+     * EPIC Revue instrumentiste, Lot 3 — `$dto->orderIndex` n'est PLUS utilisé pour une
+     * création : voir le docblock `@deprecated` sur MissionInterventionCreateRequest::
+     * $orderIndex. Le serveur alloue désormais seul la position via
+     * MissionEntryOrderAllocator (verrou pessimiste sur la mission, MAX+1 sur l'union
+     * interventions réelles + drafts) — remplace l'absence totale d'allocation serveur
+     * qui existait jusqu'ici (le client choisissait et envoyait sa propre position).
      */
     public function create(Mission $mission, MissionInterventionCreateRequest $dto): MissionIntervention
     {
         $type = $this->resolveActiveInterventionType((int) $dto->interventionTypeId);
-        $firm = $dto->primaryFirmId !== null ? $this->resolveActiveFirm($dto->primaryFirmId) : null;
+        $firm = $dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null;
 
-        $intervention = new MissionIntervention();
-        $intervention
-            ->setMission($mission)
-            ->setInterventionType($type)
-            ->setPrimaryFirm($firm)
-            ->setCode($type->getCode())
-            ->setLabel($type->getLabel())
-            ->setOrderIndex($dto->orderIndex);
+        $intervention = null;
+        $this->em->wrapInTransaction(function () use (&$intervention, $mission, $type, $firm): void {
+            $orderIndex = $this->orderAllocator->nextIndexForNewEntry($mission);
 
-        $this->em->persist($intervention);
-        $this->em->flush();
+            $intervention = new MissionIntervention();
+            $intervention
+                ->setMission($mission)
+                ->setInterventionType($type)
+                ->setPrimaryFirm($firm)
+                ->setCode($type->getCode())
+                ->setLabel($type->getLabel())
+                ->setOrderIndex($orderIndex);
+
+            $this->em->persist($intervention);
+            $this->em->flush();
+        });
 
         return $intervention;
     }
@@ -68,7 +79,7 @@ class InterventionService
         }
 
         if ($dto->primaryFirmIdProvided) {
-            $firm = $dto->primaryFirmId !== null ? $this->resolveActiveFirm($dto->primaryFirmId) : null;
+            $firm = $dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null;
             $intervention->setPrimaryFirm($firm);
         }
 
@@ -89,18 +100,6 @@ class InterventionService
             throw new InterventionTypeInactiveException('Ce type d\'intervention est désactivé.');
         }
         return $type;
-    }
-
-    private function resolveActiveFirm(int $firmId): Firm
-    {
-        $firm = $this->em->find(Firm::class, $firmId);
-        if (!$firm instanceof Firm) {
-            throw new PrimaryFirmNotFoundException('Firme introuvable.');
-        }
-        if (!$firm->isActive()) {
-            throw new PrimaryFirmInactiveException('Cette firme est désactivée.');
-        }
-        return $firm;
     }
 
     public function delete(MissionIntervention $intervention): void

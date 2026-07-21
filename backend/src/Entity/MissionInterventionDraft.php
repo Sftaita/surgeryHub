@@ -288,6 +288,20 @@ class MissionInterventionDraft implements MaterialAttachmentTarget
      * (le matériel a été repointé vers la cible redirigée, voir redirectTarget()) — la
      * valeur reflète que ce target précis n'est, lui, jamais CATALOGUED. Seul
      * KEPT_AS_HISTORY est définitivement HISTORY_ONLY (terminal, aucune cible réelle).
+     *
+     * DÉCISION EXPLICITE (revue de conception) : CONVERTED/MATERIAL_REASSIGNED ne
+     * retournent JAMAIS CATALOGUED, même si on les interroge directement. Après une
+     * transition réussie, un draft dans l'un de ces deux statuts ne devrait plus porter
+     * aucune MaterialLine/MaterialItemRequest (tout a été repointé vers
+     * resolvedMissionIntervention, dans la même transaction que la transition). Si une
+     * ligne résiduelle existe malgré tout ici — bug de repointage, données corrompues,
+     * transition interrompue — cette ligne DOIT rester exclue du moteur financier plutôt
+     * que d'être traitée comme CATALOGUED par accident. N'ajoutez JAMAIS de cas
+     * `self::STATUS_CONVERTED, self::STATUS_MATERIAL_REASSIGNED =>
+     * MaterialLineBillingState::CATALOGUED` ici : la facturation d'un draft ne doit
+     * jamais passer par cette méthode, uniquement par la MissionIntervention réelle vers
+     * laquelle le matériel a été repointé (voir FinancialCalculationService, qui ne
+     * traite que les lignes dont billingEligibility() === CATALOGUED).
      */
     public function billingEligibility(): MaterialLineBillingState
     {
