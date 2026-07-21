@@ -164,4 +164,17 @@ class InterventionTypeRequest
     {
         return $this->draft;
     }
+
+    /**
+     * Doctrine ne synchronise pas automatiquement le côté inverse d'une OneToOne à
+     * partir du côté possédant (MissionInterventionDraft::$interventionTypeRequest) —
+     * même raisonnement que MissionEncodingWorkflowService::addComment() pour les
+     * collections inverses. Appelé uniquement par MissionInterventionDraftService::
+     * createForRequest(), jamais directement ailleurs.
+     */
+    public function setDraft(MissionInterventionDraft $draft): static
+    {
+        $this->draft = $draft;
+        return $this;
+    }
 }

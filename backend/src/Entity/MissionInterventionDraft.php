@@ -3,6 +3,8 @@
 namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
+use App\Enum\MaterialLineBillingState;
+use App\Exception\InvalidDraftResolutionStateException;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
@@ -38,7 +40,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
     new ORM\Index(name: 'idx_draft_status_entity', columns: ['status']),
 ])]
 #[ORM\HasLifecycleCallbacks]
-class MissionInterventionDraft
+class MissionInterventionDraft implements MaterialAttachmentTarget
 {
     use TimestampableTrait;
 
@@ -128,14 +130,19 @@ class MissionInterventionDraft
         $this->materialItemRequests = new ArrayCollection();
     }
 
-    public function getId(): ?int
+    /**
+     * `int` non-nullable (contrat MaterialAttachmentTarget) : lève si appelée avant
+     * persist()/flush() — voir même raisonnement sur MissionIntervention::getId().
+     */
+    public function getId(): int
     {
-        return $this->id;
+        return $this->id ?? throw new \LogicException('MissionInterventionDraft::getId() called before the entity was persisted.');
     }
 
-    public function getMission(): ?Mission
+    /** Voir docblock de getId() — mission_id est NOT NULL en base. */
+    public function getMission(): Mission
     {
-        return $this->mission;
+        return $this->mission ?? throw new \LogicException('MissionInterventionDraft::getMission() called before a Mission was set.');
     }
 
     public function setMission(Mission $mission): static
@@ -188,9 +195,10 @@ class MissionInterventionDraft
         return $this;
     }
 
-    public function getOrderIndex(): ?int
+    /** Jamais null après construction : défaut 0, setter non-nullable — voir $orderIndex. */
+    public function getOrderIndex(): int
     {
-        return $this->orderIndex;
+        return $this->orderIndex ?? 0;
     }
 
     public function setOrderIndex(int $orderIndex): static
@@ -246,5 +254,46 @@ class MissionInterventionDraft
     public function getMaterialItemRequests(): Collection
     {
         return $this->materialItemRequests;
+    }
+
+    // ── MaterialAttachmentTarget ────────────────────────────────────────
+
+    public function acceptsNewMaterial(): bool
+    {
+        return $this->status === self::STATUS_OPEN;
+    }
+
+    /**
+     * CONVERTED/MATERIAL_REASSIGNED redirigent vers resolvedMissionIntervention — son
+     * absence dans ces deux statuts est un état invalide (revue de conception : "ne
+     * retourne jamais une redirection incohérente"), détecté explicitement plutôt que
+     * de retourner silencieusement null comme si c'était KEPT_AS_HISTORY.
+     */
+    public function redirectTarget(): ?MaterialAttachmentTarget
+    {
+        return match ($this->status) {
+            self::STATUS_CONVERTED, self::STATUS_MATERIAL_REASSIGNED => $this->resolvedMissionIntervention
+                ?? throw new InvalidDraftResolutionStateException(sprintf(
+                    'MissionInterventionDraft #%d has status %s but no resolvedMissionIntervention — invalid state.',
+                    $this->getId(),
+                    $this->status,
+                )),
+            default => null, // OPEN, KEPT_AS_HISTORY
+        };
+    }
+
+    /**
+     * OPEN et CONVERTED/MATERIAL_REASSIGNED partagent REQUEST_PENDING : dans les deux
+     * derniers statuts, le draft n'est plus jamais interrogé directement en pratique
+     * (le matériel a été repointé vers la cible redirigée, voir redirectTarget()) — la
+     * valeur reflète que ce target précis n'est, lui, jamais CATALOGUED. Seul
+     * KEPT_AS_HISTORY est définitivement HISTORY_ONLY (terminal, aucune cible réelle).
+     */
+    public function billingEligibility(): MaterialLineBillingState
+    {
+        return match ($this->status) {
+            self::STATUS_KEPT_AS_HISTORY => MaterialLineBillingState::HISTORY_ONLY,
+            default => MaterialLineBillingState::REQUEST_PENDING,
+        };
     }
 }

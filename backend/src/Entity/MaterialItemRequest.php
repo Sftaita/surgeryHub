@@ -3,6 +3,7 @@
 namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
+use App\Exception\ConflictingAttachmentTargetsException;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
 
@@ -179,5 +180,21 @@ class MaterialItemRequest
     {
         $this->materialItem = $materialItem;
         return $this;
+    }
+
+    /**
+     * Seul point d'accès à la cible d'attachement — voir docblock de
+     * MaterialAttachmentTarget et MaterialLine::attachmentTarget() (même contrat).
+     */
+    public function attachmentTarget(): ?MaterialAttachmentTarget
+    {
+        if ($this->missionIntervention !== null && $this->interventionDraft !== null) {
+            throw new ConflictingAttachmentTargetsException(sprintf(
+                'MaterialItemRequest #%s has both missionIntervention and interventionDraft set — invalid state.',
+                $this->id ?? 'new',
+            ));
+        }
+
+        return $this->missionIntervention ?? $this->interventionDraft;
     }
 }

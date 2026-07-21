@@ -3,6 +3,7 @@
 namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
+use App\Exception\ConflictingAttachmentTargetsException;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
 
@@ -167,5 +168,22 @@ class MaterialLine
     {
         $this->implantSubMission = $implantSubMission;
         return $this;
+    }
+
+    /**
+     * Seul point d'accès à la cible d'attachement — voir docblock de
+     * MaterialAttachmentTarget. missionIntervention/interventionDraft ne doivent plus
+     * être lus directement par de la logique métier en dehors de cette méthode.
+     */
+    public function attachmentTarget(): ?MaterialAttachmentTarget
+    {
+        if ($this->missionIntervention !== null && $this->interventionDraft !== null) {
+            throw new ConflictingAttachmentTargetsException(sprintf(
+                'MaterialLine #%s has both missionIntervention and interventionDraft set — invalid state.',
+                $this->id ?? 'new',
+            ));
+        }
+
+        return $this->missionIntervention ?? $this->interventionDraft;
     }
 }

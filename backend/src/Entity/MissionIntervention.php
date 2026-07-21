@@ -3,6 +3,7 @@
 namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
+use App\Enum\MaterialLineBillingState;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
@@ -23,11 +24,15 @@ use Symfony\Component\Serializer\Attribute\Groups;
  * `interventionType` est **obligatoire pour tout nouvel encodage** (imposé par
  * InterventionService::create(), pas par une contrainte NOT NULL en base — voir la
  * migration pour la raison). `primaryFirm` reste toujours facultatif.
+ *
+ * EPIC Revue instrumentiste, Lot 3 — implémente MaterialAttachmentTarget : la cible
+ * "réelle" du contrat (toujours ouverte, jamais de redirection, toujours CATALOGUED),
+ * par opposition à MissionInterventionDraft (cible provisoire).
  */
 #[ORM\Entity]
 #[ORM\Table(indexes: [new ORM\Index(name: 'idx_intervention_mission', columns: ['mission_id'])])]
 #[ORM\HasLifecycleCallbacks]
-class MissionIntervention
+class MissionIntervention implements MaterialAttachmentTarget
 {
     use TimestampableTrait;
 
@@ -80,14 +85,20 @@ class MissionIntervention
         $this->materialLines = new ArrayCollection();
     }
 
-    public function getId(): ?int
+    /**
+     * `int` non-nullable (contrat MaterialAttachmentTarget) : lève si appelée avant
+     * persist()/flush(). Aucun appelant existant ne dépend d'un retour null (vérifié) —
+     * en pratique cette méthode n'est jamais atteinte sur une intervention non persistée.
+     */
+    public function getId(): int
     {
-        return $this->id;
+        return $this->id ?? throw new \LogicException('MissionIntervention::getId() called before the entity was persisted.');
     }
 
-    public function getMission(): ?Mission
+    /** Voir docblock de getId() — même raisonnement, mission_id est NOT NULL en base. */
+    public function getMission(): Mission
     {
-        return $this->mission;
+        return $this->mission ?? throw new \LogicException('MissionIntervention::getMission() called before a Mission was set.');
     }
 
     public function setMission(?Mission $mission): static
@@ -118,9 +129,10 @@ class MissionIntervention
         return $this;
     }
 
-    public function getOrderIndex(): ?int
+    /** Jamais null après construction : défaut 0, setter non-nullable — voir $orderIndex. */
+    public function getOrderIndex(): int
     {
-        return $this->orderIndex;
+        return $this->orderIndex ?? 0;
     }
 
     public function setOrderIndex(int $orderIndex): static
@@ -157,5 +169,22 @@ class MissionIntervention
     public function getMaterialLines(): Collection
     {
         return $this->materialLines;
+    }
+
+    // ── MaterialAttachmentTarget ────────────────────────────────────────
+
+    public function acceptsNewMaterial(): bool
+    {
+        return true;
+    }
+
+    public function redirectTarget(): ?MaterialAttachmentTarget
+    {
+        return null;
+    }
+
+    public function billingEligibility(): MaterialLineBillingState
+    {
+        return MaterialLineBillingState::CATALOGUED;
     }
 }
