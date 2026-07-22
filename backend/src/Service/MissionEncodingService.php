@@ -8,6 +8,7 @@ use App\Dto\Request\Response\MissionEncodingCatalogDto;
 use App\Dto\Request\Response\MissionEncodingCoherenceSummaryDto;
 use App\Dto\Request\Response\MissionEncodingCommentDto;
 use App\Dto\Request\Response\MissionEncodingDto;
+use App\Dto\Request\Response\MissionEncodingEntryDto;
 use App\Dto\Request\Response\MissionEncodingInterventionDto;
 use App\Dto\Request\Response\MissionEncodingInterventionTypeRequestDto;
 use App\Dto\Request\Response\MissionEncodingMaterialItemRequestDto;
@@ -22,7 +23,9 @@ use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionEncodingComment;
 use App\Entity\MissionIntervention;
+use App\Entity\MissionInterventionDraft;
 use App\Entity\User;
+use App\Enum\MaterialLineBillingState;
 use Doctrine\ORM\EntityManagerInterface;
 
 final class MissionEncodingService
@@ -45,15 +48,43 @@ final class MissionEncodingService
         // présents, puis on charge en une fois les FirmServiceOffering correspondantes.
         $suggestedMaterialsByPair = $this->loadSuggestedMaterialsByTypeAndFirm($mission->getInterventions());
 
+        // EPIC Revue instrumentiste, Lot 3, commit 7 — un seul regroupement du matériel
+        // de la mission, par cible réelle (attachmentTarget()), consommé à la fois par
+        // mapIntervention() (déjà existant, refactoré pour ne plus lire les FK brutes) et
+        // mapDraftToEntry() (nouveau) : une seule logique de rattachement, jamais deux
+        // mécanismes divergents dans ce fichier.
+        $grouped = $this->groupMaterialByAttachmentTarget($mission);
+
         $interventions = [];
+        $entries = [];
         foreach ($mission->getInterventions() as $intervention) {
-            $interventions[] = $this->mapIntervention($mission, $intervention, $suggestedMaterialsByPair);
+            $dto = $this->mapIntervention($mission, $intervention, $suggestedMaterialsByPair, $grouped);
+            $interventions[] = $dto;
+            $entries[] = $this->mapInterventionToEntry($intervention, $dto);
         }
 
         usort(
             $interventions,
             static fn (MissionEncodingInterventionDto $a, MissionEncodingInterventionDto $b): int
                 => [$a->orderIndex, $a->id] <=> [$b->orderIndex, $b->id]
+        );
+
+        foreach ($mission->getMissionInterventionDrafts() as $draft) {
+            $entry = $this->mapDraftToEntry($draft, $grouped);
+            if ($entry !== null) {
+                $entries[] = $entry;
+            }
+        }
+
+        // Tri exclusivement par orderIndex. Tri secondaire déterministe (kind puis id) en
+        // cas d'égalité anormale entre une intervention et un draft — MissionEntryOrderAllocator
+        // ne doit jamais produire un tel chevauchement, mais si l'invariant est violé
+        // (données corrompues, bug), les deux entrées restent visibles à un rang voisin
+        // plutôt que l'une masquant silencieusement l'autre selon l'ordre de itération PHP.
+        usort(
+            $entries,
+            static fn (MissionEncodingEntryDto $a, MissionEncodingEntryDto $b): int
+                => [$a->orderIndex, $a->kind, $a->id] <=> [$b->orderIndex, $b->kind, $b->id]
         );
 
         $interventionTypeRequests = [];
@@ -88,6 +119,7 @@ final class MissionEncodingService
                 'allowedActions' => $allowedActions,
             ],
             interventions: $interventions,
+            entries: $entries,
             interventionTypeRequests: $interventionTypeRequests,
             catalog: $catalog,
             coherenceSummary: $coherenceSummary,
@@ -202,6 +234,8 @@ final class MissionEncodingService
             ->leftJoin('item.firm', 'firm')->addSelect('firm')
             ->leftJoin('m.materialItemRequests', 'mir')->addSelect('mir')
             ->leftJoin('m.interventionTypeRequests', 'itr')->addSelect('itr')
+            ->leftJoin('m.missionInterventionDrafts', 'mid')->addSelect('mid')
+            ->leftJoin('mid.requestedFirm', 'midf')->addSelect('midf')
             ->leftJoin('m.encodingComments', 'ec')->addSelect('ec')
             ->leftJoin('ec.author', 'eca')->addSelect('eca')
             ->andWhere('m.id = :id')->setParameter('id', $missionId);
@@ -271,35 +305,59 @@ final class MissionEncodingService
     }
 
     /**
-     * @param array<string, list<\App\Dto\Request\Response\MaterialItemSlimDto>> $suggestedMaterialsByPair
+     * EPIC Revue instrumentiste, Lot 3, commit 7 — regroupe tout le matériel de la
+     * mission (MaterialLine + MaterialItemRequest PENDING) par sa cible réelle, via
+     * MaterialLine::attachmentTarget()/MaterialItemRequest::attachmentTarget() — jamais
+     * en lisant directement getMissionIntervention()/getInterventionDraft() (voir
+     * MaterialAttachmentTarget). Clé = spl_object_id() de la cible, pas son id métier :
+     * une MissionIntervention et un MissionInterventionDraft sont deux tables avec deux
+     * séquences indépendantes, un id numérique identique entre les deux ne signifierait
+     * pas la même cible.
+     *
+     * @return array{lines: array<int, MaterialLine[]>, requests: array<int, MaterialItemRequest[]>}
      */
-    private function mapIntervention(Mission $mission, MissionIntervention $i, array $suggestedMaterialsByPair = []): MissionEncodingInterventionDto
+    private function groupMaterialByAttachmentTarget(Mission $mission): array
     {
         $lines = [];
-        $rawLines = [];
         foreach ($mission->getMaterialLines() as $line) {
-            if ($line->getMissionIntervention()?->getId() !== $i->getId()) {
+            $target = $line->attachmentTarget();
+            if ($target === null) {
                 continue;
             }
-            $lines[] = $this->mapMaterialLine($line);
-            $rawLines[] = $line;
+            $lines[spl_object_id($target)][] = $line;
         }
+
+        $requests = [];
+        foreach ($mission->getMaterialItemRequests() as $req) {
+            if ($req->getStatus() !== MaterialItemRequest::STATUS_PENDING) {
+                continue;
+            }
+            $target = $req->attachmentTarget();
+            if ($target === null) {
+                continue;
+            }
+            $requests[spl_object_id($target)][] = $req;
+        }
+
+        return ['lines' => $lines, 'requests' => $requests];
+    }
+
+    /**
+     * @param array<string, list<\App\Dto\Request\Response\MaterialItemSlimDto>> $suggestedMaterialsByPair
+     * @param array{lines: array<int, MaterialLine[]>, requests: array<int, MaterialItemRequest[]>} $grouped
+     */
+    private function mapIntervention(Mission $mission, MissionIntervention $i, array $suggestedMaterialsByPair, array $grouped): MissionEncodingInterventionDto
+    {
+        $rawLines = $grouped['lines'][spl_object_id($i)] ?? [];
+        $lines = array_map($this->mapMaterialLine(...), $rawLines);
 
         usort(
             $lines,
             static fn (MissionEncodingMaterialLineDto $a, MissionEncodingMaterialLineDto $b): int => $a->id <=> $b->id
         );
 
-        $requests = [];
-        foreach ($mission->getMaterialItemRequests() as $req) {
-            if ($req->getMissionIntervention()?->getId() !== $i->getId()) {
-                continue;
-            }
-            if ($req->getStatus() !== MaterialItemRequest::STATUS_PENDING) {
-                continue;
-            }
-            $requests[] = $this->mapMaterialItemRequest($req);
-        }
+        $rawRequests = $grouped['requests'][spl_object_id($i)] ?? [];
+        $requests = array_map($this->mapMaterialItemRequest(...), $rawRequests);
 
         usort(
             $requests,
@@ -339,6 +397,91 @@ final class MissionEncodingService
             materialItemRequests: $requests,
             suggestedMaterials: $suggestedMaterials,
             coherence: $coherence,
+        );
+    }
+
+    /**
+     * EPIC Revue instrumentiste, Lot 3, commit 7 — une MissionIntervention réelle est
+     * toujours "CATALOGUED" (MaterialLineBillingState::billingEligibility() de
+     * MissionIntervention ne renvoie jamais autre chose) et toujours modifiable
+     * (acceptsNewMaterial() toujours true) — dérivés de l'interface plutôt que codés en
+     * dur, pour ne jamais diverger silencieusement si ce comportement changeait un jour.
+     */
+    private function mapInterventionToEntry(MissionIntervention $i, MissionEncodingInterventionDto $dto): MissionEncodingEntryDto
+    {
+        return new MissionEncodingEntryDto(
+            kind: 'INTERVENTION',
+            id: $dto->id,
+            requestId: null,
+            orderIndex: $dto->orderIndex,
+            label: $dto->label,
+            interventionType: $dto->interventionType,
+            firm: $dto->primaryFirm,
+            requestedFirmNameSnapshot: null,
+            status: $i->billingEligibility()->value,
+            readOnly: !$i->acceptsNewMaterial(),
+            materialLines: $dto->materialLines,
+            materialItemRequests: $dto->materialItemRequests,
+        );
+    }
+
+    /**
+     * EPIC Revue instrumentiste, Lot 3, commit 7 — un draft ne produit une entrée que
+     * s'il reste utile à afficher :
+     * - CONVERTED / MATERIAL_REASSIGNED : jamais d'entrée. Le matériel a déjà été
+     *   repointé vers redirectTarget() (la vraie MissionIntervention, déjà présente dans
+     *   $entries via mapInterventionToEntry()) — afficher le draft en plus dupliquerait
+     *   la même position visuelle avec une ligne vide.
+     * - KEPT_AS_HISTORY sans le moindre matériel : aucune entrée non plus (rien à montrer
+     *   à l'instrumentiste/manager, voir consigne "visible uniquement si son matériel
+     *   historique doit encore être montré").
+     * - OPEN, ou KEPT_AS_HISTORY avec du matériel : une entrée, readOnly reflète
+     *   acceptsNewMaterial() (false uniquement pour KEPT_AS_HISTORY).
+     *
+     * @param array{lines: array<int, MaterialLine[]>, requests: array<int, MaterialItemRequest[]>} $grouped
+     */
+    private function mapDraftToEntry(MissionInterventionDraft $draft, array $grouped): ?MissionEncodingEntryDto
+    {
+        if ($draft->getStatus() === MissionInterventionDraft::STATUS_CONVERTED
+            || $draft->getStatus() === MissionInterventionDraft::STATUS_MATERIAL_REASSIGNED
+        ) {
+            return null;
+        }
+
+        $rawLines = $grouped['lines'][spl_object_id($draft)] ?? [];
+        $lines = array_map($this->mapMaterialLine(...), $rawLines);
+        usort($lines, static fn (MissionEncodingMaterialLineDto $a, MissionEncodingMaterialLineDto $b): int => $a->id <=> $b->id);
+
+        $rawRequests = $grouped['requests'][spl_object_id($draft)] ?? [];
+        $requests = array_map($this->mapMaterialItemRequest(...), $rawRequests);
+        usort($requests, static fn (MissionEncodingMaterialItemRequestDto $a, MissionEncodingMaterialItemRequestDto $b): int => $a->id <=> $b->id);
+
+        if ($draft->getStatus() === MissionInterventionDraft::STATUS_KEPT_AS_HISTORY
+            && count($lines) === 0
+            && count($requests) === 0
+        ) {
+            return null;
+        }
+
+        $requestedFirm = $draft->getRequestedFirm();
+        $firmDto = $requestedFirm ? new FirmSlimDto(
+            id: (int) $requestedFirm->getId(),
+            name: (string) $requestedFirm->getName(),
+        ) : null;
+
+        return new MissionEncodingEntryDto(
+            kind: 'DRAFT',
+            id: $draft->getId(),
+            requestId: $draft->getInterventionTypeRequest()->getId(),
+            orderIndex: $draft->getOrderIndex(),
+            label: (string) $draft->getLabel(),
+            interventionType: null,
+            firm: $firmDto,
+            requestedFirmNameSnapshot: $draft->getRequestedFirmNameSnapshot(),
+            status: $draft->getStatus(),
+            readOnly: !$draft->acceptsNewMaterial(),
+            materialLines: $lines,
+            materialItemRequests: $requests,
         );
     }
 
