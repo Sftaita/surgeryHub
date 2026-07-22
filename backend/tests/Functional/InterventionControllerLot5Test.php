@@ -552,8 +552,13 @@ final class InterventionControllerLot5Test extends WebTestCase
         $managerToken = $this->login($client, $manager);
 
         $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken);
-        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertSame('IGNORED', json_decode($response->getContent(), true)['status']);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame('IGNORED', $body['status']);
+        // EPIC Revue instrumentiste, Lot 3, commit 6 — sans matériel et sans stratégie
+        // fournie, ignore() applique implicitement KEEP_AS_HISTORY sur le draft.
+        self::assertSame('KEPT_AS_HISTORY', $body['draftStatus']);
+        self::assertNull($body['missionInterventionId']);
     }
 
     public function test_instrumentist_cannot_resolve_or_list_requests(): void

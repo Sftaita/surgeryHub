@@ -145,4 +145,25 @@ enum AuditEventType: string
      * suffise à vérifier qu'aucune ligne n'a été oubliée, sans recharger les entités.
      */
     case MISSION_INTERVENTION_DRAFT_RESOLVED = 'MISSION_INTERVENTION_DRAFT_RESOLVED';
+
+    /**
+     * EPIC Revue instrumentiste, Lot 3, commit 6 — MissionInterventionDraftService::
+     * ignore() avec la stratégie KEEP_AS_HISTORY (par défaut aussi lorsqu'aucun matériel
+     * n'est attaché au draft). Le matériel reste attaché au draft, gelé
+     * (billingEligibility() = HISTORY_ONLY), en lecture seule (acceptsNewMaterial() =
+     * false) — rien n'est repointé, aucune MissionIntervention n'est créée ni référencée.
+     */
+    case MISSION_INTERVENTION_DRAFT_IGNORED_AS_HISTORY = 'MISSION_INTERVENTION_DRAFT_IGNORED_AS_HISTORY';
+
+    /**
+     * EPIC Revue instrumentiste, Lot 3, commit 6 — MissionInterventionDraftService::
+     * ignore() avec la stratégie REASSIGN : tout le matériel du draft est repointé vers
+     * une MissionIntervention réelle déjà existante de la même mission (bulk UPDATE,
+     * même principe que MISSION_INTERVENTION_DRAFT_RESOLVED). Distinct de ce dernier :
+     * ici aucune nouvelle MissionIntervention n'est créée et la demande devient IGNORED
+     * (pas RESOLVED) — deux faits métier réellement différents, deux événements distincts
+     * plutôt qu'un seul type paramétré par un champ "strategy" (revue de conception :
+     * un log d'audit doit rester lisible sans avoir à interpréter un payload).
+     */
+    case MISSION_INTERVENTION_DRAFT_MATERIAL_REASSIGNED = 'MISSION_INTERVENTION_DRAFT_MATERIAL_REASSIGNED';
 }

@@ -3,7 +3,9 @@
 namespace App\Controller\Api;
 
 use App\Entity\InterventionTypeRequest;
+use App\Entity\MissionIntervention;
 use App\Entity\User;
+use App\Enum\MissionInterventionDraftIgnoreStrategy;
 use App\Exception\InterventionTypeRequestWithoutDraftException;
 use App\Security\Voter\BillingVoter;
 use App\Service\ActiveFirmResolver;
@@ -24,7 +26,13 @@ use Symfony\Component\Security\Http\Attribute\CurrentUser;
  * MissionIntervention lui-même : résout uniquement les entités de référence
  * (InterventionType, Firm) puis délègue toute la transition à
  * MissionInterventionDraftService::resolve(), seul propriétaire du cycle de vie du
- * draft. ignore() reste inchangé (hors périmètre de ce commit).
+ * draft.
+ *
+ * Commit 6 — ignore() suit désormais le même principe : ne résout que la stratégie et
+ * l'éventuelle intervention cible (existence uniquement — l'appartenance à la même
+ * mission est un invariant métier vérifié par le service lui-même, sous verrou, même
+ * raisonnement que la cohérence draft/request dans resolve()), puis délègue à
+ * MissionInterventionDraftService::ignore().
  */
 #[Route('/api/intervention-type-requests')]
 final class InterventionTypeRequestManagerController extends AbstractController
@@ -119,9 +127,13 @@ final class InterventionTypeRequestManagerController extends AbstractController
 
     /**
      * POST /api/intervention-type-requests/{id}/ignore
+     * Ignore une demande sans créer d'intervention réelle. Body :
+     * { strategy?: "KEEP_AS_HISTORY" | "REASSIGN", missionInterventionId?: int }
+     * strategy est requis dès que le draft porte du matériel (sinon 422) ;
+     * missionInterventionId est requis (et uniquement pertinent) pour REASSIGN.
      */
     #[Route('/{id}/ignore', name: 'api_intervention_type_requests_ignore', methods: ['POST'], requirements: ['id' => '\d+'])]
-    public function ignore(int $id): JsonResponse
+    public function ignore(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
 
@@ -130,14 +142,49 @@ final class InterventionTypeRequestManagerController extends AbstractController
             return $this->json(['message' => 'Request not found'], Response::HTTP_NOT_FOUND);
         }
 
-        if ($req->getStatus() !== InterventionTypeRequest::STATUS_PENDING) {
-            return $this->json(['message' => 'Request is not pending'], Response::HTTP_CONFLICT);
+        $draft = $req->getDraft();
+        if ($draft === null) {
+            throw new InterventionTypeRequestWithoutDraftException(sprintf(
+                'InterventionTypeRequest #%d has no associated MissionInterventionDraft and cannot be ignored through this workflow.',
+                $req->getId(),
+            ));
         }
 
-        $req->setStatus(InterventionTypeRequest::STATUS_IGNORED);
-        $this->em->flush();
+        $body = json_decode($request->getContent(), true) ?? [];
 
-        return $this->json($this->serialize($req));
+        $strategy = null;
+        $strategyRaw = $body['strategy'] ?? null;
+        if ($strategyRaw !== null) {
+            $strategy = MissionInterventionDraftIgnoreStrategy::tryFrom($strategyRaw);
+            if ($strategy === null) {
+                return $this->json(['message' => 'Invalid strategy'], Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+        }
+
+        $reassignTarget = null;
+        if ($strategy === MissionInterventionDraftIgnoreStrategy::REASSIGN) {
+            $targetId = $body['missionInterventionId'] ?? null;
+            if (!$targetId) {
+                return $this->json(['message' => 'missionInterventionId is required for the REASSIGN strategy'], Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+            // Existence uniquement : l'appartenance à la même mission est vérifiée par
+            // MissionInterventionDraftService::ignore() lui-même, sous verrou (voir
+            // docblock de la méthode).
+            $reassignTarget = $this->em->find(MissionIntervention::class, (int) $targetId);
+            if (!$reassignTarget instanceof MissionIntervention) {
+                return $this->json(['message' => 'Mission intervention not found'], Response::HTTP_NOT_FOUND);
+            }
+        }
+
+        $this->draftService->ignore($draft, $strategy, $reassignTarget, $user);
+
+        return $this->json([
+            'requestId' => $req->getId(),
+            'draftId' => $draft->getId(),
+            'status' => $req->getStatus(),
+            'draftStatus' => $draft->getStatus(),
+            'missionInterventionId' => $draft->getResolvedMissionIntervention()?->getId(),
+        ]);
     }
 
     private function serialize(InterventionTypeRequest $r): array

@@ -27,6 +27,7 @@ use App\Exception\DraftAlreadyResolvedException;
 use App\Exception\InterventionTypeRequestWithoutDraftException;
 use App\Exception\MaterialAttachmentTargetClosedException;
 use App\Exception\MaterialAttachmentTargetNotFoundException;
+use App\Exception\MissingIgnoreStrategyException;
 use App\Exception\RefundExceedsOverpaidException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
@@ -171,6 +172,10 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'DRAFT_ALREADY_RESOLVED';
             $message = $e->getMessage() ?: 'Cette demande a déjà été traitée.';
+        } elseif ($e instanceof MissingIgnoreStrategyException) {
+            $status = 422;
+            $code = 'MISSING_IGNORE_STRATEGY';
+            $message = $e->getMessage() ?: 'Une stratégie (KEEP_AS_HISTORY ou REASSIGN) est requise : cette demande a déjà du matériel attaché.';
         } elseif ($e instanceof HttpExceptionInterface) {
             $status = $e->getStatusCode();
             $message = $e->getMessage() ?: $message;

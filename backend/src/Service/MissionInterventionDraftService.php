@@ -11,8 +11,11 @@ use App\Entity\MissionIntervention;
 use App\Entity\MissionInterventionDraft;
 use App\Entity\User;
 use App\Enum\AuditEventType;
+use App\Enum\MissionInterventionDraftIgnoreStrategy;
 use App\Exception\DraftAlreadyExistsException;
 use App\Exception\DraftAlreadyResolvedException;
+use App\Exception\MaterialAttachmentTargetNotFoundException;
+use App\Exception\MissingIgnoreStrategyException;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -23,8 +26,8 @@ use Doctrine\ORM\EntityManagerInterface;
  * MissionInterventionDraft directement ou muter son statut/resolvedMissionIntervention
  * en dehors de ce service.
  *
- * Commit 5 introduit resolve() (résolution positive) — ignore() et le repointage en
- * masse via MATERIAL_REASSIGNED arrivent dans des commits séparés (voir découpage validé).
+ * Commit 5 a introduit resolve() (résolution positive). Commit 6 introduit ignore() —
+ * KEEP_AS_HISTORY et REASSIGN, seules deux stratégies restantes pour clore un draft OPEN.
  */
 final class MissionInterventionDraftService
 {
@@ -210,16 +213,177 @@ final class MissionInterventionDraftService
     }
 
     /**
+     * EPIC Revue instrumentiste, Lot 3, commit 6 — ignorance d'une demande : deux
+     * dénouements possibles pour son draft, jamais une suppression.
+     *
+     * - $strategy === null : autorisé UNIQUEMENT si le draft ne porte aucun matériel —
+     *   équivaut alors implicitement à KEEP_AS_HISTORY (rien à conserver ni à repointer).
+     *   Si du matériel existe, refusé explicitement (MissingIgnoreStrategyException,
+     *   422) : perdre la trace du matériel déjà déclaré par l'instrumentiste sans un
+     *   choix explicite du manager serait un effet de bord silencieux.
+     * - KEEP_AS_HISTORY : le matériel reste attaché au draft, AUCUNE ligne n'est
+     *   modifiée ni déplacée — seul le statut du draft change. acceptsNewMaterial()
+     *   devient false (nouvelles écritures rejetées en 409 par MaterialAttachmentResolver,
+     *   commit 4, sans changement nécessaire ici) et billingEligibility() devient
+     *   HISTORY_ONLY (voir MissionInterventionDraft, déjà câblé depuis le commit 2).
+     * - REASSIGN : tout le matériel du draft est repointé (bulk UPDATE, voir
+     *   repointMaterial() — même méthode que resolve(), généralisée à n'importe quelle
+     *   MissionIntervention cible) vers $reassignTarget, qui DOIT appartenir à la même
+     *   mission que le draft (vérifié ici sous verrou, jamais délégué uniquement à
+     *   l'appelant — même invariant défensif que la cohérence draft/request de
+     *   resolve()) ; sinon MaterialAttachmentTargetNotFoundException (404, même
+     *   convention de non-divulgation qu'un target de matériel introuvable, commit 4).
+     *   redirectTarget() du draft pointe alors vers $reassignTarget, donc toute écriture
+     *   tardive sur l'ancien draftId continue d'être transparente redirigée (déjà câblé
+     *   par MaterialAttachmentResolver::resolveDraft(), commit 4 — rien à changer ici).
+     *
+     * Dans les deux cas : InterventionTypeRequest → IGNORED (jamais RESOLVED, aucune
+     * MissionIntervention n'est créée par cette méthode). Un seul AuditEvent distinct par
+     * dénouement réel (voir AuditEventType) — jamais un seul type paramétré par un champ
+     * "strategy" dans le payload.
+     */
+    public function ignore(
+        MissionInterventionDraft $draft,
+        ?MissionInterventionDraftIgnoreStrategy $strategy,
+        ?MissionIntervention $reassignTarget,
+        User $actor,
+    ): MissionInterventionDraft {
+        $this->em->wrapInTransaction(function () use ($draft, $strategy, $reassignTarget, $actor): void {
+            $this->em->lock($draft, LockMode::PESSIMISTIC_WRITE);
+            $this->em->refresh($draft);
+
+            if ($draft->getStatus() !== MissionInterventionDraft::STATUS_OPEN) {
+                throw new DraftAlreadyResolvedException(sprintf(
+                    'MissionInterventionDraft #%d is %s, not OPEN — cannot be ignored (again).',
+                    $draft->getId(),
+                    $draft->getStatus(),
+                ));
+            }
+
+            $request = $draft->getInterventionTypeRequest();
+            if ($request->getStatus() !== InterventionTypeRequest::STATUS_PENDING) {
+                throw new DraftAlreadyResolvedException(sprintf(
+                    'InterventionTypeRequest #%d is %s, not PENDING — cannot be ignored (again).',
+                    $request->getId(),
+                    $request->getStatus(),
+                ));
+            }
+
+            $mission = $draft->getMission();
+            if ($request->getMission()?->getId() !== $mission->getId()) {
+                throw new \LogicException(sprintf(
+                    'MissionInterventionDraft #%d and its InterventionTypeRequest #%d belong to different missions — invalid state.',
+                    $draft->getId(),
+                    $request->getId(),
+                ));
+            }
+
+            $materialCount = $this->countMaterial($draft);
+            $hasMaterial = $materialCount['lines'] > 0 || $materialCount['materialItemRequests'] > 0;
+
+            $effectiveStrategy = $strategy;
+            if ($effectiveStrategy === null) {
+                if ($hasMaterial) {
+                    throw new MissingIgnoreStrategyException(sprintf(
+                        'MissionInterventionDraft #%d has attached material — an explicit strategy (KEEP_AS_HISTORY or REASSIGN) is required.',
+                        $draft->getId(),
+                    ));
+                }
+                $effectiveStrategy = MissionInterventionDraftIgnoreStrategy::KEEP_AS_HISTORY;
+            }
+
+            if ($effectiveStrategy === MissionInterventionDraftIgnoreStrategy::REASSIGN) {
+                if ($reassignTarget === null) {
+                    throw new \LogicException('REASSIGN strategy requires a target MissionIntervention.');
+                }
+                if ($reassignTarget->getMission()->getId() !== $mission->getId()) {
+                    throw new MaterialAttachmentTargetNotFoundException(
+                        'Mission intervention not found on this mission.',
+                    );
+                }
+
+                $moved = $this->repointMaterial($draft, $reassignTarget);
+
+                $draft->setStatus(MissionInterventionDraft::STATUS_MATERIAL_REASSIGNED);
+                $draft->setResolvedMissionIntervention($reassignTarget);
+                $request->setStatus(InterventionTypeRequest::STATUS_IGNORED);
+
+                $this->em->flush();
+
+                $this->audit->record($mission, $actor, AuditEventType::MISSION_INTERVENTION_DRAFT_MATERIAL_REASSIGNED, [
+                    'interventionTypeRequestId' => $request->getId(),
+                    'draftId' => $draft->getId(),
+                    'strategy' => $effectiveStrategy->value,
+                    'missionInterventionId' => $reassignTarget->getId(),
+                    'requestedFirmId' => $draft->getRequestedFirm()?->getId(),
+                    'requestedFirmNameSnapshot' => $draft->getRequestedFirmNameSnapshot(),
+                    'label' => $draft->getLabel(),
+                    'materialLinesCount' => $moved['lines'],
+                    'materialItemRequestsCount' => $moved['materialItemRequests'],
+                ]);
+            } else {
+                // KEEP_AS_HISTORY — le matériel reste attaché au draft, rien n'est
+                // modifié sur MaterialLine/MaterialItemRequest, seul le statut du draft
+                // change.
+                $draft->setStatus(MissionInterventionDraft::STATUS_KEPT_AS_HISTORY);
+                $request->setStatus(InterventionTypeRequest::STATUS_IGNORED);
+
+                $this->em->flush();
+
+                $this->audit->record($mission, $actor, AuditEventType::MISSION_INTERVENTION_DRAFT_IGNORED_AS_HISTORY, [
+                    'interventionTypeRequestId' => $request->getId(),
+                    'draftId' => $draft->getId(),
+                    'strategy' => $effectiveStrategy->value,
+                    'missionInterventionId' => null,
+                    'requestedFirmId' => $draft->getRequestedFirm()?->getId(),
+                    'requestedFirmNameSnapshot' => $draft->getRequestedFirmNameSnapshot(),
+                    'label' => $draft->getLabel(),
+                    'materialLinesCount' => $materialCount['lines'],
+                    'materialItemRequestsCount' => $materialCount['materialItemRequests'],
+                ]);
+            }
+
+            $this->em->flush();
+        });
+
+        return $draft;
+    }
+
+    /**
+     * Compte le matériel attaché au draft sans hydrater les collections — sert à la fois
+     * à décider si une stratégie explicite est requise (ignore()) et à renseigner
+     * l'audit KEEP_AS_HISTORY (où repointMaterial() n'est jamais appelée, donc aucun
+     * compte d'affectation Query::execute() disponible autrement).
+     *
+     * @return array{lines: int, materialItemRequests: int}
+     */
+    private function countMaterial(MissionInterventionDraft $draft): array
+    {
+        $lines = (int) $this->em->createQuery(sprintf(
+            'SELECT COUNT(l.id) FROM %s l WHERE l.interventionDraft = :draft',
+            MaterialLine::class,
+        ))->setParameter('draft', $draft)->getSingleScalarResult();
+
+        $materialItemRequests = (int) $this->em->createQuery(sprintf(
+            'SELECT COUNT(r.id) FROM %s r WHERE r.interventionDraft = :draft',
+            MaterialItemRequest::class,
+        ))->setParameter('draft', $draft)->getSingleScalarResult();
+
+        return ['lines' => $lines, 'materialItemRequests' => $materialItemRequests];
+    }
+
+    /**
      * UPDATE en masse (DQL, jamais un flush() par ligne) — repointe toute MaterialLine/
      * MaterialItemRequest du draft vers la nouvelle intervention. Après cette méthode,
      * aucune ligne ne référence plus le draft. Le compte de lignes affectées vient
      * directement de Query::execute() (nombre de lignes SQL modifiées), pas d'un second
      * aller-retour de comptage.
      *
-     * Centralisée ici plutôt qu'un composant séparé (pas de second appelant pour
-     * l'instant) — le futur ignore(REASSIGN) (commit séparé, hors périmètre ici) aura
-     * probablement besoin de la même logique : à extraire à ce moment-là si un second
-     * appelant réel se confirme, pas avant.
+     * Commit 6 — désormais appelée depuis deux points (resolve() et ignore(REASSIGN)),
+     * généralisée dès le départ à n'importe quelle MissionIntervention cible (jamais
+     * spécifique à une intervention nouvellement créée). Reste une méthode privée de ce
+     * service (toujours aucun appelant en dehors de MissionInterventionDraftService) —
+     * pas de raison de l'extraire tant qu'aucun consommateur externe ne se confirme.
      *
      * @return array{lines: int, materialItemRequests: int}
      */
