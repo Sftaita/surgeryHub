@@ -6,15 +6,12 @@ use App\Dto\Request\MaterialLineCreateRequest;
 use App\Dto\Request\MaterialLineUpdateRequest;
 use App\Dto\Request\MissionInterventionCreateRequest;
 use App\Dto\Request\MissionInterventionUpdateRequest;
-use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
 use App\Entity\MissionInterventionDraft;
 use App\Entity\User;
-use App\Exception\InterventionTypeInactiveException;
-use App\Exception\InterventionTypeNotFoundException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -25,6 +22,7 @@ class InterventionService
         private readonly EntityManagerInterface $em,
         private readonly MissionEntryOrderAllocator $orderAllocator,
         private readonly ActiveFirmResolver $firmResolver,
+        private readonly ActiveInterventionTypeResolver $interventionTypeResolver,
         private readonly MaterialAttachmentResolver $attachmentResolver,
     ) {}
 
@@ -42,7 +40,7 @@ class InterventionService
      */
     public function create(Mission $mission, MissionInterventionCreateRequest $dto): MissionIntervention
     {
-        $type = $this->resolveActiveInterventionType((int) $dto->interventionTypeId);
+        $type = $this->interventionTypeResolver->resolveActive((int) $dto->interventionTypeId);
         $firm = $dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null;
 
         $intervention = null;
@@ -74,7 +72,7 @@ class InterventionService
     public function update(MissionIntervention $intervention, MissionInterventionUpdateRequest $dto): void
     {
         if ($dto->interventionTypeId !== null) {
-            $type = $this->resolveActiveInterventionType($dto->interventionTypeId);
+            $type = $this->interventionTypeResolver->resolveActive($dto->interventionTypeId);
             $intervention->setInterventionType($type);
             $intervention->setCode($type->getCode());
             $intervention->setLabel($type->getLabel());
@@ -90,18 +88,6 @@ class InterventionService
         }
 
         $this->em->flush();
-    }
-
-    private function resolveActiveInterventionType(int $interventionTypeId): InterventionType
-    {
-        $type = $this->em->find(InterventionType::class, $interventionTypeId);
-        if (!$type instanceof InterventionType) {
-            throw new InterventionTypeNotFoundException('Type d\'intervention introuvable.');
-        }
-        if (!$type->isActive()) {
-            throw new InterventionTypeInactiveException('Ce type d\'intervention est désactivé.');
-        }
-        return $type;
     }
 
     public function delete(MissionIntervention $intervention): void

@@ -513,13 +513,18 @@ final class InterventionControllerLot5Test extends WebTestCase
 
         $resolve = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
             'interventionTypeId' => $type->getId(),
-            'primaryFirmId' => $firm->getId(),
+            'firmId' => $firm->getId(),
         ]);
 
+        // EPIC Revue instrumentiste, Lot 3, commit 5 — nouveau contrat de réponse
+        // (requestId/draftId/missionInterventionId/status/draftStatus/orderIndex),
+        // resolve() passe désormais par MissionInterventionDraftService.
         self::assertSame(Response::HTTP_OK, $resolve->getStatusCode(), $resolve->getContent());
         $body = json_decode($resolve->getContent(), true);
-        self::assertSame('RESOLVED', $body['request']['status']);
-        $interventionId = $body['intervention']['id'];
+        self::assertSame($requestId, $body['requestId']);
+        self::assertSame('RESOLVED', $body['status']);
+        self::assertSame('CONVERTED', $body['draftStatus']);
+        $interventionId = $body['missionInterventionId'];
 
         $this->em->clear();
         $intervention = $this->em->find(MissionIntervention::class, $interventionId);
@@ -527,6 +532,10 @@ final class InterventionControllerLot5Test extends WebTestCase
         self::assertSame($mission->getId(), $intervention->getMission()->getId());
         self::assertSame($type->getId(), $intervention->getInterventionType()?->getId());
         self::assertSame($firm->getId(), $intervention->getPrimaryFirm()?->getId());
+
+        $req = $this->em->find(InterventionTypeRequest::class, $requestId);
+        self::assertSame($body['draftId'], $req->getDraft()->getId());
+        self::assertSame($intervention->getId(), $req->getDraft()->getResolvedMissionIntervention()?->getId());
     }
 
     public function test_manager_can_ignore_a_request(): void

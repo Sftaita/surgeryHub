@@ -133,4 +133,16 @@ enum AuditEventType: string
      * identifiants sont retrouvables depuis ce seul événement.
      */
     case MISSION_INTERVENTION_DRAFT_CREATED = 'MISSION_INTERVENTION_DRAFT_CREATED';
+
+    /**
+     * EPIC Revue instrumentiste, Lot 3, commit 5 — MissionInterventionDraftService::
+     * resolve(). Un seul événement pour toute la résolution (création de la
+     * MissionIntervention réelle + transition InterventionTypeRequest→RESOLVED +
+     * transition MissionInterventionDraft→CONVERTED + repointage de tout le matériel),
+     * même principe que MISSION_INTERVENTION_DRAFT_CREATED : une seule action manager,
+     * un seul fait à auditer. Le payload porte les deux compteurs de matériel repointé
+     * (materialLinesMovedCount/materialItemRequestsMovedCount) pour que l'audit seul
+     * suffise à vérifier qu'aucune ligne n'a été oubliée, sans recharger les entités.
+     */
+    case MISSION_INTERVENTION_DRAFT_RESOLVED = 'MISSION_INTERVENTION_DRAFT_RESOLVED';
 }

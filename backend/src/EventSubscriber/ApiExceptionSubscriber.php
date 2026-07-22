@@ -23,6 +23,8 @@ use App\Exception\CorrectionValidationException;
 use App\Exception\ConflictingMaterialAttachmentInputException;
 use App\Exception\CorrectionNotEligibleException;
 use App\Exception\DraftAlreadyExistsException;
+use App\Exception\DraftAlreadyResolvedException;
+use App\Exception\InterventionTypeRequestWithoutDraftException;
 use App\Exception\MaterialAttachmentTargetClosedException;
 use App\Exception\MaterialAttachmentTargetNotFoundException;
 use App\Exception\RefundExceedsOverpaidException;
@@ -161,6 +163,14 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'MATERIAL_ATTACHMENT_TARGET_CLOSED';
             $message = $e->getMessage() ?: 'Cette intervention provisoire est close et n\'accepte plus de nouveau matériel.';
+        } elseif ($e instanceof InterventionTypeRequestWithoutDraftException) {
+            $status = 409;
+            $code = 'INTERVENTION_TYPE_REQUEST_WITHOUT_DRAFT';
+            $message = $e->getMessage() ?: 'Cette demande n\'a pas d\'intervention provisoire associée.';
+        } elseif ($e instanceof DraftAlreadyResolvedException) {
+            $status = 409;
+            $code = 'DRAFT_ALREADY_RESOLVED';
+            $message = $e->getMessage() ?: 'Cette demande a déjà été traitée.';
         } elseif ($e instanceof HttpExceptionInterface) {
             $status = $e->getStatusCode();
             $message = $e->getMessage() ?: $message;

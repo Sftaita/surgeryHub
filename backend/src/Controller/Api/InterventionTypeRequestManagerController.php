@@ -2,26 +2,38 @@
 
 namespace App\Controller\Api;
 
-use App\Dto\Request\MissionInterventionCreateRequest;
 use App\Entity\InterventionTypeRequest;
+use App\Entity\User;
+use App\Exception\InterventionTypeRequestWithoutDraftException;
 use App\Security\Voter\BillingVoter;
-use App\Service\InterventionService;
+use App\Service\ActiveFirmResolver;
+use App\Service\ActiveInterventionTypeResolver;
+use App\Service\MissionInterventionDraftService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Security\Http\Attribute\CurrentUser;
 
 /**
  * Lot 5 (D-068) — miroir de MaterialItemRequestManagerController.
+ *
+ * EPIC Revue instrumentiste, Lot 3, commit 5 — resolve() ne construit plus la
+ * MissionIntervention lui-même : résout uniquement les entités de référence
+ * (InterventionType, Firm) puis délègue toute la transition à
+ * MissionInterventionDraftService::resolve(), seul propriétaire du cycle de vie du
+ * draft. ignore() reste inchangé (hors périmètre de ce commit).
  */
 #[Route('/api/intervention-type-requests')]
 final class InterventionTypeRequestManagerController extends AbstractController
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly InterventionService $interventionService,
+        private readonly MissionInterventionDraftService $draftService,
+        private readonly ActiveInterventionTypeResolver $interventionTypeResolver,
+        private readonly ActiveFirmResolver $firmResolver,
     ) {}
 
     /**
@@ -58,12 +70,12 @@ final class InterventionTypeRequestManagerController extends AbstractController
     /**
      * POST /api/intervention-type-requests/{id}/resolve
      * Résout une demande en la liant à un InterventionType (existant ou tout juste créé
-     * par le manager via POST /api/intervention-types) et crée la MissionIntervention
-     * réelle sur la mission d'origine — impossible de l'avoir créée avant, faute de type.
-     * Body: { interventionTypeId: int, primaryFirmId?: int }
+     * par le manager via POST /api/intervention-types) : crée la MissionIntervention
+     * réelle, repointe tout le matériel déjà déclaré par l'instrumentiste sur le draft,
+     * transitionne la demande et le draft. Body: { interventionTypeId: int, firmId?: int }
      */
     #[Route('/{id}/resolve', name: 'api_intervention_type_requests_resolve', methods: ['POST'], requirements: ['id' => '\d+'])]
-    public function resolve(int $id, Request $request): JsonResponse
+    public function resolve(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
 
@@ -72,8 +84,12 @@ final class InterventionTypeRequestManagerController extends AbstractController
             return $this->json(['message' => 'Request not found'], Response::HTTP_NOT_FOUND);
         }
 
-        if ($req->getStatus() !== InterventionTypeRequest::STATUS_PENDING) {
-            return $this->json(['message' => 'Request is not pending'], Response::HTTP_CONFLICT);
+        $draft = $req->getDraft();
+        if ($draft === null) {
+            throw new InterventionTypeRequestWithoutDraftException(sprintf(
+                'InterventionTypeRequest #%d has no associated MissionInterventionDraft and cannot be resolved through this workflow.',
+                $req->getId(),
+            ));
         }
 
         $body = json_decode($request->getContent(), true) ?? [];
@@ -82,28 +98,22 @@ final class InterventionTypeRequestManagerController extends AbstractController
             return $this->json(['message' => 'interventionTypeId is required'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        $mission = $req->getMission();
-        $orderIndex = count($mission->getInterventions());
+        // Résolues AVANT MissionInterventionDraftService::resolve() : de simples lectures,
+        // si l'une échoue rien n'est encore verrouillé/modifié (même principe que
+        // InterventionTypeRequestController::create(), commit 3).
+        $interventionType = $this->interventionTypeResolver->resolveActive((int) $interventionTypeId);
+        $firmId = $body['firmId'] ?? null;
+        $firm = $firmId !== null ? $this->firmResolver->resolveActive((int) $firmId) : null;
 
-        $createDto = new MissionInterventionCreateRequest();
-        $createDto->interventionTypeId = (int) $interventionTypeId;
-        $createDto->primaryFirmId = isset($body['primaryFirmId']) && $body['primaryFirmId'] !== null
-            ? (int) $body['primaryFirmId']
-            : null;
-        $createDto->orderIndex = $orderIndex;
-
-        // Validation (type actif, firme active) déléguée à InterventionService::create() —
-        // ses exceptions dédiées (INTERVENTION_TYPE_NOT_FOUND, etc.) sont déjà mappées par
-        // ApiExceptionSubscriber, pas besoin de les dupliquer ici.
-        $intervention = $this->interventionService->create($mission, $createDto);
-
-        $req->setResolvedInterventionType($intervention->getInterventionType());
-        $req->setStatus(InterventionTypeRequest::STATUS_RESOLVED);
-        $this->em->flush();
+        $intervention = $this->draftService->resolve($draft, $interventionType, $firm, $user);
 
         return $this->json([
-            'request'     => $this->serialize($req),
-            'intervention' => ['id' => $intervention->getId()],
+            'requestId' => $req->getId(),
+            'draftId' => $draft->getId(),
+            'missionInterventionId' => $intervention->getId(),
+            'status' => $req->getStatus(),
+            'draftStatus' => $draft->getStatus(),
+            'orderIndex' => $intervention->getOrderIndex(),
         ]);
     }
 
