@@ -6,8 +6,9 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import dayjs from "dayjs";
 import "dayjs/locale/fr";
 
-import { fetchMissionById, getMissionExecution, type MissionExecutionInfo } from "../../features/missions/api/missions.api";
+import { fetchMissionById, getMissionExecution } from "../../features/missions/api/missions.api";
 import type { UserRef } from "../../features/missions/api/missions.types";
+import { formatExecutionHours } from "../../features/missions/utils/missions.format";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { fetchMissionEncoding } from "../../features/encoding/api/encoding.api";
 import InterventionsSection from "../../features/encoding/components/InterventionsSection";
@@ -35,22 +36,6 @@ function extractErrorMessage(err: any): string {
     err?.message ??
     String(err)
   );
-}
-
-/**
- * Anomalie écran d'encodage (commit dédié) — la source de vérité des heures prestées
- * est MissionExecutionInfo (GET/PATCH .../execution), en minutes entières, pas
- * mission.service.hours (Mission ne porte plus ce champ depuis D-071 — voir
- * EditServiceHoursDialog.tsx). hasExecutionRecord distingue "jamais saisi" de "saisi à
- * une valeur qui vaut 0" (repli sur le planifié uniquement quand aucun enregistrement
- * n'existe), même format d'affichage ("X h") que l'ancien comportement.
- */
-function formatExecutionHours(execution: MissionExecutionInfo | undefined): string {
-  if (!execution?.hasExecutionRecord || execution.actualDurationMinutes == null) {
-    return "Non renseigné";
-  }
-  const hours = execution.actualDurationMinutes / 60;
-  return `${Number.isInteger(hours) ? hours : hours.toFixed(2).replace(/\.?0+$/, "")} h`;
 }
 
 function missionTypeLabel(type: string): string {

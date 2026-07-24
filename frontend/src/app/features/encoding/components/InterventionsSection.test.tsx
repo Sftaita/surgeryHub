@@ -662,6 +662,30 @@ describe("InterventionsSection — ajout optimiste de matériel sur un draft", (
     expect(await screen.findByText("Ancre titane 4.5mm")).toBeInTheDocument();
   });
 
+  it("MaterialLine sur un draft : rollback complet si l'ajout échoue", async () => {
+    const user = userEvent.setup();
+    renderSection([makeDraftEntry()]);
+    await screen.findByText("Reconstruction LCL");
+
+    apiPostMock.mockImplementationOnce(() => Promise.reject(new Error("Network Error")));
+
+    await openWizardOnDraft(user);
+    await user.click(screen.getByRole("button", { name: /ajouter fiberwire/i }));
+    await screen.findByText("Étape 3/3 – Détails du matériel");
+    await user.click(screen.getByRole("button", { name: "Ajouter à l'intervention" }));
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalled());
+    // Le wizard porte lui-même "FiberWire n°2" dans son récapitulatif d'étape 3 (SheetModal
+    // ferme avec une animation de 250ms, voir CLOSE_DURATION_MS) : attendre la disparition
+    // de ce récapitulatif (texte unique au wizard — "Ajouter du matériel" seul est ambigu,
+    // c'est aussi le libellé du bouton persistant du draft) avant de vérifier l'absence de
+    // toute ligne matériel, sinon un résidu du dialogue en cours de fermeture produirait un
+    // faux négatif.
+    await waitFor(() => expect(screen.queryByText("Étape 3/3 – Détails du matériel")).not.toBeInTheDocument());
+    expect(screen.queryByText("FiberWire n°2")).not.toBeInTheDocument();
+    expect(screen.getByText("Aucun matériel encodé")).toBeInTheDocument();
+  });
+
   it("les compteurs (interventions · matériel) sont recalculés immédiatement, avant toute réponse serveur", async () => {
     const user = userEvent.setup();
     renderSection([makeDraftEntry()]);

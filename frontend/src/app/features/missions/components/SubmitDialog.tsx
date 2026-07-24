@@ -1,13 +1,15 @@
 import * as React from "react";
 import { Box } from "@mui/material";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 
 import type { Mission } from "../api/missions.types";
-import { submitMission } from "../api/missions.api";
+import { submitMission, getMissionExecution } from "../api/missions.api";
 import { fetchMissionEncoding } from "../../encoding/api/encoding.api";
+import { formatExecutionHours } from "../utils/missions.format";
 import { useToast } from "../../../ui/toast/useToast";
 import { requestMissionSync } from "../sync/missionSyncBus";
 import { SheetModal } from "../../../ui/sheet/SheetModal";
+import { Field } from "../../../ui/sheet/Field";
 
 const GREEN_50 = "#EFFAF5";
 const GREEN_700 = "#2C7D5F";
@@ -23,6 +25,8 @@ type Props = {
   mission: Mission;
   onClose: () => void;
   onSubmitted?: () => void;
+  /** Topic d'aide contextuel — omis par défaut, ce composant est réutilisé hors encodage. */
+  helpTopicId?: string;
 };
 
 function extractErrorMessage(err: any): string {
@@ -32,12 +36,6 @@ function extractErrorMessage(err: any): string {
     err?.message ??
     String(err)
   );
-}
-
-function fmtDuration(hours: number): string {
-  const h = Math.floor(hours);
-  const m = Math.round((hours - h) * 60);
-  return `${h}h${String(m).padStart(2, "0")}`;
 }
 
 function OkIcon() {
@@ -72,14 +70,16 @@ function RecapRow({ warn, label, value }: { warn: boolean; label: string; value:
 
 /**
  * docs/design/screens/sheets-divers.md#Récapitulatif — passage obligé avant la
- * clôture, jamais un raccourci direct depuis "Terminer l'encodage". noMaterial/comment
- * existent encore dans MissionSubmitRequest côté backend mais MissionService::submit()
- * ne les lit jamais (vérifié dans le code) : aucune donnée n'est perdue à ne plus les
- * collecter ici.
+ * clôture, jamais un raccourci direct depuis "Terminer l'encodage". `noMaterial`/`comment`
+ * (MissionSubmitRequest) sont désormais réellement branchés côté serveur
+ * (MissionEncodingWorkflowService::complete()) : si la mission n'a aucune ligne de
+ * matériel encodée, un commentaire décrivant les interventions réalisées est requis pour
+ * clôturer — le serveur recalcule lui-même le compte de lignes, jamais une confiance
+ * aveugle dans `noMaterial` envoyé par le client.
  */
-export default function SubmitDialog({ open, mission, onClose, onSubmitted }: Props) {
+export default function SubmitDialog({ open, mission, onClose, onSubmitted, helpTopicId }: Props) {
   const toast = useToast();
-  const queryClient = useQueryClient();
+  const [comment, setComment] = React.useState("");
 
   const { data: encoding, isLoading } = useQuery({
     queryKey: ["missionEncoding", mission.id],
@@ -87,8 +87,30 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted }: Pr
     enabled: open,
   });
 
+  // Anomalie écran d'encodage (commit dédié) — même query key que MissionEncodingPage.tsx
+  // (lecture) et EditServiceHoursDialog.tsx (mutation) : le récapitulatif final doit
+  // afficher exactement la même valeur que la carte "Heures prestées", jamais
+  // mission.service?.hours (le backend n'expose plus ce champ depuis D-071).
+  const { data: execution } = useQuery({
+    queryKey: ["mission-execution", mission.id],
+    queryFn: () => getMissionExecution(mission.id),
+    enabled: open,
+  });
+
+  React.useEffect(() => {
+    if (open) setComment("");
+  }, [open]);
+
+  const interventions = encoding?.interventions ?? [];
+  const materialLineCount = interventions.reduce((sum, itv) => sum + (itv.materialLines?.length ?? 0), 0);
+  const notFoundCount = interventions.reduce((sum, itv) => sum + (itv.materialItemRequests?.length ?? 0), 0);
+  const hoursLabel = formatExecutionHours(execution);
+  const hasHours = hoursLabel !== "Non renseigné";
+  const requiresComment = !isLoading && materialLineCount === 0;
+  const canSubmit = !requiresComment || comment.trim() !== "";
+
   const mutation = useMutation({
-    mutationFn: () => submitMission(mission.id, { noMaterial: true, comment: "" }),
+    mutationFn: () => submitMission(mission.id, { noMaterial: materialLineCount === 0, comment: comment.trim() }),
     onSuccess: () => {
       toast.success("Mission clôturée. Encodage transmis à l'établissement.");
       requestMissionSync();
@@ -98,24 +120,34 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted }: Pr
     onError: (err: any) => toast.error(extractErrorMessage(err)),
   });
 
-  const interventions = encoding?.interventions ?? [];
-  const materialLineCount = interventions.reduce((sum, itv) => sum + (itv.materialLines?.length ?? 0), 0);
-  const notFoundCount = interventions.reduce((sum, itv) => sum + (itv.materialItemRequests?.length ?? 0), 0);
-  const hours = mission.service?.hours;
-  const hasHours = hours !== null && hours !== undefined && Number.isFinite(Number(hours));
-
   return (
-    <SheetModal open={open} title="Récapitulatif avant validation" onClose={onClose} closeDisabled={mutation.isPending}>
+    <SheetModal open={open} title="Récapitulatif avant validation" onClose={onClose} closeDisabled={mutation.isPending} helpTopicId={helpTopicId}>
       {isLoading ? (
         <Box sx={{ mt: "14px", fontSize: 14, color: GRAY_500 }}>Chargement…</Box>
       ) : (
         <Box sx={{ mt: "14px", display: "flex", flexDirection: "column" }}>
-          <RecapRow warn={!hasHours} label="Heures" value={hasHours ? fmtDuration(Number(hours)) : "Non renseignées"} />
+          <RecapRow warn={!hasHours} label="Heures" value={hoursLabel} />
           <RecapRow warn={false} label="Interventions" value={String(interventions.length)} />
           <RecapRow warn={false} label="Matériel encodé" value={`${materialLineCount} ligne${materialLineCount > 1 ? "s" : ""}`} />
           {notFoundCount > 0 && (
             <RecapRow warn label="Matériel non trouvé" value={`${notFoundCount} ligne${notFoundCount > 1 ? "s" : ""}`} />
           )}
+        </Box>
+      )}
+
+      {requiresComment && (
+        <Box sx={{ mt: "14px" }}>
+          <Field
+            id="submit-no-material-comment"
+            label="Décrivez les interventions réalisées *"
+            value={comment}
+            onChange={setComment}
+            disabled={mutation.isPending}
+            multiline
+            minRows={3}
+            placeholder="Ex. Consultation de suivi, aucun matériel utilisé."
+            helperText="Aucun matériel n'a été encodé — précisez ce qui a été fait avant de clôturer."
+          />
         </Box>
       )}
 
@@ -127,7 +159,7 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted }: Pr
         component="button"
         type="button"
         onClick={() => mutation.mutate()}
-        disabled={mutation.isPending || isLoading}
+        disabled={mutation.isPending || isLoading || !canSubmit}
         sx={{
           mt: "16px", width: "100%", height: 54, border: "none", borderRadius: "13px",
           background: GREEN_800, color: "#fff", fontFamily: "inherit", fontSize: 15.5, fontWeight: 700,

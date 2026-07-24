@@ -26,8 +26,9 @@ import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import dayjs from "dayjs";
 import "dayjs/locale/fr";
 
-import { fetchMissionById } from "../../features/missions/api/missions.api";
+import { fetchMissionById, getMissionExecution } from "../../features/missions/api/missions.api";
 import type { Mission } from "../../features/missions/api/missions.types";
+import { formatExecutionHours } from "../../features/missions/utils/missions.format";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
 import { MobileCard } from "../../ui/mobile/MobileCard";
@@ -59,13 +60,6 @@ function formatDate(iso?: string): string {
   if (!iso) return "—";
   const raw = dayjs(iso).format("dddd D MMMM YYYY");
   return raw.charAt(0).toUpperCase() + raw.slice(1);
-}
-
-function formatHours(hours?: string | number | null): string {
-  if (hours === null || hours === undefined || hours === "") return "—";
-  const n = typeof hours === "string" ? Number(hours) : hours;
-  if (!Number.isFinite(n)) return "—";
-  return `${n} h`;
 }
 
 function surgeonLabel(mission: Mission): string {
@@ -157,6 +151,14 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
     enabled: Number.isFinite(missionId) && missionId > 0,
   });
 
+  // Même query key que MissionEncodingPage.tsx (lecture) et EditServiceHoursDialog.tsx
+  // (mutation) — une seule source de vérité pour les heures prestées.
+  const { data: execution } = useQuery({
+    queryKey: ["mission-execution", missionId],
+    queryFn: () => getMissionExecution(missionId),
+    enabled: Number.isFinite(missionId) && missionId > 0 && !!mission,
+  });
+
   if (!Number.isFinite(missionId) || missionId <= 0)
     return <Typography>Identifiant invalide</Typography>;
   if (isLoading) return <CircularProgress />;
@@ -168,7 +170,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
   const canEditHours = allowed.includes("edit_hours");
 
   const { label: chipLabel, color: chipColor } = getStatusChip(String(mission.status ?? ""));
-  const hoursLabel = formatHours(mission.service?.hours ?? null);
+  const hoursLabel = formatExecutionHours(execution);
   const isEncodingPending =
     (mission.status === "ASSIGNED" || mission.status === "IN_PROGRESS" || mission.status === "DECLARED") &&
     canEncoding;
@@ -230,7 +232,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
             <Typography variant="body2" color="text.secondary">
               Heures prestées
             </Typography>
-            <Typography variant="body2" fontWeight={700} color={hoursLabel === "—" ? "text.disabled" : "text.primary"}>
+            <Typography variant="body2" fontWeight={700} color={hoursLabel === "Non renseigné" ? "text.disabled" : "text.primary"}>
               {hoursLabel}
             </Typography>
           </Stack>

@@ -1,6 +1,25 @@
 // src/app/features/missions/utils/missions.format.ts
 
+import type { MissionExecutionInfo } from "../api/missions.api";
+
 const BRUSSELS_TZ = "Europe/Brussels";
+
+/**
+ * Heures prestées — source de vérité unique : MissionExecutionInfo
+ * (GET/PATCH /api/missions/{id}/execution), jamais `mission.service?.hours` (le backend
+ * n'expose plus ce champ depuis le renommage InstrumentistService -> MissionExecution,
+ * D-071 ; voir EditServiceHoursDialog.tsx). hasExecutionRecord distingue "jamais saisi"
+ * de "saisi à une valeur qui vaut 0". Centralisée ici pour que MissionEncodingPage.tsx,
+ * SubmitDialog.tsx et instrumentist/MissionDetailPage.tsx affichent toujours exactement
+ * la même valeur, au même format, jamais trois logiques locales divergentes.
+ */
+export function formatExecutionHours(execution: MissionExecutionInfo | null | undefined): string {
+  if (!execution?.hasExecutionRecord || execution.actualDurationMinutes == null) {
+    return "Non renseigné";
+  }
+  const hours = execution.actualDurationMinutes / 60;
+  return `${Number.isInteger(hours) ? hours : hours.toFixed(2).replace(/\.?0+$/, "")} h`;
+}
 
 /**
  * Format une plage horaire en timezone Europe/Brussels
