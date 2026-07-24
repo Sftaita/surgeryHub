@@ -4544,3 +4544,85 @@ complexes, refonte UX complète (§34 du lot).
 | 18-07-2026 | D-075 — Paiements append-only, solde toujours dérivé, émission explicite, Payment polymorphe (Exécution & Valorisation, Lot 5) |
 | 19-07-2026 | D-076 — Corrections financières additives : notes de crédit/débit, remboursements append-only, jamais de réécriture (Exécution & Valorisation, Lot 6) |
 | 19-07-2026 | D-077 — Statistiques financières : sources de vérité par catégorie, convention temporelle/devise, cash flow réel dérivé de (documentType, direction) (Pilotage financier, Lot 7) |
+
+---
+
+## TODO — Suivi de la revue fonctionnelle « Espace instrumentiste »
+
+*(Ajouté le 24-07-2026 — suivi de tâches, distinct des ADR numérotées ci-dessus.)*
+
+Revue fonctionnelle menée en 4 catégories (écran d'encodage, onglet Offres, navigation,
+planning instrumentiste) : **tous les points sont clôturés**, à l'exception de deux
+fonctionnalités de notification push, volontairement différées au chantier général sur
+les notifications push (traité dans une autre conversation).
+
+### Terminé
+
+- **Écran d'encodage** : résumé intermédiaire supprimé ; bouton « Démarrer l'encodage »
+  absent ; heures prestées optimistes et persistantes (source unique
+  `mission-execution`) ; firme sélectionnée avant l'intervention ; recherche dynamique
+  des firmes ; type d'intervention en `select` ; intervention et matériel affichés de
+  façon optimiste ; bouton « Terminer l'encodage » sticky ; intervention provisoire
+  visible et utilisable ; matériel hors catalogue visible immédiatement ; photo du
+  chirurgien (encodage et onglet Offres) ; heures correctes dans le récapitulatif final
+  et dans la fiche instrumentiste.
+- **Navigation** (commit `1cf1c90`) : un nouvel onglet démarre toujours en haut ; chaque
+  route conserve sa propre position de scroll pendant la session ; revenir sur un onglet
+  restaure sa dernière position ; les positions sont réinitialisées au montage initial de
+  `MobileLayout` (nouvelle entrée dans l'espace instrumentiste) ; l'ouverture d'un
+  encodage mémorise la route et le scroll d'origine ; la flèche retour y ramène avec
+  restauration du scroll ; un accès direct à l'encodage utilise un repli stable
+  (`/app/i/today`) ; la position restaurée est bornée à la hauteur réellement disponible.
+  Logique centralisée dans `frontend/src/app/layouts/scrollRestoration.ts`.
+- **Planning instrumentiste** (commit `60db90f`) : missions passées non soumises dans
+  « À encoder », missions futures dans « À venir » ; missions déjà soumises absentes des
+  deux sections ; aucun doublon entre sections ; états vides corrects ; clic sur une
+  mission « À encoder » ouvre directement `/app/i/missions/{id}/encoding` (aucune modale
+  intermédiaire) ; flèche retour vers le planning d'origine avec scroll restauré ;
+  comportement des missions futures inchangé. Classification via
+  `classifyPlanningMission()` dans `PlanningPage.tsx`.
+
+### Ouvert — dépend du chantier général sur les notifications push
+
+Ces deux fonctionnalités sont les seules tâches fonctionnelles encore ouvertes de la
+revue instrumentiste. Elles seront traitées dans une autre conversation, après le
+travail général sur les notifications push. **L'implémentation devra réutiliser
+l'infrastructure push existante ou celle validée dans ce chantier général — aucun
+second système parallèle ne doit être créé.**
+
+#### TODO — Rappel d'encodage à 19 h
+
+À 19 h, heure métier du projet, envoyer une notification push à l'instrumentiste
+lorsqu'une mission du jour qui lui est assignée n'a pas encore été soumise.
+
+Contraintes à conserver pour l'implémentation future :
+
+- uniquement les missions assignées à l'instrumentiste ;
+- encodage encore modifiable ou en attente de soumission ;
+- mission correspondant à la journée métier concernée ;
+- exclusion des missions futures, annulées, rejetées, soumises ou validées ;
+- réutilisation de `MissionEncodingGuard` ou des `allowedActions` ;
+- timezone métier, jamais UTC brut ni heure du navigateur ;
+- au maximum un rappel par mission, destinataire et journée ;
+- traitement idempotent ;
+- lien profond vers `/app/i/missions/{id}/encoding`.
+
+Contenu envisagé :
+
+- Titre : *Encodage à terminer*
+- Message : *L'encodage de votre mission du jour n'a pas encore été soumis.*
+- Inclure si possible : le nom de l'établissement, l'heure de la mission.
+
+#### TODO — Notification au chirurgien après soumission
+
+Après la soumission définitive de l'encodage par l'instrumentiste, envoyer une
+notification push récapitulative au chirurgien concerné.
+
+Contraintes à conserver :
+
+- déclenchement uniquement après une soumission réellement persistée ;
+- destinataire = chirurgien de la mission ;
+- contenu récapitulatif utile ;
+- lien profond vers la mission ou son récapitulatif ;
+- déduplication ;
+- aucune notification sur une tentative échouée ou annulée.
