@@ -9,6 +9,7 @@ import "dayjs/locale/fr";
 import { fetchMissionById, getMissionExecution } from "../../features/missions/api/missions.api";
 import type { UserRef } from "../../features/missions/api/missions.types";
 import { formatExecutionHours } from "../../features/missions/utils/missions.format";
+import { getEncodingBackTarget } from "../../layouts/scrollRestoration";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { fetchMissionEncoding } from "../../features/encoding/api/encoding.api";
 import InterventionsSection from "../../features/encoding/components/InterventionsSection";
@@ -84,6 +85,12 @@ export default function MissionEncodingPage() {
   const missionId = Number(id);
   const isValidId = Number.isFinite(missionId) && missionId > 0;
 
+  // Route mémorisée par MobileLayout au moment d'entrer dans l'encodage (voir
+  // scrollRestoration.ts) — jamais navigate(-1), imprévisible sur lien profond ou
+  // notification (pourrait sortir de l'app ou atterrir sur une entrée d'historique
+  // sans rapport). Repli sur /app/i/today si l'écran a été ouvert directement.
+  const handleBack = () => navigate(getEncodingBackTarget());
+
   const {
     data: mission,
     isLoading: isMissionLoading,
@@ -126,7 +133,7 @@ export default function MissionEncodingPage() {
   if (missionError) {
     return (
       <Stack spacing={2}>
-        <Button variant="outlined" size="small" startIcon={<ArrowBackIcon />} onClick={() => navigate(-1)}>
+        <Button variant="outlined" size="small" startIcon={<ArrowBackIcon />} onClick={handleBack}>
           Retour
         </Button>
         <Typography color="error">{extractErrorMessage(missionError)}</Typography>
@@ -139,7 +146,7 @@ export default function MissionEncodingPage() {
   if (!canEncoding) {
     return (
       <Stack spacing={2}>
-        <Button variant="outlined" size="small" startIcon={<ArrowBackIcon />} onClick={() => navigate(-1)}>
+        <Button variant="outlined" size="small" startIcon={<ArrowBackIcon />} onClick={handleBack}>
           Retour
         </Button>
         <Typography color="text.secondary">
@@ -154,7 +161,7 @@ export default function MissionEncodingPage() {
   if (encodingError) {
     return (
       <Stack spacing={2}>
-        <Button variant="outlined" size="small" startIcon={<ArrowBackIcon />} onClick={() => navigate(-1)}>
+        <Button variant="outlined" size="small" startIcon={<ArrowBackIcon />} onClick={handleBack}>
           Retour
         </Button>
         <Typography color="error">{extractErrorMessage(encodingError)}</Typography>
@@ -186,7 +193,7 @@ export default function MissionEncodingPage() {
         missionId={mission.id}
         dateLabel={dateLabel}
         typeLabel={missionTypeLabel(mission.type)}
-        onBack={() => navigate(-1)}
+        onBack={handleBack}
         helpTopicId="mission-encoding"
         savedAt={lastSavedAt}
       />
@@ -260,7 +267,7 @@ export default function MissionEncodingPage() {
           queryClient.invalidateQueries({ queryKey: ["mission", mission.id] });
           queryClient.invalidateQueries({ queryKey: ["missionEncoding", mission.id] });
           queryClient.invalidateQueries({ queryKey: ["missions"] });
-          navigate(-1);
+          handleBack();
         }}
         helpTopicId="mission-encoding"
       />

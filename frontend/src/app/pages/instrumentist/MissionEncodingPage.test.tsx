@@ -4,6 +4,11 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import MissionEncodingPage from "./MissionEncodingPage";
+import { getEncodingBackTarget } from "../../layouts/scrollRestoration";
+
+vi.mock("../../layouts/scrollRestoration", () => ({
+  getEncodingBackTarget: vi.fn(() => "/app/i/today"),
+}));
 
 const apiGetMock = vi.fn();
 const apiPatchMock = vi.fn();
@@ -422,5 +427,79 @@ describe("MissionEncodingPage — heures prestées (source de vérité MissionEx
     unmount();
     renderPage();
     expect(await screen.findByText("4 h")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Navigation et scroll (commit dédié) — la flèche retour et les boutons "Retour" ne
+ * doivent plus jamais utiliser navigate(-1), trop imprévisible sur lien profond ou
+ * notification (voir MobileLayout, qui mémorise l'origine réelle dans
+ * scrollRestoration.ts). getEncodingBackTarget() est mocké ici pour piloter
+ * précisément la cible attendue, indépendamment de MobileLayout (non rendu par
+ * ces tests, comme pour le reste du fichier).
+ */
+function renderPageWithBackRoute(backTarget: string, missionId = 529) {
+  vi.mocked(getEncodingBackTarget).mockReturnValue(backTarget);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  return render(
+    <MemoryRouter initialEntries={[`/app/i/missions/${missionId}/encoding`]}>
+      <QueryClientProvider client={client}>
+        <Routes>
+          <Route path="/app/i/missions/:id/encoding" element={<MissionEncodingPage />} />
+          <Route path={backTarget} element={<div>Origin content</div>} />
+        </Routes>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+}
+
+describe("MissionEncodingPage — bouton retour (origine mémorisée par MobileLayout)", () => {
+  it("la flèche retour navigue vers getEncodingBackTarget(), jamais navigate(-1)", async () => {
+    const user = userEvent.setup();
+    const mission = baseMission();
+    mockRoutes(mission, baseEncoding());
+    renderPageWithBackRoute("/app/i/offers");
+
+    await screen.findByText("ENCODAGE MISSION");
+    await user.click(screen.getByRole("button", { name: "Retour" }));
+
+    expect(await screen.findByText("Origin content")).toBeInTheDocument();
+  });
+
+  it("ouverture directe (getEncodingBackTarget() replié sur /app/i/today) → la flèche retour y navigue", async () => {
+    const user = userEvent.setup();
+    const mission = baseMission();
+    mockRoutes(mission, baseEncoding());
+    renderPageWithBackRoute("/app/i/today");
+
+    await screen.findByText("ENCODAGE MISSION");
+    await user.click(screen.getByRole("button", { name: "Retour" }));
+
+    expect(await screen.findByText("Origin content")).toBeInTheDocument();
+  });
+
+  it("valider et clôturer la mission ramène aussi vers l'origine mémorisée, pas ailleurs", async () => {
+    const user = userEvent.setup();
+    const mission = baseMission();
+    // Au moins une ligne de matériel : évite la branche "commentaire obligatoire"
+    // (D-070), hors sujet ici — seul le routage du retour post-soumission est testé.
+    mockRoutes(
+      mission,
+      baseEncoding({
+        interventions: [{
+          id: 1, code: "A", label: "Intervention A", orderIndex: 0,
+          materialLines: [{ id: 1, missionInterventionId: 1, item: { id: 1, label: "Vis", referenceCode: "V1", unit: "u", isImplant: false, firm: { id: 1, name: "Arthrex" } }, quantity: "1.00", comment: null }],
+          materialItemRequests: [],
+        }],
+        coherenceSummary: { hasNoInterventions: false, hasInterventionsWithNoMaterial: false, hasUnusedSuggestions: false, hasMaterialFromOtherFirm: false, hasMissingPrimaryFirm: false },
+      }),
+    );
+    renderPageWithBackRoute("/app/i/planning");
+
+    await user.click(await screen.findByText("Terminer l'encodage"));
+    await screen.findByText("Récapitulatif avant validation");
+    await user.click(screen.getByRole("button", { name: "Valider et clôturer la mission" }));
+
+    expect(await screen.findByText("Origin content")).toBeInTheDocument();
   });
 });

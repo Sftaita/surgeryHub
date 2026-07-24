@@ -9,6 +9,7 @@ import { useNotifications } from "../features/push/useNotifications";
 import { useAuth } from "../auth/AuthContext";
 import { fetchMissions, fetchInstrumentistOffersWithFallback } from "../features/missions/api/missions.api";
 import { useInstrumentistMissionSync } from "../features/missions/sync/useInstrumentistMissionSync";
+import { resetScrollRestoration, useRouteScrollRestoration, recordEncodingOrigin } from "./scrollRestoration";
 import { useToast } from "../ui/toast/useToast";
 import dayjs from "dayjs";
 import "dayjs/locale/fr";
@@ -672,6 +673,15 @@ export function MobileLayout() {
 
   useInstrumentistMissionSync();
 
+  // Nouvelle entrée dans l'espace instrumentiste = montage initial de ce layout (voir
+  // scrollRestoration.ts) — doit s'exécuter avant l'effet de restauration ci-dessous
+  // pour que la toute première route de la session ne restaure jamais rien.
+  React.useEffect(() => {
+    resetScrollRestoration();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useRouteScrollRestoration(pathname);
+
   const isInstrumentist = pathname.startsWith("/app/i");
   const activeTab = tabs.find((t) => t.match(pathname))?.key ?? null;
 
@@ -695,12 +705,16 @@ export function MobileLayout() {
   }, []);
 
   // Leaving-encoding kick — covers both the prototype's closeEncode and validateTap
-  // (both simply leave the encoding screen in the real router).
+  // (both simply leave the encoding screen in the real router). Also where the
+  // encoding screen's origin route is captured (see scrollRestoration.ts) — on a
+  // direct/deep-link open, previousPathnameRef already equals pathname on mount, so
+  // this never fires and getEncodingBackTarget() correctly falls back.
   const previousPathnameRef = React.useRef(pathname);
   React.useEffect(() => {
     const wasEncoding = ENCODING_ROUTE_RE.test(previousPathnameRef.current);
     const isEncoding = ENCODING_ROUTE_RE.test(pathname);
     if (wasEncoding && !isEncoding) kickWaves();
+    if (!wasEncoding && isEncoding) recordEncodingOrigin(previousPathnameRef.current);
     previousPathnameRef.current = pathname;
   }, [pathname, kickWaves]);
 
