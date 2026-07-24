@@ -263,6 +263,48 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
         self::assertSame(1, $count);
     }
 
+    /**
+     * EPIC Revue instrumentiste, Lot 3, commit 8 — enrichissement additif de la réponse
+     * (draftId/orderIndex/label/requestedFirm en plus de {id}) : le frontend en a besoin
+     * pour normaliser son cache React Query après création sans second aller-retour.
+     */
+    public function test_creation_response_exposes_draft_fields_needed_by_the_frontend_cache(): void
+    {
+        [$client, $mission, $token] = $this->bootMissionScenario();
+        $firm = $this->makeFirm();
+
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+            'label' => 'Prothèse épaule inversée',
+            'requestedFirmId' => $firm->getId(),
+        ]);
+        self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        $this->createdIds['requests'][] = $body['id'];
+
+        $this->em->clear();
+        $draft = $this->em->find(InterventionTypeRequest::class, $body['id'])->getDraft();
+
+        self::assertSame($draft->getId(), $body['draftId']);
+        self::assertSame($draft->getOrderIndex(), $body['orderIndex']);
+        self::assertSame('Prothèse épaule inversée', $body['label']);
+        self::assertSame($firm->getId(), $body['requestedFirm']['id']);
+        self::assertSame($firm->getName(), $body['requestedFirm']['name']);
+    }
+
+    public function test_creation_response_requested_firm_is_null_when_none_given(): void
+    {
+        [$client, $mission, $token] = $this->bootMissionScenario();
+
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+            'label' => 'Sans firme',
+        ]);
+        self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        $this->createdIds['requests'][] = $body['id'];
+
+        self::assertNull($body['requestedFirm']);
+    }
+
     public function test_label_is_frozen_as_a_snapshot_on_the_draft(): void
     {
         [$client, $mission, $token] = $this->bootMissionScenario();

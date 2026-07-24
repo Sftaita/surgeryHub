@@ -3,6 +3,7 @@
 namespace App\Controller\Api;
 
 use App\Dto\Request\InterventionTypeRequestCreateRequest;
+use App\Dto\Request\Response\FirmSlimDto;
 use App\Entity\InterventionTypeRequest;
 use App\Entity\Mission;
 use App\Entity\User;
@@ -75,10 +76,24 @@ class InterventionTypeRequestController extends AbstractController
             ->setComment($dto->comment)
             ->setCreatedBy($user);
 
-        // Réponse volontairement inchangée ({id}) : les DTO complets de lecture du
-        // draft sont hors périmètre de ce commit (voir découpage validé).
-        $this->draftService->createForRequest($req, $requestedFirm, $user);
+        $draft = $this->draftService->createForRequest($req, $requestedFirm, $user);
 
-        return $this->json(['id' => $req->getId()], Response::HTTP_CREATED);
+        // EPIC Revue instrumentiste, Lot 3, commit 8 — enrichissement additif de la
+        // réponse ({id} seul jusqu'ici) : le frontend a besoin de draftId/orderIndex/
+        // label/requestedFirm pour normaliser son cache React Query sans un second
+        // aller-retour réseau après la création (insérer l'entrée DRAFT optimiste
+        // définitive à la place du placeholder temporaire). Toujours pas de DTO de
+        // lecture complet du draft ici (hors périmètre) — seulement les champs
+        // strictement nécessaires à cette normalisation.
+        return $this->json([
+            'id' => $req->getId(),
+            'draftId' => $draft->getId(),
+            'orderIndex' => $draft->getOrderIndex(),
+            'label' => $draft->getLabel(),
+            'requestedFirm' => $requestedFirm ? new FirmSlimDto(
+                id: (int) $requestedFirm->getId(),
+                name: (string) $requestedFirm->getName(),
+            ) : null,
+        ], Response::HTTP_CREATED);
     }
 }

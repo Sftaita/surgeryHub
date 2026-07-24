@@ -1,25 +1,17 @@
 import * as React from "react";
-import {
-  Autocomplete,
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-  FormControl,
-  InputLabel,
-  MenuItem,
-  Select,
-  SelectChangeEvent,
-  Stack,
-  TextField,
-} from "@mui/material";
-import type { CatalogFirm, CatalogInterventionType, EncodingIntervention, PatchInterventionBody } from "../api/encoding.types";
+import { Box } from "@mui/material";
+import { SheetModal } from "../../../ui/sheet/SheetModal";
+import { SelectField } from "../../../ui/sheet/SelectField";
+import type { CatalogFirm, CatalogInterventionType, MissionEncodingInterventionEntry, PatchInterventionBody } from "../api/encoding.types";
+
+const GRAY_500 = "#727E8C";
+
+const NO_FIRM = 0;
 
 type Props = {
   open: boolean;
   loading: boolean;
-  intervention: EncodingIntervention | null;
+  intervention: MissionEncodingInterventionEntry | null;
   interventionTypes: CatalogInterventionType[];
   firms: CatalogFirm[];
   onClose: () => void;
@@ -39,75 +31,77 @@ export default function EditInterventionDialog({
   onClose,
   onSubmit,
 }: Props) {
-  const [type, setType] = React.useState<CatalogInterventionType | null>(null);
-  const [firmId, setFirmId] = React.useState<number | "">("");
+  const [typeId, setTypeId] = React.useState<number | null>(null);
+  const [firmId, setFirmId] = React.useState<number>(NO_FIRM);
 
   React.useEffect(() => {
     if (!open || !intervention) return;
-    setType(intervention.interventionType ?? null);
-    setFirmId(intervention.primaryFirm?.id ?? "");
+    setTypeId(intervention.interventionType?.id ?? null);
+    setFirmId(intervention.firm?.id ?? NO_FIRM);
   }, [open, intervention]);
 
   const submit = () => {
-    if (!type) return;
+    if (typeId == null) return;
     onSubmit({
-      interventionTypeId: type.id,
-      primaryFirmId: firmId === "" ? null : Number(firmId),
+      interventionTypeId: typeId,
+      primaryFirmId: firmId === NO_FIRM ? null : firmId,
     });
   };
 
+  const typeOptions = interventionTypes.map((t) => ({ value: t.id, label: `${t.code} — ${t.label}` }));
+  const firmOptions = [
+    { value: NO_FIRM, label: "— Aucune" },
+    ...firms.map((f) => ({ value: f.id, label: f.name })),
+  ];
+
   return (
-    <Dialog
-      open={open}
-      onClose={loading ? undefined : onClose}
-      fullWidth
-      maxWidth="xs"
-    >
-      <DialogTitle>Modifier l’intervention</DialogTitle>
+    <SheetModal open={open} title="Modifier l'intervention" onClose={onClose} closeDisabled={loading} helpTopicId="mission-encoding">
+      <Box sx={{ mt: "18px", display: "flex", flexDirection: "column", gap: "16px" }}>
+        <SelectField
+          id="edit-itv-type"
+          label="Type d'intervention *"
+          placeholder="Sélectionner un type"
+          value={typeId}
+          options={typeOptions}
+          onChange={(v) => setTypeId(v)}
+          disabled={loading}
+        />
 
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <Autocomplete<CatalogInterventionType, false, false, false>
-            options={interventionTypes}
-            getOptionLabel={(opt) => `${opt.code} — ${opt.label}`}
-            isOptionEqualToValue={(a, b) => a.id === b.id}
-            value={type}
-            onChange={(_, v) => setType(v)}
-            disabled={loading}
-            renderInput={(params) => (
-              <TextField {...params} label="Type d'intervention *" size="small" />
-            )}
-            noOptionsText="Aucun type actif dans le catalogue"
-          />
+        <SelectField
+          id="edit-itv-firm"
+          label="Firme principale (optionnel)"
+          placeholder="Sélectionner une firme"
+          value={firmId}
+          options={firmOptions}
+          onChange={(v) => setFirmId(v)}
+          disabled={loading}
+        />
+      </Box>
 
-          <FormControl fullWidth size="small" disabled={loading}>
-            <InputLabel id="edit-itv-firm-label">Firme principale (optionnel)</InputLabel>
-            <Select
-              labelId="edit-itv-firm-label"
-              value={firmId === "" ? "" : String(firmId)}
-              label="Firme principale (optionnel)"
-              onChange={(e: SelectChangeEvent<string>) => {
-                const v = e.target.value;
-                setFirmId(v === "" ? "" : Number(v));
-              }}
-            >
-              <MenuItem value="">—</MenuItem>
-              {firms.map((f) => (
-                <MenuItem key={f.id} value={String(f.id)}>{f.name}</MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        </Stack>
-      </DialogContent>
-
-      <DialogActions>
-        <Button onClick={onClose} disabled={loading}>
-          Annuler
-        </Button>
-        <Button variant="contained" onClick={submit} disabled={loading || !type}>
-          {loading ? "..." : "Enregistrer"}
-        </Button>
-      </DialogActions>
-    </Dialog>
+      <Box
+        component="button"
+        type="button"
+        onClick={submit}
+        disabled={loading || typeId == null}
+        sx={{
+          mt: "20px", width: "100%", height: 52, border: "none", borderRadius: "12px",
+          background: "#1F6B4F", color: "#fff", fontFamily: "inherit", fontSize: 15, fontWeight: 700,
+          cursor: "pointer", boxShadow: "0 5px 14px rgba(20,77,56,.3)",
+          "&:hover": { background: "#144D38" }, "&:active": { transform: "translateY(0.5px)" },
+          "&:disabled": { opacity: 0.6, cursor: "default", boxShadow: "none" },
+        }}
+      >
+        {loading ? "…" : "Enregistrer"}
+      </Box>
+      <Box
+        component="button"
+        type="button"
+        onClick={onClose}
+        disabled={loading}
+        sx={{ mt: "8px", width: "100%", height: 44, border: "none", background: "transparent", color: GRAY_500, fontFamily: "inherit", fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+      >
+        Annuler
+      </Box>
+    </SheetModal>
   );
 }

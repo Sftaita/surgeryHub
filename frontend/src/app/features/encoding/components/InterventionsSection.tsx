@@ -11,7 +11,6 @@ import AddIcon from "@mui/icons-material/Add";
 
 import type {
   EncodingIntervention,
-  EncodingInterventionTypeRequest,
   CatalogFirm,
   CatalogItem,
   CatalogInterventionType,
@@ -19,6 +18,8 @@ import type {
   PatchMaterialLineBody,
   EncodingMaterialLine,
   MissionEncodingResponse,
+  MissionEncodingEntry,
+  MissionEncodingInterventionEntry,
   CreateMaterialItemRequestBody,
   CreateInterventionBody,
   PatchInterventionBody,
@@ -36,19 +37,24 @@ import {
   createMissionInterventionTypeRequest,
 } from "../api/encoding.api";
 
-import AddInterventionDialog from "./AddInterventionDialog";
+import AddInterventionDialog, { type DraftSubmitValues } from "./AddInterventionDialog";
 import EditInterventionDialog from "./EditInterventionDialog";
 import ConfirmDeleteDialog from "./ConfirmDeleteDialog";
-import MaterialWizard from "./MaterialWizard";
+import MaterialWizard, { type MaterialTarget } from "./MaterialWizard";
 import EditMaterialLineDialog from "./EditMaterialLineDialog";
 import MaterialItemRequestDialog from "./MaterialItemRequestDialog";
-import InterventionTypeRequestDialog from "./InterventionTypeRequestDialog";
 
 type Props = {
   missionId: number;
   canEdit: boolean;
-  interventions: EncodingIntervention[];
-  interventionTypeRequests?: EncodingInterventionTypeRequest[];
+  entries: MissionEncodingEntry[];
+  /**
+   * TRANSITOIRE — uniquement pour l'enrichissement Lot 6 (suggestedMaterials/coherence)
+   * d'une entrée INTERVENTION, tant que ces champs n'existent pas encore sur `entries`
+   * côté backend (hors périmètre du commit 7 backend). Jamais utilisé pour construire la
+   * liste ni son ordre — voir `entries`, seule source de vérité pour le rendu.
+   */
+  legacyInterventions?: EncodingIntervention[];
   catalog?: { items: CatalogItem[]; firms: CatalogFirm[]; interventionTypes: CatalogInterventionType[] };
   /** Called after any intervention/material mutation succeeds — drives the "Enregistré à" timestamp. */
   onSaved?: () => void;
@@ -59,10 +65,14 @@ const GREEN_100 = "#DDF4EA";
 const GREEN_500 = "#42A882";
 const GREEN_700 = "#2C7D5F";
 const GREEN_800 = "#1F6B4F";
+const GRAY_200 = "#DDE2E8";
 const GRAY_500 = "#727E8C";
+const GRAY_700 = "#3A4754";
 const GRAY_800 = "#243240";
 const TEXT_STRONG = "#16202B";
 const TEXT_MUTED = "#727E8C";
+const AMBER_50 = "#FEF6E7";
+const AMBER_700 = "#B7791F";
 const SHADOW_XS = "0 1px 2px rgba(22,32,43,.05)";
 
 function extractErrorMessage(err: any): string {
@@ -80,32 +90,52 @@ function displayQty(qty: string): string {
   return n % 1 === 0 ? String(Math.round(n)) : String(n);
 }
 
-function interventionTitle(itv: EncodingIntervention): string {
-  return itv.label || itv.code;
+/** Convention déjà utilisée pour les lignes matériel optimistes (createLineMutation) :
+ *  un id négatif = placeholder local, pas encore confirmé par le serveur. */
+function isPending(id: number): boolean {
+  return id < 0;
 }
 
-export default function InterventionsSection({ missionId, canEdit, interventions, interventionTypeRequests, catalog, onSaved }: Props) {
+/** `intervention-{id}` / `draft-{id}`, `-temp-` pour les entrées optimistes — jamais
+ *  seulement `id` : une intervention et un draft peuvent partager le même id numérique
+ *  (deux tables, deux séquences indépendantes). */
+function entryKey(entry: MissionEncodingEntry): string {
+  const prefix = entry.kind === "INTERVENTION" ? "intervention" : "draft";
+  return isPending(entry.id) ? `${prefix}-temp-${Math.abs(entry.id)}` : `${prefix}-${entry.id}`;
+}
+
+function entryTarget(entry: MissionEncodingEntry): MaterialTarget {
+  return { kind: entry.kind, id: entry.id };
+}
+
+function statusBadge(entry: MissionEncodingEntry): { label: string; bg: string; fg: string } | null {
+  if (entry.kind === "INTERVENTION") return null;
+  if (entry.status === "KEPT_AS_HISTORY") {
+    return { label: "Conservé comme historique", bg: "#EFF2F5", fg: GRAY_700 };
+  }
+  return { label: "En attente de validation manager", bg: AMBER_50, fg: AMBER_700 };
+}
+
+export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved }: Props) {
   const toast = useToast();
   const queryClient = useQueryClient();
 
   const [openAddIntervention, setOpenAddIntervention] = React.useState(false);
-  const [editIntervention, setEditIntervention] = React.useState<EncodingIntervention | null>(null);
-  const [deleteInterventionTarget, setDeleteInterventionTarget] = React.useState<EncodingIntervention | null>(null);
+  const [editIntervention, setEditIntervention] = React.useState<MissionEncodingInterventionEntry | null>(null);
+  const [deleteInterventionTarget, setDeleteInterventionTarget] = React.useState<MissionEncodingInterventionEntry | null>(null);
 
   const [openAddMaterial, setOpenAddMaterial] = React.useState(false);
-  const [preferredInterventionId, setPreferredInterventionId] = React.useState<number | null>(null);
+  const [preferredTarget, setPreferredTarget] = React.useState<MaterialTarget | null>(null);
 
   const [openRequestDialog, setOpenRequestDialog] = React.useState(false);
-  const [preferredRequestInterventionId, setPreferredRequestInterventionId] = React.useState<number | null>(null);
+  const [preferredRequestTarget, setPreferredRequestTarget] = React.useState<MaterialTarget | null>(null);
 
-  const [openTypeRequestDialog, setOpenTypeRequestDialog] = React.useState(false);
-
-  // Accordéon — la première intervention est ouverte par défaut (screens/encodage/README.md).
-  const [openIds, setOpenIds] = React.useState<Set<number> | null>(null);
-  const toggleOpen = (id: number) => setOpenIds((prev) => {
-    const base = prev ?? new Set(interventions.length ? [interventions[0].id] : []);
+  // Accordéon — la première entrée est ouverte par défaut (screens/encodage/README.md).
+  const [openIds, setOpenIds] = React.useState<Set<string> | null>(null);
+  const toggleOpen = (key: string) => setOpenIds((prev) => {
+    const base = prev ?? new Set(entries.length ? [entryKey(sortEntries(entries)[0])] : []);
     const next = new Set(base);
-    if (next.has(id)) next.delete(id); else next.add(id);
+    if (next.has(key)) next.delete(key); else next.add(key);
     return next;
   });
 
@@ -135,13 +165,50 @@ export default function InterventionsSection({ missionId, canEdit, interventions
     [queryClient, missionId],
   );
 
-  // ── Mutations: Interventions ──────────────────────────────────────
+  // ── Mutations: Interventions (réelles) ────────────────────────────
 
   const createInterventionMutation = useMutation({
-    mutationFn: (body: CreateInterventionBody) =>
-      createMissionIntervention(missionId, body),
-    onSuccess: () => { toast.success("Intervention ajoutée"); setOpenAddIntervention(false); invalidate(); onSaved?.(); },
-    onError: (err: any) => toast.error(extractErrorMessage(err)),
+    mutationFn: (body: CreateInterventionBody) => createMissionIntervention(missionId, body),
+    onMutate: async (body) => {
+      await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
+      const previous = queryClient.getQueryData(["missionEncoding", missionId]);
+      setOpenAddIntervention(false);
+      const tempId = -Date.now();
+      const type = (catalog?.interventionTypes ?? []).find((t) => t.id === body.interventionTypeId) ?? null;
+      const firm = body.primaryFirmId != null ? (catalog?.firms ?? []).find((f) => f.id === body.primaryFirmId) ?? null : null;
+      const optimistic: MissionEncodingInterventionEntry = {
+        kind: "INTERVENTION",
+        id: tempId,
+        requestId: null,
+        orderIndex: body.orderIndex,
+        label: type?.label ?? "",
+        interventionType: type,
+        firm: firm ? { id: firm.id, name: firm.name } : null,
+        requestedFirmNameSnapshot: null,
+        status: "CATALOGUED",
+        readOnly: false,
+        materialLines: [],
+        materialItemRequests: [],
+      };
+      setEncodingCache((current) => ({ ...current, entries: [...(current.entries ?? []), optimistic] }));
+      return { previous, tempId };
+    },
+    onSuccess: (created, _body, ctx) => {
+      if (!ctx) return;
+      setEncodingCache((current) => ({
+        ...current,
+        entries: (current.entries ?? []).map((e) =>
+          e.kind === "INTERVENTION" && e.id === ctx.tempId ? { ...e, id: created.id } : e,
+        ),
+      }));
+      toast.success("Intervention ajoutée");
+      invalidate();
+      onSaved?.();
+    },
+    onError: (err: any, _body, ctx) => {
+      if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
+      toast.error(extractErrorMessage(err));
+    },
   });
 
   const patchInterventionMutation = useMutation({
@@ -151,19 +218,73 @@ export default function InterventionsSection({ missionId, canEdit, interventions
     onError: (err: any) => toast.error(extractErrorMessage(err)),
   });
 
-  const createTypeRequestMutation = useMutation({
-    mutationFn: (body: CreateInterventionTypeRequestBody) => createMissionInterventionTypeRequest(missionId, body),
-    onSuccess: () => { toast.success("Demande envoyée au manager."); setOpenTypeRequestDialog(false); setOpenAddIntervention(false); invalidate(); },
-    onError: (err: any) => toast.error(extractErrorMessage(err)),
-  });
-
   const deleteInterventionMutation = useMutation({
     mutationFn: (interventionId: number) => deleteMissionIntervention(missionId, interventionId),
     onSuccess: () => { toast.success("Intervention supprimée"); setDeleteInterventionTarget(null); invalidate(); onSaved?.(); },
     onError: (err: any) => toast.error(extractErrorMessage(err)),
   });
 
-  // ── Mutations: Material lines (optimistic) ────────────────────────
+  // ── Mutations: demandes provisoires (drafts) ──────────────────────
+
+  const createDraftMutation = useMutation({
+    mutationFn: (body: CreateInterventionTypeRequestBody) => createMissionInterventionTypeRequest(missionId, body),
+    onMutate: async (body) => {
+      await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
+      const previous = queryClient.getQueryData(["missionEncoding", missionId]);
+      setOpenAddIntervention(false);
+      const tempId = -Date.now();
+      const firm = body.requestedFirmId != null ? (catalog?.firms ?? []).find((f) => f.id === body.requestedFirmId) ?? null : null;
+      setEncodingCache((current) => ({
+        ...current,
+        entries: [
+          ...(current.entries ?? []),
+          {
+            kind: "DRAFT",
+            id: tempId,
+            requestId: tempId,
+            orderIndex: (current.entries ?? []).length,
+            label: body.label,
+            interventionType: null,
+            firm: firm ? { id: firm.id, name: firm.name } : null,
+            requestedFirmNameSnapshot: firm?.name ?? null,
+            status: "OPEN",
+            readOnly: false,
+            materialLines: [],
+            materialItemRequests: [],
+          },
+        ],
+      }));
+      return { previous, tempId };
+    },
+    onSuccess: (created, _body, ctx) => {
+      if (!ctx) return;
+      setEncodingCache((current) => ({
+        ...current,
+        entries: (current.entries ?? []).map((e) =>
+          e.kind === "DRAFT" && e.id === ctx.tempId
+            ? {
+                ...e,
+                id: created.draftId,
+                requestId: created.id,
+                orderIndex: created.orderIndex,
+                label: created.label,
+                firm: created.requestedFirm,
+                requestedFirmNameSnapshot: created.requestedFirm?.name ?? null,
+              }
+            : e,
+        ),
+      }));
+      toast.success("Demande envoyée au manager.");
+      invalidate();
+      onSaved?.();
+    },
+    onError: (err: any, _body, ctx) => {
+      if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
+      toast.error(extractErrorMessage(err));
+    },
+  });
+
+  // ── Mutations: Material lines (optimistic, cible intervention OU draft) ─────
 
   const createLineMutation = useMutation({
     mutationFn: (body: CreateMaterialLineBody) => createMissionMaterialLine(missionId, body),
@@ -171,21 +292,24 @@ export default function InterventionsSection({ missionId, canEdit, interventions
       await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
       const previous = queryClient.getQueryData(["missionEncoding", missionId]);
       setOpenAddMaterial(false);
-      setPreferredInterventionId(null);
+      setPreferredTarget(null);
+      const targetKind: MaterialTarget["kind"] = body.missionInterventionId != null ? "INTERVENTION" : "DRAFT";
+      const targetId = (body.missionInterventionId ?? body.interventionDraftId)!;
       const tempId = -Date.now();
       const item = (catalog?.items ?? []).find((i) => i.id === body.itemId) ?? null;
       if (item) {
         setEncodingCache((current) => ({
           ...current,
-          interventions: current.interventions.map((itv) => {
-            if (itv.id !== body.missionInterventionId) return itv;
+          entries: (current.entries ?? []).map((e) => {
+            if (e.kind !== targetKind || e.id !== targetId) return e;
             return {
-              ...itv,
+              ...e,
               materialLines: [
-                ...(itv.materialLines ?? []),
+                ...(e.materialLines ?? []),
                 {
                   id: tempId,
-                  missionInterventionId: body.missionInterventionId,
+                  missionInterventionId: targetKind === "INTERVENTION" ? targetId : null,
+                  interventionDraftId: targetKind === "DRAFT" ? targetId : null,
                   item: { id: item.id, label: item.label, referenceCode: item.referenceCode, unit: item.unit, isImplant: item.isImplant, firm: { id: item.firm.id, name: item.firm.name } },
                   quantity: body.quantity,
                   comment: body.comment ?? "",
@@ -195,15 +319,15 @@ export default function InterventionsSection({ missionId, canEdit, interventions
           }),
         }));
       }
-      return { previous, tempId };
+      return { previous, tempId, targetKind, targetId };
     },
     onSuccess: (created, _body, ctx) => {
       if (!ctx) return;
       setEncodingCache((current) => ({
         ...current,
-        interventions: current.interventions.map((itv) => {
-          if (itv.id !== created.missionInterventionId) return itv;
-          return { ...itv, materialLines: (itv.materialLines ?? []).map((l) => l.id === ctx.tempId ? created : l) };
+        entries: (current.entries ?? []).map((e) => {
+          if (e.kind !== ctx.targetKind || e.id !== ctx.targetId) return e;
+          return { ...e, materialLines: (e.materialLines ?? []).map((l) => l.id === ctx.tempId ? created : l) };
         }),
       }));
       setNewLineIds((prev) => new Set(prev).add(created.id));
@@ -226,9 +350,9 @@ export default function InterventionsSection({ missionId, canEdit, interventions
       setEditLineTarget(null);
       setEncodingCache((current) => ({
         ...current,
-        interventions: current.interventions.map((itv) => ({
-          ...itv,
-          materialLines: (itv.materialLines ?? []).map((l) => {
+        entries: (current.entries ?? []).map((e) => ({
+          ...e,
+          materialLines: (e.materialLines ?? []).map((l) => {
             if (l.id !== args.lineId) return l;
             return { ...l, quantity: args.body.quantity ?? l.quantity, comment: args.body.comment ?? l.comment };
           }),
@@ -239,10 +363,10 @@ export default function InterventionsSection({ missionId, canEdit, interventions
     onSuccess: (updated) => {
       setEncodingCache((current) => ({
         ...current,
-        interventions: current.interventions.map((itv) => {
-          if (itv.id !== updated.missionInterventionId) return itv;
-          return { ...itv, materialLines: (itv.materialLines ?? []).map((l) => l.id === updated.id ? updated : l) };
-        }),
+        entries: (current.entries ?? []).map((e) => ({
+          ...e,
+          materialLines: (e.materialLines ?? []).map((l) => l.id === updated.id ? updated : l),
+        })),
       }));
       invalidate();
       onSaved?.();
@@ -261,9 +385,9 @@ export default function InterventionsSection({ missionId, canEdit, interventions
       setDeleteLineTarget(null);
       setEncodingCache((current) => ({
         ...current,
-        interventions: current.interventions.map((itv) => ({
-          ...itv,
-          materialLines: (itv.materialLines ?? []).filter((l) => l.id !== lineId),
+        entries: (current.entries ?? []).map((e) => ({
+          ...e,
+          materialLines: (e.materialLines ?? []).filter((l) => l.id !== lineId),
         })),
       }));
       return { previous };
@@ -287,30 +411,93 @@ export default function InterventionsSection({ missionId, canEdit, interventions
 
   const createRequestMutation = useMutation({
     mutationFn: (body: CreateMaterialItemRequestBody) => createMissionMaterialItemRequest(missionId, body),
-    onSuccess: () => { toast.success("Demande envoyée au manager."); setOpenRequestDialog(false); invalidate(); },
-    onError: (err: any) => toast.error(extractErrorMessage(err)),
+    onMutate: async (body) => {
+      await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
+      const previous = queryClient.getQueryData(["missionEncoding", missionId]);
+      setOpenRequestDialog(false);
+      const targetKind: MaterialTarget["kind"] = body.missionInterventionId != null ? "INTERVENTION" : "DRAFT";
+      const targetId = (body.missionInterventionId ?? body.interventionDraftId)!;
+      const tempId = -Date.now();
+      setEncodingCache((current) => ({
+        ...current,
+        entries: (current.entries ?? []).map((e) => {
+          if (e.kind !== targetKind || e.id !== targetId) return e;
+          return {
+            ...e,
+            materialItemRequests: [
+              ...(e.materialItemRequests ?? []),
+              { id: tempId, label: body.label, referenceCode: body.referenceCode ?? "", comment: body.comment ?? "" },
+            ],
+          };
+        }),
+      }));
+      return { previous, tempId, targetKind, targetId };
+    },
+    onSuccess: (created, _body, ctx) => {
+      if (!ctx) return;
+      setEncodingCache((current) => ({
+        ...current,
+        entries: (current.entries ?? []).map((e) => {
+          if (e.kind !== ctx.targetKind || e.id !== ctx.targetId) return e;
+          return {
+            ...e,
+            materialItemRequests: (e.materialItemRequests ?? []).map((r) =>
+              r.id === ctx.tempId ? { ...r, id: created.id } : r,
+            ),
+          };
+        }),
+      }));
+      toast.success("Demande envoyée au manager.");
+      invalidate();
+    },
+    onError: (err: any, _body, ctx) => {
+      if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
+      toast.error(extractErrorMessage(err));
+    },
   });
 
   const isBusy =
     createInterventionMutation.isPending || patchInterventionMutation.isPending ||
     deleteInterventionMutation.isPending || createLineMutation.isPending ||
     patchLineMutation.isPending || deleteLineMutation.isPending || createRequestMutation.isPending ||
-    createTypeRequestMutation.isPending;
+    createDraftMutation.isPending;
 
-  const sorted = (interventions ?? []).slice().sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
-  const isOpen = (id: number) => (openIds ?? new Set(sorted.length ? [sorted[0].id] : [])).has(id);
+  const sorted = sortEntries(entries ?? []);
+  const isOpen = (entry: MissionEncodingEntry) => (openIds ?? new Set(sorted.length ? [entryKey(sorted[0])] : [])).has(entryKey(entry));
+
+  // Lot 6 : suggestedMaterials/coherence n'existent que sur le champ transitoire
+  // `legacyInterventions` (voir docblock de la prop) — jamais utilisé pour la liste ou
+  // l'ordre, uniquement pour enrichir une entrée INTERVENTION déjà présente dans `entries`.
+  const legacyById = React.useMemo(() => {
+    const map = new Map<number, EncodingIntervention>();
+    for (const itv of legacyInterventions ?? []) map.set(itv.id, itv);
+    return map;
+  }, [legacyInterventions]);
 
   // "Marques récentes" du wizard — dérivé des marques déjà utilisées ailleurs dans
-  // cette mission (données réelles), jamais une liste inventée.
+  // cette mission (données réelles, interventions ET drafts), jamais une liste inventée.
   const recentFirmIds = React.useMemo(() => {
     const ids = new Set<number>();
-    for (const itv of sorted) {
-      for (const line of itv.materialLines ?? []) {
+    for (const entry of sorted) {
+      for (const line of entry.materialLines ?? []) {
         if (line.item?.firm?.id != null) ids.add(line.item.firm.id);
       }
     }
     return Array.from(ids);
   }, [sorted]);
+
+  const materialTotal = sorted.reduce((sum, e) => sum + (e.materialLines?.length ?? 0), 0);
+  const countsLabel = `${sorted.length} intervention${sorted.length > 1 ? "s" : ""} · ${materialTotal} matériel${materialTotal > 1 ? "s" : ""}`;
+
+  // Stepper inline ±1 sur chaque ligne (prototypes/encodage-react) — ajustement rapide de
+  // la quantité, jamais de suppression implicite (borne min 1, la suppression reste un
+  // choix explicite via ConfirmDeleteDialog, ouvert depuis EditMaterialLineDialog).
+  function bumpQty(line: EncodingMaterialLine, delta: number) {
+    const current = parseFloat(line.quantity) || 0;
+    const next = Math.max(1, current + delta);
+    if (next === current) return;
+    patchLineMutation.mutate({ lineId: line.id, body: { quantity: String(next) } });
+  }
 
   return (
     <Stack spacing={1.75}>
@@ -320,25 +507,10 @@ export default function InterventionsSection({ missionId, canEdit, interventions
           INTERVENTIONS
         </Box>
         <Box sx={{ flex: 1, borderTop: "1px dashed", borderColor: "grey.300" }} />
+        <Box sx={{ fontSize: 12.5, color: GRAY_500, whiteSpace: "nowrap", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
+          {countsLabel}
+        </Box>
       </Stack>
-
-      {/* Demandes de nouveau type en attente (Lot 5, D-068) — pas rattachées à une
-          intervention : le manager doit d'abord les résoudre pour qu'une intervention
-          existe. */}
-      {(interventionTypeRequests ?? []).length > 0 && (
-        <Paper variant="outlined" sx={{ borderRadius: 2, borderStyle: "dashed", borderColor: "#F0C36D", background: "#FEF6E7", p: 1.5 }}>
-          <Typography variant="caption" sx={{ fontWeight: 700, color: "#B7791F" }}>
-            En attente de validation manager
-          </Typography>
-          <Stack spacing={0.5} sx={{ mt: 0.5 }}>
-            {(interventionTypeRequests ?? []).map((req) => (
-              <Typography key={req.id} variant="body2" color="text.secondary">
-                {req.label}{req.suggestedCode ? ` (${req.suggestedCode})` : ""}
-              </Typography>
-            ))}
-          </Stack>
-        </Paper>
-      )}
 
       {/* Empty state — un seul point d'entrée pour ajouter (le bouton persistant plein-largeur
           ci-dessous), jamais un second bouton concurrent ici. */}
@@ -352,25 +524,51 @@ export default function InterventionsSection({ missionId, canEdit, interventions
           </Typography>
         </Paper>
       ) : (
-        sorted.map((itv) => {
-          const lines = itv.materialLines ?? [];
-          const open = isOpen(itv.id);
+        sorted.map((entry) => {
+          const lines = entry.materialLines ?? [];
+          const open = isOpen(entry);
+          const readOnly = entry.readOnly;
+          const editableHere = canEdit && !readOnly;
+          const badge = statusBadge(entry);
+          const firmName = entry.firm?.name ?? entry.requestedFirmNameSnapshot ?? null;
+          const legacy = entry.kind === "INTERVENTION" ? legacyById.get(entry.id) : undefined;
 
           return (
-            <Box key={itv.id} sx={{ background: "#fff", borderRadius: "16px", boxShadow: SHADOW_XS, overflow: "hidden" }}>
+            <Box key={entryKey(entry)} sx={{ background: "#fff", borderRadius: "16px", boxShadow: SHADOW_XS, overflow: "hidden", opacity: readOnly ? 0.85 : 1 }}>
               {/* En-tête accordéon */}
               <Box
                 component="button"
                 type="button"
-                onClick={() => toggleOpen(itv.id)}
+                onClick={() => toggleOpen(entryKey(entry))}
                 sx={{
                   width: "100%", display: "flex", alignItems: "center", gap: "11px", padding: "15px 16px",
                   border: "none", background: "transparent", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
                 }}
               >
-                <Box sx={{ width: 8, height: 8, borderRadius: "999px", background: GREEN_500, flexShrink: 0 }} />
-                <Box sx={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 700, color: TEXT_STRONG, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {interventionTitle(itv)}
+                <Box sx={{ width: 8, height: 8, borderRadius: "999px", background: readOnly ? GRAY_500 : GREEN_500, flexShrink: 0, mt: entry.kind === "DRAFT" ? "3px" : 0, alignSelf: entry.kind === "DRAFT" ? "flex-start" : "center" }} />
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Box sx={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <Box sx={{ fontSize: 15, fontWeight: 700, color: TEXT_STRONG, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {entry.label}
+                    </Box>
+                    {isPending(entry.id) && (
+                      <Typography component="span" variant="caption" color="text.disabled" sx={{ fontStyle: "italic", flexShrink: 0 }}>
+                        Enregistrement…
+                      </Typography>
+                    )}
+                  </Box>
+                  {entry.kind === "DRAFT" && (
+                    <Box sx={{ display: "flex", alignItems: "center", gap: "8px", mt: "3px", flexWrap: "wrap" }}>
+                      <Box sx={{ fontSize: 12, color: GRAY_500 }}>
+                        {firmName ?? "Sans firme"}
+                      </Box>
+                      {badge && (
+                        <Box sx={{ display: "inline-flex", alignItems: "center", height: 18, px: "7px", borderRadius: "999px", background: badge.bg, color: badge.fg, fontSize: 10.5, fontWeight: 700 }}>
+                          {badge.label}
+                        </Box>
+                      )}
+                    </Box>
+                  )}
                 </Box>
                 <Box sx={{ fontSize: 12.5, color: TEXT_MUTED, whiteSpace: "nowrap", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
                   {lines.length} matériel{lines.length > 1 ? "s" : ""}
@@ -385,19 +583,24 @@ export default function InterventionsSection({ missionId, canEdit, interventions
 
               {open && (
                 <Box sx={{ px: "16px" }}>
-                  {lines.map((l) => (
+                  {lines.map((l) => {
+                    const qtyNum = parseFloat(l.quantity) || 0;
+                    return (
                     <Box
                       key={l.id}
-                      component={canEdit ? "button" : "div"}
-                      type={canEdit ? "button" : undefined}
-                      onClick={canEdit ? () => setEditLineTarget({ line: l }) : undefined}
-                      disabled={canEdit ? isBusy : undefined}
-                      aria-label={canEdit ? `Modifier ${l.item?.label ?? "ce matériel"}` : undefined}
+                      component="div"
+                      role={editableHere ? "button" : undefined}
+                      tabIndex={editableHere ? 0 : undefined}
+                      onClick={editableHere ? () => { if (!isBusy) setEditLineTarget({ line: l }); } : undefined}
+                      onKeyDown={editableHere ? (e: React.KeyboardEvent) => {
+                        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (!isBusy) setEditLineTarget({ line: l }); }
+                      } : undefined}
+                      aria-label={editableHere ? `Modifier ${l.item?.label ?? "ce matériel"}` : undefined}
                       sx={{
                         width: "100%", display: "flex", alignItems: "center", gap: "8px", py: "10px",
                         border: "none", borderTop: "1px dashed", borderColor: "grey.150", background: "transparent",
-                        fontFamily: "inherit", textAlign: "left", cursor: canEdit ? "pointer" : "default",
-                        "&:hover": canEdit ? { background: GREEN_50 } : undefined,
+                        fontFamily: "inherit", textAlign: "left", cursor: editableHere ? "pointer" : "default",
+                        "&:hover": editableHere ? { background: GREEN_50 } : undefined,
                       }}
                     >
                       <Stack sx={{ flex: 1, minWidth: 0 }}>
@@ -425,18 +628,63 @@ export default function InterventionsSection({ missionId, canEdit, interventions
                         </Box>
                       )}
 
-                      <Typography
-                        variant="body2"
-                        fontWeight={700}
-                        sx={{ color: GRAY_500, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}
-                      >
-                        {canEdit ? `x${displayQty(l.quantity)}` : `${displayQty(l.quantity)} ${l.item?.unit ?? ""}`}
-                      </Typography>
+                      {editableHere ? (
+                        <Stack direction="row" alignItems="center" spacing="6px" sx={{ flexShrink: 0 }}>
+                          <Box
+                            component="button"
+                            type="button"
+                            aria-label={`Diminuer la quantité de ${l.item?.label ?? "ce matériel"}`}
+                            onClick={(e) => { e.stopPropagation(); bumpQty(l, -1); }}
+                            disabled={isBusy || qtyNum <= 1}
+                            sx={{
+                              width: 26, height: 26, border: "1.5px solid", borderColor: GRAY_200, borderRadius: "8px",
+                              background: "#fff", color: GRAY_700, fontSize: 13, fontWeight: 700, cursor: "pointer",
+                              display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit",
+                              "&:hover": { borderColor: GREEN_500 },
+                              "&:disabled": { opacity: 0.4, cursor: "default" },
+                            }}
+                          >
+                            −
+                          </Box>
+                          <Typography
+                            variant="body2"
+                            fontWeight={700}
+                            sx={{ color: GRAY_700, fontVariantNumeric: "tabular-nums", minWidth: 20, textAlign: "center" }}
+                          >
+                            x{displayQty(l.quantity)}
+                          </Typography>
+                          <Box
+                            component="button"
+                            type="button"
+                            aria-label={`Augmenter la quantité de ${l.item?.label ?? "ce matériel"}`}
+                            onClick={(e) => { e.stopPropagation(); bumpQty(l, 1); }}
+                            disabled={isBusy}
+                            sx={{
+                              width: 26, height: 26, border: "1.5px solid", borderColor: GRAY_200, borderRadius: "8px",
+                              background: "#fff", color: GRAY_700, fontSize: 13, fontWeight: 700, cursor: "pointer",
+                              display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit",
+                              "&:hover": { borderColor: GREEN_500 },
+                              "&:disabled": { opacity: 0.4, cursor: "default" },
+                            }}
+                          >
+                            +
+                          </Box>
+                        </Stack>
+                      ) : (
+                        <Typography
+                          variant="body2"
+                          fontWeight={700}
+                          sx={{ color: GRAY_500, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}
+                        >
+                          {displayQty(l.quantity)} {l.item?.unit ?? ""}
+                        </Typography>
+                      )}
                     </Box>
-                  ))}
+                    );
+                  })}
 
                   {/* Demandes en attente ("À préciser") */}
-                  {(itv.materialItemRequests ?? []).map((req) => (
+                  {(entry.materialItemRequests ?? []).map((req) => (
                     <Stack
                       key={req.id}
                       direction="row"
@@ -452,17 +700,24 @@ export default function InterventionsSection({ missionId, canEdit, interventions
                           </Typography>
                         )}
                       </Stack>
-                      <Box sx={{ display: "inline-flex", alignItems: "center", height: 20, px: "8px", borderRadius: "999px", background: "#FEF6E7", color: "#B7791F", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
-                        À préciser
-                      </Box>
+                      {isPending(req.id) ? (
+                        <Box sx={{ fontSize: 11, fontWeight: 600, color: GRAY_500, fontStyle: "italic", flexShrink: 0 }}>
+                          Enregistrement…
+                        </Box>
+                      ) : (
+                        <Box sx={{ display: "inline-flex", alignItems: "center", height: 20, px: "8px", borderRadius: "999px", background: "#FEF6E7", color: "#B7791F", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+                          À préciser
+                        </Box>
+                      )}
                     </Stack>
                   ))}
 
                   {/* Matériels suggérés non encore ajoutés (Lot 6) — jamais obligatoires,
                       un clic les ajoute directement (mêmes item/firme déjà connus, pas
-                      besoin de repasser par l'assistant 3 étapes). */}
-                  {canEdit && (itv.suggestedMaterials ?? [])
-                    .filter((sm) => (itv.coherence?.unusedSuggestedMaterialItemIds ?? []).includes(sm.id))
+                      besoin de repasser par l'assistant 3 étapes). Uniquement pour une
+                      intervention réelle (voir docblock legacyInterventions). */}
+                  {editableHere && legacy && (legacy.suggestedMaterials ?? [])
+                    .filter((sm) => (legacy.coherence?.unusedSuggestedMaterialItemIds ?? []).includes(sm.id))
                     .map((sm) => (
                       <Stack
                         key={`suggested-${sm.id}`}
@@ -481,7 +736,7 @@ export default function InterventionsSection({ missionId, canEdit, interventions
                           component="button"
                           type="button"
                           disabled={isBusy}
-                          onClick={() => createLineMutation.mutate({ missionInterventionId: itv.id, itemId: sm.id, quantity: "1" })}
+                          onClick={() => createLineMutation.mutate({ missionInterventionId: entry.id, itemId: sm.id, quantity: "1" })}
                           sx={{
                             border: "1px solid", borderColor: GREEN_500, borderRadius: "999px", background: "#fff",
                             color: GREEN_700, fontSize: 12, fontWeight: 700, px: "10px", py: "4px", cursor: "pointer",
@@ -493,17 +748,17 @@ export default function InterventionsSection({ missionId, canEdit, interventions
                       </Stack>
                     ))}
 
-                  {lines.length === 0 && (itv.materialItemRequests ?? []).length === 0 && (
+                  {lines.length === 0 && (entry.materialItemRequests ?? []).length === 0 && (
                     <Typography variant="body2" color="text.secondary" sx={{ py: "10px" }}>
                       Aucun matériel encodé
                     </Typography>
                   )}
 
-                  {canEdit && (
+                  {editableHere && (
                     <Box
                       component="button"
                       type="button"
-                      onClick={() => { setPreferredInterventionId(itv.id); setOpenAddMaterial(true); }}
+                      onClick={() => { setPreferredTarget(entryTarget(entry)); setOpenAddMaterial(true); }}
                       disabled={isBusy}
                       sx={{
                         width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", height: 46,
@@ -518,12 +773,15 @@ export default function InterventionsSection({ missionId, canEdit, interventions
                     </Box>
                   )}
 
-                  {canEdit && (
+                  {/* Modifier/Supprimer : uniquement pour une intervention réelle (le
+                      workflow manager frontend pour les drafts est hors périmètre de ce
+                      commit) et jamais sur une entrée en lecture seule. */}
+                  {editableHere && entry.kind === "INTERVENTION" && (
                     <Stack direction="row" spacing={2} sx={{ py: "10px", borderTop: "1px dashed", borderColor: "grey.150" }}>
                       <Box
                         component="button"
                         type="button"
-                        onClick={() => setEditIntervention(itv)}
+                        onClick={() => setEditIntervention(entry)}
                         disabled={isBusy}
                         sx={{ border: "none", background: "none", p: 0, color: GRAY_500, fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, cursor: "pointer", textDecoration: "underline" }}
                       >
@@ -532,7 +790,7 @@ export default function InterventionsSection({ missionId, canEdit, interventions
                       <Box
                         component="button"
                         type="button"
-                        onClick={() => setDeleteInterventionTarget(itv)}
+                        onClick={() => setDeleteInterventionTarget(entry)}
                         disabled={isBusy}
                         sx={{ border: "none", background: "none", p: 0, color: "error.main", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, cursor: "pointer", textDecoration: "underline" }}
                       >
@@ -571,13 +829,14 @@ export default function InterventionsSection({ missionId, canEdit, interventions
       {/* Dialogs */}
       <AddInterventionDialog
         open={openAddIntervention}
-        loading={createInterventionMutation.isPending}
+        loadingIntervention={createInterventionMutation.isPending}
+        loadingDraft={createDraftMutation.isPending}
         interventionTypes={catalog?.interventionTypes ?? []}
         firms={catalog?.firms ?? []}
         existingCount={sorted.length}
         onClose={() => (isBusy ? null : setOpenAddIntervention(false))}
         onSubmit={(values) => createInterventionMutation.mutate(values)}
-        onRequestNewType={() => setOpenTypeRequestDialog(true)}
+        onSubmitDraft={(values: DraftSubmitValues) => createDraftMutation.mutate(values)}
       />
 
       <EditInterventionDialog
@@ -593,32 +852,26 @@ export default function InterventionsSection({ missionId, canEdit, interventions
         }}
       />
 
-      <InterventionTypeRequestDialog
-        open={openTypeRequestDialog}
-        loading={createTypeRequestMutation.isPending}
-        onClose={() => (isBusy ? null : setOpenTypeRequestDialog(false))}
-        onSubmit={(values) => createTypeRequestMutation.mutate(values)}
-      />
-
       <ConfirmDeleteDialog
         open={!!deleteInterventionTarget}
         loading={deleteInterventionMutation.isPending}
         title="Supprimer l'intervention ?"
-        message={deleteInterventionTarget ? `${deleteInterventionTarget.code} — ${deleteInterventionTarget.label}` : ""}
+        message={deleteInterventionTarget?.label ?? ""}
         onClose={() => (isBusy ? null : setDeleteInterventionTarget(null))}
         onConfirm={() => { if (!deleteInterventionTarget) return; deleteInterventionMutation.mutate(deleteInterventionTarget.id); }}
+        helpTopicId="mission-encoding"
       />
 
       <MaterialWizard
         open={openAddMaterial}
         loading={createLineMutation.isPending}
-        interventionId={preferredInterventionId}
+        target={preferredTarget}
         catalog={catalog}
         recentFirmIds={recentFirmIds}
         onClose={() => (isBusy ? null : setOpenAddMaterial(false))}
         onSubmit={(values) => createLineMutation.mutate(values)}
-        onNotFound={(itvId) => {
-          setPreferredRequestInterventionId(itvId || preferredInterventionId);
+        onNotFound={(target) => {
+          setPreferredRequestTarget(target ?? preferredTarget);
           setOpenRequestDialog(true);
         }}
       />
@@ -652,16 +905,29 @@ export default function InterventionsSection({ missionId, canEdit, interventions
         message={deleteLineTarget ? `${deleteLineTarget.line.item.label} (${deleteLineTarget.line.item.firm.name})` : ""}
         onClose={() => (isBusy ? null : setDeleteLineTarget(null))}
         onConfirm={() => { if (!deleteLineTarget) return; deleteLineMutation.mutate(deleteLineTarget.line.id); }}
+        helpTopicId="mission-encoding"
       />
 
       <MaterialItemRequestDialog
         open={openRequestDialog}
         loading={createRequestMutation.isPending}
-        interventions={sorted}
-        preferredInterventionId={preferredRequestInterventionId}
+        entries={sorted}
+        preferredTarget={preferredRequestTarget}
         onClose={() => (isBusy ? null : setOpenRequestDialog(false))}
         onSubmit={(values) => createRequestMutation.mutate(values)}
       />
     </Stack>
   );
+}
+
+/** Tri exclusivement par orderIndex, puis secondaire déterministe (kind puis id) — même
+ *  convention que le backend (MissionEncodingService::buildEncodingDto()) : en cas
+ *  d'égalité d'orderIndex anormale, l'ordre reste stable plutôt que dépendant de
+ *  l'itération JS, sans jamais masquer l'incohérence. */
+function sortEntries(entries: MissionEncodingEntry[]): MissionEncodingEntry[] {
+  return entries.slice().sort((a, b) => {
+    if (a.orderIndex !== b.orderIndex) return (a.orderIndex ?? 0) - (b.orderIndex ?? 0);
+    if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+    return a.id - b.id;
+  });
 }

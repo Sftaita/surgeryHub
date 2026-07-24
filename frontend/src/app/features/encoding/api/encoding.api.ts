@@ -10,7 +10,9 @@ import type {
   CreateMaterialItemRequestBody,
   MaterialItemRequestDto,
   CreateInterventionTypeRequestBody,
+  CreateInterventionTypeRequestResponse,
   InterventionTypeEncodingContext,
+  CatalogInterventionType,
 } from "./encoding.types";
 
 export async function fetchMissionEncoding(
@@ -132,8 +134,8 @@ export async function createMissionMaterialItemRequest(
 export async function createMissionInterventionTypeRequest(
   missionId: number,
   body: CreateInterventionTypeRequestBody,
-): Promise<{ id: number }> {
-  const { data } = await apiClient.post<{ id: number }>(
+): Promise<CreateInterventionTypeRequestResponse> {
+  const { data } = await apiClient.post<CreateInterventionTypeRequestResponse>(
     `/api/missions/${missionId}/intervention-type-requests`,
     body,
   );
@@ -141,15 +143,30 @@ export async function createMissionInterventionTypeRequest(
 }
 
 /**
+ * EPIC Revue instrumentiste, Lot 3, commit 8 — parcours "firme puis intervention" : une
+ * fois la firme choisie, on ne propose que les types d'intervention pour lesquels une
+ * prestation existe chez cette firme (accélérateur de saisie, jamais une restriction
+ * dure côté backend — voir FirmServiceOfferingController, "jamais lu par le moteur
+ * financier"). GET /api/firms/{firmId}/service-offerings
+ */
+export async function fetchFirmServiceOfferings(
+  firmId: number,
+): Promise<Array<{ id: number; interventionType: CatalogInterventionType; active: boolean }>> {
+  const { data } = await apiClient.get<Array<{ id: number; interventionType: CatalogInterventionType; active: boolean }>>(
+    `/api/firms/${firmId}/service-offerings`,
+  );
+  return data;
+}
+
+/**
  * Cycle de vie de l'encodage (Lot 7, D-070).
+ * `start` n'a plus de point d'entrée frontend (revue UX instrumentiste, lot 1) : c'était
+ * une invite optionnelle vers ENCODING_IN_PROGRESS, jamais un préalable requis — l'API
+ * `POST /api/missions/{id}/encoding/start` reste disponible côté backend (contrat inchangé).
  * `complete` n'est pas ici : "Terminer l'encodage" utilise toujours l'alias legacy
  * `POST /api/missions/{id}/submit` (submitMission dans missions.api.ts) — le backend
  * délègue au même MissionEncodingWorkflowService::complete(), jamais deux implémentations.
  */
-export async function startMissionEncoding(missionId: number): Promise<void> {
-  await apiClient.post(`/api/missions/${missionId}/encoding/start`);
-}
-
 export async function validateMissionEncoding(missionId: number): Promise<void> {
   await apiClient.post(`/api/missions/${missionId}/encoding/validate`);
 }

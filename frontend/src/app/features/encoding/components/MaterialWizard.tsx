@@ -11,7 +11,6 @@ const GREEN_700 = "#2C7D5F";
 const GREEN_800 = "#1F6B4F";
 const GREEN_100 = "#DDF4EA";
 const GRAY_100 = "#EFF2F5";
-const GRAY_150 = "#E7EBEF";
 const GRAY_200 = "#DDE2E8";
 const GRAY_300 = "#C2C9D1";
 const GRAY_400 = "#98A2AE";
@@ -72,16 +71,20 @@ function searchInputSx() {
 
 type Step = 1 | 2 | 3;
 
+/** EPIC Revue instrumentiste, Lot 3, commit 8 — cible générique : une intervention
+ *  réelle ou un draft OPEN, jamais les deux à la fois (voir CreateMaterialLineBody). */
+export type MaterialTarget = { kind: "INTERVENTION" | "DRAFT"; id: number };
+
 type Props = {
   open: boolean;
   loading: boolean;
-  interventionId: number | null;
+  target: MaterialTarget | null;
   catalog?: { items: CatalogItem[]; firms: CatalogFirm[] };
   /** Marques déjà utilisées ailleurs dans cette mission — dérivé de données réelles, jamais inventé. */
   recentFirmIds?: number[];
   onClose: () => void;
   onSubmit: (values: CreateMaterialLineBody) => void;
-  onNotFound?: (interventionId: number) => void;
+  onNotFound?: (target: MaterialTarget) => void;
 };
 
 /**
@@ -89,7 +92,7 @@ type Props = {
  * (Marque → Matériel → Détails). Ne jamais fusionner en un seul formulaire.
  */
 export default function MaterialWizard({
-  open, loading, interventionId, catalog, recentFirmIds = [], onClose, onSubmit, onNotFound,
+  open, loading, target, catalog, recentFirmIds = [], onClose, onSubmit, onNotFound,
 }: Props) {
   const [step, setStep] = React.useState<Step>(1);
   const [brandQuery, setBrandQuery] = React.useState("");
@@ -130,14 +133,15 @@ export default function MaterialWizard({
     setStep(3);
   }
   function handleNotFound() {
-    if (interventionId == null || !onNotFound) return;
+    if (target == null || !onNotFound) return;
     onClose();
-    onNotFound(interventionId);
+    onNotFound(target);
   }
   function handleAdd() {
-    if (interventionId == null || !selectedItem) return;
+    if (target == null || !selectedItem) return;
     onSubmit({
-      missionInterventionId: interventionId,
+      missionInterventionId: target.kind === "INTERVENTION" ? target.id : undefined,
+      interventionDraftId: target.kind === "DRAFT" ? target.id : undefined,
       itemId: selectedItem.id,
       quantity: String(qty),
       comment: comment.trim(),
@@ -174,6 +178,7 @@ export default function MaterialWizard({
       title="Ajouter du matériel"
       onClose={onClose}
       closeDisabled={loading}
+      helpTopicId="mission-encoding"
       steps={
         <Box sx={{ display: "flex", alignItems: "flex-start", mt: "18px" }}>
           {stepDot(1, "Marque")}

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import MissionEncodingPage from "./MissionEncodingPage";
@@ -54,6 +54,7 @@ function baseEncoding(overrides: Record<string, any> = {}) {
   return {
     mission: { id: 529, type: "BLOCK", status: "ASSIGNED", allowedActions: ["encoding", "submit"] },
     interventions: [],
+    entries: [],
     catalog: CATALOG,
     ...overrides,
   };
@@ -76,14 +77,14 @@ beforeEach(() => {
   apiGetMock.mockReset();
 });
 
-describe("MissionEncodingPage — header", () => {
-  it("affiche le nom du site sans l'adresse", async () => {
+describe("MissionEncodingPage — header et carte mission (MissionReadOnlyCard)", () => {
+  it("affiche le nom du site et son adresse dans la carte mission", async () => {
     const mission = baseMission();
     mockRoutes(mission, baseEncoding());
     renderPage();
 
     expect(await screen.findByText("CHU Brugmann — Site Victor Horta")).toBeInTheDocument();
-    expect(screen.queryByText(/Rue de la Clinique 1/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Rue de la Clinique 1/)).toBeInTheDocument();
   });
 
   it("affiche la spécialité du chirurgien quand elle est disponible", async () => {
@@ -91,7 +92,8 @@ describe("MissionEncodingPage — header", () => {
     mockRoutes(mission, baseEncoding());
     renderPage();
 
-    expect(await screen.findByText("Dr. Jérôme De Muylder · Genou")).toBeInTheDocument();
+    expect(await screen.findByText("Dr. Jérôme De Muylder")).toBeInTheDocument();
+    expect(screen.getByText("Genou")).toBeInTheDocument();
   });
 
   it("n'affiche aucun suffixe quand le chirurgien n'a pas de spécialité (jamais 'undefined')", async () => {
@@ -112,6 +114,30 @@ describe("MissionEncodingPage — header", () => {
 
     expect(await screen.findByText("Dr. Jérôme De Muylder")).toBeInTheDocument();
     expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
+  });
+
+  it("affiche la photo du chirurgien quand profilePicturePath est renseigné", async () => {
+    const mission = baseMission({
+      surgeon: { id: 2, firstname: "Jérôme", lastname: "De Muylder", email: "x@x.test", specialties: [], profilePicturePath: "/uploads/profile-pictures/surgeon-2.jpg" },
+    });
+    mockRoutes(mission, baseEncoding());
+    renderPage();
+
+    const img = await screen.findByAltText("Dr. Jérôme De Muylder");
+    expect(img.tagName).toBe("IMG");
+    expect((img as HTMLImageElement).src).toContain("/uploads/profile-pictures/surgeon-2.jpg");
+  });
+
+  it("affiche les initiales quand le chirurgien n'a pas de photo", async () => {
+    const mission = baseMission({
+      surgeon: { id: 2, firstname: "Jérôme", lastname: "De Muylder", email: "x@x.test", specialties: [], profilePicturePath: null },
+    });
+    mockRoutes(mission, baseEncoding());
+    renderPage();
+
+    await screen.findByText("Dr. Jérôme De Muylder");
+    expect(screen.queryByAltText("Dr. Jérôme De Muylder")).not.toBeInTheDocument();
+    expect(screen.getByText("DM")).toBeInTheDocument();
   });
 });
 
@@ -143,19 +169,21 @@ describe("MissionEncodingPage — brouillon et interventions", () => {
 
   it("plusieurs interventions et matériels : compteurs réels dérivés des données", async () => {
     const mission = baseMission();
+    const materialLineA1 = { id: 1, missionInterventionId: 1, interventionDraftId: null, item: { id: 1, label: "Vis", referenceCode: "V1", unit: "u", isImplant: false, firm: { id: 1, name: "Arthrex" } }, quantity: "1.00", comment: "" };
+    const materialLineA2 = { id: 2, missionInterventionId: 1, interventionDraftId: null, item: { id: 2, label: "Fil", referenceCode: "F1", unit: "u", isImplant: false, firm: { id: 1, name: "Arthrex" } }, quantity: "2.00", comment: "" };
     mockRoutes(
       mission,
       baseEncoding({
+        // `interventions` (legacy) reste transmis pour l'enrichissement Lot 6 — `entries`
+        // (EPIC Revue instrumentiste, Lot 3, commit 8) est la source de vérité du rendu
+        // et des compteurs sur cette page.
         interventions: [
-          {
-            id: 1, code: "A", label: "Intervention A", orderIndex: 0,
-            materialLines: [
-              { id: 1, missionInterventionId: 1, item: { id: 1, label: "Vis", referenceCode: "V1", unit: "u", isImplant: false, firm: { id: 1, name: "Arthrex" } }, quantity: "1.00", comment: "" },
-              { id: 2, missionInterventionId: 1, item: { id: 2, label: "Fil", referenceCode: "F1", unit: "u", isImplant: false, firm: { id: 1, name: "Arthrex" } }, quantity: "2.00", comment: "" },
-            ],
-            materialItemRequests: [],
-          },
+          { id: 1, code: "A", label: "Intervention A", orderIndex: 0, materialLines: [materialLineA1, materialLineA2], materialItemRequests: [] },
           { id: 2, code: "B", label: "Intervention B", orderIndex: 1, materialLines: [], materialItemRequests: [] },
+        ],
+        entries: [
+          { kind: "INTERVENTION", id: 1, requestId: null, orderIndex: 0, label: "Intervention A", interventionType: null, firm: null, requestedFirmNameSnapshot: null, status: "CATALOGUED", readOnly: false, materialLines: [materialLineA1, materialLineA2], materialItemRequests: [] },
+          { kind: "INTERVENTION", id: 2, requestId: null, orderIndex: 1, label: "Intervention B", interventionType: null, firm: null, requestedFirmNameSnapshot: null, status: "CATALOGUED", readOnly: false, materialLines: [], materialItemRequests: [] },
         ],
       }),
     );
@@ -197,5 +225,14 @@ describe("MissionEncodingPage — brouillon et interventions", () => {
 
     await screen.findByText("0 intervention · 0 matériel");
     expect(screen.queryByRole("button", { name: "Terminer l'encodage" })).not.toBeInTheDocument();
+  });
+
+  it("le bouton 'Démarrer l'encodage' n'est jamais affiché (revue UX lot 1), même si le backend l'autorise encore", async () => {
+    const mission = baseMission({ allowedActions: ["encoding", "submit", "start_encoding"] });
+    mockRoutes(mission, baseEncoding());
+    renderPage();
+
+    await screen.findByText("0 intervention · 0 matériel");
+    expect(screen.queryByRole("button", { name: /démarrer l'encodage/i })).not.toBeInTheDocument();
   });
 });

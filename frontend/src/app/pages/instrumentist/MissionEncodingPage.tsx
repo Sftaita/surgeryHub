@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import dayjs from "dayjs";
@@ -8,24 +8,24 @@ import "dayjs/locale/fr";
 
 import { fetchMissionById } from "../../features/missions/api/missions.api";
 import type { UserRef } from "../../features/missions/api/missions.types";
-import { fetchMissionEncoding, startMissionEncoding } from "../../features/encoding/api/encoding.api";
+import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
+import { fetchMissionEncoding } from "../../features/encoding/api/encoding.api";
 import InterventionsSection from "../../features/encoding/components/InterventionsSection";
 import { EncodeHeader } from "../../features/encoding/components/EncodeHeader";
 import { EncodingStatusPanel } from "../../features/encoding/components/EncodingStatusPanel";
+import { MissionReadOnlyCard } from "../../features/encoding/components/MissionReadOnlyCard";
+import { StickyValidateFooter } from "../../features/encoding/components/StickyValidateFooter";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
 import { SPECIALTIES } from "../../features/planning-manager/api/planning.api";
-import { useToast } from "../../ui/toast/useToast";
 
 dayjs.locale("fr");
 
 const GREEN_50 = "#EFFAF5";
-const GREEN_500 = "#42A882";
 const GREEN_700 = "#2C7D5F";
 const GRAY_300 = "#C2C9D1";
 const GRAY_400 = "#98A2AE";
 const GRAY_700 = "#3A4754";
-const SHADOW_MD = "0 2px 6px rgba(22,32,43,.06), 0 8px 20px rgba(22,32,43,.08)";
 const SHADOW_XS = "0 1px 2px rgba(22,32,43,.05)";
 const SHADOW_SM = "0 1px 2px rgba(22,32,43,.05), 0 2px 6px rgba(22,32,43,.06)";
 
@@ -80,7 +80,6 @@ export default function MissionEncodingPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const toast = useToast();
 
   const [openSubmit, setOpenSubmit] = React.useState(false);
   const [openEditHours, setOpenEditHours] = React.useState(false);
@@ -108,17 +107,6 @@ export default function MissionEncodingPage() {
 
   const canSubmit = mission?.allowedActions?.includes("submit") ?? false;
   const canEditHours = mission?.allowedActions?.includes("edit_hours") ?? false;
-  /** Lot 7 (D-070) — invite optionnelle : passer explicitement en ENCODING_IN_PROGRESS. */
-  const canStart = mission?.allowedActions?.includes("start_encoding") ?? false;
-
-  const startMutation = useMutation({
-    mutationFn: () => startMissionEncoding(missionId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
-      queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] });
-    },
-    onError: (err: any) => toast.error(extractErrorMessage(err)),
-  });
 
   const {
     data: encoding,
@@ -182,54 +170,35 @@ export default function MissionEncodingPage() {
   const hoursLabel = formatHours(mission.service?.hours ?? null);
   const surgeon = mission.surgeon;
   const specialtyLabel = surgeonSpecialtyLabel(surgeon);
-  const personLine = surgeon
-    ? `Dr. ${[surgeon.firstname, surgeon.lastname].filter(Boolean).join(" ").trim() || surgeon.displayName || surgeon.email}${specialtyLabel ? ` · ${specialtyLabel}` : ""}`
+  const surgeonName = surgeon
+    ? `Dr. ${[surgeon.firstname, surgeon.lastname].filter(Boolean).join(" ").trim() || surgeon.displayName || surgeon.email}`
     : null;
-
-  const interventionCount = encoding.interventions?.length ?? 0;
-  const materialCount = (encoding.interventions ?? []).reduce(
-    (sum, itv) => sum + (itv.materialLines?.length ?? 0), 0,
-  );
-  const countsLabel = `${interventionCount} intervention${interventionCount > 1 ? "s" : ""} · ${materialCount} matériel${materialCount > 1 ? "s" : ""}`;
+  const dateLabel = dayjs(mission.startAt).format("dddd D MMMM YYYY").replace(/^\w/, (c) => c.toUpperCase());
+  const scheduledLabel = mission.startAt && mission.endAt
+    ? `${dayjs(mission.startAt).format("HH[h]mm")} → ${dayjs(mission.endAt).format("HH[h]mm")}`
+    : "—";
 
   return (
     <Box>
       <EncodeHeader
         missionId={mission.id}
-        siteName={mission.site?.name ?? "—"}
-        personLine={personLine}
-        dateLabel={dayjs(mission.startAt).format("dddd D MMMM YYYY").replace(/^\w/, (c) => c.toUpperCase())}
+        dateLabel={dateLabel}
         typeLabel={missionTypeLabel(mission.type)}
         onBack={() => navigate(-1)}
+        helpTopicId="mission-encoding"
+        savedAt={lastSavedAt}
       />
 
       <Box sx={{ px: "20px", mt: "-28px", position: "relative", display: "flex", flexDirection: "column", gap: "14px" }}>
-        {/* Barre brouillon */}
-        <Stack
-          direction="row"
-          alignItems="center"
-          spacing={1.5}
-          sx={{ background: "#fff", borderRadius: "14px", padding: "12px 15px", boxShadow: SHADOW_MD }}
-        >
-          <Box
-            sx={{
-              width: 9, height: 9, borderRadius: "999px", background: GREEN_500, flexShrink: 0,
-              animation: "shPulse 1.6s ease-in-out infinite",
-              "@keyframes shPulse": { "0%,100%": { opacity: 1 }, "50%": { opacity: 0.35 } },
-            }}
-          />
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Box sx={{ fontSize: 13.5, fontWeight: 700, color: GREEN_700 }}>
-              {mission.status === "ENCODING_IN_PROGRESS" ? "Encodage en cours" : "Brouillon"}
-            </Box>
-            <Box sx={{ mt: "1px", fontSize: 12.5, color: GRAY_400, fontVariantNumeric: "tabular-nums" }}>{countsLabel}</Box>
-          </Box>
-          {lastSavedAt && (
-            <Box sx={{ display: "flex", alignItems: "center", gap: "6px", fontSize: 12, color: GRAY_400, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
-              Enregistré à {dayjs(lastSavedAt).format("HH:mm")}
-            </Box>
-          )}
-        </Stack>
+        <MissionReadOnlyCard
+          surgeonName={surgeonName}
+          surgeonPhotoUrl={resolveApiAssetUrl(surgeon?.profilePicturePath)}
+          specialtyLabel={specialtyLabel}
+          siteName={mission.site?.name ?? "—"}
+          siteAddress={mission.site?.address ?? null}
+          dateLabel={dateLabel}
+          scheduledLabel={scheduledLabel}
+        />
 
         {/* Cycle de vie de l'encodage (Lot 7, D-070) : statut réel, signaux de cohérence
             informationnels, et commentaires manager si la mission a déjà été rejetée. */}
@@ -238,18 +207,6 @@ export default function MissionEncodingPage() {
           coherenceSummary={encoding.coherenceSummary}
           comments={encoding.encodingComments}
         />
-
-        {canStart && (
-          <Button
-            variant="outlined"
-            fullWidth
-            onClick={() => startMutation.mutate()}
-            disabled={startMutation.isPending}
-            sx={{ height: 48, borderRadius: "13px", fontWeight: 700, textTransform: "none", borderColor: GREEN_700, color: GREEN_700 }}
-          >
-            Démarrer l'encodage
-          </Button>
-        )}
 
         {/* Heures prestées */}
         <Box
@@ -275,31 +232,24 @@ export default function MissionEncodingPage() {
           {canEditHours && <ChevronRightIcon />}
         </Box>
 
-        {/* Interventions */}
+        {/* Interventions — entries (EPIC Revue instrumentiste, Lot 3, commit 8) est la
+            source de vérité du rendu : liste unifiée interventions réelles + drafts,
+            déjà triée par orderIndex. `interventions` (legacy) n'est plus transmis que
+            pour l'enrichissement Lot 6 (suggestedMaterials/coherence), jamais pour
+            construire la liste elle-même. */}
         <InterventionsSection
           missionId={mission.id}
           canEdit={canEdit}
-          interventions={encoding.interventions ?? []}
-          interventionTypeRequests={encoding.interventionTypeRequests ?? []}
+          entries={encoding.entries ?? []}
+          legacyInterventions={encoding.interventions ?? []}
           catalog={encoding.catalog}
           onSaved={() => setLastSavedAt(new Date())}
         />
-
-        {canSubmit && (
-          <Button
-            variant="contained"
-            disableElevation
-            fullWidth
-            onClick={() => setOpenSubmit(true)}
-            sx={{
-              height: 54, borderRadius: "13px", fontWeight: 700, fontSize: 15.5, textTransform: "none",
-              bgcolor: "#1F6B4F", boxShadow: "0 5px 14px rgba(20,77,56,.3)", "&:hover": { bgcolor: "#144D38" },
-            }}
-          >
-            Terminer l'encodage
-          </Button>
-        )}
       </Box>
+
+      {canSubmit && (
+        <StickyValidateFooter onClick={() => setOpenSubmit(true)} />
+      )}
 
       <SubmitDialog
         open={openSubmit}
@@ -311,6 +261,7 @@ export default function MissionEncodingPage() {
           queryClient.invalidateQueries({ queryKey: ["missions"] });
           navigate(-1);
         }}
+        helpTopicId="mission-encoding"
       />
 
       {canEditHours && openEditHours && (
@@ -318,6 +269,8 @@ export default function MissionEncodingPage() {
           open={openEditHours}
           onClose={() => setOpenEditHours(false)}
           mission={mission}
+          onSaved={() => setLastSavedAt(new Date())}
+          helpTopicId="mission-encoding"
         />
       )}
     </Box>
