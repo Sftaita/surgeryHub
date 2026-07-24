@@ -6,13 +6,12 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import dayjs from "dayjs";
 import "dayjs/locale/fr";
 
-import { fetchMissionById } from "../../features/missions/api/missions.api";
+import { fetchMissionById, getMissionExecution, type MissionExecutionInfo } from "../../features/missions/api/missions.api";
 import type { UserRef } from "../../features/missions/api/missions.types";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { fetchMissionEncoding } from "../../features/encoding/api/encoding.api";
 import InterventionsSection from "../../features/encoding/components/InterventionsSection";
 import { EncodeHeader } from "../../features/encoding/components/EncodeHeader";
-import { EncodingStatusPanel } from "../../features/encoding/components/EncodingStatusPanel";
 import { MissionReadOnlyCard } from "../../features/encoding/components/MissionReadOnlyCard";
 import { StickyValidateFooter } from "../../features/encoding/components/StickyValidateFooter";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
@@ -38,11 +37,20 @@ function extractErrorMessage(err: any): string {
   );
 }
 
-function formatHours(hours?: string | number | null): string {
-  if (hours === null || hours === undefined || hours === "") return "Non renseigné";
-  const n = typeof hours === "string" ? Number(hours) : hours;
-  if (!Number.isFinite(n)) return "Non renseigné";
-  return `${n} h`;
+/**
+ * Anomalie écran d'encodage (commit dédié) — la source de vérité des heures prestées
+ * est MissionExecutionInfo (GET/PATCH .../execution), en minutes entières, pas
+ * mission.service.hours (Mission ne porte plus ce champ depuis D-071 — voir
+ * EditServiceHoursDialog.tsx). hasExecutionRecord distingue "jamais saisi" de "saisi à
+ * une valeur qui vaut 0" (repli sur le planifié uniquement quand aucun enregistrement
+ * n'existe), même format d'affichage ("X h") que l'ancien comportement.
+ */
+function formatExecutionHours(execution: MissionExecutionInfo | undefined): string {
+  if (!execution?.hasExecutionRecord || execution.actualDurationMinutes == null) {
+    return "Non renseigné";
+  }
+  const hours = execution.actualDurationMinutes / 60;
+  return `${Number.isInteger(hours) ? hours : hours.toFixed(2).replace(/\.?0+$/, "")} h`;
 }
 
 function missionTypeLabel(type: string): string {
@@ -108,6 +116,15 @@ export default function MissionEncodingPage() {
   const canSubmit = mission?.allowedActions?.includes("submit") ?? false;
   const canEditHours = mission?.allowedActions?.includes("edit_hours") ?? false;
 
+  // Même query key que EditServiceHoursDialog.tsx (mutation) et manager/MissionDetailPage.tsx
+  // (lecture) — une seule source de vérité pour les heures prestées, jamais un champ
+  // dérivé de ["mission", missionId] (voir formatExecutionHours()).
+  const { data: execution } = useQuery({
+    queryKey: ["mission-execution", missionId],
+    queryFn: () => getMissionExecution(missionId),
+    enabled: isValidId && !!mission,
+  });
+
   const {
     data: encoding,
     isLoading: isEncodingLoading,
@@ -167,7 +184,7 @@ export default function MissionEncodingPage() {
     encoding.mission?.allowedActions?.includes("edit_encoding") ||
     false;
 
-  const hoursLabel = formatHours(mission.service?.hours ?? null);
+  const hoursLabel = formatExecutionHours(execution);
   const surgeon = mission.surgeon;
   const specialtyLabel = surgeonSpecialtyLabel(surgeon);
   const surgeonName = surgeon
@@ -200,13 +217,12 @@ export default function MissionEncodingPage() {
           scheduledLabel={scheduledLabel}
         />
 
-        {/* Cycle de vie de l'encodage (Lot 7, D-070) : statut réel, signaux de cohérence
-            informationnels, et commentaires manager si la mission a déjà été rejetée. */}
-        <EncodingStatusPanel
-          status={String(mission.status)}
-          coherenceSummary={encoding.coherenceSummary}
-          comments={encoding.encodingComments}
-        />
+        {/* Anomalie écran d'encodage (commit dédié) — EncodingStatusPanel (statut +
+            signaux de cohérence informationnels + historique commentaires manager)
+            formait un résumé intermédiaire redondant avec le véritable récapitulatif
+            affiché par SubmitDialog après "Terminer l'encodage". Retiré uniquement de
+            cette page : le composant reste utilisé tel quel par
+            pages/manager/MissionDetailPage.tsx (composant partagé, jamais modifié). */}
 
         {/* Heures prestées */}
         <Box

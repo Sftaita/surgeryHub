@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
 
 import type { Mission } from "../api/missions.types";
-import { patchMissionService, type ServiceUpdateBody } from "../api/missions.api";
+import { updateMissionExecution, type MissionExecutionInfo } from "../api/missions.api";
 import { useToast } from "../../../ui/toast/useToast";
 import { SheetModal } from "../../../ui/sheet/SheetModal";
 import { StepperRow } from "../../../ui/sheet/StepperRow";
@@ -24,6 +24,10 @@ type Props = {
   open: boolean;
   onClose: () => void;
   mission: Mission;
+  /** Appelé après une sauvegarde réussie — pilote l'horodatage "Enregistré à" du header. */
+  onSaved?: () => void;
+  /** Topic d'aide contextuel — omis par défaut, ce composant est réutilisé hors encodage. */
+  helpTopicId?: string;
 };
 
 type HoursDraft = { start: number; end: number; pause: number; nextDay: boolean };
@@ -71,7 +75,7 @@ function defaultDraft(mission: Mission): HoursDraft {
  * pas de start/end) : à la réouverture on repart donc toujours de l'horaire prévu de
  * la mission, jamais d'une valeur déjà enregistrée (impossible à reconstruire).
  */
-export default function EditServiceHoursDialog({ open, onClose, mission }: Props) {
+export default function EditServiceHoursDialog({ open, onClose, mission, onSaved, helpTopicId }: Props) {
   const queryClient = useQueryClient();
   const toast = useToast();
 
@@ -86,19 +90,60 @@ export default function EditServiceHoursDialog({ open, onClose, mission }: Props
   const totalMinutes = Math.max(0, endEff - draft.start - draft.pause);
   const maxPause = Math.max(0, endEff - draft.start - STEP);
 
+  // Source de vérité unique des heures prestées : ["mission-execution", missionId], lu
+  // par GET /api/missions/{id}/execution (MissionExecutionController::toDto()) — jamais
+  // ["mission", missionId].service, un champ que MissionDetailDto n'expose plus depuis le
+  // renommage InstrumentistService -> MissionExecution (D-071). Toute page qui affiche les
+  // heures prestées (encodage instrumentiste, fiche mission instrumentiste, fiche mission
+  // manager) doit lire ce même cache pour rester synchronisée avec cette mutation.
+  const executionKey = React.useMemo(() => ["mission-execution", mission.id] as const, [mission.id]);
+
   const mutation = useMutation({
-    mutationFn: (body: ServiceUpdateBody) => patchMissionService(mission.id, body),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["mission", mission.id] });
-      toast.success("Heures prestées enregistrées.");
+    mutationFn: (body: { actualDurationMinutes: number; hoursSource: string }) =>
+      updateMissionExecution(mission.id, body),
+    onMutate: async (body) => {
+      await queryClient.cancelQueries({ queryKey: executionKey });
+      const previous = queryClient.getQueryData<MissionExecutionInfo>(executionKey);
+      // Affichage optimiste : la modale se ferme immédiatement, la nouvelle valeur est
+      // visible sans attendre la réponse serveur — rollback vers `previous` si l'appel
+      // échoue. Construit un MissionExecutionInfo complet même si le cache était encore
+      // vide (première saisie sur cette mission, jamais consultée depuis ce point d'entrée) :
+      // un merge partiel sur `undefined` laisserait `hasExecutionRecord` absent et la carte
+      // retomberait sur "Non renseigné" malgré la saisie.
+      const optimistic: MissionExecutionInfo = {
+        missionId: mission.id,
+        hasExecutionRecord: true,
+        actualStartAt: previous?.actualStartAt ?? null,
+        actualEndAt: previous?.actualEndAt ?? null,
+        actualDurationMinutes: body.actualDurationMinutes,
+        hoursSource: body.hoursSource,
+        effectiveDurationMinutes: body.actualDurationMinutes,
+        effectiveDurationSource: "ACTUAL_EXPLICIT",
+        disputes: previous?.disputes ?? [],
+      };
+      queryClient.setQueryData<MissionExecutionInfo>(executionKey, optimistic);
       onClose();
+      return { previous };
     },
-    onError: (err: any) => toast.error(extractErrorMessage(err)),
+    onSuccess: (updated) => {
+      // Le serveur reste la source de vérité finale : PATCH .../execution renvoie
+      // exactement la même forme (MissionExecutionDto) que GET .../execution — remplacement
+      // complet et fiable, jamais un patch partiel qui devinerait des champs absents.
+      queryClient.setQueryData<MissionExecutionInfo>(executionKey, updated);
+      queryClient.invalidateQueries({ queryKey: executionKey });
+      toast.success("Heures prestées enregistrées.");
+      onSaved?.();
+    },
+    onError: (err: any, _body, ctx) => {
+      if (ctx?.previous !== undefined) queryClient.setQueryData(executionKey, ctx.previous);
+      toast.error(extractErrorMessage(err));
+    },
   });
 
   function handleSave() {
-    const hours = Math.round((totalMinutes / 60) * 4) / 4; // arrondi au 1/4h (cohérent avec le stepper)
-    mutation.mutate({ hours, hoursSource: "INSTRUMENTIST" });
+    // totalMinutes est déjà un multiple de 15 (steppers) — plus besoin de le reconvertir
+    // en heures décimales, actualDurationMinutes attend directement des minutes entières.
+    mutation.mutate({ actualDurationMinutes: totalMinutes, hoursSource: "INSTRUMENTIST" });
   }
 
   const plannedLabel =
@@ -107,7 +152,7 @@ export default function EditServiceHoursDialog({ open, onClose, mission }: Props
       : "—";
 
   return (
-    <SheetModal open={open} title="Heures prestées" onClose={onClose} closeDisabled={mutation.isPending}>
+    <SheetModal open={open} title="Heures prestées" onClose={onClose} closeDisabled={mutation.isPending} helpTopicId={helpTopicId}>
       <Box sx={{ display: "flex", alignItems: "center", gap: "10px", background: "#F5F7FA", borderRadius: "12px", padding: "12px 14px", mt: "14px" }}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={GRAY_500} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
           <rect x="3" y="4" width="18" height="17" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" />

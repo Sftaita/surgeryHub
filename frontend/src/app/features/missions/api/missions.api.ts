@@ -341,3 +341,31 @@ export async function getMissionExecution(id: number): Promise<MissionExecutionI
   const { data } = await apiClient.get<MissionExecutionInfo>(`/api/missions/${id}/execution`);
   return data;
 }
+
+/**
+ * Anomalie écran d'encodage (commit dédié) — EditServiceHoursDialog appelait jusqu'ici
+ * l'endpoint legacy `patchMissionService` (PATCH /api/missions/{id}/service), dont la
+ * réponse est désormais l'entité MissionExecution brute (groupes execution:read),
+ * PAS le DTO MissionExecutionInfo lu par GET .../execution. La carte "Heures prestées"
+ * lit `mission.service?.hours`, un champ que MissionDetailDto n'expose plus du tout
+ * depuis le renommage InstrumentistService -> MissionExecution (D-071) : `mission.service`
+ * est donc systématiquement `undefined`, quel que soit l'état réel. PATCH .../execution
+ * est la "forme cible" déjà documentée côté backend (MissionExecutionController) et
+ * renvoie exactement la même forme que le GET (MissionExecutionDto) — la seule à pouvoir
+ * resynchroniser le cache ["mission-execution", missionId] sans deviner de champs.
+ */
+export type MissionExecutionUpdateBody = {
+  actualDurationMinutes?: number | null;
+  hoursSource?: string | null;
+};
+
+export async function updateMissionExecution(
+  id: number,
+  body: MissionExecutionUpdateBody,
+): Promise<MissionExecutionInfo> {
+  const { data } = await apiClient.patch<MissionExecutionInfo>(
+    `/api/missions/${id}/execution`,
+    body,
+  );
+  return data;
+}
