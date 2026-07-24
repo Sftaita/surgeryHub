@@ -173,6 +173,27 @@ function isPendingEncoding(mission: Mission): boolean {
   return mission.allowedActions?.some((a) => a === "encoding" || a === "edit_encoding") ?? false;
 }
 
+export type PlanningBucket = "toEncode" | "upcoming" | "other";
+
+/**
+ * "À encoder" / "À venir" pour le planning instrumentiste — la seule source fiable pour
+ * "cette mission attend un encodage" est `allowedActions` (déjà calculé côté backend par
+ * MissionEncodingGuard sur `startAt`, jamais `actualStartAt` : ce champ n'existe que sur
+ * MissionExecution, pour la durée, jamais exposé par /api/missions). Une mission ne peut
+ * porter "encoding"/"edit_encoding" qu'une fois son heure de début passée et tant qu'elle
+ * n'est ni REJECTED ni verrouillée (encodingLockedAt) — donc jamais une mission future, et
+ * jamais une mission déjà SUBMITTED/VALIDATED (ces statuts ne génèrent plus ces actions).
+ * "À venir" est un pur repli d'affichage sur `startAt` (chaîne ISO déjà porteuse du bon
+ * offset horaire métier, comparaison d'instants absolus — pas une comparaison de date
+ * locale naïve) : jamais recalculé pour "à encoder", jamais dupliqué entre les deux.
+ */
+export function classifyPlanningMission(mission: Mission, nowMs: number): PlanningBucket {
+  if (isPendingEncoding(mission)) return "toEncode";
+  const startMs = new Date(mission.startAt).getTime();
+  if (Number.isFinite(startMs) && startMs > nowMs) return "upcoming";
+  return "other";
+}
+
 function missionRowStatus(mission: Mission): { variant: StatusPillVariant; label: string; withDot?: boolean } {
   if (mission.status === "IN_PROGRESS") return { variant: "enCours", label: "En cours", withDot: true };
   if (isPendingEncoding(mission)) return { variant: "aEncoder", label: "À encoder" };
@@ -392,12 +413,21 @@ function EmptyUpcomingBanner({ onSeeOffers }: { onSeeOffers: () => void }) {
         <circle cx="12" cy="12" r="9" /><path d="M12 8h.01M12 11v5" />
       </svg>
       <Typography sx={{ fontSize: 14, color: BLUE_700, lineHeight: 1.45 }}>
-        Acceptez des offres pour compléter votre planning.{" "}
+        Aucune mission à venir. Acceptez des offres pour compléter votre planning.{" "}
         <Box component="button" type="button" onClick={onSeeOffers} sx={{ border: "none", background: "none", p: 0, font: "inherit", fontWeight: 700, color: BLUE_700, textDecoration: "underline", cursor: "pointer" }}>
           Voir les offres
         </Box>
       </Typography>
     </Stack>
+  );
+}
+
+// ── État vide simple (aucune mission à encoder) ─────────────────────────────
+function EmptyStateRow({ text }: { text: string }) {
+  return (
+    <Box sx={{ background: "#fff", border: "1px solid #E7EBEF", borderRadius: "14px", padding: "14px 16px", textAlign: "center" }}>
+      <Typography sx={{ fontSize: 13.5, color: GRAY_600 }}>{text}</Typography>
+    </Box>
   );
 }
 
@@ -485,10 +515,19 @@ export default function PlanningPage() {
     return meta;
   }, [dayBuckets, conflictMissionIds]);
 
-  const upcomingMissions = React.useMemo(
-    () => missions.slice().sort(compareMissionsByStart),
-    [missions],
-  );
+  const { toEncodeMissions, upcomingMissions } = React.useMemo(() => {
+    const nowMs = Date.now();
+    const toEncode: Mission[] = [];
+    const upcoming: Mission[] = [];
+    for (const mission of missions) {
+      const bucket = classifyPlanningMission(mission, nowMs);
+      if (bucket === "toEncode") toEncode.push(mission);
+      else if (bucket === "upcoming") upcoming.push(mission);
+    }
+    toEncode.sort(compareMissionsByStart);
+    upcoming.sort(compareMissionsByStart);
+    return { toEncodeMissions: toEncode, upcomingMissions: upcoming };
+  }, [missions]);
 
   const updateSearchParams = React.useCallback(
     (patch: Partial<{ view: ViewMode; date: string }>) => {
@@ -578,6 +617,27 @@ export default function PlanningPage() {
           ) : (
             <MonthGrid date={date} todayYmd={todayYmd} dayMeta={dayMeta} onDayClick={handleDayClick} />
           )}
+
+          <Stack spacing={1.375}>
+            <Stack direction="row" alignItems="center" spacing={1.5}>
+              <Box sx={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.07em", color: AMBER_500, whiteSpace: "nowrap" }}>
+                À ENCODER
+              </Box>
+              <Box sx={{ flex: 1, borderTop: "1px dashed", borderColor: "grey.200" }} />
+            </Stack>
+
+            {toEncodeMissions.length === 0 ? (
+              <EmptyStateRow text="Aucune mission à encoder" />
+            ) : (
+              toEncodeMissions.map((m) => (
+                <MissionListRow
+                  key={m.id}
+                  mission={m}
+                  onClick={() => navigate(`/app/i/missions/${m.id}/encoding`)}
+                />
+              ))
+            )}
+          </Stack>
 
           <Stack spacing={1.375}>
             <Stack direction="row" alignItems="center" spacing={1.5}>
