@@ -65,7 +65,7 @@ final class MissionSiteAndSpecialtiesContractTest extends WebTestCase
         return $client;
     }
 
-    private function createUser(string $role, array $specialties = []): User
+    private function createUser(string $role, array $specialties = [], ?string $profilePicturePath = null): User
     {
         /** @var UserPasswordHasherInterface $hasher */
         $hasher = static::getContainer()->get(UserPasswordHasherInterface::class);
@@ -76,6 +76,7 @@ final class MissionSiteAndSpecialtiesContractTest extends WebTestCase
         $u->setActive(true);
         $u->setPassword($hasher->hashPassword($u, self::PASSWORD));
         $u->setSpecialties($specialties);
+        $u->setProfilePicturePath($profilePicturePath);
         $this->em->persist($u);
         $this->em->flush();
         $this->createdUserIds[] = $u->getId();
@@ -199,5 +200,46 @@ final class MissionSiteAndSpecialtiesContractTest extends WebTestCase
         self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
         $body = json_decode($response->getContent(), true);
         self::assertSame([], $body['surgeon']['specialties']);
+    }
+
+    public function test_mission_list_and_detail_include_surgeon_profile_picture_path(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON', [], '/uploads/profile-pictures/surgeon-z.jpg');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ASSIGNED);
+
+        $detailResponse = $this->getJson($client, $token, '/api/missions/' . $mission->getId());
+        self::assertSame(Response::HTTP_OK, $detailResponse->getStatusCode(), $detailResponse->getContent());
+        $detailBody = json_decode($detailResponse->getContent(), true);
+        self::assertSame('/uploads/profile-pictures/surgeon-z.jpg', $detailBody['surgeon']['profilePicturePath']);
+
+        $listResponse = $this->getJson($client, $token, '/api/missions?limit=100');
+        self::assertSame(Response::HTTP_OK, $listResponse->getStatusCode(), $listResponse->getContent());
+        $listBody = json_decode($listResponse->getContent(), true);
+        $item = null;
+        foreach ($listBody['items'] as $it) {
+            if ($it['id'] === $mission->getId()) { $item = $it; break; }
+        }
+        self::assertNotNull($item, 'mission not found in list: ' . $listResponse->getContent());
+        self::assertSame('/uploads/profile-pictures/surgeon-z.jpg', $item['surgeon']['profilePicturePath']);
+    }
+
+    public function test_mission_without_surgeon_profile_picture_returns_null(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ASSIGNED);
+
+        $response = $this->getJson($client, $token, '/api/missions/' . $mission->getId());
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertNull($body['surgeon']['profilePicturePath']);
     }
 }

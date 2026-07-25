@@ -1,19 +1,16 @@
 import * as React from "react";
-import {
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-  Stack,
-  TextField,
-  Typography,
-} from "@mui/material";
+import { Box } from "@mui/material";
+import { SheetModal } from "../../../ui/sheet/SheetModal";
+import { Field } from "../../../ui/sheet/Field";
 
 import type {
   EncodingMaterialLine,
   PatchMaterialLineBody,
 } from "../api/encoding.types";
+
+const GREEN_800 = "#1F6B4F";
+const GRAY_500 = "#727E8C";
+const RED_600 = "#E5484D";
 
 type Props = {
   open: boolean;
@@ -51,7 +48,6 @@ export default function EditMaterialLineDialog({
 
   const submit = () => {
     if (!line) return;
-
     onSubmit({
       quantity: String(quantity ?? "").trim(),
       comment: comment ?? "",
@@ -59,64 +55,75 @@ export default function EditMaterialLineDialog({
   };
 
   return (
-    <Dialog
-      open={open}
-      onClose={loading ? undefined : onClose}
-      fullWidth
-      maxWidth="sm"
-    >
-      <DialogTitle>Modifier la ligne matériel</DialogTitle>
+    <SheetModal open={open} title="Modifier la ligne matériel" onClose={onClose} closeDisabled={loading} helpTopicId="mission-encoding">
+      {line && (
+        <Box sx={{ mt: "14px", fontSize: 14, color: GRAY_500 }}>
+          <Box component="span" sx={{ fontWeight: 700, color: "#16202B" }}>{line.item.label}</Box>
+          {" "}({line.item.firm.name} / {line.item.referenceCode})
+        </Box>
+      )}
 
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          {line ? (
-            <Typography color="text.secondary">
-              {line.item.label}{" "}
-              <Typography component="span" color="text.secondary">
-                ({line.item.firm.name} / {line.item.referenceCode})
-              </Typography>
-            </Typography>
-          ) : null}
+      <Box sx={{ mt: "16px", display: "flex", flexDirection: "column", gap: "16px" }}>
+        <Field
+          id="edit-line-qty"
+          label="Quantité"
+          value={quantity}
+          onChange={setQuantity}
+          disabled={loading}
+          inputMode="decimal"
+          helperText='Envoyer une valeur numérique (ex: "3").'
+        />
 
-          <TextField
-            label="Quantité"
-            value={quantity}
-            onChange={(e) => setQuantity(e.target.value)}
-            disabled={loading}
-            fullWidth
-            inputProps={{ inputMode: "decimal" }}
-            helperText='Envoyer une string (ex: "3"). Le backend renvoie "3.00".'
-          />
+        <Field
+          id="edit-line-comment"
+          label="Commentaire"
+          value={comment}
+          onChange={setComment}
+          disabled={loading}
+          multiline
+          minRows={2}
+        />
+      </Box>
 
-          <TextField
-            label="Commentaire"
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            disabled={loading}
-            fullWidth
-            multiline
-            minRows={2}
-          />
-        </Stack>
-      </DialogContent>
-
-      <DialogActions sx={{ justifyContent: "space-between" }}>
-        <Button color="error" onClick={onDelete} disabled={loading}>
+      <Box
+        component="button"
+        type="button"
+        onClick={submit}
+        disabled={loading || !canSubmit}
+        sx={{
+          mt: "20px", width: "100%", height: 52, border: "none", borderRadius: "12px",
+          background: GREEN_800, color: "#fff", fontFamily: "inherit", fontSize: 15, fontWeight: 700,
+          cursor: "pointer", boxShadow: "0 5px 14px rgba(20,77,56,.3)",
+          "&:hover": { background: "#144D38" }, "&:active": { transform: "translateY(0.5px)" },
+          "&:disabled": { opacity: 0.6, cursor: "default", boxShadow: "none" },
+        }}
+      >
+        {loading ? "…" : "Enregistrer"}
+      </Box>
+      <Box sx={{ mt: "8px", display: "flex", gap: "8px" }}>
+        <Box
+          component="button"
+          type="button"
+          onClick={onDelete}
+          disabled={loading}
+          sx={{
+            flex: 1, height: 44, border: "1.5px solid", borderColor: "#FBD5D6", borderRadius: "12px",
+            background: "#fff", color: RED_600, fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+            "&:hover": { background: "#FDEEEE" },
+          }}
+        >
           Supprimer
-        </Button>
-        <Stack direction="row" spacing={1}>
-          <Button onClick={onClose} disabled={loading}>
-            Annuler
-          </Button>
-          <Button
-            variant="contained"
-            onClick={submit}
-            disabled={loading || !canSubmit}
-          >
-            {loading ? "..." : "Enregistrer"}
-          </Button>
-        </Stack>
-      </DialogActions>
-    </Dialog>
+        </Box>
+        <Box
+          component="button"
+          type="button"
+          onClick={onClose}
+          disabled={loading}
+          sx={{ flex: 1, height: 44, border: "none", background: "transparent", color: GRAY_500, fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}
+        >
+          Annuler
+        </Box>
+      </Box>
+    </SheetModal>
   );
 }

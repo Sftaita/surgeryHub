@@ -4,12 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { EncodeHeader } from "./EncodeHeader";
 
 describe("EncodeHeader", () => {
-  it("affiche le numéro de mission, le site (sans adresse) et les tags date/type", () => {
+  it("affiche le numéro de mission et les tags date/type (site/chirurgien vivent désormais dans MissionReadOnlyCard)", () => {
     render(
       <EncodeHeader
         missionId={529}
-        siteName="CHU Brugmann — Site Victor Horta"
-        personLine="Dr. Anouk Peeters · Orthopédie"
         dateLabel="Dimanche 5 juillet 2026"
         typeLabel="Bloc opératoire"
         onBack={vi.fn()}
@@ -17,30 +15,30 @@ describe("EncodeHeader", () => {
     );
 
     expect(screen.getByText("Mission #529")).toBeInTheDocument();
-    expect(screen.getByText("CHU Brugmann — Site Victor Horta")).toBeInTheDocument();
-    expect(screen.getByText("Dr. Anouk Peeters · Orthopédie")).toBeInTheDocument();
     expect(screen.getByText("Dimanche 5 juillet 2026")).toBeInTheDocument();
     expect(screen.getByText("Bloc opératoire")).toBeInTheDocument();
   });
 
-  it("n'affiche pas de 2e ligne quand personLine est absent", () => {
+  it("n'affiche aucun horodatage tant que savedAt est absent", () => {
     render(
-      <EncodeHeader
-        missionId={1}
-        siteName="Site X"
-        dateLabel="Lundi 1 janvier 2026"
-        typeLabel="Consultation"
-        onBack={vi.fn()}
-      />,
+      <EncodeHeader missionId={1} dateLabel="Lundi 1 janvier 2026" typeLabel="Consultation" onBack={vi.fn()} />,
     );
-    expect(screen.queryByText(/Dr\./)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^\d{2}:\d{2}$/)).not.toBeInTheDocument();
+  });
+
+  it("affiche l'horodatage HH:MM quand savedAt est fourni", () => {
+    const savedAt = new Date(2026, 0, 1, 9, 46);
+    render(
+      <EncodeHeader missionId={1} dateLabel="—" typeLabel="Bloc opératoire" onBack={vi.fn()} savedAt={savedAt} />,
+    );
+    expect(screen.getByText("09:46")).toBeInTheDocument();
   });
 
   it("appelle onBack au clic sur le bouton retour", async () => {
     const onBack = vi.fn();
     const user = userEvent.setup();
     render(
-      <EncodeHeader missionId={1} siteName="Site X" dateLabel="—" typeLabel="Bloc opératoire" onBack={onBack} />,
+      <EncodeHeader missionId={1} dateLabel="—" typeLabel="Bloc opératoire" onBack={onBack} />,
     );
 
     await user.click(screen.getByLabelText("Retour"));

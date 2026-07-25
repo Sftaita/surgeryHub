@@ -2,6 +2,7 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { Box } from "@mui/material";
 import { CloseButton } from "./CloseButton";
+import { HelpButton } from "../../features/help/HelpButton";
 
 const SHADOW_XL = "0 10px 24px rgba(22,32,43,.10), 0 28px 60px rgba(22,32,43,.16)";
 // docs/design/animations/animations.md — "Fermetures" : le prototype ferme sans
@@ -25,6 +26,14 @@ type Props = {
    * éviter un scroll interne inutile, sans changer le comportement des autres sheets.
    */
   mobileMaxHeight?: string;
+  /**
+   * Clé du topic d'aide (features/help/content/registry.ts) — affiche un bouton "?"
+   * dans l'en-tête, à gauche du bouton de fermeture, pour qu'un utilisateur perdu dans
+   * cette sheet retrouve immédiatement le mode d'emploi sans devoir la fermer d'abord.
+   * Omis par défaut : ce composant est partagé par des contextes hors encodage (ex.
+   * suppression d'un chirurgien) qui n'ont pas forcément de topic dédié.
+   */
+  helpTopicId?: string;
 };
 
 /**
@@ -32,7 +41,7 @@ type Props = {
  * l'encodage (heures, nouvelle intervention, wizard matériel, récapitulatif) :
  * bottom sheet plein-largeur sur mobile (< 900px), dialogue centré 480px au-delà.
  */
-export function SheetModal({ open, title, onClose, closeDisabled, children, steps, closeVariant, mobileMaxHeight = "80vh" }: Props) {
+export function SheetModal({ open, title, onClose, closeDisabled, children, steps, closeVariant, mobileMaxHeight = "80vh", helpTopicId }: Props) {
   const [mounted, setMounted] = React.useState(open);
   const [closing, setClosing] = React.useState(false);
 
@@ -122,6 +131,7 @@ export function SheetModal({ open, title, onClose, closeDisabled, children, step
             <Box component="h2" sx={{ m: 0, flex: 1, fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em" }}>
               {title}
             </Box>
+            {helpTopicId && <HelpButton topicId={helpTopicId} />}
             <CloseButton onClick={onClose} disabled={closeDisabled} variant={closeVariant} />
           </Box>
           {steps}

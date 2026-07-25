@@ -1,4 +1,5 @@
 import { Box } from "@mui/material";
+import { HelpButton } from "../../help/HelpButton";
 
 const GREEN_300 = "#8FDABF";
 const ENCODE_GRADIENT = "linear-gradient(150deg, #123F30 0%, #1E634A 55%, #2E7D5F 120%)";
@@ -31,14 +32,23 @@ function CalendarIcon() {
     </svg>
   );
 }
+function SavedIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.5 19a4.5 4.5 0 1 0-.9-8.9 6 6 0 1 0-11.1 3" /><path d="m9 15 3 3 5-5" />
+    </svg>
+  );
+}
 
 interface EncodeHeaderProps {
   missionId: number;
-  siteName: string;
-  personLine?: string | null;
   dateLabel: string;
   typeLabel: string;
   onBack: () => void;
+  /** Clé du topic d'aide (voir features/help/content/registry.ts). Bouton masqué si absent. */
+  helpTopicId?: string;
+  /** Horodatage local de la dernière sauvegarde réussie — voir MissionEncodingPage. */
+  savedAt?: Date | null;
 }
 
 /**
@@ -47,7 +57,7 @@ interface EncodeHeaderProps {
  * qui masque BrandBand sur cette route). Vague fixe animée une seule fois à
  * l'arrivée, pas de morphing par onglet.
  */
-export function EncodeHeader({ missionId, siteName, personLine, dateLabel, typeLabel, onBack }: EncodeHeaderProps) {
+export function EncodeHeader({ missionId, dateLabel, typeLabel, onBack, helpTopicId, savedAt }: EncodeHeaderProps) {
   return (
     <Box
       sx={{
@@ -101,23 +111,30 @@ export function EncodeHeader({ missionId, siteName, personLine, dateLabel, typeL
         >
           <BackIcon />
         </Box>
-        <Box sx={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.07em", color: GREEN_300 }}>
+        <Box sx={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.07em", color: GREEN_300, flex: 1 }}>
           ENCODAGE MISSION
         </Box>
+        {savedAt && (
+          <Box sx={{ display: "flex", alignItems: "center", gap: "6px", fontSize: 11, color: "rgba(255,255,255,.6)", whiteSpace: "nowrap", flexShrink: 0 }}>
+            <SavedIcon />
+            {savedAt.getHours().toString().padStart(2, "0")}:{savedAt.getMinutes().toString().padStart(2, "0")}
+          </Box>
+        )}
+        {helpTopicId && (
+          <HelpButton
+            topicId={helpTopicId}
+            sx={{
+              width: 40, height: 40, color: "#fff", background: "rgba(255,255,255,.12)", borderRadius: "12px",
+              transition: "background 150ms", "&:hover": { background: "rgba(255,255,255,.2)" },
+            }}
+          />
+        )}
       </Box>
 
       <Box sx={{ mt: "14px", position: "relative" }}>
         <Box component="h1" sx={{ m: 0, fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em", color: "#fff" }}>
           Mission #{missionId}
         </Box>
-        <Box sx={{ mt: "5px", fontSize: 15, fontWeight: 600, color: "rgba(255,255,255,.92)" }}>
-          {siteName}
-        </Box>
-        {personLine && (
-          <Box sx={{ mt: "2px", fontSize: 13.5, color: "rgba(255,255,255,.7)" }}>
-            {personLine}
-          </Box>
-        )}
         <Box sx={{ display: "flex", gap: "8px", mt: "13px", flexWrap: "wrap" }}>
           <Box sx={{ display: "inline-flex", alignItems: "center", gap: "7px", height: 28, px: "12px", borderRadius: "999px", background: "rgba(255,255,255,.14)", color: "#fff", fontSize: 12.5, fontWeight: 600 }}>
             <CalendarIcon />

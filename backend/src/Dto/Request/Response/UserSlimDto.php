@@ -15,6 +15,7 @@ final class UserSlimDto
         public readonly ?bool $active = null,
         public readonly ?string $employmentType = null,
         public readonly array $specialties = [],
+        public readonly ?string $profilePicturePath = null,
     ) {}
 
     public function displayName(): string

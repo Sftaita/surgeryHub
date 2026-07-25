@@ -81,6 +81,7 @@ final class MissionMapper
             active: $u->isActive(),
             employmentType: $u->getEmploymentType()?->value,
             specialties: $u->getSpecialties(),
+            profilePicturePath: $u->getProfilePicturePath(),
         );
     }
 }

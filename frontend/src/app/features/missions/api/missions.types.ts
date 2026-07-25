@@ -110,6 +110,7 @@ export interface UserRef {
   employmentType?: string | null;
   displayName?: string | null;
   specialties?: string[];
+  profilePicturePath?: string | null;
 }
 
 /**

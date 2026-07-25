@@ -45,13 +45,14 @@ final class MissionMapperTest extends TestCase
         return $h;
     }
 
-    private function makeSurgeon(array $specialties): User
+    private function makeSurgeon(array $specialties, ?string $profilePicturePath = null): User
     {
         $u = new User();
         $this->setId($u, 2);
         $u->setEmail('surgeon@surgicalhub.test');
         $u->setRoles(['ROLE_SURGEON']);
         $u->setSpecialties($specialties);
+        $u->setProfilePicturePath($profilePicturePath);
         return $u;
     }
 
@@ -125,6 +126,39 @@ final class MissionMapperTest extends TestCase
         self::assertSame('/uploads/hospital-photos/hospital-2.jpg', $dto->site->photoPath);
         self::assertSame('Avenue du Bloc 12', $dto->site->address);
         self::assertSame(['HANCHE'], $dto->surgeon->specialties);
+    }
+
+    public function test_user_slim_carries_surgeon_profile_picture_path(): void
+    {
+        $site = $this->makeSite(null, null);
+        $surgeon = $this->makeSurgeon([], '/uploads/profile-pictures/surgeon-2.jpg');
+        $mission = $this->makeMission($site, $surgeon);
+
+        $dto = $this->mapper->toDetailDto($mission, $surgeon);
+
+        self::assertSame('/uploads/profile-pictures/surgeon-2.jpg', $dto->surgeon->profilePicturePath);
+    }
+
+    public function test_user_slim_profile_picture_path_is_null_when_surgeon_has_none(): void
+    {
+        $site = $this->makeSite(null, null);
+        $surgeon = $this->makeSurgeon([], null);
+        $mission = $this->makeMission($site, $surgeon);
+
+        $dto = $this->mapper->toDetailDto($mission, $surgeon);
+
+        self::assertNull($dto->surgeon->profilePicturePath);
+    }
+
+    public function test_list_dto_also_carries_surgeon_profile_picture_path(): void
+    {
+        $site = $this->makeSite(null, null);
+        $surgeon = $this->makeSurgeon([], '/uploads/profile-pictures/surgeon-2.jpg');
+        $mission = $this->makeMission($site, $surgeon);
+
+        $dto = $this->mapper->toListDto($mission, $surgeon);
+
+        self::assertSame('/uploads/profile-pictures/surgeon-2.jpg', $dto->surgeon->profilePicturePath);
     }
 
 }
