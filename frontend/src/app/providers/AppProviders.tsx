@@ -4,6 +4,7 @@ import { CssBaseline, ThemeProvider, createTheme } from "@mui/material";
 import { queryClient } from "./queryClient";
 import { AppErrorBoundary } from "../errors/AppErrorBoundary";
 import { AuthProvider } from "../auth/AuthContext";
+import { PushProvider } from "../features/push/PushProvider";
 
 // Toast (global)
 import { ToastProvider } from "../ui/toast/ToastProvider";
@@ -87,7 +88,9 @@ export function AppProviders({ children }: PropsWithChildren) {
           <CssBaseline />
           <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale="fr">
             <ToastProvider>
-              <AuthProvider>{children}</AuthProvider>
+              <AuthProvider>
+                <PushProvider>{children}</PushProvider>
+              </AuthProvider>
             </ToastProvider>
           </LocalizationProvider>
         </ThemeProvider>

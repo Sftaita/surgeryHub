@@ -21,6 +21,14 @@ final class WebPushService implements WebPushServiceInterface
         private readonly string $vapidPublicKey,
         private readonly string $vapidPrivateKey,
         private readonly string $vapidSubject,
+        /**
+         * Forwarded as-is to minishlink/web-push's underlying Guzzle client (e.g. a
+         * `handler` => MockHandler stack in tests). Empty in production — the library
+         * builds its own default HTTP client. This is the minimal seam needed to unit-test
+         * sendToSubscriptions() against real (mocked) HTTP responses instead of only via
+         * WebPushServiceInterface doubles in handler tests (Lot 1 / audit 24-07-2026).
+         */
+        private readonly array $httpClientOptions = [],
     ) {}
 
     public function sendToUser(User $user, string $title, string $body, array $data = []): void
@@ -93,7 +101,7 @@ final class WebPushService implements WebPushServiceInterface
                 'publicKey'  => $this->vapidPublicKey,
                 'privateKey' => $this->vapidPrivateKey,
             ],
-        ]);
+        ], [], 30, $this->httpClientOptions);
 
         $payload = json_encode(['title' => $title, 'body' => $body, 'data' => $data]);
 
@@ -122,15 +130,19 @@ final class WebPushService implements WebPushServiceInterface
                 }
 
                 ++$failed;
-                $this->logger->warning('push.send_failed', [
-                    'endpoint' => $report->getEndpoint(),
-                    'reason'   => $report->getReason(),
-                    'title'    => $title,
-                    'type'     => $data['type'] ?? null,
-                ]);
 
+                // Endpoint gone (404/410): expected and handled — auto-cleanup below, no need
+                // to alarm anyone. Anything else is an unexpected send failure (bad VAPID
+                // signature, quota exceeded, payload rejected, transient push-service error) —
+                // logged at error so it reaches Sentry (see monolog.yaml `sentry` handler,
+                // Lot 1 / audit 24-07-2026) instead of disappearing silently as before.
+                $endpointHint = $this->hintForLog($report->getEndpoint());
                 if ($report->isSubscriptionExpired()) {
                     ++$expired;
+                    $this->logger->info('push.subscription_expired', [
+                        'endpoint_hint' => $endpointHint,
+                        'type'          => $data['type'] ?? null,
+                    ]);
                     $this->em->getRepository(PushSubscription::class)
                         ->createQueryBuilder('ps')
                         ->delete()
@@ -138,6 +150,13 @@ final class WebPushService implements WebPushServiceInterface
                         ->setParameter('endpoint', $report->getEndpoint())
                         ->getQuery()
                         ->execute();
+                } else {
+                    $this->logger->error('push.send_failed', [
+                        'endpoint_hint' => $endpointHint,
+                        'reason'        => $report->getReason(),
+                        'title'         => $title,
+                        'type'          => $data['type'] ?? null,
+                    ]);
                 }
             }
         } catch (\Throwable $e) {
@@ -160,5 +179,18 @@ final class WebPushService implements WebPushServiceInterface
                 'type'    => $data['type'] ?? null,
             ]);
         }
+    }
+
+    /**
+     * Never log a full push endpoint (it's effectively a per-device bearer credential) —
+     * only enough of it to correlate log lines by eye, e.g. "https://push.example/…xyz".
+     */
+    private function hintForLog(?string $endpoint): string
+    {
+        if ($endpoint === null || $endpoint === '') {
+            return '(none)';
+        }
+
+        return substr($endpoint, 0, 24) . '…' . substr($endpoint, -6);
     }
 }

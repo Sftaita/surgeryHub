@@ -3,6 +3,7 @@ import { apiClient } from "../api/apiClient";
 import { clearAuth, readAuth, writeAuth } from "./authStorage";
 import { loginRequest, logoutRequest } from "./authApi";
 import { SESSION_EXPIRED_EVENT } from "./sessionExpiredEvent";
+import { detachCurrentPushSubscription } from "../features/push/pushSubscriptionClient";
 
 /* ======================
    Types
@@ -96,9 +97,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   /**
    * LOGOUT
+   *
+   * Detaches this browser's push subscription server-side before the access token is
+   * cleared — captured now and passed explicitly, since by the time the subscription
+   * lookup resolves the token may already be gone from storage. Fire-and-forget: a slow
+   * or failing detach must never delay token revocation, local cleanup, or the redirect
+   * to /login (docs/decisions.md D-081).
    */
   function logout() {
     const stored = readAuth();
+    void detachCurrentPushSubscription(stored?.accessToken ?? null);
     if (stored?.refreshToken) {
       void logoutRequest(stored.refreshToken);
     }

@@ -16,8 +16,13 @@ vi.mock("./authApi", () => ({
   logoutRequest: vi.fn(),
 }));
 
+vi.mock("../features/push/pushSubscriptionClient", () => ({
+  detachCurrentPushSubscription: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { apiClient } from "../api/apiClient";
 import { loginRequest, logoutRequest } from "./authApi";
+import { detachCurrentPushSubscription } from "../features/push/pushSubscriptionClient";
 
 function Probe() {
   const { state, login, logout } = useAuth();
@@ -94,6 +99,48 @@ describe("AuthContext", () => {
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("anonymous"));
     expect(logoutRequest).toHaveBeenCalledWith("r");
     expect(readAuth()).toBeNull();
+  });
+
+  it("logout() détache l'abonnement push côté serveur avec le token capturé avant le nettoyage local", async () => {
+    // The token must be the one that was valid at logout time — captured synchronously
+    // before clearAuth() — not read lazily from storage after it's already gone.
+    writeAuth({ accessToken: "push-token-abc", refreshToken: "r" });
+    (apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: { id: 1, role: "ADMIN", sites: [] } });
+
+    renderProbe();
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("authenticated"));
+
+    await act(async () => {
+      screen.getByText("logout").click();
+    });
+
+    expect(detachCurrentPushSubscription).toHaveBeenCalledWith("push-token-abc");
+  });
+
+  it("logout() ne bloque jamais sur le détachement push (même si le nettoyage local doit se produire avant qu'il ne se résolve)", async () => {
+    // Simulates the User A → User B same-device scenario: A's server-side detach may still
+    // be in flight, but A's local session must clear immediately regardless.
+    let resolveDetach: () => void = () => {};
+    (detachCurrentPushSubscription as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveDetach = resolve;
+      }),
+    );
+    writeAuth({ accessToken: "a", refreshToken: "r" });
+    (apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: { id: 1, role: "ADMIN", sites: [] } });
+
+    renderProbe();
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("authenticated"));
+
+    await act(async () => {
+      screen.getByText("logout").click();
+    });
+
+    // Local session is already gone even though the detach promise never resolved.
+    expect(screen.getByTestId("status").textContent).toBe("anonymous");
+    expect(readAuth()).toBeNull();
+
+    resolveDetach();
   });
 
   it("passe à anonyme dès que le SESSION_EXPIRED_EVENT est émis en arrière-plan (401 définitif sur une mutation)", async () => {

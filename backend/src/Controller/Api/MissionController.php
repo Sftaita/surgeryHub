@@ -125,6 +125,12 @@ class MissionController extends AbstractController
 
         $this->missionService->publish($mission, $dto, $user);
 
+        // Known tech debt (D-081, Lot 1 Web Push audit 24-07-2026): synchronous, unlike
+        // every other push send which goes through MissionLifecycleChangedMessage
+        // (async, D-043/D-056). publish() is pre-deploy (DRAFT), outside the domain
+        // MissionChangeType covers — migrating this without extending that domain was
+        // judged out of scope for Lot 1. WebPushService isolates individual send
+        // failures internally, so this never blocks the HTTP response below.
         $this->webPushService->sendToSiteInstrumentists(
             $mission,
             'Nouvelle mission disponible',

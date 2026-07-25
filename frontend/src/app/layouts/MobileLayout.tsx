@@ -737,7 +737,7 @@ export function MobileLayout() {
   });
   const offersCount = offersData?.items?.length ?? 0;
 
-  const { pushState, requestPermission } = usePushNotifications();
+  const { status: pushStatus, subscribe: subscribeToPush } = usePushNotifications();
   const { badgeLabel } = useNotifications();
 
   const firstname = state.status === "authenticated" ? state.user.firstname : null;
@@ -788,7 +788,7 @@ export function MobileLayout() {
         position: "relative",
       }}
     >
-      {pushState === "prompt" && (
+      {pushStatus === "permission-default" && (
         <Box
           sx={{
             display: "flex",
@@ -808,7 +808,7 @@ export function MobileLayout() {
           <Box
             component="button"
             type="button"
-            onClick={requestPermission}
+            onClick={subscribeToPush}
             sx={{ border: "none", background: "transparent", color: GREEN_700, fontWeight: 700, fontSize: 13, cursor: "pointer", textDecoration: "underline", p: 0 }}
           >
             Activer

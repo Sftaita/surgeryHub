@@ -1,6 +1,6 @@
 # SurgicalHub — Architecture système
 
-_Last updated: 2026-05-29 (v7 — observabilité, push fixes)_
+_Last updated: 2026-07-25 (v8 — Lot 1 : fiabilisation du socle Web Push, D-081)_
 
 ---
 
@@ -1867,3 +1867,106 @@ notables (Batch 13) :
 | `VITE_API_BASE_URL` | Base URL du backend (ex: `http://localhost`) |
 
 Les URLs de fichiers uploadés sont construites comme `VITE_API_BASE_URL + profilePicturePath`.
+
+## 9. Notifications Web Push (Lot 1, D-081)
+
+Socle fiabilisé au Lot 1 (audit PWA/push 24-07-2026) — installation PWA, préférences
+sélectives complètes, rappel de 19 h et mises à jour applicatives restent hors périmètre
+(voir D-081 pour le détail des décisions).
+
+### 9.1 Composants
+
+**Backend**
+- `App\Entity\PushSubscription` — une ligne par *navigateur/profil × SW registration ×
+  utilisateur actuellement rattaché*. `endpoint` `UNIQUE` (migration
+  `Version20260724222527`, additive — table vide en dev/test au moment de la migration).
+- `App\Controller\Api\PushSubscriptionController` — `GET .../vapid-public-key`,
+  `POST .../subscribe` (idempotent, upsert), `DELETE .../unsubscribe` (idempotent, scopé
+  au propriétaire). Voir `docs/api.md` §40 pour le contrat complet.
+- `App\Service\WebPushService` (implémente `WebPushServiceInterface`) —
+  `sendToUser()`/`sendToUsers()`/`sendToSiteInstrumentists()`. Seul point d'envoi HTTP
+  réel (`minishlink/web-push`) ; tout appelant métier passe par l'interface, jamais par
+  un appel HTTP direct.
+- Canal Monolog `push` (`config/packages/monolog.yaml`) + handler `sentry` (type
+  `service`, `Sentry\Monolog\LogToSentryIssueHandler`, seuil `ERROR`, `services.yaml`) —
+  toute erreur d'envoi non-expirée devient une issue Sentry en prod, no-op si
+  `SENTRY_DSN` est vide.
+
+**Frontend**
+- `frontend/src/app/features/push/PushProvider.tsx` — provider React monté une seule
+  fois, à la racine authentifiée (`AppProviders.tsx`, à l'intérieur d'`AuthProvider`),
+  donc disponible pour `MobileLayout` **et** `DesktopLayout` sans duplication (avant ce
+  lot, seul `MobileLayout` le montait — chirurgiens/managers/admins ne pouvaient jamais
+  s'abonner). Expose l'état `PushNotificationStatus` (`unsupported` /
+  `permission-default` / `permission-denied` / `subscribing` / `subscribed` / `error`) et
+  `subscribe()`/`unsubscribe()`/`refreshStatus()`.
+- `frontend/src/app/features/push/pushSubscriptionClient.ts` — primitives non-React
+  (`registerServiceWorker`, `subscribeToPush`, `unsubscribeFromPush`,
+  `detachCurrentPushSubscription`) : gardées libres de toute dépendance à un contexte
+  React pour qu'`AuthContext.tsx` puisse appeler `detachCurrentPushSubscription()`
+  directement au logout sans import circulaire.
+- `frontend/src/app/features/push/usePushNotifications.ts` — point d'entrée public
+  ré-exporté depuis `PushProvider` ; les sites d'appel existants (`MobileLayout`,
+  `DesktopLayout`) n'ont pas besoin de connaître l'implémentation.
+- `frontend/public/sw.js` — service worker existant, enregistrement centralisé dans
+  `PushProvider`. Toujours hors périmètre de ce lot : cache offline, `install`/
+  `activate`/`fetch`, `SKIP_WAITING`, mise à jour forcée.
+
+### 9.2 Flux abonnement (frontend → backend → navigateur)
+
+1. `PushProvider` enregistre le service worker au montage (`registerServiceWorker()`),
+   pour tous les rôles, sans jamais demander la permission ni s'abonner.
+2. Si la permission était déjà accordée, `PushProvider` retente silencieusement
+   `subscribeToPush()` une seule fois **par identité de session** (`state.user.id`, pas
+   à chaque render/route, et pas seulement "une fois par montage du provider" — le
+   provider ne démonte jamais entre deux connexions dans le même onglet puisqu'il est
+   monté au-dessus du `Router`, voir D-081 "le socle réagit à l'identité de session").
+   Une transition `A → B` sans passer par l'état anonyme redéclenche donc bien ce
+   réabonnement pour B, avec réutilisation de la subscription navigateur existante.
+3. Activation volontaire : `MobileLayout` affiche un bandeau (« Activer ») quand
+   `status === "permission-default"`. `DesktopLayout` porte aujourd'hui un item de menu
+   compte équivalent (« Activer les notifications ») dans le code, mais celui-ci est
+   imbriqué dans une refonte de navigation manager hors périmètre de ce lot et n'entre
+   pas dans son commit (voir D-081, "activation volontaire" — distinction socle
+   technique / point d'entrée visuel) ; il sera livré avec le commit de cette refonte.
+   Dans tous les cas, seul un clic déclenche `Notification.requestPermission()` — jamais
+   au montage.
+4. `subscribeToPush()` : récupère la clé VAPID (`GET .../vapid-public-key`), réutilise
+   une `PushSubscription` navigateur existante via `getSubscription()` ou en crée une,
+   puis `POST .../subscribe` avec `{ endpoint, keys: { p256dh, auth } }`.
+5. `unsubscribeFromPush()` (désactivation complète sur cet appareil, action utilisateur
+   explicite) : `DELETE .../unsubscribe` **puis** `subscription.unsubscribe()`
+   côté navigateur — distinct du détachement au logout (point 6), qui ne révoque jamais
+   la subscription navigateur elle-même (réactivation fluide au prochain login).
+
+### 9.3 Politique de logout (D-081)
+
+`AuthContext::logout()` appelle `detachCurrentPushSubscription(accessToken)` avec le
+token capturé de façon synchrone, **avant** `clearAuth()` — fire-and-forget : jamais
+bloquant, jamais de délai sur la révocation du refresh token, le nettoyage local ou la
+redirection vers `/login`. Un détachement raté (offline, timeout, session déjà expirée)
+s'auto-corrige au prochain `subscribe()` via la réattribution explicite et journalisée
+côté backend (§9.4) — aucune complexité multi-compte par appareil n'a été introduite.
+
+### 9.4 Observabilité
+
+- **Réattribution d'endpoint** (`PushSubscriptionController::subscribe()`, endpoint
+  déjà rattaché à un autre utilisateur) : jamais silencieuse — `warning
+  push.subscription_reassigned` (`from_user_id`/`to_user_id`).
+- **Envoi** (`WebPushService::sendToSubscriptions()`) : abonnement expiré (404/410) →
+  suppression automatique inchangée + `info push.subscription_expired` ; tout autre
+  échec → `error push.send_failed` (raison, type de notification), routé vers Sentry.
+  Un échec individuel n'interrompt jamais le traitement des abonnements suivants ni la
+  mutation métier d'origine qui a déclenché l'envoi.
+- **Jamais loggé** : endpoint complet (`WebPushService::hintForLog()` ne conserve que
+  les premiers/derniers caractères), clé `p256dh`, `auth`, payload de notification.
+
+### 9.5 Dette technique connue
+
+`MissionController::publish()` appelle `WebPushService::sendToSiteInstrumentists()` de
+façon synchrone dans la requête HTTP, contrairement au reste des envois push
+post-déploiement (tous async via `MissionLifecycleChangedMessage`, D-043/D-056).
+`publish()` agit en pré-déploiement (`DRAFT`), hors du domaine couvert par
+`MissionChangeType` — migrer proprement aurait exigé d'étendre ce domaine au-delà de la
+fiabilisation visée par ce lot. Documenté et non traité ici (D-081) ; sous-lot proposé :
+`MissionPublishedMessage` dédié, routé async.

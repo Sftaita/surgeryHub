@@ -54,3 +54,9 @@ when@prod:
                 channels: [deprecation]
                 path: php://stderr
                 formatter: monolog.formatter.json
+            # Lot 1 Web Push (audit 24-07-2026): ERROR+ records from any channel (notably
+            # `push` — see WebPushService) become Sentry issues instead of only reaching
+            # stderr. Safe no-op if SENTRY_DSN is unset.
+            sentry:
+                type: service
+                id: Sentry\Monolog\LogToSentryIssueHandler

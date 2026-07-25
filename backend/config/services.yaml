@@ -47,6 +47,16 @@ services:
         arguments:
             $appEnv: "%kernel.environment%"
 
+    # Lot 1 Web Push (audit 24-07-2026): routes ERROR+ log records (any channel, notably
+    # `push`) to Sentry as issues. The sentry-symfony bundle (5.10.0) does not register a
+    # `type: sentry` Monolog handler automatically in this version, so it's wired explicitly
+    # here and referenced via `type: service` in config/packages/monolog.yaml (prod only —
+    # SENTRY_DSN is expected to be configured there; the SDK is a safe no-op with an empty DSN).
+    Sentry\Monolog\LogToSentryIssueHandler:
+        arguments:
+            $hub: '@Sentry\State\HubInterface'
+            $level: !php/const Monolog\Logger::ERROR
+
     App\EventListener\MailSafeModeListener:
         arguments:
             $kernelEnvironment: "%kernel.environment%"

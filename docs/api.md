@@ -5051,3 +5051,89 @@ endpoints). `.../documents` couvre uniquement les documents `STANDARD` (une corr
 a sa propre forme, voir `GET .../corrections`, Lot 6).
 
 ---
+
+## 40. Notifications push — abonnement navigateur (Lot 1, D-081)
+
+Contrôleur `PushSubscriptionController`. Un `PushSubscription` représente *navigateur/
+profil × service worker registration × utilisateur SurgicalHub actuellement rattaché* —
+voir D-081 pour le modèle complet et le détail de chaque décision résumée ici.
+
+**AuthZ (toutes routes) :** utilisateur authentifié (`#[CurrentUser]`), sans contrôle de
+rôle — chaque utilisateur ne gère jamais que ses propres abonnements. Non authentifié →
+`401`.
+
+### `GET /api/push/vapid-public-key`
+
+Retourne la clé publique VAPID nécessaire à `PushManager.subscribe()` côté navigateur. Ne
+retourne jamais la clé privée.
+
+**Réponse — 200 :**
+```json
+{ "publicKey": "BLzVPsUY7v1GtNQDDQVMAsov9V3UolJ7xn9yOWqVAO1l3Nbju_Mehm5eaNLJfXPAbiYERxwB8a1eupULUOQsxGk" }
+```
+
+**Réponse — 500** (`VAPID_PUBLIC_KEY` absent de la configuration serveur) :
+```json
+{ "message": "Push notifications are not configured on this server" }
+```
+
+### `POST /api/push/subscribe`
+
+Idempotent (upsert par `endpoint` — colonne `UNIQUE`, voir D-081). Corps attendu :
+
+```json
+{
+  "endpoint": "https://fcm.googleapis.com/fcm/send/…",
+  "keys": { "p256dh": "…", "auth": "…" }
+}
+```
+
+**Validation stricte (400 si non respectée) :** `endpoint` requis, non vide, ≤ 500
+caractères ; `keys.p256dh`/`keys.auth` requis, non vides, ≤ 255 caractères chacun.
+
+**Comportement (idempotence et multi-utilisateur — D-081) :**
+
+| Cas | Effet | Log |
+|---|---|---|
+| `endpoint` inconnu | création | `info push.subscription_created` |
+| `endpoint` déjà rattaché à l'utilisateur courant | mise à jour des clés, aucun doublon | `info push.subscription_updated` |
+| `endpoint` rattaché à un **autre** utilisateur | réattribution à l'utilisateur courant, jamais silencieuse | `warning push.subscription_reassigned` (`from_user_id`/`to_user_id`, jamais l'endpoint complet) |
+
+**Réponse — 204** (aucun corps) dans tous les cas de succès ci-dessus.
+**Réponse — 400** si la validation échoue.
+
+### `DELETE /api/push/unsubscribe`
+
+Idempotent, scopé au propriétaire. Corps attendu : `{ "endpoint": "…" }`.
+
+| Cas | Effet |
+|---|---|
+| `endpoint` appartient à l'utilisateur courant | suppression |
+| `endpoint` absent de la base | succès, aucune erreur métier |
+| `endpoint` appartient à un **autre** utilisateur | aucune suppression (scope `user` dans la requête) |
+
+**Réponse — 204** dans tous les cas ci-dessus (y compris "déjà absent" et "appartient à
+un autre utilisateur" — toujours idempotent et stable, jamais d'erreur qui fuiterait
+l'existence d'un abonnement appartenant à quelqu'un d'autre).
+**Réponse — 400** si `endpoint` est absent ou vide du corps.
+
+### Comportement multi-utilisateur (logout / appareil partagé)
+
+`AuthContext::logout()` (frontend) appelle `DELETE .../unsubscribe` avec l'endpoint
+courant **avant** de nettoyer la session locale — best-effort, non bloquant (voir D-081).
+Au login suivant, `POST .../subscribe` rattache explicitement l'endpoint au nouvel
+utilisateur (réattribution journalisée ci-dessus si le détachement précédent n'a pas eu
+lieu, p. ex. session expirée sans logout explicite). Aucune notification destinée à
+l'ancien utilisateur n'est plus envoyée sur cet endpoint une fois la réattribution
+effectuée.
+
+### Envoi (interne, jamais exposé en HTTP)
+
+`WebPushService::sendToUser()`/`sendToUsers()`/`sendToSiteInstrumentists()` — voir
+`docs/architecture.md` pour le flux complet et D-081 pour la politique d'observabilité
+(canal Monolog `push`, erreurs non-expirées routées vers Sentry, jamais d'endpoint
+complet ni de clé dans un log). Un abonnement retournant `404`/`410` est supprimé
+automatiquement ; les autres échecs sont isolés (n'affectent jamais les abonnements
+suivants ni la mutation métier d'origine).
+
+---

@@ -579,6 +579,16 @@ Verifying Batch 7's design evolves cleanly to the requested granularity
    Reminder) × per-channel (in-app, email, push) granularity. Today's defaults
    (in-app/email on, push not built) keep working without this — it only blocks
    broader rollout/generalization, not this initial launch.
+
+   > **Erratum (2026-07-25, Lot 1 fiabilisation Web Push, D-081):** "push not built" is
+   > no longer accurate — Web Push has since been built and shipped (it already existed
+   > at the time this document was written for the nominal path, per the 24-07-2026
+   > PWA/push audit; the socle itself was fiabilisé in Lot 1: real `UNIQUE(endpoint)`
+   > constraint, logout cleanup, availability for every role via `PushProvider`, isolated
+   > but observable send errors). What is still genuinely not built is per-type/
+   > per-channel **notification preferences** (this Batch 14 item) — that remains
+   > accurate and unchanged. This note corrects the stale claim only; the rest of this
+   > document's history is left as written.
 2. **Monthly recurrence test coverage** (Batch 13 finding) — `PlanningGeneratorServiceV2`'s
    `MONTHLY`+`monthlyNthWeekday` branch has zero recurrence-expansion test coverage.
    Hidden from the create/edit post picker until a real test matrix backs it (see §E

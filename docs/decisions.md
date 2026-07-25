@@ -4544,6 +4544,7 @@ complexes, refonte UX complète (§34 du lot).
 | 18-07-2026 | D-075 — Paiements append-only, solde toujours dérivé, émission explicite, Payment polymorphe (Exécution & Valorisation, Lot 5) |
 | 19-07-2026 | D-076 — Corrections financières additives : notes de crédit/débit, remboursements append-only, jamais de réécriture (Exécution & Valorisation, Lot 6) |
 | 19-07-2026 | D-077 — Statistiques financières : sources de vérité par catégorie, convention temporelle/devise, cash flow réel dérivé de (documentType, direction) (Pilotage financier, Lot 7) |
+| 25-07-2026 | D-081 — Fiabilisation du socle Web Push : endpoint unique par abonnement, rattachement mono-utilisateur, nettoyage au logout, activation volontaire pour tous les rôles, erreurs isolées mais observables (Lot 1) |
 
 ---
 
@@ -4626,3 +4627,186 @@ Contraintes à conserver :
 - lien profond vers la mission ou son récapitulatif ;
 - déduplication ;
 - aucune notification sur une tentative échouée ou annulée.
+
+---
+
+## D-081 — Fiabilisation du socle Web Push : endpoint unique, rattachement mono-utilisateur, nettoyage au logout, activation volontaire pour tous les rôles, erreurs isolées mais observables (Lot 1)
+
+Date : 25-07-2026
+
+### Contexte
+
+L'audit PWA/push du 24-07-2026 a confirmé que le Web Push fonctionne sur le chemin
+nominal mais a identifié huit défauts structurels du socle : aucun nettoyage au logout,
+réattribution silencieuse d'un endpoint entre utilisateurs sur un navigateur partagé,
+socle push absent de `DesktopLayout` (chirurgiens/managers/admins ne pouvaient jamais
+s'abonner), erreurs frontend/backend pratiquement invisibles, contrainte
+`UNIQUE(endpoint)` déclarée côté entité mais absente de la migration réelle, aucun test
+fonctionnel du contrôleur d'abonnement, aucun test du vrai `WebPushService`, et un envoi
+push synchrone dans `MissionController::publish()`. Ce lot fiabilise l'infrastructure
+existante avant d'implémenter l'installation PWA, les préférences sélectives, le rappel
+de 19 h et les mises à jour applicatives (tous explicitement hors périmètre ici).
+
+### Décision — un abonnement = un endpoint, rattaché à un seul utilisateur à la fois
+
+Un `PushSubscription` modélise *navigateur/profil × service worker registration ×
+utilisateur SurgicalHub actuellement rattaché*. `endpoint` est désormais réellement
+`UNIQUE` en base (voir migration ci-dessous, pas seulement déclaré côté entité).
+`PushSubscriptionController::subscribe()` (idempotent, upsert par `endpoint`) distingue
+trois cas :
+
+- **endpoint inconnu** → création ;
+- **endpoint déjà rattaché au même utilisateur** → mise à jour des clés, aucun doublon
+  (resoumission silencieuse du navigateur au reload, cas courant) ;
+- **endpoint rattaché à un autre utilisateur** → réattribution explicite et **toujours
+  journalisée** (`push.subscription_reassigned`, `warning`, avec l'ancien et le nouvel
+  `user_id` — jamais l'endpoint complet). Ce cas devient rare une fois le nettoyage au
+  logout en place (ci-dessous) ; il reste la voie d'auto-guérison pour les sessions
+  expirées sans logout explicite, plutôt qu'un `409` qui bloquerait un appareil partagé
+  sans bénéfice réel (personne d'autre que l'utilisateur courant ne peut légitimement
+  vouloir cet endpoint au moment du `subscribe()`).
+
+### Décision — nettoyage au logout, best-effort, jamais bloquant
+
+`AuthContext::logout()` appelle `detachCurrentPushSubscription(accessToken)`
+(`pushSubscriptionClient.ts`) **avant** de nettoyer le stockage local, avec le token
+capturé de façon synchrone (il peut avoir disparu du storage au moment où la résolution
+de la subscription navigateur aboutit). L'appel est fire-and-forget : une erreur réseau,
+un timeout ou une session déjà expirée ne doivent jamais retarder la révocation du
+refresh token, le nettoyage local, ni la redirection vers `/login`. Un détachement raté
+s'auto-corrige au prochain `subscribe()` via la voie de réattribution ci-dessus — aucune
+complexité multi-compte par appareil n'a été introduite dans ce lot.
+
+Scénario bout en bout (couvert par test, réparti backend/frontend, cf. §9/§10) :
+utilisateur A connecté → endpoint X rattaché à A → logout A (détachement serveur
+best-effort) → utilisateur B se connecte sur le même navigateur → `subscribe()` rattache
+explicitement X à B → A ne reçoit plus aucune notification sur X.
+
+### Décision — le socle réagit à l'identité de session, pas seulement à `isAuthenticated`
+
+`PushProvider` est monté une seule fois, à la racine authentifiée de l'app, **au-dessus
+du `Router`** (`main.tsx` : `<BrowserRouter><AppProviders>...`) — il ne démonte donc
+jamais lors d'une navigation `/login ↔ /app/...`, contrairement à l'ancien hook qui vivait
+dans `MobileLayout` (un composant de route, qui démonte réellement à cette navigation et
+réinitialisait donc son état par construction). Une revue pré-commit a révélé qu'un garde
+basé uniquement sur `isAuthenticated` (booléen) ne peut pas distinguer une **session**
+d'une autre : sur un navigateur partagé, `A connecté → logout → B connecté` dans le même
+onglet, sans rechargement complet, laisse `isAuthenticated` à `true` tout du long — un
+garde "une seule fois par montage du provider" bloquerait alors le rattachement de B.
+
+**Correctif :** le provider suit désormais l'identité réelle de la session
+(`state.status === "authenticated" ? state.user.id : null`, pas seulement le booléen), et
+compare cette identité à celle déjà traitée (`processedUserId`, `useRef`) à chaque rendu.
+Toute transition d'identité (`null → A`, `A → B` directement même si `isAuthenticated`
+reste vrai tout du long, `A → null`) déclenche :
+
+1. **`→ null` (logout ou jamais connecté)** — recalcule le statut à partir de l'état
+   réel du navigateur (`refreshStatus()`), sans jamais conserver artificiellement le
+   `status` de la session précédente, sans révoquer la subscription navigateur (déjà
+   gérée par `AuthContext::logout()` ci-dessus) et sans jamais demander la permission.
+2. **`→ un utilisateur (A ou B)`** — relit `Notification.permission` en direct :
+   `denied` → `permission-denied` (jamais de Sentry, refus normal) ; `default` →
+   `permission-default` (le point d'entrée d'activation réapparaît, aucune demande
+   automatique) ; `granted` → réabonnement idempotent (`subscribeToPush()`), qui
+   réutilise la subscription navigateur existante si elle est déjà là (elle n'a jamais
+   été révoquée par le logout précédent) et la rattache explicitement au nouvel
+   utilisateur côté serveur (upsert par `endpoint`, cf. réattribution ci-dessus).
+
+Une même identité de session ne déclenche jamais un second appel (le `ref` empêche tout
+double traitement, y compris sous double-invoke React StrictMode — même mécanisme que
+`swRegistered` pour l'enregistrement du service worker).
+
+### Décision — activation volontaire, disponible pour tous les rôles
+
+Deux choses distinctes, à ne pas confondre :
+
+- **Le socle `PushProvider`** (état, réabonnement, service worker) est monté une seule
+  fois à la racine authentifiée de l'app (`AppProviders.tsx`) et disponible, en tant que
+  *capacité technique*, pour n'importe quel composant de l'arbre — `MobileLayout` et
+  `DesktopLayout` y ont accès de façon strictement équivalente. C'est ce que ce lot livre
+  et que `PushProvider.test.tsx` couvre génériquement ("disponible dans n'importe quel
+  shell").
+- **Le point d'entrée visuel** qui expose réellement ce socle à l'utilisateur diffère
+  selon le fichier : `MobileLayout` affiche un bandeau discret (« Activer ») quand
+  `status === "permission-default"` — ce point d'entrée est isolable du reste du fichier
+  (revue pré-commit, patch de 3 lignes contre HEAD) et fait partie de ce commit. Le
+  point d'entrée `DesktopLayout` (item de menu « Activer les notifications ») existe
+  dans le code actuel mais est **imbriqué dans une refonte de navigation manager plus
+  large et hors périmètre** (nouveau menu compte `Menu`/`MenuItem` qui n'existe pas dans
+  HEAD) — il n'est **pas isolable proprement** de cette refonte et **ne fait donc pas
+  partie du commit Lot 1**. Il sera livré avec le commit de la refonte de navigation qui
+  le rend possible. Avant ce commit de suivi, les rôles chirurgien/manager/admin ont
+  accès au socle technique (enregistrement SW, réabonnement automatique si la permission
+  est déjà accordée) mais pas encore à un point d'entrée visuel pour l'activer
+  volontairement une première fois depuis `DesktopLayout`.
+
+L'enregistrement du service worker est centralisé et protégé contre les enregistrements
+concurrents (`swRegistered` ref, idempotence native de `serviceWorker.register()`). La
+permission n'est **jamais** demandée automatiquement au montage — la demande ne part que
+d'une action utilisateur explicite (`subscribe()`), quel que soit le point d'entrée qui
+l'invoque.
+
+### Décision — erreurs isolées mais observables
+
+`WebPushService::sendToSubscriptions()` ne journaliait auparavant qu'un `warning`
+générique pour tout échec, expiré ou non. Désormais : abonnement expiré (404/410) →
+suppression automatique inchangée, `info` (`push.subscription_expired`) ; tout autre
+échec (VAPID invalide, quota, erreur transitoire du service push) → `error`
+(`push.send_failed`), routé vers Sentry via le handler `sentry` (type `service`,
+`Sentry\Monolog\LogToSentryIssueHandler`, seuil `ERROR`, ajouté à
+`config/packages/monolog.yaml`/`services.yaml`, no-op si `SENTRY_DSN` est vide). Un
+échec d'envoi individuel n'interrompt jamais le traitement des abonnements suivants
+(isolation déjà en place, désormais couverte par test — voir
+`WebPushServiceTest`). Aucun endpoint complet ni clé (`p256dh`, `auth`) n'apparaît jamais
+dans un log : `WebPushService::hintForLog()` ne conserve que les premiers/derniers
+caractères (`https://push.example/…xyz`), et `PushSubscriptionController` ne journalise
+que des `user_id`.
+
+### Décision — migration `UNIQUE(endpoint)`, additive
+
+Audit préalable (dev + test, `surgicalhub`/`surgicalhub_test`, `dbal:run-sql`) : `0`
+ligne dans `push_subscription` dans les deux environnements. Aucun doublon à nettoyer →
+migration strictement additive (`Version20260724222527`, `ALTER TABLE push_subscription
+ADD CONSTRAINT uniq_push_subscription_endpoint UNIQUE (endpoint)`). Non appliquée en
+production dans le cadre de ce lot.
+
+### Décision — envoi push synchrone dans `MissionController::publish()` : dette documentée, non traitée dans ce lot
+
+`MissionController::publish()` appelle `WebPushService::sendToSiteInstrumentists()` de
+façon synchrone, dans la requête HTTP du manager qui publie une mission — contrairement
+au reste des envois push post-déploiement, tous asynchrones via
+`MissionLifecycleChangedMessage`/`MissionLifecycleChangedMessageHandler` (D-056, D-043 :
+routage Messenger obligatoire pour tout traitement IO-intensif). `publish()` agit sur une
+mission encore `DRAFT` (pré-déploiement) — un domaine distinct de celui couvert par
+`MissionChangeType` (`CLAIMED`/`RELEASED`/`REASSIGNED`/`CANCELLED`/`TIME_CHANGED`), qui ne
+connaît que les transitions post-déploiement. Réutiliser tel quel ce message pour
+`publish()` aurait exigé d'étendre l'enum et le handler à un domaine qu'ils ne couvrent
+pas aujourd'hui — au-delà de la fiabilisation du socle visée par ce lot. Décision : **ne
+pas migrer à moitié**. L'appel synchrone reste en l'état, documenté ici comme dette
+technique connue ; `WebPushService::sendToSubscriptions()` reste néanmoins désormais
+protégé par le même isolement d'erreurs que le reste du socle (une notification en échec
+n'empêche pas la réponse HTTP de `publish()` de réussir). Sous-lot proposé, hors
+périmètre de ce lot : introduire un message dédié (p. ex. `MissionPublishedMessage`) routé
+async, en cohérence avec D-043/D-056, plutôt que d'étendre `MissionChangeType`.
+
+### Tests
+
+- `PushSubscriptionControllerTest` (fonctionnel, 17 tests) : AuthZ, `vapid-public-key`,
+  validation stricte du payload, création/idempotence/rafraîchissement de clés,
+  réattribution explicite entre deux utilisateurs, unsubscribe idempotent et scopé au
+  propriétaire, les 4 rôles (instrumentiste/chirurgien/manager/admin) gèrent leur propre
+  abonnement.
+- `WebPushServiceTest` (unitaire, 9 tests) : envoi réussi, échec isolé sans blocage des
+  abonnements suivants, suppression sur 404/410, absence de suppression sur erreur
+  temporaire (503/500), log d'erreur avec raison/type, aucune exception ne remonte au
+  code appelant, aucun endpoint complet ni clé dans les logs — via un vrai
+  `GuzzleHttp\Handler\MockHandler` injecté dans `WebPush` (seam `httpClientOptions`),
+  pas un double de `WebPushServiceInterface`.
+- `PushProvider.test.tsx`, `pushSubscriptionClient.test.ts`, `AuthContext.test.tsx`,
+  `MobileLayout.push.test.tsx` (frontend) : support/permission/état, enregistrement SW
+  unique, auto-réabonnement silencieux par identité de session (§ ci-dessus),
+  `subscribe()`/`unsubscribe()`, détachement au logout avec token capturé et non
+  bloquant, bannière mobile pilotée par `status`, aucune exception Sentry sur un refus
+  normal de permission. `MobileLayout.push.test.tsx` est délibérément séparé de
+  `MobileLayout.test.tsx` (refonte de navigation, hors périmètre) afin que les deux
+  puissent être committés indépendamment.
