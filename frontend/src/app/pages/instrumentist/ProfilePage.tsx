@@ -9,6 +9,7 @@ import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../../ui/toast/useToast";
 import { AvatarUploader } from "../../ui/avatar/AvatarUploader";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
+import { PwaInstallMenuItem } from "../../features/pwa-install/PwaInstallMenuItem";
 
 const ORTHO_SPECIALTIES = [
   { value: "EPAULE", label: "Épaule" },
@@ -104,6 +105,10 @@ export default function ProfilePage() {
           </Box>
         </Stack>
       </Paper>
+
+      <Divider />
+
+      <PwaInstallMenuItem />
 
       <Divider />
 

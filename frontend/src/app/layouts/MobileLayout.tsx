@@ -6,6 +6,7 @@ import type { SxProps, Theme } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import { usePushNotifications } from "../features/push/usePushNotifications";
 import { useNotifications } from "../features/push/useNotifications";
+import { PwaInstallBanner } from "../features/pwa-install/PwaInstallBanner";
 import { useAuth } from "../auth/AuthContext";
 import { fetchMissions, fetchInstrumentistOffersWithFallback } from "../features/missions/api/missions.api";
 import { useInstrumentistMissionSync } from "../features/missions/sync/useInstrumentistMissionSync";
@@ -815,6 +816,7 @@ export function MobileLayout() {
           </Box>
         </Box>
       )}
+      <PwaInstallBanner />
       <Box
         key={pathname}
         sx={{

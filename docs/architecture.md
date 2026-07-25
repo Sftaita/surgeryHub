@@ -1970,3 +1970,65 @@ post-déploiement (tous async via `MissionLifecycleChangedMessage`, D-043/D-056)
 `MissionChangeType` — migrer proprement aurait exigé d'étendre ce domaine au-delà de la
 fiabilisation visée par ce lot. Documenté et non traité ici (D-081) ; sous-lot proposé :
 `MissionPublishedMessage` dédié, routé async.
+
+## 10. Installation PWA Android/iOS (Lot 2, D-082)
+
+Module `frontend/src/app/features/pwa-install/` — aucun changement backend.
+
+### 10.1 Composants
+
+- `PwaInstallProvider.tsx` — monté une seule fois à la racine authentifiée
+  (`AppProviders.tsx`, à côté de `PushProvider`, D-081), même principe : socle unique,
+  jamais dupliqué par layout. Capture `beforeinstallprompt`/`appinstalled`, expose
+  `status` (`installed`/`android-installable`/`ios-installable`/`not-installable`/
+  `dismissed`), `platform`, `showBanner`, et les actions (`promptAndroidInstall`,
+  `openIosGuide`/`closeIosGuide`, `dismissBanner`). Monte aussi
+  `IosInstallGuideModal` en permanence (état piloté par le contexte), disponible
+  partout sans qu'aucun layout n'ait à le monter lui-même.
+- `pwaInstallDetection.ts` — `isStandalone()` (source de vérité unique sur
+  l'installation réelle : `display-mode` + `navigator.standalone` iOS),
+  `detectPlatform()` (`ios`/`android`/`other`, gère le cas iPadOS 13+ qui usurpe l'UA
+  Mac via `maxTouchPoints`).
+- `pwaInstallStorage.ts` — politique de report (`localStorage`, 3 clés
+  `surgicalhub.pwaInstall.*`), dégrade silencieusement si le stockage est indisponible.
+- `PwaInstallBanner.tsx` — bannière automatique, montée uniquement dans `MobileLayout`
+  (jamais `DesktopLayout` — voir D-082 pour la justification).
+- `IosStepAnimation.tsx` — aperçu animé 4 étapes, recréé en React à partir du handoff
+  design (`handoff-install-guide/`, jamais copié tel quel — voir D-082), respecte
+  `prefers-reduced-motion`.
+- `IosInstallGuideModal.tsx` — guide manuel iOS, composant dédié avec son propre
+  `useFocusTrap.ts` (focus trap + `Échap`, scopé à ce module — voir D-082 pour pourquoi
+  `SheetModal.tsx` partagé n'a pas été modifié).
+- `usePwaInstallMenuState.ts` + `PwaInstallMenuItem.tsx` — point d'entrée permanent
+  (§7 du lot), consommé par `ProfilePage.tsx` (instrumentiste) et par un `MenuItem`
+  dédié dans le menu compte de `DesktopLayout` — jamais soumis à la politique de
+  report.
+
+### 10.2 Flux
+
+```
+beforeinstallprompt (Android/Chromium) ──┐
+                                           ├─→ PwaInstallProvider ─→ status
+navigator.standalone / display-mode ──────┘        │
+                                                     ├─→ showBanner (MobileLayout only,
+                                                     │   authentifié, jamais login)
+                                                     └─→ usePwaInstallMenuState (partout,
+                                                         jamais de report)
+```
+
+Android : bouton "Installer" → `deferredPrompt.prompt()` natif, jamais recréé.
+iOS : bouton "Voir comment faire" → `IosInstallGuideModal` (bottom sheet mobile /
+dialogue centré ≥ 900px, jamais de bouton "Installer" — iOS ne permet pas de déclencher
+l'installation par script).
+
+### 10.3 Manifest et service worker
+
+Audités, non modifiés — déjà conformes (voir D-082) : `manifest.json` réunit déjà tous
+les critères d'installabilité Chrome, `sw.js` est déjà enregistré globalement par
+`PushProvider` avant même l'authentification. Aucun cache offline, aucune logique
+`install`/`activate`/`fetch` ajoutée.
+
+### 10.4 Séparation avec Web Push
+
+`PwaInstallProvider` n'importe rien de `features/push/` ; aucune demande de permission
+de notification depuis la bannière ou le guide d'installation. `PushProvider` inchangé.

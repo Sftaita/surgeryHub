@@ -57,6 +57,11 @@ vi.mock("../features/push/useNotifications", () => ({
   useNotifications: () => ({ badgeLabel: undefined }),
 }));
 
+// Lot 2 PWA install, hors périmètre de ce fichier (Web Push uniquement, D-081).
+vi.mock("../features/pwa-install/PwaInstallBanner", () => ({
+  PwaInstallBanner: () => null,
+}));
+
 vi.mock("../ui/toast/useToast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));

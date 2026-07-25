@@ -32,6 +32,12 @@ vi.mock("../../ui/toast/useToast", () => ({
   useToast: () => ({ success: toastSuccessMock, error: vi.fn(), warning: vi.fn() }),
 }));
 
+// Lot 2 PWA install — hors périmètre de ce fichier (photo/spécialités), voir
+// PwaInstallMenuItem.test.tsx pour sa propre couverture.
+vi.mock("../../features/pwa-install/PwaInstallMenuItem", () => ({
+  PwaInstallMenuItem: () => null,
+}));
+
 // AvatarCropDialog needs canvas/Image APIs jsdom doesn't implement.
 vi.mock("../../ui/avatar/AvatarCropDialog", () => ({
   AvatarCropDialog: ({ open, onConfirm }: any) =>

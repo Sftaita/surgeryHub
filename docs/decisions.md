@@ -4545,6 +4545,7 @@ complexes, refonte UX complète (§34 du lot).
 | 19-07-2026 | D-076 — Corrections financières additives : notes de crédit/débit, remboursements append-only, jamais de réécriture (Exécution & Valorisation, Lot 6) |
 | 19-07-2026 | D-077 — Statistiques financières : sources de vérité par catégorie, convention temporelle/devise, cash flow réel dérivé de (documentType, direction) (Pilotage financier, Lot 7) |
 | 25-07-2026 | D-081 — Fiabilisation du socle Web Push : endpoint unique par abonnement, rattachement mono-utilisateur, nettoyage au logout, activation volontaire pour tous les rôles, erreurs isolées mais observables (Lot 1) |
+| 25-07-2026 | D-082 — Installation PWA Android/iOS : bannière + `beforeinstallprompt`, guide manuel iOS (animation recréée en React, jamais copiée), source de vérité standalone, politique de report, séparation stricte avec le Push (Lot 2) |
 
 ---
 
@@ -4810,3 +4811,142 @@ async, en cohérence avec D-043/D-056, plutôt que d'étendre `MissionChangeType
   normal de permission. `MobileLayout.push.test.tsx` est délibérément séparé de
   `MobileLayout.test.tsx` (refonte de navigation, hors périmètre) afin que les deux
   puissent être committés indépendamment.
+
+---
+
+## D-082 — Installation PWA Android/iOS : bannière + `beforeinstallprompt`, guide manuel iOS, source de vérité standalone, politique de report (Lot 2)
+
+Date : 25-07-2026
+
+### Contexte
+
+Le manifest (`frontend/public/manifest.json`) et le service worker (`frontend/public/sw.js`,
+déjà enregistré globalement par `PushProvider`, D-081) rendaient SurgicalHub techniquement
+installable depuis longtemps, mais rien ne le proposait jamais à l'utilisateur — aucune
+bannière, aucun guide, aucun point d'entrée. Un design complet (bannière + guide iOS 4
+temps « Partager → Sur l'écran d'accueil → Ajouter → Installé », variante Android native)
+avait été produit séparément (`handoff-install-guide/`, Claude Design) ; ce lot l'intègre
+au frontend de production sans le redessiner ni recréer les assets d'un autre format que
+celui déjà designé.
+
+### Décision — socle unique, même principe que Push (D-081)
+
+`PwaInstallProvider` est monté une seule fois à la racine authentifiée
+(`AppProviders.tsx`, à côté de `PushProvider`), jamais dupliqué par layout. Il capture
+`beforeinstallprompt` (avec `preventDefault()`, jamais de mini-infobar Chrome par défaut)
+et `appinstalled` sans jamais déclencher de prompt automatiquement — seule une action
+utilisateur explicite (bannière ou point d'entrée manuel) appelle `deferredPrompt.prompt()`.
+L'événement est à usage unique : la référence est supprimée après le premier `prompt()`,
+qu'il soit accepté, refusé, ou en erreur (capturée par Sentry, tag `feature: "pwa-install"`
+— jamais silencieuse).
+
+### Décision — la détection standalone est la seule source de vérité sur l'installation
+
+`window.matchMedia('(display-mode: standalone)')` (Android/desktop) et
+`navigator.standalone` (iOS, jamais reconnu par `matchMedia` sur WebKit) — jamais dérivée
+d'un état local ("J'ai compris" ne signifie pas installé, voir plus bas). `appinstalled`
+recalcule cet état et efface toute la politique de report d'un coup
+(`clearDismissalState()`) : une fois installée, l'application ne repropose plus jamais
+rien automatiquement, et le point d'entrée manuel (§ ci-dessous) affiche
+« Application installée ».
+
+### Décision — deux parcours par plateforme, jamais un troisième inventé
+
+- **Android/Chromium (bannière + `beforeinstallprompt`)** : bouton "Installer" déclenche
+  directement le prompt natif du navigateur — SurgicalHub ne recrée jamais son interface
+  (non personnalisable), conformément à la recommandation du handoff design.
+- **iOS (bannière + guide manuel)** : aucune API ne permet de déclencher l'installation par
+  script sur iOS — jamais de bouton "Installer" sur ce parcours. Le guide reprend la
+  Variante B du handoff (bottom sheet, recommandée — texte, copie et timings d'animation
+  exacts du handoff), qui bascule en dialogue centré ≥ 900px (même mécanisme responsive
+  que `SheetModal.tsx`, réutilisé en styles mais pas en composant — voir plus bas).
+- Détection iOS : UA `iPad|iPhone|iPod`, plus le cas iPadOS 13+ qui usurpe l'UA "Mac"
+  (distingué via `navigator.maxTouchPoints > 1`, seul signal fiable pour un vrai Mac non
+  tactile).
+
+### Décision — animation recréée en React, jamais copiée depuis le handoff
+
+Le fichier de référence (`handoff-install-guide/iOS Install Guide.dc.html`) est une
+maquette exécutable de conception (son propre README le précise explicitement : « Design
+uniquement — pas de logique d'affichage/détection réelle. À recréer en React dans le
+codebase de production, pas à copier tel quel »). `IosStepAnimation.tsx` recrée les 4
+étapes (Partager/Ajouter à l'écran d'accueil/Confirmer/Installé) en composants MUI `Box`,
+en reprenant à l'identique : les noms et timings des animations CSS du handoff
+(`iigFade`, `iigHalo` 1.6s, `iigTap` 1.2–1.4s, `iigGlow` 1.4–1.8s, `iigPop` 0.5s, cycle de
+2.4s par étape), la copie exacte des textes, et la palette de couleurs déjà utilisée
+ailleurs dans le projet (`MobileLayout.tsx`/`DesktopLayout.tsx`) — aucune couleur inventée
+hors charte. Les fichiers `ios-frame.jsx`/`android-frame.jsx` du handoff (coques de
+téléphone décoratives, marquées "pas à réutiliser en prod" dans leur propre en-tête) ne
+sont pas repris.
+
+`prefers-reduced-motion: reduce` : le cycle automatique s'arrête entièrement (reste figé
+sur la première étape), sans qu'aucune information ne devienne inaccessible — les 3
+étapes textuelles du guide (`IosInstallGuideModal`) sont un `<ol>` statique, **jamais**
+conditionné par l'état de l'animation, donc toujours lisibles avec ou sans elle
+(exigence accessibilité du lot).
+
+### Décision — `IosInstallGuideModal` n'est pas une réutilisation de `SheetModal`
+
+`SheetModal.tsx` (composant partagé par tout l'écran d'encodage) suit déjà le même motif
+responsive (bottom sheet mobile / dialogue centré desktop) mais n'implémente ni focus
+trap ni fermeture au clavier (`Échap`) — un gap préexistant, sur un composant partagé par
+le reste de l'application. Le corriger pour ce seul lot aurait élargi son périmètre bien
+au-delà de l'installation PWA ; `IosInstallGuideModal` est donc un composant dédié,
+reprenant les mêmes valeurs d'animation/rayon/ombre que `SheetModal` pour la cohérence
+visuelle, mais avec son propre conteneur et son propre `useFocusTrap` (module
+`pwa-install/`, non partagé) : focus posé sur le premier élément focusable à l'ouverture,
+`Tab`/`Maj+Tab` bouclent à l'intérieur, `Échap` ferme (`outcome: "later"`), le focus
+revient au déclencheur à la fermeture. `role="dialog"`, `aria-modal`, `aria-labelledby`,
+`aria-describedby` sur le conteneur.
+
+### Décision — politique de report (localStorage)
+
+```
+surgicalhub.pwaInstall.dismissedAt
+surgicalhub.pwaInstall.dismissCount
+surgicalhub.pwaInstall.completedGuide
+```
+
+1er report ("Plus tard" ou "J'ai compris") → pas de nouvelle proposition automatique avant
+7 jours ; 2e → 14 jours ; 3e et suivants → plus jamais automatiquement. **« J'ai compris »
+applique la même règle que « Plus tard »** — ce n'est pas une confirmation d'installation,
+seulement un accusé de lecture qui referme et reporte ; la détection standalone reste seule
+source de vérité, jamais court-circuitée par ce champ. Stockage par navigateur
+(`localStorage`, nativement scopé par origine) ; dégrade silencieusement en "toujours
+proposer" si le stockage est indisponible (navigation privée stricte), jamais une erreur
+bloquante. Le point d'entrée permanent (ci-dessous) n'est **jamais** soumis à cette
+politique — disponible quel que soit le nombre de reports.
+
+### Décision — point d'entrée permanent, page profil et menu compte
+
+`usePwaInstallMenuState()` centralise la logique état→libellé→action, consommée par
+`PwaInstallMenuItem` (page profil instrumentiste, `ProfilePage.tsx`) et par un `MenuItem`
+dédié dans le menu compte de `DesktopLayout` (même état, deux rendus différents — jamais
+un composant partagé forcé dans deux systèmes de menu hétérogènes). Bannière automatique
+réservée à `MobileLayout` (montée une fois, jamais dupliquée) : le design fourni est
+pensé téléphone, et une bannière d'installation dans le tableau de bord manager desktop
+n'aurait pas de sens produit — le point d'entrée manuel du menu compte reste, lui,
+disponible pour tous les rôles, y compris desktop (prompt natif si disponible).
+
+### Décision — séparation stricte avec Web Push (D-081)
+
+`PwaInstallProvider` n'importe rien de `features/push/` et ne demande jamais la
+permission de notification depuis la bannière ou le guide — les deux parcours (installer
+l'application, autoriser les notifications) restent déclenchés indépendamment, par des
+actions utilisateur distinctes. `PushProvider` n'a pas été modifié par ce lot.
+
+### Manifest et service worker — état déjà conforme
+
+Audité, non modifié : `manifest.json` a déjà `name`, `short_name`, `start_url`,
+`display: "standalone"`, `theme_color`, `background_color`, et des icônes `192`/`512`
+déclinées en `purpose: "any"` et `"maskable"` — tous les critères d'installabilité Chrome
+sont déjà réunis, tous les fichiers icônes référencés existent sur disque. `sw.js` est
+déjà enregistré globalement (via `PushProvider`, D-081) avant même l'authentification —
+aucun changement n'était nécessaire pour ce lot. Aucun cache offline, aucune logique
+`install`/`activate`/`fetch` n'a été ajoutée (explicitement hors périmètre).
+
+### Portée non traitée ici
+
+Préférences sélectives de notifications, rappel 19 h, escalade J+1, cache offline,
+versioning applicatif, mise à jour forcée du service worker, refonte de
+`NotificationsPage` — aucun n'a été commencé.

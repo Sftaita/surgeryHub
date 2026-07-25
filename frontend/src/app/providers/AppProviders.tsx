@@ -5,6 +5,7 @@ import { queryClient } from "./queryClient";
 import { AppErrorBoundary } from "../errors/AppErrorBoundary";
 import { AuthProvider } from "../auth/AuthContext";
 import { PushProvider } from "../features/push/PushProvider";
+import { PwaInstallProvider } from "../features/pwa-install/PwaInstallProvider";
 
 // Toast (global)
 import { ToastProvider } from "../ui/toast/ToastProvider";
@@ -89,7 +90,9 @@ export function AppProviders({ children }: PropsWithChildren) {
           <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale="fr">
             <ToastProvider>
               <AuthProvider>
-                <PushProvider>{children}</PushProvider>
+                <PushProvider>
+                  <PwaInstallProvider>{children}</PwaInstallProvider>
+                </PushProvider>
               </AuthProvider>
             </ToastProvider>
           </LocalizationProvider>

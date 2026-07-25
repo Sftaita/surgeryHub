@@ -39,6 +39,10 @@ vi.mock("../features/push/useNotifications", () => ({
   useNotifications: () => ({ badgeLabel: undefined }),
 }));
 
+vi.mock("../features/pwa-install/PwaInstallBanner", () => ({
+  PwaInstallBanner: () => null,
+}));
+
 vi.mock("../ui/toast/useToast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));
