@@ -78,7 +78,26 @@ class WebPushService implements WebPushServiceInterface
             return false;
         }
 
-        return $this->sendToSubscriptions($subscriptions, $title, $body, $data) > 0;
+        return $this->sendToSubscriptions($subscriptions, $title, $body, $data)['sent'] > 0;
+    }
+
+    /**
+     * Same as sendToUserAndReportSuccess(), but returns one entry per subscription
+     * actually attempted (provider/success/statusCode/reason) instead of collapsing to a
+     * single bool — needed by OutboundNotificationService (D-084) to record one
+     * OutboundNotificationAttempt per real transport attempt. Never includes an endpoint,
+     * only the provider derived from its host.
+     *
+     * @return array{sent:int, attempts:list<array{provider:string, success:bool, statusCode:?int, reason:?string}>}
+     */
+    public function sendToUserWithAttempts(User $user, string $title, string $body, array $data = []): array
+    {
+        $subscriptions = $this->em->getRepository(PushSubscription::class)->findBy(['user' => $user]);
+        if (empty($subscriptions)) {
+            return ['sent' => 0, 'attempts' => []];
+        }
+
+        return $this->sendToSubscriptions($subscriptions, $title, $body, $data);
     }
 
     /** @param User[] $users */
@@ -134,9 +153,9 @@ class WebPushService implements WebPushServiceInterface
 
     /**
      * @param PushSubscription[] $pushSubscriptions
-     * @return int number of subscriptions that received the push successfully
+     * @return array{sent:int, attempts:list<array{provider:string, success:bool, statusCode:?int, reason:?string}>}
      */
-    private function sendToSubscriptions(array $pushSubscriptions, string $title, string $body, array $data = []): int
+    private function sendToSubscriptions(array $pushSubscriptions, string $title, string $body, array $data = []): array
     {
         $webPush = new WebPush([
             'VAPID' => [
@@ -164,11 +183,16 @@ class WebPushService implements WebPushServiceInterface
         $sent    = 0;
         $failed  = 0;
         $expired = 0;
+        $attempts = [];
 
         try {
             foreach ($webPush->flush() as $report) {
+                $statusCode = $report->getResponse()?->getStatusCode();
+                $provider = self::providerForEndpoint($report->getEndpoint());
+
                 if ($report->isSuccess()) {
                     ++$sent;
+                    $attempts[] = ['provider' => $provider, 'success' => true, 'statusCode' => $statusCode, 'reason' => null];
                     continue;
                 }
 
@@ -180,8 +204,10 @@ class WebPushService implements WebPushServiceInterface
                 // logged at error so it reaches Sentry (see monolog.yaml `sentry` handler,
                 // Lot 1 / audit 24-07-2026) instead of disappearing silently as before.
                 $endpointHint = $this->hintForLog($report->getEndpoint());
+                $normalizedReason = self::normalizeReason($report->getReason());
                 if ($report->isSubscriptionExpired()) {
                     ++$expired;
+                    $attempts[] = ['provider' => $provider, 'success' => false, 'statusCode' => $statusCode, 'reason' => 'expired'];
                     $this->logger->info('push.subscription_expired', [
                         'endpoint_hint' => $endpointHint,
                         'type'          => $data['type'] ?? null,
@@ -194,9 +220,16 @@ class WebPushService implements WebPushServiceInterface
                         ->getQuery()
                         ->execute();
                 } else {
+                    $attempts[] = ['provider' => $provider, 'success' => false, 'statusCode' => $statusCode, 'reason' => $normalizedReason];
+                    // Reason logged normalized, not raw: minishlink/web-push's own
+                    // getReason() embeds the full push endpoint URL in its message
+                    // ("Client error: `POST https://...` resulted in...") — logging it
+                    // verbatim would leak exactly what hintForLog() above exists to
+                    // prevent. Found while building D-084's "no secret in any log"
+                    // guarantee; fixed here since it's the same log line.
                     $this->logger->error('push.send_failed', [
                         'endpoint_hint' => $endpointHint,
-                        'reason'        => $report->getReason(),
+                        'reason'        => $normalizedReason,
                         'title'         => $title,
                         'type'          => $data['type'] ?? null,
                     ]);
@@ -210,7 +243,7 @@ class WebPushService implements WebPushServiceInterface
                 'subscriptions_count' => count($pushSubscriptions),
             ]);
 
-            return 0;
+            return ['sent' => 0, 'attempts' => []];
         }
 
         if ($sent > 0 || $failed > 0) {
@@ -223,7 +256,42 @@ class WebPushService implements WebPushServiceInterface
             ]);
         }
 
-        return $sent;
+        return ['sent' => $sent, 'attempts' => $attempts];
+    }
+
+    /** Derived from the endpoint's host only — never logs or persists the full endpoint. */
+    private static function providerForEndpoint(?string $endpoint): string
+    {
+        $host = $endpoint !== null ? (string) (parse_url($endpoint, PHP_URL_HOST) ?: '') : '';
+
+        return match (true) {
+            str_contains($host, 'fcm.googleapis.com') => 'FCM',
+            str_contains($host, 'web.push.apple.com') => 'APPLE',
+            default => 'OTHER',
+        };
+    }
+
+    /**
+     * minishlink/web-push's MessageSentReport::getReason() embeds the full push endpoint
+     * URL in its message string — never store or log that raw. Extracts a short,
+     * endpoint-free code instead: the provider's own JSON "reason" field if present (e.g.
+     * "BadJwtToken"), else the HTTP status phrase, else a generic fallback.
+     */
+    private static function normalizeReason(?string $rawReason): ?string
+    {
+        if ($rawReason === null || $rawReason === '') {
+            return null;
+        }
+
+        if (preg_match('/"reason":"([^"]+)"/', $rawReason, $m) === 1) {
+            return $m[1];
+        }
+
+        if (preg_match('/resulted in a `(\d{3} [^`]+)`/', $rawReason, $m) === 1) {
+            return $m[1];
+        }
+
+        return 'send_failed';
     }
 
     /**

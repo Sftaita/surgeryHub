@@ -15,6 +15,13 @@ final class SendTemplatedEmailMessage
         public readonly string $htmlTemplate,
         public readonly array $context = [],
         public readonly ?string $textTemplate = null,
+        /**
+         * D-084 — id of the OutboundNotification row already persisted (QUEUED) before
+         * this message was dispatched, so the handler/failure listener update the SAME
+         * row across retries instead of creating a new one each time. Null for callers
+         * predating D-084 (invitations, absences, billing emails) that don't track history yet.
+         */
+        public readonly ?int $outboundNotificationId = null,
     ) {
     }
 }

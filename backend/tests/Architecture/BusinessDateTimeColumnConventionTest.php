@@ -126,6 +126,17 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
 
         // Rappel d'encodage D+1, D-083.
         'App\Entity\Mission::encodingReminderSentAt' => 'set from the cron command\'s own "now" (SendEncodingRemindersCommand::now(), Europe/Brussels-computed) inside EncodingReminderService::processMission(), never client input',
+
+        // Historique des notifications sortantes, D-084 — every timestamp on both entities
+        // is set from new \DateTimeImmutable() inside OutboundNotificationService, never
+        // hydrated from a client-submitted value (the API is read-only, admin history only).
+        'App\Entity\OutboundNotification::createdAt' => 'set from new \DateTimeImmutable() in OutboundNotification::initializeCreatedAt() (PrePersist), never client input',
+        'App\Entity\OutboundNotification::queuedAt' => 'set from new \DateTimeImmutable() in OutboundNotificationService::recordEmailQueued(), never client input',
+        'App\Entity\OutboundNotification::sentAt' => 'set from new \DateTimeImmutable() in OutboundNotificationService (recordPushSend()/recordEmailAttempt()), never client input',
+        'App\Entity\OutboundNotification::failedAt' => 'set from new \DateTimeImmutable() in OutboundNotificationService (recordPushSend()/recordEmailAttempt()), never client input',
+        'App\Entity\OutboundNotificationAttempt::startedAt' => 'set from new \DateTimeImmutable() in OutboundNotificationAttempt::initializeCreatedAt() (PrePersist) or explicitly by OutboundNotificationService, never client input',
+        'App\Entity\OutboundNotificationAttempt::finishedAt' => 'set from new \DateTimeImmutable() in OutboundNotificationService, never client input',
+        'App\Entity\OutboundNotificationAttempt::createdAt' => 'set from new \DateTimeImmutable() in OutboundNotificationAttempt::initializeCreatedAt() (PrePersist), never client input',
     ];
 
     /** Exempt by name, not by allowlist entry — the project-wide TimestampableTrait convention. */

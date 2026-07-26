@@ -6,7 +6,9 @@ use App\Entity\FirmInvoice;
 use App\Entity\InstrumentistStatement;
 use App\Entity\Mission;
 use App\Entity\NotificationEvent;
+use App\Entity\OutboundNotification;
 use App\Entity\User;
+use App\Enum\OutboundNotificationFallbackReason;
 use App\Enum\PublicationChannel;
 use App\Message\PlanningAlertRaisedMessage;
 use App\Message\SendBillingEmailMessage;
@@ -31,6 +33,7 @@ class NotificationService
         private readonly string $fromAddress,
         #[Autowire('%env(string:MAILER_FROM_NAME)%')]
         private readonly string $fromName,
+        private readonly OutboundNotificationService $outboundNotificationService,
     ) {
     }
 
@@ -163,19 +166,39 @@ class NotificationService
     /**
      * D-083 — repli email du rappel d'encodage D+1, uniquement quand Push n'est pas
      * réellement livrable pour l'instrumentiste (voir EncodingReminderService).
+     *
+     * D-084 — crée d'abord la ligne OutboundNotification (QUEUED), avant de dispatcher
+     * le message Messenger, afin que son id circule dans le message et que le
+     * handler/listener mettent à jour la même ligne plutôt que d'en créer une nouvelle
+     * à chaque retry. $fallbackOf/$fallbackReason relient cette ligne au Push non
+     * livrable qui l'a déclenchée.
      */
-    public function missionEncodingReminderNotifyInstrumentist(Mission $mission): void
-    {
+    public function missionEncodingReminderNotifyInstrumentist(
+        Mission $mission,
+        ?OutboundNotification $fallbackOf = null,
+        ?OutboundNotificationFallbackReason $fallbackReason = null,
+    ): ?OutboundNotification {
         $instrumentist = $mission->getInstrumentist();
         if (!$instrumentist instanceof User) {
-            return;
+            return null;
         }
 
         $missionUrl = sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId());
+        $subject = 'SurgicalHub — Encodage à finaliser';
+
+        $notification = $this->outboundNotificationService->recordEmailQueued(
+            $instrumentist,
+            'ENCODING_REMINDER_D1',
+            $subject,
+            rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
+            mission: $mission,
+            fallbackOf: $fallbackOf,
+            fallbackReason: $fallbackReason,
+        );
 
         $this->bus->dispatch(new SendTemplatedEmailMessage(
             to: (string) $instrumentist->getEmail(),
-            subject: 'SurgicalHub — Encodage à finaliser',
+            subject: $subject,
             fromAddress: $this->fromAddress,
             fromName: $this->fromName,
             htmlTemplate: 'emails/mission_encoding_reminder.html.twig',
@@ -183,7 +206,10 @@ class NotificationService
                 'firstname'  => $instrumentist->getFirstname(),
                 'missionUrl' => $missionUrl,
             ],
+            outboundNotificationId: $notification->getId(),
         ));
+
+        return $notification;
     }
 
     public function sendAbsenceRequestMissingEmailToUser(User $user, string $message): void

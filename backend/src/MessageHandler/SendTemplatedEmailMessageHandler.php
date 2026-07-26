@@ -3,6 +3,7 @@
 namespace App\MessageHandler;
 
 use App\Message\SendTemplatedEmailMessage;
+use App\Service\OutboundNotificationService;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Mailer\MailerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
@@ -17,6 +18,7 @@ final class SendTemplatedEmailMessageHandler
         private readonly MailerInterface $mailer,
         private readonly Environment $twig,
         private readonly LoggerInterface $logger,
+        private readonly OutboundNotificationService $outboundNotificationService,
     ) {
     }
 
@@ -50,5 +52,19 @@ final class SendTemplatedEmailMessageHandler
             'subject' => $message->subject,
             'htmlTemplate' => $message->htmlTemplate,
         ]);
+
+        // D-084 — "handed off" is the honest signal available here (see comment above),
+        // so this is what SENT means for the history: transport accepted it, not that it
+        // was delivered/read. A later genuine failure (this send throwing on a retry, or
+        // a bounce) is not tracked here — see OutboundNotificationEmailFailureListener.
+        if ($message->outboundNotificationId !== null) {
+            $this->outboundNotificationService->recordEmailAttempt(
+                $message->outboundNotificationId,
+                success: true,
+                reason: null,
+                bodyText: $textBody,
+                bodyHtml: $htmlBody,
+            );
+        }
     }
 }

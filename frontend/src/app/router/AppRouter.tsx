@@ -33,6 +33,7 @@ const AdminUsersPage       = React.lazy(() => import("../pages/admin/AdminUsersP
 const AdminSitesPage       = React.lazy(() => import("../pages/admin/AdminSitesPage"));
 const AdminInvitationsPage = React.lazy(() => import("../pages/admin/AdminInvitationsPage"));
 const AdminAuditPage       = React.lazy(() => import("../pages/admin/AdminAuditPage"));
+const AdminOutboundNotificationsPage = React.lazy(() => import("../pages/admin/AdminOutboundNotificationsPage"));
 
 // Manager
 const MissionsListPage       = React.lazy(() => import("../pages/manager/MissionsListPage"));
@@ -178,6 +179,8 @@ export function AppRouter() {
                 <Route path="admin/sites"       element={<AdminSitesPage />} />
                 <Route path="admin/invitations" element={<AdminInvitationsPage />} />
                 <Route path="admin/audit"       element={<AdminAuditPage />} />
+                {/* D-084 — route + page seules ; entrée de menu à brancher avec le lot navigation (DesktopLayout encore mêlé à la refonte en cours). */}
+                <Route path="admin/outbound-notifications" element={<AdminOutboundNotificationsPage />} />
               </Route>
             </Route>
           </Route>

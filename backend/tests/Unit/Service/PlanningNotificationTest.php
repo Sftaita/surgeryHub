@@ -13,6 +13,7 @@ use App\Enum\SchedulePrecision;
 use App\Repository\UserRepository;
 use App\Service\EmailService;
 use App\Service\NotificationService;
+use App\Service\OutboundNotificationService;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
@@ -44,6 +45,7 @@ class PlanningNotificationTest extends TestCase
             'http://localhost:5173',
             'noreply@test.com',
             'SurgicalHub',
+            $this->createMock(OutboundNotificationService::class),
         );
     }
 

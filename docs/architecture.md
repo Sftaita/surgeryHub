@@ -2067,3 +2067,53 @@ toutes expirées, tous les envois échouent). Jamais les deux à la fois.
 Cron serveur (pas de Symfony Scheduler dans ce projet), garde horaire interne dans la
 commande elle-même — absorbe tout décalage été/hiver même si le cron serveur est
 planifié en UTC fixe. Voir docs/production.md pour le déploiement.
+
+## 12. Historique des notifications sortantes (D-084)
+
+Traçabilité durable de tous les Push et emails envoyés — snapshot du contenu exact,
+chronologie des tentatives, statut honnête (`SENT` ≠ lu). Réservé à ROLE_ADMIN.
+
+### 12.1 Modèle
+
+- `OutboundNotification` — une ligne par communication sortante (Push OU email, jamais
+  les deux). Snapshot : `title`/`subject`/`bodyText`/`bodyHtml`/`payload` (nettoyé, liste
+  blanche). Un repli Push → email crée une seconde ligne distincte, liée via
+  `fallbackOf`/`fallbackReason` — jamais un statut composite sur une ligne partagée.
+- `OutboundNotificationAttempt` — append-only, une ligne par tentative réelle de
+  transport (une par subscription Push, une par essai/retry Messenger pour un email).
+  Ne stocke jamais d'endpoint, seulement le `provider` (`FCM`/`APPLE`/`OTHER`/`SMTP`)
+  dérivé du host, et une `reason` normalisée (jamais un message d'exception brut).
+
+### 12.2 Branchement Push
+
+`WebPushService::sendToUserWithAttempts()` (nouvelle méthode, pas dans
+`WebPushServiceInterface`) retourne le détail par abonnement au lieu d'un simple bool.
+`OutboundNotificationService::recordPushSend()` agrège : `SENT` si au moins un envoi
+réussit, `FAILED` si tous échouent, `SKIPPED` si aucun abonnement.
+
+### 12.3 Branchement email
+
+`SendTemplatedEmailMessage` transporte désormais un `outboundNotificationId` optionnel
+(nullable, rétrocompatible avec les appelants antérieurs à D-084). La ligne
+`OutboundNotification` (statut `QUEUED`) est créée AVANT le dispatch Messenger, pour que
+son id circule dans le message. `SendTemplatedEmailMessageHandler` marque `SENT` au
+succès (et rétro-remplit `bodyText`/`bodyHtml` avec le contenu réellement rendu — le
+Twig n'est rendu que dans le handler, pas au moment de la mise en file). Un échec ne
+marque `FAILED` que si Messenger a épuisé ses tentatives
+(`OutboundNotificationEmailFailureListener` sur `WorkerMessageFailedEvent`,
+`!$event->willRetry()`) — un échec en attente de retry laisse le statut à `QUEUED`,
+jamais `FAILED` prématurément.
+
+### 12.4 API et interface ADMIN
+
+`GET /api/admin/outbound-notifications` (liste paginée/filtrable) et `/{id}` (détail),
+`OutboundNotificationVoter` (ROLE_ADMIN strict). Page `AdminOutboundNotificationsPage`
++ `AdminOutboundNotificationDrawer` (tableau + filtres + détail en panneau latéral,
+même convention que les autres écrans admin). Aperçu HTML d'un email affiché dans une
+`<iframe sandbox="">` vide (aucune librairie de sanitization n'existe dans ce projet ;
+un sandbox vide interdit scripts/formulaires/popups sans ajouter de dépendance).
+
+### 12.5 Rétention
+
+Politique initiale documentée (D-084) : contenu complet conservé 12 mois. Aucune purge
+automatique implémentée dans ce lot — hors périmètre, à traiter séparément.

@@ -183,6 +183,71 @@ final class WebPushServiceTest extends TestCase
         self::assertFalse($service->sendToUserAndReportSuccess($user, 'Titre', 'Corps'));
     }
 
+    // ── sendToUserWithAttempts (D-084) ──────────────────────────────────────────
+
+    public function test_with_attempts_returns_no_subscription_when_user_has_none(): void
+    {
+        $user = new User();
+        $this->repo->method('findBy')->with(['user' => $user])->willReturn([]);
+
+        $service = $this->service(new MockHandler([]));
+        $result = $service->sendToUserWithAttempts($user, 'Titre', 'Corps');
+
+        self::assertSame(['sent' => 0, 'attempts' => []], $result);
+    }
+
+    public function test_with_attempts_reports_provider_and_success_on_fcm_success(): void
+    {
+        $user = new User();
+        $sub  = $this->subscription('https://fcm.googleapis.com/fcm/send/aaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+        $this->repo->method('findBy')->with(['user' => $user])->willReturn([$sub]);
+        $this->expectNoDelete();
+
+        $service = $this->service(new MockHandler([new Response(201)]));
+        $result = $service->sendToUserWithAttempts($user, 'Titre', 'Corps');
+
+        self::assertSame(1, $result['sent']);
+        self::assertCount(1, $result['attempts']);
+        self::assertSame('FCM', $result['attempts'][0]['provider']);
+        self::assertTrue($result['attempts'][0]['success']);
+        self::assertSame(201, $result['attempts'][0]['statusCode']);
+        self::assertNull($result['attempts'][0]['reason']);
+    }
+
+    public function test_with_attempts_normalizes_apple_failure_reason_without_leaking_endpoint(): void
+    {
+        $user = new User();
+        $sub  = $this->subscription('https://web.push.apple.com/aVeryLongSecretEndpointToken1234567890');
+        $this->repo->method('findBy')->with(['user' => $user])->willReturn([$sub]);
+        $this->expectNoDelete();
+
+        $service = $this->service(new MockHandler([
+            new Response(403, [], '{"reason":"BadJwtToken"}'),
+        ]));
+        $result = $service->sendToUserWithAttempts($user, 'Titre', 'Corps');
+
+        self::assertSame(0, $result['sent']);
+        self::assertCount(1, $result['attempts']);
+        self::assertSame('APPLE', $result['attempts'][0]['provider']);
+        self::assertFalse($result['attempts'][0]['success']);
+        self::assertSame('BadJwtToken', $result['attempts'][0]['reason']);
+        self::assertStringNotContainsString('aVeryLongSecretEndpointToken1234567890', (string) $result['attempts'][0]['reason']);
+    }
+
+    public function test_with_attempts_marks_expired_subscription_with_expired_reason(): void
+    {
+        $user = new User();
+        $sub  = $this->subscription('https://fcm.googleapis.com/fcm/send/bbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+        $this->repo->method('findBy')->with(['user' => $user])->willReturn([$sub]);
+        $this->expectDeleteFor('https://fcm.googleapis.com/fcm/send/bbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+
+        $service = $this->service(new MockHandler([new Response(410)]));
+        $result = $service->sendToUserWithAttempts($user, 'Titre', 'Corps');
+
+        self::assertSame(0, $result['sent']);
+        self::assertSame('expired', $result['attempts'][0]['reason']);
+    }
+
     // ── envoi réussi ─────────────────────────────────────────────────────────
 
     public function test_successful_send_logs_batch_done_without_any_error(): void

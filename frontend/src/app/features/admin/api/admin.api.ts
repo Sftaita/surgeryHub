@@ -8,6 +8,10 @@ import type {
   AdminChangeRolePayload,
   AdminPatchUserPayload,
   AdminSiteMembership,
+  OutboundNotificationListResponse,
+  OutboundNotificationDetail,
+  OutboundNotificationChannel,
+  OutboundNotificationStatus,
 } from "./admin.types";
 
 // ── Users ─────────────────────────────────────────────────────────────────────
@@ -106,5 +110,28 @@ export const getAdminAudit = async (params?: {
   offset?: number;
 }): Promise<AdminAuditListResponse> => {
   const res = await apiClient.get("/api/admin/audit", { params });
+  return res.data;
+};
+
+// ── Historique des notifications (D-084) ────────────────────────────────────
+
+export const getAdminOutboundNotifications = async (params?: {
+  from?: string;
+  to?: string;
+  recipientUserId?: number;
+  channel?: OutboundNotificationChannel;
+  notificationType?: string;
+  status?: OutboundNotificationStatus;
+  missionId?: number;
+  search?: string;
+  page?: number;
+  limit?: number;
+}): Promise<OutboundNotificationListResponse> => {
+  const res = await apiClient.get("/api/admin/outbound-notifications", { params });
+  return res.data;
+};
+
+export const getAdminOutboundNotification = async (id: number): Promise<OutboundNotificationDetail> => {
+  const res = await apiClient.get(`/api/admin/outbound-notifications/${id}`);
   return res.data;
 };

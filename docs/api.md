@@ -3967,6 +3967,73 @@ GET /api/admin/audit
 
 **Note :** `targetUser` peut être `null` si l'utilisateur a été supprimé (ON DELETE SET NULL).
 
+
+---
+
+### 28.13 Historique des notifications sortantes (D-084)
+
+Trace persistante de tous les Push et emails envoyés (snapshot du contenu exact,
+tentatives de transport, statut honnête). Voir D-084 pour le modèle complet.
+`SENT` signifie uniquement « accepté par le fournisseur/transport » — jamais que le
+destinataire a lu le message.
+
+```
+GET /api/admin/outbound-notifications
+GET /api/admin/outbound-notifications/{id}
+```
+
+**AuthZ :** `ROLE_ADMIN` uniquement (`OutboundNotificationVoter`) — `MANAGER` et les
+autres rôles reçoivent 403.
+
+**Query params (liste) :**
+
+| Paramètre          | Type    | Description |
+|---------------------|---------|-------------|
+| `from`              | ISO8601 | Depuis (inclusif) |
+| `to`                | ISO8601 | Jusqu'au (inclusif) |
+| `recipientUserId`   | integer | Filtrer par destinataire |
+| `channel`           | string  | `PUSH` \| `EMAIL` |
+| `notificationType`  | string  | ex : `ENCODING_REMINDER_D1` |
+| `status`            | string  | `QUEUED` \| `SENT` \| `FAILED` \| `SKIPPED` |
+| `missionId`         | integer | Filtrer par mission liée |
+| `search`            | string  | Email/prénom/nom du destinataire, sujet, titre, corps texte, type |
+| `page`              | integer | Défaut 1 |
+| `limit`             | integer | Défaut 25, max 100 |
+
+**Réponse 200 (liste) :**
+
+```json
+{
+  "items": [
+    {
+      "id": 123,
+      "createdAt": "2026-07-26T08:05:00+02:00",
+      "recipient": { "id": 12, "name": "Jane Doe", "email": "jane@example.com" },
+      "channel": "PUSH",
+      "notificationType": "ENCODING_REMINDER_D1",
+      "status": "SENT",
+      "title": "Encodage à finaliser",
+      "subject": null,
+      "missionId": 690,
+      "attemptCount": 1,
+      "fallback": false
+    }
+  ],
+  "page": 1,
+  "limit": 25,
+  "total": 140
+}
+```
+
+**Réponse 200 (détail) :** tous les champs ci-dessus, plus `bodyText`, `bodyHtml`,
+`payload` (nettoyé, liste blanche `missionId`/`planningVersionId`/`url`/`notificationType`),
+`planningVersionId`, `queuedAt`, `sentAt`, `failedAt`, `failureCode`, `failureMessage`,
+`fallbackOfId`, `fallbackReason` (`NO_SUBSCRIPTION` \| `EXPIRED` \| `ALL_FAILED` \|
+`PUSH_DISABLED`), et `attempts` (chronologie : `attemptNumber`, `startedAt`, `finishedAt`,
+`success`, `statusCode`, `reason`, `provider`).
+
+**Jamais dans la réponse :** endpoint Push complet, `p256dh`, `auth`, JWT, clé VAPID,
+secret SMTP, mot de passe, donnée patient.
 ---
 
 ## 29. Authentification — login, refresh, logout, « Se souvenir de moi »

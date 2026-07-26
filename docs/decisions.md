@@ -4547,6 +4547,7 @@ complexes, refonte UX complète (§34 du lot).
 | 25-07-2026 | D-081 — Fiabilisation du socle Web Push : endpoint unique par abonnement, rattachement mono-utilisateur, nettoyage au logout, activation volontaire pour tous les rôles, erreurs isolées mais observables (Lot 1) |
 | 25-07-2026 | D-082 — Installation PWA Android/iOS : bannière + `beforeinstallprompt`, guide manuel iOS (animation recréée en React, jamais copiée), source de vérité standalone, politique de report, séparation stricte avec le Push (Lot 2) |
 | 26-07-2026 | D-083 — Rappel unique d'encodage D+1 à 08 h Europe/Brussels : remplace le rappel 19 h jamais implémenté, Push prioritaire avec repli email, idempotence persistante (`encodingReminderSentAt`), aucune relance quotidienne |
+| 26-07-2026 | D-084 — Historique centralisé des notifications sortantes : `OutboundNotification`/`OutboundNotificationAttempt`, snapshot du contenu, statuts honnêtes (`SENT` ≠ lu), fallback Push→email tracé, écran ADMIN, rétention 12 mois documentée |
 
 ---
 
@@ -5087,3 +5088,174 @@ transverse pour un seul appelant.
 (gap réel identifié pendant la validation Push, non corrigé — voir le rapport de
 diagnostic Android/iOS du 25-07-2026), notifications manager, escalade répétée J+2/J+3,
 modification de l'encodage ou des règles financières — aucun n'a été commencé.
+---
+
+## D-084 — Historique centralisé des communications sortantes (Push + email), ADMIN uniquement
+
+Date : 26-07-2026
+
+### Contexte
+
+Le socle Push (D-081), l'installation PWA (D-082) et le rappel D+1 (D-083) sont
+committés et validés en conditions réelles. Aucune trace persistante des envois n'existe
+jusqu'ici — `WebPushService` et `SendTemplatedEmailMessageHandler` journalisent (Monolog)
+mais rien n'est requêtable ni consultable par un admin. Ce lot ajoute cette traçabilité,
+sans toucher aux règles métier des lots précédents.
+
+### Décision — deux entités, jamais une ligne partagée entre canaux
+
+`OutboundNotification` (une ligne par communication sortante — Push OU email) +
+`OutboundNotificationAttempt` (append-only, une ligne par tentative réelle de transport).
+Un repli Push → email crée une **seconde** `OutboundNotification`, liée à la première via
+`fallbackOf`/`fallbackReason` — jamais un statut composite écrasant les deux canaux sur
+une même ligne. `payload` est toujours nettoyé (liste blanche stricte
+`missionId`/`planningVersionId`/`url`/`notificationType`) avant persistance —
+`OutboundNotificationService::cleanPayload()` ; n'importe quelle autre clé fournie par un
+appelant (donnée patient incluse) est silencieusement rejetée, jamais persistée.
+
+**N'écrit jamais** : endpoint Push complet, `p256dh`, `auth`, JWT, clé VAPID, secret
+SMTP, mot de passe, donnée patient. `OutboundNotificationAttempt.provider` (`FCM` /
+`APPLE` / `OTHER` / `SMTP`) est dérivé du host de l'endpoint, jamais de l'endpoint
+lui-même. `reason` est toujours normalisée : `WebPushService::normalizeReason()` extrait
+un code court depuis la réponse du fournisseur — minishlink/web-push embarque l'endpoint
+complet dans son propre message d'erreur (`Client error: POST https://...`), donc le
+logger `push.send_failed` existant loggait déjà cette fuite avant ce lot ; corrigé au
+passage dans le même fichier, même log. Idem côté email :
+`OutboundNotificationEmailFailureListener::normalizeThrowableMessage()` retire toute
+sous-chaîne ressemblant à une URI (susceptible de contenir le DSN SMTP avec mot de
+passe) avant persistance.
+
+### Décision — statuts honnêtes, `SENT` ne veut jamais dire « lu »
+
+`QUEUED` / `SENT` / `FAILED` / `SKIPPED` uniquement. Pas de `DELIVERED`/`OPENED`/
+`READ`/`CLICKED` — aucune preuve technique de lecture n'existe pour Push ou email dans
+ce projet (pas de pixel de tracking, explicitement hors périmètre). L'interface ADMIN
+affiche systématiquement l'avertissement « accepté par le fournisseur ne garantit pas
+que le message a été lu » à côté de tout statut `SENT`.
+
+### Décision — Push : agrégation depuis le détail par abonnement
+
+`WebPushService::sendToUser()` restait `void`, `sendToUserAndReportSuccess()` (D-083)
+ne retournait qu'un bool agrégé — insuffisant pour tracer une ligne par tentative
+réelle. Nouvelle méthode `sendToUserWithAttempts()` (concrète uniquement, pas dans
+`WebPushServiceInterface` — même précédent que `sendToSiteInstrumentists()`) qui
+retourne le détail complet (`provider`, `success`, `statusCode`, `reason` normalisée)
+par abonnement, en réutilisant `sendToSubscriptions()` en interne (son type de retour
+change de `int` à `array{sent, attempts}`, mais reste `private` : aucune API publique
+existante n'est modifiée). `OutboundNotificationService::recordPushSend()` agrège :
+`SENT` si au moins un envoi réussit, `FAILED` si tous échouent, `SKIPPED` si aucun
+abonnement — même logique que D-083, désormais tracée.
+
+### Décision — email : `QUEUED` avant dispatch, jamais un nouvel enregistrement par retry
+
+`SendTemplatedEmailMessage` transporte un `outboundNotificationId` optionnel (nullable —
+rétrocompatible avec tous les appelants antérieurs à D-084 : invitations, absences,
+factures). La ligne `OutboundNotification` est créée `QUEUED` **avant** le dispatch
+Messenger (`OutboundNotificationService::recordEmailQueued()`), pour que son id circule
+dans le message et que le handler/listener mettent à jour la **même** ligne à chaque
+tentative plutôt que d'en créer une nouvelle. `bodyText`/`bodyHtml` restent `null` à la
+mise en file : ce projet rend Twig dans le handler asynchrone, pas au moment du dispatch
+— le contenu réellement envoyé n'est donc connu qu'après coup et rétro-rempli par
+`recordEmailAttempt()` au succès.
+
+Le passage `FAILED` n'a lieu que quand Messenger a épuisé ses tentatives : aucun état de
+retry n'est lisible depuis l'intérieur d'un handler dans ce projet (confirmé par
+recherche — pas de lecture de `RedeliveryStamp` existante), donc `FAILED` prématuré
+serait dishonnête pour un échec encore en attente de retry. Solution :
+`OutboundNotificationEmailFailureListener`, sur `WorkerMessageFailedEvent`
+(`#[AsEventListener]`, même pattern que `MailSafeModeListener`) — `!$event->willRetry()`
+seul déclenche `FAILED` ; sinon la ligne reste `QUEUED` et une nouvelle
+`OutboundNotificationAttempt` est simplement ajoutée.
+
+### Décision — autorisation : `OutboundNotificationVoter`, ROLE_ADMIN strict
+
+Nouveau Voter dédié (`OUTBOUND_NOTIFICATION_LIST`/`_VIEW`), pas de palier MANAGER
+(contrairement à `UserAdministrationVoter::UPDATE_EMAIL`) — l'historique complet des
+communications, y compris leur contenu texte/HTML, est jugé plus sensible qu'une
+opération de gestion ponctuelle. `AdminOutboundNotificationController` suit exactement
+le style déjà établi par `AdminAuditController` (filtres manuels, `AdminResponseTrait`
+pour le nom d'affichage du destinataire) — avec une différence délibérée : `total` est
+un vrai `COUNT()` (`OutboundNotificationRepository::findForAdmin()`, deux requêtes),
+pas `count($page)` comme le fait `AdminAuditController` aujourd'hui (limite déjà
+documentée sur cette ligne, non corrigée ici — hors périmètre).
+
+### Décision — interface ADMIN : aperçu HTML dans une iframe sandboxée, pas de nouvelle dépendance
+
+Aucune librairie de sanitization HTML n'existe dans ce projet (vérifié avant
+d'implémenter). Plutôt que d'ajouter `dompurify` pour un seul écran, l'aperçu HTML d'un
+email s'affiche dans une `<iframe sandbox="">` — sandbox vide : aucun script, aucun accès
+same-origin, aucun formulaire, aucune popup. Le texte brut (`bodyText`) reste l'onglet
+par défaut. Page `AdminOutboundNotificationsPage` (tableau + filtres, convention
+`AdminAuditPage`) et `AdminOutboundNotificationDrawer` (détail en panneau latéral,
+convention `AdminUserDrawer` — MUI `Drawer`, pas `SheetModal.tsx` qui est réservé aux
+parcours mobiles d'encodage).
+
+**Entrée de menu non branchée** : `DesktopLayout.tsx` reste mêlé à la refonte de
+navigation en cours (même constat que pour les lots Push/PWA précédents) — route et
+page créées et fonctionnelles (`/app/admin/outbound-notifications`), entrée de menu
+volontairement non ajoutée pour ne pas contaminer ce commit avec des hunks de navigation
+non liés. À brancher avec le lot navigation.
+
+### Décision — rétention : documentée, pas implémentée
+
+Politique initiale : contenu complet conservé 12 mois, métadonnées minimales au-delà
+(durée à définir dans un lot ultérieur). Aucune purge automatique dans ce lot — ni tâche
+planifiée, ni commande, ni logique de suppression. Documenté ici comme dette assumée,
+pas comme un oubli.
+
+### Tests
+
+- `OutboundNotificationServiceTest` (unitaire, 15 tests) : agrégation Push (un succès
+  suffit, aucun abonnement → `SKIPPED`, tout échoue → `FAILED`), jamais d'endpoint dans
+  une tentative, `cleanPayload()` (liste blanche stricte), cycle email `QUEUED` →
+  `SENT`/`FAILED`, échec transitoire ≠ `FAILED`, tentatives cumulées sans écrasement,
+  `fallbackReasonFor()` (NO_SUBSCRIPTION/EXPIRED/ALL_FAILED). A révélé deux bugs réels
+  pendant l'écriture (voir ci-dessous).
+- `WebPushServiceTest` (+4 tests) : `sendToUserWithAttempts()` — provider correct par
+  host, raison normalisée sans fuite d'endpoint, subscription expirée marquée `expired`.
+- `SendTemplatedEmailMessageHandlerTest` (unitaire, 2 tests) : succès enregistré avec le
+  contenu réellement rendu ; aucun appel au service si `outboundNotificationId` est nul
+  (rétrocompatibilité des appelants antérieurs).
+- `OutboundNotificationEmailFailureListenerTest` (unitaire, 5 tests) : retry en attente
+  ≠ `FAILED`, épuisement des tentatives → `FAILED`, message ignoré si pas de
+  `SendTemplatedEmailMessage`/pas d'id, jamais de DSN/mot de passe dans la raison
+  persistée.
+- `AdminOutboundNotificationControllerTest` (fonctionnel, base réelle, 10 tests) : RBAC
+  (ADMIN 200, MANAGER/INSTRUMENTIST 403, non authentifié 401), pagination avec vrai
+  total, filtres canal/statut, détail complet avec tentatives, 404 sur id inconnu,
+  aucun endpoint/clé/secret dans la réponse HTTP brute.
+- `EncodingReminderNotificationHistoryTest` (intégration, base réelle, 4 tests) : preuve
+  de bout en bout que le rappel D+1 (D-083) produit exactement la trace attendue — Push
+  réussi = une seule ligne, aucun email ; Push impossible/échoué = ligne Push +
+  ligne email liée (`fallbackOf`) avec la bonne raison ; deuxième exécution = aucune
+  trace supplémentaire (idempotence déjà garantie par D-083, revérifiée au niveau
+  historique).
+- Frontend : `AdminOutboundNotificationsPage.test.tsx` (8 tests — chargement, vide,
+  erreur, filtre, recherche debouncée, ouverture du détail, avertissement lecture,
+  pagination/total réel) et `AdminOutboundNotificationDrawer.test.tsx` (7 tests —
+  contenu texte, détail de tentative Push, contenu email + aperçu HTML sandboxé, repli
+  affiché avec sa raison, avertissement lecture, aucune donnée sensible, id nul = aucun
+  appel réseau).
+
+**Deux bugs réels trouvés par les tests, corrigés avant commit** :
+1. `recordPushSend()`/`recordEmailAttempt()` construisaient chaque
+   `OutboundNotificationAttempt` avec `setNotification()` mais sans jamais appeler
+   `OutboundNotification::addAttempt()` — la collection en mémoire restait vide dans la
+   même requête (la ligne SQL était correcte après un `flush()` réel, mais
+   `fallbackReasonFor()`, appelée dans le même appel que `recordPushSend()`, aurait
+   toujours vu une collection vide et renvoyé `NO_SUBSCRIPTION` même pour un vrai échec
+   `ALL_FAILED`/`EXPIRED`). Corrigé : les deux méthodes utilisent désormais
+   `addAttempt()`, et la relation `OneToMany` porte `cascade: ['persist']`.
+2. Les deux entités avaient leurs callbacks `#[ORM\PrePersist]` sans l'attribut de
+   classe `#[ORM\HasLifecycleCallbacks]` requis pour que Doctrine les enregistre —
+   `created_at` (et `started_at`) seraient restés `NULL` sur **toute** ligne en
+   production. Invisible dans les tests unitaires (EntityManager mocké, aucun `flush()`
+   réel n'y déclenche jamais un vrai `PrePersist`) ; découvert uniquement par le premier
+   test fonctionnel en base réelle.
+
+### Portée non traitée ici
+
+Statistiques avancées, export CSV, relance manuelle d'un envoi, renvoi d'une
+notification, modification des préférences utilisateur, accusé de lecture artificiel,
+tracking d'ouverture email par pixel, purge automatique, entrée de menu (voir ci-dessus)
+— aucun n'a été commencé.
