@@ -106,20 +106,43 @@ final class MissionSiteAndSpecialtiesContractTest extends WebTestCase
         return $h;
     }
 
-    private function makeMission(Hospital $site, User $surgeon, User $createdBy, MissionStatus $status): Mission
-    {
+    private function makeMission(
+        Hospital $site,
+        User $surgeon,
+        User $createdBy,
+        MissionStatus $status,
+        ?\DateTimeImmutable $startAt = null,
+        ?\DateTimeImmutable $endAt = null,
+    ): Mission {
         $m = new Mission();
         $m->setType(MissionType::BLOCK);
         $m->setSite($site);
         $m->setSurgeon($surgeon);
         $m->setCreatedBy($createdBy);
-        $m->setStartAt(new \DateTimeImmutable('2026-09-01 08:00:00'));
-        $m->setEndAt(new \DateTimeImmutable('2026-09-01 12:00:00'));
+        $m->setStartAt($startAt ?? new \DateTimeImmutable('2026-09-01 08:00:00'));
+        $m->setEndAt($endAt ?? new \DateTimeImmutable('2026-09-01 12:00:00'));
         $m->setStatus($status);
         $this->em->persist($m);
         $this->em->flush();
         $this->createdMissionIds[] = $m->getId();
         return $m;
+    }
+
+    /**
+     * Créneau unique par exécution de test : les tests qui interrogent GET /api/missions
+     * (liste globale) ne peuvent pas dépendre d'une date business fixe partagée avec les
+     * autres tests de ce fichier ni avec les données résiduelles de surgicalhub_test — voir
+     * MissionService::list() qui applique from/to en intersection (m.startAt < to ET
+     * m.endAt > from) pour scoper strictement la requête à ce créneau.
+     *
+     * @return array{0: \DateTimeImmutable, 1: \DateTimeImmutable}
+     */
+    private function uniqueMissionWindow(): array
+    {
+        $offsetMinutes = random_int(1, 5_000_000);
+        $start = (new \DateTimeImmutable('2030-01-01 00:00:00'))->modify("+{$offsetMinutes} minutes");
+        $end = $start->modify('+4 hours');
+        return [$start, $end];
     }
 
     private function getJson(KernelBrowser $client, string $token, string $uri): Response
@@ -135,9 +158,16 @@ final class MissionSiteAndSpecialtiesContractTest extends WebTestCase
         $token   = $this->login($client, $manager);
         $surgeon = $this->createUser('ROLE_SURGEON', ['GENOU', 'EPAULE']);
         $site    = $this->makeSite('Rue de la Clinique 1, 1000 Bruxelles', '/uploads/hospital-photos/hospital-x.jpg');
-        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ASSIGNED);
+        [$startAt, $endAt] = $this->uniqueMissionWindow();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ASSIGNED, $startAt, $endAt);
 
-        $response = $this->getJson($client, $token, '/api/missions?limit=100');
+        $from = $startAt->modify('-1 minute')->format('Y-m-d H:i:s');
+        $to   = $endAt->modify('+1 minute')->format('Y-m-d H:i:s');
+        $response = $this->getJson($client, $token, '/api/missions?' . http_build_query([
+            'from' => $from,
+            'to' => $to,
+            'limit' => 100,
+        ]));
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
         $body = json_decode($response->getContent(), true);
@@ -209,14 +239,21 @@ final class MissionSiteAndSpecialtiesContractTest extends WebTestCase
         $token   = $this->login($client, $manager);
         $surgeon = $this->createUser('ROLE_SURGEON', [], '/uploads/profile-pictures/surgeon-z.jpg');
         $site    = $this->makeSite();
-        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ASSIGNED);
+        [$startAt, $endAt] = $this->uniqueMissionWindow();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ASSIGNED, $startAt, $endAt);
 
         $detailResponse = $this->getJson($client, $token, '/api/missions/' . $mission->getId());
         self::assertSame(Response::HTTP_OK, $detailResponse->getStatusCode(), $detailResponse->getContent());
         $detailBody = json_decode($detailResponse->getContent(), true);
         self::assertSame('/uploads/profile-pictures/surgeon-z.jpg', $detailBody['surgeon']['profilePicturePath']);
 
-        $listResponse = $this->getJson($client, $token, '/api/missions?limit=100');
+        $from = $startAt->modify('-1 minute')->format('Y-m-d H:i:s');
+        $to   = $endAt->modify('+1 minute')->format('Y-m-d H:i:s');
+        $listResponse = $this->getJson($client, $token, '/api/missions?' . http_build_query([
+            'from' => $from,
+            'to' => $to,
+            'limit' => 100,
+        ]));
         self::assertSame(Response::HTTP_OK, $listResponse->getStatusCode(), $listResponse->getContent());
         $listBody = json_decode($listResponse->getContent(), true);
         $item = null;

@@ -402,10 +402,16 @@ class MissionService
             ->leftJoin('m.instrumentist', 'instr')->addSelect('instr')
             ->distinct();
 
+        // Secondary key on m.id: startAt alone isn't unique (missions sharing the exact
+        // same start time are common, especially in tests with fixed fixture dates) — an
+        // ORDER BY on a non-unique column alone gives MySQL no tie-breaking guarantee
+        // under LIMIT, so a page's contents/order across ties is not stable. Same
+        // direction as the primary key keeps the "most recent first"/"soonest first"
+        // intent consistent for ties.
         if ($filter->eligibleToMe === true) {
-            $qb->orderBy('m.startAt', 'ASC');
+            $qb->orderBy('m.startAt', 'ASC')->addOrderBy('m.id', 'ASC');
         } else {
-            $qb->orderBy('m.startAt', 'DESC');
+            $qb->orderBy('m.startAt', 'DESC')->addOrderBy('m.id', 'DESC');
         }
 
         if ($filter->siteId) {

@@ -11,6 +11,7 @@ import {
   Typography,
   Button,
 } from "@mui/material";
+import HistoryOutlinedIcon from "@mui/icons-material/HistoryOutlined";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
 import { getMaterialRequests } from "../features/manager-catalogue/api/catalogue.api";
@@ -193,20 +194,25 @@ export function DesktopLayout() {
                     { label: "Sites",        href: "/app/admin/sites" },
                     { label: "Invitations",  href: "/app/admin/invitations" },
                     { label: "Audit",        href: "/app/admin/audit" },
+                    { label: "Historique des notifications", href: "/app/admin/outbound-notifications", icon: HistoryOutlinedIcon },
                   ].map((item) => (
                     <NavLink
                       key={item.href}
                       to={item.href}
                       style={{ textDecoration: "none", color: "inherit" }}
                     >
-                      {({ isActive }) => (
-                        <ListItemButton selected={isActive} sx={{ pl: 3, py: 0.75 }}>
-                          <ListItemText
-                            primary={item.label}
-                            primaryTypographyProps={{ variant: "body2" }}
-                          />
-                        </ListItemButton>
-                      )}
+                      {({ isActive }) => {
+                        const Icon = "icon" in item ? item.icon : null;
+                        return (
+                          <ListItemButton selected={isActive} sx={{ pl: 3, py: 0.75 }}>
+                            {Icon && <Icon sx={{ fontSize: 18, mr: 1 }} />}
+                            <ListItemText
+                              primary={item.label}
+                              primaryTypographyProps={{ variant: "body2" }}
+                            />
+                          </ListItemButton>
+                        );
+                      }}
                     </NavLink>
                   ))}
                 </Box>
