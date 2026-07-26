@@ -26,14 +26,15 @@ use Psr\Log\LoggerInterface;
  * mocking minishlink/web-push itself — this is the actual HTTP contract (2xx/404/410/5xx)
  * production traffic produces.
  *
- * Reused as-is from .env (dev-only, non-secret): a syntactically valid VAPID keypair is
- * required for WebPush::queueNotification() to sign requests at all.
+ * A syntactically valid VAPID keypair is required for WebPush::queueNotification() to
+ * sign requests at all — see VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY below.
  */
 final class WebPushServiceTest extends TestCase
 {
-    private const VAPID_PUBLIC_KEY  = 'BLzVPsUY7v1GtNQDDQVMAsov9V3UolJ7xn9yOWqVAO1l3Nbju_Mehm5eaNLJfXPAbiYERxwB8a1eupULUOQsxGk';
-    private const VAPID_PRIVATE_KEY = 'fYiXf5w91rouDs1AwbjPby8mmqgQwyT4zRqurmssGiQ';
-    private const VAPID_SUBJECT     = 'mailto:notifications@surgicalhub.be';
+    /** Test-only VAPID key pair. Never use in dev or production. */
+    private const VAPID_PUBLIC_KEY  = 'BLiIGxqZdtCBQ4lOGR-CR1fqlE1BL9pMj1K5P2iKzfgnvCOv7e3umyG2ruAnyPP1aQNvt7XiEqk4K8Fvk472ZDE';
+    private const VAPID_PRIVATE_KEY = 'bG2PI77Lh7YoYcZLGYi219Ep1F1r7QjFElNGc3wIQmg';
+    private const VAPID_SUBJECT     = 'mailto:test@surgicalhub.invalid';
 
     /**
      * Not a real subscriber's key — a throwaway EC P-256 keypair generated once for this
@@ -131,6 +132,25 @@ final class WebPushServiceTest extends TestCase
         );
 
         $this->assertInstanceOf(WebPushService::class, $service);
+    }
+
+    /**
+     * Guards against ever reintroducing the dev VAPID key that leaked into a committed
+     * `backend/.env` (security lot, docs/decisions.md) — compares by SHA-256 fingerprint
+     * only, so the leaked value itself never needs to be stored here to detect it.
+     */
+    public function test_vapid_constants_are_not_the_leaked_dev_keypair(): void
+    {
+        self::assertNotSame(
+            'd247c2e093dceaa1530d4bf684c208308844d6c8349528298d9286f37649a104',
+            hash('sha256', self::VAPID_PUBLIC_KEY),
+            'This is the fingerprint of the leaked dev VAPID public key — never reuse it in tests.',
+        );
+        self::assertNotSame(
+            '6febeb88c4600403ab3f2cc2f02e0af5857cba8f146d3556a28421fcc551eccf',
+            hash('sha256', self::VAPID_PRIVATE_KEY),
+            'This is the fingerprint of the leaked dev VAPID private key — never reuse it in tests.',
+        );
     }
 
     public function test_constructor_accepts_https_subject(): void

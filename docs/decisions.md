@@ -5259,3 +5259,56 @@ Statistiques avancées, export CSV, relance manuelle d'un envoi, renvoi d'une
 notification, modification des préférences utilisateur, accusé de lecture artificiel,
 tracking d'ouverture email par pixel, purge automatique, entrée de menu (voir ci-dessus)
 — aucun n'a été commencé.
+
+---
+
+## D-085 — Rotation des clés VAPID compromises, séparation stricte dev/test/prod
+
+**Constat** : `backend/.env` (versionné depuis la mise en place du Web Push, commit
+`a91ce6b`) contenait une vraie paire de clés VAPID de développement en clair.
+`backend/tests/Unit/Service/WebPushServiceTest.php` (commit `dd5cad8`) réutilisait
+exactement la même paire comme constante de test, avec un commentaire ambigu
+("Reused as-is from .env (dev-only, non-secret)") laissant entendre à tort qu'une
+clé d'environnement réel était acceptable dans un test. La clé étant versionnée,
+elle est considérée compromise même après rotation — elle reste lisible dans
+l'historique Git (`git log -S` sur les deux fichiers ci-dessus).
+
+**Correctif** :
+- `backend/.env` : `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` remplacés par `CHANGE_ME`
+  (`backend/.env.prod.local.example` l'était déjà). `VAPID_SUBJECT` corrigé au passage
+  vers le domaine réel (`mailto:notifications@surgicalhub.be`) — l'ancienne valeur
+  `.local` aurait reproduit le rejet Apple `BadJwtToken` documenté en D-081.
+- Nouvelle paire de développement générée (`Minishlink\WebPush\VAPID::createVapidKeys()`),
+  stockée uniquement dans `backend/.env.local` (déjà ignoré par `backend/.gitignore` —
+  `/.env.local`, `/.env.*.local` — aucun nouveau mécanisme introduit). Toute subscription
+  Push existante sur un appareil de dev est invalidée par cette rotation ; les
+  notifications doivent être réactivées sur ces appareils.
+- `backend/.env.test` reçoit désormais sa propre paire dédiée, générée une seule fois et
+  volontairement commise (jamais réutilisée en dev/prod, sujet `mailto:test@surgicalhub.invalid`,
+  domaine `.invalid` — RFC 2606 — pour qu'elle ne puisse jamais ressembler à un domaine
+  réel). Avant ce lot, les tests s'appuyaient sur le repli implicite de `.env` (aucune
+  variable VAPID dans `.env.test`) — c'est ce repli qui avait permis à la vraie clé de dev
+  d'être copiée dans un test au lieu qu'une paire dédiée soit générée.
+- `WebPushServiceTest.php` : constantes remplacées par la paire de test dédiée,
+  commentaire corrigé ("Test-only VAPID key pair. Never use in dev or production."),
+  et nouveau test `test_vapid_constants_are_not_the_leaked_dev_keypair()` comparant par
+  empreinte SHA-256 (jamais la valeur brute) pour empêcher toute réintroduction future de
+  l'ancienne paire compromise.
+- Nouveau garde-fou d'architecture `NoRealVapidKeyCommittedTest.php` : vérifie que
+  `backend/.env`, `backend/.env.dev` et `backend/.env.prod.local.example` ne contiennent
+  jamais autre chose que `CHANGE_ME` pour ces deux variables — volontairement restreint à
+  ces trois fichiers pour ne jamais bloquer `.env.test` (paire dédiée légitime) ni un
+  fichier local ignoré.
+
+**Rotation production** : préparée (procédure documentée, jamais exécutée dans ce lot) —
+nouvelle paire à générer séparément, à écrire uniquement dans
+`/opt/stack/apps/surgicalhub/.env` sur le serveur, distincte des paires dev et test.
+Toute rotation invalide les subscriptions Push existantes des utilisateurs réels ; prévoir
+qu'ils devront réactiver les notifications après le déploiement de la nouvelle paire.
+
+**Historique Git** : la clé de dev compromise reste lisible dans l'historique
+(`a91ce6b`, `dd5cad8`) — non réécrit dans ce lot (`git filter-repo`/`filter-branch`
+affecteraient tous les clones et tags existants, décision hors périmètre local). La
+rotation seule (ci-dessus) suffit à rendre l'ancienne clé inutilisable : une purge
+d'historique reste une option séparée, à planifier explicitement si l'exposition
+historique doit être supprimée du dépôt lui-même.

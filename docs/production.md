@@ -249,6 +249,40 @@ Variables mailer actuelles :
 | `MAILER_FROM_ADDRESS` | `notifications@surgicalhub.be` |
 | `MAILER_FROM_NAME` | `SurgicalHub` |
 
+### Rotation des clés VAPID (D-085)
+
+La paire VAPID de développement a été retirée des fichiers versionnés après avoir
+été trouvée commitée en clair dans `backend/.env` (voir `docs/decisions.md` D-085) —
+considérée compromise. La paire de production, distincte, vit uniquement dans
+`/opt/stack/apps/surgicalhub/.env` et n'a **pas** été modifiée par ce lot.
+
+Procédure de rotation (préparée, non exécutée) :
+
+```bash
+# 1. Générer une nouvelle paire (depuis le container php, ou tout outil web-push VAPID)
+docker exec surgicalhub-php php -r '
+require "/var/www/backend/vendor/autoload.php";
+print_r(\Minishlink\WebPush\VAPID::createVapidKeys());
+'
+
+# 2. Sauvegarder la config actuelle avant modification
+cp /opt/stack/apps/surgicalhub/.env /home/deploy/backups/env/surgicalhub.env.bak_$(date +%Y%m%d_%H%M%S)
+
+# 3. Mettre à jour VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY (script Python ci-dessus,
+#    répété pour chaque variable — confirmer VAPID_SUBJECT=mailto:notifications@surgicalhub.be
+#    reste inchangé)
+
+# 4. Recréer les containers pour charger le nouveau .env
+cd /opt/stack/apps/surgicalhub && docker compose up -d
+```
+
+**Une rotation invalide toutes les subscriptions Push existantes des utilisateurs
+réels** (la nouvelle clé publique ne correspond plus à ce que le navigateur a
+enregistré) — après activation, tester iOS et Android avec un compte jetable, puis
+confirmer via l'historique ADMIN (`/app/admin/outbound-notifications`) que les
+nouveaux envois apparaissent normalement. Les utilisateurs réels devront réactiver
+les notifications sur leurs appareils.
+
 ---
 
 ## Créer un compte utilisateur
