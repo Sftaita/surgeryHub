@@ -29,7 +29,35 @@ final class WebPushService implements WebPushServiceInterface
          * WebPushServiceInterface doubles in handler tests (Lot 1 / audit 24-07-2026).
          */
         private readonly array $httpClientOptions = [],
-    ) {}
+    ) {
+        self::assertValidVapidSubject($vapidSubject);
+    }
+
+    /**
+     * Apple's Web Push endpoint (web.push.apple.com) validates the JWT `sub` claim
+     * strictly and rejects a ".local" mailto domain with `403 BadJwtToken` — FCM does
+     * not validate it, so this only surfaces on iOS. Confirmed on a real device
+     * 25-07-2026 (D-081 addendum): reproduced with VAPID_SUBJECT=mailto:admin@surgicalhub.local,
+     * fixed by switching to a real, monitored domain.
+     */
+    private static function assertValidVapidSubject(string $subject): void
+    {
+        if (str_starts_with($subject, 'https://')) {
+            return;
+        }
+
+        if (str_starts_with($subject, 'mailto:')) {
+            $domain = strtolower((string) strrchr($subject, '@'));
+            if ($domain !== '' && !str_ends_with($domain, '.local')) {
+                return;
+            }
+        }
+
+        throw new \InvalidArgumentException(
+            '[WebPushService] Invalid VAPID_SUBJECT: must be a "mailto:" address on a real, ' .
+            'non-".local" domain, or an "https://" URL — Apple Web Push rejects anything else.'
+        );
+    }
 
     public function sendToUser(User $user, string $title, string $body, array $data = []): void
     {

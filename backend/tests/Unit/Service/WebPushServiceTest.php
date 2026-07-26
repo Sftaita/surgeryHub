@@ -33,7 +33,7 @@ final class WebPushServiceTest extends TestCase
 {
     private const VAPID_PUBLIC_KEY  = 'BLzVPsUY7v1GtNQDDQVMAsov9V3UolJ7xn9yOWqVAO1l3Nbju_Mehm5eaNLJfXPAbiYERxwB8a1eupULUOQsxGk';
     private const VAPID_PRIVATE_KEY = 'fYiXf5w91rouDs1AwbjPby8mmqgQwyT4zRqurmssGiQ';
-    private const VAPID_SUBJECT     = 'mailto:admin@surgicalhub.local';
+    private const VAPID_SUBJECT     = 'mailto:notifications@surgicalhub.be';
 
     /**
      * Not a real subscriber's key — a throwaway EC P-256 keypair generated once for this
@@ -102,6 +102,48 @@ final class WebPushServiceTest extends TestCase
     private function expectNoDelete(): void
     {
         $this->repo->expects($this->never())->method('createQueryBuilder');
+    }
+
+    // ── validation VAPID_SUBJECT (D-081 addendum, Apple 403 BadJwtToken) ───────
+
+    public function test_constructor_rejects_mailto_subject_on_local_domain(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessageMatches('/VAPID_SUBJECT/');
+
+        new WebPushService(
+            $this->em,
+            $this->logger,
+            self::VAPID_PUBLIC_KEY,
+            self::VAPID_PRIVATE_KEY,
+            'mailto:admin@surgicalhub.local',
+        );
+    }
+
+    public function test_constructor_accepts_mailto_subject_on_real_domain(): void
+    {
+        $service = new WebPushService(
+            $this->em,
+            $this->logger,
+            self::VAPID_PUBLIC_KEY,
+            self::VAPID_PRIVATE_KEY,
+            'mailto:notifications@surgicalhub.be',
+        );
+
+        $this->assertInstanceOf(WebPushService::class, $service);
+    }
+
+    public function test_constructor_accepts_https_subject(): void
+    {
+        $service = new WebPushService(
+            $this->em,
+            $this->logger,
+            self::VAPID_PUBLIC_KEY,
+            self::VAPID_PRIVATE_KEY,
+            'https://surgicalhub.be',
+        );
+
+        $this->assertInstanceOf(WebPushService::class, $service);
     }
 
     // ── envoi réussi ─────────────────────────────────────────────────────────

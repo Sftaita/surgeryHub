@@ -4812,6 +4812,22 @@ async, en cohérence avec D-043/D-056, plutôt que d'étendre `MissionChangeType
   `MobileLayout.test.tsx` (refonte de navigation, hors périmètre) afin que les deux
   puissent être committés indépendamment.
 
+### Addendum (validation réelle sur appareil, 25-07-2026) — `VAPID_SUBJECT` ne doit jamais utiliser un domaine `.local`
+
+Test réel sur iPhone (Safari, PWA installée) : Apple (`web.push.apple.com`) rejetait
+systématiquement l'envoi avec `403 BadJwtToken`, alors que FCM (Android) acceptait le
+même envoi sans erreur. Audience JWT, format de clé, algorithme ES256 et fenêtre
+d'expiration étaient tous conformes (vérifiés dans `minishlink/web-push` v10.0.3, qui
+dérive l'audience automatiquement par endpoint) — seule variable en cause :
+`VAPID_SUBJECT=mailto:admin@surgicalhub.local`. Apple valide strictement le claim `sub`
+du JWT et rejette le TLD `.local` (réservé, non résolvable) ; FCM ne le valide pas, d'où
+un échec silencieux propre à iOS. Corrigé en `mailto:notifications@surgicalhub.be` (même
+boîte que `MAILER_FROM_ADDRESS`, réellement surveillée) dans `backend/.env` et
+`backend/.env.prod.local.example` — confirmé par bascule `403` → `201` puis réception
+réelle sur l'appareil. `WebPushService` refuse désormais tout `VAPID_SUBJECT` invalide
+(`.local` ou format inattendu) dès la construction du service, avec un message
+explicite ; couvert par 3 tests dans `WebPushServiceTest`.
+
 ---
 
 ## D-082 — Installation PWA Android/iOS : bannière + `beforeinstallprompt`, guide manuel iOS, source de vérité standalone, politique de report (Lot 2)
