@@ -2032,3 +2032,38 @@ les critères d'installabilité Chrome, `sw.js` est déjà enregistré globaleme
 
 `PwaInstallProvider` n'importe rien de `features/push/` ; aucune demande de permission
 de notification depuis la bannière ou le guide d'installation. `PushProvider` inchangé.
+
+## 11. Rappel d'encodage D+1 (D-083)
+
+Remplace le rappel 19 h jamais implémenté (D-081) — un seul rappel, le lendemain matin,
+jamais de relance quotidienne.
+
+### 11.1 Composants
+
+- `SendEncodingRemindersCommand` (`app:notifications:send-encoding-reminders`) — commande
+  planifiée, orchestration uniquement (garde 08 h Europe/Brussels, boucle isolée par
+  mission, résumé). Pas de logique métier.
+- `EncodingReminderService` — décide (éligibilité) et envoie (Push prioritaire, repli
+  email). `findEligibleMissions()` : requête DQL réelle (statuts soumissibles, `endAt`
+  dans le jour civil précédent en Europe/Brussels, non verrouillée, jamais déjà
+  rappelée). `processMission()` : réservation atomique puis envoi.
+- `Mission.encodingReminderSentAt` — champ nullable, marque le rappel envoyé ; garantit
+  l'idempotence stricte (au plus un rappel par mission) par construction, indépendamment
+  des logs ou d'un verrou applicatif.
+- `WebPushService::sendToUserAndReportSuccess()` — nouvelle méthode (pas dans
+  `WebPushServiceInterface`, même précédent que `sendToSiteInstrumentists()`) qui
+  rapporte si le Push a réellement été livré, condition du repli email.
+- `NotificationService::missionEncodingReminderNotifyInstrumentist()` +
+  `templates/emails/mission_encoding_reminder.html.twig` — repli email, même mécanisme
+  asynchrone Messenger que le reste du projet.
+
+### 11.2 Canal
+
+Push tenté en premier ; email seulement si Push n'est pas livrable (aucune subscription,
+toutes expirées, tous les envois échouent). Jamais les deux à la fois.
+
+### 11.3 Planification
+
+Cron serveur (pas de Symfony Scheduler dans ce projet), garde horaire interne dans la
+commande elle-même — absorbe tout décalage été/hiver même si le cron serveur est
+planifié en UTC fixe. Voir docs/production.md pour le déploiement.

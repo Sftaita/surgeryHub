@@ -123,6 +123,9 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\Payment::paidAt' => 'date-only (date_immutable, Y-m-d) — may be client-submitted (a manager enters a past payment date) but never carries a time-of-day/offset component, so there is nothing to mislabel',
         'App\Entity\Payment::recordedAt' => 'set from new \DateTimeImmutable() in DocumentPaymentService::recordPayment(), never client input',
         'App\Entity\Payment::createdAt' => 'set from new \DateTimeImmutable() in the constructor, never client input',
+
+        // Rappel d'encodage D+1, D-083.
+        'App\Entity\Mission::encodingReminderSentAt' => 'set from the cron command\'s own "now" (SendEncodingRemindersCommand::now(), Europe/Brussels-computed) inside EncodingReminderService::processMission(), never client input',
     ];
 
     /** Exempt by name, not by allowlist entry — the project-wide TimestampableTrait convention. */

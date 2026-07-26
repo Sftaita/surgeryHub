@@ -160,6 +160,32 @@ class NotificationService
     // the bus (async, same as billing emails), never block the request, never duplicate the
     // period computation (that lives only in AbsenceReminderService).
 
+    /**
+     * D-083 — repli email du rappel d'encodage D+1, uniquement quand Push n'est pas
+     * réellement livrable pour l'instrumentiste (voir EncodingReminderService).
+     */
+    public function missionEncodingReminderNotifyInstrumentist(Mission $mission): void
+    {
+        $instrumentist = $mission->getInstrumentist();
+        if (!$instrumentist instanceof User) {
+            return;
+        }
+
+        $missionUrl = sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId());
+
+        $this->bus->dispatch(new SendTemplatedEmailMessage(
+            to: (string) $instrumentist->getEmail(),
+            subject: 'SurgicalHub — Encodage à finaliser',
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: 'emails/mission_encoding_reminder.html.twig',
+            context: [
+                'firstname'  => $instrumentist->getFirstname(),
+                'missionUrl' => $missionUrl,
+            ],
+        ));
+    }
+
     public function sendAbsenceRequestMissingEmailToUser(User $user, string $message): void
     {
         $this->bus->dispatch(new SendTemplatedEmailMessage(

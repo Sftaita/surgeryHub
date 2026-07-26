@@ -12,7 +12,7 @@ use Minishlink\WebPush\WebPush;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
-final class WebPushService implements WebPushServiceInterface
+class WebPushService implements WebPushServiceInterface
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
@@ -61,12 +61,24 @@ final class WebPushService implements WebPushServiceInterface
 
     public function sendToUser(User $user, string $title, string $body, array $data = []): void
     {
+        $this->sendToUserAndReportSuccess($user, $title, $body, $data);
+    }
+
+    /**
+     * Same as sendToUser(), but reports whether the push was actually deliverable — at
+     * least one subscription existed AND at least one transport report came back
+     * successful. Needed by callers that must fall back to another channel (e.g. email,
+     * D-083) when Push isn't usable, since sendToUser() itself stays void and swallows
+     * per-subscription outcomes (they're only ever logged, never surfaced to the caller).
+     */
+    public function sendToUserAndReportSuccess(User $user, string $title, string $body, array $data = []): bool
+    {
         $subscriptions = $this->em->getRepository(PushSubscription::class)->findBy(['user' => $user]);
         if (empty($subscriptions)) {
-            return;
+            return false;
         }
 
-        $this->sendToSubscriptions($subscriptions, $title, $body, $data);
+        return $this->sendToSubscriptions($subscriptions, $title, $body, $data) > 0;
     }
 
     /** @param User[] $users */
@@ -120,8 +132,11 @@ final class WebPushService implements WebPushServiceInterface
         $this->sendToSubscriptions($subscriptions, $title, $body, $data);
     }
 
-    /** @param PushSubscription[] $pushSubscriptions */
-    private function sendToSubscriptions(array $pushSubscriptions, string $title, string $body, array $data = []): void
+    /**
+     * @param PushSubscription[] $pushSubscriptions
+     * @return int number of subscriptions that received the push successfully
+     */
+    private function sendToSubscriptions(array $pushSubscriptions, string $title, string $body, array $data = []): int
     {
         $webPush = new WebPush([
             'VAPID' => [
@@ -195,7 +210,7 @@ final class WebPushService implements WebPushServiceInterface
                 'subscriptions_count' => count($pushSubscriptions),
             ]);
 
-            return;
+            return 0;
         }
 
         if ($sent > 0 || $failed > 0) {
@@ -207,6 +222,8 @@ final class WebPushService implements WebPushServiceInterface
                 'type'    => $data['type'] ?? null,
             ]);
         }
+
+        return $sent;
     }
 
     /**

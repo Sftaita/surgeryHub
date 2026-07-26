@@ -146,6 +146,43 @@ final class WebPushServiceTest extends TestCase
         $this->assertInstanceOf(WebPushService::class, $service);
     }
 
+    // ── sendToUserAndReportSuccess (D-083) ──────────────────────────────────────
+
+    public function test_report_success_returns_true_when_at_least_one_subscription_receives_it(): void
+    {
+        $user = new User();
+        $sub  = $this->subscription('https://push.example.test/report-success-aaaaaaaaaaaa');
+        $this->repo->method('findBy')->with(['user' => $user])->willReturn([$sub]);
+        $this->expectNoDelete();
+
+        $service = $this->service(new MockHandler([new Response(201)]));
+
+        self::assertTrue($service->sendToUserAndReportSuccess($user, 'Titre', 'Corps'));
+    }
+
+    public function test_report_success_returns_false_when_user_has_no_subscription(): void
+    {
+        $user = new User();
+        $this->repo->method('findBy')->with(['user' => $user])->willReturn([]);
+
+        $service = $this->service(new MockHandler([]));
+
+        self::assertFalse($service->sendToUserAndReportSuccess($user, 'Titre', 'Corps'));
+    }
+
+    public function test_report_success_returns_false_when_every_attempt_fails(): void
+    {
+        $user = new User();
+        $sub  = $this->subscription('https://push.example.test/report-failure-bbbbbbbbbbbb');
+        $this->repo->method('findBy')->with(['user' => $user])->willReturn([$sub]);
+        $this->expectNoDelete();
+
+        // 500: an unexpected failure, not an expired subscription — no cleanup expected.
+        $service = $this->service(new MockHandler([new Response(500)]));
+
+        self::assertFalse($service->sendToUserAndReportSuccess($user, 'Titre', 'Corps'));
+    }
+
     // ── envoi réussi ─────────────────────────────────────────────────────────
 
     public function test_successful_send_logs_batch_done_without_any_error(): void

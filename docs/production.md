@@ -422,6 +422,83 @@ utile même en exécution manuelle).
 
 ---
 
+## Tâche planifiée — rappel d'encodage D+1 (D-083) — PAS ENCORE ACTIVÉE
+
+`app:notifications:send-encoding-reminders` (`SendEncodingRemindersCommand`)
+envoie le rappel d'encodage D+1 (Push prioritaire, repli email) aux missions
+éligibles. Développée et testée en local (voir D-083), **non déployée et non
+planifiée en production** au moment de la rédaction — instructions ci-dessous
+prêtes pour l'activation, à exécuter seulement avec une autorisation explicite
+de déploiement/configuration prod.
+
+### Mécanisme prévu (même schéma que D-064)
+
+| | |
+|---|---|
+| Planificateur | cron utilisateur `deploy` |
+| Fréquence recommandée | toutes les 15-30 minutes (`*/15 * * * *`) — **pas** un tick unique à 08h00 pile |
+| Script | `/home/deploy/scripts/send_encoding_reminders.sh` (à créer, même style que `missions_start_due.sh` : `set -uo pipefail`, `flock -n`, vérification `docker inspect`) |
+| Commande exécutée | `docker compose exec -T php php bin/console app:notifications:send-encoding-reminders --env=prod` |
+| Répertoire d'exécution | `/opt/stack/apps/surgicalhub` |
+| Journal | `/home/deploy/logs/encoding-reminders.log` |
+| Verrou anti-chevauchement (shell) | `flock -n` sur `/home/deploy/locks/encoding-reminders.lock` |
+| Garde métier (applicatif) | `SendEncodingRemindersCommand` refuse d'agir avant 08h00 Europe/Brussels — voir ci-dessous |
+
+**Pourquoi une fréquence de 15-30 min plutôt qu'un tick unique à 08h00** : le
+serveur de production n'a pas de garantie documentée d'être en `Europe/Brussels`
+(le cron `deploy` existant pour D-064 tourne en UTC — voir le tick "18:00 UTC"
+loggué plus haut). Un cron fixé à `0 8 * * *` dériverait d'une heure entre
+heure d'été et heure d'hiver si le serveur est en UTC. Plutôt que de dépendre
+de `CRON_TZ=Europe/Brussels` (à vérifier/configurer explicitement si retenu),
+la commande elle-même refuse d'envoyer quoi que ce soit avant 08h00 heure de
+Bruxelles (`SendEncodingRemindersCommand::now()`, `EARLIEST_HOUR = 8`) — une
+exécution plus fréquente que nécessaire est donc sans risque : la majorité des
+ticks avant 08h00 locale ne font rien (sortie "Trop tôt", aucun appel au
+service), et le premier tick après 08h00 locale traite le lot du jour.
+L'idempotence stricte (`Mission.encodingReminderSentAt`) garantit par
+ailleurs qu'un tick supplémentaire ne renvoie jamais un rappel déjà envoyé.
+
+Entrée crontab prévue (à ajouter après les jobs existants, jamais réécrits) :
+
+```
+# D-083 — Rappel d'encodage D+1 (garde 08h00 Europe/Brussels interne à la commande)
+*/15 * * * * /home/deploy/scripts/send_encoding_reminders.sh >> /home/deploy/logs/encoding-reminders.log 2>&1
+```
+
+### Avant activation
+
+1. Confirmer la timezone réelle du serveur (`docker exec surgicalhub-php-1 date -u`
+   et `date` côté hôte) — documenter l'écart avec Europe/Brussels s'il existe,
+   la garde interne fonctionne quel que soit cet écart tant que la commande
+   calcule elle-même l'heure Bruxelles (elle le fait, indépendamment de
+   l'horloge système du conteneur).
+2. Appliquer la migration `Version20260726090000` en prod
+   (`doctrine:migrations:migrate --env=prod`) avant tout déploiement du code
+   applicatif qui la suppose.
+3. Créer `/home/deploy/scripts/send_encoding_reminders.sh` sur le modèle exact
+   de `missions_start_due.sh` (même garde `flock`, même vérification
+   `docker inspect`, `log()` écrivant directement dans le fichier — pas de
+   `tee`, pour éviter le doublon déjà rencontré et documenté pour D-064).
+4. Sauvegarder la crontab avant modification
+   (`crontab -l > /home/deploy/backups/cron/crontab_before_encoding_reminders_<horodatage>.txt`).
+
+### Vérification (une fois activée)
+
+```bash
+tail -50 /home/deploy/logs/encoding-reminders.log
+ps aux | grep send-encoding-reminders
+crontab -l | grep send_encoding_reminders
+```
+
+### Désactivation
+
+```bash
+crontab -l | grep -v 'send_encoding_reminders.sh' | crontab -
+crontab -l   # confirmer l'absence de la ligne, les autres jobs intacts
+```
+
+---
+
 ## Rollback
 
 Le tag `*-prod` précédent (voir "Historique des versions déployées"

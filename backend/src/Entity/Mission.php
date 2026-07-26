@@ -89,6 +89,10 @@ class Mission
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
     private ?\DateTimeImmutable $invoiceGeneratedAt = null;
 
+    /** D-083 — marque le rappel d'encodage D+1 comme envoyé ; au plus un par mission. */
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $encodingReminderSentAt = null;
+
     // ✅ Lot B1 — mission_declared fields (modèle uniquement)
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
@@ -238,6 +242,9 @@ class Mission
 
     public function getInvoiceGeneratedAt(): ?\DateTimeImmutable { return $this->invoiceGeneratedAt; }
     public function setInvoiceGeneratedAt(?\DateTimeImmutable $invoiceGeneratedAt): static { $this->invoiceGeneratedAt = $invoiceGeneratedAt; return $this; }
+
+    public function getEncodingReminderSentAt(): ?\DateTimeImmutable { return $this->encodingReminderSentAt; }
+    public function setEncodingReminderSentAt(?\DateTimeImmutable $encodingReminderSentAt): static { $this->encodingReminderSentAt = $encodingReminderSentAt; return $this; }
 
     public function getDeclaredAt(): ?\DateTimeImmutable { return $this->declaredAt; }
     public function setDeclaredAt(?\DateTimeImmutable $declaredAt): static { $this->declaredAt = $declaredAt; return $this; }

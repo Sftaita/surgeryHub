@@ -4546,6 +4546,7 @@ complexes, refonte UX complète (§34 du lot).
 | 19-07-2026 | D-077 — Statistiques financières : sources de vérité par catégorie, convention temporelle/devise, cash flow réel dérivé de (documentType, direction) (Pilotage financier, Lot 7) |
 | 25-07-2026 | D-081 — Fiabilisation du socle Web Push : endpoint unique par abonnement, rattachement mono-utilisateur, nettoyage au logout, activation volontaire pour tous les rôles, erreurs isolées mais observables (Lot 1) |
 | 25-07-2026 | D-082 — Installation PWA Android/iOS : bannière + `beforeinstallprompt`, guide manuel iOS (animation recréée en React, jamais copiée), source de vérité standalone, politique de report, séparation stricte avec le Push (Lot 2) |
+| 26-07-2026 | D-083 — Rappel unique d'encodage D+1 à 08 h Europe/Brussels : remplace le rappel 19 h jamais implémenté, Push prioritaire avec repli email, idempotence persistante (`encodingReminderSentAt`), aucune relance quotidienne |
 
 ---
 
@@ -4592,7 +4593,13 @@ travail général sur les notifications push. **L'implémentation devra réutili
 l'infrastructure push existante ou celle validée dans ce chantier général — aucun
 second système parallèle ne doit être créé.**
 
-#### TODO — Rappel d'encodage à 19 h
+#### TODO — Rappel d'encodage à 19 h — SUPERSEDED par D-083 (26-07-2026)
+
+**Ce TODO n'a jamais été implémenté et ne le sera pas tel quel.** La décision produit a
+changé : plus de rappel le jour même à 19 h, remplacé par un rappel unique le lendemain
+matin à 08 h (D+1), avec repli email si le Push n'est pas livrable. Voir D-083 pour la
+règle actuelle. Conservé ci-dessous pour l'historique uniquement.
+
 
 À 19 h, heure métier du projet, envoyer une notification push à l'instrumentiste
 lorsqu'une mission du jour qui lui est assignée n'a pas encore été soumise.
@@ -4966,3 +4973,117 @@ aucun changement n'était nécessaire pour ce lot. Aucun cache offline, aucune l
 Préférences sélectives de notifications, rappel 19 h, escalade J+1, cache offline,
 versioning applicatif, mise à jour forcée du service worker, refonte de
 `NotificationsPage` — aucun n'a été commencé.
+
+---
+
+## D-083 — Rappel unique d'encodage D+1 à 08 h Europe/Brussels, Push prioritaire avec repli email
+
+Date : 26-07-2026
+
+### Contexte
+
+Remplace le TODO "rappel d'encodage à 19 h" (jamais implémenté, voir plus haut) par une
+décision produit différente : plus de relance le jour même, un seul rappel le lendemain
+matin. Le socle Web Push (D-081) et l'installation PWA (D-082) sont désormais validés en
+conditions réelles (Android et iOS), ce lot construit dessus sans y toucher.
+
+### Décision — règle métier
+
+Une mission est éligible au rappel uniquement si, au moment de l'exécution :
+
+- un instrumentiste lui est assigné ;
+- son `endAt` planifié tombe dans le jour civil précédent, en Europe/Brussels
+  (`business_datetime_immutable`, jamais UTC brut) ;
+- elle n'est pas soumise (`submittedAt IS NULL`) ;
+- elle n'est pas verrouillée (`encodingLockedAt`/`invoiceGeneratedAt` tous deux `NULL`) ;
+- son statut fait encore partie des statuts où l'encodage est soumissible
+  (`ASSIGNED`, `IN_PROGRESS`, `ENCODING_IN_PROGRESS`, `DECLARED` — liste blanche, exclut
+  implicitement `REJECTED`/`CANCELLED`/`SUBMITTED`/`VALIDATED`/`CLOSED`/`OPEN`/`DRAFT`) ;
+- aucun rappel ne lui a déjà été envoyé (`encodingReminderSentAt IS NULL`).
+
+Le rappel n'est jamais envoyé avant 08 h Europe/Brussels — `SendEncodingRemindersCommand`
+refuse d'agir (aucun appel au service) si l'heure locale au moment de l'exécution est
+antérieure à 08 h, indépendamment de la fréquence réelle du cron serveur. Cette garde
+interne, plutôt qu'une confiance aveugle dans l'heure du cron, absorbe tout décalage
+été/hiver si le serveur est planifié en UTC fixe (voir docs/production.md).
+
+### Décision — canal : Push prioritaire, email uniquement si Push n'est pas livrable
+
+`WebPushService::sendToUser()` restait `void` et avalait silencieusement tout résultat
+(aucune subscription trouvée, échec de transport, etc.) — insuffisant pour décider d'un
+repli. Ajout de `sendToUserAndReportSuccess()` (nouvelle méthode publique, pas dans
+`WebPushServiceInterface` — même précédent que `sendToSiteInstrumentists()`) qui retourne
+`true` seulement si au moins un rapport de transport final est positif. `sendToUser()`
+délègue désormais à cette méthode et ignore simplement son retour — comportement
+inchangé pour tous les appelants existants.
+
+`EncodingReminderService::processMission()` : Push tenté en premier ; s'il n'est pas
+livrable (aucune subscription, toutes expirées, tous les envois échouent), repli email
+via `NotificationService::missionEncodingReminderNotifyInstrumentist()` (nouveau
+template `emails/mission_encoding_reminder.html.twig`, même mécanisme asynchrone
+Messenger que le reste du projet). Jamais les deux canaux à la fois.
+
+### Décision — idempotence : réservation atomique, pas de dépendance aux logs
+
+Nouveau champ `Mission.encodingReminderSentAt` (nullable, migration additive
+`Version20260726090000`) — au plus un rappel par mission, par construction. La
+réservation utilise une `UPDATE ... WHERE encoding_reminder_sent_at IS NULL` en DQL
+(bulk update, atomique côté moteur SQL) plutôt qu'un verrou applicatif Symfony Lock :
+si `0` ligne est affectée, une exécution concurrente a déjà réclamé cette mission, celle-ci
+est ignorée (`skipped`) sans effet de bord. Choix délibéré plutôt que `NotificationEvent`
+seul : cette table n'a aucune contrainte unique aujourd'hui (limite déjà documentée dans
+D-056/`MissionLifecycleChangedMessageHandler`, "accepted V1 limit") — insuffisant pour
+l'exigence stricte "au plus un rappel, jamais deux" de ce lot.
+
+**Compromis assumé** : la réservation a lieu *avant* la tentative d'envoi, pas après. Si
+l'envoi échoue après la réservation (exception inattendue), le rappel de cette mission
+est perdu plutôt que retenté le lendemain — préféré à l'alternative (envoyer puis
+marquer), qui risquerait un double envoi si le processus meurt entre les deux étapes. Le
+repli email n'étant qu'un dépôt en file Messenger (échoue seulement en cas de panne
+d'infrastructure), ce risque de perte reste faible en pratique. Documenté ici plutôt que
+« résolu » : accepté comme limite connue, pas un bug.
+
+### Décision — orchestration : commande + service, aucun message Messenger dédié
+
+`SendEncodingRemindersCommand` (`app:notifications:send-encoding-reminders`) orchestre
+uniquement (garde horaire, boucle, isolation par mission, résumé) ; toute la décision
+vit dans `EncodingReminderService`. Contrairement à
+`MissionLifecycleChangedMessage`/Handler (D-043/D-056, transitions de statut
+post-déploiement), ce lot est un balayage temporel, pas une mutation déclenchée par une
+action utilisateur — étendre `MissionChangeType` pour ce cas aurait été le même genre de
+"migration à moitié" déjà rejeté pour `MissionController::publish()`. Un appel direct
+`WebPushService`/`NotificationService` depuis la commande suffit, à l'image de
+`AbsenceReminderController`.
+
+Pas de service `Clock` injecté : aucune abstraction de ce type n'existe encore dans ce
+projet. La commande expose une méthode `now()` `protected`, surchargeable dans les tests
+(seul point d'injection ajouté), plutôt que d'introduire une nouvelle dépendance
+transverse pour un seul appelant.
+
+### Tests
+
+- `EncodingReminderServiceEligibilityTest` (intégration, base réelle, 10 tests) : chaque
+  critère de sélection isolé (terminée hier/aujourd'hui, soumise, annulée, rejetée, sans
+  instrumentiste, déjà rappelée), plus heure d'été/hiver Bruxelles et frontière exacte à
+  minuit — un mock de `QueryBuilder` ne peut pas vérifier une clause `WHERE`, seule une
+  exécution réelle le peut (même rationale que `MissionEligibilityServiceFindEligibleTest`,
+  RC1-D/E). Piège rencontré et documenté dans le test lui-même : construire les dates de
+  test sans fuseau explicite déplace silencieusement l'instant d'1-2 h au moment de
+  l'écriture (`BusinessDateTimeImmutableType::convertToDatabaseValue()` appelle
+  `setTimezone(Brussels)`, une vraie conversion, pas un simple réétiquetage).
+- `EncodingReminderServiceTest` (unitaire, 10 tests) : canal (Push seul, repli email,
+  jamais les deux), idempotence (réservation atomique, deux appels sur la même mission,
+  deux missions indépendantes), contenu (aucune donnée patient, texte non culpabilisant).
+- `SendEncodingRemindersCommandTest` (unitaire, 8 tests) : résumé exact, isolation d'une
+  erreur par mission, logs sans donnée sensible, garde 08 h (avant/pile/été/hiver).
+- `NotificationServiceEncodingReminderTest` (unitaire, 2 tests) : email envoyé avec
+  uniquement prénom + URL mission dans le contexte, no-op si mission sans instrumentiste.
+- `WebPushServiceTest` (+3 tests) : `sendToUserAndReportSuccess()` — vrai si au moins un
+  envoi réussit, faux si aucune subscription, faux si tous les envois échouent.
+
+### Portée non traitée ici
+
+Écran de préférences détaillées, cache offline, résilience `pushsubscriptionchange`
+(gap réel identifié pendant la validation Push, non corrigé — voir le rapport de
+diagnostic Android/iOS du 25-07-2026), notifications manager, escalade répétée J+2/J+3,
+modification de l'encodage ou des règles financières — aucun n'a été commencé.
