@@ -3,10 +3,15 @@
 namespace App\Tests\Unit\Service;
 
 use App\Entity\Mission;
+use App\Entity\OutboundNotification;
+use App\Entity\OutboundNotificationAttempt;
 use App\Entity\User;
+use App\Enum\OutboundNotificationChannel;
+use App\Enum\OutboundNotificationFallbackReason;
+use App\Enum\OutboundNotificationStatus;
 use App\Service\EncodingReminderService;
 use App\Service\NotificationService;
-use App\Service\WebPushService;
+use App\Service\OutboundNotificationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Query;
 use Doctrine\ORM\QueryBuilder;
@@ -20,11 +25,16 @@ use Psr\Log\LoggerInterface;
  * eligibility query itself (findEligibleMissions()) is DQL-heavy and covered by a real-DB
  * functional test instead (EncodingReminderServiceEligibilityTest) — mocking QueryBuilder
  * can't meaningfully verify WHERE-clause correctness.
+ *
+ * D-084 — Push/email dispatch itself now goes through OutboundNotificationService
+ * (traced history); this test mocks that service and controls the OutboundNotification
+ * it returns to drive the push-vs-email branch, same as WebPushServiceTest already
+ * covers the transport-level detail.
  */
 class EncodingReminderServiceTest extends TestCase
 {
     private EntityManagerInterface&MockObject $em;
-    private WebPushService&MockObject $webPushService;
+    private OutboundNotificationService&MockObject $outboundNotificationService;
     private NotificationService&MockObject $notificationService;
     private LoggerInterface&MockObject $logger;
 
@@ -34,7 +44,7 @@ class EncodingReminderServiceTest extends TestCase
     protected function setUp(): void
     {
         $this->em = $this->createMock(EntityManagerInterface::class);
-        $this->webPushService = $this->createMock(WebPushService::class);
+        $this->outboundNotificationService = $this->createMock(OutboundNotificationService::class);
         $this->notificationService = $this->createMock(NotificationService::class);
         $this->logger = $this->createMock(LoggerInterface::class);
         $this->claimAffectedRows = 1;
@@ -77,9 +87,20 @@ class EncodingReminderServiceTest extends TestCase
         return $m;
     }
 
+    /** A real OutboundNotification (not a mock) with a chosen status, as recordPushSend() would return. */
+    private function makePushNotification(OutboundNotificationStatus $status, bool $withExpiredAttempt = false): OutboundNotification
+    {
+        $n = (new OutboundNotification())->setChannel(OutboundNotificationChannel::PUSH)->setStatus($status);
+        if ($withExpiredAttempt) {
+            $n->addAttempt((new OutboundNotificationAttempt())->setSuccess(false)->setReason('expired'));
+        }
+        $this->setId($n, self::$nextId++);
+        return $n;
+    }
+
     private function service(): EncodingReminderService
     {
-        return new EncodingReminderService($this->em, $this->webPushService, $this->notificationService, $this->logger);
+        return new EncodingReminderService($this->em, $this->outboundNotificationService, $this->notificationService, $this->logger);
     }
 
     private function now(): \DateTimeImmutable
@@ -93,9 +114,9 @@ class EncodingReminderServiceTest extends TestCase
     {
         $mission = $this->makeMission($this->makeInstrumentist());
 
-        $this->webPushService->expects($this->once())
-            ->method('sendToUserAndReportSuccess')
-            ->willReturn(true);
+        $this->outboundNotificationService->expects($this->once())
+            ->method('recordPushSend')
+            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
         $this->notificationService->expects($this->never())->method('missionEncodingReminderNotifyInstrumentist');
 
         $result = $this->service()->processMission($mission, $this->now());
@@ -103,12 +124,15 @@ class EncodingReminderServiceTest extends TestCase
         $this->assertSame('push', $result);
     }
 
-    public function test_falls_back_to_email_when_push_has_no_subscription(): void
+    public function test_falls_back_to_email_when_push_is_skipped(): void
     {
         $mission = $this->makeMission($this->makeInstrumentist());
 
-        $this->webPushService->method('sendToUserAndReportSuccess')->willReturn(false);
-        $this->notificationService->expects($this->once())->method('missionEncodingReminderNotifyInstrumentist')->with($mission);
+        $this->outboundNotificationService->method('recordPushSend')
+            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SKIPPED));
+        $this->notificationService->expects($this->once())
+            ->method('missionEncodingReminderNotifyInstrumentist')
+            ->with($mission, $this->isInstanceOf(OutboundNotification::class), OutboundNotificationFallbackReason::NO_SUBSCRIPTION);
 
         $result = $this->service()->processMission($mission, $this->now());
 
@@ -117,22 +141,34 @@ class EncodingReminderServiceTest extends TestCase
 
     public function test_falls_back_to_email_when_all_push_attempts_fail(): void
     {
-        // sendToUserAndReportSuccess() already collapses "no subscription", "all expired"
-        // and "all attempts failed" into the same false — exercised distinctly in
-        // WebPushServiceTest; here we only need the caller-side branch.
         $mission = $this->makeMission($this->makeInstrumentist());
 
-        $this->webPushService->method('sendToUserAndReportSuccess')->willReturn(false);
+        $this->outboundNotificationService->method('recordPushSend')
+            ->willReturn($this->makePushNotification(OutboundNotificationStatus::FAILED));
         $this->notificationService->expects($this->once())->method('missionEncodingReminderNotifyInstrumentist');
 
         $this->assertSame('email', $this->service()->processMission($mission, $this->now()));
+    }
+
+    public function test_fallback_reason_is_expired_when_all_attempts_expired(): void
+    {
+        $mission = $this->makeMission($this->makeInstrumentist());
+
+        $this->outboundNotificationService->method('recordPushSend')
+            ->willReturn($this->makePushNotification(OutboundNotificationStatus::FAILED, withExpiredAttempt: true));
+        $this->notificationService->expects($this->once())
+            ->method('missionEncodingReminderNotifyInstrumentist')
+            ->with($mission, $this->isInstanceOf(OutboundNotification::class), OutboundNotificationFallbackReason::EXPIRED);
+
+        $this->service()->processMission($mission, $this->now());
     }
 
     public function test_never_sends_push_and_email_together(): void
     {
         $mission = $this->makeMission($this->makeInstrumentist());
 
-        $this->webPushService->method('sendToUserAndReportSuccess')->willReturn(true);
+        $this->outboundNotificationService->method('recordPushSend')
+            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
         $this->notificationService->expects($this->never())->method('missionEncodingReminderNotifyInstrumentist');
 
         $this->service()->processMission($mission, $this->now());
@@ -145,7 +181,7 @@ class EncodingReminderServiceTest extends TestCase
         $this->claimAffectedRows = 0; // a concurrent run already claimed this mission
         $mission = $this->makeMission($this->makeInstrumentist());
 
-        $this->webPushService->expects($this->never())->method('sendToUserAndReportSuccess');
+        $this->outboundNotificationService->expects($this->never())->method('recordPushSend');
         $this->notificationService->expects($this->never())->method('missionEncodingReminderNotifyInstrumentist');
 
         $this->assertSame('skipped', $this->service()->processMission($mission, $this->now()));
@@ -154,7 +190,8 @@ class EncodingReminderServiceTest extends TestCase
     public function test_second_call_for_the_same_mission_sends_nothing_more(): void
     {
         $mission = $this->makeMission($this->makeInstrumentist());
-        $this->webPushService->method('sendToUserAndReportSuccess')->willReturn(true);
+        $this->outboundNotificationService->method('recordPushSend')
+            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
 
         $service = $this->service();
         $first = $service->processMission($mission, $this->now());
@@ -171,7 +208,8 @@ class EncodingReminderServiceTest extends TestCase
         $missionA = $this->makeMission($this->makeInstrumentist());
         $missionB = $this->makeMission($this->makeInstrumentist());
 
-        $this->webPushService->method('sendToUserAndReportSuccess')->willReturn(true);
+        $this->outboundNotificationService->method('recordPushSend')
+            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
 
         $service = $this->service();
         $resultA = $service->processMission($missionA, $this->now());
@@ -185,7 +223,7 @@ class EncodingReminderServiceTest extends TestCase
     {
         $mission = $this->makeMission(null);
 
-        $this->webPushService->expects($this->never())->method('sendToUserAndReportSuccess');
+        $this->outboundNotificationService->expects($this->never())->method('recordPushSend');
         $this->notificationService->expects($this->never())->method('missionEncodingReminderNotifyInstrumentist');
 
         $this->assertSame('skipped', $this->service()->processMission($mission, $this->now()));
@@ -199,10 +237,10 @@ class EncodingReminderServiceTest extends TestCase
         $missionId = $mission->getId();
 
         $captured = [];
-        $this->webPushService->method('sendToUserAndReportSuccess')
-            ->willReturnCallback(function (User $user, string $title, string $body, array $data) use (&$captured): bool {
+        $this->outboundNotificationService->method('recordPushSend')
+            ->willReturnCallback(function (User $user, string $type, string $title, string $body, array $data) use (&$captured): OutboundNotification {
                 $captured = ['title' => $title, 'body' => $body, 'data' => $data];
-                return true;
+                return $this->makePushNotification(OutboundNotificationStatus::SENT);
             });
 
         $this->service()->processMission($mission, $this->now());
@@ -219,10 +257,10 @@ class EncodingReminderServiceTest extends TestCase
         $mission = $this->makeMission($this->makeInstrumentist());
 
         $captured = null;
-        $this->webPushService->method('sendToUserAndReportSuccess')
-            ->willReturnCallback(function (User $user, string $title, string $body) use (&$captured): bool {
+        $this->outboundNotificationService->method('recordPushSend')
+            ->willReturnCallback(function (User $user, string $type, string $title, string $body) use (&$captured): OutboundNotification {
                 $captured = $body;
-                return true;
+                return $this->makePushNotification(OutboundNotificationStatus::SENT);
             });
 
         $this->service()->processMission($mission, $this->now());

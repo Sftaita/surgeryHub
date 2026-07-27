@@ -5,6 +5,7 @@ namespace App\Service;
 use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\MissionStatus;
+use App\Enum\OutboundNotificationStatus;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -28,7 +29,7 @@ class EncodingReminderService
 
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly WebPushService $webPushService,
+        private readonly OutboundNotificationService $outboundNotificationService,
         private readonly NotificationService $notificationService,
         #[Autowire(service: 'monolog.logger.push')]
         private readonly LoggerInterface $logger,
@@ -121,9 +122,18 @@ class EncodingReminderService
             'url'       => sprintf('/app/i/missions/%d', $mission->getId()),
         ];
 
-        $pushDelivered = $this->webPushService->sendToUserAndReportSuccess($instrumentist, $title, $body, $data);
+        // D-084 — recordPushSend() attempts the real Push send AND creates the traced
+        // OutboundNotification (+ one Attempt per subscription) in the same call.
+        $pushNotification = $this->outboundNotificationService->recordPushSend(
+            $instrumentist,
+            'ENCODING_REMINDER_D1',
+            $title,
+            $body,
+            $data,
+            $mission,
+        );
 
-        if ($pushDelivered) {
+        if ($pushNotification->getStatus() === OutboundNotificationStatus::SENT) {
             $this->logger->info('encoding_reminder.sent_push', [
                 'missionId' => $mission->getId(),
                 'userId'    => $instrumentist->getId(),
@@ -132,7 +142,11 @@ class EncodingReminderService
             return 'push';
         }
 
-        $this->notificationService->missionEncodingReminderNotifyInstrumentist($mission);
+        $this->notificationService->missionEncodingReminderNotifyInstrumentist(
+            $mission,
+            $pushNotification,
+            OutboundNotificationService::fallbackReasonFor($pushNotification),
+        );
 
         $this->logger->info('encoding_reminder.sent_email', [
             'missionId' => $mission->getId(),
