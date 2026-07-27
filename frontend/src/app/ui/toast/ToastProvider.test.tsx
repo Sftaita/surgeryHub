@@ -29,11 +29,9 @@ describe("ToastProvider", () => {
 
     await user.click(screen.getByText("fire-success"));
     const successToast = await screen.findByText("Enregistré");
-    const successColor = (successToast.parentElement as HTMLElement).style.background;
 
     await user.click(screen.getByText("fire-error"));
     const errorToast = await screen.findByText("Erreur serveur");
-    const errorColor = (errorToast.parentElement as HTMLElement)?.style.background || (errorToast as HTMLElement).style.background;
 
     // Le toast lui-même porte les styles (c'est le même élément qui contient le texte).
     expect(successToast).toHaveStyle({ background: "#16202B", color: "rgb(255, 255, 255)" });
