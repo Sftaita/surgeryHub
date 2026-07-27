@@ -1,14 +1,16 @@
+import { useState } from "react";
 import type { ReactNode } from "react";
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import {
   Badge,
   Box,
-  Button,
   Divider,
   Drawer,
   List,
   ListItemButton,
   ListItemText,
+  Menu,
+  MenuItem,
   Stack,
   Typography,
 } from "@mui/material";
@@ -29,11 +31,19 @@ import PeopleAltOutlinedIcon from "@mui/icons-material/PeopleAltOutlined";
 import MailOutlineIcon from "@mui/icons-material/MailOutline";
 import FactCheckOutlinedIcon from "@mui/icons-material/FactCheckOutlined";
 import HistoryOutlinedIcon from "@mui/icons-material/HistoryOutlined";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import LogoutIcon from "@mui/icons-material/Logout";
+import NotificationsActiveOutlinedIcon from "@mui/icons-material/NotificationsActiveOutlined";
+import GetAppOutlinedIcon from "@mui/icons-material/GetAppOutlined";
 import type { SvgIconComponent } from "@mui/icons-material";
 import { useAuth } from "../auth/AuthContext";
+import { usePushNotifications } from "../features/push/usePushNotifications";
+import { usePwaInstallMenuState } from "../features/pwa-install/usePwaInstallMenuState";
 import { getMaterialRequests } from "../features/manager-catalogue/api/catalogue.api";
 import { getInterventionTypeRequests } from "../features/manager-catalogue/api/interventionTypeRequests.api";
 import { useNavBadgeCount } from "../ui/hooks/useNavBadgeCount";
+import { PersonAvatar } from "../ui/avatar/PersonAvatar";
+import { resolveApiAssetUrl } from "../api/apiAssetUrl";
 
 /**
  * Tokens sourced from docs/design/design-tokens.json + docs/design/components/navigation.md
@@ -138,10 +148,20 @@ const ADMIN_ITEMS = [
   { label: "Historique des notifications", href: "/app/admin/outbound-notifications", icon: HistoryOutlinedIcon },
 ] as const;
 
+const ROLE_LABEL: Record<string, string> = {
+  MANAGER: "Manager",
+  ADMIN: "Administrateur",
+};
+
 export function DesktopLayout() {
   const navigate = useNavigate();
   const { state, logout } = useAuth();
   const isAuthenticated = state.status === "authenticated";
+  const { status: pushStatus, subscribe: subscribeToPush } = usePushNotifications();
+  const pwaInstall = usePwaInstallMenuState();
+
+  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+  const menuOpen = Boolean(menuAnchor);
 
   const pendingMaterialCount = useNavBadgeCount(
     ["material-requests", "PENDING"],
@@ -152,6 +172,10 @@ export function DesktopLayout() {
     async () => (await getInterventionTypeRequests({ status: "PENDING" })).items.length,
   );
   const pendingCount = pendingMaterialCount + pendingInterventionCount;
+
+  const fullName = isAuthenticated
+    ? `${state.user.firstname ?? ""} ${state.user.lastname ?? ""}`.trim() || "Mon compte"
+    : "";
 
   return (
     <Box sx={{ display: "flex", minHeight: "100vh" }}>
@@ -242,19 +266,97 @@ export function DesktopLayout() {
           </Box>
 
           {isAuthenticated && (
-            <Box sx={{ px: 2, py: 2 }}>
-              <Button
-                size="small"
-                variant="text"
-                color="inherit"
-                fullWidth
-                onClick={() => {
-                  logout();
-                  navigate("/login", { replace: true });
+            <Box sx={{ borderTop: `1px solid ${COLOR.borderSubtle}`, p: "14px" }}>
+              <Box
+                component="button"
+                type="button"
+                id="account-menu-button"
+                aria-haspopup="menu"
+                aria-controls={menuOpen ? "account-menu" : undefined}
+                aria-expanded={menuOpen ? "true" : undefined}
+                onClick={(e) => setMenuAnchor(e.currentTarget)}
+                sx={{
+                  display: "flex", alignItems: "center", gap: "10px", width: "100%",
+                  border: "none", background: "transparent", cursor: "pointer",
+                  borderRadius: "13px", p: "8px", textAlign: "left", fontFamily: "inherit",
+                  "&:hover": { bgcolor: COLOR.gray75 },
                 }}
               >
-                Déconnexion
-              </Button>
+                <PersonAvatar
+                  name={fullName}
+                  photoUrl={resolveApiAssetUrl(state.status === "authenticated" ? state.user.profilePictureUrl : null)}
+                  size="md"
+                />
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography noWrap sx={{ fontSize: "14px", fontWeight: 700, color: COLOR.gray900 }}>
+                    {fullName}
+                  </Typography>
+                  <Typography noWrap sx={{ fontSize: "12px", color: COLOR.gray500 }}>
+                    {ROLE_LABEL[state.user.role] ?? state.user.role}
+                  </Typography>
+                </Box>
+                <ExpandMoreIcon sx={{ fontSize: 19, color: COLOR.gray400, flex: "none" }} />
+              </Box>
+
+              <Menu
+                id="account-menu"
+                anchorEl={menuAnchor}
+                open={menuOpen}
+                onClose={() => setMenuAnchor(null)}
+                anchorOrigin={{ vertical: "top", horizontal: "left" }}
+                transformOrigin={{ vertical: "bottom", horizontal: "left" }}
+                slotProps={{
+                  paper: { sx: { width: 232, borderRadius: "14px", p: "8px" } },
+                  list: { "aria-labelledby": "account-menu-button" },
+                }}
+              >
+                {pushStatus === "permission-default" && (
+                  <MenuItem
+                    onClick={() => {
+                      setMenuAnchor(null);
+                      void subscribeToPush();
+                    }}
+                    sx={{
+                      height: 42, borderRadius: "10px", color: COLOR.gray600, fontWeight: 600, fontSize: "14px",
+                      "&:hover": { bgcolor: COLOR.gray75 },
+                    }}
+                  >
+                    <NotificationsActiveOutlinedIcon sx={{ fontSize: 18, mr: "10px" }} />
+                    Activer les notifications
+                  </MenuItem>
+                )}
+                {pwaInstall.variant !== "unavailable" && (
+                  <MenuItem
+                    onClick={() => {
+                      if (!pwaInstall.onAction) return;
+                      setMenuAnchor(null);
+                      pwaInstall.onAction();
+                    }}
+                    disabled={pwaInstall.disabled}
+                    sx={{
+                      height: 42, borderRadius: "10px", color: COLOR.gray600, fontWeight: 600, fontSize: "14px",
+                      "&:hover": { bgcolor: COLOR.gray75 },
+                    }}
+                  >
+                    <GetAppOutlinedIcon sx={{ fontSize: 18, mr: "10px" }} />
+                    {pwaInstall.label}
+                  </MenuItem>
+                )}
+                <MenuItem
+                  onClick={() => {
+                    setMenuAnchor(null);
+                    logout();
+                    navigate("/login", { replace: true });
+                  }}
+                  sx={{
+                    height: 42, borderRadius: "10px", color: COLOR.red600, fontWeight: 600, fontSize: "14px",
+                    "&:hover": { bgcolor: COLOR.red50 },
+                  }}
+                >
+                  <LogoutIcon sx={{ fontSize: 18, mr: "10px" }} />
+                  Se déconnecter
+                </MenuItem>
+              </Menu>
             </Box>
           )}
         </Stack>

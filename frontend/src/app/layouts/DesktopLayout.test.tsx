@@ -14,15 +14,47 @@ import { DesktopLayout } from "./DesktopLayout";
  * Lot 9 (D-079) — étend cette suite avec la nouvelle structure de navigation
  * groupée (Dashboard/Missions/.../Catalogue/Planning/Facturation/Administration)
  * et les badges de demandes en attente (useNavBadgeCount).
+ *
+ * Lot 10 — étend cette suite avec le menu compte (avatar, préférences push,
+ * installation PWA, déconnexion). Aucune action "Profil" : aucune route/écran
+ * profil manager/admin n'existe dans le code actuel (seule /app/i/profile existe,
+ * réservée aux instrumentistes) — voir le rapport du Lot 10.
  */
 
+let authStatus: "authenticated" | "anonymous" = "authenticated";
 let authRole: "ADMIN" | "MANAGER" | "INSTRUMENTIST" | "SURGEON" = "ADMIN";
+let authUser: { firstname?: string | null; lastname?: string | null; profilePictureUrl?: string | null } = {
+  firstname: "Ada", lastname: "Lovelace", profilePictureUrl: null,
+};
+const logoutMock = vi.fn();
 
 vi.mock("../auth/AuthContext", () => ({
   useAuth: () => ({
-    state: { status: "authenticated", user: { role: authRole, email: "user@test.com" } },
-    logout: vi.fn(),
+    state: authStatus === "authenticated"
+      ? { status: "authenticated", user: { role: authRole, email: "user@test.com", ...authUser } }
+      : { status: "anonymous" },
+    logout: logoutMock,
   }),
+}));
+
+let pushStatus: "permission-default" | "subscribed" | "unsupported" | "permission-denied" = "permission-default";
+const subscribeToPushMock = vi.fn();
+vi.mock("../features/push/usePushNotifications", () => ({
+  usePushNotifications: () => ({ status: pushStatus, subscribe: subscribeToPushMock }),
+}));
+
+let pwaVariant: "installed" | "actionable" | "unavailable" = "actionable";
+const pwaOnActionMock = vi.fn();
+vi.mock("../features/pwa-install/usePwaInstallMenuState", () => ({
+  usePwaInstallMenuState: () => {
+    if (pwaVariant === "unavailable") {
+      return { label: "Installation non proposée automatiquement sur ce navigateur", actionLabel: null, onAction: null, disabled: true, variant: "unavailable" as const };
+    }
+    if (pwaVariant === "installed") {
+      return { label: "Application installée", actionLabel: null, onAction: null, disabled: true, variant: "installed" as const };
+    }
+    return { label: "Installer l'application", actionLabel: "Installer", onAction: pwaOnActionMock, disabled: false, variant: "actionable" as const };
+  },
 }));
 
 const getMaterialRequestsMock = vi.fn();
@@ -54,6 +86,13 @@ function renderLayout(initialPath = "/app/m/missions") {
 }
 
 beforeEach(() => {
+  authStatus = "authenticated";
+  authUser = { firstname: "Ada", lastname: "Lovelace", profilePictureUrl: null };
+  logoutMock.mockReset();
+  pushStatus = "permission-default";
+  subscribeToPushMock.mockReset();
+  pwaVariant = "actionable";
+  pwaOnActionMock.mockReset();
   getMaterialRequestsMock.mockReset().mockResolvedValue({ items: [] });
   getInterventionTypeRequestsMock.mockReset().mockResolvedValue({ items: [] });
 });
@@ -219,5 +258,165 @@ describe("DesktopLayout — badges de demandes en attente (D-079)", () => {
     renderLayout();
     const requestsLink = screen.getByRole("link", { name: "Demandes" });
     expect(requestsLink.textContent).toBe("Demandes");
+  });
+});
+
+describe("DesktopLayout — menu compte (Lot 10)", () => {
+  it("affiche le nom du compte connecté", () => {
+    renderLayout();
+    expect(screen.getAllByText("Ada Lovelace").length).toBeGreaterThan(0);
+  });
+
+  it("sans photo de profil, affiche les initiales en repli", () => {
+    authUser = { firstname: "Ada", lastname: "Lovelace", profilePictureUrl: null };
+    renderLayout();
+    expect(screen.getByText("AL")).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "Ada Lovelace" })).toBeNull();
+  });
+
+  it("avec une photo de profil, affiche l'image plutôt que les initiales", () => {
+    authUser = { firstname: "Ada", lastname: "Lovelace", profilePictureUrl: "/uploads/profile-pictures/ada.jpg" };
+    renderLayout();
+    const img = screen.getByRole("img", { name: "Ada Lovelace" });
+    expect(img).toHaveAttribute("src", expect.stringContaining("/uploads/profile-pictures/ada.jpg"));
+    expect(screen.queryByText("AL")).toBeNull();
+  });
+
+  it("le déclencheur porte les attributs d'accessibilité attendus, menu fermé initialement", () => {
+    renderLayout();
+    const trigger = screen.getByRole("button", { name: /Ada Lovelace/ });
+    expect(trigger).toHaveAttribute("aria-haspopup", "menu");
+    expect(trigger).not.toHaveAttribute("aria-expanded");
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("ouvre le menu au clic sur le déclencheur", async () => {
+    const user = userEvent.setup();
+    renderLayout();
+
+    const trigger = screen.getByRole("button", { name: /Ada Lovelace/ });
+    await user.click(trigger);
+
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    // Le menu MUI ouvert applique aria-hidden au reste de l'arbre (dont le déclencheur) —
+    // on relit donc l'attribut sur la même référence DOM plutôt que de requêter par rôle.
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("ferme le menu à la touche Échap", async () => {
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("affiche l'action Préférences de notifications quand elles sont désactivées, et appelle l'abonnement au clic", async () => {
+    pushStatus = "permission-default";
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+    const item = screen.getByRole("menuitem", { name: "Activer les notifications" });
+    await user.click(item);
+
+    expect(subscribeToPushMock).toHaveBeenCalledTimes(1);
+    // Ferme le menu après sélection.
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("n'affiche pas l'action Préférences de notifications si déjà abonné", async () => {
+    pushStatus = "subscribed";
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+    expect(screen.queryByRole("menuitem", { name: "Activer les notifications" })).toBeNull();
+  });
+
+  it("l'ouverture du menu ne déclenche jamais elle-même une demande de permission navigateur", async () => {
+    pushStatus = "permission-default";
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+
+    expect(subscribeToPushMock).not.toHaveBeenCalled();
+  });
+
+  it("affiche l'action Installation quand disponible, et appelle le mécanisme PWA existant au clic", async () => {
+    pwaVariant = "actionable";
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+    const item = screen.getByRole("menuitem", { name: "Installer l'application" });
+    await user.click(item);
+
+    expect(pwaOnActionMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("masque l'action Installation quand le point d'entrée n'est pas disponible (variant unavailable)", async () => {
+    pwaVariant = "unavailable";
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+    expect(screen.queryByRole("menuitem", { name: /Installation/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Application installée" })).toBeNull();
+  });
+
+  it("affiche « Application installée » désactivé quand l'application est déjà installée", async () => {
+    pwaVariant = "installed";
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+    const item = screen.getByRole("menuitem", { name: "Application installée" });
+    expect(item).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("affiche toujours l'action Déconnexion et appelle logout() au clic", async () => {
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+    const item = screen.getByRole("menuitem", { name: "Se déconnecter" });
+    await user.click(item);
+
+    expect(logoutMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("n'affiche aucune action représentée uniquement par une icône (chaque item porte un intitulé textuel)", async () => {
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+    const items = screen.getAllByRole("menuitem");
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) {
+      expect(item.textContent?.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it("aucun menu compte affiché quand l'utilisateur n'est pas authentifié", () => {
+    authStatus = "anonymous";
+    renderLayout();
+    expect(screen.queryByRole("button", { name: /Ada Lovelace/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Se déconnecter" })).toBeNull();
+  });
+
+  it("ne contient aucun lien vers les destinations de la navigation principale (Dashboard, Missions, Catalogue, Planning, Facturation, Administration)", async () => {
+    authRole = "ADMIN";
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+    const menu = screen.getByRole("menu");
+    expect(menu.querySelector("a")).toBeNull();
   });
 });
