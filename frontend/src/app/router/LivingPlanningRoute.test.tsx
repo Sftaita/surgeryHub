@@ -110,9 +110,16 @@ describe("Living Planning route wiring (RC1-E)", () => {
     expect(screen.getByLabelText("Au")).toBeInTheDocument();
   });
 
-  it("renders the Planning V2 stub route when navigated to directly", () => {
+  it("exposes Planning > Construire in the grouped sidebar (D-079)", () => {
     renderApp("/app/m/planning/v2");
 
     expect(screen.getByText("Planning V2 stub")).toBeInTheDocument();
+
+    const construireLink = screen.getByRole("link", { name: "Construire" });
+    expect(construireLink).toHaveAttribute("href", "/app/m/planning/v2");
+
+    // "Planning publié" no longer has a direct sidebar entry (D-079) — it's reachable
+    // via a button inside Planning > Construire (PlanningV2Page.tsx) instead.
+    expect(screen.queryByRole("link", { name: "Planning publié" })).toBeNull();
   });
 });
