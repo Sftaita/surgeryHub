@@ -291,4 +291,21 @@ final class FirmBillingControllerPricingRuleTest extends WebTestCase
 
         self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
     }
+
+    /** Régression D-072-EPIC-UX : ADMIN seul doit avoir les mêmes droits qu'un manager (BillingVoter::MANAGE). */
+    public function test_admin_can_create_pricing_rule(): void
+    {
+        $client = $this->boot();
+        $admin = $this->createUser('ROLE_ADMIN');
+        $token = $this->login($client, $admin);
+        $firm = $this->makeFirm();
+        $type = $this->makeType();
+
+        $response = $this->request($client, 'POST', "/api/firms/{$firm->getId()}/pricing-rules", $token, [
+            'ruleType' => 'INTERVENTION_FEE', 'interventionTypeId' => $type->getId(), 'unitPrice' => 100,
+        ]);
+
+        self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
+        $this->createdRuleIds[] = json_decode($response->getContent(), true)['id'];
+    }
 }

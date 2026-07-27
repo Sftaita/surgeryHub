@@ -225,4 +225,22 @@ final class InstrumentistRateControllerTest extends WebTestCase
 
         self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
     }
+
+    /** Régression D-072-EPIC-UX : ADMIN seul doit avoir les mêmes droits qu'un manager (BillingVoter::MANAGE). */
+    public function test_admin_can_create_and_list_rates(): void
+    {
+        $client = $this->boot();
+        $admin = $this->createUser('ROLE_ADMIN');
+        $instr = $this->createUser('ROLE_INSTRUMENTIST');
+        $token = $this->login($client, $admin);
+
+        $create = $this->request($client, 'POST', "/api/instrumentists/{$instr->getId()}/rates", $token, [
+            'rateType' => 'HOURLY_RATE', 'amount' => 45, 'validFrom' => '2026-01-01',
+        ]);
+        self::assertSame(Response::HTTP_CREATED, $create->getStatusCode(), $create->getContent());
+        $this->createdRateIds[] = json_decode($create->getContent(), true)['id'];
+
+        $list = $this->request($client, 'GET', "/api/instrumentists/{$instr->getId()}/rates", $token);
+        self::assertSame(Response::HTTP_OK, $list->getStatusCode());
+    }
 }

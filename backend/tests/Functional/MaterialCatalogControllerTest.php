@@ -142,6 +142,22 @@ final class MaterialCatalogControllerTest extends WebTestCase
         self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
     }
 
+    /** Régression D-072-EPIC-UX : ADMIN seul doit avoir les mêmes droits qu'un manager (BillingVoter::MANAGE). */
+    public function test_admin_can_create_material_item(): void
+    {
+        $client = $this->boot();
+        $admin = $this->createUser('ROLE_ADMIN');
+        $token = $this->login($client, $admin);
+        $firm = $this->makeFirm();
+
+        $response = $this->request($client, 'POST', '/api/material-items', $token, [
+            'firmId' => $firm->getId(), 'label' => 'Ancre', 'unit' => 'pièce',
+        ]);
+
+        self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
+        $this->createdItemIds[] = json_decode($response->getContent(), true)['id'];
+    }
+
     public function test_manager_can_create_and_toggle_active(): void
     {
         $client = $this->boot();

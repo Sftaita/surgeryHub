@@ -207,6 +207,23 @@ final class FirmServiceOfferingControllerTest extends WebTestCase
         self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
     }
 
+    /** Régression D-072-EPIC-UX : ADMIN seul doit avoir les mêmes droits qu'un manager (BillingVoter::MANAGE). */
+    public function test_admin_can_create_offering(): void
+    {
+        $client = $this->boot();
+        $admin = $this->createUser('ROLE_ADMIN');
+        $token = $this->login($client, $admin);
+        $firm = $this->makeFirm();
+        $type = $this->makeType();
+
+        $response = $this->request($client, 'POST', "/api/firms/{$firm->getId()}/service-offerings", $token, [
+            'interventionTypeId' => $type->getId(),
+        ]);
+
+        self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
+        $this->createdOfferingIds[] = json_decode($response->getContent(), true)['id'];
+    }
+
     public function test_deactivate_offering(): void
     {
         $client = $this->boot();

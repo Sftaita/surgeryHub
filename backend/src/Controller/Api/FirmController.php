@@ -3,6 +3,7 @@
 namespace App\Controller\Api;
 
 use App\Entity\Firm;
+use App\Security\Voter\BillingVoter;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -27,7 +28,7 @@ final class FirmController extends AbstractController
     #[Route('', name: 'api_firms_create', methods: ['POST'])]
     public function create(Request $request): JsonResponse
     {
-        $this->denyAccessUnlessGranted('ROLE_MANAGER');
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
 
         $data = json_decode($request->getContent(), true) ?? [];
         $name = trim((string) ($data['name'] ?? ''));
@@ -59,7 +60,7 @@ final class FirmController extends AbstractController
     #[Route('/{id}', name: 'api_firms_update', methods: ['PATCH'])]
     public function update(Firm $firm, Request $request): JsonResponse
     {
-        $this->denyAccessUnlessGranted('ROLE_MANAGER');
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
 
         $data = json_decode($request->getContent(), true) ?? [];
 
@@ -110,7 +111,7 @@ final class FirmController extends AbstractController
     #[Route('/{id}', name: 'api_firms_delete', methods: ['DELETE'])]
     public function delete(Firm $firm): JsonResponse
     {
-        $this->denyAccessUnlessGranted('ROLE_MANAGER');
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
 
         $this->em->remove($firm);
         $this->em->flush();
