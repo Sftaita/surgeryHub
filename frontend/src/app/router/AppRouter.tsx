@@ -36,6 +36,7 @@ const AdminAuditPage       = React.lazy(() => import("../pages/admin/AdminAuditP
 const AdminOutboundNotificationsPage = React.lazy(() => import("../pages/admin/AdminOutboundNotificationsPage"));
 
 // Manager
+const DashboardPage          = React.lazy(() => import("../pages/manager/DashboardPage"));
 const MissionsListPage       = React.lazy(() => import("../pages/manager/MissionsListPage"));
 const MissionDetailPageM     = React.lazy(() => import("../pages/manager/MissionDetailPage"));
 const MissionCreatePage      = React.lazy(() => import("../pages/manager/MissionCreatePage"));
@@ -74,7 +75,7 @@ function PostLoginRedirect() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
   const role = state.user.role;
-  if (isDesktopRole(role)) return <Navigate to="/app/m/missions" replace />;
+  if (isDesktopRole(role)) return <Navigate to="/app/m/dashboard" replace />;
   if (role === "SURGEON") return <Navigate to="/app/s" replace />;
   if (isMobileRole(role)) return <Navigate to="/app/i/today" replace />;
   return <Navigate to="/app/forbidden" replace />;
@@ -83,7 +84,7 @@ function PostLoginRedirect() {
 function RequireInstrumentist() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
-  if (state.user.role !== "INSTRUMENTIST") return <Navigate to="/app/m/missions" replace />;
+  if (state.user.role !== "INSTRUMENTIST") return <Navigate to="/app/m/dashboard" replace />;
   return <Outlet />;
 }
 
@@ -144,7 +145,8 @@ export function AppRouter() {
             {/* Manager / Admin */}
             <Route element={<RequireManager />}>
               <Route element={<DesktopLayout />}>
-                <Route path="m" element={<Navigate to="/app/m/missions" replace />} />
+                <Route path="m" element={<Navigate to="/app/m/dashboard" replace />} />
+                <Route path="m/dashboard" element={<DashboardPage />} />
                 <Route path="m/missions" element={<MissionsListPage />} />
                 <Route path="m/missions/to-validate" element={<MissionsListPage />} />
                 <Route path="m/missions/new" element={<MissionCreatePage />} />
