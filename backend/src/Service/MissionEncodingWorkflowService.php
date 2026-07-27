@@ -10,15 +10,17 @@ use App\Enum\AuditEventType;
 use App\Enum\FinancialCalculationStatus;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
+use App\Enum\MissionType;
 use App\Message\MissionLifecycleChangedMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
  * Lot 7 (D-070) — cycle de vie de l'encodage :
  *
- *   ASSIGNED/IN_PROGRESS ──start──▶ ENCODING_IN_PROGRESS ──complete──▶ SUBMITTED
+ *   ASSIGNED/IN_PROGRESS ──start──▶ ENCODING_IN_PROGRESS ──complete (commentaire requis si BLOCK et 0 matériel)──▶ SUBMITTED
  *                                                                          │
  *                                                          ┌───validate───┤───reject (commentaire requis)──┐
  *                                                          ▼                                               ▼
@@ -80,8 +82,21 @@ final class MissionEncodingWorkflowService
      * C'est l'implémentation réelle derrière POST /api/missions/{id}/submit (legacy, inchangé
      * pour compatibilité) et POST /api/missions/{id}/encoding/complete (Lot 7) — un seul et
      * même point d'entrée métier, jamais dupliqué.
+     *
+     * $comment : requis uniquement pour une mission MissionType::BLOCK n'ayant aucune ligne
+     * de matériel *active* encodée (toutes interventions confondues) — décrit alors ce qui a
+     * été réalisé en l'absence de matériel. Une mission MissionType::CONSULTATION n'attend
+     * jamais de matériel : jamais de commentaire exigé pour ce type, quel que soit le nombre
+     * de lignes. Le total de lignes est toujours recalculé côté serveur
+     * (countActiveMaterialLines(), jamais un flag envoyé par le client) : source de
+     * vérité unique, jamais de confiance aveugle dans ce que déclare le frontend.
+     *
+     * $submittedWithoutMaterial est figé à CHAQUE appel (jamais dérivé après coup) : une
+     * resoumission ultérieure avec du matériel repasse ce flag à false — le commentaire
+     * précédent reste en base pour traçabilité mais n'est plus la justification de la
+     * soumission courante (voir Mission::$noMaterialComment).
      */
-    public function complete(Mission $mission, User $actor): Mission
+    public function complete(Mission $mission, User $actor, ?string $comment = null): Mission
     {
         $this->encodingGuard->assertEncodingAllowed($mission, $actor);
 
@@ -95,6 +110,21 @@ final class MissionEncodingWorkflowService
             throw new ConflictHttpException('Mission cannot be submitted from its current status');
         }
 
+        $trimmedComment = $comment !== null ? trim($comment) : null;
+        $hasNoActiveMaterial = $this->countActiveMaterialLines($mission) === 0;
+        $requiresJustification = $mission->getType() === MissionType::BLOCK && $hasNoActiveMaterial;
+
+        if ($requiresJustification && ($trimmedComment === null || $trimmedComment === '')) {
+            throw new UnprocessableEntityHttpException(
+                "Aucun matériel n'a été encodé pour cette mission : décrivez les interventions réalisées avant de clôturer.",
+            );
+        }
+
+        $mission->setSubmittedWithoutMaterial($hasNoActiveMaterial);
+        if ($trimmedComment !== null && $trimmedComment !== '') {
+            $mission->setNoMaterialComment($trimmedComment);
+        }
+
         $mission->setStatus(MissionStatus::SUBMITTED);
         $mission->setSubmittedAt(new \DateTimeImmutable());
 
@@ -105,6 +135,32 @@ final class MissionEncodingWorkflowService
         $this->dispatch($mission, MissionChangeType::ENCODING_COMPLETED, $actor, $payload);
 
         return $mission;
+    }
+
+    /**
+     * Compte les lignes de matériel réellement significatives pour décider si la mission
+     * a "du matériel encodé". Ignore les lignes à quantité nulle ou négative (aucune
+     * contrainte Assert\Positive côté DTO aujourd'hui — cf. MaterialLineCreateRequest/
+     * MaterialLineUpdateRequest — donc quantity=0 est persistable en base et ne doit pas
+     * compter comme du matériel réellement utilisé).
+     *
+     * MaterialLine n'a ni suppression logique (DELETE fait un vrai
+     * $this->em->remove(), voir MaterialLineController), ni flag `active` propre à la
+     * ligne (seul MaterialItem, le catalogue, en a un — qui ne doit jamais invalider
+     * rétroactivement une ligne déjà utilisée), ni notion de version/superseded (contrairement
+     * à PricingRule/InstrumentistRate, D-072) : ces trois filtres ne s'appliquent donc pas à
+     * cette entité, volontairement pas simulés ici.
+     */
+    private function countActiveMaterialLines(Mission $mission): int
+    {
+        $count = 0;
+        foreach ($mission->getMaterialLines() as $line) {
+            if ((float) $line->getQuantity() > 0) {
+                ++$count;
+            }
+        }
+
+        return $count;
     }
 
     /** SUBMITTED → VALIDATED (verrouille l'encodage — encodingLockedAt, lu par MissionEncodingGuard). */

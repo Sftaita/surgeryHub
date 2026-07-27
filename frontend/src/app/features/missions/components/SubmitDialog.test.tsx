@@ -149,6 +149,26 @@ describe("SubmitDialog — commentaire requis si aucun matériel encodé (D-070 
       );
     });
   });
+
+  it("n'exige jamais de commentaire pour une mission CONSULTATION, même sans matériel", async () => {
+    const user = userEvent.setup();
+    const consultation: Mission = { ...MISSION, type: "CONSULTATION" };
+    renderDialog(0, consultation);
+
+    await screen.findByText("0 ligne");
+    expect(screen.queryByLabelText(/décrivez les interventions réalisées/i)).not.toBeInTheDocument();
+
+    const submitButton = screen.getByRole("button", { name: "Valider et clôturer la mission" });
+    expect(submitButton).not.toBeDisabled();
+    await user.click(submitButton);
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith(
+        "/api/missions/690/submit",
+        { noMaterial: true, comment: "" },
+      );
+    });
+  });
 });
 
 /**

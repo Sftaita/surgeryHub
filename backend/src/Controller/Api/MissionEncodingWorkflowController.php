@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Dto\Request\MissionEncodingCompleteRequest;
 use App\Dto\Request\MissionEncodingReopenRequest;
 use App\Dto\Request\MissionEncodingRejectRequest;
 use App\Entity\Mission;
@@ -51,12 +52,15 @@ final class MissionEncodingWorkflowController extends AbstractController
     }
 
     #[Route('/complete', name: 'api_missions_encoding_complete', methods: ['POST'])]
-    public function complete(int $missionId, #[CurrentUser] User $user): JsonResponse
+    public function complete(int $missionId, Request $request, #[CurrentUser] User $user): JsonResponse
     {
         $mission = $this->getMissionOr404($missionId);
         $this->denyAccessUnlessGranted(MissionVoter::SUBMIT, $mission);
 
-        $mission = $this->workflow->complete($mission, $user);
+        /** @var MissionEncodingCompleteRequest $dto */
+        $dto = $this->deserializeAndValidate($request->getContent(), MissionEncodingCompleteRequest::class);
+
+        $mission = $this->workflow->complete($mission, $user, $dto->comment);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), Response::HTTP_OK);
     }

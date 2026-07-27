@@ -348,13 +348,14 @@ class MissionService
     /**
      * Lot 7 (D-070) : delegates to MissionEncodingWorkflowService::complete(), the real
      * implementation shared with POST /api/missions/{id}/encoding/complete — this legacy
-     * route (`$dto->noMaterial`/`$dto->comment` still accepted but unused, unchanged from
-     * before this lot) is kept working for existing frontend callers, never a second
-     * business-logic path.
+     * route is kept working for existing frontend callers, never a second business-logic
+     * path. `$dto->comment` is now forwarded (was dead code before this fix — the server
+     * still recomputes whether material lines exist itself, `$dto->noMaterial` stays
+     * unused/informational, never trusted as the source of truth).
      */
     public function submit(Mission $mission, MissionSubmitRequest $dto, User $actor): Mission
     {
-        return $this->encodingWorkflowService->complete($mission, $actor);
+        return $this->encodingWorkflowService->complete($mission, $actor, $dto->comment);
     }
 
     /**

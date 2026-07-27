@@ -2,11 +2,13 @@
 
 namespace App\Tests\Unit\Service;
 
+use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
+use App\Enum\MissionType;
 use App\Message\MissionLifecycleChangedMessage;
 use App\Service\AuditService;
 use App\Service\MissionEncodingGuard;
@@ -82,11 +84,17 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
         return $this->makeActor(['ROLE_MANAGER']);
     }
 
-    /** startAt defaults to one hour in the past so the instrumentist guard check passes. */
-    private function makeMission(MissionStatus $status, ?\DateTimeImmutable $startAt = null): Mission
+    /**
+     * startAt defaults to one hour in the past so the instrumentist guard check passes.
+     * type defaults to BLOCK — every pre-existing test in this file implicitly assumed a
+     * mission that requires material encoding; MissionType::CONSULTATION is passed
+     * explicitly where that exemption is the point of the test.
+     */
+    private function makeMission(MissionStatus $status, ?\DateTimeImmutable $startAt = null, MissionType $type = MissionType::BLOCK): Mission
     {
         $m = new Mission();
         $m->setStatus($status);
+        $m->setType($type);
         $m->setStartAt($startAt ?? new \DateTimeImmutable('-1 hour'));
         $this->setId($m, self::$nextId++);
         return $m;
@@ -187,10 +195,95 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
         $this->audit->expects($this->once())->method('record')
             ->with($mission, $actor, AuditEventType::MISSION_ENCODING_COMPLETED, $this->anything());
 
-        $this->service->complete($mission, $actor);
+        // Aucune ligne de matériel sur cette mission en mémoire (test unitaire, pas de
+        // vraie table material_line) : le commentaire est requis, voir test dédié
+        // test_complete_requires_comment_when_no_material_lines ci-dessous.
+        $this->service->complete($mission, $actor, 'Consultation sans matériel utilisé.');
 
         self::assertSame(MissionStatus::SUBMITTED, $mission->getStatus());
         self::assertNotNull($mission->getSubmittedAt());
+        self::assertSame('Consultation sans matériel utilisé.', $mission->getNoMaterialComment());
+        self::assertTrue($mission->isSubmittedWithoutMaterial());
+    }
+
+    public function test_complete_requires_comment_when_no_material_lines(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS);
+        $actor   = $this->makeActor();
+
+        $this->expectException(\Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException::class);
+
+        $this->service->complete($mission, $actor, null);
+    }
+
+    public function test_complete_requires_comment_to_be_non_blank_when_no_material_lines(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS);
+        $actor   = $this->makeActor();
+
+        $this->expectException(\Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException::class);
+
+        $this->service->complete($mission, $actor, '   ');
+    }
+
+    /**
+     * Une mission CONSULTATION n'attend jamais de matériel — aucun commentaire ne doit
+     * être exigé même avec 0 ligne, contrairement à une mission BLOCK (voir les deux
+     * tests précédents).
+     */
+    public function test_complete_consultation_without_material_and_without_comment_succeeds(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS, type: MissionType::CONSULTATION);
+        $actor   = $this->makeActor();
+
+        $this->audit->expects($this->once())->method('record');
+
+        $this->service->complete($mission, $actor, null);
+
+        self::assertSame(MissionStatus::SUBMITTED, $mission->getStatus());
+        self::assertTrue($mission->isSubmittedWithoutMaterial());
+        self::assertNull($mission->getNoMaterialComment());
+    }
+
+    /**
+     * Régression — point 3 de la revue pré-déploiement : une ligne de matériel à quantité
+     * nulle ou zéro ne doit pas compter comme "du matériel encodé" (rien ne l'empêche
+     * d'exister en base : MaterialLineCreateRequest/MaterialLineUpdateRequest n'ont pas de
+     * contrainte Assert\Positive sur quantity aujourd'hui).
+     */
+    public function test_complete_ignores_zero_and_negative_quantity_material_lines(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS);
+        $actor   = $this->makeActor();
+
+        $mission->getMaterialLines()->add((new MaterialLine())->setQuantity('0.00'));
+        $mission->getMaterialLines()->add((new MaterialLine())->setQuantity('-1.00'));
+
+        $this->expectException(\Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException::class);
+
+        $this->service->complete($mission, $actor, null);
+    }
+
+    /**
+     * Symétrique du test précédent : une seule ligne à quantité strictement positive parmi
+     * des lignes à quantité nulle suffit à considérer la mission comme ayant du matériel —
+     * aucun commentaire requis, et submittedWithoutMaterial est figé à false.
+     */
+    public function test_complete_counts_mission_as_having_material_with_one_positive_quantity_line(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS);
+        $actor   = $this->makeActor();
+
+        $mission->getMaterialLines()->add((new MaterialLine())->setQuantity('0.00'));
+        $mission->getMaterialLines()->add((new MaterialLine())->setQuantity('2.00'));
+
+        $this->audit->expects($this->once())->method('record');
+
+        $this->service->complete($mission, $actor, null);
+
+        self::assertSame(MissionStatus::SUBMITTED, $mission->getStatus());
+        self::assertFalse($mission->isSubmittedWithoutMaterial());
+        self::assertNull($mission->getNoMaterialComment());
     }
 
     /**
@@ -222,6 +315,45 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
         $this->service->complete($mission, $actor);
     }
 
+    /**
+     * Point 2 de la revue pré-déploiement : soumission sans matériel avec commentaire, puis
+     * correction (reject par le manager, seule voie de retour en ENCODING_IN_PROGRESS depuis
+     * SUBMITTED), ajout d'une ligne de matériel, puis nouvelle soumission. Décision métier :
+     * le commentaire précédent reste en base pour traçabilité, mais submittedWithoutMaterial
+     * repasse à false — c'est ce flag, pas la seule présence du commentaire, qui doit gouverner
+     * l'affichage manager (voir MissionDetailPage). La resoumission ne doit pas exiger de
+     * nouveau commentaire puisque du matériel est désormais présent.
+     */
+    public function test_complete_after_correction_with_material_keeps_comment_but_clears_active_flag(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS);
+        $instrumentist = $this->makeActor();
+        $manager = $this->makeManager();
+
+        // 1. Soumission sans matériel, commentaire obligatoire fourni.
+        $this->service->complete($mission, $instrumentist, 'Consultation sans matériel utilisé.');
+        self::assertTrue($mission->isSubmittedWithoutMaterial());
+        self::assertSame('Consultation sans matériel utilisé.', $mission->getNoMaterialComment());
+
+        // 2. Correction : le manager rejette (seule transition SUBMITTED → ENCODING_IN_PROGRESS).
+        $this->service->reject($mission, $manager, 'Merci de vérifier le matériel utilisé.');
+        self::assertSame(MissionStatus::ENCODING_IN_PROGRESS, $mission->getStatus());
+
+        // 3. Ajout d'une ligne de matériel réelle.
+        $mission->getMaterialLines()->add((new MaterialLine())->setQuantity('1.00'));
+
+        // 4. Nouvelle soumission, sans commentaire — ne doit pas être bloquée.
+        $this->service->complete($mission, $instrumentist, null);
+
+        self::assertSame(MissionStatus::SUBMITTED, $mission->getStatus());
+        self::assertFalse($mission->isSubmittedWithoutMaterial());
+        self::assertSame(
+            'Consultation sans matériel utilisé.',
+            $mission->getNoMaterialComment(),
+            'Le commentaire précédent doit rester en base pour traçabilité, même une fois du matériel ajouté.',
+        );
+    }
+
     public function test_complete_rejects_rejected_mission_via_guard(): void
     {
         $mission = $this->makeMission(MissionStatus::REJECTED);
@@ -230,6 +362,24 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
         $this->expectException(\Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException::class);
 
         $this->service->complete($mission, $actor);
+    }
+
+    /**
+     * Point 5 de la revue pré-déploiement : une fois la mission verrouillée
+     * (encodingLockedAt, posé par validate()), plus aucune transition complete() n'est
+     * possible — donc ni le commentaire ni submittedWithoutMaterial ne peuvent plus être
+     * modifiés après verrouillage. C'est la même garde que celle qui bloque déjà toute
+     * autre mutation d'encodage (MissionEncodingGuard), pas un mécanisme dédié.
+     */
+    public function test_complete_rejects_locked_mission_via_guard(): void
+    {
+        $mission = $this->makeMission(MissionStatus::SUBMITTED);
+        $mission->setEncodingLockedAt(new \DateTimeImmutable());
+        $actor = $this->makeManager();
+
+        $this->expectException(\Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException::class);
+
+        $this->service->complete($mission, $actor, 'Tentative après verrouillage.');
     }
 
     // ── validate() ───────────────────────────────────────────────────────────

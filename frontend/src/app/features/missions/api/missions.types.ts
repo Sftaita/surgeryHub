@@ -170,6 +170,17 @@ export interface Mission {
    */
   service?: InstrumentistService | null;
 
+  /** Lot 7 (D-070) suite — commentaire instrumentiste requis à la clôture si aucune
+   *  ligne de matériel active n'a été encodée (décrit les interventions réalisées).
+   *  Conservé pour traçabilité même après une resoumission ultérieure avec matériel —
+   *  ne jamais l'afficher comme justification active sans vérifier submittedWithoutMaterial. */
+  noMaterialComment?: string | null;
+
+  /** Figé à chaque clôture d'encodage : cette soumission précise avait-elle 0 ligne
+   *  de matériel active ? Seule condition valide pour afficher noMaterialComment comme
+   *  justification "aucun matériel" au manager (voir MissionDetailPage). */
+  submittedWithoutMaterial?: boolean | null;
+
   [key: string]: unknown;
 }
 

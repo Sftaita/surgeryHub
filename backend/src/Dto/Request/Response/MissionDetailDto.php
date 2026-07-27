@@ -18,5 +18,7 @@ final class MissionDetailDto
         public readonly UserSlimDto $surgeon,
         public readonly ?UserSlimDto $instrumentist,
         public readonly array $allowedActions,
+        public readonly ?string $noMaterialComment,
+        public readonly ?bool $submittedWithoutMaterial,
     ) {}
 }

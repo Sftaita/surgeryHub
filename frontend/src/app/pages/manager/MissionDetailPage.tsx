@@ -435,6 +435,23 @@ export function MissionDetailContent({
           />
         )}
 
+        {/* Lot 7 (D-070) suite — commentaire instrumentiste saisi à la clôture quand
+            aucune ligne de matériel active n'a été encodée (interventions réalisées).
+            Affiché uniquement si la soumission COURANTE avait réellement 0 matériel
+            (submittedWithoutMaterial, figé par soumission) — un commentaire conservé
+            d'une soumission antérieure ne doit jamais être présenté comme une
+            justification active une fois du matériel ajouté. */}
+        {data.submittedWithoutMaterial === true && data.noMaterialComment && (
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, borderColor: "warning.main", bgcolor: "warning.50" }}>
+            <Typography variant="subtitle2" fontWeight={600} color="warning.dark" mb={0.5}>
+              Aucun matériel encodé — justification de l'instrumentiste
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>
+              {data.noMaterialComment}
+            </Typography>
+          </Paper>
+        )}
+
         {/* Calcul financier (EPIC Exécution & Valorisation, Lot 3) — nécessite une mission validée. */}
         {(data.status === "VALIDATED" || data.status === "CLOSED") && (
           <FinancialCalculationCard missionId={data.id} />

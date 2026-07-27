@@ -72,10 +72,11 @@ function RecapRow({ warn, label, value }: { warn: boolean; label: string; value:
  * docs/design/screens/sheets-divers.md#Récapitulatif — passage obligé avant la
  * clôture, jamais un raccourci direct depuis "Terminer l'encodage". `noMaterial`/`comment`
  * (MissionSubmitRequest) sont désormais réellement branchés côté serveur
- * (MissionEncodingWorkflowService::complete()) : si la mission n'a aucune ligne de
- * matériel encodée, un commentaire décrivant les interventions réalisées est requis pour
- * clôturer — le serveur recalcule lui-même le compte de lignes, jamais une confiance
- * aveugle dans `noMaterial` envoyé par le client.
+ * (MissionEncodingWorkflowService::complete()) : pour une mission BLOCK sans aucune ligne
+ * de matériel encodée, un commentaire décrivant les interventions réalisées est requis pour
+ * clôturer — une mission CONSULTATION n'attend jamais de matériel, jamais de commentaire
+ * exigé pour ce type. Le serveur recalcule lui-même le compte de lignes et applique cette
+ * même règle par type, jamais une confiance aveugle dans ce que ce composant calcule ici.
  */
 export default function SubmitDialog({ open, mission, onClose, onSubmitted, helpTopicId }: Props) {
   const toast = useToast();
@@ -106,7 +107,7 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
   const notFoundCount = interventions.reduce((sum, itv) => sum + (itv.materialItemRequests?.length ?? 0), 0);
   const hoursLabel = formatExecutionHours(execution);
   const hasHours = hoursLabel !== "Non renseigné";
-  const requiresComment = !isLoading && materialLineCount === 0;
+  const requiresComment = !isLoading && mission.type === "BLOCK" && materialLineCount === 0;
   const canSubmit = !requiresComment || comment.trim() !== "";
 
   const mutation = useMutation({

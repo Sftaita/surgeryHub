@@ -3,7 +3,10 @@
 namespace App\Tests\Functional;
 
 use App\Entity\AuditEvent;
+use App\Entity\Firm;
 use App\Entity\Hospital;
+use App\Entity\MaterialItem;
+use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionEncodingComment;
 use App\Entity\User;
@@ -28,6 +31,8 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
     private array $createdMissionIds = [];
     private array $createdUserIds    = [];
     private array $createdSiteIds    = [];
+    private array $createdFirmIds    = [];
+    private array $createdMaterialItemIds = [];
 
     protected function setUp(): void
     {
@@ -45,11 +50,20 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
                 foreach ($this->em->getRepository(AuditEvent::class)->findBy(['mission' => $missionId]) as $evt) {
                     $this->em->remove($evt);
                 }
+                foreach ($this->em->getRepository(MaterialLine::class)->findBy(['mission' => $missionId]) as $line) {
+                    $this->em->remove($line);
+                }
             }
             $this->em->flush();
 
             foreach ($this->createdMissionIds as $id) {
                 $e = $this->em->find(Mission::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
+
+            foreach ($this->createdMaterialItemIds as $id) {
+                $e = $this->em->find(MaterialItem::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
             }
             $this->em->flush();
@@ -60,6 +74,10 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
             }
             foreach ($this->createdSiteIds as $id) {
                 $e = $this->em->find(Hospital::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            foreach ($this->createdFirmIds as $id) {
+                $e = $this->em->find(Firm::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
             }
             $this->em->flush();
@@ -113,7 +131,11 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         return $h;
     }
 
-    /** startAt defaults to one hour in the past so instrumentist encoding actions are allowed. */
+    /**
+     * startAt defaults to one hour in the past so instrumentist encoding actions are allowed.
+     * type defaults to BLOCK — MissionType::CONSULTATION is passed explicitly where the
+     * "no material required" exemption is the point of the test.
+     */
     private function makeMission(
         Hospital $site,
         User $surgeon,
@@ -121,9 +143,10 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         MissionStatus $status,
         ?User $instrumentist = null,
         ?\DateTimeImmutable $startAt = null,
+        MissionType $type = MissionType::BLOCK,
     ): Mission {
         $m = new Mission();
-        $m->setType(MissionType::BLOCK);
+        $m->setType($type);
         $m->setSite($site);
         $m->setSurgeon($surgeon);
         $m->setCreatedBy($createdBy);
@@ -137,6 +160,33 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         $this->em->flush();
         $this->createdMissionIds[] = $m->getId();
         return $m;
+    }
+
+    private function makeMaterialLine(Mission $mission, User $createdBy, string $quantity = '1.00'): MaterialLine
+    {
+        $firm = new Firm();
+        $firm->setName('Lot7-Firm-' . bin2hex(random_bytes(3)));
+        $this->em->persist($firm);
+
+        $item = new MaterialItem();
+        $item->setFirm($firm);
+        $item->setReferenceCode('REF-' . bin2hex(random_bytes(3)));
+        $item->setLabel('Vis titane');
+        $item->setUnit('u');
+        $this->em->persist($item);
+        $this->em->flush();
+        $this->createdFirmIds[] = $firm->getId();
+        $this->createdMaterialItemIds[] = $item->getId();
+
+        $line = new MaterialLine();
+        $line->setMission($mission);
+        $line->setItem($item);
+        $line->setQuantity($quantity);
+        $line->setCreatedBy($createdBy);
+        $this->em->persist($line);
+        $this->em->flush();
+
+        return $line;
     }
 
     private function postJson(KernelBrowser $client, string $token, string $uri, array $body = []): Response
@@ -245,12 +295,146 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ENCODING_IN_PROGRESS, $instr);
         $token   = $this->login($client, $instr);
 
-        $response = $this->postJson($client, $token, "/api/missions/{$mission->getId()}/encoding/complete");
+        // Mission sans ligne de matériel (fixture minimale) : commentaire requis, voir
+        // MissionEncodingWorkflowServiceTest pour la règle elle-même.
+        $response = $this->postJson($client, $token, "/api/missions/{$mission->getId()}/encoding/complete", [
+            'comment' => 'Consultation sans matériel utilisé.',
+        ]);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         $data = json_decode((string) $response->getContent(), true);
         self::assertSame('SUBMITTED', $data['status']);
+        self::assertSame('Consultation sans matériel utilisé.', $data['noMaterialComment']);
+        self::assertTrue($data['submittedWithoutMaterial']);
         self::assertContains(AuditEventType::MISSION_ENCODING_COMPLETED->value, $this->auditEventTypesFor($mission->getId()));
+    }
+
+    /**
+     * Point 5 de la revue pré-déploiement : noMaterialComment/submittedWithoutMaterial
+     * n'existent que dans MissionDetailDto (le récapitulatif de mission, GET
+     * /api/missions/{id}) — jamais dans le DTO d'encodage (GET .../encoding), qui reste
+     * dédié au formulaire de saisie (interventions/matériel/catalogue).
+     */
+    public function test_no_material_comment_is_only_exposed_on_mission_detail_not_encoding_dto(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ENCODING_IN_PROGRESS, $instr);
+        $token   = $this->login($client, $instr);
+
+        $this->postJson($client, $token, "/api/missions/{$mission->getId()}/encoding/complete", [
+            'comment' => 'Consultation sans matériel utilisé.',
+        ]);
+
+        $detail = json_decode((string) $this->getJson($client, $token, "/api/missions/{$mission->getId()}")->getContent(), true);
+        self::assertArrayHasKey('noMaterialComment', $detail);
+        self::assertArrayHasKey('submittedWithoutMaterial', $detail);
+
+        $encoding = json_decode((string) $this->getJson($client, $token, "/api/missions/{$mission->getId()}/encoding")->getContent(), true);
+        self::assertArrayNotHasKey('noMaterialComment', $encoding);
+        self::assertArrayNotHasKey('submittedWithoutMaterial', $encoding);
+    }
+
+    /**
+     * Point 2 de la revue pré-déploiement (bout en bout HTTP) : soumission sans matériel
+     * avec commentaire, correction (reject), ajout d'une ligne de matériel réelle, nouvelle
+     * soumission sans commentaire. Le commentaire précédent reste en base (traçabilité) mais
+     * submittedWithoutMaterial doit refléter la soumission courante — c'est ce flag, pas la
+     * seule présence du commentaire, qui doit gouverner l'affichage manager.
+     */
+    public function test_resubmit_with_material_after_no_material_justification(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ENCODING_IN_PROGRESS, $instr);
+        $instrToken   = $this->login($client, $instr);
+        $managerToken = $this->login($client, $manager);
+
+        // 1. Soumission sans matériel, commentaire obligatoire.
+        $first = $this->postJson($client, $instrToken, "/api/missions/{$mission->getId()}/encoding/complete", [
+            'comment' => 'Consultation sans matériel utilisé.',
+        ]);
+        self::assertSame(Response::HTTP_OK, $first->getStatusCode());
+        $firstData = json_decode((string) $first->getContent(), true);
+        self::assertTrue($firstData['submittedWithoutMaterial']);
+
+        // 2. Correction par le manager.
+        self::assertSame(
+            Response::HTTP_OK,
+            $this->postJson($client, $managerToken, "/api/missions/{$mission->getId()}/encoding/reject", [
+                'comment' => 'Merci de vérifier le matériel utilisé.',
+            ])->getStatusCode(),
+        );
+
+        // 3. Ajout d'une ligne de matériel réelle. Le client HTTP reboote le kernel à
+        //    chaque requête (WebTestCase) : $mission/$instr sont détachés de l'EM
+        //    courant, on les recharge par id avant de les référencer dans une nouvelle
+        //    entité gérée.
+        $this->makeMaterialLine(
+            $this->em->find(Mission::class, $mission->getId()),
+            $this->em->find(User::class, $instr->getId()),
+        );
+
+        // 4. Nouvelle soumission, sans commentaire : ne doit pas être bloquée puisque du
+        //    matériel est désormais présent.
+        $second = $this->postJson($client, $instrToken, "/api/missions/{$mission->getId()}/encoding/complete");
+        self::assertSame(Response::HTTP_OK, $second->getStatusCode());
+        $secondData = json_decode((string) $second->getContent(), true);
+        self::assertSame('SUBMITTED', $secondData['status']);
+        self::assertFalse($secondData['submittedWithoutMaterial']);
+        self::assertSame(
+            'Consultation sans matériel utilisé.',
+            $secondData['noMaterialComment'],
+            'Le commentaire précédent doit rester en base pour traçabilité.',
+        );
+    }
+
+    public function test_complete_encoding_without_material_and_without_comment_is_rejected(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ENCODING_IN_PROGRESS, $instr);
+        $token   = $this->login($client, $instr);
+
+        $response = $this->postJson($client, $token, "/api/missions/{$mission->getId()}/encoding/complete");
+
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
+    }
+
+    /**
+     * Une mission CONSULTATION n'attend jamais de matériel — contrairement au test
+     * précédent (mission BLOCK par défaut), la clôture sans matériel ni commentaire doit
+     * réussir.
+     */
+    public function test_complete_consultation_encoding_without_material_and_without_comment_succeeds(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission(
+            $site, $surgeon, $manager, MissionStatus::ENCODING_IN_PROGRESS, $instr,
+            type: MissionType::CONSULTATION,
+        );
+        $token   = $this->login($client, $instr);
+
+        $response = $this->postJson($client, $token, "/api/missions/{$mission->getId()}/encoding/complete");
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $data = json_decode((string) $response->getContent(), true);
+        self::assertSame('SUBMITTED', $data['status']);
+        self::assertTrue($data['submittedWithoutMaterial']);
+        self::assertNull($data['noMaterialComment']);
     }
 
     // ── validate ─────────────────────────────────────────────────────────────
@@ -443,10 +627,14 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         $instrToken  = $this->login($client, $instr);
         $managerToken = $this->login($client, $manager);
 
+        // Mission sans ligne de matériel (fixture minimale) : commentaire requis à chaque
+        // complete() — voir test_complete_encoding_without_material_and_without_comment_is_rejected.
+        $completeBody = ['comment' => 'Consultation sans matériel utilisé.'];
+
         self::assertSame(Response::HTTP_OK, $this->postJson($client, $instrToken, "/api/missions/{$mission->getId()}/encoding/start")->getStatusCode());
-        self::assertSame(Response::HTTP_OK, $this->postJson($client, $instrToken, "/api/missions/{$mission->getId()}/encoding/complete")->getStatusCode());
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $instrToken, "/api/missions/{$mission->getId()}/encoding/complete", $completeBody)->getStatusCode());
         self::assertSame(Response::HTTP_OK, $this->postJson($client, $managerToken, "/api/missions/{$mission->getId()}/encoding/reject", ['comment' => 'Matériel manquant'])->getStatusCode());
-        self::assertSame(Response::HTTP_OK, $this->postJson($client, $instrToken, "/api/missions/{$mission->getId()}/encoding/complete")->getStatusCode());
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $instrToken, "/api/missions/{$mission->getId()}/encoding/complete", $completeBody)->getStatusCode());
         self::assertSame(Response::HTTP_OK, $this->postJson($client, $managerToken, "/api/missions/{$mission->getId()}/encoding/validate")->getStatusCode());
 
         self::assertSame(

@@ -47,6 +47,8 @@ final class MissionMapper
             surgeon: $this->toUserSlim($m->getSurgeon()),
             instrumentist: $m->getInstrumentist() ? $this->toUserSlim($m->getInstrumentist()) : null,
             allowedActions: $this->actions->allowedActions($m, $viewer),
+            noMaterialComment: $m->getNoMaterialComment(),
+            submittedWithoutMaterial: $m->isSubmittedWithoutMaterial(),
         );
     }
 
