@@ -68,6 +68,12 @@ final class MissionActionsService
                 // (comportement préexistant conservé, voir MissionEncodingWorkflowService::complete()).
                 $actions[] = 'start_encoding';
                 $actions[] = 'submit';
+                // Corrigé : 'edit_hours' était réservé à DECLARED depuis D-013, jamais étendu
+                // quand Lot 7 a introduit ce bloc de statuts. PATCH /api/missions/{id}/service
+                // (ServiceController + MissionExecutionVoter::UPDATE) n'a aucune restriction de
+                // statut — l'instrumentiste assigné peut déjà éditer les heures ici côté backend,
+                // seul allowedActions ne le reflétait pas.
+                $actions[] = 'edit_hours';
             }
 
             // Lot 7 (D-070) : encodage explicitement démarré — mêmes actions que ci-dessus
@@ -75,6 +81,7 @@ final class MissionActionsService
             if ($mission->getStatus() === MissionStatus::ENCODING_IN_PROGRESS) {
                 $actions[] = 'edit_encoding';
                 $actions[] = 'submit';
+                $actions[] = 'edit_hours'; // même correction que ci-dessus
             }
 
             if ($mission->getStatus() === MissionStatus::DECLARED) {
