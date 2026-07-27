@@ -16,6 +16,8 @@ import {
   Paper,
   Select,
   Stack,
+  Tab,
+  Tabs,
   Table,
   TableBody,
   TableCell,
@@ -29,6 +31,8 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
+import CategoryIcon from "@mui/icons-material/Category";
+import MedicalServicesIcon from "@mui/icons-material/MedicalServices";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getFirmPricingRules,
@@ -44,14 +48,21 @@ import {
   deleteSuggestedMaterial,
   type PricingRule,
   type FirmServiceOffering,
-} from "../../../features/billing-firm/api/firmBilling.api";
-import RateVersionManager, { getActiveVersion } from "../../../features/billing-shared/components/RateVersionManager";
+} from "../../features/billing-firm/api/firmBilling.api";
+import RateVersionManager, { getActiveVersion } from "../../features/billing-shared/components/RateVersionManager";
 import {
   getInterventionTypes,
   createInterventionType,
-} from "../../../features/intervention-types/api/interventionTypes.api";
-import { useToast } from "../../../ui/toast/useToast";
-import { apiClient } from "../../../api/apiClient";
+} from "../../features/intervention-types/api/interventionTypes.api";
+import { InterventionTypesManager } from "../../features/intervention-types/components/InterventionTypesManager";
+import { getFirms, getMaterialItems, createMaterialItem } from "../../features/manager-catalogue/api/catalogue.api";
+import type { FirmDTO } from "../../features/manager-catalogue/api/catalogue.types";
+import { MaterialItemFormDialog } from "../../features/manager-catalogue/components/MaterialItemFormDialog";
+import { useToast } from "../../ui/toast/useToast";
+import { PageHeader } from "../../ui/PageHeader";
+import { SideList } from "../../ui/SideList";
+import { EmptyState } from "../../ui/EmptyState";
+import { useDebouncedValue } from "../../ui/hooks/useDebouncedValue";
 
 function extractError(err: unknown): string {
   const e = err as any;
@@ -471,22 +482,47 @@ function AddMaterialRuleDialog({
   );
 }
 
+// ── Dialog : gérer les types d'intervention (embarque InterventionTypesManager) ──
+function InterventionTypesDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+      <DialogTitle fontWeight={700}>Types d'intervention</DialogTitle>
+      <DialogContent>
+        <Box sx={{ pt: 1 }}>
+          <InterventionTypesManager showHeader={false} />
+        </Box>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2.5 }}>
+        <Button onClick={onClose} variant="contained" disableElevation>Fermer</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 // ── Page principale ───────────────────────────────────────────────────────────
-export default function BillingConfigPage() {
+export default function PrestationsPage() {
   const toast = useToast();
   const qc = useQueryClient();
 
-  const [selectedFirmId, setSelectedFirmId] = React.useState<number | "">("");
+  const [selectedFirmId, setSelectedFirmId] = React.useState<number | null>(null);
+  const [firmSearch, setFirmSearch] = React.useState("");
+  const debouncedFirmSearch = useDebouncedValue(firmSearch, 300);
+  const [tab, setTab] = React.useState<"offerings" | "materials">("offerings");
+
   const [addOfferingOpen, setAddOfferingOpen] = React.useState(false);
   const [forfaitTarget, setForfaitTarget] = React.useState<number | null>(null);
   const [suggestionsTargetId, setSuggestionsTargetId] = React.useState<number | null>(null);
   const [addMaterialRuleOpen, setAddMaterialRuleOpen] = React.useState(false);
   const [materialRateTarget, setMaterialRateTarget] = React.useState<{ id: number; label: string } | null>(null);
+  const [interventionTypesOpen, setInterventionTypesOpen] = React.useState(false);
+  const [createMaterialOpen, setCreateMaterialOpen] = React.useState(false);
+  const [createMaterialError, setCreateMaterialError] = React.useState<string | null>(null);
 
-  const firmsQuery = useQuery({
-    queryKey: ["firms"],
-    queryFn: async () => (await apiClient.get("/api/firms")).data as { id: number; name: string }[],
-  });
+  const firmsQuery = useQuery({ queryKey: ["firms"], queryFn: getFirms });
+  const firms: FirmDTO[] = firmsQuery.data ?? [];
+  const filteredFirms = debouncedFirmSearch.trim()
+    ? firms.filter((f) => f.name.toLowerCase().includes(debouncedFirmSearch.trim().toLowerCase()))
+    : firms;
 
   const rulesQuery = useQuery({
     queryKey: ["pricing-rules", selectedFirmId],
@@ -502,10 +538,7 @@ export default function BillingConfigPage() {
 
   const materialsQuery = useQuery({
     queryKey: ["material-items-firm", selectedFirmId],
-    queryFn: async () => {
-      const res = await apiClient.get("/api/material-items", { params: { firmId: selectedFirmId, limit: 200 } });
-      return (res.data.items as { id: number; label: string; referenceCode: string | null }[]);
-    },
+    queryFn: () => getMaterialItems({ firmId: selectedFirmId as number, limit: 200 }),
     enabled: !!selectedFirmId,
   });
 
@@ -514,9 +547,22 @@ export default function BillingConfigPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["service-offerings", selectedFirmId] }),
     onError: (e) => toast.error(extractError(e)),
   });
+
+  const createMaterialMutation = useMutation({
+    mutationFn: createMaterialItem,
+    onSuccess: () => {
+      toast.success("Article créé");
+      qc.invalidateQueries({ queryKey: ["material-items-firm", selectedFirmId] });
+      qc.invalidateQueries({ queryKey: ["material-items"] });
+      setCreateMaterialOpen(false);
+      setCreateMaterialError(null);
+    },
+    onError: (e: any) => setCreateMaterialError(e?.response?.data?.message ?? extractError(e)),
+  });
+
   const rules = rulesQuery.data ?? [];
   const offerings = offeringsQuery.data ?? [];
-  const materials = materialsQuery.data ?? [];
+  const materials: MaterialItemRow[] = materialsQuery.data?.items ?? [];
   // Dérivé en direct de la liste rafraîchie plutôt qu'une copie figée au clic — sinon le
   // dialogue afficherait une liste de suggestions périmée après un ajout/suppression.
   const suggestionsTarget = offerings.find((o) => o.id === suggestionsTargetId) ?? null;
@@ -547,194 +593,229 @@ export default function BillingConfigPage() {
   }, [rules]);
 
   return (
-    <Stack spacing={3} sx={{ p: 3, maxWidth: 1100 }}>
-      <Typography variant="h5" fontWeight={700}>Règles de facturation firmes</Typography>
+    <Box sx={{ p: 3 }}>
+      <PageHeader
+        icon={CategoryIcon}
+        title="Prestations"
+        subtitle="Prestations (accélérateurs de saisie) et tarifs contractuels par firme."
+        helpTopicId="billing-config"
+        actions={
+          <Button variant="outlined" startIcon={<MedicalServicesIcon />} onClick={() => setInterventionTypesOpen(true)}>
+            Gérer les types d'intervention
+          </Button>
+        }
+      />
 
-      <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
-        <Stack direction="row" spacing={2} alignItems="center">
-          <Typography variant="subtitle2" fontWeight={700} sx={{ minWidth: 48 }}>Firme</Typography>
-          <Select
-            value={selectedFirmId}
-            onChange={(e) => setSelectedFirmId(Number(e.target.value))}
-            displayEmpty size="small" sx={{ minWidth: 240 }}
-          >
-            <MenuItem value="" disabled>Sélectionner une firme…</MenuItem>
-            {(firmsQuery.data ?? []).map((f) => <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>)}
-          </Select>
-        </Stack>
+      <Paper variant="outlined" sx={{ borderRadius: 2, display: "flex", minHeight: 480, overflow: "hidden" }}>
+        <SideList
+          items={filteredFirms.map((f) => ({ id: f.id, label: f.name }))}
+          selectedId={selectedFirmId}
+          onSelect={(id) => setSelectedFirmId(Number(id))}
+          searchValue={firmSearch}
+          onSearchChange={setFirmSearch}
+          countLabel="Firmes"
+          searchPlaceholder="Rechercher une firme…"
+          emptyMessage="Aucune firme."
+        />
+
+        <Box sx={{ flex: 1, minWidth: 0, p: 2.5 }}>
+          {selectedFirmId === null ? (
+            <EmptyState
+              title="Sélectionnez une firme pour commencer"
+              description="Prestations (accélérateurs de saisie) et tarifs contractuels restent deux choses indépendantes — le contact de facturation reste géré depuis la fiche Firme."
+            />
+          ) : (
+            <>
+              <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2, minHeight: 36 }}>
+                <Tab value="offerings" label="Prestations" sx={{ minHeight: 36 }} />
+                <Tab value="materials" label="Matériel facturable" sx={{ minHeight: 36 }} />
+              </Tabs>
+
+              {tab === "offerings" && (
+                <Box>
+                  <Stack direction="row" alignItems="center" justifyContent="flex-end" mb={2}>
+                    <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={() => setAddOfferingOpen(true)} sx={{ borderRadius: 999, fontWeight: 600 }}>
+                      Ajouter une prestation
+                    </Button>
+                  </Stack>
+
+                  {offeringsQuery.isLoading ? (
+                    <CircularProgress size={20} />
+                  ) : offerings.length === 0 ? (
+                    <EmptyState variant="dashed" title="Aucune prestation configurée pour cette firme." />
+                  ) : (
+                    <Stack spacing={1.5}>
+                      {offerings.map((o) => {
+                        const forfait = forfaitFor(o.interventionType.id);
+                        return (
+                          <Paper key={o.id} variant="outlined" sx={{ p: 1.75, borderRadius: 2 }}>
+                            <Stack direction="row" alignItems="center" spacing={1.5}>
+                              <Stack sx={{ flex: 1, minWidth: 0 }}>
+                                <Stack direction="row" alignItems="center" spacing={1}>
+                                  <Typography fontWeight={700} variant="body2">{o.interventionType.label}</Typography>
+                                  <Chip label={o.interventionType.code} size="small" variant="outlined" sx={{ fontFamily: "monospace", fontSize: ".68rem" }} />
+                                  <Chip
+                                    label={o.active ? "Active" : "Inactive"} size="small"
+                                    color={o.active ? "success" : "default"}
+                                    onClick={() => toggleOfferingMutation.mutate({ id: o.id, active: !o.active })}
+                                    sx={{ cursor: "pointer" }}
+                                  />
+                                </Stack>
+                                <Typography variant="caption" color="text.secondary">
+                                  {o.suggestedMaterials.length} matériel{o.suggestedMaterials.length !== 1 ? "s" : ""} suggéré{o.suggestedMaterials.length !== 1 ? "s" : ""}
+                                </Typography>
+                              </Stack>
+
+                              <Button size="small" onClick={() => setSuggestionsTargetId(o.id)}>
+                                Matériels suggérés
+                              </Button>
+
+                              {forfait ? (
+                                <Chip
+                                  icon={<EditIcon sx={{ fontSize: 14 }} />}
+                                  label={`${Number(forfait.unitPrice).toFixed(2)} €`}
+                                  onClick={() => setForfaitTarget(o.interventionType.id)}
+                                  color="primary" variant="outlined" sx={{ cursor: "pointer", fontWeight: 700 }}
+                                />
+                              ) : (
+                                <Button size="small" variant="outlined" onClick={() => setForfaitTarget(o.interventionType.id)}>
+                                  Définir un forfait
+                                </Button>
+                              )}
+                            </Stack>
+                          </Paper>
+                        );
+                      })}
+                    </Stack>
+                  )}
+                </Box>
+              )}
+
+              {tab === "materials" && (
+                <Box>
+                  <Stack direction="row" alignItems="center" justifyContent="flex-end" spacing={1} mb={2}>
+                    <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={() => setCreateMaterialOpen(true)} sx={{ borderRadius: 999, fontWeight: 600 }}>
+                      Créer un article
+                    </Button>
+                    <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={() => setAddMaterialRuleOpen(true)} sx={{ borderRadius: 999, fontWeight: 600 }}>
+                      Ajouter un tarif matériel
+                    </Button>
+                  </Stack>
+
+                  {rulesQuery.isLoading ? (
+                    <CircularProgress size={20} />
+                  ) : materialGroups.length === 0 ? (
+                    <EmptyState variant="dashed" title="Aucun tarif matériel configuré pour cette firme." />
+                  ) : (
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow sx={{ bgcolor: "grey.50" }}>
+                          <TableCell>Matériel</TableCell>
+                          <TableCell align="right">Tarif en vigueur</TableCell>
+                          <TableCell>Historique</TableCell>
+                          <TableCell align="right">Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {materialGroups.map((g) => {
+                          const activeVersion = getActiveVersion(g.rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo })));
+                          return (
+                            <TableRow key={g.materialItemId} hover>
+                              <TableCell>
+                                <Typography variant="body2">{g.label}</Typography>
+                                {g.referenceCode && <Typography variant="caption" color="text.secondary">({g.referenceCode})</Typography>}
+                              </TableCell>
+                              <TableCell align="right">
+                                {activeVersion ? (
+                                  <Typography fontWeight={700}>{Number(activeVersion.amount).toFixed(2)} {activeVersion.currency}</Typography>
+                                ) : (
+                                  <Chip label="Aucun tarif actif" size="small" color="default" />
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <Typography variant="caption" color="text.secondary">
+                                  {g.rules.length} version{g.rules.length > 1 ? "s" : ""}
+                                </Typography>
+                              </TableCell>
+                              <TableCell align="right">
+                                <Button size="small" onClick={() => setMaterialRateTarget({ id: g.materialItemId, label: g.label })}>
+                                  Gérer les tarifs
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  )}
+                </Box>
+              )}
+            </>
+          )}
+        </Box>
       </Paper>
 
-      {selectedFirmId === "" ? (
-        <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 8, gap: 2 }}>
-          <Typography variant="h6" fontWeight={600} color="text.secondary">Sélectionnez une firme pour commencer</Typography>
-          <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ maxWidth: 420 }}>
-            Prestations (accélérateurs de saisie) et tarifs contractuels restent deux
-            choses indépendantes — le contact de facturation reste géré depuis la fiche Firme.
-          </Typography>
-        </Box>
-      ) : (
-        <>
-          {/* ── Prestations ── */}
-          <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
-            <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
-              <Typography variant="subtitle1" fontWeight={700}>Prestations</Typography>
-              <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={() => setAddOfferingOpen(true)} sx={{ borderRadius: 999, fontWeight: 600 }}>
-                Ajouter une prestation
-              </Button>
-            </Stack>
-            <Divider sx={{ mb: 2 }} />
+      <InterventionTypesDialog open={interventionTypesOpen} onClose={() => setInterventionTypesOpen(false)} />
 
-            {offeringsQuery.isLoading ? (
-              <CircularProgress size={20} />
-            ) : offerings.length === 0 ? (
-              <Typography color="text.secondary" variant="body2">Aucune prestation configurée pour cette firme.</Typography>
-            ) : (
-              <Stack spacing={1.5}>
-                {offerings.map((o) => {
-                  const forfait = forfaitFor(o.interventionType.id);
-                  return (
-                    <Paper key={o.id} variant="outlined" sx={{ p: 1.75, borderRadius: 2 }}>
-                      <Stack direction="row" alignItems="center" spacing={1.5}>
-                        <Stack sx={{ flex: 1, minWidth: 0 }}>
-                          <Stack direction="row" alignItems="center" spacing={1}>
-                            <Typography fontWeight={700} variant="body2">{o.interventionType.label}</Typography>
-                            <Chip label={o.interventionType.code} size="small" variant="outlined" sx={{ fontFamily: "monospace", fontSize: ".68rem" }} />
-                            <Chip
-                              label={o.active ? "Active" : "Inactive"} size="small"
-                              color={o.active ? "success" : "default"}
-                              onClick={() => toggleOfferingMutation.mutate({ id: o.id, active: !o.active })}
-                              sx={{ cursor: "pointer" }}
-                            />
-                          </Stack>
-                          <Typography variant="caption" color="text.secondary">
-                            {o.suggestedMaterials.length} matériel{o.suggestedMaterials.length !== 1 ? "s" : ""} suggéré{o.suggestedMaterials.length !== 1 ? "s" : ""}
-                          </Typography>
-                        </Stack>
-
-                        <Button size="small" onClick={() => setSuggestionsTargetId(o.id)}>
-                          Matériels suggérés
-                        </Button>
-
-                        {forfait ? (
-                          <Chip
-                            icon={<EditIcon sx={{ fontSize: 14 }} />}
-                            label={`${Number(forfait.unitPrice).toFixed(2)} €`}
-                            onClick={() => setForfaitTarget(o.interventionType.id)}
-                            color="primary" variant="outlined" sx={{ cursor: "pointer", fontWeight: 700 }}
-                          />
-                        ) : (
-                          <Button size="small" variant="outlined" onClick={() => setForfaitTarget(o.interventionType.id)}>
-                            Définir un forfait
-                          </Button>
-                        )}
-                      </Stack>
-                    </Paper>
-                  );
-                })}
-              </Stack>
-            )}
-          </Paper>
-
-          {/* ── Matériel facturable ── */}
-          <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
-            <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
-              <Typography variant="subtitle1" fontWeight={700}>Matériel facturable</Typography>
-              <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={() => setAddMaterialRuleOpen(true)} sx={{ borderRadius: 999, fontWeight: 600 }}>
-                Ajouter un tarif matériel
-              </Button>
-            </Stack>
-            <Divider sx={{ mb: 2 }} />
-
-            {rulesQuery.isLoading ? (
-              <CircularProgress size={20} />
-            ) : materialGroups.length === 0 ? (
-              <Typography color="text.secondary" variant="body2">Aucun tarif matériel configuré pour cette firme.</Typography>
-            ) : (
-              <Table size="small">
-                <TableHead>
-                  <TableRow sx={{ bgcolor: "grey.50" }}>
-                    <TableCell>Matériel</TableCell>
-                    <TableCell align="right">Tarif en vigueur</TableCell>
-                    <TableCell>Historique</TableCell>
-                    <TableCell align="right">Actions</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {materialGroups.map((g) => {
-                    const activeVersion = getActiveVersion(g.rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo })));
-                    return (
-                      <TableRow key={g.materialItemId} hover>
-                        <TableCell>
-                          <Typography variant="body2">{g.label}</Typography>
-                          {g.referenceCode && <Typography variant="caption" color="text.secondary">({g.referenceCode})</Typography>}
-                        </TableCell>
-                        <TableCell align="right">
-                          {activeVersion ? (
-                            <Typography fontWeight={700}>{Number(activeVersion.amount).toFixed(2)} {activeVersion.currency}</Typography>
-                          ) : (
-                            <Chip label="Aucun tarif actif" size="small" color="default" />
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Typography variant="caption" color="text.secondary">
-                            {g.rules.length} version{g.rules.length > 1 ? "s" : ""}
-                          </Typography>
-                        </TableCell>
-                        <TableCell align="right">
-                          <Button size="small" onClick={() => setMaterialRateTarget({ id: g.materialItemId, label: g.label })}>
-                            Gérer les tarifs
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            )}
-          </Paper>
-        </>
-      )}
-
-      {selectedFirmId !== "" && (
+      {selectedFirmId !== null && (
         <>
           <AddOfferingDialog
             open={addOfferingOpen}
             onClose={() => setAddOfferingOpen(false)}
-            firmId={selectedFirmId as number}
+            firmId={selectedFirmId}
             existingTypeIds={offerings.map((o) => o.interventionType.id)}
             onCreated={() => qc.invalidateQueries({ queryKey: ["service-offerings", selectedFirmId] })}
           />
           <ForfaitDialog
             open={forfaitTarget !== null}
             onClose={() => setForfaitTarget(null)}
-            firmId={selectedFirmId as number}
+            firmId={selectedFirmId}
             interventionTypeId={forfaitTarget ?? 0}
             rules={forfaitTarget !== null ? rulesForIntervention(forfaitTarget) : []}
           />
           <SuggestedMaterialsDialog
             open={suggestionsTargetId !== null}
             onClose={() => setSuggestionsTargetId(null)}
-            firmId={selectedFirmId as number}
+            firmId={selectedFirmId}
             offering={suggestionsTarget}
             firmMaterials={materials}
           />
           <AddMaterialRuleDialog
             open={addMaterialRuleOpen}
             onClose={() => setAddMaterialRuleOpen(false)}
-            firmId={selectedFirmId as number}
+            firmId={selectedFirmId}
             firmMaterials={materials}
             existingRules={rules}
           />
           <MaterialRateDialog
             open={materialRateTarget !== null}
             onClose={() => setMaterialRateTarget(null)}
-            firmId={selectedFirmId as number}
+            firmId={selectedFirmId}
             materialItemId={materialRateTarget?.id ?? 0}
             materialLabel={materialRateTarget?.label ?? ""}
             rules={materialRateTarget ? materialGroups.find((g) => g.materialItemId === materialRateTarget.id)?.rules ?? [] : []}
           />
+          <MaterialItemFormDialog
+            open={createMaterialOpen}
+            title="Créer un article"
+            initial={{ firmId: selectedFirmId }}
+            submitLabel="Créer"
+            loading={createMaterialMutation.isPending}
+            error={createMaterialError}
+            onClose={() => { setCreateMaterialOpen(false); setCreateMaterialError(null); }}
+            onSubmit={(values) => {
+              if (!values.firmId) return;
+              createMaterialMutation.mutate({
+                firmId: values.firmId,
+                label: values.label,
+                unit: values.unit,
+                referenceCode: values.referenceCode || undefined,
+                isImplant: values.isImplant,
+              });
+            }}
+          />
         </>
       )}
-    </Stack>
+    </Box>
   );
 }

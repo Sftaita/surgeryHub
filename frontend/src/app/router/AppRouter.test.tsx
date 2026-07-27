@@ -6,12 +6,12 @@ import { AppRouter } from "./AppRouter";
 import { ToastProvider } from "../ui/toast/ToastProvider";
 
 /**
- * Lot 9A (commit Dashboard) — vérifie uniquement le mappage route → page pour
- * /app/m/dashboard et la redirection racine manager qui en dépend. N'exerce pas
- * les autres routes (déjà stables, hors périmètre de ce commit) : AppRouter les
- * charge via React.lazy, donc seules les pages réellement montées ici déclenchent
- * leur propre import dynamique — pas besoin de mocker les ~30 autres pages
- * manager/instrumentiste/admin.
+ * Lot 9A — vérifie uniquement le mappage route → page pour /app/m/dashboard et
+ * /app/m/catalogue/prestations, et les deux redirections qui en dépendent (racine
+ * manager, ancienne route de configuration tarifaire). N'exerce pas les autres routes
+ * (déjà stables, hors périmètre de ce lot) : AppRouter les charge via React.lazy, donc
+ * seules les pages réellement montées ici déclenchent leur propre import dynamique —
+ * pas besoin de mocker les ~30 autres pages manager/instrumentiste/admin.
  */
 
 vi.mock("../auth/AuthContext", () => ({
@@ -37,6 +37,9 @@ vi.mock("../features/pwa-install/usePwaInstallMenuState", () => ({
 }));
 vi.mock("../features/manager-catalogue/api/catalogue.api", () => ({
   getMaterialRequests: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+  getFirms: vi.fn().mockResolvedValue([]),
+  getMaterialItems: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 200 }),
+  createMaterialItem: vi.fn(),
 }));
 vi.mock("../features/manager-catalogue/api/interventionTypeRequests.api", () => ({
   getInterventionTypeRequests: vi.fn().mockResolvedValue({ items: [], total: 0 }),
@@ -70,6 +73,19 @@ vi.mock("../features/financial-statistics/api/financialStatistics.api", () => ({
   getTopMaterials: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 5 }),
 }));
 
+// ── Dépendances propres à PrestationsPage ───────────────────────────────────────
+vi.mock("../features/billing-firm/api/firmBilling.api", () => ({
+  getFirmPricingRules: vi.fn().mockResolvedValue([]),
+  createPricingRule: vi.fn(), updatePricingRule: vi.fn(), deletePricingRule: vi.fn(), replacePricingRule: vi.fn(),
+  getFirmServiceOfferings: vi.fn().mockResolvedValue([]),
+  createFirmServiceOffering: vi.fn(), updateFirmServiceOffering: vi.fn(),
+  addSuggestedMaterial: vi.fn(), reorderSuggestedMaterials: vi.fn(), deleteSuggestedMaterial: vi.fn(),
+}));
+vi.mock("../features/intervention-types/api/interventionTypes.api", () => ({
+  getInterventionTypes: vi.fn().mockResolvedValue([]),
+  createInterventionType: vi.fn(),
+}));
+
 function renderAt(initialPath: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -83,7 +99,7 @@ function renderAt(initialPath: string) {
   );
 }
 
-describe("AppRouter — route Dashboard (Lot 9A)", () => {
+describe("AppRouter — routes Dashboard et Prestations (Lot 9A)", () => {
   it("/app/m/dashboard rend DashboardPage", async () => {
     renderAt("/app/m/dashboard");
     // Timeout généreux : premier test à déclencher l'import lazy à froid du chunk DashboardPage.
@@ -93,5 +109,15 @@ describe("AppRouter — route Dashboard (Lot 9A)", () => {
   it("/app/m redirige vers /app/m/dashboard", async () => {
     renderAt("/app/m");
     await waitFor(() => expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument(), { timeout: 5000 });
+  });
+
+  it("/app/m/catalogue/prestations rend PrestationsPage", async () => {
+    renderAt("/app/m/catalogue/prestations");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Prestations" })).toBeInTheDocument(), { timeout: 5000 });
+  });
+
+  it("l'ancienne route /app/m/billing/config redirige vers /app/m/catalogue/prestations", async () => {
+    renderAt("/app/m/billing/config");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Prestations" })).toBeInTheDocument(), { timeout: 5000 });
   });
 });

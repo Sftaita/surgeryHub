@@ -17,6 +17,7 @@ export const getFirms = async (): Promise<FirmDTO[]> => {
 
 export const getMaterialItems = async (params?: {
   search?: string;
+  firmId?: number;
   page?: number;
   limit?: number;
 }): Promise<MaterialItemsListResponseDTO> => {

@@ -2,14 +2,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import BillingConfigPage from "./BillingConfigPage";
+import PrestationsPage from "./PrestationsPage";
 
 const apiGetMock = vi.fn();
 const apiPostMock = vi.fn();
 const apiPatchMock = vi.fn();
 const apiDeleteMock = vi.fn();
 
-vi.mock("../../../api/apiClient", () => ({
+vi.mock("../../api/apiClient", () => ({
   apiClient: {
     get: (...args: unknown[]) => apiGetMock(...args),
     post: (...args: unknown[]) => apiPostMock(...args),
@@ -20,7 +20,7 @@ vi.mock("../../../api/apiClient", () => ({
 
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
-vi.mock("../../../ui/toast/useToast", () => ({
+vi.mock("../../ui/toast/useToast", () => ({
   useToast: () => ({ success: toastSuccess, error: toastError, warning: vi.fn() }),
 }));
 
@@ -46,7 +46,8 @@ function mockGet(url: string) {
   if (url === "/api/firms") return Promise.resolve({ data: FIRMS });
   if (url === "/api/firms/10/service-offerings") return Promise.resolve({ data: OFFERINGS });
   if (url === "/api/firms/10/pricing-rules") return Promise.resolve({ data: RULES });
-  if (url === "/api/material-items") return Promise.resolve({ data: { items: MATERIALS } });
+  if (url === "/api/material-items") return Promise.resolve({ data: { items: MATERIALS, total: MATERIALS.length, page: 1, limit: 200 } });
+  if (url === "/api/intervention-types") return Promise.resolve({ data: [] });
   return Promise.resolve({ data: [] });
 }
 
@@ -54,9 +55,13 @@ function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <BillingConfigPage />
+      <PrestationsPage />
     </QueryClientProvider>,
   );
+}
+
+async function selectFirm(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: "Smith & Nephew" }));
 }
 
 beforeEach(() => {
@@ -68,31 +73,30 @@ beforeEach(() => {
   toastError.mockReset();
 });
 
-describe("BillingConfigPage", () => {
-  it("invite à choisir une firme avant d'afficher quoi que ce soit", async () => {
+describe("PrestationsPage", () => {
+  it("invite à choisir une firme avant d'afficher les onglets", async () => {
     renderPage();
     await screen.findByText("Sélectionnez une firme pour commencer");
-    expect(screen.queryByText("Prestations")).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Prestations" })).toBeNull();
   });
 
   it("affiche les prestations et le matériel facturable après sélection d'une firme", async () => {
     const user = userEvent.setup();
     renderPage();
-
-    await user.click(await screen.findByRole("combobox"));
-    await user.click(await screen.findByRole("option", { name: "Smith & Nephew" }));
+    await selectFirm(user);
 
     await screen.findByText("LCA primaire");
     expect(screen.getByText("Définir un forfait")).toBeInTheDocument();
-    expect(screen.getByText("Suture FiberWire")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Matériel facturable" }));
+    expect(await screen.findByText("Suture FiberWire")).toBeInTheDocument();
     expect(screen.getByText("40.00 EUR")).toBeInTheDocument();
   });
 
   it("le contact de facturation n'apparaît nulle part sur cette page", async () => {
     const user = userEvent.setup();
     renderPage();
-    await user.click(await screen.findByRole("combobox"));
-    await user.click(await screen.findByRole("option", { name: "Smith & Nephew" }));
+    await selectFirm(user);
 
     await screen.findByText("LCA primaire");
     expect(screen.queryByText(/contact de facturation/i)).toBeNull();
@@ -104,18 +108,46 @@ describe("BillingConfigPage", () => {
       data: { id: 300, ruleType: "INTERVENTION_FEE", interventionType: { id: 1, code: "LCA", label: "LCA primaire" }, materialItem: null, unitPrice: "180.00", currency: "EUR", validFrom: null, validTo: null, active: true },
     });
     renderPage();
-    await user.click(await screen.findByRole("combobox"));
-    await user.click(await screen.findByRole("option", { name: "Smith & Nephew" }));
+    await selectFirm(user);
 
     await user.click(await screen.findByText("Définir un forfait"));
     const dialog = await screen.findByRole("dialog");
-    await user.type(within(dialog).getByLabelText("Montant (€) *"), "180");
-    await user.click(within(dialog).getByRole("button", { name: "Enregistrer" }));
+    await user.click(within(dialog).getByRole("button", { name: "Définir un tarif" }));
+    await user.type(within(dialog).getByLabelText("Montant"), "180");
+    await user.click(within(dialog).getByRole("button", { name: "Créer" }));
 
     await waitFor(() => {
       expect(apiPostMock).toHaveBeenCalledWith("/api/firms/10/pricing-rules", expect.objectContaining({
         ruleType: "INTERVENTION_FEE", interventionTypeId: 1, unitPrice: 180,
       }));
     });
+  });
+
+  it("ouvre le dialog de gestion des types d'intervention depuis le header", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Gérer les types d'intervention" }));
+    expect(await screen.findByRole("heading", { name: "Types d'intervention" })).toBeInTheDocument();
+  });
+
+  it("affiche un toast d'erreur sans planter quand la création du forfait échoue côté backend", async () => {
+    const user = userEvent.setup();
+    apiPostMock.mockRejectedValue({
+      response: { data: { error: { message: "Un tarif actif existe déjà pour cette période." } } },
+    });
+    renderPage();
+    await selectFirm(user);
+
+    await user.click(await screen.findByText("Définir un forfait"));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Définir un tarif" }));
+    await user.type(within(dialog).getByLabelText("Montant"), "180");
+    await user.click(within(dialog).getByRole("button", { name: "Créer" }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("Un tarif actif existe déjà pour cette période.");
+    });
+    // Le dialog reste ouvert (pas de fermeture optimiste) — aucun crash de la page.
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 });
