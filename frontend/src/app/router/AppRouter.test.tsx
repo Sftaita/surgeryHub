@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -14,9 +14,14 @@ import { ToastProvider } from "../ui/toast/ToastProvider";
  * pas besoin de mocker les ~30 autres pages manager/instrumentiste/admin.
  */
 
+let authStatus: "authenticated" | "anonymous" = "authenticated";
+let authRole: "MANAGER" | "ADMIN" | "INSTRUMENTIST" = "MANAGER";
+
 vi.mock("../auth/AuthContext", () => ({
   useAuth: () => ({
-    state: { status: "authenticated", user: { id: 1, role: "MANAGER", email: "manager@test.com", firstname: "Ada", lastname: "Lovelace" } },
+    state: authStatus === "authenticated"
+      ? { status: "authenticated", user: { id: 1, role: authRole, email: "manager@test.com", firstname: "Ada", lastname: "Lovelace" } }
+      : { status: "anonymous" },
     logout: vi.fn(),
   }),
 }));
@@ -86,6 +91,27 @@ vi.mock("../features/intervention-types/api/interventionTypes.api", () => ({
   createInterventionType: vi.fn(),
 }));
 
+// ── Dépendance de MobileLayout (cible de la redirection instrumentiste, Lot 12) ──
+// Requiert PwaInstallProvider, non monté dans cet arbre de test — hors périmètre
+// de ce fichier (couvert par PwaInstallBanner.test.tsx).
+vi.mock("../features/pwa-install/PwaInstallBanner", () => ({
+  PwaInstallBanner: () => null,
+}));
+
+// ── Dépendances propres à ProfilePage (manager/admin) ───────────────────────────
+vi.mock("../features/me/api/me.api", () => ({
+  fetchMe: vi.fn().mockResolvedValue({
+    id: 1, email: "manager@test.com", firstname: "Ada", lastname: "Lovelace",
+    profilePictureUrl: null, role: "MANAGER", instrumentistProfile: null, sites: [], activeSiteId: null,
+  }),
+  uploadProfilePicture: vi.fn(),
+}));
+
+beforeEach(() => {
+  authStatus = "authenticated";
+  authRole = "MANAGER";
+});
+
 function renderAt(initialPath: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -119,5 +145,31 @@ describe("AppRouter — routes Dashboard et Prestations (Lot 9A)", () => {
   it("l'ancienne route /app/m/billing/config redirige vers /app/m/catalogue/prestations", async () => {
     renderAt("/app/m/billing/config");
     await waitFor(() => expect(screen.getByRole("heading", { name: "Prestations" })).toBeInTheDocument(), { timeout: 5000 });
+  });
+});
+
+describe("AppRouter — route Profil manager/admin (Lot 12)", () => {
+  it("/app/m/profile rend ProfilePage pour MANAGER", async () => {
+    authRole = "MANAGER";
+    renderAt("/app/m/profile");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Mon profil" })).toBeInTheDocument(), { timeout: 5000 });
+  });
+
+  it("/app/m/profile rend ProfilePage pour ADMIN", async () => {
+    authRole = "ADMIN";
+    renderAt("/app/m/profile");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Mon profil" })).toBeInTheDocument(), { timeout: 5000 });
+  });
+
+  it("utilisateur non authentifié redirigé vers /login (guard RequireAuth existant)", async () => {
+    authStatus = "anonymous";
+    renderAt("/app/m/profile");
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Mon profil" })).toBeNull());
+  });
+
+  it("un instrumentiste ne passe pas par la route manager /app/m/profile (redirigé vers son espace)", async () => {
+    authRole = "INSTRUMENTIST";
+    renderAt("/app/m/profile");
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Mon profil" })).toBeNull());
   });
 });

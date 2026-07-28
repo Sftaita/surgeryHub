@@ -37,6 +37,7 @@ const AdminOutboundNotificationsPage = React.lazy(() => import("../pages/admin/A
 
 // Manager
 const DashboardPage          = React.lazy(() => import("../pages/manager/DashboardPage"));
+const ProfilePageM           = React.lazy(() => import("../pages/manager/ProfilePage"));
 const MissionsListPage       = React.lazy(() => import("../pages/manager/MissionsListPage"));
 const MissionDetailPageM     = React.lazy(() => import("../pages/manager/MissionDetailPage"));
 const MissionCreatePage      = React.lazy(() => import("../pages/manager/MissionCreatePage"));
@@ -147,6 +148,7 @@ export function AppRouter() {
               <Route element={<DesktopLayout />}>
                 <Route path="m" element={<Navigate to="/app/m/dashboard" replace />} />
                 <Route path="m/dashboard" element={<DashboardPage />} />
+                <Route path="m/profile" element={<ProfilePageM />} />
                 <Route path="m/missions" element={<MissionsListPage />} />
                 <Route path="m/missions/to-validate" element={<MissionsListPage />} />
                 <Route path="m/missions/new" element={<MissionCreatePage />} />
