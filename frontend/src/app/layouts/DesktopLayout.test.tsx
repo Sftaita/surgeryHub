@@ -19,6 +19,9 @@ import { DesktopLayout } from "./DesktopLayout";
  * installation PWA, déconnexion). Aucune action "Profil" : aucune route/écran
  * profil manager/admin n'existe dans le code actuel (seule /app/i/profile existe,
  * réservée aux instrumentistes) — voir le rapport du Lot 10.
+ *
+ * Lot 12 — la route /app/m/profile existe désormais (ProfilePage manager/admin) :
+ * ajoute l'action "Mon profil" au menu compte.
  */
 
 let authStatus: "authenticated" | "anonymous" = "authenticated";
@@ -75,6 +78,7 @@ function renderLayout(initialPath = "/app/m/missions") {
         <Routes>
           <Route element={<DesktopLayout />}>
             <Route path="/app/m/dashboard" element={<div>Dashboard stub</div>} />
+            <Route path="/app/m/profile" element={<div>Profile stub</div>} />
             <Route path="/app/m/missions" element={<div>Missions stub</div>} />
             <Route path="/app/m/catalogue/requests" element={<div>Requests stub</div>} />
             <Route path="/app/admin/outbound-notifications" element={<div>Outbound notifications stub</div>} />
@@ -345,6 +349,40 @@ describe("DesktopLayout — menu compte (Lot 10)", () => {
     await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
 
     expect(subscribeToPushMock).not.toHaveBeenCalled();
+  });
+
+  it("affiche l'action Mon profil et navigue vers /app/m/profile pour MANAGER", async () => {
+    authRole = "MANAGER";
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+    const item = screen.getByRole("menuitem", { name: "Mon profil" });
+    await user.click(item);
+
+    expect(await screen.findByText("Profile stub")).toBeInTheDocument();
+  });
+
+  it("affiche l'action Mon profil et navigue vers /app/m/profile pour ADMIN", async () => {
+    authRole = "ADMIN";
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+    const item = screen.getByRole("menuitem", { name: "Mon profil" });
+    await user.click(item);
+
+    expect(await screen.findByText("Profile stub")).toBeInTheDocument();
+  });
+
+  it("ferme le menu après le clic sur Mon profil", async () => {
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
+    await user.click(screen.getByRole("menuitem", { name: "Mon profil" }));
+
+    expect(screen.queryByRole("menu")).toBeNull();
   });
 
   it("affiche l'action Installation quand disponible, et appelle le mécanisme PWA existant au clic", async () => {

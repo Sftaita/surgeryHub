@@ -310,6 +310,19 @@ export function DesktopLayout() {
                   list: { "aria-labelledby": "account-menu-button" },
                 }}
               >
+                <MenuItem
+                  onClick={() => {
+                    setMenuAnchor(null);
+                    navigate("/app/m/profile");
+                  }}
+                  sx={{
+                    height: 42, borderRadius: "10px", color: COLOR.gray600, fontWeight: 600, fontSize: "14px",
+                    "&:hover": { bgcolor: COLOR.gray75 },
+                  }}
+                >
+                  <PersonOutlineOutlinedIcon sx={{ fontSize: 18, mr: "10px" }} />
+                  Mon profil
+                </MenuItem>
                 {pushStatus === "permission-default" && (
                   <MenuItem
                     onClick={() => {
