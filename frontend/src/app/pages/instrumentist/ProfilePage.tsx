@@ -10,6 +10,7 @@ import { useToast } from "../../ui/toast/useToast";
 import { AvatarUploader } from "../../ui/avatar/AvatarUploader";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { PwaInstallMenuItem } from "../../features/pwa-install/PwaInstallMenuItem";
+import { useInstrumentistOnboardingReplay } from "../../features/instrumentist-onboarding/InstrumentistOnboardingReplayContext";
 
 const ORTHO_SPECIALTIES = [
   { value: "EPAULE", label: "Épaule" },
@@ -33,6 +34,7 @@ export default function ProfilePage() {
   const { state, refreshUser } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
+  const { requestReplay } = useInstrumentistOnboardingReplay();
 
   const userId = state.status === "authenticated" ? state.user.id : null;
 
@@ -109,6 +111,28 @@ export default function ProfilePage() {
       <Divider />
 
       <PwaInstallMenuItem />
+
+      <Paper variant="outlined" sx={{ p: 2, borderRadius: 3 }}>
+        <Stack direction="row" alignItems="center" spacing={2}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography variant="subtitle2" fontWeight={700}>
+              Revoir la présentation de SurgicalHub
+            </Typography>
+          </Box>
+          <Box
+            component="button"
+            type="button"
+            onClick={requestReplay}
+            sx={{
+              border: "none", borderRadius: "999px", background: "#2C7D5F", color: "#fff",
+              fontFamily: "inherit", fontWeight: 700, fontSize: 13, cursor: "pointer",
+              height: 36, padding: "0 16px", flexShrink: 0,
+            }}
+          >
+            Revoir
+          </Box>
+        </Stack>
+      </Paper>
 
       <Divider />
 

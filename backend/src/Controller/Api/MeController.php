@@ -79,6 +79,30 @@ final class MeController extends AbstractController
         return $this->json($this->buildMeResponse($user));
     }
 
+    /**
+     * POST /api/me/onboarding/complete
+     * - Authentifié, réservé au rôle INSTRUMENTIST (403 sinon).
+     * - Idempotent : n'écrase pas un timestamp déjà posé.
+     * - Toujours "l'utilisateur courant" — même convention que uploadProfilePicture()
+     *   ci-dessus : aucun Voter dédié, on ne modifie jamais que sa propre ressource.
+     */
+    #[Route('/me/onboarding/complete', name: 'api_me_onboarding_complete', methods: ['POST'])]
+    public function completeOnboarding(#[CurrentUser] User $user): JsonResponse
+    {
+        $this->denyAccessUnlessGranted('IS_AUTHENTICATED_FULLY');
+
+        if ($this->extractBusinessRole($user->getRoles()) !== 'INSTRUMENTIST') {
+            throw $this->createAccessDeniedException('Onboarding instrumentiste réservé au rôle INSTRUMENTIST.');
+        }
+
+        if ($user->getInstrumentistOnboardingCompletedAt() === null) {
+            $user->setInstrumentistOnboardingCompletedAt(new \DateTimeImmutable());
+            $this->em->flush();
+        }
+
+        return $this->json($this->buildMeResponse($user));
+    }
+
     private function buildMeResponse(User $user): MeResponse
     {
         $role = $this->extractBusinessRole($user->getRoles());
@@ -160,6 +184,7 @@ final class MeController extends AbstractController
             instrumentistProfile: $instrumentistProfile,
             sites: $sites,
             activeSiteId: $activeSiteId,
+            instrumentistOnboardingCompleted: $user->getInstrumentistOnboardingCompletedAt() !== null,
         );
     }
 

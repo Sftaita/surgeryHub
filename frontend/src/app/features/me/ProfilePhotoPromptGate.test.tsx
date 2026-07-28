@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { ProfilePhotoPromptGate } from "./ProfilePhotoPromptGate";
 
-let authState: any = { status: "authenticated", user: { id: 1, role: "INSTRUMENTIST", sites: [], profilePictureUrl: null } };
+let authState: any = { status: "authenticated", user: { id: 1, role: "INSTRUMENTIST", sites: [], profilePictureUrl: null, instrumentistOnboardingCompleted: true } };
 let reminderIsDue = true;
 const dismissMock = vi.fn();
 let justActivated = false;
@@ -31,7 +31,7 @@ vi.mock("./ProfilePhotoPromptModal", () => ({
 
 beforeEach(() => {
   vi.useFakeTimers();
-  authState = { status: "authenticated", user: { id: 1, role: "INSTRUMENTIST", sites: [], profilePictureUrl: null } };
+  authState = { status: "authenticated", user: { id: 1, role: "INSTRUMENTIST", sites: [], profilePictureUrl: null, instrumentistOnboardingCompleted: true } };
   reminderIsDue = true;
   justActivated = false;
   dismissMock.mockClear();
@@ -93,6 +93,18 @@ describe("ProfilePhotoPromptGate", () => {
     act(() => screen.getByText("Plus tard").click());
 
     expect(dismissMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("n'affiche pas la modale tant que l'onboarding instrumentiste n'est pas terminé côté serveur", () => {
+    authState = {
+      status: "authenticated",
+      user: { id: 1, role: "INSTRUMENTIST", sites: [], profilePictureUrl: null, instrumentistOnboardingCompleted: false },
+    };
+    render(<ProfilePhotoPromptGate />);
+
+    act(() => vi.advanceTimersByTime(2500));
+
+    expect(screen.queryByText("prompt-modal-open")).not.toBeInTheDocument();
   });
 
   it("ne rend rien quand l'utilisateur n'est pas authentifié", () => {

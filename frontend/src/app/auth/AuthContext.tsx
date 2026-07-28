@@ -16,6 +16,7 @@ type User = {
   firstname?: string | null;
   lastname?: string | null;
   profilePictureUrl?: string | null;
+  instrumentistOnboardingCompleted?: boolean;
 };
 
 type AuthState =

@@ -18,5 +18,6 @@ final class MeResponse
         public ?InstrumentistProfileResponse $instrumentistProfile,
         public array $sites,
         public ?int $activeSiteId,
+        public bool $instrumentistOnboardingCompleted,
     ) {}
 }

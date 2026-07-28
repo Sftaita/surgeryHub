@@ -24,6 +24,7 @@ export type MeResponse = {
   } | null;
   sites: Array<{ id: number; name: string; timezone: string }>;
   activeSiteId: number | null;
+  instrumentistOnboardingCompleted: boolean;
 };
 
 /**

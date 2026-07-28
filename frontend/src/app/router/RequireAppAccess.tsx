@@ -2,6 +2,7 @@ import { Navigate, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { isMobileRole, isDesktopRole } from "../auth/roles";
 import { ProfilePhotoPromptGate } from "../features/me/ProfilePhotoPromptGate";
+import { InstrumentistOnboardingGate } from "../features/instrumentist-onboarding/InstrumentistOnboardingGate";
 
 export function RequireAppAccess() {
   const { state } = useAuth();
@@ -27,9 +28,9 @@ export function RequireAppAccess() {
   // (suppression de la redirection /app/no-site qui provoquait une boucle)
 
   return (
-    <>
+    <InstrumentistOnboardingGate>
       <ProfilePhotoPromptGate />
       <Outlet />
-    </>
+    </InstrumentistOnboardingGate>
   );
 }

@@ -92,6 +92,9 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[ORM\Column(nullable: true)]
     private ?\DateTimeImmutable $invitationLastSentAt = null;
 
+    #[ORM\Column(nullable: true)]
+    private ?\DateTimeImmutable $instrumentistOnboardingCompletedAt = null;
+
     /**
      * @var Collection<int, SiteMembership>
      */
@@ -320,6 +323,17 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setInvitationLastSentAt(?\DateTimeImmutable $invitationLastSentAt): static
     {
         $this->invitationLastSentAt = $invitationLastSentAt;
+        return $this;
+    }
+
+    public function getInstrumentistOnboardingCompletedAt(): ?\DateTimeImmutable
+    {
+        return $this->instrumentistOnboardingCompletedAt;
+    }
+
+    public function setInstrumentistOnboardingCompletedAt(?\DateTimeImmutable $instrumentistOnboardingCompletedAt): static
+    {
+        $this->instrumentistOnboardingCompletedAt = $instrumentistOnboardingCompletedAt;
         return $this;
     }
 

@@ -38,6 +38,11 @@ vi.mock("../../features/pwa-install/PwaInstallMenuItem", () => ({
   PwaInstallMenuItem: () => null,
 }));
 
+const requestReplayMock = vi.fn();
+vi.mock("../../features/instrumentist-onboarding/InstrumentistOnboardingReplayContext", () => ({
+  useInstrumentistOnboardingReplay: () => ({ requestReplay: requestReplayMock }),
+}));
+
 // AvatarCropDialog needs canvas/Image APIs jsdom doesn't implement.
 vi.mock("../../ui/avatar/AvatarCropDialog", () => ({
   AvatarCropDialog: ({ open, onConfirm }: any) =>
@@ -81,6 +86,7 @@ beforeEach(() => {
   uploadProfilePictureMock.mockReset();
   refreshUserMock.mockClear();
   toastSuccessMock.mockClear();
+  requestReplayMock.mockClear();
   apiGetMock.mockResolvedValue({ data: baseProfile });
   vi.stubEnv("VITE_API_BASE_URL", "https://api.surgicalhub.test");
 });
@@ -114,6 +120,16 @@ describe("ProfilePage — photo de profil", () => {
     await waitFor(() => expect(uploadProfilePictureMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Photo de profil mise à jour"));
     expect(refreshUserMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("le bouton « Revoir » de la présentation appelle requestReplay() sans mutation serveur", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByText("Revoir"));
+
+    expect(requestReplayMock).toHaveBeenCalledTimes(1);
+    expect(apiPatchMock).not.toHaveBeenCalled();
   });
 
   it("affiche les spécialités et permet de les basculer", async () => {

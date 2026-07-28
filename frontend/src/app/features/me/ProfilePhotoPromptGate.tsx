@@ -20,11 +20,15 @@ export function ProfilePhotoPromptGate() {
 
   const { user } = state;
   const hasPhoto = !!user.profilePictureUrl;
+  // L'onboarding instrumentiste (InstrumentistOnboardingGate) a priorité tant qu'il
+  // n'est pas terminé côté serveur — évite deux overlays superposés pour un
+  // instrumentiste tout juste activé.
+  const onboardingPending = user.role === "INSTRUMENTIST" && !user.instrumentistOnboardingCompleted;
 
-  return <Gate userId={user.id} hasPhoto={hasPhoto} />;
+  return <Gate userId={user.id} hasPhoto={hasPhoto} onboardingPending={onboardingPending} />;
 }
 
-function Gate({ userId, hasPhoto }: { userId: number; hasPhoto: boolean }) {
+function Gate({ userId, hasPhoto, onboardingPending }: { userId: number; hasPhoto: boolean; onboardingPending: boolean }) {
   const { isDue, dismiss } = useProfilePhotoReminder(userId);
   const [delayElapsed, setDelayElapsed] = React.useState(false);
   const [justActivated] = React.useState(() => wasAccountJustActivated());
@@ -34,7 +38,7 @@ function Gate({ userId, hasPhoto }: { userId: number; hasPhoto: boolean }) {
     return () => clearTimeout(timer);
   }, []);
 
-  const shouldShow = !hasPhoto && isDue && delayElapsed && !justActivated;
+  const shouldShow = !hasPhoto && isDue && delayElapsed && !justActivated && !onboardingPending;
 
   return <ProfilePhotoPromptModal open={shouldShow} onDismiss={dismiss} />;
 }

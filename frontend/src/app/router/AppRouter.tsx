@@ -56,7 +56,6 @@ const InstrumentistStatementDetailPage  = React.lazy(() => import("../pages/mana
 const CorrectionDetailPage              = React.lazy(() => import("../pages/manager/billing/CorrectionDetailPage"));
 const FinancialStatisticsPage           = React.lazy(() => import("../pages/manager/FinancialStatisticsPage"));
 const AbsencesPage                      = React.lazy(() => import("../pages/manager/planning/AbsencesPage"));
-const PlanningVersionDetailPage         = React.lazy(() => import("../pages/manager/planning/PlanningVersionDetailPage"));
 const PlanningV2Page                    = React.lazy(() => import("../pages/manager/planning/PlanningV2Page"));
 const PlanningSchedulePage              = React.lazy(() => import("../pages/manager/planning/PlanningSchedulePage"));
 
@@ -170,7 +169,6 @@ export function AppRouter() {
                 <Route path="m/billing/instrumentist-statement-corrections/:id" element={<CorrectionDetailPage resource="instrumentist-statements" />} />
                 <Route path="m/finance/statistics" element={<FinancialStatisticsPage />} />
                 <Route path="m/planning/absences" element={<AbsencesPage />} />
-                <Route path="m/planning/versions/:id" element={<PlanningVersionDetailPage />} />
                 <Route path="m/planning" element={<Navigate to="/app/m/planning/v2" replace />} />
                 <Route path="m/planning/v2" element={<PlanningV2Page />} />
                 <Route path="m/planning/living" element={<PlanningSchedulePage />} />
