@@ -11,7 +11,6 @@ import { useAuth } from "../auth/AuthContext";
 import { fetchMissions, fetchInstrumentistOffersWithFallback } from "../features/missions/api/missions.api";
 import { useInstrumentistMissionSync } from "../features/missions/sync/useInstrumentistMissionSync";
 import { resetScrollRestoration, useRouteScrollRestoration, recordEncodingOrigin } from "./scrollRestoration";
-import { useToast } from "../ui/toast/useToast";
 import dayjs from "dayjs";
 import "dayjs/locale/fr";
 
@@ -72,20 +71,6 @@ function BellIcon() {
   return (
     <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
-    </svg>
-  );
-}
-function MessagesIcon() {
-  return (
-    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z" />
-    </svg>
-  );
-}
-function ChevronDownIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={GRAY_400} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="m6 9 6 6 6-6" />
     </svg>
   );
 }
@@ -325,31 +310,30 @@ function BrandBand({
 }
 
 // ── Desktop sidebar ──────────────────────────────────────────────────────────
+// Strictly ported from handoff-instrumentiste-nav/src/SidebarRail.tsx — exactly the 3
+// tabs (Aujourd'hui/Planning/Offres) + a static user block (avatar, name, role, direct
+// logout button). No Messages/Notifications/Profil items, no dropdown: Notifications is
+// reached via the BrandBand bell (both breakpoints), Profil via the BrandBand avatar's
+// AccountMenu (both breakpoints) — this sidebar never duplicated a real destination.
 function DesktopSidebar({
   activeKey,
   onNavigate,
   offersCount,
   firstname,
   lastname,
-  onAvatarClick,
-  onMessages,
-  onNotifications,
-  onProfile,
+  onLogout,
 }: {
   activeKey: TabKey | null;
   onNavigate: (path: string) => void;
   offersCount: number;
   firstname?: string | null;
   lastname?: string | null;
-  onAvatarClick: (e: React.MouseEvent<HTMLElement>) => void;
-  onMessages: () => void;
-  onNotifications: () => void;
-  onProfile: () => void;
+  onLogout: () => void;
 }) {
   const railItem = (active: boolean): SxProps<Theme> => ({
     display: "flex",
     alignItems: "center",
-    gap: 12,
+    gap: "12px",
     height: 48,
     padding: "0 14px",
     borderRadius: 13,
@@ -365,28 +349,6 @@ function DesktopSidebar({
     fontWeight: active ? 800 : 600,
     "&:active": { transform: "translateY(0.5px)" },
   });
-
-  // "Idle" rail items (Messages/Notifications/Profil) — never highlighted as an
-  // active tab, only a hover background, per handoff (ri.idle style).
-  const idleItem: SxProps<Theme> = {
-    display: "flex",
-    alignItems: "center",
-    gap: 12,
-    height: 48,
-    padding: "0 14px",
-    borderRadius: 13,
-    border: "none",
-    cursor: "pointer",
-    fontFamily: "inherit",
-    fontSize: 14,
-    width: "100%",
-    textAlign: "left",
-    transition: "all 150ms",
-    background: "transparent",
-    color: GRAY_600,
-    fontWeight: 600,
-    "&:active": { transform: "translateY(0.5px)" },
-  };
 
   const name = `${firstname ?? ""} ${lastname ?? ""}`.trim() || "Instrumentiste";
 
@@ -417,7 +379,14 @@ function DesktopSidebar({
 
       <Box component="nav" sx={{ display: "flex", flexDirection: "column", gap: "6px", mt: "34px" }}>
         {tabs.map((t) => (
-          <Box key={t.key} component="button" type="button" onClick={() => onNavigate(t.path)} sx={railItem(activeKey === t.key)}>
+          <Box
+            key={t.key}
+            component="button"
+            type="button"
+            onClick={() => onNavigate(t.path)}
+            aria-current={activeKey === t.key ? "page" : undefined}
+            sx={railItem(activeKey === t.key)}
+          >
             {t.icon}
             <span>{t.label}</span>
             {t.key === "offers" && offersCount > 0 && (
@@ -442,44 +411,19 @@ function DesktopSidebar({
             )}
           </Box>
         ))}
-        <Box component="button" type="button" onClick={onMessages} sx={idleItem}>
-          <MessagesIcon />
-          <span>Messages</span>
-        </Box>
-        <Box component="button" type="button" onClick={onNotifications} sx={idleItem}>
-          <BellIcon />
-          <span>Notifications</span>
-        </Box>
-        <Box component="button" type="button" onClick={onProfile} sx={idleItem}>
-          <UserIcon />
-          <span>Profil</span>
-        </Box>
       </Box>
 
       <Box sx={{ flex: 1 }} />
-      <Box sx={{ borderTop: `1px solid ${BORDER_SUBTLE}`, mx: "2px" }} />
+      <Box sx={{ borderTop: `1px dashed ${BORDER_SUBTLE}`, mx: "6px" }} />
       <Box
-        component="button"
-        type="button"
-        onClick={onAvatarClick}
         sx={{
           display: "flex",
           alignItems: "center",
           gap: "11px",
-          padding: "12px 8px",
-          border: "none",
-          background: "transparent",
-          borderRadius: "12px",
-          cursor: "pointer",
-          fontFamily: "inherit",
-          textAlign: "left",
-          width: "100%",
-          transition: "background 150ms",
-          "&:hover": { background: GRAY_75 },
-          "&:active": { transform: "translateY(0.5px)" },
+          padding: "14px 8px 0",
         }}
       >
-        <Box sx={{ width: 38, height: 38, borderRadius: "999px", background: GREEN_100, color: GREEN_800, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, flexShrink: 0 }}>
+        <Box sx={{ width: 36, height: 36, borderRadius: "999px", background: GREEN_50, color: GREEN_800, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, flexShrink: 0 }}>
           {initialsOf(firstname, lastname)}
         </Box>
         <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
@@ -488,7 +432,30 @@ function DesktopSidebar({
           </Box>
           <Box sx={{ fontSize: 12, color: GRAY_500 }}>Instrumentiste</Box>
         </Box>
-        <ChevronDownIcon />
+        <Box
+          component="button"
+          type="button"
+          onClick={onLogout}
+          aria-label="Se déconnecter"
+          title="Se déconnecter"
+          sx={{
+            width: 36,
+            height: 36,
+            border: "none",
+            background: "transparent",
+            borderRadius: "10px",
+            cursor: "pointer",
+            color: GRAY_400,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+            "&:hover": { background: "#FDEEEE", color: "#C62F36" },
+            "&:active": { transform: "translateY(0.5px)" },
+          }}
+        >
+          <LogoutIcon />
+        </Box>
       </Box>
     </Box>
   );
@@ -530,6 +497,7 @@ function MobileBottomNav({
             component="button"
             type="button"
             onClick={() => onNavigate(t.path)}
+            aria-current={active ? "page" : undefined}
             sx={{
               flex: 1,
               display: "flex",
@@ -667,7 +635,6 @@ export function MobileLayout() {
   const location = useLocation();
   const pathname = location.pathname;
   const { state, logout } = useAuth();
-  const toast = useToast();
 
   const [menuAnchor, setMenuAnchor] = React.useState<HTMLElement | null>(null);
   const isDesktop = useMediaQuery("(min-width:900px)");
@@ -841,10 +808,7 @@ export function MobileLayout() {
           offersCount={offersCount}
           firstname={firstname}
           lastname={lastname}
-          onAvatarClick={(e) => setMenuAnchor(e.currentTarget)}
-          onMessages={() => toast.warning("Fonctionnalité bientôt disponible.")}
-          onNotifications={() => navigate("/app/i/notifications")}
-          onProfile={() => navigate("/app/i/profile")}
+          onLogout={handleLogout}
         />
       )}
 
