@@ -26,7 +26,10 @@ export class AppErrorBoundary extends React.Component<Props, State> {
       return (
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "center",
-          minHeight: "100vh", background: "#F8FAFC",
+          // Plain inline style can't express a `@supports`/vh-then-dvh fallback (unlike
+          // the MUI `sx` spots fixed via `ui/dvh.ts`) — 100dvh alone is safe here given
+          // its browser support, and this is a low-traffic crash fallback screen.
+          minHeight: "100dvh", background: "#F8FAFC",
           fontFamily: "'Inter', 'Roboto', sans-serif",
         }}>
           <div style={{

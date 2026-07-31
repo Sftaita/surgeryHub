@@ -7,6 +7,7 @@ import OffersPage from "./OffersPage";
 
 const fetchOffersMock = vi.fn();
 const claimMissionMock = vi.fn();
+const markOffersSeenMock = vi.fn();
 const toastSuccessMock = vi.fn();
 const toastWarningMock = vi.fn();
 const toastErrorMock = vi.fn();
@@ -14,6 +15,7 @@ const toastErrorMock = vi.fn();
 vi.mock("../../features/missions/api/missions.api", () => ({
   fetchInstrumentistOffersWithFallback: (...args: unknown[]) => fetchOffersMock(...args),
   claimMission: (...args: unknown[]) => claimMissionMock(...args),
+  markOffersSeen: (...args: unknown[]) => markOffersSeenMock(...args),
 }));
 
 vi.mock("../../ui/toast/useToast", () => ({
@@ -22,10 +24,6 @@ vi.mock("../../ui/toast/useToast", () => ({
 
 vi.mock("../../auth/AuthContext", () => ({
   useAuth: () => ({ state: { status: "authenticated", user: { id: 1, role: "INSTRUMENTIST" } } }),
-}));
-
-vi.mock("../../features/push/useNotifications", () => ({
-  useNotifications: () => ({ addNotification: vi.fn() }),
 }));
 
 vi.mock("../../features/missions/sync/missionSyncBus", () => ({
@@ -45,11 +43,11 @@ function makeMission(overrides: Partial<any> = {}) {
   };
 }
 
-function renderPage() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+function renderPage(client?: QueryClient) {
+  const queryClient = client ?? new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <MemoryRouter>
-      <QueryClientProvider client={client}>
+      <QueryClientProvider client={queryClient}>
         <OffersPage />
       </QueryClientProvider>
     </MemoryRouter>,
@@ -59,6 +57,7 @@ function renderPage() {
 beforeEach(() => {
   fetchOffersMock.mockReset();
   claimMissionMock.mockReset();
+  markOffersSeenMock.mockReset().mockResolvedValue(undefined);
   toastSuccessMock.mockClear();
   toastWarningMock.mockClear();
   toastErrorMock.mockClear();
@@ -123,5 +122,89 @@ describe("OffersPage", () => {
     renderPage();
 
     expect(await screen.findByText("Aucune offre disponible")).toBeInTheDocument();
+  });
+});
+
+describe("OffersPage — remise à zéro du badge non-lu (Lot 6, audit PWA/mobile/admin 2026-07-29)", () => {
+  it("appelle markOffersSeen après un chargement réussi", async () => {
+    fetchOffersMock.mockResolvedValue({ items: [makeMission()] });
+    renderPage();
+
+    await screen.findByText("CHU Brugmann");
+    await waitFor(() => expect(markOffersSeenMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("appelle markOffersSeen même quand la liste est vide (un chargement réussi reste un chargement réussi)", async () => {
+    fetchOffersMock.mockResolvedValue({ items: [] });
+    renderPage();
+
+    await waitFor(() => expect(markOffersSeenMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("n'appelle markOffersSeen qu'une seule fois par montage, pas à chaque re-render", async () => {
+    fetchOffersMock.mockResolvedValue({ items: [makeMission()] });
+    renderPage();
+
+    await screen.findByText("CHU Brugmann");
+    await waitFor(() => expect(markOffersSeenMock).toHaveBeenCalledTimes(1));
+
+    // Laisse le temps à un éventuel second appel non désiré de se produire.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(markOffersSeenMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("un échec de markOffersSeen ne casse pas l'écran (best-effort)", async () => {
+    fetchOffersMock.mockResolvedValue({ items: [makeMission()] });
+    markOffersSeenMock.mockRejectedValue(new Error("network"));
+    renderPage();
+
+    expect(await screen.findByText("CHU Brugmann")).toBeInTheDocument();
+  });
+
+  /**
+   * Revue post-rapport (2026-07-29) : preuve explicite que markOffersSeen n'est
+   * jamais appelé quand le CHARGEMENT lui-même échoue — une erreur réseau ne doit
+   * jamais remettre le badge à zéro côté client (et ne doit surtout pas déclencher
+   * le checkpoint serveur alors que l'utilisateur n'a rien vu).
+   */
+  it("n'appelle jamais markOffersSeen si le chargement de la liste échoue", async () => {
+    fetchOffersMock.mockRejectedValue(new Error("network down"));
+    renderPage();
+
+    await waitFor(() => expect(fetchOffersMock).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(markOffersSeenMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Un simple préchargement React Query (ex: un autre écran qui pré-remplit le cache
+   * de la clé ["missions","offers"]) ne doit jamais marquer les offres comme vues —
+   * seul un montage RÉEL de OffersPage (l'utilisateur consulte effectivement l'écran)
+   * doit déclencher le checkpoint. Ce test précharge le cache sans jamais monter
+   * OffersPage, et prouve qu'aucun appel n'a lieu.
+   */
+  it("un simple préchargement React Query de la clé offres ne marque rien comme vu (aucun montage de la page)", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await client.prefetchQuery({
+      queryKey: ["missions", "offers"],
+      queryFn: () => fetchOffersMock.mockResolvedValue({ items: [makeMission()] })(),
+    });
+
+    expect(markOffersSeenMock).not.toHaveBeenCalled();
+  });
+
+  it("le timestamp n'est mis à jour que par un montage réel de l'écran Offres, pas par la simple présence de données en cache", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // Simule des données déjà en cache (ex: préchargées ailleurs) avant que
+    // l'utilisateur n'ouvre réellement l'écran.
+    client.setQueryData(["missions", "offers"], { items: [makeMission()] });
+    fetchOffersMock.mockResolvedValue({ items: [makeMission()] });
+    expect(markOffersSeenMock).not.toHaveBeenCalled();
+
+    // Seul le montage réel de la page (navigation effective de l'utilisateur)
+    // déclenche le checkpoint — même si les données étaient déjà disponibles.
+    renderPage(client);
+    await screen.findByText("CHU Brugmann");
+    await waitFor(() => expect(markOffersSeenMock).toHaveBeenCalledTimes(1));
   });
 });

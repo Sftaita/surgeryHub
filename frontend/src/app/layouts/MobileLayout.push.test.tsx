@@ -32,6 +32,7 @@ vi.mock("../auth/AuthContext", () => ({
 vi.mock("../features/missions/api/missions.api", () => ({
   fetchMissions: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   fetchInstrumentistOffersWithFallback: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+  fetchOffersUnreadCount: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock("../features/missions/sync/useInstrumentistMissionSync", () => ({
@@ -53,8 +54,8 @@ vi.mock("../features/push/usePushNotifications", () => ({
   }),
 }));
 
-vi.mock("../features/push/useNotifications", () => ({
-  useNotifications: () => ({ badgeLabel: undefined }),
+vi.mock("../features/notifications/api/notifications.api", () => ({
+  fetchUnreadNotificationsCount: vi.fn().mockResolvedValue(0),
 }));
 
 // Lot 2 PWA install, hors périmètre de ce fichier (Web Push uniquement, D-081).

@@ -10,6 +10,8 @@ import { useToast } from "../../ui/toast/useToast";
 import { AvatarUploader } from "../../ui/avatar/AvatarUploader";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { PwaInstallMenuItem } from "../../features/pwa-install/PwaInstallMenuItem";
+import { PushPermissionCard } from "../../features/push/PushPermissionCard";
+import { NotificationPreferencesSection } from "../../features/notifications/NotificationPreferencesSection";
 import { useInstrumentistOnboardingReplay } from "../../features/instrumentist-onboarding/InstrumentistOnboardingReplayContext";
 
 const ORTHO_SPECIALTIES = [
@@ -109,6 +111,9 @@ export default function ProfilePage() {
       </Paper>
 
       <Divider />
+
+      <PushPermissionCard />
+      <NotificationPreferencesSection />
 
       <PwaInstallMenuItem />
 

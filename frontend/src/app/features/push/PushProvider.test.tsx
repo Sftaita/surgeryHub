@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import type { ReactElement } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PushProvider, usePushNotifications } from "./PushProvider";
 
 const apiGetMock = vi.fn();
@@ -18,6 +19,11 @@ vi.mock("../../api/apiClient", () => ({
 const captureExceptionMock = vi.fn();
 vi.mock("@sentry/react", () => ({
   captureException: (...args: unknown[]) => captureExceptionMock(...args),
+}));
+
+const toastInfoMock = vi.fn();
+vi.mock("../../ui/toast/useToast", () => ({
+  useToast: () => ({ info: toastInfoMock, success: vi.fn(), warning: vi.fn(), error: vi.fn() }),
 }));
 
 type MockAuthState = { status: "anonymous" } | { status: "authenticated"; user: { id: number } };
@@ -39,12 +45,22 @@ function Probe() {
   return <div data-testid="status">{value.status}</div>;
 }
 
+function withProviders(children: ReactElement, queryClient: QueryClient) {
+  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+}
+
 function renderProvider() {
-  return render(
-    <PushProvider>
-      <Probe />
-    </PushProvider>,
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
+  const result = render(
+    withProviders(
+      <PushProvider>
+        <Probe />
+      </PushProvider>,
+      queryClient,
+    ),
   );
+  return { ...result, invalidateQueriesSpy, queryClient };
 }
 
 /* ── Browser API stubs ── */
@@ -96,10 +112,25 @@ function installBrowserStubs(opts: {
   const register = vi.fn().mockImplementation(registerImpl ?? (async () => registration));
   const getRegistration = vi.fn().mockResolvedValue(registration);
 
+  // Minimal EventTarget-like stub so PushProvider's `message` listener (real-time push
+  // nudge, see the bridge test below) can be exercised without a real ServiceWorker.
+  let messageHandlers: Array<(e: MessageEvent) => void> = [];
   const serviceWorker = {
     register,
     getRegistration,
     ready: Promise.resolve(registration),
+    addEventListener: (type: string, handler: (e: MessageEvent) => void) => {
+      if (type === "message") messageHandlers.push(handler);
+    },
+    removeEventListener: (type: string, handler: (e: MessageEvent) => void) => {
+      if (type === "message") messageHandlers = messageHandlers.filter((h) => h !== handler);
+    },
+  };
+  const simulateRawMessage = (data: unknown) => {
+    messageHandlers.forEach((h) => h({ data } as MessageEvent));
+  };
+  const simulatePush = (payload: { title?: string; body?: string }) => {
+    simulateRawMessage({ type: "PUSH_NOTIFICATION", payload });
   };
 
   // `"x" in obj` is true for a defined-but-undefined property, so unsupported browsers
@@ -122,7 +153,7 @@ function installBrowserStubs(opts: {
 
   const requestPermission = (window as any).Notification?.requestPermission ?? vi.fn();
 
-  return { register, getRegistration, pushManager, requestPermission, getCurrentSubscription: () => currentSubscription };
+  return { register, getRegistration, pushManager, requestPermission, getCurrentSubscription: () => currentSubscription, simulatePush, simulateRawMessage };
 }
 
 beforeEach(() => {
@@ -130,6 +161,7 @@ beforeEach(() => {
   apiPostMock.mockReset().mockResolvedValue({});
   apiDeleteMock.mockReset().mockResolvedValue({});
   captureExceptionMock.mockReset();
+  toastInfoMock.mockReset();
   authState = authenticatedAs(1);
   delete (window as any).__push;
 });
@@ -169,16 +201,111 @@ describe("PushProvider — enregistrement du service worker", () => {
 
   it("n'enregistre le service worker qu'une seule fois même après re-render", async () => {
     const { register } = installBrowserStubs({ permission: "default" });
-    const { rerender } = renderProvider();
+    const { rerender, queryClient } = renderProvider();
     await waitFor(() => expect(register).toHaveBeenCalledTimes(1));
 
     rerender(
-      <PushProvider>
-        <Probe />
-      </PushProvider>,
+      withProviders(
+        <PushProvider>
+          <Probe />
+        </PushProvider>,
+        queryClient,
+      ),
     );
     await new Promise((r) => setTimeout(r, 0));
     expect(register).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Demande explicite (revue post-rapport, 2026-07-29) : prouver que l'enregistrement
+   * global du SW (PWA/cache/mises à jour) est réellement indépendant de la permission
+   * de notification — un refus de notification ne doit jamais empêcher la PWA de
+   * s'installer/se mettre à jour.
+   */
+  it("enregistre le service worker même si Notification.permission === 'denied'", async () => {
+    const { register } = installBrowserStubs({ permission: "denied" });
+    renderProvider();
+
+    await waitFor(() => expect(register).toHaveBeenCalledWith("/sw.js"));
+  });
+
+  it("l'absence de support du service worker ne fait pas planter l'application (rendu stable, aucun register tenté)", () => {
+    const { register } = installBrowserStubs({ supported: false });
+
+    expect(() => renderProvider()).not.toThrow();
+    expect(screen.getByTestId("status").textContent).toBe("unsupported");
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  /**
+   * L'enregistrement global (effet ci-dessus) et le flux d'auto-réattachement Push
+   * (permission déjà accordée, cf. describe suivant) doivent rester strictement
+   * séparés : `subscribeToPush()` réutilise `navigator.serviceWorker.ready`, il ne
+   * ré-enregistre jamais le SW lui-même — un seul `register()` au total, même quand
+   * les deux effets s'exécutent dans la même session.
+   */
+  it("aucun double enregistrement entre l'effet global et le flux d'auto-réattachement push (permission déjà accordée)", async () => {
+    const existing = makeSubscription("https://push.example/existing");
+    const { register } = installBrowserStubs({ permission: "granted", existingSubscription: existing });
+    renderProvider();
+
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalled()); // auto-reattach a bien tourné
+    expect(register).toHaveBeenCalledTimes(1);
+  });
+
+  it("l'abonnement Push n'est jamais déclenché automatiquement au démarrage — seule subscribe() (action utilisateur) le fait", async () => {
+    installBrowserStubs({ permission: "default" });
+    renderProvider();
+
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("permission-default"));
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Remplace l'ancien cache localStorage (notifications.store.ts, retiré — audit
+ * PWA/mobile/admin 2026-07-29, revue post-rapport) : à la réception d'un push, la
+ * cloche/le badge se rafraîchissent via invalidation de la query serveur, jamais via
+ * un état local persistant. Le toast reste le seul nudge "temps réel" immédiat.
+ */
+describe("PushProvider — nudge temps réel à la réception d'un push (bridge toast + invalidation)", () => {
+  it("affiche un toast et invalide la query notifications à la réception d'un message PUSH_NOTIFICATION", async () => {
+    const { simulatePush } = installBrowserStubs({ permission: "granted" });
+    const { invalidateQueriesSpy } = renderProvider();
+
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("subscribed"));
+
+    act(() => {
+      simulatePush({ title: "Nouvelle mission", body: "Mission #42 — CHU" });
+    });
+
+    expect(toastInfoMock).toHaveBeenCalledWith("Nouvelle mission — Mission #42 — CHU");
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({ queryKey: ["notifications"] });
+  });
+
+  it("ignore les messages qui ne sont pas de type PUSH_NOTIFICATION", async () => {
+    const { simulateRawMessage } = installBrowserStubs({ permission: "default" });
+    const { invalidateQueriesSpy } = renderProvider();
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("permission-default"));
+
+    act(() => {
+      simulateRawMessage({ type: "SOME_OTHER_MESSAGE" });
+    });
+
+    expect(toastInfoMock).not.toHaveBeenCalled();
+    expect(invalidateQueriesSpy).not.toHaveBeenCalled();
+  });
+
+  it("le nudge fonctionne même si la permission de notification est refusée (la cloche ne dépend jamais du statut Push)", async () => {
+    const { simulatePush } = installBrowserStubs({ permission: "denied" });
+    const { invalidateQueriesSpy } = renderProvider();
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("permission-denied"));
+
+    act(() => {
+      simulatePush({ title: "Alerte", body: "Test" });
+    });
+
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({ queryKey: ["notifications"] });
   });
 });
 
@@ -215,11 +342,14 @@ describe("PushProvider — auto-resouscription silencieuse (permission déjà ac
 });
 
 describe("PushProvider — changement de compte dans le même onglet (D-081)", () => {
-  function rerenderProvider(rerender: (ui: ReactElement) => void) {
+  function rerenderProvider(rerender: (ui: ReactElement) => void, queryClient: QueryClient) {
     rerender(
-      <PushProvider>
-        <Probe />
-      </PushProvider>,
+      withProviders(
+        <PushProvider>
+          <Probe />
+        </PushProvider>,
+        queryClient,
+      ),
     );
   }
 
@@ -228,14 +358,14 @@ describe("PushProvider — changement de compte dans le même onglet (D-081)", (
     installBrowserStubs({ permission: "granted", existingSubscription: subA });
 
     authState = authenticatedAs(1);
-    const { rerender } = renderProvider();
+    const { rerender, queryClient } = renderProvider();
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledTimes(1));
     expect(screen.getByTestId("status").textContent).toBe("subscribed");
 
     // Logout: same tab, PushProvider never unmounts (mounted above the router).
     authState = { status: "anonymous" };
     await act(async () => {
-      rerenderProvider(rerender);
+      rerenderProvider(rerender, queryClient);
     });
     apiPostMock.mockClear();
 
@@ -243,7 +373,7 @@ describe("PushProvider — changement de compte dans le même onglet (D-081)", (
     // the same `subA`, never revoked by logout), but must be re-attached to B server-side.
     authState = authenticatedAs(2);
     await act(async () => {
-      rerenderProvider(rerender);
+      rerenderProvider(rerender, queryClient);
     });
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledTimes(1));
     expect(apiPostMock).toHaveBeenCalledWith(
@@ -254,7 +384,7 @@ describe("PushProvider — changement de compte dans le même onglet (D-081)", (
 
     // Re-rendering again for the same user B must not fire a third call.
     await act(async () => {
-      rerenderProvider(rerender);
+      rerenderProvider(rerender, queryClient);
     });
     expect(apiPostMock).toHaveBeenCalledTimes(1);
   });
@@ -264,13 +394,13 @@ describe("PushProvider — changement de compte dans le même onglet (D-081)", (
     installBrowserStubs({ permission: "granted", existingSubscription: shared });
 
     authState = authenticatedAs(1);
-    const { rerender } = renderProvider();
+    const { rerender, queryClient } = renderProvider();
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledTimes(1));
 
     apiPostMock.mockClear();
     authState = authenticatedAs(2); // isAuthenticated stays true throughout
     await act(async () => {
-      rerenderProvider(rerender);
+      rerenderProvider(rerender, queryClient);
     });
 
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledTimes(1));
@@ -281,12 +411,12 @@ describe("PushProvider — changement de compte dans le même onglet (D-081)", (
     installBrowserStubs({ permission: "granted", existingSubscription: makeSubscription() });
 
     authState = authenticatedAs(1);
-    const { rerender } = renderProvider();
+    const { rerender, queryClient } = renderProvider();
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("subscribed"));
 
     authState = { status: "anonymous" };
     await act(async () => {
-      rerenderProvider(rerender);
+      rerenderProvider(rerender, queryClient);
     });
 
     // Recomputed fresh from the browser's actual state (refreshStatus()), not left over
@@ -298,12 +428,12 @@ describe("PushProvider — changement de compte dans le même onglet (D-081)", (
   it("pas de double réabonnement pour la même session utilisateur (re-render répété)", async () => {
     installBrowserStubs({ permission: "granted", existingSubscription: makeSubscription() });
     authState = authenticatedAs(1);
-    const { rerender } = renderProvider();
+    const { rerender, queryClient } = renderProvider();
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledTimes(1));
 
     for (let i = 0; i < 3; i++) {
       await act(async () => {
-        rerenderProvider(rerender);
+        rerenderProvider(rerender, queryClient);
       });
     }
 
@@ -313,12 +443,12 @@ describe("PushProvider — changement de compte dans le même onglet (D-081)", (
   it("nouvelle session avec permission 'default' : aucune demande de permission, aucun abonnement, statut correct", async () => {
     installBrowserStubs({ permission: "default" });
     authState = { status: "anonymous" };
-    const { rerender } = renderProvider();
+    const { rerender, queryClient } = renderProvider();
 
     const { requestPermission } = installBrowserStubs({ permission: "default" });
     authState = authenticatedAs(3);
     await act(async () => {
-      rerenderProvider(rerender);
+      rerenderProvider(rerender, queryClient);
     });
 
     expect(requestPermission).not.toHaveBeenCalled();
@@ -329,11 +459,11 @@ describe("PushProvider — changement de compte dans le même onglet (D-081)", (
   it("nouvelle session avec permission 'denied' : aucun abonnement, aucun Sentry technique, statut correct", async () => {
     installBrowserStubs({ permission: "denied" });
     authState = { status: "anonymous" };
-    const { rerender } = renderProvider();
+    const { rerender, queryClient } = renderProvider();
 
     authState = authenticatedAs(4);
     await act(async () => {
-      rerenderProvider(rerender);
+      rerenderProvider(rerender, queryClient);
     });
 
     expect(apiPostMock).not.toHaveBeenCalled();
@@ -437,10 +567,13 @@ describe("PushProvider — disponible dans n'importe quel shell (mobile ou deskt
   it("le hook fonctionne pour n'importe quel consommateur monté sous le même provider", () => {
     installBrowserStubs({ permission: "default" });
     render(
-      <PushProvider>
-        <Probe />
-        <Probe />
-      </PushProvider>,
+      withProviders(
+        <PushProvider>
+          <Probe />
+          <Probe />
+        </PushProvider>,
+        new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+      ),
     );
     const statuses = screen.getAllByTestId("status");
     expect(statuses).toHaveLength(2);

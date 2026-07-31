@@ -114,6 +114,23 @@ export async function fetchInstrumentistOffersWithFallback(
 }
 
 /**
+ * Lot 6 (audit PWA/mobile/admin 2026-07-29) — badge "offres non lues". Remplace un
+ * badge cumulatif (comptait toutes les offres OPEN disponibles, ne redescendait jamais
+ * en visitant l'écran Offres) par un compteur serveur filtrant sur
+ * `User.offersLastSeenAt`. Le frontend n'infère aucune éligibilité ni aucune date de
+ * dernière visite localement — la seule source de vérité est ce endpoint.
+ */
+export async function fetchOffersUnreadCount(): Promise<number> {
+  const { data } = await apiClient.get<{ unreadCount: number }>("/api/missions/offers/unread-count");
+  return data.unreadCount;
+}
+
+/** Checkpoint appelé quand l'écran Offres termine un chargement réussi (remet le badge à zéro côté serveur). */
+export async function markOffersSeen(): Promise<void> {
+  await apiClient.post("/api/me/offers-seen");
+}
+
+/**
  * Lot 3 — Mes missions instrumentiste (missions déjà “à moi”)
  *
  * IMPORTANT (backend):

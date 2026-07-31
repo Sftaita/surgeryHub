@@ -7,6 +7,7 @@ use App\Entity\Hospital;
 use App\Entity\SiteMembership;
 use App\Entity\User;
 use App\Repository\UserRepository;
+use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
@@ -16,6 +17,14 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 class UserAdministrationService
 {
     private const INVITATION_TTL_HOURS = 48;
+
+    /**
+     * Anti-spam guard for resendInvitation() (Lot 7, audit PWA/mobile/admin
+     * 2026-07-29) — previously an admin could resend in a tight loop (double-click,
+     * repeated clicks), each call invalidating the previous token before the
+     * instrumentist had any chance to use it.
+     */
+    private const RESEND_INVITATION_COOLDOWN_SECONDS = 60;
 
     private const ROLE_TO_SITE_ROLE = [
         'ROLE_INSTRUMENTIST' => 'INSTRUMENTIST',
@@ -141,7 +150,13 @@ class UserAdministrationService
      */
     public function changeRole(User $target, string $newRole, User $admin): User
     {
-        if (!isset(self::ROLE_TO_SITE_ROLE[$newRole])) {
+        // ROLE_ADMIN is accepted as a target despite being absent from ROLE_TO_SITE_ROLE
+        // (Lot 7, audit PWA/mobile/admin 2026-07-29 — this endpoint previously rejected
+        // it outright, leaving no controlled path to promote an existing account to
+        // admin other than a manual SQL edit). It has no canonical site-role label, same
+        // as today's "sites optional, never required" status for MANAGER/ADMIN in
+        // ROLES_REQUIRING_SITE below — see the site-membership handling further down.
+        if ($newRole !== 'ROLE_ADMIN' && !isset(self::ROLE_TO_SITE_ROLE[$newRole])) {
             throw new BadRequestHttpException('Invalid role: '.$newRole);
         }
 
@@ -158,12 +173,20 @@ class UserAdministrationService
 
         $oldRoles = $target->getRoles();
         $oldRole  = $this->extractBusinessRole($oldRoles);
-        $newSiteRole = self::ROLE_TO_SITE_ROLE[$newRole];
 
+        // setRoles() on the existing, managed $target entity — an UPDATE on flush, never
+        // an INSERT, so this can never create a duplicate user for the same account.
         $target->setRoles([$newRole]);
 
-        foreach ($target->getSiteMemberships() as $membership) {
-            $membership->setSiteRole($newSiteRole);
+        // Existing SiteMembership rows are preserved either way (never deleted here) —
+        // only their descriptive siteRole label is refreshed, and only for roles that
+        // have one. Promoting to ROLE_ADMIN keeps whatever labels the memberships
+        // already had rather than inventing a fictitious "ADMIN" site role.
+        if (isset(self::ROLE_TO_SITE_ROLE[$newRole])) {
+            $newSiteRole = self::ROLE_TO_SITE_ROLE[$newRole];
+            foreach ($target->getSiteMemberships() as $membership) {
+                $membership->setSiteRole($newSiteRole);
+            }
         }
 
         $this->audit->userRoleChanged($admin, $target, $oldRole, $newRole);
@@ -175,24 +198,71 @@ class UserAdministrationService
     /**
      * Régénère le token d'invitation et renvoie l'email.
      * L'ancien token est invalide dès le flush.
+     *
+     * Concurrence (revue post-rapport, 2026-07-29) : le garde-fou "déjà activé" +
+     * l'anti-spam (cooldown) sont vérifiés ET appliqués sous verrou pessimiste
+     * (`SELECT ... FOR UPDATE`, transaction courte) — deux requêtes simultanées pour le
+     * même utilisateur se sérialisent ici, la seconde relit l'état déjà mis à jour par
+     * la première une fois son verrou obtenu, au lieu que les deux passent le contrôle
+     * de cooldown avant qu'aucune n'ait écrit (race condition classique
+     * check-then-act). Le verrou est relâché (commit) avant l'envoi de l'email : l'I/O
+     * lente ne doit jamais retenir un verrou de ligne.
      */
     public function resendInvitation(User $target, User $admin): User
     {
-        if ($target->getPassword() !== null) {
-            throw new ConflictHttpException('Account already activated — invitation cannot be resent.');
+        $shouldSend = false;
+
+        $this->em->wrapInTransaction(function () use ($target, &$shouldSend): void {
+            $this->em->lock($target, LockMode::PESSIMISTIC_WRITE);
+            // Le verrou peut avoir été obtenu après qu'une requête concurrente a déjà
+            // modifié cette ligne — on relit les champs pertinents depuis l'entité
+            // managée (Doctrine rafraîchit l'état via le SELECT ... FOR UPDATE ci-dessus)
+            // avant de décider, jamais depuis des valeurs capturées avant le verrou.
+
+            if ($target->getPassword() !== null) {
+                throw new ConflictHttpException('Account already activated — invitation cannot be resent.');
+            }
+
+            $lastSent = $target->getInvitationLastSentAt();
+            if ($lastSent !== null) {
+                $secondsSinceLastSend = (new \DateTimeImmutable())->getTimestamp() - $lastSent->getTimestamp();
+                if ($secondsSinceLastSend < self::RESEND_INVITATION_COOLDOWN_SECONDS) {
+                    throw new ConflictHttpException(sprintf(
+                        'Invitation was already resent %d second(s) ago — please wait at least %d seconds between resends.',
+                        max(0, $secondsSinceLastSend),
+                        self::RESEND_INVITATION_COOLDOWN_SECONDS,
+                    ));
+                }
+            }
+
+            $target
+                ->setInvitationToken(bin2hex(random_bytes(32)))
+                ->setInvitationExpiresAt(
+                    new \DateTimeImmutable(sprintf('+%d hours', self::INVITATION_TTL_HOURS))
+                );
+
+            $shouldSend = true;
+            // wrapInTransaction() flushes + commits (releasing the lock) right after this
+            // closure returns — no explicit flush()/commit needed here.
+        });
+
+        if ($shouldSend) {
+            try {
+                $this->notifications->sendUserInvitation($target);
+                $this->audit->userInvitationResent($admin, $target);
+                $this->em->flush();
+            } catch (\Throwable $e) {
+                // Mirrors createUser()'s resilience (see above): the regenerated token
+                // stays valid so the admin can simply retry — never rolled back just
+                // because the email transport failed. sendUserInvitation() only sets
+                // invitationLastSentAt after a successful send, so the cooldown above
+                // never blocks a retry caused by a transient mail failure.
+                $this->logger->warning('Could not resend invitation email for user {email}: {error}', [
+                    'email' => $target->getEmail(),
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
-
-        $target
-            ->setInvitationToken(bin2hex(random_bytes(32)))
-            ->setInvitationExpiresAt(
-                new \DateTimeImmutable(sprintf('+%d hours', self::INVITATION_TTL_HOURS))
-            );
-
-        $this->em->flush();
-
-        $this->notifications->sendUserInvitation($target);
-        $this->audit->userInvitationResent($admin, $target);
-        $this->em->flush();
 
         return $target;
     }

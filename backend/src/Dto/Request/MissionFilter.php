@@ -51,6 +51,14 @@ class MissionFilter
     #[Assert\Type('boolean')]
     public ?bool $eligibleToMe = null;
 
+    /**
+     * Only used programmatically (not part of the public query-string contract —
+     * see MissionFilter::fromQuery) by the offers "unread count" endpoint
+     * (GET /api/missions/offers/unread-count, Lot 6). Filters to missions created
+     * strictly after this timestamp, combined with eligibleToMe=true.
+     */
+    public ?\DateTimeImmutable $createdAfter = null;
+
     #[Assert\Positive]
     public ?int $page = 1;
 

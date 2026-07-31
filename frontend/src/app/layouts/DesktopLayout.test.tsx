@@ -70,6 +70,11 @@ vi.mock("../features/manager-catalogue/api/interventionTypeRequests.api", () => 
   getInterventionTypeRequests: (...args: unknown[]) => getInterventionTypeRequestsMock(...args),
 }));
 
+const fetchUnreadNotificationsCountMock = vi.fn();
+vi.mock("../features/notifications/api/notifications.api", () => ({
+  fetchUnreadNotificationsCount: (...args: unknown[]) => fetchUnreadNotificationsCountMock(...args),
+}));
+
 function renderLayout(initialPath = "/app/m/missions") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -80,6 +85,7 @@ function renderLayout(initialPath = "/app/m/missions") {
             <Route path="/app/m/dashboard" element={<div>Dashboard stub</div>} />
             <Route path="/app/m/profile" element={<div>Profile stub</div>} />
             <Route path="/app/m/missions" element={<div>Missions stub</div>} />
+            <Route path="/app/m/notifications" element={<div>Notifications stub</div>} />
             <Route path="/app/m/catalogue/requests" element={<div>Requests stub</div>} />
             <Route path="/app/admin/outbound-notifications" element={<div>Outbound notifications stub</div>} />
           </Route>
@@ -99,6 +105,7 @@ beforeEach(() => {
   pwaOnActionMock.mockReset();
   getMaterialRequestsMock.mockReset().mockResolvedValue({ items: [] });
   getInterventionTypeRequestsMock.mockReset().mockResolvedValue({ items: [] });
+  fetchUnreadNotificationsCountMock.mockReset().mockResolvedValue(0);
 });
 
 describe("DesktopLayout — entrée ADMIN Historique des notifications", () => {
@@ -150,6 +157,41 @@ describe("DesktopLayout — entrée ADMIN Historique des notifications", () => {
     expect(screen.getByRole("link", { name: "Sites" })).toHaveAttribute("href", "/app/admin/sites");
     expect(screen.getByRole("link", { name: "Invitations" })).toHaveAttribute("href", "/app/admin/invitations");
     expect(screen.getByRole("link", { name: "Audit" })).toHaveAttribute("href", "/app/admin/audit");
+  });
+});
+
+describe("DesktopLayout — Notifications (Lot 3, audit PWA/mobile/admin 2026-07-29)", () => {
+  it("affiche l'entrée Notifications pour MANAGER, absente auparavant", () => {
+    authRole = "MANAGER";
+    renderLayout();
+    expect(screen.getByRole("link", { name: "Notifications" })).toHaveAttribute("href", "/app/m/notifications");
+  });
+
+  it("le clic ouvre /app/m/notifications", async () => {
+    authRole = "MANAGER";
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("link", { name: "Notifications" }));
+
+    expect(await screen.findByText("Notifications stub")).toBeInTheDocument();
+  });
+
+  it("aucun badge quand il n'y a aucune notification non lue", async () => {
+    authRole = "MANAGER";
+    fetchUnreadNotificationsCountMock.mockResolvedValue(0);
+    renderLayout();
+
+    await screen.findByRole("link", { name: "Notifications" });
+    expect(screen.queryByText("3")).toBeNull();
+  });
+
+  it("affiche un badge avec le nombre de notifications non lues", async () => {
+    authRole = "MANAGER";
+    fetchUnreadNotificationsCountMock.mockResolvedValue(3);
+    renderLayout();
+
+    expect(await screen.findByText("3")).toBeInTheDocument();
   });
 });
 

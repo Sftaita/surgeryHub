@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Box } from "@mui/material";
 import { CloseButton } from "./CloseButton";
 import { HelpButton } from "../../features/help/HelpButton";
+import { dvh } from "../dvh";
 
 const SHADOW_XL = "0 10px 24px rgba(22,32,43,.10), 0 28px 60px rgba(22,32,43,.16)";
 // docs/design/animations/animations.md — "Fermetures" : le prototype ferme sans
@@ -96,7 +97,7 @@ export function SheetModal({ open, title, onClose, closeDisabled, children, step
           aria-modal="true"
           aria-label={title}
           sx={{
-            background: "#fff", boxShadow: SHADOW_XL, maxHeight: mobileMaxHeight, overflowY: "auto",
+            background: "#fff", boxShadow: SHADOW_XL, ...dvh("maxHeight", mobileMaxHeight), overflowY: "auto",
             width: "100%", borderRadius: "26px 26px 0 0",
             padding: "20px 20px calc(24px + env(safe-area-inset-bottom))",
             animation: closing

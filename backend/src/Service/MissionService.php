@@ -469,6 +469,11 @@ class MissionService
             $qb->setParameter('isFreelancer', $isFreelancer);
             $qb->setParameter('scopeTargeted', PublicationScope::TARGETED);
             $qb->setParameter('scopePool', PublicationScope::POOL);
+
+            // Lot 6 (offers "unread" badge) — programmatic-only filter, see MissionFilter.
+            if ($filter->createdAfter !== null) {
+                $qb->andWhere('m.createdAt > :createdAfter')->setParameter('createdAfter', $filter->createdAfter);
+            }
         } else {
             if ($statusList !== null) {
                 if (count($statusList) === 1) {

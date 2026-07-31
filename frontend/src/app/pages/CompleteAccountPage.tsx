@@ -18,6 +18,7 @@ import {
 } from "../features/invitation/api/invitation.api";
 import { AvatarUploader } from "../ui/avatar/AvatarUploader";
 import { markAccountJustActivated } from "../features/me/justActivatedAccountFlag";
+import { dvh } from "../ui/dvh";
 
 function validateForm(fields: {
   firstname: string;
@@ -411,7 +412,7 @@ function PageShell({ children }: { children: React.ReactNode }) {
   return (
     <Box
       sx={{
-        minHeight: "100vh",
+        ...dvh("minHeight", "100vh"),
         display: "flex",
         alignItems: "center",
         justifyContent: "center",

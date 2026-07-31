@@ -89,11 +89,31 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[ORM\Column(length: 255, nullable: true)]
     private ?string $profilePicturePath = null;
 
+    /**
+     * Set when the invitation email was successfully DISPATCHED to Messenger
+     * (NotificationService::sendUserInvitation → EmailService::sendTemplatedEmail,
+     * async transport — see docs/production.md). This is NOT a delivery
+     * confirmation: actual SMTP send happens later, out of band, and can still fail
+     * without ever updating this field (revue post-rapport, 2026-07-29). Used only as
+     * the resend-invitation anti-spam checkpoint (60s cooldown) and for the admin UI's
+     * "dernier envoi" hint — never read as proof the instrumentiste received anything.
+     */
     #[ORM\Column(nullable: true)]
     private ?\DateTimeImmutable $invitationLastSentAt = null;
 
     #[ORM\Column(nullable: true)]
     private ?\DateTimeImmutable $instrumentistOnboardingCompletedAt = null;
+
+    /**
+     * Checkpoint pour le badge "offres non lues" (audit PWA/mobile/admin 2026-07-29,
+     * Lot 6) — remplace un badge cumulatif qui comptait toutes les offres OPEN sans
+     * distinction de nouveauté. Mis à jour via POST /api/me/offers-seen quand l'écran
+     * Offres termine un chargement réussi ; le compteur (GET
+     * /api/missions/offers/unread-count) compte les missions OPEN éligibles créées
+     * après cette date. Null = jamais consulté (le compteur compte alors tout).
+     */
+    #[ORM\Column(nullable: true)]
+    private ?\DateTimeImmutable $offersLastSeenAt = null;
 
     /**
      * @var Collection<int, SiteMembership>
@@ -334,6 +354,17 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setInstrumentistOnboardingCompletedAt(?\DateTimeImmutable $instrumentistOnboardingCompletedAt): static
     {
         $this->instrumentistOnboardingCompletedAt = $instrumentistOnboardingCompletedAt;
+        return $this;
+    }
+
+    public function getOffersLastSeenAt(): ?\DateTimeImmutable
+    {
+        return $this->offersLastSeenAt;
+    }
+
+    public function setOffersLastSeenAt(?\DateTimeImmutable $offersLastSeenAt): static
+    {
+        $this->offersLastSeenAt = $offersLastSeenAt;
         return $this;
     }
 

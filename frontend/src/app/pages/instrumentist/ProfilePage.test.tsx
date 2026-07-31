@@ -38,6 +38,16 @@ vi.mock("../../features/pwa-install/PwaInstallMenuItem", () => ({
   PwaInstallMenuItem: () => null,
 }));
 
+// Lot 3 notifications (audit PWA/mobile/admin 2026-07-29) — hors périmètre de ce
+// fichier (photo/spécialités), voir PushPermissionCard.test.tsx /
+// NotificationPreferencesSection.test.tsx pour leur propre couverture.
+vi.mock("../../features/push/PushPermissionCard", () => ({
+  PushPermissionCard: () => null,
+}));
+vi.mock("../../features/notifications/NotificationPreferencesSection", () => ({
+  NotificationPreferencesSection: () => null,
+}));
+
 const requestReplayMock = vi.fn();
 vi.mock("../../features/instrumentist-onboarding/InstrumentistOnboardingReplayContext", () => ({
   useInstrumentistOnboardingReplay: () => ({ requestReplay: requestReplayMock }),

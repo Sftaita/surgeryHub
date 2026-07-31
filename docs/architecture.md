@@ -1894,12 +1894,29 @@ sélectives complètes, rappel de 19 h et mises à jour applicatives restent hor
 
 **Frontend**
 - `frontend/src/app/features/push/PushProvider.tsx` — provider React monté une seule
-  fois, à la racine authentifiée (`AppProviders.tsx`, à l'intérieur d'`AuthProvider`),
+  fois à la toute racine de l'app (`main.tsx` → `AppProviders.tsx` → `PushProvider`,
+  au-dessus du router, à l'intérieur d'`AuthProvider` mais **jamais conditionné par
+  l'état d'authentification** — la page publique `/` avant login le monte tout autant),
   donc disponible pour `MobileLayout` **et** `DesktopLayout` sans duplication (avant ce
   lot, seul `MobileLayout` le montait — chirurgiens/managers/admins ne pouvaient jamais
   s'abonner). Expose l'état `PushNotificationStatus` (`unsupported` /
   `permission-default` / `permission-denied` / `subscribing` / `subscribed` / `error`) et
   `subscribe()`/`unsubscribe()`/`refreshStatus()`.
+  - **Enregistrement du service worker — indépendant du Push (confirmé, revue
+    post-rapport 2026-07-29) :** l'effet qui appelle `registerServiceWorker()`
+    (`useEffect` gardé uniquement par la détection de support navigateur, jamais par
+    `Notification.permission`, ni par un `PushSubscription`, ni par le rôle, ni par la
+    page visitée) s'exécute au montage de ce provider — donc dès le premier chargement
+    de l'app, pour tout le monde, y compris `Notification.permission === "denied"` ou
+    un visiteur non authentifié. La création d'un `PushSubscription` (consentement
+    explicite, `subscribe()`) reste un chemin strictement séparé, jamais déclenché
+    automatiquement. Couvert par `frontend/src/app/features/push/PushProvider.test.tsx`
+    (describe "enregistrement du service worker").
+  - **Nudge temps réel à la réception d'un push :** un second effet écoute les messages
+    `postMessage` du service worker (`type: "PUSH_NOTIFICATION"`) et, à leur réception,
+    affiche un toast et invalide la query react-query `["notifications"]` — c'est le
+    seul rôle restant de ce canal côté client, la persistance/le compteur/le statut lu
+    viennent uniquement du backend (`GET /api/notifications`, voir §13.1).
 - `frontend/src/app/features/push/pushSubscriptionClient.ts` — primitives non-React
   (`registerServiceWorker`, `subscribeToPush`, `unsubscribeFromPush`,
   `detachCurrentPushSubscription`) : gardées libres de toute dépendance à un contexte
@@ -2117,3 +2134,60 @@ un sandbox vide interdit scripts/formulaires/popups sans ajouter de dépendance)
 
 Politique initiale documentée (D-084) : contenu complet conservé 12 mois. Aucune purge
 automatique implémentée dans ce lot — hors périmètre, à traiter séparément.
+
+## 13. Notifications internes lisibles, préférences par catégorie, badge offres non lues (audit PWA/mobile/admin, D-086/D-087, 2026-07-29)
+
+Distinct de la section 12 (`OutboundNotification`, supervision ADMIN des envois
+Push/email) : cette section couvre `NotificationEvent` (in-app, ce que voit
+l'utilisateur destinataire lui-même) et le badge offres instrumentiste, deux modèles qui
+existaient déjà en base mais sans API de lecture ni UI avant ce lot.
+
+### 13.1 `NotificationEvent` — de l'écriture seule à un vrai cycle de vie
+
+`NotificationEvent` était persistée par `NotificationService::createInApp*()` à chaque
+événement métier pertinent (D-... Batch 7 et suivants), avec un champ `seenAt` jamais
+renseigné (`setSeenAt()` n'était appelé nulle part). `NotificationController`
+(`/api/notifications`, scopé `#[CurrentUser]`, sans Voter dédié — même convention que
+`PushSubscriptionController`) ajoute : liste + `unreadCount`, marquage individuel et
+global. Voir `docs/api.md` §41.1.
+
+Frontend : `useNotificationsFeed` (react-query, `frontend/src/app/features/notifications/`)
+sert la cloche + l'historique pour les deux familles de rôles — manager/admin
+(`ManagerNotificationsPage`, entrée sidebar `DesktopLayout.tsx` — ce layout n'a pas de
+topbar, le badge vit dans la nav groupée) et instrumentiste (`NotificationsPage.tsx`,
+entrée cloche `MobileLayout.tsx`). Même hook, même source de vérité serveur, cohérente
+entre appareils et entre les deux écrans.
+
+**Révision (revue post-rapport, 2026-07-29) :** l'ancien cache `localStorage`
+(`features/push/notifications.store.ts` + `useNotifications.ts`) — qui servait
+auparavant l'affichage côté instrumentiste, alimenté par le service worker — a été
+**entièrement retiré**, pas seulement synchronisé en plus : il ne restait qu'un
+doublon partiel et non fiable (perdu au changement d'appareil) de la source de vérité
+serveur désormais en place pour les deux rôles. Le nudge temps réel à la réception
+d'un push (toast immédiat + invalidation de la query `["notifications"]`) est assuré
+par `PushProvider` (§9), indépendamment de l'état de la permission Push de l'appareil
+courant — sans lui, le badge reste correct mais se met à jour au prochain
+`refetchInterval` (60 s) plutôt qu'instantanément.
+
+### 13.2 `NotificationPreference` — premier lecteur/écrivain
+
+`NotificationPreference` (Batch 15A) avait un resolver de défauts par catégorie
+(`DefaultNotificationPreferenceResolver`, déjà consommé par l'envoi réel) mais aucune
+API ni UI. `GET`/`PATCH /api/me/notification-preferences[/{type}]` (`MeController`) et
+`NotificationPreferencesSection` (frontend, montée sur les deux pages Profil) comblent
+ce vide. Un `PATCH` partiel matérialise une ligne amorcée depuis les valeurs déjà
+résolues — jamais de régression silencieuse d'un canal non touché. Le canal `push` est
+volontairement absent de cette UI : il dépend d'un abonnement d'appareil réel (§9,
+D-081), représenté par `PushPermissionCard` (les 4 états de permission, désormais
+partagés entre manager et instrumentiste — seul manager les avait tous avant ce lot).
+
+### 13.3 Badge "offres non lues" — checkpoint serveur, pas un inventaire
+
+`User.offersLastSeenAt` (nullable, migration `Version20260729140000`) remplace un badge
+qui affichait `items.length` du fetch `eligibleToMe=true` — un inventaire total, sans
+notion de lecture. `GET /api/missions/offers/unread-count` réutilise
+`MissionService::list()` (même règle d'éligibilité que `GET /api/missions`) avec un
+filtre additionnel programmatique (`MissionFilter::$createdAfter`, jamais exposé dans
+`fromQuery()` — pas de nouveau paramètre public sur l'endpoint générique). `POST
+/api/me/offers-seen` pose le checkpoint, appelé une fois par montage réussi
+d'`OffersPage`. Voir `docs/api.md` §41.3, D-087.

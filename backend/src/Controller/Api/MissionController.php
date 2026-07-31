@@ -286,6 +286,28 @@ class MissionController extends AbstractController
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }
 
+    /**
+     * Badge "offres non lues" (Lot 6, audit PWA/mobile/admin 2026-07-29) — remplace le
+     * badge cumulatif de la nav instrumentiste (comptait toutes les offres OPEN
+     * disponibles, sans notion de lecture, ne redescendait jamais en visitant l'écran
+     * Offres). Réutilise exactement la même logique d'éligibilité que
+     * `GET /api/missions?eligibleToMe=true` (MissionService::list, `createdAfter`
+     * programmatique) — pas de duplication de la règle métier. `limit=1` : seul le
+     * `total` de la pagination nous intéresse ici.
+     */
+    #[Route(path: '/offers/unread-count', name: 'api_missions_offers_unread_count', methods: ['GET'])]
+    public function offersUnreadCount(#[CurrentUser] User $user): JsonResponse
+    {
+        $filter = new MissionFilter();
+        $filter->eligibleToMe = true;
+        $filter->createdAfter = $user->getOffersLastSeenAt();
+        $filter->limit = 1;
+
+        $result = $this->missionService->list($filter, $user);
+
+        return $this->json(['unreadCount' => $result['total']]);
+    }
+
     #[Route(name: 'api_missions_list', methods: ['GET'])]
     public function list(Request $request, #[CurrentUser] User $user): JsonResponse
     {

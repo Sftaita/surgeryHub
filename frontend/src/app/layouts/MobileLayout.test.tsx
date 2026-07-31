@@ -27,6 +27,7 @@ vi.mock("../auth/AuthContext", () => ({
 vi.mock("../features/missions/api/missions.api", () => ({
   fetchMissions: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   fetchInstrumentistOffersWithFallback: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+  fetchOffersUnreadCount: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock("../features/missions/sync/useInstrumentistMissionSync", () => ({
@@ -48,8 +49,8 @@ vi.mock("../features/push/usePushNotifications", () => ({
   }),
 }));
 
-vi.mock("../features/push/useNotifications", () => ({
-  useNotifications: () => ({ badgeLabel: undefined }),
+vi.mock("../features/notifications/api/notifications.api", () => ({
+  fetchUnreadNotificationsCount: vi.fn().mockResolvedValue(0),
 }));
 
 // Hors périmètre de ce fichier (refonte navigation) — voir MobileLayout.push.test.tsx
@@ -68,7 +69,7 @@ function mockDesktop(isDesktop: boolean) {
 
 function renderLayout(initialPath = "/app/i/today") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
@@ -81,6 +82,7 @@ function renderLayout(initialPath = "/app/i/today") {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...result, queryClient };
 }
 
 describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste-nav)", () => {
@@ -213,17 +215,38 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
       expect(within(nav).getByRole("button", { name: "Planning" })).not.toHaveAttribute("aria-current");
     });
 
-    it("affiche le badge sur Offres quand des offres sont en attente", async () => {
+    it("affiche le badge sur Offres — nombre d'offres NON LUES (Lot 6), pas le total disponible", async () => {
       mockDesktop(false);
-      const { fetchInstrumentistOffersWithFallback } = await import("../features/missions/api/missions.api");
+      const { fetchInstrumentistOffersWithFallback, fetchOffersUnreadCount } = await import("../features/missions/api/missions.api");
+      // Volontairement différent du total (5) pour prouver que le badge ne dérive plus
+      // de items.length (comportement pré-Lot 6) mais du compteur serveur dédié.
       (fetchInstrumentistOffersWithFallback as unknown as Mock).mockResolvedValue({
-        items: [{ id: 1 }, { id: 2 }, { id: 3 }],
-        total: 3,
+        items: [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }],
+        total: 5,
       });
+      (fetchOffersUnreadCount as unknown as Mock).mockResolvedValue(3);
       renderLayout();
 
       const nav = await screen.findByRole("navigation", { name: "Navigation instrumentiste" });
       expect(await within(nav).findByText("3")).toBeInTheDocument();
+    });
+
+    it("une erreur réseau sur un refetch en arrière-plan ne remet jamais le badge à zéro (revue post-rapport)", async () => {
+      mockDesktop(false);
+      const { fetchOffersUnreadCount } = await import("../features/missions/api/missions.api");
+      (fetchOffersUnreadCount as unknown as Mock).mockResolvedValueOnce(4);
+      const { queryClient } = renderLayout();
+
+      const nav = await screen.findByRole("navigation", { name: "Navigation instrumentiste" });
+      expect(await within(nav).findByText("4")).toBeInTheDocument();
+
+      // Un refetch en arrière-plan échoue (ex: coupure réseau transitoire) — react-query
+      // conserve la dernière valeur connue tant qu'un succès ne l'écrase pas ; le badge
+      // ne doit jamais retomber silencieusement à 0/disparaître à cause de cet échec.
+      (fetchOffersUnreadCount as unknown as Mock).mockRejectedValueOnce(new Error("network down"));
+      await queryClient.refetchQueries({ queryKey: ["missions", "offers", "unread-count"] }).catch(() => {});
+
+      expect(within(nav).getByText("4")).toBeInTheDocument();
     });
   });
 
@@ -234,6 +257,24 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
 
       await userEvent.click(await screen.findByRole("button", { name: "Notifications" }));
       expect(mockNavigate).toHaveBeenCalledWith("/app/i/notifications");
+    });
+
+    it("le badge de la cloche vient du compteur serveur (Lot 3, revue post-rapport) — plus de cache local", async () => {
+      mockDesktop(false);
+      const { fetchUnreadNotificationsCount } = await import("../features/notifications/api/notifications.api");
+      (fetchUnreadNotificationsCount as unknown as Mock).mockResolvedValue(3);
+      renderLayout();
+
+      expect(await screen.findByRole("button", { name: "3 notifications non lues" })).toBeInTheDocument();
+    });
+
+    it("aucun libellé numéroté quand il n'y a aucune notification non lue", async () => {
+      mockDesktop(false);
+      const { fetchUnreadNotificationsCount } = await import("../features/notifications/api/notifications.api");
+      (fetchUnreadNotificationsCount as unknown as Mock).mockResolvedValue(0);
+      renderLayout();
+
+      expect(await screen.findByRole("button", { name: "Notifications" })).toBeInTheDocument();
     });
 
     it("le bouton Compte ouvre le menu compte avec Mon profil et Se déconnecter", async () => {
@@ -316,6 +357,18 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
       expect(screen.queryByRole("navigation", { name: "Navigation instrumentiste" })).not.toBeInTheDocument();
       expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Compte" })).not.toBeInTheDocument();
+    });
+  });
+
+  describe("iOS safe-area (Lot 4, audit PWA/mobile/admin 2026-07-29)", () => {
+    it("le header mobile compense l'encoche/Dynamic Island via env(safe-area-inset-top)", () => {
+      mockDesktop(false);
+      renderLayout();
+
+      const emittedCss = Array.from(document.querySelectorAll("style"))
+        .map((el) => el.textContent ?? "")
+        .join("\n");
+      expect(emittedCss).toMatch(/env\(safe-area-inset-top\)/);
     });
   });
 });

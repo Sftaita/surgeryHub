@@ -1,11 +1,13 @@
-import { Box, Button, Chip, CircularProgress, Paper, Stack, Typography } from "@mui/material";
+import { Box, Chip, CircularProgress, Paper, Stack, Typography } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PersonOutlineOutlinedIcon from "@mui/icons-material/PersonOutlineOutlined";
 
 import { fetchMe, uploadProfilePicture } from "../../features/me/api/me.api";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../../ui/toast/useToast";
-import { usePushNotifications } from "../../features/push/usePushNotifications";
+import { PushPermissionCard } from "../../features/push/PushPermissionCard";
+import { NotificationPreferencesSection } from "../../features/notifications/NotificationPreferencesSection";
+import { PwaInstallMenuItem } from "../../features/pwa-install/PwaInstallMenuItem";
 import { AvatarUploader } from "../../ui/avatar/AvatarUploader";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { PageHeader } from "../../ui/PageHeader";
@@ -40,7 +42,6 @@ export default function ProfilePage() {
   const { refreshUser } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
-  const { status: pushStatus, subscribe: subscribeToPush } = usePushNotifications();
 
   const meQuery = useQuery({ queryKey: ["me"], queryFn: fetchMe });
 
@@ -115,36 +116,10 @@ export default function ProfilePage() {
           </Typography>
         </Paper>
 
-        <Paper variant="outlined" sx={{ p: 2, borderRadius: 3 }}>
-          <Typography variant="subtitle1" fontWeight={700} mb={1}>
-            Notifications
-          </Typography>
-          {pushStatus === "permission-default" && (
-            <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1}>
-              <Typography variant="body2" color="text.secondary">
-                Activez les notifications pour rester informé des nouvelles demandes.
-              </Typography>
-              <Button variant="outlined" size="small" onClick={() => void subscribeToPush()}>
-                Activer
-              </Button>
-            </Stack>
-          )}
-          {pushStatus === "subscribed" && (
-            <Typography variant="body2" color="text.secondary">
-              Notifications activées sur cet appareil.
-            </Typography>
-          )}
-          {pushStatus === "permission-denied" && (
-            <Typography variant="body2" color="text.secondary">
-              Notifications bloquées par le navigateur. Modifiez ce réglage dans les paramètres du navigateur pour les réactiver.
-            </Typography>
-          )}
-          {pushStatus === "unsupported" && (
-            <Typography variant="body2" color="text.secondary">
-              Les notifications ne sont pas prises en charge par ce navigateur.
-            </Typography>
-          )}
-        </Paper>
+        <PushPermissionCard />
+        <NotificationPreferencesSection />
+
+        <PwaInstallMenuItem />
       </Stack>
     </Box>
   );

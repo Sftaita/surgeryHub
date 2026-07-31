@@ -41,7 +41,9 @@ import { usePushNotifications } from "../features/push/usePushNotifications";
 import { usePwaInstallMenuState } from "../features/pwa-install/usePwaInstallMenuState";
 import { getMaterialRequests } from "../features/manager-catalogue/api/catalogue.api";
 import { getInterventionTypeRequests } from "../features/manager-catalogue/api/interventionTypeRequests.api";
+import { fetchUnreadNotificationsCount } from "../features/notifications/api/notifications.api";
 import { useNavBadgeCount } from "../ui/hooks/useNavBadgeCount";
+import { dvh } from "../ui/dvh";
 import { PersonAvatar } from "../ui/avatar/PersonAvatar";
 import { resolveApiAssetUrl } from "../api/apiAssetUrl";
 
@@ -115,6 +117,7 @@ const NAV_ITEMS = [
   { label: "Instrumentistes", href: "/app/m/instrumentists", icon: BadgeOutlinedIcon },
   { label: "Chirurgiens", href: "/app/m/surgeons", icon: PersonOutlineOutlinedIcon },
   { label: "Établissements", href: "/app/m/hospitals", icon: ApartmentOutlinedIcon },
+  { label: "Notifications", href: "/app/m/notifications", icon: NotificationsActiveOutlinedIcon },
   {
     label: "Catalogue",
     children: [
@@ -172,13 +175,17 @@ export function DesktopLayout() {
     async () => (await getInterventionTypeRequests({ status: "PENDING" })).items.length,
   );
   const pendingCount = pendingMaterialCount + pendingInterventionCount;
+  const unreadNotificationsCount = useNavBadgeCount(
+    ["notifications", "unread-count"],
+    fetchUnreadNotificationsCount,
+  );
 
   const fullName = isAuthenticated
     ? `${state.user.firstname ?? ""} ${state.user.lastname ?? ""}`.trim() || "Mon compte"
     : "";
 
   return (
-    <Box sx={{ display: "flex", minHeight: "100vh" }}>
+    <Box sx={{ display: "flex", ...dvh("minHeight", "100vh") }}>
       <Drawer
         variant="permanent"
         sx={{
@@ -237,12 +244,27 @@ export function DesktopLayout() {
                   );
                 }
 
+                const isNotifications = item.href === "/app/m/notifications";
                 return (
                   <NavItem key={item.href} href={item.href} icon={item.icon}>
-                    <ListItemText
-                      primary={item.label}
-                      primaryTypographyProps={{ sx: { fontSize: "inherit", fontWeight: "inherit" } }}
-                    />
+                    {isNotifications && unreadNotificationsCount > 0 ? (
+                      <Badge
+                        badgeContent={unreadNotificationsCount}
+                        color="error"
+                        aria-label={`${unreadNotificationsCount} notification${unreadNotificationsCount > 1 ? "s" : ""} non lue${unreadNotificationsCount > 1 ? "s" : ""}`}
+                        sx={{ "& .MuiBadge-badge": { right: -14, top: 1 } }}
+                      >
+                        <ListItemText
+                          primary={item.label}
+                          primaryTypographyProps={{ sx: { fontSize: "inherit", fontWeight: "inherit" } }}
+                        />
+                      </Badge>
+                    ) : (
+                      <ListItemText
+                        primary={item.label}
+                        primaryTypographyProps={{ sx: { fontSize: "inherit", fontWeight: "inherit" } }}
+                      />
+                    )}
                   </NavItem>
                 );
               })}

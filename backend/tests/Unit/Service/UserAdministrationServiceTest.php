@@ -35,6 +35,18 @@ final class UserAdministrationServiceTest extends TestCase
         $this->audit         = $this->createMock(UserAuditService::class);
         $this->logger        = $this->createMock(LoggerInterface::class);
 
+        // resendInvitation() wraps its check-then-act in wrapInTransaction()+lock()
+        // (pessimistic write lock, revue post-rapport 2026-07-29) — the mock must
+        // actually invoke the given closure (or none of that logic would ever run) and
+        // flush afterwards, mirroring wrapInTransaction()'s real behavior (flush then
+        // commit; never reached if the closure throws, same as the real implementation).
+        $this->em->method('wrapInTransaction')->willReturnCallback(function (callable $func) {
+            $result = $func();
+            $this->em->flush();
+            return $result;
+        });
+        $this->em->method('lock')->willReturnCallback(function (): void {});
+
         $this->service = new UserAdministrationService(
             $this->em,
             $this->users,
@@ -251,7 +263,47 @@ final class UserAdministrationServiceTest extends TestCase
 
         $admin  = $this->buildAdmin();
         $target = $this->buildUserWithId(2, ['ROLE_INSTRUMENTIST']);
-        $this->service->changeRole($target, 'ROLE_ADMIN', $admin);
+        $this->service->changeRole($target, 'ROLE_BOGUS', $admin);
+    }
+
+    /**
+     * Lot 7 (audit PWA/mobile/admin 2026-07-29) — ROLE_ADMIN is now an accepted
+     * changeRole target (was previously always rejected as "invalid", see the
+     * ROLE_BOGUS case above which replaces this one). setRoles() runs on the existing
+     * managed $target entity — an UPDATE on flush, never an INSERT — so promoting an
+     * existing account can never create a duplicate user.
+     */
+    public function testChangeRoleToAdminSucceedsAndPreservesSiteMemberships(): void
+    {
+        $admin  = $this->buildAdmin();
+        $target = $this->buildUserWithId(42, ['ROLE_MANAGER']);
+
+        $site       = $this->buildSite(1, 'CHU');
+        $membership = new SiteMembership();
+        $membership->setSite($site)->setUser($target)->setSiteRole('MANAGER');
+        $target->addSiteMembership($membership);
+
+        $this->em->expects(self::once())->method('flush');
+        $this->audit->expects(self::once())->method('userRoleChanged');
+
+        $result = $this->service->changeRole($target, 'ROLE_ADMIN', $admin);
+
+        self::assertContains('ROLE_ADMIN', $result->getRoles());
+        self::assertCount(1, $result->getSiteMemberships(), 'Existing site memberships must survive promotion to admin');
+        self::assertSame('MANAGER', $membership->getSiteRole(), 'ROLE_ADMIN has no canonical site-role label — existing labels are left untouched, not overwritten');
+    }
+
+    public function testChangeRoleToAdminSucceedsWithoutAnySite(): void
+    {
+        $admin  = $this->buildAdmin();
+        $target = $this->buildUserWithId(2, ['ROLE_INSTRUMENTIST']);
+
+        $this->em->expects(self::once())->method('flush');
+        $this->audit->expects(self::once())->method('userRoleChanged');
+
+        $result = $this->service->changeRole($target, 'ROLE_ADMIN', $admin);
+
+        self::assertContains('ROLE_ADMIN', $result->getRoles());
     }
 
     public function testChangeRoleThrowsWhenTargetHasNoSiteAndNewRoleRequiresSite(): void
@@ -308,6 +360,77 @@ final class UserAdministrationServiceTest extends TestCase
         self::assertNotSame('old-token', $result->getInvitationToken());
         self::assertNotNull($result->getInvitationExpiresAt());
         self::assertGreaterThan(new \DateTimeImmutable(), $result->getInvitationExpiresAt());
+    }
+
+    /**
+     * Preuve mécanique (revue post-rapport, 2026-07-29) que le check-then-act
+     * (activé ? / cooldown ?) tourne sous verrou pessimiste — pas seulement un
+     * contrôle applicatif racy. Complète (ne remplace pas) la preuve d'intégration
+     * réelle en base (OffersUnreadCountControllerTest reste single-process ; voir
+     * ResendInvitationConcurrencyTest pour la preuve MySQL multi-connexion).
+     */
+    public function testResendInvitationAcquiresAPessimisticWriteLockBeforeCheckingCooldown(): void
+    {
+        $admin  = $this->buildAdmin();
+        $target = $this->buildUser(['ROLE_INSTRUMENTIST']);
+
+        $this->em->expects(self::once())->method('lock')
+            ->with($target, \Doctrine\DBAL\LockMode::PESSIMISTIC_WRITE);
+        $this->em->expects(self::once())->method('wrapInTransaction');
+
+        $this->service->resendInvitation($target, $admin);
+    }
+
+    /**
+     * Lot 7 (audit PWA/mobile/admin 2026-07-29) — anti-spam guard, absent before this
+     * lot (an admin could resend in a tight loop, each call invalidating the previous
+     * token before the instrumentist had any chance to use it).
+     */
+    public function testResendInvitationThrowsWhenResentTooRecently(): void
+    {
+        $this->expectException(ConflictHttpException::class);
+        $this->expectExceptionMessage('wait at least');
+
+        $admin  = $this->buildAdmin();
+        $target = $this->buildUser(['ROLE_INSTRUMENTIST']);
+        $target->setInvitationLastSentAt(new \DateTimeImmutable('-5 seconds'));
+
+        $this->notifications->expects(self::never())->method('sendUserInvitation');
+
+        $this->service->resendInvitation($target, $admin);
+    }
+
+    public function testResendInvitationSucceedsOnceCooldownHasElapsed(): void
+    {
+        $admin  = $this->buildAdmin();
+        $target = $this->buildUser(['ROLE_INSTRUMENTIST']);
+        $target->setInvitationLastSentAt(new \DateTimeImmutable('-5 minutes'));
+
+        $this->notifications->expects(self::once())->method('sendUserInvitation');
+        $this->audit->expects(self::once())->method('userInvitationResent');
+
+        $this->service->resendInvitation($target, $admin);
+    }
+
+    /**
+     * Before this lot, a failed sendUserInvitation() call propagated as an uncaught
+     * exception even though the token had already been regenerated and flushed —
+     * leaving the old link dead, no new one sent, and no audit trail of what
+     * happened. createUser() already had this resilience; resendInvitation() did not.
+     */
+    public function testResendInvitationDoesNotThrowWhenEmailSendingFails(): void
+    {
+        $admin  = $this->buildAdmin();
+        $target = $this->buildUser(['ROLE_INSTRUMENTIST']);
+        $target->setInvitationToken('old-token');
+
+        $this->notifications->method('sendUserInvitation')->willThrowException(new \RuntimeException('SMTP down'));
+        $this->audit->expects(self::never())->method('userInvitationResent');
+        $this->logger->expects(self::once())->method('warning');
+
+        $result = $this->service->resendInvitation($target, $admin);
+
+        self::assertNotSame('old-token', $result->getInvitationToken(), 'Token must still be regenerated so the admin can simply retry');
     }
 
     // ── computeInvitationStatus ───────────────────────────────────────────────

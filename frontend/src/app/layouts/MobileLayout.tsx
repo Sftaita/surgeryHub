@@ -5,12 +5,13 @@ import type { SxProps, Theme } from "@mui/material";
 
 import { useQuery } from "@tanstack/react-query";
 import { usePushNotifications } from "../features/push/usePushNotifications";
-import { useNotifications } from "../features/push/useNotifications";
+import { fetchUnreadNotificationsCount } from "../features/notifications/api/notifications.api";
 import { PwaInstallBanner } from "../features/pwa-install/PwaInstallBanner";
 import { useAuth } from "../auth/AuthContext";
-import { fetchMissions, fetchInstrumentistOffersWithFallback } from "../features/missions/api/missions.api";
+import { fetchMissions, fetchInstrumentistOffersWithFallback, fetchOffersUnreadCount } from "../features/missions/api/missions.api";
 import { useInstrumentistMissionSync } from "../features/missions/sync/useInstrumentistMissionSync";
 import { resetScrollRestoration, useRouteScrollRestoration, recordEncodingOrigin } from "./scrollRestoration";
+import { dvh } from "../ui/dvh";
 import dayjs from "dayjs";
 import "dayjs/locale/fr";
 
@@ -179,7 +180,7 @@ function BrandBand({
   subtitle,
   titleKey,
   initials,
-  hasUnread,
+  unreadCount,
   onBell,
   onAvatar,
 }: {
@@ -191,10 +192,14 @@ function BrandBand({
   /** Changes on every navigation — forces shTitleA/B to replay (docs/design/animations §2). */
   titleKey: string;
   initials: string;
-  hasUnread: boolean;
+  unreadCount: number;
   onBell: () => void;
   onAvatar: (e: React.MouseEvent<HTMLElement>) => void;
 }) {
+  const hasUnread = unreadCount > 0;
+  const bellLabel = hasUnread
+    ? `${unreadCount} notification${unreadCount > 1 ? "s" : ""} non lue${unreadCount > 1 ? "s" : ""}`
+    : "Notifications";
   return (
     <Box sx={isDesktop ? { maxWidth: 760, mx: "auto", width: "100%", px: "20px", pt: "22px" } : { width: "100%" }}>
       <Box
@@ -203,7 +208,10 @@ function BrandBand({
           overflow: "hidden",
           background: `linear-gradient(140deg, ${GREEN_800} 0%, ${GREEN_600} 62%, ${GREEN_500} 118%)`,
           borderRadius: isDesktop ? "24px" : "0 0 28px 28px",
-          padding: isDesktop ? "22px 26px 58px" : "12px 20px 56px",
+          // Fond du header jusque dans la safe area iOS (encoche / Dynamic Island) —
+          // seul le bas était compensé avant ce lot (audit PWA/mobile/admin 2026-07-29,
+          // Lot 4) ; le padding-top fixe laissait le logo/la cloche sous l'encoche.
+          padding: isDesktop ? "22px 26px 58px" : "calc(12px + env(safe-area-inset-top)) 20px 56px",
         }}
       >
         <BandWaves activeKey={activeKey} kick={waveKick} />
@@ -225,7 +233,7 @@ function BrandBand({
           <Box
             component="button"
             type="button"
-            aria-label="Notifications"
+            aria-label={bellLabel}
             onClick={onBell}
             sx={{
               position: "relative",
@@ -367,7 +375,7 @@ function DesktopSidebar({
         pb: "14px",
         position: "sticky",
         top: 0,
-        height: "100vh",
+        ...dvh("height", "100vh"),
       }}
     >
       <Box sx={{ display: "flex", alignItems: "center", gap: "11px", px: "10px" }}>
@@ -705,8 +713,28 @@ export function MobileLayout() {
   });
   const offersCount = offersData?.items?.length ?? 0;
 
+  // Lot 6 (audit PWA/mobile/admin 2026-07-29) — le badge nav utilise un compteur
+  // serveur dédié (offres créées après User.offersLastSeenAt), distinct de
+  // `offersCount` ci-dessus qui reste "total d'offres actuellement disponibles"
+  // (utilisé pour le sous-titre de l'écran Offres, une information différente).
+  const { data: offersUnreadCount = 0 } = useQuery({
+    queryKey: ["missions", "offers", "unread-count"],
+    queryFn: fetchOffersUnreadCount,
+    enabled: isInstrumentist,
+    refetchInterval: isInstrumentist ? 60_000 : false,
+  });
+
   const { status: pushStatus, subscribe: subscribeToPush } = usePushNotifications();
-  const { badgeLabel } = useNotifications();
+
+  // Bascule serveur (audit PWA/mobile/admin 2026-07-29, revue post-rapport) — la
+  // cloche ne dépend plus d'un cache localStorage ni de l'état de la permission Push
+  // (cette requête tourne même si pushStatus === "permission-denied"/"unsupported").
+  const { data: notificationsUnreadCount = 0 } = useQuery({
+    queryKey: ["notifications", "unread-count"],
+    queryFn: fetchUnreadNotificationsCount,
+    enabled: isInstrumentist,
+    refetchInterval: isInstrumentist ? 60_000 : false,
+  });
 
   const firstname = state.status === "authenticated" ? state.user.firstname : null;
   const lastname = state.status === "authenticated" ? state.user.lastname : null;
@@ -737,7 +765,7 @@ export function MobileLayout() {
 
   if (!isInstrumentist) {
     return (
-      <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
+      <Box sx={{ ...dvh("minHeight", "100vh"), bgcolor: "background.default" }}>
         <Outlet />
       </Box>
     );
@@ -800,12 +828,12 @@ export function MobileLayout() {
   );
 
   return (
-    <Box sx={{ minHeight: "100vh", display: "flex", background: "#F5F7FA" }}>
+    <Box sx={{ ...dvh("minHeight", "100vh"), display: "flex", background: "#F5F7FA" }}>
       {isDesktop && (
         <DesktopSidebar
           activeKey={activeTab}
           onNavigate={(path) => navigate(path)}
-          offersCount={offersCount}
+          offersCount={offersUnreadCount}
           firstname={firstname}
           lastname={lastname}
           onLogout={handleLogout}
@@ -822,7 +850,7 @@ export function MobileLayout() {
             subtitle={subtitle}
             titleKey={pathname}
             initials={initialsOf(firstname, lastname)}
-            hasUnread={!!badgeLabel}
+            unreadCount={notificationsUnreadCount}
             onBell={() => navigate("/app/i/notifications")}
             onAvatar={(e) => setMenuAnchor(e.currentTarget)}
           />
@@ -834,7 +862,7 @@ export function MobileLayout() {
         <MobileBottomNav
           activeKey={activeTab}
           onNavigate={(path) => navigate(path)}
-          offersCount={offersCount}
+          offersCount={offersUnreadCount}
         />
       )}
 

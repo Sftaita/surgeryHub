@@ -5312,3 +5312,208 @@ affecteraient tous les clones et tags existants, décision hors périmètre loca
 rotation seule (ci-dessus) suffit à rendre l'ancienne clé inutilisable : une purge
 d'historique reste une option séparée, à planifier explicitement si l'exposition
 historique doit être supprimée du dépôt lui-même.
+
+---
+
+## D-086 — Les notifications internes deviennent lisibles côté serveur (GET /api/notifications, seenAt enfin écrit), avec parité manager/admin ; le cache localStorage instrumentiste est retiré, GET /api/notifications devient l'unique source de vérité pour les deux rôles (audit PWA/mobile/admin, Lot 3 — révisé lors de la revue post-rapport du 29-07-2026)
+
+Date : 29-07-2026
+
+### Contexte
+
+`NotificationEvent` (D-... Batch 7) était persistée à chaque événement métier pertinent
+mais n'était lue par aucune API — `seenAt` existait en base, avec un groupe de
+sérialisation `notification:read` prêt, mais `setSeenAt()` n'était appelé nulle part
+dans le code (grep confirmé). L'unique affichage utilisateur (cloche + badge + écran
+"Notifications") était un cache `localStorage` alimenté uniquement par les messages
+`postMessage` du service worker au moment d'un push — perdu au changement
+d'appareil/navigateur, jamais synchronisé avec le backend, et réservé à l'instrumentiste
+(`MobileLayout.tsx`) : manager/admin n'avaient ni cloche, ni badge, ni historique.
+
+### Décision — GET/POST /api/notifications, scopé `#[CurrentUser]`, sans Voter dédié
+
+Même convention que `PushSubscriptionController` (D-081) : une notification
+n'appartient qu'à son destinataire, la portée `#[CurrentUser]` suffit à l'autoriser.
+`GET /api/notifications` (liste + `unreadCount`), `GET /api/notifications/unread-count`
+(badge seul), `POST /api/notifications/{id}/seen` et `POST
+/api/notifications/mark-all-seen` (idempotents). Voir §41.1 de `docs/api.md`.
+
+### Décision — parité manager/admin, pas une nouvelle architecture parallèle
+
+`frontend/src/app/pages/manager/NotificationsPage.tsx` (nouvelle route
+`/app/m/notifications`) et l'entrée badge dans `DesktopLayout.tsx` (sidebar, pas de
+topbar dans ce layout) sont entièrement backés par le nouvel endpoint serveur — pas de
+cache local côté manager, contrairement à l'instrumentiste. Un même hook
+(`useNotificationsFeed`) et un même formatter (`notificationFormat.ts`, qui dérive un
+titre/corps lisible depuis `eventType`+`payload` car `NotificationEvent` ne stocke aucun
+texte préformaté) servent les deux écrans.
+
+### Décision révisée — le cache local instrumentiste est retiré, pas seulement augmenté
+
+Choix initial (Lot 3) : garder `useNotifications`/`notifications.store.ts`
+(localStorage, alimenté par le service worker) pour l'affichage instantané côté
+instrumentiste, en synchronisant seulement `seenAt` côté serveur en plus — jugé plus
+prudent qu'une réécriture, avec plusieurs fichiers de tests déjà verts dessus. Limite
+explicitement actée à l'époque : deux systèmes coexistants, jamais unifiés.
+
+**Révision (revue post-rapport, 2026-07-29) :** ce compromis maintenait deux sources
+de vérité pour la même donnée (l'historique affiché restait local, potentiellement
+différent du serveur), contraire à l'exigence "le backend doit être la source de
+vérité finale, jamais `localStorage`". `NotificationsPage.tsx` (instrumentiste) est
+réécrite pour utiliser `useNotificationsFeed()` — exactement le même hook que la page
+manager — et `features/push/notifications.store.ts` + `useNotifications.ts` sont
+**supprimés** (plus aucun consommateur, vérifié par recherche exhaustive avant
+suppression). Le nudge temps réel (perdu avec le retrait du cache) est reconstruit
+autrement, sans réintroduire d'état local persistant : `PushProvider` écoute toujours
+les messages `PUSH_NOTIFICATION` du service worker, mais réagit désormais par un toast
+éphémère (`useToast().info(...)`) + une invalidation immédiate de la query
+`["notifications"]`, forçant un refetch serveur au lieu d'un affichage depuis un cache
+local. `OffersPage.tsx` perd son appel `addNotification(...)` (créait une entrée
+locale de confirmation à la prise de mission) — le `toast.success()` déjà présent
+couvre le même besoin de feedback immédiat, sans persistance nécessaire (le backend ne
+crée d'ailleurs aucun `NotificationEvent` pour l'auto-confirmation d'une action de
+l'utilisateur sur sa propre mission).
+
+### Décision — préférences par catégorie enfin lisibles/modifiables
+
+`NotificationPreference` (Batch 15A) avait un resolver de défauts
+(`DefaultNotificationPreferenceResolver`) déjà utilisé par l'envoi, mais aucune UI.
+`GET`/`PATCH /api/me/notification-preferences[/{type}]` (MeController, même convention
+self-scope que `POST /api/me/offers-seen`) exposent les 14 `NotificationType` avec leurs
+canaux résolus ; un `PATCH` partiel ne matérialise une ligne que pour le canal
+explicitement modifié, amorcée depuis les valeurs déjà résolues (jamais de régression
+silencieuse des canaux non touchés). Le canal `push` n'y figure pas : il dépend d'un
+abonnement d'appareil réel (D-081), pas d'un booléen par catégorie.
+
+### Décision — les 4 états de permission push, désormais partagés
+
+`PushPermissionCard` factorise les 4 branches (`permission-default` / `subscribed` /
+`permission-denied` / `unsupported`) auparavant dupliquées uniquement dans
+`manager/ProfilePage.tsx` (l'instrumentiste n'en avait aucune). Le cas
+`permission-denied` explique la marche à suivre par plateforme (iOS : Réglages système ;
+Android : paramètres navigateur/app installée ; desktop : paramètres du site) — jamais
+de bouton prétendant réactiver seul une permission bloquée, un site web ne peut pas
+rouvrir la demande native après un refus permanent.
+
+---
+
+## D-087 — Le badge "offres non lues" devient un compteur serveur filtré sur `User.offersLastSeenAt`, jamais une valeur locale (audit PWA/mobile/admin, Lot 6)
+
+Date : 29-07-2026
+
+### Contexte
+
+Le badge de la nav instrumentiste (`MobileLayout.tsx`) affichait
+`offersData?.items?.length` — le nombre total de missions `OPEN` actuellement éligibles.
+Visiter l'écran Offres ne le faisait jamais redescendre : ce n'était pas un cumulatif au
+sens "ne fait qu'augmenter" (une offre claim/annulée sortait bien du compte au prochain
+`refetchInterval`), mais un simple inventaire, sans aucune notion de lecture.
+
+### Décision — checkpoint serveur, réutilise la logique d'éligibilité existante
+
+`User.offersLastSeenAt` (nullable, migration `Version20260729140000`) posé uniquement
+par `POST /api/me/offers-seen` (appelé une fois par montage réussi d'`OffersPage`,
+jamais à la simple ouverture de l'application). `GET
+/api/missions/offers/unread-count` réutilise `MissionService::list()` avec
+`eligibleToMe=true` (même filtre d'éligibilité que `GET /api/missions`, aucune
+duplication de règle métier) plus un filtre additionnel programmatique
+`createdAfter` (`MissionFilter::$createdAfter`, volontairement absent de
+`fromQuery()` — pas de nouveau paramètre public sur l'endpoint générique, seulement une
+construction directe du DTO côté contrôleur dédié). `offersLastSeenAt = null` (jamais
+consulté) → aucun filtre de date, comportement identique à avant ce lot pour un nouvel
+utilisateur.
+
+### Décision — deux compteurs distincts, pas un seul réutilisé à double usage
+
+`MobileLayout.tsx` distingue désormais `offersCount` (total disponible, alimente le
+sous-titre "X offres correspondent à vos disponibilités") de `offersUnreadCount`
+(nouveau, alimente le badge nav). Un badge de nouveauté et un total affiché sont deux
+informations différentes ; les confondre aurait recréé le bug d'origine sous un autre
+nom.
+
+---
+
+## D-088 — `change-role` accepte `ROLE_ADMIN` comme cible (+ commande console dédiée `app:user:promote-to-admin`) ; `resend-invitation` gagne un anti-spam sous verrou pessimiste réel (pas juste applicatif) et une résilience email (audit PWA/mobile/admin, Lot 7 — étendu lors de la revue post-rapport du 29-07-2026)
+
+Date : 29-07-2026
+
+### Contexte
+
+`POST /api/admin/users/{id}/change-role` rejetait `ROLE_ADMIN` comme cible
+("Invalid role") — `ROLE_TO_SITE_ROLE` ne le liste pas, et le DTO
+`AdminChangeRoleRequest` avait sa propre liste `Assert\Choice` sans `ROLE_ADMIN`. Aucune
+procédure contrôlée n'existait donc pour promouvoir un compte existant en administrateur
+autrement qu'une édition SQL manuelle. Séparément, `resendInvitation()` n'avait aucun
+garde-fou anti-spam (un admin pouvait renvoyer en boucle, chaque appel invalidant le
+token précédent avant que l'instrumentiste ait pu l'utiliser) et propageait toute
+exception d'envoi email sans filet — le token était déjà régénéré/flushé avant l'envoi,
+laissant l'ancien lien mort et le nouveau jamais envoyé si le transport échouait.
+
+### Décision — ROLE_ADMIN valide, sans siteRole canonique, jamais de doublon
+
+`UserAdministrationService::changeRole()` accepte `ROLE_ADMIN` explicitement (hors de
+`ROLE_TO_SITE_ROLE`, qui reste dédié aux 3 rôles ayant un `siteRole` réel). Les
+`SiteMembership` existantes de la cible sont conservées telles quelles (ni supprimées,
+ni relabellisées avec un rôle inventé) — cohérent avec `ROLES_REQUIRING_SITE`, où
+ADMIN/MANAGER n'ont jamais de site requis. `setRoles()` s'applique à l'entité déjà
+managée : un `UPDATE` au flush, jamais un `INSERT`, donc aucun risque de doublon de
+compte. Pas d'exécution en production dans ce lot — voir §28.7 de `docs/api.md` pour la
+procédure exacte préparée (identifier le compte, authentifier un admin, appeler
+l'endpoint), couverte par
+`tests/Functional/AdminUserControllerChangeRoleAndResendInvitationTest.php`.
+
+### Décision — cooldown de 60s indexé sur `invitationLastSentAt`, jamais un état local
+
+Choix d'un délai fixe (60s) plutôt qu'un compteur de tentatives ou une fenêtre
+glissante complexe — suffisant pour absorber un double-clic ou une rafale de clics sans
+gêner un renvoi légitime après correction d'un problème. Le champ réutilisé
+(`User.invitationLastSentAt`) n'est mis à jour qu'après un envoi email **réussi**
+(`NotificationService::sendUserInvitation`), donc un échec transitoire du transport ne
+bloque jamais un nouvel essai immédiat — le cooldown protège contre le spam, pas contre
+la résilience.
+
+### Décision — l'échec d'envoi ne fait plus échouer la requête (même politique que `createUser`)
+
+`sendUserInvitation()` + l'audit + le flush associé sont désormais dans un bloc
+`try/catch` : en cas d'échec, seul un `warning` est journalisé — le token régénéré reste
+en place (l'admin peut simplement relancer), et ni l'audit "resent" ni
+`invitationLastSentAt` ne sont mis à jour (cohérent : l'email n'a pas réellement été
+renvoyé).
+
+### Décision (revue post-rapport, 2026-07-29) — le cooldown tourne sous verrou pessimiste réel, pas un simple check applicatif
+
+Le cooldown ci-dessus, tel que livré initialement, relisait `invitationLastSentAt` puis
+écrivait plus loin dans la même méthode sans aucune protection contre l'exécution
+concurrente — deux requêtes HTTP simultanées pouvaient toutes deux lire "pas de renvoi
+récent" avant qu'aucune n'ait écrit (race *check-then-act* classique), produisant deux
+tokens, deux emails, deux écritures d'`invitationLastSentAt`. `resendInvitation()`
+enveloppe désormais le contrôle + la mutation dans
+`EntityManager::wrapInTransaction()` avec `EntityManager::lock($target,
+LockMode::PESSIMISTIC_WRITE)` (même pattern déjà utilisé par
+`AbsenceMissionReactionService`/`DocumentPaymentService`/`FinancialCalculationService`
+— `SELECT ... FOR UPDATE` sur la ligne `user`), qui sérialise deux requêtes concurrentes
+pour le même utilisateur. Le verrou est relâché (commit) **avant** l'envoi de l'email —
+l'I/O lente (dispatch Messenger) ne retient jamais un verrou de ligne. Preuve
+d'intégration réelle avec deux connexions MySQL indépendantes (pas seulement un mock) :
+`tests/Functional/ResendInvitationConcurrencyTest.php`.
+
+Clarification corollaire : `invitationLastSentAt` horodate un **dispatch réussi vers
+Messenger** (transport asynchrone), jamais une livraison SMTP confirmée — la doc et les
+docblocks (`User::$invitationLastSentAt`, `NotificationService::sendUserInvitation()`)
+sont mis à jour en conséquence pour ne jamais laisser croire à un accusé de réception.
+
+### Décision (revue post-rapport, 2026-07-29) — commande console dédiée pour ROLE_ADMIN, plutôt qu'une migration avec l'email en dur
+
+`App\Command\PromoteUserToAdminCommand` (`app:user:promote-to-admin <email>
+<actorEmail>`) réutilise `UserAdministrationService::changeRole()` telle quelle (aucune
+règle métier dupliquée) : recherche insensible à la casse
+(`findOneByEmailInsensitive`), jamais de création de compte, idempotente (no-op auditée
+si la cible est déjà `ROLE_ADMIN`), acteur obligatoirement un `ROLE_ADMIN` existant
+(traçabilité réelle, jamais un pseudo-acteur "système"), garde-fou anti-auto-promotion
+vérifié en priorité (avant même le contrôle de rôle de l'acteur). Pensée pour un
+déploiement (`docker exec surgicalhub-php php bin/console app:user:promote-to-admin ...
+--env=prod`, même convention que les commandes déjà documentées dans
+`docs/production.md`) sans jamais committer d'adresse email personnelle dans une
+migration Doctrine. Testée unitairement (mock des dépendances) dans
+`tests/Unit/Command/PromoteUserToAdminCommandTest.php` — n'exécute rien contre la
+production dans ce lot.

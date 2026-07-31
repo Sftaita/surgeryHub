@@ -53,6 +53,18 @@ vi.mock("../features/manager-catalogue/api/interventionTypeRequests.api", () => 
 // ── Dépendances propres à DashboardPage ─────────────────────────────────────────
 vi.mock("../features/missions/api/missions.api", () => ({
   fetchMissions: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+  fetchInstrumentistOffersWithFallback: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+  fetchOffersUnreadCount: vi.fn().mockResolvedValue(0),
+  markOffersSeen: vi.fn().mockResolvedValue(undefined),
+  claimMission: vi.fn(),
+}));
+vi.mock("../features/notifications/api/notifications.api", () => ({
+  fetchUnreadNotificationsCount: vi.fn().mockResolvedValue(0),
+  fetchNotifications: vi.fn().mockResolvedValue({ items: [], unreadCount: 0 }),
+  markNotificationSeen: vi.fn().mockResolvedValue(undefined),
+  markAllNotificationsSeen: vi.fn().mockResolvedValue({ updated: 0 }),
+  fetchNotificationPreferences: vi.fn().mockResolvedValue([]),
+  updateNotificationPreference: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../features/sites/api/sites.api", () => ({
   fetchSites: vi.fn().mockResolvedValue([]),

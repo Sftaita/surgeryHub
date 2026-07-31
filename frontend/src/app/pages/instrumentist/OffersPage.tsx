@@ -9,12 +9,12 @@ import "dayjs/locale/fr";
 import {
   fetchInstrumentistOffersWithFallback,
   claimMission,
+  markOffersSeen,
 } from "../../features/missions/api/missions.api";
 import type { Mission, MissionType } from "../../features/missions/api/missions.types";
 import { useToast } from "../../ui/toast/useToast";
 import { useAuth } from "../../auth/AuthContext";
 import { isMobileRole } from "../../auth/roles";
-import { useNotifications } from "../../features/push/useNotifications";
 import { requestMissionSync } from "../../features/missions/sync/missionSyncBus";
 import { DateTile } from "../../ui/mobile/DateTile";
 import { StatusPill } from "../../ui/mobile/StatusPill";
@@ -210,7 +210,6 @@ export default function OffersPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { state } = useAuth();
-  const { addNotification } = useNotifications();
 
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
   const role = state.user.role;
@@ -229,6 +228,19 @@ export default function OffersPage() {
     queryFn: () => fetchInstrumentistOffersWithFallback(1, 100),
   });
 
+  // Lot 6 (audit PWA/mobile/admin 2026-07-29) — "la consultation de l'écran Offres
+  // remet le badge à zéro après chargement réussi" : une seule fois par montage de
+  // cette page (pas à chaque refetch en arrière-plan pendant que l'écran reste ouvert).
+  const markedOffersSeenRef = React.useRef(false);
+  React.useEffect(() => {
+    if (data && !markedOffersSeenRef.current) {
+      markedOffersSeenRef.current = true;
+      markOffersSeen()
+        .then(() => queryClient.invalidateQueries({ queryKey: ["missions", "offers", "unread-count"] }))
+        .catch(() => {});
+    }
+  }, [data, queryClient]);
+
   const openMissions = data?.items ?? [];
   const allMissions = [...claimedMissions, ...openMissions.filter((m) => !claimedMissions.some((c) => c.id === m.id))];
   const missions = filter === "all" ? allMissions : allMissions.filter((m) => m.type === filter);
@@ -239,13 +251,6 @@ export default function OffersPage() {
     try {
       await claimMission(mission.id);
       setClaimedMissions((prev) => [...prev, mission]);
-      addNotification({
-        type: "MISSION_ASSIGNED",
-        title: "Mission attribuée",
-        body: `Mission #${mission.id} — ${mission.site?.name ?? ""}`,
-        data: { missionId: mission.id },
-        readAt: null,
-      });
       toast.success(
         "Mission attribuée.\nMerci de consulter le programme opératoire afin de préparer au mieux cette journée.",
       );

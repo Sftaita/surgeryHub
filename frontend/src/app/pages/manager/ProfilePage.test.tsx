@@ -32,6 +32,19 @@ vi.mock("../../features/push/usePushNotifications", () => ({
   usePushNotifications: () => ({ status: pushStatus, subscribe: subscribeToPushMock }),
 }));
 
+// Couverture dédiée dans PwaInstallMenuItem.test.tsx — même pattern que
+// pages/instrumentist/ProfilePage.test.tsx.
+vi.mock("../../features/pwa-install/PwaInstallMenuItem", () => ({
+  PwaInstallMenuItem: () => <div data-testid="pwa-install-menu-item" />,
+}));
+
+// Couverture dédiée dans notifications.api.test.ts / NotificationPreferencesSection —
+// évite un vrai appel réseau non mocké dans cette suite.
+vi.mock("../../features/notifications/api/notifications.api", () => ({
+  fetchNotificationPreferences: vi.fn().mockResolvedValue([]),
+  updateNotificationPreference: vi.fn(),
+}));
+
 // AvatarCropDialog needs canvas/Image APIs jsdom doesn't implement — same bypass
 // pattern as pages/instrumentist/ProfilePage.test.tsx.
 vi.mock("../../ui/avatar/AvatarCropDialog", () => ({
@@ -207,6 +220,13 @@ describe("ProfilePage — notifications (préférences push existantes)", () => 
     pushStatus = "subscribed";
     renderPage();
     expect(await screen.findByText("Notifications activées sur cet appareil.")).toBeInTheDocument();
+  });
+});
+
+describe("ProfilePage — installation PWA", () => {
+  it("expose le point d'entrée d'installation, absent auparavant pour manager/admin", async () => {
+    renderPage();
+    expect(await screen.findByTestId("pwa-install-menu-item")).toBeInTheDocument();
   });
 });
 

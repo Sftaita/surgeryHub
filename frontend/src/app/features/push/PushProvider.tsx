@@ -1,7 +1,9 @@
 import * as Sentry from "@sentry/react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../auth/AuthContext";
+import { useToast } from "../../ui/toast/useToast";
 import {
   isPushSupported,
   registerServiceWorker,
@@ -45,6 +47,8 @@ function computeInitialStatus(): PushNotificationStatus {
  */
 export function PushProvider({ children }: { children: ReactNode }) {
   const { state } = useAuth();
+  const toast = useToast();
+  const queryClient = useQueryClient();
   // The identity that actually matters for push, not just the boolean: a shared browser
   // that goes A → B without an intervening full reload keeps this provider mounted (it
   // sits above the router, see AppProviders.tsx) — `isAuthenticated` alone stays `true`
@@ -96,6 +100,26 @@ export function PushProvider({ children }: { children: ReactNode }) {
       Sentry.captureException(err, { tags: { feature: "push", stage: "sw-register" } });
     });
   }, [isSupported]);
+
+  // Nudge temps réel à la réception d'un push : toast immédiat + invalidation de la
+  // requête notifications serveur (GET /api/notifications), pour que la cloche/le
+  // badge se rafraîchissent sans attendre le prochain refetchInterval (60s). Remplace
+  // l'ancien cache localStorage (notifications.store.ts, retiré — audit PWA/mobile/
+  // admin 2026-07-29, revue post-rapport) : le backend reste la seule source de
+  // vérité pour le compteur/l'historique, ceci n'est qu'un signal de fraîcheur.
+  useEffect(() => {
+    if (!isSupported || !("serviceWorker" in navigator)) return;
+
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type !== "PUSH_NOTIFICATION") return;
+      const { title, body } = event.data.payload ?? {};
+      toast.info([title, body].filter(Boolean).join(" — ") || "Nouvelle notification");
+      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    };
+
+    navigator.serviceWorker.addEventListener("message", handler);
+    return () => navigator.serviceWorker.removeEventListener("message", handler);
+  }, [isSupported, toast, queryClient]);
 
   // Reacts to a change of *session identity* (anonymous → A, A → B directly, A → logout),
   // not merely to `isAuthenticated` flipping — this provider outlives every login/logout

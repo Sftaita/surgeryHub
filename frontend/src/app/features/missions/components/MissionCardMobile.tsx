@@ -164,7 +164,10 @@ export default function MissionCardMobile({
           {secondaryAction?.visible && (
             <Button
               variant="outlined"
-              size="small"
+              // size="small" (~30px) était nettement en dessous des CTA des autres cartes
+              // mobiles (46-58px) — zone tactile trop petite (audit PWA/mobile/admin
+              // 2026-07-29, Lot 5). minHeight garantit ≥44px quel que soit le libellé.
+              sx={{ minHeight: 44, px: 2 }}
               onClick={secondaryAction.action}
               disabled={secondaryAction.disabled || secondaryAction.loading}
             >
@@ -175,7 +178,7 @@ export default function MissionCardMobile({
           {primaryAction?.visible && (
             <Button
               variant="contained"
-              size="small"
+              sx={{ minHeight: 44, px: 2 }}
               onClick={primaryAction.action}
               disabled={primaryAction.disabled || primaryAction.loading}
             >

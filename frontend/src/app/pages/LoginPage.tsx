@@ -5,6 +5,7 @@ import { Box, useMediaQuery } from "@mui/material";
 import { useAuth } from "../auth/AuthContext";
 import { consumeSessionExpired } from "../auth/authStorage";
 import { useToast } from "../ui/toast/useToast";
+import { dvh } from "../ui/dvh";
 
 type LocationState = { from?: string } | null;
 
@@ -421,7 +422,7 @@ export default function LoginPage() {
     return (
       <Box
         sx={{
-          minHeight: "100vh",
+          ...dvh("minHeight", "100vh"),
           display: "flex",
           flexDirection: "column",
           background: LOGIN_GRADIENT,
@@ -507,7 +508,7 @@ export default function LoginPage() {
   return (
     <Box
       sx={{
-        minHeight: "100vh",
+        ...dvh("minHeight", "100vh"),
         display: "grid",
         gridTemplateColumns: "minmax(420px,1fr) minmax(460px,1.1fr)",
         background: "#fff",

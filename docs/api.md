@@ -3810,14 +3810,54 @@ POST /api/admin/users/{id}/change-role
 ```
 
 **Règles :**
-- `newRole` ∈ `ROLE_INSTRUMENTIST` | `ROLE_SURGEON` | `ROLE_MANAGER`.
+- `newRole` ∈ `ROLE_INSTRUMENTIST` | `ROLE_SURGEON` | `ROLE_MANAGER` | `ROLE_ADMIN`
+  (`ROLE_ADMIN` accepté depuis le lot audit PWA/mobile/admin du 2026-07-29 — refusé
+  auparavant comme "invalid role", sans procédure contrôlée pour promouvoir un compte
+  existant en administrateur autrement qu'une édition SQL manuelle).
 - L'admin ne peut pas changer son propre rôle (`400`).
 - Si `newRole` est `ROLE_INSTRUMENTIST` ou `ROLE_SURGEON` et que l'utilisateur cible n'a aucune
   `SiteMembership`, le changement est refusé (`400`) — ces rôles requièrent toujours au moins un
-  site (D-049). Aucune restriction si `newRole` est `ROLE_MANAGER`.
-- Met également à jour le `siteRole` de toutes les `SiteMembership` existantes.
+  site (D-049). Aucune restriction si `newRole` est `ROLE_MANAGER` ou `ROLE_ADMIN`.
+- Met également à jour le `siteRole` de toutes les `SiteMembership` existantes — sauf si
+  `newRole = ROLE_ADMIN`, qui n'a pas de `siteRole` canonique : les affiliations existantes
+  sont conservées telles quelles (ni supprimées, ni relabellisées).
+- `setRoles()` s'applique à l'entité `$target` déjà managée par Doctrine — un `UPDATE` au
+  flush, jamais un `INSERT` : aucun doublon de compte possible.
 
 **Réponse 200 :** `AdminUserDetail`
+
+**Procédure contrôlée pour promouvoir `samy.ftaita89@gmail.com` en `ROLE_ADMIN`**
+(préparée, **non exécutée** en production — révisée post-rapport, 2026-07-29). Deux
+chemins équivalents existent désormais (même logique métier,
+`UserAdministrationService::changeRole()`) ; la commande console est recommandée pour
+un déploiement (pas de migration applicative générale contenant l'email en dur,
+recherche insensible à la casse, idempotente, sans JWT à manipuler) :
+
+**A. Commande console (recommandée)** — voir `App\Command\PromoteUserToAdminCommand`,
+couverte par `tests/Unit/Command/PromoteUserToAdminCommandTest.php` :
+```bash
+docker exec surgicalhub-php php bin/console app:user:promote-to-admin \
+  samy.ftaita89@gmail.com admin@surgicalhub.be --env=prod
+```
+- `email` : compte cible, recherche insensible à la casse (`findOneByEmailInsensitive`),
+  échoue clairement si le compte n'existe pas (jamais de création).
+- `actorEmail` : un compte **déjà** `ROLE_ADMIN` existant — l'auteur audité de l'action ;
+  refusé si ce compte n'est pas admin ou s'il est identique à la cible.
+- Idempotente : si la cible est déjà `ROLE_ADMIN`, la commande le signale et ne fait rien
+  (pas de second `UserAuditEvent`).
+- Préserve les `SiteMembership` existantes et toutes les autres données du compte.
+
+**B. Via l'API (équivalent manuel)** :
+1. Vérifier l'état réel du compte —
+   `SELECT id, email, roles, is_active, password IS NOT NULL AS activated FROM user WHERE email = 'samy.ftaita89@gmail.com';`
+2. Se connecter en tant qu'admin existant, récupérer son JWT (`POST /api/auth/login`).
+3. Récupérer l'`id` de l'utilisateur cible (`GET /api/admin/users?search=samy.ftaita89@gmail.com`).
+4. `POST /api/admin/users/{id}/change-role` avec `{ "newRole": "ROLE_ADMIN" }`.
+
+Dans les deux cas, vérifier ensuite `UserAuditEvent` (`GET /app/admin/audit`) pour
+confirmer la traçabilité — voir
+`tests/Functional/AdminUserControllerChangeRoleAndResendInvitationTest.php` pour la
+couverture du chemin API.
 
 ---
 
@@ -3829,6 +3869,34 @@ POST /api/admin/users/{id}/resend-invitation
 
 **Règles :** Impossible si le compte est déjà activé (password ≠ null → `409`).
 Régénère le token et repart pour 48 h.
+
+**Anti-spam :** un renvoi moins de 60 secondes après le précédent
+(`User.invitationLastSentAt`) est refusé (`409`) — absent initialement, un admin
+pouvait renvoyer en boucle, invalidant le token précédent avant que l'instrumentiste
+ait pu l'utiliser.
+
+**Concurrence (révisé, revue post-rapport 2026-07-29) :** le contrôle "déjà activé" +
+le cooldown tournent sous verrou pessimiste MySQL (`SELECT ... FOR UPDATE`, transaction
+courte via `EntityManager::wrapInTransaction()` + `lock(..., LockMode::PESSIMISTIC_WRITE)`)
+— un simple contrôle applicatif check-then-act aurait laissé une fenêtre de course où
+deux requêtes simultanées passent toutes deux le contrôle avant qu'aucune n'ait écrit
+(deux tokens générés, deux emails dispatchés, `invitationLastSentAt` écrasé deux fois).
+Le verrou est relâché (commit) **avant** l'envoi de l'email — l'I/O lente ne retient
+jamais un verrou de ligne. Preuve d'intégration réelle (deux connexions MySQL
+indépendantes) : `tests/Functional/ResendInvitationConcurrencyTest.php`.
+
+**Sémantique exacte de `invitationLastSentAt` (précisée, revue post-rapport
+2026-07-29) :** ce champ horodate un **dispatch réussi vers Messenger**
+(`EmailService::sendTemplatedEmail` → transport asynchrone, voir §4 de
+`docs/production.md`), **pas une livraison SMTP confirmée**. L'envoi réel a lieu plus
+tard, hors de cette requête HTTP, et peut encore échouer sans que ce champ le reflète.
+Il ne sert que de checkpoint anti-spam et d'indication "dernier envoi" côté UI admin —
+jamais de preuve de réception par l'instrumentiste. Si l'appel à
+`sendTemplatedEmail()` lui-même échoue (ex. transport indisponible), le token est tout
+de même régénéré et persisté (l'admin peut simplement relancer) ; l'échec est
+journalisé (`warning`) mais ne fait pas échouer la requête HTTP — même politique que
+`POST /api/admin/users` (création). `invitationLastSentAt` n'est alors pas mis à jour,
+donc un échec de dispatch ne bloque jamais un nouvel essai immédiat via le cooldown.
 
 **Réponse 200 :**
 
@@ -5204,3 +5272,126 @@ automatiquement ; les autres échecs sont isolés (n'affectent jamais les abonne
 suivants ni la mutation métier d'origine).
 
 ---
+
+## 41. Notifications internes, préférences et badge offres non lues (audit PWA/mobile/admin, 2026-07-29)
+
+Avant ce lot, `NotificationEvent` (Batch 7) était écrit en base mais jamais lu ni marqué
+"vu" par aucune API — l'historique affiché côté frontend (cloche instrumentiste,
+uniquement) provenait d'un cache `localStorage` alimenté par le service worker, perdu au
+changement d'appareil/navigateur et jamais synchronisé avec `seenAt`. Manager/admin
+n'avaient aucune cloche, aucun badge, aucun historique. `NotificationPreference` (Batch
+15A) existait aussi sans aucune UI. Voir `docs/decisions.md` (D-086, D-087, D-088) pour
+le détail des décisions.
+
+### 41.1 Historique des notifications internes
+
+```
+GET /api/notifications?limit=30
+```
+
+Notifications `IN_APP` de l'utilisateur courant, triées par `sentAt` décroissant.
+`limit` par défaut 30, plafonné à 100.
+
+**Réponse 200 :**
+
+```json
+{
+  "items": [
+    { "id": 1, "eventType": "PLANNING_ALERT_REASSIGNED_TO", "missionId": 42, "payload": {"siteName": "CHU", "missionDate": "2026-08-01"}, "sentAt": "2026-07-29T10:00:00+00:00", "seenAt": null }
+  ],
+  "unreadCount": 3
+}
+```
+
+```
+GET /api/notifications/unread-count
+```
+
+Réponse : `{ "unreadCount": 3 }` — utilisé pour le badge de la cloche/sidebar, indépendamment de la liste complète.
+
+```
+POST /api/notifications/{id}/seen
+```
+
+Marque une notification comme lue (`seenAt = now`), idempotent. `404` si l'id
+n'appartient pas à l'utilisateur courant ou n'existe pas.
+
+```
+POST /api/notifications/mark-all-seen
+```
+
+Marque toutes les notifications non lues de l'utilisateur courant. Réponse :
+`{ "updated": 3 }`.
+
+**Autorisation :** scopé à `#[CurrentUser]`, comme `PushSubscriptionController` — pas de
+Voter dédié, une notification n'appartient qu'à son destinataire.
+
+**Frontend :** cloche + badge + historique présents pour les deux familles de rôles —
+manager/admin (`frontend/src/app/pages/manager/NotificationsPage.tsx`, entrée sidebar
+`DesktopLayout.tsx`) et instrumentiste (`frontend/src/app/pages/instrumentist/NotificationsPage.tsx`,
+entrée cloche `MobileLayout.tsx`) — toutes deux backées par `useNotificationsFeed()`
+(`GET /api/notifications`), même source de vérité, cohérente entre appareils.
+
+**Révision (revue post-rapport, 2026-07-29) :** l'ancien cache `localStorage`
+(`features/push/notifications.store.ts` / `useNotifications.ts`) a été **entièrement
+retiré**, plus seulement synchronisé en plus — il ne restait qu'un doublon partiel de
+la source de vérité serveur. Le nudge temps réel à la réception d'un push (toast +
+invalidation immédiate de la requête `["notifications"]`) est désormais assuré par
+`PushProvider` (voir §40), indépendamment du statut de la permission Push de
+l'appareil courant : la cloche elle-même n'a jamais dépendu de cette permission,
+seul le nudge instantané en dépend (sans lui, le badge se met à jour au prochain
+`refetchInterval`, 60 s).
+
+### 41.2 Préférences de notification par catégorie
+
+```
+GET /api/me/notification-preferences
+```
+
+Retourne chaque `NotificationType` avec ses canaux résolus (ligne stockée, ou défaut
+produit via `DefaultNotificationPreferenceResolver` si aucune ligne n'existe encore).
+
+```
+PATCH /api/me/notification-preferences/{type}
+```
+
+**Body (partiel) :** `{ "inAppEnabled"?: bool, "emailEnabled"?: bool, "pushEnabled"?: bool }`
+
+Seuls les canaux fournis sont modifiés. Le premier écrit pour une paire (utilisateur,
+type) matérialise une ligne `NotificationPreference` amorcée avec les valeurs
+actuellement résolues (défauts inclus), pour que les canaux non touchés gardent
+exactement leur comportement précédent. `400` si `{type}` n'est pas une valeur
+`NotificationType` valide.
+
+**Frontend :** `frontend/src/app/features/notifications/NotificationPreferencesSection.tsx`,
+monté sur les deux pages Profil (manager et instrumentiste). Le canal push n'y est pas
+proposé — il dépend d'un abonnement d'appareil (voir §40), pas d'un simple booléen par
+catégorie.
+
+### 41.3 Badge "offres non lues" (instrumentiste)
+
+Remplace un badge cumulatif qui comptait toutes les missions `OPEN` éligibles
+actuellement disponibles, sans notion de lecture — visiter l'écran Offres ne le faisait
+jamais redescendre.
+
+```
+GET /api/missions/offers/unread-count
+```
+
+Réponse : `{ "unreadCount": 2 }` — réutilise exactement la même logique d'éligibilité
+que `GET /api/missions?eligibleToMe=true` (`MissionService::list`), filtrée en plus sur
+`m.createdAt > User.offersLastSeenAt`. Si `offersLastSeenAt` est `null` (jamais
+consulté), aucun filtre de date n'est appliqué — toutes les offres actuellement
+éligibles comptent, comme avant ce lot pour un nouvel utilisateur.
+
+```
+POST /api/me/offers-seen
+```
+
+Pose `User.offersLastSeenAt = now()`. Appelé par le frontend
+(`frontend/src/app/pages/instrumentist/OffersPage.tsx`) une fois par montage de la page,
+après un chargement réussi de la liste des offres — jamais à la simple ouverture de
+l'application.
+
+**Aucune valeur purement locale n'est source de vérité** : le compteur est calculé
+côté serveur à chaque appel, cohérent entre appareils.

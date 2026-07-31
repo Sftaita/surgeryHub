@@ -3,7 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#63C9A3" />
+    <!--
+      Aligné sur le dégradé réel du header mobile (MobileLayout.tsx BrandBand :
+      linear-gradient(140deg, #1F6B4F 0%, #338F6E 62%, #42A882 118%)) — #63C9A3
+      (vert clair, ton "accent" du design system) ne correspondait à aucune des
+      couleurs effectivement visibles dans ce dégradé (audit PWA/mobile/admin
+      2026-07-29, Lot 4). #1F6B4F est le point de départ du dégradé (haut de
+      l'écran), donc le plus représentatif pour la barre de statut Android/PWA.
+    -->
+    <meta name="theme-color" content="#1F6B4F" />
+    <style>
+      /* Empêche une bande blanche pendant le rebond de scroll iOS (overscroll) —
+         fond aligné sur celui de l'app-shell (MUI CssBaseline palette.background.default,
+         voir AppProviders.tsx), appliqué avant même le montage React puisque le rebond
+         natif Safari est un rendu du navigateur, pas de la page (Lot 4). */
+      html, body { background-color: #F5F7FA; overscroll-behavior-y: none; }
+    </style>
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />

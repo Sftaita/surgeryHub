@@ -77,7 +77,13 @@ class NotificationService
 
     /**
      * Méthode générique d'envoi d'invitation, quel que soit le rôle.
-     * Met à jour invitationLastSentAt sur l'entité (flush géré par l'appelant).
+     *
+     * "Succès" ici signifie uniquement que `sendTemplatedEmail()` a dispatché le
+     * message vers Messenger sans lever d'exception (transport async — voir
+     * docs/production.md) : l'envoi SMTP réel a lieu plus tard, hors de cet appel, et
+     * peut encore échouer sans que ce code le sache (revue post-rapport, 2026-07-29).
+     * Met à jour invitationLastSentAt sur l'entité (flush géré par l'appelant) —
+     * horodate ce dispatch, pas une livraison confirmée.
      */
     public function sendUserInvitation(User $user): void
     {
