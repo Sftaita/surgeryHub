@@ -1,0 +1,153 @@
+
+D-090 — Audit (lecture seule) des décalages horaires possibles (mode Modification)
+==================================================================================
+
+ 137 événement(s) MISSION_TIME_CHANGED_POST_DEPLOY trouvé(s).
+ -------- ---------- --------------------- -------------- ---------------------------------- ------------------------ --------- --------------------- 
+  Audit#   Mission#   Événement (créé le)   Date mission   Attendu                            Actuel                   Delta     Diagnostic           
+ -------- ---------- --------------------- -------------- ---------------------------------- ------------------------ --------- --------------------- 
+  24       324        2026-07-20 13:18      2026-07-31     13:00 (attendu, d'après l'audit)   17:00 (actuel en base)   240 min   écart (autre cause)  
+  25       322        2026-07-20 13:18      2026-07-31     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  26       319        2026-07-20 13:18      2026-07-30     13:00 (attendu, d'après l'audit)   17:00 (actuel en base)   240 min   écart (autre cause)  
+  27       318        2026-07-20 13:18      2026-07-30     13:00 (attendu, d'après l'audit)   17:00 (actuel en base)   240 min   écart (autre cause)  
+  28       321        2026-07-20 13:18      2026-07-30     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  29       320        2026-07-20 13:18      2026-07-30     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  30       317        2026-07-20 13:18      2026-07-30     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  31       316        2026-07-20 13:18      2026-07-29     13:00 (attendu, d'après l'audit)   15:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  32       315        2026-07-20 13:18      2026-07-29     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  33       314        2026-07-20 13:18      2026-07-29     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  35       312        2026-07-20 13:18      2026-07-28     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  36       310        2026-07-20 13:18      2026-07-27     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  37       308        2026-07-20 13:18      2026-07-24     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  38       306        2026-07-20 13:18      2026-07-23     13:00 (attendu, d'après l'audit)   15:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  39       307        2026-07-20 13:18      2026-07-23     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  40       305        2026-07-20 13:18      2026-07-23     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  41       304        2026-07-20 13:18      2026-07-22     13:00 (attendu, d'après l'audit)   15:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  42       302        2026-07-20 13:18      2026-07-22     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  43       303        2026-07-20 13:18      2026-07-22     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  44       300        2026-07-20 13:18      2026-07-21     13:00 (attendu, d'après l'audit)   15:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  45       299        2026-07-20 13:18      2026-07-21     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  46       298        2026-07-20 13:18      2026-07-21     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  47       291        2026-07-20 13:18      2026-07-16     13:00 (attendu, d'après l'audit)   17:00 (actuel en base)   240 min   écart (autre cause)  
+  48       290        2026-07-20 13:18      2026-07-16     13:00 (attendu, d'après l'audit)   17:00 (actuel en base)   240 min   écart (autre cause)  
+  49       289        2026-07-20 13:18      2026-07-16     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  50       288        2026-07-20 13:18      2026-07-15     13:00 (attendu, d'après l'audit)   17:00 (actuel en base)   240 min   écart (autre cause)  
+  51       287        2026-07-20 13:18      2026-07-15     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  52       286        2026-07-20 13:18      2026-07-15     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  53       285        2026-07-20 13:18      2026-07-15     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  54       284        2026-07-20 13:18      2026-07-14     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  55       282        2026-07-20 13:18      2026-07-13     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  56       281        2026-07-20 13:18      2026-07-13     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  57       280        2026-07-20 13:18      2026-07-10     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  58       278        2026-07-20 13:18      2026-07-09     13:00 (attendu, d'après l'audit)   17:00 (actuel en base)   240 min   écart (autre cause)  
+  59       279        2026-07-20 13:18      2026-07-09     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  60       277        2026-07-20 13:18      2026-07-09     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  61       276        2026-07-20 13:18      2026-07-08     13:00 (attendu, d'après l'audit)   17:00 (actuel en base)   240 min   écart (autre cause)  
+  62       275        2026-07-20 13:18      2026-07-08     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  63       274        2026-07-20 13:18      2026-07-08     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  64       273        2026-07-20 13:18      2026-07-08     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  65       272        2026-07-20 13:18      2026-07-07     13:00 (attendu, d'après l'audit)   17:00 (actuel en base)   240 min   écart (autre cause)  
+  66       271        2026-07-20 13:18      2026-07-07     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  67       268        2026-07-20 13:18      2026-07-06     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  68       269        2026-07-20 13:18      2026-07-06     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  69       270        2026-07-20 13:18      2026-07-06     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  70       267        2026-07-20 13:18      2026-07-03     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  71       266        2026-07-20 13:18      2026-07-03     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  72       263        2026-07-20 13:18      2026-07-02     13:00 (attendu, d'après l'audit)   17:00 (actuel en base)   240 min   écart (autre cause)  
+  73       262        2026-07-20 13:18      2026-07-02     13:00 (attendu, d'après l'audit)   17:00 (actuel en base)   240 min   écart (autre cause)  
+  74       265        2026-07-20 13:18      2026-07-02     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  75       264        2026-07-20 13:18      2026-07-02     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  76       261        2026-07-20 13:18      2026-07-02     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  77       260        2026-07-20 13:18      2026-07-01     13:00 (attendu, d'après l'audit)   17:00 (actuel en base)   240 min   écart (autre cause)  
+  78       258        2026-07-20 13:18      2026-07-01     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  79       259        2026-07-20 13:18      2026-07-01     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  80       257        2026-07-20 13:18      2026-07-01     08:00 (attendu, d'après l'audit)   12:00 (actuel en base)   240 min   écart (autre cause)  
+  86       324        2026-07-26 19:55      2026-07-31     15:00 (attendu, d'après l'audit)   17:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  87       322        2026-07-26 19:55      2026-07-31     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  88       319        2026-07-26 19:55      2026-07-30     15:00 (attendu, d'après l'audit)   17:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  89       318        2026-07-26 19:55      2026-07-30     15:00 (attendu, d'après l'audit)   17:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  90       321        2026-07-26 19:55      2026-07-30     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  91       320        2026-07-26 19:55      2026-07-30     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  92       317        2026-07-26 19:55      2026-07-30     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  95       315        2026-07-26 19:55      2026-07-29     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  96       312        2026-07-26 19:55      2026-07-28     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  97       310        2026-07-26 19:55      2026-07-27     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  98       305        2026-07-26 19:55      2026-07-23     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  99       302        2026-07-26 19:55      2026-07-22     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  100      303        2026-07-26 19:55      2026-07-22     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  101      299        2026-07-26 19:55      2026-07-21     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  102      298        2026-07-26 19:55      2026-07-21     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  103      291        2026-07-26 19:55      2026-07-16     15:00 (attendu, d'après l'audit)   17:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  104      290        2026-07-26 19:55      2026-07-16     15:00 (attendu, d'après l'audit)   17:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  105      289        2026-07-26 19:55      2026-07-16     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  106      288        2026-07-26 19:55      2026-07-15     15:00 (attendu, d'après l'audit)   17:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  107      287        2026-07-26 19:55      2026-07-15     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  108      286        2026-07-26 19:55      2026-07-15     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  109      285        2026-07-26 19:55      2026-07-15     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  110      284        2026-07-26 19:55      2026-07-14     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  111      282        2026-07-26 19:55      2026-07-13     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  112      281        2026-07-26 19:55      2026-07-13     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  113      280        2026-07-26 19:55      2026-07-10     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  114      278        2026-07-26 19:55      2026-07-09     15:00 (attendu, d'après l'audit)   17:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  115      279        2026-07-26 19:55      2026-07-09     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  116      277        2026-07-26 19:55      2026-07-09     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  117      276        2026-07-26 19:55      2026-07-08     15:00 (attendu, d'après l'audit)   17:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  118      275        2026-07-26 19:55      2026-07-08     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  119      274        2026-07-26 19:55      2026-07-08     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  120      273        2026-07-26 19:55      2026-07-08     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  121      272        2026-07-26 19:55      2026-07-07     15:00 (attendu, d'après l'audit)   17:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  122      271        2026-07-26 19:55      2026-07-07     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  123      268        2026-07-26 19:55      2026-07-06     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  124      269        2026-07-26 19:55      2026-07-06     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  125      270        2026-07-26 19:55      2026-07-06     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  126      267        2026-07-26 19:55      2026-07-03     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  127      266        2026-07-26 19:55      2026-07-03     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  128      263        2026-07-26 19:55      2026-07-02     15:00 (attendu, d'après l'audit)   17:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  129      262        2026-07-26 19:55      2026-07-02     15:00 (attendu, d'après l'audit)   17:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  130      265        2026-07-26 19:55      2026-07-02     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  131      264        2026-07-26 19:55      2026-07-02     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  132      261        2026-07-26 19:55      2026-07-02     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  133      260        2026-07-26 19:55      2026-07-01     15:00 (attendu, d'après l'audit)   17:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  134      258        2026-07-26 19:55      2026-07-01     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  135      259        2026-07-26 19:55      2026-07-01     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  136      257        2026-07-26 19:55      2026-07-01     10:00 (attendu, d'après l'audit)   12:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  145      421        2026-07-31 04:34      2026-08-31     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  146      420        2026-07-31 04:34      2026-08-31     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  147      419        2026-07-31 04:34      2026-08-31     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  148      418        2026-07-31 04:34      2026-08-28     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  149      417        2026-07-31 04:34      2026-08-28     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  150      415        2026-07-31 04:34      2026-08-27     13:00 (attendu, d'après l'audit)   15:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  151      414        2026-07-31 04:34      2026-08-27     13:00 (attendu, d'après l'audit)   15:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  152      416        2026-07-31 04:34      2026-08-27     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  153      413        2026-07-31 04:34      2026-08-27     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  154      412        2026-07-31 04:34      2026-08-26     13:00 (attendu, d'après l'audit)   15:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  155      411        2026-07-31 04:34      2026-08-26     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  156      410        2026-07-31 04:34      2026-08-26     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  157      409        2026-07-31 04:34      2026-08-26     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  158      408        2026-07-31 04:34      2026-08-25     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  159      407        2026-07-31 04:34      2026-08-25     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  160      406        2026-07-31 04:34      2026-08-24     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  161      405        2026-07-31 04:34      2026-08-24     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  162      404        2026-07-31 04:34      2026-08-21     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  163      403        2026-07-31 04:34      2026-08-18     13:00 (attendu, d'après l'audit)   15:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  164      402        2026-07-31 04:34      2026-08-18     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  165      401        2026-07-31 04:34      2026-08-18     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  166      400        2026-07-31 04:34      2026-08-17     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  167      399        2026-07-31 04:34      2026-08-14     13:00 (attendu, d'après l'audit)   15:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  168      398        2026-07-31 04:34      2026-08-14     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  169      396        2026-07-31 04:34      2026-08-13     13:00 (attendu, d'après l'audit)   15:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  170      397        2026-07-31 04:34      2026-08-13     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  172      395        2026-07-31 04:34      2026-08-10     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  173      394        2026-07-31 04:34      2026-08-10     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  174      393        2026-07-31 04:34      2026-08-06     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  176      392        2026-07-31 04:34      2026-08-04     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  178      391        2026-07-31 04:34      2026-08-03     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+  179      390        2026-07-31 04:34      2026-08-03     08:00 (attendu, d'après l'audit)   10:00 (actuel en base)   120 min   SUSPECTED_DST_SHIFT  
+ -------- ---------- --------------------- -------------- ---------------------------------- ------------------------ --------- --------------------- 
+
+ [WARNING] 137 ligne(s) avec écart, dont 89 présentant la signature exacte du   
+           bug D-089 (delta de 1h ou 2h). Ceci est un signal, pas une preuve :  
+           vérifier manuellement chaque ligne (PDF/email envoyé au moment des   
+           faits, horaires habituels du chirurgien/site) avant toute correction.
+           Aucune donnée n'a été modifiée par cette commande.                   
+
