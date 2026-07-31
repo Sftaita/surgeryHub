@@ -38,4 +38,11 @@ enum NotificationType: string
     case ABSENCE_INSTRUMENTIST_RELEASED = 'ABSENCE_INSTRUMENTIST_RELEASED'; // to the removed instrumentist
     case ABSENCE_SURGEON_MISSION_OPENED = 'ABSENCE_SURGEON_MISSION_OPENED'; // to the surgeon, instrumentist absence
     case ABSENCE_MISSION_CANCELLED      = 'ABSENCE_MISSION_CANCELLED';      // to the instrumentist, surgeon absence
+
+    // ── Manual resend (D-090, anomalie fonctionnelle 1) ──────────────────────
+    // A manager explicitly re-sending one person's currently-published plan on demand —
+    // never diff-driven, never fanned out to anyone else. Not gated by
+    // NotificationPreferenceResolver (an explicit one-off manager action always sends,
+    // unlike the policy-driven categories above).
+    case PLANNING_RESENT_MANUAL = 'PLANNING_RESENT_MANUAL';
 }

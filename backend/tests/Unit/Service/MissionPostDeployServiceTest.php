@@ -271,24 +271,42 @@ final class MissionPostDeployServiceTest extends TestCase
         $this->assertSame(MissionChangeType::CANCELLED, $dispatched->changeType);
     }
 
-    public function test_cancel_on_draft_mission_throws_conflict(): void
+    /**
+     * D-090: DRAFT is now accepted (PlanningDraftRevalidationService neutralizes a DRAFT
+     * mission whose surgeon is absent, right before deploy() publishes it) — see
+     * test_cancel_on_submitted_mission_throws_conflict below for the guard's remaining edge.
+     */
+    public function test_cancel_on_draft_mission_transitions_to_cancelled(): void
     {
-        $mission = $this->makeMission(MissionStatus::DRAFT);
-        $actor   = $this->makeActor();
+        $instrumentist = $this->makeInstrumentist();
+        $mission       = $this->makeMission(MissionStatus::DRAFT, $instrumentist);
+        $actor         = $this->makeActor();
 
-        $this->expectException(ConflictHttpException::class);
-        $this->expectExceptionMessage('Mission must be OPEN or ASSIGNED to cancel');
+        $this->em->expects($this->once())->method('flush');
 
-        $this->service->cancel($mission, $actor);
+        $this->service->cancel($mission, $actor, 'Chirurgien absent — revalidation au déploiement');
+
+        $this->assertSame(MissionStatus::CANCELLED, $mission->getStatus());
+        $this->assertNull($mission->getInstrumentist(), 'A cancelled mission must have no assignee.');
     }
 
     /**
-     * REGRESSION guard: cancel() originally only accepted OPEN. Extended to also accept
-     * ASSIGNED (AbsenceMissionReactionService — surgeon absence cancels a mission that may
-     * already have an instrumentist). Non-cancellable statuses (DRAFT above, and by the same
-     * guard: SUBMITTED/VALIDATED/CLOSED/IN_PROGRESS/CANCELLED/REJECTED/DECLARED) must still
-     * be rejected — only OPEN and ASSIGNED are in the allowlist.
+     * REGRESSION guard: cancel() originally only accepted OPEN, then ASSIGNED
+     * (AbsenceMissionReactionService — surgeon absence cancels a mission that may already
+     * have an instrumentist), then DRAFT (D-090, above). Non-cancellable statuses
+     * (SUBMITTED/VALIDATED/CLOSED/IN_PROGRESS/CANCELLED/REJECTED/DECLARED) must still be
+     * rejected — only DRAFT, OPEN and ASSIGNED are in the allowlist.
      */
+    public function test_cancel_on_submitted_mission_throws_conflict(): void
+    {
+        $mission = $this->makeMission(MissionStatus::SUBMITTED);
+        $actor   = $this->makeActor();
+
+        $this->expectException(ConflictHttpException::class);
+        $this->expectExceptionMessage('Mission must be DRAFT, OPEN or ASSIGNED to cancel');
+
+        $this->service->cancel($mission, $actor);
+    }
     public function test_cancel_on_assigned_mission_transitions_to_cancelled_and_clears_instrumentist(): void
     {
         $instrumentist = $this->makeInstrumentist();

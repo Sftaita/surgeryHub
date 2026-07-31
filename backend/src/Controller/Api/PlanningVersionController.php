@@ -13,12 +13,15 @@ use App\Service\PdfService;
 use App\Service\PlanningCoverageService;
 use App\Service\PlanningDiffService;
 use App\Service\PlanningModificationService;
+use App\Service\PlanningResendService;
 use App\Service\PlanningVersionHistoryService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 
@@ -31,6 +34,7 @@ class PlanningVersionController extends AbstractController
         private readonly PlanningCoverageService        $coverageService,
         private readonly PlanningVersionHistoryService  $historyService,
         private readonly PlanningModificationService    $modificationService,
+        private readonly PlanningResendService          $resendService,
     ) {}
 
     // ── List ──────────────────────────────────────────────────────────────────
@@ -167,6 +171,42 @@ class PlanningVersionController extends AbstractController
         $lines = isset($data['lines']) && is_array($data['lines']) ? $data['lines'] : [];
 
         $result = $this->modificationService->apply($version, $lines, $user);
+
+        return $this->json($result);
+    }
+
+    /**
+     * D-090 (anomalie fonctionnelle 1) — "Renvoyer le planning par e-mail" : renvoie à UN
+     * seul utilisateur son planning tel qu'actuellement publié dans cette version (jamais
+     * un brouillon — PlanningResendService refuse toute version non ACTIVE), avec le même
+     * format que l'email de déploiement initial. Ne dépend d'aucun diff, ne prévient
+     * personne d'autre, et enregistre systématiquement un NotificationEvent (succès ou
+     * échec) dans l'historique du destinataire.
+     */
+    #[Route('/api/planning/versions/{id}/resend/{userId}', name: 'api_planning_version_resend', methods: ['POST'])]
+    public function resend(int $id, int $userId, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $version = $this->em->find(PlanningVersion::class, $id);
+        if ($version === null) {
+            return $this->json(['error' => ['message' => 'PlanningVersion not found.']], 404);
+        }
+
+        $target = $this->em->find(User::class, $userId);
+        if ($target === null) {
+            return $this->json(['error' => ['message' => 'Utilisateur introuvable.']], 404);
+        }
+
+        try {
+            $result = $this->resendService->resend($version, $target, $actor);
+        } catch (ConflictHttpException $e) {
+            return $this->json(['error' => ['message' => $e->getMessage()]], 409);
+        } catch (NotFoundHttpException $e) {
+            return $this->json(['error' => ['message' => $e->getMessage()]], 404);
+        } catch (\Throwable $e) {
+            return $this->json(['error' => ['message' => $e->getMessage()]], 502);
+        }
 
         return $this->json($result);
     }

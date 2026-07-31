@@ -50,6 +50,14 @@ class PlanningChangeSummaryService
      *        Pass a diff explicitly for a different baseline — e.g. Planning V2 Modification
      *        mode diffs the *same* version against a before-edit-session snapshot of itself,
      *        via PlanningDiffService::computeDiffFromSnapshots(), not diff().
+     * @return int[] Distinct user IDs an email was actually dispatched to (or attempted —
+     *         a dispatch failure is still counted here, it's logged separately by
+     *         dispatchOrLog(); this reflects "who this operation targeted", not delivery
+     *         confirmation). Each recipient appears at most once by construction: a person
+     *         is never in both $byInstrumentist and $bySurgeon (roles are exclusive), and
+     *         each of those maps has at most one entry per person — so a caller can use
+     *         count() on this directly as "how many people were notified" without its own
+     *         deduplication.
      */
     public function sendChangeSummaryEmails(
         int $versionId,
@@ -62,18 +70,20 @@ class PlanningChangeSummaryService
         \DateTimeImmutable $fromDate,
         \DateTimeImmutable $toDate,
         ?array $precomputedDiff = null,
-    ): void {
+    ): array {
         $version = $this->em->find(PlanningVersion::class, $versionId);
         if ($version === null) {
-            return;
+            return [];
         }
 
         $diff = $precomputedDiff ?? $this->diffService->diff($version);
 
         // Skip entirely if the planning didn't change
         if (empty($diff['added']) && empty($diff['removed']) && empty($diff['modified'])) {
-            return;
+            return [];
         }
+
+        $notifiedUserIds = [];
 
         // Deliberately distinct from the initial-deploy subject ("Planning du {from} au {to}",
         // PlanningDeployPdfsMessageHandler, D-058) — this is a redeploy-after-edit recap, and
@@ -154,6 +164,7 @@ class PlanningChangeSummaryService
                 recipientId: $instrId,
                 recipientRole: 'instrumentist',
             );
+            $notifiedUserIds[] = $instrId;
         }
 
         // ── Per-surgeon: only THEIR OWN diff-relevant changes ─────────────────
@@ -229,7 +240,10 @@ class PlanningChangeSummaryService
                 recipientId: $surgeonId,
                 recipientRole: 'surgeon',
             );
+            $notifiedUserIds[] = $surgeonId;
         }
+
+        return array_values(array_unique($notifiedUserIds));
     }
 
     /**

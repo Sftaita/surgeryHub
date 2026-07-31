@@ -10,6 +10,7 @@ use App\Dto\Request\Response\PreviewSummaryResponse;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\PlanningVersionStatus;
+use App\Exception\PlanningDraftConflictException;
 use App\Security\Voter\PlanningVoter;
 use App\Service\PlanningDeploymentService;
 use App\Service\PlanningGeneratorServiceV2;
@@ -116,14 +117,24 @@ class PlanningV2GenerationController extends AbstractController
             throw $this->createNotFoundException('PlanningVersion introuvable.');
         }
 
-        $result = $this->deploymentService->deploy(
-            from: $version->getPeriodStart()->format('Y-m-d'),
-            to: $version->getPeriodEnd()->format('Y-m-d'),
-            siteId: $version->getSite()?->getId(),
-            deployedBy: $currentUser,
-            versionId: $version->getId(),
-            selectedUncoveredMissionIds: [],
-        );
+        try {
+            $result = $this->deploymentService->deploy(
+                from: $version->getPeriodStart()->format('Y-m-d'),
+                to: $version->getPeriodEnd()->format('Y-m-d'),
+                siteId: $version->getSite()?->getId(),
+                deployedBy: $currentUser,
+                versionId: $version->getId(),
+                selectedUncoveredMissionIds: [],
+            );
+        } catch (PlanningDraftConflictException $e) {
+            // D-090 — structured, never a bare 500/generic 409: the manager needs to see
+            // exactly which mission/date/instrumentist is conflicting to resolve it.
+            return $this->json([
+                'code'      => 'DRAFT_CONFLICTS',
+                'message'   => $e->getMessage(),
+                'conflicts' => $e->getConflicts(),
+            ], 409);
+        }
 
         return $this->json(new DeployResponse(
             deploymentId: $result['deploymentId'],

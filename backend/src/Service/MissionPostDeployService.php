@@ -167,11 +167,16 @@ class MissionPostDeployService
      * absence email to the removed instrumentist instead, avoiding a duplicate.
      *
      * $notify — see release() doc.
+     *
+     * DRAFT accepted since D-090 (PlanningDraftRevalidationService) — neutralizing a DRAFT
+     * mission whose surgeon is now absent, right before deploy() publishes it, reuses this
+     * exact same mutation/audit path rather than a bespoke one. Every existing caller only
+     * ever invokes this on OPEN/ASSIGNED (unchanged), so widening the guard is purely additive.
      */
     public function cancel(Mission $mission, User $actor, ?string $reason = null, bool $notify = true): void
     {
-        if (!in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
-            throw new ConflictHttpException('Mission must be OPEN or ASSIGNED to cancel');
+        if (!in_array($mission->getStatus(), [MissionStatus::DRAFT, MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
+            throw new ConflictHttpException('Mission must be DRAFT, OPEN or ASSIGNED to cancel');
         }
 
         $fromInstrumentist     = $mission->getInstrumentist();

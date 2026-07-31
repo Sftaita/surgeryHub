@@ -15,6 +15,7 @@ use App\Enum\SchedulePrecision;
 use App\Message\PlanningDeployPdfsMessage;
 use App\Message\SendBillingEmailMessage;
 use App\Service\PlanningDeploymentService;
+use App\Service\PlanningDraftRevalidationService;
 use Doctrine\ORM\AbstractQuery;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Query;
@@ -39,6 +40,7 @@ class PlanningDeploymentServiceTest extends TestCase
 {
     private EntityManagerInterface&MockObject $em;
     private MessageBusInterface&MockObject    $bus;
+    private PlanningDraftRevalidationService&MockObject $draftRevalidation;
 
     private array $persisted  = [];
     private array $dispatched = [];
@@ -47,6 +49,14 @@ class PlanningDeploymentServiceTest extends TestCase
     {
         $this->em  = $this->createMock(EntityManagerInterface::class);
         $this->bus = $this->createMock(MessageBusInterface::class);
+
+        // D-090 — this test suite exercises deploy()'s bulk-publish DQL routing, not the
+        // revalidation feature (covered by PlanningDeployAbsenceRevalidationTest, a real-DB
+        // functional test — mocking Doctrine's query chain for revalidate() itself here would
+        // test nothing beyond "the mock returns what it's told to"). Default: no conflicts, no
+        // neutralization, deploy proceeds exactly as before D-090 for every scenario below.
+        $this->draftRevalidation = $this->createMock(PlanningDraftRevalidationService::class);
+        $this->draftRevalidation->method('revalidate')->willReturn(['blockingConflicts' => [], 'neutralized' => []]);
 
         $this->persisted  = [];
         $this->dispatched = [];
@@ -89,7 +99,7 @@ class PlanningDeploymentServiceTest extends TestCase
 
     private function makeService(): PlanningDeploymentService
     {
-        return new PlanningDeploymentService($this->em, $this->bus);
+        return new PlanningDeploymentService($this->em, $this->bus, $this->draftRevalidation);
     }
 
     /**

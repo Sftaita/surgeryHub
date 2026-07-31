@@ -13,6 +13,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   ABSENCE_INSTRUMENTIST_RELEASED: "Mission libérée suite à une absence",
   ABSENCE_SURGEON_MISSION_OPENED: "Mission réouverte suite à une absence",
   ABSENCE_MISSION_CANCELLED: "Mission annulée suite à une absence",
+  PLANNING_RESENT_MANUAL: "Planning renvoyé par un manager",
 };
 
 export function notificationTypeLabel(type: string): string {

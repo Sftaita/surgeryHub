@@ -10,6 +10,7 @@ use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\PlanningDeploymentStatus;
 use App\Enum\PlanningVersionStatus;
+use App\Exception\PlanningDraftConflictException;
 use App\Message\PlanningDeployPdfsMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
@@ -19,6 +20,7 @@ class PlanningDeploymentService
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly MessageBusInterface $bus,
+        private readonly PlanningDraftRevalidationService $draftRevalidation,
     ) {}
 
     /**
@@ -54,6 +56,23 @@ class PlanningDeploymentService
         $version = null;
         if ($versionId !== null) {
             $version = $this->em->find(PlanningVersion::class, $versionId);
+        }
+
+        // D-090: revalidate every DRAFT mission against CURRENT absence data before
+        // publishing anything — a draft was only ever validated against absences as they
+        // stood at generate() time; nothing re-checked it since. Read-only first: if any
+        // instrumentist is now absent, abort the ENTIRE deploy (nothing below has mutated
+        // yet) rather than publish a plan the manager never actually reviewed. Only once
+        // confirmed conflict-free do we apply the (safe, already-established) surgeon-
+        // absence neutralization and continue with the normal archive/activate/publish flow.
+        if ($version !== null) {
+            $revalidation = $this->draftRevalidation->revalidate($version);
+            if (!empty($revalidation['blockingConflicts'])) {
+                throw new PlanningDraftConflictException($revalidation['blockingConflicts']);
+            }
+            if (!empty($revalidation['neutralized'])) {
+                $this->draftRevalidation->neutralize($revalidation['neutralized'], $deployedBy);
+            }
         }
 
         // ── 2. Archive the current ACTIVE version (if any) ───────────────────

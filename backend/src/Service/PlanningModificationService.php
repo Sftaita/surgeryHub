@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningVersion;
@@ -36,7 +37,17 @@ class PlanningModificationService
      * @param array<int,array<string,mixed>> $lines Editor lines (same shape as PreviewLineV2 —
      *        date, postId, surgeonId, missionType, startTime, endTime, siteId, instrumentistId,
      *        status, existingMissionId). existingMissionId null = a newly-added line.
-     * @return array{created:int,updated:int,cancelled:int,released:int,unchanged:int}
+     *        The frontend currently sends every line of the month (not just the ones the
+     *        manager actually touched) — safe now that combineDateTime() compares real
+     *        Europe/Brussels instants (D-089/D-090), since an untouched line's schedule can
+     *        no longer register as spuriously "changed". $counts below still reflects the
+     *        mutation-level (created/updated/cancelled/released/unchanged) bookkeeping this
+     *        method has always returned; functionalChanges/usersNotified/emailsSent are the
+     *        separate, diff-derived, manager-facing numbers (D-090 — see PlanningDiffService).
+     * @return array{
+     *   created:int,updated:int,cancelled:int,released:int,unchanged:int,
+     *   functionalChanges:int,usersNotified:int,emailsSent:int,
+     * }
      */
     public function apply(PlanningVersion $version, array $lines, User $actor): array
     {
@@ -105,16 +116,32 @@ class PlanningModificationService
         }
         $afterById = array_filter($afterById, fn ($v) => $v !== null);
 
-        $diff = $this->diffService->computeDiffFromSnapshots(
-            array_values($beforeById),
-            array_values($afterById),
-        );
+        // D-090: matched by missionId (computeDiffByMissionId), never the composite slot-key
+        // matching of computeDiffFromSnapshots()/diff() — this is the SAME version's own
+        // mission set before/after an edit, not two different versions' distinct rows. Key-
+        // based matching would see a pure schedule edit's changed composite key as "old slot
+        // removed, new slot added" (two functional changes for one edit) instead of one
+        // `modified` entry.
+        $diff = $this->diffService->computeDiffByMissionId($beforeById, $afterById);
 
-        if (!empty($diff['added']) || !empty($diff['removed']) || !empty($diff['modified'])) {
-            $this->dispatchTargetedNotifications($version, $diff, $actor);
+        // D-090 — the manager-facing "what actually happened" numbers, distinct from the
+        // mutation bookkeeping in $counts above: one functional change per added/removed/
+        // modified mission in the diff (never a per-cell-touched or per-line-sent count —
+        // the diff already excludes anything that isn't a real planning-visible change, see
+        // PlanningDiffService), and the exact number of people the notification pass below
+        // will email (never assumed equal — computed from what was actually dispatched).
+        $functionalChanges = count($diff['added']) + count($diff['removed']) + count($diff['modified']);
+        $notifiedUserIds   = [];
+
+        if ($functionalChanges > 0) {
+            $notifiedUserIds = $this->dispatchTargetedNotifications($version, $diff, $actor);
         }
 
-        return $counts;
+        return $counts + [
+            'functionalChanges' => $functionalChanges,
+            'usersNotified'     => count($notifiedUserIds),
+            'emailsSent'        => count($notifiedUserIds),
+        ];
     }
 
     /**
@@ -232,13 +259,30 @@ class PlanningModificationService
         );
     }
 
+    /**
+     * D-066: the incoming $date/$time strings are business (Europe/Brussels) wall-clock
+     * digits from the editor — exactly like PlanningGeneratorServiceV2::generate() (see
+     * its $day construction). Constructing a naive `new \DateTimeImmutable("...")` here
+     * would silently label those digits with PHP's container default timezone (UTC in
+     * every environment this app runs in — verified, no `date.timezone` override anywhere
+     * in dev or prod images), which is a *different instant* from the same digits read
+     * back via Mission::getStartAt()/getEndAt() (always Brussels-labeled by
+     * BusinessDateTimeImmutableType). That mismatch made every mission in a Modification-
+     * mode batch compare as "schedule changed" (a full DST-offset apart) even when the
+     * manager never touched it, and — far worse — made updateSchedule() persist the
+     * DST-shifted instant, corrupting the stored wall-clock time. See D-066 in
+     * docs/decisions.md and the audit note above apply().
+     */
     private function combineDateTime(?string $date, ?string $time): ?\DateTimeImmutable
     {
         if ($date === null || $time === null) {
             return null;
         }
         try {
-            return new \DateTimeImmutable("{$date}T{$time}:00");
+            return new \DateTimeImmutable(
+                "{$date}T{$time}:00",
+                new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE),
+            );
         } catch (\Throwable) {
             return null;
         }
@@ -246,7 +290,8 @@ class PlanningModificationService
 
     // ── Private — targeted notification dispatch ────────────────────────────────────
 
-    private function dispatchTargetedNotifications(PlanningVersion $version, array $diff, User $actor): void
+    /** @return int[] distinct user IDs actually notified — see sendChangeSummaryEmails(). */
+    private function dispatchTargetedNotifications(PlanningVersion $version, array $diff, User $actor): array
     {
         // Re-queried fresh from the DB rather than reusing $version->getMissions() — that
         // Doctrine collection may already be hydrated from earlier in this same request (e.g.
@@ -311,7 +356,7 @@ class PlanningModificationService
             }
         }
 
-        $this->changeSummary->sendChangeSummaryEmails(
+        return $this->changeSummary->sendChangeSummaryEmails(
             versionId: $version->getId(),
             missions: $allMissions,
             byInstrumentist: $byInstrumentist,

@@ -2,6 +2,7 @@
 
 namespace App\Tests\Functional;
 
+use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Entity\AuditEvent;
 use App\Entity\Hospital;
 use App\Entity\Mission;
@@ -160,14 +161,21 @@ final class PlanningModificationControllerTest extends WebTestCase
 
     private function makeMission(PlanningVersion $version, Hospital $site, User $surgeon, User $createdBy, MissionStatus $status, ?User $instrumentist = null): Mission
     {
+        // D-066/D-090: business wall-clock digits — Europe/Brussels explicit, exactly like
+        // PlanningGeneratorServiceV2::generate() and the now-fixed combineDateTime(). A naive
+        // construction here would make this fixture itself "correct" only by coincidentally
+        // matching the very bug D-090 fixes — see PlanningModificationControllerTest's own
+        // regression history for what happens when a test fixture and the code under test
+        // share the same wrong convention.
+        $businessTz = new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE);
         $m = new Mission();
         $m->setPlanningVersion($version);
         $m->setType(MissionType::BLOCK);
         $m->setSite($site);
         $m->setSurgeon($surgeon);
         $m->setCreatedBy($createdBy);
-        $m->setStartAt(new \DateTimeImmutable('2026-09-15 08:00:00'));
-        $m->setEndAt(new \DateTimeImmutable('2026-09-15 13:00:00'));
+        $m->setStartAt(new \DateTimeImmutable('2026-09-15 08:00:00', $businessTz));
+        $m->setEndAt(new \DateTimeImmutable('2026-09-15 13:00:00', $businessTz));
         $m->setStatus($status);
         if ($instrumentist !== null) {
             $m->setInstrumentist($instrumentist);

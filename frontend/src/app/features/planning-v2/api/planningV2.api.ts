@@ -241,6 +241,13 @@ export interface ApplyModificationsResult {
   cancelled: number;
   released: number;
   unchanged: number;
+  /** D-090 — planning-visible changes only (added/removed/modified in the diff), never a
+   *  per-line-sent or per-cell-touched count. This is the number to show the manager. */
+  functionalChanges: number;
+  /** Distinct people who received a change-summary email for this operation. */
+  usersNotified: number;
+  /** Always equal to usersNotified today (one email per notified person, never more). */
+  emailsSent: number;
 }
 
 /**
@@ -269,6 +276,25 @@ export async function applyModifications(
 export async function cancelAllMissions(versionId: number): Promise<ApplyModificationsResult> {
   const res = await apiClient.post(
     `/api/planning/versions/${versionId}/cancel-all`,
+    {},
+    { timeout: 30_000 },
+  );
+  return res.data;
+}
+
+export interface ResendPlanningResult {
+  missionCount: number;
+  email: string;
+}
+
+/**
+ * D-090 (anomalie fonctionnelle 1) — "Renvoyer le planning par e-mail" à un seul
+ * utilisateur, indépendamment de tout redéploiement/diff. `versionId` doit être la version
+ * actuellement publiée (ACTIVE) — le backend refuse explicitement un brouillon.
+ */
+export async function resendPlanning(versionId: number, userId: number): Promise<ResendPlanningResult> {
+  const res = await apiClient.post(
+    `/api/planning/versions/${versionId}/resend/${userId}`,
     {},
     { timeout: 30_000 },
   );

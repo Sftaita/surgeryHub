@@ -147,6 +147,57 @@ class PlanningDiffService
         return ['added' => $added, 'removed' => $removed, 'modified' => $modified];
     }
 
+    /**
+     * D-090 — same output shape as computeDiffFromSnapshots(), but matched by missionId
+     * instead of the composite slot key. Use this to diff the SAME PlanningVersion's mission
+     * set against itself before/after an edit session (Planning V2 Modification mode's
+     * apply-modifications) — never computeDiffFromSnapshots() for that case.
+     *
+     * Why this matters: the composite key (siteId_surgeonId_missionType_date_startRounded15min)
+     * intentionally includes the rounded start time, because computeDiffFromSnapshots() /
+     * computeDiff() exist to match DIFFERENT Mission rows across two different
+     * PlanningVersions that happen to represent "the same slot" — there is no shared ID to
+     * match on there, only shape. But when diffing a single mission against its own
+     * before/after state (same missionId, same DB row, mutated in place), a genuine schedule
+     * edit changes that composite key — so key-based matching sees "old key gone, new key
+     * appeared" and reports it as a REMOVED slot plus an unrelated ADDED slot (two functional
+     * changes) instead of one "schedule modified" entry. Matching by missionId — always
+     * available and always stable across the SAME mission's own before/after snapshots —
+     * fixes this: a pure schedule/site/type edit is exactly one `modified` entry.
+     *
+     * @param array<int,array<string,mixed>> $oldById Serialized snapshot before, keyed by missionId
+     * @param array<int,array<string,mixed>> $newById Serialized snapshot after, keyed by missionId
+     * @return array{added: array<array>, removed: array<array>, modified: array<array>}
+     */
+    public function computeDiffByMissionId(array $oldById, array $newById): array
+    {
+        $added    = [];
+        $removed  = [];
+        $modified = [];
+
+        foreach ($newById as $id => $newMission) {
+            if (!isset($oldById[$id])) {
+                $added[] = $newMission;
+                continue;
+            }
+            $changes = $this->detectChanges($oldById[$id], $newMission);
+            if (!empty($changes)) {
+                $modified[] = [
+                    'mission' => $newMission,
+                    'changes' => $changes,
+                ];
+            }
+        }
+
+        foreach ($oldById as $id => $oldMission) {
+            if (!isset($newById[$id])) {
+                $removed[] = $oldMission;
+            }
+        }
+
+        return ['added' => $added, 'removed' => $removed, 'modified' => $modified];
+    }
+
     // ── Private — DB loading ──────────────────────────────────────────────────
 
     /** @return Mission[] */

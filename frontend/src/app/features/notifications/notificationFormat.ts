@@ -15,6 +15,7 @@ const TITLES: Record<string, string> = {
   PLANNING_DEPLOYED: "Planning déployé",
   PLANNING_MISSION_ASSIGNED: "Mission assignée",
   PLANNING_OPEN_MISSIONS_AVAILABLE: "Nouvelles offres disponibles",
+  PLANNING_RESENT_MANUAL: "Planning renvoyé",
 };
 
 /**
@@ -28,10 +29,16 @@ export function formatNotificationTitle(n: Pick<NotificationItem, "eventType">):
   return TITLES[n.eventType] ?? "Notification";
 }
 
-export function formatNotificationBody(n: Pick<NotificationItem, "payload">): string {
+export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "eventType">): string {
   const payload = n.payload ?? {};
   const siteName = typeof payload.siteName === "string" ? payload.siteName : null;
   const missionDate = typeof payload.missionDate === "string" ? payload.missionDate : null;
+
+  if (n.eventType === "PLANNING_RESENT_MANUAL") {
+    const from = typeof payload.periodFrom === "string" ? payload.periodFrom : null;
+    const to = typeof payload.periodTo === "string" ? payload.periodTo : null;
+    return from && to ? `Période du ${from} au ${to}` : "";
+  }
 
   if (missionDate && siteName) return `${missionDate} — ${siteName}`;
   if (siteName) return siteName;

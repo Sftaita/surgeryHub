@@ -22,7 +22,7 @@ import { getSurgeons } from "../../manager-surgeons/api/surgeons.api";
 import { fetchMissions } from "../../missions/api/missions.api";
 import {
   getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2,
-  applyModifications, cancelAllMissions, extractErrorV2,
+  applyModifications, cancelAllMissions, resendPlanning, extractErrorV2, type ApplyModificationsResult,
 } from "../api/planningV2.api";
 import { listPlanningVersions, getAbsences } from "../../planning-manager/api/planning.api";
 import type { PreviewLineStatus, PreviewLineV2, PreviewResponseV2 } from "../api/planningV2.types";
@@ -101,8 +101,22 @@ export function GeneratePlanningTab() {
   const [modificationLabel, setModificationLabel] = React.useState<string | null>(null);
   const [newLines, setNewLines] = React.useState<PreviewLineV2[]>([]);
   const [isCreatingMission, setIsCreatingMission] = React.useState(false);
-  const [modificationApplied, setModificationApplied] = React.useState<{ created: number; updated: number; cancelled: number; released: number; unchanged: number } | null>(null);
+  const [modificationApplied, setModificationApplied] = React.useState<ApplyModificationsResult | null>(null);
   const [deleteMonthConfirmOpen, setDeleteMonthConfirmOpen] = React.useState(false);
+  // D-090 — populated when deploy() is blocked by PlanningDraftConflictException (409
+  // DRAFT_CONFLICTS): an absence was registered after generate() ran, invalidating an
+  // instrumentist assignment in the draft. Never silently dropped or auto-resolved —
+  // the manager must see exactly which mission/date/person is conflicting.
+  const [draftConflicts, setDraftConflicts] = React.useState<Array<{
+    missionId: number; date: string; siteName: string | null;
+    surgeonName: string | null; instrumentistName: string; reason: string;
+  }> | null>(null);
+  // D-090 (anomalie fonctionnelle 1) — "Renvoyer le planning par e-mail" à un utilisateur,
+  // indépendamment de tout redéploiement. Only offered in Modification mode: that's the
+  // only place modificationVersionId is guaranteed to be the currently ACTIVE (published)
+  // version — resend must never target a DRAFT.
+  const [resendDialogOpen, setResendDialogOpen] = React.useState(false);
+  const [resendUserId, setResendUserId] = React.useState<number | "">("");
   const nextDraftIdRef = React.useRef(-1);
 
   const mode: PlanningEditorMode = modificationVersionId !== null ? "modification" : "generation";
@@ -278,14 +292,29 @@ export function GeneratePlanningTab() {
       toast.success(`Planning déployé — ${data.missionCount} mission(s) publiée(s)`);
       setDeployed(data);
     },
-    onError: (err) => toast.error(extractErrorV2(err)),
+    onError: (err: any) => {
+      if (err?.response?.status === 409 && err?.response?.data?.code === "DRAFT_CONFLICTS") {
+        setDraftConflicts(err.response.data.conflicts ?? []);
+        toast.error(`Déploiement bloqué — ${(err.response.data.conflicts ?? []).length} conflit(s) d'absence à résoudre`);
+        return;
+      }
+      toast.error(extractErrorV2(err));
+    },
   });
 
   const applyModsMutation = useMutation({
     mutationFn: () => applyModifications(modificationVersionId!, effectiveLines),
     onSuccess: async (result) => {
-      const total = result.created + result.updated + result.cancelled + result.released;
-      toast.success(total > 0 ? `Planning mis à jour — ${total} changement(s) appliqué(s)` : "Aucun changement à appliquer");
+      // D-090 — functionalChanges/usersNotified are diff-derived (planning-visible changes
+      // only), never the raw created+updated+cancelled+released mutation count: that count
+      // used to include every mission whose schedule spuriously compared as "changed" (D-089
+      // timezone bug) or that the frontend re-sent unedited — neither is what the manager
+      // means by "how many things did I just change".
+      toast.success(
+        result.functionalChanges > 0
+          ? `Planning mis à jour — ${result.functionalChanges} changement(s), ${result.usersNotified} personne(s) prévenue(s)`
+          : "Aucun changement à appliquer",
+      );
       setModificationApplied(result);
       setEditedLines(new Map());
       setNewLines([]);
@@ -300,6 +329,16 @@ export function GeneratePlanningTab() {
       if (refreshed.isError) {
         toast.error("Les changements sont enregistrés, mais l'affichage n'a pas pu être actualisé — rechargez la page.");
       }
+    },
+    onError: (err) => toast.error(extractErrorV2(err)),
+  });
+
+  const resendMutation = useMutation({
+    mutationFn: () => resendPlanning(modificationVersionId!, resendUserId as number),
+    onSuccess: (result) => {
+      toast.success(`Planning renvoyé à ${result.email} (${result.missionCount} mission(s))`);
+      setResendDialogOpen(false);
+      setResendUserId("");
     },
     onError: (err) => toast.error(extractErrorV2(err)),
   });
@@ -601,6 +640,64 @@ export function GeneratePlanningTab() {
         </DialogActions>
       </Dialog>
 
+      {/* D-090 (anomalie fonctionnelle 1) — renvoi manuel du planning publié à une personne. */}
+      <Dialog open={resendDialogOpen} onClose={() => { setResendDialogOpen(false); setResendUserId(""); }} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>Renvoyer le planning par e-mail</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: 13, color: planningV2Colors.textMuted, mb: 2 }}>
+            Renvoie à la personne choisie son planning actuellement publié pour {modificationLabel ?? "cette période"},
+            sans prévenir personne d&apos;autre. N&apos;a aucun effet sur le planning lui-même.
+          </Typography>
+          <SearchableSelect
+            label="Destinataire"
+            options={[...instrumentistOptions, ...surgeonOptions]}
+            value={resendUserId === "" ? null : resendUserId}
+            onChange={(id) => setResendUserId(id ?? "")}
+            placeholder="Rechercher un instrumentiste ou un chirurgien…"
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button onClick={() => { setResendDialogOpen(false); setResendUserId(""); }} sx={{ textTransform: "none", fontWeight: 600 }}>
+            Annuler
+          </Button>
+          <Button
+            variant="contained" disableElevation disabled={resendUserId === "" || resendMutation.isPending}
+            onClick={() => resendMutation.mutate()}
+            sx={{ textTransform: "none", fontWeight: 600 }}
+          >
+            {resendMutation.isPending ? "Envoi…" : "Envoyer"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* D-090 — deploy() blocked by an absence conflict detected at revalidation time. */}
+      <Dialog open={draftConflicts !== null} onClose={() => setDraftConflicts(null)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>
+          Déploiement bloqué — {draftConflicts?.length ?? 0} conflit(s) d&apos;absence
+        </DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted, mb: 2 }}>
+            Une absence a été enregistrée depuis la génération de ce brouillon pour au moins un
+            instrumentiste affecté. Réaffectez ou retirez ces instrumentistes puis redéployez.
+          </Typography>
+          <Stack spacing={1.25}>
+            {(draftConflicts ?? []).map((c) => (
+              <Box key={c.missionId} sx={{ p: 1.5, borderRadius: 1.5, bgcolor: "#FBF2F1", border: "1px solid #F0D8D6" }}>
+                <Typography sx={{ fontSize: 13, fontWeight: 600 }}>
+                  {c.date} — {c.instrumentistName}{c.surgeonName ? ` (${c.surgeonName}${c.siteName ? `, ${c.siteName}` : ""})` : ""}
+                </Typography>
+                <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textMuted }}>{c.reason}</Typography>
+              </Box>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button variant="contained" disableElevation onClick={() => setDraftConflicts(null)} sx={{ textTransform: "none", fontWeight: 600 }}>
+            Fermer
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {!isModification && (
         <>
           <Box sx={{ mt: 3 }} />
@@ -817,8 +914,11 @@ export function GeneratePlanningTab() {
           </Box>
           <Typography sx={{ fontSize: 16, fontWeight: 700 }}>Planning redéployé</Typography>
           <Typography sx={{ fontSize: 13, color: planningV2Colors.textMuted, mt: 0.75, mb: 2 }}>
+            {modificationApplied.functionalChanges} changement{modificationApplied.functionalChanges > 1 ? "s" : ""} de planning
+            {" · "}{modificationApplied.usersNotified} personne{modificationApplied.usersNotified > 1 ? "s" : ""} concernée{modificationApplied.usersNotified > 1 ? "s" : ""}
+            {" · "}{modificationApplied.emailsSent} email{modificationApplied.emailsSent > 1 ? "s" : ""} envoyé{modificationApplied.emailsSent > 1 ? "s" : ""}.
+            <br />
             {modificationApplied.created} créée{modificationApplied.created > 1 ? "s" : ""} · {modificationApplied.updated} modifiée{modificationApplied.updated > 1 ? "s" : ""} · {modificationApplied.cancelled} annulée{modificationApplied.cancelled > 1 ? "s" : ""} · {modificationApplied.released} libérée{modificationApplied.released > 1 ? "s" : ""}.
-            Seules les personnes concernées par un changement ont reçu un email récapitulatif.
           </Typography>
           <Stack direction="row" spacing={1.25} justifyContent="center">
             <Button onClick={() => setModificationApplied(null)} sx={{ height: 38, px: 2.25, borderRadius: planningV2Radii.button, border: "1px solid #DDE2E8", color: planningV2Colors.textStrong, textTransform: "none", fontWeight: 600 }}>
@@ -1026,14 +1126,22 @@ export function GeneratePlanningTab() {
                 </Button>
               )}
               {isModification ? (
-                <Button
-                  variant="contained" disableElevation disabled={applyModsMutation.isPending || dirtyCount + newLines.length === 0}
-                  onClick={() => applyModsMutation.mutate()}
-                  startIcon={<RocketLaunchOutlinedIcon />}
-                  sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: accent.main, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: accent.hover } }}
-                >
-                  Redéployer
-                </Button>
+                <>
+                  <Button
+                    onClick={() => setResendDialogOpen(true)}
+                    sx={{ height: 40, px: 2, borderRadius: planningV2Radii.button, border: "1px solid #DDE2E8", color: planningV2Colors.textStrong, textTransform: "none", fontWeight: 600 }}
+                  >
+                    Renvoyer le planning…
+                  </Button>
+                  <Button
+                    variant="contained" disableElevation disabled={applyModsMutation.isPending || dirtyCount + newLines.length === 0}
+                    onClick={() => applyModsMutation.mutate()}
+                    startIcon={<RocketLaunchOutlinedIcon />}
+                    sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: accent.main, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: accent.hover } }}
+                  >
+                    Redéployer
+                  </Button>
+                </>
               ) : !generated ? (
                 <Button
                   variant="contained" disableElevation disabled={generateMutation.isPending} onClick={() => generateMutation.mutate()}
