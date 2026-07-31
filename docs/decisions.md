@@ -5517,3 +5517,183 @@ déploiement (`docker exec surgicalhub-php php bin/console app:user:promote-to-a
 migration Doctrine. Testée unitairement (mock des dépendances) dans
 `tests/Unit/Command/PromoteUserToAdminCommandTest.php` — n'exécute rien contre la
 production dans ce lot.
+
+---
+
+## D-090 — Planning V2 : revalidation des absences au déploiement, correction du bug de fuseau horaire en mode Modification, sémantique du diff par mission, renvoi manuel du planning (audit Planning V2, 2026-07-31)
+
+Date : 2026-07-31
+
+### Contexte
+
+Audit demandé sur quatre anomalies rapportées en production : (1) des instrumentistes
+en congé restaient affectés à des postes dans le planning publié ; (2) un modal de
+redéploiement en mode Modification annonçait « 32 modifications » après seulement 3
+éditions réelles ; (3) un chirurgien absent laissait son poste affiché « à pourvoir »
+au lieu d'être neutralisé ; (4) aucune action ne permettait de renvoyer manuellement
+son planning à un utilisateur précis.
+
+### Décision — cause racine unique pour les anomalies 1 et 3 : fenêtre génération→déploiement non revalidée
+
+`PlanningGeneratorServiceV2::preview()`/`generate()` excluent déjà correctement les
+absences **au moment de la génération** (`isAbsentFast()`, requête fraîche). Le trou
+se situe entre génération et déploiement : `AbsenceMissionReactionService` ne réagit
+qu'aux missions déjà publiées (`ASSIGNED`/`OPEN`), jamais aux `DRAFT` d'une version non
+déployée ; `AbsenceImpactService` lève bien une alerte informative pour les `DRAFT`,
+mais rien ne bloquait le déploiement pour autant — `PlanningDeploymentService::deploy()`
+publiait le brouillon tel quel, sans revalider les absences actuelles au moment du clic
+« Déployer ».
+
+**Correctif** : nouveau `PlanningDraftRevalidationService`, appelé par `deploy()` avant
+toute mutation. Passe en lecture seule sur les missions `DRAFT` de la version :
+- **Chirurgien absent** → mission neutralisée (statut `CANCELLED`, réutilisé — aucun
+  nouveau statut créé, cohérent avec `AbsenceMissionReactionService::processSurgeonAbsence()`
+  qui applique déjà cette règle aux missions post-déploiement). L'éventuel instrumentiste
+  déjà affecté est retiré et notifié via le pipeline `MissionLifecycleChangedMessage`
+  existant (`MissionPostDeployService::cancel()`, dont le garde-fou de statut accepte
+  désormais aussi `DRAFT`, en plus d'`OPEN`/`ASSIGNED`).
+- **Instrumentiste absent** (chirurgien présent) → **blocage total du déploiement**
+  (`PlanningDraftConflictException`, HTTP 409 `DRAFT_CONFLICTS` avec le détail structuré
+  de chaque conflit — mission, date, site, chirurgien, instrumentiste). Choix délibéré de
+  bloquer plutôt que d'exclure silencieusement la seule mission concernée : un planning
+  partiellement publié sans intention explicite du manager est exactement le mode
+  d'échec que cette revalidation doit fermer.
+
+Nouvelle règle centrale : `AbsenceOverlapService::isUserAbsentDuring()` — chevauchement
+jour-inclusif, cohérent avec les trois implémentations préexistantes (générateur,
+réaction aux absences, impact) qui restent inchangées mais vérifiées sémantiquement
+identiques.
+
+**Limite assumée** : la revalidation couvre les absences (instrumentiste + chirurgien),
+pas l'état du poste (`SurgeonSchedulePost.active`) ni les exceptions de planning
+ajoutées après génération — `Mission` n'a aucune référence directe vers le poste qui
+l'a générée, une revalidation de ces axes nécessiterait un changement de modèle de
+données plus large, hors périmètre de cet audit.
+
+### Décision — anomalie 2 : deux bugs distincts dans `PlanningModificationService`
+
+**Bug de fuseau horaire (D-066 violé)** — `combineDateTime()` construisait
+`new \DateTimeImmutable("{date}T{heure}:00")` sans fuseau explicite. Interprété par PHP
+avec le fuseau conteneur par défaut, **UTC** (confirmé : aucun `date.timezone` dans les
+images Docker dev/prod). `Mission::getStartAt()`/`getEndAt()` sont toujours étiquetées
+Europe/Brussels par `BusinessDateTimeImmutableType`. Le frontend renvoyant toutes les
+lignes du mois (pas seulement les éditées), chaque ligne non touchée comparait deux
+représentations du même horaire affiché dans des fuseaux différents (jusqu'à 2h
+d'écart en été) → `scheduleChanged` devenait vrai pour quasiment toutes les missions.
+**Conséquence plus grave que le comptage** : `MissionPostDeployService::updateSchedule()`
+persistait la valeur mal étiquetée — chaque mission touchée voyait son horaire
+réellement décalé de 1h (hiver) ou 2h (été) en base à l'écriture, pas seulement à
+l'affichage. Corrigé en étiquetant explicitement Europe/Brussels, comme
+`PlanningGeneratorServiceV2::generate()` le fait déjà. Audit exhaustif des autres
+constructions `new \DateTimeImmutable(...)` du périmètre Planning V2 : aucun autre bug
+trouvé — les autres usages portent sur des colonnes `date_immutable`/`time_immutable`
+(pas de fuseau au niveau du stockage) ou des paramètres de requête liés en type
+générique `Types::DATETIME_IMMUTABLE` (impression des chiffres sans `setTimezone()`,
+contrairement au type métier).
+
+**Clé de correspondance du diff** — même après le fix fuseau, `PlanningDiffService`
+indexait par clé composite (site/chirurgien/type/date/heure-arrondie-15min), pensée
+pour comparer deux **versions différentes**. Appliquée à un auto-diff (même version,
+même mission, avant/après édition), un changement d'horaire fait changer la clé
+elle-même → « ancien créneau disparu + nouveau créneau apparu » (2 changements) au lieu
+d'une modification. Corrigé par une nouvelle méthode `computeDiffByMissionId()`, utilisée
+exclusivement par `PlanningModificationService::apply()` (le diff par clé composite
+reste inchangé pour `diff()`/`computeDiff()`, toujours utilisés pour comparer deux
+versions distinctes — ne pas les fusionner).
+
+**Risque sur les données historiques** : techniquement possible pour toute mission
+ayant transité par `apply()` avant ce correctif. Commande d'audit en lecture seule
+livrée : `app:planning:audit-modification-timezone-shifts` (compare les chiffres
+horaires capturés dans les événements d'audit `MISSION_TIME_CHANGED_POST_DEPLOY` à
+l'heure actuellement stockée, signale un écart de exactement 1h/2h comme signature
+probable — jamais une correction automatique). Exécutée en développement local : zéro
+événement de ce type trouvé, rien à signaler. **Non exécutée en production** dans cet
+audit (contrainte explicite de ne pas y toucher) — recommandé avant tout déploiement de
+ce correctif.
+
+### Décision — sémantique du nombre de modifications
+
+`apply()` retourne désormais trois nombres distincts, dérivés du diff (jamais du
+comptage de mutations techniques `created`/`updated`/`cancelled`/`released`, conservé
+séparément pour l'historique) : `functionalChanges` (missions ajoutées + supprimées +
+modifiées dans le diff — jamais `updatedAt`, l'ordre des tableaux, ou une ligne
+renvoyée inchangée par le frontend), `usersNotified`, `emailsSent` (toujours égaux
+aujourd'hui — un email par personne réellement concernée, jamais plus, jamais de
+doublon puisqu'un rôle exclut l'autre et que chaque destinataire n'apparaît qu'une
+fois par famille). `PlanningChangeSummaryService::sendChangeSummaryEmails()` retourne
+désormais la liste réelle des destinataires notifiés plutôt que `void`, pour que ce
+comptage reflète ce qui a été réellement envoyé.
+
+### Décision — renvoi manuel du planning (anomalie fonctionnelle 1)
+
+`POST /api/planning/versions/{id}/resend/{userId}` (`PlanningResendService`) : refuse
+toute version non `ACTIVE` (jamais un brouillon), charge les missions réellement
+publiées de la version pour cet utilisateur (jamais un diff, jamais dépendant d'un
+changement récent), réutilise exactement les mêmes templates PDF/email et le même
+sujet que l'email de déploiement initial (`PlanningDeployPdfsMessageHandler` — pas de
+format divergent), un seul destinataire jamais de fan-out, `PlanningVoter::PLANNING_MANAGE`
+(même RBAC que le reste du module). Enregistre systématiquement un `NotificationEvent`
+(nouveau type `PLANNING_RESENT_MANUAL`) avec statut `SENT`/`FAILED` et l'erreur
+éventuelle.
+
+### Tests
+
+16 tests fonctionnels nouveaux (`PlanningModificationTimezoneTest` — été/hiver sans
+dérive, édition réelle = 1 changement exact, 32 lignes envoyées/1 éditée = 1 changement ;
+`PlanningDeployAbsenceRevalidationTest` — blocage instrumentiste absent, neutralisation
+chirurgien absent, bornes exactes, absences sans chevauchement ; `PlanningResendControllerTest`)
++ 6 tests unitaires nouveaux pour la commande d'audit, tous verts. Deux régressions
+réelles (attendues, conséquences directes des changements intentionnels) trouvées et
+corrigées dans les tests existants : `PlanningDeploymentServiceTest` (nouveau paramètre
+constructeur) et `MissionPostDeployServiceTest` (le test qui attendait un rejet sur
+`DRAFT` attend désormais un succès). Un bug caché révélé par la correction du fuseau
+dans la fixture de `PlanningModificationControllerTest` (même défaut que le bug de
+production) — corrigé pour utiliser Europe/Brussels partout. Suite complète : frontend
+96/96 fichiers · 823/823 tests verts (inchangé) ; backend 1638 tests, ~57 échecs
+préexistants et sans rapport avec ce lot : 6 tests de suppression d'absence instables
+selon l'ordre d'exécution, non liés à ce chantier ; ~51 tests financiers en échec à
+cause d'une collision de numérotation de facture `FIRM-2026-219` due à l'accumulation
+de données dans la base de test locale partagée — reproductible même isolément,
+domaine financier jamais touché ici (détail des deux catégories ci-dessous).
+
+### Tests préexistants hors périmètre (non corrigés dans ce chantier)
+
+**6 variantes de suppression d'absence, instables selon l'ordre d'exécution** —
+échouent lorsqu'elles tournent regroupées avec d'autres suites, passent systématiquement
+en isolation. Reproduction : `docker exec surgicalhub-php-1 sh -c "cd /var/www/backend
+&& php bin/phpunit --filter AbsenceControllerTest"` → 14/14 verts en isolation, contre
+échec observé dans un run groupé de 12 fichiers plus tôt dans cette session (trace
+capturée : `Doctrine\DBAL\Exception\ForeignKeyConstraintViolationException` sur
+`notification_event.user_id` pendant `AbsenceMissionReactionService::onAbsenceDeleted()`).
+Hypothèse de cause racine : état résiduel accumulé entre tests dans la base de test
+partagée (pas de transaction par test, `tearDown()` manuel), sans déclencheur fixe
+identifié — 3 tentatives de reproduction du run groupé original ont toutes échoué à
+reproduire l'échec (40/40, 239/239, 14/14 verts), confirmant une instabilité réelle liée
+à l'ordre/au timing plutôt qu'un bug déterministe. Aucun des fichiers touchés par ce
+chantier n'importe ni n'appelle de code lié à ces suites. **Ne pas corriger dans ce
+chantier** — nécessite un travail dédié de nettoyage/isolation des tests, non entamé ici.
+
+**~51 échecs financiers, collision `FIRM-2026-219`** — reproduction :
+`docker exec surgicalhub-php-1 sh -c "cd /var/www/backend && php bin/phpunit
+tests/Functional/FirmInvoiceServiceLot1AdaptationTest.php"`, échoue seul, avec la même
+erreur `Duplicate entry 'FIRM-2026-219' for key ...` à chaque exécution — cause racine
+unique confirmée par une requête en lecture seule sur la base de test partagée
+(`SELECT COUNT(*) FROM firm_invoice WHERE number LIKE 'FIRM-2026-%'` → exactement 218
+lignes accumulées), qui fait retomber le prochain numéro généré sur une valeur déjà
+prise. Suites touchées : `DocumentPaymentControllerTest`,
+`FinancialCorrectionControllerTest`, `FinancialCorrectionServiceTest`,
+`FirmInvoiceServiceLot1AdaptationTest` et les tests `FirmInvoice*` associés — la
+majorité des ~51 échecs sont des échecs en cascade du même conflit de clé unique, pas
+~51 causes distinctes. Recommandation : réinitialiser/tronquer la base de test locale
+dans un chantier séparé, dédié. **Domaine financier non touché dans ce chantier**,
+conformément à la contrainte explicite.
+
+### Portée non traitée ici
+
+Base de données de test locale nécessitant une réinitialisation/troncature propre
+(collision `FIRM-2026-219`) — action distincte, non exécutée sans instruction
+explicite. Instabilité d'ordre d'exécution des tests de suppression d'absence — nécessite
+un nettoyage/une meilleure isolation de l'état entre tests, non traité ici (préexistant,
+hors du diff de ce chantier). Revalidation au déploiement limitée aux absences —
+état du poste et exceptions de planning ajoutées après génération non couverts (voir
+limite assumée ci-dessus).

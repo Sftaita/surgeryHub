@@ -3192,16 +3192,40 @@ Une ligne dont l'`existingMissionId` référence une mission déjà mutée aille
 **Réponse — 200 :**
 
 ```json
-{ "created": 1, "updated": 2, "cancelled": 1, "released": 0, "unchanged": 3 }
+{
+  "created": 1, "updated": 2, "cancelled": 1, "released": 0, "unchanged": 3,
+  "functionalChanges": 3, "usersNotified": 2, "emailsSent": 2
+}
 ```
+
+`created`/`updated`/`cancelled`/`released`/`unchanged` restent le comptage technique
+des mutations (inchangé). `functionalChanges`/`usersNotified`/`emailsSent` (D-090, audit
+Planning V2) sont dérivés du diff — le nombre à afficher au manager, jamais le comptage
+de mutations : `functionalChanges` = missions ajoutées + supprimées + modifiées dans le
+diff (jamais `updatedAt`, l'ordre des tableaux, ou une ligne renvoyée inchangée par le
+frontend — le frontend envoie systématiquement **toutes** les lignes du mois, pas
+seulement celles éditées). `usersNotified`/`emailsSent` sont toujours égaux aujourd'hui.
+
+> **Correctif D-090** : le frontend envoyant toutes les lignes du mois, un bug de fuseau
+> horaire (`combineDateTime()` sans Europe/Brussels explicite, voir D-090) faisait
+> comparer chaque ligne non éditée dans deux fuseaux différents — `functionalChanges`
+> valait alors ~le nombre total de missions du mois, jamais le nombre réel d'éditions
+> (symptôme rapporté : "32 modifications" pour 3 éditions). Corrigé ; voir aussi le
+> changement de `date`/`startTime`/`endTime` ci-dessus, désormais interprété comme heure
+> métier Europe/Brussels de façon garantie, jamais implicitement UTC.
 
 **Réponse — 404 :** `PlanningVersion` inexistante.
 
 **Emails envoyés — un seul récapitulatif ciblé par personne réellement affectée :**
 
 À la fin du lot, `PlanningModificationService` calcule un diff avant/après sur
-l'ensemble des missions de la version (`PlanningDiffService::computeDiffFromSnapshots()`
-— pas `diff()`, qui compare deux versions différentes) et appelle **une seule fois**
+l'ensemble des missions de la version, **indexé par `missionId`**
+(`PlanningDiffService::computeDiffByMissionId()`, D-090 — pas `computeDiffFromSnapshots()`/
+`diff()`, qui indexent par clé composite site/chirurgien/type/date/heure-arrondie et sont
+réservées à la comparaison de deux `PlanningVersion` **différentes** ; appliquée à un
+auto-diff avant/après édition de la même mission, cette clé composite ferait apparaître
+un simple changement d'horaire comme "suppression + ajout", soit deux changements
+fonctionnels pour une seule édition) et appelle **une seule fois**
 `PlanningChangeSummaryService::sendChangeSummaryEmails()` avec ce diff précalculé.
 
 | Destinataire | Condition d'envoi | Template |
@@ -3271,6 +3295,44 @@ personne réellement affectée, calculé via le même diff avant/après. Une mis
 sans instrumentiste qui est annulée ne produit **aucune entrée de diff** (son
 instrumentiste reste `null` avant/après — `PlanningDiffService::detectChanges()` ignore
 le statut) : son chirurgien ne reçoit donc rien pour cette mission-là spécifiquement.
+
+---
+
+### 26.6e Renvoi manuel du planning à un utilisateur (D-090, audit Planning V2)
+
+#### `POST /api/planning/versions/{id}/resend/{userId}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Renvoie à **un seul** utilisateur son planning tel qu'actuellement publié dans cette
+version — action manuelle explicite, jamais déclenchée par un redéploiement, **ne
+dépend d'aucun diff**. Réutilise exactement le même format que l'email de déploiement
+initial (mêmes templates PDF/email, même sujet `Planning du {from} au {to}`, §26.6) —
+jamais un format divergent.
+
+**Body :** aucun (POST sans payload).
+
+**Réponse — 200 :**
+```json
+{ "missionCount": 4, "email": "instrumentiste@example.com" }
+```
+
+**Réponse — 409 :** la version ciblée n'est pas `ACTIVE` — **exclusivement le planning
+publié, jamais un brouillon**, refusé structurellement (pas seulement par convention).
+
+**Réponse — 404 :** version ou utilisateur introuvable, ou utilisateur sans rôle
+chirurgien/instrumentiste, ou sans email, ou sans mission publiée dans cette version
+pour ce rôle.
+
+**Réponse — 502 :** échec d'envoi de l'email (transport indisponible, etc.).
+
+**Missions incluses :** `ASSIGNED` pour un instrumentiste ; `OPEN` + `ASSIGNED` pour un
+chirurgien (même périmètre que l'email de déploiement initial).
+
+**Historique des notifications :** enregistre systématiquement un `NotificationEvent`
+(`eventType: "PLANNING_RESENT_MANUAL"`) pour le destinataire uniquement — jamais pour
+personne d'autre — avec `payload.status` (`SENT`/`FAILED`) et `payload.error` le cas
+échéant, visible dans `GET /api/notifications` (§41.1) du destinataire.
 
 ---
 
@@ -3557,6 +3619,38 @@ de la `PlanningVersion` ciblée.
 > persisté. Corrigé par un `flush()` immédiatement après l'activation. Trouvé par le
 > premier test fonctionnel (EntityManager réel) à exercer ce chemin de code — les tests
 > unitaires existants mockaient `EntityManager` et ne pouvaient pas révéler ce bug.
+
+**Réponse — 409 `DRAFT_CONFLICTS`** (D-090, audit Planning V2) :
+
+Avant toute publication, `deploy()` revalide chaque mission `DRAFT` de la version contre
+les absences **actuelles** (`PlanningDraftRevalidationService`) — un brouillon n'est
+jamais supposé encore valide simplement parce qu'il l'était à la génération. Si au moins
+un instrumentiste affecté dans le brouillon est désormais absent, le déploiement entier
+est bloqué (aucune mutation, y compris sur les missions non concernées) :
+
+```json
+{
+  "code": "DRAFT_CONFLICTS",
+  "message": "Déploiement bloqué : 1 affectation(s) invalidée(s) par une absence détectée depuis la génération.",
+  "conflicts": [
+    {
+      "missionId": 501, "date": "2026-09-15",
+      "siteId": 3, "siteName": "CHIREC",
+      "surgeonId": 10, "surgeonName": "Jean Dupont",
+      "instrumentistId": 19, "instrumentistName": "Ancien Instrumentiste",
+      "reason": "Instrumentiste Ancien Instrumentiste absent le 15/09/2026 — déploiement bloqué."
+    }
+  ]
+}
+```
+
+Un chirurgien absent, en revanche, neutralise silencieusement (mais de façon auditée et
+notifiée) sa propre mission `DRAFT` — statut `CANCELLED` (réutilisé, jamais un nouveau
+statut), instrumentiste éventuel retiré et notifié via le pipeline `MissionLifecycleChangedMessage`
+existant — sans bloquer le reste du déploiement : ce cas ne produit jamais de réponse
+`DRAFT_CONFLICTS`, la mission est simplement absente du `missionCount` publié. Voir
+D-090 (`docs/decisions.md`) pour le détail complet et la cause racine de ces deux
+anomalies.
 
 ---
 
