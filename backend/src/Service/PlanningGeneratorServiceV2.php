@@ -29,6 +29,7 @@ class PlanningGeneratorServiceV2
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
+        private readonly PlanningConflictDetectionService $conflictDetection,
     ) {}
 
     /**
@@ -446,6 +447,14 @@ class PlanningGeneratorServiceV2
         }
 
         $this->em->flush();
+
+        // D-091 — surface cross-site conflicts as PlanningAlert rows right after
+        // generation, so the manager sees them in the Alertes tab before ever attempting
+        // to deploy (deploy() re-checks and BLOCKS on them regardless — this is visibility,
+        // not the enforcement gate). Bulk/pool-based: one extra preload query for the whole
+        // version's period, not per-mission, to stay within the fixed-query-budget
+        // discipline the rest of this generator already follows.
+        $this->conflictDetection->syncAlertsForVersion($version);
 
         return [
             'versionId' => $version->getId(),

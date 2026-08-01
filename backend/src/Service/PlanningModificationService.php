@@ -31,6 +31,7 @@ class PlanningModificationService
         private readonly MissionPostDeployService             $postDeploy,
         private readonly PlanningDiffService                  $diffService,
         private readonly PlanningChangeSummaryService          $changeSummary,
+        private readonly PlanningConflictDetectionService      $conflictDetection,
     ) {}
 
     /**
@@ -113,6 +114,16 @@ class PlanningModificationService
             $afterById[$missionId] = $mission !== null && $mission->getStatus() !== MissionStatus::REJECTED
                 ? $this->diffService->serializeMission($mission)
                 : null; // deleted/rejected — treated as removed below
+
+            // D-091 — a manual reassignment/reschedule can create (or resolve) a cross-site
+            // conflict; re-sync SURGEON_CONFLICT/INSTRUMENTIST_CONFLICT alerts for every
+            // touched mission so the Alertes tab reflects reality immediately. Deliberately
+            // non-blocking here (unlike deploy()): this mirrors how absence-driven alerts
+            // already work for post-deploy edits — the alert makes the conflict visible for
+            // manager review, it does not reject the save itself.
+            if ($mission !== null && $mission->getStatus() !== MissionStatus::REJECTED && $mission->getStatus() !== MissionStatus::CANCELLED) {
+                $this->conflictDetection->syncAlertsForMission($mission);
+            }
         }
         $afterById = array_filter($afterById, fn ($v) => $v !== null);
 

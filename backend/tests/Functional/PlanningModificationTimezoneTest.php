@@ -6,6 +6,7 @@ use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Entity\AuditEvent;
 use App\Entity\Hospital;
 use App\Entity\Mission;
+use App\Entity\PlanningAlert;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\MissionStatus;
@@ -53,6 +54,12 @@ final class PlanningModificationTimezoneTest extends WebTestCase
                 foreach ($missions as $m) {
                     foreach ($this->em->getRepository(AuditEvent::class)->findBy(['mission' => $m->getId()]) as $evt) {
                         $this->em->remove($evt);
+                    }
+                    // D-091 — a cross-site conflict alert may have been raised (correctly)
+                    // against fixture missions that happen to overlap; must be removed
+                    // before the mission itself (FK_PA_MISSION has no cascade).
+                    foreach ($this->em->getRepository(PlanningAlert::class)->findBy(['mission' => $m->getId()]) as $alert) {
+                        $this->em->remove($alert);
                     }
                     $this->em->remove($m);
                 }

@@ -9,15 +9,16 @@ use App\Enum\MissionStatus;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
- * Revalidates every DRAFT mission of a PlanningVersion against CURRENT absence data,
- * right before deploy() publishes it — D-090. A draft's instrumentist/surgeon assignment
- * was correct against absences at the moment PlanningGeneratorServiceV2::preview()/generate()
- * ran; nothing re-checks it if an absence is created or modified afterward but before the
- * manager clicks Déployer (DRAFT is deliberately never touched by AbsenceMissionReactionService,
- * which only reacts to already-published ASSIGNED/OPEN missions — see its class docblock).
- * This service closes that gap.
+ * Revalidates every DRAFT mission of a PlanningVersion against CURRENT absence AND
+ * cross-site-conflict data, right before deploy() publishes it — D-090/D-091. A draft's
+ * assignment was correct against absences and other missions at the moment
+ * PlanningGeneratorServiceV2::preview()/generate() ran; nothing re-checks it if an absence
+ * is created, or another mission changes, afterward but before the manager clicks
+ * Déployer (DRAFT is deliberately never touched by AbsenceMissionReactionService, which
+ * only reacts to already-published ASSIGNED/OPEN missions — see its class docblock). This
+ * service closes that gap for both causes.
  *
- * Two distinct outcomes, by design (see docs/decisions.md D-090):
+ * Absence outcomes, by design (see docs/decisions.md D-090):
  *   - Surgeon absent → the mission's own activity is cancelled; there is no "vacant post"
  *     left to fill, so the mission is neutralized (CANCELLED) rather than published as OPEN.
  *     This mirrors AbsenceMissionReactionService::processSurgeonAbsence()'s existing rule
@@ -28,9 +29,18 @@ use Doctrine\ORM\EntityManagerInterface;
  *     just the affected missions — a partially-published plan without explicit manager
  *     intent is the exact failure mode D-090 exists to close.
  *
+ * Cross-site conflict outcome (D-091) — always blocking, for either person: unlike an
+ * absence, there is no safe automatic resolution (neutralizing would silently drop a
+ * commitment the manager never reviewed either). Checked for BOTH the surgeon and the
+ * instrumentist of every DRAFT mission, using PlanningConflictDetectionService — the same
+ * cross-site, end-exclusive overlap rule used everywhere else in Planning V2.
+ *
  * A mission whose surgeon AND instrumentist are both absent is reported only as
  * "neutralized" (surgeon check runs first) — once the surgeon's own activity is cancelled,
  * whichever instrumentist was attached to it is no longer a meaningful conflict to block on.
+ * Conflict checks run only for missions that passed the absence check unneutralized —
+ * a mission about to be neutralized for surgeon absence is never also reported as
+ * conflicting, since it will not be published either way.
  */
 class PlanningDraftRevalidationService
 {
@@ -38,6 +48,7 @@ class PlanningDraftRevalidationService
         private readonly EntityManagerInterface $em,
         private readonly AbsenceOverlapService $absenceOverlap,
         private readonly MissionPostDeployService $postDeploy,
+        private readonly PlanningConflictDetectionService $conflictDetection,
     ) {}
 
     /**
@@ -45,7 +56,7 @@ class PlanningDraftRevalidationService
      * afterward, and only if blockingConflicts is empty.
      *
      * @return array{
-     *   blockingConflicts: list<array{missionId:int,date:string,siteId:?int,siteName:?string,surgeonId:?int,surgeonName:?string,instrumentistId:int,instrumentistName:string,reason:string}>,
+     *   blockingConflicts: list<array{type:string,missionId:int,date:string,siteId:?int,siteName:?string,surgeonId:?int,surgeonName:?string,instrumentistId:?int,instrumentistName:?string,reason:string,conflictingMissionId?:int,conflictingSiteId?:?int,conflictingSiteName?:?string,conflictingStartAt?:string,conflictingEndAt?:string}>,
      *   neutralized: list<array{missionId:int,date:string,siteId:?int,siteName:?string,surgeonId:int,surgeonName:string,previousInstrumentistId:?int,previousInstrumentistName:?string,reason:string}>,
      * }
      */
@@ -96,6 +107,7 @@ class PlanningDraftRevalidationService
 
             if ($instrumentist !== null && $this->absenceOverlap->isUserAbsentDuring($instrumentist, $start, $end)) {
                 $blockingConflicts[] = [
+                    'type'              => 'ABSENCE',
                     'missionId'         => $mission->getId(),
                     'date'              => $start->format('Y-m-d'),
                     'siteId'            => $mission->getSite()?->getId(),
@@ -108,6 +120,54 @@ class PlanningDraftRevalidationService
                         'Instrumentiste %s absent le %s — déploiement bloqué.',
                         self::displayName($instrumentist),
                         $start->format('d/m/Y'),
+                    ),
+                ];
+                continue;
+            }
+
+            // D-091 — cross-site conflict, checked for both people. Runs only for missions
+            // that reached here unneutralized (surgeon present and not absent). Real-time,
+            // per-mission queries are acceptable here: this loop is bounded by one
+            // PlanningVersion's DRAFT missions (at most a few hundred), not a full month of
+            // every site combined.
+            foreach ([
+                ['person' => $surgeon,       'role' => 'SURGEON'],
+                ['person' => $instrumentist, 'role' => 'INSTRUMENTIST'],
+            ] as ['person' => $person, 'role' => $role]) {
+                if ($person === null) {
+                    continue;
+                }
+                $other = $this->conflictDetection->findConflict($person, $start, $end, $mission->getId());
+                if ($other === null) {
+                    continue;
+                }
+
+                $blockingConflicts[] = [
+                    'type'                 => 'CROSS_SITE_CONFLICT',
+                    'missionId'            => $mission->getId(),
+                    'date'                 => $start->format('Y-m-d'),
+                    'siteId'               => $mission->getSite()?->getId(),
+                    'siteName'             => $mission->getSite()?->getName(),
+                    'surgeonId'            => $surgeon?->getId(),
+                    'surgeonName'          => $surgeon !== null ? self::displayName($surgeon) : null,
+                    'instrumentistId'      => $instrumentist?->getId(),
+                    'instrumentistName'    => $instrumentist !== null ? self::displayName($instrumentist) : null,
+                    'conflictingMissionId' => $other->getId(),
+                    'conflictingSiteId'    => $other->getSite()?->getId(),
+                    'conflictingSiteName'  => $other->getSite()?->getName(),
+                    'conflictingStartAt'   => $other->getStartAt()->format(\DateTimeInterface::ATOM),
+                    'conflictingEndAt'     => $other->getEndAt()->format(\DateTimeInterface::ATOM),
+                    'reason'               => sprintf(
+                        '%s %s déjà prévu(e) sur %s (%s–%s) — chevauche %s (%s–%s) sur %s : déploiement bloqué.',
+                        $role === 'SURGEON' ? 'Chirurgien' : 'Instrumentiste',
+                        self::displayName($person),
+                        $other->getSite()?->getName() ?? 'un autre site',
+                        $other->getStartAt()->format('H:i'),
+                        $other->getEndAt()->format('H:i'),
+                        $start->format('d/m/Y'),
+                        $start->format('H:i'),
+                        $end->format('H:i'),
+                        $mission->getSite()?->getName() ?? 'ce site',
                     ),
                 ];
             }

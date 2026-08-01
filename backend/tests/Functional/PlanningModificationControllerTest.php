@@ -6,6 +6,7 @@ use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Entity\AuditEvent;
 use App\Entity\Hospital;
 use App\Entity\Mission;
+use App\Entity\PlanningAlert;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\MissionStatus;
@@ -48,6 +49,12 @@ final class PlanningModificationControllerTest extends WebTestCase
                 foreach ($this->em->getRepository(AuditEvent::class)->findBy(['mission' => $id]) as $evt) {
                     $this->em->remove($evt);
                 }
+                // D-091 — a cross-site conflict alert may have been raised (correctly)
+                // against fixture missions that happen to overlap; must be removed before
+                // the mission itself (FK_PA_MISSION has no cascade).
+                foreach ($this->em->getRepository(PlanningAlert::class)->findBy(['mission' => $id]) as $alert) {
+                    $this->em->remove($alert);
+                }
             }
             $this->em->flush();
 
@@ -61,6 +68,9 @@ final class PlanningModificationControllerTest extends WebTestCase
                 foreach ($extra as $m) {
                     foreach ($this->em->getRepository(AuditEvent::class)->findBy(['mission' => $m->getId()]) as $evt) {
                         $this->em->remove($evt);
+                    }
+                    foreach ($this->em->getRepository(PlanningAlert::class)->findBy(['mission' => $m->getId()]) as $alert) {
+                        $this->em->remove($alert);
                     }
                     $this->em->remove($m);
                 }
@@ -159,7 +169,7 @@ final class PlanningModificationControllerTest extends WebTestCase
         return $v;
     }
 
-    private function makeMission(PlanningVersion $version, Hospital $site, User $surgeon, User $createdBy, MissionStatus $status, ?User $instrumentist = null): Mission
+    private function makeMission(PlanningVersion $version, Hospital $site, User $surgeon, User $createdBy, MissionStatus $status, ?User $instrumentist = null, string $startTime = '08:00:00', string $endTime = '13:00:00'): Mission
     {
         // D-066/D-090: business wall-clock digits — Europe/Brussels explicit, exactly like
         // PlanningGeneratorServiceV2::generate() and the now-fixed combineDateTime(). A naive
@@ -174,8 +184,8 @@ final class PlanningModificationControllerTest extends WebTestCase
         $m->setSite($site);
         $m->setSurgeon($surgeon);
         $m->setCreatedBy($createdBy);
-        $m->setStartAt(new \DateTimeImmutable('2026-09-15 08:00:00', $businessTz));
-        $m->setEndAt(new \DateTimeImmutable('2026-09-15 13:00:00', $businessTz));
+        $m->setStartAt(new \DateTimeImmutable("2026-09-15 {$startTime}", $businessTz));
+        $m->setEndAt(new \DateTimeImmutable("2026-09-15 {$endTime}", $businessTz));
         $m->setStatus($status);
         if ($instrumentist !== null) {
             $m->setInstrumentist($instrumentist);
@@ -433,8 +443,12 @@ final class PlanningModificationControllerTest extends WebTestCase
         $site     = $this->makeSite();
         $version  = $this->makeVersion($site, $manager);
         $mission  = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $oldInstr);
-        // Unrelated mission, untouched by this redeploy — its instrumentist must receive nothing.
-        $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $unrelatedInstr);
+        // Unrelated mission, untouched by this redeploy — its instrumentist must receive
+        // nothing. Different time slot (same surgeon, same day) so it is genuinely
+        // non-overlapping — D-091 conflict detection would otherwise (correctly) flag two
+        // same-surgeon missions sharing the default 08:00–13:00 slot as a real conflict,
+        // which is not what this test is about.
+        $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $unrelatedInstr, '14:00:00', '17:00:00');
 
         /** @var InMemoryTransport $transport */
         $transport = static::getContainer()->get('messenger.transport.async');

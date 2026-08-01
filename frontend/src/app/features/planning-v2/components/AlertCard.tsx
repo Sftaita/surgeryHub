@@ -50,16 +50,29 @@ interface Props {
   busy?: boolean;
 }
 
+function formatTime(iso?: string | null): string {
+  return iso ? iso.slice(11, 16) : "?";
+}
+
 function buildProbleme(alert: PlanningAlertV2): string {
   const date = alert.mission.startAt?.slice(0, 10);
   const surgeon = alert.mission.surgeon?.name ?? alert.mission.surgeon?.email ?? "—";
+  const c = alert.conflict;
   switch (alert.type) {
     case "SURGEON_ABSENCE": return `${surgeon} absent le ${formatFr(date)} — poste à couvrir`;
     case "INSTRUMENTIST_ABSENCE": return `Instrumentiste absente le ${formatFr(date)}`;
     case "REASSIGNMENT_REQUIRED": return `Instrumentiste absente le ${formatFr(date)} — réassignation nécessaire`;
     case "OCCURRENCE_CANCELLED": return `Occurrence annulée le ${formatFr(date)}`;
-    case "SURGEON_CONFLICT": return `Conflit de planning pour ${surgeon} le ${formatFr(date)}`;
-    case "INSTRUMENTIST_CONFLICT": return `Conflit d'instrumentiste le ${formatFr(date)}`;
+    case "SURGEON_CONFLICT":
+      if (c) {
+        return `${c.personName ?? surgeon} déjà prévu(e) sur ${c.missionSiteName ?? "un site"} (${formatTime(c.missionStartAt)}–${formatTime(c.missionEndAt)}) — chevauche ${c.conflictingSiteName ?? "un autre site"} (${formatTime(c.conflictingStartAt)}–${formatTime(c.conflictingEndAt)}) le ${formatFr(date)}`;
+      }
+      return `Conflit de planning pour ${surgeon} le ${formatFr(date)}`;
+    case "INSTRUMENTIST_CONFLICT":
+      if (c) {
+        return `${c.personName ?? "Instrumentiste"} déjà prévu(e) sur ${c.missionSiteName ?? "un site"} (${formatTime(c.missionStartAt)}–${formatTime(c.missionEndAt)}) — chevauche ${c.conflictingSiteName ?? "un autre site"} (${formatTime(c.conflictingStartAt)}–${formatTime(c.conflictingEndAt)}) le ${formatFr(date)}`;
+      }
+      return `Conflit d'instrumentiste le ${formatFr(date)}`;
   }
 }
 

@@ -15,6 +15,7 @@ use App\Service\MissionPostDeployService;
 use App\Service\NotificationService;
 use App\Service\PlanningAlertActionService;
 use App\Service\PlanningAlertService;
+use App\Service\PlanningConflictDetectionService;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Query;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -30,6 +31,7 @@ class PlanningAlertActionServiceTest extends TestCase
     private PlanningAlertService&MockObject    $alertService;
     private NotificationService&MockObject     $notificationService;
     private MissionPostDeployService&MockObject $deployService;
+    private PlanningConflictDetectionService&MockObject $conflictDetection;
 
     /** Toggle which eligibility check fails for the "instrumentist" query results. */
     private bool $affiliated   = true;
@@ -46,6 +48,7 @@ class PlanningAlertActionServiceTest extends TestCase
         $this->alertService        = $this->createMock(PlanningAlertService::class);
         $this->notificationService = $this->createMock(NotificationService::class);
         $this->deployService       = $this->createMock(MissionPostDeployService::class);
+        $this->conflictDetection   = $this->createMock(PlanningConflictDetectionService::class);
         $this->affiliated    = true;
         $this->absent        = false;
         $this->conflicting   = false;
@@ -58,6 +61,11 @@ class PlanningAlertActionServiceTest extends TestCase
             return $this->foundUsers[$id] ?? null;
         });
 
+        // Delegated to PlanningConflictDetectionService (D-091) — a non-null return means
+        // "conflicting", regardless of which Mission instance is returned.
+        $this->conflictDetection->method('findConflict')
+            ->willReturnCallback(fn () => $this->conflicting ? $this->makeConflictingMissionStub() : null);
+
         $this->em->method('createQuery')
             ->willReturnCallback(function (string $dql): Query {
                 $q = $this->createMock(Query::class);
@@ -67,8 +75,6 @@ class PlanningAlertActionServiceTest extends TestCase
                     $q->method('getSingleScalarResult')->willReturnCallback(fn () => $this->affiliated ? 1 : 0);
                 } elseif (str_contains($dql, 'Absence a')) {
                     $q->method('getSingleScalarResult')->willReturnCallback(fn () => $this->absent ? 1 : 0);
-                } elseif (str_contains($dql, 'm.instrumentist = :user')) {
-                    $q->method('getSingleScalarResult')->willReturnCallback(fn () => $this->conflicting ? 1 : 0);
                 } elseif (str_contains($dql, 'JOIN u.siteMemberships sm')) {
                     $q->method('getResult')->willReturnCallback(fn () => $this->candidateRows);
                 }
@@ -77,9 +83,17 @@ class PlanningAlertActionServiceTest extends TestCase
             });
     }
 
+    private ?Mission $conflictingMissionStub = null;
+
+    /** A stand-in "other" mission — its identity is irrelevant to these tests, only presence/absence of a conflict is. */
+    private function makeConflictingMissionStub(): Mission
+    {
+        return $this->conflictingMissionStub ??= $this->makeMission($this->makeSite(), MissionStatus::ASSIGNED);
+    }
+
     private function makeService(): PlanningAlertActionService
     {
-        return new PlanningAlertActionService($this->em, $this->alertService, $this->notificationService, $this->deployService);
+        return new PlanningAlertActionService($this->em, $this->alertService, $this->notificationService, $this->deployService, $this->conflictDetection);
     }
 
     private function makeUser(string $email, bool $active = true, array $roles = ['ROLE_INSTRUMENTIST']): User

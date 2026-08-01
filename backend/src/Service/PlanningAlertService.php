@@ -226,7 +226,38 @@ class PlanningAlertService
                 'dateEnd'   => $absence->getDateEnd()->format('Y-m-d'),
                 'reason'    => $absence->getReason(),
             ] : null,
+            'conflict' => $this->serializeConflict($alert),
             'actions' => $this->computeActionFlags($alert),
+        ];
+    }
+
+    /**
+     * SURGEON_CONFLICT/INSTRUMENTIST_CONFLICT carry the conflicting mission's site/schedule
+     * in snapshotJson (D-091) — never re-derived from a live query at read time, since the
+     * conflicting mission may since have been resolved/changed and the alert should still
+     * show what was true when it was detected.
+     */
+    private function serializeConflict(PlanningAlert $alert): ?array
+    {
+        if (!in_array($alert->getType(), [PlanningAlertType::SURGEON_CONFLICT, PlanningAlertType::INSTRUMENTIST_CONFLICT], true)) {
+            return null;
+        }
+
+        $snapshot = $alert->getSnapshotJson();
+        if (!isset($snapshot['conflictingMissionId'])) {
+            return null;
+        }
+
+        return [
+            'personName'           => $snapshot['personName']           ?? null,
+            'missionSiteName'      => $snapshot['missionSiteName']      ?? null,
+            'missionStartAt'       => $snapshot['missionStartAt']       ?? null,
+            'missionEndAt'         => $snapshot['missionEndAt']         ?? null,
+            'conflictingMissionId' => $snapshot['conflictingMissionId'],
+            'conflictingSiteName'  => $snapshot['conflictingSiteName']  ?? null,
+            'conflictingStartAt'   => $snapshot['conflictingStartAt']   ?? null,
+            'conflictingEndAt'     => $snapshot['conflictingEndAt']     ?? null,
+            'crossSite'            => $snapshot['crossSite']            ?? null,
         ];
     }
 
@@ -273,9 +304,15 @@ class PlanningAlertService
         $mission        = $alert->getMission();
         $missionMutable = in_array($mission->getStatus(), [MissionStatus::DRAFT, MissionStatus::OPEN, MissionStatus::ASSIGNED], true);
 
+        // INSTRUMENTIST_CONFLICT reuses the existing reassign/open-as-available actions —
+        // freeing the anchor mission's instrumentist resolves the conflict without any new
+        // mutation endpoint. SURGEON_CONFLICT deliberately gets neither: there is no
+        // reassign-the-surgeon action, and inventing an automatic one is explicitly out of
+        // scope (D-091) — a surgeon conflict is always a manual REVIEW decision.
         $canReassign = $active && $missionMutable && in_array($alert->getType(), [
             PlanningAlertType::REASSIGNMENT_REQUIRED,
             PlanningAlertType::INSTRUMENTIST_ABSENCE,
+            PlanningAlertType::INSTRUMENTIST_CONFLICT,
         ], true);
 
         $canOpenAsAvailable = $active && $missionMutable
@@ -284,6 +321,7 @@ class PlanningAlertService
                 PlanningAlertType::REASSIGNMENT_REQUIRED,
                 PlanningAlertType::INSTRUMENTIST_ABSENCE,
                 PlanningAlertType::SURGEON_ABSENCE,
+                PlanningAlertType::INSTRUMENTIST_CONFLICT,
             ], true);
 
         return [
@@ -303,12 +341,12 @@ class PlanningAlertService
         }
 
         return match ($alert->getType()) {
-            PlanningAlertType::REASSIGNMENT_REQUIRED => 'REASSIGN',
+            PlanningAlertType::REASSIGNMENT_REQUIRED,
+            PlanningAlertType::INSTRUMENTIST_CONFLICT => 'REASSIGN',
             PlanningAlertType::INSTRUMENTIST_ABSENCE => $alert->getMission()->getStatus() === MissionStatus::OPEN ? 'NONE' : 'REVIEW',
             PlanningAlertType::SURGEON_ABSENCE,
             PlanningAlertType::OCCURRENCE_CANCELLED,
-            PlanningAlertType::SURGEON_CONFLICT,
-            PlanningAlertType::INSTRUMENTIST_CONFLICT => 'REVIEW',
+            PlanningAlertType::SURGEON_CONFLICT => 'REVIEW',
         };
     }
 }

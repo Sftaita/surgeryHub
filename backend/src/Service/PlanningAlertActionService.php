@@ -35,6 +35,7 @@ class PlanningAlertActionService
         private readonly PlanningAlertService      $alertService,
         private readonly NotificationService       $notificationService,
         private readonly MissionPostDeployService  $missionPostDeployService,
+        private readonly PlanningConflictDetectionService $conflictDetection,
     ) {}
 
     /** @return array{mission: Mission, alert: PlanningAlert} */
@@ -217,28 +218,15 @@ class PlanningAlertActionService
     }
 
     /**
-     * Only REJECTED missions are excluded — DRAFT missions still represent a real
-     * commitment of the instrumentist's time once a Mission row exists (this is Batch 5
-     * reassigning an already-generated mission, not draft-time generation suggestion —
-     * deliberately stricter than PlanningScoreService's [DRAFT, REJECTED] exclusion).
+     * Delegates to the central PlanningConflictDetectionService (D-091) — never a
+     * bespoke overlap query here. Cross-site by construction (never filtered by site),
+     * and correctly excludes CANCELLED/CLOSED alongside REJECTED (fixed by the same
+     * centralization — the previous inline query only excluded REJECTED).
      */
     private function hasConflict(User $instrumentist, Mission $mission): bool
     {
-        $count = (int) $this->em->createQuery(
-            'SELECT COUNT(m.id) FROM App\Entity\Mission m
-             WHERE m.instrumentist = :user
-               AND m.id != :excludeId
-               AND m.startAt < :end
-               AND m.endAt > :start
-               AND m.status NOT IN (:excluded)'
-        )
-            ->setParameter('user', $instrumentist)
-            ->setParameter('excludeId', $mission->getId() ?? 0)
-            ->setParameter('start', $mission->getStartAt())
-            ->setParameter('end', $mission->getEndAt())
-            ->setParameter('excluded', [MissionStatus::REJECTED])
-            ->getSingleScalarResult();
-
-        return $count > 0;
+        return $this->conflictDetection->findConflict(
+            $instrumentist, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(),
+        ) !== null;
     }
 }

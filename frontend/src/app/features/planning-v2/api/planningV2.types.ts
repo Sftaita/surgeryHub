@@ -168,6 +168,19 @@ export interface PlanningAlertActionsV2 {
   recommendedAction: "REASSIGN" | "REVIEW" | "NONE";
 }
 
+/** D-091 — only populated for SURGEON_CONFLICT/INSTRUMENTIST_CONFLICT alerts. */
+export interface PlanningAlertConflictV2 {
+  personName: string | null;
+  missionSiteName: string | null;
+  missionStartAt: string | null;
+  missionEndAt: string | null;
+  conflictingMissionId: number;
+  conflictingSiteName: string | null;
+  conflictingStartAt: string | null;
+  conflictingEndAt: string | null;
+  crossSite: boolean | null;
+}
+
 export interface PlanningAlertV2 {
   id: number;
   type: PlanningAlertType;
@@ -178,6 +191,7 @@ export interface PlanningAlertV2 {
   resolutionNote: string | null;
   mission: PlanningAlertMissionV2;
   absence: { id: number; dateStart: string; dateEnd: string; reason: string | null } | null;
+  conflict: PlanningAlertConflictV2 | null;
   actions: PlanningAlertActionsV2;
 }
 

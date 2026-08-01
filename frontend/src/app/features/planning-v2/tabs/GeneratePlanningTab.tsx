@@ -103,13 +103,16 @@ export function GeneratePlanningTab() {
   const [isCreatingMission, setIsCreatingMission] = React.useState(false);
   const [modificationApplied, setModificationApplied] = React.useState<ApplyModificationsResult | null>(null);
   const [deleteMonthConfirmOpen, setDeleteMonthConfirmOpen] = React.useState(false);
-  // D-090 — populated when deploy() is blocked by PlanningDraftConflictException (409
-  // DRAFT_CONFLICTS): an absence was registered after generate() ran, invalidating an
-  // instrumentist assignment in the draft. Never silently dropped or auto-resolved —
-  // the manager must see exactly which mission/date/person is conflicting.
+  // D-090/D-091 — populated when deploy() is blocked by PlanningDraftConflictException
+  // (409 DRAFT_CONFLICTS): either an absence was registered after generate() ran
+  // (type: 'ABSENCE'), or the surgeon/instrumentist is now double-booked on another
+  // active mission, same site or another one (type: 'CROSS_SITE_CONFLICT'). Never
+  // silently dropped or auto-resolved — the manager must see exactly which mission/
+  // date/person/site is conflicting.
   const [draftConflicts, setDraftConflicts] = React.useState<Array<{
-    missionId: number; date: string; siteName: string | null;
-    surgeonName: string | null; instrumentistName: string; reason: string;
+    type?: string; missionId: number; date: string; siteName: string | null;
+    surgeonName: string | null; instrumentistName: string | null; reason: string;
+    conflictingSiteName?: string | null; conflictingStartAt?: string; conflictingEndAt?: string;
   }> | null>(null);
   // D-090 (anomalie fonctionnelle 1) — "Renvoyer le planning par e-mail" à un utilisateur,
   // indépendamment de tout redéploiement. Only offered in Modification mode: that's the
@@ -295,7 +298,7 @@ export function GeneratePlanningTab() {
     onError: (err: any) => {
       if (err?.response?.status === 409 && err?.response?.data?.code === "DRAFT_CONFLICTS") {
         setDraftConflicts(err.response.data.conflicts ?? []);
-        toast.error(`Déploiement bloqué — ${(err.response.data.conflicts ?? []).length} conflit(s) d'absence à résoudre`);
+        toast.error(`Déploiement bloqué — ${(err.response.data.conflicts ?? []).length} conflit(s) à résoudre`);
         return;
       }
       toast.error(extractErrorV2(err));
@@ -670,21 +673,27 @@ export function GeneratePlanningTab() {
         </DialogActions>
       </Dialog>
 
-      {/* D-090 — deploy() blocked by an absence conflict detected at revalidation time. */}
+      {/* D-090/D-091 — deploy() blocked by an absence or a cross-site conflict detected at
+          revalidation time. Both causes share the same structured 409 shape (`type` tells
+          them apart); the `reason` text on each entry already spells out the specific
+          cause, sites and time slots involved, so a single generic list covers both. */}
       <Dialog open={draftConflicts !== null} onClose={() => setDraftConflicts(null)} maxWidth="sm" fullWidth>
         <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>
-          Déploiement bloqué — {draftConflicts?.length ?? 0} conflit(s) d&apos;absence
+          Déploiement bloqué — {draftConflicts?.length ?? 0} conflit(s) à résoudre
         </DialogTitle>
         <DialogContent>
           <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted, mb: 2 }}>
-            Une absence a été enregistrée depuis la génération de ce brouillon pour au moins un
-            instrumentiste affecté. Réaffectez ou retirez ces instrumentistes puis redéployez.
+            Une absence a été enregistrée, ou une personne est désormais planifiée sur deux
+            créneaux qui se chevauchent, depuis la génération de ce brouillon. Réaffectez,
+            retirez ou corrigez les éléments ci-dessous puis redéployez.
           </Typography>
           <Stack spacing={1.25}>
             {(draftConflicts ?? []).map((c) => (
               <Box key={c.missionId} sx={{ p: 1.5, borderRadius: 1.5, bgcolor: "#FBF2F1", border: "1px solid #F0D8D6" }}>
                 <Typography sx={{ fontSize: 13, fontWeight: 600 }}>
-                  {c.date} — {c.instrumentistName}{c.surgeonName ? ` (${c.surgeonName}${c.siteName ? `, ${c.siteName}` : ""})` : ""}
+                  {c.date} — {c.instrumentistName ?? c.surgeonName ?? "—"}
+                  {c.siteName ? ` (${c.siteName})` : ""}
+                  {c.type === "CROSS_SITE_CONFLICT" && c.conflictingSiteName ? ` ↔ ${c.conflictingSiteName}` : ""}
                 </Typography>
                 <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textMuted }}>{c.reason}</Typography>
               </Box>

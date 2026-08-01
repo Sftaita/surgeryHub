@@ -93,7 +93,9 @@ class PlanningGeneratorServiceV2GenerateTest extends TestCase
 
     private function makeService(): PlanningGeneratorServiceV2
     {
-        return new PlanningGeneratorServiceV2($this->em);
+        // D-091 — conflict-alert sync is a discarded-return-value side effect of generate();
+        // an unconfigured mock (returns null) is sufficient for these unit tests.
+        return new PlanningGeneratorServiceV2($this->em, $this->createMock(\App\Service\PlanningConflictDetectionService::class));
     }
 
     private function makeSite(string $name = 'Alpha'): Hospital
