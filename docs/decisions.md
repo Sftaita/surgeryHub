@@ -6094,3 +6094,150 @@ un nettoyage/une meilleure isolation de l'état entre tests, non traité ici (pr
 hors du diff de ce chantier). Revalidation au déploiement limitée aux absences —
 état du poste et exceptions de planning ajoutées après génération non couverts (voir
 limite assumée ci-dessus).
+
+## D-091 — Planning V2 : détection des conflits cross-site (double affectation chirurgien/instrumentiste), moteur central, blocage au déploiement (2026-08-01)
+
+Date : 2026-08-01
+
+### Contexte
+
+Aucune détection n'existait pour le cas où la même personne (chirurgien ou
+instrumentiste) se retrouve affectée à deux activités temporellement incompatibles sur
+des sites différents. Deux implémentations d'un chevauchement horaire existaient déjà,
+mais chacune limitée à son propre besoin : `PlanningAlertActionService::hasConflict()`
+(vérifie l'éligibilité au moment d'une réaffectation manuelle d'instrumentiste, jamais
+appelé pour un chirurgien) et `PlanningGeneratorServiceV2::hasConflictFast()` (exclut un
+créneau du pool de génération, jamais persisté comme alerte). Rien ne revalidait
+l'incompatibilité entre la génération d'un planning et son déploiement, ni ne
+l'empêchait après une modification manuelle.
+
+### Décision — règle métier retenue
+
+Chevauchement réel, jamais une simple égalité d'heures : `missionA.startAt < missionB.endAt
+ET missionA.endAt > missionB.startAt`, borne de fin exclusive (convention déjà en usage
+dans les deux implémentations préexistantes ci-dessus, reprise telle quelle — pas de
+nouvelle logique). Deux créneaux jointifs (08:00–10:00 puis 10:00–12:00) ne sont donc
+**jamais** un conflit. Comparaison toujours en `Europe/Brussels`
+(`BusinessDateTimeImmutableType`, jamais UTC — cf. D-066/D-090). Le moteur est
+volontairement **cross-site par défaut** : la requête ne filtre jamais par site, un
+chevauchement entre deux missions du même site est donc détecté par le même mécanisme
+(double réservation sur un même site) — seul le message d'alerte distingue
+explicitement site A / site B / créneaux / personne pour rester lisible.
+
+**Aucune modélisation de temps de trajet** : deux missions strictement non chevauchantes
+sur deux sites différents ne sont jamais bloquées, même si elles sont adjacentes à la
+minute près. Limite assumée, documentée ici, pas de correctif prévu dans ce chantier.
+
+**Statuts pris en compte** — seules les missions dans un état réellement actif comptent :
+`DRAFT`, `OPEN`, `DECLARED`, `ASSIGNED`, `SUBMITTED`, `VALIDATED`, `IN_PROGRESS`,
+`ENCODING_IN_PROGRESS`. Exclues explicitement : `REJECTED`, `CANCELLED`, `CLOSED` — une
+mission annulée ou supersédée ne peut jamais générer de faux conflit.
+
+### Décision — service central unique
+
+`PlanningConflictDetectionService`, seul point d'entrée pour la question « cette
+affectation est-elle en conflit avec une autre affectation active de cette personne ? » :
+- `findConflict()` — requête temps réel à une seule mission conflictuelle, utilisée par
+  la revalidation au déploiement, la modification manuelle et l'éligibilité de
+  réaffectation (`PlanningAlertActionService::hasConflict()` délègue désormais
+  entièrement ici, au lieu de dupliquer sa propre DQL limitée).
+- `preloadActiveMissionsForPeriod()` / `hasConflictInPool()` — variante en masse,
+  préchargée par personne, utilisée par le générateur pour respecter la discipline de
+  budget de requêtes fixe déjà en vigueur dans `PlanningGeneratorServiceV2`.
+- `syncAlertsForMission()` / `syncAlertsForVersion()` — couche de cycle de vie des
+  alertes au-dessus des deux precédentes (créer si nouveau conflit, résoudre si le
+  chevauchement a disparu), sur le modèle déjà établi par `AbsenceImpactService::sync()`.
+
+Aucun autre endroit du code ne recalcule de chevauchement — `hasConflictFast()` du
+générateur reste distinct (filtrage interne du pool avant affectation, pas de mission
+persistée à comparer) mais partage la même convention de bornes.
+
+### Décision — anti-duplication de l'alerte (A↔B jamais B↔A)
+
+`PlanningAlert.mission` est une relation `ManyToOne` unique et obligatoire — impossible
+de rattacher une alerte à une paire de missions. Résolu par un **ancrage déterministe** :
+l'alerte est toujours créée sur la mission ayant l'identifiant le plus bas de la paire
+(`min(mission, conflict)` par id), quelle que soit celle des deux missions qui a
+déclenché la synchronisation ; l'autre mission est décrite dans `snapshotJson`
+(`conflictingMissionId`, site, créneau). `PlanningAlertService::createIfNotDuplicate()`
+garantit qu'un rappel de synchronisation depuis l'un ou l'autre côté ne crée jamais de
+second enregistrement.
+
+**Bug trouvé et corrigé pendant ce chantier** : la première version de `applySync()` ne
+créait l'alerte que lorsque la mission en cours de synchronisation était déjà l'ancre —
+si l'ancre elle-même n'était jamais synchronisée indépendamment (cas courant : seule la
+mission "touchée" par une modification déclenche la synchronisation), le conflit était
+détecté par `findConflict()` mais **aucune alerte n'était jamais créée**. Confirmé par un
+script de débogage appelant directement le service dans le conteneur. Corrigé pour que
+l'alerte soit toujours posée sur l'ancre calculée, indépendamment du sens d'appel.
+
+### Décision — comportement chirurgien vs instrumentiste
+
+`SURGEON_CONFLICT` et `INSTRUMENTIST_CONFLICT` (types déjà présents dans
+`PlanningAlertType` mais jamais générés avant ce chantier) suivent des chemins de
+résolution différents, sur instruction explicite :
+- **Instrumentiste** : `canReassign`/`canOpenAsAvailable` activés dans
+  `PlanningAlertService::computeActionFlags()` — réutilise les actions de réaffectation
+  déjà existantes, aucune nouvelle mutation. `recommendAction()` retourne `REASSIGN`.
+- **Chirurgien** : délibérément exclu de ces deux actions — jamais de réaffectation
+  automatique d'un chirurgien. `recommendAction()` retourne `REVIEW` : le manager doit
+  arbitrer manuellement lequel des deux créneaux garder.
+
+### Décision — détection à trois moments
+
+1. **Génération** — `PlanningGeneratorServiceV2::generate()` appelle
+   `syncAlertsForVersion()` juste après le flush, en fin de génération (bulk, pool
+   préchargé).
+2. **Modification manuelle** — `PlanningModificationService::apply()` appelle
+   `syncAlertsForMission()` pour chaque mission touchée non `REJECTED`/`CANCELLED`, après
+   le flush de la modification (non bloquant — l'alerte prévient, ne refuse jamais la
+   modification elle-même).
+3. **Déploiement/redéploiement** — `PlanningDraftRevalidationService::revalidate()`
+   revalide désormais aussi les conflits cross-site (en plus des absences, D-090), pour
+   chirurgien **et** instrumentiste, sur l'état courant des données — pas celui capturé à
+   la génération. Un conflit actif ajoute une entrée `type: CROSS_SITE_CONFLICT` à
+   `blockingConflicts` ; `PlanningDeploymentService::deploy()` lève la même
+   `PlanningDraftConflictException` que pour une absence (généralisée : message et
+   docblock couvrent désormais les deux types), capturée par le contrôleur en HTTP 409
+   `DRAFT_CONFLICTS` avec le détail structuré (personne, site courant, site en conflit,
+   créneaux, ids de mission). **Aucun déploiement silencieux avec un conflit actif** —
+   qu'il ait été introduit à la génération, par une modification manuelle ultérieure, ou
+   par l'écoulement du temps entre les deux.
+
+### Frontend
+
+Minimal, par instruction explicite — aucune refonte visuelle :
+- `AlertCard.tsx` — le message d'alerte (`buildProbleme()`) affiche désormais les deux
+  sites et les deux créneaux horaires quand `alert.conflict` est renseigné (nouveau champ
+  `PlanningAlertConflictV2`), avec repli sur le texte générique existant sinon.
+- `GeneratePlanningTab.tsx` — le dialogue de blocage au déploiement, jusqu'ici limité aux
+  conflits d'absence (D-090), généralisé pour afficher aussi les conflits cross-site
+  (site ↔ site en conflit dans chaque ligne).
+- Résolution toujours via les mécanismes existants (réassigner, ouvrir comme mission
+  disponible, résoudre) — aucun nouvel écran.
+
+### Tests
+
+14 tests fonctionnels nouveaux (`PlanningCrossSiteConflictTest`, base réelle) : chirurgien
+(chevauchement total, chevauchement partiel, créneaux jointifs non bloquants, mission
+annulée ignorée, conflit apparu après génération bloque le déploiement), instrumentiste
+(deux sites, même site avec message distinguable, créneaux jointifs non bloquants,
+affectation annulée ignorée, réaffectation manuelle créant un conflit), alertes (types
+corrects, jamais de doublon A/B, résolution via réassignation résout bien l'alerte),
+fuseau horaire (un test dédié confirmant l'usage d'Europe/Brussels, non-régression du bug
+UTC déjà corrigé en D-066/D-090). 4 tests frontend nouveaux (`AlertCard.test.tsx`) pour le
+rendu des deux sites/créneaux et l'absence de réaffectation automatique pour un chirurgien.
+Suite ciblée : 113/113 backend verts (415 assertions). Suite complète backend : 1658
+tests, mêmes 48 erreurs/3 échecs préexistants qu'en D-090 (collision `FIRM-2026-219`,
+instabilité de suppression d'absence — aucun rapport avec ce chantier, aucun fichier
+touché ici ne les référence). Frontend : suite `planning-v2` 89 tests, 87 verts + 2
+timeouts préexistants déjà documentés comme instables sous charge Docker
+(`PostFormDialog`, `GeneratePlanningTab` réaffectation — sans rapport avec ce chantier) ;
+`AlertCard.test.tsx` 4/4 verts. `npx tsc -b` et `npm run build` propres, zéro erreur.
+
+### Portée non traitée ici
+
+Pas de modélisation de temps de trajet entre sites (limite assumée ci-dessus). Pas de
+revalidation de l'état du poste (`SurgeonSchedulePost.active`) au-delà de ce que D-090
+couvre déjà. Base de test locale non réinitialisée (collision `FIRM-2026-219`,
+préexistante, hors périmètre).
