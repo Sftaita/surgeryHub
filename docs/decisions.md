@@ -1704,6 +1704,14 @@ validé. Le faire devenir l'interface planning officielle des managers, sans sup
   une semaine sur deux, jours sélectionnés) sont proposées à la création/édition. Couverture de
   test pour le cas mensuel = travail futur documenté (voir
   `docs/planning-v2-architecture-freeze.md`), pas un blocage du lancement.
+  >
+  > **Errata (2026-08-01, audit de reprise)** : ce paragraphe décrit l'état au lancement (cutover),
+  > désormais dépassé. La récurrence mensuelle (`MONTHLY_NTH_WEEKDAY`) est couverte par
+  > `PlanningGeneratorServiceV2MonthlyTest.php` (612 lignes, matrice de cas réels incluant les bords
+  > de calendrier) et de nouveau exposée dans le picker de création/édition
+  > (`LAUNCH_RECURRENCE_PRESET_OPTIONS` est désormais identique à `RECURRENCE_PRESET_OPTIONS`) —
+  > livré par le commit `11bbc0e` ("Batch 14A/B/C"), qui n'a cependant **jamais eu sa propre entrée
+  > ADR** ; ce commit reste donc non documenté au-delà de cette note.
 - **Les cartes "Fin de poste proche" déplacées de l'onglet Alertes vers l'onglet Postes.** Ce ne
   sont pas des `PlanningAlert` réelles (aucune entité backend, calcul de date 100% frontend depuis
   `SurgeonSchedulePost.endDate`) — les mélanger avec les vraies alertes nécessitant une action
@@ -1722,13 +1730,11 @@ réelles avant la suppression définitive de V1.
 
 ### Travail restant (non bloquant pour ce lancement)
 
-- **Batch 14 — Préférences de notification** : `GET`/`PATCH /api/notification-preferences`,
-  UI de réglage par type d'alerte (Planning alert, Absence chirurgien, Absence instrumentiste,
-  Réassignation, Mission ouverte, Rappel) × par canal (in-app, email, push). Nécessaire avant une
-  généralisation large, mais ne bloque pas ce lancement initial (les canaux in-app/email
-  fonctionnent déjà avec les valeurs par défaut du resolver).
-- Couverture de test pour l'expansion de récurrence `MONTHLY`+`monthlyNthWeekday`, avant de
-  rouvrir ces options dans le formulaire.
+- ~~**Batch 14 — Préférences de notification**~~ **Livré (D-086, 2026-07-29)** —
+  `GET`/`PATCH /api/me/notification-preferences[/{type}]` (chemin final, différent du plan
+  initial), UI de réglage par type × par canal.
+- ~~Couverture de test pour l'expansion de récurrence `MONTHLY`+`monthlyNthWeekday`~~ **Livré**
+  (commit `11bbc0e`, "Batch 14A/B/C") — voir errata ci-dessus.
 - Détection de conflits cross-site (`SURGEON_CONFLICT`/`INSTRUMENTIST_CONFLICT`) — toujours non
   déclenchée, cf. `planning-v2-architecture-freeze.md` §G.
 - Critère de sortie pour la suppression effective de V1 : un cycle complet de

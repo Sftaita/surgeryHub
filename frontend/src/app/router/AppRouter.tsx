@@ -184,7 +184,7 @@ export function AppRouter() {
                 <Route path="admin/sites"       element={<AdminSitesPage />} />
                 <Route path="admin/invitations" element={<AdminInvitationsPage />} />
                 <Route path="admin/audit"       element={<AdminAuditPage />} />
-                {/* D-084 — route + page seules ; entrée de menu à brancher avec le lot navigation (DesktopLayout encore mêlé à la refonte en cours). */}
+                {/* D-084 — entrée de menu branchée dans DesktopLayout.tsx ("Historique des notifications"). */}
                 <Route path="admin/outbound-notifications" element={<AdminOutboundNotificationsPage />} />
               </Route>
             </Route>

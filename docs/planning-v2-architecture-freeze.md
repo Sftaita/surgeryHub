@@ -589,18 +589,30 @@ Verifying Batch 7's design evolves cleanly to the requested granularity
    > per-channel **notification preferences** (this Batch 14 item) — that remains
    > accurate and unchanged. This note corrects the stale claim only; the rest of this
    > document's history is left as written.
+   >
+   > **Erratum (2026-08-01, reprise audit):** shipped as D-086 (2026-07-29) —
+   > `GET`/`PATCH /api/me/notification-preferences[/{type}]` (final path differs from
+   > the one written above), per-type/per-channel granularity delivered. This item is
+   > now done; the rest of the entry is left as written for history.
 2. **Monthly recurrence test coverage** (Batch 13 finding) — `PlanningGeneratorServiceV2`'s
    `MONTHLY`+`monthlyNthWeekday` branch has zero recurrence-expansion test coverage.
    Hidden from the create/edit post picker until a real test matrix backs it (see §E
    for the unrelated, already-covered split-recurrence design). Code path is untouched
    and still reachable by direct API call or by editing a pre-existing monthly post.
+
+   > **Erratum (2026-08-01, reprise audit):** done — `PlanningGeneratorServiceV2MonthlyTest.php`
+   > (612 lines, real-calendar edge cases) landed in commit `11bbc0e` ("Batch 14A/B/C"),
+   > and `LAUNCH_RECURRENCE_PRESET_OPTIONS` now equals `RECURRENCE_PRESET_OPTIONS` — the
+   > option is back in the create/edit picker. That commit has no dedicated ADR entry in
+   > `docs/decisions.md`; only this note and the errata added to D-048 document it.
 3. **Cross-site conflict detection** (§G) — `SURGEON_CONFLICT`/`INSTRUMENTIST_CONFLICT`
    still never trigger. Filtered out of the Alertes tab's type options already.
-4. **Per-site cutover flag + V1 deletion** (§C) — not implemented. Current Batch 13
-   cutover is UI-only (hide nav, redirect bare route); the `Hospital.planningEngine`
-   flag and the actual removal of `PlanningTemplate`/`PlanningSlot`/
-   `PlanningGeneratorService`/`PlanningTemplateController` remain future work, gated on
-   a full incident-free billing/encoding cycle on V2.
+4. ~~**Per-site cutover flag + V1 deletion** (§C)~~ **Superseded (2026-08-01):** the
+   strategy actually taken was outright deletion, not a per-site `Hospital.planningEngine`
+   flag — see `docs/decisions.md` D-079 and its errata. `PlanningTemplate`/`PlanningSlot`/
+   `PlanningGeneratorService`/`PlanningTemplateController` are removed. The
+   `planningEngine` flag proposal never got built and is now moot — its premise (V1
+   staying installed indefinitely behind a flag) no longer applies.
 5. **Recurrence split-pattern** (§E) and **exception type-collapse** (§F) — designed,
    not implemented; still future work, independent of the launch.
 

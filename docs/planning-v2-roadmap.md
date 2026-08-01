@@ -1417,7 +1417,24 @@ CANCELLED → background #616161, label "Annulé"
 
 ---
 
-### Batch 14 — Notification Preferences UI
+### Batch 14 — Notification Preferences UI ✅ DONE (2026-07-29, shipped as D-086)
+
+**Note (2026-08-01, audit de reprise) :** le besoin métier de la spec ci-dessous
+est couvert, mais l'implémentation livrée diverge sur plusieurs points concrets
+— conservée telle quelle pour l'historique de conception, ne pas s'y fier pour
+le contrat actuel (voir `docs/api.md` §41 pour le contrat exact) :
+- `MeController` (pas un `NotificationPreferenceController` dédié), sous
+  `GET`/`PATCH /api/me/notification-preferences[/{type}]` (pas
+  `/api/notification-preferences`).
+- Réponse `GET` sans flag `isDefault` — chaque type est toujours résolu
+  (override stocké ou défaut produit via `DefaultNotificationPreferenceResolver`),
+  jamais distingué explicitement côté client.
+- Pas de section "bientôt disponible" grisée : au moment de la livraison
+  (2026-07-29), tous les `NotificationType` de Batch 15E existaient déjà, donc
+  aucun type à afficher en avance de phase.
+- Liste plate côté frontend, pas de regroupement par famille (Publication
+  initiale / Suivi de couverture / etc.).
+- PATCH immédiat sans bouton save, conforme à la spec.
 
 #### Objective
 
@@ -1498,11 +1515,11 @@ Each toggle PATCH is dispatched immediately on change (no save button). Error to
 
 #### Definition of Done
 
-- [ ] All active `NotificationType` cases listed in GET response
-- [ ] PATCH upserts correctly
-- [ ] User isolation enforced
-- [ ] Frontend toggles functional with immediate PATCH
-- [ ] "Bientôt disponible" types visually distinct
+- [x] All active `NotificationType` cases listed in GET response
+- [x] PATCH upserts correctly (partial update, not full-row upsert — see note above)
+- [x] User isolation enforced (via `#[CurrentUser]`, structural — not a manual check)
+- [x] Frontend toggles functional with immediate PATCH
+- [ ] "Bientôt disponible" types visually distinct — **N/A**, no type was pending at ship time (see note above)
 
 ---
 

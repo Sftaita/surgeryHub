@@ -19,8 +19,9 @@ use Symfony\Component\Messenger\MessageBusInterface;
  * Hard rule: this service NEVER mutates a Mission. Regardless of status (DRAFT, OPEN,
  * ASSIGNED, SUBMITTED, VALIDATED, IN_PROGRESS), it only ever creates or resolves
  * PlanningAlert rows and prepares notification payloads. Manager-driven resolution
- * actions (reassign/cancel/open) are a future batch, once the UI/endpoints exist to
- * make that decision deliberately rather than automatically.
+ * actions reassign/open-as-available now exist (PlanningAlertController::reassign()/
+ * openAsAvailable(), which do mutate the Mission — deliberately, outside this service).
+ * A cancel-from-alert action remains unbuilt.
  *
  * Missions in a terminal-or-out-of-band state (CLOSED, REJECTED, DECLARED) are excluded
  * from impact detection — there is no actionable manager decision left to make about them.

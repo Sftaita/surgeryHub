@@ -21,13 +21,12 @@ use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 
 /**
- * Manager/Admin-only read + acknowledge/resolve/ignore API for PlanningAlert (Batch 3's
- * post-publication absence-impact engine). No endpoint here ever mutates a Mission —
- * the action flags returned alongside each alert (canReassign/canOpenAsAvailable) are
- * advisory only, for a future batch that will add real reassignment endpoints.
- *
- * No frontend, no cutover, V1 (PAIR/IMPAIR/TOUTES) untouched — this exposes Batch 3's
- * alert system, nothing else.
+ * Manager/Admin-only read + acknowledge/resolve/ignore/reassign/open-as-available API for
+ * PlanningAlert (Batch 3's post-publication absence-impact engine). `reassign()` and
+ * `openAsAvailable()` do mutate the underlying Mission (see their docblocks below) — the
+ * action flags returned alongside each alert (canReassign/canOpenAsAvailable) reflect real,
+ * wired endpoints, not advisory-only placeholders. Consumed by the Alertes tab
+ * (`ReassignMissionDialog`, `planningV2.api.ts`).
  */
 class PlanningAlertController extends AbstractController
 {
