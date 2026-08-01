@@ -18,6 +18,8 @@ import { isMobileRole } from "../../auth/roles";
 import { requestMissionSync } from "../../features/missions/sync/missionSyncBus";
 import { DateTile } from "../../ui/mobile/DateTile";
 import { StatusPill } from "../../ui/mobile/StatusPill";
+import { PersonAvatar } from "../../ui/avatar/PersonAvatar";
+import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 
 dayjs.locale("fr");
 
@@ -87,13 +89,6 @@ function ClockIcon() {
     </svg>
   );
 }
-function UserIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={GREEN_700} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="8" r="5" /><path d="M20 21a8 8 0 0 0-16 0" />
-    </svg>
-  );
-}
 function CheckIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={GREEN_700} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -158,9 +153,7 @@ function OfferCard({
         </Stack>
         {surgeon && (
           <Stack direction="row" alignItems="center" spacing={1.375}>
-            <Box sx={{ width: 34, height: 34, borderRadius: "999px", background: GREEN_50, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <UserIcon />
-            </Box>
+            <PersonAvatar name={surgeon} photoUrl={resolveApiAssetUrl(mission.surgeon?.profilePicturePath)} size="sm" />
             <Typography sx={{ fontSize: 14, color: "#3A4754" }}>{surgeon}</Typography>
           </Stack>
         )}

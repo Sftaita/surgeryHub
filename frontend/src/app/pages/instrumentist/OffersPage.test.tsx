@@ -123,6 +123,28 @@ describe("OffersPage", () => {
 
     expect(await screen.findByText("Aucune offre disponible")).toBeInTheDocument();
   });
+
+  it("affiche la photo du chirurgien quand profilePicturePath est renseigné", async () => {
+    fetchOffersMock.mockResolvedValue({
+      items: [makeMission({ surgeon: { id: 2, firstname: "Anouk", lastname: "Peeters", profilePicturePath: "/uploads/profile-pictures/surgeon-2.jpg" } })],
+    });
+    renderPage();
+
+    const img = await screen.findByAltText("Dr. Anouk Peeters");
+    expect(img.tagName).toBe("IMG");
+    expect((img as HTMLImageElement).src).toContain("/uploads/profile-pictures/surgeon-2.jpg");
+  });
+
+  it("affiche les initiales quand le chirurgien n'a pas de photo", async () => {
+    fetchOffersMock.mockResolvedValue({
+      items: [makeMission({ surgeon: { id: 2, firstname: "Anouk", lastname: "Peeters", profilePicturePath: null } })],
+    });
+    renderPage();
+
+    await screen.findByText("CHU Brugmann");
+    expect(screen.queryByAltText("Dr. Anouk Peeters")).not.toBeInTheDocument();
+    expect(screen.getByText("DP")).toBeInTheDocument();
+  });
 });
 
 describe("OffersPage — remise à zéro du badge non-lu (Lot 6, audit PWA/mobile/admin 2026-07-29)", () => {
