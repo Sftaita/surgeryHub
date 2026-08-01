@@ -9,9 +9,7 @@ use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\PlanningVersionStatus;
 use App\Security\Voter\PlanningVoter;
-use App\Service\PdfService;
 use App\Service\PlanningCoverageService;
-use App\Service\PlanningDiffService;
 use App\Service\PlanningModificationService;
 use App\Service\PlanningResendService;
 use App\Service\PlanningVersionHistoryService;
@@ -19,7 +17,6 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
-use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\Routing\Attribute\Route;
@@ -29,8 +26,6 @@ class PlanningVersionController extends AbstractController
 {
     public function __construct(
         private readonly EntityManagerInterface         $em,
-        private readonly PlanningDiffService            $diffService,
-        private readonly PdfService                     $pdfService,
         private readonly PlanningCoverageService        $coverageService,
         private readonly PlanningVersionHistoryService  $historyService,
         private readonly PlanningModificationService    $modificationService,
@@ -109,46 +104,6 @@ class PlanningVersionController extends AbstractController
         return $this->json(['items' => $items, 'total' => $total, 'page' => $page, 'limit' => $limit]);
     }
 
-    // ── Show ──────────────────────────────────────────────────────────────────
-
-    #[Route('/api/planning/versions/{id}', name: 'api_planning_version_show', methods: ['GET'])]
-    public function show(int $id): JsonResponse
-    {
-        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
-
-        $version = $this->em->find(PlanningVersion::class, $id);
-        if ($version === null) {
-            return $this->json(['error' => ['message' => 'PlanningVersion not found.']], 404);
-        }
-
-        return $this->json(array_merge(
-            $this->serialize($version),
-            [
-                'allowedActions'  => $this->allowedActions($version),
-                'lastDeployment'  => $this->serializeDeployment($this->findLastDeployment($version)),
-            ],
-        ));
-    }
-
-    // ── Diff ─────────────────────────────────────────────────────────────────
-
-    /**
-     * Planning-visible diff vs the previous ACTIVE/ARCHIVED version.
-     * Call BEFORE deploying to preview what will change.
-     */
-    #[Route('/api/planning/versions/{id}/diff', name: 'api_planning_version_diff', methods: ['GET'])]
-    public function diff(int $id): JsonResponse
-    {
-        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
-
-        $version = $this->em->find(PlanningVersion::class, $id);
-        if ($version === null) {
-            return $this->json(['error' => ['message' => 'PlanningVersion not found.']], 404);
-        }
-
-        return $this->json($this->diffService->diff($version));
-    }
-
     // ── Modification mode (Planning V2 unified editor) ────────────────────────
 
     /**
@@ -217,8 +172,9 @@ class PlanningVersionController extends AbstractController
      * and the PlanningVersion itself are preserved, missions transition to CANCELLED through
      * the same post-deploy chain as an individual "Annuler la mission", and exactly one
      * targeted summary email is sent per actually-affected person. Only ACTIVE versions are
-     * eligible — a DRAFT version has its own hard-delete endpoint (DELETE .../{id} above);
-     * ARCHIVED means already superseded, nothing left to meaningfully cancel.
+     * eligible; ARCHIVED means already superseded, nothing left to meaningfully cancel.
+     * (The DRAFT hard-delete endpoint this docblock used to reference was V1-only UI
+     * and was removed in D-079 — see docs/decisions.md errata.)
      */
     #[Route('/api/planning/versions/{id}/cancel-all', name: 'api_planning_version_cancel_all', methods: ['POST'])]
     public function cancelAll(int $id, #[CurrentUser] User $user): JsonResponse
@@ -283,188 +239,7 @@ class PlanningVersionController extends AbstractController
         return $this->json($timeline);
     }
 
-    // ── Delete ────────────────────────────────────────────────────────────────
-
-    /**
-     * Deletes a DRAFT PlanningVersion and all its linked missions.
-     * Refuses deletion if status is ACTIVE or ARCHIVED.
-     */
-    #[Route('/api/planning/versions/{id}', name: 'api_planning_versions_delete', methods: ['DELETE'])]
-    public function delete(int $id): JsonResponse
-    {
-        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
-
-        $version = $this->em->find(PlanningVersion::class, $id);
-        if ($version === null) {
-            return $this->json(['error' => ['message' => 'PlanningVersion not found.']], 404);
-        }
-
-        if ($version->getStatus() !== PlanningVersionStatus::DRAFT) {
-            return $this->json([
-                'error' => [
-                    'message' => sprintf(
-                        'Impossible de supprimer une version %s. Seules les versions DRAFT peuvent être supprimées.',
-                        $version->getStatus()->value,
-                    ),
-                ],
-            ], 400);
-        }
-
-        // Refuse if any linked mission is already published or assigned.
-        // Even a DRAFT version may have had some missions individually published
-        // (e.g. via the ResolveModal), and deleting those would leave orphaned OPEN missions.
-        $publishedCount = (int) $this->em->createQuery(
-            'SELECT COUNT(m.id) FROM App\Entity\Mission m
-             WHERE m.planningVersion = :v AND m.status != :draft'
-        )
-            ->setParameter('v',     $version)
-            ->setParameter('draft', MissionStatus::DRAFT)
-            ->getSingleScalarResult();
-
-        if ($publishedCount > 0) {
-            return $this->json([
-                'error' => [
-                    'message' => 'Impossible de supprimer ce planning car certaines missions ont déjà été publiées ou assignées.',
-                ],
-            ], 400);
-        }
-
-        // Delete linked DRAFT missions first (no cascade remove in ORM mapping)
-        $this->em->createQuery(
-            'DELETE FROM App\Entity\Mission m WHERE m.planningVersion = :v'
-        )->setParameter('v', $version)->execute();
-
-        $this->em->remove($version);
-        $this->em->flush();
-
-        return new JsonResponse(null, 204);
-    }
-
-    // ── PDF ───────────────────────────────────────────────────────────────────
-
-    /**
-     * Generates and streams the global PDF for a PlanningVersion (synchronous).
-     * V1: blocking Dompdf — acceptable for typical planning sizes.
-     */
-    #[Route('/api/planning/versions/{id}/pdf', name: 'api_planning_version_pdf', methods: ['GET'])]
-    public function pdf(int $id): Response
-    {
-        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
-
-        $version = $this->em->find(PlanningVersion::class, $id);
-        if ($version === null) {
-            return $this->json(['error' => ['message' => 'PlanningVersion not found.']], 404);
-        }
-
-        $qb = $this->em->createQueryBuilder()
-            ->select('m')
-            ->from(Mission::class, 'm')
-            ->where('m.startAt >= :from')
-            ->andWhere('m.startAt <= :to')
-            ->andWhere('m.status NOT IN (:excluded)')
-            ->setParameter('from',     $version->getPeriodStart()->setTime(0, 0, 0))
-            ->setParameter('to',       $version->getPeriodEnd()->setTime(23, 59, 59))
-            ->setParameter('excluded', [MissionStatus::REJECTED]);
-
-        if ($version->getSite() !== null) {
-            $qb->andWhere('m.site = :site')->setParameter('site', $version->getSite());
-        }
-
-        $missions = $qb->getQuery()->getResult();
-
-        $pdf = $this->pdfService->generateFromTemplate('pdf/planning_global.html.twig', [
-            'missions'   => $missions,
-            'periodFrom' => $version->getPeriodStart(),
-            'periodTo'   => $version->getPeriodEnd(),
-        ]);
-
-        $filename = sprintf('planning-v%d-%s-%s.pdf',
-            $version->getVersionNumber(),
-            $version->getPeriodStart()->format('Y-m-d'),
-            $version->getPeriodEnd()->format('Y-m-d'),
-        );
-
-        return new Response($pdf, 200, [
-            'Content-Type'        => 'application/pdf',
-            'Content-Disposition' => 'inline; filename="' . $filename . '"',
-        ]);
-    }
-
     // ── Private — serialization ───────────────────────────────────────────────
-
-    /** Full serialization for the show endpoint (loads mission entities). */
-    private function serialize(PlanningVersion $version): array
-    {
-        $qb = $this->em->createQueryBuilder()
-            ->select('m')
-            ->from(Mission::class, 'm')
-            ->where('m.startAt >= :from')
-            ->andWhere('m.startAt <= :to')
-            ->andWhere('m.status NOT IN (:excluded)')
-            ->setParameter('from',     $version->getPeriodStart()->setTime(0, 0, 0))
-            ->setParameter('to',       $version->getPeriodEnd()->setTime(23, 59, 59))
-            ->setParameter('excluded', [MissionStatus::REJECTED]);
-
-        if ($version->getSite() !== null) {
-            $qb->andWhere('m.site = :site')->setParameter('site', $version->getSite());
-        }
-
-        /** @var Mission[] $missions */
-        $missions = $qb->getQuery()->getResult();
-
-        $total = count($missions);
-        $draft = $open = $assigned = $withoutInstr = 0;
-        $surgeonIds = $instrumentistIds = [];
-
-        foreach ($missions as $mission) {
-            $status   = $mission->getStatus();
-            $hasInstr = $mission->getInstrumentist() !== null;
-
-            if ($status === MissionStatus::DRAFT) {
-                $draft++;
-                if (!$hasInstr) $withoutInstr++;
-            } elseif ($status === MissionStatus::OPEN) {
-                $open++;
-                if (!$hasInstr) $withoutInstr++;
-            } else {
-                $assigned++;
-            }
-
-            if ($mission->getSurgeon() !== null) {
-                $surgeonIds[$mission->getSurgeon()->getId()] = true;
-            }
-            if ($hasInstr) {
-                $instrumentistIds[$mission->getInstrumentist()->getId()] = true;
-            }
-        }
-
-        $site = $version->getSite();
-
-        return [
-            'id'            => $version->getId(),
-            'versionNumber' => $version->getVersionNumber(),
-            'status'        => $version->getStatus()->value,
-            'periodStart'   => $version->getPeriodStart()->format('Y-m-d'),
-            'periodEnd'     => $version->getPeriodEnd()->format('Y-m-d'),
-            'generatedAt'   => $version->getGeneratedAt()->format(\DateTimeInterface::ATOM),
-            'deployedAt'    => $version->getDeployedAt()?->format(\DateTimeInterface::ATOM),
-            'archivedAt'    => $version->getArchivedAt()?->format(\DateTimeInterface::ATOM),
-            'site'          => $site !== null ? ['id' => $site->getId(), 'name' => $site->getName()] : null,
-            'generatedBy'   => [
-                'id'    => $version->getGeneratedBy()?->getId(),
-                'email' => $version->getGeneratedBy()?->getEmail(),
-            ],
-            'summary' => [
-                'total'               => $total,
-                'draft'               => $draft,
-                'open'                => $open,
-                'assigned'            => $assigned,
-                'withoutInstrumentist'=> $withoutInstr,
-                'surgeonCount'        => count($surgeonIds),
-                'instrumentistCount'  => count($instrumentistIds),
-            ],
-        ];
-    }
 
     /**
      * Lightweight serialization for the list endpoint.
