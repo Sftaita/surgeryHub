@@ -100,6 +100,7 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\User::invitationExpiresAt' => "set from new \\DateTimeImmutable('+N hours'), relative to server now, never client input",
         'App\Entity\User::invitationLastSentAt' => 'set from new \DateTimeImmutable()',
         'App\Entity\User::instrumentistOnboardingCompletedAt' => 'set from new \DateTimeImmutable() in MeController::completeOnboarding(), never client input',
+        'App\Entity\User::offersLastSeenAt' => 'set from new \DateTimeImmutable() in MeController::markOffersSeen(), never client input',
         'App\Entity\UserAuditEvent::createdAt' => 'set from new \DateTimeImmutable() in the constructor',
         'App\Entity\Absence::createdAt' => 'not covered by TimestampableTrait on this entity; set from new \DateTimeImmutable()',
 
