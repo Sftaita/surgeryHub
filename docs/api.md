@@ -305,11 +305,20 @@ Réassigne une mission à un autre instrumentiste. Le statut reste `ASSIGNED`.
 
 **Transition :** `DECLARED\|ASSIGNED\|IN_PROGRESS\|ENCODING_IN_PROGRESS\|SUBMITTED → SUBMITTED`
 
+**Body (optionnel) :**
+
+```json
+{ "comment": "Consultation de suivi, aucun matériel utilisé." }
+```
+
 **Règles :**
 - Ne verrouille pas l'encodage
 - **Legacy, inchangé pour compatibilité frontend** (Lot 7, D-070) : délègue à
   `MissionEncodingWorkflowService::complete()`, le même point d'entrée métier que
   `POST /api/missions/{id}/encoding/complete` (§7.1) — jamais deux implémentations.
+- **Justification obligatoire si aucun matériel (D-080)** : si le serveur ne trouve
+  aucune ligne de matériel active (quantité strictement positive), `comment` devient
+  obligatoire et non-blanc — sinon `422`. Voir §32 pour le détail complet de la règle.
 
 ---
 
@@ -4129,7 +4138,6 @@ GET /api/admin/audit
 
 **Note :** `targetUser` peut être `null` si l'utilisateur a été supprimé (ON DELETE SET NULL).
 
-
 ---
 
 ### 28.13 Historique des notifications sortantes (D-084)
@@ -4196,6 +4204,7 @@ autres rôles reçoivent 403.
 
 **Jamais dans la réponse :** endpoint Push complet, `p256dh`, `auth`, JWT, clé VAPID,
 secret SMTP, mot de passe, donnée patient.
+
 ---
 
 ## 29. Authentification — login, refresh, logout, « Se souvenir de moi »
@@ -4425,6 +4434,17 @@ contrôleur `MissionEncodingWorkflowController`, service
 `MissionEncodingWorkflowService`. Réponse — 200 : la mission complète
 (`MissionDetailDto`, même forme que les autres endpoints d'action mission).
 
+**Justification "aucun matériel" (D-080)** — deux champs exposés uniquement sur
+`MissionDetailDto` (GET `/api/missions/{id}`), jamais sur le DTO d'encodage (GET
+`.../encoding`, dédié au formulaire de saisie) :
+- `noMaterialComment: string \| null` — le commentaire de justification, conservé
+  indéfiniment pour traçabilité (jamais effacé automatiquement, y compris après une
+  resoumission ultérieure avec du matériel).
+- `submittedWithoutMaterial: boolean \| null` — figé à chaque `.../complete`, reflète si
+  **la soumission courante** avait 0 matériel actif. C'est ce flag, jamais la seule
+  présence de `noMaterialComment`, qui doit gouverner l'affichage manager d'une
+  justification active.
+
 ### `POST .../start`
 
 **AuthZ :** `MissionVoter::ENCODING_START` — **instrumentiste assigné uniquement**, un
@@ -4460,12 +4480,28 @@ atteignable directement depuis `ASSIGNED`/`IN_PROGRESS`/`DECLARED`.
 compatibilité frontend) — `MissionEncodingWorkflowService::complete()`, jamais deux
 chemins métier distincts.
 
+**Body (optionnel) :**
+
+```json
+{ "comment": "Consultation de suivi, aucun matériel utilisé." }
+```
+
 **Effets backend :**
 - `mission.submittedAt = now()` — **ne verrouille pas l'encodage**
+- `mission.submittedWithoutMaterial` figé au résultat du recompte serveur des lignes de
+  matériel actives (quantité `> 0`) au moment de cet appel précis (D-080)
+- Si `comment` est fourni et non-blanc : `mission.noMaterialComment = trim(comment)`
+  (jamais effacé, y compris si une soumission ultérieure a du matériel)
 - Audit `MISSION_ENCODING_COMPLETED`
 - `MissionLifecycleChangedMessage(ENCODING_COMPLETED)` dispatché
 
-**Erreurs :** `403` non autorisé · `409` mission dans un statut non soumissible.
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non autorisé |
+| `409` | Mission dans un statut non soumissible |
+| `422` | Aucune ligne de matériel active trouvée et `comment` absent/vide (D-080) — voir la règle complète en tête de §32 |
 
 ---
 

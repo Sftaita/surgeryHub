@@ -16,7 +16,8 @@ import {
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { updateUserSpecialties } from "../../../features/planning-manager/api/planning.api";
 import { useToast } from "../../../ui/toast/useToast";
-import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
+import { ActiveBadge } from "../../../ui/StatusBadge";
+import { EntityHeader } from "../../../ui/EntityHeader";
 
 import { DrawerSection } from "./DrawerSection";
 import { AddSiteMembershipDialog } from "./AddSiteMembershipDialog";
@@ -206,53 +207,31 @@ export function InstrumentistDrawer({
 
             {!isLoading && !isError && instrumentist ? (
               <Stack spacing={2}>
+                <EntityHeader
+                  name={headerDisplayName}
+                  subtitle={instrumentist.email}
+                  photoUrl={resolveApiAssetUrl(instrumentist.profilePicturePath)}
+                  chips={
+                    <>
+                      <ActiveBadge active={instrumentist.active} inactiveLabel="Suspendu" filledWhenActive />
+                      <Chip
+                        size="small"
+                        label={getEmploymentTypeLabel(
+                          instrumentist.employmentType,
+                        )}
+                        variant="outlined"
+                      />
+                      <Chip
+                        size="small"
+                        label={`Devise : ${instrumentist.defaultCurrency}`}
+                        variant="outlined"
+                      />
+                    </>
+                  }
+                />
                 <Paper variant="outlined">
                   <Box sx={{ p: 2 }}>
                     <Stack spacing={1.5}>
-                      <Stack direction="row" spacing={2} alignItems="center">
-                        <PersonAvatar
-                          name={headerDisplayName}
-                          photoUrl={resolveApiAssetUrl(instrumentist.profilePicturePath)}
-                          size="lg"
-                        />
-                        <Stack spacing={0.25}>
-                          <Typography variant="h6" sx={{ lineHeight: 1.2 }}>
-                            {headerDisplayName}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            {instrumentist.email}
-                          </Typography>
-                        </Stack>
-                      </Stack>
-
-                      <Stack
-                        direction="row"
-                        spacing={1}
-                        flexWrap="wrap"
-                        useFlexGap
-                      >
-                        <Chip
-                          size="small"
-                          label={instrumentist.active ? "Actif" : "Suspendu"}
-                          color={instrumentist.active ? "success" : "default"}
-                          variant={
-                            instrumentist.active ? "filled" : "outlined"
-                          }
-                        />
-                        <Chip
-                          size="small"
-                          label={getEmploymentTypeLabel(
-                            instrumentist.employmentType,
-                          )}
-                          variant="outlined"
-                        />
-                        <Chip
-                          size="small"
-                          label={`Devise : ${instrumentist.defaultCurrency}`}
-                          variant="outlined"
-                        />
-                      </Stack>
-
                       <Stack
                         direction="row"
                         spacing={1}

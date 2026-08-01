@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
-import { Box, Button, Chip, Stack, Typography } from "@mui/material";
+import { Box, Button, Chip, Stack, Tab, Tabs, Typography } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 
 import { fetchMissions } from "../../features/missions/api/missions.api";
@@ -145,24 +145,14 @@ export default function MissionsListPage() {
         )}
       </Stack>
 
-      <Stack direction="row" spacing={1} mb={2}>
-        <Button
-          variant={!isToValidateView ? "contained" : "outlined"}
-          size="small"
-          disableElevation
-          onClick={() => navigate("/app/m/missions")}
-        >
-          Toutes
-        </Button>
-        <Button
-          variant={isToValidateView ? "contained" : "outlined"}
-          size="small"
-          disableElevation
-          onClick={() => navigate("/app/m/missions/to-validate")}
-        >
-          À valider
-        </Button>
-      </Stack>
+      <Tabs
+        value={isToValidateView ? "to-validate" : "all"}
+        onChange={(_, v) => navigate(v === "to-validate" ? "/app/m/missions/to-validate" : "/app/m/missions")}
+        sx={{ mb: 2, borderBottom: 1, borderColor: "divider", minHeight: 40 }}
+      >
+        <Tab value="all" label="Toutes" sx={{ minHeight: 40 }} />
+        <Tab value="to-validate" label="À valider" sx={{ minHeight: 40 }} />
+      </Tabs>
 
       {!isToValidateView && (
         <MissionsFiltersBar

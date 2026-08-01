@@ -5,7 +5,6 @@ import {
   Button,
   Chip,
   CircularProgress,
-  InputAdornment,
   MenuItem,
   Select,
   Stack,
@@ -15,10 +14,8 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  TextField,
   Typography,
 } from "@mui/material";
-import SearchIcon   from "@mui/icons-material/Search";
 import AddIcon      from "@mui/icons-material/Add";
 import { useQuery } from "@tanstack/react-query";
 import { getAdminUsers } from "../../features/admin/api/admin.api";
@@ -26,6 +23,8 @@ import { InvitationStatusChip } from "../../features/admin/components/Invitation
 import { AdminUserDrawer } from "../../features/admin/components/AdminUserDrawer";
 import { AdminCreateUserModal } from "../../features/admin/components/AdminCreateUserModal";
 import type { AdminUserListItem } from "../../features/admin/api/admin.types";
+import { SearchBox } from "../../ui/SearchBox";
+import { useDebouncedValue } from "../../ui/hooks/useDebouncedValue";
 
 const ROLE_OPTIONS = [
   { value: "", label: "Tous les rôles" },
@@ -45,14 +44,9 @@ export default function AdminUsersPage() {
   const [search, setSearch] = React.useState("");
   const [role, setRole]     = React.useState("");
   const [active, setActive] = React.useState("");
-  const [debouncedSearch, setDebouncedSearch] = React.useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [selectedUserId, setSelectedUserId]   = React.useState<number | null>(null);
   const [createOpen, setCreateOpen]           = React.useState(false);
-
-  React.useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(t);
-  }, [search]);
 
   const query = useQuery({
     queryKey: ["admin-users", debouncedSearch, role, active],
@@ -76,12 +70,10 @@ export default function AdminUsersPage() {
 
       {/* Filtres */}
       <Stack direction="row" spacing={2} sx={{ mb: 2 }} flexWrap="wrap">
-        <TextField
-          size="small"
+        <SearchBox
           placeholder="Rechercher…"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+          onChange={setSearch}
           sx={{ width: 260 }}
         />
         <Select

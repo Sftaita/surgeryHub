@@ -40,5 +40,7 @@ Chips récentes = raccourci étape 2 · « Changer » = retour étape 1 (marque 
 ## Contraintes (intouchables)
 3 étapes exactement · voie « non trouvé » toujours disponible à l'étape 2 · quantité min 1 · aucune saisie libre de nom de matériel (sauf voie « non trouvé » qui reste générique).
 
+**⚠ Conflit ouvert (2026-07-20)** : `prototypes/encodage-react/src/components/MaterialSearchSheet.tsx` fusionne marque+matériel en un seul écran de recherche (contredit la contrainte « 3 étapes exactement » ci-dessus). Décision utilisateur requise avant tout portage — détail complet dans `screens/encodage/README.md#Audit — nouvelle référence encodage-react`.
+
 ## Checklist d'acceptation
 ☐ Conforme au prototype (flux complet) ☐ stepper d'étapes exact ☐ recherche en direct ☐ voie « non trouvé » ☐ badges Nouveau/À préciser ☐ compteurs + horodatage ☐ accessibilité ☐ aucune différence notable

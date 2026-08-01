@@ -5,7 +5,6 @@ import {
   Paper, Stack, Switch, Table, TableBody, TableCell, TableContainer,
   TableHead, TableRow, TextField, Tooltip, Typography,
 } from "@mui/material";
-import AddIcon        from "@mui/icons-material/Add";
 import EditIcon       from "@mui/icons-material/Edit";
 import DeleteIcon     from "@mui/icons-material/Delete";
 import BusinessIcon   from "@mui/icons-material/Business";
@@ -14,6 +13,9 @@ import RemoveCircleOutlineIcon from "@mui/icons-material/RemoveCircleOutline";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../../api/apiClient";
 import { useToast } from "../../ui/toast/useToast";
+import { EmptyState } from "../../ui/EmptyState";
+import { PageHeader } from "../../ui/PageHeader";
+import { ActiveBadge } from "../../ui/StatusBadge";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface Firm {
@@ -122,32 +124,24 @@ export default function FirmsPage() {
     <Box sx={{ p: 3, maxWidth: 960 }}>
 
       {/* Header */}
-      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" mb={3}>
-        <Box>
-          <Stack direction="row" alignItems="center" spacing={1.5} mb={0.5}>
-            <BusinessIcon sx={{ color: "primary.main", fontSize: 28 }} />
-            <Typography variant="h5">Firmes partenaires</Typography>
-          </Stack>
-          <Typography variant="body2" color="text.secondary">
-            Sociétés de matériel et fournisseurs avec qui Surgery Hub collabore.
-          </Typography>
-        </Box>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={openCreate} disableElevation>
-          Ajouter une firme
-        </Button>
-      </Stack>
+      <PageHeader
+        icon={BusinessIcon}
+        title="Firmes partenaires"
+        subtitle="Sociétés de matériel et fournisseurs avec qui Surgery Hub collabore."
+        helpTopicId="firms"
+        action={{ label: "Ajouter une firme", onClick: openCreate }}
+      />
 
       {/* Table */}
       {firmsQuery.isLoading ? (
         <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}><CircularProgress /></Box>
       ) : firms.length === 0 ? (
-        <Paper variant="outlined" sx={{ py: 8, textAlign: "center", borderStyle: "dashed" }}>
-          <BusinessIcon sx={{ fontSize: 48, color: "text.disabled", mb: 1 }} />
-          <Typography color="text.secondary">Aucune firme enregistrée.</Typography>
-          <Button onClick={openCreate} sx={{ mt: 2 }} variant="contained" disableElevation>
-            Ajouter la première firme
-          </Button>
-        </Paper>
+        <EmptyState
+          variant="dashed"
+          icon={BusinessIcon}
+          title="Aucune firme enregistrée."
+          action={{ label: "Ajouter la première firme", onClick: openCreate }}
+        />
       ) : (
         <TableContainer component={Paper} variant="outlined">
           <Table size="small">
@@ -183,11 +177,11 @@ export default function FirmsPage() {
                     )}
                   </TableCell>
                   <TableCell>
-                    <Chip
-                      label={f.active ? "Active" : "Inactive"}
-                      size="small"
-                      color={f.active ? "success" : "default"}
-                      variant={f.active ? "filled" : "outlined"}
+                    <ActiveBadge
+                      active={f.active}
+                      activeLabel="Active"
+                      inactiveLabel="Inactive"
+                      filledWhenActive
                       sx={{ fontSize: ".72rem" }}
                     />
                   </TableCell>

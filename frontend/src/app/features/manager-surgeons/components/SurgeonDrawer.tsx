@@ -19,7 +19,8 @@ import { UserEmailEditor } from "../../manager-instrumentists/components/UserEma
 import ConfirmDeleteDialog from "../../encoding/components/ConfirmDeleteDialog";
 import { useSurgeonDrawer } from "../hooks/useSurgeonDrawer";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
-import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
+import { ActiveBadge } from "../../../ui/StatusBadge";
+import { EntityHeader } from "../../../ui/EntityHeader";
 import type { SurgeonProfileDTO } from "../api/surgeons.types";
 
 type SurgeonDrawerProps = {
@@ -154,39 +155,15 @@ export function SurgeonDrawer({
 
             {!isLoading && !isError && surgeon ? (
               <Stack spacing={2}>
+                <EntityHeader
+                  name={headerDisplayName}
+                  subtitle={surgeon.email}
+                  photoUrl={resolveApiAssetUrl(surgeon.profilePicturePath)}
+                  chips={<ActiveBadge active={surgeon.active} filledWhenActive />}
+                />
                 <Paper variant="outlined">
                   <Box sx={{ p: 2 }}>
                     <Stack spacing={1.5}>
-                      <Stack direction="row" spacing={2} alignItems="center">
-                        <PersonAvatar
-                          name={headerDisplayName}
-                          photoUrl={resolveApiAssetUrl(surgeon.profilePicturePath)}
-                          size="lg"
-                        />
-                        <Stack spacing={0.25}>
-                          <Typography variant="h6" sx={{ lineHeight: 1.2 }}>
-                            {headerDisplayName}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            {surgeon.email}
-                          </Typography>
-                        </Stack>
-                      </Stack>
-
-                      <Stack
-                        direction="row"
-                        spacing={1}
-                        flexWrap="wrap"
-                        useFlexGap
-                      >
-                        <Chip
-                          size="small"
-                          label={surgeon.active ? "Actif" : "Inactif"}
-                          color={surgeon.active ? "success" : "default"}
-                          variant={surgeon.active ? "filled" : "outlined"}
-                        />
-                      </Stack>
-
                       <Stack
                         direction="row"
                         spacing={1}

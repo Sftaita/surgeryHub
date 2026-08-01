@@ -21,6 +21,7 @@ import type {
 import type { InstrumentistsListQuery } from "../api/instrumentists.requests";
 import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
+import { EmptyState } from "../../../ui/EmptyState";
 
 function buildDisplayName(row: InstrumentistListItemDTO): string {
   if (row.displayName && row.displayName.trim() !== "") {
@@ -46,22 +47,6 @@ function getEmploymentTypeLabel(
     default:
       return "—";
   }
-}
-
-function EmptyState() {
-  return (
-    <Stack
-      alignItems="center"
-      justifyContent="center"
-      sx={{ py: 6, px: 2, minHeight: 220 }}
-      spacing={1}
-    >
-      <Typography variant="subtitle1">Aucun instrumentiste trouvé</Typography>
-      <Typography variant="body2" color="text.secondary" textAlign="center">
-        Aucun résultat ne correspond aux filtres actuels.
-      </Typography>
-    </Stack>
-  );
 }
 
 type InstrumentistsTableProps = {
@@ -228,7 +213,12 @@ export function InstrumentistsTable({
             hideFooter
             disableRowSelectionOnClick
             slots={{
-              noRowsOverlay: EmptyState,
+              noRowsOverlay: () => (
+                <EmptyState
+                  title="Aucun instrumentiste trouvé"
+                  description="Aucun résultat ne correspond aux filtres actuels."
+                />
+              ),
             }}
           />
         </Box>

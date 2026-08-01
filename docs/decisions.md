@@ -1255,6 +1255,10 @@ Date : 30-04-2026 — Note Batch 15A (2026-06-27) : voir ci-dessous.
 > de déploiement) — l'"Étape 2" décrite ci-dessous n'a plus d'effet côté serveur. Le
 > modal V1 (`DeployModal.tsx`) envoie encore ce champ ; il est désormais silencieusement
 > ignoré. `selectedUncoveredMissionIds` (Étape 1) reste inchangé et fonctionnel.
+>
+> **Dette résolue par D-079 (2026-07-20)** : `DeployModal.tsx` et la page qui l'utilisait
+> (`PlanningVersionDetailPage.tsx`) ont été supprimées avec le reste du moteur V1 — ce
+> no-op n'existe donc plus.
 
 ### Décision
 
@@ -1739,6 +1743,118 @@ réelles avant la suppression définitive de V1.
   déclenchée, cf. `planning-v2-architecture-freeze.md` §G.
 - Critère de sortie pour la suppression effective de V1 : un cycle complet de
   facturation/encodage sans incident sur V2 (cf. §C du freeze doc), site par site.
+
+### Errata (2026-07-19, D-079 — réorganisation de l'espace manager)
+
+Deux inexactitudes de ce décision record, corrigées à l'occasion de l'audit legacy mené pour D-079 :
+
+1. **"Les routes V1 restent techniquement actives, accessibles par URL directe"** — faux depuis
+   `26d66ef` (26/06/2026, 4 jours après cette ADR) : ce commit a retiré les `<Route>` de
+   `PlanningTemplatesPage`, `PlanningTemplateEditorPage`, `PlanningGeneratePage`,
+   `PlanningVersionsListPage`, `SpecialtiesPage` d'`AppRouter.tsx` sans que cette doc soit mise à
+   jour. Ces 5 pages étaient donc déjà du code 100% mort (ni routé, ni importé, ni navigable) avant
+   même le début de D-079.
+2. **Critère de sortie ("un cycle complet de facturation/encodage sans incident sur V2")** — jamais
+   formellement constaté dans le dépôt. V2 sert cependant 100% du trafic planning depuis son
+   cutover, sans régression rapportée dans les mémoires/commits depuis.
+
+**Décision D-079** : au vu du point 1 (code déjà mort, pas une suppression anticipée d'un filet de
+sécurité actif) et du point 2 (V2 en production stable depuis près d'un mois sans incident), les 5
+pages frontend ci-dessus, leurs tests, et le contrôleur backend `PlanningTemplateController.php`
+(CRUD `/api/planning/templates`, lui aussi sans appelant restant une fois les 5 pages supprimées)
+sont supprimés.
+
+**Ce qui n'est PAS supprimé, contrairement à l'intention initiale de D-079** : l'audit de
+suppression a révélé que `PlanningVersionDetailPage.tsx` (conservée, `/app/m/planning/versions/:id`,
+déjà signalée comme risque préexistant hors périmètre) appelle toujours `previewPlanning`/
+`deployPlanning` (`POST /api/planning/preview`, `POST /api/planning/deploy`,
+`PlanningGenerationController`), qui dépendent directement de `PlanningGeneratorService` — lequel
+interroge les entités `PlanningTemplate`/`PlanningSlot` (`PlanningGeneratorService.php:8-9,79-80,
+375,452-458`). Supprimer le service ou les entités aurait cassé le bouton "Déployer" de cette page
+encore active : régression réelle, exclue par la contrainte "aucune régression fonctionnelle" du
+brief D-079. Restent donc en place : `PlanningGeneratorService.php` (+ ses tests
+`PlanningGeneratorServiceTest.php`, `PlanningGeneratorServiceGenerateTest.php`), les entités
+`PlanningTemplate`/`PlanningSlot`/`PlanningTemplateType`, `PlanningGenerationController.php`, et les
+exports non-CRUD de `planning.api.ts` (`previewPlanning`, `getPlanningVersion`, `deployPlanning`,
+`getVersionDiff`, `listPlanningVersions`, `deletePlanningVersion`, `downloadPlanningVersionPdf`,
+`triggerVersionPdfDownload`). Seuls les exports exclusifs aux 5 pages supprimées sont retirés
+(CRUD gabarits/slots : `getTemplates`, `createTemplate`, `addSlot`, etc. ; `generatePlanning`,
+`getSuggestedInstrumentists`, `assignInstrumentist` — 0 appelant restant) — ainsi que
+`createMission`/`publishMission`, dupliqués de `missions.api.ts` et déjà sans appelant avant D-079.
+
+Le nouveau critère de sortie, si une suppression complète de ce reliquat V1 est souhaitée un jour :
+retirer le bouton "Déployer" (et son flux preview/diff) de `PlanningVersionDetailPage.tsx`, ou
+migrer cette page vers les endpoints `/api/planning/v2/*`. Décision produit à prendre séparément,
+hors périmètre de D-079.
+
+### Errata 2 (2026-07-20, D-079 — audit complet de PlanningVersionDetailPage → suppression)
+
+L'errata ci-dessus concluait à tort à la conservation. Un audit de réachabilité complet (grep
+exhaustif de tout `frontend/src` pour tout `NavLink`/`Link`/`navigate()`/template email pointant
+vers `/app/m/planning/versions/:id`) a établi que :
+
+- **Zéro lien UI** ne mène à cette page — ni sidebar (retirée dès D-048), ni `PlanningVersionsListPage`
+  (supprimée dans la première passe D-079, qui était le seul moyen de découvrir un `versionId`), ni
+  notification, ni template email (`backend/templates`, `MessageHandler` audités : aucune référence).
+  Seule une URL tapée à la main ou un favori antérieur au cutover V2 (22/06/2026) peut y mener.
+- **Le "Déployer" de cette page est fonctionnellement redondant et potentiellement incorrect** :
+  `PlanningV2GenerationController::deploy()` réutilise déjà `PlanningDeploymentService` — le même
+  service que le "Déployer" V1 (`deploy() reuses PlanningDeploymentService unchanged`, commentaire du
+  fichier) — donc aucune divergence de logique de déploiement entre V1 et V2. En revanche, le bouton
+  "Déployer" de cette page recalcule un **aperçu indépendant** via `previewPlanning()` →
+  `PlanningGeneratorService::preview()`, qui lit les gabarits `PlanningTemplate`/`PlanningSlot` — une
+  source sans aucun rapport avec le contenu réel d'une `PlanningVersion` générée par V2 (V2 utilise
+  `SurgeonSchedulePost`/`ShiftPeriodConfig`, jamais `PlanningTemplate`/`PlanningSlot`). Si un manager
+  ouvrait cette page sur une version V2 et cliquait "Déployer", `selectedUncoveredMissionIds` serait
+  calculé à partir d'un aperçu sans rapport avec les missions réelles de la version — un risque de
+  correction de données, pas seulement un risque théorique de confusion UI.
+- **Aucune fonctionnalité n'est perdue** : Planning V2 a son propre flux complet et déjà testé
+  (aperçu/génération/déploiement via `GeneratePlanningTab`, `/api/planning/v2/*`), qui couvre 100% du
+  même besoin métier sans les défauts ci-dessus.
+
+**Décision finale** : `PlanningVersionDetailPage.tsx`, `DeployModal.tsx` (composant exclusif à cette
+page) et la route `m/planning/versions/:id` sont supprimés. Côté backend, suppression en cascade de
+tout ce qui n'était plus utile qu'à cette page :
+- `PlanningGenerationController.php` (POST /api/planning/preview, /generate — et
+  /api/missions/{id}/suggested-instrumentists, déjà sans appelant frontend avant cette passe) —
+  fichier entier, 0 appelant restant.
+- `PlanningDeployController.php` (POST /api/planning/deploy) — fichier entier, 0 appelant restant.
+- `PlanningVersionController.php` : 4 actions retirées (`show`, `diff`, `delete`, `pdf` — toutes
+  sans appelant restant, vérifié par grep sur les tests backend : aucun test fonctionnel ne les
+  couvrait déjà). Conservé intégralement : `list`, `apply-modifications`, `cancel-all`,
+  `coverage-summary`, `history` — actifs, utilisés par Planning V2. `PlanningDiffService` et
+  `PdfService` (services injectés uniquement pour `diff`/`pdf`) restent en place : tous deux
+  partagés avec d'autres flux actifs (`PlanningModificationService`, factures/décomptes/PDFs de
+  déploiement), seule l'injection dans ce controller est retirée.
+- `PlanningGeneratorService.php` (moteur V1) — devenu sans appelant une fois `preview()` retiré ;
+  `PlanningScoreService` (utilisé aussi par `PlanningAlertActionService`, V2) n'est pas touché.
+- Entités `PlanningTemplate`, `PlanningSlot`, enum `PlanningTemplateType` — plus aucune référence
+  dans `src/` après suppression du service ci-dessus (vérifié par grep exhaustif).
+- 6 fichiers de tests unitaires exclusifs à `PlanningGeneratorService`
+  (`PlanningGeneratorServiceTest`, `PlanningGeneratorServiceGenerateTest`,
+  `PlanningFreedInstrumentistTest`, `PlanningMultiRoomTest`, `PlanningPoolFilteringTest`,
+  `PlanningPreviewPerformanceTest`) — chacun instancie `new PlanningGeneratorService(...)`
+  directement, aucun ne teste autre chose.
+- `BusinessDateTimeColumnConventionTest.php` : 3 entrées `SAFE_ALLOWLIST` retirées
+  (`PlanningSlot::startTime`, `PlanningSlot::endTime`, `PlanningTemplate::createdAt`) — ce test
+  échoue explicitement sur toute entrée d'allowlist dont la classe n'existe plus plus
+  (`staleAllowlistEntries`), donc laisser ces lignes aurait cassé la suite après suppression des
+  entités.
+
+**Ce qui reste en place, sans lien avec ce nettoyage** : `PlanningDeploymentService` (partagé V1
+et V2 dès l'origine, mais V1 n'a plus de point d'entrée HTTP pour l'atteindre — seul V2 l'utilise
+désormais), `PlanningVersion`/`PlanningDeployment` (entités actives, coeur de V2),
+`PlanningVersionAllowedActions`/`PlanningVersionSummary`/`listPlanningVersions` côté frontend
+(contrat de données du `list`, consommé par `GeneratePlanningTab`).
+
+**Non traité ici, action distincte à décider séparément** : les tables SQL `planning_template` et
+`planning_slot` ne sont pas droppées par cette passe — supprimer une entité Doctrine ne supprime
+pas la table ; une migration de suppression de table est une action destructive distincte qui n'a
+pas été demandée et n'a pas été exécutée. Les tables restent en base, orphelines de tout mapping
+ORM, jusqu'à une décision explicite ultérieure.
+
+Suite complète validée après cette suppression : backend 1251/1251 (contre 1292/1292 avant, delta
+= -41 tests supprimés avec le code qu'ils testaient), frontend 431/431 (61 fichiers).
 
 ---
 
@@ -2389,6 +2505,7 @@ Provenait de `UncoveredReason::MANUALLY_LEFT_OPEN` — en réalité le cas *fall
 `sendChangeSummary` retiré de `PlanningDeploymentService::deploy()`, `PlanningDeployPdfsMessage`, `POST /api/planning/deploy`. `sendPdf` retiré de `POST /api/planning/v2/deploy` (n'avait plus d'effet distinct une fois `sendChangeSummary` retiré du service partagé). Voir `docs/api.md` §26.6/§26.6 V2.
 
 > **Dette connue, hors scope de ce ticket** : le modal V1 `DeployModal.tsx` (frontend, `planning-manager`) envoie encore un champ `sendChangeSummary` dans sa requête — désormais silencieusement ignoré par le backend (pas d'erreur HTTP, juste sans effet). La case à cocher correspondante devient un no-op côté UI ; un ticket frontend de suivi est nécessaire pour la retirer/relabelliser.
+> **Résolu par D-079 (2026-07-20)** : `DeployModal.tsx` a été supprimé avec tout le reste du moteur V1 — plus de no-op à corriger.
 
 ---
 
@@ -4476,6 +4593,277 @@ complexes, refonte UX complète (§34 du lot).
 
 ---
 
+## D-078 — Autorisation catalogue financier alignée sur BillingVoter::MANAGE (ROLE_ADMIN = ROLE_MANAGER) ; système d'aide contextuelle par écran
+
+Date : 2026-07-19
+
+### Contexte
+
+Audit post-déploiement (tests manuels manager/admin sur le catalogue financier livré
+en D-072 à D-077) : un compte `ROLE_ADMIN` seul recevait un 403 sur la création/mise à
+jour/suppression de firmes (`POST/PATCH/DELETE /api/firms`), alors que tout le reste du
+catalogue financier (matériel, types d'intervention, prestations, règles tarifaires,
+tarifs instrumentiste, factures, décomptes, statistiques) fonctionnait déjà correctement
+pour un admin. Cause : `FirmController` était le seul contrôleur du périmètre à vérifier
+littéralement `denyAccessUnlessGranted('ROLE_MANAGER')` au lieu du Voter dédié.
+
+### Décision — autorisation
+
+Le projet n'a **pas** de `role_hierarchy` Symfony configuré (vérifié dans
+`config/packages/security.yaml`) : `ROLE_ADMIN` n'implique jamais `ROLE_MANAGER`
+automatiquement. L'équivalence entre les deux rôles pour la gestion du catalogue
+financier est donc portée exclusivement par `BillingVoter::MANAGE` (`ROLE_MANAGER` OU
+`ROLE_ADMIN`), déjà la convention établie et utilisée sans exception par
+`MaterialCatalogController`, `FirmServiceOfferingController`, `InterventionTypeController`,
+`InterventionTypeRequestManagerController`, `FirmBillingController`,
+`InstrumentistRateController`, `FirmInvoiceController`, `FirmInvoiceCorrectionController`,
+`InstrumentistStatementController`, `InstrumentistStatementCorrectionController`,
+`FinancialCalculationController`, `FinancialStatisticsController`. `FirmController` a été
+aligné sur cette convention (import `BillingVoter`, remplacement des trois
+`denyAccessUnlessGranted('ROLE_MANAGER')` par `denyAccessUnlessGranted(BillingVoter::MANAGE)`)
+— aucune nouvelle classe Voter créée, la bonne abstraction existait déjà.
+
+**Règle projet reconfirmée** : toute nouvelle route mutant une ressource du catalogue
+financier doit utiliser `BillingVoter::MANAGE`, jamais un rôle littéral — un test
+`test_admin_can_...` doit accompagner tout nouveau contrôleur pour empêcher la
+régression de revenir silencieusement (voir `FirmControllerTest.php` et les tests
+ajoutés à `MaterialCatalogControllerTest`, `FirmServiceOfferingControllerTest`,
+`FirmBillingControllerPricingRuleTest`, `InstrumentistRateControllerTest` —
+`InterventionTypeControllerTest` avait déjà cette couverture). Suite complète validée :
+1292/1292 tests verts.
+
+`SiteController` utilise le même check littéral `ROLE_MANAGER` mais est hors périmètre
+« catalogue financier » (gestion des établissements/sites) — non touché ici, signalé
+pour un audit ultérieur si le même besoin se présente pour les sites.
+
+### Décision — aide contextuelle
+
+Système d'aide par écran (drawer déclenché par un bouton « ? » discret dans le header),
+jamais une FAQ générique. Architecture à trois couches, aucune couche ne connaît le
+contenu métier des autres :
+
+1. **Contenu** — `frontend/src/app/features/help/content/topics/*.ts`, un fichier par
+   écran, exportant un objet `HelpTopic` typé (`types.ts` : titre, intro en une phrase,
+   sections `{heading, paragraphs?, bullets?}`). Contenu rédigé du point de vue métier
+   (workflow, impacts, erreurs fréquentes, bonnes pratiques) — jamais "Cette page permet
+   de...".
+2. **Registre** — `content/registry.ts` : `Record<topicId, HelpTopic>`. Ajouter une aide
+   = créer un fichier de contenu + une ligne dans ce registre. Aucun composant à modifier.
+3. **UI** — `HelpButton.tsx` (le seul composant à poser dans un header :
+   `<HelpButton topicId="..." />`) et `HelpDrawer.tsx` (panneau MUI `Drawer`, largeur
+   `100%` sous le breakpoint `sm`, 420px au-dessus — même composant desktop/mobile,
+   aucune branche de code séparée). `HelpButton` accepte un `sx` optionnel pour
+   s'intégrer à un header non standard (voir `EncodeHeader.tsx`, header dégradé de
+   l'écran d'encodage instrumentiste, bouton stylé en miroir du bouton retour).
+
+Cinq écrans couverts au lancement : Planning V2 (manager), Firmes, Catalogue matériel,
+Règles de facturation firmes, Encodage d'une mission (instrumentiste). Voir
+`docs/architecture.md` §4 « Aide contextuelle » pour le détail architecture et la
+procédure d'ajout.
+
+### Portée non traitée ici
+
+Aide contextuelle sur les écrans hors périmètre financier/planning (missions, absences,
+administration...) — le système est prêt à les recevoir, contenu non rédigé faute de
+demande explicite. Pas de tracking d'usage/analytics sur l'ouverture de l'aide.
+
+---
+
+## D-079 — Réorganisation de la navigation manager (sidebar groupée, Dashboard, fusion Prestations/Demandes)
+
+Date : 2026-07-19
+
+### Contexte
+
+L'espace manager avait grossi au fil des lots (D-067 à D-078) jusqu'à 23 pages : 8 items de
+sidebar à plat + 2 groupes + une page (`InterventionTypesPage`) jamais liée au menu. Demande
+explicite : regrouper par domaine, ajouter une page d'accueil, consolider les pages qui se
+recoupaient (règles tarifaires / types d'intervention / matériel facturable dispersés ; demandes
+matériel et demandes de type d'intervention jamais réunies bien que le backend `Intervention
+TypeRequestManagerController` existât depuis D-068 sans jamais avoir de vue manager). Contraintes
+dures : aucune nouvelle fonctionnalité métier, aucune régression, réutilisation maximale du code
+et des composants, suppression du legacy uniquement après audit, aucune modification des règles
+d'autorisation.
+
+### Décision — nouvelle architecture de navigation
+
+```
+Dashboard · Missions · Instrumentistes · Chirurgiens · Établissements
+Catalogue    → Firmes / Prestations / Demandes [badge]
+Planning     → Construire / Absences
+Facturation  → Factures firmes / Décomptes / Statistiques
+Administration (ADMIN, inchangée) → Utilisateurs / Sites / Invitations / Audit
+```
+
+- **Dashboard** (`DashboardPage.tsx`, nouvelle route `/app/m/dashboard`, nouvelle page
+  d'atterrissage post-login pour MANAGER/ADMIN) — agrège uniquement des requêtes déjà existantes
+  (`fetchMissions`, `getAlerts`, `getInstrumentists`/`getSurgeons` filtrés actifs, `fetchSites`,
+  `getMaterialRequests`/`getInterventionTypeRequests` PENDING, `getPipeline`, `getOverview`,
+  `getByFirm`/`getBySurgeon`/`getTopMaterials`). Aucun nouvel endpoint backend créé — audit
+  préalable du lot 7 statistiques (D-077) confirmé suffisant.
+- **Missions** : `MissionsListPage.tsx` bascule sa distinction Toutes/À valider (jusqu'ici un
+  `location.pathname.endsWith("/to-validate")` piloté par deux boutons) vers de vraies `Tabs` MUI
+  pilotées par la route — la logique de filtre (`effectiveFilters`, déjà correcte) est inchangée.
+  `/app/m/missions/to-validate` reste une route valide (compat liens/favoris).
+- **Catalogue** reste à exactement 3 entrées :
+  - **Firmes** (`FirmsPage.tsx`, inchangée) — fiche administrative uniquement, jamais mélangée aux
+    tarifs (règle déjà établie, reconfirmée ici).
+  - **Prestations** (`PrestationsPage.tsx`, nouvelle, remplace `BillingConfigPage.tsx` /
+    `/app/m/billing/config`) — centre de configuration métier : prestations (offerings) + forfaits
+    + tarifs matériel + types d'intervention + création d'article matériel, tous réunis. Réutilise
+    **sans modification** les 5 dialogs existants de `BillingConfigPage.tsx`
+    (`AddOfferingDialog`, `ForfaitDialog`, `MaterialRateDialog`, `SuggestedMaterialsDialog`,
+    `AddMaterialRuleDialog`) et 100% de `firmBilling.api.ts`. Seul le conteneur change : sélecteur
+    de firme `<Select>` → `SideList` (recherche + liste) ; deux `<Paper>` empilés (Prestations /
+    Matériel facturable) → vraies `<Tabs>` MUI. Types d'intervention intégrés via un bouton
+    "Gérer les types d'intervention" ouvrant un `Dialog` — décision explicite du produit (bouton
+    plutôt que sous-onglet, option la plus simple) — qui embarque `InterventionTypesManager.tsx`,
+    la logique CRUD **extraite** de `InterventionTypesPage.tsx` (devenu un wrapper fin autour de
+    ce composant partagé, pas une duplication). Création d'article matériel intégrée via un bouton
+    "Créer un article" réutilisant tel quel `MaterialItemFormDialog` (déjà utilisé par
+    `CataloguePage.tsx`) — décision explicite : `/app/m/catalogue` (Matériel) sort du menu, sa
+    fonction de création est désormais accessible aussi depuis Prestations.
+  - **Demandes** (`CatalogueRequestsPage.tsx`, étendue) — fusionne demandes matériel (déjà
+    branché) et demandes de type d'intervention (nouveau client frontend
+    `interventionTypeRequests.api.ts` vers l'endpoint backend `InterventionTypeRequestManager
+    Controller`, livré en D-068 mais jamais consommé côté manager) dans un même tableau avec un
+    tag de type par ligne, Tabs En attente/Résolues/Ignorées inchangées, dialog de résolution
+    dédié par type. Badge de sidebar = somme des deux compteurs PENDING
+    (`ui/hooks/useNavBadgeCount`, généralisé depuis le `useQuery`+`Badge` auparavant câblé en dur
+    pour les seules demandes matériel).
+- **Planning** : "Construire" = `PlanningV2Page.tsx` inchangée (renommage de menu uniquement).
+  "Planning publié" (`PlanningSchedulePage.tsx`) retirée du menu mais route conservée
+  (`/app/m/planning/living`) et reste accessible via un bouton ajouté dans Construire.
+- **Facturation** : entrée "Configuration" supprimée (absorbée par Catalogue > Prestations) ;
+  Factures firmes / Décomptes / Statistiques inchangées. `/app/m/billing/config` redirige
+  désormais vers `/app/m/catalogue/prestations` (compat liens existants).
+- **Administration** : inchangée.
+
+### Décision — composants extraits (`frontend/src/app/ui/`)
+
+`EmptyState`, `PageHeader`, `StatusBadge`/`ActiveBadge`, `StatCard`, `SearchBox` (+
+`hooks/useDebouncedValue`), `EntityHeader`, `SideList` (généralisé depuis le pattern sidebar
+recherche+liste déjà le plus abouti du projet, `SurgeonPostsTab.tsx`), `hooks/useNavBadgeCount`.
+Chaque extraction a remplacé ses doublons déjà identifiés dans le code (pas seulement posée sur
+les nouvelles pages) : `EmptyState` remplace les implémentations locales de
+`InstrumentistsTable.tsx`/`SurgeonsTable.tsx`/`FirmsPage.tsx`/`HospitalsPage.tsx`/
+`InterventionTypesPage.tsx` ; `PageHeader` remplace le bloc copié-collé de ces mêmes pages ;
+`ActiveBadge` remplace le ternaire actif/inactif dupliqué (`FirmsPage`, `InterventionTypesPage`,
+`BillingConfigPage`, `SurgeonDrawer`) ; `EntityHeader` remplace la composition `Paper > Stack >
+[avatar + nom + chip]` dupliquée dans `InstrumentistDrawer.tsx`/`SurgeonDrawer.tsx` ; `SearchBox`
+remplace le debounce manuel dupliqué (`AdminUsersPage.tsx`, `CataloguePage.tsx`). Deux exceptions
+délibérées, documentées au moment de l'implémentation : `SurgeonPostsTab.tsx` (Planning V2) n'a
+pas été migré vers `SideList` (source d'inspiration seulement, migration jugée hors périmètre/
+risque pour une fonctionnalité de planification en production) ; les champs de recherche non-
+debouncés avec libellé d'`InstrumentistsTable.tsx`/`SurgeonsTable.tsx` n'ont pas été remplacés par
+`SearchBox` (style visuel différent, aurait violé la contrainte "aucun changement visuel majeur").
+
+### Décision — legacy Planning V1 (errata D-048, mise à jour 2026-07-20)
+
+Voir les deux errata ajoutées directement dans D-048 ci-dessus. Résumé final (après audit complet
+demandé sur `PlanningVersionDetailPage.tsx`, "Errata 2" du 2026-07-20) : la totalité du legacy V1
+est supprimée, pas seulement les 5 pages initiales. `PlanningTemplatesPage`,
+`PlanningTemplateEditorPage`, `PlanningGeneratePage`, `PlanningVersionsListPage`, `SpecialtiesPage`,
+`PlanningVersionDetailPage.tsx`, `DeployModal.tsx`, `PlanningTemplateController.php`,
+`PlanningGenerationController.php`, `PlanningDeployController.php`, `PlanningGeneratorService.php`,
+les entités `PlanningTemplate`/`PlanningSlot`/`PlanningTemplateType`, et 4 actions orphelines de
+`PlanningVersionController.php` (`show`/`diff`/`delete`/`pdf`) sont tous supprimés — plus aucune
+route, endpoint, ni page ne dépend du moteur V1. Planning V2 est désormais l'unique implémentation
+active de la génération/déploiement de planning. Suite backend validée : 1251/1251 tests verts.
+
+### Portée non traitée ici
+
+Les tables SQL `planning_template`/`planning_slot` ne sont pas droppées (suppression d'entité
+Doctrine ≠ suppression de table ; décision distincte, non demandée). Le risque documenté en D-048
+sur `PlanningVersionDetailPage.tsx` (bouton "Déployer" agissant via les endpoints V1 sur une
+`PlanningVersion` potentiellement créée par V2) est désormais **résolu par suppression de la page
+elle-même**, plus seulement documenté — voir "Errata 2" ci-dessus. Aucune modification des règles
+d'autorisation (Voters inchangés). Aucun changement de logique métier backend au-delà des
+suppressions listées ci-dessus (aucune règle métier réécrite, aucun endpoint dupliqué).
+
+---
+
+## D-080 — Justification obligatoire si aucun matériel encodé, deux colonnes distinctes commentaire/flag (précise D-070, Lot 7)
+
+Date : 2026-07-20
+
+### Contexte
+
+`MissionSubmitRequest::$comment` existait côté DTO depuis D-070 mais n'était jamais
+persisté (`MissionService::submit()` l'ignorait) — un test manuel en direct sur la
+mission #690 a montré qu'aucun garde-fou n'empêchait de clôturer un encodage sans la
+moindre ligne de matériel, sans qu'aucune trace ne permette au manager de savoir si
+c'était normal (mission de consultation sans matériel) ou un oubli. Revue pré-déploiement
+en 7 points demandée avant tout commit/déploiement (sémantique du champ, resoumission
+avec matériel, comptage défensif, affichage manager, cycle de vie, documentation,
+rapport final).
+
+### Décision — règle métier
+
+> Lors de la clôture de l'encodage, si aucune ligne de matériel active avec une quantité
+> strictement positive n'est enregistrée, l'instrumentiste doit décrire les interventions
+> réellement réalisées. La vérification est effectuée côté serveur.
+
+`MissionEncodingWorkflowService::complete()` recalcule le compte
+(`countActiveMaterialLines()`, filtre `quantity > 0`) à chaque appel — jamais un flag
+envoyé par le client. `MaterialLine` n'a ni suppression logique (DELETE fait un vrai
+`remove()`), ni flag `active` propre, ni notion de version/superseded : seul le filtre
+quantité correspondait à une lacune réelle (aucune contrainte `Assert\Positive` sur
+`MaterialLineCreateRequest`/`MaterialLineUpdateRequest` aujourd'hui — lacune signalée,
+non corrigée dans ce lot, hors périmètre de la revue demandée).
+
+### Décision — deux colonnes distinctes, pas un seul champ générique
+
+- **`no_material_comment`** (texte) : le contenu du commentaire. Nommé explicitement
+  (jamais un `submit_comment` générique) parce qu'il n'a qu'un seul usage possible.
+  Conservé indéfiniment pour traçabilité, y compris après une resoumission ultérieure
+  avec du matériel — jamais effacé automatiquement.
+- **`submitted_without_material`** (booléen) : figé à **chaque** `complete()`, reflète si
+  **cette soumission précise** avait 0 matériel actif. Nécessaire car
+  `MissionEncodingGuard` bloque toute lecture d'encodage une fois la mission verrouillée
+  (`encodingLockedAt`) — un recomptage live après coup n'est pas toujours possible, donc
+  ce fait doit être capturé au moment de la transition, pas dérivé après coup.
+
+Sans ce second champ, un manager consultant une mission resoumise avec du matériel après
+une première justification "sans matériel" verrait un commentaire orphelin sans pouvoir
+distinguer "cette soumission n'a pas de matériel" de "il y a du matériel mais le
+commentaire d'une soumission antérieure traîne encore" — l'affichage manager
+(`MissionDetailPage`, libellé **"Aucun matériel encodé — justification de
+l'instrumentiste"**) est donc conditionné sur `submittedWithoutMaterial === true` de la
+soumission courante, jamais sur la seule présence du commentaire.
+
+### Décision — resoumission après correction
+
+Scénario couvert par test (unitaire et fonctionnel HTTP) : soumission sans matériel avec
+commentaire → correction (`reject()`, seule transition `SUBMITTED → ENCODING_IN_PROGRESS`)
+→ ajout d'une ligne de matériel → nouvelle soumission. Le commentaire précédent reste en
+base (traçabilité) ; `submittedWithoutMaterial` repasse à `false` ; la nouvelle
+soumission n'exige pas de nouveau commentaire puisque du matériel est désormais présent.
+
+### Cycle de vie et droits (vérifié par tests)
+
+Le champ n'est exposé que dans `MissionDetailDto` (le récapitulatif de mission, GET
+`/api/missions/{id}`) — jamais dans le DTO d'encodage (GET `.../encoding`, dédié au
+formulaire de saisie). Obligatoire seulement quand le serveur constate 0 matériel actif ;
+n'empêche jamais la sauvegarde progressive des lignes de matériel pendant la journée
+(le contrôle ne vit que dans `complete()`, jamais dans les endpoints CRUD de
+`MaterialLine`). Plus aucune mutation possible une fois la mission verrouillée — même
+garde (`MissionEncodingGuard`) que toute autre transition d'encodage, pas de mécanisme
+dédié. Le bouton de validation manager reste gouverné par `allowedActions`
+(`MissionActionsService`), non affecté par ce lot.
+
+### Portée non traitée ici
+
+Contrainte `Assert\Positive` manquante sur les DTOs de création/édition de ligne de
+matériel (quantité 0/négative reste persistable via l'API) — lacune réelle, signalée,
+correction laissée à un lot ultérieur si jugée prioritaire. Aucune règle financière
+modifiée (isBillable()/FinancialCalculation hors périmètre). Migration
+`Version20260720150000` : ajoute `mission.no_material_comment` (LONGTEXT nullable) et
+`mission.submitted_without_material` (TINYINT(1) nullable) ; aucune autre colonne
+touchée.
+
+---
+
 ## Historique
 
 | Date | Décision |
@@ -4550,6 +4938,9 @@ complexes, refonte UX complète (§34 du lot).
 | 18-07-2026 | D-075 — Paiements append-only, solde toujours dérivé, émission explicite, Payment polymorphe (Exécution & Valorisation, Lot 5) |
 | 19-07-2026 | D-076 — Corrections financières additives : notes de crédit/débit, remboursements append-only, jamais de réécriture (Exécution & Valorisation, Lot 6) |
 | 19-07-2026 | D-077 — Statistiques financières : sources de vérité par catégorie, convention temporelle/devise, cash flow réel dérivé de (documentType, direction) (Pilotage financier, Lot 7) |
+| 19-07-2026 | D-078 — FirmController aligné sur BillingVoter::MANAGE (ROLE_ADMIN = ROLE_MANAGER partout) ; système d'aide contextuelle par écran (HelpButton/HelpDrawer/registry) |
+| 19-07-2026 | D-079 — Réorganisation navigation manager : sidebar groupée, Dashboard, fusion Prestations/Demandes, errata D-048 (suppression Planning V1 mort) |
+| 20-07-2026 | D-080 — Justification obligatoire si aucun matériel encodé, deux colonnes distinctes commentaire/flag (précise D-070, Lot 7) |
 | 25-07-2026 | D-081 — Fiabilisation du socle Web Push : endpoint unique par abonnement, rattachement mono-utilisateur, nettoyage au logout, activation volontaire pour tous les rôles, erreurs isolées mais observables (Lot 1) |
 | 25-07-2026 | D-082 — Installation PWA Android/iOS : bannière + `beforeinstallprompt`, guide manuel iOS (animation recréée en React, jamais copiée), source de vérité standalone, politique de report, séparation stricte avec le Push (Lot 2) |
 | 26-07-2026 | D-083 — Rappel unique d'encodage D+1 à 08 h Europe/Brussels : remplace le rappel 19 h jamais implémenté, Push prioritaire avec repli email, idempotence persistante (`encodingReminderSentAt`), aucune relance quotidienne |
@@ -4606,7 +4997,6 @@ second système parallèle ne doit être créé.**
 changé : plus de rappel le jour même à 19 h, remplacé par un rappel unique le lendemain
 matin à 08 h (D+1), avec repli email si le Push n'est pas livrable. Voir D-083 pour la
 règle actuelle. Conservé ci-dessous pour l'historique uniquement.
-
 
 À 19 h, heure métier du projet, envoyer une notification push à l'instrumentiste
 lorsqu'une mission du jour qui lui est assignée n'a pas encore été soumise.
@@ -5094,6 +5484,7 @@ transverse pour un seul appelant.
 (gap réel identifié pendant la validation Push, non corrigé — voir le rapport de
 diagnostic Android/iOS du 25-07-2026), notifications manager, escalade répétée J+2/J+3,
 modification de l'encodage ou des règles financières — aucun n'a été commencé.
+
 ---
 
 ## D-084 — Historique centralisé des communications sortantes (Push + email), ADMIN uniquement

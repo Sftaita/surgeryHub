@@ -5,7 +5,6 @@ import {
   Paper, Select, Stack, Table, TableBody, TableCell, TableContainer,
   TableHead, TableRow, TextField, Tooltip, Typography,
 } from "@mui/material";
-import AddIcon          from "@mui/icons-material/Add";
 import EditIcon         from "@mui/icons-material/Edit";
 import DeleteIcon       from "@mui/icons-material/Delete";
 import BusinessIcon     from "@mui/icons-material/Business";
@@ -14,6 +13,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../../api/apiClient";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { useToast } from "../../ui/toast/useToast";
+import { EmptyState } from "../../ui/EmptyState";
+import { PageHeader } from "../../ui/PageHeader";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface Hospital {
@@ -142,32 +143,23 @@ export default function HospitalsPage() {
     <Box sx={{ p: 3, maxWidth: 960 }}>
 
       {/* Header */}
-      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" mb={3}>
-        <Box>
-          <Stack direction="row" alignItems="center" spacing={1.5} mb={0.5}>
-            <BusinessIcon sx={{ color: "primary.main", fontSize: 28 }} />
-            <Typography variant="h5">Établissements</Typography>
-          </Stack>
-          <Typography variant="body2" color="text.secondary">
-            Hôpitaux, cliniques et centres chirurgicaux partenaires de Surgery Hub.
-          </Typography>
-        </Box>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={openCreate} disableElevation>
-          Ajouter un établissement
-        </Button>
-      </Stack>
+      <PageHeader
+        icon={BusinessIcon}
+        title="Établissements"
+        subtitle="Hôpitaux, cliniques et centres chirurgicaux partenaires de Surgery Hub."
+        action={{ label: "Ajouter un établissement", onClick: openCreate }}
+      />
 
       {/* Table */}
       {sitesQuery.isLoading ? (
         <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}><CircularProgress /></Box>
       ) : sites.length === 0 ? (
-        <Paper variant="outlined" sx={{ py: 8, textAlign: "center", borderStyle: "dashed" }}>
-          <BusinessIcon sx={{ fontSize: 48, color: "text.disabled", mb: 1 }} />
-          <Typography color="text.secondary">Aucun établissement enregistré.</Typography>
-          <Button onClick={openCreate} sx={{ mt: 2 }} variant="contained" disableElevation>
-            Ajouter le premier établissement
-          </Button>
-        </Paper>
+        <EmptyState
+          variant="dashed"
+          icon={BusinessIcon}
+          title="Aucun établissement enregistré."
+          action={{ label: "Ajouter le premier établissement", onClick: openCreate }}
+        />
       ) : (
         <TableContainer component={Paper} variant="outlined">
           <Table size="small">

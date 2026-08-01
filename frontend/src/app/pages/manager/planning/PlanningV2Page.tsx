@@ -1,6 +1,8 @@
 import * as React from "react";
-import { Box, Chip, Stack, Typography } from "@mui/material";
+import { Box, Button, Chip, Stack, Typography } from "@mui/material";
+import { Link as RouterLink } from "react-router-dom";
 import AutoAwesomeOutlinedIcon from "@mui/icons-material/AutoAwesomeOutlined";
+import CalendarViewWeekIcon from "@mui/icons-material/CalendarViewWeek";
 
 import { PlanningV2Tabs, type PlanningV2TabKey } from "../../../features/planning-v2/components/PlanningV2Tabs";
 import { SurgeonPostsTab } from "../../../features/planning-v2/tabs/SurgeonPostsTab";
@@ -9,14 +11,16 @@ import { PlanningAlertsTab } from "../../../features/planning-v2/tabs/PlanningAl
 import { PlanningSettingsTab } from "../../../features/planning-v2/tabs/PlanningSettingsTab";
 import { useQuery } from "@tanstack/react-query";
 import { getAlerts } from "../../../features/planning-v2/api/planningV2.api";
+import { HelpButton } from "../../../features/help/HelpButton";
 
 /**
- * Planning V2 — the official manager planning UI as of the Batch 13 cutover. The sidebar
- * "Planning" entry and the bare /app/m/planning route both point here now. V1's pages
+ * Planning V2 — the official manager planning UI as of the Batch 13 cutover. The
+ * "Construire" sidebar entry (Planning > Construire, D-079) and the bare
+ * /app/m/planning route both point here now. "Planning publié" (PlanningSchedulePage)
+ * was removed from the sidebar in D-079 but stays reachable via the button below, per
+ * the reorg brief ("reste accessible depuis Construire"). V1's other pages
  * (PlanningTemplatesPage, PlanningGeneratePage, PlanningVersionsListPage,
- * PlanningVersionDetailPage, PlanningSchedulePage, SpecialtiesPage) are kept reachable
- * by direct URL only — no longer linked from the sidebar — as a rollback fallback per
- * docs/decisions.md's V2 cutover ADR.
+ * PlanningVersionDetailPage, SpecialtiesPage) were removed entirely, see D-048 errata.
  */
 export default function PlanningV2Page() {
   const [tab, setTab] = React.useState<PlanningV2TabKey>("posts");
@@ -41,7 +45,17 @@ export default function PlanningV2Page() {
             color="primary"
             variant="outlined"
           />
+          <HelpButton topicId="planning-v2" />
         </Stack>
+        <Button
+          component={RouterLink}
+          to="/app/m/planning/living"
+          size="small"
+          variant="outlined"
+          startIcon={<CalendarViewWeekIcon />}
+        >
+          Planning publié
+        </Button>
       </Stack>
 
       <Box sx={{ bgcolor: "background.paper", borderRadius: 2, border: "1px solid", borderColor: "divider" }}>

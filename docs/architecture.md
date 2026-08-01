@@ -59,11 +59,10 @@ Api/
 ├── FirmBillingController               — PATCH billing-contact + CRUD /api/firms/{id}/pricing-rules
 ├── FirmInvoiceController               — CRUD /api/firm-invoices + preview/generate/send/mark-paid
 ├── InstrumentistStatementController    — CRUD /api/instrumentist-statements + preview/generate/send/mark-paid
-├── PlanningTemplateController          — CRUD /api/planning/templates + slots
 ├── AbsenceController                   — CRUD /api/absences
-├── PlanningGenerationController        — POST /api/planning/preview + /generate
-├── PlanningDeployController            — POST /api/planning/deploy
-├── PlanningVersionController           — GET /api/planning/versions/{id} + diff
+├── PlanningVersionController           — GET /api/planning/versions (list) + apply-modifications/
+│                                           cancel-all/coverage-summary/history (Planning V2 only —
+│                                           show/diff/delete/pdf removed in D-079, see errata)
 ├── SiteController                      — GET /api/sites
 ├── UserController                      — PATCH /api/users/{id}/specialties
 ├── InstrumentistMissionSyncController  — GET /api/instrumentist/missions/sync (polling)
@@ -148,8 +147,9 @@ $day = new \DateTimeImmutable(
 );
 ```
 
-`PlanningGeneratorService`/`PlanningGeneratorServiceV2` (génération à partir des
-gabarits) suivent cette convention. Un test d'architecture,
+`PlanningGeneratorServiceV2` (génération à partir des postes récurrents — son
+prédécesseur V1, `PlanningGeneratorService`, a été supprimé en D-079) suit cette
+convention. Un test d'architecture,
 `tests/Architecture/BusinessDateTimeColumnConventionTest.php`, scanne toutes les
 entités par réflexion et échoue si une nouvelle colonne `DateTimeImmutable` métier est
 ajoutée sans décision explicite (soit `business_datetime_immutable`, soit une entrée
@@ -237,31 +237,48 @@ L'envoi est découplé de la logique métier : une erreur SMTP ne fait jamais é
 /app/s/*                    — Surgeon
 ```
 
-**Routes manager :**
+**Routes manager** (réorganisées en D-079 — sidebar groupée par domaine + Dashboard) :
 
 ```
-/app/m/missions              — liste missions
-/app/m/missions/to-validate  — missions DECLARED à valider
-/app/m/missions/new          — création mission
-/app/m/missions/:id          — détail mission
-/app/m/instrumentists        — liste + drawer instrumentistes
-/app/m/surgeons              — liste + drawer chirurgiens
-/app/m/catalogue             — catalogue matériel
-/app/m/catalogue/requests    — demandes matériel
-/app/m/billing/config            — configuration tarifs firmes (PricingRules + billing contact)
-/app/m/billing/firm-invoices     — liste + génération factures firmes
-/app/m/billing/firm-invoices/:id — détail facture firme
-/app/m/billing/statements        — liste + génération décomptes instrumentistes
-/app/m/billing/statements/:id    — détail décompte instrumentiste
-/app/m/planning/templates        — liste des gabarits de semaine
-/app/m/planning/templates/:id    — éditeur de gabarit (timeline par jour, drag & drop)
-/app/m/planning/generate         — prévisualisation, résolution, génération et déploiement (modal 2 étapes)
-/app/m/planning/versions         — liste de toutes les PlanningVersions avec filtres et actions
-/app/m/planning/versions/:id     — détail d'une PlanningVersion (compteurs, diff, déploiement, suppression)
-/app/m/planning/schedule         — planning publié (vue tableau lecture + modification instrumentiste)
-/app/m/planning/absences         — gestion des absences
-/app/m/planning/specialties      — compétences & spécialités instrumentistes/chirurgiens
+/app/m                            — redirect → /app/m/dashboard
+/app/m/dashboard                  — Dashboard (agrège des requêtes déjà existantes, aucun nouvel endpoint)
+/app/m/missions                   — liste missions (Tabs "Toutes" / "À valider", pilotées par route)
+/app/m/missions/to-validate       — alias conservé (redirige vers l'onglet "À valider") — compat liens/favoris
+/app/m/missions/new                — création mission
+/app/m/missions/:id                — détail mission
+/app/m/instrumentists              — liste + drawer instrumentistes
+/app/m/surgeons                    — liste + drawer chirurgiens
+/app/m/hospitals                   — liste établissements
+/app/m/firms                       — fiche administrative firmes (jamais de tarifs ici)
+/app/m/catalogue/prestations       — Prestations : sidebar firmes + Tabs Prestations/Matériel facturable,
+                                       remplace l'ancien "Configuration" (ex-BillingConfigPage)
+/app/m/catalogue/requests          — Demandes : matériel + types d'intervention fusionnés (Tabs
+                                       En attente/Résolues/Ignorées, badge nav = somme des deux PENDING)
+/app/m/catalogue                   — catalogue matériel (retirée du menu, route conservée — la création
+                                       d'article vit désormais aussi dans Prestations > Matériel facturable)
+/app/m/intervention-types          — page standalone (jamais liée au menu) — sa logique CRUD est extraite
+                                       dans InterventionTypesManager, réutilisée par le dialog "Gérer les
+                                       types d'intervention" de Prestations (pas de duplication)
+/app/m/billing/config               — redirect → /app/m/catalogue/prestations (compat liens existants)
+/app/m/billing/firm-invoices        — liste + génération factures firmes
+/app/m/billing/firm-invoices/:id    — détail facture firme
+/app/m/billing/statements           — liste + génération décomptes instrumentistes
+/app/m/billing/statements/:id       — détail décompte instrumentiste
+/app/m/billing/firm-invoice-corrections/:id          — détail correction facture firme
+/app/m/billing/instrumentist-statement-corrections/:id — détail correction décompte instrumentiste
+/app/m/finance/statistics           — statistiques financières ("Statistiques" dans le menu)
+/app/m/planning                     — redirect → /app/m/planning/v2
+/app/m/planning/v2                  — Planning V2 ("Construire" dans le menu) — postes récurrents,
+                                        génération, alertes, réglages
+/app/m/planning/living              — "Planning publié" (ex-Planning vivant) — retirée du menu, reste
+                                        accessible via un bouton dans Construire (PlanningV2Page.tsx)
+/app/m/planning/absences            — gestion des absences
 ```
+
+Routes V1 supprimées en D-079 (gabarits/générer/liste versions/spécialités/détail version) : voir
+l'errata D-048 ci-dessous — les 5 premières étaient déjà hors routeur depuis `26d66ef`
+(26/06/2026), donc déjà
+inatteignables, cette section documentait encore leurs anciennes routes par erreur.
 
 ### Organisation du code
 
@@ -284,15 +301,27 @@ src/app/
 │   │   ├── components/  — SurgeonDrawer, SurgeonPlanningSection, ...
 │   │   └── hooks/    — useSurgeonDrawer
 │   ├── manager-catalogue/
-│   │   ├── api/      — catalogue.types.ts, catalogue.api.ts
+│   │   ├── api/      — catalogue.types.ts, catalogue.api.ts, interventionTypeRequests.api.ts
 │   │   └── components/  — MaterialItemFormDialog
+│   ├── intervention-types/
+│   │   ├── api/      — interventionTypes.api.ts
+│   │   └── components/  — InterventionTypesManager (extrait de InterventionTypesPage en D-079,
+│   │                        réutilisé tel quel par le dialog "Gérer les types d'intervention" de Prestations)
 │   ├── billing-firm/
 │   │   └── api/      — firmInvoice.api.ts, firmBilling.api.ts
 │   ├── billing-instrumentist/
 │   │   └── api/      — statement.api.ts
+│   ├── billing-shared/
+│   │   └── components/  — RateVersionManager (versions PricingRule/InstrumentistRate append-only)
+│   ├── financial-statistics/
+│   │   ├── api/      — financialStatistics.api.ts
+│   │   └── components/  — StatFilterBar, RankingTable, DrilldownTable
 │   ├── planning-manager/
-│   │   ├── api/      — planning.api.ts (types + fonctions API planning)
-│   │   └── components/  — DeployModal (modal 2 étapes partagé entre PlanningGeneratePage et PlanningVersionDetailPage)
+│   │   ├── api/      — planning.api.ts (Absences + listPlanningVersions, seul reliquat de l'API
+│   │   │                Version encore appelé, par GeneratePlanningTab en V2 — tout le reste du
+│   │   │                module Version/Génération/Déploiement V1 a été supprimé en D-079)
+│   │   └── components/  — PersonSearchSelect, AbsenceReminderDialog (utilisés par AbsencesPage) ;
+│   │                        DeployModal supprimé en D-079 (n'était utilisé que par la page ci-dessous)
 │   ├── invitation/
 │   ├── admin/
 │   │   ├── api/         — admin.types.ts, admin.api.ts (CRUD utilisateurs, invitations, audit)
@@ -306,51 +335,64 @@ src/app/
 │   │   ├── AdminInvitationsPage  — liste invitations avec filtres par statut + renvoi
 │   │   └── AdminAuditPage        — journal d'audit en lecture seule
 │   ├── manager/
+│   │   ├── DashboardPage                 — point d'entrée manager (D-079), agrège des requêtes existantes
 │   │   ├── MissionsListPage, MissionDetailPage, MissionCreatePage
-│   │   ├── InstrumentistsPage
-│   │   ├── CataloguePage, CatalogueRequestsPage
-│   │   ├── SurgeonsPage
+│   │   ├── InstrumentistsPage, SurgeonsPage, HospitalsPage, FirmsPage
+│   │   ├── PrestationsPage               — ex-billing/BillingConfigPage (D-079) : sidebar firmes
+│   │   │                                    (SideList) + Tabs Prestations/Matériel facturable
+│   │   ├── InterventionTypesPage         — wrapper fin autour de InterventionTypesManager
+│   │   ├── CataloguePage                 — catalogue matériel (hors menu, route conservée)
+│   │   ├── CatalogueRequestsPage         — Demandes fusionnées (matériel + types d'intervention)
+│   │   ├── FinancialStatisticsPage
+│   │   ├── billing/
+│   │   │   ├── FirmInvoicesPage, FirmInvoiceDetailPage
+│   │   │   ├── InstrumentistStatementsPage, InstrumentistStatementDetailPage
+│   │   │   └── CorrectionDetailPage
 │   │   └── planning/
-│   │       ├── PlanningTemplatesPage        — liste des gabarits
-│   │       ├── PlanningTemplateEditorPage   — éditeur de gabarit (timeline par jour, drag & drop)
-│   │       ├── PlanningGeneratePage         — prévisualisation, résolution, génération, déploiement
-│   │       ├── PlanningVersionsListPage     — liste des PlanningVersions avec filtres et actions
-│   │       ├── PlanningVersionDetailPage    — détail d'une PlanningVersion (diff, déploiement, suppression)
-│   │       ├── PlanningSchedulePage         — planning publié (tableau lecture + edit instrumentiste)
-│   │       ├── AbsencesPage                 — gestion des absences
-│   │       └── SpecialtiesPage              — compétences & spécialités
+│   │       ├── PlanningV2Page               — "Construire", postes récurrents (Batches 1–13)
+│   │       ├── PlanningSchedulePage         — "Planning publié" (hors menu, bouton dans Construire)
+│   │       └── AbsencesPage                 — gestion des absences
 │   └── instrumentist/
 ├── layouts/          — DesktopLayout (sidebar MUI permanente), MobileLayout
 ├── router/           — AppRouter, guards RequireAuth / RequireManager / RequireAdmin
-└── ui/               — composants UI partagés (Toast...)
+└── ui/               — composants UI manager partagés (D-079) : EmptyState, PageHeader, StatusBadge/
+                          ActiveBadge, StatCard, SearchBox (+ hooks/useDebouncedValue), EntityHeader,
+                          SideList, hooks/useNavBadgeCount ; ui/toast/ (Toast)
 ```
+
+Pages V1 supprimées en D-079 (gabarits/générer/liste versions/spécialités/détail version) — voir
+errata D-048 : `PlanningTemplatesPage`, `PlanningTemplateEditorPage`, `PlanningGeneratePage`,
+`PlanningVersionsListPage`, `SpecialtiesPage`, `PlanningVersionDetailPage` (+ `DeployModal`, son
+composant exclusif).
 
 ### Layout manager — Sidebar permanente
 
-`DesktopLayout` utilise un `Drawer` MUI permanent (largeur 220px) avec la navigation :
+`DesktopLayout` utilise un `Drawer` MUI permanent (largeur 220px). Navigation regroupée par
+domaine depuis D-079 (avant : 8 items à plat + 2 groupes + 1 page orpheline jamais liée) :
 
 ```
 SurgicalHub
 ─────────────
+Dashboard
 Missions
 Instrumentistes
 Chirurgiens
+Établissements
 CATALOGUE
-  Matériel
-  Demandes matériel
+  Firmes
+  Prestations
+  Demandes [badge]      ← somme demandes matériel + types d'intervention PENDING
+PLANNING
+  Construire
+  Absences
 FACTURATION
-  Configuration
   Factures Firmes
   Décomptes
-PLANNING
-  Gabarits
-  Générer
-  Planning
-  Absences
-  Spécialités
+  Statistiques
 ─────────────         ← affiché uniquement si role === 'ADMIN'
 ADMINISTRATION
   Utilisateurs
+  Sites
   Invitations
   Audit
 ─────────────
@@ -358,6 +400,14 @@ Déconnexion
 ```
 
 La navigation utilise `NavLink` de React Router — l'item actif est mis en surbrillance (`selected`).
+Le badge "Demandes" utilise `ui/hooks/useNavBadgeCount` (généralisé en D-079 depuis le `useQuery` +
+`Badge` auparavant câblé en dur pour les seules demandes matériel) — deux appels (matériel PENDING +
+types d'intervention PENDING), un seul nombre affiché, `refetchInterval` 60 s.
+
+"Planning publié" (`PlanningSchedulePage`) et "Configuration" (fondue dans Prestations) n'ont plus
+d'entrée directe dans le menu — leurs routes restent actives (compat liens/favoris/historique) :
+"Planning publié" reste accessible via un bouton dans Construire (`PlanningV2Page.tsx`),
+"Configuration" (`/app/m/billing/config`) redirige vers `/app/m/catalogue/prestations`.
 
 ### MissionDetailContent — export nommé
 
@@ -419,6 +469,46 @@ ou via `requestMissionSync()` (bus d'événements appelé après claim/submit/de
 `applyMissionSyncToCache` patche en place le cache React Query `["missions", ...]` (mise à
 jour/suppression des missions existantes, ajout des nouvelles offres OPEN et des missions
 nouvellement assignées) et déclenche un toast groupé pour les nouvelles offres.
+
+### Aide contextuelle (HelpButton/HelpDrawer) — D-078
+
+Un panneau d'aide spécifique à l'écran, déclenché par un bouton « ? » discret dans le
+header — jamais une FAQ générique. Trois couches, chacune ignorant le contenu des
+autres :
+
+```
+frontend/src/app/features/help/
+├── types.ts              — HelpTopic { title, intro, sections: HelpSection[] }
+│                            HelpSection { heading, paragraphs?, bullets? }
+├── HelpButton.tsx         — <HelpButton topicId="firms" /> : seul composant à poser
+│                            dans un header. Gère son propre état d'ouverture.
+├── HelpDrawer.tsx         — MUI Drawer, width 100% sous le breakpoint sm / 420px
+│                            au-dessus. Même composant desktop et mobile.
+└── content/
+    ├── registry.ts        — Record<topicId, HelpTopic>, agrège tous les topics
+    └── topics/
+        ├── planningV2.ts
+        ├── firms.ts
+        ├── materialCatalogue.ts
+        ├── billingConfig.ts
+        └── missionEncoding.ts
+```
+
+**Ajouter l'aide d'un nouvel écran** (aucun composant à modifier) :
+
+1. Créer `content/topics/monEcran.ts` exportant un `HelpTopic` — contenu orienté
+   workflow métier (objectif, ordre des actions, impacts, erreurs fréquentes, bonnes
+   pratiques), jamais "Cette page permet de gérer X".
+2. L'importer dans `content/registry.ts` et l'ajouter à `HELP_REGISTRY` avec une clé
+   stable (`topicId`).
+3. Poser `<HelpButton topicId="mon-ecran" />` dans le header de la page. Pour un header
+   non-MUI (fond coloré, boutons custom — voir `EncodeHeader.tsx`), passer un `sx` pour
+   assortir le style plutôt que dupliquer le composant.
+
+Écrans couverts actuellement : `planning-v2`, `firms`, `material-catalogue`,
+`billing-config`, `mission-encoding`. Le contenu (`intro`/`sections`) est du texte
+structuré versionné dans le dépôt (pas de CMS externe) — toute modification passe par
+une PR comme le reste du code.
 
 ---
 
@@ -703,26 +793,6 @@ DocumentPaymentService/FinancialCorrectionService restent uniques (§18/§20 des
 sans dupliquer leur logique par type de document ; les deux restent deux agrégats et
 deux tables distinctes (même principe que leur coexistence au Lot 4).
 
-PlanningTemplate
-├── id
-├── type: 'PAIR' | 'IMPAIR' | 'TOUTES'
-├── label: string (nullable) — nom personnalisé
-├── site → Hospital (obligatoire)
-├── createdBy → User
-├── createdAt
-└── PlanningSlot[]
-
-PlanningSlot
-├── id
-├── template → PlanningTemplate
-├── dayOfWeek: int (1=Lundi … 7=Dimanche)
-├── period: 'AM' | 'PM'
-├── startTime, endTime (HH:MM:SS)
-├── missionType: 'BLOCK' | 'CONSULTATION'
-├── surgeon → User
-├── instrumentist → User (nullable)
-└── site → Hospital (nullable — surcharge par rapport au template)
-
 Absence
 ├── id
 ├── user → User
@@ -730,6 +800,10 @@ Absence
 ├── reason: string (nullable)
 └── createdBy → User
 ```
+
+> `PlanningTemplate`/`PlanningSlot` (gabarits de semaine V1) supprimées en D-079 — voir errata
+> D-048 dans `docs/decisions.md`. Les tables SQL `planning_template`/`planning_slot` existent
+> toujours en base (aucune migration de suppression exécutée) mais n'ont plus de mapping ORM.
 
 ---
 
@@ -1510,120 +1584,25 @@ bancaire, graphiques frontend complexes, refonte UX complète.
 
 ## 7. Flux planning
 
-### Génération du planning
-
-```
-Manager → définit PlanningTemplates (PAIR/IMPAIR/TOUTES) + PlanningSlots
-        → enregistre les Absences des instrumentistes/chirurgiens
-
-        ① POST /api/planning/preview   — simulation sans écriture
-             → tableau par semaine (COVERED / UNCOVERED / SKIPPED / CONFLICT / MODIFIED)
-
-        ② [Si UNCOVERED] Bouton "Résoudre les non-attribués"
-             → modal par ligne UNCOVERED :
-               • Instrumentiste libéré détecté (slot SKIPPED → chirurgien absent)
-                   → POST /api/missions { instrumentistUserId }   (DRAFT avec instrumentiste direct)
-                   → ligne passe COVERED — le déploiement (④) le publiera en ASSIGNED
-               • Aucun libéré disponible
-                   → POST /api/missions   (DRAFT)
-                   → POST /api/missions/{id}/publish  { scope: POOL }
-                   → ligne affiche "Demande envoyée" (fond bleu)
-
-        ③ POST /api/planning/generate  — crée les missions DRAFT restantes
-             (les missions déjà publiées en ② ne sont pas écrasées)
-
-        ④ POST /api/planning/deploy    — publie les DRAFT + envoie les PDFs
-```
-
-### Auto-assignation des instrumentistes libérés (backend — second passage)
-
-`PlanningGeneratorService::preview()` effectue un **second passage** après la boucle principale pour réaffecter automatiquement les instrumentistes libérés aux créneaux sans instrumentiste.
-
-**Définition "libéré"** : un instrumentiste dont **tous** les slots du jour sont `SKIPPED` (son chirurgien est absent). Il peut couvrir plusieurs créneaux non-chevauchants le même jour.
-
-**Algorithme :**
-
-1. **Construction du pool** — collecter les instrumentistes présents uniquement sur des lignes `SKIPPED`. Retirer immédiatement tout instrumentiste qui apparaît aussi sur au moins une ligne non-SKIPPED (il n'est pas vraiment libre).
-
-2. **Traitement des créneaux candidats** — pour chaque ligne qui a besoin d'un instrumentiste :
-   - `status === 'UNCOVERED'` (aucun instrumentiste, aucune mission existante)
-   - `status === 'COVERED' && instrumentistId === null` (mission existante sans instrumentiste)
-
-3. **Vérification d'overlap** — pour chaque libéré candidat :
-   - Aucune ligne non-SKIPPED avec cet instrumentiste ne doit chevaucher le créneau cible (check sur `$lines`)
-   - Aucune affectation du second passage lui-même ne doit chevaucher (check sur `$secondPassAssignments`)
-
-4. **Affectation** — si disponible : `instrumentistId` mis à jour, `status → COVERED`, `freedFrom = true`. L'instrumentiste reste dans le pool (peut couvrir un autre créneau non-chevauchant).
-
-**Champ `freedFrom`** : exposé dans `PreviewLine`, consommé par `generate()` pour mettre à jour l'instrumentiste des missions existantes sans instrumentiste, et par le frontend pour afficher le badge "Libéré".
-
-### Vue tableau de la page Générer (`PlanningGeneratePage`)
-
-La page `/app/m/planning/generate` affiche les lignes de prévisualisation sous forme de **tableau groupé par semaine**, calqué sur le format du planning Excel interne.
-
-**Structure :**
-- Chaque semaine a une barre d'en-tête colorée : bleu = semaine paire, violet = semaine impaire
-- Colonnes : **Jour** (rowspan) | **Date** (rowspan) | **Chirurgien** | **Période** | **Instrumentiste** | **Site** | **État**
-- Les lignes d'un même jour partagent les cellules Jour et Date (`rowSpan`)
-- Tri au sein de chaque jour : chirurgien A→Z, puis Matin avant Après-midi
-
-**Couleur de ligne par statut :**
-
-| Statut | Couleur |
-|---|---|
-| `COVERED` | Blanc |
-| `UNCOVERED` | Jaune clair |
-| `MODIFIED` | Bleu clair |
-| `CONFLICT` | Rouge clair |
-| `SKIPPED` | Gris (chirurgien absent) |
-
-**Attribution inline d'instrumentiste :**
-- La colonne Instrumentiste contient un `<Select>` MUI directement dans chaque cellule
-- La liste est chargée une fois depuis `GET /api/instrumentists?active=true`
-- Avant génération : la sélection met à jour l'état local uniquement (`previewLines`)
-- Après génération (`existingMissionId` présent) : la sélection appelle `POST /api/missions/{id}/assign-instrumentist` puis met à jour l'état local
-
-### Performances de preview() — 3 requêtes DB pour toute période
-
-`preview()` pré-charge tout en 3 requêtes avant la boucle sur les jours, puis travaille entièrement en mémoire :
-
-| # | Méthode | Token DQL | Ce qui est chargé |
-|---|---|---|---|
-| 1 | `loadAllTemplates()` | QB | Tous les templates + slots (filtré par site) |
-| 2 | `loadAbsencesMap()` | `absencesFrom` | Toutes les absences → `[userId => [[start, end]]]` |
-| 3 | `loadExistingMissionsPool()` | `poolFrom` | Toutes les missions → `["{surgeonId}_{siteId}_{date}" => Mission[]]` |
-
-Le filtrage PAIR/IMPAIR, les vérifications d'absence (`isAbsentFast`) et les conflits (`hasConflictFast`) sont 100% en mémoire. Sans ça, un planning de 2 mois × 10 slots/jour = ~1 830 requêtes DB → timeout.
-
-**Test de régression :** `PlanningPreviewPerformanceTest::test_two_month_preview_uses_only_3_db_queries`
-
-### Déploiement asynchrone — PlanningDeployPdfsMessageHandler
-
-`PlanningDeploymentService::deploy()` ne fait que le travail DB (rapide) et retourne immédiatement `{ missionCount }`. La génération des PDFs et l'envoi des emails sont délégués à `PlanningDeployPdfsMessageHandler` via Messenger (worker asynchrone). Cela évite le timeout HTTP sur les plannings avec beaucoup de chirurgiens/instrumentistes.
-
-### Détection de conflits
-
-`PlanningGeneratorService::preview()` détecte deux types de conflits :
-
-1. **Conflit pool** : l'instrumentiste a une mission dans `$missionsByInstrumentist` (index en mémoire du pool) qui chevauche le créneau → statut `CONFLICT`
-2. **Conflit intra-preview** : deux slots de templates différents assignent le même instrumentiste à des créneaux qui se chevauchent dans la même preview → le second slot reçoit `CONFLICT`
-
-La détection intra-preview utilise une map en mémoire `$previewAssignments[instrumentistId]` qui accumule les plages `[dateStr, startMinutes, endMinutes]` au fil du traitement.
-
-Les missions `DRAFT` sont incluses dans le check DB (seules les `REJECTED` sont exclues), ce qui permet de détecter les conflits lors d'une re-preview après génération.
-
-### Algorithme de sélection d'instrumentiste (suggestions)
-
-`PlanningScoreService::suggestForMission()` — alimenté par `GET /api/missions/{id}/suggested-instrumentists` :
-
-1. Charge tous les instrumentistes actifs du même site
-2. Filtre les absents (via `Absence`)
-3. Filtre les instrumentistes avec une mission en conflit horaire
-4. Score les candidats restants (sur 100 pts) :
-   - Spécialité correspondante : 0–40 pts
-   - Historique avec ce chirurgien (missions VALIDATED) : 0–35 pts
-   - Expérience du type de mission (BLOCK/CONSULTATION) : 0–25 pts
-5. Tri : historique + spécialité en premier, puis spécialité seule, puis score décroissant
+> **Note D-079 (2026-07-20)** : le moteur Planning V1 (`PlanningGeneratorService`,
+> `PlanningTemplate`/`PlanningSlot`, `PlanningGenerationController`,
+> `PlanningDeployController`, `PlanningVersionDetailPage.tsx`, `DeployModal.tsx`) a
+> été entièrement supprimé — un audit de réachabilité a confirmé zéro lien UI restant
+> et une incompatibilité de fond (l'aperçu V1 est recalculé depuis des gabarits sans
+> rapport avec le contenu réel d'une version générée par V2). Voir l'errata "2" de
+> D-048 dans `docs/decisions.md` pour le détail complet de l'audit et de la
+> suppression. Planning V2 (`PlanningGeneratorServiceV2`, fin de ce chapitre) est
+> désormais l'unique moteur de génération/déploiement — il n'a jamais dépendu de
+> `PlanningTemplate`/`PlanningSlot`, il utilise `ShiftPeriodConfig`.
+>
+> `PlanningDeploymentService` (déploiement DB) et `PlanningDeployPdfsMessageHandler`
+> (PDFs/emails asynchrones post-déploiement) restent actifs — ils étaient déjà
+> partagés entre V1 et V2 avant cette suppression, et servent maintenant
+> exclusivement le flux V2 (`/api/planning/v2/deploy`,
+> `PlanningV2GenerationController`). `PlanningScoreService` reste actif également
+> (utilisé par les alertes de réassignation V2), seul l'endpoint V1
+> `GET /api/missions/{id}/suggested-instrumentists` qui l'exposait a été supprimé
+> (0 appelant frontend).
 
 ### Page planning publié (`PlanningSchedulePage`)
 
@@ -1767,13 +1746,11 @@ Voir `docs/planning-v2-architecture-freeze.md` §L9 et `docs/planning-v2-roadmap
 ### Flux planning V2 — postes récurrents (Batches 1–13)
 
 **Planning V2 est désormais l'interface planning officielle des managers (cutover UI,
-Batch 13, voir D-048 dans `docs/decisions.md`).** Le menu latéral "Planning" et le chemin
-nu `/app/m/planning` pointent vers `/app/m/planning/v2`. La section 7 ci-dessus
-(`PlanningTemplate`/`PlanningSlot`, parité PAIR/IMPAIR/TOUTES) **n'est pas supprimée** —
-son code et ses routes restent actifs, atteignables par URL directe uniquement, comme
-filet de repli pendant la période de rodage. Voir `docs/planning-v2-architecture-freeze.md`
-pour la stratégie de suppression définitive de V1 (flag par site, critère de sortie —
-toujours non implémentée, seule la bascule UI manager est faite).
+Batch 13, voir D-048 dans `docs/decisions.md`) et, depuis D-079 (2026-07-20), l'unique
+moteur de génération/déploiement — le moteur V1 (`PlanningTemplate`/`PlanningSlot`,
+parité PAIR/IMPAIR/TOUTES, `PlanningGeneratorService`) a été supprimé (voir errata D-048).**
+Le menu latéral "Planning" et le chemin nu `/app/m/planning` pointent vers
+`/app/m/planning/v2`.
 
 **Modèle** : `SurgeonSchedulePost` (poste récurrent d'un chirurgien, rattaché à un site
 obligatoire) porte une `RecurrenceRule` embarquée (`frequency` WEEKLY/MONTHLY,
@@ -1797,12 +1774,12 @@ Manager → définit SurgeonSchedulePosts (site obligatoire, période, récurren
              → réutilise PlanningDeploymentService SANS AUCUNE logique V2-spécifique
 ```
 
-**Réutilisation confirmée à 100 %** (audité Batch 8, vérifié à nouveau Batch 9) :
-`PlanningVersion`, `Mission`, `PlanningDeploymentService`, `PlanningDiffService`,
-`PdfService` et tous les templates PDF (`planning_global/instrumentist/surgeon.html.twig`)
-ne référencent **jamais** `PlanningTemplate`/`PlanningSlot`/PAIR/IMPAIR/TOUTES — le
-cutover (non implémenté) n'aura jamais qu'à changer quel générateur produit les
-`Mission`, rien en aval.
+**Réutilisation confirmée à 100 %** (audité Batch 8, vérifié à nouveau Batch 9, et une
+dernière fois lors de la suppression V1 de D-079) : `PlanningVersion`, `Mission`,
+`PlanningDeploymentService`, `PlanningDiffService`, `PdfService` et tous les templates PDF
+(`planning_global/instrumentist/surgeon.html.twig`) n'ont **jamais** référencé
+`PlanningTemplate`/`PlanningSlot`/PAIR/IMPAIR/TOUTES — ce qui a permis de supprimer le
+moteur V1 en D-079 sans toucher à aucun de ces éléments partagés.
 
 **Alertes (Batch 3–5)** : `PlanningAlert` détecte l'impact d'une absence sur des
 missions déjà générées/publiées (`AbsenceImpactService`), jamais avant. Types

@@ -6,7 +6,6 @@ import {
   Button,
   Chip,
   CircularProgress,
-  InputAdornment,
   Paper,
   Stack,
   Table,
@@ -15,11 +14,11 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  TextField,
   Typography,
 } from "@mui/material";
-import SearchIcon from "@mui/icons-material/Search";
 
+import { SearchBox } from "../../ui/SearchBox";
+import { useDebouncedValue } from "../../ui/hooks/useDebouncedValue";
 import {
   createMaterialItem,
   getMaterialItems,
@@ -31,18 +30,14 @@ import {
   type MaterialItemFormValues,
 } from "../../features/manager-catalogue/components/MaterialItemFormDialog";
 import { useToast } from "../../ui/toast/useToast";
+import { HelpButton } from "../../features/help/HelpButton";
 
 export default function CataloguePage() {
   const toast = useToast();
   const queryClient = useQueryClient();
 
   const [search, setSearch] = React.useState("");
-  const [debouncedSearch, setDebouncedSearch] = React.useState("");
-
-  React.useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(t);
-  }, [search]);
+  const debouncedSearch = useDebouncedValue(search, 300);
 
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editItem, setEditItem] = React.useState<MaterialItemDTO | null>(null);
@@ -115,7 +110,10 @@ export default function CataloguePage() {
         justifyContent="space-between"
         alignItems="center"
       >
-        <Typography variant="h6">Catalogue matériel</Typography>
+        <Stack direction="row" alignItems="center" spacing={0.5}>
+          <Typography variant="h6">Catalogue matériel</Typography>
+          <HelpButton topicId="material-catalogue" />
+        </Stack>
         <Button
           variant="contained"
           size="small"
@@ -125,18 +123,10 @@ export default function CataloguePage() {
         </Button>
       </Stack>
 
-      <TextField
-        size="small"
+      <SearchBox
         placeholder="Rechercher matériel ou firme…"
         value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        InputProps={{
-          startAdornment: (
-            <InputAdornment position="start">
-              <SearchIcon fontSize="small" />
-            </InputAdornment>
-          ),
-        }}
+        onChange={setSearch}
         sx={{ maxWidth: 400 }}
       />
 
