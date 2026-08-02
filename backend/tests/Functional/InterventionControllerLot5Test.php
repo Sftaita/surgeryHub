@@ -4,6 +4,7 @@ namespace App\Tests\Functional;
 
 use App\Entity\AuditEvent;
 use App\Entity\Firm;
+use App\Entity\FirmServiceOffering;
 use App\Entity\Hospital;
 use App\Entity\InterventionType;
 use App\Entity\InterventionTypeRequest;
@@ -33,7 +34,7 @@ final class InterventionControllerLot5Test extends WebTestCase
 
     private EntityManagerInterface $em;
     private array $createdIds = [
-        'missions' => [], 'users' => [], 'sites' => [], 'firms' => [], 'types' => [], 'requests' => [],
+        'missions' => [], 'users' => [], 'sites' => [], 'firms' => [], 'types' => [], 'requests' => [], 'offerings' => [],
     ];
 
     protected function setUp(): void
@@ -78,6 +79,11 @@ final class InterventionControllerLot5Test extends WebTestCase
             $this->em->flush();
             foreach ($this->createdIds['missions'] as $id) {
                 $e = $this->em->find(Mission::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
+            foreach ($this->createdIds['offerings'] as $id) {
+                $e = $this->em->find(FirmServiceOffering::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
             }
             $this->em->flush();
@@ -179,6 +185,18 @@ final class InterventionControllerLot5Test extends WebTestCase
         $this->em->flush();
         $this->createdIds['types'][] = $t->getId();
         return $t;
+    }
+
+    private function makeOffering(Firm $firm, InterventionType $type, bool $representativePresenceRelevant): FirmServiceOffering
+    {
+        $o = new FirmServiceOffering();
+        $o->setFirm($firm);
+        $o->setInterventionType($type);
+        $o->setRepresentativePresenceRelevant($representativePresenceRelevant);
+        $this->em->persist($o);
+        $this->em->flush();
+        $this->createdIds['offerings'][] = $o->getId();
+        return $o;
     }
 
     /** Mission ASSIGNED, démarrée (startAt passé), instrumentiste = $instr — encodage autorisé. */
@@ -293,6 +311,151 @@ final class InterventionControllerLot5Test extends WebTestCase
 
         $this->em->clear();
         $intervention = $this->em->find(MissionIntervention::class, $id);
+        self::assertNull($intervention->getRepresentativePresent());
+    }
+
+    // ── Défense serveur : réponse délégué obligatoire quand la prestation l'exige ────
+
+    public function test_create_is_rejected_with_422_when_offering_requires_representative_presence_and_none_provided(): void
+    {
+        [$client, $mission, $token] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $firm = $this->makeFirm();
+        $this->makeOffering($firm, $type, true);
+
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+            'interventionTypeId' => $type->getId(),
+            'primaryFirmId' => $firm->getId(),
+            'orderIndex' => 0,
+        ]);
+
+        self::assertSame(422, $response->getStatusCode(), $response->getContent());
+        self::assertStringContainsString($firm->getName(), (string) $response->getContent());
+    }
+
+    public function test_create_succeeds_with_true_or_false_when_offering_requires_representative_presence(): void
+    {
+        [$client, $mission, $token] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $firm = $this->makeFirm();
+        $this->makeOffering($firm, $type, true);
+
+        foreach ([true, false] as $answer) {
+            $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+                'interventionTypeId' => $type->getId(),
+                'primaryFirmId' => $firm->getId(),
+                'orderIndex' => 0,
+                'representativePresent' => $answer,
+            ]);
+            self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
+        }
+    }
+
+    public function test_create_accepts_null_representative_present_when_offering_does_not_require_it(): void
+    {
+        [$client, $mission, $token] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $firm = $this->makeFirm();
+        $this->makeOffering($firm, $type, false);
+
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+            'interventionTypeId' => $type->getId(),
+            'primaryFirmId' => $firm->getId(),
+            'orderIndex' => 0,
+        ]);
+
+        self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
+    }
+
+    public function test_update_touching_type_is_rejected_with_422_when_new_offering_requires_unanswered_representative_presence(): void
+    {
+        [$client, $mission, $token] = $this->bootMissionScenario();
+        $irrelevantType = $this->makeType();
+        $relevantType = $this->makeType();
+        $firm = $this->makeFirm();
+        $this->makeOffering($firm, $irrelevantType, false);
+        $this->makeOffering($firm, $relevantType, true);
+
+        $createResponse = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+            'interventionTypeId' => $irrelevantType->getId(),
+            'primaryFirmId' => $firm->getId(),
+            'orderIndex' => 0,
+        ]);
+        $id = json_decode($createResponse->getContent(), true)['id'];
+
+        $updateResponse = $this->request($client, 'PATCH', "/api/missions/{$mission->getId()}/interventions/{$id}", $token, [
+            'interventionTypeId' => $relevantType->getId(),
+        ]);
+
+        self::assertSame(422, $updateResponse->getStatusCode(), $updateResponse->getContent());
+    }
+
+    /**
+     * Un simple réordonnancement (orderIndex seul, ex: drag & drop) ne doit jamais être
+     * bloqué par cette règle même si l'intervention est une ancienne ligne jamais
+     * répondue sur une prestation actuellement pertinente — voir le docblock de
+     * InterventionService::update() : la contrainte ne se déclenche que si la requête
+     * touche réellement type/firme/représentant.
+     */
+    public function test_update_with_only_order_index_is_never_blocked_by_representative_presence_rule(): void
+    {
+        [$client, $mission, $token] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $firm = $this->makeFirm();
+        $this->makeOffering($firm, $type, true);
+
+        // Ligne "legacy" simulée : créée avec la prestation NON pertinente au départ pour
+        // contourner la garde à la création, puis la prestation devient pertinente sans
+        // que la ligne ne soit jamais modifiée (représentatif de l'historique réel : une
+        // FirmServiceOffering peut devenir pertinente après coup).
+        $createResponse = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+            'interventionTypeId' => $type->getId(),
+            'primaryFirmId' => null,
+            'orderIndex' => 0,
+        ]);
+        $id = json_decode($createResponse->getContent(), true)['id'];
+
+        $this->em->clear();
+        $intervention = $this->em->find(MissionIntervention::class, $id);
+        $intervention->setPrimaryFirm($this->em->find(Firm::class, $firm->getId()));
+        $this->em->flush();
+
+        $reorderResponse = $this->request($client, 'PATCH', "/api/missions/{$mission->getId()}/interventions/{$id}", $token, [
+            'orderIndex' => 3,
+        ]);
+
+        self::assertSame(Response::HTTP_NO_CONTENT, $reorderResponse->getStatusCode(), $reorderResponse->getContent());
+    }
+
+    /**
+     * Changement de firme/type vers une prestation devenue non pertinente : la réponse
+     * explicitement envoyée à null est acceptée (efface une réponse obsolète) — voir
+     * EditInterventionDialog.tsx, section "prestation non pertinente".
+     */
+    public function test_update_clears_stale_representative_present_when_new_offering_is_not_relevant(): void
+    {
+        [$client, $mission, $token] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $firm = $this->makeFirm();
+        $this->makeOffering($firm, $type, true);
+
+        $createResponse = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+            'interventionTypeId' => $type->getId(),
+            'primaryFirmId' => $firm->getId(),
+            'orderIndex' => 0,
+            'representativePresent' => true,
+        ]);
+        $id = json_decode($createResponse->getContent(), true)['id'];
+
+        $updateResponse = $this->request($client, 'PATCH', "/api/missions/{$mission->getId()}/interventions/{$id}", $token, [
+            'primaryFirmId' => null,
+            'representativePresent' => null,
+        ]);
+        self::assertSame(Response::HTTP_NO_CONTENT, $updateResponse->getStatusCode(), $updateResponse->getContent());
+
+        $this->em->clear();
+        $intervention = $this->em->find(MissionIntervention::class, $id);
+        self::assertNull($intervention->getPrimaryFirm());
         self::assertNull($intervention->getRepresentativePresent());
     }
 

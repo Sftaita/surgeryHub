@@ -491,6 +491,13 @@ DECLARED → REJECTED
 
 **Réponse — 201 :** `{ "id": 88, "orderIndex": 0, "representativePresent": true }`
 
+**Validation serveur — présence du délégué (D-092, finalisation UX instrumentiste) :** si la
+prestation effective (`primaryFirm` × `interventionType` résolus, via `FirmServiceOffering`)
+a `representativePresenceRelevant = true`, `representativePresent` **doit** valoir `true` ou
+`false` — jamais `null`/absent. Sans firme résolue (`primaryFirmId` omis), la question n'est
+jamais pertinente et aucune réponse n'est exigée. Défendu côté serveur (`InterventionService`),
+pas uniquement côté frontend.
+
 **Erreurs (codes stables, voir `ApiExceptionSubscriber`) :**
 
 | Code | Status | Description |
@@ -499,6 +506,7 @@ DECLARED → REJECTED
 | `INTERVENTION_TYPE_INACTIVE` | 422 | Type désactivé |
 | `PRIMARY_FIRM_NOT_FOUND` | 404 | `primaryFirmId` inexistant |
 | `PRIMARY_FIRM_INACTIVE` | 422 | Firme désactivée |
+| — (422, message brut) | 422 | `representativePresent` manquant alors que la prestation l'exige — message : "Indiquez si un délégué de {Firme} était présent." |
 
 ### `PATCH /api/missions/{missionId}/interventions/{interventionId}`
 
@@ -508,12 +516,15 @@ DECLARED → REJECTED
 {
   "interventionTypeId": 15,
   "primaryFirmId": null,
-  "orderIndex": 2
+  "orderIndex": 2,
+  "representativePresent": null
 }
 ```
 
 - `interventionTypeId`, si fourni, ré-dérive aussi le snapshot `code`/`label` depuis le nouveau type (jamais de retrait — un type reste toujours obligatoire).
-- `primaryFirmId` supporte le **tri-état** : clé absente = inchangé ; `null` explicite = retrait ; valeur = définit/remplace. C'est le seul champ de ce payload à avoir ce comportement.
+- `primaryFirmId` supporte le **tri-état** : clé absente = inchangé ; `null` explicite = retrait ; valeur = définit/remplace.
+- `representativePresent` supporte le même tri-état (D-092) : clé absente = inchangé ; `null` explicite = efface une réponse devenue obsolète (ex: changement vers une firme/prestation non pertinente — voir `EditInterventionDialog.tsx`) ; `true`/`false` = répond.
+- **Validation serveur** : dès que la requête touche `interventionTypeId`, `primaryFirmId` ou `representativePresent`, le serveur recalcule la prestation effective (valeurs fournies fusionnées avec l'existant) et applique la même règle qu'à la création — `representativePresent` ne peut pas rester `null` si la prestation résultante l'exige. Un PATCH qui ne touche à aucun de ces trois champs (ex: réordonnancement via `orderIndex` seul) n'est jamais bloqué par cette règle, y compris sur une ancienne intervention jamais répondue.
 - Réponse — **204** (pas de corps).
 
 ### `DELETE /api/missions/{missionId}/interventions/{interventionId}`

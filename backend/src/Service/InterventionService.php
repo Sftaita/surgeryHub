@@ -6,6 +6,8 @@ use App\Dto\Request\MaterialLineCreateRequest;
 use App\Dto\Request\MaterialLineUpdateRequest;
 use App\Dto\Request\MissionInterventionCreateRequest;
 use App\Dto\Request\MissionInterventionUpdateRequest;
+use App\Entity\Firm;
+use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
@@ -15,6 +17,7 @@ use App\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 class InterventionService
 {
@@ -24,6 +27,7 @@ class InterventionService
         private readonly ActiveFirmResolver $firmResolver,
         private readonly ActiveInterventionTypeResolver $interventionTypeResolver,
         private readonly MaterialAttachmentResolver $attachmentResolver,
+        private readonly RepresentativePolicyResolver $representativePolicyResolver,
     ) {}
 
     /**
@@ -43,6 +47,8 @@ class InterventionService
         $type = $this->interventionTypeResolver->resolveActive((int) $dto->interventionTypeId);
         $firm = $dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null;
         $representativePresent = $dto->representativePresent;
+
+        $this->assertRepresentativePresenceAnswered($firm, $type, $representativePresent);
 
         $intervention = null;
         $this->em->wrapInTransaction(function () use (&$intervention, $mission, $type, $firm, $representativePresent): void {
@@ -73,15 +79,35 @@ class InterventionService
      */
     public function update(MissionIntervention $intervention, MissionInterventionUpdateRequest $dto): void
     {
+        $type = $dto->interventionTypeId !== null
+            ? $this->interventionTypeResolver->resolveActive($dto->interventionTypeId)
+            : $intervention->getInterventionType();
+
+        $firm = $dto->primaryFirmIdProvided
+            ? ($dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null)
+            : $intervention->getPrimaryFirm();
+
+        $representativePresent = $dto->representativePresentProvided
+            ? $dto->representativePresent
+            : $intervention->getRepresentativePresent();
+
+        // Refonte Catalogue/Prestations (D-092) — la validation ne se déclenche que si la
+        // requête touche réellement un champ métier (type/firme/réponse délégué), jamais
+        // sur un simple réordonnancement (orderIndex seul) : une ancienne intervention
+        // jamais répondue reste réordonnable tant qu'on ne la modifie pas au sens métier
+        // (voir docblock de section "rétrocompatibilité" — l'ouverture/la consultation ne
+        // doivent jamais être cassées par cette règle).
+        if ($dto->interventionTypeId !== null || $dto->primaryFirmIdProvided || $dto->representativePresentProvided) {
+            $this->assertRepresentativePresenceAnswered($firm, $type, $representativePresent);
+        }
+
         if ($dto->interventionTypeId !== null) {
-            $type = $this->interventionTypeResolver->resolveActive($dto->interventionTypeId);
             $intervention->setInterventionType($type);
             $intervention->setCode($type->getCode());
             $intervention->setLabel($type->getLabel());
         }
 
         if ($dto->primaryFirmIdProvided) {
-            $firm = $dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null;
             $intervention->setPrimaryFirm($firm);
         }
 
@@ -94,6 +120,28 @@ class InterventionService
         }
 
         $this->em->flush();
+    }
+
+    /**
+     * Refonte Catalogue/Prestations (D-092) — défense serveur (jamais uniquement le
+     * frontend) : si la prestation (firme × type) effective exige la réponse délégué,
+     * elle doit être fournie (true/false), jamais null. Sans firme ou sans type résolu,
+     * la question ne peut pas être pertinente (voir RepresentativePolicyResolver::resolve,
+     * jamais appelé sans les deux).
+     */
+    private function assertRepresentativePresenceAnswered(?Firm $firm, ?InterventionType $type, ?bool $representativePresent): void
+    {
+        if ($firm === null || $type === null) {
+            return;
+        }
+
+        $policy = $this->representativePolicyResolver->resolve($firm, $type);
+        if ($policy->representativePresenceRelevant && $representativePresent === null) {
+            throw new UnprocessableEntityHttpException(sprintf(
+                'Indiquez si un délégué de %s était présent.',
+                $firm->getName(),
+            ));
+        }
     }
 
     public function delete(MissionIntervention $intervention): void

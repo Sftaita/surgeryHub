@@ -251,12 +251,130 @@ describe("AddInterventionDialog — présence d'un délégué (D-092)", () => {
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
 
-    expect(await screen.findByText("Un délégué Arthrex était-il présent ?")).toBeInTheDocument();
+    expect(await screen.findByText("Un délégué de Arthrex était-il présent ?")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Ajouter" })).toBeDisabled();
+    expect(screen.getByText("Indiquez si un délégué de Arthrex était présent.")).toBeInTheDocument();
 
     await user.click(screen.getByText("Oui"));
     await user.click(screen.getByRole("button", { name: "Ajouter" }));
 
     expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, orderIndex: 2, representativePresent: true });
+  });
+
+  it("répondre Non envoie representativePresent=false", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/service-offerings")) {
+        return Promise.resolve({ data: [{ id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: true }] });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    const { onSubmit } = renderDialog();
+
+    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
+
+    await user.click(await screen.findByText("Non"));
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, orderIndex: 2, representativePresent: false });
+  });
+
+  it("changer de type d'une prestation non pertinente vers une prestation pertinente fait apparaître la question, sans valeur préremplie", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/service-offerings")) {
+        return Promise.resolve({
+          data: [
+            { id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: false },
+            { id: 502, interventionType: TYPES[1], active: true, representativePresenceRelevant: true },
+          ],
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    const { onSubmit } = renderDialog();
+
+    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
+    expect(screen.queryByText(/délégué/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("PTG — Prothèse totale de genou"));
+
+    expect(await screen.findByText("Un délégué de Arthrex était-il présent ?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ajouter" })).toBeDisabled();
+
+    await user.click(screen.getByText("Oui"));
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 2, primaryFirmId: 10, orderIndex: 2, representativePresent: true });
+  });
+
+  it("changer de type d'une prestation pertinente vers une prestation non pertinente fait disparaître la question et n'envoie plus representativePresent", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/service-offerings")) {
+        return Promise.resolve({
+          data: [
+            { id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: true },
+            { id: 502, interventionType: TYPES[1], active: true, representativePresenceRelevant: false },
+          ],
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    const { onSubmit } = renderDialog();
+
+    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
+    await user.click(await screen.findByText("Oui"));
+
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("PTG — Prothèse totale de genou"));
+
+    expect(screen.queryByText(/délégué/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 2, primaryFirmId: 10, orderIndex: 2 });
+  });
+
+  it("changer de firme (ConMed → Smith & Nephew) ne réutilise jamais l'ancienne réponse sur une prestation pourtant toujours pertinente", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/firms/10/service-offerings")) {
+        return Promise.resolve({ data: [{ id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: true }] });
+      }
+      if (url.includes("/firms/11/service-offerings")) {
+        return Promise.resolve({ data: [{ id: 502, interventionType: TYPES[0], active: true, representativePresenceRelevant: true }] });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    const { onSubmit } = renderDialog();
+
+    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
+    await user.click(await screen.findByText("Oui"));
+    expect(await screen.findByText("Un délégué de Arthrex était-il présent ?")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Changer" }));
+    await screen.findByText("Étape 1/2 – Choisir une firme");
+    await user.click(screen.getByRole("button", { name: "Medacta" }));
+    await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
+
+    expect(await screen.findByText("Un délégué de Medacta était-il présent ?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ajouter" })).toBeDisabled();
+
+    await user.click(screen.getByText("Non"));
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 11, orderIndex: 2, representativePresent: false });
   });
 });

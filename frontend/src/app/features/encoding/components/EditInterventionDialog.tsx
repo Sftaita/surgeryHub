@@ -10,6 +10,7 @@ const GREEN_500 = "#42A882";
 const GREEN_800 = "#1F6B4F";
 const GRAY_500 = "#727E8C";
 const GRAY_800 = "#243240";
+const RED_600 = "#E5484D";
 const BORDER_DEFAULT = "#DDE2E8";
 
 const NO_FIRM = 0;
@@ -58,6 +59,7 @@ export default function EditInterventionDialog({
   // n'est affichée que si pertinente pour la firme × type actuellement sélectionnés.
   const currentOffering = (offeringsQuery.data ?? []).find((o) => o.interventionType.id === typeId);
   const showRepresentativeQuestion = firmId !== NO_FIRM && !!currentOffering?.representativePresenceRelevant;
+  const selectedFirmName = firms.find((f) => f.id === firmId)?.name ?? "";
 
   const canSubmit = typeId != null && (!showRepresentativeQuestion || representativePresent !== null);
 
@@ -66,7 +68,10 @@ export default function EditInterventionDialog({
     onSubmit({
       interventionTypeId: typeId,
       primaryFirmId: firmId === NO_FIRM ? null : firmId,
-      representativePresent: showRepresentativeQuestion ? representativePresent : undefined,
+      // Prestation non pertinente désormais : on efface explicitement une éventuelle
+      // ancienne réponse (jamais laissée orpheline, liée à une firme/type qui n'est plus
+      // celui sélectionné — voir D-092 section 3 du lot instrumentiste).
+      representativePresent: showRepresentativeQuestion ? representativePresent : null,
     });
   };
 
@@ -101,7 +106,10 @@ export default function EditInterventionDialog({
 
         {showRepresentativeQuestion && (
           <Box sx={{ background: "#F5F7FA", borderRadius: "12px", padding: "14px" }}>
-            <Box sx={{ fontSize: 14, fontWeight: 700, mb: "10px" }}>Un délégué était-il présent ?</Box>
+            <Box sx={{ fontSize: 14, fontWeight: 700, mb: "4px" }}>Un délégué de {selectedFirmName} était-il présent ?</Box>
+            <Box sx={{ fontSize: 12.5, color: GRAY_500, mb: "10px" }}>
+              Cette information est nécessaire pour cette intervention.
+            </Box>
             <Box sx={{ display: "flex", gap: "10px" }}>
               {([true, false] as const).map((val) => (
                 <Box
@@ -122,6 +130,11 @@ export default function EditInterventionDialog({
                 </Box>
               ))}
             </Box>
+            {representativePresent === null && (
+              <Box sx={{ mt: "10px", fontSize: 12.5, color: RED_600, fontWeight: 600 }}>
+                Indiquez si un délégué de {selectedFirmName} était présent.
+              </Box>
+            )}
           </Box>
         )}
       </Box>

@@ -16,6 +16,7 @@ const GRAY_300 = "#C2C9D1";
 const GRAY_400 = "#98A2AE";
 const GRAY_500 = "#727E8C";
 const GRAY_800 = "#243240";
+const RED_600 = "#E5484D";
 const BORDER_DEFAULT = GRAY_200;
 const FOCUS_RING = "0 0 0 3px rgba(66,168,130,.32)";
 
@@ -324,8 +325,11 @@ export default function AddInterventionDialog({
 
           {showRepresentativeQuestion && (
             <Box sx={{ mt: "16px", background: "#F5F7FA", borderRadius: "12px", padding: "14px" }}>
-              <Box sx={{ fontSize: 14, fontWeight: 700, mb: "10px" }}>
-                Un délégué {selectedFirm !== NO_FIRM ? selectedFirm?.name : ""} était-il présent ?
+              <Box sx={{ fontSize: 14, fontWeight: 700, mb: "4px" }}>
+                Un délégué de {selectedFirm !== NO_FIRM ? selectedFirm?.name : ""} était-il présent ?
+              </Box>
+              <Box sx={{ fontSize: 12.5, color: GRAY_500, mb: "10px" }}>
+                Cette information est nécessaire pour cette intervention.
               </Box>
               <Box sx={{ display: "flex", gap: "10px" }}>
                 {([true, false] as const).map((val) => (
@@ -347,6 +351,11 @@ export default function AddInterventionDialog({
                   </Box>
                 ))}
               </Box>
+              {representativePresent === null && (
+                <Box sx={{ mt: "10px", fontSize: 12.5, color: RED_600, fontWeight: 600 }}>
+                  Indiquez si un délégué de {selectedFirm !== NO_FIRM ? selectedFirm?.name : ""} était présent.
+                </Box>
+              )}
             </Box>
           )}
 
