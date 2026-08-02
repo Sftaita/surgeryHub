@@ -74,6 +74,18 @@ class MissionIntervention implements MaterialAttachmentTarget
     private ?int $orderIndex = 0;
 
     /**
+     * Refonte Catalogue/Prestations (D-092) — donnée FACTUELLE encodée par
+     * l'instrumentiste ("un délégué de la firme principale était-il présent ?"), jamais
+     * une donnée financière. null = jamais répondu (legacy, ou question non pertinente
+     * pour cette prestation). La conséquence financière éventuelle est décidée
+     * exclusivement par FinancialCalculationService via RepresentativePolicyResolver —
+     * cette entité ne connaît aucune politique commerciale.
+     */
+    #[ORM\Column(name: 'representative_present', type: 'boolean', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
+    private ?bool $representativePresent = null;
+
+    /**
      * @var Collection<int, MaterialLine>
      */
     #[ORM\OneToMany(mappedBy: 'missionIntervention', targetEntity: MaterialLine::class)]
@@ -160,6 +172,17 @@ class MissionIntervention implements MaterialAttachmentTarget
     public function setPrimaryFirm(?Firm $primaryFirm): static
     {
         $this->primaryFirm = $primaryFirm;
+        return $this;
+    }
+
+    public function getRepresentativePresent(): ?bool
+    {
+        return $this->representativePresent;
+    }
+
+    public function setRepresentativePresent(?bool $representativePresent): static
+    {
+        $this->representativePresent = $representativePresent;
         return $this;
     }
 

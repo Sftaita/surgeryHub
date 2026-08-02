@@ -5,7 +5,7 @@ import { SheetModal } from "../../../ui/sheet/SheetModal";
 import { SelectField } from "../../../ui/sheet/SelectField";
 import { Field } from "../../../ui/sheet/Field";
 import type { CatalogFirm, CatalogInterventionType, CreateInterventionBody } from "../api/encoding.types";
-import { fetchInterventionTypeEncodingContext, fetchFirmServiceOfferings } from "../api/encoding.api";
+import { fetchInterventionTypeEncodingContext, fetchFirmServiceOfferings, type FirmServiceOfferingSummary } from "../api/encoding.api";
 
 const GREEN_500 = "#42A882";
 const GREEN_700 = "#2C7D5F";
@@ -93,6 +93,7 @@ export default function AddInterventionDialog({
 
   const [typeId, setTypeId] = React.useState<number | null>(null);
   const [firmAutoSuggested, setFirmAutoSuggested] = React.useState(false);
+  const [representativePresent, setRepresentativePresent] = React.useState<boolean | null>(null);
 
   const [draftLabel, setDraftLabel] = React.useState("");
   const [draftSuggestedCode, setDraftSuggestedCode] = React.useState("");
@@ -107,6 +108,7 @@ export default function AddInterventionDialog({
     setSelectedFirm(null);
     setTypeId(null);
     setFirmAutoSuggested(false);
+    setRepresentativePresent(null);
     setDraftLabel("");
     setDraftSuggestedCode("");
     setDraftComment("");
@@ -155,11 +157,25 @@ export default function AddInterventionDialog({
     setSelectedFirm(firm);
     setTypeId(null);
     setFirmAutoSuggested(false);
+    setRepresentativePresent(null);
     setStep(2);
   }
 
+  function pickType(v: number | null) {
+    setTypeId(v);
+    setRepresentativePresent(null);
+  }
+
+  // Refonte Catalogue/Prestations (D-092) — ne demander la présence du délégué que si
+  // la prestation (firme × type) le rend pertinent. Jamais posée sans firme connue.
+  const currentOffering: FirmServiceOfferingSummary | undefined = firmId != null
+    ? (offeringsQuery.data ?? []).find((o) => o.interventionType.id === typeId)
+    : undefined;
+  const showRepresentativeQuestion = !!currentOffering?.representativePresenceRelevant;
+
   const notInCatalog = typeId === NOT_IN_CATALOG;
-  const canSubmitIntervention = !notInCatalog && typeId != null && !loading;
+  const canSubmitIntervention =
+    !notInCatalog && typeId != null && !loading && (!showRepresentativeQuestion || representativePresent !== null);
   const canSubmitDraft = notInCatalog && draftLabel.trim() !== "" && !loading;
 
   function handleSubmit() {
@@ -178,6 +194,7 @@ export default function AddInterventionDialog({
       interventionTypeId: typeId,
       primaryFirmId: firmId ?? undefined,
       orderIndex: existingCount,
+      ...(showRepresentativeQuestion && representativePresent !== null ? { representativePresent } : {}),
     });
   }
 
@@ -288,7 +305,7 @@ export default function AddInterventionDialog({
               placeholder="Sélectionner un type"
               value={typeId}
               options={typeOptions}
-              onChange={(v) => setTypeId(v)}
+              onChange={pickType}
               disabled={loading}
             />
           </Box>
@@ -302,6 +319,34 @@ export default function AddInterventionDialog({
           {firmAutoSuggested && (
             <Box sx={{ mt: "8px", fontSize: 12.5, color: GRAY_500 }}>
               Firme suggérée automatiquement (seule prestation active pour ce type).
+            </Box>
+          )}
+
+          {showRepresentativeQuestion && (
+            <Box sx={{ mt: "16px", background: "#F5F7FA", borderRadius: "12px", padding: "14px" }}>
+              <Box sx={{ fontSize: 14, fontWeight: 700, mb: "10px" }}>
+                Un délégué {selectedFirm !== NO_FIRM ? selectedFirm?.name : ""} était-il présent ?
+              </Box>
+              <Box sx={{ display: "flex", gap: "10px" }}>
+                {([true, false] as const).map((val) => (
+                  <Box
+                    key={String(val)}
+                    component="button"
+                    type="button"
+                    onClick={() => setRepresentativePresent(val)}
+                    disabled={loading}
+                    sx={{
+                      flex: 1, height: 42, borderRadius: "10px", cursor: "pointer", fontFamily: "inherit",
+                      fontSize: 14, fontWeight: 700,
+                      border: "1.5px solid", borderColor: representativePresent === val ? GREEN_500 : BORDER_DEFAULT,
+                      background: representativePresent === val ? "rgba(66,168,130,.12)" : "#fff",
+                      color: representativePresent === val ? GREEN_800 : GRAY_800,
+                    }}
+                  >
+                    {val ? "Oui" : "Non"}
+                  </Box>
+                ))}
+              </Box>
             </Box>
           )}
 

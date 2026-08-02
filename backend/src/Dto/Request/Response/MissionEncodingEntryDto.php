@@ -48,5 +48,10 @@ final class MissionEncodingEntryDto
         public readonly bool $readOnly,
         public readonly array $materialLines,
         public readonly array $materialItemRequests,
+        /**
+         * Refonte Catalogue/Prestations (D-092) — toujours null pour kind=DRAFT (donnée
+         * spécifique à une MissionIntervention réelle). Jamais financière.
+         */
+        public readonly ?bool $representativePresent = null,
     ) {}
 }

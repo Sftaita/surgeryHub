@@ -73,6 +73,7 @@ final class FirmServiceOfferingController extends AbstractController
         $offering->setInterventionType($type);
         $offering->setLabel(isset($data['label']) ? trim((string) $data['label']) ?: null : null);
         $offering->setActive(true);
+        $this->applyPolicyFields($offering, $data);
 
         $this->em->persist($offering);
 
@@ -109,6 +110,7 @@ final class FirmServiceOfferingController extends AbstractController
         if (array_key_exists('active', $data)) {
             $offering->setActive((bool) $data['active']);
         }
+        $this->applyPolicyFields($offering, $data);
 
         $this->em->flush();
 
@@ -235,6 +237,27 @@ final class FirmServiceOfferingController extends AbstractController
 
     // ── Helpers ───────────────────────────────────────────────────────
 
+    /**
+     * Refonte Catalogue/Prestations (D-092) — les 4 champs de politique délégué sont
+     * volontairement acceptés en création ET en mise à jour partielle (array_key_exists,
+     * jamais de valeur implicite non fournie) — cohérent avec label/active ci-dessus.
+     */
+    private function applyPolicyFields(FirmServiceOffering $offering, array $data): void
+    {
+        if (array_key_exists('representativePresenceRelevant', $data)) {
+            $offering->setRepresentativePresenceRelevant((bool) $data['representativePresenceRelevant']);
+        }
+        if (array_key_exists('representativeSuppressesInterventionFee', $data)) {
+            $offering->setRepresentativeSuppressesInterventionFee((bool) $data['representativeSuppressesInterventionFee']);
+        }
+        if (array_key_exists('representativeSuppressesOwnMaterialFees', $data)) {
+            $offering->setRepresentativeSuppressesOwnMaterialFees((bool) $data['representativeSuppressesOwnMaterialFees']);
+        }
+        if (array_key_exists('feeApplicable', $data)) {
+            $offering->setFeeApplicable((bool) $data['feeApplicable']);
+        }
+    }
+
     private function getFirmOr404(int $id): Firm|JsonResponse
     {
         $firm = $this->em->find(Firm::class, $id);
@@ -253,9 +276,25 @@ final class FirmServiceOfferingController extends AbstractController
         return $offering;
     }
 
+    /**
+     * Refonte Catalogue/Prestations (D-092) — correctif revue de sécurité : `list()`
+     * n'a jamais eu de garde `BillingVoter::MANAGE` (par conception — c'est cet
+     * endpoint que consomme l'encodage instrumentiste via
+     * `fetchFirmServiceOfferings()`, voir InterventionEncodingContextService et
+     * AddInterventionDialog/EditInterventionDialog). `representativePresenceRelevant`
+     * reste donc exposé à tout rôle authentifié — c'est exactement l'information dont
+     * le frontend instrumentiste a besoin pour savoir si la question "délégué
+     * présent ?" doit être posée (D-092 §10), jamais un montant ni une conséquence
+     * financière. En revanche `representativeSuppressesInterventionFee`/
+     * `representativeSuppressesOwnMaterialFees`/`feeApplicable` révèlent la
+     * CONSÉQUENCE financière de cette politique (ex. "si je réponds oui, le forfait
+     * de cette firme tombe à 0€") — l'instrumentiste ne doit jamais les voir
+     * (contrainte explicite du prompt : "aucune conséquence financière"). Réservés
+     * ici à BillingVoter::MANAGE, jamais exposés sur cet endpoint à un autre rôle.
+     */
     private function serialize(FirmServiceOffering $o): array
     {
-        return [
+        $base = [
             'id' => $o->getId(),
             'firmId' => $o->getFirm()->getId(),
             'interventionType' => [
@@ -265,11 +304,20 @@ final class FirmServiceOfferingController extends AbstractController
             ],
             'label' => $o->getLabel(),
             'active' => $o->isActive(),
+            'representativePresenceRelevant' => $o->isRepresentativePresenceRelevant(),
             'suggestedMaterials' => array_map(
                 fn (SuggestedMaterial $s) => $this->serializeSuggestion($s),
                 iterator_to_array($o->getSuggestedMaterials()),
             ),
         ];
+
+        if ($this->isGranted(BillingVoter::MANAGE)) {
+            $base['representativeSuppressesInterventionFee'] = $o->isRepresentativeSuppressesInterventionFee();
+            $base['representativeSuppressesOwnMaterialFees'] = $o->isRepresentativeSuppressesOwnMaterialFees();
+            $base['feeApplicable'] = $o->isFeeApplicable();
+        }
+
+        return $base;
     }
 
     private function serializeSuggestion(SuggestedMaterial $s): array

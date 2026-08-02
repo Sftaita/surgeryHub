@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Dto\FinancialCalculationAnomaly;
+use App\Dto\RepresentativePolicy;
 use App\Entity\FinancialCalculation;
 use App\Entity\FinancialCalculationLine;
 use App\Entity\MaterialLine;
@@ -15,6 +16,7 @@ use App\Enum\FinancialCalculationStatus;
 use App\Enum\FinancialLineSourceType;
 use App\Enum\FinancialLineType;
 use App\Enum\InstrumentistRateType;
+use App\Enum\MaterialBillingStatus;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Exception\FinancialCalculationAnomaliesException;
@@ -41,6 +43,7 @@ final class FinancialCalculationService
         private readonly PricingRuleResolver $pricingRuleResolver,
         private readonly InstrumentistRateResolver $instrumentistRateResolver,
         private readonly MissionExecutionService $missionExecutionService,
+        private readonly RepresentativePolicyResolver $representativePolicyResolver,
         private readonly AuditService $audit,
     ) {}
 
@@ -311,7 +314,14 @@ final class FinancialCalculationService
         return $calculation;
     }
 
-    /** @param FinancialCalculationAnomaly[] &$anomalies */
+    /**
+     * Refonte Catalogue/Prestations (D-092) — §19/§21 : brut résolu normalement via
+     * PricingRuleResolver (inchangé), puis politique délégué appliquée en AJUSTEMENT
+     * post-résolution (jamais une source alternative de montant). Voir
+     * RepresentativePolicyResolver pour la portée exacte de l'exception à D-067.
+     *
+     * @param FinancialCalculationAnomaly[] &$anomalies
+     */
     private function resolveFirmInterventionLine(MissionIntervention $intervention, \DateTimeImmutable $effectiveAt, array &$anomalies): ?array
     {
         $firm = $intervention->getPrimaryFirm();
@@ -334,6 +344,25 @@ final class FinancialCalculationService
             return null;
         }
 
+        $policy = $this->representativePolicyResolver->resolve($firm, $interventionType);
+        $representativePresent = $intervention->getRepresentativePresent();
+
+        if ($policy->representativePresenceRelevant && $representativePresent === null) {
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'MISSING_REPRESENTATIVE_PRESENCE_ANSWER',
+                sprintf('Representative presence must be answered for intervention #%d (firm=%d) before any calculation.', $intervention->getId(), $firm->getId()),
+                ['missionInterventionId' => $intervention->getId(), 'firmId' => $firm->getId(), 'interventionTypeId' => $interventionType->getId()],
+            );
+            return null;
+        }
+
+        if (!$policy->feeApplicable) {
+            // Décision commerciale explicite (FirmServiceOffering.feeApplicable=false) —
+            // aucun forfait n'est attendu pour cette prestation : état valide, aucune
+            // ligne, aucune anomalie. Ne JAMAIS confondre avec un tarif manquant.
+            return null;
+        }
+
         $rule = $this->pricingRuleResolver->resolveInterventionFee($firm, $interventionType, $effectiveAt);
         if ($rule === null) {
             $anomalies[] = new FinancialCalculationAnomaly(
@@ -345,7 +374,17 @@ final class FinancialCalculationService
         }
 
         $unitAmount = $rule->getUnitPrice();
-        $totalAmount = $this->roundMoney((float) $unitAmount);
+        $grossAmount = $this->roundMoney((float) $unitAmount);
+
+        $suppressed = $policy->representativePresenceRelevant
+            && $representativePresent === true
+            && $policy->representativeSuppressesInterventionFee;
+
+        [$adjustmentAmount, $totalAmount, $adjustmentReason] = $this->applyAdjustment($grossAmount, $suppressed, sprintf(
+            'Le forfait de cette prestation est neutralisé en présence du délégué %s.', $firm->getName(),
+        ));
+
+        $warnings = $this->staleRepresentativeAnswerWarning($policy, $representativePresent);
 
         return [
             'beneficiaryType' => FinancialBeneficiaryType::FIRM,
@@ -361,9 +400,12 @@ final class FinancialCalculationService
             'quantity' => '1.0000',
             'durationMinutes' => null,
             'unitAmount' => $unitAmount,
+            'grossAmount' => $grossAmount,
+            'adjustmentAmount' => $adjustmentAmount,
             'totalAmount' => $totalAmount,
             'currency' => $rule->getCurrency(),
             'effectiveAt' => $effectiveAt,
+            'warnings' => $warnings,
             'snapshot' => [
                 'pricingRuleId' => $rule->getId(),
                 'ruleType' => $rule->getRuleType()->value,
@@ -374,15 +416,30 @@ final class FinancialCalculationService
                 'interventionTypeId' => $interventionType->getId(),
                 'interventionCodeSnapshot' => $intervention->getCode(),
                 'interventionLabelSnapshot' => $intervention->getLabel(),
+                'representativePresentSnapshot' => $representativePresent,
+                'representativePolicySnapshot' => $this->policySnapshot($policy),
+                'adjustmentReasonSnapshot' => $adjustmentReason,
             ],
         ];
     }
 
-    /** @param FinancialCalculationAnomaly[] &$anomalies */
+    /**
+     * Refonte Catalogue/Prestations (D-092) — §19 : la neutralisation d'un matériel
+     * n'est possible que si sa firme EST la firme principale de l'intervention à
+     * laquelle il est rattaché. Un matériel d'une autre firme dans la même intervention
+     * garde son calcul normal (aucune contamination inter-firme, §20).
+     *
+     * @param FinancialCalculationAnomaly[] &$anomalies
+     */
     private function resolveFirmMaterialLine(MaterialLine $materialLine, \DateTimeImmutable $effectiveAt, array &$anomalies): ?array
     {
         $item = $materialLine->getItem();
         $firm = $item->getFirm();
+
+        if ($item->getBillingStatus() === MaterialBillingStatus::NOT_BILLABLE) {
+            // Décision commerciale explicite — état valide, aucune ligne, aucune anomalie.
+            return null;
+        }
 
         $rule = $this->pricingRuleResolver->resolveMaterialFee($item, $effectiveAt);
         if ($rule === null) {
@@ -396,7 +453,30 @@ final class FinancialCalculationService
 
         $quantity = $materialLine->getQuantity();
         $unitAmount = $rule->getUnitPrice();
-        $totalAmount = $this->roundMoney((float) $quantity * (float) $unitAmount);
+        $grossAmount = $this->roundMoney((float) $quantity * (float) $unitAmount);
+
+        $suppressed = false;
+        $representativePresent = null;
+        $policy = null;
+        $adjustmentReason = null;
+
+        $intervention = $materialLine->getMissionIntervention();
+        if ($intervention !== null) {
+            $primaryFirm = $intervention->getPrimaryFirm();
+            $interventionType = $intervention->getInterventionType();
+            if ($primaryFirm !== null && $interventionType !== null && $primaryFirm->getId() === $firm->getId()) {
+                $policy = $this->representativePolicyResolver->resolve($primaryFirm, $interventionType);
+                $representativePresent = $intervention->getRepresentativePresent();
+                $suppressed = $policy->representativePresenceRelevant
+                    && $representativePresent === true
+                    && $policy->representativeSuppressesOwnMaterialFees;
+            }
+        }
+
+        $reasonIfSuppressed = sprintf('Le matériel facturable %s (%s) n\'est pas facturé en présence du délégué %s.', $item->getLabel(), $firm->getName(), $firm->getName());
+        [$adjustmentAmount, $totalAmount, $adjustmentReason] = $this->applyAdjustment($grossAmount, $suppressed, $reasonIfSuppressed);
+
+        $warnings = $policy !== null ? $this->staleRepresentativeAnswerWarning($policy, $representativePresent) : [];
 
         return [
             'beneficiaryType' => FinancialBeneficiaryType::FIRM,
@@ -412,9 +492,12 @@ final class FinancialCalculationService
             'quantity' => $quantity,
             'durationMinutes' => null,
             'unitAmount' => $unitAmount,
+            'grossAmount' => $grossAmount,
+            'adjustmentAmount' => $adjustmentAmount,
             'totalAmount' => $totalAmount,
             'currency' => $rule->getCurrency(),
             'effectiveAt' => $effectiveAt,
+            'warnings' => $warnings,
             'snapshot' => [
                 'pricingRuleId' => $rule->getId(),
                 'ruleType' => $rule->getRuleType()->value,
@@ -425,8 +508,57 @@ final class FinancialCalculationService
                 'materialItemId' => $item->getId(),
                 'materialNameSnapshot' => $item->getLabel(),
                 'materialFirmSnapshot' => $firm->getName(),
+                'billingStatusSnapshot' => $item->getBillingStatus()->value,
+                'representativePresentSnapshot' => $representativePresent,
+                'representativePolicySnapshot' => $policy !== null ? $this->policySnapshot($policy) : null,
+                'adjustmentReasonSnapshot' => $adjustmentReason,
             ],
         ];
+    }
+
+    /**
+     * Point d'arrondi unique pour l'ajustement — jamais recalculé ailleurs. Retourne
+     * [adjustmentAmount, totalAmount, adjustmentReasonSnapshot|null].
+     *
+     * @return array{0: string, 1: string, 2: ?string}
+     */
+    private function applyAdjustment(string $grossAmount, bool $suppressed, string $reasonIfSuppressed): array
+    {
+        if (!$suppressed) {
+            return ['0.00', $grossAmount, null];
+        }
+
+        return [$this->roundMoney(-(float) $grossAmount), '0.00', $reasonIfSuppressed];
+    }
+
+    /** @return array{representativePresenceRelevant: bool, representativeSuppressesInterventionFee: bool, representativeSuppressesOwnMaterialFees: bool, feeApplicable: bool} */
+    private function policySnapshot(RepresentativePolicy $policy): array
+    {
+        return [
+            'representativePresenceRelevant' => $policy->representativePresenceRelevant,
+            'representativeSuppressesInterventionFee' => $policy->representativeSuppressesInterventionFee,
+            'representativeSuppressesOwnMaterialFees' => $policy->representativeSuppressesOwnMaterialFees,
+            'feeApplicable' => $policy->feeApplicable,
+        ];
+    }
+
+    /**
+     * Avertissement non bloquant : une réponse "délégué présent" a été enregistrée alors
+     * que la politique actuelle ne la considère plus pertinente (ex. FirmServiceOffering
+     * modifiée après l'encodage). N'empêche jamais le calcul — informe seulement.
+     *
+     * @return array<int, array{code: string, message: string}>
+     */
+    private function staleRepresentativeAnswerWarning(RepresentativePolicy $policy, ?bool $representativePresent): array
+    {
+        if ($policy->representativePresenceRelevant || $representativePresent !== true) {
+            return [];
+        }
+
+        return [[
+            'code' => 'STALE_REPRESENTATIVE_PRESENCE_ANSWER',
+            'message' => 'Le délégué a été signalé présent mais cette politique n\'affecte plus (ou jamais) la facturation de cette prestation.',
+        ]];
     }
 
     /**
@@ -554,10 +686,13 @@ final class FinancialCalculationService
         $line->setQuantity($spec['quantity']);
         $line->setDurationMinutes($spec['durationMinutes']);
         $line->setUnitAmount($spec['unitAmount']);
+        $line->setGrossAmount($spec['grossAmount'] ?? $spec['totalAmount']);
+        $line->setAdjustmentAmount($spec['adjustmentAmount'] ?? '0.00');
         $line->setTotalAmount($spec['totalAmount']);
         $line->setCurrency($spec['currency']);
         $line->setEffectiveAt($spec['effectiveAt']);
         $line->setSnapshot($spec['snapshot']);
+        $line->setWarnings($spec['warnings'] ?? []);
         return $line;
     }
 

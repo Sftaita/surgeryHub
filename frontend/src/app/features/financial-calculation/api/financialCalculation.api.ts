@@ -11,6 +11,12 @@ import { apiClient } from "../../../api/apiClient";
  */
 export type FinancialCalculationStatus = "CALCULATED" | "APPROVED" | "LOCKED" | "SUPERSEDED" | "CANCELLED";
 
+/** Refonte Catalogue/Prestations (D-092) — voir FinancialCalculationLine (backend). */
+export interface FinancialCalculationLineWarning {
+  code: string;
+  message: string;
+}
+
 export interface FinancialCalculationLineDetail {
   id: number;
   beneficiaryType: "FIRM" | "INSTRUMENTIST";
@@ -22,10 +28,24 @@ export interface FinancialCalculationLineDetail {
   quantity: string;
   durationMinutes: number | null;
   unitAmount: string;
+  /** Refonte Catalogue/Prestations (D-092) — montant avant toute politique délégué, toujours renseigné. */
+  grossAmount: string;
+  /** totalAmount - grossAmount ; "0.00" = aucun ajustement. */
+  adjustmentAmount: string;
   totalAmount: string;
   currency: string;
   effectiveAt: string | null;
-  snapshot: Record<string, unknown>;
+  snapshot: Record<string, unknown> & {
+    adjustmentReasonSnapshot?: string | null;
+    representativePresentSnapshot?: boolean | null;
+    representativePolicySnapshot?: {
+      representativePresenceRelevant: boolean;
+      representativeSuppressesInterventionFee: boolean;
+      representativeSuppressesOwnMaterialFees: boolean;
+      feeApplicable: boolean;
+    } | null;
+  };
+  warnings: FinancialCalculationLineWarning[];
 }
 
 export interface FinancialCalculation {

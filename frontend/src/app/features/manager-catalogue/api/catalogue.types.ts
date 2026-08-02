@@ -3,6 +3,9 @@ export type FirmDTO = {
   name: string;
 };
 
+/** Refonte Catalogue/Prestations (D-092) — distingue "volontairement non facturé" de "tarif pas encore configuré". */
+export type MaterialBillingStatus = "UNSPECIFIED" | "BILLABLE" | "NOT_BILLABLE";
+
 export type MaterialItemDTO = {
   id: number;
   firm: FirmDTO | null;
@@ -10,6 +13,7 @@ export type MaterialItemDTO = {
   referenceCode: string;
   unit: string;
   isImplant: boolean;
+  billingStatus: MaterialBillingStatus;
 };
 
 export type MaterialItemsListResponseDTO = {
@@ -33,6 +37,7 @@ export type UpdateMaterialItemBody = {
   unit?: string;
   referenceCode?: string;
   isImplant?: boolean;
+  billingStatus?: MaterialBillingStatus;
 };
 
 export type MaterialRequestStatus = "PENDING" | "RESOLVED" | "IGNORED";

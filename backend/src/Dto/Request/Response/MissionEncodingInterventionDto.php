@@ -26,5 +26,10 @@ final class MissionEncodingInterventionDto
         public readonly array $materialItemRequests,
         public readonly array $suggestedMaterials,
         public readonly MissionInterventionCoherenceDto $coherence,
+        /**
+         * Refonte Catalogue/Prestations (D-092) — donnée factuelle, jamais financière.
+         * null = jamais répondu (legacy, ou question non pertinente pour cette prestation).
+         */
+        public readonly ?bool $representativePresent = null,
     ) {}
 }

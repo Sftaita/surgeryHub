@@ -563,7 +563,10 @@ MaterialItem
 ├── id
 ├── firm → Firm (obligatoire, immuable dès qu'une MaterialLine réelle existe)
 ├── label, referenceCode (unique par firme), unit, active: bool
-└── isImplant: bool (information médicale pure — sans rôle financier, voir D-067)
+├── isImplant: bool (information médicale pure — sans rôle financier, voir D-067)
+└── billingStatus: UNSPECIFIED | BILLABLE | NOT_BILLABLE (D-092 — distingue "volontairement
+    non facturé" de "tarif pas encore configuré" ; auto-promu à BILLABLE dès la première
+    PricingRule MATERIAL_FEE créée, voir PricingRuleWriteService::create())
 
 InterventionType (Lot 1 — référentiel médical fermé)
 ├── id, code (unique, immuable), label
@@ -575,6 +578,15 @@ FirmServiceOffering ("Prestation" à l'écran — Lot 1)
 ├── interventionType → InterventionType
 ├── UNIQUE(firm, interventionType)
 ├── label (nullable), active: bool
+├── representativePresenceRelevant: bool (D-092, défaut false — la question "délégué
+│   présent ?" doit-elle être posée à l'encodage pour cette prestation ?)
+├── representativeSuppressesInterventionFee: bool (D-092, défaut false)
+├── representativeSuppressesOwnMaterialFees: bool (D-092, défaut false)
+├── feeApplicable: bool (D-092, défaut true — un forfait INTERVENTION_FEE est-il
+│   seulement attendu ? false = "pas de forfait", jamais confondu avec un tarif manquant)
+│   — ces 4 champs sont lus EXCLUSIVEMENT par FinancialCalculationService (via
+│   RepresentativePolicyResolver), jamais par PricingRuleResolver — exception scopée et
+│   documentée à l'invariant D-067 (voir amendement dans D-067, docs/decisions.md)
 └── SuggestedMaterial[] (ordonnée par displayOrder)
     — jamais lue par le moteur financier (invariant D-067) : accélère la saisie
       manager uniquement, aucune donnée facturante n'y est stockée.
@@ -631,6 +643,9 @@ MissionIntervention
 │   pré-Lot 5 ; obligatoire pour tout nouvel encodage, imposé par InterventionService,
 │   pas par une contrainte NOT NULL en base — voir D-068)
 ├── primaryFirm → Firm (nullable, toujours facultative)
+├── representativePresent: bool|null (D-092 — donnée FACTUELLE encodée par
+│   l'instrumentiste, "un délégué de la firme principale était-il présent ?" ; null =
+│   jamais répondu ; jamais une donnée financière, jamais sur Mission globale)
 ├── MaterialLine[]
 └── MaterialItemRequest[]
 
@@ -711,7 +726,14 @@ FinancialCalculationLine
 ├── missionIntervention/materialLine/pricingRule/instrumentistRate (FK nullables,
 │   navigation uniquement — le snapshot JSON reste la source de vérité historique)
 ├── descriptionSnapshot, quantity (decimal 10,4), durationMinutes (nullable, HOURLY
-│   uniquement), unitAmount/totalAmount (decimal 10,2), currency, effectiveAt
+│   uniquement), unitAmount (decimal 10,2), currency, effectiveAt
+├── grossAmount (decimal 10,2, D-092 — toujours renseigné, montant AVANT toute politique
+│   délégué ; identique à totalAmount quand aucun ajustement)
+├── adjustmentAmount (decimal 10,2, D-092 — toujours renseigné, "0.00" = aucun ajustement ;
+│   totalAmount = grossAmount + adjustmentAmount, jamais recalculé implicitement)
+├── totalAmount (decimal 10,2) — montant réellement facturé, sémantique inchangée (D-073)
+├── warnings (JSON, D-092 — {code, message}[], non bloquant, distinct des anomalies qui
+│   empêchent tout le calcul ; ex. STALE_REPRESENTATIVE_PRESENCE_ANSWER)
 ├── firmInvoiceLine / instrumentistStatementLine (Lot 4, D-074 — côté INVERSE de la
 │   relation 1—0..1 vers le document qui a consommé cette ligne ; isAssigned() = true
 │   si l'un des deux est non-null — jamais les deux à la fois, voir beneficiaryType)
@@ -887,6 +909,47 @@ Moteur financier (PricingRuleResolver) :
 relation directe (au lieu du rapprochement par convention de code partagée,
 `InterventionType.code === MissionIntervention.code`, inchangé dans ce lot) appartient
 au Lot 7.
+
+### Flux politique délégué — neutralisation post-résolution (D-092)
+
+```
+FirmServiceOffering (Firm × InterventionType) porte 4 indicateurs NON-MONÉTAIRES :
+  representativePresenceRelevant           — la question doit-elle être posée à l'encodage ?
+  representativeSuppressesInterventionFee  — neutralise le forfait si délégué présent
+  representativeSuppressesOwnMaterialFees  — neutralise le matériel de CETTE firme si délégué présent
+  feeApplicable                            — un forfait est-il seulement attendu (défaut true) ?
+
+MissionIntervention.representativePresent (bool|null) — donnée FACTUELLE encodée par
+  l'instrumentiste, jamais une donnée financière, jamais sur Mission globale.
+
+Ordre de résolution (FinancialCalculationService, jamais PricingRuleResolver) :
+  1. RepresentativePolicyResolver.resolve(firm, interventionType) → RepresentativePolicy
+     (4 booléens ; défaut neutre si aucune FirmServiceOffering n'existe pour ce couple)
+  2. policy.representativePresenceRelevant && representativePresent === null
+       → anomalie bloquante MISSING_REPRESENTATIVE_PRESENCE_ANSWER (aucune persistance)
+  3. !policy.feeApplicable → aucune ligne INTERVENTION_FEE, aucune anomalie ("pas de forfait")
+  4. PricingRuleResolver résout le tarif normalement (INCHANGÉ, ne connaît jamais la politique)
+  5. Si résolu ET policy.representativePresenceRelevant && representativePresent===true
+       && policy.representativeSuppresses*  → adjustmentAmount = -grossAmount, totalAmount = 0
+     Sinon → adjustmentAmount = "0.00", totalAmount = grossAmount
+
+Neutralisation matériel : uniquement si material.firm === intervention.primaryFirm — un
+matériel d'une autre firme dans la même intervention n'est jamais affecté (§20).
+```
+
+**Exception scopée à l'invariant D-067** (voir amendement inséré directement dans D-067,
+`docs/decisions.md`) : `PricingRuleResolver` reste pur et sans dépendance vers
+`FirmServiceOffering` (preuve structurelle : `PricingRuleResolverArchitectureTest`).
+`RepresentativePolicyResolver` est le seul point de lecture des 4 indicateurs, appelé
+uniquement par `FinancialCalculationService`, jamais avant la résolution normale du
+tarif, jamais comme source de montant.
+
+**Facturable/non facturable** (`MaterialItem.billingStatus`) et **forfait attendu**
+(`FirmServiceOffering.feeApplicable`) suivent le même principe : distinguer une décision
+commerciale explicite (état valide, aucune ligne, aucune anomalie) d'un oubli de
+configuration (anomalie bloquante inchangée, jamais un 0€ silencieux). Auto-promotion :
+poser une première `PricingRule MATERIAL_FEE` fait automatiquement passer
+`billingStatus` à `BILLABLE` (`PricingRuleWriteService::create()`).
 
 ### Flux encodage — rattachement au catalogue fermé (Lot 5, D-068)
 

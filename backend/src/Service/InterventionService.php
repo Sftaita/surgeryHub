@@ -42,9 +42,10 @@ class InterventionService
     {
         $type = $this->interventionTypeResolver->resolveActive((int) $dto->interventionTypeId);
         $firm = $dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null;
+        $representativePresent = $dto->representativePresent;
 
         $intervention = null;
-        $this->em->wrapInTransaction(function () use (&$intervention, $mission, $type, $firm): void {
+        $this->em->wrapInTransaction(function () use (&$intervention, $mission, $type, $firm, $representativePresent): void {
             $orderIndex = $this->orderAllocator->nextIndexForNewEntry($mission);
 
             $intervention = new MissionIntervention();
@@ -54,7 +55,8 @@ class InterventionService
                 ->setPrimaryFirm($firm)
                 ->setCode($type->getCode())
                 ->setLabel($type->getLabel())
-                ->setOrderIndex($orderIndex);
+                ->setOrderIndex($orderIndex)
+                ->setRepresentativePresent($representativePresent);
 
             $this->em->persist($intervention);
             $this->em->flush();
@@ -85,6 +87,10 @@ class InterventionService
 
         if ($dto->orderIndex !== null) {
             $intervention->setOrderIndex($dto->orderIndex);
+        }
+
+        if ($dto->representativePresentProvided) {
+            $intervention->setRepresentativePresent($dto->representativePresent);
         }
 
         $this->em->flush();

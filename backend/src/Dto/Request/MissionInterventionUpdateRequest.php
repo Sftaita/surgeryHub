@@ -19,4 +19,12 @@ final class MissionInterventionUpdateRequest
     public ?int $primaryFirmId = null;
 
     public ?int $orderIndex = null;
+
+    /**
+     * Refonte Catalogue/Prestations (D-092) — même tri-état que primaryFirmId : absent =
+     * inchangé, présent avec null = retire explicitement la réponse (rare), présent avec
+     * une valeur = Oui/Non.
+     */
+    public bool $representativePresentProvided = false;
+    public ?bool $representativePresent = null;
 }

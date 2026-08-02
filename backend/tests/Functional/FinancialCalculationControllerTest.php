@@ -294,6 +294,43 @@ final class FinancialCalculationControllerTest extends WebTestCase
         self::assertSame('LOCKED', json_decode((string) $lockResponse->getContent(), true)['status']);
     }
 
+    /**
+     * Refonte Catalogue/Prestations (D-092) — le détail de calcul (accessible depuis
+     * preview/détail de facture) doit exposer grossAmount/adjustmentAmount/warnings sans
+     * nouvel endpoint (§26 : DTO existant étendu). Fixture sans FirmServiceOffering :
+     * comportement par défaut — grossAmount = totalAmount, adjustmentAmount = "0.00",
+     * warnings = [].
+     */
+    public function test_show_exposes_gross_amount_adjustment_amount_and_warnings(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $instrumentist = $this->createUser('ROLE_INSTRUMENTIST');
+        $mission = $this->makeEligibleMission($instrumentist);
+        $token = $this->login($client, $manager);
+
+        $createResponse = $this->postJson($client, $token, "/api/missions/{$mission->getId()}/financial-calculations");
+        self::assertSame(Response::HTTP_CREATED, $createResponse->getStatusCode(), (string) $createResponse->getContent());
+        $created = json_decode((string) $createResponse->getContent(), true);
+        $this->created['calculations'][] = $created['id'];
+
+        $showResponse = $this->getJson($client, $token, "/api/financial-calculations/{$created['id']}");
+        self::assertSame(Response::HTTP_OK, $showResponse->getStatusCode());
+        $body = json_decode((string) $showResponse->getContent(), true);
+
+        $feeLine = null;
+        foreach ($body['lines'] as $l) {
+            if ($l['lineType'] === 'FIRM_INTERVENTION_FEE') { $feeLine = $l; }
+        }
+        self::assertNotNull($feeLine, (string) $showResponse->getContent());
+        self::assertSame('150.00', $feeLine['grossAmount']);
+        self::assertSame('0.00', $feeLine['adjustmentAmount']);
+        self::assertSame('150.00', $feeLine['totalAmount']);
+        self::assertSame([], $feeLine['warnings']);
+        self::assertArrayHasKey('representativePresentSnapshot', $feeLine['snapshot']);
+        self::assertArrayHasKey('representativePolicySnapshot', $feeLine['snapshot']);
+    }
+
     // ── Erreurs métier mappées ──────────────────────────────────────────────
 
     public function test_create_on_ineligible_mission_returns_409(): void

@@ -157,10 +157,13 @@ final class FinancialCalculationController extends AbstractController
             'quantity' => $l->getQuantity(),
             'durationMinutes' => $l->getDurationMinutes(),
             'unitAmount' => $l->getUnitAmount(),
+            'grossAmount' => $l->getGrossAmount(),
+            'adjustmentAmount' => $l->getAdjustmentAmount(),
             'totalAmount' => $l->getTotalAmount(),
             'currency' => $l->getCurrency(),
             'effectiveAt' => $l->getEffectiveAt()?->format('Y-m-d'),
             'snapshot' => $l->getSnapshot(),
+            'warnings' => $l->getWarnings(),
         ];
     }
 }

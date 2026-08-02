@@ -34,12 +34,22 @@ export interface SuggestedMaterialDto {
   };
 }
 
+/**
+ * Refonte Catalogue/Prestations (D-092) — politique commerciale "présence d'un délégué"
+ * + "forfait attendu", configurée sur cette prestation (Firm × InterventionType). Jamais
+ * un montant : uniquement des indicateurs consommés par le backend (voir
+ * RepresentativePolicyResolver) pour ajuster un tarif déjà résolu.
+ */
 export interface FirmServiceOffering {
   id: number;
   firmId: number;
   interventionType: { id: number; code: string; label: string };
   label: string | null;
   active: boolean;
+  representativePresenceRelevant: boolean;
+  representativeSuppressesInterventionFee: boolean;
+  representativeSuppressesOwnMaterialFees: boolean;
+  feeApplicable: boolean;
   suggestedMaterials: SuggestedMaterialDto[];
 }
 
@@ -121,7 +131,14 @@ export async function createFirmServiceOffering(
 export async function updateFirmServiceOffering(
   firmId: number,
   offeringId: number,
-  body: { label?: string | null; active?: boolean },
+  body: {
+    label?: string | null;
+    active?: boolean;
+    representativePresenceRelevant?: boolean;
+    representativeSuppressesInterventionFee?: boolean;
+    representativeSuppressesOwnMaterialFees?: boolean;
+    feeApplicable?: boolean;
+  },
 ): Promise<FirmServiceOffering> {
   const res = await apiClient.patch(`/api/firms/${firmId}/service-offerings/${offeringId}`, body);
   return res.data;

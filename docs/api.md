@@ -477,7 +477,8 @@ DECLARED → REJECTED
 {
   "interventionTypeId": 12,
   "primaryFirmId": 4,
-  "orderIndex": 0
+  "orderIndex": 0,
+  "representativePresent": true
 }
 ```
 
@@ -486,8 +487,9 @@ DECLARED → REJECTED
 | `interventionTypeId` | ✓ | Doit exister et être `active` |
 | `primaryFirmId` | — | Doit exister et être `active` si fourni |
 | `orderIndex` | ✓ | Position d'affichage |
+| `representativePresent` | — | D-092 — donnée factuelle ("délégué présent ?"), jamais financière |
 
-**Réponse — 201 :** `{ "id": 88 }`
+**Réponse — 201 :** `{ "id": 88, "orderIndex": 0, "representativePresent": true }`
 
 **Erreurs (codes stables, voir `ApiExceptionSubscriber`) :**
 
@@ -4297,9 +4299,19 @@ dans le body de `PATCH`). `POST` : `{ code, label, specialty? }`.
 `{ interventionTypeId, label? }`. `409` si une prestation existe déjà pour ce couple
 firme + type d'intervention (`UNIQUE(firm_id, intervention_type_id)`).
 
+**D-092 — réponse enrichie** de 4 indicateurs de politique commerciale "présence d'un
+délégué", **jamais des montants** : `representativePresenceRelevant` (la question
+doit-elle être posée à l'encodage ?), `representativeSuppressesInterventionFee`,
+`representativeSuppressesOwnMaterialFees` (conséquence si le délégué est présent),
+`feeApplicable` (défaut `true` — un forfait `INTERVENTION_FEE` est-il seulement attendu
+pour cette prestation ? `false` = "pas de forfait", jamais confondu avec un tarif
+manquant). Lus exclusivement par `FinancialCalculationService` (via
+`RepresentativePolicyResolver`), jamais par `PricingRuleResolver` — voir amendement D-092
+dans D-067 (`docs/decisions.md`).
+
 ### `PATCH /api/firms/{firmId}/service-offerings/{offeringId}`
 
-`{ label?, active? }`.
+`{ label?, active?, representativePresenceRelevant?, representativeSuppressesInterventionFee?, representativeSuppressesOwnMaterialFees?, feeApplicable? }` (D-092).
 
 ### `POST /api/firms/{firmId}/service-offerings/{offeringId}/suggested-materials`
 
@@ -4335,6 +4347,15 @@ remplacer un tarif actuellement actif.
 Accepte désormais `active` (auparavant présent en base mais jamais exposé). Le
 changement de `firmId` est refusé (`409`) dès qu'une `MaterialLine` réelle référence ce
 matériel.
+
+**D-092 — `billingStatus`** (`UNSPECIFIED` défaut / `BILLABLE` / `NOT_BILLABLE`) —
+distingue "volontairement non facturé" de "tarif pas encore configuré" (jusqu'ici
+indiscernables, tous deux traduits par une absence de `PricingRule`). `billingStatus:
+"BILLABLE"` refusé (`409`) sans `PricingRule` `MATERIAL_FEE` active existante.
+`billingStatus: "NOT_BILLABLE"` refusé (`409`) si une `PricingRule` active existe encore
+(fermer le tarif d'abord). **Auto-promotion** : créer une première `PricingRule`
+`MATERIAL_FEE` sur ce matériel (`POST /api/firms/{firmId}/pricing-rules`) le fait
+automatiquement passer à `BILLABLE`, sans appel `PATCH` séparé.
 
 ---
 
@@ -4804,7 +4825,9 @@ tarifs, construit les lignes.
   contient chaque anomalie (`code`/`message`/`context`) : `MISSING_PRIMARY_FIRM`,
   `MISSING_INTERVENTION_TYPE`, `MISSING_FIRM_INTERVENTION_RATE`,
   `MISSING_FIRM_MATERIAL_RATE`, `MISSING_INSTRUMENTIST_RATE`,
-  `INVALID_EFFECTIVE_DURATION`. Aucun calcul persisté dans ce cas.
+  `INVALID_EFFECTIVE_DURATION`, `MISSING_REPRESENTATIVE_PRESENCE_ANSWER` (D-092 — la
+  question "délégué présent ?" est pertinente pour cette prestation mais n'a jamais été
+  répondue). Aucun calcul persisté dans ce cas.
 
 ### `GET /api/missions/{missionId}/financial-calculations`
 
@@ -4814,7 +4837,16 @@ complet, y compris `SUPERSEDED`/`CANCELLED`.
 ### `GET /api/financial-calculations/{id}`
 
 Détail d'un calcul : statut, version, date effective, lignes complètes (snapshots
-inclus), totaux par devise.
+inclus), totaux par devise. **D-092** — chaque ligne expose désormais aussi
+`grossAmount` (toujours renseigné — montant avant toute politique délégué),
+`adjustmentAmount` (toujours renseigné, `"0.00"` = aucun ajustement — `totalAmount =
+grossAmount + adjustmentAmount`), et `warnings` (`{code, message}[]`, non bloquant,
+ex. `STALE_REPRESENTATIVE_PRESENCE_ANSWER`). `snapshot` gagne
+`representativePresentSnapshot`, `representativePolicySnapshot`,
+`adjustmentReasonSnapshot` (texte humain expliquant l'ajustement, `null` si aucun) et,
+pour les lignes matériel, `billingStatusSnapshot`. Consommé par
+`FinancialCalculationCard.tsx` (détail de calcul dépliable par ligne, accessible depuis
+`MissionDetailPage`).
 
 ### `POST /api/financial-calculations/{id}/recalculate`
 

@@ -5,7 +5,9 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Collapse,
   Divider,
+  IconButton,
   Paper,
   Stack,
   Table,
@@ -16,6 +18,10 @@ import {
   Typography,
 } from "@mui/material";
 import CalculateIcon from "@mui/icons-material/Calculate";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
+import WarningAmberIcon from "@mui/icons-material/WarningAmber";
+import type { FinancialCalculationLineDetail } from "../api/financialCalculation.api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   approveFinancialCalculation,
@@ -50,6 +56,61 @@ const LINE_TYPE_LABELS: Record<string, string> = {
   INSTRUMENTIST_CONSULTATION_FEE: "Consultation (instrumentiste)",
 };
 
+/**
+ * Refonte Catalogue/Prestations (D-092) — détail du calcul par ligne, dépliable.
+ * Distingue toujours brut/ajustement/final, jamais un total opaque, et affiche la
+ * raison exacte de l'ajustement quand une politique délégué s'est appliquée.
+ */
+function LineDetailRow({ line }: { line: FinancialCalculationLineDetail }) {
+  const snapshot = line.snapshot;
+  const hasAdjustment = Number(line.adjustmentAmount) !== 0;
+  const representativePresent = snapshot.representativePresentSnapshot;
+  const adjustmentReason = snapshot.adjustmentReasonSnapshot;
+
+  return (
+    <Box sx={{ py: 1.5, px: 2, bgcolor: "grey.50", borderRadius: 1 }}>
+      <Stack spacing={0.5}>
+        <Stack direction="row" justifyContent="space-between">
+          <Typography variant="caption" color="text.secondary">Montant brut</Typography>
+          <Typography variant="caption" fontWeight={600}>{Number(line.grossAmount).toFixed(2)} {line.currency}</Typography>
+        </Stack>
+        {representativePresent !== undefined && representativePresent !== null && (
+          <Stack direction="row" justifyContent="space-between">
+            <Typography variant="caption" color="text.secondary">Délégué présent</Typography>
+            <Typography variant="caption">{representativePresent ? "Oui" : "Non"}</Typography>
+          </Stack>
+        )}
+        {hasAdjustment && (
+          <>
+            <Stack direction="row" justifyContent="space-between">
+              <Typography variant="caption" color="text.secondary">Règle appliquée</Typography>
+              <Typography variant="caption" sx={{ maxWidth: "60%", textAlign: "right" }}>{adjustmentReason ?? "—"}</Typography>
+            </Stack>
+            <Stack direction="row" justifyContent="space-between">
+              <Typography variant="caption" color="text.secondary">Ajustement</Typography>
+              <Typography variant="caption" color="error.main" fontWeight={600}>{Number(line.adjustmentAmount).toFixed(2)} {line.currency}</Typography>
+            </Stack>
+          </>
+        )}
+        <Divider sx={{ my: 0.5 }} />
+        <Stack direction="row" justifyContent="space-between">
+          <Typography variant="caption" fontWeight={700}>Montant final</Typography>
+          <Typography variant="caption" fontWeight={700}>{Number(line.totalAmount).toFixed(2)} {line.currency}</Typography>
+        </Stack>
+        {line.warnings.length > 0 && (
+          <Stack spacing={0.5} sx={{ mt: 1 }}>
+            {line.warnings.map((w, i) => (
+              <Alert key={i} severity="warning" variant="outlined" icon={<WarningAmberIcon fontSize="small" />} sx={{ py: 0, fontSize: ".75rem" }}>
+                {w.message}
+              </Alert>
+            ))}
+          </Stack>
+        )}
+      </Stack>
+    </Box>
+  );
+}
+
 function extractError(err: unknown): string {
   const e = err as any;
   const violations = e?.response?.data?.error?.violations;
@@ -74,6 +135,15 @@ export default function FinancialCalculationCard({ missionId }: Props) {
   const toast = useToast();
   const qc = useQueryClient();
   const [showHistory, setShowHistory] = React.useState(false);
+  const [expandedLineIds, setExpandedLineIds] = React.useState<Set<number>>(new Set());
+
+  function toggleLine(id: number) {
+    setExpandedLineIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
 
   const query = useQuery({
     queryKey: ["mission-financial-calculations", missionId],
@@ -150,6 +220,7 @@ export default function FinancialCalculationCard({ missionId }: Props) {
           <Table size="small">
             <TableHead>
               <TableRow>
+                <TableCell />
                 <TableCell>Bénéficiaire</TableCell>
                 <TableCell>Type</TableCell>
                 <TableCell>Description</TableCell>
@@ -159,16 +230,40 @@ export default function FinancialCalculationCard({ missionId }: Props) {
               </TableRow>
             </TableHead>
             <TableBody>
-              {active.lines.map((l) => (
-                <TableRow key={l.id}>
-                  <TableCell>{l.beneficiaryType === "FIRM" ? "Firme" : "Instrumentiste"}</TableCell>
-                  <TableCell>{LINE_TYPE_LABELS[l.lineType] ?? l.lineType}</TableCell>
-                  <TableCell>{l.descriptionSnapshot}</TableCell>
-                  <TableCell align="right">{l.quantity}</TableCell>
-                  <TableCell align="right">{Number(l.unitAmount).toFixed(2)} {l.currency}</TableCell>
-                  <TableCell align="right"><strong>{Number(l.totalAmount).toFixed(2)} {l.currency}</strong></TableCell>
-                </TableRow>
-              ))}
+              {active.lines.map((l) => {
+                const expanded = expandedLineIds.has(l.id);
+                const hasAdjustment = Number(l.adjustmentAmount) !== 0;
+                return (
+                  <React.Fragment key={l.id}>
+                    <TableRow hover sx={{ cursor: "pointer" }} onClick={() => toggleLine(l.id)}>
+                      <TableCell sx={{ width: 32, p: 0.5 }}>
+                        <IconButton size="small">
+                          {expanded ? <KeyboardArrowUpIcon fontSize="small" /> : <KeyboardArrowDownIcon fontSize="small" />}
+                        </IconButton>
+                      </TableCell>
+                      <TableCell>{l.beneficiaryType === "FIRM" ? "Firme" : "Instrumentiste"}</TableCell>
+                      <TableCell>{LINE_TYPE_LABELS[l.lineType] ?? l.lineType}</TableCell>
+                      <TableCell>
+                        {l.descriptionSnapshot}
+                        {hasAdjustment && <Chip size="small" label="Ajustée" color="info" variant="outlined" sx={{ ml: 1, height: 18, fontSize: ".65rem" }} />}
+                        {l.warnings.length > 0 && <WarningAmberIcon fontSize="small" color="warning" sx={{ ml: 0.5, verticalAlign: "middle" }} />}
+                      </TableCell>
+                      <TableCell align="right">{l.quantity}</TableCell>
+                      <TableCell align="right">{Number(l.unitAmount).toFixed(2)} {l.currency}</TableCell>
+                      <TableCell align="right"><strong>{Number(l.totalAmount).toFixed(2)} {l.currency}</strong></TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell colSpan={7} sx={{ py: 0, border: expanded ? undefined : "none" }}>
+                        <Collapse in={expanded} unmountOnExit>
+                          <Box sx={{ my: 1 }}>
+                            <LineDetailRow line={l} />
+                          </Box>
+                        </Collapse>
+                      </TableCell>
+                    </TableRow>
+                  </React.Fragment>
+                );
+              })}
             </TableBody>
           </Table>
 

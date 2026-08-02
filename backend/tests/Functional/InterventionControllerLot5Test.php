@@ -239,6 +239,63 @@ final class InterventionControllerLot5Test extends WebTestCase
         self::assertSame($type->getLabel(), $intervention->getLabel());
     }
 
+    /**
+     * Refonte Catalogue/Prestations (D-092) — donnée factuelle, jamais un champ
+     * financier : la réponse ne contient que id/orderIndex/representativePresent, aucun
+     * montant, cohérent avec "l'instrumentiste ne voit jamais tarif/montant/règle".
+     */
+    public function test_create_and_update_round_trip_representative_present(): void
+    {
+        [$client, $mission, $token] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $firm = $this->makeFirm();
+
+        $createResponse = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+            'interventionTypeId' => $type->getId(),
+            'primaryFirmId' => $firm->getId(),
+            'orderIndex' => 0,
+            'representativePresent' => true,
+        ]);
+        self::assertSame(Response::HTTP_CREATED, $createResponse->getStatusCode(), $createResponse->getContent());
+        $createBody = json_decode($createResponse->getContent(), true);
+        self::assertArrayHasKey('representativePresent', $createBody);
+        self::assertTrue($createBody['representativePresent']);
+        self::assertArrayNotHasKey('unitAmount', $createBody);
+        self::assertArrayNotHasKey('totalAmount', $createBody);
+        $id = $createBody['id'];
+
+        $this->em->clear();
+        $intervention = $this->em->find(MissionIntervention::class, $id);
+        self::assertTrue($intervention->getRepresentativePresent());
+
+        $updateResponse = $this->request($client, 'PATCH', "/api/missions/{$mission->getId()}/interventions/{$id}", $token, [
+            'representativePresent' => false,
+        ]);
+        self::assertSame(Response::HTTP_NO_CONTENT, $updateResponse->getStatusCode(), $updateResponse->getContent());
+
+        $this->em->clear();
+        $intervention = $this->em->find(MissionIntervention::class, $id);
+        self::assertFalse($intervention->getRepresentativePresent());
+    }
+
+    public function test_create_defaults_representative_present_to_null_when_not_provided(): void
+    {
+        [$client, $mission, $token] = $this->bootMissionScenario();
+        $type = $this->makeType();
+
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+            'interventionTypeId' => $type->getId(),
+            'orderIndex' => 0,
+        ]);
+
+        self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
+        $id = json_decode($response->getContent(), true)['id'];
+
+        $this->em->clear();
+        $intervention = $this->em->find(MissionIntervention::class, $id);
+        self::assertNull($intervention->getRepresentativePresent());
+    }
+
     public function test_create_with_type_and_no_primary_firm_succeeds(): void
     {
         [$client, $mission, $token] = $this->bootMissionScenario();

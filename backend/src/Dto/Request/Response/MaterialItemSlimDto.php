@@ -12,5 +12,6 @@ final class MaterialItemSlimDto
         public readonly string $unit,
         public readonly bool $isImplant,
         public readonly bool $active,
+        public readonly string $billingStatus = 'UNSPECIFIED',
     ) {}
 }

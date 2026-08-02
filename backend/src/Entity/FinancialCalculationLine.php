@@ -91,6 +91,24 @@ class FinancialCalculationLine
     #[ORM\Column(name: 'unit_amount', type: 'decimal', precision: 10, scale: 2)]
     private ?string $unitAmount = null;
 
+    /**
+     * Refonte Catalogue/Prestations (D-092) — montant AVANT toute politique délégué,
+     * toujours renseigné (jamais null) : identique à totalAmount quand aucun ajustement
+     * n'a été appliqué. Permet au manager de toujours voir "ce que ça aurait coûté sans
+     * la règle commerciale", même pour une ligne jamais neutralisée.
+     */
+    #[ORM\Column(name: 'gross_amount', type: 'decimal', precision: 10, scale: 2)]
+    private ?string $grossAmount = null;
+
+    /**
+     * totalAmount - grossAmount, toujours renseigné (0.00 = aucun ajustement). Jamais
+     * déduit implicitement : persisté explicitement au moment du calcul pour rester
+     * exact même si la politique FirmServiceOffering change ensuite (snapshot D-073).
+     */
+    #[ORM\Column(name: 'adjustment_amount', type: 'decimal', precision: 10, scale: 2, options: ['default' => '0.00'])]
+    private string $adjustmentAmount = '0.00';
+
+    /** Montant réellement facturé — sémantique inchangée (D-073), = grossAmount + adjustmentAmount. */
     #[ORM\Column(name: 'total_amount', type: 'decimal', precision: 10, scale: 2)]
     private ?string $totalAmount = null;
 
@@ -103,6 +121,17 @@ class FinancialCalculationLine
     /** @var array<string, mixed> */
     #[ORM\Column(type: 'json')]
     private array $snapshot = [];
+
+    /**
+     * Refonte Catalogue/Prestations (D-092) — avertissements non bloquants (distincts
+     * des anomalies de FinancialCalculationAnomaly, qui empêchent tout le calcul). Une
+     * ligne avec des warnings est tout de même persistée normalement. Structure minimale
+     * : {code: string, message: string}[] — voir §24 de l'ADR.
+     *
+     * @var array<int, array{code: string, message: string}>
+     */
+    #[ORM\Column(type: 'json')]
+    private array $warnings = [];
 
     #[ORM\Column(name: 'created_at', type: 'datetime_immutable')]
     private ?\DateTimeImmutable $createdAt = null;
@@ -170,6 +199,12 @@ class FinancialCalculationLine
     public function getUnitAmount(): string { return $this->unitAmount; }
     public function setUnitAmount(string $unitAmount): static { $this->unitAmount = $unitAmount; return $this; }
 
+    public function getGrossAmount(): string { return $this->grossAmount; }
+    public function setGrossAmount(string $grossAmount): static { $this->grossAmount = $grossAmount; return $this; }
+
+    public function getAdjustmentAmount(): string { return $this->adjustmentAmount; }
+    public function setAdjustmentAmount(string $adjustmentAmount): static { $this->adjustmentAmount = $adjustmentAmount; return $this; }
+
     public function getTotalAmount(): string { return $this->totalAmount; }
     public function setTotalAmount(string $totalAmount): static { $this->totalAmount = $totalAmount; return $this; }
 
@@ -183,6 +218,11 @@ class FinancialCalculationLine
     public function getSnapshot(): array { return $this->snapshot; }
     /** @param array<string, mixed> $snapshot */
     public function setSnapshot(array $snapshot): static { $this->snapshot = $snapshot; return $this; }
+
+    /** @return array<int, array{code: string, message: string}> */
+    public function getWarnings(): array { return $this->warnings; }
+    /** @param array<int, array{code: string, message: string}> $warnings */
+    public function setWarnings(array $warnings): static { $this->warnings = $warnings; return $this; }
 
     public function getCreatedAt(): ?\DateTimeImmutable { return $this->createdAt; }
 

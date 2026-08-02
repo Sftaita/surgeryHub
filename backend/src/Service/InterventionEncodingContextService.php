@@ -54,6 +54,7 @@ final class InterventionEncodingContextService
                 firm: new FirmSlimDto(id: (int) $o->getFirm()->getId(), name: (string) $o->getFirm()->getName()),
                 label: $o->getLabel(),
                 suggestedMaterials: $suggested,
+                representativePresenceRelevant: $o->isRepresentativePresenceRelevant(),
             );
         }
 

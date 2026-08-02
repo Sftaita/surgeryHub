@@ -6,9 +6,11 @@ use App\Dto\Request\MaterialItemFilter;
 use App\Entity\Firm;
 use App\Entity\MaterialItem;
 use App\Entity\MaterialLine;
+use App\Enum\MaterialBillingStatus;
 use App\Security\Voter\BillingVoter;
 use App\Service\MaterialCatalogService;
 use App\Service\MaterialItemMapper;
+use App\Service\PricingRuleResolver;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -28,6 +30,7 @@ final class MaterialCatalogController extends AbstractController
         private readonly MaterialItemMapper $mapper,
         private readonly EntityManagerInterface $em,
         private readonly ValidatorInterface $validator,
+        private readonly PricingRuleResolver $pricingRuleResolver,
     ) {}
 
     /**
@@ -206,6 +209,33 @@ final class MaterialCatalogController extends AbstractController
 
         if (array_key_exists('active', $body)) {
             $mi->setActive((bool) $body['active']);
+        }
+
+        if (array_key_exists('billingStatus', $body)) {
+            $requested = MaterialBillingStatus::tryFrom((string) $body['billingStatus']);
+            if ($requested === null) {
+                return $this->json(['message' => 'billingStatus invalide (UNSPECIFIED, BILLABLE ou NOT_BILLABLE attendu).'], Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+
+            $hasActiveRate = $this->pricingRuleResolver->resolveMaterialFee($mi, new \DateTimeImmutable('today')) !== null;
+
+            // Refonte Catalogue/Prestations (D-092) §15 : impossible de déclarer un
+            // matériel facturable sans tarif actif — jamais une incohérence silencieuse.
+            if ($requested === MaterialBillingStatus::BILLABLE && !$hasActiveRate) {
+                return $this->json([
+                    'message' => 'Impossible de marquer ce matériel comme facturable sans tarif actif — configurez d\'abord un tarif.',
+                ], Response::HTTP_CONFLICT);
+            }
+
+            // Un matériel avec un tarif actif reste facturable par construction — une
+            // décision "non facturable" doit d'abord passer par la fermeture du tarif.
+            if ($requested === MaterialBillingStatus::NOT_BILLABLE && $hasActiveRate) {
+                return $this->json([
+                    'message' => 'Impossible de marquer ce matériel comme non facturable : un tarif actif existe encore pour lui.',
+                ], Response::HTTP_CONFLICT);
+            }
+
+            $mi->setBillingStatus($requested);
         }
 
         try {

@@ -165,6 +165,62 @@ final class FirmServiceOfferingControllerTest extends WebTestCase
         self::assertSame([], $body['suggestedMaterials']);
     }
 
+    /**
+     * Refonte Catalogue/Prestations (D-092) — correctif revue de sécurité :
+     * `list()` n'a jamais eu de garde BillingVoter::MANAGE (par conception, c'est
+     * l'endpoint que consomme l'encodage instrumentiste). Les 3 champs de politique
+     * délégué qui révèlent une CONSÉQUENCE financière
+     * (representativeSuppressesInterventionFee/OwnMaterialFees, feeApplicable) ne
+     * doivent jamais apparaître pour un rôle non-manager — seul
+     * representativePresenceRelevant (qui ne fait que gater la question, jamais un
+     * montant) reste universellement exposé.
+     */
+    public function test_instrumentist_sees_relevance_flag_but_never_the_financial_consequence_fields(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $firm = $this->makeFirm();
+        $type = $this->makeType();
+
+        $createResponse = $this->request($client, 'POST', "/api/firms/{$firm->getId()}/service-offerings", $managerToken, [
+            'interventionTypeId' => $type->getId(),
+        ]);
+        self::assertSame(Response::HTTP_CREATED, $createResponse->getStatusCode(), $createResponse->getContent());
+        $offeringId = json_decode($createResponse->getContent(), true)['id'];
+        $this->createdOfferingIds[] = $offeringId;
+
+        $patchResponse = $this->request($client, 'PATCH', "/api/firms/{$firm->getId()}/service-offerings/{$offeringId}", $managerToken, [
+            'representativePresenceRelevant' => true,
+            'representativeSuppressesInterventionFee' => true,
+            'representativeSuppressesOwnMaterialFees' => true,
+            'feeApplicable' => false,
+        ]);
+        self::assertSame(Response::HTTP_OK, $patchResponse->getStatusCode(), $patchResponse->getContent());
+
+        // Le manager voit les 4 champs.
+        $managerListResponse = $this->request($client, 'GET', "/api/firms/{$firm->getId()}/service-offerings", $managerToken);
+        self::assertSame(Response::HTTP_OK, $managerListResponse->getStatusCode());
+        $managerBody = json_decode($managerListResponse->getContent(), true)[0];
+        self::assertTrue($managerBody['representativePresenceRelevant']);
+        self::assertArrayHasKey('representativeSuppressesInterventionFee', $managerBody);
+        self::assertTrue($managerBody['representativeSuppressesInterventionFee']);
+        self::assertArrayHasKey('representativeSuppressesOwnMaterialFees', $managerBody);
+        self::assertArrayHasKey('feeApplicable', $managerBody);
+        self::assertFalse($managerBody['feeApplicable']);
+
+        // L'instrumentiste voit UNIQUEMENT representativePresenceRelevant.
+        $instrumentist = $this->createUser('ROLE_INSTRUMENTIST');
+        $instrumentistToken = $this->login($client, $instrumentist);
+        $instrListResponse = $this->request($client, 'GET', "/api/firms/{$firm->getId()}/service-offerings", $instrumentistToken);
+        self::assertSame(Response::HTTP_OK, $instrListResponse->getStatusCode());
+        $instrBody = json_decode($instrListResponse->getContent(), true)[0];
+        self::assertTrue($instrBody['representativePresenceRelevant'], 'nécessaire pour savoir si la question doit être posée');
+        self::assertArrayNotHasKey('representativeSuppressesInterventionFee', $instrBody, 'conséquence financière — ne doit jamais fuiter à un rôle non-manager');
+        self::assertArrayNotHasKey('representativeSuppressesOwnMaterialFees', $instrBody, 'conséquence financière — ne doit jamais fuiter à un rôle non-manager');
+        self::assertArrayNotHasKey('feeApplicable', $instrBody, 'conséquence financière — ne doit jamais fuiter à un rôle non-manager');
+    }
+
     public function test_missing_intervention_type_is_rejected(): void
     {
         $client = $this->boot();

@@ -28,6 +28,7 @@ final class MaterialItemMapper
             unit: (string) $mi->getUnit(),
             isImplant: (bool) $mi->isImplant(),
             active: (bool) $mi->isActive(),
+            billingStatus: $mi->getBillingStatus()->value,
         );
     }
 }

@@ -21,6 +21,14 @@ class MissionInterventionCreateRequest
     public ?int $primaryFirmId = null;
 
     /**
+     * Refonte Catalogue/Prestations (D-092) — donnée factuelle facultative à la
+     * création : la question n'est affichée par le frontend que si
+     * FirmServiceOffering.representativePresenceRelevant est vrai pour (firm, type),
+     * mais rien n'empêche de la fournir dès la création si déjà connue.
+     */
+    public ?bool $representativePresent = null;
+
+    /**
      * @deprecated EPIC Revue instrumentiste, Lot 3 — n'est plus utilisé par
      * InterventionService::create() : le serveur alloue seul la position via
      * MissionEntryOrderAllocator (voir son docblock). Le champ reste accepté en entrée

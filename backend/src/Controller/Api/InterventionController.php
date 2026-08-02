@@ -50,7 +50,11 @@ class InterventionController extends AbstractController
 
         // orderIndex : l'index réellement alloué par le serveur (MissionEntryOrderAllocator),
         // jamais celui envoyé par le client — voir MissionInterventionCreateRequest::$orderIndex.
-        return $this->json(['id' => $intervention->getId(), 'orderIndex' => $intervention->getOrderIndex()], Response::HTTP_CREATED);
+        return $this->json([
+            'id' => $intervention->getId(),
+            'orderIndex' => $intervention->getOrderIndex(),
+            'representativePresent' => $intervention->getRepresentativePresent(),
+        ], Response::HTTP_CREATED);
     }
 
     #[Route('/{interventionId}', methods: ['PATCH'])]
@@ -88,6 +92,11 @@ class InterventionController extends AbstractController
 
         if (array_key_exists('orderIndex', $body) && $body['orderIndex'] !== null) {
             $dto->orderIndex = (int) $body['orderIndex'];
+        }
+
+        if (array_key_exists('representativePresent', $body)) {
+            $dto->representativePresentProvided = true;
+            $dto->representativePresent = $body['representativePresent'] !== null ? (bool) $body['representativePresent'] : null;
         }
 
         $this->service->update($intervention, $dto);

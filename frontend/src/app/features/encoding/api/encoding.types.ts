@@ -94,6 +94,13 @@ export type EncodingIntervention = {
    *  primaryFirm n'est pas défini ou si aucune prestation ne couvre ce couple. */
   suggestedMaterials: CatalogItem[];
   coherence: MissionInterventionCoherence;
+  /**
+   * Refonte Catalogue/Prestations (D-092) — donnée factuelle, jamais financière. null =
+   * jamais répondu (legacy, ou question non pertinente pour cette prestation). Optionnel
+   * (et non `| undefined` sur le champ lui-même) pour rester compatible avec les fixtures
+   * de test existantes qui ne le fournissent pas encore.
+   */
+  representativePresent?: boolean | null;
 };
 
 /** "Demande de nouveau type" (Lot 5, D-068) — pas rattachée à une intervention : elle
@@ -131,6 +138,8 @@ export type MissionEncodingInterventionEntry = {
   readOnly: boolean;
   materialLines: EncodingEntryMaterialLine[];
   materialItemRequests: EncodingEntryMaterialItemRequest[];
+  /** Refonte Catalogue/Prestations (D-092) — donnée factuelle, jamais financière. */
+  representativePresent?: boolean | null;
 };
 
 export type MissionEncodingDraftEntry = {
@@ -164,6 +173,12 @@ export type FirmServiceOfferingEncodingContext = {
   firm: CatalogFirm;
   label: string | null;
   suggestedMaterials: CatalogItem[];
+  /**
+   * Refonte Catalogue/Prestations (D-092) — n'affiche la question "délégué présent ?" à
+   * l'encodage que si ce champ est vrai pour la firme effectivement choisie. Jamais un
+   * montant, jamais une politique de calcul.
+   */
+  representativePresenceRelevant: boolean;
 };
 
 export type InterventionTypeEncodingContext = {
@@ -232,6 +247,9 @@ export type MissionEncodingResponse = {
  */
 export type MissionInterventionDto = {
   id: number;
+  orderIndex?: number;
+  /** Refonte Catalogue/Prestations (D-092) — présent uniquement sur la réponse de création. */
+  representativePresent?: boolean | null;
 };
 
 /**
@@ -243,16 +261,20 @@ export type CreateInterventionBody = {
   interventionTypeId: number;
   primaryFirmId?: number;
   orderIndex: number;
+  /** Refonte Catalogue/Prestations (D-092) — facultatif, uniquement si déjà connu à la création. */
+  representativePresent?: boolean;
 };
 
 /**
  * `primaryFirmId` supporte le retrait explicite : omettre la clé = ne pas toucher à la
- * firme actuelle ; `primaryFirmId: null` = la retirer.
+ * firme actuelle ; `primaryFirmId: null` = la retirer. Même tri-état pour
+ * `representativePresent` (D-092).
  */
 export type PatchInterventionBody = {
   interventionTypeId?: number;
   primaryFirmId?: number | null;
   orderIndex?: number;
+  representativePresent?: boolean | null;
 };
 
 /**

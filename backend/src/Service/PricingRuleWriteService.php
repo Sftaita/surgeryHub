@@ -6,6 +6,7 @@ use App\Entity\Firm;
 use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
 use App\Entity\PricingRule;
+use App\Enum\MaterialBillingStatus;
 use App\Enum\PricingRuleType;
 use App\Exception\PricingRuleImmutableException;
 use App\Exception\PricingRulePeriodOverlapException;
@@ -60,6 +61,19 @@ final class PricingRuleWriteService
             }
 
             $this->em->persist($rule);
+
+            // Refonte Catalogue/Prestations (D-092) — auto-promotion : poser un premier
+            // tarif matériel déclare implicitement ce matériel facturable, sans geste
+            // manager supplémentaire. Ne rétrograde jamais un NOT_BILLABLE explicite dans
+            // l'autre sens (voir MaterialCatalogController — seul chemin qui repasse en
+            // NOT_BILLABLE, et seulement si plus aucun tarif actif n'existe).
+            if ($rule->getRuleType() === PricingRuleType::MATERIAL_FEE) {
+                $item = $rule->getMaterialItem();
+                if ($item !== null && $item->getBillingStatus() !== MaterialBillingStatus::BILLABLE) {
+                    $item->setBillingStatus(MaterialBillingStatus::BILLABLE);
+                }
+            }
+
             $this->em->flush();
         });
 

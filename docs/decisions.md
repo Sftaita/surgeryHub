@@ -3318,6 +3318,20 @@ montant déjà calculable. Un test d'intégration dédié (`PricingRuleResolverT
 littéralement ce scénario (création d'une prestation + suggestions, suppression
 complète, nouvelle résolution identique).
 
+> **Amendement D-092 (2026-08-02) — exception scopée, jamais monétaire :**
+> `PricingRuleResolver` reste inchangé et garde cet invariant à la lettre — vérifié
+> structurellement par `PricingRuleResolverArchitectureTest` (aucun import de
+> `FirmServiceOffering`, aucune dépendance constructeur). `FinancialCalculationService`
+> (jamais `PricingRuleResolver`) est désormais le seul consommateur autorisé à lire, via
+> `RepresentativePolicyResolver`, quatre indicateurs **non-monétaires** de
+> `FirmServiceOffering` (`representativePresenceRelevant`,
+> `representativeSuppressesInterventionFee`, `representativeSuppressesOwnMaterialFees`,
+> `feeApplicable`) — et uniquement **après** résolution normale du tarif par
+> `PricingRuleResolver`, jamais avant, jamais à sa place. Le montant brut provient
+> toujours et exclusivement d'une `PricingRule` ; la politique délégué ne peut
+> qu'appliquer un ajustement post-résolution (voir D-092). `SuggestedMaterial` reste
+> totalement hors-jeu, y compris dans cette exception.
+
 `isImplant` (`MaterialItem`) redevient une information médicale pure — la seule source
 de vérité du caractère facturable d'un matériel est désormais l'existence d'une
 `PricingRule` active (`MATERIAL_FEE`, renommé depuis `IMPLANT_FEE`), quel que soit ce
@@ -6241,3 +6255,192 @@ Pas de modélisation de temps de trajet entre sites (limite assumée ci-dessus).
 revalidation de l'état du poste (`SurgeonSchedulePost.active`) au-delà de ce que D-090
 couvre déjà. Base de test locale non réinitialisée (collision `FIRM-2026-219`,
 préexistante, hors périmètre).
+
+---
+
+## D-092 — Refonte Catalogue/Prestations : politique commerciale "présence d'un délégué", distinction facturable/non-facturable, explicabilité complète des calculs (2026-08-02)
+
+Date : 2026-08-02
+
+### Contexte
+
+Chantier fonctionnel demandé sur `/app/m/catalogue/prestations`, au-delà de la simple
+règle métier "présence d'un délégué" : simplifier l'expérience manager, réduire les
+erreurs de configuration tarifaire, clarifier catalogue/prestation/matériel/tarification,
+et rendre tout calcul financier explicable. Audité avant toute modification : le modèle
+existant (D-067 à D-079) était sain mais incomplet sur trois axes précis — (1) aucune
+donnée de présence délégué nulle part, (2) aucune distinction entre "volontairement non
+facturé" et "tarif oublié", (3) `FinancialCalculationLine` ne portait qu'un montant final,
+sans distinction brut/ajustement.
+
+### Décision — règle métier retenue
+
+Une politique commerciale "présence d'un délégué" est configurée sur `FirmServiceOffering`
+(Firm × InterventionType, jamais sur `Firm` seule) via quatre indicateurs :
+`representativePresenceRelevant` (la question doit-elle être posée à l'encodage ?),
+`representativeSuppressesInterventionFee`, `representativeSuppressesOwnMaterialFees`
+(l'un ou l'autre, ou les deux), `feeApplicable` (un forfait est-il seulement attendu pour
+cette prestation ?). La présence effective du délégué est une donnée **factuelle**,
+encodée par l'instrumentiste sur `MissionIntervention.representativePresent` (nullable —
+`null` = jamais répondu), jamais une donnée de `Mission` globale, jamais une notion
+financière en elle-même. Le moteur financier décide seul de la conséquence.
+
+**Exemple ConMed** (LCA, `representativePresenceRelevant=true`,
+`representativeSuppressesInterventionFee=true`, `representativeSuppressesOwnMaterialFees=true`,
+délégué présent) : forfait 150 € → 0 € (ajustement -150 €), matériel ConMed 45 € → 0 €
+(ajustement -45 €), matériel Smith & Nephew de la même intervention → 20 € inchangé (la
+politique ConMed ne neutralise jamais une ligne d'une autre firme, §19/§20 du prompt).
+**Exemple Smith & Nephew** (`representativePresenceRelevant=false`) : même si un délégué
+SN est signalé présent, aucun effet — un avertissement non bloquant
+(`STALE_REPRESENTATIVE_PRESENCE_ANSWER`) signale l'incohérence sans jamais bloquer le
+calcul.
+
+### Décision — exception scopée à l'invariant D-067 (arbitrage explicite)
+
+Voir l'amendement inséré directement dans D-067 ci-dessus. Résumé : `PricingRuleResolver`
+reste 100% pur (aucune dépendance, structurellement prouvée par
+`PricingRuleResolverArchitectureTest`) ; `FinancialCalculationService` est seul autorisé à
+lire les 4 indicateurs non-monétaires de `FirmServiceOffering`, uniquement **après**
+résolution normale du tarif, pour appliquer un ajustement — jamais une source de montant.
+Ordre logique fixé : `FirmServiceOffering` répond "ce forfait doit-il exister ?" (via
+`feeApplicable`) → `PricingRuleResolver` répond "quel est son montant ?" →
+`FinancialCalculationService` répond "quel montant final après ajustement ?".
+
+### Décision — statuts pris en compte pour la neutralisation
+
+Un matériel dont la firme est **exactement** la firme principale de l'intervention à
+laquelle il est rattaché (`MaterialLine.missionIntervention.primaryFirm`) peut être
+neutralisé. `MaterialLine` sans intervention réelle rattachée (unattached, ou attachée à
+un `MissionInterventionDraft`) n'a jamais de contexte délégué — résolue normalement, sans
+neutralisation possible. Aucune contamination inter-intervention au sein d'une même
+`Mission` (chaque `MissionIntervention` a son propre `representativePresent` et sa propre
+politique résolue indépendamment).
+
+### Décision — distinction facturable / non facturable (matériel)
+
+Nouveau `MaterialItem.billingStatus` (enum `UNSPECIFIED` défaut / `BILLABLE` /
+`NOT_BILLABLE`). `NOT_BILLABLE` → absence de `PricingRule` valide, aucune ligne générée,
+aucune anomalie. `BILLABLE`/`UNSPECIFIED` sans règle active → anomalie bloquante inchangée
+(`MISSING_FIRM_MATERIAL_RATE`) — jamais un 0€ silencieux. **Auto-promotion** : poser une
+première `PricingRule` `MATERIAL_FEE` sur un matériel (`PricingRuleWriteService::create()`)
+le fait automatiquement passer à `BILLABLE`, sans geste manager supplémentaire — cohérent
+avec le formulaire unique "Facturable + Tarif" du prompt. Rétrograder à `NOT_BILLABLE`
+n'est autorisé (`MaterialCatalogController::update()`) que si aucune `PricingRule` active
+n'existe — sinon 409, le manager doit d'abord fermer le tarif. Backfill de migration :
+`BILLABLE` uniquement pour les matériels ayant aujourd'hui une `PricingRule` `MATERIAL_FEE`
+active, `UNSPECIFIED` partout ailleurs — jamais `NOT_BILLABLE` par défaut (ce serait
+deviner une décision commerciale jamais prise).
+
+### Décision — distinction "pas de forfait" / "tarif manquant" (prestation)
+
+Même logique via `FirmServiceOffering.feeApplicable` (défaut `true` = comportement
+identique à avant ce lot). `feeApplicable=false` → aucune résolution `INTERVENTION_FEE`
+tentée, état valide, aucune ligne, aucune anomalie ("Pas de forfait"). `feeApplicable=true`
+sans `PricingRule` active → anomalie bloquante inchangée ("Tarif à définir" côté UI,
+jamais affiché comme 0,00 €).
+
+### Décision — explicabilité financière (`FinancialCalculationLine`)
+
+Trois colonnes additives : `grossAmount` (toujours renseigné — identique à `totalAmount`
+si aucun ajustement), `adjustmentAmount` (toujours renseigné, `"0.00"` = aucun ajustement),
+`warnings` (JSON, non bloquant, distinct des anomalies qui empêchent tout le calcul).
+`snapshot` enrichi de `representativePresentSnapshot`, `representativePolicySnapshot` (les
+4 indicateurs au moment du calcul), `adjustmentReasonSnapshot` (texte humain),
+`billingStatusSnapshot` (lignes matériel). Un ancien calcul déjà persisté n'est **jamais**
+affecté par un changement ultérieur de politique — testé explicitement
+(`test_old_calculation_unaffected_by_later_policy_change`).
+
+**Distinction des zéros (§23 du prompt), non négociable** : un 0€ de neutralisation
+commerciale porte toujours `adjustmentAmount != "0.00"` et `adjustmentReasonSnapshot`
+renseigné — jamais confondu avec l'absence de résolution (qui reste une anomalie
+bloquante empêchant toute persistance, comportement D-073 inchangé).
+
+### Décision — nouvelle anomalie bloquante
+
+`MISSING_REPRESENTATIVE_PRESENCE_ANSWER` : la question est pertinente
+(`representativePresenceRelevant=true`) mais `MissionIntervention.representativePresent`
+est encore `null` au moment du calcul — défense en profondeur (l'UI encodage bloque déjà
+la finalisation dans ce cas, §10 du prompt), jamais un 0€ implicite si la réponse n'a
+jamais été donnée (`test_representative_present_never_turns_a_missing_rate_into_a_valid_zero`).
+
+### API / DTO (extension, aucun nouvel endpoint pour le calcul)
+
+`GET /api/financial-calculations/{id}` (existant) étend `serializeLine()` :
+`grossAmount`/`adjustmentAmount`/`warnings` ajoutés au JSON. `GET /api/firms/{firmId}/service-offerings`
+et `PATCH .../service-offerings/{id}` (existants) acceptent/exposent les 4 indicateurs.
+`POST`/`PATCH /api/missions/{id}/interventions` (existants) acceptent
+`representativePresent` en tri-état (absent = inchangé, `null` = retire explicitement,
+valeur = Oui/Non) — réponse minimale (`id`/`orderIndex`/`representativePresent`), jamais
+de champ financier exposé à l'instrumentiste. `GET /api/intervention-types/{id}/encoding-context`
+(existant) expose désormais `representativePresenceRelevant` par prestation, pour que le
+frontend sache quand poser la question. `PATCH /api/material-items/{id}` accepte
+`billingStatus`, validé selon les règles ci-dessus.
+
+### Frontend — minimal, mécanique interne masquée (§1/§2 du prompt)
+
+`PrestationsPage.tsx` : onglet renommé "Matériel" (au lieu de "Matériel facturable") ;
+boutons d'ajout compacts (`IconButton` + `aria-label`, tooltip) au lieu de boutons texte ;
+états vides dédiés (`EmptyState`, icône + titre + sous-texte + CTA) pour les deux onglets ;
+ajout de prestation en un seul écran (`AddOfferingDialog` réécrit : recherche
+texte-libre → sélection ou `+ Créer «X»` → formulaire de création intégré, "Créer et
+ajouter" enchaîne directement la création du type ET son rattachement à la firme, jamais
+un second clic) ; détail d'une prestation au clic (`OfferingDetailDialog`, nouveau :
+forfait/matériels suggérés/politique délégué en un seul écran) ; onglet Matériel liste
+désormais **tous** les `MaterialItem` de la firme (plus seulement ceux ayant déjà un
+tarif) ; suppression du bouton global "Ajouter un tarif matériel" — le tarif se pilote
+depuis la ligne matériel (`MaterialRateDialog`, déjà capable de créer un premier tarif
+via `RateVersionManager::onCreateFirst`) ; `MaterialItemFormDialog` gagne une prop
+`firmLocked` (masque le sélecteur Firme quand le contexte le connaît déjà — Prestations —,
+inchangé pour CataloguePage). `FinancialCalculationCard.tsx` : chaque ligne devient
+dépliable ("Détail du calcul" — brut/délégué/règle appliquée/ajustement/final/warnings),
+badge "Ajustée" visible sans déplier. `AddInterventionDialog.tsx`/`EditInterventionDialog.tsx` :
+question "délégué présent ?" affichée uniquement si pertinente pour la firme × type
+effectivement choisis (résolu via le contexte d'encodage déjà chargé, aucun appel réseau
+supplémentaire), obligatoire avant soumission dans ce cas.
+
+### Tests
+
+**Backend** : `RepresentativePolicyFinancialCalculationTest` (18 tests, base réelle) —
+ConMed sans/avec délégué, ConMed+SN sans contamination, SN sans impact, deux prestations
+d'une même firme avec politiques différentes, deux interventions d'une même mission sans
+contamination, matériel volontairement non facturable, matériel facturable sans tarif,
+tarif absent involontaire jamais 0€, `feeApplicable=false`/`true`, réponse manquante
+bloque, présence délégué ne transforme jamais un tarif manquant en 0€ valide, historisation
+(ancien calcul inchangé), défaut sans `FirmServiceOffering` = comportement pré-lot.
+`PricingRuleResolverArchitectureTest` (3 tests) — preuve structurelle par réflexion que
+`PricingRuleResolver` n'a et n'aura jamais de dépendance vers `FirmServiceOffering`/
+`RepresentativePolicyResolver`, et que `RepresentativePolicy` ne porte que des booléens.
+Extension de `FinancialCalculationControllerTest` (détail API expose les nouveaux champs),
+`InterventionControllerLot5Test` (aller-retour `representativePresent`, défaut `null`).
+Un bug réel trouvé et corrigé en cours de route : `InterventionService::create()` ne
+capturait pas `$dto` dans la closure de transaction (`Undefined variable $dto`) — corrigé
+en pré-extrayant `$representativePresent` avant la closure, comme déjà fait pour
+`$type`/`$firm`.
+
+**Frontend** : `PrestationsPage.test.tsx` (réécrit, 19 tests) — états vides, ajout de
+prestation sans modal intermédiaire, création de type dans le même flux, détail de
+prestation (forfait/matériels/délégué), bascule de politique délégué, liste exhaustive du
+matériel, Facturable/Non facturable, absence du bouton global tarif matériel, gestion du
+tarif depuis la ligne, création de matériel sans choix de firme. `FinancialCalculationCard.test.tsx`
+(nouveau, 4 tests) — détail déplié (brut/ajustement/raison/final), ligne non ajustée sans
+section ajustement, warning affiché, badge "Ajustée". `AddInterventionDialog.test.tsx`
+étendu (2 tests) — question jamais posée si non pertinente, posée et bloquante sinon. Un
+bug UX réel trouvé et corrigé pendant l'écriture des tests : "Créer et ajouter" ne créait
+que le type d'intervention, laissant un second clic manuel nécessaire pour l'ajouter comme
+prestation — corrigé pour enchaîner les deux mutations automatiquement (conforme à
+l'intention du prompt : un seul geste).
+
+**Résultats** : suite ciblée backend 18+3+quelques extensions, tous verts. Suite complète
+backend : mêmes ~48 erreurs/3 échecs préexistants (collision `FIRM-2026-219`, instabilité
+de suppression d'absence) qu'aux chantiers précédents — aucun nouveau, aucun fichier
+touché ici ne les référence. Frontend : `npx tsc -b` et `npm run build` propres ;
+suite complète frontend verte (voir rapport final pour le compte exact).
+
+### Portée non traitée ici
+
+Pas de modélisation d'un écran de détail dédié au matériel (le mockup §15 du prompt est
+représenté par des actions de ligne — "Ajouter/Définir un tarif" et "Non facturable" —
+plutôt qu'un nouveau dialog, cohérent avec "pas de refonte visuelle majeure"). Pas de
+réconciliation entre `billingStatus` et l'ancien flag `isImplant` au-delà de ce que D-067
+avait déjà tranché (`isImplant` reste purement médical). Base de test locale non
+réinitialisée (collision `FIRM-2026-219`, préexistante, hors périmètre).

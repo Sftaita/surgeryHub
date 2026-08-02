@@ -214,3 +214,49 @@ describe("AddInterventionDialog — intervention absente du catalogue (draft)", 
     expect(screen.getByText("Intervention absente du catalogue")).toBeInTheDocument();
   });
 });
+
+describe("AddInterventionDialog — présence d'un délégué (D-092)", () => {
+  it("ne pose jamais la question quand la prestation n'en a pas besoin", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/service-offerings")) {
+        return Promise.resolve({ data: [{ id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: false }] });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    const { onSubmit } = renderDialog();
+
+    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
+
+    expect(screen.queryByText(/délégué/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, orderIndex: 2 });
+  });
+
+  it("pose la question et bloque la soumission tant qu'elle n'est pas répondue quand la prestation le requiert", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/service-offerings")) {
+        return Promise.resolve({ data: [{ id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: true }] });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    const { onSubmit } = renderDialog();
+
+    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
+
+    expect(await screen.findByText("Un délégué Arthrex était-il présent ?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ajouter" })).toBeDisabled();
+
+    await user.click(screen.getByText("Oui"));
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, orderIndex: 2, representativePresent: true });
+  });
+});

@@ -26,6 +26,7 @@ use App\Service\FirmInvoiceService;
 use App\Service\InstrumentistRateResolver;
 use App\Service\MissionExecutionService;
 use App\Service\PricingRuleResolver;
+use App\Service\RepresentativePolicyResolver;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
@@ -106,7 +107,7 @@ final class DocumentPaymentConcurrencyTest extends KernelTestCase
         $audit = new AuditService($em);
         return new FinancialCalculationService(
             $em, new PricingRuleResolver($em), new InstrumentistRateResolver($em),
-            new MissionExecutionService($em, $audit), $audit,
+            new MissionExecutionService($em, $audit), new RepresentativePolicyResolver($em), $audit,
         );
     }
 

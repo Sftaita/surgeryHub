@@ -49,6 +49,34 @@ class FirmServiceOffering
     #[Groups(['offering:read'])]
     private bool $active = true;
 
+    /**
+     * Refonte Catalogue/Prestations (D-092) — politique commerciale "présence d'un
+     * délégué", lue exclusivement par FinancialCalculationService via
+     * RepresentativePolicyResolver (exception scopée à D-067, voir son docblock).
+     * Jamais un montant, jamais lu par PricingRuleResolver.
+     */
+    #[ORM\Column(name: 'representative_presence_relevant', options: ['default' => false])]
+    #[Groups(['offering:read'])]
+    private bool $representativePresenceRelevant = false;
+
+    #[ORM\Column(name: 'representative_suppresses_intervention_fee', options: ['default' => false])]
+    #[Groups(['offering:read'])]
+    private bool $representativeSuppressesInterventionFee = false;
+
+    #[ORM\Column(name: 'representative_suppresses_own_material_fees', options: ['default' => false])]
+    #[Groups(['offering:read'])]
+    private bool $representativeSuppressesOwnMaterialFees = false;
+
+    /**
+     * true (défaut) = un forfait INTERVENTION_FEE est attendu pour cette prestation —
+     * comportement identique à avant ce lot (absence de PricingRule = anomalie
+     * bloquante). false = décision commerciale explicite qu'aucun forfait ne s'applique
+     * — absence de PricingRule alors valide, jamais transformée en 0€ silencieux (D-092).
+     */
+    #[ORM\Column(name: 'fee_applicable', options: ['default' => true])]
+    #[Groups(['offering:read'])]
+    private bool $feeApplicable = true;
+
     /** @var Collection<int, SuggestedMaterial> */
     #[ORM\OneToMany(mappedBy: 'firmServiceOffering', targetEntity: SuggestedMaterial::class, orphanRemoval: true)]
     #[ORM\OrderBy(['displayOrder' => 'ASC'])]
@@ -113,5 +141,49 @@ class FirmServiceOffering
     public function getSuggestedMaterials(): Collection
     {
         return $this->suggestedMaterials;
+    }
+
+    public function isRepresentativePresenceRelevant(): bool
+    {
+        return $this->representativePresenceRelevant;
+    }
+
+    public function setRepresentativePresenceRelevant(bool $value): static
+    {
+        $this->representativePresenceRelevant = $value;
+        return $this;
+    }
+
+    public function isRepresentativeSuppressesInterventionFee(): bool
+    {
+        return $this->representativeSuppressesInterventionFee;
+    }
+
+    public function setRepresentativeSuppressesInterventionFee(bool $value): static
+    {
+        $this->representativeSuppressesInterventionFee = $value;
+        return $this;
+    }
+
+    public function isRepresentativeSuppressesOwnMaterialFees(): bool
+    {
+        return $this->representativeSuppressesOwnMaterialFees;
+    }
+
+    public function setRepresentativeSuppressesOwnMaterialFees(bool $value): static
+    {
+        $this->representativeSuppressesOwnMaterialFees = $value;
+        return $this;
+    }
+
+    public function isFeeApplicable(): bool
+    {
+        return $this->feeApplicable;
+    }
+
+    public function setFeeApplicable(bool $value): static
+    {
+        $this->feeApplicable = $value;
+        return $this;
     }
 }

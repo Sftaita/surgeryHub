@@ -4,6 +4,7 @@ import {
   Autocomplete,
   Box,
   Button,
+  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -13,6 +14,7 @@ import {
   Stack,
   Switch,
   TextField,
+  Typography,
 } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import { getFirms } from "../api/catalogue.api";
@@ -36,6 +38,13 @@ type Props = {
   error: string | null;
   onClose: () => void;
   onSubmit: (values: MaterialItemFormValues) => void;
+  /**
+   * Refonte Catalogue/Prestations (D-092) §14 — le contexte connaît déjà la firme
+   * (ex : PrestationsPage, firme sélectionnée dans la colonne gauche) : masque le
+   * sélecteur, réduit une source d'erreur. `initial.firmId` reste obligatoire dans ce
+   * cas. CataloguePage (contexte sans firme connue) ne passe pas cette prop.
+   */
+  firmLocked?: boolean;
 };
 
 const DEFAULT_VALUES: MaterialItemFormValues = {
@@ -56,6 +65,7 @@ export function MaterialItemFormDialog({
   headerExtra,
   onClose,
   onSubmit,
+  firmLocked = false,
 }: Props) {
   const [values, setValues] = React.useState<MaterialItemFormValues>({
     ...DEFAULT_VALUES,
@@ -98,34 +108,41 @@ export function MaterialItemFormDialog({
           {headerExtra ?? null}
           {error ? <Alert severity="error">{error}</Alert> : null}
 
-          <Autocomplete<FirmDTO>
-            options={firms}
-            loading={firmsQuery.isLoading}
-            getOptionLabel={(f) => f.name}
-            isOptionEqualToValue={(a, b) => a.id === b.id}
-            value={selectedFirm}
-            onChange={(_, value) =>
-              setValues((prev) => ({ ...prev, firmId: value?.id ?? null }))
-            }
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                label="Firme *"
-                size="small"
-                InputProps={{
-                  ...params.InputProps,
-                  endAdornment: (
-                    <>
-                      {firmsQuery.isLoading ? (
-                        <CircularProgress size={16} />
-                      ) : null}
-                      {params.InputProps.endAdornment}
-                    </>
-                  ),
-                }}
-              />
-            )}
-          />
+          {firmLocked ? (
+            <Stack direction="row" alignItems="center" spacing={1}>
+              <Typography variant="body2" color="text.secondary">Firme</Typography>
+              <Chip size="small" label={selectedFirm?.name ?? "…"} />
+            </Stack>
+          ) : (
+            <Autocomplete<FirmDTO>
+              options={firms}
+              loading={firmsQuery.isLoading}
+              getOptionLabel={(f) => f.name}
+              isOptionEqualToValue={(a, b) => a.id === b.id}
+              value={selectedFirm}
+              onChange={(_, value) =>
+                setValues((prev) => ({ ...prev, firmId: value?.id ?? null }))
+              }
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Firme *"
+                  size="small"
+                  InputProps={{
+                    ...params.InputProps,
+                    endAdornment: (
+                      <>
+                        {firmsQuery.isLoading ? (
+                          <CircularProgress size={16} />
+                        ) : null}
+                        {params.InputProps.endAdornment}
+                      </>
+                    ),
+                  }}
+                />
+              )}
+            />
+          )}
 
           <TextField
             label="Nom *"

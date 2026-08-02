@@ -189,6 +189,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
         readOnly: false,
         materialLines: [],
         materialItemRequests: [],
+        representativePresent: body.representativePresent ?? null,
       };
       setEncodingCache((current) => ({ ...current, entries: [...(current.entries ?? []), optimistic] }));
       return { previous, tempId };

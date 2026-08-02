@@ -3,6 +3,7 @@
 namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
+use App\Enum\MaterialBillingStatus;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
 
@@ -64,6 +65,17 @@ class MaterialItem
     #[ORM\Column(type: 'text', nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager'])]
     private ?string $description = null;
+
+    /**
+     * Refonte Catalogue/Prestations (D-092) — distingue "volontairement non facturé" de
+     * "tarif pas encore configuré" (voir MaterialBillingStatus). Auto-promu à BILLABLE
+     * par PricingRuleWriteService::create() dès qu'une première PricingRule MATERIAL_FEE
+     * est posée sur ce matériel — jamais un geste manuel supplémentaire dans le cas
+     * courant. Ne remplace jamais PricingRule comme source du montant.
+     */
+    #[ORM\Column(name: 'billing_status', enumType: MaterialBillingStatus::class, length: 20, options: ['default' => 'UNSPECIFIED'])]
+    #[Groups(['mission:read', 'mission:read_manager'])]
+    private MaterialBillingStatus $billingStatus = MaterialBillingStatus::UNSPECIFIED;
 
     public function getId(): ?int
     {
@@ -151,4 +163,7 @@ class MaterialItem
 
     public function getDescription(): ?string { return $this->description; }
     public function setDescription(?string $v): static { $this->description = $v; return $this; }
+
+    public function getBillingStatus(): MaterialBillingStatus { return $this->billingStatus; }
+    public function setBillingStatus(MaterialBillingStatus $v): static { $this->billingStatus = $v; return $this; }
 }

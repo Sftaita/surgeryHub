@@ -149,12 +149,16 @@ export async function createMissionInterventionTypeRequest(
  * dure côté backend — voir FirmServiceOfferingController, "jamais lu par le moteur
  * financier"). GET /api/firms/{firmId}/service-offerings
  */
-export async function fetchFirmServiceOfferings(
-  firmId: number,
-): Promise<Array<{ id: number; interventionType: CatalogInterventionType; active: boolean }>> {
-  const { data } = await apiClient.get<Array<{ id: number; interventionType: CatalogInterventionType; active: boolean }>>(
-    `/api/firms/${firmId}/service-offerings`,
-  );
+export type FirmServiceOfferingSummary = {
+  id: number;
+  interventionType: CatalogInterventionType;
+  active: boolean;
+  /** Refonte Catalogue/Prestations (D-092) — voir AddInterventionDialog/EditInterventionDialog. */
+  representativePresenceRelevant: boolean;
+};
+
+export async function fetchFirmServiceOfferings(firmId: number): Promise<FirmServiceOfferingSummary[]> {
+  const { data } = await apiClient.get<FirmServiceOfferingSummary[]>(`/api/firms/${firmId}/service-offerings`);
   return data;
 }
 

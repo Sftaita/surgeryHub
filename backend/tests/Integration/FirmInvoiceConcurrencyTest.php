@@ -24,6 +24,7 @@ use App\Service\FirmInvoiceService;
 use App\Service\InstrumentistRateResolver;
 use App\Service\MissionExecutionService;
 use App\Service\PricingRuleResolver;
+use App\Service\RepresentativePolicyResolver;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
@@ -112,6 +113,7 @@ final class FirmInvoiceConcurrencyTest extends KernelTestCase
             new PricingRuleResolver($em),
             new InstrumentistRateResolver($em),
             new MissionExecutionService($em, $audit),
+            new RepresentativePolicyResolver($em),
             $audit,
         );
     }

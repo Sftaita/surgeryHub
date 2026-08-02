@@ -397,6 +397,7 @@ final class MissionEncodingService
             materialItemRequests: $requests,
             suggestedMaterials: $suggestedMaterials,
             coherence: $coherence,
+            representativePresent: $i->getRepresentativePresent(),
         );
     }
 
@@ -422,6 +423,7 @@ final class MissionEncodingService
             readOnly: !$i->acceptsNewMaterial(),
             materialLines: $dto->materialLines,
             materialItemRequests: $dto->materialItemRequests,
+            representativePresent: $dto->representativePresent,
         );
     }
 
