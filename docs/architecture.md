@@ -557,7 +557,13 @@ Hospital (site)
 
 Firm
 ├── id, name (unique)
-└── active: bool
+├── active: bool
+└── logoPath (nullable — Catalogue > Prestations, refonte UX) : chemin racine-relatif
+    ("/uploads/firm-logos/..."), même convention que User.profilePicturePath
+    (FirmLogoStorage mirrors ProfilePictureStorage). Résolu côté frontend via
+    resolveApiAssetUrl(). Propriété exclusive de Firm — jamais dupliquée sur une
+    FirmServiceOffering/MaterialItem/facture ; réutilisée partout via FirmAvatar
+    (seule implémentation du rendu logo/fallback-initiales, voir PersonAvatar).
 
 MaterialItem
 ├── id

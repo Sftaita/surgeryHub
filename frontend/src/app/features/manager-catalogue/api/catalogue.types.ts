@@ -1,6 +1,8 @@
 export type FirmDTO = {
   id: number;
   name: string;
+  /** Chemin racine-relatif ("/uploads/firm-logos/..."), résoudre via resolveApiAssetUrl(). */
+  logoPath?: string | null;
 };
 
 /** Refonte Catalogue/Prestations (D-092) — distingue "volontairement non facturé" de "tarif pas encore configuré". */

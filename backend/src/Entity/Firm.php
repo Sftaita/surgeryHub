@@ -47,6 +47,14 @@ class Firm
     #[ORM\Column(length: 30, nullable: true)]
     private ?string $phone = null;
 
+    /**
+     * Chemin racine-relatif ("/uploads/firm-logos/xyz.png"), même convention que
+     * User::profilePicturePath — jamais une URL absolue stockée en base (voir
+     * FirmLogoStorage). Résolu côté frontend via resolveApiAssetUrl().
+     */
+    #[ORM\Column(length: 255, nullable: true)]
+    private ?string $logoPath = null;
+
     public function getId(): ?int
     {
         return $this->id;
@@ -104,4 +112,7 @@ class Firm
 
     public function getPhone(): ?string { return $this->phone; }
     public function setPhone(?string $phone): static { $this->phone = $phone; return $this; }
+
+    public function getLogoPath(): ?string { return $this->logoPath; }
+    public function setLogoPath(?string $logoPath): static { $this->logoPath = $logoPath; return $this; }
 }

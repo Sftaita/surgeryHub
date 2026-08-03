@@ -12,6 +12,7 @@
 | `heures-prestees/` | idem |
 | `declarer-mission/` | idem |
 | `ajout-materiel/` | README + pixel-audit (flux interactif — référence = prototype, pas de capture statique) |
+| `catalogue-prestations/` | README (flux interactif — référence = prototype `react-catalogue-prestations/`, proposition fonctionnelle validée, **pixel non designé**, pas de pixel-audit pour cette raison) |
 
 Sheets « Nouvelle intervention » et « Récapitulatif » : documentés dans `sheets-divers.md` + `encodage/README.md`.
 

@@ -29,6 +29,7 @@ import {
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
@@ -37,6 +38,8 @@ import MedicalServicesIcon from "@mui/icons-material/MedicalServices";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import BadgeOutlinedIcon from "@mui/icons-material/BadgeOutlined";
+import BusinessIcon from "@mui/icons-material/Business";
+import MenuBookIcon from "@mui/icons-material/MenuBook";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getFirmPricingRules,
@@ -57,11 +60,18 @@ import RateVersionManager, { getActiveVersion } from "../../features/billing-sha
 import {
   getInterventionTypes,
   createInterventionType,
+  findSimilarInterventionTypes,
+  type InterventionType,
+  type SimilarInterventionTypeCandidate,
 } from "../../features/intervention-types/api/interventionTypes.api";
 import { InterventionTypesManager } from "../../features/intervention-types/components/InterventionTypesManager";
+import { InterventionTypeDetailDialog } from "../../features/intervention-types/components/InterventionTypeDetailDialog";
 import { getFirms, getMaterialItems, createMaterialItem, updateMaterialItem } from "../../features/manager-catalogue/api/catalogue.api";
 import type { FirmDTO, MaterialItemDTO } from "../../features/manager-catalogue/api/catalogue.types";
 import { MaterialItemFormDialog } from "../../features/manager-catalogue/components/MaterialItemFormDialog";
+import { FirmAvatar } from "../../features/manager-catalogue/components/FirmAvatar";
+import { FirmLogoDialog } from "../../features/manager-catalogue/components/FirmLogoDialog";
+import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { useToast } from "../../ui/toast/useToast";
 import { PageHeader } from "../../ui/PageHeader";
 import { SideList } from "../../ui/SideList";
@@ -90,6 +100,8 @@ function AddOfferingDialog({
   const [creatingNewType, setCreatingNewType] = React.useState(false);
   const [newCode, setNewCode] = React.useState("");
   const [newLabel, setNewLabel] = React.useState("");
+  const [similarCandidates, setSimilarCandidates] = React.useState<SimilarInterventionTypeCandidate[] | null>(null);
+  const [checkingSimilar, setCheckingSimilar] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
@@ -98,6 +110,7 @@ function AddOfferingDialog({
       setCreatingNewType(false);
       setNewCode("");
       setNewLabel("");
+      setSimilarCandidates(null);
     }
   }, [open]);
 
@@ -134,12 +147,62 @@ function AddOfferingDialog({
     setCreatingNewType(true);
   }
 
+  // Task 11, section 6 — "Un type similaire existe déjà : X. Voulez-vous l'utiliser ?"
+  // Suggestion avant création, jamais un blocage : le manager choisit "Créer quand même"
+  // si l'intervention est réellement distincte.
+  async function handleCreateType() {
+    setCheckingSimilar(true);
+    try {
+      const candidates = (await findSimilarInterventionTypes(newLabel.trim()))
+        .filter((c) => !existingTypeIds.includes(c.type.id));
+      if (candidates.length > 0) {
+        setSimilarCandidates(candidates);
+        return;
+      }
+    } finally {
+      setCheckingSimilar(false);
+    }
+    createTypeMutation.mutate({ code: newCode.trim(), label: newLabel.trim() });
+  }
+
+  function useExistingCandidate(candidateId: number) {
+    setSimilarCandidates(null);
+    setCreatingNewType(false);
+    setSelectedTypeId(candidateId);
+  }
+
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
       <DialogTitle fontWeight={700}>Ajouter une prestation</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
-          {!creatingNewType ? (
+          {similarCandidates ? (
+            <>
+              <Typography variant="body2" color="text.secondary">
+                {similarCandidates.length > 1 ? "Des types proches existent déjà :" : "Un type proche existe déjà :"}
+              </Typography>
+              {similarCandidates.map((c) => (
+                <Paper key={c.type.id} variant="outlined" sx={{ p: 1.5, borderRadius: 2, display: "flex", alignItems: "center", gap: 1 }}>
+                  <Box sx={{ flex: 1 }}>
+                    <Typography fontWeight={700} variant="body2">{c.type.label}</Typography>
+                    <Chip label={c.type.code} size="small" variant="outlined" sx={{ fontFamily: "monospace", fontSize: ".68rem", mt: 0.5 }} />
+                  </Box>
+                  <Button size="small" variant="contained" disableElevation onClick={() => useExistingCandidate(c.type.id)}>
+                    Utiliser ce type
+                  </Button>
+                </Paper>
+              ))}
+              <Stack direction="row" spacing={1}>
+                <Button size="small" onClick={() => setSimilarCandidates(null)}>Retour</Button>
+                <Button
+                  size="small" variant="outlined" disableElevation disabled={createTypeMutation.isPending}
+                  onClick={() => { setSimilarCandidates(null); createTypeMutation.mutate({ code: newCode.trim(), label: newLabel.trim() }); }}
+                >
+                  {createTypeMutation.isPending ? <CircularProgress size={14} /> : "Créer quand même"}
+                </Button>
+              </Stack>
+            </>
+          ) : !creatingNewType ? (
             <>
               {selectedType ? (
                 <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, display: "flex", alignItems: "center", gap: 1 }}>
@@ -193,10 +256,10 @@ function AddOfferingDialog({
                 <Button size="small" onClick={() => setCreatingNewType(false)}>Retour</Button>
                 <Button
                   size="small" variant="contained" disableElevation
-                  disabled={!newCode.trim() || !newLabel.trim() || createTypeMutation.isPending}
-                  onClick={() => createTypeMutation.mutate({ code: newCode.trim(), label: newLabel.trim() })}
+                  disabled={!newCode.trim() || !newLabel.trim() || createTypeMutation.isPending || checkingSimilar}
+                  onClick={handleCreateType}
                 >
-                  {createTypeMutation.isPending ? <CircularProgress size={14} /> : "Créer et ajouter"}
+                  {createTypeMutation.isPending || checkingSimilar ? <CircularProgress size={14} /> : "Créer et ajouter"}
                 </Button>
               </Stack>
             </>
@@ -308,28 +371,56 @@ function ForfaitDialog({
   );
 }
 
-// ── Dialog : tarif matériel (historique de tarifs versionné) ────────────────
-function MaterialRateDialog({
-  open, onClose, firmId, materialItemId, materialLabel, rules,
+// ── Dialog : édition complète d'un matériel (identification + tarification) ─
+// Point 10 (audit tarification) — remplace les 3 actions séparées de la ligne
+// (Définir un tarif / Ajouter un tarif / Non facturable) par un seul point d'entrée
+// « Modifier » couvrant à la fois l'identification (nom, référence — corriger une
+// référence erronée après coup) et la tarification (RateVersionManager, réutilise
+// PricingRule/D-072 tel quel, aucun nouveau modèle financier).
+function MaterialEditDialog({
+  open, onClose, firmId, material, rules,
 }: {
   open: boolean;
   onClose: () => void;
   firmId: number;
-  materialItemId: number;
-  materialLabel: string;
+  material: MaterialItemDTO | null;
   rules: PricingRule[];
 }) {
   const toast = useToast();
   const qc = useQueryClient();
+  const [label, setLabel] = React.useState("");
+  const [referenceCode, setReferenceCode] = React.useState("");
+  const [unit, setUnit] = React.useState("");
+  const [isImplant, setIsImplant] = React.useState(false);
+  const [identificationError, setIdentificationError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (open && material) {
+      setLabel(material.label);
+      setReferenceCode(material.referenceCode);
+      setUnit(material.unit);
+      setIsImplant(material.isImplant);
+      setIdentificationError(null);
+    }
+  }, [open, material]);
+
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["pricing-rules", firmId] });
     qc.invalidateQueries({ queryKey: ["material-items-firm", firmId] });
+    qc.invalidateQueries({ queryKey: ["material-items"] });
   };
+
+  const identificationMutation = useMutation({
+    mutationFn: (body: { label: string; unit: string; referenceCode?: string; isImplant: boolean }) =>
+      updateMaterialItem(material!.id, body),
+    onSuccess: () => { toast.success("Matériel mis à jour"); invalidate(); },
+    onError: (e) => setIdentificationError(extractError(e)),
+  });
 
   const createMutation = useMutation({
     mutationFn: (body: { amount: number; currency: string; validFrom: string | null; validTo: string | null }) =>
       createPricingRule(firmId, {
-        ruleType: "MATERIAL_FEE", materialItemId,
+        ruleType: "MATERIAL_FEE", materialItemId: material!.id,
         unitPrice: body.amount, currency: body.currency, validFrom: body.validFrom, validTo: body.validTo,
       }),
     onSuccess: () => { toast.success("Tarif créé — matériel désormais facturable"); invalidate(); },
@@ -352,23 +443,68 @@ function MaterialRateDialog({
     onSuccess: () => { toast.success("Tarif programmé annulé"); invalidate(); },
     onError: (e) => toast.error(extractError(e)),
   });
+  const notBillableMutation = useMutation({
+    mutationFn: () => updateMaterialItem(material!.id, { billingStatus: "NOT_BILLABLE" }),
+    onSuccess: () => { toast.success("Matériel marqué non facturable"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+
+  if (!material) return null;
 
   const isSaving = createMutation.isPending || replaceMutation.isPending || editMutation.isPending || cancelMutation.isPending;
+  const hasActiveRate = !!getActiveVersion(rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo })));
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
-      <DialogTitle fontWeight={700}>Tarif — {materialLabel}</DialogTitle>
+      <DialogTitle fontWeight={700}>Modifier le matériel</DialogTitle>
       <DialogContent>
-        <Box sx={{ pt: 1 }}>
-          <RateVersionManager
-            versions={rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo }))}
-            onCreateFirst={(b) => createMutation.mutate(b)}
-            onReplaceActive={(id, b) => replaceMutation.mutate({ id, body: b })}
-            onEditFuture={(id, b) => editMutation.mutate({ id, body: b })}
-            onCancelFuture={(id) => cancelMutation.mutate(id)}
-            isSaving={isSaving}
-          />
-        </Box>
+        <Stack spacing={2.5} sx={{ pt: 1 }}>
+          <Box>
+            <Typography variant="overline" color="text.secondary">Identification</Typography>
+            {identificationError && <Alert severity="error" sx={{ mb: 1.5 }}>{identificationError}</Alert>}
+            <Stack spacing={1.5}>
+              <TextField label="Nom *" size="small" fullWidth value={label} onChange={(e) => setLabel(e.target.value)} />
+              <TextField label="Référence" size="small" fullWidth value={referenceCode} onChange={(e) => setReferenceCode(e.target.value)} helperText="Corrige une référence erronée après création" />
+              <TextField label="Unité *" size="small" fullWidth value={unit} onChange={(e) => setUnit(e.target.value)} />
+              <FormControlLabel
+                control={<Checkbox checked={isImplant} onChange={(e) => setIsImplant(e.target.checked)} />}
+                label="Implant"
+              />
+              <Button
+                size="small" variant="outlined" sx={{ alignSelf: "flex-start" }}
+                disabled={identificationMutation.isPending || !label.trim() || !unit.trim()}
+                onClick={() => identificationMutation.mutate({ label: label.trim(), unit: unit.trim(), referenceCode: referenceCode.trim() || undefined, isImplant })}
+              >
+                Enregistrer l'identification
+              </Button>
+            </Stack>
+          </Box>
+
+          <Divider />
+
+          <Box>
+            <Typography variant="overline" color="text.secondary">Tarification</Typography>
+            <Box sx={{ mt: 1 }}>
+              <RateVersionManager
+                versions={rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo }))}
+                onCreateFirst={(b) => createMutation.mutate(b)}
+                onReplaceActive={(id, b) => replaceMutation.mutate({ id, body: b })}
+                onEditFuture={(id, b) => editMutation.mutate({ id, body: b })}
+                onCancelFuture={(id) => cancelMutation.mutate(id)}
+                isSaving={isSaving}
+              />
+              {!hasActiveRate && material.billingStatus !== "NOT_BILLABLE" && (
+                <Button
+                  size="small" color="inherit" sx={{ mt: 1 }}
+                  onClick={() => notBillableMutation.mutate()}
+                  disabled={notBillableMutation.isPending}
+                >
+                  Marquer non facturable
+                </Button>
+              )}
+            </Box>
+          </Box>
+        </Stack>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5 }}>
         <Button onClick={onClose} variant="contained" disableElevation>Fermer</Button>
@@ -482,26 +618,13 @@ function SuggestedMaterialsDialog({
   );
 }
 
-// ── Dialog : gérer les types d'intervention (embarque InterventionTypesManager) ──
-function InterventionTypesDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
-      <DialogTitle fontWeight={700}>Types d'intervention</DialogTitle>
-      <DialogContent>
-        <Box sx={{ pt: 1 }}>
-          <InterventionTypesManager showHeader={false} />
-        </Box>
-      </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2.5 }}>
-        <Button onClick={onClose} variant="contained" disableElevation>Fermer</Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
-
+// Refonte UX (§5) — trois états jamais confondus : montant défini, "Tarif à définir"
+// (feeApplicable=true sans PricingRule active), "Pas de forfait" (feeApplicable=false,
+// décision volontaire). Tous les montants sont HTVA — clarification d'unité uniquement,
+// aucun calcul de taxe introduit ici (hors périmètre de ce lot).
 function forfaitSummary(offering: FirmServiceOffering, forfait: PricingRule | null): string {
   if (!offering.feeApplicable) return "Pas de forfait";
-  if (forfait) return `${Number(forfait.unitPrice).toFixed(2)} €`;
+  if (forfait) return `${Number(forfait.unitPrice).toFixed(2)} € HTVA`;
   return "Tarif à définir";
 }
 
@@ -515,7 +638,7 @@ function representativeSummary(offering: FirmServiceOffering): string {
 
 // ── Dialog : détail d'une prestation (intervention, forfait, matériels, délégué) ──
 function OfferingDetailDialog({
-  open, onClose, firmId, offering, forfait, onOpenForfait, onOpenSuggestions,
+  open, onClose, firmId, offering, forfait, onOpenForfait, onOpenSuggestions, onViewInReferentiel,
 }: {
   open: boolean;
   onClose: () => void;
@@ -524,6 +647,9 @@ function OfferingDetailDialog({
   forfait: PricingRule | null;
   onOpenForfait: () => void;
   onOpenSuggestions: () => void;
+  /** Refonte UX — bascule vers le Référentiel global (contexte GLOBAL), jamais un
+   *  champ d'édition de l'identité clinique depuis cette prestation firme. */
+  onViewInReferentiel: () => void;
 }) {
   const toast = useToast();
   const qc = useQueryClient();
@@ -544,6 +670,9 @@ function OfferingDetailDialog({
         <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1, fontFamily: "monospace" }}>
           {offering.interventionType.code}
         </Typography>
+        <Button size="small" onClick={onViewInReferentiel} sx={{ float: "right", mt: -0.5 }}>
+          Voir dans le référentiel →
+        </Button>
       </DialogTitle>
       <DialogContent>
         <Stack spacing={3} sx={{ pt: 1 }}>
@@ -621,16 +750,17 @@ function OfferingDetailDialog({
   );
 }
 
-const BILLING_LABELS: Record<MaterialItemDTO["billingStatus"], string> = {
-  BILLABLE: "Facturable",
-  NOT_BILLABLE: "Non facturable",
-  UNSPECIFIED: "Tarif à définir",
-};
-
 // ── Page principale ───────────────────────────────────────────────────────────
 export default function PrestationsPage() {
   const toast = useToast();
   const qc = useQueryClient();
+
+  // Refonte UX (docs/design/screens/catalogue-prestations/README.md) — deux
+  // destinations de poids différent, jamais 3 onglets à plat : "firms" (configuration
+  // par firme) vs "referentiel" (bibliothèque clinique globale).
+  const [view, setView] = React.useState<"firms" | "referentiel">("firms");
+  const [referentielDetailId, setReferentielDetailId] = React.useState<number | null>(null);
+  const [logoDialogOpen, setLogoDialogOpen] = React.useState(false);
 
   const [selectedFirmId, setSelectedFirmId] = React.useState<number | null>(null);
   const [firmSearch, setFirmSearch] = React.useState("");
@@ -641,16 +771,27 @@ export default function PrestationsPage() {
   const [detailTargetId, setDetailTargetId] = React.useState<number | null>(null);
   const [forfaitTargetId, setForfaitTargetId] = React.useState<number | null>(null);
   const [suggestionsTargetId, setSuggestionsTargetId] = React.useState<number | null>(null);
-  const [materialRateTarget, setMaterialRateTarget] = React.useState<{ id: number; label: string } | null>(null);
-  const [interventionTypesOpen, setInterventionTypesOpen] = React.useState(false);
   const [createMaterialOpen, setCreateMaterialOpen] = React.useState(false);
   const [createMaterialError, setCreateMaterialError] = React.useState<string | null>(null);
+  // Point 10 (audit tarification) — un seul point d'entrée « Modifier » par matériel
+  // (identification + tarification combinées), remplace les anciens materialRateTarget/
+  // editMaterialTarget distincts. Stocke l'id, pas l'objet : le dialogue doit refléter
+  // les données fraîches après une mutation interne (ex: passage à NOT_BILLABLE), pas
+  // un instantané figé au moment du clic sur la ligne.
+  const [materialEditTargetId, setMaterialEditTargetId] = React.useState<number | null>(null);
 
   const firmsQuery = useQuery({ queryKey: ["firms"], queryFn: getFirms });
   const firms: FirmDTO[] = firmsQuery.data ?? [];
   const filteredFirms = debouncedFirmSearch.trim()
     ? firms.filter((f) => f.name.toLowerCase().includes(debouncedFirmSearch.trim().toLowerCase()))
     : firms;
+  const selectedFirm = firms.find((f) => f.id === selectedFirmId) ?? null;
+
+  // Même clé de requête qu'InterventionTypesManager ("intervention-types") — un seul
+  // fetch réseau réellement effectué, le cache React Query est partagé.
+  const interventionTypesQuery = useQuery({ queryKey: ["intervention-types"], queryFn: () => getInterventionTypes() });
+  const referentielDetailType: InterventionType | null =
+    (interventionTypesQuery.data ?? []).find((t) => t.id === referentielDetailId) ?? null;
 
   const rulesQuery = useQuery({
     queryKey: ["pricing-rules", selectedFirmId],
@@ -682,12 +823,6 @@ export default function PrestationsPage() {
     onError: (e: any) => setCreateMaterialError(extractError(e)),
   });
 
-  const billingStatusMutation = useMutation({
-    mutationFn: ({ id, billingStatus }: { id: number; billingStatus: "BILLABLE" | "NOT_BILLABLE" }) => updateMaterialItem(id, { billingStatus }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["material-items-firm", selectedFirmId] }),
-    onError: (e) => toast.error(extractError(e)),
-  });
-
   const rules = rulesQuery.data ?? [];
   const offerings = offeringsQuery.data ?? [];
   const materials: MaterialItemDTO[] = materialsQuery.data?.items ?? [];
@@ -695,6 +830,7 @@ export default function PrestationsPage() {
   const detailTarget = offerings.find((o) => o.id === detailTargetId) ?? null;
   const forfaitTarget = offerings.find((o) => o.id === forfaitTargetId) ?? null;
   const suggestionsTarget = offerings.find((o) => o.id === suggestionsTargetId) ?? null;
+  const materialEditTarget = materials.find((m) => m.id === materialEditTargetId) ?? null;
 
   function rulesForIntervention(interventionTypeId: number): PricingRule[] {
     return rules.filter((r) => r.ruleType === "INTERVENTION_FEE" && r.interventionType?.id === interventionTypeId);
@@ -715,16 +851,60 @@ export default function PrestationsPage() {
         title="Prestations"
         subtitle="Pour chaque firme : quelles prestations, quel matériel, combien ça coûte."
         helpTopicId="billing-config"
-        actions={
-          <Button variant="outlined" startIcon={<MedicalServicesIcon />} onClick={() => setInterventionTypesOpen(true)}>
-            Gérer les types d'intervention
-          </Button>
-        }
       />
 
+      {/* Refonte UX — deux destinations de poids différent (jamais 3 onglets à plat) :
+          Firmes = configuration commerciale par firme, Référentiel = bibliothèque
+          clinique globale. Voir docs/design/screens/catalogue-prestations/README.md. */}
+      <Stack direction="row" spacing={1.5} sx={{ mb: 1.5 }}>
+        <Button
+          variant={view === "firms" ? "contained" : "outlined"}
+          disableElevation
+          startIcon={<BusinessIcon />}
+          onClick={() => setView("firms")}
+          sx={{ flexDirection: "column", alignItems: "flex-start", textAlign: "left", py: 1, px: 2 }}
+        >
+          <Typography variant="body2" fontWeight={700} sx={{ display: "flex", alignItems: "center", gap: .5 }}>Firmes</Typography>
+          <Typography variant="caption" sx={{ opacity: .8, textTransform: "none" }}>Configuration commerciale par firme</Typography>
+        </Button>
+        <Button
+          variant={view === "referentiel" ? "contained" : "outlined"}
+          disableElevation
+          startIcon={<MenuBookIcon />}
+          onClick={() => setView("referentiel")}
+          sx={{ flexDirection: "column", alignItems: "flex-start", textAlign: "left", py: 1, px: 2 }}
+        >
+          <Typography variant="body2" fontWeight={700}>Référentiel</Typography>
+          <Typography variant="caption" sx={{ opacity: .8, textTransform: "none" }}>Bibliothèque clinique globale, commune à toutes les firmes</Typography>
+        </Button>
+      </Stack>
+
+      {/* Bandeau de contexte permanent — le logo/nom de firme disparaît entièrement en
+          vue Référentiel : le signal le plus fort de sortie de contexte. */}
+      {view === "firms" && selectedFirm ? (
+        <Alert icon={false} severity="info" variant="outlined" sx={{ mb: 2, py: .5 }}>
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <Typography variant="overline" fontWeight={700}>CONFIGURATION FIRME</Typography>
+            <Typography color="text.secondary">·</Typography>
+            <FirmAvatar name={selectedFirm.name} logoPath={selectedFirm.logoPath} size="xs" />
+            <Typography variant="body2" fontWeight={700}>{selectedFirm.name}</Typography>
+          </Stack>
+        </Alert>
+      ) : view === "referentiel" ? (
+        <Alert icon={false} severity="info" variant="outlined" sx={{ mb: 2, py: .5 }}>
+          <Typography variant="overline" fontWeight={700}>RÉFÉRENTIEL GLOBAL</Typography>
+          <Typography variant="body2" color="text.secondary" component="span"> · Commun à toutes les firmes — aucune configuration commerciale ici.</Typography>
+        </Alert>
+      ) : null}
+
+      {view === "referentiel" ? (
+        <Paper variant="outlined" sx={{ borderRadius: 2, p: 2.5, minHeight: 480 }}>
+          <InterventionTypesManager showHeader={false} onOpenDetail={(t) => setReferentielDetailId(t.id)} />
+        </Paper>
+      ) : (
       <Paper variant="outlined" sx={{ borderRadius: 2, display: "flex", minHeight: 480, overflow: "hidden" }}>
         <SideList
-          items={filteredFirms.map((f) => ({ id: f.id, label: f.name }))}
+          items={filteredFirms.map((f) => ({ id: f.id, label: f.name, avatarLabel: f.name, avatarUrl: resolveApiAssetUrl(f.logoPath) }))}
           selectedId={selectedFirmId}
           onSelect={(id) => setSelectedFirmId(Number(id))}
           searchValue={firmSearch}
@@ -735,13 +915,24 @@ export default function PrestationsPage() {
         />
 
         <Box sx={{ flex: 1, minWidth: 0, p: 2.5 }}>
-          {selectedFirmId === null ? (
+          {selectedFirmId === null || !selectedFirm ? (
             <EmptyState
               title="Sélectionnez une firme pour commencer"
               description="Prestations et tarifs contractuels restent deux choses indépendantes — le contact de facturation reste géré depuis la fiche Firme."
             />
           ) : (
             <>
+              {/* Contexte firme (écran 3) — identité toujours visible avant les onglets. */}
+              <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mb: 2.5 }}>
+                <FirmAvatar name={selectedFirm.name} logoPath={selectedFirm.logoPath} size="lg" />
+                <Box>
+                  <Typography variant="h6" fontWeight={700}>{selectedFirm.name}</Typography>
+                  <Button size="small" onClick={() => setLogoDialogOpen(true)} sx={{ p: 0, minWidth: 0 }}>
+                    Gérer le logo
+                  </Button>
+                </Box>
+              </Stack>
+
               <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2, minHeight: 36 }}>
                 <Tab value="offerings" label="Prestations" sx={{ minHeight: 36 }} />
                 <Tab value="materials" label="Matériel" sx={{ minHeight: 36 }} />
@@ -843,7 +1034,6 @@ export default function PrestationsPage() {
                         {materials.map((m) => {
                           const itemRules = materialRulesFor(m.id);
                           const activeVersion = getActiveVersion(itemRules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo })));
-                          const hasActiveRate = !!activeVersion;
                           return (
                             <TableRow key={m.id} hover>
                               <TableCell>
@@ -854,16 +1044,13 @@ export default function PrestationsPage() {
                               </TableCell>
                               <TableCell align="right">
                                 {activeVersion ? (
-                                  <Button size="small" onClick={() => setMaterialRateTarget({ id: m.id, label: m.label })}>
-                                    {Number(activeVersion.amount).toFixed(2)} {activeVersion.currency}
-                                  </Button>
+                                  <Typography variant="body2" fontWeight={700} color="success.main">
+                                    {Number(activeVersion.amount).toFixed(2)} {activeVersion.currency} HTVA
+                                  </Typography>
                                 ) : (
-                                  <Chip
-                                    label={BILLING_LABELS[m.billingStatus]}
-                                    size="small"
-                                    color={m.billingStatus === "NOT_BILLABLE" ? "default" : "warning"}
-                                    variant="outlined"
-                                  />
+                                  <Typography variant="caption" color="text.secondary">
+                                    Tarif à définir
+                                  </Typography>
                                 )}
                               </TableCell>
                               <TableCell>
@@ -872,28 +1059,15 @@ export default function PrestationsPage() {
                                 </Typography>
                               </TableCell>
                               <TableCell align="right">
-                                <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                                  {hasActiveRate ? (
-                                    <Button size="small" onClick={() => setMaterialRateTarget({ id: m.id, label: m.label })}>
-                                      Modifier le tarif
-                                    </Button>
-                                  ) : (
-                                    <>
-                                      <Button size="small" onClick={() => setMaterialRateTarget({ id: m.id, label: m.label })}>
-                                        {m.billingStatus === "NOT_BILLABLE" ? "Ajouter un tarif" : "Définir un tarif"}
-                                      </Button>
-                                      {m.billingStatus !== "NOT_BILLABLE" && (
-                                        <Button
-                                          size="small" color="inherit"
-                                          onClick={() => billingStatusMutation.mutate({ id: m.id, billingStatus: "NOT_BILLABLE" })}
-                                          disabled={billingStatusMutation.isPending}
-                                        >
-                                          Non facturable
-                                        </Button>
-                                      )}
-                                    </>
-                                  )}
-                                </Stack>
+                                <Tooltip title="Modifier le matériel">
+                                  <IconButton
+                                    aria-label={`Modifier ${m.label}`}
+                                    size="small"
+                                    onClick={() => setMaterialEditTargetId(m.id)}
+                                  >
+                                    <EditIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
                               </TableCell>
                             </TableRow>
                           );
@@ -907,8 +1081,24 @@ export default function PrestationsPage() {
           )}
         </Box>
       </Paper>
+      )}
 
-      <InterventionTypesDialog open={interventionTypesOpen} onClose={() => setInterventionTypesOpen(false)} />
+      <InterventionTypeDetailDialog
+        open={referentielDetailId !== null}
+        onClose={() => setReferentielDetailId(null)}
+        intervention={referentielDetailType}
+        onOpenFirm={(firmId, offeringId) => {
+          setView("firms");
+          setSelectedFirmId(firmId);
+          setReferentielDetailId(null);
+          setTab("offerings");
+          setDetailTargetId(offeringId);
+        }}
+      />
+
+      {selectedFirm && (
+        <FirmLogoDialog open={logoDialogOpen} onClose={() => setLogoDialogOpen(false)} firm={selectedFirm} />
+      )}
 
       {selectedFirmId !== null && (
         <>
@@ -927,6 +1117,12 @@ export default function PrestationsPage() {
             forfait={detailTarget ? forfaitFor(detailTarget.interventionType.id) : null}
             onOpenForfait={() => { setForfaitTargetId(detailTargetId); }}
             onOpenSuggestions={() => { setSuggestionsTargetId(detailTargetId); }}
+            onViewInReferentiel={() => {
+              const typeId = detailTarget?.interventionType.id ?? null;
+              setDetailTargetId(null);
+              setReferentielDetailId(typeId);
+              setView("referentiel");
+            }}
           />
           <ForfaitDialog
             open={forfaitTargetId !== null}
@@ -941,14 +1137,6 @@ export default function PrestationsPage() {
             firmId={selectedFirmId}
             offering={suggestionsTarget}
             firmMaterials={materials}
-          />
-          <MaterialRateDialog
-            open={materialRateTarget !== null}
-            onClose={() => setMaterialRateTarget(null)}
-            firmId={selectedFirmId}
-            materialItemId={materialRateTarget?.id ?? 0}
-            materialLabel={materialRateTarget?.label ?? ""}
-            rules={materialRateTarget ? materialRulesFor(materialRateTarget.id) : []}
           />
           <MaterialItemFormDialog
             open={createMaterialOpen}
@@ -969,6 +1157,13 @@ export default function PrestationsPage() {
                 isImplant: values.isImplant,
               });
             }}
+          />
+          <MaterialEditDialog
+            open={materialEditTarget !== null}
+            onClose={() => setMaterialEditTargetId(null)}
+            firmId={selectedFirmId}
+            material={materialEditTarget}
+            rules={materialEditTarget ? materialRulesFor(materialEditTarget.id) : []}
           />
         </>
       )}

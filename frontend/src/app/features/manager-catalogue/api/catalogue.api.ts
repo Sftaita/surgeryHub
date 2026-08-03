@@ -15,6 +15,21 @@ export const getFirms = async (): Promise<FirmDTO[]> => {
   return res.data;
 };
 
+/** Catalogue > Prestations, refonte UX — logo = propriété exclusive de Firm. */
+export const uploadFirmLogo = async (firmId: number, file: File): Promise<FirmDTO> => {
+  const formData = new FormData();
+  formData.append("logo", file);
+  const res = await apiClient.post(`/api/firms/${firmId}/logo`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return res.data;
+};
+
+export const deleteFirmLogo = async (firmId: number): Promise<FirmDTO> => {
+  const res = await apiClient.delete(`/api/firms/${firmId}/logo`);
+  return res.data;
+};
+
 export const getMaterialItems = async (params?: {
   search?: string;
   firmId?: number;

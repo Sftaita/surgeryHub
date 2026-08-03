@@ -23,20 +23,32 @@ _Last updated: 2026-03-18 (v6 — module planning)_
 
 **AuthZ :** `MANAGER` / `ADMIN`
 
-Liste toutes les firmes actives, triées par nom.
+Liste toutes les firmes, triées par nom.
 
 **Réponse — 200 :**
 
 ```json
 [
-  { "id": 1, "name": "Arthrex" },
-  { "id": 2, "name": "Zimmer Biomet" }
+  { "id": 1, "name": "Arthrex", "active": true, "billingEmail": null, "billingEmailCc": [], "country": null, "representative": null, "phone": null, "logoPath": null },
+  { "id": 2, "name": "Zimmer Biomet", "active": true, "billingEmail": null, "billingEmailCc": [], "country": null, "representative": null, "phone": null, "logoPath": "/uploads/firm-logos/firm-2-ab12cd34.png" }
 ]
 ```
 
 **Notes :**
-- Lecture seule — aucun endpoint de création/édition firm (géré en base)
-- Utilisé pour peupler le select dans les formulaires matériel
+- Utilisé pour peupler le select dans les formulaires matériel et le sélecteur de firme de Catalogue > Prestations.
+- `POST`/`PATCH`/`DELETE /api/firms(/{id})` existent également (`FirmController`), `MANAGE`-gated — non documentés en détail ici (hors périmètre de ce lot).
+
+### `POST /api/firms/{id}/logo` (Catalogue > Prestations, refonte UX)
+
+**AuthZ :** `MANAGER` / `ADMIN` (`BillingVoter::MANAGE`).
+
+Upload ou remplacement du logo d'une firme. `multipart/form-data`, champ `logo`. Mêmes contraintes que `POST /api/me/profile-picture` : JPEG/PNG/WebP uniquement, 5 Mo max (`Assert\Image`, `422` sinon) — jamais de SVG (surface XSS). Remplace et supprime l'ancien fichier s'il existe. `400` si aucun fichier fourni.
+
+**Réponse — 200 :** la firme sérialisée complète (voir `GET /api/firms`), avec `logoPath` mis à jour.
+
+### `DELETE /api/firms/{id}/logo` (Catalogue > Prestations, refonte UX)
+
+**AuthZ :** `MANAGER` / `ADMIN`. Supprime le fichier logo et remet `logoPath` à `null`. Sans effet (200, no-op) si la firme n'avait pas de logo.
 
 ---
 
