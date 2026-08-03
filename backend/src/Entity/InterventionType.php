@@ -44,6 +44,22 @@ class InterventionType
     #[Groups(['intervention_type:read'])]
     private bool $active = true;
 
+    /**
+     * Task 11 — non-null uniquement sur le type SOURCE d'une fusion explicite
+     * (InterventionTypeMergeService::merge()). Le type source n'est jamais supprimé :
+     * ses PricingRule/FirmServiceOffering historiques non réassignés (voir le service)
+     * continuent de le référencer valablement. Un type avec mergedInto non-null est
+     * toujours active=false et ne doit plus jamais être proposé à la création.
+     */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(name: 'merged_into_id', nullable: true)]
+    #[Groups(['intervention_type:read'])]
+    private ?InterventionType $mergedInto = null;
+
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['intervention_type:read'])]
+    private ?\DateTimeImmutable $mergedAt = null;
+
     public function getId(): ?int
     {
         return $this->id;
@@ -97,5 +113,32 @@ class InterventionType
     {
         $this->active = $active;
         return $this;
+    }
+
+    public function getMergedInto(): ?InterventionType
+    {
+        return $this->mergedInto;
+    }
+
+    public function setMergedInto(?InterventionType $mergedInto): static
+    {
+        $this->mergedInto = $mergedInto;
+        return $this;
+    }
+
+    public function getMergedAt(): ?\DateTimeImmutable
+    {
+        return $this->mergedAt;
+    }
+
+    public function setMergedAt(?\DateTimeImmutable $mergedAt): static
+    {
+        $this->mergedAt = $mergedAt;
+        return $this;
+    }
+
+    public function isMerged(): bool
+    {
+        return $this->mergedInto !== null;
     }
 }

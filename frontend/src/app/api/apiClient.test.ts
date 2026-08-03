@@ -48,6 +48,41 @@ describe("apiClient — 401 refresh flow", () => {
     expect(readAuth()?.accessToken).toBe("new-access");
   });
 
+  // Task 11, Cas D — deux requêtes protégées reçoivent un 401 en parallèle : un seul
+  // refresh réel doit être exécuté (mutex), les deux requêtes doivent repartir avec le
+  // nouveau token une fois ce refresh unique résolu.
+  it("un seul refresh réel est exécuté quand deux requêtes reçoivent un 401 en parallèle", async () => {
+    let resolveRefresh: (tokens: { accessToken: string; refreshToken: string }) => void = () => {};
+    (refreshTokens as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise((resolve) => { resolveRefresh = resolve; }),
+    );
+
+    let call = 0;
+    apiClient.defaults.adapter = vi.fn(async (config: any) => {
+      call += 1;
+      // Les deux requêtes initiales (call 1 et 2) échouent en 401 ; les deux retries
+      // (après refresh) réussissent.
+      if (call === 1 || call === 2) {
+        throw axiosError(401, config.url, config);
+      }
+      return { data: { ok: true, url: config.url }, status: 200, statusText: "OK", headers: {}, config };
+    });
+
+    const p1 = apiClient.get("/api/me");
+    const p2 = apiClient.get("/api/notifications");
+
+    // Laisse les deux 401 initiaux être traités et le refresh démarrer avant de le résoudre.
+    await new Promise((r) => setTimeout(r, 0));
+    resolveRefresh({ accessToken: "new-access", refreshToken: "new-refresh" });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1.data).toEqual({ ok: true, url: "/api/me" });
+    expect(r2.data).toEqual({ ok: true, url: "/api/notifications" });
+    expect(refreshTokens).toHaveBeenCalledTimes(1);
+    expect(readAuth()?.accessToken).toBe("new-access");
+  });
+
   it("ne boucle pas indéfiniment si le refresh échoue : retour 401 propre, tokens nettoyés", async () => {
     (refreshTokens as ReturnType<typeof vi.fn>).mockRejectedValue(
       axiosError(401, "/api/auth/refresh")
@@ -87,6 +122,36 @@ describe("apiClient — 401 refresh flow", () => {
     expect(refreshTokens).not.toHaveBeenCalled();
     expect(readAuth()).toBeNull();
     expect(onSessionExpired).toHaveBeenCalledTimes(1);
+
+    window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+  });
+
+  // Task 11 — re-audit Remember Me : cause racine réelle du bug "déconnexions fréquentes"
+  // (reproductible sur Chrome, pas seulement Safari/localStorage). Avant ce correctif,
+  // toute erreur pendant l'appel réseau de refresh (pas seulement un vrai 401) effaçait
+  // les tokens et déconnectait l'utilisateur — y compris une simple coupure Wi-Fi
+  // transitoire pendant que le refresh token restait parfaitement valide.
+  it("ne déconnecte PAS l'utilisateur si l'appel de refresh échoue pour une raison réseau/timeout transitoire", async () => {
+    const networkError = new Error("Network Error") as AxiosError;
+    networkError.isAxiosError = true;
+    networkError.response = undefined; // pas de réponse HTTP du tout — coupure réseau/timeout
+    (refreshTokens as ReturnType<typeof vi.fn>).mockRejectedValue(networkError);
+
+    const adapter = vi.fn(async (config: any) => {
+      throw axiosError(401, "/api/me", config);
+    });
+    apiClient.defaults.adapter = adapter;
+
+    const onSessionExpired = vi.fn();
+    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+
+    await expect(apiClient.get("/api/me")).rejects.toBeTruthy();
+
+    // Le refresh token stocké doit rester intact — une prochaine requête pourra retenter
+    // un refresh normalement, l'utilisateur n'a jamais été réellement déconnecté.
+    expect(readAuth()?.refreshToken).toBe("old-refresh");
+    expect(sessionStorage.getItem("surgicalhub.auth.sessionExpired")).toBeNull();
+    expect(onSessionExpired).not.toHaveBeenCalled();
 
     window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
   });

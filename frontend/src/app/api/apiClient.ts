@@ -77,9 +77,21 @@ apiClient.interceptors.response.use(
       return apiClient(originalRequest);
     } catch (e) {
       setRefreshPromise(null);
-      markSessionExpired();
-      clearTokens();
-      dispatchSessionExpired();
+
+      // Re-audit Remember Me (Task 11) — ne déconnecter que si le refresh token est
+      // RÉELLEMENT invalide (401 sur /api/auth/refresh, déjà géré ci-dessus). Une erreur
+      // réseau/timeout transitoire pendant l'appel de refresh (Wi-Fi instable, latence,
+      // le `timeout: 10_000` ci-dessus) ne prouve rien sur la validité du refresh token :
+      // déconnecter dans ce cas était la cause racine du bug "déconnexions fréquentes
+      // malgré Se souvenir de moi", reproductible sur tout navigateur (pas un problème
+      // Safari/localStorage — voir docs/decisions.md D-047, réinvestigation).
+      const refreshError = e as AxiosError;
+      const refreshTokenIsInvalid = refreshError?.response?.status === 401;
+      if (refreshTokenIsInvalid) {
+        markSessionExpired();
+        clearTokens();
+        dispatchSessionExpired();
+      }
       throw error;
     }
   }

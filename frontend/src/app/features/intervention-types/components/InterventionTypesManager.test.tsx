@@ -199,9 +199,10 @@ describe("InterventionTypesManager — activation/désactivation", () => {
 describe("InterventionTypesManager — invalidation après mutation", () => {
   it("recharge la liste après une création réussie (refetch déclenché par l'invalidation)", async () => {
     const user = userEvent.setup();
-    apiGetMock.mockResolvedValueOnce({ data: [] });
+    apiGetMock.mockResolvedValueOnce({ data: [] }); // liste initiale
+    apiGetMock.mockResolvedValueOnce({ data: [] }); // Task 11 — vérification /similar avant création
     apiPostMock.mockResolvedValue({ data: { id: 2, code: "PTG", label: "Prothèse totale genou", specialty: null, active: true } });
-    apiGetMock.mockResolvedValueOnce({ data: [{ id: 2, code: "PTG", label: "Prothèse totale genou", specialty: null, active: true }] });
+    apiGetMock.mockResolvedValueOnce({ data: [{ id: 2, code: "PTG", label: "Prothèse totale genou", specialty: null, active: true }] }); // refetch post-invalidation
     renderManager();
 
     await screen.findByText("Aucun type d'intervention enregistré.");
@@ -212,7 +213,75 @@ describe("InterventionTypesManager — invalidation après mutation", () => {
     await user.type(within(dialog).getByLabelText("Libellé *"), "Prothèse totale genou");
     await user.click(within(dialog).getByRole("button", { name: "Créer" }));
 
-    await waitFor(() => expect(apiGetMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(apiGetMock).toHaveBeenCalledTimes(3));
     await screen.findByText("Prothèse totale genou");
+  });
+});
+
+describe("InterventionTypesManager — Task 11 : référentiel canonique", () => {
+  it("affiche le nombre de firmes utilisant chaque type", async () => {
+    apiGetMock.mockResolvedValue({
+      data: [{ id: 1, code: "PTG", label: "Prothèse totale de genou", specialty: null, active: true, firmsCount: 2 }],
+    });
+    renderManager();
+
+    await screen.findByText("Prothèse totale de genou");
+    const row = screen.getByText("Prothèse totale de genou").closest("tr")!;
+    expect(within(row).getByText("2")).toBeInTheDocument();
+  });
+
+  it("suggère un rapprochement avant de créer un doublon potentiel, sans bloquer la création", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockResolvedValueOnce({ data: [] }); // liste initiale
+    apiGetMock.mockResolvedValueOnce({
+      data: [{ type: { id: 1, code: "PTG", label: "Prothèse totale de genou", specialty: null, active: true }, confidence: "HIGH" }],
+    }); // /similar trouve un candidat
+    apiPostMock.mockResolvedValue({ data: { id: 3, code: "PTG2", label: "PTG bis", specialty: null, active: true } });
+    renderManager();
+
+    await screen.findByText("Aucun type d'intervention enregistré.");
+    await user.click(screen.getByRole("button", { name: "Ajouter le premier type" }));
+
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Code *"), "ptg2");
+    await user.type(within(dialog).getByLabelText("Libellé *"), "PTG bis");
+    await user.click(within(dialog).getByRole("button", { name: "Créer" }));
+
+    expect(await screen.findByText("Un type proche existe déjà")).toBeInTheDocument();
+    expect(apiPostMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Créer quand même" }));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith("/api/intervention-types", { code: "PTG2", label: "PTG bis" });
+    });
+  });
+
+  it("fusionne explicitement un type dans un autre via l'action dédiée, sans fusion automatique", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockResolvedValue({
+      data: [
+        { id: 1, code: "PTG", label: "PTG canonique", specialty: null, active: true, firmsCount: 3 },
+        { id: 2, code: "PTG-BIS", label: "PTG doublon", specialty: null, active: true, firmsCount: 0 },
+      ],
+    });
+    apiPostMock.mockResolvedValue({
+      data: { source: { id: 2, mergedIntoId: 1, active: false }, target: { id: 1 }, offeringsReassigned: 0, missionInterventionsReassigned: 0, pricingRulesReassigned: 0, pricingRulesSkipped: [] },
+    });
+    renderManager();
+
+    await screen.findByText("PTG doublon");
+    const row = screen.getByText("PTG doublon").closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Fusionner dans un autre type" }));
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByLabelText("Fusionner dans"));
+    await user.click(await screen.findByText("PTG — PTG canonique"));
+    await user.click(within(dialog).getByRole("button", { name: "Fusionner" }));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith("/api/intervention-types/2/merge", { targetId: 1 });
+    });
+    expect(toastSuccess).toHaveBeenCalledWith("Types fusionnés");
   });
 });

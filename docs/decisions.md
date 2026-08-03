@@ -1666,6 +1666,45 @@ frontend/backend, alors que le besoin actuel (session courte vs longue) ne le ju
 - Frontend : message discret "Votre session a expiré" affiché sur `/login` après un échec de
   refresh (pas de boucle 401 — l'intercepteur Axios existant gérait déjà ce cas).
 
+### Amendement (2026-08-03) — Réinvestigation "déconnexions fréquentes malgré Se souvenir de moi"
+
+Une première investigation (session précédente) concluait qu'aucun bug applicatif n'était
+visible et suspectait la purge `localStorage` de Safari/iOS ITP pour les PWA installées.
+Cette conclusion a été invalidée : le symptôme a été rapporté également sur **Google
+Chrome**, ce qui exclut ITP/Safari comme cause principale ou unique.
+
+**Cause racine réelle, confirmée par relecture ligne à ligne puis reproduite par un test
+exécutable** : dans l'intercepteur Axios (`frontend/src/app/api/apiClient.ts`), le bloc
+`catch` qui suit une tentative de refresh échouée effaçait systématiquement les tokens et
+déclenchait la déconnexion — **y compris quand l'appel réseau de refresh lui-même échouait
+pour une raison transitoire** (coupure Wi-Fi, latence, le timeout de 10s configuré sur le
+client Axios), sans aucun rapport avec la validité réelle du refresh token stocké. Un
+utilisateur avec un refresh token parfaitement valide se retrouvait déconnecté à la moindre
+requête réseau imparfaite pendant le refresh — reproductible sur n'importe quel navigateur,
+pas un problème de stockage Safari.
+
+**Correctif** : le `catch` ne déclenche désormais la déconnexion (nettoyage des tokens,
+`markSessionExpired`, `dispatchSessionExpired`) que lorsque l'erreur de refresh porte
+effectivement un statut HTTP `401` (refresh token réellement invalide/expiré, déjà détecté
+en amont par la branche `/api/auth/refresh` de l'intercepteur). Toute autre erreur (pas de
+`response`, timeout, 5xx) est désormais transmise à l'appelant sans purger la session — une
+prochaine requête pourra retenter un refresh normalement.
+
+**Autres hypothèses explicitement testées et écartées** (voir
+`frontend/src/app/api/apiClient.test.ts`) :
+- 401 prématuré avant toute tentative de refresh au bootstrap (`AuthContext.tsx`) — réfuté,
+  `/api/me` passe par l'intercepteur qui tente déjà un refresh avant tout échec définitif.
+- Race condition entre deux requêtes recevant un 401 en parallèle — réfuté, le mutex
+  (`refreshMutex.ts`) est un check-and-set synchrone sans fenêtre d'interleaving ; preuve
+  ajoutée par un test simulant deux requêtes 401 concurrentes ne déclenchant qu'un seul
+  appel de refresh réel.
+- Stockage token en `sessionStorage` (purgé à la fermeture d'onglet) — vérifié absent, seul
+  un indicateur UI sans lien avec les tokens utilise `sessionStorage`.
+- Cache du service worker sur les routes `/api/*` — vérifié absent (`sw.js` ne cache que les
+  assets statiques `/icons/` et `manifest.json`).
+- Dérive de configuration Lexik/Gesdinet par rapport à ce qui est documenté ci-dessus —
+  vérifiée absente (TTL access 1h fixe, refresh 1j/30j selon `rememberMe`, pas de rotation).
+
 ---
 
 ## D-048 — Planning V2 : bascule UI (cutover) et désactivation de la navigation V1

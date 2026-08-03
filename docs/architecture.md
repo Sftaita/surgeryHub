@@ -571,7 +571,12 @@ MaterialItem
 InterventionType (Lot 1 — référentiel médical fermé)
 ├── id, code (unique, immuable), label
 ├── specialty (nullable)
-└── active: bool
+├── active: bool
+├── mergedInto → InterventionType (nullable, auto-référence — Task 11) : non-null
+│   uniquement sur le type SOURCE d'une fusion explicite manager (jamais automatique,
+│   voir InterventionTypeMergeService/InterventionTypeSimilarityService) ; le type
+│   source n'est jamais supprimé, toujours active=false une fois fusionné
+└── mergedAt (nullable — Task 11)
 
 FirmServiceOffering ("Prestation" à l'écran — Lot 1)
 ├── firm → Firm

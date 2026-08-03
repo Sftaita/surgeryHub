@@ -166,4 +166,11 @@ enum AuditEventType: string
      * un log d'audit doit rester lisible sans avoir à interpréter un payload).
      */
     case MISSION_INTERVENTION_DRAFT_MATERIAL_REASSIGNED = 'MISSION_INTERVENTION_DRAFT_MATERIAL_REASSIGNED';
+
+    /**
+     * Task 11 — InterventionTypeMergeService::merge(). Fusion explicite manager d'un
+     * doublon de référentiel clinique dans son type canonique. recordGlobal() (pas de
+     * Mission associée) — même famille que PRICING_RULE_* ci-dessus.
+     */
+    case INTERVENTION_TYPE_MERGED = 'INTERVENTION_TYPE_MERGED';
 }

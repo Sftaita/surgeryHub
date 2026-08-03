@@ -104,6 +104,9 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\UserAuditEvent::createdAt' => 'set from new \DateTimeImmutable() in the constructor',
         'App\Entity\Absence::createdAt' => 'not covered by TimestampableTrait on this entity; set from new \DateTimeImmutable()',
 
+        // Task 11 — InterventionTypeMergeService (référentiel canonique, fusion explicite manager).
+        'App\Entity\InterventionType::mergedAt' => 'set from new \DateTimeImmutable() in InterventionTypeMergeService::merge(), never client input',
+
         // Exécution & Valorisation, Lot 3 (D-073) — FinancialCalculation/Line.
         'App\Entity\FinancialCalculation::effectiveAt' => 'date-only (date_immutable, Y-m-d) — FinancialCalculationService::resolveEffectiveAt(), jamais un instant client à décalage horaire',
         'App\Entity\FinancialCalculation::calculatedAt' => 'set from new \DateTimeImmutable() in FinancialCalculationService, never client input',

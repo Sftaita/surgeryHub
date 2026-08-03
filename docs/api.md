@@ -4320,6 +4320,54 @@ dans le body de `PATCH`). `POST` : `{ code, label, specialty? }`.
 
 `409` si référencé par une prestation ou une règle tarifaire (désactiver plutôt).
 
+### `GET /api/intervention-types/similar?label=...&excludeId=` (Task 11)
+
+`MANAGER`/`ADMIN` uniquement. Suggestion de rapprochement AVANT création — jamais un
+blocage : rapproche `label` des `InterventionType` actifs/non-fusionnés existants par
+comparaison de texte normalisé (casse/accents/espaces/ponctuation), retourne au plus 10
+candidats triés `HIGH`/`MEDIUM`/`LOW`. Réponse : `[{ type: {...}, confidence }]`, `[]` si
+aucun rapprochement plausible.
+
+### `GET /api/intervention-types/duplicate-audit` (Task 11)
+
+`MANAGER`/`ADMIN` uniquement. Rapport d'audit complet, lecture seule, ne fusionne jamais
+rien : pour chaque `InterventionType`, `firmsCount`/`firms`, `missionsCount`,
+`pricingRulesCount`, `financialLinesCount`, et `candidates` (rapprochements potentiels,
+même mécanisme que `/similar`). À examiner manuellement avant toute fusion.
+
+### `POST /api/intervention-types/{id}/merge` (Task 11)
+
+`MANAGER`/`ADMIN` uniquement. Fusion explicite d'un doublon (`{id}` = source) dans son type
+canonique (`{ targetId }`). Réassigne `FirmServiceOffering.interventionType`,
+`MissionIntervention.interventionType` (toutes missions, passées comme futures — jamais
+les instantanés `code`/`label` ni un document financier déjà émis), et les `PricingRule`
+**futures uniquement** (`validFrom` > aujourd'hui — les règles déjà effectives sont
+append-only, D-072, jamais réassignées). Le type source devient `active=false` et
+`mergedIntoId` pointe vers la cible ; il n'est jamais supprimé. `409` si une firme a déjà
+une prestation sur les deux types (conflit `UNIQUE(firm, interventionType)`) — la fusion
+entière est alors refusée, aucune mutation partielle.
+
+### `GET /api/intervention-types/{id}/offerings` (Catalogue > Prestations, refonte UX)
+
+`MANAGER`/`ADMIN` uniquement. Détail d'une intervention globale — firmes utilisatrices
+(écran "Référentiel" du design doc). Pour chaque `FirmServiceOffering` de ce type :
+firme (`id`/`name`/`logoPath`), `active`, `feeApplicable`, `forfait` (résolu via
+`PricingRuleResolver::resolveInterventionFee()` — jamais recalculé côté frontend ;
+`null` si `feeApplicable=false` ou aucune règle active).
+
+```json
+[
+  { "offeringId": 100, "firm": { "id": 1, "name": "Smith & Nephew", "logoPath": null }, "active": true, "feeApplicable": true, "forfait": { "amount": "191.00", "currency": "EUR" } },
+  { "offeringId": 201, "firm": { "id": 2, "name": "Zimmer Biomet", "logoPath": null }, "active": true, "feeApplicable": true, "forfait": null }
+]
+```
+
+*(Note lot : cet endpoint `/offerings` a été ajouté par le lot "Catalogue > Prestations,
+refonte UX" — regroupé ici avec les 3 endpoints Task 11 ci-dessus car les deux se trouvaient
+dans le même hunk de diff non commité séparément (backend/src/Controller/Api/
+InterventionTypeController.php est majoritairement Task 11) ; aucune donnée métier n'est
+mélangée, uniquement la documentation et un endpoint additif isolé.)*
+
 ### `GET|POST /api/firms/{firmId}/service-offerings`
 
 « Prestations » à l'écran (nom technique `FirmServiceOffering`). `POST` :
