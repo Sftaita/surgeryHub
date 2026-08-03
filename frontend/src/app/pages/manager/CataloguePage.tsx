@@ -6,6 +6,7 @@ import {
   Button,
   Chip,
   CircularProgress,
+  IconButton,
   Paper,
   Stack,
   Table,
@@ -16,6 +17,7 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
+import EditIcon from "@mui/icons-material/Edit";
 
 import { SearchBox } from "../../ui/SearchBox";
 import { useDebouncedValue } from "../../ui/hooks/useDebouncedValue";
@@ -146,13 +148,14 @@ export default function CataloguePage() {
                 <TableCell>Type</TableCell>
                 <TableCell>Référence</TableCell>
                 <TableCell>Unité</TableCell>
+                <TableCell>Tarif</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {items.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} align="center">
+                  <TableCell colSpan={7} align="center">
                     <Typography
                       variant="body2"
                       color="text.secondary"
@@ -176,14 +179,25 @@ export default function CataloguePage() {
                     </TableCell>
                     <TableCell>{item.referenceCode || "—"}</TableCell>
                     <TableCell>{item.unit}</TableCell>
+                    <TableCell>
+                      {item.currentPrice != null ? (
+                        <Typography variant="body2" fontWeight={700} color="success.main">
+                          {Number(item.currentPrice).toFixed(2)} {item.currentCurrency} HTVA
+                        </Typography>
+                      ) : (
+                        <Typography variant="caption" color="text.secondary">
+                          Tarif à définir
+                        </Typography>
+                      )}
+                    </TableCell>
                     <TableCell align="right">
-                      <Button
+                      <IconButton
                         size="small"
-                        variant="text"
+                        aria-label={`Modifier ${item.label}`}
                         onClick={() => handleOpenEdit(item)}
                       >
-                        Modifier
-                      </Button>
+                        <EditIcon fontSize="small" />
+                      </IconButton>
                     </TableCell>
                   </TableRow>
                 ))

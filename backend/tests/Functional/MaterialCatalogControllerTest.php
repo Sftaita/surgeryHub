@@ -282,4 +282,112 @@ final class MaterialCatalogControllerTest extends WebTestCase
         $this->em->flush();
         return $h;
     }
+
+    // ── Point 10 (audit tarification) — currentPrice sur GET /api/material-items ──
+
+    public function test_manager_sees_current_price_when_an_active_rate_exists(): void
+    {
+        $client = $this->boot();
+        $firm = $this->makeFirm();
+        $item = new MaterialItem();
+        $item->setFirm($firm);
+        $item->setLabel('Item-' . bin2hex(random_bytes(3)));
+        $item->setUnit('pièce');
+        $item->setReferenceCode(bin2hex(random_bytes(4)));
+        $this->em->persist($item);
+        $this->em->flush();
+        $this->createdItemIds[] = $item->getId();
+
+        $rule = new \App\Entity\PricingRule();
+        $rule->setFirm($firm);
+        $rule->setRuleType(\App\Enum\PricingRuleType::MATERIAL_FEE);
+        $rule->setMaterialItem($item);
+        $rule->setUnitPrice('125.00');
+        $this->em->persist($rule);
+        $this->em->flush();
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token = $this->login($client, $manager);
+
+        $response = $this->request($client, 'GET', '/api/material-items?limit=100', $token);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $body = json_decode((string) $response->getContent(), true);
+        $row = current(array_filter($body['items'], static fn ($i) => $i['id'] === $item->getId()));
+        self::assertNotFalse($row);
+        self::assertSame('125.00', $row['currentPrice']);
+        self::assertSame('EUR', $row['currentCurrency']);
+
+        $this->em->clear();
+        $freshRule = $this->em->find(\App\Entity\PricingRule::class, $rule->getId());
+        if ($freshRule !== null) { $this->em->remove($freshRule); }
+        $this->em->flush();
+    }
+
+    public function test_manager_sees_null_current_price_when_no_active_rate_exists(): void
+    {
+        $client = $this->boot();
+        $firm = $this->makeFirm();
+        $item = new MaterialItem();
+        $item->setFirm($firm);
+        $item->setLabel('Item-' . bin2hex(random_bytes(3)));
+        $item->setUnit('pièce');
+        $item->setReferenceCode(bin2hex(random_bytes(4)));
+        $this->em->persist($item);
+        $this->em->flush();
+        $this->createdItemIds[] = $item->getId();
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token = $this->login($client, $manager);
+
+        $response = $this->request($client, 'GET', '/api/material-items?limit=100', $token);
+        $body = json_decode((string) $response->getContent(), true);
+        $row = current(array_filter($body['items'], static fn ($i) => $i['id'] === $item->getId()));
+        self::assertNotFalse($row);
+        self::assertArrayHasKey('currentPrice', $row);
+        self::assertNull($row['currentPrice']);
+        self::assertNull($row['currentCurrency']);
+    }
+
+    /**
+     * L'endpoint est délibérément non gardé par BillingVoter::MANAGE (l'instrumentiste
+     * le consomme aussi pour l'encodage) — mais le tarif est une conséquence financière :
+     * jamais exposée hors manager/admin (même précédent que FirmServiceOfferingController).
+     */
+    public function test_instrumentist_never_sees_current_price(): void
+    {
+        $client = $this->boot();
+        $firm = $this->makeFirm();
+        $item = new MaterialItem();
+        $item->setFirm($firm);
+        $item->setLabel('Item-' . bin2hex(random_bytes(3)));
+        $item->setUnit('pièce');
+        $item->setReferenceCode(bin2hex(random_bytes(4)));
+        $this->em->persist($item);
+        $this->em->flush();
+        $this->createdItemIds[] = $item->getId();
+
+        $rule = new \App\Entity\PricingRule();
+        $rule->setFirm($firm);
+        $rule->setRuleType(\App\Enum\PricingRuleType::MATERIAL_FEE);
+        $rule->setMaterialItem($item);
+        $rule->setUnitPrice('125.00');
+        $this->em->persist($rule);
+        $this->em->flush();
+
+        $instr = $this->createUser('ROLE_INSTRUMENTIST');
+        $token = $this->login($client, $instr);
+
+        $response = $this->request($client, 'GET', '/api/material-items?limit=100', $token);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $body = json_decode((string) $response->getContent(), true);
+        $row = current(array_filter($body['items'], static fn ($i) => $i['id'] === $item->getId()));
+        self::assertNotFalse($row);
+        self::assertArrayNotHasKey('currentPrice', $row, 'Le tarif est une conséquence financière — jamais exposé à un instrumentiste.');
+        self::assertArrayNotHasKey('currentCurrency', $row);
+
+        $this->em->clear();
+        $freshRule = $this->em->find(\App\Entity\PricingRule::class, $rule->getId());
+        if ($freshRule !== null) { $this->em->remove($freshRule); }
+        $this->em->flush();
+    }
 }

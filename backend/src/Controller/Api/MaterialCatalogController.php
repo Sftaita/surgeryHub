@@ -44,10 +44,35 @@ final class MaterialCatalogController extends AbstractController
 
         $result = $this->catalog->list($dto);
 
-        $items = array_map(
-            fn (MaterialItem $mi) => $this->mapper->toSlim($mi),
-            $result['items']
-        );
+        // Point 10 (audit tarification) — cet endpoint n'est délibérément pas gardé par
+        // BillingVoter::MANAGE (l'instrumentiste le consomme aussi, via l'encodage — voir
+        // MaterialItemMapper::toSlim(), commun aux deux). Le tarif actuel est une
+        // conséquence financière : jamais exposée hors manager/admin, même précédent que
+        // le correctif RBAC de FirmServiceOfferingController (D-092).
+        $canSeePricing = $this->isGranted(BillingVoter::MANAGE);
+        $today = new \DateTimeImmutable('today');
+
+        $items = array_map(function (MaterialItem $mi) use ($canSeePricing, $today) {
+            $slim = $this->mapper->toSlim($mi);
+            $item = [
+                'id' => $slim->id,
+                'firm' => $slim->firm,
+                'referenceCode' => $slim->referenceCode,
+                'label' => $slim->label,
+                'unit' => $slim->unit,
+                'isImplant' => $slim->isImplant,
+                'active' => $slim->active,
+                'billingStatus' => $slim->billingStatus,
+            ];
+
+            if ($canSeePricing) {
+                $rule = $this->pricingRuleResolver->resolveMaterialFee($mi, $today);
+                $item['currentPrice'] = $rule?->getUnitPrice();
+                $item['currentCurrency'] = $rule?->getCurrency();
+            }
+
+            return $item;
+        }, $result['items']);
 
         return $this->json([
             'items' => $items,

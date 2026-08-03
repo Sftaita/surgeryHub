@@ -1446,7 +1446,10 @@ Si l'instrumentiste se crée lui-même un compte, un flux séparé devra exiger 
       "label": "FiberTape",
       "referenceCode": "AR-7234",
       "unit": "pièce",
-      "isImplant": true
+      "isImplant": true,
+      "billingStatus": "BILLABLE",
+      "currentPrice": "125.00",
+      "currentCurrency": "EUR"
     }
   ],
   "total": 42,
@@ -1454,6 +1457,13 @@ Si l'instrumentiste se crée lui-même un compte, un flux séparé devra exiger 
   "limit": 50
 }
 ```
+
+**`currentPrice`/`currentCurrency`** (Point 10, audit tarification) — tarif `MATERIAL_FEE`
+actif résolu côté serveur (`PricingRuleResolver::resolveMaterialFee()`), `null` si aucun
+tarif actif. **Présents uniquement pour `ROLE_MANAGER`/`ROLE_ADMIN`** (`BillingVoter::MANAGE`)
+— absents (jamais juste `null`) pour tout autre rôle, cet endpoint restant par ailleurs
+volontairement non gardé par ce voter (consommé aussi par l'instrumentiste pour
+l'encodage, via `MaterialItemMapper::toSlim()`, qui lui n'expose jamais de tarif).
 
 ---
 

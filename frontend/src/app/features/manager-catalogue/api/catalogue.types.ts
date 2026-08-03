@@ -14,6 +14,13 @@ export type MaterialItemDTO = {
   unit: string;
   isImplant: boolean;
   billingStatus: MaterialBillingStatus;
+  /**
+   * Point 10 (audit tarification) — présent uniquement pour manager/admin (backend
+   * RBAC, MaterialCatalogController::list()) ; absent (jamais juste `null`) pour tout
+   * autre rôle — voir MaterialCatalogControllerTest::test_instrumentist_never_sees_current_price.
+   */
+  currentPrice?: string | null;
+  currentCurrency?: string | null;
 };
 
 export type MaterialItemsListResponseDTO = {
