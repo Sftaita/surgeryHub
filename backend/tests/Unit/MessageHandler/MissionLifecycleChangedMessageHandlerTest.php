@@ -14,6 +14,7 @@ use App\MessageHandler\MissionLifecycleChangedMessageHandler;
 use App\Service\MissionEligibilityService;
 use App\Service\NotificationChannels;
 use App\Service\NotificationPreferenceResolver;
+use App\Service\NotificationTargetResolver;
 use App\Service\WebPushServiceInterface;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\MockObject\MockObject;
@@ -27,6 +28,7 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
     private WebPushServiceInterface&MockObject        $webPushService;
     private LoggerInterface&MockObject                $logger;
     private MissionEligibilityService&MockObject      $eligibilityService;
+    private NotificationTargetResolver                $targetResolver;
     private array                                     $persisted = [];
 
     private static int $nextId = 1;
@@ -38,6 +40,9 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         $this->webPushService     = $this->createMock(WebPushServiceInterface::class);
         $this->logger             = $this->createMock(LoggerInterface::class);
         $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        // Pure computation, no dependencies — real instance rather than a mock (nothing
+        // to stub, a mock would just duplicate the real routing logic).
+        $this->targetResolver = new NotificationTargetResolver();
 
         // Default: inApp=true, email=false, push=false
         $this->preferenceResolver->method('resolve')
@@ -57,6 +62,7 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
             $this->webPushService,
             $this->logger,
             $this->eligibilityService,
+            $this->targetResolver,
         );
     }
 

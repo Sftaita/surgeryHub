@@ -36,6 +36,7 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::ABSENCE_INSTRUMENTIST_RELEASED,
         NotificationType::ABSENCE_SURGEON_MISSION_OPENED,
         NotificationType::ABSENCE_MISSION_CANCELLED,
+        NotificationType::SURGEON_MISSION_OPEN_PUBLISHED,
     ];
 
     public function __construct(

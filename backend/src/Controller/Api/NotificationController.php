@@ -4,7 +4,9 @@ namespace App\Controller\Api;
 
 use App\Entity\NotificationEvent;
 use App\Entity\User;
+use App\Enum\NotificationType;
 use App\Enum\PublicationChannel;
+use App\Service\NotificationTargetResolver;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -28,8 +30,10 @@ final class NotificationController extends AbstractController
     private const DEFAULT_LIMIT = 30;
     private const MAX_LIMIT = 100;
 
-    public function __construct(private readonly EntityManagerInterface $em)
-    {
+    public function __construct(
+        private readonly EntityManagerInterface $em,
+        private readonly NotificationTargetResolver $targetResolver,
+    ) {
     }
 
     #[Route('', name: 'api_notifications_list', methods: ['GET'])]
@@ -112,10 +116,20 @@ final class NotificationController extends AbstractController
 
     private function toArray(NotificationEvent $n): array
     {
+        $recipient = $n->getUser();
+        $type = NotificationType::tryFrom($n->getEventType());
+        $targetUrl = ($type !== null && $recipient !== null)
+            ? $this->targetResolver->resolve($type, $n->getMission(), $recipient)
+            : null;
+
         return [
             'id' => $n->getId(),
             'eventType' => $n->getEventType(),
             'missionId' => $n->getMission()?->getId(),
+            // Point 4 (audit UX) — cible de navigation calculée côté serveur, jamais
+            // reconstruite côté frontend à partir de missionId/eventType. null = non
+            // actionnable (purement informatif, ou pas de cible connue).
+            'targetUrl' => $targetUrl,
             'payload' => $n->getPayload(),
             'sentAt' => $n->getSentAt()?->format(DATE_ATOM),
             'seenAt' => $n->getSeenAt()?->format(DATE_ATOM),

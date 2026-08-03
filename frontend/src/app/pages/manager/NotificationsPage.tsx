@@ -44,9 +44,15 @@ export default function ManagerNotificationsPage() {
     }
   }, [isLoading, unreadCount, markAllSeen]);
 
+  /**
+   * Point 4 (audit UX) — navigue vers `targetUrl`, calculé côté serveur
+   * (NotificationTargetResolver) : jamais reconstruit ici à partir de missionId. Une
+   * notification sans cible (purement informative) est tout de même marquée lue, mais
+   * ne navigue nulle part.
+   */
   const handleClick = (n: NotificationItem) => {
     if (!n.seenAt) void markSeen(n.id);
-    if (n.missionId) navigate(`/app/m/missions/${n.missionId}`);
+    if (n.targetUrl) navigate(n.targetUrl);
   };
 
   return (
@@ -82,16 +88,20 @@ export default function ManagerNotificationsPage() {
           <List sx={{ p: 0 }}>
             {items.map((n) => {
               const isUnread = !n.seenAt;
+              const isActionable = !!n.targetUrl;
               const body = formatNotificationBody(n);
               return (
                 <ListItemButton
                   key={n.id}
                   onClick={() => handleClick(n)}
+                  disableRipple={!isActionable}
                   sx={{
                     py: 1.5,
                     px: 2,
                     borderLeft: "3px solid",
                     borderLeftColor: isUnread ? "primary.main" : "transparent",
+                    cursor: isActionable ? "pointer" : "default",
+                    "&:hover": isActionable ? undefined : { bgcolor: "transparent" },
                   }}
                 >
                   <Stack direction="row" spacing={1.5} alignItems="flex-start" sx={{ width: "100%" }}>

@@ -35,7 +35,10 @@ final class MissionActionsService
         // Manager/Admin
         if ($isManager) {
             return match ($mission->getStatus()) {
-                MissionStatus::DRAFT => ['view', 'edit', 'publish'],
+                // 'cancel' couvre aussi DRAFT depuis D-090 (MissionPostDeployService::cancel()
+                // accepte déjà DRAFT|OPEN|ASSIGNED) — un manager doit pouvoir abandonner un
+                // brouillon jamais publié, jamais uniquement 'edit'/'publish' sans issue.
+                MissionStatus::DRAFT => ['view', 'edit', 'publish', 'cancel'],
                 MissionStatus::OPEN => ['view', 'view_publications', 'cancel'],
                 MissionStatus::ASSIGNED => ['view', 'cancel', 'reassign', 'view_claim'],
                 // Lot 7 (D-070) : corrigé — 'reopen' n'est valide que depuis VALIDATED

@@ -25,6 +25,7 @@ import AccessTimeIcon from "@mui/icons-material/AccessTime";
 
 import {
   approveDeclaredMission,
+  cancelMission,
   fetchMissionById,
   getMissionExecution,
   rejectDeclaredMission,
@@ -138,6 +139,8 @@ export function MissionDetailContent({
   const [rejectEncodingComment, setRejectEncodingComment] = React.useState("");
   const [reopenOpen, setReopenOpen] = React.useState(false);
   const [reopenComment, setReopenComment] = React.useState("");
+  const [cancelConfirmOpen, setCancelConfirmOpen] = React.useState(false);
+  const [cancelReason, setCancelReason] = React.useState("");
 
   async function refreshAfterAction() {
     await queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
@@ -209,6 +212,25 @@ export function MissionDetailContent({
     },
   });
 
+  /**
+   * Point 5 (audit UX manager) — annulation, jamais une suppression physique (D-055/
+   * D-056 : historique auditable). Couvre DRAFT/OPEN/ASSIGNED, toujours conditionné à
+   * allowedActions.includes("cancel") — voir MissionActionsService côté backend.
+   */
+  const cancelMutation = useMutation({
+    mutationFn: async (reason: string) => cancelMission(missionId, reason),
+    onSuccess: async () => {
+      await refreshAfterAction();
+      toast.success("Mission annulée.");
+      setCancelReason("");
+      if (embedded) onCloseEmbedded?.();
+      else navigate("/app/m/missions", { replace: true });
+    },
+    onError: (err: any) => {
+      toast.error(err?.response?.status === 403 ? "Accès interdit." : "Erreur lors de l'annulation.");
+    },
+  });
+
   if (!Number.isFinite(missionId)) return <Typography sx={{ p: 3 }}>ID invalide</Typography>;
   if (isLoading) return <Typography sx={{ p: 3 }} color="text.secondary">Chargement…</Typography>;
 
@@ -232,13 +254,22 @@ export function MissionDetailContent({
   const canRejectEncoding = allowed.includes("reject") && data.status === "SUBMITTED";
   const canValidateEncoding = allowed.includes("validate");
   const canReopenEncoding = allowed.includes("reopen");
+  const canCancel = allowed.includes("cancel");
 
   const anyLoading =
     approveMutation.isPending ||
     rejectMutation.isPending ||
     validateEncodingMutation.isPending ||
     rejectEncodingMutation.isPending ||
-    reopenEncodingMutation.isPending;
+    reopenEncodingMutation.isPending ||
+    cancelMutation.isPending;
+
+  const cancelEffectMessage =
+    data.status === "DRAFT"
+      ? "Ce brouillon n'a jamais été publié — l'annuler ne notifie personne."
+      : data.status === "ASSIGNED"
+      ? "Un instrumentiste est assigné à cette mission. L'annuler le retire de la mission et l'en informe."
+      : "Cette mission est proposée au pool d'instrumentistes. L'annuler retire l'offre — plus personne ne pourra la revendiquer.";
 
   return (
     <Box sx={{ maxWidth: embedded ? "none" : 800 }}>
@@ -268,8 +299,14 @@ export function MissionDetailContent({
       </Stack>
 
       {/* Actions */}
-      {(canEdit || canPublish || canApprove || canReject || canValidateEncoding || canRejectEncoding || canReopenEncoding) && (
+      {(canEdit || canPublish || canApprove || canReject || canValidateEncoding || canRejectEncoding || canReopenEncoding || canCancel) && (
         <Stack direction="row" spacing={1} mb={3} flexWrap="wrap">
+          {canCancel && (
+            <Button color="error" variant="outlined" size="small" disabled={anyLoading}
+              onClick={() => setCancelConfirmOpen(true)}>
+              Annuler la mission
+            </Button>
+          )}
           {canReject && (
             <Button color="error" variant="outlined" size="small" disabled={anyLoading}
               onClick={() => setRejectConfirmOpen(true)}>
@@ -582,6 +619,34 @@ export function MissionDetailContent({
           <Button color="warning" variant="contained" disabled={anyLoading}
             onClick={() => { setReopenOpen(false); reopenEncodingMutation.mutate(reopenComment.trim()); }}>
             Rouvrir
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={cancelConfirmOpen} onClose={() => setCancelConfirmOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Annuler la mission</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary" mb={1.5}>
+            {cancelEffectMessage}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" mb={1.5}>
+            La mission reste consultable dans l'historique — elle n'est jamais supprimée.
+          </Typography>
+          <TextField
+            autoFocus
+            fullWidth
+            multiline
+            minRows={2}
+            label="Motif (optionnel)"
+            value={cancelReason}
+            onChange={(e) => setCancelReason(e.target.value)}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCancelConfirmOpen(false)} disabled={anyLoading}>Retour</Button>
+          <Button color="error" variant="contained" disabled={anyLoading}
+            onClick={() => { setCancelConfirmOpen(false); cancelMutation.mutate(cancelReason); }}>
+            Annuler la mission
           </Button>
         </DialogActions>
       </Dialog>

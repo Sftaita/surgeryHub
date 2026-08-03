@@ -152,15 +152,27 @@ function BandWaves({ activeKey, kick }: { activeKey: TabKey | null; kick: boolea
       preserveAspectRatio="none"
       fill="none"
     >
+      {/*
+        Safari ne supporte pas la propriété CSS `d` (utilisée ici pour animer la
+        transition entre formes via `style.d`) — sans un attribut `d` HTML de repli,
+        le <path> n'a alors AUCUNE géométrie et reste invisible (pas seulement figé,
+        totalement absent). L'attribut `d` ci-dessous fournit ce repli : Safari
+        l'utilise directement (vagues visibles, sans morph animé) ; Chrome/Firefox et
+        Safari récent (support de `d` en CSS) continuent d'utiliser `style.d`, qui
+        prend le dessus sur l'attribut et anime la transition normalement.
+      */}
       <path
+        d={shapes.w1}
         style={{ transition: "d 1.1s cubic-bezier(0.16, 1, 0.3, 1)", d: `path('${shapes.w1}')` } as React.CSSProperties}
         fill="rgba(255,255,255,.07)"
       />
       <path
+        d={shapes.w2}
         style={{ transition: "d 1.35s cubic-bezier(0.16, 1, 0.3, 1)", d: `path('${shapes.w2}')` } as React.CSSProperties}
         fill="rgba(11,19,32,.14)"
       />
       <path
+        d={shapes.w3}
         style={{ transition: "d 1.6s cubic-bezier(0.16, 1, 0.3, 1)", d: `path('${shapes.w3}')` } as React.CSSProperties}
         stroke="rgba(255,255,255,.22)"
         strokeWidth={1.5}

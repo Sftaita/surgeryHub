@@ -218,6 +218,53 @@ class NotificationService
         return $notification;
     }
 
+    /**
+     * Point 8 (audit UX) — repli email quand Push n'est pas livrable au chirurgien pour
+     * `SURGEON_MISSION_OPEN_PUBLISHED` (mission OPEN publiée pour lui, sans instrumentiste
+     * assigné). Même orchestration D-083/D-084 que `missionEncodingReminderNotifyInstrumentist`
+     * ci-dessus. Aucune donnée patient : date/horaire/site/type uniquement.
+     */
+    public function missionOpenNotifySurgeon(
+        Mission $mission,
+        User $surgeon,
+        ?OutboundNotification $fallbackOf = null,
+        ?OutboundNotificationFallbackReason $fallbackReason = null,
+    ): OutboundNotification {
+        $missionUrl = sprintf('%s/app/s', $this->frontendUrl);
+        $subject = 'SurgicalHub — Nouvelle mission ouverte';
+
+        $notification = $this->outboundNotificationService->recordEmailQueued(
+            $surgeon,
+            'SURGEON_MISSION_OPEN_PUBLISHED',
+            $subject,
+            rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
+            mission: $mission,
+            fallbackOf: $fallbackOf,
+            fallbackReason: $fallbackReason,
+        );
+
+        $this->bus->dispatch(new SendTemplatedEmailMessage(
+            to: (string) $surgeon->getEmail(),
+            subject: $subject,
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: 'emails/mission_open_notify_surgeon.html.twig',
+            context: [
+                'firstname'   => $surgeon->getFirstname(),
+                'dateLabel'   => $mission->getStartAt()?->format('d/m/Y'),
+                'timeLabel'   => $mission->getStartAt() !== null && $mission->getEndAt() !== null
+                    ? $mission->getStartAt()->format('H:i') . ' – ' . $mission->getEndAt()->format('H:i')
+                    : null,
+                'siteName'    => $mission->getSite()?->getName(),
+                'typeLabel'   => $mission->getType() === \App\Enum\MissionType::CONSULTATION ? 'Consultation' : 'Bloc opératoire',
+                'missionUrl'  => $missionUrl,
+            ],
+            outboundNotificationId: $notification->getId(),
+        ));
+
+        return $notification;
+    }
+
     public function sendAbsenceRequestMissingEmailToUser(User $user, string $message): void
     {
         $this->bus->dispatch(new SendTemplatedEmailMessage(

@@ -78,8 +78,13 @@ self.addEventListener('push', function (event) {
 self.addEventListener('notificationclick', function (event) {
   event.notification.close();
 
+  // Point 4 (audit UX) — `data.url` (calculé côté serveur, NotificationTargetResolver)
+  // est prioritaire : il est correct quel que soit le rôle du destinataire. Repli sur
+  // l'ancienne heuristique (toujours /app/i/...) uniquement pour les envois push qui ne
+  // le portent pas encore — tous les appelants n'ont pas été retrofit dans ce lot.
   const missionId = event.notification.data?.missionId;
-  const url = missionId ? `/app/i/missions/${missionId}` : '/app/i/today';
+  const url = event.notification.data?.url
+    || (missionId ? `/app/i/missions/${missionId}` : '/app/i/today');
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (clientList) {

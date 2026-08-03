@@ -1,20 +1,26 @@
 import type { NotificationItem } from "./api/notifications.api";
 
+/**
+ * Point 4 (audit UX) — cette table avait divergé de `NotificationType` (backend/src/
+ * Enum/NotificationType.php) : la quasi-totalité des notifications réellement émises
+ * retombait sur le repli générique "Notification", sans titre lisible. Clés alignées
+ * sur les valeurs exactes de l'enum ci-dessus.
+ */
 const TITLES: Record<string, string> = {
-  MISSION_CANCELLED: "Mission annulée",
-  MISSION_COVERED: "Mission couverte",
-  MISSION_DECLARED: "Mission déclarée",
-  MISSION_DECLARED_APPROVED: "Déclaration approuvée",
-  MISSION_DECLARED_REJECTED: "Déclaration refusée",
-  MISSION_REASSIGNED: "Mission réassignée",
-  MISSION_UNCOVERED: "Mission non couverte",
   PLANNING_ALERT: "Alerte planning",
-  PLANNING_ALERT_RAISED: "Alerte planning",
-  PLANNING_ALERT_REASSIGNED_AWAY: "Mission retirée de votre planning",
-  PLANNING_ALERT_REASSIGNED_TO: "Nouvelle mission assignée",
-  PLANNING_DEPLOYED: "Planning déployé",
-  PLANNING_MISSION_ASSIGNED: "Mission assignée",
-  PLANNING_OPEN_MISSIONS_AVAILABLE: "Nouvelles offres disponibles",
+  PLANNING_DEPLOYED_INSTRUMENTIST: "Planning publié",
+  PLANNING_DEPLOYED_SURGEON: "Planning publié",
+  PLANNING_DEPLOYED_MANAGER: "Déploiement confirmé",
+  OPEN_MISSION_AVAILABLE: "Nouvelle offre disponible",
+  SURGEON_POST_COVERED: "Poste couvert",
+  SURGEON_POST_UNCOVERED: "Poste non couvert",
+  PLANNING_MISSION_REASSIGNED: "Mission réassignée",
+  PLANNING_MISSION_CANCELLED: "Mission annulée",
+  PLANNING_MISSION_ADDED: "Nouvelle mission",
+  PLANNING_MISSION_UPDATED: "Mission modifiée",
+  ABSENCE_INSTRUMENTIST_RELEASED: "Mission retirée (absence)",
+  ABSENCE_SURGEON_MISSION_OPENED: "Mission désormais ouverte (absence)",
+  ABSENCE_MISSION_CANCELLED: "Mission annulée (absence)",
   PLANNING_RESENT_MANUAL: "Planning renvoyé",
 };
 

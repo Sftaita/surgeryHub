@@ -53,4 +53,11 @@ describe("LandingPage — absence de contenu fictif", () => {
     renderLandingPage();
     expect(screen.getByRole("button", { name: /Ouvrir le menu/i })).toBeInTheDocument();
   });
+
+  it("affiche le logo officiel partagé (même asset que LoginPage/MobileLayout), jamais un SVG réinventé localement", () => {
+    renderLandingPage();
+    const logos = screen.getAllByAltText("SurgeryHub");
+    expect(logos.length).toBeGreaterThanOrEqual(2); // navbar + footer
+    logos.forEach((img) => expect(img).toHaveAttribute("src", "/logo-mark-transparent.png"));
+  });
 });

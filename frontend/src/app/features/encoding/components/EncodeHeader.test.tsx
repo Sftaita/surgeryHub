@@ -44,4 +44,15 @@ describe("EncodeHeader", () => {
     await user.click(screen.getByLabelText("Retour"));
     expect(onBack).toHaveBeenCalledTimes(1);
   });
+
+  it("les vagues décoratives ont un attribut d HTML statique (repli Safari, qui ne supporte pas la propriété CSS d utilisée pour l'animation)", () => {
+    const { container } = render(
+      <EncodeHeader missionId={1} dateLabel="—" typeLabel="Bloc opératoire" onBack={vi.fn()} />,
+    );
+    const wavePaths = container.querySelectorAll("path");
+    expect(wavePaths.length).toBeGreaterThanOrEqual(2);
+    wavePaths.forEach((path) => {
+      expect(path.getAttribute("d")).toBeTruthy();
+    });
+  });
 });

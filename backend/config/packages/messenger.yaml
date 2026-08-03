@@ -21,6 +21,7 @@ framework:
             App\Message\PlanningAlertRaisedMessage:         async
             App\Message\MissionLifecycleChangedMessage:     async
             App\Message\AbsenceMissionsReactedMessage:      async
+            App\Message\MissionPublishedMessage:            async
 
 when@test:
     framework:

@@ -371,4 +371,17 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
       expect(emittedCss).toMatch(/env\(safe-area-inset-top\)/);
     });
   });
+
+  describe("Vagues du bandeau de marque — repli Safari (propriété CSS d non supportée)", () => {
+    it("chaque <path> du BandWaves porte un attribut d HTML statique, pas seulement la propriété CSS d", () => {
+      mockDesktop(false);
+      const { container } = renderLayout();
+
+      const wavePaths = container.querySelectorAll("path");
+      expect(wavePaths.length).toBeGreaterThanOrEqual(3);
+      wavePaths.forEach((path) => {
+        expect(path.getAttribute("d")).toBeTruthy();
+      });
+    });
+  });
 });

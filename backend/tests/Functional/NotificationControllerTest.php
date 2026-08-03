@@ -201,6 +201,100 @@ final class NotificationControllerTest extends WebTestCase
         self::assertSame(2, $body['unreadCount']);
     }
 
+    // ── targetUrl (Point 4, audit UX) ───────────────────────────────────────
+
+    #[WithoutErrorHandler]
+    public function test_targetUrl_is_computed_for_a_mission_tied_notification(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['user' => $instr, 'token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        $site = new \App\Entity\Hospital();
+        $site->setName('NotifCtrl-' . bin2hex(random_bytes(3)));
+        $this->em->persist($site);
+        $surgeon = new User();
+        $surgeon->setEmail('notif-ctrl-surg-' . bin2hex(random_bytes(4)) . '@surgicalhub.test');
+        $surgeon->setRoles(['ROLE_SURGEON']);
+        $surgeon->setActive(true);
+        $surgeon->setPassword('x');
+        $this->em->persist($surgeon);
+        $this->em->flush();
+
+        $mission = new \App\Entity\Mission();
+        $mission->setStatus(\App\Enum\MissionStatus::ASSIGNED);
+        $mission->setType(\App\Enum\MissionType::BLOCK);
+        $mission->setSite($site);
+        $mission->setSurgeon($surgeon);
+        $mission->setInstrumentist($instr);
+        $mission->setCreatedBy($surgeon);
+        $mission->setStartAt(new \DateTimeImmutable('+1 day'));
+        $mission->setEndAt(new \DateTimeImmutable('+1 day +2 hours'));
+        $this->em->persist($mission);
+        $this->em->flush();
+
+        $managedInstr = $this->em->find(User::class, $instr->getId());
+        $evt = new NotificationEvent();
+        $evt->setUser($managedInstr)
+            ->setEventType(\App\Enum\NotificationType::PLANNING_MISSION_REASSIGNED->value)
+            ->setChannel(PublicationChannel::IN_APP)
+            ->setMission($mission)
+            ->setSentAt(new \DateTimeImmutable());
+        $this->em->persist($evt);
+        $this->em->flush();
+        $this->createdIds['notifications'][] = $evt->getId();
+
+        $client->request('GET', '/api/notifications', server: $this->auth($token));
+        $body = $this->json($client->getResponse());
+
+        self::assertSame('/app/i/missions/' . $mission->getId(), $body['items'][0]['targetUrl']);
+
+        // Cleanup mission-specific entities (not covered by the base tearDown, which only
+        // knows users/notifications) — re-fetched by id: the HTTP request above resets
+        // the container's services (services_resetter), detaching the in-memory
+        // references captured before the call (same reason `authenticate()`'s returned
+        // User needs re-fetching elsewhere in this file, see createNotification()).
+        $this->em->clear();
+        $missionId = $mission->getId();
+        $surgeonId = $surgeon->getId();
+        $siteId = $site->getId();
+        $notifId = $evt->getId();
+
+        $freshNotif = $this->em->find(NotificationEvent::class, $notifId);
+        if ($freshNotif !== null) { $this->em->remove($freshNotif); }
+        $this->em->flush();
+
+        $freshMission = $this->em->find(\App\Entity\Mission::class, $missionId);
+        if ($freshMission !== null) { $this->em->remove($freshMission); }
+        $this->em->flush();
+
+        $freshSurgeon = $this->em->find(User::class, $surgeonId);
+        if ($freshSurgeon !== null) { $this->em->remove($freshSurgeon); }
+        $freshSite = $this->em->find(\App\Entity\Hospital::class, $siteId);
+        if ($freshSite !== null) { $this->em->remove($freshSite); }
+        $this->em->flush();
+
+        // Already removed above — prevent the shared tearDown() from double-removing.
+        $this->createdIds['notifications'] = array_values(array_diff($this->createdIds['notifications'], [$notifId]));
+    }
+
+    #[WithoutErrorHandler]
+    public function test_targetUrl_is_null_for_an_unrecognized_event_type(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $user] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        $this->createNotification($user, 'MISSION_ASSIGNED');
+
+        $client->request('GET', '/api/notifications', server: $this->auth($token));
+        $body = $this->json($client->getResponse());
+
+        self::assertNull($body['items'][0]['targetUrl']);
+    }
+
     // ── mark seen (single) ──────────────────────────────────────────────────
 
     #[WithoutErrorHandler]

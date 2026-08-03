@@ -12,6 +12,7 @@ use App\Message\MissionLifecycleChangedMessage;
 use App\Service\MissionEligibilityService;
 use App\Service\NotificationChannels;
 use App\Service\NotificationPreferenceResolver;
+use App\Service\NotificationTargetResolver;
 use App\Service\WebPushServiceInterface;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -61,6 +62,7 @@ final class MissionLifecycleChangedMessageHandler
         private readonly WebPushServiceInterface        $webPushService,
         private readonly LoggerInterface                $logger,
         private readonly MissionEligibilityService      $eligibilityService,
+        private readonly NotificationTargetResolver     $targetResolver,
     ) {}
 
     public function __invoke(MissionLifecycleChangedMessage $message): void
@@ -135,7 +137,7 @@ final class MissionLifecycleChangedMessageHandler
                     $surgeon,
                     'Mission couverte',
                     "{$instrName} a pris en charge votre mission à {$siteName}.",
-                    ['type' => 'MISSION_COVERED', 'missionId' => $mission->getId()],
+                    ['type' => 'MISSION_COVERED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::SURGEON_POST_COVERED, $mission, $surgeon)],
                 );
                 $this->logger->info('MissionLifecycleChanged::CLAIMED: push sent', [
                     'missionId' => $mission->getId(),
@@ -200,7 +202,7 @@ final class MissionLifecycleChangedMessageHandler
                     $surgeon,
                     'Mission non couverte',
                     "Votre mission à {$siteName} n'a plus d'instrumentiste.",
-                    ['type' => 'MISSION_UNCOVERED', 'missionId' => $mission->getId()],
+                    ['type' => 'MISSION_UNCOVERED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::SURGEON_POST_UNCOVERED, $mission, $surgeon)],
                 );
                 $this->logger->info('MissionLifecycleChanged::RELEASED: push sent', [
                     'missionId' => $mission->getId(),
@@ -271,7 +273,7 @@ final class MissionLifecycleChangedMessageHandler
                             $fromInstrumentist,
                             'Mission réassignée',
                             "Vous avez été retiré d'une mission à {$siteName}.",
-                            ['type' => 'MISSION_REASSIGNED', 'missionId' => $mission->getId()],
+                            ['type' => 'MISSION_REASSIGNED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::PLANNING_MISSION_REASSIGNED, $mission, $fromInstrumentist)],
                         );
                     } catch (\Throwable $e) {
                         $this->logger->error('MissionLifecycleChanged::REASSIGNED: old instr push failed', [
@@ -312,7 +314,7 @@ final class MissionLifecycleChangedMessageHandler
                             $toInstrumentist,
                             'Mission assignée',
                             "Vous avez été assigné à une mission à {$siteName}.",
-                            ['type' => 'MISSION_REASSIGNED', 'missionId' => $mission->getId()],
+                            ['type' => 'MISSION_REASSIGNED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::PLANNING_MISSION_REASSIGNED, $mission, $toInstrumentist)],
                         );
                     } catch (\Throwable $e) {
                         $this->logger->error('MissionLifecycleChanged::REASSIGNED: new instr push failed', [
@@ -366,7 +368,7 @@ final class MissionLifecycleChangedMessageHandler
                             $surgeon,
                             'Mission couverte',
                             "{$instrName} a pris en charge votre mission à {$siteName}.",
-                            ['type' => 'MISSION_COVERED', 'missionId' => $mission->getId()],
+                            ['type' => 'MISSION_COVERED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::SURGEON_POST_COVERED, $mission, $surgeon)],
                         );
                     } catch (\Throwable $e) {
                         $this->logger->error('MissionLifecycleChanged::REASSIGNED: surgeon push failed', [
@@ -425,7 +427,7 @@ final class MissionLifecycleChangedMessageHandler
                         $surgeon,
                         'Mission annulée',
                         "Une mission à {$siteName} a été annulée.",
-                        ['type' => 'MISSION_CANCELLED', 'missionId' => $mission->getId()],
+                        ['type' => 'MISSION_CANCELLED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::PLANNING_MISSION_CANCELLED, $mission, $surgeon)],
                     );
                 } catch (\Throwable $e) {
                     $this->logger->error('MissionLifecycleChanged::CANCELLED: surgeon push failed', [
@@ -467,7 +469,7 @@ final class MissionLifecycleChangedMessageHandler
                         $instrumentist,
                         'Mission annulée',
                         "Une mission à {$siteName} a été annulée.",
-                        ['type' => 'MISSION_CANCELLED', 'missionId' => $mission->getId()],
+                        ['type' => 'MISSION_CANCELLED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::PLANNING_MISSION_CANCELLED, $mission, $instrumentist)],
                     );
                 } catch (\Throwable $e) {
                     $this->logger->error('MissionLifecycleChanged::CANCELLED: instrumentist push failed', [

@@ -89,6 +89,12 @@ Crée une mission planning classique (`DRAFT`).
 
 **Transition :** `DRAFT → OPEN`
 
+Dispatche `MissionPublishedMessage` (async — Point 8, audit UX) : notifie les
+instrumentistes du site (comportement inchangé, déplacé ici depuis un envoi synchrone
+dans le contrôleur — dette D-081 résolue) et, désormais, le chirurgien de la mission
+(`SURGEON_MISSION_OPEN_PUBLISHED` — push si préférence + abonnement actif, repli email
+sinon, aucune donnée patient). Voir `MissionPublishedMessageHandler`.
+
 ---
 
 ### `POST /api/missions/{id}/claim`
@@ -5470,11 +5476,18 @@ Notifications `IN_APP` de l'utilisateur courant, triées par `sentAt` décroissa
 ```json
 {
   "items": [
-    { "id": 1, "eventType": "PLANNING_ALERT_REASSIGNED_TO", "missionId": 42, "payload": {"siteName": "CHU", "missionDate": "2026-08-01"}, "sentAt": "2026-07-29T10:00:00+00:00", "seenAt": null }
+    { "id": 1, "eventType": "PLANNING_MISSION_REASSIGNED", "missionId": 42, "targetUrl": "/app/i/missions/42", "payload": {"siteName": "CHU", "missionDate": "2026-08-01"}, "sentAt": "2026-07-29T10:00:00+00:00", "seenAt": null }
   ],
   "unreadCount": 3
 }
 ```
+
+**`targetUrl`** (Point 4, audit UX — cliquer sur une notification n'ouvrait rien) — cible
+de navigation calculée côté serveur (`NotificationTargetResolver`), jamais reconstruite
+côté frontend à partir de `missionId`/`eventType`. Rôle-dépendante (ex : une même
+notification liée à une Mission pointe vers `/app/m/missions/{id}` pour un manager,
+`/app/i/missions/{id}` pour un instrumentiste). `null` = notification non actionnable
+(purement informative — ex : déploiements agrégés — ou type inconnu).
 
 ```
 GET /api/notifications/unread-count

@@ -17,6 +17,13 @@ const WAVE_2_KEYFRAMES = {
   "45%": { d: "path('M0 118 C 100 150, 210 102, 310 148 S 385 108, 400 114')" },
   "100%": { d: "path('M0 132 C 100 128, 210 128, 310 132 S 385 122, 400 126')" },
 };
+// Repli statique (attribut `d` HTML) pour les navigateurs sans support de la
+// propriété CSS `d` (Safari) — sans lui, ces <path> n'ont aucune géométrie et
+// restent invisibles plutôt que simplement non animés. Valeur = état final (100%)
+// de chaque keyframe, cohérent avec ce que Chrome/Firefox affichent une fois
+// l'animation "both" terminée.
+const WAVE_1_FALLBACK_D = "M0 128 C 90 88, 200 168, 300 118 S 380 96, 400 104 L400 190 L0 190 Z";
+const WAVE_2_FALLBACK_D = "M0 132 C 100 128, 210 128, 310 132 S 385 122, 400 126";
 
 function BackIcon() {
   return (
@@ -77,6 +84,7 @@ export function EncodeHeader({ missionId, dateLabel, typeLabel, onBack, helpTopi
       >
         <Box
           component="path"
+          d={WAVE_1_FALLBACK_D}
           fill="rgba(255,255,255,.05)"
           sx={{
             animation: "shEncWave1 1.1s cubic-bezier(0.16, 1, 0.3, 1) both",
@@ -85,6 +93,7 @@ export function EncodeHeader({ missionId, dateLabel, typeLabel, onBack, helpTopi
         />
         <Box
           component="path"
+          d={WAVE_2_FALLBACK_D}
           stroke="rgba(255,255,255,.16)"
           strokeWidth={1.5}
           strokeDasharray="10 9"

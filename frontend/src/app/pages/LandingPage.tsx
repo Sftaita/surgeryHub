@@ -54,16 +54,9 @@ const NAV_LINKS: [string, string][] = [
   ["#contact", "Contact"],
 ];
 
+/** Même asset que LoginPage/MobileLayout (`/logo-mark-transparent.png`) — jamais un logo réinventé localement. */
 const SurgeryHubLogo = ({ size = 38 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="40" cy="40" r="37" stroke={C.green} strokeWidth="4" />
-    <line x1="27" y1="57" x2="50" y2="25" stroke={C.green} strokeWidth="3.5" strokeLinecap="round" />
-    <path d="M46 21 L54 30 Q58 25 53 21 Z" fill={C.green} />
-    <line x1="30" y1="55" x2="35" y2="59" stroke={C.green} strokeWidth="2" strokeLinecap="round" />
-    <line x1="55" y1="57" x2="32" y2="25" stroke={C.green} strokeWidth="3.5" strokeLinecap="round" />
-    <path d="M30 23 Q27 29 31 31 L35 23 Z" fill={C.green} />
-    <rect x="50" y="50" width="8" height="3.5" rx="1.75" transform="rotate(-55 54 52)" fill={C.green} />
-  </svg>
+  <Box component="img" src="/logo-mark-transparent.png" alt="SurgeryHub" sx={{ width: size, height: size, objectFit: "contain", flexShrink: 0 }} />
 );
 
 const HERO_HIGHLIGHTS = [

@@ -9,6 +9,12 @@ const fetchNotificationsMock = vi.fn();
 const markNotificationSeenMock = vi.fn();
 const markAllNotificationsSeenMock = vi.fn();
 
+const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }));
+vi.mock("react-router-dom", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-router-dom")>();
+  return { ...actual, useNavigate: () => mockNavigate };
+});
+
 vi.mock("../../features/notifications/api/notifications.api", () => ({
   fetchNotifications: (...args: unknown[]) => fetchNotificationsMock(...args),
   markNotificationSeen: (...args: unknown[]) => markNotificationSeenMock(...args),
@@ -30,6 +36,7 @@ beforeEach(() => {
   fetchNotificationsMock.mockReset().mockResolvedValue({ items: [], unreadCount: 0 });
   markNotificationSeenMock.mockReset().mockResolvedValue({});
   markAllNotificationsSeenMock.mockReset().mockResolvedValue({ updated: 0 });
+  mockNavigate.mockReset();
 });
 
 /**
@@ -50,8 +57,9 @@ describe("NotificationsPage (instrumentiste) — source de vérité serveur", ()
       items: [
         {
           id: 1,
-          eventType: "PLANNING_ALERT_REASSIGNED_TO",
+          eventType: "PLANNING_MISSION_REASSIGNED",
           missionId: 42,
+          targetUrl: "/app/i/missions/42",
           payload: { siteName: "Clinique Test", missionDate: "2026-08-01" },
           sentAt: "2026-07-29T10:00:00+00:00",
           seenAt: null,
@@ -61,7 +69,7 @@ describe("NotificationsPage (instrumentiste) — source de vérité serveur", ()
 
     renderPage();
 
-    expect(await screen.findByText("Nouvelle mission assignée")).toBeInTheDocument();
+    expect(await screen.findByText("Mission réassignée")).toBeInTheDocument();
     expect(screen.getByText("2026-08-01 — Clinique Test")).toBeInTheDocument();
   });
 
@@ -69,8 +77,8 @@ describe("NotificationsPage (instrumentiste) — source de vérité serveur", ()
     fetchNotificationsMock.mockResolvedValue({
       unreadCount: 2,
       items: [
-        { id: 1, eventType: "MISSION_REASSIGNED", missionId: null, payload: null, sentAt: null, seenAt: null },
-        { id: 2, eventType: "MISSION_CANCELLED", missionId: null, payload: null, sentAt: null, seenAt: null },
+        { id: 1, eventType: "PLANNING_MISSION_REASSIGNED", missionId: null, targetUrl: null, payload: null, sentAt: null, seenAt: null },
+        { id: 2, eventType: "PLANNING_MISSION_CANCELLED", missionId: null, targetUrl: null, payload: null, sentAt: null, seenAt: null },
       ],
     });
 
@@ -82,7 +90,7 @@ describe("NotificationsPage (instrumentiste) — source de vérité serveur", ()
   it("marque une notification comme lue individuellement au clic", async () => {
     fetchNotificationsMock.mockResolvedValue({
       unreadCount: 1,
-      items: [{ id: 7, eventType: "MISSION_REASSIGNED", missionId: null, payload: null, sentAt: null, seenAt: null }],
+      items: [{ id: 7, eventType: "PLANNING_MISSION_REASSIGNED", missionId: null, targetUrl: null, payload: null, sentAt: null, seenAt: null }],
     });
     const user = userEvent.setup();
     renderPage();
@@ -96,7 +104,7 @@ describe("NotificationsPage (instrumentiste) — source de vérité serveur", ()
   it("le bouton « Tout marquer comme lu » déclenche le marquage global", async () => {
     fetchNotificationsMock.mockResolvedValue({
       unreadCount: 1,
-      items: [{ id: 1, eventType: "MISSION_REASSIGNED", missionId: null, payload: null, sentAt: null, seenAt: null }],
+      items: [{ id: 1, eventType: "PLANNING_MISSION_REASSIGNED", missionId: null, targetUrl: null, payload: null, sentAt: null, seenAt: null }],
     });
     const user = userEvent.setup();
     renderPage();
@@ -108,10 +116,12 @@ describe("NotificationsPage (instrumentiste) — source de vérité serveur", ()
     await waitFor(() => expect(markAllNotificationsSeenMock).toHaveBeenCalledTimes(2));
   });
 
-  it("navigue vers la mission liée au clic sur une notification déjà lue", async () => {
+  // Point 4 (audit UX) — navigation basée sur targetUrl (calculé côté serveur), jamais
+  // reconstruite ici depuis missionId.
+  it("navigue vers targetUrl au clic sur une notification déjà lue", async () => {
     fetchNotificationsMock.mockResolvedValue({
       unreadCount: 0,
-      items: [{ id: 1, eventType: "MISSION_REASSIGNED", missionId: 99, payload: null, sentAt: null, seenAt: "2026-07-29T09:00:00+00:00" }],
+      items: [{ id: 1, eventType: "PLANNING_MISSION_REASSIGNED", missionId: 99, targetUrl: "/app/i/missions/99", payload: null, sentAt: null, seenAt: "2026-07-29T09:00:00+00:00" }],
     });
     const user = userEvent.setup();
     renderPage();
@@ -121,6 +131,22 @@ describe("NotificationsPage (instrumentiste) — source de vérité serveur", ()
 
     // Déjà lue : pas de nouvel appel markSeen, seule la navigation doit se produire.
     await waitFor(() => expect(markNotificationSeenMock).not.toHaveBeenCalled());
+    expect(mockNavigate).toHaveBeenCalledWith("/app/i/missions/99");
+  });
+
+  it("clique sur une notification agrégée sans targetUrl : marque lue mais ne navigue jamais", async () => {
+    fetchNotificationsMock.mockResolvedValue({
+      unreadCount: 1,
+      items: [{ id: 3, eventType: "OPEN_MISSION_AVAILABLE", missionId: null, targetUrl: null, payload: null, sentAt: null, seenAt: null }],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const card = await screen.findByText("Nouvelle offre disponible");
+    await user.click(card);
+
+    await waitFor(() => expect(markNotificationSeenMock).toHaveBeenCalledWith(3));
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   it("fonctionne même lorsque les notifications Push sont refusées (aucune dépendance à la permission)", async () => {
@@ -128,7 +154,7 @@ describe("NotificationsPage (instrumentiste) — source de vérité serveur", ()
     // uniquement l'API serveur — preuve par construction qu'elle ne s'y couple pas.
     fetchNotificationsMock.mockResolvedValue({
       unreadCount: 1,
-      items: [{ id: 1, eventType: "MISSION_REASSIGNED", missionId: null, payload: null, sentAt: null, seenAt: null }],
+      items: [{ id: 1, eventType: "PLANNING_MISSION_REASSIGNED", missionId: null, targetUrl: null, payload: null, sentAt: null, seenAt: null }],
     });
     renderPage();
 

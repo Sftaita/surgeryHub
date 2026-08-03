@@ -45,4 +45,10 @@ enum NotificationType: string
     // NotificationPreferenceResolver (an explicit one-off manager action always sends,
     // unlike the policy-driven categories above).
     case PLANNING_RESENT_MANUAL = 'PLANNING_RESENT_MANUAL';
+
+    // ── Pre-deploy publish (Point 8, audit UX) ────────────────────────────────
+    // A manager publishes a mission (DRAFT → OPEN) for a specific surgeon — distinct from
+    // PLANNING_DEPLOYED_SURGEON (bulk deploy summary, no single Mission) and from
+    // SURGEON_POST_COVERED/UNCOVERED (post-deploy claim/release). No patient data.
+    case SURGEON_MISSION_OPEN_PUBLISHED = 'SURGEON_MISSION_OPEN_PUBLISHED';
 }

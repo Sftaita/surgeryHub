@@ -1745,6 +1745,7 @@ EntityManager::flush()            — chaque effet de bord isolé dans try/catch
 | Instrumentiste | Changement post-deploy (action unitaire hors Mode Modification) | `PLANNING_MISSION_REASSIGNED` / `CANCELLED` / `ADDED` / `UPDATED` | `MissionLifecycleChangedMessageHandler` (Batch 15F+) |
 | Instrumentiste / Chirurgien réellement concernés | Redéploiement après Mode Modification (lot d'édits) | Un seul email récapitulatif ciblé, jamais de global resend | `PlanningModificationService` → `PlanningChangeSummaryService` (Batch 15K) |
 | Manager (déployeur) | Déploiement initial | `PLANNING_DEPLOYED_MANAGER` (email + in-app, avec PDF global) | `PlanningDeployPdfsMessageHandler` |
+| Chirurgien | Manager publie une mission OPEN pour lui (pré-déploiement, `MissionController::publish()`) | `SURGEON_MISSION_OPEN_PUBLISHED` (push priorité, repli email, aucune donnée patient) | `MissionPublishedMessageHandler` (Point 8, audit UX) |
 | Instrumentiste retiré | Absence instrumentiste → mission `ASSIGNED` libérée | `ABSENCE_INSTRUMENTIST_RELEASED` (email récap + in-app par mission) | `AbsenceMissionsReactedMessageHandler` (D-062) |
 | Chirurgien concerné | Absence instrumentiste → mission désormais `OPEN` | `ABSENCE_SURGEON_MISSION_OPENED` (email récap + in-app par mission) | `AbsenceMissionsReactedMessageHandler` (D-062) |
 | Instrumentiste concerné | Absence chirurgien → mission annulée | `ABSENCE_MISSION_CANCELLED` (email récap + in-app par mission) | `AbsenceMissionsReactedMessageHandler` (D-062) |

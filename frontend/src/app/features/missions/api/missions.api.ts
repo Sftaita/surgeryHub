@@ -331,6 +331,22 @@ export async function publishMission(
   await apiClient.post(`/api/missions/${id}/publish`, body);
 }
 
+/**
+ * Point 5 (audit UX manager) — annulation post-déploiement, jamais une suppression
+ * physique (D-055/D-056 : historique auditable). Couvre DRAFT (brouillon jamais
+ * publié) / OPEN / ASSIGNED, toujours conditionné à allowedActions.includes("cancel").
+ * POST /api/missions/{id}/cancel
+ */
+export async function cancelMission(
+  id: number,
+  reason?: string,
+): Promise<Mission> {
+  const { data } = await apiClient.post<Mission>(`/api/missions/${id}/cancel`, {
+    reason: reason?.trim() || undefined,
+  });
+  return data;
+}
+
 /** EPIC Exécution & Valorisation, Lot 1 — le RÉALISÉ, distinct du planifié (Mission.startAt/endAt) et du chemin legacy (ServiceController/patchMissionService). */
 export interface MissionExecutionDispute {
   id: number;

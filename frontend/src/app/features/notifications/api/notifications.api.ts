@@ -4,6 +4,13 @@ export type NotificationItem = {
   id: number;
   eventType: string;
   missionId: number | null;
+  /**
+   * Point 4 (audit UX) — cible de navigation calculée côté serveur
+   * (NotificationTargetResolver), jamais reconstruite côté frontend à partir de
+   * missionId/eventType. `null` = notification non actionnable (purement
+   * informative, ou pas de cible connue pour ce type).
+   */
+  targetUrl: string | null;
   payload: Record<string, unknown> | null;
   sentAt: string | null;
   seenAt: string | null;

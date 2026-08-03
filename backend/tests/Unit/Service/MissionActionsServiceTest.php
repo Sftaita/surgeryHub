@@ -200,4 +200,39 @@ final class MissionActionsServiceTest extends TestCase
 
         self::assertNotContains('edit_hours', $this->service->allowedActions($mission, $instr));
     }
+
+    /**
+     * Point 5 (audit UX manager) — MissionPostDeployService::cancel() accepte déjà
+     * DRAFT|OPEN|ASSIGNED (D-090) mais allowedActions() n'exposait 'cancel' que pour
+     * OPEN/ASSIGNED : un manager n'avait donc aucun moyen d'abandonner un brouillon
+     * jamais publié. Purement additif — edit/publish restent inchangés.
+     */
+    public function test_manager_gets_cancel_on_draft(): void
+    {
+        $manager = $this->makeUser(['ROLE_MANAGER']);
+        $mission = $this->makeMission(MissionStatus::DRAFT);
+
+        $actions = $this->service->allowedActions($mission, $manager);
+        self::assertContains('cancel', $actions);
+        self::assertContains('edit', $actions);
+        self::assertContains('publish', $actions);
+    }
+
+    public function test_manager_gets_cancel_on_open_and_assigned(): void
+    {
+        $manager = $this->makeUser(['ROLE_MANAGER']);
+        $instr   = $this->makeUser(['ROLE_INSTRUMENTIST']);
+
+        self::assertContains('cancel', $this->service->allowedActions($this->makeMission(MissionStatus::OPEN), $manager));
+        self::assertContains('cancel', $this->service->allowedActions($this->makeMission(MissionStatus::ASSIGNED, $instr), $manager));
+    }
+
+    public function test_manager_never_gets_cancel_on_submitted_validated_declared(): void
+    {
+        $manager = $this->makeUser(['ROLE_MANAGER']);
+
+        foreach ([MissionStatus::SUBMITTED, MissionStatus::VALIDATED, MissionStatus::DECLARED] as $status) {
+            self::assertNotContains('cancel', $this->service->allowedActions($this->makeMission($status), $manager));
+        }
+    }
 }

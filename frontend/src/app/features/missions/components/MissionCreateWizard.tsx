@@ -54,6 +54,15 @@ function toApiZonedDate(localValue: string) {
   return dayjs.tz(localValue, "Europe/Brussels").format("YYYY-MM-DDTHH:mm:ssZ");
 }
 
+/**
+ * Valeurs initiales de formulaire uniquement (08:00–17:00, jour courant) — le
+ * manager les modifie librement, aucune règle métier backend ne les impose.
+ */
+function defaultScheduleLocal(): { startLocal: string; endLocal: string } {
+  const today = dayjs.tz(undefined, "Europe/Brussels").format("YYYY-MM-DD");
+  return { startLocal: `${today}T08:00`, endLocal: `${today}T17:00` };
+}
+
 function validateRequired(s: FormState) {
   const errors: string[] = [];
   if (!s.siteId) errors.push("Site requis.");
@@ -119,8 +128,7 @@ export default function MissionCreateWizard(props: Props) {
     surgeonUserId: undefined,
     type: "BLOCK",
     schedulePrecision: "EXACT",
-    startLocal: "",
-    endLocal: "",
+    ...defaultScheduleLocal(),
     publishScope: "POOL",
     targetUserId: undefined,
   });

@@ -36,9 +36,15 @@ export default function NotificationsPage() {
     }
   }, [isLoading, unreadCount, markAllSeen]);
 
+  /**
+   * Point 4 (audit UX) — navigue vers `targetUrl`, calculé côté serveur
+   * (NotificationTargetResolver) : jamais reconstruit ici à partir de missionId. Une
+   * notification sans cible (purement informative) est tout de même marquée lue, mais
+   * ne navigue nulle part.
+   */
   const handleClick = (n: NotificationItem) => {
     if (!n.seenAt) void markSeen(n.id);
-    if (n.missionId) navigate(`/app/i/missions/${n.missionId}`);
+    if (n.targetUrl) navigate(n.targetUrl);
   };
 
   if (!isLoading && items.length === 0) {
@@ -74,7 +80,7 @@ export default function NotificationsPage() {
           <MobileCard
             key={n.id}
             sx={{
-              cursor: n.missionId ? "pointer" : "default",
+              cursor: n.targetUrl ? "pointer" : "default",
               borderLeft: isUnread ? "3px solid" : "3px solid transparent",
               borderLeftColor: isUnread ? "primary.main" : "transparent",
             }}

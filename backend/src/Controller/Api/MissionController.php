@@ -12,6 +12,7 @@ use App\Entity\AuditEvent;
 use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\EligibilityReason;
+use App\Message\MissionPublishedMessage;
 use App\Security\Voter\MissionVoter;
 use App\Service\MissionEligibilityService;
 use App\Service\MissionEncodingGuard;
@@ -19,12 +20,12 @@ use App\Service\MissionEncodingService;
 use App\Service\MissionMapper;
 use App\Service\MissionPostDeployService;
 use App\Service\MissionService;
-use App\Service\WebPushService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 use Symfony\Component\Serializer\Normalizer\DateTimeNormalizer;
@@ -41,7 +42,7 @@ class MissionController extends AbstractController
         private readonly MissionEncodingGuard      $encodingGuard,
         private readonly SerializerInterface       $serializer,
         private readonly ValidatorInterface        $validator,
-        private readonly WebPushService            $webPushService,
+        private readonly MessageBusInterface       $bus,
         private readonly EntityManagerInterface    $em,
         private readonly MissionPostDeployService  $missionPostDeployService,
         private readonly MissionEligibilityService $eligibilityService,
@@ -125,18 +126,16 @@ class MissionController extends AbstractController
 
         $this->missionService->publish($mission, $dto, $user);
 
-        // Known tech debt (D-081, Lot 1 Web Push audit 24-07-2026): synchronous, unlike
-        // every other push send which goes through MissionLifecycleChangedMessage
-        // (async, D-043/D-056). publish() is pre-deploy (DRAFT), outside the domain
-        // MissionChangeType covers — migrating this without extending that domain was
-        // judged out of scope for Lot 1. WebPushService isolates individual send
-        // failures internally, so this never blocks the HTTP response below.
-        $this->webPushService->sendToSiteInstrumentists(
-            $mission,
-            'Nouvelle mission disponible',
-            'Une nouvelle mission a été publiée sur votre site.',
-            ['missionId' => $mission->getId()],
-        );
+        // Point 8 (audit UX) — resolves the D-081 tech debt this comment used to document
+        // (synchronous push here, unlike every other send which goes through an async
+        // Messenger message): MissionPublishedMessageHandler now sends the same
+        // instrumentist push asynchronously, plus the surgeon notification this endpoint
+        // never triggered before this lot (push priority, email fallback, no patient data).
+        $this->bus->dispatch(new MissionPublishedMessage(
+            missionId: $mission->getId(),
+            actorId: $user->getId(),
+            occurredAt: new \DateTimeImmutable(),
+        ));
 
         return new JsonResponse(null, JsonResponse::HTTP_NO_CONTENT);
     }

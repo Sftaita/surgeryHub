@@ -231,4 +231,70 @@ final class AuthRememberMeFlowTest extends WebTestCase
             (string) $client->getResponse()->getContent()
         );
     }
+
+    /**
+     * Audit "Se souvenir de moi" (bug report) — démontre explicitement le scénario de
+     * validation attendu : avec rememberMe=true, une expiration normale de l'access
+     * token (1h) ne doit jamais forcer un retour à /login tant que le refresh token
+     * (30 jours) reste valide. On ne peut pas attendre réellement 1h dans un test ; on
+     * simule l'expiration en appelant directement /api/auth/refresh avec le refresh
+     * token émis au login (c'est exactement ce que fait l'intercepteur Axios frontend
+     * sur un 401 access-token-expiré, voir apiClient.ts) puis on utilise le NOUVEL
+     * access token retourné contre un endpoint protégé réel (`/api/me`).
+     */
+    #[WithoutErrorHandler]
+    public function testRefreshAfterAccessTokenExpiryYieldsAWorkingAccessTokenWithRememberMe(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        $this->createTestUser();
+
+        $client->request(
+            'POST',
+            '/api/auth/login',
+            server: ['CONTENT_TYPE' => 'application/json'],
+            content: json_encode([
+                'email' => $this->email,
+                'password' => self::PASSWORD,
+                'rememberMe' => true,
+            ])
+        );
+        $loginData = json_decode((string) $client->getResponse()->getContent(), true);
+        $refreshToken = $loginData['refresh_token'];
+
+        $token = $this->findRefreshTokens()[0];
+        self::assertTrue($token->isRememberMe());
+        // Le refresh token (30 jours) survit très largement à l'access token (1h) —
+        // c'est précisément cette marge qui doit empêcher toute reconnexion forcée.
+        self::assertGreaterThan((new \DateTimeImmutable())->modify('+29 days'), $token->getValid());
+
+        // Simule l'expiration de l'access token : on n'utilise plus le token du login,
+        // seulement le refresh token, exactement comme le fait l'intercepteur Axios
+        // après un 401 sur une requête protégée (apiClient.ts, response interceptor).
+        $client->request(
+            'POST',
+            '/api/auth/refresh',
+            server: ['CONTENT_TYPE' => 'application/json'],
+            content: json_encode(['refresh_token' => $refreshToken])
+        );
+        $refreshResponse = $client->getResponse();
+        self::assertSame(Response::HTTP_OK, $refreshResponse->getStatusCode(), (string) $refreshResponse->getContent());
+
+        $refreshData = json_decode((string) $refreshResponse->getContent(), true);
+        self::assertArrayHasKey('token', $refreshData);
+        $newAccessToken = $refreshData['token'];
+
+        // Le nouvel access token doit réellement fonctionner contre un endpoint
+        // protégé — la garantie concrète que l'utilisateur reste connecté, jamais
+        // renvoyé vers /login, tant que le refresh token reste valide.
+        $client->request(
+            'GET',
+            '/api/me',
+            server: ['CONTENT_TYPE' => 'application/json', 'HTTP_AUTHORIZATION' => 'Bearer '.$newAccessToken],
+        );
+        $meResponse = $client->getResponse();
+        self::assertSame(Response::HTTP_OK, $meResponse->getStatusCode(), (string) $meResponse->getContent());
+        $me = json_decode((string) $meResponse->getContent(), true);
+        self::assertSame($this->email, $me['email'] ?? null);
+    }
 }
