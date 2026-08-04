@@ -16,6 +16,7 @@ import { useToast } from "../../ui/toast/useToast";
 import { EmptyState } from "../../ui/EmptyState";
 import { PageHeader } from "../../ui/PageHeader";
 import { ActiveBadge } from "../../ui/StatusBadge";
+import { FirmAvatar } from "../../features/manager-catalogue/components/FirmAvatar";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface Firm {
@@ -27,6 +28,7 @@ interface Firm {
   country: string | null;
   representative: string | null;
   phone: string | null;
+  logoPath: string | null;
 }
 
 // ── API ────────────────────────────────────────────────────────────────────────
@@ -113,6 +115,10 @@ export default function FirmsPage() {
       country:        form.country.trim() || null,
       representative: form.representative.trim() || null,
       phone:          form.phone.trim() || null,
+      // Logo géré uniquement via son propre endpoint dédié (voir FirmAvatar/
+      // Prestations) — jamais ce formulaire ; on repropage la valeur existante en
+      // édition (ignorée par le backend ici de toute façon) pour satisfaire le typage.
+      logoPath:       editing?.logoPath ?? null,
     };
     if (editing) updateMutation.mutate({ id: editing.id, ...payload });
     else         createMutation.mutate(payload);
@@ -159,8 +165,13 @@ export default function FirmsPage() {
               {firms.map((f) => (
                 <TableRow key={f.id} hover sx={{ "&:last-child td": { borderBottom: 0 } }}>
                   <TableCell>
-                    <Typography fontWeight={600} variant="body2">{f.name}</Typography>
-                    {f.country && <Typography variant="caption" color="text.secondary">{f.country}</Typography>}
+                    <Stack direction="row" spacing={1.5} alignItems="center">
+                      <FirmAvatar name={f.name} logoPath={f.logoPath} size="sm" />
+                      <Box>
+                        <Typography fontWeight={600} variant="body2">{f.name}</Typography>
+                        {f.country && <Typography variant="caption" color="text.secondary">{f.country}</Typography>}
+                      </Box>
+                    </Stack>
                   </TableCell>
                   <TableCell>
                     <Typography variant="body2">{f.representative ?? <em style={{ opacity: .5 }}>—</em>}</Typography>
