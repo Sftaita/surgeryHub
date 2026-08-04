@@ -60,9 +60,15 @@ class FirmLogoStorage
             return;
         }
 
-        if (!mkdir($concurrentDirectory = $this->uploadDir, 0775, true) && !is_dir($concurrentDirectory)) {
+        // mkdir()'s mode argument is masked by the creating process's umask, so a
+        // directory first created by a root-run process (e.g. the functional test
+        // suite, which writes to this same real path) can end up unwritable by the
+        // php-fpm www-data worker that serves real uploads — chmod() afterward sets
+        // the literal bits, unaffected by umask.
+        if (!mkdir($concurrentDirectory = $this->uploadDir, 0777, true) && !is_dir($concurrentDirectory)) {
             throw new \RuntimeException(sprintf('Unable to create upload directory "%s".', $this->uploadDir));
         }
+        chmod($this->uploadDir, 0777);
     }
 
     private function resolveExtension(UploadedFile $file): string
