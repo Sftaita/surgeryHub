@@ -51,4 +51,25 @@ enum NotificationType: string
     // PLANNING_DEPLOYED_SURGEON (bulk deploy summary, no single Mission) and from
     // SURGEON_POST_COVERED/UNCOVERED (post-deploy claim/release). No patient data.
     case SURGEON_MISSION_OPEN_PUBLISHED = 'SURGEON_MISSION_OPEN_PUBLISHED';
+
+    // ── Catalogue proposal outcome — instrumentist (D-093) ───────────────────
+    // An instrumentist proposed a missing InterventionType or MaterialItem during
+    // encoding (InterventionTypeRequest / MaterialItemRequest) and the manager just
+    // processed it — one shared category for both request kinds (the requester's
+    // channel preference is "tell me what happened to my catalogue proposals", not
+    // separately for interventions vs material) ; which kind and label are carried in
+    // the message/payload, never a second NotificationType.
+    case CATALOGUE_REQUEST_RESOLVED = 'CATALOGUE_REQUEST_RESOLVED'; // accepted, now in the catalogue
+    case CATALOGUE_REQUEST_IGNORED  = 'CATALOGUE_REQUEST_IGNORED';  // not retained
+
+    // ── Catalogue proposal creation — manager/admin (follow-up to D-093) ─────
+    // An instrumentist just submitted a new InterventionTypeRequest or
+    // MaterialItemRequest — every active manager/admin (same targeting as
+    // PLANNING_ALERT, see AbsenceImpactService::buildNotification()) needs to know
+    // one is waiting for them. In-app + push only, deliberately never email (even as
+    // a push-failure fallback) — a manager already checks the catalogue-requests
+    // screen regularly, and a proposal isn't urgent the way a mission cancellation
+    // is; adding email here would just be noise. One shared category for both
+    // request kinds, same reasoning as CATALOGUE_REQUEST_RESOLVED/IGNORED above.
+    case CATALOGUE_REQUEST_CREATED = 'CATALOGUE_REQUEST_CREATED';
 }

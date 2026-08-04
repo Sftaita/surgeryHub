@@ -5,8 +5,10 @@ namespace App\Controller\Api;
 use App\Entity\InterventionTypeRequest;
 use App\Entity\MissionIntervention;
 use App\Entity\User;
+use App\Enum\CatalogueRequestKind;
 use App\Enum\MissionInterventionDraftIgnoreStrategy;
 use App\Exception\InterventionTypeRequestWithoutDraftException;
+use App\Message\CatalogueRequestProcessedMessage;
 use App\Security\Voter\BillingVoter;
 use App\Service\ActiveFirmResolver;
 use App\Service\ActiveInterventionTypeResolver;
@@ -16,6 +18,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 
@@ -42,6 +45,7 @@ final class InterventionTypeRequestManagerController extends AbstractController
         private readonly MissionInterventionDraftService $draftService,
         private readonly ActiveInterventionTypeResolver $interventionTypeResolver,
         private readonly ActiveFirmResolver $firmResolver,
+        private readonly MessageBusInterface $bus,
     ) {}
 
     /**
@@ -115,6 +119,18 @@ final class InterventionTypeRequestManagerController extends AbstractController
 
         $intervention = $this->draftService->resolve($draft, $interventionType, $firm, $user);
 
+        // D-093 — prévient l'instrumentiste (jamais bloquant : dispatché après le succès
+        // de la transaction métier, échec de notification isolé dans le handler async).
+        $this->bus->dispatch(new CatalogueRequestProcessedMessage(
+            kind: CatalogueRequestKind::INTERVENTION_TYPE,
+            requestId: $req->getId(),
+            accepted: true,
+            recipientUserId: $req->getCreatedBy()->getId(),
+            missionId: $draft->getMission()->getId(),
+            label: $req->getLabel(),
+            occurredAt: new \DateTimeImmutable(),
+        ));
+
         return $this->json([
             'requestId' => $req->getId(),
             'draftId' => $draft->getId(),
@@ -177,6 +193,16 @@ final class InterventionTypeRequestManagerController extends AbstractController
         }
 
         $this->draftService->ignore($draft, $strategy, $reassignTarget, $user);
+
+        $this->bus->dispatch(new CatalogueRequestProcessedMessage(
+            kind: CatalogueRequestKind::INTERVENTION_TYPE,
+            requestId: $req->getId(),
+            accepted: false,
+            recipientUserId: $req->getCreatedBy()->getId(),
+            missionId: $draft->getMission()->getId(),
+            label: $req->getLabel(),
+            occurredAt: new \DateTimeImmutable(),
+        ));
 
         return $this->json([
             'requestId' => $req->getId(),

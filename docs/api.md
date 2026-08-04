@@ -1655,6 +1655,10 @@ PENDING → IGNORED   (via ignore)
 | `409` | Demande non `PENDING` |
 | `422` | `materialItemId` manquant |
 
+**Effet async (D-093) :** dispatche `CatalogueRequestProcessedMessage(accepted: true)` —
+notifie l'instrumentiste auteur (in-app + push prioritaire, repli email si le push n'est
+pas livrable). Voir `docs/decisions.md` D-093/D-094.
+
 ---
 
 ### 20.3 `POST /api/material-item-requests/{id}/ignore`
@@ -1668,6 +1672,9 @@ Body vide.
 **Réponse — 200 :** MaterialItemRequest avec `status: "IGNORED"`
 
 **Erreurs :** `404` introuvable, `409` non PENDING
+
+**Effet async (D-093) :** dispatche `CatalogueRequestProcessedMessage(accepted: false)` —
+même orchestration que `resolve()` ci-dessus.
 
 ---
 
@@ -1775,6 +1782,10 @@ Déclarer un matériel absent du catalogue lors de l'encodage. La demande est tr
 - Crée un `MaterialItemRequest` avec `status = PENDING`
 - Set `createdBy = currentUser`
 - La mission peut continuer sans bloquer l'encodage
+
+**Effet async (D-094) :** dispatche `CatalogueRequestCreatedMessage` — notifie tous les
+managers/admins actifs (in-app + push, jamais d'email) qu'une proposition attend leur
+traitement.
 
 **Réponse — 201 :**
 
@@ -4492,6 +4503,10 @@ l'intervention (jamais l'inverse).
 
 **Réponse — 201 :** `{ "id": 7 }`
 
+**Effet async (D-094) :** dispatche `CatalogueRequestCreatedMessage` — notifie tous les
+managers/admins actifs (in-app + push, jamais d'email) qu'une proposition attend leur
+traitement. Voir `docs/decisions.md` D-094.
+
 #### `GET /api/intervention-type-requests`
 
 **AuthZ :** `BillingVoter::MANAGE` (`MANAGER`/`ADMIN`)
@@ -4520,11 +4535,18 @@ vient de créer via `POST /api/intervention-types` pour cette demande.
 `INTERVENTION_TYPE_INACTIVE`, `PRIMARY_FIRM_NOT_FOUND`, `PRIMARY_FIRM_INACTIVE`), plus
 `404` demande introuvable, `409` demande non `PENDING`.
 
+**Effet async (D-093) :** dispatche `CatalogueRequestProcessedMessage(accepted: true)` —
+notifie l'instrumentiste auteur (in-app + push prioritaire, repli email si le push n'est
+pas livrable).
+
 #### `POST /api/intervention-type-requests/{id}/ignore`
 
 **AuthZ :** `BillingVoter::MANAGE` — **Précondition :** `status = PENDING` — body vide.
 
 **Réponse — 200 :** la demande avec `status: "IGNORED"`. **Erreurs :** `404`, `409`.
+
+**Effet async (D-093) :** dispatche `CatalogueRequestProcessedMessage(accepted: false)` —
+même orchestration que `resolve()` ci-dessus.
 
 ---
 

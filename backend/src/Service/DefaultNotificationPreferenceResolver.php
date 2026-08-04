@@ -17,6 +17,12 @@ use Doctrine\ORM\EntityManagerInterface;
  *   - ABSENCE_*:                           inApp=true, email=true  (urgent — same "your mission just
  *                                           changed" urgency as PLANNING_MISSION_CANCELLED, just
  *                                           triggered by an absence instead of a manual action)
+ *   - CATALOGUE_REQUEST_RESOLVED/IGNORED:  inApp=true, email=true  (actionable — the instrumentist is
+ *                                           waiting on a yes/no for a catalogue proposal, D-093)
+ *   - CATALOGUE_REQUEST_CREATED:           inApp=true, email=false (follow-up to D-093 — a manager
+ *                                           is told a proposal is waiting, not urgent enough for
+ *                                           email; deliberately excluded even as a push-failure
+ *                                           fallback, see CatalogueRequestCreatedMessageHandler)
  *   - All others (pool, coverage, updates): inApp=true, email=false (informational)
  *
  * push: always false by default — requires an explicit device subscription (PushSubscription).
@@ -37,6 +43,8 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::ABSENCE_SURGEON_MISSION_OPENED,
         NotificationType::ABSENCE_MISSION_CANCELLED,
         NotificationType::SURGEON_MISSION_OPEN_PUBLISHED,
+        NotificationType::CATALOGUE_REQUEST_RESOLVED,
+        NotificationType::CATALOGUE_REQUEST_IGNORED,
     ];
 
     public function __construct(

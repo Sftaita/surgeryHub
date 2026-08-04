@@ -1760,6 +1760,8 @@ EntityManager::flush()            — chaque effet de bord isolé dans try/catch
 | Instrumentiste retiré | Absence instrumentiste → mission `ASSIGNED` libérée | `ABSENCE_INSTRUMENTIST_RELEASED` (email récap + in-app par mission) | `AbsenceMissionsReactedMessageHandler` (D-062) |
 | Chirurgien concerné | Absence instrumentiste → mission désormais `OPEN` | `ABSENCE_SURGEON_MISSION_OPENED` (email récap + in-app par mission) | `AbsenceMissionsReactedMessageHandler` (D-062) |
 | Instrumentiste concerné | Absence chirurgien → mission annulée | `ABSENCE_MISSION_CANCELLED` (email récap + in-app par mission) | `AbsenceMissionsReactedMessageHandler` (D-062) |
+| Instrumentiste auteur | Manager traite (accepte/écarte) sa proposition catalogue (intervention/matériel) | `CATALOGUE_REQUEST_RESOLVED` / `CATALOGUE_REQUEST_IGNORED` (push priorité, repli email, aucune donnée patient/financière) | `CatalogueRequestProcessedMessageHandler` (D-093) |
+| Managers/admins actifs (tous, sans scoping par site) | Instrumentiste crée une proposition catalogue (intervention/matériel) | `CATALOGUE_REQUEST_CREATED` (in-app + push uniquement, **jamais** d'email même en repli) | `CatalogueRequestCreatedMessageHandler` (D-094) |
 
 Exactement UN email de déploiement par destinataire (D-058). `PlanningChangeSummaryService` (récapitulatif de changements) était écrit mais non câblé jusqu'au Batch 15K, qui le déclenche depuis `PlanningModificationService` : un planning déjà déployé peut être édité dans l'éditeur unifié (§ ci-dessous), et son redéploiement calcule un diff avant/après pour n'envoyer un récapitulatif qu'aux personnes dont au moins une mission a réellement changé — jamais un renvoi global aux chirurgiens/instrumentistes non concernés.
 

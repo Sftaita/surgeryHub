@@ -32,6 +32,15 @@ final class NotificationTargetResolver
         $isInstrumentist = in_array('ROLE_INSTRUMENTIST', $roles, true);
         $isSurgeon = in_array('ROLE_SURGEON', $roles, true);
 
+        // Follow-up to D-093 — override ahead of the generic mission-based branch below:
+        // a new catalogue proposal is actionable from CatalogueRequestsPage
+        // (/app/m/catalogue/requests), not from the mission detail screen. The mission
+        // FK still exists on the NotificationEvent for context/audit, it's just not
+        // where a manager treats the request.
+        if ($type === NotificationType::CATALOGUE_REQUEST_CREATED && $isManager) {
+            return '/app/m/catalogue/requests';
+        }
+
         if ($mission !== null) {
             if ($isManager) {
                 return '/app/m/missions/' . $mission->getId();

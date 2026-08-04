@@ -22,6 +22,8 @@ framework:
             App\Message\MissionLifecycleChangedMessage:     async
             App\Message\AbsenceMissionsReactedMessage:      async
             App\Message\MissionPublishedMessage:            async
+            App\Message\CatalogueRequestProcessedMessage:   async
+            App\Message\CatalogueRequestCreatedMessage:     async
 
 when@test:
     framework:

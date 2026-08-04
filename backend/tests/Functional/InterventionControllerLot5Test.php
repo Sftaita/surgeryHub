@@ -15,10 +15,12 @@ use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\SchedulePrecision;
+use App\Message\CatalogueRequestCreatedMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
 /**
@@ -714,6 +716,37 @@ final class InterventionControllerLot5Test extends WebTestCase
         $body = json_decode($encoding->getContent(), true);
         self::assertCount(1, $body['interventionTypeRequests']);
         self::assertSame('Prothèse épaule inversée', $body['interventionTypeRequests'][0]['label']);
+    }
+
+    /**
+     * Follow-up D-093 (lot notifications catalogue) — la création d'une
+     * InterventionTypeRequest doit annoncer aux managers qu'une proposition attend leur
+     * traitement, jamais à l'instrumentiste lui-même (il vient de la créer).
+     */
+    public function test_creating_a_request_dispatches_catalogue_request_created_message(): void
+    {
+        [$client, $mission, $token] = $this->bootMissionScenario();
+        $client->disableReboot();
+
+        /** @var InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+            'label' => 'Arthroplastie de hanche',
+        ]);
+        self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
+        $requestId = json_decode($response->getContent(), true)['id'];
+        $this->createdIds['requests'][] = $requestId;
+
+        $sent = array_values(array_filter($transport->getSent(), static fn ($e) => $e->getMessage() instanceof CatalogueRequestCreatedMessage));
+        self::assertCount(1, $sent);
+        /** @var CatalogueRequestCreatedMessage $message */
+        $message = $sent[0]->getMessage();
+        self::assertSame('INTERVENTION_TYPE', $message->kind->value);
+        self::assertSame($requestId, $message->requestId);
+        self::assertSame('Arthroplastie de hanche', $message->label);
+        self::assertSame($mission->getId(), $message->missionId);
     }
 
     public function test_manager_resolving_request_creates_the_real_intervention(): void

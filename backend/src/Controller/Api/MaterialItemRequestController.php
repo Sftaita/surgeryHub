@@ -5,6 +5,8 @@ namespace App\Controller\Api;
 use App\Dto\Request\MaterialItemRequestCreateRequest;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\CatalogueRequestKind;
+use App\Message\CatalogueRequestCreatedMessage;
 use App\Security\Voter\MissionVoter;
 use App\Service\MaterialItemRequestService;
 use App\Service\MissionEncodingGuard;
@@ -13,6 +15,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 use Symfony\Component\Serializer\SerializerInterface;
@@ -25,6 +28,7 @@ class MaterialItemRequestController extends AbstractController
         private readonly MaterialItemRequestService $service,
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
+        private readonly MessageBusInterface $bus,
     ) {}
 
     #[Route('', methods: ['POST'])]
@@ -46,6 +50,16 @@ class MaterialItemRequestController extends AbstractController
         );
 
         $req = $this->service->create($mission, $dto, $user);
+
+        // Follow-up D-093 — prévient les managers/admins (jamais bloquant, voir handler
+        // async). Toujours après le flush transactionnel ci-dessus.
+        $this->bus->dispatch(new CatalogueRequestCreatedMessage(
+            kind: CatalogueRequestKind::MATERIAL_ITEM,
+            requestId: $req->getId(),
+            missionId: $mission->getId(),
+            label: $req->getLabel(),
+            occurredAt: new \DateTimeImmutable(),
+        ));
 
         // missionInterventionId/interventionDraftId confirment la cible réellement
         // utilisée (jamais le draft initial en cas de redirection silencieuse depuis un

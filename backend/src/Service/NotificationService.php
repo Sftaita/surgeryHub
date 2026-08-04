@@ -211,6 +211,7 @@ class NotificationService
             context: [
                 'firstname'  => $instrumentist->getFirstname(),
                 'missionUrl' => $missionUrl,
+                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($instrumentist),
             ],
             outboundNotificationId: $notification->getId(),
         ));
@@ -258,6 +259,97 @@ class NotificationService
                 'siteName'    => $mission->getSite()?->getName(),
                 'typeLabel'   => $mission->getType() === \App\Enum\MissionType::CONSULTATION ? 'Consultation' : 'Bloc opératoire',
                 'missionUrl'  => $missionUrl,
+                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($surgeon),
+            ],
+            outboundNotificationId: $notification->getId(),
+        ));
+
+        return $notification;
+    }
+
+    /**
+     * D-093 — repli email quand Push n'est pas livrable à l'instrumentiste dont la
+     * proposition catalogue (InterventionType ou MaterialItem) vient d'être acceptée.
+     * Même orchestration D-083/D-084 que missionOpenNotifySurgeon ci-dessus.
+     */
+    public function catalogueRequestResolvedNotifyInstrumentist(
+        Mission $mission,
+        User $instrumentist,
+        string $label,
+        string $kindLabel,
+        ?OutboundNotification $fallbackOf = null,
+        ?OutboundNotificationFallbackReason $fallbackReason = null,
+    ): OutboundNotification {
+        $missionUrl = sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId());
+        $subject = 'SurgicalHub — Votre proposition a été acceptée';
+
+        $notification = $this->outboundNotificationService->recordEmailQueued(
+            $instrumentist,
+            'CATALOGUE_REQUEST_RESOLVED',
+            $subject,
+            rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
+            mission: $mission,
+            fallbackOf: $fallbackOf,
+            fallbackReason: $fallbackReason,
+        );
+
+        $this->bus->dispatch(new SendTemplatedEmailMessage(
+            to: (string) $instrumentist->getEmail(),
+            subject: $subject,
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: 'emails/catalogue_request_resolved.html.twig',
+            context: [
+                'firstname'  => $instrumentist->getFirstname(),
+                'label'      => $label,
+                'kindLabel'  => $kindLabel,
+                'missionUrl' => $missionUrl,
+                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($instrumentist),
+            ],
+            outboundNotificationId: $notification->getId(),
+        ));
+
+        return $notification;
+    }
+
+    /**
+     * D-093 — repli email quand Push n'est pas livrable à l'instrumentiste dont la
+     * proposition catalogue vient d'être écartée par le manager (jamais supprimée —
+     * IGNORED, voir InterventionTypeRequest/MaterialItemRequest).
+     */
+    public function catalogueRequestIgnoredNotifyInstrumentist(
+        Mission $mission,
+        User $instrumentist,
+        string $label,
+        string $kindLabel,
+        ?OutboundNotification $fallbackOf = null,
+        ?OutboundNotificationFallbackReason $fallbackReason = null,
+    ): OutboundNotification {
+        $missionUrl = sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId());
+        $subject = 'SurgicalHub — Votre proposition n\'a pas été retenue';
+
+        $notification = $this->outboundNotificationService->recordEmailQueued(
+            $instrumentist,
+            'CATALOGUE_REQUEST_IGNORED',
+            $subject,
+            rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
+            mission: $mission,
+            fallbackOf: $fallbackOf,
+            fallbackReason: $fallbackReason,
+        );
+
+        $this->bus->dispatch(new SendTemplatedEmailMessage(
+            to: (string) $instrumentist->getEmail(),
+            subject: $subject,
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: 'emails/catalogue_request_ignored.html.twig',
+            context: [
+                'firstname'  => $instrumentist->getFirstname(),
+                'label'      => $label,
+                'kindLabel'  => $kindLabel,
+                'missionUrl' => $missionUrl,
+                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($instrumentist),
             ],
             outboundNotificationId: $notification->getId(),
         ));
@@ -273,7 +365,12 @@ class NotificationService
             fromAddress: $this->fromAddress,
             fromName: $this->fromName,
             htmlTemplate: 'emails/absences_request_missing.html.twig',
-            context: ['user' => $user, 'greeting' => $this->greetingFor($user), 'message' => $message],
+            context: [
+                'user' => $user,
+                'greeting' => $this->greetingFor($user),
+                'message' => $message,
+                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($user),
+            ],
         ));
     }
 
@@ -292,7 +389,13 @@ class NotificationService
             fromAddress: $this->fromAddress,
             fromName: $this->fromName,
             htmlTemplate: 'emails/absences_confirm_encoded.html.twig',
-            context: ['user' => $user, 'greeting' => $this->greetingFor($user), 'absences' => $absences, 'message' => $message],
+            context: [
+                'user' => $user,
+                'greeting' => $this->greetingFor($user),
+                'absences' => $absences,
+                'message' => $message,
+                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($user),
+            ],
         ));
     }
 
@@ -466,6 +569,31 @@ class NotificationService
             ->setSentAt(new \DateTimeImmutable());
 
         $this->em->persist($evt);
+    }
+
+    /**
+     * URL de l'écran de préférences de notification du destinataire, pour le CTA
+     * discret ajouté en bas des emails applicatifs (lot notifications catalogue,
+     * follow-up D-093) — jamais une URL inventée : uniquement les routes React
+     * réelles qui exposent NotificationPreferencesSection aujourd'hui
+     * (ProfilePage instrumentiste/manager). `null` pour tout rôle sans écran dédié
+     * (chirurgien — même limite déjà documentée dans NotificationTargetResolver pour
+     * la route unique `/app/s`) : le partial _notification_preferences_cta.html.twig
+     * n'affiche alors rien plutôt que de pointer vers une route qui n'existe pas.
+     */
+    private function notificationPreferencesUrl(User $user): ?string
+    {
+        $roles = $user->getRoles();
+
+        if (in_array('ROLE_INSTRUMENTIST', $roles, true)) {
+            return $this->buildFrontendUrl('/app/i/profile');
+        }
+
+        if (in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true)) {
+            return $this->buildFrontendUrl('/app/m/profile');
+        }
+
+        return null;
     }
 
     private function buildFrontendUrl(string $path, array $query = []): string

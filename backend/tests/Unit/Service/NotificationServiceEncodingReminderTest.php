@@ -71,6 +71,7 @@ class NotificationServiceEncodingReminderTest extends TestCase
         $u = new User();
         $u->setEmail($email);
         $u->setFirstname($firstname);
+        $u->setRoles(['ROLE_INSTRUMENTIST']);
         $ref = new \ReflectionProperty($u, 'id');
         $ref->setAccessible(true);
         $ref->setValue($u, $id);
@@ -128,9 +129,10 @@ class NotificationServiceEncodingReminderTest extends TestCase
         $this->assertSame('emails/mission_encoding_reminder.html.twig', $captured->htmlTemplate);
         $this->assertSame(777, $captured->outboundNotificationId);
 
-        $this->assertSame(['firstname', 'missionUrl'], array_keys($captured->context));
+        $this->assertSame(['firstname', 'missionUrl', 'notificationPreferencesUrl'], array_keys($captured->context));
         $this->assertSame('Jane', $captured->context['firstname']);
         $this->assertSame('https://surgicalhub.test/app/i/missions/123', $captured->context['missionUrl']);
+        $this->assertSame('https://surgicalhub.test/app/i/profile', $captured->context['notificationPreferencesUrl']);
     }
 
     public function test_does_nothing_when_mission_has_no_instrumentist(): void

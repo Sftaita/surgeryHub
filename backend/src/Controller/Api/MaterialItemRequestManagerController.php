@@ -5,13 +5,19 @@ namespace App\Controller\Api;
 use App\Entity\MaterialItem;
 use App\Entity\MaterialItemRequest;
 use App\Entity\MaterialLine;
+use App\Entity\MissionIntervention;
+use App\Entity\MissionInterventionDraft;
 use App\Entity\User;
+use App\Enum\CatalogueRequestKind;
+use App\Message\CatalogueRequestProcessedMessage;
+use App\Security\Voter\BillingVoter;
 use App\Service\MaterialItemMapper;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 
@@ -21,6 +27,7 @@ final class MaterialItemRequestManagerController extends AbstractController
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly MaterialItemMapper $mapper,
+        private readonly MessageBusInterface $bus,
     ) {}
 
     /**
@@ -31,6 +38,8 @@ final class MaterialItemRequestManagerController extends AbstractController
     #[Route('', name: 'api_material_item_requests_list', methods: ['GET'])]
     public function list(Request $request): JsonResponse
     {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
         $status = $request->query->get('status');
 
         $qb = $this->em->getRepository(MaterialItemRequest::class)
@@ -62,6 +71,8 @@ final class MaterialItemRequestManagerController extends AbstractController
     #[Route('/{id}/resolve', name: 'api_material_item_requests_resolve', methods: ['POST'], requirements: ['id' => '\d+'])]
     public function resolve(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
     {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
         $req = $this->em->getRepository(MaterialItemRequest::class)->find($id);
         if (!$req instanceof MaterialItemRequest) {
             return $this->json(['message' => 'Request not found'], Response::HTTP_NOT_FOUND);
@@ -87,10 +98,21 @@ final class MaterialItemRequestManagerController extends AbstractController
         $req->setMaterialItem($mi);
         $req->setStatus(MaterialItemRequest::STATUS_RESOLVED);
 
-        // 2. Créer une MaterialLine sur la mission (réconciliation)
+        // 2. Créer une MaterialLine sur la mission (réconciliation) — attachée à la
+        // MÊME cible que la demande (attachmentTarget(), jamais getMissionIntervention()
+        // seul) : si la demande est encore rattachée à un draft ouvert (intervention pas
+        // encore validée par le manager), la ligne doit l'être aussi, sinon elle ne serait
+        // jamais reprise par MissionInterventionDraftService::repointMaterial() lors de la
+        // résolution ultérieure du draft — elle resterait orpheline (ni intervention réelle,
+        // ni draft) sur la mission.
+        $target = $req->attachmentTarget();
         $line = new MaterialLine();
         $line->setMission($req->getMission());
-        $line->setMissionIntervention($req->getMissionIntervention());
+        if ($target instanceof MissionIntervention) {
+            $line->setMissionIntervention($target);
+        } elseif ($target instanceof MissionInterventionDraft) {
+            $line->setInterventionDraft($target);
+        }
         $line->setItem($mi);
         $line->setQuantity('1.00');
         $line->setComment($req->getComment());
@@ -98,6 +120,17 @@ final class MaterialItemRequestManagerController extends AbstractController
 
         $this->em->persist($line);
         $this->em->flush();
+
+        // D-093 — prévient l'instrumentiste (jamais bloquant, voir handler async).
+        $this->bus->dispatch(new CatalogueRequestProcessedMessage(
+            kind: CatalogueRequestKind::MATERIAL_ITEM,
+            requestId: $req->getId(),
+            accepted: true,
+            recipientUserId: $req->getCreatedBy()->getId(),
+            missionId: $req->getMission()->getId(),
+            label: $req->getLabel(),
+            occurredAt: new \DateTimeImmutable(),
+        ));
 
         return $this->json([
             'request'      => $this->serialize($req),
@@ -112,6 +145,8 @@ final class MaterialItemRequestManagerController extends AbstractController
     #[Route('/{id}/ignore', name: 'api_material_item_requests_ignore', methods: ['POST'], requirements: ['id' => '\d+'])]
     public function ignore(int $id): JsonResponse
     {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
         $req = $this->em->getRepository(MaterialItemRequest::class)->find($id);
         if (!$req instanceof MaterialItemRequest) {
             return $this->json(['message' => 'Request not found'], Response::HTTP_NOT_FOUND);
@@ -123,6 +158,16 @@ final class MaterialItemRequestManagerController extends AbstractController
 
         $req->setStatus(MaterialItemRequest::STATUS_IGNORED);
         $this->em->flush();
+
+        $this->bus->dispatch(new CatalogueRequestProcessedMessage(
+            kind: CatalogueRequestKind::MATERIAL_ITEM,
+            requestId: $req->getId(),
+            accepted: false,
+            recipientUserId: $req->getCreatedBy()->getId(),
+            missionId: $req->getMission()->getId(),
+            label: $req->getLabel(),
+            occurredAt: new \DateTimeImmutable(),
+        ));
 
         return $this->json($this->serialize($req));
     }

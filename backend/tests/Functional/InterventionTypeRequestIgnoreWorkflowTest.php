@@ -15,10 +15,12 @@ use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\SchedulePrecision;
+use App\Message\CatalogueRequestProcessedMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
 /**
@@ -494,5 +496,35 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
         $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $instrToken, []);
 
         self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
+    }
+
+    // ── Notification (D-093) ─────────────────────────────────────────────────
+
+    public function test_ignore_dispatches_catalogue_request_processed_message_not_accepted(): void
+    {
+        [$client, $mission, $instrToken, $instr] = $this->bootMissionScenario();
+        // disableReboot() : sans lui, le client reboote le kernel à chaque requête et le
+        // transport capturé ci-dessous devient obsolète (voir MissionPublishControllerTest,
+        // même précaution).
+        $client->disableReboot();
+        $requestId = $this->createPendingRequest($client, $mission, $instrToken, 'PTG proposée');
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+
+        /** @var InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, []);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $sent = array_values(array_filter($transport->getSent(), static fn ($e) => $e->getMessage() instanceof CatalogueRequestProcessedMessage));
+        self::assertCount(1, $sent);
+        /** @var CatalogueRequestProcessedMessage $message */
+        $message = $sent[0]->getMessage();
+        self::assertFalse($message->accepted);
+        self::assertSame('INTERVENTION_TYPE', $message->kind->value);
+        self::assertSame($instr->getId(), $message->recipientUserId);
     }
 }

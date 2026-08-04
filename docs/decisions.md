@@ -6483,3 +6483,145 @@ plutôt qu'un nouveau dialog, cohérent avec "pas de refonte visuelle majeure").
 réconciliation entre `billingStatus` et l'ancien flag `isImplant` au-delà de ce que D-067
 avait déjà tranché (`isImplant` reste purement médical). Base de test locale non
 réinitialisée (collision `FIRM-2026-219`, préexistante, hors périmètre).
+
+## D-093 — Cycle de vie des propositions catalogue (intervention/matériel) : notification de la décision à l'instrumentiste, deux bugs corrigés au passage (2026-07-29)
+
+Date : 2026-07-29
+
+### Contexte
+
+Vérification demandée du parcours "l'instrumentiste ne trouve pas l'intervention/le
+matériel dont il a besoin pendant l'encodage → il propose → le manager traite → il est
+informé". La création (`InterventionTypeRequestController`/`MaterialItemRequestController`,
+EPIC Revue instrumentiste Lot 3) et le traitement manager
+(`InterventionTypeRequestManagerController`/`MaterialItemRequestManagerController`)
+existaient déjà ; le dernier maillon — prévenir l'instrumentiste de l'issue — n'existait
+pas du tout côté matériel, et côté intervention se limitait à ce que l'instrumentiste
+revienne consulter l'écran manuellement.
+
+### Bugs corrigés (préexistants, indépendants de la nouvelle fonctionnalité)
+
+1. **RBAC manquant** sur `MaterialItemRequestManagerController` (`list()`/`resolve()`/
+   `ignore()`) : aucun `denyAccessUnlessGranted()`, contrairement à son jumeau
+   `InterventionTypeRequestManagerController`. N'importe quel utilisateur authentifié
+   pouvait lister/traiter les demandes matériel. Corrigé avec `BillingVoter::MANAGE`,
+   même garde que le contrôleur intervention.
+2. **Orphelinage silencieux de `MaterialLine`** : résoudre une `MaterialItemRequest`
+   pendant que sa cible (`MissionInterventionDraft`) est encore ouverte attachait la
+   ligne via `setMissionIntervention($req->getMissionIntervention())` — toujours `null`
+   à ce stade — au lieu de suivre `$req->attachmentTarget()` (draft OU intervention
+   réelle). La ligne n'était alors rattachée à rien et n'était jamais reprise par
+   `MissionInterventionDraftService::repointMaterial()` au moment où le draft est
+   converti. Corrigé pour toujours attacher à la cible réelle de la demande.
+
+### Décision — notification de la décision à l'instrumentiste
+
+Un `NotificationType` unique par issue, partagé entre intervention et matériel —
+`CATALOGUE_REQUEST_RESOLVED` (accepté) / `CATALOGUE_REQUEST_IGNORED` (non retenu) — la
+préférence de canal de l'instrumentiste est naturellement "informe-moi de mes
+propositions catalogue", pas une préférence séparée par nature de demande ; le type de
+demande (`CatalogueRequestKind::INTERVENTION_TYPE`/`MATERIAL_ITEM`) est porté en donnée de
+message/payload. `MaterialItemRequestManagerController::resolve()`/`ignore()` et
+`InterventionTypeRequestManagerController::resolve()`/`ignore()` dispatchent
+`CatalogueRequestProcessedMessage` (async, `messenger.yaml`) après leur transaction ;
+`CatalogueRequestProcessedMessageHandler` orchestre in-app → push prioritaire → repli
+email uniquement si le push n'est pas réellement livrable — même pattern que
+`MissionPublishedMessageHandler::notifySurgeon()` (D-083/D-084), via
+`NotificationPreferenceResolver`/`OutboundNotificationService`/`NotificationService`.
+`CATALOGUE_REQUEST_RESOLVED`/`_IGNORED` sont email=true par défaut (actionnable — la
+personne attend un oui/non). Aucune donnée patient ni montant financier dans le payload.
+
+### Portée non traitée ici
+
+Vérification live uniquement en environnement de développement local (comptes/mission
+jetables, nettoyés après coup) — pas de vérification en environnement de production.
+
+## D-094 — Notification des managers/admins à la création d'une proposition catalogue ; invitation push en bas des emails applicatifs (2026-08-04)
+
+Date : 2026-08-04
+
+### Contexte
+
+Suite directe de D-093 : le dernier maillon manquant du parcours propositions catalogue
+était côté manager — rien ne le prévenait qu'une proposition attendait son traitement, il
+fallait consulter `CatalogueRequestsPage` sans y être invité. Deuxième volet demandé dans
+le même lot : réduire le volume d'emails envoyés aux personnes qui pourraient utiliser le
+push à la place, via une invitation discrète en bas des emails applicatifs concernés.
+
+### Décision — notification manager à la création
+
+`InterventionTypeRequestController::create()` et `MaterialItemRequestController::create()`
+dispatchent chacun un `CatalogueRequestCreatedMessage` (async) juste après la création
+réussie de la demande. `CatalogueRequestCreatedMessageHandler` fane vers
+**tous les managers/admins actifs** — `UserRepository::findManagersAndAdmins(true)`,
+exactement le même ciblage que `PlanningAlertRaisedMessageHandler`/
+`AbsenceImpactService::buildNotification()` (Batch 7) — sans scoping par site : une
+proposition catalogue impacte le référentiel global, pas seulement le site de la mission.
+Un seul `NotificationType` — `CATALOGUE_REQUEST_CREATED` — partagé entre intervention et
+matériel, même raisonnement que D-093.
+
+**In-app + push uniquement, jamais d'email — y compris en repli si le push échoue.**
+Contrairement à D-093 (réponse attendue par l'instrumentiste, actionnable), une nouvelle
+proposition n'est pas urgente : le manager la retrouve de toute façon sur
+`CatalogueRequestsPage`, et un repli email serait du bruit pur. `CATALOGUE_REQUEST_CREATED`
+n'est **pas** dans `EMAIL_ON_BY_DEFAULT` (email=false par défaut) et
+`CatalogueRequestCreatedMessageHandler` n'a même pas de dépendance capable d'envoyer un
+email applicatif (`NotificationService` n'y est pas injecté) — "pas de repli email" est
+donc structurel, pas juste un comportement observé. Isolation par destinataire (l'échec
+d'un manager n'empêche jamais la notification des autres), même pattern que
+`MissionPublishedMessageHandler::notifySiteInstrumentists()`.
+
+Deep-link : `NotificationTargetResolver::resolve()` route désormais
+`CATALOGUE_REQUEST_CREATED` + destinataire manager/admin vers `/app/m/catalogue/requests`
+(l'écran réel de traitement) en priorité sur la branche générique "mission liée → détail
+mission" — la `Mission` reste posée en FK sur le `NotificationEvent` pour le contexte/
+l'audit, ce n'est simplement pas la cible de clic pour ce type précis.
+
+### Décision — invitation à activer les notifications push, en bas des emails applicatifs
+
+Architecture des templates email existante : **aucun layout Twig commun**, chaque
+`templates/emails/*.html.twig` est un document HTML autonome (contraintes email —
+styles inline, pas d'héritage de layout robuste selon les clients mail). Reconstruire un
+layout commun aurait été une refonte hors périmètre de ce lot. Solution pragmatique
+retenue : un partial unique, `templates/emails/_notification_preferences_cta.html.twig`,
+inclus via `{% include %}` dans chaque template concerné — un seul bloc à maintenir,
+aucune duplication du HTML/texte du CTA.
+
+Le partial ne s'affiche que si la variable `notificationPreferencesUrl` (fournie par
+l'appelant) est non vide — il ne décide jamais lui-même de sa propre visibilité, toute la
+décision métier (qui a droit au CTA) reste côté PHP. `NotificationService` porte un
+nouveau helper privé `notificationPreferencesUrl(User $user): ?string` qui route vers la
+vraie route React exposant `NotificationPreferencesSection` selon le rôle du
+destinataire — `/app/i/profile` (instrumentiste), `/app/m/profile` (manager/admin,
+`ProfilePageM` sert les deux rôles) — construite via `FRONTEND_URL`, jamais une URL
+inventée. Retourne `null` pour tout rôle sans écran de préférences aujourd'hui
+(chirurgien — même limite déjà documentée dans `NotificationTargetResolver` pour l'unique
+route `/app/s`) : le partial n'affiche alors simplement rien, plutôt que de pointer vers
+une route qui n'existe pas.
+
+**Templates concernés** (tous dispatchés via `NotificationService`, tous vers un
+utilisateur SurgicalHub déjà capable de se connecter) : `catalogue_request_resolved`,
+`catalogue_request_ignored`, `mission_encoding_reminder`, `mission_open_notify_surgeon`,
+`absences_request_missing`, `absences_confirm_encoded`.
+
+**Templates explicitement exclus** : `instrumentist_invitation` (avant premier login —
+rien à activer), `user_email_changed_new_address`/`_old_address` (emails de sécurité liés
+au changement d'adresse — jamais mélangés à une invitation produit),
+`firm_invoice_sent`/`instrumentist_statement_sent` (`firm_invoice_sent` part vers un
+contact de facturation externe, pas un utilisateur SurgicalHub — `instrumentist_statement_sent`
+n'a par ailleurs pas d'objet `User` dans son contexte actuel, seulement l'entité
+`InstrumentistStatement`).
+
+**Hors périmètre de ce lot** (délibérément) : `planning_alert.html.twig` et les
+récapitulatifs de déploiement (`planning_instrumentist`/`planning_manager`/
+`planning_surgeon`/`planning_change_summary_*`) sont dispatchés directement depuis
+`PlanningAlertRaisedMessageHandler`/`PlanningDeployPdfsMessageHandler`, hors
+`NotificationService` — les y câbler aurait dupliqué la logique de résolution de route
+dans deux handlers supplémentaires plutôt que de la centraliser. Suite rapide possible
+une fois `notificationPreferencesUrl()` extrait en service partagé, mais volontairement
+non traité ici pour ne pas élargir le lot.
+
+### Portée non traitée ici
+
+Comme D-093 : vérification live uniquement en environnement de développement local
+(comptes/mission jetables, nettoyés après coup).

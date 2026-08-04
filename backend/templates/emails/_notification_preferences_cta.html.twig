@@ -1,0 +1,18 @@
+{# Invitation discrète à activer les notifications push, pour réduire le volume d'emails
+   envoyés aux utilisateurs qui pourraient les recevoir plus vite via push.
+
+   `notificationPreferencesUrl` doit être fourni par l'appelant (NotificationService) —
+   déjà résolu par rôle (route /app/i/profile ou /app/m/profile) et déjà `null` pour tout
+   destinataire sans écran de préférences aujourd'hui (chirurgien) ou hors périmètre
+   (invitation initiale, changement d'email, facture firme externe...). Ce partial ne
+   décide jamais lui-même s'il doit s'afficher au-delà de "l'URL existe" — la décision
+   métier (qui a droit au CTA) reste entièrement côté PHP. #}
+{% if notificationPreferencesUrl is defined and notificationPreferencesUrl is not empty %}
+<div style="margin-top:24px;padding:14px 18px;background:#F5F6F8;border-radius:8px;font-size:12px;color:#667085;">
+  <div style="font-weight:bold;color:#475467;margin-bottom:4px;">Recevez vos prochaines notifications directement sur votre téléphone</div>
+  <div>Activez les notifications SurgicalHub pour recevoir plus rapidement ces informations et limiter les emails.</div>
+  <div style="margin-top:10px;">
+    <a href="{{ notificationPreferencesUrl }}" style="color:#1B5FD0;font-weight:bold;text-decoration:none;">Activer les notifications →</a>
+  </div>
+</div>
+{% endif %}

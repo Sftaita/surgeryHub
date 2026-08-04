@@ -7,6 +7,8 @@ use App\Dto\Request\Response\FirmSlimDto;
 use App\Entity\InterventionTypeRequest;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\CatalogueRequestKind;
+use App\Message\CatalogueRequestCreatedMessage;
 use App\Security\Voter\MissionVoter;
 use App\Service\ActiveFirmResolver;
 use App\Service\MissionEncodingGuard;
@@ -16,6 +18,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 use Symfony\Component\Serializer\SerializerInterface;
@@ -42,6 +45,7 @@ class InterventionTypeRequestController extends AbstractController
         private readonly ActiveFirmResolver $firmResolver,
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
+        private readonly MessageBusInterface $bus,
     ) {}
 
     #[Route('', methods: ['POST'])]
@@ -77,6 +81,17 @@ class InterventionTypeRequestController extends AbstractController
             ->setCreatedBy($user);
 
         $draft = $this->draftService->createForRequest($req, $requestedFirm, $user);
+
+        // Follow-up D-093 — prévient les managers/admins (jamais bloquant, voir handler
+        // async). Toujours après le flush transactionnel ci-dessus : la demande doit
+        // exister avant qu'on annonce sa création.
+        $this->bus->dispatch(new CatalogueRequestCreatedMessage(
+            kind: CatalogueRequestKind::INTERVENTION_TYPE,
+            requestId: $req->getId(),
+            missionId: $mission->getId(),
+            label: $req->getLabel(),
+            occurredAt: new \DateTimeImmutable(),
+        ));
 
         // EPIC Revue instrumentiste, Lot 3, commit 8 — enrichissement additif de la
         // réponse ({id} seul jusqu'ici) : le frontend a besoin de draftId/orderIndex/

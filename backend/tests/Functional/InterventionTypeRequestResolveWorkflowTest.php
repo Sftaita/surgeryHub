@@ -13,10 +13,12 @@ use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\SchedulePrecision;
+use App\Message\CatalogueRequestProcessedMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
 /**
@@ -411,5 +413,40 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
 
         $count = $this->em->getRepository(MissionIntervention::class)->count(['mission' => $mission->getId()]);
         self::assertSame(1, $count, 'exactly one MissionIntervention must exist after a refused second resolution');
+    }
+
+    // ── Notification (D-093) ─────────────────────────────────────────────────
+
+    public function test_resolve_dispatches_catalogue_request_processed_message(): void
+    {
+        [$client, $mission, $instrToken, $instr] = $this->bootMissionScenario();
+        // disableReboot() : sans lui, le client reboote le kernel à chaque requête et le
+        // transport capturé ci-dessous devient obsolète (voir MissionPublishControllerTest,
+        // même précaution).
+        $client->disableReboot();
+        $requestId = $this->createPendingRequest($client, $mission, $instrToken, 'PTG proposée');
+        $type = $this->makeType();
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+
+        /** @var InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+            'interventionTypeId' => $type->getId(),
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $sent = array_values(array_filter($transport->getSent(), static fn ($e) => $e->getMessage() instanceof CatalogueRequestProcessedMessage));
+        self::assertCount(1, $sent);
+        /** @var CatalogueRequestProcessedMessage $message */
+        $message = $sent[0]->getMessage();
+        self::assertTrue($message->accepted);
+        self::assertSame('INTERVENTION_TYPE', $message->kind->value);
+        self::assertSame('PTG proposée', $message->label);
+        self::assertSame($instr->getId(), $message->recipientUserId);
+        self::assertSame($mission->getId(), $message->missionId);
     }
 }
