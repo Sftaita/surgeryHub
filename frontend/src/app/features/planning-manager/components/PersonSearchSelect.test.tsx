@@ -101,7 +101,7 @@ describe("PersonSearchSelect — régression Arnaud Deltour : recherche par nom 
 describe("PersonSearchSelect — scope (all/instrumentists/surgeons)", () => {
   it('scope="all" (par défaut) appelle les deux API et affiche les deux rôles', async () => {
     vi.mocked(instrumentistsApi.getInstrumentists).mockResolvedValue({
-      items: [{ id: 2, email: "diane@test.com", firstname: "Diane", lastname: "Lefebvre", active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Diane Lefebvre" }],
+      items: [{ id: 2, email: "diane@test.com", firstname: "Diane", lastname: "Lefebvre", active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Diane Lefebvre", hasCurrentHourlyRate: true }],
       total: 1,
     });
     vi.mocked(surgeonsApi.getSurgeons).mockResolvedValue({
@@ -123,7 +123,7 @@ describe("PersonSearchSelect — scope (all/instrumentists/surgeons)", () => {
 
   it('scope="instrumentists" n\'appelle que getInstrumentists, jamais getSurgeons', async () => {
     vi.mocked(instrumentistsApi.getInstrumentists).mockResolvedValue({
-      items: [{ id: 2, email: "diane@test.com", firstname: "Diane", lastname: "Lefebvre", active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Diane Lefebvre" }],
+      items: [{ id: 2, email: "diane@test.com", firstname: "Diane", lastname: "Lefebvre", active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Diane Lefebvre", hasCurrentHourlyRate: true }],
       total: 1,
     });
     const user = userEvent.setup();
@@ -154,8 +154,8 @@ describe("PersonSearchSelect — scope (all/instrumentists/surgeons)", () => {
   it('scope="instrumentists" garde le tri (nom → prénom) et la recherche locale sans nouvel appel réseau', async () => {
     vi.mocked(instrumentistsApi.getInstrumentists).mockResolvedValue({
       items: [
-        { id: 1, email: "alice@test.com", firstname: "Alice", lastname: "Martin", active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Alice Martin" },
-        { id: 2, email: "zoe@test.com", firstname: "Zoé", lastname: "Dupont", active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Zoé Dupont" },
+        { id: 1, email: "alice@test.com", firstname: "Alice", lastname: "Martin", active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Alice Martin", hasCurrentHourlyRate: true },
+        { id: 2, email: "zoe@test.com", firstname: "Zoé", lastname: "Dupont", active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Zoé Dupont", hasCurrentHourlyRate: true },
       ],
       total: 2,
     });
@@ -233,7 +233,7 @@ describe("PersonSearchSelect — chargement unique, filtrage 100% client", () =>
 
   it("filtre instantanément côté client sur prénom, nom, email ou rôle, sans nouvel appel API", async () => {
     vi.mocked(instrumentistsApi.getInstrumentists).mockResolvedValue({
-      items: [{ id: 2, email: "diane@test.com", firstname: "Diane", lastname: "Lefebvre", active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Diane Lefebvre" }],
+      items: [{ id: 2, email: "diane@test.com", firstname: "Diane", lastname: "Lefebvre", active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Diane Lefebvre", hasCurrentHourlyRate: true }],
       total: 1,
     });
     vi.mocked(surgeonsApi.getSurgeons).mockResolvedValue({
@@ -318,7 +318,7 @@ describe("PersonSearchSelect — chargement unique, filtrage 100% client", () =>
 
   it("trie les instrumentistes avant les chirurgiens", async () => {
     vi.mocked(instrumentistsApi.getInstrumentists).mockResolvedValue({
-      items: [{ id: 2, email: "diane@test.com", firstname: "Diane", lastname: "Zorro", active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Diane Zorro" }],
+      items: [{ id: 2, email: "diane@test.com", firstname: "Diane", lastname: "Zorro", active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Diane Zorro", hasCurrentHourlyRate: true }],
       total: 1,
     });
     vi.mocked(surgeonsApi.getSurgeons).mockResolvedValue({

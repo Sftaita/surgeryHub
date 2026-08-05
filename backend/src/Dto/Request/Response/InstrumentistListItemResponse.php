@@ -15,6 +15,7 @@ final class InstrumentistListItemResponse
         public string $displayName,
         public array $specialties = [],
         public ?string $profilePicturePath = null,
+        public bool $hasCurrentHourlyRate = false,
     ) {
     }
 }

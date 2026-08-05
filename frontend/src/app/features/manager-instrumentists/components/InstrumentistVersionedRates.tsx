@@ -39,7 +39,14 @@ export default function InstrumentistVersionedRates({ instrumentistId }: Props) 
     enabled: Number.isFinite(instrumentistId),
   });
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["instrumentist-rates", instrumentistId] });
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["instrumentist-rates", instrumentistId] });
+    // Diagnostic tarifs instrumentistes (2026-08-05) — sans ceci, le badge « Tarif
+    // manquant »/« Tarif configuré » de la liste manager reste périmé après une
+    // création/remplacement/modification/annulation ici (clé de requête distincte,
+    // découverte lors du test réel en local).
+    qc.invalidateQueries({ queryKey: ["instrumentists"] });
+  };
 
   const createMutation = useMutation({
     mutationFn: (body: { rateType: InstrumentistRateType; amount: number; currency: string; validFrom: string | null; validTo: string | null }) =>
@@ -73,6 +80,15 @@ export default function InstrumentistVersionedRates({ instrumentistId }: Props) 
   const hourly = rates.filter((r) => r.rateType === "HOURLY_RATE");
   const consultation = rates.filter((r) => r.rateType === "CONSULTATION_FEE");
 
+  // Diagnostic tarifs instrumentistes (2026-08-05) — même sémantique que
+  // InstrumentistRateResolver::coversDate() (validFrom inclusif, validTo exclusif,
+  // null = ouvert). Purement indicatif : les versions listées ci-dessous restent la
+  // vérité affichée, ceci ne fait que résumer si l'une d'elles couvre aujourd'hui.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const hasActiveHourlyToday = hourly.some(
+    (r) => r.validFrom !== null && r.validFrom <= todayIso && (r.validTo === null || todayIso < r.validTo),
+  );
+
   return (
     <Stack spacing={2}>
       <Alert severity="info" variant="outlined">
@@ -84,6 +100,12 @@ export default function InstrumentistVersionedRates({ instrumentistId }: Props) 
 
       <Box>
         <Typography variant="subtitle2" fontWeight={700} mb={1}>Tarif horaire (bloc)</Typography>
+        {!hasActiveHourlyToday && (
+          <Alert severity="warning" variant="outlined" sx={{ mb: 1.5 }}>
+            <strong>Aucun tarif horaire actif.</strong> Les missions de cet instrumentiste ne pourront pas être
+            valorisées tant qu'un tarif horaire n'est pas configuré ci-dessous.
+          </Alert>
+        )}
         <RateVersionManager
           versions={hourly.map((r) => ({ id: r.id, amount: r.amount, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo }))}
           onCreateFirst={(b) => createMutation.mutate({ rateType: "HOURLY_RATE", ...b })}

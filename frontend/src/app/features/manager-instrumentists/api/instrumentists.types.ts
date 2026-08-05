@@ -12,6 +12,12 @@ export type InstrumentistListItemDTO = {
   defaultCurrency: string;
   displayName: string;
   profilePicturePath?: string | null;
+  /**
+   * Diagnostic tarifs instrumentistes (2026-08-05) — calculé côté backend via
+   * InstrumentistRateResolver (même règle que FinancialCalculationService), jamais
+   * recalculé ici. false si aucun InstrumentistRate HOURLY_RATE ne couvre aujourd'hui.
+   */
+  hasCurrentHourlyRate: boolean;
 };
 
 export type InstrumentistsListResponseDTO = {

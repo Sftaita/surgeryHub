@@ -9,6 +9,7 @@ use App\Dto\Request\MissionFilter;
 use App\Dto\Request\MissionPatchRequest;
 use App\Dto\Request\MissionPublishRequest;
 use App\Dto\Request\MissionSubmitRequest;
+use App\Entity\FinancialCalculation;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\MissionPublication;
@@ -548,6 +549,21 @@ class MissionService
 
         if ($filter->assignedToMe === true) {
             $qb->andWhere('m.instrumentist = :meAssigned')->setParameter('meAssigned', $user);
+        }
+
+        // Diagnostic tarifs instrumentistes (2026-08-05) — tuile dashboard "Missions
+        // validées sans calcul". Même règle que
+        // FinancialStatisticsQueryService::pipeline() (validatedMissionsWithoutCalculation,
+        // §17) : statut VALIDATED + aucun FinancialCalculation pour la mission, quelle
+        // que soit sa version/son statut (CALCULATED/APPROVED/LOCKED/CANCELLED —
+        // l'absence de toute ligne suffit). Les deux implémentations diffèrent
+        // (DQL ici, SQL agrégé là-bas pour raisons de performance sur des agrégats),
+        // mais expriment la même règle métier — les faire diverger serait un bug futur
+        // à éviter : toute modification de l'une doit être reportée sur l'autre.
+        if ($filter->validatedWithoutCalculation === true) {
+            $qb->andWhere('m.status = :vwcStatus')->setParameter('vwcStatus', MissionStatus::VALIDATED);
+            $qb->leftJoin(FinancialCalculation::class, 'vwcFc', 'WITH', 'vwcFc.mission = m')
+                ->andWhere('vwcFc.id IS NULL');
         }
 
         $page = max(1, (int) ($filter->page ?? 1));

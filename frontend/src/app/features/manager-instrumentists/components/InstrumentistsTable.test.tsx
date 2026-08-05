@@ -26,6 +26,7 @@ function baseItem(overrides: Partial<InstrumentistListItemDTO> = {}): Instrument
     defaultCurrency: "EUR",
     displayName: "Jane Doe",
     profilePicturePath: null,
+    hasCurrentHourlyRate: true,
     ...overrides,
   };
 }
@@ -77,5 +78,31 @@ describe("InstrumentistsTable — avatar", () => {
     renderTable();
 
     await waitFor(() => expect(screen.getByText("jane@example.com")).toBeInTheDocument());
+  });
+});
+
+describe("InstrumentistsTable — tarif", () => {
+  it("affiche « Tarif manquant » quand hasCurrentHourlyRate est false", async () => {
+    vi.mocked(getInstrumentists).mockResolvedValue({
+      items: [baseItem({ hasCurrentHourlyRate: false })],
+      total: 1,
+    });
+
+    renderTable();
+
+    await waitFor(() => expect(screen.getByText("Tarif manquant")).toBeInTheDocument());
+    expect(screen.queryByText("Tarif configuré")).not.toBeInTheDocument();
+  });
+
+  it("affiche « Tarif configuré » quand hasCurrentHourlyRate est true", async () => {
+    vi.mocked(getInstrumentists).mockResolvedValue({
+      items: [baseItem({ hasCurrentHourlyRate: true })],
+      total: 1,
+    });
+
+    renderTable();
+
+    await waitFor(() => expect(screen.getByText("Tarif configuré")).toBeInTheDocument());
+    expect(screen.queryByText("Tarif manquant")).not.toBeInTheDocument();
   });
 });

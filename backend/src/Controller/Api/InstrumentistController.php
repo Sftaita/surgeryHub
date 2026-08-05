@@ -13,8 +13,10 @@ use App\Dto\Request\Response\InstrumentistSiteMembershipResponse;
 use App\Dto\Request\Response\InstrumentistWithRatesListItemResponse;
 use App\Dto\Request\Response\SiteSummaryResponse;
 use App\Entity\User;
+use App\Enum\InstrumentistRateType;
 use App\Repository\UserRepository;
 use App\Security\Voter\InstrumentistVoter;
+use App\Service\InstrumentistRateResolver;
 use App\Service\InstrumentistServiceManager;
 use App\Service\NotificationService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -35,6 +37,7 @@ final class InstrumentistController extends AbstractController
         private readonly UserRepository $users,
         private readonly InstrumentistServiceManager $instrumentistServiceManager,
         private readonly NotificationService $notificationService,
+        private readonly InstrumentistRateResolver $instrumentistRateResolver,
         private readonly SerializerInterface $serializer,
         private readonly ValidatorInterface $validator,
     ) {
@@ -133,7 +136,13 @@ final class InstrumentistController extends AbstractController
 
         $items = $this->users->findInstrumentists($search, $active, $siteId);
 
-        $dtos = array_map(static function (User $u): InstrumentistListItemResponse {
+        // Suite au diagnostic tarifs instrumentistes (2026-08-05) : le manager ne
+        // découvrait un tarif horaire manquant qu'en tentant un calcul financier
+        // (422 MISSING_INSTRUMENTIST_RATE). Même règle que
+        // FinancialCalculationService::calculateInstrumentistHourlyLine() —
+        // InstrumentistRateResolver, jamais un raccourci recalculé côté frontend.
+        $today = new \DateTimeImmutable('today');
+        $dtos = array_map(function (User $u) use ($today): InstrumentistListItemResponse {
             $firstname = $u->getFirstname();
             $lastname = $u->getLastname();
 
@@ -142,6 +151,8 @@ final class InstrumentistController extends AbstractController
 
             $employmentType = $u->getEmploymentType();
             $employmentTypeValue = $employmentType ? $employmentType->value : null;
+
+            $currentRate = $this->instrumentistRateResolver->resolve($u, InstrumentistRateType::HOURLY_RATE, $today);
 
             return new InstrumentistListItemResponse(
                 id: (int) $u->getId(),
@@ -154,6 +165,7 @@ final class InstrumentistController extends AbstractController
                 displayName: $displayName,
                 specialties: $u->getSpecialties() ?? [],
                 profilePicturePath: $u->getProfilePicturePath(),
+                hasCurrentHourlyRate: $currentRate !== null,
             );
         }, $items);
 

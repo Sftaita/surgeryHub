@@ -52,6 +52,15 @@ class MissionFilter
     public ?bool $eligibleToMe = null;
 
     /**
+     * Diagnostic tarifs instrumentistes (2026-08-05) — même règle que
+     * FinancialStatisticsQueryService::pipeline() (validatedMissionsWithoutCalculation) :
+     * m.status = VALIDATED et aucun FinancialCalculation pour la mission. Voir
+     * MissionService::list().
+     */
+    #[Assert\Type('boolean')]
+    public ?bool $validatedWithoutCalculation = null;
+
+    /**
      * Only used programmatically (not part of the public query-string contract —
      * see MissionFilter::fromQuery) by the offers "unread count" endpoint
      * (GET /api/missions/offers/unread-count, Lot 6). Filters to missions created
@@ -88,6 +97,10 @@ class MissionFilter
 
         if (isset($q['eligibleToMe'])) {
             $dto->eligibleToMe = filter_var($q['eligibleToMe'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        }
+
+        if (isset($q['validatedWithoutCalculation'])) {
+            $dto->validatedWithoutCalculation = filter_var($q['validatedWithoutCalculation'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
         }
 
         $periodStart = isset($q['periodStart']) ? trim((string) $q['periodStart']) : null;

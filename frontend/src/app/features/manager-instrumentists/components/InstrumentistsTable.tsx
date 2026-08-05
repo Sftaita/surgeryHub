@@ -136,6 +136,20 @@ export function InstrumentistsTable({
           ),
       },
       {
+        field: "hasCurrentHourlyRate",
+        headerName: "Tarif",
+        flex: 0.9,
+        sortable: false,
+        renderCell: ({ row }) => (
+          <Chip
+            size="small"
+            label={row.hasCurrentHourlyRate ? "Tarif configuré" : "Tarif manquant"}
+            color={row.hasCurrentHourlyRate ? "default" : "warning"}
+            variant={row.hasCurrentHourlyRate ? "outlined" : "filled"}
+          />
+        ),
+      },
+      {
         field: "actions",
         headerName: "Actions",
         flex: 0.7,

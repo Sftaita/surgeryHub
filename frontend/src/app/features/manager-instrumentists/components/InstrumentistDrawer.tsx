@@ -474,6 +474,11 @@ export function InstrumentistDrawer({
                         Modifiez les tarifs puis enregistrez uniquement les
                         changements.
                       </Typography>
+                      <Alert severity="info" variant="outlined">
+                        Ces champs n'alimentent que l'ancien flux de génération de décompte — ils n'affectent pas
+                        le calcul financier des missions. Pour valoriser une mission, configurez le tarif horaire
+                        dans « Nouveau flux (calcul financier) » ci-dessous.
+                      </Alert>
 
                       <Stack spacing={1.5}>
                         <TextField

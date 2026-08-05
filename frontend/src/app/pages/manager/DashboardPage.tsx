@@ -171,7 +171,7 @@ export default function DashboardPage() {
           <Box sx={GRID_SX}>
             <StatCard
               label="Missions validées sans calcul" value={pipelineQuery.data?.validatedMissionsWithoutCalculation ?? "—"}
-              onClick={() => navigate("/app/m/finance/statistics")}
+              onClick={() => navigate("/app/m/missions?validatedWithoutCalculation=true")}
             />
             <StatCard
               label="Factures générées non émises" value={pipelineQuery.data?.generatedInvoicesNotIssued ?? "—"}

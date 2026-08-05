@@ -35,6 +35,11 @@ export type MissionsFilters = {
 
   // Planning V2 Modification mode — all missions of an already-deployed PlanningVersion
   planningVersionId?: number;
+
+  // Diagnostic tarifs instrumentistes (2026-08-05) — missions VALIDATED sans aucun
+  // FinancialCalculation (tuile dashboard "Missions validées sans calcul", même règle
+  // que FinancialStatisticsQueryService::pipeline()). Backend = source de vérité.
+  validatedWithoutCalculation?: boolean;
 };
 
 export async function fetchMissions(

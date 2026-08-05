@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
 import { Box, Button, Chip, Stack, Tab, Tabs, Typography } from "@mui/material";
@@ -34,8 +34,13 @@ function statusChipColor(status: string): ChipColor {
 export default function MissionsListPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const isToValidateView = location.pathname.endsWith("/to-validate");
+
+  // Diagnostic tarifs instrumentistes (2026-08-05) — filtre pré-appliqué en arrivant
+  // depuis la tuile dashboard "Missions validées sans calcul" (?validatedWithoutCalculation=true).
+  const validatedWithoutCalculation = searchParams.get("validatedWithoutCalculation") === "true";
 
   const [page, setPage] = useState(1);
   const limit = 100;
@@ -51,9 +56,9 @@ export default function MissionsListPage() {
   }, [isToValidateView]);
 
   const effectiveFilters = useMemo(() => {
-    if (!isToValidateView) return filters;
-    return { ...filters, status: "DECLARED" };
-  }, [filters, isToValidateView]);
+    const base = isToValidateView ? { ...filters, status: "DECLARED" } : filters;
+    return validatedWithoutCalculation ? { ...base, validatedWithoutCalculation: true } : base;
+  }, [filters, isToValidateView, validatedWithoutCalculation]);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["missions", { page, limit, filters: effectiveFilters }],
@@ -153,6 +158,20 @@ export default function MissionsListPage() {
         <Tab value="all" label="Toutes" sx={{ minHeight: 40 }} />
         <Tab value="to-validate" label="À valider" sx={{ minHeight: 40 }} />
       </Tabs>
+
+      {validatedWithoutCalculation && (
+        <Chip
+          label="Validées sans calcul"
+          color="warning"
+          size="small"
+          onDelete={() => setSearchParams((prev) => {
+            const next = new URLSearchParams(prev);
+            next.delete("validatedWithoutCalculation");
+            return next;
+          })}
+          sx={{ mb: 2 }}
+        />
+      )}
 
       {!isToValidateView && (
         <MissionsFiltersBar

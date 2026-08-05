@@ -156,6 +156,16 @@ describe("DashboardPage", () => {
 
     expect(navigateMock).toHaveBeenCalledWith("/app/m/missions");
   });
+
+  it("navigue vers /app/m/missions avec le filtre validatedWithoutCalculation au clic sur la tuile « Missions validées sans calcul » (diagnostic tarifs instrumentistes, 2026-08-05)", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByText("41").length).toBeGreaterThan(0));
+    await user.click(screen.getByText("Missions validées sans calcul"));
+
+    expect(navigateMock).toHaveBeenCalledWith("/app/m/missions?validatedWithoutCalculation=true");
+  });
 });
 
 describe("DashboardPage — état vide", () => {

@@ -300,6 +300,7 @@ describe("AbsencesPage — flux complet réel : recherche → sélection → cr�
       items: [{
         id: 19, email: "sophie@hospiathome.be", firstname: "Sophie", lastname: "Collette",
         active: true, employmentType: null, defaultCurrency: "EUR", displayName: "Sophie Collette",
+        hasCurrentHourlyRate: true,
       }],
       total: 1,
     });

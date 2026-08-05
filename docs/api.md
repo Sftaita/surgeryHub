@@ -894,7 +894,8 @@ Alimente la liste _Ressources > Instrumentistes_.
       "defaultCurrency": "EUR",
       "displayName": "Ole Salve",
       "specialties": ["GENOU", "EPAULE"],
-      "profilePicturePath": "/uploads/profile-pictures/user-12-abc123.jpg"
+      "profilePicturePath": "/uploads/profile-pictures/user-12-abc123.jpg",
+      "hasCurrentHourlyRate": true
     }
   ],
   "total": 1
@@ -904,10 +905,11 @@ Alimente la liste _Ressources > Instrumentistes_.
 **Notes frontend :**
 - Pas de pagination
 - Pas de filtre `employmentType`
-- Pas d'affiliations détaillées ni de tarifs dans la réponse
+- Pas d'affiliations détaillées ni de montant de tarif dans la réponse
 - `displayName` : `firstname + lastname` si disponible, sinon `email`
 - `specialties` : tableau de codes spécialité (voir module planning pour les valeurs possibles)
 - `profilePicturePath` : chemin relatif au web root du backend (ou `null`), même convention que `GET /api/instrumentists/{id}` — construire l'URL complète avec `VITE_API_BASE_URL + profilePicturePath`
+- `hasCurrentHourlyRate` (diagnostic tarifs instrumentistes, 2026-08-05) : `true` si une `InstrumentistRate` de type `HOURLY_RATE` couvre la date du jour (`InstrumentistRateResolver`, même règle que `FinancialCalculationService` — jamais de fallback vers `User.hourlyRate` legacy). Sert uniquement au badge « Tarif configuré »/« Tarif manquant » de la liste manager — jamais recalculé côté frontend.
 
 **Erreurs possibles :**
 

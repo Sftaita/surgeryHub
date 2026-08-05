@@ -3910,6 +3910,42 @@ propriété instrumentiste sur son propre tarif).
 `InstrumentistRateService`, tout paiement, toute correction financière, la réconciliation
 de l'endpoint legacy `PATCH /instrumentists/{id}/rates` avec `InstrumentistRate`.
 
+### Amendement (2026-08-05) — le risque de double source de vérité a été réexaminé, pas supprimé
+
+Diagnostic production (2026-08-05) : sur 10 instrumentistes actifs réels, un seul avait un
+tarif configuré (compte de démo) — les 7 instrumentistes réels n'avaient de tarif ni dans
+`User.hourlyRate`/`consultationFee` (legacy), ni dans `InstrumentistRate` (source de
+vérité) — donc pas un cas de divergence entre les deux systèmes, mais une absence totale
+des deux côtés. Aucune migration nécessaire (rien à backfiller).
+
+Le vrai défaut identifié : le manager ne découvrait un tarif horaire manquant qu'en
+tentant de calculer une mission (422 `MISSING_INSTRUMENTIST_RATE`), sans aucun endroit
+pour le voir à l'avance. Lot correctif : badge « Tarif configuré »/« Tarif manquant »
+dans `InstrumentistsTable` (calculé côté backend via `InstrumentistRateResolver`, même
+règle que `FinancialCalculationService` — voir `docs/api.md` §16.1), avertissement dans
+`InstrumentistVersionedRates` quand aucune version `HOURLY_RATE` ne couvre aujourd'hui, et
+filtre `validatedWithoutCalculation` sur `GET /api/missions` relié à la tuile dashboard
+« Missions validées sans calcul » (même règle que
+`FinancialStatisticsQueryService::pipeline()`, voir le commentaire croisé dans les deux
+implémentations).
+
+**Le risque de divergence documenté ci-dessus reste réel et non traité** : l'endpoint
+legacy `PATCH /instrumentists/{id}/rates` est toujours accessible et continue d'écrire
+uniquement `User.hourlyRate`/`consultationFee`, jamais `InstrumentistRate`. Option
+envisagée pour ce lot — rediriger cet endpoint pour qu'il écrive aussi dans
+`InstrumentistRate` — **rejetée** : `InstrumentistRateService::replaceCurrentRateFrom()`
+interdit un remplacement le même jour que le `validFrom` du tarif courant
+(`InstrumentistRateImmutableException`), alors que le formulaire legacy peut être
+enregistré plusieurs fois le même jour (pas d'autosave, mais rien n'empêche un second
+clic sur "Enregistrer") — rediriger l'endpoint aurait donc introduit une nouvelle erreur
+utilisateur là où il n'y en avait pas, pour un chemin déjà legacy et non couvert par
+`InstrumentistStatementService` en pratique aujourd'hui (aucun instrumentiste réel n'a de
+valeur dans ce champ). Correctif retenu à la place, strictement en affichage : un
+avertissement explicite dans la section « Ancien flux (décompte classique) » du drawer
+précisant que ces champs n'alimentent pas le calcul financier — rend la divergence
+visible plutôt que de la corriger structurellement. La redirection ou dépréciation de
+l'endpoint legacy reste à trancher dans un lot futur, non traité ici.
+
 ---
 
 ## D-073 — FinancialCalculation est append-only. Chaque calcul fige les données tarifaires et métier utilisées. Toute nouvelle valorisation crée une nouvelle version (EPIC Exécution & Valorisation, Lot 3)

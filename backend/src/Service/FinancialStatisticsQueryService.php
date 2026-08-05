@@ -182,7 +182,10 @@ final class FinancialStatisticsQueryService
         // §17 — mission VALIDATED sans AUCUN FinancialCalculation (première ligne du
         // pipeline, jamais recalculée ici : simple absence, aucune double comptabilité
         // possible avec les autres compteurs qui portent tous sur des FinancialCalculation
-        // existants).
+        // existants). Même règle métier — sans la fenêtre from/to — que
+        // MissionFilter::validatedWithoutCalculation (MissionService::list(), diagnostic
+        // tarifs instrumentistes 2026-08-05, tuile dashboard cliquable) : toute évolution
+        // de cette condition doit être reportée sur les deux implémentations.
         $sql = "SELECT COUNT(*) FROM mission m
                 WHERE m.status = 'VALIDATED'
                   AND COALESCE((SELECT me.actual_start_at FROM mission_execution me WHERE me.mission_id = m.id), m.start_at) >= :fBusiness

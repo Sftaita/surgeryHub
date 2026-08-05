@@ -617,6 +617,43 @@ final class FinancialCalculationServiceTest extends KernelTestCase
         }
     }
 
+    /**
+     * Vérification tarif 0€ (2026-08-05) — un HOURLY_RATE à 0.00 EUR est un tarif RÉEL
+     * (InstrumentistRateResolver le retourne, non null) : le calcul doit réussir, sans
+     * MISSING_INSTRUMENTIST_RATE, et produire une ligne instrumentiste à 0.00 — jamais
+     * confondu avec l'absence de tarif (voir test_missing_instrumentist_rate_produces_anomaly
+     * juste au-dessus, qui fige le cas inverse).
+     */
+    public function test_zero_hourly_rate_succeeds_and_produces_a_zero_amount_line(): void
+    {
+        $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
+        $this->hourlyRate($instrumentist, '0.00', new \DateTimeImmutable('2020-01-01'));
+        $actor = $this->makeUser('ROLE_MANAGER');
+
+        $mission = $this->makeMission(
+            MissionType::BLOCK,
+            new \DateTimeImmutable('2026-06-01 08:00:00'),
+            new \DateTimeImmutable('2026-06-01 10:00:00'),
+            $instrumentist,
+        );
+
+        $calculation = $this->trackCalculation($this->service->calculate($mission, $actor));
+
+        self::assertSame(FinancialCalculationStatus::CALCULATED, $calculation->getStatus());
+        self::assertCount(1, $calculation->getLines());
+
+        $line = $calculation->getLines()->first();
+        self::assertSame('INSTRUMENTIST_HOURLY', $line->getLineType()->value);
+        self::assertSame('0.00', $line->getUnitAmount());
+        self::assertSame('0.00', $line->getGrossAmount());
+        self::assertSame('0.00', $line->getAdjustmentAmount(), 'aucun ajustement de neutralisation applicable aux lignes instrumentiste (réservé aux lignes firme)');
+        self::assertSame('0.00', $line->getTotalAmount());
+        self::assertSame('2.0000', $line->getQuantity(), '2h de mission, quantité calculée normalement malgré le tarif nul');
+
+        $totals = $calculation->totalsByCurrency();
+        self::assertSame('0.00', $totals['EUR']['INSTRUMENTIST']);
+    }
+
     public function test_multiple_anomalies_are_collected_in_a_single_exception(): void
     {
         $type = $this->makeType('MULTI-ANOM');
