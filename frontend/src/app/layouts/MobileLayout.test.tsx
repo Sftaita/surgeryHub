@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { MemoryRouter, Routes, Route, RouterProvider, createMemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useMediaQuery } from "@mui/material";
 
@@ -382,6 +382,96 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
       wavePaths.forEach((path) => {
         expect(path.getAttribute("d")).toBeTruthy();
       });
+    });
+  });
+
+  describe("Vagues du bandeau — redémarrage à chaque navigation (audit iOS, 2026-08-05)", () => {
+    // useNavigate() est mocké plus haut (mockNavigate, simple recorder) pour les tests
+    // de clic — insuffisant ici, où on doit prouver qu'un VRAI changement de
+    // location.pathname (jamais mocké) redéclenche l'animation. createMemoryRouter +
+    // router.navigate() pilote la navigation en dehors du hook mocké.
+    function renderLayoutWithRouter(initialPath = "/app/i/today") {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const router = createMemoryRouter(
+        [
+          {
+            path: "/app/i",
+            element: <MobileLayout />,
+            children: [
+              { path: "today", element: <div>Today content</div> },
+              { path: "planning", element: <div>Planning content</div> },
+            ],
+          },
+        ],
+        { initialEntries: [initialPath] },
+      );
+      const result = render(
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>,
+      );
+      return { ...result, router, queryClient };
+    }
+
+    function bandWavesSvg(container: HTMLElement) {
+      return container.querySelector('svg[viewBox="0 0 400 190"]');
+    }
+
+    it("remonte uniquement le composant des vagues (pas tout le layout) sur un vrai changement de route", async () => {
+      mockDesktop(false);
+      const { container, router } = renderLayoutWithRouter("/app/i/today");
+
+      // Forme réelle de l'onglet "today", une fois le kick d'arrivée retombé.
+      let todayW1 = "";
+      await waitFor(() => {
+        todayW1 = bandWavesSvg(container)?.querySelector("path")?.getAttribute("d") ?? "";
+        expect(todayW1).toBeTruthy();
+      });
+
+      const wavesBefore = bandWavesSvg(container);
+      const navBefore = screen.getByRole("navigation", { name: "Navigation instrumentiste" });
+
+      await act(async () => {
+        await router.navigate("/app/i/planning");
+      });
+      // Attend que la navigation soit réellement rendue (le contenu de la nouvelle
+      // route est monté) avant de comparer les nœuds — router.navigate() se résout
+      // dès que l'état interne du routeur change, pas forcément après le commit React.
+      await screen.findByText("Planning content");
+
+      const wavesAfter = bandWavesSvg(container);
+      const navAfter = screen.getByRole("navigation", { name: "Navigation instrumentiste" });
+
+      // Le composant des vagues a été détruit/recréé (nouveau nœud DOM)...
+      expect(wavesAfter).toBeTruthy();
+      expect(wavesAfter).not.toBe(wavesBefore);
+      // ...alors que le reste du layout (nav du bas, etc.) n'a jamais été remonté.
+      expect(navAfter).toBe(navBefore);
+
+      // Passé le court "kick" (70ms), la forme reflète bien le nouvel onglet — jamais
+      // restée figée sur la forme de la page précédente (le bug rapporté sur iOS).
+      await waitFor(() => {
+        const planningW1 = bandWavesSvg(container)?.querySelector("path")?.getAttribute("d");
+        expect(planningW1).toBeTruthy();
+        expect(planningW1).not.toBe(todayW1);
+      });
+    });
+
+    it("ne remonte pas le composant des vagues quand la route ne change pas", async () => {
+      mockDesktop(false);
+      const { container, rerender, queryClient, router } = renderLayoutWithRouter("/app/i/today");
+      void router;
+
+      const wavesBefore = bandWavesSvg(container);
+
+      rerender(
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>,
+      );
+
+      const wavesAfter = bandWavesSvg(container);
+      expect(wavesAfter).toBe(wavesBefore);
     });
   });
 });

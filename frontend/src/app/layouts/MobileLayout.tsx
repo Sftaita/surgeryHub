@@ -143,7 +143,42 @@ const WAVE_KICK_SHAPES = {
   w3: "M0 130 C 90 40, 190 150, 280 60 S 370 130, 400 50",
 };
 
-function BandWaves({ activeKey, kick }: { activeKey: TabKey | null; kick: boolean }) {
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = React.useState(
+    () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true,
+  );
+  React.useEffect(() => {
+    const mq = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (!mq) return;
+    const onChange = () => setReduced(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return reduced;
+}
+
+// Rendu avec `key={pathname}` par l'appelant (voir BrandBand) — remonté à chaque
+// navigation, jamais réutilisé d'une page à l'autre. Ce composant porte donc son
+// propre état de "kick" (impulsion brève vers WAVE_KICK_SHAPES puis retour à la
+// forme réelle de l'onglet actif), qui redémarre naturellement à chaque montage.
+//
+// Choix délibéré plutôt qu'un état de kick élevé dans MobileLayout + re-déclenché
+// par un useEffect(pathname) : sur iOS/Safari, un changement de state React sur un
+// nœud déjà monté ne rejoue pas de façon fiable la transition CSS `d` déjà en cours
+// (constaté réellement — les vagues restaient figées sur la forme précédente lors
+// d'une navigation qui ne changeait pas d'onglet). Un remount complet du <svg>
+// repart d'un état initial garanti, sans dépendre du comportement de retrigger de
+// transition CSS d'un moteur de rendu donné (audit vagues iOS, 2026-08-05).
+function BandWaves({ activeKey }: { activeKey: TabKey | null }) {
+  const reducedMotion = usePrefersReducedMotion();
+  const [kick, setKick] = React.useState(!reducedMotion);
+  React.useEffect(() => {
+    if (reducedMotion) return;
+    const t = setTimeout(() => setKick(false), 70);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const shapes = kick ? WAVE_KICK_SHAPES : (WAVE_SHAPES[activeKey ?? "today"] ?? WAVE_SHAPES.today);
   return (
     <svg
@@ -187,7 +222,6 @@ function BandWaves({ activeKey, kick }: { activeKey: TabKey | null; kick: boolea
 function BrandBand({
   isDesktop,
   activeKey,
-  waveKick,
   title,
   subtitle,
   titleKey,
@@ -198,7 +232,6 @@ function BrandBand({
 }: {
   isDesktop: boolean;
   activeKey: TabKey | null;
-  waveKick: boolean;
   title: string;
   subtitle: string;
   /** Changes on every navigation — forces shTitleA/B to replay (docs/design/animations §2). */
@@ -226,7 +259,14 @@ function BrandBand({
           padding: isDesktop ? "22px 26px 58px" : "calc(12px + env(safe-area-inset-top)) 20px 56px",
         }}
       >
-        <BandWaves activeKey={activeKey} kick={waveKick} />
+        {/*
+          key distinct de celui du bloc titre juste en dessous (`key={titleKey}`,
+          ligne ~338) — ce sont deux ENFANTS DIRECTS du même conteneur, donc deux
+          `key={titleKey}` identiques entreraient en collision (React ne garantit
+          plus le remount dans ce cas — c'est ce qui a fait échouer la première
+          version de ce correctif, voir MobileLayout.test.tsx "audit iOS, 2026-08-05").
+        */}
+        <BandWaves key={`waves-${titleKey}`} activeKey={activeKey} />
         <Box sx={{ display: "flex", alignItems: "center", gap: "12px", position: "relative" }}>
           {!isDesktop && (
             <>
@@ -673,38 +713,24 @@ export function MobileLayout() {
   const isInstrumentist = pathname.startsWith("/app/i");
   const activeTab = tabs.find((t) => t.match(pathname))?.key ?? null;
 
-  // "Kick" pulse on the header waves — same mechanism as the prototype's kickWaves():
-  // a very brief (70ms) flip to a fixed distorted shape, reverted before the CSS
-  // transition (1.1-1.6s) can complete, producing an impulse rather than a full morph.
-  const [waveKick, setWaveKick] = React.useState(false);
-  const kickTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const kickWaves = React.useCallback(() => {
-    clearTimeout(kickTimeoutRef.current);
-    setWaveKick(true);
-    kickTimeoutRef.current = setTimeout(() => setWaveKick(false), 70);
-  }, []);
-  React.useEffect(() => () => clearTimeout(kickTimeoutRef.current), []);
-
-  // Arrival kick — equivalent of the prototype's post-login kick: fires once when
-  // this layout mounts (fresh login, or a hard reload while already in the app).
-  React.useEffect(() => {
-    kickWaves();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Leaving-encoding kick — covers both the prototype's closeEncode and validateTap
-  // (both simply leave the encoding screen in the real router). Also where the
-  // encoding screen's origin route is captured (see scrollRestoration.ts) — on a
-  // direct/deep-link open, previousPathnameRef already equals pathname on mount, so
-  // this never fires and getEncodingBackTarget() correctly falls back.
+  // Le "kick" des vagues du bandeau (impulsion brève à chaque navigation) est
+  // désormais géré directement par BandWaves, remonté via `key={pathname}` à chaque
+  // changement de route (voir BandWaves plus haut, audit vagues iOS 2026-08-05) — un
+  // remount garantit le redémarrage sur tous les moteurs de rendu, y compris iOS
+  // Safari, contrairement à l'ancien mécanisme basé sur un state levé ici et
+  // rejoué par transition CSS sur un nœud déjà monté.
+  //
+  // Capture de l'origine de l'écran d'encodage (pour le bouton retour, voir
+  // scrollRestoration.ts) — sur un accès direct/deep-link, previousPathnameRef
+  // égale déjà pathname au montage, donc ceci ne se déclenche jamais et
+  // getEncodingBackTarget() retombe correctement sur son repli.
   const previousPathnameRef = React.useRef(pathname);
   React.useEffect(() => {
     const wasEncoding = ENCODING_ROUTE_RE.test(previousPathnameRef.current);
     const isEncoding = ENCODING_ROUTE_RE.test(pathname);
-    if (wasEncoding && !isEncoding) kickWaves();
     if (!wasEncoding && isEncoding) recordEncodingOrigin(previousPathnameRef.current);
     previousPathnameRef.current = pathname;
-  }, [pathname, kickWaves]);
+  }, [pathname]);
 
   const isEncodingRoute = ENCODING_ROUTE_RE.test(pathname);
 
@@ -857,7 +883,6 @@ export function MobileLayout() {
           <BrandBand
             isDesktop={isDesktop}
             activeKey={activeTab}
-            waveKick={waveKick}
             title={title}
             subtitle={subtitle}
             titleKey={pathname}

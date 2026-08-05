@@ -23,8 +23,17 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="SurgicalHub" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png" />
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/icon-16.png" />
+    <!--
+      icon-16-v2/icon-32-v2 (pas icon-16.png/icon-32.png) — ces deux fichiers
+      contenaient encore l'ancien logo (croix bleue générique) alors que toutes
+      les icônes PWA ≥72px avaient déjà été régénérées avec le nouveau logo le
+      2026-07-29 (favicon audit, 2026-08-05). Nom de fichier différent (plutôt
+      qu'un simple remplacement du contenu au même chemin) pour garantir que le
+      cache favicon très persistant des navigateurs (souvent indépendant des
+      en-têtes Cache-Control classiques) reparte sur une URL jamais vue.
+    -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32-v2.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/icon-16-v2.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180.png" />
     <link rel="manifest" href="/manifest.json" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />

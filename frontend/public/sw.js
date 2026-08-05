@@ -2,7 +2,7 @@
 // the new assets instead of keeping a stale cached copy (Lot 2 PWA audit —
 // previously this service worker had no fetch handler at all, so icon
 // requests were left entirely to the browser's default HTTP cache heuristics).
-const STATIC_CACHE_VERSION = 'v2';
+const STATIC_CACHE_VERSION = 'v3';
 const STATIC_CACHE_NAME = `surgicalhub-static-${STATIC_CACHE_VERSION}`;
 const STATIC_CACHE_PATH_PATTERN = /\/(icons\/|manifest\.json$)/;
 
