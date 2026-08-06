@@ -18,10 +18,10 @@ use App\Enum\NotificationType;
  * - notification agrégée (aucune Mission unique — déploiement, alerte planning, pool
  *   OPEN) → écran/contexte le plus pertinent pour ce type, jamais une mission arbitraire.
  *
- * Le chirurgien n'a aujourd'hui aucun écran de détail mission dédié (seule route:
- * `/app/s`, voir AppRouter.tsx) — les notifications chirurgien renvoient donc vers cet
- * unique écran existant plutôt que vers une route inventée. Limite documentée, pas un
- * bug de ce lot.
+ * Le chirurgien dispose depuis le Lot 2 du socle mobile partagé (D-095) d'un vrai
+ * écran de détail mission (`/app/s/missions/{id}`, MissionDetailContent généralisé)
+ * et d'un vrai planning (`/app/s/planning`) — les notifications chirurgien y renvoient
+ * désormais directement, plus de repli générique vers `/app/s`.
  */
 final class NotificationTargetResolver
 {
@@ -49,7 +49,7 @@ final class NotificationTargetResolver
                 return '/app/i/missions/' . $mission->getId();
             }
             if ($isSurgeon) {
-                return '/app/s';
+                return '/app/s/missions/' . $mission->getId();
             }
             return null;
         }
@@ -57,10 +57,10 @@ final class NotificationTargetResolver
         return match ($type) {
             NotificationType::PLANNING_DEPLOYED_MANAGER => '/app/m/missions',
             NotificationType::PLANNING_DEPLOYED_INSTRUMENTIST => '/app/i/planning',
-            NotificationType::PLANNING_DEPLOYED_SURGEON => '/app/s',
+            NotificationType::PLANNING_DEPLOYED_SURGEON => '/app/s/planning',
             NotificationType::OPEN_MISSION_AVAILABLE => '/app/i/offers',
             NotificationType::PLANNING_ALERT => $isManager ? '/app/m/planning/v2' : null,
-            NotificationType::PLANNING_RESENT_MANUAL => $isManager ? '/app/m/missions' : ($isInstrumentist ? '/app/i/planning' : ($isSurgeon ? '/app/s' : null)),
+            NotificationType::PLANNING_RESENT_MANUAL => $isManager ? '/app/m/missions' : ($isInstrumentist ? '/app/i/planning' : ($isSurgeon ? '/app/s/planning' : null)),
             // Purement informatif ou sans cible connue aujourd'hui — jamais une route
             // devinée. Le frontend traite `null` comme non cliquable.
             default => null,

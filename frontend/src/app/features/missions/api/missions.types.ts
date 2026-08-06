@@ -165,6 +165,13 @@ export interface Mission {
   allowedActions?: AllowedAction[];
 
   /**
+   * Socle chirurgien (Lot 2, D-095) — calculé backend (PlanningCoverageService::isCovered(),
+   * source unique) : status ∈ {ASSIGNED, SUBMITTED, VALIDATED, CLOSED, IN_PROGRESS}. Le
+   * frontend ne doit jamais recalculer un second set de statuts "couvert"/"à couvrir".
+   */
+  covered?: boolean;
+
+  /**
    * Lot F5 — bloc service (si présent dans MissionDetailDto).
    * IMPORTANT: pas d'inférence côté frontend.
    */

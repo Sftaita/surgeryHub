@@ -10,6 +10,8 @@ use App\Enum\MissionType;
 use App\Service\MissionActionsService;
 use App\Service\MissionEncodingGuard;
 use App\Service\MissionMapper;
+use App\Service\PlanningCoverageService;
+use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -34,7 +36,10 @@ final class MissionMapperTimezoneTest extends TestCase
     protected function setUp(): void
     {
         // MissionActionsService is final — real instance instead of a mock double.
-        $this->mapper = new MissionMapper(new MissionActionsService(new MissionEncodingGuard()));
+        $this->mapper = new MissionMapper(
+            new MissionActionsService(new MissionEncodingGuard()),
+            new PlanningCoverageService($this->createMock(EntityManagerInterface::class)),
+        );
     }
 
     private function setId(object $entity, int $id): void

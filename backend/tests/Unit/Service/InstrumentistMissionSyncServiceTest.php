@@ -17,6 +17,7 @@ use App\Service\InstrumentistMissionSyncService;
 use App\Service\MissionActionsService;
 use App\Service\MissionEncodingGuard;
 use App\Service\MissionMapper;
+use App\Service\PlanningCoverageService;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Query;
 use Doctrine\ORM\Query\Expr;
@@ -42,7 +43,12 @@ class InstrumentistMissionSyncServiceTest extends TestCase
     protected function setUp(): void
     {
         $this->em = $this->createMock(EntityManagerInterface::class);
-        $this->mapper = new MissionMapper(new MissionActionsService(new MissionEncodingGuard()));
+        // PlanningCoverageService::isCovered() ne touche jamais à $em (pure fonction de
+        // Mission::getStatus()) — réutilise le même mock plutôt que d'en créer un second.
+        $this->mapper = new MissionMapper(
+            new MissionActionsService(new MissionEncodingGuard()),
+            new PlanningCoverageService($this->em),
+        );
     }
 
     private function makeService(): InstrumentistMissionSyncService

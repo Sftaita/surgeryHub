@@ -78,6 +78,21 @@ function missionTypeLabel(type?: string | null): string {
   return type ?? "—";
 }
 
+/**
+ * Socle chirurgien (Lot 2, D-095) — le chirurgien doit voir qui est assigné à sa
+ * mission (ou "À couvrir" si personne). Affiché aussi côté instrumentiste (lecture
+ * neutre de sa propre affectation), aucune raison de le masquer par rôle.
+ */
+function instrumentistLabel(mission: Mission): string {
+  const i = mission.instrumentist;
+  if (!i) return "À couvrir";
+  const fn = (i.firstname ?? "").trim();
+  const ln = (i.lastname ?? "").trim();
+  const full = `${fn} ${ln}`.trim();
+  if (full) return full;
+  return (i as any).displayName?.trim() || i.email || "—";
+}
+
 // ─── Reusable section card ──────────────────────────────────────────────────
 type SectionCardProps = {
   icon: React.ReactNode;
@@ -207,6 +222,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
             value={`${formatDate(mission.startAt)} · ${formatTime(mission.startAt)} → ${formatTime(mission.endAt)}`}
           />
           <InfoRow icon={<PersonIcon fontSize="small" />} label="Chirurgien" value={surgeonLabel(mission)} />
+          <InfoRow icon={<PersonIcon fontSize="small" />} label="Instrumentiste" value={instrumentistLabel(mission)} />
           <InfoRow
             icon={<MedicalServicesIcon fontSize="small" />}
             label="Type"

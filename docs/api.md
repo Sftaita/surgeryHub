@@ -85,6 +85,24 @@ Pas un endpoint : une commande planifiée, `app:missions:start-due`, transitionn
 
 ---
 
+### 3.2 `covered: boolean` — champ backend-calculé (Lot 2 chirurgien, D-096, 2026-08-06)
+
+`MissionListDto` et `MissionDetailDto` (donc `GET /api/missions` et
+`GET /api/missions/{id}`) exposent désormais `covered: boolean`, calculé par
+`PlanningCoverageService::isCovered(Mission $mission)` — **la même règle** que celle
+utilisée pour les KPI de couverture planning (`PlanningCoverageService`, Batch 15F) :
+`true` si `status ∈ {ASSIGNED, SUBMITTED, VALIDATED, CLOSED, IN_PROGRESS}`, `false`
+sinon (y compris pour `OPEN`, qui reste le seul statut réellement "à couvrir", et pour
+`CANCELLED`, jamais compté comme couvert ni comme à couvrir). Introduit pour le
+planning/l'accueil chirurgien (Home, Planning — voir `docs/architecture.md` §15) afin
+qu'aucun frontend n'ait besoin de redéfinir la couverture localement
+(`covered = instrumentist != null` aurait été incorrect : une mission `OPEN` peut avoir
+un instrumentiste pré-suggéré sans être réellement couverte). Tout nouveau consommateur
+frontend de la couverture d'une mission doit lire `mission.covered`, jamais recalculer
+une approximation.
+
+---
+
 ## 4. Missions standard
 
 ### `POST /api/missions`

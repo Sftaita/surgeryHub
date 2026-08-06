@@ -76,14 +76,14 @@ final class NotificationTargetResolverTest extends TestCase
         self::assertSame('/app/i/missions/' . $mission->getId(), $url);
     }
 
-    /** Aucun écran de détail mission chirurgien n'existe encore (voir AppRouter.tsx) — limite documentée. */
-    public function test_mission_tied_notification_routes_surgeon_to_their_only_existing_page(): void
+    /** Socle mobile chirurgien Lot 2 (D-095) — /app/s/missions/{id} existe réellement. */
+    public function test_mission_tied_notification_routes_to_surgeon_mission_detail(): void
     {
         $mission = $this->makeMission();
         $surgeon = $this->makeUser('ROLE_SURGEON');
 
         $url = $this->resolver->resolve(NotificationType::SURGEON_POST_COVERED, $mission, $surgeon);
-        self::assertSame('/app/s', $url);
+        self::assertSame('/app/s/missions/' . $mission->getId(), $url);
     }
 
     // ── Notifications agrégées (aucune Mission unique) ──────────────────────
@@ -121,5 +121,55 @@ final class NotificationTargetResolverTest extends TestCase
         $instr = $this->makeUser('ROLE_INSTRUMENTIST');
         $url = $this->resolver->resolve(NotificationType::PLANNING_ALERT, null, $instr);
         self::assertNull($url);
+    }
+
+    // ── Socle mobile chirurgien Lot 2 (D-095) ───────────────────────────────
+
+    public function test_planning_deployed_surgeon_routes_to_their_planning(): void
+    {
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $url = $this->resolver->resolve(NotificationType::PLANNING_DEPLOYED_SURGEON, null, $surgeon);
+        self::assertSame('/app/s/planning', $url);
+    }
+
+    public function test_planning_resent_manual_routes_surgeon_to_their_planning(): void
+    {
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $url = $this->resolver->resolve(NotificationType::PLANNING_RESENT_MANUAL, null, $surgeon);
+        self::assertSame('/app/s/planning', $url);
+    }
+
+    public function test_planning_resent_manual_still_routes_manager_and_instrumentist_unchanged(): void
+    {
+        $manager = $this->makeUser('ROLE_MANAGER');
+        $instr = $this->makeUser('ROLE_INSTRUMENTIST');
+
+        self::assertSame(
+            '/app/m/missions',
+            $this->resolver->resolve(NotificationType::PLANNING_RESENT_MANUAL, null, $manager),
+        );
+        self::assertSame(
+            '/app/i/planning',
+            $this->resolver->resolve(NotificationType::PLANNING_RESENT_MANUAL, null, $instr),
+        );
+    }
+
+    /** Un chirurgien ne doit jamais recevoir le lien mission d'un autre rôle, et inversement. */
+    public function test_mission_tied_notification_target_is_role_specific_not_shared_across_roles(): void
+    {
+        $mission = $this->makeMission();
+        $manager = $this->makeUser('ROLE_MANAGER');
+        $instr = $this->makeUser('ROLE_INSTRUMENTIST');
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+
+        $managerUrl = $this->resolver->resolve(NotificationType::PLANNING_MISSION_REASSIGNED, $mission, $manager);
+        $instrUrl = $this->resolver->resolve(NotificationType::PLANNING_MISSION_REASSIGNED, $mission, $instr);
+        $surgeonUrl = $this->resolver->resolve(NotificationType::PLANNING_MISSION_REASSIGNED, $mission, $surgeon);
+
+        self::assertSame('/app/m/missions/' . $mission->getId(), $managerUrl);
+        self::assertSame('/app/i/missions/' . $mission->getId(), $instrUrl);
+        self::assertSame('/app/s/missions/' . $mission->getId(), $surgeonUrl);
+        self::assertNotSame($managerUrl, $surgeonUrl);
+        self::assertNotSame($instrUrl, $surgeonUrl);
     }
 }

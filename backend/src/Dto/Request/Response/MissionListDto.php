@@ -18,5 +18,11 @@ final class MissionListDto
         public readonly UserSlimDto $surgeon,
         public readonly ?UserSlimDto $instrumentist,
         public readonly array $allowedActions,
+        /**
+         * Socle chirurgien (Lot 2, D-095) — même règle que PlanningCoverageService::isCovered(),
+         * source unique. Le frontend ne doit jamais recalculer un second set de statuts
+         * "couvert"/"à couvrir" localement.
+         */
+        public readonly bool $covered,
     ) {}
 }

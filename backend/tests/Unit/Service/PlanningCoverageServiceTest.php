@@ -3,12 +3,14 @@
 namespace App\Tests\Unit\Service;
 
 use App\Dto\CoverageSummary;
+use App\Entity\Mission;
 use App\Entity\PlanningVersion;
 use App\Enum\MissionStatus;
 use App\Service\PlanningCoverageService;
 use Doctrine\ORM\AbstractQuery;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Query;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 
@@ -144,6 +146,38 @@ class PlanningCoverageServiceTest extends TestCase
         self::assertNotNull($summary);
         self::assertSame(10, $summary->total);
         self::assertSame(7,  $summary->covered);
+    }
+
+    // ── isCovered() — per-mission, socle chirurgien Lot 2 (D-095) ──────────────
+    // Même source que COVERED_STATUSES ci-dessus, testé exhaustivement contre
+    // chaque MissionStatus pour verrouiller la règle exacte demandée : OPEN = non
+    // couvert ; ASSIGNED/SUBMITTED/VALIDATED/CLOSED/IN_PROGRESS = couvert ;
+    // CANCELLED (et tout le reste : DRAFT/DECLARED/REJECTED/ENCODING_IN_PROGRESS)
+    // exclus de la couverture active.
+
+    /** @return iterable<string, array{MissionStatus, bool}> */
+    public static function statusCoverageProvider(): iterable
+    {
+        yield 'OPEN is not covered' => [MissionStatus::OPEN, false];
+        yield 'ASSIGNED is covered' => [MissionStatus::ASSIGNED, true];
+        yield 'SUBMITTED is covered' => [MissionStatus::SUBMITTED, true];
+        yield 'VALIDATED is covered' => [MissionStatus::VALIDATED, true];
+        yield 'CLOSED is covered' => [MissionStatus::CLOSED, true];
+        yield 'IN_PROGRESS is covered' => [MissionStatus::IN_PROGRESS, true];
+        yield 'CANCELLED is not covered' => [MissionStatus::CANCELLED, false];
+        yield 'DRAFT is not covered' => [MissionStatus::DRAFT, false];
+        yield 'DECLARED is not covered' => [MissionStatus::DECLARED, false];
+        yield 'REJECTED is not covered' => [MissionStatus::REJECTED, false];
+        yield 'ENCODING_IN_PROGRESS is not covered' => [MissionStatus::ENCODING_IN_PROGRESS, false];
+    }
+
+    #[DataProvider('statusCoverageProvider')]
+    public function test_is_covered_matches_covered_statuses_exactly(MissionStatus $status, bool $expectedCovered): void
+    {
+        $mission = new Mission();
+        $mission->setStatus($status);
+
+        self::assertSame($expectedCovered, $this->service->isCovered($mission));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

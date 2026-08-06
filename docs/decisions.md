@@ -6780,3 +6780,83 @@ bloquante). `NotificationService::notificationPreferencesUrl()` (D-094) retourne
 toujours `null` pour `ROLE_SURGEON` — devenu obsolète depuis que `/app/s/profile`
 existe réellement, non corrigé dans ce lot pour ne pas élargir son périmètre (petit
 correctif isolé, sans risque, à faire au prochain lot touchant ce fichier).
+
+## D-096 — Home + Planning chirurgien réels, réutilisation du moteur planning instrumentiste (Lot 2, 2026-08-06)
+
+Date : 2026-08-06
+
+### Contexte
+
+Suite au socle mobile partagé du Lot 1 (D-095), `/app/s` et `/app/s/planning`
+restaient des replis `ComingSoonPage`. Ce lot les remplace par des écrans réels, dans
+le prolongement direct du principe directeur de D-095 : jamais une deuxième
+implémentation quand une réutilisation est possible.
+
+### Décision — extraction du moteur planning, pas une réécriture
+
+Le moteur de grille/calendrier de `pages/instrumentist/PlanningPage.tsx` (date-math,
+`buildMonthGridCells`, `SegmentedControl`, `WeekStrip`, `MonthGrid`, `MissionListRow`,
+`EmptyStateRow`) est déplacé vers un module partagé
+`features/mobile-planning/planningPrimitives.tsx`, sans changement de comportement
+pour l'instrumentiste (verrouillé par `PlanningPage.test.tsx`, 24 tests inchangés, plus
+un nouveau `planningPrimitives.test.tsx` dédié au contrat du module partagé). Ce qui
+reste spécifique à chaque rôle (classification "à encoder"/"à couvrir", libellé de la
+personne affichée, bannière d'état vide) reste hors du module partagé — voir
+`docs/architecture.md` §15.1.
+
+### Décision — couverture : un seul champ backend, jamais recalculé côté frontend
+
+`PlanningCoverageService` gagne une méthode `isCovered(Mission $mission): bool`
+(réutilise la constante `COVERED_STATUSES` déjà existante), exposée via un nouveau
+champ `covered: boolean` sur `MissionListDto`/`MissionDetailDto` (voir `docs/api.md`
+§3.2). Décision explicite : **jamais** `covered = instrumentist != null` côté
+frontend — une mission `OPEN` peut porter un instrumentiste pré-suggéré sans être
+réellement couverte, et cette approximation aurait divergé silencieusement de la
+définition déjà utilisée par les KPI planning (Batch 15F). Le chirurgien comme
+l'instrumentiste (ligne "Instrumentiste" ajoutée à `MissionDetailContent`) lisent
+désormais la même source de vérité.
+
+### Décision — Home chirurgien : pas de nouvel endpoint, deux requêtes self-scoped
+
+`SurgeonHomePage` interroge deux fois `GET /api/missions` (fenêtre "à venir" 90 jours,
+fenêtre "ce mois-ci"), sans `assignedToMe`. **Piège identifié avant implémentation** :
+`MissionService::list()` code en dur `assignedToMe: true` sur `m.instrumentist` — le
+passer pour un chirurgien aurait vidé systématiquement les résultats. Le podium
+d'activité est volontairement absent de ce lot ("je préfère aucun faux chiffre à un
+podium temporaire incorrect" — aucun placeholder chiffré tant que le vrai calcul
+backend n'existe pas).
+
+### Décision — détail mission chirurgien : même composant, jamais un `SurgeonMissionDetail`
+
+`/app/s/missions/:id` réutilise `MissionDetailPageI`/`MissionDetailContent`, entièrement
+piloté par `allowedActions[]`. Pour un chirurgien, `MissionActionsService` n'accorde
+jamais `encoding`/`edit_hours`/`submit` (ces droits ne dépendent que de
+`ROLE_MANAGER`/`ROLE_ADMIN`/`ROLE_INSTRUMENTIST`) : aucun bouton d'action
+instrumentiste ne peut donc apparaître pour un chirurgien — garantie structurelle par
+construction, pas une convention à respecter dans chaque nouvel écran.
+
+`rate_instrumentist`/`dispute_hours` : présents dans `allowedActions` mais sans
+aucune implémentation backend (vérifié par recherche exhaustive — aucun endpoint, DTO,
+service ou Voter). Décision explicite de ne pas construire de bouton frontend pour un
+contrat backend qui n'existe pas encore, plutôt que de fabriquer un comportement.
+
+### Décision — notifications : cibles réelles, isolation de rôle inchangée
+
+`NotificationTargetResolver` route les notifications mission chirurgien vers
+`/app/s/missions/{id}` (au lieu du repli générique `/app/s`), et les notifications
+planning agrégées vers `/app/s/planning`. Aucun changement d'isolation de rôle : une
+notification reste spécifique au destinataire, même si le composant de détail sous-
+jacent est partagé avec l'instrumentiste.
+
+### Décision — synchronisation : toujours pas de généralisation par anticipation
+
+Comme au Lot 1, `useInstrumentistMissionSync()` reste strictement instrumentiste ;
+`SurgeonHomePage`/`SurgeonPlanningPage` s'appuient sur le comportement React Query par
+défaut. Réévalué seulement si un besoin réel (pas de symétrie architecturale) le
+justifie.
+
+### Portée non traitée ici
+
+Comme D-095 : Activité chirurgien réelle (podium, agrégats), absences self-service,
+`SurgeonMissionRequest`, distinction `VIEW_ENCODING`/`EDIT_ENCODING`, signalement
+d'anomalie, export `.ics`. Préparation navbar Absences (D-095) reconfirmée inchangée.

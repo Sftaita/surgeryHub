@@ -32,6 +32,11 @@ const MissionEncodingPage = React.lazy(() => import("../pages/instrumentist/Miss
 const ProfilePage         = React.lazy(() => import("../pages/common/ProfilePage"));
 const ComingSoonPage      = React.lazy(() => import("../pages/common/ComingSoonPage"));
 
+// Chirurgien (Lot 2, D-095) — Home/Planning réels ; détail mission réutilise
+// MissionDetailPageI (même composant que l'instrumentiste, allowedActions-driven).
+const SurgeonHomePage     = React.lazy(() => import("../pages/surgeon/SurgeonHomePage"));
+const SurgeonPlanningPage = React.lazy(() => import("../pages/surgeon/SurgeonPlanningPage"));
+
 // Admin
 const AdminUsersPage       = React.lazy(() => import("../pages/admin/AdminUsersPage"));
 const AdminSitesPage       = React.lazy(() => import("../pages/admin/AdminSitesPage"));
@@ -146,18 +151,20 @@ export function AppRouter() {
             </Route>
 
             {/* Surgeon — même MobileLayout que l'instrumentiste (jamais un second layout,
-                voir docs/decisions.md). Home/Planning/Activité/Demandes/Absences restent
-                des repli propres (ComingSoonPage) tant que leurs lots dédiés ne sont pas
-                livrés — Notifications et Profil sont réellement fonctionnels dès ce lot. */}
+                voir docs/decisions.md). Home/Planning/Détail mission sont réellement
+                fonctionnels depuis le Lot 2 (D-095) ; Activité/Demandes/Absences restent
+                des replis propres (ComingSoonPage) tant que leurs lots dédiés ne sont pas
+                livrés. */}
             <Route element={<RequireSurgeon />}>
               <Route element={<MobileLayout />}>
-                <Route path="s" element={<ComingSoonPage title="Accueil" />} />
-                <Route path="s/planning" element={<ComingSoonPage title="Planning" />} />
+                <Route path="s" element={<SurgeonHomePage />} />
+                <Route path="s/planning" element={<SurgeonPlanningPage />} />
                 <Route path="s/activity" element={<ComingSoonPage title="Activité" />} />
                 <Route path="s/requests" element={<ComingSoonPage title="Mes demandes" />} />
                 <Route path="s/absences" element={<ComingSoonPage title="Mes indisponibilités" />} />
                 <Route path="s/notifications" element={<NotificationsPage />} />
                 <Route path="s/profile" element={<ProfilePage />} />
+                <Route path="s/missions/:id" element={<MissionDetailPageI />} />
               </Route>
             </Route>
 

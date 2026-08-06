@@ -20,5 +20,7 @@ final class MissionDetailDto
         public readonly array $allowedActions,
         public readonly ?string $noMaterialComment,
         public readonly ?bool $submittedWithoutMaterial,
+        /** Socle chirurgien (Lot 2, D-095) — voir MissionListDto::$covered. */
+        public readonly bool $covered,
     ) {}
 }

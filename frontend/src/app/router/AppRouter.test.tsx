@@ -51,12 +51,19 @@ vi.mock("../features/manager-catalogue/api/interventionTypeRequests.api", () => 
 }));
 
 // ── Dépendances propres à DashboardPage ─────────────────────────────────────────
+const fetchMissionByIdMock = vi.fn().mockResolvedValue(null);
 vi.mock("../features/missions/api/missions.api", () => ({
   fetchMissions: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   fetchInstrumentistOffersWithFallback: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   fetchOffersUnreadCount: vi.fn().mockResolvedValue(0),
   markOffersSeen: vi.fn().mockResolvedValue(undefined),
   claimMission: vi.fn(),
+  fetchMissionById: (...args: unknown[]) => fetchMissionByIdMock(...args),
+  getMissionExecution: vi.fn().mockResolvedValue({
+    missionId: 0, hasExecutionRecord: false, actualStartAt: null, actualEndAt: null,
+    actualDurationMinutes: null, hoursSource: null, effectiveDurationMinutes: 0,
+    effectiveDurationSource: "PLANNED", disputes: [],
+  }),
 }));
 vi.mock("../features/notifications/api/notifications.api", () => ({
   fetchUnreadNotificationsCount: vi.fn().mockResolvedValue(0),
@@ -125,6 +132,7 @@ vi.mock("../features/me/api/me.api", () => ({
 beforeEach(() => {
   authStatus = "authenticated";
   authRole = "MANAGER";
+  fetchMissionByIdMock.mockReset().mockResolvedValue(null);
 });
 
 function renderAt(initialPath: string) {
@@ -190,10 +198,11 @@ describe("AppRouter — route Profil manager/admin (Lot 12)", () => {
 });
 
 describe("AppRouter — RequireSurgeon et socle mobile chirurgien (Lot 1, 2026-08-05)", () => {
-  it("un SURGEON accède à /app/s (ComingSoonPage, pas de redirection)", async () => {
+  it("un SURGEON accède à /app/s (SurgeonHomePage réelle depuis le Lot 2, plus ComingSoonPage)", async () => {
     authRole = "SURGEON";
     renderAt("/app/s");
-    await waitFor(() => expect(screen.getByText(/Accueil.*bientôt disponible/)).toBeInTheDocument(), { timeout: 5000 });
+    await waitFor(() => expect(screen.getByText("Aucune mission planifiée prochainement")).toBeInTheDocument(), { timeout: 5000 });
+    expect(screen.queryByText(/Accueil.*bientôt disponible/)).not.toBeInTheDocument();
   });
 
   it("un SURGEON accède à /app/s/notifications (NotificationsPage, partagée avec l'instrumentiste)", async () => {
@@ -211,7 +220,7 @@ describe("AppRouter — RequireSurgeon et socle mobile chirurgien (Lot 1, 2026-0
   it("un INSTRUMENTIST ne peut pas accéder à /app/s (redirigé hors de l'espace chirurgien)", async () => {
     authRole = "INSTRUMENTIST";
     renderAt("/app/s");
-    await waitFor(() => expect(screen.queryByText(/Accueil.*bientôt disponible/)).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Aucune mission planifiée prochainement")).toBeNull());
   });
 
   it("un MANAGER ne peut pas accéder à /app/s (redirigé vers /app/m/dashboard)", async () => {
@@ -223,6 +232,46 @@ describe("AppRouter — RequireSurgeon et socle mobile chirurgien (Lot 1, 2026-0
   it("utilisateur non authentifié redirigé vers /login (guard RequireAuth existant)", async () => {
     authStatus = "anonymous";
     renderAt("/app/s");
-    await waitFor(() => expect(screen.queryByText(/Accueil.*bientôt disponible/)).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Aucune mission planifiée prochainement")).toBeNull());
+  });
+});
+
+describe("AppRouter — Planning et détail mission chirurgien (Lot 2, D-095, 2026-08-06)", () => {
+  it("un SURGEON accède à /app/s/planning (SurgeonPlanningPage réelle, plus ComingSoonPage)", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/s/planning");
+    await waitFor(() => expect(screen.getByText("Aucune mission sur cette période")).toBeInTheDocument(), { timeout: 5000 });
+  });
+
+  it("un INSTRUMENTIST ne peut pas accéder à /app/s/planning (redirigé hors de l'espace chirurgien)", async () => {
+    authRole = "INSTRUMENTIST";
+    renderAt("/app/s/planning");
+    await waitFor(() => expect(screen.queryByText("Aucune mission sur cette période")).toBeNull());
+  });
+
+  it("un SURGEON accède à /app/s/missions/:id (réutilise MissionDetailPageI, jamais un composant dédié)", async () => {
+    authRole = "SURGEON";
+    (fetchMissionByIdMock as any).mockResolvedValue({
+      id: 42,
+      type: "BLOCK",
+      status: "ASSIGNED",
+      startAt: "2026-08-10T08:00:00+02:00",
+      endAt: "2026-08-10T12:00:00+02:00",
+      site: { id: 1, name: "CHU Test" },
+      surgeon: { id: 9, firstname: "Jean", lastname: "Dupont", email: "jd@test.be" },
+      instrumentist: { id: 3, firstname: "Marie", lastname: "Curie", email: "mc@test.be" },
+      allowedActions: [],
+    });
+    renderAt("/app/s/missions/42");
+    await waitFor(() => expect(screen.getByText("CHU Test")).toBeInTheDocument(), { timeout: 5000 });
+    // Route notification chirurgien (D-095) : aucune action instrumentiste disponible.
+    expect(screen.queryByText("Encoder la mission")).not.toBeInTheDocument();
+    expect(screen.queryByText("Terminer l'encodage")).not.toBeInTheDocument();
+  });
+
+  it("un INSTRUMENTIST ne peut pas accéder à /app/s/missions/:id (isolation de rôle malgré le composant partagé)", async () => {
+    authRole = "INSTRUMENTIST";
+    renderAt("/app/s/missions/42");
+    await waitFor(() => expect(screen.queryByText("CHU Test")).toBeNull());
   });
 });

@@ -2355,3 +2355,117 @@ navigation — la source de vérité des droits reste le backend (`MissionServic
 auto-scope déjà `m.surgeon = :self` pour tout appelant `ROLE_SURGEON`,
 `MissionActionsService::allowedActions()` calcule déjà les actions chirurgien
 possibles) ; aucune donnée sensible n'est protégée uniquement par ce guard.
+
+## 15. Home + Planning chirurgien réels (Lot 2, D-096, 2026-08-06)
+
+`/app/s` (`SurgeonHomePage.tsx`) et `/app/s/planning` (`SurgeonPlanningPage.tsx`)
+remplacent leurs replis `ComingSoonPage` du Lot 1 (§14.5) par des écrans réels,
+construits en réutilisant au maximum le moteur planning de l'instrumentiste — jamais
+une deuxième implémentation de calendrier.
+
+### 15.1 `planningPrimitives.tsx` — extraction, pas une réécriture
+
+Le moteur de grille/calendrier de `pages/instrumentist/PlanningPage.tsx` (date-math,
+`buildMonthGridCells`, `SegmentedControl`, `WeekStrip`, `MonthGrid`, `MissionListRow`,
+`EmptyStateRow`) est déplacé tel quel vers
+`frontend/src/app/features/mobile-planning/planningPrimitives.tsx`, sans changement de
+comportement. `PlanningPage.tsx` importe désormais ces fonctions au lieu de les
+définir localement, et ré-exporte `buildMonthGridCells`/`formatDateToYmd` pour la
+compatibilité de son test existant. Non-régression verrouillée à trois niveaux :
+`PlanningPage.test.tsx` (24 tests, rendu complet de la page instrumentiste, inchangé),
+un nouveau `planningPrimitives.test.tsx` (contrat direct du module partagé — les
+valeurs par défaut de `MonthGrid` restent `secondaryLabel="À encoder"`/ambre, dont
+dépend `PlanningPage.tsx` sans jamais les passer explicitement), et
+`SurgeonPlanningPage.test.tsx` (le même moteur, utilisé avec des props différentes,
+sans jamais dupliquer le calcul de grille).
+
+Reste volontairement hors de ce module (spécifique à chaque rôle, jamais généralisé de
+force) : la classification "à encoder"/"à couvrir" d'une mission, le libellé de la
+personne affichée sur une ligne (chirurgien pour l'instrumentiste, instrumentiste pour
+le chirurgien), et la bannière d'état vide (CTA différent par rôle).
+
+### 15.2 Couverture — jamais recalculée côté frontend
+
+`SurgeonHomePage`/`SurgeonPlanningPage` lisent exclusivement `mission.covered`
+(backend-calculé, voir `docs/api.md` §3.2 et `PlanningCoverageService::isCovered()`,
+même règle que les KPI planning du Batch 15F). "À couvrir" au sens filtrable/actionnable
+correspond précisément au statut `OPEN` (`isActionableUncovered()`/`isUncovered()`) —
+les statuts `DRAFT`/`DECLARED`/`REJECTED`/`ENCODING_IN_PROGRESS` ne sont ni couverts ni
+"à couvrir" au sens actionnable (visibles seulement sous le filtre "Toutes").
+`CANCELLED` n'est jamais compté ni comme couvert ni comme à couvrir, et reste exclu de
+tous les comptages "résumé du mois" — affiché avec un rendu discret (pastille grise
+"Annulée") plutôt que masqué, pour rester compréhensible sans polluer la lecture
+quotidienne.
+
+### 15.3 Home chirurgien — deux requêtes self-scoped, jamais `assignedToMe`
+
+`SurgeonHomePage` interroge deux fois `GET /api/missions` sans le paramètre
+`assignedToMe` : une fenêtre "à venir" (90 jours, pour trouver la prochaine mission
+réelle) et une fenêtre "ce mois-ci" (pour le résumé). **Piège backend identifié avant
+implémentation** : `MissionService::list()` code en dur `assignedToMe: true` sur
+`m.instrumentist` — le passer pour un chirurgien viderait systématiquement les
+résultats. Le self-scope chirurgien (`m.surgeon = :self`) s'applique automatiquement
+dès que `assignedToMe` est omis pour un appelant `ROLE_SURGEON`. Aucun nouvel endpoint
+"Home" dédié : le listing existant suffit. Le podium d'activité (section D du plan) est
+volontairement absent de ce lot — jamais un chiffre inventé en attendant le vrai calcul
+backend (lot Activité, non livré).
+
+### 15.4 Planning chirurgien — vues Mois/Semaine, filtre Toutes/Couvertes/À couvrir
+
+`SurgeonPlanningPage` réutilise `WeekStrip`/`MonthGrid` avec des props adaptées
+(`secondaryLabel="À couvrir"`, couleur ambre inchangée) et un filtre local
+Toutes/Couvertes/À couvrir agissant sur le jeu de données déjà chargé (aucune requête
+réseau supplémentaire au changement de filtre). Le clic sur une ligne ou un jour de la
+grille ouvre `MissionDetailContent` (voir §15.5) dans un `Dialog`, jamais une page
+dédiée. Vue Semaine : chips 7 jours identiques à l'instrumentiste (position, swipe,
+navigation) ; Vue Mois : priorité lisibilité heure/site/couverture, sans gros badges.
+
+### 15.5 Détail mission chirurgien — même composant, jamais un `SurgeonMissionDetail`
+
+`/app/s/missions/:id` réutilise `MissionDetailPageI`
+(`pages/instrumentist/MissionDetailPage.tsx`), exactement comme
+`MissionDetailContent` intégré en `Dialog` depuis Home/Planning — jamais un composant
+dédié. Le rendu est entièrement piloté par `mission.allowedActions[]` (jamais de
+branchement par rôle dans ce composant) : pour un chirurgien,
+`MissionActionsService` (backend) n'accorde jamais `encoding`/`edit_hours`/`submit`
+(ces droits ne dépendent que de `ROLE_MANAGER`/`ROLE_ADMIN`/`ROLE_INSTRUMENTIST`), donc
+aucun bouton d'action instrumentiste n'apparaît jamais pour un chirurgien — garantie
+structurelle, pas un test qui pourrait devenir obsolète. Le composant affiche déjà
+site/horaire/chirurgien/type/statut ; ce lot y ajoute uniquement une ligne
+"Instrumentiste" (nom ou "À couvrir"), neutre pour l'instrumentiste qui la voit aussi
+(sa propre affectation). Zéro donnée patient, zéro donnée financière — jamais exposées
+par ce composant, quel que soit le rôle.
+
+**`rate_instrumentist`/`dispute_hours` — gap documenté, pas implémenté** : ces deux
+chaînes existent dans `allowedActions` mais n'ont aucune implémentation backend
+(aucun endpoint, DTO, service ou Voter associé — vérifié par recherche exhaustive dans
+le code). Décision explicite : ne pas fabriquer de bouton frontend pour une action dont
+le contrat backend n'existe pas. À construire dans un lot dédié qui définira d'abord ce
+contrat.
+
+### 15.6 Notifications — `NotificationTargetResolver` mis à jour
+
+`NotificationTargetResolver` route désormais les notifications liées à une mission
+chirurgien vers `/app/s/missions/{id}` (au lieu du repli générique `/app/s` du Lot 1),
+et les notifications planning agrégées (`PLANNING_DEPLOYED_SURGEON`,
+`PLANNING_RESENT_MANUAL`) vers `/app/s/planning` (au lieu de `/app/s`) — ces écrans
+réels existent désormais. Isolation de rôle inchangée : une notification liée à une
+mission reste spécifique au rôle du destinataire, jamais une route partagée entre
+rôles malgré le composant de détail partagé (§15.5).
+
+### 15.7 Synchronisation — React Query standard, toujours pas de nouvel endpoint
+
+Comme au Lot 1 (§14, décision "pas de généralisation pour la seule symétrie"),
+`SurgeonHomePage`/`SurgeonPlanningPage` s'appuient sur React Query standard
+(invalidation/refetch au focus/online déjà fournis par défaut) au-dessus de
+`GET /api/missions` déjà auto-scopé. Aucun `useSurgeonMissionSync()` créé par
+anticipation ; `useInstrumentistMissionSync()` reste strictement instrumentiste.
+
+### 15.8 Portée non traitée dans ce lot
+
+Activité chirurgien (podium réel, agrégats), absences self-service, demandes de
+mission (`SurgeonMissionRequest`), signalement d'anomalie d'encodage, export `.ics` —
+tous hors périmètre, chacun son propre lot (voir D-095 §Portée non traitée, toujours
+valable). Préparation navbar Absences (§14.5) reconfirmée inchangée : toujours un
+simple array `Tab`, trois touch-points, aucune entrée tant que le module réel n'est
+pas livré.

@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Dto\CoverageSummary;
+use App\Entity\Mission;
 use App\Entity\PlanningVersion;
 use App\Enum\MissionStatus;
 use Doctrine\ORM\EntityManagerInterface;
@@ -40,6 +41,17 @@ class PlanningCoverageService
     public function __construct(
         private readonly EntityManagerInterface $em,
     ) {}
+
+    /**
+     * Per-mission coverage — même règle que COVERED_STATUSES ci-dessus (source unique),
+     * pour tout consommateur ayant besoin d'un booléen par Mission plutôt que d'un
+     * agrégat par PlanningVersion (ex. MissionMapper, Lot 2 socle chirurgien, D-095).
+     * Aucune requête — pure fonction de `Mission::getStatus()`.
+     */
+    public function isCovered(Mission $mission): bool
+    {
+        return in_array($mission->getStatus(), self::COVERED_STATUSES, true);
+    }
 
     /**
      * Computes coverage for the given PlanningVersion.

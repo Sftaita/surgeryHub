@@ -12,7 +12,10 @@ use App\Entity\User;
 
 final class MissionMapper
 {
-    public function __construct(private readonly MissionActionsService $actions) {}
+    public function __construct(
+        private readonly MissionActionsService $actions,
+        private readonly PlanningCoverageService $coverage,
+    ) {}
 
     public function toListDto(Mission $m, User $viewer): MissionListDto
     {
@@ -29,6 +32,7 @@ final class MissionMapper
             surgeon: $this->toUserSlim($m->getSurgeon()),
             instrumentist: $m->getInstrumentist() ? $this->toUserSlim($m->getInstrumentist()) : null,
             allowedActions: $this->actions->allowedActions($m, $viewer),
+            covered: $this->coverage->isCovered($m),
         );
     }
 
@@ -49,6 +53,7 @@ final class MissionMapper
             allowedActions: $this->actions->allowedActions($m, $viewer),
             noMaterialComment: $m->getNoMaterialComment(),
             submittedWithoutMaterial: $m->isSubmittedWithoutMaterial(),
+            covered: $this->coverage->isCovered($m),
         );
     }
 
