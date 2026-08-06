@@ -191,6 +191,19 @@ class AbsenceImpactService
             : PlanningAlertType::INSTRUMENTIST_ABSENCE;
     }
 
+    /**
+     * Read-only dry-run for the self-service "impact preview before saving" UX (Lot 3,
+     * D-097) — same overlap query as sync() (ALERTABLE_STATUSES), but never persists
+     * anything, never creates/resolves a PlanningAlert, never dispatches a notification.
+     * Safe to call repeatedly as the user edits the date range in the form.
+     *
+     * @return Mission[]
+     */
+    public function previewOverlappingMissions(User $user, \DateTimeImmutable $dateStart, \DateTimeImmutable $dateEnd): array
+    {
+        return $this->findOverlappingMissions($user, $dateStart, $dateEnd);
+    }
+
     /** @return Mission[] */
     private function findOverlappingMissions(User $user, \DateTimeImmutable $dateStart, \DateTimeImmutable $dateEnd): array
     {

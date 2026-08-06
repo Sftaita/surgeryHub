@@ -17,6 +17,11 @@ use Doctrine\ORM\EntityManagerInterface;
  *   - ABSENCE_*:                           inApp=true, email=true  (urgent — same "your mission just
  *                                           changed" urgency as PLANNING_MISSION_CANCELLED, just
  *                                           triggered by an absence instead of a manual action)
+ *   - ABSENCE_SELF_DECLARED (Lot 3):       inApp=true, email=false (deliberate exception within the
+ *                                           ABSENCE_* family — fires only when a self-declared absence
+ *                                           did NOT impact any mission, informational only; see
+ *                                           AbsenceSelfDeclaredMessageHandler, which never sends email
+ *                                           for this type regardless of stored preference)
  *   - CATALOGUE_REQUEST_RESOLVED/IGNORED:  inApp=true, email=true  (actionable — the instrumentist is
  *                                           waiting on a yes/no for a catalogue proposal, D-093)
  *   - CATALOGUE_REQUEST_CREATED:           inApp=true, email=false (follow-up to D-093 — a manager

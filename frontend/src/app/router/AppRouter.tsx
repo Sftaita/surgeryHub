@@ -11,7 +11,7 @@ import { DesktopLayout } from "../layouts/DesktopLayout";
 import { ForbiddenPage } from "../pages/ForbiddenPage";
 import LoginPage from "../pages/LoginPage";
 import { useAuth } from "../auth/AuthContext";
-import { isMobileRole, isDesktopRole } from "../auth/roles";
+import { isDesktopRole, homePathForRole } from "../auth/roles";
 import CompleteAccountPage from "../pages/CompleteAccountPage";
 import LandingPage from "../pages/LandingPage";
 
@@ -36,6 +36,10 @@ const ComingSoonPage      = React.lazy(() => import("../pages/common/ComingSoonP
 // MissionDetailPageI (même composant que l'instrumentiste, allowedActions-driven).
 const SurgeonHomePage     = React.lazy(() => import("../pages/surgeon/SurgeonHomePage"));
 const SurgeonPlanningPage = React.lazy(() => import("../pages/surgeon/SurgeonPlanningPage"));
+
+// Partagé instrumentiste + chirurgien (Lot 3, D-097) — un seul SelfAbsencesPage, jamais
+// SurgeonAbsencesPage/InstrumentistAbsencesPage, voir docs/decisions.md.
+const SelfAbsencesPage    = React.lazy(() => import("../features/self-absences/SelfAbsencesPage"));
 
 // Admin
 const AdminUsersPage       = React.lazy(() => import("../pages/admin/AdminUsersPage"));
@@ -84,31 +88,27 @@ function PageLoader() {
 function PostLoginRedirect() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
-  const role = state.user.role;
-  if (isDesktopRole(role)) return <Navigate to="/app/m/dashboard" replace />;
-  if (role === "SURGEON") return <Navigate to="/app/s" replace />;
-  if (isMobileRole(role)) return <Navigate to="/app/i/today" replace />;
-  return <Navigate to="/app/forbidden" replace />;
+  return <Navigate to={homePathForRole(state.user.role)} replace />;
 }
 
 function RequireInstrumentist() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
-  if (state.user.role !== "INSTRUMENTIST") return <Navigate to="/app/m/dashboard" replace />;
+  if (state.user.role !== "INSTRUMENTIST") return <Navigate to={homePathForRole(state.user.role)} replace />;
   return <Outlet />;
 }
 
 function RequireSurgeon() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
-  if (state.user.role !== "SURGEON") return <Navigate to="/app/m/dashboard" replace />;
+  if (state.user.role !== "SURGEON") return <Navigate to={homePathForRole(state.user.role)} replace />;
   return <Outlet />;
 }
 
 function RequireManager() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
-  if (!isDesktopRole(state.user.role)) return <Navigate to="/app/i/today" replace />;
+  if (!isDesktopRole(state.user.role)) return <Navigate to={homePathForRole(state.user.role)} replace />;
   return <Outlet />;
 }
 
@@ -144,6 +144,7 @@ export function AppRouter() {
                 <Route path="i/planning" element={<PlanningPage />} />
                 <Route path="i/notifications" element={<NotificationsPage />} />
                 <Route path="i/profile" element={<ProfilePage />} />
+                <Route path="i/absences" element={<SelfAbsencesPage />} />
                 <Route path="i/missions/declare" element={<DeclareMissionPage />} />
                 <Route path="i/missions/:id" element={<MissionDetailPageI />} />
                 <Route path="i/missions/:id/encoding" element={<MissionEncodingPage />} />
@@ -151,17 +152,17 @@ export function AppRouter() {
             </Route>
 
             {/* Surgeon — même MobileLayout que l'instrumentiste (jamais un second layout,
-                voir docs/decisions.md). Home/Planning/Détail mission sont réellement
-                fonctionnels depuis le Lot 2 (D-095) ; Activité/Demandes/Absences restent
-                des replis propres (ComingSoonPage) tant que leurs lots dédiés ne sont pas
-                livrés. */}
+                voir docs/decisions.md). Home/Planning/Détail mission/Absences sont réellement
+                fonctionnels depuis le Lot 2 (D-095)/Lot 3 (D-097) ; Activité/Demandes
+                restent des replis propres (ComingSoonPage) tant que leurs lots dédiés ne
+                sont pas livrés. */}
             <Route element={<RequireSurgeon />}>
               <Route element={<MobileLayout />}>
                 <Route path="s" element={<SurgeonHomePage />} />
                 <Route path="s/planning" element={<SurgeonPlanningPage />} />
                 <Route path="s/activity" element={<ComingSoonPage title="Activité" />} />
                 <Route path="s/requests" element={<ComingSoonPage title="Mes demandes" />} />
-                <Route path="s/absences" element={<ComingSoonPage title="Mes indisponibilités" />} />
+                <Route path="s/absences" element={<SelfAbsencesPage />} />
                 <Route path="s/notifications" element={<NotificationsPage />} />
                 <Route path="s/profile" element={<ProfilePage />} />
                 <Route path="s/missions/:id" element={<MissionDetailPageI />} />

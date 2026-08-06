@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppRouter } from "./AppRouter";
@@ -64,6 +64,13 @@ vi.mock("../features/missions/api/missions.api", () => ({
     actualDurationMinutes: null, hoursSource: null, effectiveDurationMinutes: 0,
     effectiveDurationSource: "PLANNED", disputes: [],
   }),
+}));
+vi.mock("../features/self-absences/api/selfAbsences.api", () => ({
+  fetchMyAbsences: vi.fn().mockResolvedValue([]),
+  fetchAbsenceImpactPreview: vi.fn().mockResolvedValue([]),
+  createMyAbsence: vi.fn(),
+  updateMyAbsence: vi.fn(),
+  deleteMyAbsence: vi.fn(),
 }));
 vi.mock("../features/notifications/api/notifications.api", () => ({
   fetchUnreadNotificationsCount: vi.fn().mockResolvedValue(0),
@@ -273,5 +280,55 @@ describe("AppRouter — Planning et détail mission chirurgien (Lot 2, D-095, 20
     authRole = "INSTRUMENTIST";
     renderAt("/app/s/missions/42");
     await waitFor(() => expect(screen.queryByText("CHU Test")).toBeNull());
+  });
+});
+
+describe("AppRouter — Absences self-service (Lot 3, D-097, 2026-08-06)", () => {
+  it("un SURGEON accède à /app/s/absences (SelfAbsencesPage réelle, plus ComingSoonPage)", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/s/absences");
+    await waitFor(() => expect(screen.getByText("MES ABSENCES")).toBeInTheDocument(), { timeout: 5000 });
+    expect(screen.queryByText(/bientôt disponible/)).not.toBeInTheDocument();
+  });
+
+  it("un INSTRUMENTIST accède à /app/i/absences (même SelfAbsencesPage, jamais un composant dédié par rôle)", async () => {
+    authRole = "INSTRUMENTIST";
+    renderAt("/app/i/absences");
+    await waitFor(() => expect(screen.getByText("MES ABSENCES")).toBeInTheDocument(), { timeout: 5000 });
+  });
+
+  it("un INSTRUMENTIST ne peut pas accéder à /app/s/absences (redirigé hors de l'espace chirurgien)", async () => {
+    authRole = "INSTRUMENTIST";
+    renderAt("/app/s/absences");
+    await waitFor(() => expect(screen.queryByText("MES ABSENCES")).toBeNull());
+  });
+
+  it("un SURGEON ne peut pas accéder à /app/i/absences (redirigé vers son propre espace /app/s, jamais une boucle)", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/i/absences");
+    // Régression (Lot 3) : RequireInstrumentist renvoyait auparavant tout non-INSTRUMENTIST
+    // vers /app/m/dashboard sans condition — pour un SURGEON (ni desktop ni instrumentiste),
+    // RequireManager le renvoyait ensuite vers /app/i/today, RequireInstrumentist l'y
+    // renvoyait de nouveau vers /app/m/dashboard, indéfiniment (boucle infinie, worker
+    // vitest crashé). homePathForRole() corrige ça : chaque garde redirige directement vers
+    // le vrai "chez soi" du rôle réel.
+    await waitFor(() => expect(screen.getByText("Aucune mission planifiée prochainement")).toBeInTheDocument(), { timeout: 5000 });
+    expect(screen.queryByText("MES ABSENCES")).not.toBeInTheDocument();
+  });
+
+  it("l'onglet Absences de la bottom nav chirurgien est actif sur /app/s/absences", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/s/absences");
+    await waitFor(() => expect(screen.getByText("MES ABSENCES")).toBeInTheDocument(), { timeout: 5000 });
+    const nav = screen.getByRole("navigation", { name: "Navigation chirurgien" });
+    expect(within(nav).getByRole("button", { name: "Absences" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("l'onglet Absences de la bottom nav instrumentiste est actif sur /app/i/absences", async () => {
+    authRole = "INSTRUMENTIST";
+    renderAt("/app/i/absences");
+    await waitFor(() => expect(screen.getByText("MES ABSENCES")).toBeInTheDocument(), { timeout: 5000 });
+    const nav = screen.getByRole("navigation", { name: "Navigation instrumentiste" });
+    expect(within(nav).getByRole("button", { name: "Absences" })).toHaveAttribute("aria-current", "page");
   });
 });

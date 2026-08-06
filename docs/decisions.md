@@ -6860,3 +6860,126 @@ justifie.
 Comme D-095 : Activité chirurgien réelle (podium, agrégats), absences self-service,
 `SurgeonMissionRequest`, distinction `VIEW_ENCODING`/`EDIT_ENCODING`, signalement
 d'anomalie, export `.ics`. Préparation navbar Absences (D-095) reconfirmée inchangée.
+
+## D-097 — Absences self-service partagé Chirurgien + Instrumentiste (Lot 3, 2026-08-06)
+
+Date : 2026-08-06
+
+### Contexte
+
+D-095 avait explicitement réservé ce chantier ("absences self-service, extension du
+domaine `Absence` existant, forçant systématiquement `absence.user = current
+authenticated user`, jamais un `userId` client, partagée à l'identique
+instrumentiste/chirurgien") et posé la préparation de navbar nécessaire (§14.5). Ce lot
+livre le module réel et active enfin l'onglet "Absences" dans les deux bottom nav.
+
+### Décision — extension de `Absence`, jamais une deuxième entité
+
+Le domaine existant (`Absence` : `user`, `dateStart`/`dateEnd` en `date_immutable`,
+`reason` libre, `createdBy`, `createdAt`, aucun champ de statut) est réutilisé tel quel.
+Aucune migration, aucun nouvel enum de motif — le champ `reason` reste un texte libre ;
+l'UX propose des suggestions cliquables ("Congé", "Congrès / formation", "Garde /
+récupération", "Indisponibilité", "Autre") qui ne font que préremplir le champ, jamais
+une contrainte de valeur côté backend. `AbsenceRepository` n'existe pas dans ce
+domaine (convention déjà en place : chaque service interroge `Absence` via l'EM
+directement) — `SelfAbsenceController` suit la même convention plutôt que d'introduire
+un repository isolé pour ce seul contrôleur.
+
+### Décision — API self-service séparée, jamais un paramètre de rôle sur l'existant
+
+Nouveau `SelfAbsenceController` (`/api/absences/mine`, GET/POST/PATCH/DELETE + GET
+`/impact-preview`), entièrement distinct de `AbsenceController`
+(`PLANNING_MANAGE`-only, manager/admin, inchangé par ce lot). Nouveau
+`AbsenceVoter` (`SELF_ACCESS` — rôle SURGEON/INSTRUMENTIST uniquement, sans sujet ;
+`SELF_MANAGE` — ownership + éditabilité, évalué sur une instance `Absence`).
+
+**Invariant de sécurité absolu** : le contrôleur ne lit jamais `userId` depuis le
+payload — `absence.user`/`absence.createdBy` valent systématiquement
+`$currentUser`, sans exception, y compris si le client envoie un `userId` dans le
+corps de la requête (silencieusement ignoré, jamais un 400 qui laisserait croire que
+le champ a un effet). Pour GET (liste)/PATCH/DELETE, l'appartenance est toujours
+revérifiée côté serveur (`AbsenceVoter::SELF_MANAGE`), jamais déduite de l'ID de route
+seul. Testé explicitement (payload malveillant `{userId: 999}`, tentative de
+modification/suppression de l'absence d'un tiers, isolation chirurgien/instrumentiste
+dans les deux sens, non-régression du workflow manager existant).
+
+### Décision — règle passé/futur : nouvelle, propre au self-service
+
+`AbsenceController` (manager) n'impose aucune restriction temporelle sur
+modification/suppression. Le self-service en introduit une, volontairement plus
+stricte : une absence reste modifiable/supprimable tant que `dateEnd >= aujourd'hui`
+(futur et en cours), et devient lecture seule une fois entièrement passée
+(`AbsenceVoter::isStillEditable()`). Décision assumée, non déduite d'une règle
+préexistante (il n'y en avait pas) — le manager conserve son pouvoir total, le
+self-service ajoute un garde-fou UX propre à l'auto-déclaration.
+
+### Décision — Jour unique / Période : convention backend jamais exposée à l'UX
+
+Le backend représente toujours un jour unique par `dateStart === dateEnd` (inchangé,
+même convention que D-050 côté manager). L'UX self-service impose un choix explicite
+`[ Jour unique ] [ Période ]` (`AbsenceFormSheet`, segmented control) — reconstruit
+depuis cette égalité uniquement en édition (une absence rouverte avec
+`dateStart === dateEnd` présélectionne "Jour unique", sinon "Période"), jamais montré
+ni demandé à l'utilisateur autrement.
+
+### Décision — impact planning : aperçu réel, jamais bloquant, jamais un moteur dupliqué
+
+`AbsenceImpactService` gagne une méthode `previewOverlappingMissions(User, dateStart,
+dateEnd): Mission[]` — délègue à la même requête de recouvrement que `sync()`
+(mêmes `ALERTABLE_STATUSES`), mais purement en lecture (aucune persistance, aucune
+alerte, aucune notification). Exposée via `GET /api/absences/mine/impact-preview`,
+utilisée à la fois pour l'aperçu live dans `AbsenceFormSheet` (avant sauvegarde) et
+pour compter `missionsImpactedCount` dans la réponse de création/modification (même
+requête, capturée avant toute mutation par `AbsenceMissionReactionService` — sans quoi
+une mission auto-libérée/annulée sortirait de la requête d'`AbsenceImpactService` avant
+d'avoir pu être comptée, voir l'ordre d'appel déjà documenté dans
+`AbsenceMissionReactionService`). **Règle métier explicite : l'impact n'a jamais
+bloqué la création** — `SelfAbsenceController::create()` persiste toujours l'absence,
+quel que soit le nombre de missions concernées ; `AbsenceMissionReactionService`/
+`AbsenceImpactService` existants (inchangés) traitent ensuite l'impact exactement comme
+pour une absence créée par un manager (auto-libération/annulation des missions
+actionnables, `PlanningAlert` pour les autres, notifications déjà existantes).
+
+### Décision — notification manager : un vrai trou comblé, jamais un doublon
+
+Constat (§16 du cahier des charges) : `AbsenceImpactService` ne notifie le manager que
+lorsqu'une alerte est réellement levée (recouvrement avec une mission actionnable).
+Avant ce lot, seul un manager créait une absence — il savait déjà. Le self-service
+change cette hypothèse : un chirurgien/instrumentiste peut déclarer une absence sans
+aucun recouvrement actuel, et le manager n'en apprenait alors strictement rien. Trou
+comblé par un nouveau `NotificationType::ABSENCE_SELF_DECLARED` (in-app uniquement,
+jamais email/push même si un manager l'active manuellement en préférence — voir
+`AbsenceSelfDeclaredMessageHandler` — informationnel, pas urgent), dispatché de manière
+async (`AbsenceSelfDeclaredMessage`, routé Messenger, jamais depuis la requête HTTP
+elle-même) **uniquement** quand `AbsenceImpactService` n'a levé aucune nouvelle alerte
+pour cette création/modification — jamais en doublon de `PLANNING_ALERT`. Pas de
+nouvel `AuditEvent` : le flux manager existant (création d'une absence pour un tiers)
+n'en produit déjà aucun, et en ajouter un uniquement côté self-service aurait été une
+incohérence plutôt qu'une vraie correction — limite documentée explicitement (voir
+rapport final Lot 3).
+
+### Décision — frontend : un seul module, jamais deux pages par rôle
+
+`features/self-absences/` (`selfAbsences.api.ts`/`.types.ts`, `AbsenceFormSheet.tsx`,
+`AbsenceImpactPreview.tsx`, `AbsenceListItem.tsx`, `SelfAbsencesPage.tsx`) est monté
+sans changement à la fois sur `/app/s/absences` et `/app/i/absences` — le composant
+n'a aucune connaissance du rôle du viewer (tout le comportement différenciateur est
+déjà résolu côté backend : contenu de la liste, `counterpart` de l'impact planning).
+Jamais de `SurgeonAbsencesPage`/`InstrumentistAbsencesPage`.
+
+### Décision — navbar : Absences devient un onglet direct, retiré du menu "Plus"
+
+Conformément à la préparation D-095 (§14.5, 3 touch-points : `TabKey`,
+`WAVE_SHAPE_KEY`, les deux tableaux de tabs) : chirurgien
+`Accueil | Planning | Absences | Activité | Plus`, instrumentiste
+`Aujourd'hui | Planning | Offres | Absences`. L'entrée "Mes indisponibilités" du menu
+"Plus" chirurgien (Lot 1) est retirée — jamais deux points d'accès différents vers le
+même écran une fois qu'il existe un onglet direct.
+
+### Portée non traitée ici
+
+Comme D-095/D-096 : Activité chirurgien réelle, `SurgeonMissionRequest`, distinction
+`VIEW_ENCODING`/`EDIT_ENCODING`, signalement d'anomalie, export `.ics`. Absence
+d'`AuditEvent` sur le flux self-service (voir décision ci-dessus) — limite assumée,
+pas un oubli, à revisiter si le domaine `Absence` gagne un jour un audit trail
+généralisé.

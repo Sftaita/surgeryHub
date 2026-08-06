@@ -39,6 +39,16 @@ enum NotificationType: string
     case ABSENCE_SURGEON_MISSION_OPENED = 'ABSENCE_SURGEON_MISSION_OPENED'; // to the surgeon, instrumentist absence
     case ABSENCE_MISSION_CANCELLED      = 'ABSENCE_MISSION_CANCELLED';      // to the instrumentist, surgeon absence
 
+    // ── Self-service absence, no mission impact (Lot 3, D-097) ───────────────
+    // A surgeon/instrumentist declared their own absence (self-service, AbsenceController's
+    // PLANNING_MANAGE-gated endpoint is manager-only and never triggers this) and it did NOT
+    // overlap any actionable mission — so PLANNING_ALERT above never fires for it, and without
+    // this category a manager would have zero visibility that a self-declared absence exists
+    // at all. Deliberately in-app only, never email/push regardless of stored preference (see
+    // AbsenceSelfDeclaredMessageHandler) — informational ("FYI, no action needed today"), not
+    // urgent the way an alert-raising absence already is via PLANNING_ALERT.
+    case ABSENCE_SELF_DECLARED = 'ABSENCE_SELF_DECLARED';
+
     // ── Manual resend (D-090, anomalie fonctionnelle 1) ──────────────────────
     // A manager explicitly re-sending one person's currently-published plan on demand —
     // never diff-driven, never fanned out to anyone else. Not gated by

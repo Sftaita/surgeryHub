@@ -5695,3 +5695,132 @@ l'application.
 
 **Aucune valeur purement locale n'est source de vérité** : le compteur est calculé
 côté serveur à chaque appel, cohérent entre appareils.
+
+---
+
+## 42. Absences self-service (Lot 3, D-097)
+
+Distinct d'`AbsenceController` (`/api/absences`, `PLANNING_MANAGE`-only, manager/admin,
+inchangé). `SelfAbsenceController`, préfixe `/api/absences/mine`. **AuthZ commune à
+tous les endpoints ci-dessous :** `ROLE_SURGEON` ou `ROLE_INSTRUMENTIST`
+(`AbsenceVoter::SELF_ACCESS`/`SELF_MANAGE`) — jamais manager/admin, qui restent sur
+`/api/absences`.
+
+**Invariant de sécurité absolu :** aucun endpoint ci-dessous ne lit jamais `userId`
+depuis le payload. `absence.user`/`absence.createdBy` valent systématiquement
+l'utilisateur authentifié. Un `userId` envoyé dans le corps d'une requête `POST` est
+silencieusement ignoré (jamais un 400 qui laisserait croire qu'il a un effet).
+
+### `GET /api/absences/mine`
+
+Liste **toutes** les absences de l'utilisateur authentifié (passées et futures — le
+tri À venir/Passées est un filtre frontend sur ce jeu déjà chargé, jamais un
+paramètre de requête ; le volume d'absences personnelles ne justifie pas une requête
+serveur par bascule). Triées par `dateStart` ASC.
+
+**Réponse — 200 :**
+```json
+[
+  {
+    "id": 42,
+    "dateStart": "2026-08-19",
+    "dateEnd": "2026-08-23",
+    "reason": "Congé",
+    "createdAt": "2026-08-01T10:00:00+02:00",
+    "editable": true
+  }
+]
+```
+`editable: false` dès que `dateEnd` est strictement passée (voir §Règle
+passé/futur ci-dessous) — piloté par `AbsenceVoter`, jamais recalculé côté frontend.
+
+### `GET /api/absences/mine/impact-preview?dateStart=&dateEnd=`
+
+Aperçu en lecture seule des missions qui chevauchent la période donnée — délègue à
+`AbsenceImpactService::previewOverlappingMissions()` (même requête que
+`AbsenceImpactService::sync()`, `ALERTABLE_STATUSES`), **sans aucun effet de bord**
+(aucune `PlanningAlert` créée, aucune notification). Utilisé par `AbsenceFormSheet`
+pour l'aperçu live avant sauvegarde. `400` si `dateEnd < dateStart` ou dates
+invalides.
+
+**Réponse — 200 :**
+```json
+[
+  {
+    "missionId": 7,
+    "startAt": "2026-08-20T08:00:00+02:00",
+    "endAt": "2026-08-20T13:00:00+02:00",
+    "siteName": "CHIREC - Hôpital Delta",
+    "counterpart": { "id": 5, "name": "Diane de Moor" }
+  }
+]
+```
+`counterpart` est déjà résolu côté serveur relativement au viewer (l'absent est
+nécessairement le chirurgien ou l'instrumentiste de la mission — c'est "l'autre
+partie") : `null` uniquement quand le viewer est le chirurgien et que la mission n'a
+pas encore d'instrumentiste ("À couvrir" côté frontend).
+
+### `POST /api/absences/mine`
+
+Body : `{ dateStart, dateEnd, reason? }` (jamais `userId`, voir invariant ci-dessus).
+`400` si `dateStart`/`dateEnd` manquants, invalides, ou `dateEnd < dateStart`. Aucune
+restriction sur une création dans le passé (contrairement à l'édition — voir plus
+bas), cohérent avec `AbsenceController` qui n'en impose pas non plus.
+
+**Effets (même ordre que `AbsenceController::create()`) :**
+1. Persistance de l'`Absence` (`user`/`createdBy` = utilisateur authentifié).
+2. `AbsenceMissionReactionService::onAbsenceCreated()` — auto-libère/annule les
+   missions déjà déployées actionnables (voir docs/decisions.md D-062), **jamais
+   bloquant** pour la création elle-même.
+3. `AbsenceImpactService::onAbsenceCreated()` — lève les `PlanningAlert` pour les
+   missions restantes (celles que l'étape 2 n'a pas déjà traitées).
+4. Si aucune nouvelle alerte n'a été levée à l'étape 3, dispatche
+   `AbsenceSelfDeclaredMessage` (async) vers tous les managers/admins — sinon, aucun
+   doublon avec la notification `PLANNING_ALERT` déjà envoyée par l'étape 3.
+
+**Réponse — 201 :** l'absence sérialisée + `missionsImpactedCount` (nombre de
+missions concernées, capturé **avant** les étapes 2-3 via
+`previewOverlappingMissions()` — sans quoi une mission auto-libérée sortirait de la
+requête de l'étape 3 avant d'avoir pu être comptée).
+
+### `PATCH /api/absences/mine/{id}`
+
+**AuthZ supplémentaire :** `AbsenceVoter::SELF_MANAGE` — `403` si l'absence
+n'appartient pas à l'utilisateur authentifié, **ou** si elle n'est plus éditable
+(voir Règle passé/futur). Body partiel `{ dateStart?, dateEnd?, reason? }`, mêmes
+validations que la création. Mêmes effets 2-4 que `POST`, rejoués avec la nouvelle
+plage de dates.
+
+### `DELETE /api/absences/mine/{id}`
+
+**AuthZ supplémentaire :** `AbsenceVoter::SELF_MANAGE` (identique à `PATCH`). Même
+ordre que `AbsenceController::delete()` : `AbsenceImpactService::onAbsenceDeleted()`
+(résout/re-pointe les alertes tant que la FK existe encore) puis
+`AbsenceMissionReactionService::onAbsenceDeleted()` (notice manager générique,
+**ne restaure jamais** une mission libérée/annulée) puis suppression réelle. `204`.
+
+### Règle passé/futur (self-service uniquement)
+
+`AbsenceController` (manager) n'impose aucune restriction temporelle. Le self-service
+en introduit une, volontairement plus stricte, propre à l'auto-déclaration : une
+absence reste modifiable/supprimable tant que `dateEnd >= aujourd'hui` (futur et en
+cours) ; elle devient lecture seule dès qu'elle est entièrement passée
+(`AbsenceVoter::isStillEditable()`). Le manager conserve son pouvoir total sur
+`/api/absences`, inchangé par ce lot.
+
+### Jour unique / Période (convention backend, jamais exposée à l'UX)
+
+Comme pour le flux manager (D-050), un jour unique est représenté par
+`dateStart === dateEnd` — cette égalité n'est jamais montrée telle quelle à
+l'utilisateur : le frontend (`AbsenceFormSheet`) impose un choix explicite
+`[ Jour unique ] [ Période ]`, reconstruit uniquement en édition depuis cette
+égalité.
+
+### `NotificationType::ABSENCE_SELF_DECLARED`
+
+In-app uniquement — jamais email/push, même si un manager active manuellement ce
+canal en préférence (voir `AbsenceSelfDeclaredMessageHandler`, qui ne consulte que le
+flag `inApp` du résolveur de préférences). Dispatché **uniquement** quand
+`AbsenceImpactService` n'a levé aucune nouvelle alerte pour la création/modification
+en cours — jamais en doublon de `PLANNING_ALERT`, qui couvre déjà le cas avec
+recouvrement.

@@ -141,8 +141,9 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
       expect(within(aside).getByText("Instrumentiste")).toBeInTheDocument();
       expect(within(aside).getByRole("button", { name: "Se déconnecter" })).toBeInTheDocument();
 
-      // Exactement 4 boutons dans la sidebar : 3 onglets + 1 déconnexion — rien d'autre.
-      expect(within(aside).getAllByRole("button")).toHaveLength(4);
+      // Exactement 5 boutons dans la sidebar : 4 onglets (Aujourd'hui/Planning/Offres/
+      // Absences, Lot 3 D-097) + 1 déconnexion — rien d'autre.
+      expect(within(aside).getAllByRole("button")).toHaveLength(5);
 
       // Cliquer sur le nom/avatar (texte statique, plus un bouton) n'ouvre aucun menu.
       await userEvent.click(within(aside).getByText("Sophie Collette"));
@@ -191,7 +192,7 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
   // so the two can be staged/committed independently — pre-commit review, D-081).
 
   describe("mobile (<900px) — non-régression", () => {
-    it("la bottom nav garde exactement les 3 mêmes onglets, sans sidebar desktop", async () => {
+    it("la bottom nav garde les 3 onglets historiques, plus Absences (Lot 3, D-097), sans sidebar desktop", async () => {
       mockDesktop(false);
       renderLayout();
 
@@ -199,7 +200,8 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
       expect(within(nav).getByRole("button", { name: "Aujourd'hui" })).toBeInTheDocument();
       expect(within(nav).getByRole("button", { name: "Planning" })).toBeInTheDocument();
       expect(within(nav).getByRole("button", { name: "Offres" })).toBeInTheDocument();
-      expect(within(nav).getAllByRole("button")).toHaveLength(3);
+      expect(within(nav).getByRole("button", { name: "Absences" })).toBeInTheDocument();
+      expect(within(nav).getAllByRole("button")).toHaveLength(4);
 
       expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
     });
@@ -581,7 +583,7 @@ describe("MobileLayout — chirurgien (socle mobile partagé, Lot 1, 2026-08-05)
       expect(within(nav).getByRole("button", { name: /Plus/ })).toHaveAttribute("aria-current", "page");
     });
 
-    it("cliquer Plus ouvre le menu compte avec Mes demandes / Mes indisponibilités / Notifications, en plus de Mon profil / Se déconnecter", async () => {
+    it("cliquer Plus ouvre le menu compte avec Mes demandes / Notifications, en plus de Mon profil / Se déconnecter (Absences est un onglet direct depuis le Lot 3, D-097)", async () => {
       mockDesktop(false);
       const user = userEvent.setup();
       renderSurgeonLayout();
@@ -590,11 +592,12 @@ describe("MobileLayout — chirurgien (socle mobile partagé, Lot 1, 2026-08-05)
       await user.click(within(nav).getByRole("button", { name: /Plus/ }));
 
       expect(await screen.findByText("Mes demandes")).toBeInTheDocument();
-      expect(screen.getByText("Mes indisponibilités")).toBeInTheDocument();
       expect(screen.getByText("Notifications")).toBeInTheDocument();
       expect(screen.getByText("Mon profil")).toBeInTheDocument();
       expect(screen.getByText("Se déconnecter")).toBeInTheDocument();
       expect(screen.getByText("Chirurgien")).toBeInTheDocument();
+      // Jamais deux points d'accès vers le même écran.
+      expect(screen.queryByText("Mes indisponibilités")).not.toBeInTheDocument();
     });
 
     it("Mon profil depuis le menu Plus navigue vers /app/s/profile", async () => {
@@ -609,7 +612,7 @@ describe("MobileLayout — chirurgien (socle mobile partagé, Lot 1, 2026-08-05)
       expect(mockNavigate).toHaveBeenCalledWith("/app/s/profile");
     });
 
-    it("Mes demandes / Mes indisponibilités depuis le menu Plus naviguent vers /app/s/requests et /app/s/absences", async () => {
+    it("Mes demandes depuis le menu Plus navigue vers /app/s/requests ; Absences navigue directement depuis la bottom nav", async () => {
       mockDesktop(false);
       const user = userEvent.setup();
       renderSurgeonLayout();
@@ -619,8 +622,7 @@ describe("MobileLayout — chirurgien (socle mobile partagé, Lot 1, 2026-08-05)
       await user.click(await screen.findByText("Mes demandes"));
       expect(mockNavigate).toHaveBeenCalledWith("/app/s/requests");
 
-      await user.click(within(nav).getByRole("button", { name: /Plus/ }));
-      await user.click(await screen.findByText("Mes indisponibilités"));
+      await user.click(within(nav).getByRole("button", { name: "Absences" }));
       expect(mockNavigate).toHaveBeenCalledWith("/app/s/absences");
     });
 

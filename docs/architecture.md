@@ -2469,3 +2469,108 @@ tous hors périmètre, chacun son propre lot (voir D-095 §Portée non traitée,
 valable). Préparation navbar Absences (§14.5) reconfirmée inchangée : toujours un
 simple array `Tab`, trois touch-points, aucune entrée tant que le module réel n'est
 pas livré.
+
+## 16. Absences self-service partagé Chirurgien + Instrumentiste (Lot 3, D-097, 2026-08-06)
+
+`/app/s/absences` et `/app/i/absences` remplacent leur repli `ComingSoonPage` (le
+second n'existait même pas encore comme route) par un module réel, entièrement
+partagé entre les deux rôles — jamais `SurgeonAbsencesPage`/`InstrumentistAbsencesPage`.
+Réutilise le domaine `Absence` existant sans aucune migration ni nouvelle entité (voir
+D-097 pour l'ensemble des décisions).
+
+### 16.1 Backend — `SelfAbsenceController`, distinct du flux manager
+
+Nouveau contrôleur `/api/absences/mine` (GET liste, POST création, PATCH/DELETE
+`{id}`, GET `/impact-preview`), entièrement séparé d'`AbsenceController`
+(`/api/absences`, `PLANNING_MANAGE`-only, inchangé). Nouveau `AbsenceVoter` :
+`SELF_ACCESS` (rôle SURGEON/INSTRUMENTIST, sans sujet — liste/création/aperçu) et
+`SELF_MANAGE` (ownership + éditabilité, évalué sur une instance `Absence` —
+modification/suppression). Voir `docs/api.md` §42 pour le contrat complet.
+
+**Invariant de sécurité absolu :** le contrôleur ne lit jamais `userId` depuis le
+payload client — `absence.user`/`absence.createdBy` valent systématiquement
+`$currentUser`. L'appartenance est toujours revérifiée côté serveur pour
+GET/PATCH/DELETE, jamais déduite de l'ID de route seul.
+
+### 16.2 Impact planning — aperçu réel, jamais un moteur dupliqué
+
+`AbsenceImpactService` gagne `previewOverlappingMissions(User, dateStart, dateEnd):
+Mission[]` — un wrapper public, purement en lecture, autour de la même requête de
+recouvrement que `sync()` (`ALERTABLE_STATUSES`). Utilisé à la fois pour l'aperçu live
+dans `AbsenceFormSheet` (avant sauvegarde) et pour calculer
+`missionsImpactedCount` dans la réponse de création/modification — capturé **avant**
+tout appel à `AbsenceMissionReactionService`/`AbsenceImpactService`, sans quoi une
+mission auto-libérée/annulée sortirait de la requête avant d'avoir pu être comptée.
+
+**Règle métier explicite : l'impact ne bloque jamais la création.**
+`SelfAbsenceController::create()` persiste toujours l'absence, quel que soit le
+nombre de missions concernées ; les services existants (inchangés) traitent ensuite
+l'impact exactement comme pour une absence créée par un manager.
+
+### 16.3 Notification manager — le vrai trou comblé (jamais un doublon)
+
+`AbsenceImpactService` ne notifiait le manager que lorsqu'une `PlanningAlert` était
+réellement levée. Avant ce lot, seul un manager créait une absence (il savait déjà) —
+le self-service change cette hypothèse : un chirurgien/instrumentiste peut déclarer
+une absence sans aucun recouvrement, et le manager n'en apprenait alors rien. Nouveau
+`NotificationType::ABSENCE_SELF_DECLARED` (in-app uniquement, jamais email/push —
+voir `AbsenceSelfDeclaredMessageHandler`), dispatché async
+(`AbsenceSelfDeclaredMessage`) **uniquement** quand `AbsenceImpactService` n'a levé
+aucune nouvelle alerte — jamais en doublon de `PLANNING_ALERT`.
+
+### 16.4 Règle passé/futur (self-service uniquement)
+
+Le flux manager n'impose aucune restriction temporelle. Le self-service en introduit
+une, volontairement plus stricte, propre à l'auto-déclaration : une absence reste
+modifiable/supprimable tant que `dateEnd >= aujourd'hui`, devient lecture seule une
+fois entièrement passée (`AbsenceVoter::isStillEditable()`, champ `editable` exposé
+au frontend). Décision assumée, pas déduite d'une règle préexistante.
+
+### 16.5 Frontend — `features/self-absences/`, un seul module
+
+```text
+features/self-absences/
+├── api/
+│   ├── selfAbsences.api.ts
+│   └── selfAbsences.types.ts
+├── components/
+│   ├── AbsenceFormSheet.tsx      — SheetModal, segmented control Jour unique/Période,
+│   │                                suggestions de motif (texte libre), aperçu d'impact
+│   ├── AbsenceImpactPreview.tsx  — lecture seule, jamais bloquant, `counterpart` déjà
+│   │                                résolu côté backend (aucune branche par rôle)
+│   └── AbsenceListItem.tsx       — jour unique = une date ; période = début → fin + durée
+└── SelfAbsencesPage.tsx          — liste groupée par mois, bascule À venir/Passées
+                                     (filtre local, aucune requête serveur), création/
+                                     édition/suppression
+```
+
+Monté sans changement sur les deux routes — le composant n'a aucune connaissance du
+rôle du viewer, tout le comportement différenciateur (contenu de la liste,
+`counterpart` de l'impact) est déjà résolu côté backend. Convention jour
+unique/période : le backend représente toujours un jour unique par
+`dateStart === dateEnd` (comme D-050 côté manager), jamais exposée telle quelle —
+`AbsenceFormSheet` reconstruit le bon segment en édition uniquement depuis cette
+égalité.
+
+Une mutation qui modifie potentiellement le planning (`AbsenceMissionReactionService`
+peut libérer/annuler une mission) invalide aussi les queries `["missions", ...]`
+(`SelfAbsencesPage.invalidateAfterMutation()`), pas seulement `["self-absences"]` —
+pour que Home/Planning chirurgien et instrumentiste reflètent immédiatement la
+conséquence sans rafraîchissement manuel.
+
+### 16.6 Navbar — Absences devient un onglet direct
+
+Activation de la préparation posée au Lot 1 (§14.5/D-095, 3 touch-points exacts :
+`TabKey`, `WAVE_SHAPE_KEY`, les deux tableaux de tabs) : chirurgien
+`Accueil | Planning | Absences | Activité | Plus`, instrumentiste
+`Aujourd'hui | Planning | Offres | Absences`. L'entrée "Mes indisponibilités" du menu
+"Plus" chirurgien (Lot 1) est retirée — jamais deux points d'accès vers le même écran
+une fois qu'un onglet direct existe.
+
+### 16.7 Portée non traitée dans ce lot
+
+Comme D-095/D-096 : Activité chirurgien réelle, `SurgeonMissionRequest`, distinction
+`VIEW_ENCODING`/`EDIT_ENCODING`, signalement d'anomalie, export `.ics`. Absence
+d'`AuditEvent` sur le flux self-service — limite assumée (le flux manager existant
+n'en produit déjà aucun ; en ajouter un uniquement côté self-service aurait été une
+incohérence plutôt qu'une correction), voir D-097.

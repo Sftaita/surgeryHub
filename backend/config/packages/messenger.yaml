@@ -24,6 +24,7 @@ framework:
             App\Message\MissionPublishedMessage:            async
             App\Message\CatalogueRequestProcessedMessage:   async
             App\Message\CatalogueRequestCreatedMessage:     async
+            App\Message\AbsenceSelfDeclaredMessage:         async
 
 when@test:
     framework:

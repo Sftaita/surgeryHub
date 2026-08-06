@@ -47,7 +47,7 @@ const NAV_H = 58;
 // principe complet.
 type MobileScope = "instrumentist" | "surgeon";
 
-type TabKey = "today" | "planning" | "offers" | "home" | "activity";
+type TabKey = "today" | "planning" | "offers" | "home" | "activity" | "absences";
 
 type Tab = {
   key: TabKey;
@@ -83,6 +83,13 @@ function ActivityIcon() {
   return (
     <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 20h18" /><path d="M7 20v-6" /><path d="M12 20V8" /><path d="M17 20v-10" />
+    </svg>
+  );
+}
+function AbsenceIcon() {
+  return (
+    <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="17" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" /><path d="m9.5 14 5 5M14.5 14l-5 5" />
     </svg>
   );
 }
@@ -122,20 +129,23 @@ function DownloadIcon() {
   );
 }
 
+// Absences (Lot 3, D-097) — devenu un onglet direct de la bottom nav pour les deux
+// rôles, exactement comme prévu au Lot 1 (§14.5/D-095) : 3 touch-points seulement
+// (TabKey, WAVE_SHAPE_KEY, ces deux tableaux), aucun autre changement structurel.
 const INSTRUMENTIST_TABS: Tab[] = [
   { key: "today", label: "Aujourd'hui", path: "/app/i/today", match: (p) => p === "/app/i" || p === "/app/i/today", icon: <HomeIcon /> },
   { key: "planning", label: "Planning", path: "/app/i/planning", match: (p) => p.startsWith("/app/i/planning"), icon: <CalendarIcon /> },
   { key: "offers", label: "Offres", path: "/app/i/offers", match: (p) => p.startsWith("/app/i/offers"), icon: <TagIcon /> },
+  { key: "absences", label: "Absences", path: "/app/i/absences", match: (p) => p.startsWith("/app/i/absences"), icon: <AbsenceIcon /> },
 ];
 
-// Chirurgien : Accueil | Planning | Activité | Plus (§Décision navigation, 2026-08-05).
-// "Plus" n'est pas un onglet routable — voir `moreButton` sur MobileBottomNav/
-// DesktopSidebar — donc absent de ce tableau. Ce tableau est un simple array : un
-// futur 5e onglet (ex. Absences, lot dédié) ne demande aucun changement de
-// MobileLayout/MobileBottomNav/DesktopSidebar, seulement une entrée de plus ici.
+// Chirurgien : Accueil | Planning | Absences | Activité | Plus (§Décision navigation,
+// 2026-08-05 ; Absences ajoutée Lot 3, D-097). "Plus" n'est pas un onglet routable —
+// voir `moreButton` sur MobileBottomNav/DesktopSidebar — donc absent de ce tableau.
 const SURGEON_TABS: Tab[] = [
   { key: "home", label: "Accueil", path: "/app/s", match: (p) => p === "/app/s", icon: <HomeIcon /> },
   { key: "planning", label: "Planning", path: "/app/s/planning", match: (p) => p.startsWith("/app/s/planning"), icon: <CalendarIcon /> },
+  { key: "absences", label: "Absences", path: "/app/s/absences", match: (p) => p.startsWith("/app/s/absences"), icon: <AbsenceIcon /> },
   { key: "activity", label: "Activité", path: "/app/s/activity", match: (p) => p.startsWith("/app/s/activity"), icon: <ActivityIcon /> },
 ];
 
@@ -197,6 +207,7 @@ const WAVE_SHAPE_KEY: Record<TabKey, keyof typeof WAVE_SHAPES> = {
   offers: "offers",
   home: "today",
   activity: "offers",
+  absences: "planning",
 };
 
 // Fixed shape set for the brief "kick" pulse (arrival, leaving encoding) — same
@@ -955,21 +966,21 @@ export function MobileLayout() {
   const profilePath = isSurgeon ? "/app/s/profile" : "/app/i/profile";
   const notificationsPath = isSurgeon ? "/app/s/notifications" : "/app/i/notifications";
 
+  // "Absences" est désormais un onglet direct de la bottom nav (Lot 3, D-097) — retiré
+  // d'ici pour ne jamais laisser deux points d'accès différents vers le même écran.
   const moreMenuActive =
     isSurgeon &&
     (pathname.startsWith("/app/s/profile") ||
       pathname.startsWith("/app/s/notifications") ||
-      pathname.startsWith("/app/s/requests") ||
-      pathname.startsWith("/app/s/absences"));
+      pathname.startsWith("/app/s/requests"));
 
-  // Entrées du menu "Plus" — chirurgien uniquement pour l'instant (Lot 1). Mes
-  // demandes/Mes indisponibilités pointent vers des pages "bientôt disponible"
-  // tant que leurs lots dédiés ne sont pas livrés (jamais un bouton mort : la
-  // destination existe et explique clairement l'état, voir ComingSoonPage).
+  // Entrées du menu "Plus" — chirurgien uniquement pour l'instant (Lot 1). Mes demandes
+  // pointe vers une page "bientôt disponible" tant que son lot dédié n'est pas livré
+  // (jamais un bouton mort : la destination existe et explique clairement l'état, voir
+  // ComingSoonPage).
   const surgeonMoreItems = isSurgeon
     ? [
         { key: "requests", icon: <TagIcon />, label: "Mes demandes", onClick: () => { setMenuAnchor(null); navigate("/app/s/requests"); } },
-        { key: "absences", icon: <CalendarIcon />, label: "Mes indisponibilités", onClick: () => { setMenuAnchor(null); navigate("/app/s/absences"); } },
         { key: "notifications", icon: <BellIcon />, label: "Notifications", onClick: () => { setMenuAnchor(null); navigate(notificationsPath); } },
         ...(pwaInstall.variant !== "unavailable"
           ? [{
@@ -990,6 +1001,9 @@ export function MobileLayout() {
       if (activeTab === "planning") {
         return { title: "Planning", subtitle: dayjs().format("MMMM YYYY").replace(/^\w/, (c) => c.toUpperCase()) };
       }
+      if (activeTab === "absences") {
+        return { title: "Absences", subtitle: "Gérez vos indisponibilités" };
+      }
       if (activeTab === "activity") {
         return { title: "Activité", subtitle: "Vos statistiques personnelles" };
       }
@@ -999,6 +1013,9 @@ export function MobileLayout() {
 
     if (activeTab === "planning") {
       return { title: "Planning", subtitle: dayjs().format("MMMM YYYY").replace(/^\w/, (c) => c.toUpperCase()) };
+    }
+    if (activeTab === "absences") {
+      return { title: "Absences", subtitle: "Gérez vos indisponibilités" };
     }
     if (activeTab === "offers") {
       const sub = offersCount === 0
