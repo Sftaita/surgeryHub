@@ -26,7 +26,11 @@ const NotificationsPage   = React.lazy(() => import("../pages/instrumentist/Noti
 const DeclareMissionPage  = React.lazy(() => import("../pages/instrumentist/DeclareMissionPage"));
 const MissionDetailPageI  = React.lazy(() => import("../pages/instrumentist/MissionDetailPage"));
 const MissionEncodingPage = React.lazy(() => import("../pages/instrumentist/MissionEncodingPage"));
-const ProfilePage         = React.lazy(() => import("../pages/instrumentist/ProfilePage"));
+
+// Partagé instrumentiste + chirurgien (socle mobile Lot 1, 2026-08-05) — jamais de
+// SurgeonProfilePage/SurgeonNotificationsPage quasi identiques, voir docs/decisions.md.
+const ProfilePage         = React.lazy(() => import("../pages/common/ProfilePage"));
+const ComingSoonPage      = React.lazy(() => import("../pages/common/ComingSoonPage"));
 
 // Admin
 const AdminUsersPage       = React.lazy(() => import("../pages/admin/AdminUsersPage"));
@@ -89,6 +93,13 @@ function RequireInstrumentist() {
   return <Outlet />;
 }
 
+function RequireSurgeon() {
+  const { state } = useAuth();
+  if (state.status !== "authenticated") return <Navigate to="/login" replace />;
+  if (state.user.role !== "SURGEON") return <Navigate to="/app/m/dashboard" replace />;
+  return <Outlet />;
+}
+
 function RequireManager() {
   const { state } = useAuth();
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
@@ -101,10 +112,6 @@ function RequireAdmin() {
   if (state.status !== "authenticated") return <Navigate to="/login" replace />;
   if (state.user.role !== "ADMIN") return <Navigate to="/app/forbidden" replace />;
   return <Outlet />;
-}
-
-function SurgeonHome() {
-  return <div>Surgeon Home</div>;
 }
 
 // ─── Router ──────────────────────────────────────────────────────────────────
@@ -138,9 +145,20 @@ export function AppRouter() {
               </Route>
             </Route>
 
-            {/* Surgeon */}
-            <Route element={<MobileLayout />}>
-              <Route path="s" element={<SurgeonHome />} />
+            {/* Surgeon — même MobileLayout que l'instrumentiste (jamais un second layout,
+                voir docs/decisions.md). Home/Planning/Activité/Demandes/Absences restent
+                des repli propres (ComingSoonPage) tant que leurs lots dédiés ne sont pas
+                livrés — Notifications et Profil sont réellement fonctionnels dès ce lot. */}
+            <Route element={<RequireSurgeon />}>
+              <Route element={<MobileLayout />}>
+                <Route path="s" element={<ComingSoonPage title="Accueil" />} />
+                <Route path="s/planning" element={<ComingSoonPage title="Planning" />} />
+                <Route path="s/activity" element={<ComingSoonPage title="Activité" />} />
+                <Route path="s/requests" element={<ComingSoonPage title="Mes demandes" />} />
+                <Route path="s/absences" element={<ComingSoonPage title="Mes indisponibilités" />} />
+                <Route path="s/notifications" element={<NotificationsPage />} />
+                <Route path="s/profile" element={<ProfilePage />} />
+              </Route>
             </Route>
 
             {/* Manager / Admin */}

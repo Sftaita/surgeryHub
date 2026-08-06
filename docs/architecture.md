@@ -2245,3 +2245,113 @@ filtre additionnel programmatique (`MissionFilter::$createdAfter`, jamais expos�
 `fromQuery()` — pas de nouveau paramètre public sur l'endpoint générique). `POST
 /api/me/offers-seen` pose le checkpoint, appelé une fois par montage réussi
 d'`OffersPage`. Voir `docs/api.md` §41.3, D-087.
+
+## 14. Socle mobile partagé Instrumentiste + Chirurgien (Lot 1, D-095, 2026-08-06)
+
+**Principe directeur** : Instrumentiste et Chirurgien partagent désormais le même
+shell mobile — `MobileLayout.tsx` reste un seul composant pour `/app/i/*` **et**
+`/app/s/*`, jamais deux implémentations parallèles. Les différences entre les deux
+rôles sont portées exclusivement par les routes, les tabs de navigation, les
+permissions backend (`allowedActions`, Voters) et les composants métier réellement
+spécifiques (compétences orthopédiques instrumentiste, par exemple) — jamais par une
+duplication de layout, de header, d'animation, de PWA ou de notifications.
+
+### 14.1 `MobileScope` — la seule distinction structurelle
+
+`MobileLayout.tsx` dérive un `mobileScope: "instrumentist" | "surgeon" | null` du
+préfixe de route (`/app/i` vs `/app/s`), qui pilote uniquement :
+- le jeu de tabs de navigation (`INSTRUMENTIST_TABS` : Aujourd'hui/Planning/Offres,
+  inchangé ; `SURGEON_TABS` : Accueil/Planning/Activité) — un simple array, aucune
+  hypothèse de longueur ailleurs dans le composant (voir §14.4) ;
+- le libellé de rôle (`roleLabelForScope`) utilisé dans `AccountMenu`,
+  `DesktopSidebar` et l'`aria-label` de la nav (`"Navigation instrumentiste"` /
+  `"Navigation chirurgien"`) ;
+- les requêtes strictement propres à l'instrumentiste (missions du jour, offres,
+  compteur d'offres non lues — `enabled: isInstrumentist`) : le chirurgien n'a pas
+  d'offres, ces requêtes ne s'exécutent jamais pour lui en Lot 1.
+
+Tout le reste — `BrandBand`, `BandWaves` (animation des vagues, D-094), la cloche de
+notifications (`fetchUnreadNotificationsCount`, `enabled: mobileScope !== null`,
+désormais commune), la bannière d'installation PWA (`PwaInstallBanner`), le fondu de
+contenu par route, la restauration de scroll, la safe-area iOS — est strictement
+partagé, sans branche par rôle.
+
+### 14.2 Menu "Plus" (chirurgien) — réutilise `AccountMenu`, jamais un second menu
+
+Le chirurgien dispose d'un 4ᵉ bouton "Plus" (bottom nav mobile **et** rail desktop)
+absent chez l'instrumentiste. Il ouvre le **même** composant `AccountMenu` que
+l'avatar de la `BrandBand` (jamais un second système de menu), étendu via une prop
+`extraItems` (chirurgien uniquement) : Mes demandes → `/app/s/requests`, Mes
+indisponibilités → `/app/s/absences`, Notifications → `/app/s/notifications`,
+Installer SurgicalHub (`usePwaInstallMenuState()`, masqué si `variant === "unavailable"`,
+même logique que le menu compte desktop manager/admin — voir §10). "Mon profil" et
+"Se déconnecter" restent communs aux deux rôles.
+
+### 14.3 Profil partagé — `pages/common/ProfilePage.tsx`
+
+Remplace l'ancien `pages/instrumentist/ProfilePage.tsx` (supprimé). Lit
+exclusivement les champs racine de `MeResponse` (déjà communs à tous les rôles :
+`id`/`email`/`firstname`/`lastname`/`phone`/`profilePictureUrl`/`sites`), jamais
+`instrumentistProfile` — la seule section réellement spécifique (compétences
+orthopédiques + replay de l'onboarding) reste conditionnelle
+(`{role === "INSTRUMENTIST" && ...}`), jamais un `SurgeonProfilePage` séparé. Routé à
+la fois sous `/app/i/profile` et `/app/s/profile`.
+
+`MeResponse.phone` (Lot 1) : le champ existait déjà sur `User` (renseigné à
+l'invitation, modifiable par un admin via `AdminUserController`) mais n'était jamais
+exposé sur `GET /api/me` avant ce lot — exposition minimale en lecture seule, commune
+à tous les rôles. Voir `docs/api.md` §`GET /api/me`.
+
+Décision explicitement écartée : empiler `instrumentistProfile`/`surgeonProfile`/
+`managerProfile` sur `MeResponse` pour des données en réalité communes à `User`. Un
+`surgeonProfile` ne sera introduit que si un champ *réellement* spécifique au
+chirurgien apparaît — aucun n'a été identifié en Lot 1.
+
+### 14.4 Notifications — infrastructure réutilisée telle quelle
+
+`pages/instrumentist/NotificationsPage.tsx` (déjà entièrement générique — voir §13.1)
+est routé sans modification sous `/app/s/notifications`. Aucun nouveau moteur de
+notifications, aucun wrapper : le même composant, le même hook
+`useNotificationsFeed()`, le même `NotificationTargetResolver` côté backend.
+
+### 14.5 Pages non encore livrées — repli explicite, jamais un écran cassé
+
+`/app/s` (Accueil), `/app/s/planning`, `/app/s/activity`, `/app/s/requests` et
+`/app/s/absences` sont routées et protégées par `RequireSurgeon` dès ce lot, mais
+rendent `pages/common/ComingSoonPage.tsx` (repli générique réutilisable, jamais une
+fausse donnée métier) tant que leur lot dédié n'est pas livré. Les entrées de menu
+correspondantes ("Mes demandes", "Mes indisponibilités") existent déjà dans le menu
+"Plus" et pointent vers ces replis — un bouton visible n'est jamais un bouton mort
+(la destination existe et explique clairement l'état), mais aucun contenu métier
+n'est simulé.
+
+**Absences — préparation de navbar (§14.1, confirmé explicitement à la clôture du
+Lot 1)** : le jeu de tabs `SURGEON_TABS`/`INSTRUMENTIST_TABS` est un simple array
+rendu par `.map()` dans `MobileBottomNav`/`DesktopSidebar`, sans hypothèse de
+longueur nulle part ailleurs dans `MobileLayout`. Cible future :
+`Accueil | Planning | Absences | Activité | Plus` (chirurgien), tabs instrumentiste
+adaptées au même lot en conservant toutes les fonctions actuelles. Quand le module
+Absences self-service (domaine `Absence` existant étendu, jamais une deuxième
+entité) sera livré, l'activer dans la navbar demande exactement :
+1. ajouter `"absences"` à l'union `TabKey` ;
+2. ajouter une entrée `absences` à `WAVE_SHAPE_KEY` (réutilise une ambiance
+   existante, ex. `"planning"` — vagues purement décoratives, voir §14.1) ;
+3. ajouter une entrée `Tab` à `SURGEON_TABS` et à `INSTRUMENTIST_TABS`.
+
+Aucun autre changement dans `MobileLayout.tsx`/`MobileBottomNav`/`DesktopSidebar`/
+`AccountMenu` — ces trois points sont les seuls touch-points structurels. Tant que
+le module n'est pas fonctionnel, **aucune entrée "Absences" n'apparaît dans la
+navbar** (ni chirurgien ni instrumentiste) — un bouton de navigation permanent vers
+un écran non livré n'est jamais acceptable, contrairement à une entrée de menu
+"Plus" pointant vers un `ComingSoonPage` explicite (§14.5), qui reste tolérable
+pour un accès secondaire non permanent.
+
+### 14.6 Sécurité — `RequireSurgeon`
+
+`frontend/src/app/router/RequireSurgeon` (dans `AppRouter.tsx`) mirrors exactement
+`RequireInstrumentist` : redirige vers `/login` si non authentifié, vers
+`/app/m/dashboard` si `role !== "SURGEON"`. Le frontend reste un simple confort de
+navigation — la source de vérité des droits reste le backend (`MissionService::list()`
+auto-scope déjà `m.surgeon = :self` pour tout appelant `ROLE_SURGEON`,
+`MissionActionsService::allowedActions()` calcule déjà les actions chirurgien
+possibles) ; aucune donnée sensible n'est protégée uniquement par ce guard.

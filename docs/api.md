@@ -1696,6 +1696,7 @@ Retourne le profil de l'utilisateur connecté, adapté à son rôle.
   "email": "ole@example.com",
   "firstname": "Ole",
   "lastname": "Salve",
+  "phone": null,
   "profilePictureUrl": "http://localhost/uploads/profile-pictures/user-12.jpg",
   "role": "INSTRUMENTIST",
   "sites": [
@@ -1728,6 +1729,7 @@ Retourne le profil de l'utilisateur connecté, adapté à son rôle.
 **Notes :**
 - `profilePictureUrl` (racine) et `profilePicturePath` (dans `instrumentistProfile`) sont tous les deux l'URL complète (absolue) construite par le backend à partir de `User.profilePicturePath` — malgré le nom `...Path`, `instrumentistProfile.profilePicturePath` n'est **pas** un chemin relatif.
 - Pour les rôles `MANAGER` / `ADMIN` / `SURGEON`, `instrumentistProfile` est `null`
+- `phone` (racine, commun à tous les rôles) — exposition en lecture seule ajoutée au socle mobile partagé chirurgien (2026-08-05) ; le champ existait déjà sur `User` (renseigné à l'invitation, modifiable par un admin via `PATCH /api/admin/users/{id}`) mais n'était jamais lu par l'utilisateur lui-même avant ce lot. Aucun endpoint self-service de modification n'existe pour ce champ à ce stade.
 
 ### `POST /api/me/profile-picture`
 

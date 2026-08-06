@@ -6661,3 +6661,122 @@ non traité ici pour ne pas élargir le lot.
 
 Comme D-093 : vérification live uniquement en environnement de développement local
 (comptes/mission jetables, nettoyés après coup).
+
+## D-095 — Socle mobile partagé Instrumentiste + Chirurgien : un seul `MobileLayout`, jamais deux implémentations (Lot 1, 2026-08-06)
+
+Date : 2026-08-06
+
+### Contexte
+
+L'espace chirurgien (`/app/s`) n'existait jusqu'ici que comme une route non protégée
+rendant un stub (`<div>Surgeon Home</div>`) dans le même `MobileLayout` que
+l'instrumentiste, mais sans qu'aucun de ses branchements (tabs, chrome, notifications,
+profil) ne reconnaisse ce scope — la moindre navigation vers `/app/s` retombait dans le
+repli "route non reconnue" de `MobileLayout` (aucun header, aucune nav). Avant toute
+implémentation, un audit ciblé de l'espace instrumentiste (`MobileLayout`, planning,
+détail mission, notifications, PWA, profil, absences, patterns de requêtes existants)
+a produit une matrice de réutilisation et une analyse d'écart complètes, validées
+explicitement avant tout code.
+
+### Décision — principe directeur
+
+**Instrumentiste et Chirurgien partagent désormais le même shell mobile.** Jamais de
+`InstrumentistMobileLayout`/`SurgeonMobileLayout`, jamais de duplication du header, de
+l'animation des vagues (D-094), de la logique PWA, des notifications ou du profil. Les
+différences entre rôles sont portées exclusivement par : les routes, le jeu de tabs de
+navigation, les permissions calculées côté backend (`allowedActions`, Voters), et les
+composants métier réellement spécifiques à un rôle (jamais par une deuxième
+implémentation de socle). Voir `docs/architecture.md` §14 pour le détail technique.
+
+### Décision — `RequireSurgeon`
+
+Nouveau guard frontend, mirroir exact de `RequireInstrumentist` (redirige vers
+`/login` si non authentifié, vers `/app/m/dashboard` si `role !== "SURGEON"`). Comme
+pour tous les guards existants, c'est un confort de navigation, jamais la source de
+vérité des droits : `MissionService::list()` auto-scope déjà `m.surgeon = :self` pour
+tout appelant `ROLE_SURGEON` sans paramètre supplémentaire, et
+`MissionActionsService::allowedActions()` calcule déjà les actions chirurgien
+possibles (`rate_instrumentist`, `dispute_hours`) — ce lot ne fait qu'ouvrir la porte
+frontend vers des règles backend qui existaient déjà avant lui.
+
+### Décision — Profil commun, pas de `surgeonProfile` dans `MeResponse`
+
+`pages/instrumentist/ProfilePage.tsx` (supprimé) est remplacé par
+`pages/common/ProfilePage.tsx`, routé sous `/app/i/profile` **et** `/app/s/profile`.
+Il lit exclusivement les champs racine de `MeResponse`, déjà communs à tous les rôles
+(`id`/`email`/`firstname`/`lastname`/`phone`/`profilePictureUrl`/`sites`) — jamais
+`instrumentistProfile`, qui reste spécifique et n'alimente que la section compétences
+orthopédiques, conditionnelle au rôle (`{role === "INSTRUMENTIST" && ...}`). Décision
+explicite : ne pas empiler `instrumentistProfile`/`surgeonProfile`/`managerProfile`
+pour des données en réalité communes à `User` — un `surgeonProfile` ne sera introduit
+que si un champ réellement spécifique au chirurgien apparaît (aucun identifié à ce
+stade).
+
+`User.phone` existait déjà (renseigné à l'invitation, modifiable par un admin via
+`AdminUserController`) mais n'était jamais exposé sur `GET /api/me` — exposition
+minimale en lecture seule ajoutée à `MeResponse`, commune à tous les rôles. Aucun
+endpoint self-service de modification n'est ajouté dans ce lot.
+
+### Décision — synchronisation : pas de généralisation pour la seule symétrie
+
+`useInstrumentistMissionSync()` (polling optimisé, existe parce que les offres/claims
+instrumentiste sont très dynamiques) n'est **pas** généralisé, et aucun
+`GET /api/surgeon/missions/sync` n'est créé dans ce lot. Le chirurgien s'appuie sur
+React Query standard (`refetchInterval`, refetch au focus/online déjà fournis par
+défaut) au-dessus du listing `GET /api/missions` déjà auto-scopé côté backend — décision
+explicite pour rester la solution la plus légère tant que le besoin fonctionnel réel
+(Lot Planning chirurgien) ne démontre pas qu'elle est insuffisante. Si le volume ou un
+besoin temps réel le justifie plus tard, une abstraction partagée (`useMissionSync`) sera
+étudiée à ce moment — jamais dupliquée à l'identique par anticipation.
+
+### Décision — navigation : "Plus" réutilise `AccountMenu`, jamais un second menu
+
+Le chirurgien gagne un 4ᵉ bouton "Plus" (bottom nav mobile et rail desktop), absent
+chez l'instrumentiste (qui garde exactement ses 3 tabs Aujourd'hui/Planning/Offres,
+inchangés). "Plus" ouvre le **même** composant `AccountMenu` que l'avatar de la
+`BrandBand`, étendu via une prop `extraItems` (chirurgien uniquement) plutôt qu'un
+second système de menu : Mes demandes, Mes indisponibilités, Notifications, Installer
+SurgicalHub (réutilise `usePwaInstallMenuState()`, même logique que le menu compte
+desktop manager/admin), puis Mon profil/Se déconnecter communs aux deux rôles.
+
+**Préparation pour un futur onglet Absences partagé** : le jeu de tabs
+(`SURGEON_TABS`/`INSTRUMENTIST_TABS`) est un simple array, sans hypothèse de longueur
+ailleurs dans `MobileLayout`/`MobileBottomNav`/`DesktopSidebar`. Un futur module
+Absences self-service (domaine `Absence` existant, étendu — jamais une deuxième
+entité `SurgeonAbsence`/`InstrumentistAbsence` — voir §Portée non traitée ici) sera
+partagé à l'identique entre les deux rôles et n'ajoutera qu'une entrée dans ces deux
+tableaux. Volontairement non livré dans ce lot : `/app/s/absences` (et
+`/app/i/absences`, à ajouter au même lot) restent des replis `ComingSoonPage`
+(§Portée non traitée), jamais une entrée de navbar pointant vers un écran vide en
+production — aucun bouton "Absences" n'est ajouté à la bottom nav tant que le module
+réel n'est pas livré.
+
+### Décision — pages non livrées : repli explicite, jamais un écran cassé
+
+`/app/s` (Accueil), `/app/s/planning`, `/app/s/activity`, `/app/s/requests`,
+`/app/s/absences` sont routées et protégées par `RequireSurgeon` dès ce lot, mais
+rendent `pages/common/ComingSoonPage.tsx` (nouveau repli générique réutilisable,
+jamais une fausse donnée métier — pas de "0 mission" inventé, pas de podium vide
+maquillé en donnée réelle) tant que leur lot dédié n'est pas livré. Seuls
+Notifications et Profil sont réellement fonctionnels dans ce lot (réutilisation
+directe de composants déjà existants, zéro nouveau moteur).
+
+### Portée non traitée ici
+
+Delibérément hors périmètre de ce Lot 1 (chacun son propre lot, voir la feuille de
+route validée séparément) : Planning/Home/Activité chirurgien réels (agrégats,
+podium personnel des interventions — jamais une comparaison entre chirurgiens),
+demandes de mission (`SurgeonMissionRequest`, nouveau domaine — aucune entité
+existante ne convient, le pattern architectural de `InterventionTypeRequest`/
+`MissionInterventionDraftService` — transaction atomique + `AuditEvent` par issue —
+sera repris plutôt que celui, plus permissif, de
+`MaterialItemRequestManagerController`), absences self-service (extension du domaine
+`Absence` existant, forçant systématiquement `absence.user = current authenticated
+user`, jamais un `userId` client, partagée à l'identique instrumentiste/chirurgien),
+lecture de l'encodage par le chirurgien (nouvelle distinction `VIEW_ENCODING` vs
+`EDIT_ENCODING` sur `MissionVoter`, jamais un détournement de `EDIT_ENCODING`),
+signalement d'anomalie d'encodage, export `.ics` (reporté, amélioration future non
+bloquante). `NotificationService::notificationPreferencesUrl()` (D-094) retourne
+toujours `null` pour `ROLE_SURGEON` — devenu obsolète depuis que `/app/s/profile`
+existe réellement, non corrigé dans ce lot pour ne pas élargir son périmètre (petit
+correctif isolé, sans risque, à faire au prochain lot touchant ce fichier).

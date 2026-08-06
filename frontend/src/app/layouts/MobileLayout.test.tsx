@@ -61,6 +61,20 @@ vi.mock("../features/pwa-install/PwaInstallBanner", () => ({
   PwaInstallBanner: () => <div data-testid="pwa-install-banner-mount" />,
 }));
 
+// Socle mobile chirurgien (Lot 1, 2026-08-05) — MobileLayout appelle désormais
+// usePwaInstallMenuState() directement (menu "Plus" chirurgien), pas seulement via
+// PwaInstallBanner (déjà mocké ci-dessus). Nécessite PwaInstallProvider, non monté
+// dans cet arbre de test réduit — hors périmètre de ce fichier.
+vi.mock("../features/pwa-install/usePwaInstallMenuState", () => ({
+  usePwaInstallMenuState: vi.fn(() => ({
+    label: "Installation non proposée automatiquement sur ce navigateur",
+    actionLabel: null,
+    onAction: null,
+    disabled: true,
+    variant: "unavailable",
+  })),
+}));
+
 const mockLogout = vi.fn();
 
 function mockDesktop(isDesktop: boolean) {
@@ -338,23 +352,29 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
   });
 
   describe("rôle non concerné par ce layout", () => {
-    it("hors de l'espace instrumentiste (/app/i), MobileLayout ne rend aucune navigation — simple passthrough", () => {
+    // /app/s est devenu un scope reconnu (chirurgien, Lot 1 socle mobile partagé,
+    // 2026-08-05) — ce test ciblait auparavant /app/s précisément pour vérifier le
+    // passthrough "route non reconnue" ; /app/m (jamais routé sous MobileLayout dans
+    // la vraie appli, voir AppRouter.tsx) sert maintenant de repli pour la même
+    // intention : une route dont ni /app/i ni /app/s ne sont un préfixe.
+    it("hors des espaces mobiles (/app/i, /app/s), MobileLayout ne rend aucune navigation — simple passthrough", () => {
       mockDesktop(false);
       const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={["/app/s"]}>
+          <MemoryRouter initialEntries={["/app/m"]}>
             <Routes>
-              <Route path="/app/s" element={<MobileLayout />}>
-                <Route index element={<div>Surgeon Home</div>} />
+              <Route path="/app/m" element={<MobileLayout />}>
+                <Route index element={<div>Manager Home</div>} />
               </Route>
             </Routes>
           </MemoryRouter>
         </QueryClientProvider>,
       );
 
-      expect(screen.getByText("Surgeon Home")).toBeInTheDocument();
+      expect(screen.getByText("Manager Home")).toBeInTheDocument();
       expect(screen.queryByRole("navigation", { name: "Navigation instrumentiste" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("navigation", { name: "Navigation chirurgien" })).not.toBeInTheDocument();
       expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Compte" })).not.toBeInTheDocument();
     });
@@ -472,6 +492,202 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
 
       const wavesAfter = bandWavesSvg(container);
       expect(wavesAfter).toBe(wavesBefore);
+    });
+  });
+});
+
+// ── Socle mobile chirurgien (Lot 1, 2026-08-05) ──────────────────────────────
+// Describe séparé (pas nesté dans le describe instrumentiste ci-dessus) : son
+// beforeEach fixe role: "SURGEON", incompatible avec le beforeEach INSTRUMENTIST
+// de la suite au-dessus. Le socle réellement partagé (BrandBand, vagues, PWA,
+// notifications) est déjà verrouillé par les tests instrumentiste ; ici on
+// verrouille uniquement ce qui doit différer par rôle (tabs, libellés, menu Plus).
+function renderSurgeonLayout(initialPath = "/app/s") {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const result = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <Routes>
+          <Route path="/app/s" element={<MobileLayout />}>
+            <Route index element={<div>Home content</div>} />
+            <Route path="planning" element={<div>Planning content</div>} />
+            <Route path="activity" element={<div>Activity content</div>} />
+            <Route path="profile" element={<div>Profile content</div>} />
+            <Route path="notifications" element={<div>Notifications content</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  return { ...result, queryClient };
+}
+
+describe("MobileLayout — chirurgien (socle mobile partagé, Lot 1, 2026-08-05)", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockPushStatus = "unsupported";
+    vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    (useAuth as unknown as Mock).mockReturnValue({
+      state: {
+        status: "authenticated",
+        user: { id: 7, role: "SURGEON", sites: [], firstname: "Etienne", lastname: "Lejeune" },
+      },
+      logout: mockLogout,
+    });
+    // clearAllMocks() ne restaure pas une implémentation remplacée par
+    // mockReturnValue() (seul mockReset()/mockRestore() le ferait, et
+    // resetAllMocks() casserait aussi la factory de vi.mock ci-dessus) — repli
+    // explicite au variant "unavailable" avant chaque test pour empêcher toute
+    // fuite de l'override du test "variant actionable" vers les suivants.
+    const { usePwaInstallMenuState } = await import("../features/pwa-install/usePwaInstallMenuState");
+    (usePwaInstallMenuState as unknown as Mock).mockReturnValue({
+      label: "Installation non proposée automatiquement sur ce navigateur",
+      actionLabel: null,
+      onAction: null,
+      disabled: true,
+      variant: "unavailable",
+    });
+  });
+
+  describe("mobile (<900px)", () => {
+    it("la bottom nav affiche exactement Accueil / Planning / Activité + Plus — jamais les onglets instrumentiste", async () => {
+      mockDesktop(false);
+      renderSurgeonLayout();
+
+      const nav = await screen.findByRole("navigation", { name: "Navigation chirurgien" });
+      expect(within(nav).getByRole("button", { name: /Accueil/ })).toBeInTheDocument();
+      expect(within(nav).getByRole("button", { name: /Planning/ })).toBeInTheDocument();
+      expect(within(nav).getByRole("button", { name: /Activité/ })).toBeInTheDocument();
+      expect(within(nav).getByRole("button", { name: /Plus/ })).toBeInTheDocument();
+
+      expect(within(nav).queryByRole("button", { name: /Aujourd'hui/ })).not.toBeInTheDocument();
+      expect(within(nav).queryByRole("button", { name: /Offres/ })).not.toBeInTheDocument();
+    });
+
+    it("l'onglet correspondant à la route courante porte aria-current=\"page\"", async () => {
+      mockDesktop(false);
+      renderSurgeonLayout("/app/s/planning");
+
+      const nav = await screen.findByRole("navigation", { name: "Navigation chirurgien" });
+      expect(within(nav).getByRole("button", { name: /Planning/ })).toHaveAttribute("aria-current", "page");
+      expect(within(nav).getByRole("button", { name: /Accueil/ })).not.toHaveAttribute("aria-current");
+    });
+
+    it("le bouton Plus porte aria-current=\"page\" sur une route du menu (ex. profil)", async () => {
+      mockDesktop(false);
+      renderSurgeonLayout("/app/s/profile");
+
+      const nav = await screen.findByRole("navigation", { name: "Navigation chirurgien" });
+      expect(within(nav).getByRole("button", { name: /Plus/ })).toHaveAttribute("aria-current", "page");
+    });
+
+    it("cliquer Plus ouvre le menu compte avec Mes demandes / Mes indisponibilités / Notifications, en plus de Mon profil / Se déconnecter", async () => {
+      mockDesktop(false);
+      const user = userEvent.setup();
+      renderSurgeonLayout();
+
+      const nav = await screen.findByRole("navigation", { name: "Navigation chirurgien" });
+      await user.click(within(nav).getByRole("button", { name: /Plus/ }));
+
+      expect(await screen.findByText("Mes demandes")).toBeInTheDocument();
+      expect(screen.getByText("Mes indisponibilités")).toBeInTheDocument();
+      expect(screen.getByText("Notifications")).toBeInTheDocument();
+      expect(screen.getByText("Mon profil")).toBeInTheDocument();
+      expect(screen.getByText("Se déconnecter")).toBeInTheDocument();
+      expect(screen.getByText("Chirurgien")).toBeInTheDocument();
+    });
+
+    it("Mon profil depuis le menu Plus navigue vers /app/s/profile", async () => {
+      mockDesktop(false);
+      const user = userEvent.setup();
+      renderSurgeonLayout();
+
+      const nav = await screen.findByRole("navigation", { name: "Navigation chirurgien" });
+      await user.click(within(nav).getByRole("button", { name: /Plus/ }));
+      await user.click(await screen.findByText("Mon profil"));
+
+      expect(mockNavigate).toHaveBeenCalledWith("/app/s/profile");
+    });
+
+    it("Mes demandes / Mes indisponibilités depuis le menu Plus naviguent vers /app/s/requests et /app/s/absences", async () => {
+      mockDesktop(false);
+      const user = userEvent.setup();
+      renderSurgeonLayout();
+
+      const nav = await screen.findByRole("navigation", { name: "Navigation chirurgien" });
+      await user.click(within(nav).getByRole("button", { name: /Plus/ }));
+      await user.click(await screen.findByText("Mes demandes"));
+      expect(mockNavigate).toHaveBeenCalledWith("/app/s/requests");
+
+      await user.click(within(nav).getByRole("button", { name: /Plus/ }));
+      await user.click(await screen.findByText("Mes indisponibilités"));
+      expect(mockNavigate).toHaveBeenCalledWith("/app/s/absences");
+    });
+
+    it("la cloche de notifications est présente (même mécanisme partagé que l'instrumentiste)", async () => {
+      mockDesktop(false);
+      renderSurgeonLayout();
+
+      expect(await screen.findByRole("button", { name: "Notifications" })).toBeInTheDocument();
+    });
+
+    it("le bouton Notifications de la cloche navigue vers /app/s/notifications", async () => {
+      mockDesktop(false);
+      const user = userEvent.setup();
+      renderSurgeonLayout();
+
+      await user.click(await screen.findByRole("button", { name: "Notifications" }));
+      expect(mockNavigate).toHaveBeenCalledWith("/app/s/notifications");
+    });
+  });
+
+  describe("desktop (>=900px)", () => {
+    it("le rail affiche Accueil / Planning / Activité + Plus, jamais Aujourd'hui/Offres", async () => {
+      mockDesktop(true);
+      renderSurgeonLayout();
+
+      const aside = await screen.findByRole("complementary");
+      expect(within(aside).getByRole("button", { name: "Accueil" })).toBeInTheDocument();
+      expect(within(aside).getByRole("button", { name: "Planning" })).toBeInTheDocument();
+      expect(within(aside).getByRole("button", { name: "Activité" })).toBeInTheDocument();
+      expect(within(aside).getByRole("button", { name: "Plus" })).toBeInTheDocument();
+      expect(within(aside).queryByText("Aujourd'hui")).not.toBeInTheDocument();
+      expect(within(aside).queryByText("Offres")).not.toBeInTheDocument();
+      expect(within(aside).getByText("Chirurgien")).toBeInTheDocument();
+    });
+  });
+
+  describe("menu Plus — installation PWA (variant disponible)", () => {
+    it("affiche l'entrée d'installation quand usePwaInstallMenuState signale une installation actionnable", async () => {
+      const { usePwaInstallMenuState } = await import("../features/pwa-install/usePwaInstallMenuState");
+      (usePwaInstallMenuState as unknown as Mock).mockReturnValue({
+        label: "Installer l'application",
+        actionLabel: "Installer",
+        onAction: vi.fn(),
+        disabled: false,
+        variant: "actionable",
+      });
+
+      mockDesktop(false);
+      const user = userEvent.setup();
+      renderSurgeonLayout();
+
+      const nav = await screen.findByRole("navigation", { name: "Navigation chirurgien" });
+      await user.click(within(nav).getByRole("button", { name: /Plus/ }));
+
+      expect(await screen.findByText("Installer l'application")).toBeInTheDocument();
+    });
+
+    it("n'affiche pas l'entrée d'installation quand variant est \"unavailable\" (repli par défaut de ce fichier)", async () => {
+      mockDesktop(false);
+      const user = userEvent.setup();
+      renderSurgeonLayout();
+
+      const nav = await screen.findByRole("navigation", { name: "Navigation chirurgien" });
+      await user.click(within(nav).getByRole("button", { name: /Plus/ }));
+
+      await screen.findByText("Mon profil");
+      expect(screen.queryByText("Installation non proposée automatiquement sur ce navigateur")).not.toBeInTheDocument();
     });
   });
 });

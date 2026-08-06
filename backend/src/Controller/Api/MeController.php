@@ -287,6 +287,7 @@ final class MeController extends AbstractController
             email: (string) $user->getEmail(),
             firstname: $firstname,
             lastname: $lastname,
+            phone: $this->nullIfBlank($user->getPhone()),
             profilePictureUrl: $profilePictureUrl,
             role: $role,
             instrumentistProfile: $instrumentistProfile,

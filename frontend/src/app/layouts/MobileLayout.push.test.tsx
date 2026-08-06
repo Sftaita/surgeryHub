@@ -63,6 +63,17 @@ vi.mock("../features/pwa-install/PwaInstallBanner", () => ({
   PwaInstallBanner: () => null,
 }));
 
+// Socle mobile chirurgien (Lot 1, 2026-08-05) — voir MobileLayout.test.tsx.
+vi.mock("../features/pwa-install/usePwaInstallMenuState", () => ({
+  usePwaInstallMenuState: () => ({
+    label: "Installation non proposée automatiquement sur ce navigateur",
+    actionLabel: null,
+    onAction: null,
+    disabled: true,
+    variant: "unavailable",
+  }),
+}));
+
 vi.mock("../ui/toast/useToast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));

@@ -174,9 +174,12 @@ final class NotificationPreferencesCtaEmailTest extends KernelTestCase
         self::assertStringContainsString(self::CTA_TEXT, $html);
     }
 
-    // ── Chirurgien : aucun écran de préférences aujourd'hui → CTA absent, sans lien inventé ──
+    // ── Chirurgien : /app/s/profile existe réellement depuis le socle mobile partagé
+    //    (D-095) → CTA présent, comme pour l'instrumentiste. Avant D-095, ce test
+    //    vérifiait l'absence délibérée du CTA (aucun écran de préférences côté
+    //    chirurgien) — mis à jour maintenant que la route existe. ──
 
-    public function test_mission_open_notify_surgeon_email_omits_cta_when_no_settings_screen_exists(): void
+    public function test_mission_open_notify_surgeon_email_contains_cta_pointing_to_surgeon_profile(): void
     {
         $surgeon = $this->makeUser('ROLE_SURGEON');
         $mission = $this->makeMission();
@@ -184,10 +187,12 @@ final class NotificationPreferencesCtaEmailTest extends KernelTestCase
         $this->notificationService->missionOpenNotifySurgeon($mission, $surgeon);
         $context = $this->firstDispatchedContext();
 
-        self::assertNull($context['notificationPreferencesUrl']);
+        self::assertNotNull($context['notificationPreferencesUrl']);
+        self::assertStringContainsString('/app/s/profile', $context['notificationPreferencesUrl']);
 
         $html = $this->twig->render('emails/mission_open_notify_surgeon.html.twig', $context);
-        self::assertStringNotContainsString(self::CTA_TEXT, $html);
+        self::assertStringContainsString(self::CTA_TEXT, $html);
+        self::assertStringContainsString($context['notificationPreferencesUrl'], $html);
     }
 
     // ── Hors périmètre : jamais de CTA ────────────────────────────────────────

@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { usePushNotifications } from "../features/push/usePushNotifications";
 import { fetchUnreadNotificationsCount } from "../features/notifications/api/notifications.api";
 import { PwaInstallBanner } from "../features/pwa-install/PwaInstallBanner";
+import { usePwaInstallMenuState } from "../features/pwa-install/usePwaInstallMenuState";
 import { useAuth } from "../auth/AuthContext";
 import { fetchMissions, fetchInstrumentistOffersWithFallback, fetchOffersUnreadCount } from "../features/missions/api/missions.api";
 import { useInstrumentistMissionSync } from "../features/missions/sync/useInstrumentistMissionSync";
@@ -36,7 +37,17 @@ const RED_600 = "#E5484D";
 const EASE_OUT = "cubic-bezier(0.22, 1, 0.36, 1)";
 const NAV_H = 58;
 
-type TabKey = "today" | "planning" | "offers";
+// ── Socle mobile partagé Instrumentiste + Chirurgien (Lot 1, 2026-08-05) ────
+// Un seul MobileLayout pour /app/i/* et /app/s/* — jamais deux implémentations
+// de layout. `MobileScope` distingue uniquement ce qui doit vraiment différer
+// (jeu d'onglets, libellé de rôle, requêtes propres à l'instrumentiste) ; tout
+// le reste (BrandBand, BandWaves, cloche de notifications, bannière PWA,
+// AccountMenu, animations, safe-area iOS...) est strictement partagé, sans
+// branche par rôle. Voir docs/architecture.md et docs/decisions.md pour le
+// principe complet.
+type MobileScope = "instrumentist" | "surgeon";
+
+type TabKey = "today" | "planning" | "offers" | "home" | "activity";
 
 type Tab = {
   key: TabKey;
@@ -68,6 +79,20 @@ function TagIcon() {
     </svg>
   );
 }
+function ActivityIcon() {
+  return (
+    <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 20h18" /><path d="M7 20v-6" /><path d="M12 20V8" /><path d="M17 20v-10" />
+    </svg>
+  );
+}
+function MoreIcon() {
+  return (
+    <svg width="21" height="21" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <circle cx="5" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" />
+    </svg>
+  );
+}
 function BellIcon() {
   return (
     <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -89,15 +114,42 @@ function LogoutIcon() {
     </svg>
   );
 }
+function DownloadIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" />
+    </svg>
+  );
+}
 
-const tabs: Tab[] = [
+const INSTRUMENTIST_TABS: Tab[] = [
   { key: "today", label: "Aujourd'hui", path: "/app/i/today", match: (p) => p === "/app/i" || p === "/app/i/today", icon: <HomeIcon /> },
   { key: "planning", label: "Planning", path: "/app/i/planning", match: (p) => p.startsWith("/app/i/planning"), icon: <CalendarIcon /> },
   { key: "offers", label: "Offres", path: "/app/i/offers", match: (p) => p.startsWith("/app/i/offers"), icon: <TagIcon /> },
 ];
 
+// Chirurgien : Accueil | Planning | Activité | Plus (§Décision navigation, 2026-08-05).
+// "Plus" n'est pas un onglet routable — voir `moreButton` sur MobileBottomNav/
+// DesktopSidebar — donc absent de ce tableau. Ce tableau est un simple array : un
+// futur 5e onglet (ex. Absences, lot dédié) ne demande aucun changement de
+// MobileLayout/MobileBottomNav/DesktopSidebar, seulement une entrée de plus ici.
+const SURGEON_TABS: Tab[] = [
+  { key: "home", label: "Accueil", path: "/app/s", match: (p) => p === "/app/s", icon: <HomeIcon /> },
+  { key: "planning", label: "Planning", path: "/app/s/planning", match: (p) => p.startsWith("/app/s/planning"), icon: <CalendarIcon /> },
+  { key: "activity", label: "Activité", path: "/app/s/activity", match: (p) => p.startsWith("/app/s/activity"), icon: <ActivityIcon /> },
+];
+
+function tabsForScope(scope: MobileScope): Tab[] {
+  return scope === "surgeon" ? SURGEON_TABS : INSTRUMENTIST_TABS;
+}
+
+function roleLabelForScope(scope: MobileScope): string {
+  return scope === "surgeon" ? "Chirurgien" : "Instrumentiste";
+}
+
 // The encoding screen has its own dark green header (EncodeHeader, rendered by
 // MissionEncodingPage) — it replaces the main brand band rather than stacking under it.
+// Instrumentiste uniquement : le chemin ne matche jamais une route /app/s/*.
 const ENCODING_ROUTE_RE = /^\/app\/i\/missions\/[^/]+\/encoding$/;
 
 function initialsOf(firstname?: string | null, lastname?: string | null): string {
@@ -117,7 +169,11 @@ function todayRange() {
 // Per-tab path sets — identical structure per layer (M...C...S...) across tabs so the
 // browser can interpolate the CSS `d` property directly (see prototype
 // `docs/design/prototypes/SurgeryHub App v2.dc.html`, ~line 1296 `waveShapes`).
-const WAVE_SHAPES: Record<TabKey, { w1: string; w2: string; w3: string }> = {
+// Seules 3 "ambiances" de vagues existent — purement décoratives. Les onglets
+// chirurgien réutilisent celle qui leur correspond le mieux conceptuellement
+// (WAVE_SHAPE_KEY ci-dessous) plutôt que d'inventer une géométrie de plus sans
+// raison fonctionnelle.
+const WAVE_SHAPES: Record<"today" | "planning" | "offers", { w1: string; w2: string; w3: string }> = {
   today: {
     w1: "M0 112 C 80 70, 170 158, 268 112 S 382 66, 400 92 L400 190 L0 190 Z",
     w2: "M0 150 C 110 104, 230 184, 320 144 S 380 128, 400 124 L400 190 L0 190 Z",
@@ -133,6 +189,14 @@ const WAVE_SHAPES: Record<TabKey, { w1: string; w2: string; w3: string }> = {
     w2: "M0 168 C 120 128, 210 168, 330 118 S 385 108, 400 104 L400 190 L0 190 Z",
     w3: "M0 70 C 100 118, 180 58, 290 108 S 375 92, 400 116",
   },
+};
+
+const WAVE_SHAPE_KEY: Record<TabKey, keyof typeof WAVE_SHAPES> = {
+  today: "today",
+  planning: "planning",
+  offers: "offers",
+  home: "today",
+  activity: "offers",
 };
 
 // Fixed shape set for the brief "kick" pulse (arrival, leaving encoding) — same
@@ -179,7 +243,7 @@ function BandWaves({ activeKey }: { activeKey: TabKey | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const shapes = kick ? WAVE_KICK_SHAPES : (WAVE_SHAPES[activeKey ?? "today"] ?? WAVE_SHAPES.today);
+  const shapes = kick ? WAVE_KICK_SHAPES : WAVE_SHAPES[WAVE_SHAPE_KEY[activeKey ?? "today"]];
   return (
     <svg
       style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}
@@ -218,7 +282,7 @@ function BandWaves({ activeKey }: { activeKey: TabKey | null }) {
   );
 }
 
-// ── Brand header band (shared mobile/desktop) ───────────────────────────────
+// ── Brand header band (shared mobile/desktop, shared instrumentist/surgeon) ──
 function BrandBand({
   isDesktop,
   activeKey,
@@ -369,26 +433,33 @@ function BrandBand({
   );
 }
 
-// ── Desktop sidebar ──────────────────────────────────────────────────────────
-// Strictly ported from handoff-instrumentiste-nav/src/SidebarRail.tsx — exactly the 3
-// tabs (Aujourd'hui/Planning/Offres) + a static user block (avatar, name, role, direct
-// logout button). No Messages/Notifications/Profil items, no dropdown: Notifications is
-// reached via the BrandBand bell (both breakpoints), Profil via the BrandBand avatar's
-// AccountMenu (both breakpoints) — this sidebar never duplicated a real destination.
+// ── Desktop sidebar (shared instrumentist/surgeon) ──────────────────────────
+// Strictement porté de handoff-instrumentiste-nav/src/SidebarRail.tsx à l'origine —
+// tabs + bloc utilisateur statique (avatar, nom, rôle, déconnexion directe).
+// Notifications/Profil restent joints via la BrandBand (cloche/avatar), jamais
+// dupliqués ici. `moreMenu` (chirurgien uniquement) ajoute un item de rail
+// supplémentaire ouvrant le même AccountMenu étendu que le bouton "Plus" mobile —
+// jamais un second menu.
 function DesktopSidebar({
+  tabs,
+  roleLabel,
   activeKey,
   onNavigate,
   offersCount,
   firstname,
   lastname,
   onLogout,
+  moreMenu,
 }: {
+  tabs: Tab[];
+  roleLabel: string;
   activeKey: TabKey | null;
   onNavigate: (path: string) => void;
   offersCount: number;
   firstname?: string | null;
   lastname?: string | null;
   onLogout: () => void;
+  moreMenu?: { active: boolean; onOpen: (e: React.MouseEvent<HTMLElement>) => void };
 }) {
   const railItem = (active: boolean): SxProps<Theme> => ({
     display: "flex",
@@ -410,7 +481,7 @@ function DesktopSidebar({
     "&:active": { transform: "translateY(0.5px)" },
   });
 
-  const name = `${firstname ?? ""} ${lastname ?? ""}`.trim() || "Instrumentiste";
+  const name = `${firstname ?? ""} ${lastname ?? ""}`.trim() || roleLabel;
 
   return (
     <Box
@@ -471,6 +542,18 @@ function DesktopSidebar({
             )}
           </Box>
         ))}
+        {moreMenu && (
+          <Box
+            component="button"
+            type="button"
+            onClick={moreMenu.onOpen}
+            aria-current={moreMenu.active ? "page" : undefined}
+            sx={railItem(moreMenu.active)}
+          >
+            <MoreIcon />
+            <span>Plus</span>
+          </Box>
+        )}
       </Box>
 
       <Box sx={{ flex: 1 }} />
@@ -490,7 +573,7 @@ function DesktopSidebar({
           <Box sx={{ fontSize: 14, fontWeight: 700, color: GRAY_900, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {name}
           </Box>
-          <Box sx={{ fontSize: 12, color: GRAY_500 }}>Instrumentiste</Box>
+          <Box sx={{ fontSize: 12, color: GRAY_500 }}>{roleLabel}</Box>
         </Box>
         <Box
           component="button"
@@ -521,20 +604,30 @@ function DesktopSidebar({
   );
 }
 
-// ── Mobile bottom nav (anchored variant) ────────────────────────────────────
+// ── Mobile bottom nav (anchored variant, shared instrumentist/surgeon) ──────
+// `moreButton` (chirurgien uniquement pour l'instant) ajoute un 4e bouton "Plus"
+// ouvrant AccountMenu étendu — jamais un second système de navigation. Un futur
+// 5e onglet (Absences) n'exige aucun changement ici : `tabs` est un simple
+// array rendu par `.map()`, sans hypothèse sur sa longueur.
 function MobileBottomNav({
+  tabs,
+  roleLabel,
   activeKey,
   onNavigate,
   offersCount,
+  moreButton,
 }: {
+  tabs: Tab[];
+  roleLabel: string;
   activeKey: TabKey | null;
   onNavigate: (path: string) => void;
   offersCount: number;
+  moreButton?: { active: boolean; onOpen: (e: React.MouseEvent<HTMLElement>) => void };
 }) {
   return (
     <Box
       component="nav"
-      aria-label="Navigation instrumentiste"
+      aria-label={`Navigation ${roleLabel.toLowerCase()}`}
       sx={{
         position: "fixed",
         left: 0,
@@ -609,27 +702,67 @@ function MobileBottomNav({
           </Box>
         );
       })}
+      {moreButton && (
+        <Box
+          component="button"
+          type="button"
+          onClick={moreButton.onOpen}
+          aria-current={moreButton.active ? "page" : undefined}
+          sx={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "3px",
+            height: NAV_H,
+            border: "none",
+            cursor: "pointer",
+            fontFamily: "inherit",
+            fontSize: 11,
+            borderRadius: "16px",
+            transition: `all 200ms ${EASE_OUT}`,
+            background: moreButton.active ? GREEN_800 : "transparent",
+            color: moreButton.active ? "#fff" : GRAY_500,
+            fontWeight: moreButton.active ? 700 : 600,
+            boxShadow: moreButton.active ? "0 5px 14px rgba(20,77,56,.4)" : "none",
+            "&:active": { transform: "scale(.96)" },
+          }}
+        >
+          <MoreIcon />
+          <span>Plus</span>
+        </Box>
+      )}
     </Box>
   );
 }
 
-// ── Account menu (shPop) ─────────────────────────────────────────────────────
+// ── Account menu (shPop) — partagé instrumentiste/chirurgien ────────────────
+// `extraItems` (chirurgien uniquement) ajoute les entrées du menu "Plus" (Mes
+// demandes, Mes indisponibilités, Notifications, Installer) au-dessus de "Mon
+// profil"/"Se déconnecter" — jamais un second composant de menu. Ouvert à la
+// fois depuis l'avatar de la BrandBand et depuis le bouton "Plus" (mobile/
+// desktop) : un point d'entrée partagé, unique, comme PwaInstallMenuItem.
 function AccountMenu({
   anchorEl,
   onClose,
+  roleLabel,
   firstname,
   lastname,
   onProfile,
   onLogout,
+  extraItems,
 }: {
   anchorEl: HTMLElement | null;
   onClose: () => void;
+  roleLabel: string;
   firstname?: string | null;
   lastname?: string | null;
   onProfile: () => void;
   onLogout: () => void;
+  extraItems?: { key: string; icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean }[];
 }) {
-  const name = `${firstname ?? ""} ${lastname ?? ""}`.trim() || "Instrumentiste";
+  const name = `${firstname ?? ""} ${lastname ?? ""}`.trim() || roleLabel;
   const itemSx = {
     display: "flex",
     alignItems: "center",
@@ -646,6 +779,7 @@ function AccountMenu({
     fontWeight: 600,
     textAlign: "left" as const,
     "&:active": { transform: "translateY(0.5px)" },
+    "&:disabled": { opacity: 0.5, cursor: "default" },
   };
 
   return (
@@ -674,9 +808,27 @@ function AccountMenu({
     >
       <Box sx={{ px: "12px", pt: "10px", pb: "8px" }}>
         <Box sx={{ fontSize: 14, fontWeight: 700 }}>{name}</Box>
-        <Box sx={{ fontSize: 12.5, color: GRAY_500 }}>Instrumentiste</Box>
+        <Box sx={{ fontSize: 12.5, color: GRAY_500 }}>{roleLabel}</Box>
       </Box>
       <Box sx={{ borderTop: "1px dashed #DDE2E8", mx: "6px", my: "4px" }} />
+      {extraItems && extraItems.length > 0 && (
+        <>
+          {extraItems.map((item) => (
+            <Box
+              key={item.key}
+              component="button"
+              type="button"
+              onClick={item.onClick}
+              disabled={item.disabled}
+              sx={{ ...itemSx, color: GRAY_600, "&:hover": { background: GRAY_75 } }}
+            >
+              {item.icon}
+              {item.label}
+            </Box>
+          ))}
+          <Box sx={{ borderTop: "1px dashed #DDE2E8", mx: "6px", my: "4px" }} />
+        </>
+      )}
       <Box component="button" type="button" onClick={onProfile} sx={{ ...itemSx, color: GRAY_600, "&:hover": { background: GRAY_75 } }}>
         <UserIcon />
         Mon profil
@@ -701,7 +853,7 @@ export function MobileLayout() {
 
   useInstrumentistMissionSync();
 
-  // Nouvelle entrée dans l'espace instrumentiste = montage initial de ce layout (voir
+  // Nouvelle entrée dans l'espace mobile = montage initial de ce layout (voir
   // scrollRestoration.ts) — doit s'exécuter avant l'effet de restauration ci-dessous
   // pour que la toute première route de la session ne restaure jamais rien.
   React.useEffect(() => {
@@ -710,7 +862,18 @@ export function MobileLayout() {
   }, []);
   useRouteScrollRestoration(pathname);
 
-  const isInstrumentist = pathname.startsWith("/app/i");
+  // Scope courant — seule distinction structurelle entre les deux rôles mobiles.
+  // Tout le reste de ce composant reste commun (voir en-tête du fichier).
+  const mobileScope: MobileScope | null = pathname.startsWith("/app/i")
+    ? "instrumentist"
+    : pathname.startsWith("/app/s")
+      ? "surgeon"
+      : null;
+  const isInstrumentist = mobileScope === "instrumentist";
+  const isSurgeon = mobileScope === "surgeon";
+
+  const tabs = mobileScope ? tabsForScope(mobileScope) : INSTRUMENTIST_TABS;
+  const roleLabel = mobileScope ? roleLabelForScope(mobileScope) : "Instrumentiste";
   const activeTab = tabs.find((t) => t.match(pathname))?.key ?? null;
 
   // Le "kick" des vagues du bandeau (impulsion brève à chaque navigation) est
@@ -723,7 +886,8 @@ export function MobileLayout() {
   // Capture de l'origine de l'écran d'encodage (pour le bouton retour, voir
   // scrollRestoration.ts) — sur un accès direct/deep-link, previousPathnameRef
   // égale déjà pathname au montage, donc ceci ne se déclenche jamais et
-  // getEncodingBackTarget() retombe correctement sur son repli.
+  // getEncodingBackTarget() retombe correctement sur son repli. Instrumentiste
+  // uniquement (ENCODING_ROUTE_RE ne matche jamais /app/s/*).
   const previousPathnameRef = React.useRef(pathname);
   React.useEffect(() => {
     const wasEncoding = ENCODING_ROUTE_RE.test(previousPathnameRef.current);
@@ -755,6 +919,7 @@ export function MobileLayout() {
   // serveur dédié (offres créées après User.offersLastSeenAt), distinct de
   // `offersCount` ci-dessus qui reste "total d'offres actuellement disponibles"
   // (utilisé pour le sous-titre de l'écran Offres, une information différente).
+  // Instrumentiste uniquement — le chirurgien n'a pas d'offres.
   const { data: offersUnreadCount = 0 } = useQuery({
     queryKey: ["missions", "offers", "unread-count"],
     queryFn: fetchOffersUnreadCount,
@@ -767,12 +932,16 @@ export function MobileLayout() {
   // Bascule serveur (audit PWA/mobile/admin 2026-07-29, revue post-rapport) — la
   // cloche ne dépend plus d'un cache localStorage ni de l'état de la permission Push
   // (cette requête tourne même si pushStatus === "permission-denied"/"unsupported").
+  // Partagée instrumentiste/chirurgien (socle mobile Lot 1, 2026-08-05) — même
+  // infrastructure de notifications pour les deux rôles, aucun moteur dédié.
   const { data: notificationsUnreadCount = 0 } = useQuery({
     queryKey: ["notifications", "unread-count"],
     queryFn: fetchUnreadNotificationsCount,
-    enabled: isInstrumentist,
-    refetchInterval: isInstrumentist ? 60_000 : false,
+    enabled: mobileScope !== null,
+    refetchInterval: mobileScope !== null ? 60_000 : false,
   });
+
+  const pwaInstall = usePwaInstallMenuState();
 
   const firstname = state.status === "authenticated" ? state.user.firstname : null;
   const lastname = state.status === "authenticated" ? state.user.lastname : null;
@@ -783,8 +952,51 @@ export function MobileLayout() {
     navigate("/login", { replace: true });
   };
 
+  const profilePath = isSurgeon ? "/app/s/profile" : "/app/i/profile";
+  const notificationsPath = isSurgeon ? "/app/s/notifications" : "/app/i/notifications";
+
+  const moreMenuActive =
+    isSurgeon &&
+    (pathname.startsWith("/app/s/profile") ||
+      pathname.startsWith("/app/s/notifications") ||
+      pathname.startsWith("/app/s/requests") ||
+      pathname.startsWith("/app/s/absences"));
+
+  // Entrées du menu "Plus" — chirurgien uniquement pour l'instant (Lot 1). Mes
+  // demandes/Mes indisponibilités pointent vers des pages "bientôt disponible"
+  // tant que leurs lots dédiés ne sont pas livrés (jamais un bouton mort : la
+  // destination existe et explique clairement l'état, voir ComingSoonPage).
+  const surgeonMoreItems = isSurgeon
+    ? [
+        { key: "requests", icon: <TagIcon />, label: "Mes demandes", onClick: () => { setMenuAnchor(null); navigate("/app/s/requests"); } },
+        { key: "absences", icon: <CalendarIcon />, label: "Mes indisponibilités", onClick: () => { setMenuAnchor(null); navigate("/app/s/absences"); } },
+        { key: "notifications", icon: <BellIcon />, label: "Notifications", onClick: () => { setMenuAnchor(null); navigate(notificationsPath); } },
+        ...(pwaInstall.variant !== "unavailable"
+          ? [{
+              key: "pwa-install",
+              icon: <DownloadIcon />,
+              label: pwaInstall.label,
+              disabled: pwaInstall.disabled,
+              onClick: () => { setMenuAnchor(null); pwaInstall.onAction?.(); },
+            }]
+          : []),
+      ]
+    : undefined;
+
   const { title, subtitle } = React.useMemo(() => {
     const dateLabel = dayjs().format("dddd D MMMM").replace(/^\w/, (c) => c.toUpperCase());
+
+    if (isSurgeon) {
+      if (activeTab === "planning") {
+        return { title: "Planning", subtitle: dayjs().format("MMMM YYYY").replace(/^\w/, (c) => c.toUpperCase()) };
+      }
+      if (activeTab === "activity") {
+        return { title: "Activité", subtitle: "Vos statistiques personnelles" };
+      }
+      const name = firstname ? `, ${firstname}` : "";
+      return { title: `\u{1F44B} Bonjour${name} !`, subtitle: dateLabel };
+    }
+
     if (activeTab === "planning") {
       return { title: "Planning", subtitle: dayjs().format("MMMM YYYY").replace(/^\w/, (c) => c.toUpperCase()) };
     }
@@ -796,12 +1008,12 @@ export function MobileLayout() {
     }
     const name = firstname ? `, ${firstname}` : "";
     return {
-      title: `\u{1F44B} Bonjour${name} !`,
+      title: `\u{1F44B} Bonjour${name} !`,
       subtitle: `${dateLabel} · ${todayCount} mission${todayCount > 1 ? "s" : ""} aujourd'hui`,
     };
-  }, [activeTab, firstname, offersCount, todayCount]);
+  }, [isSurgeon, activeTab, firstname, offersCount, todayCount]);
 
-  if (!isInstrumentist) {
+  if (mobileScope === null) {
     return (
       <Box sx={{ ...dvh("minHeight", "100vh"), bgcolor: "background.default" }}>
         <Outlet />
@@ -822,7 +1034,7 @@ export function MobileLayout() {
         position: "relative",
       }}
     >
-      {pushStatus === "permission-default" && (
+      {isInstrumentist && pushStatus === "permission-default" && (
         <Box
           sx={{
             display: "flex",
@@ -869,12 +1081,15 @@ export function MobileLayout() {
     <Box sx={{ ...dvh("minHeight", "100vh"), display: "flex", background: "#F5F7FA" }}>
       {isDesktop && (
         <DesktopSidebar
+          tabs={tabs}
+          roleLabel={roleLabel}
           activeKey={activeTab}
           onNavigate={(path) => navigate(path)}
           offersCount={offersUnreadCount}
           firstname={firstname}
           lastname={lastname}
           onLogout={handleLogout}
+          moreMenu={isSurgeon ? { active: moreMenuActive, onOpen: (e) => setMenuAnchor(e.currentTarget) } : undefined}
         />
       )}
 
@@ -888,7 +1103,7 @@ export function MobileLayout() {
             titleKey={pathname}
             initials={initialsOf(firstname, lastname)}
             unreadCount={notificationsUnreadCount}
-            onBell={() => navigate("/app/i/notifications")}
+            onBell={() => navigate(notificationsPath)}
             onAvatar={(e) => setMenuAnchor(e.currentTarget)}
           />
         )}
@@ -897,19 +1112,24 @@ export function MobileLayout() {
 
       {!isDesktop && (
         <MobileBottomNav
+          tabs={tabs}
+          roleLabel={roleLabel}
           activeKey={activeTab}
           onNavigate={(path) => navigate(path)}
           offersCount={offersUnreadCount}
+          moreButton={isSurgeon ? { active: moreMenuActive, onOpen: (e) => setMenuAnchor(e.currentTarget) } : undefined}
         />
       )}
 
       <AccountMenu
         anchorEl={menuAnchor}
         onClose={() => setMenuAnchor(null)}
+        roleLabel={roleLabel}
         firstname={firstname}
         lastname={lastname}
-        onProfile={() => { setMenuAnchor(null); navigate("/app/i/profile"); }}
+        onProfile={() => { setMenuAnchor(null); navigate(profilePath); }}
         onLogout={handleLogout}
+        extraItems={surgeonMoreItems}
       />
     </Box>
   );

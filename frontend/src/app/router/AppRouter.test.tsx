@@ -15,7 +15,7 @@ import { ToastProvider } from "../ui/toast/ToastProvider";
  */
 
 let authStatus: "authenticated" | "anonymous" = "authenticated";
-let authRole: "MANAGER" | "ADMIN" | "INSTRUMENTIST" = "MANAGER";
+let authRole: "MANAGER" | "ADMIN" | "INSTRUMENTIST" | "SURGEON" = "MANAGER";
 
 vi.mock("../auth/AuthContext", () => ({
   useAuth: () => ({
@@ -109,6 +109,9 @@ vi.mock("../features/intervention-types/api/interventionTypes.api", () => ({
 vi.mock("../features/pwa-install/PwaInstallBanner", () => ({
   PwaInstallBanner: () => null,
 }));
+vi.mock("../features/missions/sync/useInstrumentistMissionSync", () => ({
+  useInstrumentistMissionSync: vi.fn(),
+}));
 
 // ── Dépendances propres à ProfilePage (manager/admin) ───────────────────────────
 vi.mock("../features/me/api/me.api", () => ({
@@ -183,5 +186,43 @@ describe("AppRouter — route Profil manager/admin (Lot 12)", () => {
     authRole = "INSTRUMENTIST";
     renderAt("/app/m/profile");
     await waitFor(() => expect(screen.queryByRole("heading", { name: "Mon profil" })).toBeNull());
+  });
+});
+
+describe("AppRouter — RequireSurgeon et socle mobile chirurgien (Lot 1, 2026-08-05)", () => {
+  it("un SURGEON accède à /app/s (ComingSoonPage, pas de redirection)", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/s");
+    await waitFor(() => expect(screen.getByText(/Accueil.*bientôt disponible/)).toBeInTheDocument(), { timeout: 5000 });
+  });
+
+  it("un SURGEON accède à /app/s/notifications (NotificationsPage, partagée avec l'instrumentiste)", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/s/notifications");
+    await waitFor(() => expect(screen.getByText("Aucune notification")).toBeInTheDocument(), { timeout: 5000 });
+  });
+
+  it("un SURGEON accède à /app/s/profile (ProfilePage, partagée avec l'instrumentiste)", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/s/profile");
+    await waitFor(() => expect(screen.getByText("Ada Lovelace")).toBeInTheDocument(), { timeout: 5000 });
+  });
+
+  it("un INSTRUMENTIST ne peut pas accéder à /app/s (redirigé hors de l'espace chirurgien)", async () => {
+    authRole = "INSTRUMENTIST";
+    renderAt("/app/s");
+    await waitFor(() => expect(screen.queryByText(/Accueil.*bientôt disponible/)).toBeNull());
+  });
+
+  it("un MANAGER ne peut pas accéder à /app/s (redirigé vers /app/m/dashboard)", async () => {
+    authRole = "MANAGER";
+    renderAt("/app/s");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument(), { timeout: 5000 });
+  });
+
+  it("utilisateur non authentifié redirigé vers /login (guard RequireAuth existant)", async () => {
+    authStatus = "anonymous";
+    renderAt("/app/s");
+    await waitFor(() => expect(screen.queryByText(/Accueil.*bientôt disponible/)).toBeNull());
   });
 });

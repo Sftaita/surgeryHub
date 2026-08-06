@@ -5,6 +5,7 @@ export type MeResponse = {
   email: string;
   firstname: string | null;
   lastname: string | null;
+  phone: string | null;
   profilePictureUrl: string | null;
   role: string;
   instrumentistProfile: {

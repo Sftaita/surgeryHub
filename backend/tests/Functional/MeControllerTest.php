@@ -163,4 +163,35 @@ final class MeControllerTest extends WebTestCase
         $client->request('POST', '/api/me/onboarding/complete', server: ['CONTENT_TYPE' => 'application/json']);
         self::assertSame(Response::HTTP_UNAUTHORIZED, $client->getResponse()->getStatusCode());
     }
+
+    /**
+     * Socle mobile partagé chirurgien (Lot 1, 2026-08-05) — `phone` existait déjà sur
+     * `User` (utilisé à l'invitation/administration) mais n'était jamais exposé sur
+     * GET /api/me. Exposition minimale en lecture seule, commune à tous les rôles.
+     */
+    public function test_me_exposes_phone_when_set(): void
+    {
+        $client = $this->boot();
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $surgeon->setPhone('+32 475 00 00 00');
+        $this->em->flush();
+        $token = $this->login($client, $surgeon);
+
+        $res = $this->request($client, 'GET', '/api/me', $token);
+        self::assertSame(Response::HTTP_OK, $res->getStatusCode());
+        $data = json_decode($res->getContent(), true);
+        self::assertSame('+32 475 00 00 00', $data['phone']);
+    }
+
+    public function test_me_exposes_null_phone_when_not_set(): void
+    {
+        $client = $this->boot();
+        $instr = $this->createUser('ROLE_INSTRUMENTIST');
+        $token = $this->login($client, $instr);
+
+        $res = $this->request($client, 'GET', '/api/me', $token);
+        $data = json_decode($res->getContent(), true);
+        self::assertArrayHasKey('phone', $data);
+        self::assertNull($data['phone']);
+    }
 }

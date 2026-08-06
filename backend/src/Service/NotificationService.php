@@ -589,6 +589,14 @@ class NotificationService
             return $this->buildFrontendUrl('/app/i/profile');
         }
 
+        // Socle mobile partagé chirurgien (D-095) — `/app/s/profile` existe réellement
+        // depuis ce lot (ProfilePage commune) ; auparavant ce cas retournait null
+        // (aucun écran de préférences côté chirurgien), volontairement laissé tel quel
+        // par D-094 en attendant que la route existe.
+        if (in_array('ROLE_SURGEON', $roles, true)) {
+            return $this->buildFrontendUrl('/app/s/profile');
+        }
+
         if (in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true)) {
             return $this->buildFrontendUrl('/app/m/profile');
         }
