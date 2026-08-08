@@ -5824,3 +5824,69 @@ flag `inApp` du résolveur de préférences). Dispatché **uniquement** quand
 `AbsenceImpactService` n'a levé aucune nouvelle alerte pour la création/modification
 en cours — jamais en doublon de `PLANNING_ALERT`, qui couvre déjà le cas avec
 recouvrement.
+
+## 43. Activité chirurgien + podium personnel (Lot 4, D-098)
+
+`SurgeonActivityController`, préfixe `/api/surgeon/activity`. **AuthZ :**
+`ROLE_SURGEON` uniquement (`SurgeonActivityVoter::SELF_ACCESS`, rôle sans sujet) — 403
+pour INSTRUMENTIST/MANAGER/ADMIN. Toujours self-scopé sur l'utilisateur authentifié,
+**jamais un paramètre `surgeonId`** (un éventuel `?surgeonId=` dans la requête n'est
+jamais lu par le contrôleur, quel que soit son contenu).
+
+### `GET /api/surgeon/activity?from=&to=`
+
+`from`/`to` : dates ISO 8601, même contrat de validation que
+`GET /api/surgeons/{id}/planning` existant (tous deux requis, `422` si absents/invalides
+ou si `from >= to`). Intervalle demi-ouvert `[from, to)` côté agrégation.
+
+**Règle de comptage (unique source de vérité `SurgeonActivityService::COUNTED_STATUSES`) :**
+seules les `Mission` au statut `VALIDATED` ou `CLOSED` comptent comme activité
+réalisée — les 9 autres statuts existants (`DRAFT`, `OPEN`, `DECLARED`, `ASSIGNED`,
+`REJECTED`, `SUBMITTED`, `IN_PROGRESS`, `CANCELLED`, `ENCODING_IN_PROGRESS`) sont
+exclus.
+
+**Source :** `MissionIntervention` rattachée à une `Mission` dont
+`mission.surgeon = utilisateur authentifié` — jamais `MissionInterventionDraft`
+(ligne provisoire, avant résolution du matériel, jamais comptée).
+
+**Réponse — 200 :**
+```json
+{
+  "period": { "from": "2026-01-01", "to": "2027-01-01" },
+  "missionCount": 42,
+  "interventionCount": 182,
+  "interventions": [
+    { "interventionTypeId": 12, "label": "Prothèse totale de genou", "count": 84 },
+    { "interventionTypeId": 8, "label": "Plastie LCA", "count": 61 },
+    { "interventionTypeId": null, "label": "Ligamentoplastie (historique)", "count": 3 }
+  ]
+}
+```
+`missionCount` compte les `Mission` distinctes (indépendant du nombre d'interventions
+qu'elles contiennent — une mission peut en contenir plusieurs, donc
+`missionCount != interventionCount` dans de nombreux cas). `interventions` est déjà
+triée `count` DESC puis `label` ASC (tie-break déterministe) — le frontend dérive le
+podium par simple `interventions.slice(0, 3)`, jamais un second endpoint dédié.
+
+**Groupement :** par `interventionType.id` (FK réelle, référentiel Lot 5/D-068) quand
+elle existe — libellé = `InterventionType.label` **courant** (pas le snapshot figé
+`mi.label`). Les lignes historiques pré-Lot 5 sans FK (`interventionType = null`) sont
+groupées séparément par `mi.code`, avec `interventionTypeId: null` dans la réponse —
+**jamais fusionnées** avec un type réel au label proche (aucune résolution par
+similarité de texte).
+
+**Aucune donnée interdite :** la réponse ne contient jamais de champ patient, tarif,
+montant ou rémunération instrumentiste — testé explicitement.
+
+**Performance :** 3 requêtes DQL agrégées exactement (`missionCount`, groupement réel,
+groupement legacy), aucun N+1 — `interventionCount` est dérivé en PHP (somme des deux
+groupes), jamais une 4e requête. Utilise les index existants
+`idx_mission_start_status` et `idx_intervention_mission`.
+
+### Podium (frontend)
+
+Jamais un classement inter-chirurgiens — uniquement les types d'intervention du
+chirurgien connecté. `SurgeonHomePage` réutilise le **même** hook
+(`useSurgeonActivity`, mêmes défauts "année en cours") que `SurgeonActivityPage` :
+`queryKey` identique dans le cas par défaut, donc même cache React Query, jamais un
+second calcul côté Home.

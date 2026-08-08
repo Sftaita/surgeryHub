@@ -72,6 +72,14 @@ vi.mock("../features/self-absences/api/selfAbsences.api", () => ({
   updateMyAbsence: vi.fn(),
   deleteMyAbsence: vi.fn(),
 }));
+vi.mock("../features/surgeon-activity/api/surgeonActivity.api", () => ({
+  fetchSurgeonActivity: vi.fn().mockResolvedValue({
+    period: { from: "2026-01-01", to: "2027-01-01" },
+    missionCount: 0,
+    interventionCount: 0,
+    interventions: [],
+  }),
+}));
 vi.mock("../features/notifications/api/notifications.api", () => ({
   fetchUnreadNotificationsCount: vi.fn().mockResolvedValue(0),
   fetchNotifications: vi.fn().mockResolvedValue({ items: [], unreadCount: 0 }),
@@ -330,5 +338,28 @@ describe("AppRouter — Absences self-service (Lot 3, D-097, 2026-08-06)", () =>
     await waitFor(() => expect(screen.getByText("MES ABSENCES")).toBeInTheDocument(), { timeout: 5000 });
     const nav = screen.getByRole("navigation", { name: "Navigation instrumentiste" });
     expect(within(nav).getByRole("button", { name: "Absences" })).toHaveAttribute("aria-current", "page");
+  });
+});
+
+describe("AppRouter — Activité chirurgien (Lot 4, D-098, 2026-08-07)", () => {
+  it("un SURGEON accède à /app/s/activity (SurgeonActivityPage réelle, plus ComingSoonPage)", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/s/activity");
+    await waitFor(() => expect(screen.getByText("ACTIVITÉ")).toBeInTheDocument(), { timeout: 5000 });
+    expect(screen.queryByText(/bientôt disponible/)).not.toBeInTheDocument();
+  });
+
+  it("un INSTRUMENTIST ne peut pas accéder à /app/s/activity (redirigé hors de l'espace chirurgien)", async () => {
+    authRole = "INSTRUMENTIST";
+    renderAt("/app/s/activity");
+    await waitFor(() => expect(screen.queryByText("ACTIVITÉ")).toBeNull());
+  });
+
+  it("l'onglet Activité de la bottom nav chirurgien est actif sur /app/s/activity", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/s/activity");
+    await waitFor(() => expect(screen.getByText("ACTIVITÉ")).toBeInTheDocument(), { timeout: 5000 });
+    const nav = screen.getByRole("navigation", { name: "Navigation chirurgien" });
+    expect(within(nav).getByRole("button", { name: "Activité" })).toHaveAttribute("aria-current", "page");
   });
 });

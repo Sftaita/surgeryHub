@@ -41,6 +41,10 @@ const SurgeonPlanningPage = React.lazy(() => import("../pages/surgeon/SurgeonPla
 // SurgeonAbsencesPage/InstrumentistAbsencesPage, voir docs/decisions.md.
 const SelfAbsencesPage    = React.lazy(() => import("../features/self-absences/SelfAbsencesPage"));
 
+// Chirurgien (Lot 4, D-098) — activité personnelle + podium (pas un classement inter-
+// chirurgiens), voir docs/decisions.md.
+const SurgeonActivityPage = React.lazy(() => import("../features/surgeon-activity/SurgeonActivityPage"));
+
 // Admin
 const AdminUsersPage       = React.lazy(() => import("../pages/admin/AdminUsersPage"));
 const AdminSitesPage       = React.lazy(() => import("../pages/admin/AdminSitesPage"));
@@ -160,7 +164,7 @@ export function AppRouter() {
               <Route element={<MobileLayout />}>
                 <Route path="s" element={<SurgeonHomePage />} />
                 <Route path="s/planning" element={<SurgeonPlanningPage />} />
-                <Route path="s/activity" element={<ComingSoonPage title="Activité" />} />
+                <Route path="s/activity" element={<SurgeonActivityPage />} />
                 <Route path="s/requests" element={<ComingSoonPage title="Mes demandes" />} />
                 <Route path="s/absences" element={<SelfAbsencesPage />} />
                 <Route path="s/notifications" element={<NotificationsPage />} />

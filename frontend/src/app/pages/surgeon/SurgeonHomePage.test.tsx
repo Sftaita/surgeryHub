@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import SurgeonHomePage from "./SurgeonHomePage";
 
 /**
@@ -16,14 +16,28 @@ import SurgeonHomePage from "./SurgeonHomePage";
  */
 
 const fetchMissionsMock = vi.fn();
+const fetchSurgeonActivityMock = vi.fn();
 
 vi.mock("../../features/missions/api/missions.api", () => ({
   fetchMissions: (...args: unknown[]) => fetchMissionsMock(...args),
 }));
 
+vi.mock("../../features/surgeon-activity/api/surgeonActivity.api", () => ({
+  fetchSurgeonActivity: (...args: unknown[]) => fetchSurgeonActivityMock(...args),
+}));
+
 vi.mock("../instrumentist/MissionDetailPage", () => ({
   MissionDetailContent: ({ missionId }: { missionId: number }) => <div>détail mission #{missionId}</div>,
 }));
+
+function makeActivity(interventions: Array<{ interventionTypeId: number | null; label: string; count: number }> = []) {
+  return {
+    period: { from: "2026-01-01", to: "2027-01-01" },
+    missionCount: interventions.reduce((sum, i) => sum + i.count, 0),
+    interventionCount: interventions.reduce((sum, i) => sum + i.count, 0),
+    interventions,
+  };
+}
 
 function makeMission(overrides: Partial<any> = {}) {
   return {
@@ -51,8 +65,24 @@ function renderPage() {
   );
 }
 
+function renderPageWithRoutes() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <MemoryRouter initialEntries={["/app/s"]}>
+      <QueryClientProvider client={client}>
+        <Routes>
+          <Route path="/app/s" element={<SurgeonHomePage />} />
+          <Route path="/app/s/activity" element={<div>page activité</div>} />
+        </Routes>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+}
+
 beforeEach(() => {
   fetchMissionsMock.mockReset();
+  fetchSurgeonActivityMock.mockReset();
+  fetchSurgeonActivityMock.mockResolvedValue(makeActivity());
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-08-06T12:00:00+02:00"));
 });
@@ -179,14 +209,47 @@ describe("SurgeonHomePage — à suivre", () => {
   });
 });
 
-describe("SurgeonHomePage — podium activité", () => {
-  it("aucun podium n'est rendu (aucun faux chiffre en Lot 2, en attendant le vrai calcul backend)", async () => {
+describe("SurgeonHomePage — podium activité (Lot 4, D-098)", () => {
+  it("aucune intervention validée sur l'année en cours → pas de section podium (§12, jamais une grande section vide)", async () => {
     fetchMissionsMock.mockResolvedValue({ items: [makeMission()] });
+    fetchSurgeonActivityMock.mockResolvedValue(makeActivity([]));
     renderPage();
 
     await screen.findByText(/CHU Brugmann/);
-    expect(screen.queryByText(/podium/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/MES INTERVENTIONS/)).not.toBeInTheDocument();
+  });
+
+  it("des interventions validées → podium top 3 avec le libellé de l'année, jamais un classement inter-chirurgiens", async () => {
+    fetchMissionsMock.mockResolvedValue({ items: [makeMission()] });
+    fetchSurgeonActivityMock.mockResolvedValue(makeActivity([
+      { interventionTypeId: 1, label: "Prothèse totale de genou", count: 84 },
+      { interventionTypeId: 2, label: "Plastie LCA", count: 61 },
+      { interventionTypeId: 3, label: "Ménisque", count: 37 },
+      { interventionTypeId: 4, label: "PUC", count: 18 },
+    ]));
+    renderPage();
+
+    expect(await screen.findByText("MES INTERVENTIONS — 2026")).toBeInTheDocument();
+    expect(screen.getByText("Prothèse totale de genou")).toBeInTheDocument();
+    expect(screen.getByText("84")).toBeInTheDocument();
+    expect(screen.getByText("Plastie LCA")).toBeInTheDocument();
+    expect(screen.getByText("Ménisque")).toBeInTheDocument();
+    // Top 3 uniquement — pas le 4e type ici (voir SurgeonActivityPage pour la liste complète).
+    expect(screen.queryByText("PUC")).not.toBeInTheDocument();
     expect(screen.queryByText(/classement/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/TOP INTERVENTIONS/)).not.toBeInTheDocument();
+  });
+
+  it("le CTA 'Voir toute l'activité' ouvre /app/s/activity", async () => {
+    fetchMissionsMock.mockResolvedValue({ items: [makeMission()] });
+    fetchSurgeonActivityMock.mockResolvedValue(makeActivity([
+      { interventionTypeId: 1, label: "Prothèse totale de genou", count: 84 },
+    ]));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderPageWithRoutes();
+
+    await user.click(await screen.findByText(/Voir toute l'activité/));
+    expect(await screen.findByText("page activité")).toBeInTheDocument();
   });
 });
 

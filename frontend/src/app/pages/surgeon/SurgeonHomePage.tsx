@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { Box, Dialog, DialogTitle, DialogContent, Stack, Typography, CircularProgress, Alert } from "@mui/material";
 import dayjs from "dayjs";
 import "dayjs/locale/fr";
@@ -8,6 +9,10 @@ import { fetchMissions } from "../../features/missions/api/missions.api";
 import { MissionDetailContent } from "../instrumentist/MissionDetailPage";
 import type { Mission } from "../../features/missions/api/missions.types";
 import { compareMissionsByStart, formatMissionTime } from "../../features/mobile-planning/planningPrimitives";
+import { useSurgeonActivity } from "../../features/surgeon-activity/useSurgeonActivity";
+import { todayYmd } from "../../features/surgeon-activity/period";
+import { PodiumRows } from "../../features/surgeon-activity/components/PodiumRows";
+import type { SurgeonActivityIntervention } from "../../features/surgeon-activity/api/surgeonActivity.types";
 
 dayjs.locale("fr");
 
@@ -155,6 +160,28 @@ function FollowUpCard({ upcomingUncoveredCount }: { upcomingUncoveredCount: numb
   );
 }
 
+// ── Podium activité (Lot 4, D-098) ──────────────────────────────────────────
+// Réutilise PodiumRows (même composant que SurgeonActivityPage) et useSurgeonActivity avec
+// les mêmes défauts (année en cours) que la page Activity ouverte sans paramètres d'URL —
+// même queryKey, donc même cache React Query, jamais un second calcul côté Home (§12).
+function ActivityPodiumCard({ interventions, year }: { interventions: SurgeonActivityIntervention[]; year: string }) {
+  const navigate = useNavigate();
+  return (
+    <Box sx={{ background: "#fff", borderRadius: "18px", boxShadow: SHADOW_XS, px: 2, py: 1.75 }}>
+      <Typography sx={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.07em", color: GREEN_700, mb: 1.25 }}>
+        MES INTERVENTIONS — {year}
+      </Typography>
+      <PodiumRows interventions={interventions} showHeading={false} />
+      <Box
+        component="button" type="button" onClick={() => navigate("/app/s/activity")}
+        sx={{ mt: 1.5, border: "none", background: "none", color: GREEN_800, fontFamily: "inherit", fontWeight: 700, fontSize: 13, cursor: "pointer", p: 0 }}
+      >
+        Voir toute l'activité →
+      </Box>
+    </Box>
+  );
+}
+
 export default function SurgeonHomePage() {
   const [selectedMissionId, setSelectedMissionId] = React.useState<number | null>(null);
 
@@ -207,6 +234,12 @@ export default function SurgeonHomePage() {
     };
   }, [monthQuery.data]);
 
+  // Année en cours, mêmes défauts que SurgeonActivityPage ouverte sans paramètres d'URL —
+  // même queryKey côté useSurgeonActivity, donc même cache (§12, Lot 4, D-098).
+  const currentYear = React.useMemo(() => todayYmd(), []);
+  const activityQuery = useSurgeonActivity("year", currentYear);
+  const topInterventions = activityQuery.data?.interventions ?? [];
+
   if (isLoading) {
     return (
       <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
@@ -229,10 +262,14 @@ export default function SurgeonHomePage() {
 
       <MonthSummaryCard total={monthSummary.total} covered={monthSummary.covered} uncovered={monthSummary.uncovered} />
 
-      {/* À suivre — uniquement si quelque chose mérite l'attention, jamais une
-          grande empty card. Podium activité (Lot Activity) volontairement absent
-          ici : aucun faux chiffre tant que le vrai calcul backend n'existe pas. */}
+      {/* À suivre — uniquement si quelque chose mérite l'attention, jamais une grande empty card. */}
       {upcomingUncoveredCount > 0 && <FollowUpCard upcomingUncoveredCount={upcomingUncoveredCount} />}
+
+      {/* Podium activité (Lot 4, D-098) — jamais une grande section vide tant qu'aucune
+          intervention validée n'existe (§12). */}
+      {topInterventions.length > 0 && (
+        <ActivityPodiumCard interventions={topInterventions} year={currentYear.slice(0, 4)} />
+      )}
 
       <Dialog
         open={selectedMissionId !== null}

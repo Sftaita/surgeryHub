@@ -2574,3 +2574,76 @@ Comme D-095/D-096 : Activité chirurgien réelle, `SurgeonMissionRequest`, disti
 d'`AuditEvent` sur le flux self-service — limite assumée (le flux manager existant
 n'en produit déjà aucun ; en ajouter un uniquement côté self-service aurait été une
 incohérence plutôt qu'une correction), voir D-097.
+
+## 17. Activité chirurgien + podium personnel (Lot 4, D-098, 2026-08-07)
+
+`/app/s/activity` remplace son repli `ComingSoonPage` par un module réel — activité
+personnelle du chirurgien connecté, jamais un classement entre chirurgiens. Voir D-098
+pour l'ensemble des décisions.
+
+### 17.1 Backend — `SurgeonActivityController`, agrégation centralisée
+
+Nouveau contrôleur `/api/surgeon/activity` (GET, params `from`/`to`), nouveau
+`SurgeonActivityVoter::SELF_ACCESS` (rôle `ROLE_SURGEON` uniquement, sans sujet —
+mirrors `AbsenceVoter::SELF_ACCESS`, D-097). `SurgeonActivityService` centralise la
+règle de comptage (`COUNTED_STATUSES = [VALIDATED, CLOSED]`, unique source de vérité,
+jamais recopiée ailleurs) et le groupement (`InterventionType.id` réel, `mi.code` en
+fallback pour les lignes legacy pré-Lot 5 sans FK — voir docs/api.md §43 pour le détail
+du contrat et de la stratégie de groupement).
+
+**Source de vérité :** `MissionIntervention` rattachée à une `Mission` dont
+`mission.surgeon = utilisateur authentifié` — jamais `MissionInterventionDraft`
+(provisoire, avant résolution du matériel par l'instrumentiste).
+
+**Performance :** 3 requêtes DQL agrégées exactement, aucun N+1
+(`missionCount` seul, groupement réel, groupement legacy — `interventionCount` dérivé
+en PHP). Utilise les index existants `idx_mission_start_status` et
+`idx_intervention_mission`, aucune migration nécessaire.
+
+**Sécurité :** self-scopé sans exception — un éventuel `?surgeonId=` dans la requête
+n'est jamais lu par le contrôleur. INSTRUMENTIST et MANAGER reçoivent 403. Aucune
+donnée patient/tarif/montant/rémunération dans la réponse.
+
+### 17.2 Frontend — `features/surgeon-activity/`, cache partagé avec Home
+
+```text
+features/surgeon-activity/
+├── api/
+│   ├── surgeonActivity.api.ts
+│   └── surgeonActivity.types.ts
+├── components/
+│   └── PodiumRows.tsx        — podium partagé (Activity ET Home), `showHeading`
+│                                optionnel pour éviter le double eyebrow sur Home
+├── period.ts                 — calcul Mois/Année, intervalles demi-ouverts [from, to)
+│                                (même convention que getRange() dans mobile-planning)
+├── useSurgeonActivity.ts      — hook partagé, queryKey dérivée du range calculé
+└── SurgeonActivityPage.tsx    — toggle Mois/Année, navigation < >, résumé, podium,
+                                  liste complète, empty state
+```
+
+`useSurgeonActivity(mode, referenceYmd)` est consommé à l'identique par
+`SurgeonActivityPage` et `SurgeonHomePage` : avec les mêmes défauts (année en cours),
+les deux produisent la **même** `queryKey` React Query — une seule requête réseau,
+jamais un second calcul côté Home. `SurgeonHomePage` n'affiche sa carte podium que si
+`interventions.length > 0` (jamais une grande section vide) ; le CTA "Voir toute
+l'activité" ouvre `/app/s/activity`.
+
+### 17.3 Podium — personnel, jamais un classement
+
+`interventions.slice(0, 3)` (déjà triées côté backend, count DESC puis label ASC) —
+moins de 3 types → podium partiel, aucun type → pas de podium du tout. Jamais le nom
+d'un autre chirurgien, jamais un rang, jamais une comparaison inter-chirurgiens.
+
+### 17.4 Navbar
+
+Onglet "Activité" déjà préparé au Lot 1 (§14.5/D-095, `TabKey`/`WAVE_SHAPE_KEY`/
+`SURGEON_TABS`) — pointait vers `ComingSoonPage`, pointe désormais vers
+`SurgeonActivityPage` réelle. Aucun changement de structure de navbar dans ce lot.
+
+### 17.5 Portée non traitée dans ce lot
+
+Comme D-095/D-096/D-097 : `SurgeonMissionRequest`, distinction
+`VIEW_ENCODING`/`EDIT_ENCODING`, signalement d'anomalie, export `.ics`. Drill-down
+(clic sur une catégorie → missions correspondantes) volontairement reporté —
+nécessiterait un endpoint supplémentaire non justifié par ce lot. Aucun `AuditEvent`
+(endpoint en lecture seule).

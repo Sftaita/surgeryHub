@@ -6983,3 +6983,109 @@ Comme D-095/D-096 : Activité chirurgien réelle, `SurgeonMissionRequest`, disti
 d'`AuditEvent` sur le flux self-service (voir décision ci-dessus) — limite assumée,
 pas un oubli, à revisiter si le domaine `Absence` gagne un jour un audit trail
 généralisé.
+
+---
+
+## D-098 — Activité chirurgien + podium personnel (Lot 4, 2026-08-07)
+
+Date : 2026-08-07
+
+### Contexte
+
+D-097 avait explicitement réservé ce chantier ("Activité chirurgien réelle") et
+préparé les 3 points de navbar (`TabKey`, `WAVE_SHAPE_KEY`, `SURGEON_TABS`) — l'onglet
+"Activité" existait déjà, pointant vers `ComingSoonPage`. Ce lot livre l'écran réel :
+une page d'activité personnelle simple, jamais un classement entre chirurgiens.
+
+### Décision — source de vérité : `MissionIntervention`, jamais `MissionInterventionDraft`
+
+`MissionInterventionDraft` (EPIC Revue instrumentiste, Lot 3) représente une ligne
+*provisoire*, avant résolution du matériel — jamais comptée. Seule `MissionIntervention`
+(la cible "réelle" du contrat, toujours `CATALOGUED`) rattachée à une `Mission` dont
+`mission.surgeon = utilisateur authentifié` alimente l'agrégat.
+
+### Décision — règle de comptage centralisée : `VALIDATED`/`CLOSED` uniquement
+
+`SurgeonActivityService::COUNTED_STATUSES` (`[MissionStatus::VALIDATED,
+MissionStatus::CLOSED]`) est l'unique source de vérité — aucun autre service ni
+repository ne recopie cette règle. Les 9 autres statuts existants (`DRAFT`, `OPEN`,
+`DECLARED`, `ASSIGNED`, `REJECTED`, `SUBMITTED`, `IN_PROGRESS`, `CANCELLED`,
+`ENCODING_IN_PROGRESS`) sont explicitement exclus, testés un par un
+(`SurgeonActivityControllerTest::test_status_counting_matches_rule`, dataProvider).
+
+### Décision — groupement : `InterventionType.id` réel, `mi.code` en fallback legacy, jamais de fusion par ressemblance de label
+
+Depuis le Lot 5 catalogue (D-068), `MissionIntervention.interventionType` est une FK
+nullable — non-null pour tout encodage réel, `null` uniquement pour les lignes
+historiques pré-Lot 5 (ex. mission #529). Le groupement utilise donc deux requêtes
+disjointes : (1) `interventionType IS NOT NULL` → groupé par `it.id`, libellé = **`it.label`
+courant du référentiel** (toujours à jour, contrairement au snapshot figé
+`mi.code`/`mi.label`) ; (2) `interventionType IS NULL` → groupé par `mi.code` (seul
+identifiant stable disponible pour ces lignes), libellé = `mi.label` (snapshot, faute
+de mieux). Les deux groupes ne sont **jamais fusionnés entre eux**, même si un label se
+ressemble — aucune résolution par similarité de texte. `interventionTypeId` vaut `null`
+dans la réponse API pour le second groupe, jamais un id inventé.
+
+### Décision — 3 requêtes DQL agrégées, aucun N+1, `interventionCount` dérivé en PHP
+
+`SurgeonActivityService::getActivity()` exécute exactement 3 requêtes : `missionCount`
+(COUNT sur `Mission` seule, utilise l'index existant `idx_mission_start_status`),
+le groupement "réel" (JOIN INNER `interventionType`) et le groupement "legacy"
+(`interventionType IS NULL`) — les deux derniers utilisent l'index existant
+`idx_intervention_mission` pour la jointure `Mission`. `interventionCount` est la
+somme PHP des deux groupes — jamais une 4e requête. Tri : `count` DESC puis `label`
+ASC (tie-break déterministe, `strcmp`).
+
+### Décision — `missionCount != interventionCount` : deux comptages distincts, jamais confondus
+
+`missionCount` compte les `Mission` distinctes (VALIDATED/CLOSED, période, self-scopé),
+indépendamment du nombre d'interventions qu'elles contiennent — une mission peut
+contenir plusieurs `MissionIntervention`. Testé explicitement : 1 mission / 3
+interventions → `missionCount = 1`, `interventionCount = 3`.
+
+### Décision — API : `GET /api/surgeon/activity`, self-scopé, jamais de `surgeonId`
+
+Nouveau `SurgeonActivityController` (`/api/surgeon/activity`, GET, params `from`/`to` —
+même contrat de validation qu'`SurgeonController::planning()` existant : ISO 8601,
+`from` strictement avant `to`). Nouveau `SurgeonActivityVoter::SELF_ACCESS` (rôle
+`ROLE_SURGEON` uniquement, sans sujet — mirrors `AbsenceVoter::SELF_ACCESS`, D-097).
+Le contrôleur résout toujours l'utilisateur authentifié (`#[CurrentUser]`) ; un éventuel
+`?surgeonId=` dans la requête n'est jamais lu, testé explicitement
+(`test_surgeon_id_query_param_is_ignored`). INSTRUMENTIST et MANAGER reçoivent 403 —
+strictement self-service chirurgien, jamais une vue managériale déguisée. Aucune donnée
+patient, tarif, montant ou rémunération instrumentiste dans la réponse (testé).
+
+### Décision — période Mois/Année, pas de date range picker
+
+`features/surgeon-activity/period.ts` calcule des intervalles demi-ouverts `[from, to)`
+(même convention que `getRange()` dans `mobile-planning/planningPrimitives`), pilotés
+par un mode `"month" | "year"` + une date de référence, avec navigation `< >` — jamais
+de sélecteur de plage libre en V1. Défaut : Année en cours (volumes plus significatifs
+pour un podium que la vue mensuelle).
+
+### Décision — frontend : un seul hook partagé, Home et Activity share le même cache React Query
+
+`useSurgeonActivity(mode, referenceYmd)` calcule la `queryKey` à partir du range dérivé
+— `SurgeonHomePage` (année en cours, mêmes défauts que `SurgeonActivityPage` ouverte
+sans paramètres d'URL) et `SurgeonActivityPage` elle-même produisent donc la **même**
+`queryKey` dans le cas par défaut : une seule requête réseau, jamais un second calcul
+côté Home. `PodiumRows` (composant partagé, `showHeading` optionnel) rend le podium à
+l'identique sur les deux pages — jamais un second composant "podium Home" dupliqué.
+
+### Décision — podium personnel, jamais un classement
+
+Le podium (`🥇🥈🥉`, top 3 `interventions.slice(0, 3)`, déjà triées côté backend) ne
+montre que les types d'intervention du chirurgien connecté — jamais le nom d'un autre
+chirurgien, jamais un rang, jamais une comparaison inter-chirurgiens. Moins de 3 types
+→ podium partiel (2 ou 1 case) ; aucun type → pas de podium du tout (jamais 3 cases
+vides). Home : section entièrement absente si `interventions.length === 0` (jamais une
+grande section vide, §12) — même règle sur la page Activity elle-même (empty state
+dédié : "Aucune intervention validée pour cette période").
+
+### Portée non traitée ici
+
+Comme D-095/D-096/D-097 : `SurgeonMissionRequest`, distinction
+`VIEW_ENCODING`/`EDIT_ENCODING`, signalement d'anomalie, export `.ics`. Drill-down
+(clic sur une catégorie → liste des missions correspondantes) volontairement reporté —
+nécessiterait un endpoint supplémentaire non justifié par ce lot (§13 du cahier des
+charges). Aucun nouvel `AuditEvent` (endpoint en lecture seule, aucune mutation).
