@@ -162,6 +162,14 @@ function roleLabelForScope(scope: MobileScope): string {
 // Instrumentiste uniquement : le chemin ne matche jamais une route /app/s/*.
 const ENCODING_ROUTE_RE = /^\/app\/i\/missions\/[^/]+\/encoding$/;
 
+// Finition espace chirurgien (2026-08-09) — MissionDetailContent (détail mission) et
+// SurgeonEncodingPage (encodage, Lot 6) rendent chacun leur propre en-tête complet
+// (flèche retour + titre + statut) : sans cette exclusion, la BrandBand affichait "Bonjour,
+// Charles !" empilé au-dessus, jamais retiré depuis l'ajout de ces écrans — trouvé lors
+// d'une revue navigateur réelle. Chirurgien uniquement (§ périmètre de cette revue) ;
+// l'instrumentiste a le même souci pré-existant sur /app/i/missions/{id}, hors périmètre ici.
+const SURGEON_MISSION_DETAIL_ROUTE_RE = /^\/app\/s\/missions\/[^/]+(\/encoding)?$/;
+
 function initialsOf(firstname?: string | null, lastname?: string | null): string {
   const a = (firstname ?? "").trim()[0] ?? "";
   const b = (lastname ?? "").trim()[0] ?? "";
@@ -909,6 +917,12 @@ export function MobileLayout() {
 
   const isEncodingRoute = ENCODING_ROUTE_RE.test(pathname);
 
+  // BrandBand supprimée pour les écrans qui rendent leur propre en-tête complet — voir
+  // SURGEON_MISSION_DETAIL_ROUTE_RE ci-dessus. Distinct d'isEncodingRoute (instrumentiste
+  // uniquement, sert aussi à recordEncodingOrigin) : ne jamais fusionner les deux, l'origine
+  // d'encodage ne doit être mémorisée que pour l'instrumentiste.
+  const hasOwnFullHeader = isEncodingRoute || SURGEON_MISSION_DETAIL_ROUTE_RE.test(pathname);
+
   const { from, to } = React.useMemo(() => todayRange(), []);
   const { data: todayData } = useQuery({
     queryKey: ["missions", "today", { from, to }],
@@ -997,7 +1011,25 @@ export function MobileLayout() {
   const { title, subtitle } = React.useMemo(() => {
     const dateLabel = dayjs().format("dddd D MMMM").replace(/^\w/, (c) => c.toUpperCase());
 
+    // Écrans secondaires partagés (menu "Plus" > Notifications / Mon profil, les deux
+    // rôles) — trouvé lors d'une revue navigateur réelle (2026-08-09) : ni l'un ni
+    // l'autre n'était dans SURGEON_TABS/INSTRUMENTIST_TABS, donc activeTab valait null et
+    // retombait sur le titre "Bonjour" par défaut, même en dehors de la Home.
+    if (pathname.endsWith("/notifications")) {
+      return { title: "Notifications", subtitle: "Vos alertes et rappels" };
+    }
+    if (pathname.endsWith("/profile")) {
+      return { title: "Mon profil", subtitle: roleLabel };
+    }
+
     if (isSurgeon) {
+      // Écrans secondaires chirurgien (Lot 5, D-099) — même souci que ci-dessus.
+      if (pathname === "/app/s/requests") {
+        return { title: "Mes demandes", subtitle: "Vos demandes de mission" };
+      }
+      if (pathname === "/app/s/mission-requests/new") {
+        return { title: "Nouvelle demande", subtitle: "Demander une mission" };
+      }
       if (activeTab === "planning") {
         return { title: "Planning", subtitle: dayjs().format("MMMM YYYY").replace(/^\w/, (c) => c.toUpperCase()) };
       }
@@ -1028,7 +1060,7 @@ export function MobileLayout() {
       title: `\u{1F44B} Bonjour${name} !`,
       subtitle: `${dateLabel} · ${todayCount} mission${todayCount > 1 ? "s" : ""} aujourd'hui`,
     };
-  }, [isSurgeon, activeTab, firstname, offersCount, todayCount]);
+  }, [isSurgeon, activeTab, firstname, offersCount, todayCount, pathname, roleLabel]);
 
   if (mobileScope === null) {
     return (
@@ -1047,7 +1079,7 @@ export function MobileLayout() {
         px: isEncodingRoute ? 0 : "20px",
         pt: 0,
         pb: isDesktop ? "40px" : "130px",
-        mt: isEncodingRoute ? 0 : "-34px",
+        mt: hasOwnFullHeader ? 0 : "-34px",
         position: "relative",
       }}
     >
@@ -1111,7 +1143,7 @@ export function MobileLayout() {
       )}
 
       <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-        {!isEncodingRoute && (
+        {!hasOwnFullHeader && (
           <BrandBand
             isDesktop={isDesktop}
             activeKey={activeTab}

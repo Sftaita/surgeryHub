@@ -55,7 +55,7 @@ export default function NotificationsPage() {
           Aucune notification
         </Typography>
         <Typography variant="caption" color="text.disabled">
-          Vous verrez ici les alertes de nouvelles missions
+          Vous verrez ici vos alertes et rappels
         </Typography>
       </Box>
     );

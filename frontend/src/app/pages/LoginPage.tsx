@@ -537,7 +537,7 @@ export default function LoginPage() {
             Bienvenue sur<br />Surgery<Box component="span" sx={{ color: GREEN_300 }}>Hub</Box>
           </Box>
           <Box component="p" sx={{ m: "16px 0 0", fontSize: 16, lineHeight: 1.55, color: "rgba(255,255,255,.82)" }}>
-            La plateforme dédiée aux instrumentistes pour gérer vos missions et disponibilités.
+            La plateforme qui centralise vos missions, vos plannings et vos disponibilités au bloc opératoire.
           </Box>
 
           <Box sx={{ display: "flex", flexDirection: "column", gap: "22px", mt: "38px" }}>
