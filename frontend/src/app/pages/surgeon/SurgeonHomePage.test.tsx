@@ -73,6 +73,7 @@ function renderPageWithRoutes() {
         <Routes>
           <Route path="/app/s" element={<SurgeonHomePage />} />
           <Route path="/app/s/activity" element={<div>page activité</div>} />
+          <Route path="/app/s/mission-requests/new" element={<div>formulaire demande</div>} />
         </Routes>
       </QueryClientProvider>
     </MemoryRouter>,
@@ -250,6 +251,18 @@ describe("SurgeonHomePage — podium activité (Lot 4, D-098)", () => {
 
     await user.click(await screen.findByText(/Voir toute l'activité/));
     expect(await screen.findByText("page activité")).toBeInTheDocument();
+  });
+});
+
+describe("SurgeonHomePage — CTA demande de mission (Lot 5, D-099)", () => {
+  it("le CTA '+ Demander une mission' est toujours visible et ouvre le formulaire", async () => {
+    fetchMissionsMock.mockResolvedValue({ items: [] });
+    fetchSurgeonActivityMock.mockResolvedValue(makeActivity());
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderPageWithRoutes();
+
+    await user.click(await screen.findByText("+ Demander une mission"));
+    expect(await screen.findByText("formulaire demande")).toBeInTheDocument();
   });
 });
 

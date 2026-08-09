@@ -80,6 +80,16 @@ vi.mock("../features/surgeon-activity/api/surgeonActivity.api", () => ({
     interventions: [],
   }),
 }));
+vi.mock("../features/surgeon-mission-requests/api/surgeonMissionRequests.api", () => ({
+  fetchMyMissionRequests: vi.fn().mockResolvedValue([]),
+  createMyMissionRequest: vi.fn(),
+}));
+vi.mock("../features/manager-mission-requests/api/managerSurgeonMissionRequests.api", () => ({
+  getSurgeonMissionRequests: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+  acceptSurgeonMissionRequest: vi.fn(),
+  rejectSurgeonMissionRequest: vi.fn(),
+  getPendingSurgeonMissionRequestsCount: vi.fn().mockResolvedValue(0),
+}));
 vi.mock("../features/notifications/api/notifications.api", () => ({
   fetchUnreadNotificationsCount: vi.fn().mockResolvedValue(0),
   fetchNotifications: vi.fn().mockResolvedValue({ items: [], unreadCount: 0 }),
@@ -361,5 +371,49 @@ describe("AppRouter — Activité chirurgien (Lot 4, D-098, 2026-08-07)", () => 
     await waitFor(() => expect(screen.getByText("ACTIVITÉ")).toBeInTheDocument(), { timeout: 5000 });
     const nav = screen.getByRole("navigation", { name: "Navigation chirurgien" });
     expect(within(nav).getByRole("button", { name: "Activité" })).toHaveAttribute("aria-current", "page");
+  });
+});
+
+describe("AppRouter — Demande de mission chirurgien (Lot 5, D-099, 2026-08-08)", () => {
+  it("un SURGEON accède à /app/s/requests (SurgeonMissionRequestsPage réelle, plus ComingSoonPage)", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/s/requests");
+    await waitFor(() => expect(screen.getByText("MES DEMANDES")).toBeInTheDocument(), { timeout: 5000 });
+    expect(screen.queryByText(/bientôt disponible/)).not.toBeInTheDocument();
+  });
+
+  it("un INSTRUMENTIST ne peut pas accéder à /app/s/requests (redirigé hors de l'espace chirurgien)", async () => {
+    authRole = "INSTRUMENTIST";
+    renderAt("/app/s/requests");
+    await waitFor(() => expect(screen.queryByText("MES DEMANDES")).toBeNull());
+  });
+
+  it("un SURGEON accède à /app/s/mission-requests/new (formulaire de demande)", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/s/mission-requests/new");
+    await waitFor(
+      () => expect(screen.getByRole("dialog", { name: "Demander une mission" })).toBeInTheDocument(),
+      { timeout: 5000 },
+    );
+  });
+
+  it("l'espace Demandes chirurgien n'ajoute pas de 6e onglet à la bottom nav (§14, CTA seulement)", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/s/requests");
+    await waitFor(() => expect(screen.getByText("MES DEMANDES")).toBeInTheDocument(), { timeout: 5000 });
+    const nav = screen.getByRole("navigation", { name: "Navigation chirurgien" });
+    expect(within(nav).queryByRole("button", { name: "Demandes" })).not.toBeInTheDocument();
+  });
+
+  it("un MANAGER accède à /app/m/missions/requests (onglet Demandes chirurgien de MissionsListPage)", async () => {
+    authRole = "MANAGER";
+    renderAt("/app/m/missions/requests");
+    await waitFor(() => expect(screen.getByText("Aucune demande.")).toBeInTheDocument(), { timeout: 5000 });
+  });
+
+  it("un SURGEON ne peut pas accéder à /app/m/missions/requests (redirigé hors de l'espace manager)", async () => {
+    authRole = "SURGEON";
+    renderAt("/app/m/missions/requests");
+    await waitFor(() => expect(screen.queryByText("Demandes chirurgien")).toBeNull());
   });
 });

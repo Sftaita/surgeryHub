@@ -41,6 +41,17 @@ final class NotificationTargetResolver
             return '/app/m/catalogue/requests';
         }
 
+        // Lot 5 (D-099) — même raisonnement : une nouvelle SurgeonMissionRequest se
+        // traite sur l'onglet dédié de MissionsListPage, jamais un détail de mission
+        // (aucune Mission n'existe encore à ce stade). Un rejet n'a pas de Mission non
+        // plus (état terminal, jamais créée) — renvoie sur "Mes demandes" (§11).
+        if ($type === NotificationType::SURGEON_MISSION_REQUEST_CREATED && $isManager) {
+            return '/app/m/missions/requests';
+        }
+        if ($type === NotificationType::SURGEON_MISSION_REQUEST_REJECTED && $isSurgeon) {
+            return '/app/s/requests';
+        }
+
         if ($mission !== null) {
             if ($isManager) {
                 return '/app/m/missions/' . $mission->getId();

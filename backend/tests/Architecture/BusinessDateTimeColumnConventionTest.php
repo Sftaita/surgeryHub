@@ -139,6 +139,9 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\OutboundNotificationAttempt::startedAt' => 'set from new \DateTimeImmutable() in OutboundNotificationAttempt::initializeCreatedAt() (PrePersist) or explicitly by OutboundNotificationService, never client input',
         'App\Entity\OutboundNotificationAttempt::finishedAt' => 'set from new \DateTimeImmutable() in OutboundNotificationService, never client input',
         'App\Entity\OutboundNotificationAttempt::createdAt' => 'set from new \DateTimeImmutable() in OutboundNotificationAttempt::initializeCreatedAt() (PrePersist), never client input',
+
+        // Lot 5 (D-099) — SurgeonMissionRequestService::accept()/reject().
+        'App\Entity\SurgeonMissionRequest::reviewedAt' => 'set from new \DateTimeImmutable() in SurgeonMissionRequestService::accept()/reject(), never client input',
     ];
 
     /** Exempt by name, not by allowlist entry — the project-wide TimestampableTrait convention. */

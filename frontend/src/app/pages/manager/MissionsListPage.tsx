@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
-import { Box, Button, Chip, Stack, Tab, Tabs, Typography } from "@mui/material";
+import { Badge, Box, Button, Chip, Stack, Tab, Tabs, Typography } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 
 import { fetchMissions } from "../../features/missions/api/missions.api";
@@ -14,6 +14,9 @@ import {
   formatMissionStatus,
   formatMissionType,
 } from "../../../app/features/missions/utils/missions.format";
+import SurgeonMissionRequestsPanel from "../../features/manager-mission-requests/SurgeonMissionRequestsPanel";
+import { getPendingSurgeonMissionRequestsCount } from "../../features/manager-mission-requests/api/managerSurgeonMissionRequests.api";
+import { useNavBadgeCount } from "../../ui/hooks/useNavBadgeCount";
 
 type ChipColor = "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning";
 
@@ -37,6 +40,14 @@ export default function MissionsListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const isToValidateView = location.pathname.endsWith("/to-validate");
+  // Lot 5 (D-099) — onglet "Demandes chirurgien" : même page, contenu entièrement
+  // différent (pas de Mission tant qu'une demande n'est pas acceptée), voir §20.
+  const isRequestsView = location.pathname.endsWith("/requests");
+
+  const pendingSurgeonMissionRequestCount = useNavBadgeCount(
+    ["surgeon-mission-requests-badge"],
+    getPendingSurgeonMissionRequestsCount,
+  );
 
   // Diagnostic tarifs instrumentistes (2026-08-05) — filtre pré-appliqué en arrivant
   // depuis la tuile dashboard "Missions validées sans calcul" (?validatedWithoutCalculation=true).
@@ -63,6 +74,7 @@ export default function MissionsListPage() {
   const { data, isLoading, isError } = useQuery({
     queryKey: ["missions", { page, limit, filters: effectiveFilters }],
     queryFn: () => fetchMissions(page, limit, effectiveFilters),
+    enabled: !isRequestsView,
   });
 
   const rows = data?.items ?? [];
@@ -131,14 +143,14 @@ export default function MissionsListPage() {
     [],
   );
 
-  if (isError) return <Typography color="error" sx={{ p: 3 }}>Erreur de chargement</Typography>;
+  if (isError && !isRequestsView) return <Typography color="error" sx={{ p: 3 }}>Erreur de chargement</Typography>;
 
   return (
     <Box>
       <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2.5}>
         <Typography variant="h6" fontWeight={600}>Missions</Typography>
 
-        {!isToValidateView && (
+        {!isToValidateView && !isRequestsView && (
           <Button
             variant="contained"
             startIcon={<AddIcon />}
@@ -151,14 +163,27 @@ export default function MissionsListPage() {
       </Stack>
 
       <Tabs
-        value={isToValidateView ? "to-validate" : "all"}
-        onChange={(_, v) => navigate(v === "to-validate" ? "/app/m/missions/to-validate" : "/app/m/missions")}
+        value={isRequestsView ? "requests" : isToValidateView ? "to-validate" : "all"}
+        onChange={(_, v) => navigate(v === "to-validate" ? "/app/m/missions/to-validate" : v === "requests" ? "/app/m/missions/requests" : "/app/m/missions")}
         sx={{ mb: 2, borderBottom: 1, borderColor: "divider", minHeight: 40 }}
       >
         <Tab value="all" label="Toutes" sx={{ minHeight: 40 }} />
         <Tab value="to-validate" label="À valider" sx={{ minHeight: 40 }} />
+        <Tab
+          value="requests"
+          sx={{ minHeight: 40 }}
+          label={
+            <Badge badgeContent={pendingSurgeonMissionRequestCount} color="warning" sx={{ "& .MuiBadge-badge": { right: -10, top: -2 } }}>
+              Demandes chirurgien
+            </Badge>
+          }
+        />
       </Tabs>
 
+      {isRequestsView ? (
+        <SurgeonMissionRequestsPanel />
+      ) : (
+        <>
       {validatedWithoutCalculation && (
         <Chip
           label="Validées sans calcul"
@@ -206,6 +231,8 @@ export default function MissionsListPage() {
           "& .MuiDataGrid-cell": { alignContent: "center" },
         }}
       />
+        </>
+      )}
     </Box>
   );
 }

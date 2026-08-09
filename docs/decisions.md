@@ -7089,3 +7089,156 @@ Comme D-095/D-096/D-097 : `SurgeonMissionRequest`, distinction
 (clic sur une catégorie → liste des missions correspondantes) volontairement reporté —
 nécessiterait un endpoint supplémentaire non justifié par ce lot (§13 du cahier des
 charges). Aucun nouvel `AuditEvent` (endpoint en lecture seule, aucune mutation).
+
+---
+
+## D-099 — Demande de mission chirurgien : SurgeonMissionRequest (Lot 5, 2026-08-08)
+
+Date : 2026-08-08
+
+### Contexte
+
+Le chirurgien n'a jamais reçu, et ne reçoit toujours pas, `MissionVoter::CREATE` — il ne
+peut pas créer de Mission lui-même. Ce lot lui donne un moyen d'exprimer une intention
+("j'aimerais une mission le X à tel site") sans jamais contourner ce garde-fou : seul un
+manager/admin peut convertir une demande acceptée en Mission officielle.
+
+**Décision structurante : `SurgeonMissionRequest` est une intention chirurgien, jamais
+une Mission. Seul Manager/Admin peut convertir une demande acceptée en Mission
+officielle, de façon atomique et auditée.**
+
+### Décision — domaine dédié, jamais un détournement d'un domaine existant
+
+Ni `MaterialItemRequest`/`InterventionTypeRequest` (référentiel catalogue, concept
+métier différent), ni `Mission` à l'état `DECLARED`/`DRAFT` (représentent déjà une
+Mission réelle, alors qu'ici aucune Mission n'existe tant que la demande n'est pas
+acceptée). Nouvelle entité `SurgeonMissionRequest` (`surgeon`, `site`, `type`
+[réutilise `MissionType`, aucun nouvel enum parallèle], `startAt`/`endAt`
+[`business_datetime_immutable`, même type que `Mission`, D-066 — jamais le bug UTC
+historique du Planning V2], `comment`, `status` [`PENDING`/`ACCEPTED`/`REJECTED`,
+aucun `CANCELLED` en V1], `reviewedBy`/`reviewedAt`/`reviewComment`,
+`createdMission` [FK nullable vers `Mission`, contrainte unique — une demande ne peut
+jamais être liée à deux Missions]). Réutilise en revanche les bons patterns
+architecturaux déjà établis par ces domaines : requester, status simple, review
+manager, transaction, `AuditEvent`, notifications async, Voter dédié, timestamps.
+
+### Décision — atomicité de l'acceptation : transaction unique, verrou pessimiste
+
+`SurgeonMissionRequestService::accept()`/`reject()` sont entièrement dans un
+`$em->wrapInTransaction()`, avec `$em->lock($request, LockMode::PESSIMISTIC_WRITE)` +
+`$em->refresh($request)` posés AVANT toute décision — même pattern que
+`MissionInterventionDraftService::resolve()` (EPIC Revue instrumentiste, Lot 3). Il est
+donc structurellement impossible d'observer `status=ACCEPTED` avec
+`createdMission=null` : soit toute la transaction commit (Mission créée + demande
+transitionnée + audit, un seul commit), soit elle rollback entièrement.
+
+**Concurrence (§22)** : deux managers qui `accept()`/`reject()` la même demande en
+parallèle — le second à obtenir le verrou relit `status`, le trouve déjà
+ACCEPTED/REJECTED (état terminal, V1 n'autorise aucune transition depuis un état
+terminal), lève `SurgeonMissionRequestAlreadyReviewedException` (409,
+`SURGEON_MISSION_REQUEST_ALREADY_REVIEWED`) plutôt que de rejouer la transition.
+Testé explicitement : double `accept()`, `accept()` après `reject()`, `reject()`
+après `accept()`.
+
+**Conflits planning (§23)** : avant de créer la Mission, `accept()` réutilise
+`PlanningConflictDetectionService::findConflict()` tel quel (même moteur que le reste
+du planning V2, jamais une seconde implémentation de la détection de chevauchement).
+Un conflit fait échouer l'acceptation proprement
+(`SurgeonMissionRequestConflictException`, 409, `SURGEON_MISSION_REQUEST_CONFLICT`)
+**avant toute écriture** — la demande reste `PENDING`, `createdMission` reste `null`,
+aucune Mission fantôme n'est créée. Testé explicitement (comptage de missions avant/
+après, aucune variation).
+
+### Décision — statut de la Mission créée : `DRAFT`, fondée sur le code existant
+
+`MissionService::create()` est l'unique point d'entrée officiel de création Mission
+(R-04) — il pose systématiquement `status = MissionStatus::DRAFT`, quel que soit
+l'appelant, y compris pour la création manager ad hoc existante (`MissionCreatePage`).
+La publication vers le pool (`OPEN`) est un second geste explicite et distinct
+(`MissionController::publish()`, son propre Voter `MISSION_PUBLISH`, sa propre
+notification async) — jamais automatique à la création. `SurgeonMissionRequestService::
+accept()` réutilise `MissionService::create()` tel quel (R-04 : toute mutation Mission
+passe par l'application service, jamais un `new Mission()` ad hoc dans ce lot) — la
+Mission créée est donc `DRAFT` par construction, cohérente avec le flux manager
+existant : le manager peut encore l'ajuster/l'assigner avant de la publier
+explicitement. Décision fondée sur le code observé, jamais une hypothèse.
+
+### Décision — éligibilité site : réutilisation de `SiteMembership`
+
+Le chirurgien ne peut demander une mission que pour un site auquel il est
+effectivement affilié (`SiteMembership.user`/`site`, entité déjà existante — aucune
+nouvelle table). Revérifié côté serveur à la création (jamais confiance dans un
+`siteId` arbitraire) — testé explicitement (site non affilié → 403).
+
+### Décision — sécurité : `surgeon` toujours forcé serveur, jamais un `surgeonId` client
+
+Même invariant absolu que D-097 (Absences self-service) : le contrôleur ne lit jamais
+`surgeonId`/`status`/`reviewedBy`/`createdMissionId` depuis le payload client — ces
+champs sont systématiquement calculés/forcés côté serveur. Testé explicitement
+(payload malveillant avec `surgeonId` d'un tiers, toujours silencieusement ignoré).
+
+### Décision — Voter dédié, jamais `BillingVoter::MANAGE`
+
+`SurgeonMissionRequestVoter` : `SELF_ACCESS` (rôle SURGEON, sans sujet — création/
+liste chirurgien) et `MANAGE` (rôle MANAGER/ADMIN, sans sujet — liste/accept/reject
+manager). Domaine planning/mission, pas catalogue/facturation — jamais
+`BillingVoter::MANAGE`, qui reste réservé à son périmètre existant
+(`InterventionTypeRequestManagerController` notamment).
+
+### Décision — notifications : même famille que D-093 (propositions catalogue)
+
+`SURGEON_MISSION_REQUEST_CREATED` (chirurgien → managers/admins actifs, in-app + push
+uniquement, jamais email — pas urgent, le manager la retrouve sur l'onglet dédié,
+même raisonnement que `CATALOGUE_REQUEST_CREATED`) ;
+`SURGEON_MISSION_REQUEST_ACCEPTED`/`REJECTED` (manager → chirurgien requester, push
+d'abord puis repli email si non livrable, même orchestration que
+`CATALOGUE_REQUEST_RESOLVED`/`IGNORED` — actionnable/attendu). Aucun système de
+notification parallèle inventé : mêmes `NotificationPreferenceResolver`,
+`OutboundNotificationService`, Messenger async, `NotificationTargetResolver` (deux
+nouvelles routes de deep-link : demande créée → `/app/m/missions/requests` pour un
+manager ; demande refusée → `/app/s/requests` pour le chirurgien, aucune Mission
+n'existant dans ce cas ; une demande acceptée retombe naturellement sur la route
+générique `/app/s/missions/{id}`, une Mission existe désormais).
+
+### Décision — audit : rigoureux, contrairement à l'ancien flux `MaterialItemRequest`
+
+`SURGEON_MISSION_REQUEST_CREATED` (`recordGlobal()`, aucune Mission n'existe encore),
+`SURGEON_MISSION_REQUEST_ACCEPTED` (`record()` sur la Mission fraîchement créée —
+FK exploitable depuis le détail mission), `SURGEON_MISSION_REQUEST_REJECTED`
+(`recordGlobal()`, aucune Mission n'existe ni n'existera). Payload sans donnée
+patient : snapshot nom chirurgien, site, dates/heures, type, acteur manager,
+`createdMissionId` (ACCEPTED) ou `reviewComment` (REJECTED).
+
+### Décision — placement manager : onglet contextuel de `MissionsListPage`, jamais une nouvelle section top-level
+
+`Catalogue > Demandes` existe déjà (`CatalogueRequestsPage`, référentiel
+InterventionType/MaterialItem) — y mélanger `SurgeonMissionRequest` (planning/
+scheduling, domaine distinct) aurait été incohérent. `MissionsListPage` avait déjà un
+précédent exact pour ce besoin : l'onglet "À valider" bascule entre deux ROUTES
+(`/app/m/missions` / `/app/m/missions/to-validate`) rendues par le même composant,
+qui adapte son contenu via `location.pathname`. Un troisième onglet "Demandes
+chirurgien" (`/app/m/missions/requests`) suit exactement ce même principe — badge
+`PENDING` sur l'onglet via `useNavBadgeCount` (généralisé depuis le badge Catalogue
+existant, aucun nouveau mécanisme de polling).
+
+### Décision — formulaire chirurgien : nouveau, jamais une recopie du formulaire manager
+
+`DeclareMissionPage` (instrumentiste, `/app/i/missions/declare`) est le précédent
+direct le plus proche : `SheetModal` plein écran, `StepperRow` pour date/heures
+(jour + minutes par pas de 15, bascule "lendemain"), `SelectField` pour
+site/type, `business_datetime_immutable`-compatible côté composition. Le formulaire
+chirurgien (`SurgeonMissionRequestFormPage`, `/app/s/mission-requests/new`) reprend
+cette recette à l'identique, simplifiée : pas de sélecteur chirurgien (toujours
+l'utilisateur authentifié), site limité aux affiliations réelles (`GET /api/me`,
+`sites[]`, déjà existant — aucun nouvel endpoint). CTA "+ Demander une mission"
+accessible depuis Home ET Planning chirurgien, jamais une 6ᵉ entrée navbar.
+
+### Portée non traitée ici
+
+Ajustement des informations (site/date/heures) par le manager avant acceptation
+(§9 du cahier des charges le recommandait — "je recommande" — sans l'imposer) :
+scope réduit à un commentaire de revue optionnel + accepter/refuser, pour éviter
+d'introduire une seconde surface de DTO éditable non budgétée par ce lot ; le manager
+peut refuser avec motif et laisser le chirurgien soumettre une nouvelle demande
+ajustée. Drill-down, export `.ics`, annulation d'une demande `PENDING` par le
+chirurgien (V1 : lecture seule, §19).

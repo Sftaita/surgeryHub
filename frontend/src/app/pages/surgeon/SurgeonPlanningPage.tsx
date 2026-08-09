@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -124,6 +124,7 @@ function CoverageFilterControl({ value, onChange }: { value: CoverageFilter; onC
 }
 
 export default function SurgeonPlanningPage() {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedMissionId, setSelectedMissionId] = React.useState<number | null>(null);
   const touchStartXRef = React.useRef<number | null>(null);
@@ -268,7 +269,17 @@ export default function SurgeonPlanningPage() {
         </Stack>
       </Stack>
 
-      <CoverageFilterControl value={filter} onChange={(v) => updateSearchParams({ filter: v })} />
+      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5} flexWrap="wrap" useFlexGap>
+        <CoverageFilterControl value={filter} onChange={(v) => updateSearchParams({ filter: v })} />
+        {/* CTA demande de mission (Lot 5, D-099, §14) — accessible depuis le planning,
+            jamais une 6e entrée navbar. */}
+        <Box
+          component="button" type="button" onClick={() => navigate("/app/s/mission-requests/new")}
+          sx={{ border: "none", background: "none", color: "#1F6B4F", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}
+        >
+          + Demander une mission
+        </Box>
+      </Stack>
 
       {missionsQuery.isError && (
         <Alert severity="error">Impossible de charger le planning.</Alert>

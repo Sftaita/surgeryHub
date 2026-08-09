@@ -25,6 +25,8 @@ framework:
             App\Message\CatalogueRequestProcessedMessage:   async
             App\Message\CatalogueRequestCreatedMessage:     async
             App\Message\AbsenceSelfDeclaredMessage:         async
+            App\Message\SurgeonMissionRequestCreatedMessage: async
+            App\Message\SurgeonMissionRequestDecidedMessage: async
 
 when@test:
     framework:

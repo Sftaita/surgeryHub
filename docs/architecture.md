@@ -2647,3 +2647,86 @@ Comme D-095/D-096/D-097 : `SurgeonMissionRequest`, distinction
 (clic sur une catégorie → missions correspondantes) volontairement reporté —
 nécessiterait un endpoint supplémentaire non justifié par ce lot. Aucun `AuditEvent`
 (endpoint en lecture seule).
+
+## 18. Demande de mission chirurgien — SurgeonMissionRequest (Lot 5, D-099, 2026-08-08)
+
+Le chirurgien exprime une intention de mission sans jamais créer de Mission
+lui-même — seul un manager/admin peut convertir une demande acceptée, de façon
+atomique et auditée. Voir D-099 pour l'ensemble des décisions.
+
+### 18.1 Backend — domaine dédié, atomicité transactionnelle
+
+Nouvelle entité `SurgeonMissionRequest` (jamais un détournement de
+`MaterialItemRequest`/`InterventionTypeRequest`/`Mission DECLARED`). Deux
+contrôleurs : `SurgeonMissionRequestController` (`/api/surgeon/mission-requests`,
+self-scopé) et `ManagerSurgeonMissionRequestController`
+(`/api/manager/surgeon-mission-requests`, `SurgeonMissionRequestVoter::MANAGE` —
+jamais `BillingVoter::MANAGE`).
+
+`SurgeonMissionRequestService::accept()`/`reject()` sont entièrement dans un
+`$em->wrapInTransaction()`, verrou pessimiste posé sur la demande avant toute
+décision (même pattern que `MissionInterventionDraftService::resolve()`, EPIC Revue
+instrumentiste Lot 3) : `status=ACCEPTED` et `createdMission` sont structurellement
+toujours posés ensemble, jamais l'un sans l'autre. Concurrence (§22) : la seconde
+revue simultanée relit `status` sous verrou et échoue proprement (`409
+SURGEON_MISSION_REQUEST_ALREADY_REVIEWED`). Conflits planning (§23) : réutilise
+`PlanningConflictDetectionService::findConflict()` tel quel avant toute écriture —
+un conflit laisse la demande `PENDING`, aucune Mission fantôme.
+
+**Statut de la Mission créée : `DRAFT`** — `MissionService::create()` (l'unique
+point d'entrée officiel, R-04) pose toujours ce statut, y compris pour la création
+manager ad hoc existante ; la publication (`OPEN`) reste un second geste explicite
+via `POST /api/missions/{id}/publish`, inchangé par ce lot. Décision fondée sur le
+code observé (voir D-099).
+
+**Site eligibility :** réutilise `SiteMembership` (déjà existante) — aucune nouvelle
+table d'affiliation.
+
+### 18.2 Notifications & audit — même famille que D-093
+
+`SURGEON_MISSION_REQUEST_CREATED` (→ managers/admins, in-app + push, jamais email) ;
+`SURGEON_MISSION_REQUEST_ACCEPTED`/`REJECTED` (→ chirurgien, push puis repli email).
+`NotificationTargetResolver` gagne deux routes de deep-link dédiées (demande créée →
+`/app/m/missions/requests` pour un manager ; demande refusée → `/app/s/requests`,
+aucune Mission n'existant) — une demande acceptée retombe sur la route générique
+`/app/s/missions/{id}` (une Mission existe désormais). `AuditEvent` rigoureux sur
+les 3 transitions (`recordGlobal()` pour CREATED/REJECTED sans Mission, `record()`
+sur la Mission pour ACCEPTED) — contrairement à l'ancien flux `MaterialItemRequest`.
+
+### 18.3 Frontend chirurgien — `features/surgeon-mission-requests/`
+
+```text
+features/surgeon-mission-requests/
+├── api/
+│   ├── surgeonMissionRequests.api.ts
+│   └── surgeonMissionRequests.types.ts
+├── SurgeonMissionRequestFormPage.tsx   — /app/s/mission-requests/new, SheetModal,
+│                                          recette DeclareMissionPage (StepperRow
+│                                          date/heures, SelectField site/type),
+│                                          site limité à GET /api/me → sites[]
+└── SurgeonMissionRequestsPage.tsx      — /app/s/requests ("Mes demandes"), groupes
+                                           En attente / Traitées, lecture seule pour
+                                           PENDING (§19), lien "Voir la mission" pour
+                                           ACCEPTED
+```
+
+CTA "+ Demander une mission" sur `SurgeonHomePage` ET `SurgeonPlanningPage` — jamais
+une 6ᵉ entrée bottom nav (l'onglet "Absences" reste le dernier ajouté, D-097).
+
+### 18.4 Frontend manager — onglet contextuel de `MissionsListPage`
+
+`features/manager-mission-requests/SurgeonMissionRequestsPanel.tsx` — Tabs PENDING/
+ACCEPTED/REJECTED (calque `CatalogueRequestsPage`), dialogs Accepter (résumé lecture
+seule + commentaire optionnel) / Refuser (motif obligatoire). Monté sur un troisième
+onglet de `MissionsListPage` (`/app/m/missions/requests`), même principe exact que
+l'onglet "À valider" existant (bascule entre routes, un seul composant qui adapte son
+contenu via `location.pathname`) — jamais une nouvelle section top-level, jamais
+mélangé avec `Catalogue > Demandes` (domaine distinct). Badge `PENDING` sur l'onglet
+via `useNavBadgeCount` (généralisé depuis le badge Catalogue existant, aucun nouveau
+mécanisme de polling).
+
+### 18.5 Portée non traitée dans ce lot
+
+Ajustement des informations (site/date/heures) par le manager avant acceptation —
+scope réduit à un commentaire de revue, voir D-099. Drill-down, export `.ics`,
+annulation d'une demande `PENDING` par le chirurgien (V1 : lecture seule).

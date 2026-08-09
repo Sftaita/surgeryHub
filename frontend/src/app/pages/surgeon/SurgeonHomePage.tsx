@@ -150,6 +150,26 @@ function MonthSummaryCard({ total, covered, uncovered }: { total: number; covere
 }
 
 // ── À suivre ─────────────────────────────────────────────────────────────────
+// ── CTA demande de mission (Lot 5, D-099) ───────────────────────────────────
+// Toujours visible, discrète (bordure pointillée, pas un bouton plein) — accessible
+// sans être envahissante (§14). Même CTA sur Home et Planning, jamais une 6e entrée
+// navbar.
+function RequestMissionCta() {
+  const navigate = useNavigate();
+  return (
+    <Box
+      component="button" type="button" onClick={() => navigate("/app/s/mission-requests/new")}
+      sx={{
+        width: "100%", height: 46, border: "1.5px dashed", borderColor: "grey.300", borderRadius: "13px",
+        background: "transparent", color: GREEN_800, fontFamily: "inherit", fontSize: 13.5, fontWeight: 700,
+        cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px",
+      }}
+    >
+      + Demander une mission
+    </Box>
+  );
+}
+
 function FollowUpCard({ upcomingUncoveredCount }: { upcomingUncoveredCount: number }) {
   return (
     <Box sx={{ background: AMBER_50, borderRadius: "14px", px: 2, py: 1.5 }}>
@@ -264,6 +284,8 @@ export default function SurgeonHomePage() {
 
       {/* À suivre — uniquement si quelque chose mérite l'attention, jamais une grande empty card. */}
       {upcomingUncoveredCount > 0 && <FollowUpCard upcomingUncoveredCount={upcomingUncoveredCount} />}
+
+      <RequestMissionCta />
 
       {/* Podium activité (Lot 4, D-098) — jamais une grande section vide tant qu'aucune
           intervention validée n'existe (§12). */}

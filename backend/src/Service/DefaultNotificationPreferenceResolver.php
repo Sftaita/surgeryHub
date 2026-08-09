@@ -28,6 +28,13 @@ use Doctrine\ORM\EntityManagerInterface;
  *                                           is told a proposal is waiting, not urgent enough for
  *                                           email; deliberately excluded even as a push-failure
  *                                           fallback, see CatalogueRequestCreatedMessageHandler)
+ *   - SURGEON_MISSION_REQUEST_ACCEPTED/
+ *     REJECTED (Lot 5, D-099):              inApp=true, email=true  (actionable — same reasoning as
+ *                                           CATALOGUE_REQUEST_RESOLVED/IGNORED, the surgeon is
+ *                                           waiting on a yes/no for their mission request)
+ *   - SURGEON_MISSION_REQUEST_CREATED
+ *     (Lot 5, D-099):                       inApp=true, email=false (manager side, same reasoning
+ *                                           as CATALOGUE_REQUEST_CREATED — not urgent)
  *   - All others (pool, coverage, updates): inApp=true, email=false (informational)
  *
  * push: always false by default — requires an explicit device subscription (PushSubscription).
@@ -50,6 +57,8 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::SURGEON_MISSION_OPEN_PUBLISHED,
         NotificationType::CATALOGUE_REQUEST_RESOLVED,
         NotificationType::CATALOGUE_REQUEST_IGNORED,
+        NotificationType::SURGEON_MISSION_REQUEST_ACCEPTED,
+        NotificationType::SURGEON_MISSION_REQUEST_REJECTED,
     ];
 
     public function __construct(

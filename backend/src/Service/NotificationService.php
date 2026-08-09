@@ -357,6 +357,96 @@ class NotificationService
         return $notification;
     }
 
+    /**
+     * Lot 5 (D-099) — repli email quand Push n'est pas livrable au chirurgien dont la
+     * SurgeonMissionRequest vient d'être acceptée (Mission réelle créée). Même
+     * raisonnement que catalogueRequestResolvedNotifyInstrumentist : actionnable/
+     * attendu, jamais silencieux.
+     */
+    public function surgeonMissionRequestAcceptedNotifySurgeon(
+        Mission $mission,
+        User $surgeon,
+        ?OutboundNotification $fallbackOf = null,
+        ?OutboundNotificationFallbackReason $fallbackReason = null,
+    ): OutboundNotification {
+        $missionUrl = sprintf('%s/app/s/missions/%d', $this->frontendUrl, $mission->getId());
+        $subject = 'SurgicalHub — Votre demande de mission a été acceptée';
+
+        $notification = $this->outboundNotificationService->recordEmailQueued(
+            $surgeon,
+            'SURGEON_MISSION_REQUEST_ACCEPTED',
+            $subject,
+            rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
+            mission: $mission,
+            fallbackOf: $fallbackOf,
+            fallbackReason: $fallbackReason,
+        );
+
+        $this->bus->dispatch(new SendTemplatedEmailMessage(
+            to: (string) $surgeon->getEmail(),
+            subject: $subject,
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: 'emails/surgeon_mission_request_accepted.html.twig',
+            context: [
+                'firstname'  => $surgeon->getFirstname(),
+                'siteName'   => $mission->getSite()?->getName(),
+                'startAt'    => $mission->getStartAt(),
+                'missionUrl' => $missionUrl,
+                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($surgeon),
+            ],
+            outboundNotificationId: $notification->getId(),
+        ));
+
+        return $notification;
+    }
+
+    /**
+     * Lot 5 (D-099) — repli email quand Push n'est pas livrable au chirurgien dont la
+     * SurgeonMissionRequest vient d'être refusée. Aucune Mission n'existe (jamais
+     * créée) — le lien renvoie vers "Mes demandes", pas un détail mission.
+     */
+    public function surgeonMissionRequestRejectedNotifySurgeon(
+        User $surgeon,
+        string $siteName,
+        \DateTimeImmutable $startAt,
+        string $reviewComment,
+        ?OutboundNotification $fallbackOf = null,
+        ?OutboundNotificationFallbackReason $fallbackReason = null,
+    ): OutboundNotification {
+        $requestsUrl = sprintf('%s/app/s/requests', $this->frontendUrl);
+        $subject = 'SurgicalHub — Votre demande de mission a été refusée';
+
+        $notification = $this->outboundNotificationService->recordEmailQueued(
+            $surgeon,
+            'SURGEON_MISSION_REQUEST_REJECTED',
+            $subject,
+            rawData: ['url' => $requestsUrl],
+            mission: null,
+            fallbackOf: $fallbackOf,
+            fallbackReason: $fallbackReason,
+        );
+
+        $this->bus->dispatch(new SendTemplatedEmailMessage(
+            to: (string) $surgeon->getEmail(),
+            subject: $subject,
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: 'emails/surgeon_mission_request_rejected.html.twig',
+            context: [
+                'firstname'     => $surgeon->getFirstname(),
+                'siteName'      => $siteName,
+                'startAt'       => $startAt,
+                'reviewComment' => $reviewComment,
+                'requestsUrl'   => $requestsUrl,
+                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($surgeon),
+            ],
+            outboundNotificationId: $notification->getId(),
+        ));
+
+        return $notification;
+    }
+
     public function sendAbsenceRequestMissingEmailToUser(User $user, string $message): void
     {
         $this->bus->dispatch(new SendTemplatedEmailMessage(

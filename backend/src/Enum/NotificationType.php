@@ -82,4 +82,15 @@ enum NotificationType: string
     // is; adding email here would just be noise. One shared category for both
     // request kinds, same reasoning as CATALOGUE_REQUEST_RESOLVED/IGNORED above.
     case CATALOGUE_REQUEST_CREATED = 'CATALOGUE_REQUEST_CREATED';
+
+    // ── Demande de mission chirurgien (Lot 5, D-099) ─────────────────────────
+    // Un chirurgien demande au manager l'ajout d'une mission (SurgeonMissionRequest) —
+    // même famille de raisonnement que CATALOGUE_REQUEST_CREATED/RESOLVED/IGNORED :
+    // création → manager/admin, in-app + push uniquement, jamais email (pas urgent, le
+    // manager la retrouve sur l'écran de revue) ; décision (accepted/rejected) →
+    // chirurgien, actionnable/attendu, push d'abord puis repli email comme
+    // CATALOGUE_REQUEST_RESOLVED/IGNORED.
+    case SURGEON_MISSION_REQUEST_CREATED  = 'SURGEON_MISSION_REQUEST_CREATED';
+    case SURGEON_MISSION_REQUEST_ACCEPTED = 'SURGEON_MISSION_REQUEST_ACCEPTED';
+    case SURGEON_MISSION_REQUEST_REJECTED = 'SURGEON_MISSION_REQUEST_REJECTED';
 }

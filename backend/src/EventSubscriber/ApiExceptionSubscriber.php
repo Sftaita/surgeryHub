@@ -29,6 +29,8 @@ use App\Exception\MaterialAttachmentTargetClosedException;
 use App\Exception\MaterialAttachmentTargetNotFoundException;
 use App\Exception\MissingIgnoreStrategyException;
 use App\Exception\RefundExceedsOverpaidException;
+use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
+use App\Exception\SurgeonMissionRequestConflictException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -176,6 +178,14 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 422;
             $code = 'MISSING_IGNORE_STRATEGY';
             $message = $e->getMessage() ?: 'Une stratégie (KEEP_AS_HISTORY ou REASSIGN) est requise : cette demande a déjà du matériel attaché.';
+        } elseif ($e instanceof SurgeonMissionRequestAlreadyReviewedException) {
+            $status = 409;
+            $code = 'SURGEON_MISSION_REQUEST_ALREADY_REVIEWED';
+            $message = $e->getMessage() ?: 'Cette demande a déjà été traitée.';
+        } elseif ($e instanceof SurgeonMissionRequestConflictException) {
+            $status = 409;
+            $code = 'SURGEON_MISSION_REQUEST_CONFLICT';
+            $message = $e->getMessage() ?: 'Le chirurgien a déjà une autre mission active sur cette période.';
         } elseif ($e instanceof HttpExceptionInterface) {
             $status = $e->getStatusCode();
             $message = $e->getMessage() ?: $message;

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import SurgeonPlanningPage from "./SurgeonPlanningPage";
 
 /**
@@ -44,6 +44,20 @@ function renderPage(initialEntry = "/planning?view=week&date=2026-08-27&filter=a
     <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={client}>
         <SurgeonPlanningPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+}
+
+function renderPageWithRoutes(initialEntry = "/app/s/planning?view=week&date=2026-08-27&filter=all") {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <QueryClientProvider client={client}>
+        <Routes>
+          <Route path="/app/s/planning" element={<SurgeonPlanningPage />} />
+          <Route path="/app/s/mission-requests/new" element={<div>formulaire demande</div>} />
+        </Routes>
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -200,5 +214,16 @@ describe("SurgeonPlanningPage — états UX", () => {
     renderPage();
 
     expect(await screen.findByText("Impossible de charger le planning.")).toBeInTheDocument();
+  });
+});
+
+describe("SurgeonPlanningPage — CTA demande de mission (Lot 5, D-099)", () => {
+  it("le CTA '+ Demander une mission' est accessible depuis le planning et ouvre le formulaire", async () => {
+    fetchMissionsMock.mockResolvedValue({ items: [] });
+    const user = userEvent.setup();
+    renderPageWithRoutes();
+
+    await user.click(await screen.findByText("+ Demander une mission"));
+    expect(await screen.findByText("formulaire demande")).toBeInTheDocument();
   });
 });

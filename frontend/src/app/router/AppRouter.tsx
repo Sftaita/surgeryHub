@@ -30,7 +30,6 @@ const MissionEncodingPage = React.lazy(() => import("../pages/instrumentist/Miss
 // Partagé instrumentiste + chirurgien (socle mobile Lot 1, 2026-08-05) — jamais de
 // SurgeonProfilePage/SurgeonNotificationsPage quasi identiques, voir docs/decisions.md.
 const ProfilePage         = React.lazy(() => import("../pages/common/ProfilePage"));
-const ComingSoonPage      = React.lazy(() => import("../pages/common/ComingSoonPage"));
 
 // Chirurgien (Lot 2, D-095) — Home/Planning réels ; détail mission réutilise
 // MissionDetailPageI (même composant que l'instrumentiste, allowedActions-driven).
@@ -44,6 +43,11 @@ const SelfAbsencesPage    = React.lazy(() => import("../features/self-absences/S
 // Chirurgien (Lot 4, D-098) — activité personnelle + podium (pas un classement inter-
 // chirurgiens), voir docs/decisions.md.
 const SurgeonActivityPage = React.lazy(() => import("../features/surgeon-activity/SurgeonActivityPage"));
+
+// Chirurgien (Lot 5, D-099) — demande de mission (intention chirurgien, jamais une
+// Mission directement, voir docs/decisions.md).
+const SurgeonMissionRequestFormPage = React.lazy(() => import("../features/surgeon-mission-requests/SurgeonMissionRequestFormPage"));
+const SurgeonMissionRequestsPage    = React.lazy(() => import("../features/surgeon-mission-requests/SurgeonMissionRequestsPage"));
 
 // Admin
 const AdminUsersPage       = React.lazy(() => import("../pages/admin/AdminUsersPage"));
@@ -156,16 +160,15 @@ export function AppRouter() {
             </Route>
 
             {/* Surgeon — même MobileLayout que l'instrumentiste (jamais un second layout,
-                voir docs/decisions.md). Home/Planning/Détail mission/Absences sont réellement
-                fonctionnels depuis le Lot 2 (D-095)/Lot 3 (D-097) ; Activité/Demandes
-                restent des replis propres (ComingSoonPage) tant que leurs lots dédiés ne
-                sont pas livrés. */}
+                voir docs/decisions.md). Home/Planning/Activité/Absences/Demandes sont
+                réellement fonctionnels depuis les Lots 2 à 5 (D-095 à D-099). */}
             <Route element={<RequireSurgeon />}>
               <Route element={<MobileLayout />}>
                 <Route path="s" element={<SurgeonHomePage />} />
                 <Route path="s/planning" element={<SurgeonPlanningPage />} />
                 <Route path="s/activity" element={<SurgeonActivityPage />} />
-                <Route path="s/requests" element={<ComingSoonPage title="Mes demandes" />} />
+                <Route path="s/requests" element={<SurgeonMissionRequestsPage />} />
+                <Route path="s/mission-requests/new" element={<SurgeonMissionRequestFormPage />} />
                 <Route path="s/absences" element={<SelfAbsencesPage />} />
                 <Route path="s/notifications" element={<NotificationsPage />} />
                 <Route path="s/profile" element={<ProfilePage />} />
@@ -182,6 +185,7 @@ export function AppRouter() {
                 <Route path="m/notifications" element={<NotificationsPageM />} />
                 <Route path="m/missions" element={<MissionsListPage />} />
                 <Route path="m/missions/to-validate" element={<MissionsListPage />} />
+                <Route path="m/missions/requests" element={<MissionsListPage />} />
                 <Route path="m/missions/new" element={<MissionCreatePage />} />
                 <Route path="m/missions/:id" element={<MissionDetailPageM />} />
                 <Route path="m/instrumentists" element={<InstrumentistsPage />} />

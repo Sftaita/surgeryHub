@@ -5890,3 +5890,121 @@ chirurgien connecté. `SurgeonHomePage` réutilise le **même** hook
 (`useSurgeonActivity`, mêmes défauts "année en cours") que `SurgeonActivityPage` :
 `queryKey` identique dans le cas par défaut, donc même cache React Query, jamais un
 second calcul côté Home.
+
+## 44. Demande de mission chirurgien — SurgeonMissionRequest (Lot 5, D-099)
+
+`SurgeonMissionRequest` est une intention chirurgien, jamais une Mission — seul un
+manager/admin peut la convertir en Mission officielle, de façon atomique
+(`accept()` transactionnel, verrouillé) et auditée. Le chirurgien ne reçoit jamais
+`MissionVoter::CREATE`.
+
+### `POST /api/surgeon/mission-requests`
+
+**AuthZ :** `ROLE_SURGEON` (`SurgeonMissionRequestVoter::SELF_ACCESS`).
+
+Body :
+```json
+{
+  "siteId": 1,
+  "type": "BLOCK",
+  "startAt": "2026-09-10T08:00:00+02:00",
+  "endAt": "2026-09-10T13:00:00+02:00",
+  "comment": "Bloc supplémentaire"
+}
+```
+Jamais accepté comme champ modifiable : `surgeonId`, `status`, `reviewedBy`,
+`createdMissionId` — silencieusement ignorés si présents. Le backend force
+systématiquement `surgeon = utilisateur authentifié` et `status = PENDING`.
+
+**Éligibilité site (§6) :** `siteId` doit correspondre à un `SiteMembership` réel du
+chirurgien — `403` sinon (jamais confiance dans un `siteId` arbitraire).
+
+`422` si `endAt <= startAt`, `type` invalide, ou `startAt`/`endAt` manquants/invalides.
+`startAt`/`endAt` utilisent `business_datetime_immutable` (D-066), même convention
+timezone Europe/Brussels que `Mission`.
+
+**Réponse — 201 :**
+```json
+{
+  "id": 42,
+  "site": { "id": 1, "name": "CHIREC - Hôpital Delta" },
+  "type": "BLOCK",
+  "startAt": "2026-09-10T08:00:00+02:00",
+  "endAt": "2026-09-10T13:00:00+02:00",
+  "comment": "Bloc supplémentaire",
+  "status": "PENDING",
+  "createdAt": "2026-09-01T10:00:00+02:00",
+  "reviewedAt": null,
+  "reviewComment": null,
+  "createdMissionId": null
+}
+```
+
+**Effets :** dispatch async `SurgeonMissionRequestCreatedMessage` vers tous les
+managers/admins actifs (in-app + push, jamais email — même raisonnement que
+`CATALOGUE_REQUEST_CREATED`), `AuditEvent::SURGEON_MISSION_REQUEST_CREATED`
+(`recordGlobal()`, aucune Mission n'existe encore).
+
+### `GET /api/surgeon/mission-requests`
+
+**AuthZ :** `ROLE_SURGEON`, toujours self-scopé — aucun `?surgeonId=` accepté.
+Retourne uniquement les demandes du chirurgien authentifié, triées `createdAt` DESC.
+Même forme d'objet que la réponse de création, en tableau.
+
+### `GET /api/manager/surgeon-mission-requests?status=`
+
+**AuthZ :** `ROLE_MANAGER`/`ROLE_ADMIN` (`SurgeonMissionRequestVoter::MANAGE` — jamais
+`BillingVoter::MANAGE`). `status` optionnel (`PENDING`/`ACCEPTED`/`REJECTED`).
+
+**Réponse — 200 :** `{ "items": [...], "total": N }`, chaque item incluant en plus
+`surgeon: { id, displayName }` et `reviewedBy: { id, displayName } | null`.
+
+### `POST /api/manager/surgeon-mission-requests/{id}/accept`
+
+**AuthZ :** `ROLE_MANAGER`/`ROLE_ADMIN`. Body optionnel : `{ "reviewComment"?: string }`.
+
+**Atomicité (§3/§9) :** entièrement dans une transaction
+(`$em->wrapInTransaction()`), verrou pessimiste posé sur la demande avant toute
+décision (relecture après verrou — protège contre une revue concurrente, §22).
+Séquence : valider `status === PENDING` (sinon `409
+SURGEON_MISSION_REQUEST_ALREADY_REVIEWED`) → vérifier l'absence de conflit planning
+via `PlanningConflictDetectionService::findConflict()` (sinon `409
+SURGEON_MISSION_REQUEST_CONFLICT`, **la demande reste PENDING, rien n'est créé**) →
+créer la Mission via `MissionService::create()` (jamais un `new Mission()` ad hoc,
+R-04) → `status = ACCEPTED` + `createdMission` posés ensemble → `AuditEvent`
+→ commit → dispatch notification (hors transaction).
+
+**Statut de la Mission créée : `DRAFT`** — même statut que toute création manager ad
+hoc via `MissionService::create()` (l'unique point d'entrée officiel, qui pose
+toujours `DRAFT`). Le manager peut encore l'ajuster avant de la publier explicitement
+via `POST /api/missions/{id}/publish` (geste distinct, existant, inchangé).
+
+**Réponse — 200 :** la demande sérialisée, `status: "ACCEPTED"`,
+`createdMissionId` renseigné.
+
+**Effets :** dispatch async `SurgeonMissionRequestDecidedMessage` (`accepted: true`)
+vers le chirurgien — push d'abord, repli email si non livrable (même orchestration
+que `CATALOGUE_REQUEST_RESOLVED`) ; `AuditEvent::SURGEON_MISSION_REQUEST_ACCEPTED`
+(`record()` sur la Mission créée).
+
+### `POST /api/manager/surgeon-mission-requests/{id}/reject`
+
+**AuthZ :** `ROLE_MANAGER`/`ROLE_ADMIN`. Body requis : `{ "reviewComment": string }`
+— `422` si vide/absent (§11, motif de refus obligatoire).
+
+Même verrouillage/relecture que `accept()` — `409
+SURGEON_MISSION_REQUEST_ALREADY_REVIEWED` si la demande n'est plus `PENDING`.
+`status = REJECTED`, aucune Mission créée, jamais.
+
+**Effets :** dispatch async `SurgeonMissionRequestDecidedMessage`
+(`accepted: false`, `reviewComment`) vers le chirurgien ;
+`AuditEvent::SURGEON_MISSION_REQUEST_REJECTED` (`recordGlobal()`).
+
+### Transitions
+
+```text
+PENDING → ACCEPTED
+PENDING → REJECTED
+```
+`ACCEPTED`/`REJECTED` sont terminaux en V1 — aucune transition depuis un état
+terminal, aucune suppression d'une demande traitée, aucun `CANCELLED`.

@@ -173,4 +173,14 @@ enum AuditEventType: string
      * Mission associée) — même famille que PRICING_RULE_* ci-dessus.
      */
     case INTERVENTION_TYPE_MERGED = 'INTERVENTION_TYPE_MERGED';
+
+    /**
+     * Lot 5 (D-099) — SurgeonMissionRequestService. CREATED : recordGlobal() (aucune
+     * Mission n'existe encore). ACCEPTED : record() sur la Mission fraîchement créée
+     * (payload porte aussi surgeonMissionRequestId). REJECTED : recordGlobal() (aucune
+     * Mission n'existe, ni ne sera créée — état terminal).
+     */
+    case SURGEON_MISSION_REQUEST_CREATED  = 'SURGEON_MISSION_REQUEST_CREATED';
+    case SURGEON_MISSION_REQUEST_ACCEPTED = 'SURGEON_MISSION_REQUEST_ACCEPTED';
+    case SURGEON_MISSION_REQUEST_REJECTED = 'SURGEON_MISSION_REQUEST_REJECTED';
 }
