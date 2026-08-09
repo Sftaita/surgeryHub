@@ -285,13 +285,13 @@ export default function SurgeonHomePage() {
       {/* À suivre — uniquement si quelque chose mérite l'attention, jamais une grande empty card. */}
       {upcomingUncoveredCount > 0 && <FollowUpCard upcomingUncoveredCount={upcomingUncoveredCount} />}
 
-      <RequestMissionCta />
-
       {/* Podium activité (Lot 4, D-098) — jamais une grande section vide tant qu'aucune
           intervention validée n'existe (§12). */}
       {topInterventions.length > 0 && (
         <ActivityPodiumCard interventions={topInterventions} year={currentYear.slice(0, 4)} />
       )}
+
+      <RequestMissionCta />
 
       <Dialog
         open={selectedMissionId !== null}

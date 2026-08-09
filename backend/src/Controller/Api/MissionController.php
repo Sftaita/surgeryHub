@@ -324,7 +324,7 @@ class MissionController extends AbstractController
         ]);
     }
 
-    #[Route(path: '/{id}', name: 'api_missions_get', methods: ['GET'])]
+    #[Route(path: '/{id}', name: 'api_missions_get', methods: ['GET'], requirements: ['id' => '\d+'])]
     public function getOne(int $id, #[CurrentUser] User $user): JsonResponse
     {
         $mission = $this->missionService->getOr404($id);
@@ -357,7 +357,7 @@ class MissionController extends AbstractController
      * statuts). Ce lot corrige ce couplage en le retirant du chemin de lecture — aucune
      * mutation n'est possible ici, seul GET.
      */
-    #[Route(path: '/{id}/encoding', name: 'api_missions_get_encoding', methods: ['GET'])]
+    #[Route(path: '/{id}/encoding', name: 'api_missions_get_encoding', methods: ['GET'], requirements: ['id' => '\d+'])]
     public function getEncoding(int $id, #[CurrentUser] User $user): JsonResponse
     {
         // IMPORTANT: ne pas utiliser getOr404ForEncoding() (ça déclenche l’hydratation proxy MissionIntervention -> warning 500)

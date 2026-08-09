@@ -355,4 +355,40 @@ final class MissionLifecycleControllerTest extends WebTestCase
             'D-056 violation: MissionController must not call em->persist($mission) — all mutations go through MissionPostDeployService',
         );
     }
+
+    // ── Finition espace chirurgien — robustesse routage (2026-08-09) ──────────
+    // Découvert lors d'une revue manuelle : `/api/missions/{id}` et
+    // `/api/missions/{id}/encoding` n'avaient pas `requirements: ['id' => '\d+']`
+    // (contrairement à d'autres controllers). Un id non numérique faisait matcher
+    // getOne(int $id)/getEncoding(int $id) quand même, PHP levait alors un TypeError
+    // non rattrapé (500, trace d'exception exposée au client) au lieu d'une 404
+    // propre. Jamais atteignable via l'app (le frontend garde toujours
+    // Number.isFinite(id) avant tout appel), mais un client externe/URL malformée
+    // pouvait déclencher la fuite — corrigé en ajoutant la contrainte de route.
+
+    public function test_get_mission_with_non_numeric_id_never_returns_a_raw_500(): void
+    {
+        $client = $this->boot();
+        $user = $this->createUser('ROLE_SURGEON');
+        $token = $this->login($client, $user);
+
+        $client->request('GET', '/api/missions/not-a-number',
+            server: ['CONTENT_TYPE' => 'application/json', 'HTTP_AUTHORIZATION' => 'Bearer ' . $token],
+        );
+
+        self::assertNotSame(500, $client->getResponse()->getStatusCode());
+    }
+
+    public function test_get_mission_encoding_with_non_numeric_id_never_returns_a_raw_500(): void
+    {
+        $client = $this->boot();
+        $user = $this->createUser('ROLE_SURGEON');
+        $token = $this->login($client, $user);
+
+        $client->request('GET', '/api/missions/not-a-number/encoding',
+            server: ['CONTENT_TYPE' => 'application/json', 'HTTP_AUTHORIZATION' => 'Bearer ' . $token],
+        );
+
+        self::assertNotSame(500, $client->getResponse()->getStatusCode());
+    }
 }
