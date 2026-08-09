@@ -142,6 +142,9 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
 
         // Lot 5 (D-099) — SurgeonMissionRequestService::accept()/reject().
         'App\Entity\SurgeonMissionRequest::reviewedAt' => 'set from new \DateTimeImmutable() in SurgeonMissionRequestService::accept()/reject(), never client input',
+
+        // Lot 6 (D-100) — EncodingAnomalyReportService::resolve().
+        'App\Entity\EncodingAnomalyReport::resolvedAt' => 'set from new \DateTimeImmutable() in EncodingAnomalyReportService::resolve(), never client input',
     ];
 
     /** Exempt by name, not by allowlist entry — the project-wide TimestampableTrait convention. */

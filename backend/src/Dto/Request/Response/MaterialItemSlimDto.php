@@ -12,6 +12,9 @@ final class MaterialItemSlimDto
         public readonly string $unit,
         public readonly bool $isImplant,
         public readonly bool $active,
-        public readonly string $billingStatus = 'UNSPECIFIED',
+        // Lot 6 (D-100) — nullable : `null` = champ volontairement omis pour le chirurgien
+        // (jamais de "billing state" visible, voir MissionEncodingService). Le manager et
+        // l'instrumentiste reçoivent toujours une vraie valeur, inchangé.
+        public readonly ?string $billingStatus = null,
     ) {}
 }

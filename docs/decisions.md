@@ -7242,3 +7242,181 @@ d'introduire une seconde surface de DTO éditable non budgétée par ce lot ; le
 peut refuser avec motif et laisser le chirurgien soumettre une nouvelle demande
 ajustée. Drill-down, export `.ics`, annulation d'une demande `PENDING` par le
 chirurgien (V1 : lecture seule, §19).
+
+## D-100 — Consultation chirurgien de l'encodage + signalement d'anomalie (Lot 6, 2026-08-09)
+
+Date : 2026-08-09
+
+### Contexte
+
+Le chirurgien n'a aucune visibilité sur ce que l'instrumentiste encode pour ses
+missions (interventions, matériel, heures) — il ne peut ni le vérifier ni signaler une
+erreur constatée. Ce lot ferme la boucle Mission → encodage instrumentiste →
+consultation chirurgien → signalement éventuel → traitement manager, sans jamais
+donner au chirurgien la moindre capacité d'écriture sur l'encodage.
+
+**Décision structurante : le chirurgien consulte en lecture strictement seule ; toute
+correction continue de passer par les workflows existants (édition instrumentiste,
+reject/reopen manager) — signaler une anomalie n'est jamais couplé automatiquement à
+une correction.**
+
+### Décision — `VIEW_ENCODING` distinct d'`EDIT_ENCODING`, jamais un élargissement des droits d'écriture
+
+Audit préalable de `GET /api/missions/{id}/encoding` (`MissionController::getEncoding()`)
+et de son voter : gardé derrière `MissionVoter::EDIT_ENCODING`, ce qui interdisait par
+construction toute consultation par un rôle qui n'a pas le droit d'éditer — y compris
+le chirurgien. Nouvel attribut `MissionVoter::VIEW_ENCODING` (lecture seule) posé sur
+ce même endpoint GET, `EDIT_ENCODING` restant l'unique porte pour les mutations
+(inchangé, 0 régression — 63/63 tests de régression existants toujours verts). Manager/
+Admin : toujours autorisé. Instrumentiste : exactement les mêmes statuts que
+`canEditEncoding()` (qui peut éditer peut évidemment consulter). Chirurgien :
+`mission.surgeon === currentUser`, statuts où un encodage existe ou a existé
+(`DECLARED`/`ASSIGNED`/`IN_PROGRESS`/`ENCODING_IN_PROGRESS`/`SUBMITTED`/`VALIDATED`/
+`CLOSED` — jamais `DRAFT`/`OPEN`, aucun instrumentiste assigné ; jamais
+`REJECTED`/`CANCELLED`, mission jamais réellement advenue).
+
+**Effet de bord bénéfique découvert pendant l'audit, pas une régression :** l'ancien
+couplage bloquait aussi le manager sur `VALIDATED`/`CLOSED`/`REJECTED`
+(`MissionEncodingGuard::assertEncodingAllowed()`, un garde-fou d'ÉCRITURE
+— verrou `encodingLockedAt`/fenêtre instrumentiste — appelé à tort sur le chemin de
+LECTURE). Un contournement de ce bug était déjà documenté côté frontend manager. Ce
+lot retire l'appel au guard du chemin `GET` (aucune mutation n'y est jamais possible,
+`guard` reste appelé sur tous les endpoints d'écriture, inchangé) — le manager peut
+désormais consulter l'encodage d'une mission `VALIDATED`/`CLOSED` sans contournement.
+
+### Décision — endpoint et DTO existants réutilisés tels quels, jamais un endpoint parallèle
+
+`GET /api/missions/{id}/encoding` reste l'unique point d'entrée (attribut d'autorisation
+swappé, DTO inchangé dans sa forme) — pas de
+`GET /api/surgeon/missions/{id}/encoding` parallèle. Justifié par l'audit champ par
+champ (§ suivant) : le DTO existant s'est révélé sûr après un correctif ciblé, sans
+nécessiter de divergence de contrat.
+
+### Décision — audit champ par champ du DTO : `billingStatus` était une fuite réelle, corrigée à la source
+
+Le contrat exige qu'un chirurgien ne voie jamais de donnée financière — `PricingRule`,
+`computedAmount`, `fee`, `tarif`, `invoice`, **billing state**, salaire/taux
+instrumentiste, donnée patient. Un test de contrat (assertion sur le JSON brut,
+`MissionViewEncodingTest::test_encoding_dto_never_contains_financial_or_patient_fields`)
+a détecté `materialLines[].item.billingStatus` (`MaterialItemSlimDto`, `UNSPECIFIED`/
+`BILLABLE`/`NOT_BILLABLE` — classification catalogue D-092, pas un montant, mais
+littéralement un "billing state"). Ce champ est légitime pour l'instrumentiste
+(recherche matériel pendant l'encodage) et le manager (catalogue) — jamais globalement
+supprimé de `MaterialItemSlimDto`. Correctif ciblé : `MaterialItemMapper::toSlim()`
+gagne un second paramètre `bool $includeBillingStatus = true` (défaut inchangé pour
+tous les appelants existants), `MissionEncodingService::buildEncodingDto()` le passe à
+`false` uniquement pour un viewer chirurgien (catalogue, matériels suggérés, lignes de
+matériel — les trois points d'appel). `MaterialItemSlimDto::$billingStatus` devient
+`?string` (défaut `null`) ; le contrôleur ajoute `AbstractObjectNormalizer::
+SKIP_NULL_VALUES` **uniquement pour la réponse chirurgien** (jamais pour manager/
+instrumentiste, dont la forme JSON reste strictement inchangée — un `null` explicite
+aurait laissé la clé visible, insuffisant face à l'exigence "jamais voir").
+
+### Décision — domaine dédié `EncodingAnomalyReport`, jamais un détournement de `MaterialItemRequest`
+
+`MaterialItemRequest` est un concept catalogue (proposition de nouveau matériel), pas
+un signalement de désaccord sur un encodage déjà réalisé. Nouvelle entité minimale :
+`id`, `mission`, `reporter`, `type` (`INTERVENTION_MISSING`/`INTERVENTION_INCORRECT`/
+`MATERIAL_INCORRECT`/`HOURS_INCORRECT`/`OTHER`), `comment` (toujours requis, y compris
+`OTHER`), `status` (`OPEN`/`RESOLVED` uniquement — pas de workflow multi-étapes en V1),
+`resolvedBy`/`resolvedAt`/`resolutionComment`, timestamps. Résolution manager/admin
+uniquement en V1 — aucune capacité de résolution instrumentiste dans ce lot.
+
+**Duplication accidentelle (§14) :** un seul signalement `OPEN` à la fois par
+(mission, reporter) — `409` sinon. Un nouveau signalement redevient possible une fois
+le précédent `RESOLVED` (un second problème peut être découvert plus tard). Testé
+explicitement (E2E réel : création → résolution → nouvelle création acceptée).
+
+**Concurrence — double résolution :** même pattern transactionnel que D-099
+(`$em->wrapInTransaction()` + `LockMode::PESSIMISTIC_WRITE` + `refresh()` avant
+revalidation de `status === OPEN`) — la seconde résolution simultanée échoue proprement
+(`409 ENCODING_ANOMALY_REPORT_ALREADY_RESOLVED`, `EncodingAnomalyReportAlreadyResolvedException`),
+jamais un second `AuditEvent`/notification. Testé explicitement (double `resolve()`).
+
+### Décision — résoudre ne corrige jamais l'encodage automatiquement
+
+`EncodingAnomalyReportService::resolve()` ne mute jamais `MissionIntervention`/
+`MaterialLine` — uniquement le signalement lui-même (`status`, `resolvedBy`,
+`resolvedAt`, `resolutionComment`). La correction réelle, si nécessaire, continue
+d'utiliser les workflows existants (édition instrumentiste tant que la mission n'est
+pas verrouillée, reject/reopen manager sinon) — deux actions toujours distinctes,
+jamais couplées. Vérifié explicitement (comptage d'interventions avant/après
+résolution, aucune variation) en test et en E2E réel.
+
+### Décision — Voter dédié `SELF_ACCESS`/`MANAGE`, même famille que D-097/D-099
+
+`EncodingAnomalyReportVoter` : `SELF_ACCESS` (rôle SURGEON, sans sujet — création ;
+l'appartenance à la mission est revérifiée dans le service) et `MANAGE` (rôle
+MANAGER/ADMIN, sans sujet — résolution). La liste (`GET`) reste gérée directement dans
+le contrôleur (self-scopée pour le chirurgien de la mission, ouverte pour manager/
+admin) — jamais un instrumentiste, jamais un autre chirurgien.
+
+### Décision — notifications : même orchestration que D-093/D-099
+
+`ENCODING_ANOMALY_REPORTED` (chirurgien → managers/admins actifs, in-app + push
+uniquement, jamais email) ; `ENCODING_ANOMALY_RESOLVED` (manager → chirurgien
+requester, push d'abord, repli email si non livrable). `AuditEvent` sur les deux
+transitions (`ENCODING_ANOMALY_REPORTED`/`ENCODING_ANOMALY_RESOLVED`, `record()` sur la
+Mission — jamais de donnée patient dans le payload).
+
+### Décision — placement manager : intégré au détail Mission existant, jamais une nouvelle page de listing
+
+Fondé sur l'UX actuelle observée, pas sur une abstraction théorique : les anomalies
+sont rares et intrinsèquement liées à une Mission précise — `AnomalyReportsManagerPanel`
+s'intègre directement dans `manager/MissionDetailPage.tsx` (aucune section rendue tant
+qu'aucun signalement n'existe pour la mission — la grande majorité des missions n'en
+ont jamais). Jamais une nouvelle route top-level de listing des signalements.
+
+### Décision — présentation chirurgien strictement lecture, composants dédiés
+
+`InterventionsSection` (éditeur instrumentiste : dialogs, `useMutation`, drag/drop)
+n'est jamais réutilisé avec ses boutons masqués — un composant d'édition dont les
+boutons sont cachés reste un composant d'édition (handlers, état de formulaire,
+mutations latents). Nouveaux composants dédiés, purement lecture, sans aucun handler
+de mutation : `ReadOnlyInterventionCard`, `ReadOnlyMaterialList`,
+`EncodingHoursSummary` (`features/surgeon-encoding/components/`). Catalogue matériel
+non pertinent pour une vue lecture seule (rien à sélectionner) — jamais rendu côté
+chirurgien.
+
+### Décision — formulaire de signalement : boutons radio, jamais un menu déroulant
+
+`AnomalyReportSheet` (`SheetModal`, même pattern que D-097/D-099) — sélection du type
+via `RadioGroup` (5 options, jamais un `<select>`), commentaire toujours requis (y
+compris `OTHER`). Après succès, invalidation immédiate de la query
+`["encodingAnomalyReports", missionId]` — retour visuel instantané (bandeau "en
+attente"), jamais de rechargement manuel. Un signalement `OPEN` masque le CTA
+"Signaler un problème" côté chirurgien (reflète côté client la règle serveur anti-
+duplication, §14) ; un signalement `RESOLVED` affiche la réponse du manager et
+réaffiche le CTA (nouveau signalement possible).
+
+### Décision — jamais une grosse carte sur la Home chirurgien
+
+Le statut d'un signalement (en attente / traité) ne vit que sur l'écran d'encodage
+(`/app/s/missions/{id}/encoding`), jamais sur `SurgeonHomePage` — un signalement
+résolu se signale via les notifications existantes, la Mission (et son écran
+d'encodage) reste la surface principale, conformément au principe déjà établi pour
+d'autres domaines de ce lot (D-097 à D-099 : jamais de doublon d'affichage entre une
+carte Home et l'écran détaillé).
+
+### Validation E2E réelle (contournement Chrome persistant, même stratégie que depuis le Lot 4)
+
+Scénario complet exécuté via HTTP réel (curl) contre la stack Docker locale (comptes
+seedés `php bin/console app:seed`, mission/encodage créés via une commande console
+temporaire, supprimée après usage) : consultation chirurgien (200, aucun champ
+financier dans le JSON brut) → mutation chirurgien refusée (403) → création
+signalement (201, OPEN) → liste self-scopée (200) → doublon refusé (409) → manager
+consulte (200) → résolution (200, RESOLVED) → double résolution refusée (409,
+`ENCODING_ANOMALY_REPORT_ALREADY_RESOLVED`) → chirurgien voit RESOLVED → nouveau
+signalement post-résolution accepté (201) → chirurgien tiers non lié à la mission
+bloqué (403 sur consultation ET sur liste des signalements). Toutes les lignes créées
+(mission, intervention, ligne matériel, firme, item, type, site, 2 signalements,
+3 `AuditEvent`) nettoyées après validation — base locale laissée dans l'état où elle a
+été trouvée.
+
+### Portée non traitée ici
+
+Résolution instrumentiste (V1 : manager/admin uniquement, §12). Workflow multi-étapes
+de résolution (V1 : `OPEN`/`RESOLVED` seulement). Correction automatique de l'encodage
+couplée à la résolution (décision explicite contraire, voir plus haut). Historique des
+signalements résolus au-delà du dernier (le chirurgien voit le plus récent ; un
+historique complet n'est pas demandé par ce lot).

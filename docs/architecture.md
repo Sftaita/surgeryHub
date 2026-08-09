@@ -2730,3 +2730,105 @@ mécanisme de polling).
 Ajustement des informations (site/date/heures) par le manager avant acceptation —
 scope réduit à un commentaire de revue, voir D-099. Drill-down, export `.ics`,
 annulation d'une demande `PENDING` par le chirurgien (V1 : lecture seule).
+
+## 19. Consultation encodage chirurgien + EncodingAnomalyReport (Lot 6, D-100, 2026-08-09)
+
+Ferme la boucle Mission → encodage instrumentiste → consultation chirurgien →
+signalement éventuel → traitement manager. Voir D-100 pour l'ensemble des décisions.
+
+### 19.1 Backend — `VIEW_ENCODING`/`EDIT_ENCODING`, jamais un endpoint parallèle
+
+`GET /api/missions/{id}/encoding` reste l'unique point d'entrée — seul l'attribut
+d'autorisation change (`MissionVoter::VIEW_ENCODING`, nouveau, lecture seule ;
+`EDIT_ENCODING` reste l'unique porte pour toutes les mutations, inchangé, 0
+régression). `MissionEncodingGuard::assertEncodingAllowed()` (garde d'ÉCRITURE) est
+retiré du chemin `GET` — effet de bord bénéfique : le manager peut désormais consulter
+l'encodage d'une mission `VALIDATED`/`CLOSED`/`REJECTED`, ce qu'un couplage incorrect
+bloquait avant ce lot.
+
+`MissionActionsService` gagne `"view_encoding"` dans `allowedActions` pour un
+chirurgien éligible (mêmes statuts que le Voter), jamais en même temps que
+`"encoding"`/`"edit_encoding"` (rôles mutuellement exclusifs sur ce point).
+
+**Audit champ par champ du DTO :** `MaterialItemSlimDto.billingStatus` (catalogue,
+D-092) s'est révélé être une fuite réelle vers le chirurgien. Correctif ciblé, pas une
+suppression globale (le champ reste nécessaire à l'instrumentiste et au manager) :
+`MaterialItemMapper::toSlim(MaterialItem $mi, bool $includeBillingStatus = true)`,
+`MissionEncodingService::buildEncodingDto()` passe `false` uniquement pour un viewer
+chirurgien ; `MaterialItemSlimDto::$billingStatus` devient `?string`, et
+`MissionController::getEncoding()` applique `AbstractObjectNormalizer::
+SKIP_NULL_VALUES` uniquement sur la réponse chirurgien (la clé disparaît du JSON,
+jamais juste `null` — et jamais appliqué au manager/instrumentiste, dont la forme de
+réponse reste strictement inchangée).
+
+### 19.2 Backend — domaine dédié `EncodingAnomalyReport`
+
+Entité minimale (`mission`, `reporter`, `type` [5 valeurs fermées], `comment`
+[toujours requis], `status` [`OPEN`/`RESOLVED`], `resolvedBy`/`resolvedAt`/
+`resolutionComment`) — jamais un détournement de `MaterialItemRequest` (référentiel
+catalogue, concept différent). `EncodingAnomalyReportController`
+(`/api/missions/{id}/encoding-anomaly-reports` pour créer/lister,
+`/api/encoding-anomaly-reports/{id}/resolve` pour résoudre) + `EncodingAnomalyReportVoter`
+(`SELF_ACCESS`/`MANAGE`, même famille que D-097/D-099).
+
+`EncodingAnomalyReportService::resolve()` : même pattern transactionnel que D-099
+(`$em->wrapInTransaction()` + `LockMode::PESSIMISTIC_WRITE` + `refresh()` avant
+revalidation) — double résolution concurrente échoue proprement (`409
+ENCODING_ANOMALY_REPORT_ALREADY_RESOLVED`). `create()` refuse un second signalement
+`OPEN` pour (mission, reporter) (`409`, anti-duplication §14) — redevient possible une
+fois le précédent `RESOLVED`. **Résoudre ne mute jamais `MissionIntervention`/
+`MaterialLine`** — uniquement le signalement lui-même ; la correction réelle continue
+d'utiliser les workflows existants, jamais couplée automatiquement.
+
+Notifications même orchestration que D-093/D-099 :
+`ENCODING_ANOMALY_REPORTED` (→ managers/admins, in-app + push, jamais email) ;
+`ENCODING_ANOMALY_RESOLVED` (→ chirurgien, push puis repli email). `AuditEvent` sur les
+deux transitions, `record()` sur la Mission, sans donnée patient.
+
+### 19.3 Frontend chirurgien — `features/surgeon-encoding/` + `features/encoding-anomaly-reports/`
+
+```text
+features/surgeon-encoding/
+├── SurgeonEncodingPage.tsx             — /app/s/missions/:id/encoding, réutilise
+│                                          fetchMissionEncoding()/getMissionExecution()
+│                                          tels quels (aucun nouvel appel réseau créé)
+└── components/
+    ├── ReadOnlyInterventionCard.tsx     — dédié, jamais InterventionsSection réutilisé
+    ├── ReadOnlyMaterialList.tsx           avec ses boutons masqués (un composant
+    └── EncodingHoursSummary.tsx           d'édition aux boutons cachés reste un
+                                            composant d'édition — handlers/mutations
+                                            latents)
+
+features/encoding-anomaly-reports/      — partagé chirurgien (création) + manager
+├── api/                                  (résolution), même domaine des deux côtés
+│   ├── encodingAnomalyReports.api.ts
+│   └── encodingAnomalyReports.types.ts
+└── components/
+    ├── AnomalyReportSheet.tsx           — SheetModal, RadioGroup (5 types, jamais un
+    │                                       <select>), commentaire toujours requis
+    ├── AnomalyReportSection.tsx         — bandeau statut + CTA "Signaler un problème"
+    │                                       (masqué si un signalement OPEN existe déjà)
+    └── AnomalyReportsManagerPanel.tsx   — intégré à manager/MissionDetailPage.tsx,
+                                            jamais rendu si aucun signalement n'existe
+```
+
+CTA "Encodage de l'intervention" ajouté dans `MissionDetailContent`
+(`pages/instrumentist/MissionDetailPage.tsx`, composant partagé instrumentiste +
+chirurgien, piloté par `allowedActions` — jamais de branchement par rôle/URL) : navigue
+vers `/app/s/missions/{id}/encoding` quand `view_encoding` est présent (jamais en même
+temps que le CTA instrumentiste "Encoder la mission").
+
+### 19.4 Frontend manager — intégré au détail Mission existant
+
+`AnomalyReportsManagerPanel` monté directement dans `manager/MissionDetailPage.tsx`,
+juste après `EncodingStatusPanel` — jamais une nouvelle route de listing top-level
+(fondé sur l'UX actuelle : les signalements sont rares et intrinsèquement liés à une
+Mission). N'affiche rien tant qu'aucun signalement n'existe pour la mission (cas
+largement majoritaire).
+
+### 19.5 Portée non traitée dans ce lot
+
+Résolution instrumentiste (V1 : manager/admin uniquement). Workflow multi-étapes de
+résolution (V1 : `OPEN`/`RESOLVED`). Correction automatique de l'encodage couplée à la
+résolution (décision explicite contraire, voir D-100). Carte dédiée sur
+`SurgeonHomePage` (statut visible uniquement sur l'écran d'encodage + notifications).

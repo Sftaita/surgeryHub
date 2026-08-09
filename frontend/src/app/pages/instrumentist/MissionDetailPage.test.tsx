@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { MissionDetailContent } from "./MissionDetailPage";
 
 const apiGetMock = vi.fn();
@@ -153,5 +154,98 @@ describe("MissionDetailPage — rendu chirurgien (allowedActions vide, aucune ac
     await screen.findByText("CHU Test");
     const text = container.textContent ?? "";
     expect(text).not.toMatch(/€|tarif|montant|prix|patient/i);
+  });
+});
+
+/**
+ * Lot 6 (D-100) — allowedActions inclut désormais "view_encoding" pour un chirurgien
+ * consultant sa propre mission. MissionDetailContent reste le même composant que
+ * l'instrumentiste (pas de branchement par rôle) : le CTA "Encodage de l'intervention"
+ * apparaît uniquement piloté par ce flag, et navigue vers /app/s/... (jamais /app/i/...,
+ * réservé à l'édition instrumentiste).
+ */
+describe("MissionDetailPage — rendu chirurgien avec view_encoding (Lot 6, D-100)", () => {
+  it("affiche le CTA 'Encodage de l'intervention' et le lien 'Voir' quand view_encoding est présent", async () => {
+    mockRoutes(
+      baseMission({
+        instrumentist: { id: 5, firstname: "Salve", lastname: "Decorte", email: "sd@test.be" },
+        allowedActions: ["view_encoding"],
+      }),
+      executionInfo(),
+    );
+    renderPage();
+
+    expect(await screen.findByText("Encodage de l'intervention")).toBeInTheDocument();
+    expect(screen.getByText("Voir")).toBeInTheDocument();
+    expect(screen.getByText("Consultez les interventions et le matériel encodés par l'instrumentiste.")).toBeInTheDocument();
+
+    // Jamais les CTA d'édition instrumentiste en même temps.
+    expect(screen.queryByText("Encoder la mission")).not.toBeInTheDocument();
+    expect(screen.queryByText("Gérer")).not.toBeInTheDocument();
+  });
+
+  it("le CTA 'Voir' navigue vers /app/s/missions/:id/encoding (jamais /app/i/...)", async () => {
+    mockRoutes(
+      baseMission({
+        instrumentist: { id: 5, firstname: "Salve", lastname: "Decorte", email: "sd@test.be" },
+        allowedActions: ["view_encoding"],
+      }),
+      executionInfo(),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={["/app/s/missions/690"]}>
+        <QueryClientProvider client={client}>
+          <Routes>
+            <Route path="/app/s/missions/:id" element={<MissionDetailContent missionId={MISSION_ID} />} />
+            <Route path="/app/s/missions/:id/encoding" element={<div>Surgeon encoding screen</div>} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    const user = userEvent.setup();
+    await screen.findByText("Encodage de l'intervention");
+    await user.click(screen.getByText("Encodage de l'intervention"));
+
+    expect(await screen.findByText("Surgeon encoding screen")).toBeInTheDocument();
+  });
+
+  it("view_encoding absent (statut non éligible) : ni CTA ni lien, comme avant ce lot", async () => {
+    mockRoutes(
+      baseMission({
+        instrumentist: { id: 5, firstname: "Salve", lastname: "Decorte", email: "sd@test.be" },
+        allowedActions: [],
+      }),
+      executionInfo(),
+    );
+    renderPage();
+
+    await screen.findByText("CHU Test");
+    expect(screen.queryByText("Encodage de l'intervention")).not.toBeInTheDocument();
+    expect(screen.queryByText("Voir")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Régression instrumentiste — canEncoding doit rester strictement prioritaire et
+ * exclusif : même si un jour view_encoding apparaissait à tort aux côtés de
+ * encoding/edit_encoding, le CTA instrumentiste reste seul affiché (jamais les deux).
+ */
+describe("MissionDetailPage — régression instrumentiste (canEncoding prioritaire sur canViewEncoding)", () => {
+  it("encoding + view_encoding ensemble : seul le CTA instrumentiste 'Encoder la mission' est affiché", async () => {
+    mockRoutes(
+      baseMission({
+        instrumentist: { id: 5, firstname: "Salve", lastname: "Decorte", email: "sd@test.be" },
+        allowedActions: ["encoding", "view_encoding"],
+      }),
+      executionInfo(),
+    );
+    renderPage();
+
+    expect(await screen.findByText("Encoder la mission")).toBeInTheDocument();
+    expect(screen.getByText("Gérer")).toBeInTheDocument();
+    expect(screen.queryByText("Encodage de l'intervention")).not.toBeInTheDocument();
+    expect(screen.queryByText("Voir")).not.toBeInTheDocument();
   });
 });

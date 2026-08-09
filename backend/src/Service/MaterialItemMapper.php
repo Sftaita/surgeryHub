@@ -8,7 +8,14 @@ use App\Entity\MaterialItem;
 
 final class MaterialItemMapper
 {
-    public function toSlim(MaterialItem $mi): MaterialItemSlimDto
+    /**
+     * @param bool $includeBillingStatus Lot 6 (D-100) — false pour un consommateur
+     *             chirurgien (MissionEncodingService) : la classification tarifaire d'un
+     *             matériel reste un "billing state", jamais montré à un chirurgien.
+     *             true partout ailleurs (catalogue manager, recherche instrumentiste) —
+     *             comportement strictement inchangé pour ces appelants.
+     */
+    public function toSlim(MaterialItem $mi, bool $includeBillingStatus = true): MaterialItemSlimDto
     {
         $firm = $mi->getFirm();
         $firmDto = null;
@@ -28,7 +35,7 @@ final class MaterialItemMapper
             unit: (string) $mi->getUnit(),
             isImplant: (bool) $mi->isImplant(),
             active: (bool) $mi->isActive(),
-            billingStatus: $mi->getBillingStatus()->value,
+            billingStatus: $includeBillingStatus ? $mi->getBillingStatus()->value : null,
         );
     }
 }

@@ -6008,3 +6008,113 @@ PENDING → REJECTED
 ```
 `ACCEPTED`/`REJECTED` sont terminaux en V1 — aucune transition depuis un état
 terminal, aucune suppression d'une demande traitée, aucun `CANCELLED`.
+
+## 45. Consultation encodage chirurgien + signalement d'anomalie (Lot 6, D-100)
+
+Ferme la boucle Mission → encodage instrumentiste → consultation chirurgien →
+signalement éventuel → traitement manager. Lecture strictement seule côté chirurgien —
+aucune mutation d'encodage n'est jamais possible pour ce rôle. Voir D-100 pour
+l'ensemble des décisions.
+
+### `GET /api/missions/{id}/encoding` (inchangé dans sa forme, autorisation élargie)
+
+**AuthZ :** `MissionVoter::VIEW_ENCODING` (lecture — nouveau, distinct d'`EDIT_ENCODING`
+qui reste l'unique porte pour les mutations, inchangé). Manager/Admin : toujours
+autorisé. Instrumentiste assigné : mêmes statuts qu'avant (`DECLARED`/`ASSIGNED`/
+`IN_PROGRESS`/`ENCODING_IN_PROGRESS`/`SUBMITTED`). **Chirurgien (nouveau) :**
+`mission.surgeon === utilisateur authentifié`, statuts `DECLARED`/`ASSIGNED`/
+`IN_PROGRESS`/`ENCODING_IN_PROGRESS`/`SUBMITTED`/`VALIDATED`/`CLOSED` (jamais
+`DRAFT`/`OPEN`/`REJECTED`/`CANCELLED`) — `403` sinon, y compris pour une mission d'un
+autre chirurgien (ownership toujours revérifiée côté serveur, jamais via l'ID seul).
+
+`mission.allowedActions` contient désormais `"view_encoding"` pour un chirurgien
+éligible (jamais `"edit_encoding"`/`"encoding"`, qui restent exclusivement
+instrumentiste/manager).
+
+**Champ par champ, viewer chirurgien uniquement :** `materialLines[].item.billingStatus`
+(catalogue/facturation, D-092) est absent du JSON (jamais `null` explicite, la clé
+elle-même n'apparaît pas). Manager/instrumentiste : réponse strictement inchangée,
+`billingStatus` toujours présent. Aucun autre champ financier n'a jamais existé sur ce
+DTO (`PricingRule`/`computedAmount`/`fee`/`invoice`/salaire — hors périmètre de cet
+endpoint).
+
+### `POST /api/missions/{id}/encoding-anomaly-reports`
+
+**AuthZ :** `ROLE_SURGEON` (`EncodingAnomalyReportVoter::SELF_ACCESS`) — l'appartenance
+à la mission (`mission.surgeon === utilisateur authentifié`) est revérifiée dans le
+service, jamais confiance dans l'URL seule.
+
+Body :
+```json
+{
+  "type": "MATERIAL_INCORRECT",
+  "comment": "Le plateau tibial encodé n'est pas le bon."
+}
+```
+`type` ∈ `INTERVENTION_MISSING`/`INTERVENTION_INCORRECT`/`MATERIAL_INCORRECT`/
+`HOURS_INCORRECT`/`OTHER` — `422` si invalide. `comment` toujours requis (y compris
+`OTHER`) — `422` si vide/absent. `422` si le statut de la mission n'est pas éligible
+(mêmes statuts que `VIEW_ENCODING` côté chirurgien).
+
+**Anti-duplication (§14) :** `409` si un signalement `OPEN` existe déjà pour
+(mission, chirurgien authentifié) — un nouveau signalement redevient possible une fois
+le précédent `RESOLVED`.
+
+**Réponse — 201 :**
+```json
+{
+  "id": 12,
+  "missionId": 42,
+  "reporter": { "id": 7, "displayName": "Charles Fontaine" },
+  "type": "MATERIAL_INCORRECT",
+  "comment": "Le plateau tibial encodé n'est pas le bon.",
+  "status": "OPEN",
+  "createdAt": "2026-08-09T10:00:00+02:00",
+  "resolvedBy": null,
+  "resolvedAt": null,
+  "resolutionComment": null
+}
+```
+
+**Effets :** dispatch async `EncodingAnomalyReportCreatedMessage` vers tous les
+managers/admins actifs (in-app + push, jamais email) ;
+`AuditEvent::ENCODING_ANOMALY_REPORTED` (`record()` sur la Mission, sans donnée
+patient).
+
+### `GET /api/missions/{id}/encoding-anomaly-reports`
+
+**AuthZ :** chirurgien de la mission (self-scopé) ou manager/admin — `403` pour tout
+autre rôle, y compris un autre chirurgien ou l'instrumentiste. Retourne tous les
+signalements de la mission, triés `createdAt` DESC. Même forme d'objet que la réponse
+de création, en tableau.
+
+### `POST /api/encoding-anomaly-reports/{id}/resolve`
+
+**AuthZ :** `ROLE_MANAGER`/`ROLE_ADMIN` (`EncodingAnomalyReportVoter::MANAGE`) —
+jamais le chirurgien lui-même, jamais l'instrumentiste (aucune capacité de résolution
+en V1). Body requis : `{ "resolutionComment": string }` — `422` si vide/absent.
+
+**Concurrence :** verrou pessimiste posé sur le signalement avant toute décision
+(même pattern que D-099) — `409 ENCODING_ANOMALY_REPORT_ALREADY_RESOLVED` si le
+signalement n'est plus `OPEN` (déjà résolu par une résolution concurrente).
+
+**Ne corrige jamais l'encodage automatiquement** — `resolve()` mute uniquement le
+signalement (`status`, `resolvedBy`, `resolvedAt`, `resolutionComment`), jamais
+`MissionIntervention`/`MaterialLine`. La correction réelle, si nécessaire, continue de
+passer par les workflows existants (édition instrumentiste, reject/reopen manager).
+
+**Réponse — 200 :** le signalement sérialisé, `status: "RESOLVED"`, `resolvedBy`/
+`resolvedAt`/`resolutionComment` renseignés.
+
+**Effets :** dispatch async `EncodingAnomalyReportResolvedMessage` vers le chirurgien
+requester — push d'abord, repli email si non livrable ;
+`AuditEvent::ENCODING_ANOMALY_RESOLVED` (`record()` sur la Mission).
+
+### Transitions
+
+```text
+OPEN → RESOLVED
+```
+`RESOLVED` est terminal pour CE signalement — un nouveau signalement (même mission,
+même chirurgien) redevient possible dès que le précédent est `RESOLVED`. Aucun
+`CANCELLED`, aucune suppression.

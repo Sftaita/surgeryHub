@@ -49,6 +49,11 @@ const SurgeonActivityPage = React.lazy(() => import("../features/surgeon-activit
 const SurgeonMissionRequestFormPage = React.lazy(() => import("../features/surgeon-mission-requests/SurgeonMissionRequestFormPage"));
 const SurgeonMissionRequestsPage    = React.lazy(() => import("../features/surgeon-mission-requests/SurgeonMissionRequestsPage"));
 
+// Chirurgien (Lot 6, D-100) — consultation lecture seule de l'encodage instrumentiste +
+// signalement d'anomalie, jamais un réemploi de la page d'édition instrumentiste (voir
+// docs/decisions.md).
+const SurgeonEncodingPage = React.lazy(() => import("../features/surgeon-encoding/SurgeonEncodingPage"));
+
 // Admin
 const AdminUsersPage       = React.lazy(() => import("../pages/admin/AdminUsersPage"));
 const AdminSitesPage       = React.lazy(() => import("../pages/admin/AdminSitesPage"));
@@ -173,6 +178,7 @@ export function AppRouter() {
                 <Route path="s/notifications" element={<NotificationsPage />} />
                 <Route path="s/profile" element={<ProfilePage />} />
                 <Route path="s/missions/:id" element={<MissionDetailPageI />} />
+                <Route path="s/missions/:id/encoding" element={<SurgeonEncodingPage />} />
               </Route>
             </Route>
 

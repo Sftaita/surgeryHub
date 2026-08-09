@@ -31,6 +31,7 @@ use App\Exception\MissingIgnoreStrategyException;
 use App\Exception\RefundExceedsOverpaidException;
 use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
 use App\Exception\SurgeonMissionRequestConflictException;
+use App\Exception\EncodingAnomalyReportAlreadyResolvedException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -186,6 +187,10 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'SURGEON_MISSION_REQUEST_CONFLICT';
             $message = $e->getMessage() ?: 'Le chirurgien a déjà une autre mission active sur cette période.';
+        } elseif ($e instanceof EncodingAnomalyReportAlreadyResolvedException) {
+            $status = 409;
+            $code = 'ENCODING_ANOMALY_REPORT_ALREADY_RESOLVED';
+            $message = $e->getMessage() ?: 'Ce signalement a déjà été traité.';
         } elseif ($e instanceof HttpExceptionInterface) {
             $status = $e->getStatusCode();
             $message = $e->getMessage() ?: $message;

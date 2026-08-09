@@ -447,6 +447,48 @@ class NotificationService
         return $notification;
     }
 
+    /**
+     * Lot 6 (D-100) — repli email quand Push n'est pas livrable au chirurgien dont le
+     * signalement d'anomalie d'encodage vient d'être résolu par un manager.
+     */
+    public function encodingAnomalyResolvedNotifySurgeon(
+        Mission $mission,
+        User $surgeon,
+        string $resolutionComment,
+        ?OutboundNotification $fallbackOf = null,
+        ?OutboundNotificationFallbackReason $fallbackReason = null,
+    ): OutboundNotification {
+        $missionUrl = sprintf('%s/app/s/missions/%d', $this->frontendUrl, $mission->getId());
+        $subject = 'SurgicalHub — Votre signalement a été traité';
+
+        $notification = $this->outboundNotificationService->recordEmailQueued(
+            $surgeon,
+            'ENCODING_ANOMALY_RESOLVED',
+            $subject,
+            rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
+            mission: $mission,
+            fallbackOf: $fallbackOf,
+            fallbackReason: $fallbackReason,
+        );
+
+        $this->bus->dispatch(new SendTemplatedEmailMessage(
+            to: (string) $surgeon->getEmail(),
+            subject: $subject,
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: 'emails/encoding_anomaly_resolved.html.twig',
+            context: [
+                'firstname'         => $surgeon->getFirstname(),
+                'resolutionComment' => $resolutionComment,
+                'missionUrl'        => $missionUrl,
+                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($surgeon),
+            ],
+            outboundNotificationId: $notification->getId(),
+        ));
+
+        return $notification;
+    }
+
     public function sendAbsenceRequestMissingEmailToUser(User $user, string $message): void
     {
         $this->bus->dispatch(new SendTemplatedEmailMessage(

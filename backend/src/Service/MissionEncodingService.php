@@ -42,11 +42,17 @@ final class MissionEncodingService
     {
         $mission = $this->reloadForEncoding((int) ($mission->getId() ?? 0));
 
+        // Lot 6 (D-100) — un chirurgien ne doit jamais voir de "billing state" (audit
+        // §5) : billingStatus est omis de chaque MaterialItemSlimDto pour ce viewer.
+        // Manager/instrumentiste : comportement strictement inchangé.
+        $isSurgeonViewer = in_array('ROLE_SURGEON', $viewer->getRoles(), true)
+            && $mission->getSurgeon()?->getId() === $viewer->getId();
+
         // Lot 6 — un seul aller-retour DB pour les matériels suggérés de TOUTES les
         // interventions de cette mission (pas une requête par intervention) : on
         // rassemble d'abord les couples (interventionType, primaryFirm) réellement
         // présents, puis on charge en une fois les FirmServiceOffering correspondantes.
-        $suggestedMaterialsByPair = $this->loadSuggestedMaterialsByTypeAndFirm($mission->getInterventions());
+        $suggestedMaterialsByPair = $this->loadSuggestedMaterialsByTypeAndFirm($mission->getInterventions(), $isSurgeonViewer);
 
         // EPIC Revue instrumentiste, Lot 3, commit 7 — un seul regroupement du matériel
         // de la mission, par cible réelle (attachmentTarget()), consommé à la fois par
@@ -58,7 +64,7 @@ final class MissionEncodingService
         $interventions = [];
         $entries = [];
         foreach ($mission->getInterventions() as $intervention) {
-            $dto = $this->mapIntervention($mission, $intervention, $suggestedMaterialsByPair, $grouped);
+            $dto = $this->mapIntervention($mission, $intervention, $suggestedMaterialsByPair, $grouped, $isSurgeonViewer);
             $interventions[] = $dto;
             $entries[] = $this->mapInterventionToEntry($intervention, $dto);
         }
@@ -70,7 +76,7 @@ final class MissionEncodingService
         );
 
         foreach ($mission->getMissionInterventionDrafts() as $draft) {
-            $entry = $this->mapDraftToEntry($draft, $grouped);
+            $entry = $this->mapDraftToEntry($draft, $grouped, $isSurgeonViewer);
             if ($entry !== null) {
                 $entries[] = $entry;
             }
@@ -100,7 +106,7 @@ final class MissionEncodingService
             );
         }
 
-        $catalog = $this->buildCatalogDto();
+        $catalog = $this->buildCatalogDto($isSurgeonViewer);
 
         $allowedActions = $this->actionsService->allowedActions($mission, $viewer);
 
@@ -180,7 +186,7 @@ final class MissionEncodingService
         );
     }
 
-    private function buildCatalogDto(): MissionEncodingCatalogDto
+    private function buildCatalogDto(bool $isSurgeonViewer): MissionEncodingCatalogDto
     {
         $raw = $this->catalogService->getEncodingCatalog();
 
@@ -199,7 +205,7 @@ final class MissionEncodingService
 
         $itemDtos = [];
         foreach ($items as $it) {
-            $itemDtos[] = $this->itemMapper->toSlim($it);
+            $itemDtos[] = $this->itemMapper->toSlim($it, !$isSurgeonViewer);
         }
 
         $types = $this->em->getRepository(InterventionType::class)->createQueryBuilder('it')
@@ -254,7 +260,7 @@ final class MissionEncodingService
      * @return array<string, list<\App\Dto\Request\Response\MaterialItemSlimDto>> matériels
      *         suggérés, clé "typeId:firmId"
      */
-    private function loadSuggestedMaterialsByTypeAndFirm(iterable $interventions): array
+    private function loadSuggestedMaterialsByTypeAndFirm(iterable $interventions, bool $isSurgeonViewer): array
     {
         $typeIds = [];
         $firmIds = [];
@@ -295,7 +301,7 @@ final class MissionEncodingService
             foreach ($o->getSuggestedMaterials() as $sm) {
                 $item = $sm->getMaterialItem();
                 if ($item !== null && $item->isActive()) {
-                    $items[] = $this->itemMapper->toSlim($item);
+                    $items[] = $this->itemMapper->toSlim($item, !$isSurgeonViewer);
                 }
             }
             $map[$key] = $items;
@@ -346,10 +352,10 @@ final class MissionEncodingService
      * @param array<string, list<\App\Dto\Request\Response\MaterialItemSlimDto>> $suggestedMaterialsByPair
      * @param array{lines: array<int, MaterialLine[]>, requests: array<int, MaterialItemRequest[]>} $grouped
      */
-    private function mapIntervention(Mission $mission, MissionIntervention $i, array $suggestedMaterialsByPair, array $grouped): MissionEncodingInterventionDto
+    private function mapIntervention(Mission $mission, MissionIntervention $i, array $suggestedMaterialsByPair, array $grouped, bool $isSurgeonViewer): MissionEncodingInterventionDto
     {
         $rawLines = $grouped['lines'][spl_object_id($i)] ?? [];
-        $lines = array_map($this->mapMaterialLine(...), $rawLines);
+        $lines = array_map(fn (MaterialLine $l) => $this->mapMaterialLine($l, $isSurgeonViewer), $rawLines);
 
         usort(
             $lines,
@@ -442,7 +448,7 @@ final class MissionEncodingService
      *
      * @param array{lines: array<int, MaterialLine[]>, requests: array<int, MaterialItemRequest[]>} $grouped
      */
-    private function mapDraftToEntry(MissionInterventionDraft $draft, array $grouped): ?MissionEncodingEntryDto
+    private function mapDraftToEntry(MissionInterventionDraft $draft, array $grouped, bool $isSurgeonViewer): ?MissionEncodingEntryDto
     {
         if ($draft->getStatus() === MissionInterventionDraft::STATUS_CONVERTED
             || $draft->getStatus() === MissionInterventionDraft::STATUS_MATERIAL_REASSIGNED
@@ -451,7 +457,7 @@ final class MissionEncodingService
         }
 
         $rawLines = $grouped['lines'][spl_object_id($draft)] ?? [];
-        $lines = array_map($this->mapMaterialLine(...), $rawLines);
+        $lines = array_map(fn (MaterialLine $l) => $this->mapMaterialLine($l, $isSurgeonViewer), $rawLines);
         usort($lines, static fn (MissionEncodingMaterialLineDto $a, MissionEncodingMaterialLineDto $b): int => $a->id <=> $b->id);
 
         $rawRequests = $grouped['requests'][spl_object_id($draft)] ?? [];
@@ -487,9 +493,9 @@ final class MissionEncodingService
         );
     }
 
-    private function mapMaterialLine(MaterialLine $l): MissionEncodingMaterialLineDto
+    private function mapMaterialLine(MaterialLine $l, bool $isSurgeonViewer): MissionEncodingMaterialLineDto
     {
-        $itemDto = $this->itemMapper->toSlim($l->getItem());
+        $itemDto = $this->itemMapper->toSlim($l->getItem(), !$isSurgeonViewer);
 
         $missionInterventionId = $l->getMissionIntervention()?->getId();
         $missionInterventionId = $missionInterventionId !== null ? (int) $missionInterventionId : null;

@@ -24,6 +24,10 @@ class MissionVoter extends Voter
     // Encodage (ex: instrumentiste)
     public const EDIT_ENCODING = 'MISSION_EDIT_ENCODING';
 
+    // Lecture seule de l'encodage (Lot 6, D-100) — jamais un élargissement des droits
+    // d'écriture : EDIT_ENCODING reste inchangé, gate toujours les mutations.
+    public const VIEW_ENCODING = 'MISSION_VIEW_ENCODING';
+
     // DECLARED flow (Lot B2)
     public const DECLARE = 'MISSION_DECLARE';
     public const APPROVE_DECLARED = 'MISSION_APPROVE_DECLARED';
@@ -59,6 +63,7 @@ class MissionVoter extends Voter
             self::SUBMIT,
             self::EDIT,
             self::EDIT_ENCODING,
+            self::VIEW_ENCODING,
             self::DECLARE,
             self::APPROVE_DECLARED,
             self::REJECT_DECLARED,
@@ -113,6 +118,7 @@ class MissionVoter extends Voter
             self::SUBMIT           => $this->canSubmit($mission, $user, $isManager),
             self::EDIT             => $this->canEdit($mission, $user, $isManager),
             self::EDIT_ENCODING    => $this->canEditEncoding($mission, $user, $isManager),
+            self::VIEW_ENCODING    => $this->canViewEncoding($mission, $user, $isManager),
             self::APPROVE_DECLARED => $this->canApproveDeclared($mission, $isManager),
             self::REJECT_DECLARED  => $this->canRejectDeclared($mission, $isManager),
             self::RELEASE                     => $isManager,
@@ -274,6 +280,56 @@ class MissionVoter extends Voter
             MissionStatus::ENCODING_IN_PROGRESS,
             MissionStatus::SUBMITTED,
         ], true);
+    }
+
+    /**
+     * Lot 6 (D-100) — lecture seule, jamais un élargissement des droits d'écriture
+     * (canEditEncoding() reste la seule porte pour les mutations, inchangée).
+     *
+     * Manager/Admin : toujours autorisé (aucune restriction de statut — cohérent avec
+     * VIEW_AUDIT ci-dessus).
+     *
+     * Instrumentiste : exactement les mêmes statuts que canEditEncoding() (celui qui
+     * peut éditer peut évidemment consulter — aucune extension inventée pour ce rôle,
+     * hors périmètre de ce lot).
+     *
+     * Chirurgien : mission.surgeon === currentUser, statuts où un encodage existe
+     * potentiellement (à partir de ASSIGNED) ou a existé (VALIDATED/CLOSED — l'usage
+     * principal de ce lot est justement la consultation rétrospective d'une mission
+     * terminée). Exclut DRAFT/OPEN (aucun instrumentiste assigné, rien à montrer) et
+     * REJECTED/CANCELLED (mission jamais réellement advenue).
+     */
+    private function canViewEncoding(Mission $mission, User $user, bool $managerContext): bool
+    {
+        if ($managerContext) {
+            return true;
+        }
+
+        $roles = $user->getRoles();
+
+        if (in_array('ROLE_INSTRUMENTIST', $roles, true) && $mission->getInstrumentist()?->getId() === $user->getId()) {
+            return in_array($mission->getStatus(), [
+                MissionStatus::DECLARED,
+                MissionStatus::ASSIGNED,
+                MissionStatus::IN_PROGRESS,
+                MissionStatus::ENCODING_IN_PROGRESS,
+                MissionStatus::SUBMITTED,
+            ], true);
+        }
+
+        if (in_array('ROLE_SURGEON', $roles, true) && $mission->getSurgeon()?->getId() === $user->getId()) {
+            return in_array($mission->getStatus(), [
+                MissionStatus::DECLARED,
+                MissionStatus::ASSIGNED,
+                MissionStatus::IN_PROGRESS,
+                MissionStatus::ENCODING_IN_PROGRESS,
+                MissionStatus::SUBMITTED,
+                MissionStatus::VALIDATED,
+                MissionStatus::CLOSED,
+            ], true);
+        }
+
+        return false;
     }
 
     private function canApproveDeclared(Mission $mission, bool $managerContext): bool

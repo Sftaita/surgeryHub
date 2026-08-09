@@ -100,6 +100,20 @@ final class MissionActionsService
             $actions[] = 'dispute_hours';
         }
 
+        // Lot 6 (D-100) — lecture seule de l'encodage, jamais un droit d'écriture (voir
+        // MissionVoter::canViewEncoding(), même liste de statuts exactement).
+        if ($isSurgeon && in_array($mission->getStatus(), [
+            MissionStatus::DECLARED,
+            MissionStatus::ASSIGNED,
+            MissionStatus::IN_PROGRESS,
+            MissionStatus::ENCODING_IN_PROGRESS,
+            MissionStatus::SUBMITTED,
+            MissionStatus::VALIDATED,
+            MissionStatus::CLOSED,
+        ], true)) {
+            $actions[] = 'view_encoding';
+        }
+
         return array_values(array_unique($actions));
     }
 

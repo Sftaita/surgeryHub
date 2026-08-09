@@ -59,6 +59,7 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::CATALOGUE_REQUEST_IGNORED,
         NotificationType::SURGEON_MISSION_REQUEST_ACCEPTED,
         NotificationType::SURGEON_MISSION_REQUEST_REJECTED,
+        NotificationType::ENCODING_ANOMALY_RESOLVED,
     ];
 
     public function __construct(

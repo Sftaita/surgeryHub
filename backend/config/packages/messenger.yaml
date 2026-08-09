@@ -27,6 +27,8 @@ framework:
             App\Message\AbsenceSelfDeclaredMessage:         async
             App\Message\SurgeonMissionRequestCreatedMessage: async
             App\Message\SurgeonMissionRequestDecidedMessage: async
+            App\Message\EncodingAnomalyReportCreatedMessage: async
+            App\Message\EncodingAnomalyReportResolvedMessage: async
 
 when@test:
     framework:

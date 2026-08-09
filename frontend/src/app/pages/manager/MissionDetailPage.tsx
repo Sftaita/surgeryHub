@@ -50,6 +50,7 @@ import {
   validateMissionEncoding,
 } from "../../features/encoding/api/encoding.api";
 import { EncodingStatusPanel } from "../../features/encoding/components/EncodingStatusPanel";
+import { AnomalyReportsManagerPanel } from "../../features/encoding-anomaly-reports/components/AnomalyReportsManagerPanel";
 import { useToast } from "../../ui/toast/useToast";
 
 type ChipColor = "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning";
@@ -471,6 +472,11 @@ export function MissionDetailContent({
             comments={encodingQuery.data?.encodingComments}
           />
         )}
+
+        {/* Lot 6 (D-100) — signalements d'anomalie chirurgien, rattachés à cette Mission.
+            N'affiche rien tant qu'aucun signalement n'existe (voir AnomalyReportsManagerPanel) :
+            jamais de section vide pour la grande majorité des missions sans anomalie. */}
+        <AnomalyReportsManagerPanel missionId={data.id} />
 
         {/* Lot 7 (D-070) suite — commentaire instrumentiste saisi à la clôture quand
             aucune ligne de matériel active n'a été encodée (interventions réalisées).

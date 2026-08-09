@@ -183,4 +183,13 @@ enum AuditEventType: string
     case SURGEON_MISSION_REQUEST_CREATED  = 'SURGEON_MISSION_REQUEST_CREATED';
     case SURGEON_MISSION_REQUEST_ACCEPTED = 'SURGEON_MISSION_REQUEST_ACCEPTED';
     case SURGEON_MISSION_REQUEST_REJECTED = 'SURGEON_MISSION_REQUEST_REJECTED';
+
+    /**
+     * Lot 6 (D-100) — EncodingAnomalyReportService. Les deux événements sont toujours
+     * rattachés à la Mission concernée (record(), jamais recordGlobal() — contrairement
+     * à SurgeonMissionRequest, une Mission existe déjà dans les deux cas). Aucune
+     * donnée patient dans le payload.
+     */
+    case ENCODING_ANOMALY_REPORTED = 'ENCODING_ANOMALY_REPORTED';
+    case ENCODING_ANOMALY_RESOLVED = 'ENCODING_ANOMALY_RESOLVED';
 }

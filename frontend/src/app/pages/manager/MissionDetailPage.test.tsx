@@ -43,6 +43,7 @@ function renderDetail(mission: ReturnType<typeof baseMission>) {
     if (url === `/api/missions/${mission.id}`) return Promise.resolve({ data: mission });
     if (url.endsWith("/execution")) return Promise.resolve({ data: { missionId: mission.id, hasExecutionRecord: false, actualStartAt: null, actualEndAt: null, actualDurationMinutes: null, hoursSource: null, effectiveDurationMinutes: 0, effectiveDurationSource: "PLANNED", disputes: [] } });
     if (url.endsWith("/encoding")) return Promise.resolve({ data: { mission: {}, interventions: [], entries: [], interventionTypeRequests: [], coherenceSummary: {}, encodingComments: [] } });
+    if (url.endsWith("/encoding-anomaly-reports")) return Promise.resolve({ data: [] });
     return Promise.resolve({ data: {} });
   });
   apiPostMock.mockResolvedValue({ data: { ...mission, status: "CANCELLED" } });
@@ -123,5 +124,52 @@ describe("MissionDetailPage — annulation de mission (Point 5)", () => {
     await user.click(screen.getByRole("button", { name: "Retour" }));
 
     expect(apiPostMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Lot 6 (D-100) — AnomalyReportsManagerPanel intégré au détail Mission manager
+ * existant (§15 : jamais une nouvelle page de listing top-level). Le comportement
+ * détaillé du panneau (résolution, 409, etc.) est couvert par
+ * AnomalyReportsManagerPanel.test.tsx ; ici on vérifie uniquement le branchement.
+ */
+describe("MissionDetailPage (manager) — anomalies d'encodage signalées (Lot 6, D-100)", () => {
+  it("n'affiche aucune section quand aucune anomalie n'est signalée", async () => {
+    renderDetail(baseMission({ status: "ASSIGNED" }));
+    await screen.findByText("Mission #42");
+    expect(screen.queryByText("Anomalies signalées par le chirurgien")).not.toBeInTheDocument();
+  });
+
+  it("affiche le signalement quand il en existe un pour cette mission", async () => {
+    const mission = baseMission({ status: "ASSIGNED" });
+    apiGetMock.mockImplementation((url: string) => {
+      if (url === `/api/missions/${mission.id}`) return Promise.resolve({ data: mission });
+      if (url.endsWith("/execution")) return Promise.resolve({ data: { missionId: mission.id, hasExecutionRecord: false, actualStartAt: null, actualEndAt: null, actualDurationMinutes: null, hoursSource: null, effectiveDurationMinutes: 0, effectiveDurationSource: "PLANNED", disputes: [] } });
+      if (url.endsWith("/encoding")) return Promise.resolve({ data: { mission: {}, interventions: [], entries: [], interventionTypeRequests: [], coherenceSummary: {}, encodingComments: [] } });
+      if (url.endsWith("/encoding-anomaly-reports")) {
+        return Promise.resolve({
+          data: [{
+            id: 1, missionId: mission.id,
+            reporter: { id: 2, displayName: "A B" },
+            type: "MATERIAL_INCORRECT", comment: "Matériel manquant.", status: "OPEN",
+            createdAt: "2026-08-01T10:00:00Z", resolvedBy: null, resolvedAt: null, resolutionComment: null,
+          }],
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <MissionDetailContent missionId={mission.id} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("Anomalies signalées par le chirurgien")).toBeInTheDocument();
+    expect(screen.getByText("Matériel incorrect")).toBeInTheDocument();
+    expect(screen.getByText("Marquer comme traité")).toBeInTheDocument();
   });
 });

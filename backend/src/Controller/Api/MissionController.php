@@ -15,7 +15,6 @@ use App\Enum\EligibilityReason;
 use App\Message\MissionPublishedMessage;
 use App\Security\Voter\MissionVoter;
 use App\Service\MissionEligibilityService;
-use App\Service\MissionEncodingGuard;
 use App\Service\MissionEncodingService;
 use App\Service\MissionMapper;
 use App\Service\MissionPostDeployService;
@@ -28,6 +27,7 @@ use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
+use Symfony\Component\Serializer\Normalizer\AbstractObjectNormalizer;
 use Symfony\Component\Serializer\Normalizer\DateTimeNormalizer;
 use Symfony\Component\Serializer\SerializerInterface;
 use Symfony\Component\Validator\Validator\ValidatorInterface;
@@ -39,7 +39,6 @@ class MissionController extends AbstractController
         private readonly MissionService            $missionService,
         private readonly MissionMapper             $mapper,
         private readonly MissionEncodingService    $encodingService,
-        private readonly MissionEncodingGuard      $encodingGuard,
         private readonly SerializerInterface       $serializer,
         private readonly ValidatorInterface        $validator,
         private readonly MessageBusInterface       $bus,
@@ -348,19 +347,38 @@ class MissionController extends AbstractController
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }
 
+    /**
+     * Lot 6 (D-100) — VIEW_ENCODING (lecture), jamais EDIT_ENCODING : la mutation
+     * business-gate `MissionEncodingGuard::assertEncodingAllowed()` (verrou
+     * REJECTED/encodingLockedAt, fenêtre "pas avant startAt" instrumentiste) concerne
+     * exclusivement l'écriture — l'appeler ici bloquait à tort la lecture d'une mission
+     * VALIDATED/CLOSED/REJECTED pour TOUT le monde, y compris le manager (contournement
+     * visible côté frontend manager avant ce lot : requête désactivée pour ces 3
+     * statuts). Ce lot corrige ce couplage en le retirant du chemin de lecture — aucune
+     * mutation n'est possible ici, seul GET.
+     */
     #[Route(path: '/{id}/encoding', name: 'api_missions_get_encoding', methods: ['GET'])]
     public function getEncoding(int $id, #[CurrentUser] User $user): JsonResponse
     {
         // IMPORTANT: ne pas utiliser getOr404ForEncoding() (ça déclenche l’hydratation proxy MissionIntervention -> warning 500)
         $mission = $this->missionService->getOr404($id);
 
-        $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
-        $this->encodingGuard->assertEncodingAllowed($mission, $user);
+        $this->denyAccessUnlessGranted(MissionVoter::VIEW_ENCODING, $mission);
 
         // MissionEncodingService attend (Mission $mission, User $viewer)
         $encodingDto = $this->encodingService->buildEncodingDto($mission, $user);
 
-        return $this->json($encodingDto, JsonResponse::HTTP_OK);
+        // SKIP_NULL_VALUES uniquement pour le viewer chirurgien : billingStatus (jamais
+        // envoyé, voir MissionEncodingService) doit être absent du JSON, pas juste null
+        // (audit §5 : aucun "billing state" visible). Manager/instrumentiste : contexte
+        // par défaut inchangé — ne pas risquer de faire disparaître un autre champ null
+        // (ex. primaryFirm) déjà consommé explicitement par leurs vues existantes.
+        $isSurgeonViewer = in_array('ROLE_SURGEON', $user->getRoles(), true)
+            && $mission->getSurgeon()?->getId() === $user->getId();
+
+        return $this->json($encodingDto, JsonResponse::HTTP_OK, [], $isSurgeonViewer ? [
+            AbstractObjectNormalizer::SKIP_NULL_VALUES => true,
+        ] : []);
     }
 
     private function deserializeAndValidate(string $json, string $class): object

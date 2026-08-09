@@ -183,6 +183,10 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
   const canEncoding = allowed.includes("encoding") || allowed.includes("edit_encoding");
   const canSubmit = allowed.includes("submit");
   const canEditHours = allowed.includes("edit_hours");
+  // Lot 6 (D-100) — lecture seule chirurgien : jamais en même temps que canEncoding
+  // (allowedActions ne renvoie jamais les deux pour un même viewer), mais vérifié quand
+  // même pour ne jamais faire disparaître le CTA "Gérer" de l'instrumentiste.
+  const canViewEncoding = !canEncoding && allowed.includes("view_encoding");
 
   const { label: chipLabel, color: chipColor } = getStatusChip(String(mission.status ?? ""));
   const hoursLabel = formatExecutionHours(execution);
@@ -284,18 +288,28 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
             >
               Gérer
             </Button>
+          ) : canViewEncoding ? (
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => navigate(`/app/s/missions/${mission.id}/encoding`)}
+            >
+              Voir
+            </Button>
           ) : undefined
         }
       >
         <Typography variant="body2" color="text.secondary">
           {canEncoding
             ? "Encodez les interventions et le matériel utilisé."
+            : canViewEncoding
+            ? "Consultez les interventions et le matériel encodés par l'instrumentiste."
             : "Encodage non disponible pour cette mission."}
         </Typography>
       </SectionCard>
 
       {/* Actions */}
-      {(canEncoding || canSubmit) && (
+      {(canEncoding || canSubmit || canViewEncoding) && (
         <Stack spacing={1.5}>
           {canEncoding && (
             <Button
@@ -307,6 +321,18 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
               sx={{ borderRadius: 2, fontWeight: 700 }}
             >
               Encoder la mission
+            </Button>
+          )}
+          {canViewEncoding && (
+            <Button
+              variant="outlined"
+              disableElevation
+              fullWidth
+              size="large"
+              onClick={() => navigate(`/app/s/missions/${mission.id}/encoding`)}
+              sx={{ borderRadius: 2, fontWeight: 700 }}
+            >
+              Encodage de l'intervention
             </Button>
           )}
           {canSubmit && (

@@ -93,4 +93,13 @@ enum NotificationType: string
     case SURGEON_MISSION_REQUEST_CREATED  = 'SURGEON_MISSION_REQUEST_CREATED';
     case SURGEON_MISSION_REQUEST_ACCEPTED = 'SURGEON_MISSION_REQUEST_ACCEPTED';
     case SURGEON_MISSION_REQUEST_REJECTED = 'SURGEON_MISSION_REQUEST_REJECTED';
+
+    // ── Signalement d'anomalie d'encodage (Lot 6, D-100) ─────────────────────
+    // Même famille de raisonnement que SURGEON_MISSION_REQUEST_CREATED/ACCEPTED : un
+    // chirurgien signale une anomalie sur l'encodage de sa mission (EncodingAnomalyReport)
+    // → managers/admins, in-app + push uniquement, jamais email (le manager la retrouve
+    // sur le détail mission) ; résolution → chirurgien, actionnable/attendu, push puis
+    // repli email.
+    case ENCODING_ANOMALY_REPORTED = 'ENCODING_ANOMALY_REPORTED';
+    case ENCODING_ANOMALY_RESOLVED = 'ENCODING_ANOMALY_RESOLVED';
 }

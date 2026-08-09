@@ -17,7 +17,9 @@ export type AllowedAction =
   // Lot 7 (D-070) — cycle de vie de l'encodage
   | "start_encoding"
   | "validate"
-  | "reopen";
+  | "reopen"
+  // Lot 6 (D-100) — lecture seule chirurgien, jamais un droit d'édition
+  | "view_encoding";
 
 export type SchedulePrecision = "APPROXIMATE" | "EXACT";
 export type MissionType = "BLOCK" | "CONSULTATION";
