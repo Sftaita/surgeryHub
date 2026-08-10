@@ -234,12 +234,31 @@ Retourne le journal chronologique (DESC) des `AuditEvent` liés à une mission d
 | `403` | Non autorisé (ni `MANAGER` ni `ADMIN`) |
 | `404` | Mission ou instrumentiste introuvable |
 | `409` `MISSION_NOT_DRAFT` | Mission non `DRAFT` — utiliser `/release`, `/cancel` ou `/reassign` |
+| `409` `INSTRUMENTIST_INCOMPATIBLE` | D-101 — le candidat n'est pas éligible pour ce créneau (voir encadré ci-dessous) |
 
 **Effets backend :**
 - `mission.instrumentist → newInstrumentist` (ou `null`)
 - Statut inchangé (reste `DRAFT`)
 - Pas d'`AuditEvent`, pas de `MissionLifecycleChangedMessage` — une mission `DRAFT` n'a aucune publication ni destinataire de notification, cohérent avec `create()`/`patch()` (RC1-C)
 - Délègue à `MissionService::assignInstrumentistDraft()` — plus de mutation directe dans le contrôleur
+
+> **D-101 — `409 INSTRUMENTIST_INCOMPATIBLE` (partagé par tous les chemins d'affectation
+> pilotés par un manager)**
+> Avant toute mutation, `MissionEligibilityService::evaluateForReassignment()` (source
+> canonique unique, réutilise les mêmes requêtes absence/conflit qu'`evaluate()`) revalide
+> le candidat : `ABSENT`, `SCHEDULE_CONFLICT`, `INACTIVE`. **Ne vérifie jamais
+> `NO_SITE_MEMBERSHIP`** — décision explicite (D-101) : un manager a toujours pu
+> affecter/réaffecter n'importe quel instrumentiste indépendamment de son affiliation
+> formelle au site ; seul le flux self-service `claim()` (`evaluate()`) et les listes de
+> candidats (`evaluateAllCandidates()`/`findEligible()`) vérifient l'affiliation.
+> `error.violations` contient une entrée `{ field: "instrumentistId", message: "<raison>" }`
+> par cause en échec. S'applique
+> à `/assign-instrumentist`, `/release`→`/assign`, `/reassign`, `updateSchedule()`
+> (Modification mode), `createPostDeploy()` (ajout post-déploiement), et à la branche
+> `overrideLines` de `POST /api/planning/v2/generate` (voir `rejectedAssignments`
+> ci-dessus — ce dernier chemin ne rejette jamais toute la génération, il neutralise
+> seulement la ligne concernée). Corrige un incident réel (Sophie Collette, absente,
+> affectée quand même via `overrideLines`) où aucun de ces contrôles n'existait.
 
 ---
 
@@ -326,6 +345,7 @@ Réassigne une mission à un autre instrumentiste. Le statut reste `ASSIGNED`.
 | `403` | Non autorisé |
 | `404` | Mission introuvable / instrumentiste cible introuvable |
 | `409` | Mission non `ASSIGNED` |
+| `409` `INSTRUMENTIST_INCOMPATIBLE` | D-101 — voir encadré sous `/assign-instrumentist` |
 | `422` | `instrumentistId` manquant ou invalide |
 
 **Effets backend :**
@@ -523,11 +543,11 @@ DECLARED → REJECTED
 | `interventionTypeId` | ✓ | Doit exister et être `active` |
 | `primaryFirmId` | — | Doit exister et être `active` si fourni |
 | `orderIndex` | ✓ | Position d'affichage |
-| `representativePresent` | — | D-092 — donnée factuelle ("délégué présent ?"), jamais financière |
+| `representativePresent` | — | D-101 — donnée factuelle ("délégué présent ?"), jamais financière |
 
 **Réponse — 201 :** `{ "id": 88, "orderIndex": 0, "representativePresent": true }`
 
-**Validation serveur — présence du délégué (D-092, finalisation UX instrumentiste) :** si la
+**Validation serveur — présence du délégué (D-101, finalisation UX instrumentiste) :** si la
 prestation effective (`primaryFirm` × `interventionType` résolus, via `FirmServiceOffering`)
 a `representativePresenceRelevant = true`, `representativePresent` **doit** valoir `true` ou
 `false` — jamais `null`/absent. Sans firme résolue (`primaryFirmId` omis), la question n'est
@@ -559,7 +579,7 @@ pas uniquement côté frontend.
 
 - `interventionTypeId`, si fourni, ré-dérive aussi le snapshot `code`/`label` depuis le nouveau type (jamais de retrait — un type reste toujours obligatoire).
 - `primaryFirmId` supporte le **tri-état** : clé absente = inchangé ; `null` explicite = retrait ; valeur = définit/remplace.
-- `representativePresent` supporte le même tri-état (D-092) : clé absente = inchangé ; `null` explicite = efface une réponse devenue obsolète (ex: changement vers une firme/prestation non pertinente — voir `EditInterventionDialog.tsx`) ; `true`/`false` = répond.
+- `representativePresent` supporte le même tri-état (D-101) : clé absente = inchangé ; `null` explicite = efface une réponse devenue obsolète (ex: changement vers une firme/prestation non pertinente — voir `EditInterventionDialog.tsx`) ; `true`/`false` = répond.
 - **Validation serveur** : dès que la requête touche `interventionTypeId`, `primaryFirmId` ou `representativePresent`, le serveur recalcule la prestation effective (valeurs fournies fusionnées avec l'existant) et applique la même règle qu'à la création — `representativePresent` ne peut pas rester `null` si la prestation résultante l'exige. Un PATCH qui ne touche à aucun de ces trois champs (ex: réordonnancement via `orderIndex` seul) n'est jamais bloqué par cette règle, y compris sur une ancienne intervention jamais répondue.
 - Réponse — **204** (pas de corps).
 
@@ -3671,8 +3691,32 @@ incrémenté — comportement V1 inchangé).
 **Réponse — 200 :**
 
 ```json
-{ "versionId": 7, "created": 8, "updated": 0, "skipped": 1 }
+{ "versionId": 7, "created": 8, "updated": 0, "skipped": 1, "rejectedAssignments": [] }
 ```
+
+**`rejectedAssignments` (D-101, Batch 15L)** — jamais silencieux : chaque instrumentiste
+que le backend a refusé de conserver (envoyé dans `lines[].instrumentistId`, mais
+`ABSENT`/`SCHEDULE_CONFLICT`/`INACTIVE`) apparaît ici au lieu de
+faire échouer tout l'appel — la ligne correspondante est générée sans instrumentiste
+(`UNCOVERED`) :
+
+```json
+{
+  "versionId": 7, "created": 8, "updated": 0, "skipped": 1,
+  "rejectedAssignments": [{
+    "missionId": 398, "date": "2026-08-14",
+    "requestedInstrumentistId": 19, "requestedInstrumentistName": "Sophie Collette",
+    "reasons": ["ABSENT"]
+  }]
+}
+```
+
+Ceci corrige un incident réel : la branche `overrideLines` de
+`PlanningGeneratorServiceV2::generate()` réutilisait `instrumentistId` envoyé par le
+client sans jamais le revalider côté serveur — un instrumentiste déjà absent au moment
+de la génération pouvait ainsi être affecté à une mission sur son propre jour d'absence,
+sans qu'aucune `PlanningAlert` ne soit jamais créée. Voir D-101 dans
+`docs/decisions.md`.
 
 ##### `POST /api/planning/v2/deploy`
 
@@ -4419,19 +4463,19 @@ mélangée, uniquement la documentation et un endpoint additif isolé.)*
 `{ interventionTypeId, label? }`. `409` si une prestation existe déjà pour ce couple
 firme + type d'intervention (`UNIQUE(firm_id, intervention_type_id)`).
 
-**D-092 — réponse enrichie** de 4 indicateurs de politique commerciale "présence d'un
+**D-101 — réponse enrichie** de 4 indicateurs de politique commerciale "présence d'un
 délégué", **jamais des montants** : `representativePresenceRelevant` (la question
 doit-elle être posée à l'encodage ?), `representativeSuppressesInterventionFee`,
 `representativeSuppressesOwnMaterialFees` (conséquence si le délégué est présent),
 `feeApplicable` (défaut `true` — un forfait `INTERVENTION_FEE` est-il seulement attendu
 pour cette prestation ? `false` = "pas de forfait", jamais confondu avec un tarif
 manquant). Lus exclusivement par `FinancialCalculationService` (via
-`RepresentativePolicyResolver`), jamais par `PricingRuleResolver` — voir amendement D-092
+`RepresentativePolicyResolver`), jamais par `PricingRuleResolver` — voir amendement D-101
 dans D-067 (`docs/decisions.md`).
 
 ### `PATCH /api/firms/{firmId}/service-offerings/{offeringId}`
 
-`{ label?, active?, representativePresenceRelevant?, representativeSuppressesInterventionFee?, representativeSuppressesOwnMaterialFees?, feeApplicable? }` (D-092).
+`{ label?, active?, representativePresenceRelevant?, representativeSuppressesInterventionFee?, representativeSuppressesOwnMaterialFees?, feeApplicable? }` (D-101).
 
 ### `POST /api/firms/{firmId}/service-offerings/{offeringId}/suggested-materials`
 
@@ -4468,7 +4512,7 @@ Accepte désormais `active` (auparavant présent en base mais jamais exposé). L
 changement de `firmId` est refusé (`409`) dès qu'une `MaterialLine` réelle référence ce
 matériel.
 
-**D-092 — `billingStatus`** (`UNSPECIFIED` défaut / `BILLABLE` / `NOT_BILLABLE`) —
+**D-101 — `billingStatus`** (`UNSPECIFIED` défaut / `BILLABLE` / `NOT_BILLABLE`) —
 distingue "volontairement non facturé" de "tarif pas encore configuré" (jusqu'ici
 indiscernables, tous deux traduits par une absence de `PricingRule`). `billingStatus:
 "BILLABLE"` refusé (`409`) sans `PricingRule` `MATERIAL_FEE` active existante.
@@ -4956,7 +5000,7 @@ tarifs, construit les lignes.
   contient chaque anomalie (`code`/`message`/`context`) : `MISSING_PRIMARY_FIRM`,
   `MISSING_INTERVENTION_TYPE`, `MISSING_FIRM_INTERVENTION_RATE`,
   `MISSING_FIRM_MATERIAL_RATE`, `MISSING_INSTRUMENTIST_RATE`,
-  `INVALID_EFFECTIVE_DURATION`, `MISSING_REPRESENTATIVE_PRESENCE_ANSWER` (D-092 — la
+  `INVALID_EFFECTIVE_DURATION`, `MISSING_REPRESENTATIVE_PRESENCE_ANSWER` (D-101 — la
   question "délégué présent ?" est pertinente pour cette prestation mais n'a jamais été
   répondue). Aucun calcul persisté dans ce cas.
 
@@ -4968,7 +5012,7 @@ complet, y compris `SUPERSEDED`/`CANCELLED`.
 ### `GET /api/financial-calculations/{id}`
 
 Détail d'un calcul : statut, version, date effective, lignes complètes (snapshots
-inclus), totaux par devise. **D-092** — chaque ligne expose désormais aussi
+inclus), totaux par devise. **D-101** — chaque ligne expose désormais aussi
 `grossAmount` (toujours renseigné — montant avant toute politique délégué),
 `adjustmentAmount` (toujours renseigné, `"0.00"` = aucun ajustement — `totalAmount =
 grossAmount + adjustmentAmount`), et `warnings` (`{code, message}[]`, non bloquant,
@@ -6032,7 +6076,7 @@ autre chirurgien (ownership toujours revérifiée côté serveur, jamais via l'I
 instrumentiste/manager).
 
 **Champ par champ, viewer chirurgien uniquement :** `materialLines[].item.billingStatus`
-(catalogue/facturation, D-092) est absent du JSON (jamais `null` explicite, la clé
+(catalogue/facturation, D-101) est absent du JSON (jamais `null` explicite, la clé
 elle-même n'apparaît pas). Manager/instrumentiste : réponse strictement inchangée,
 `billingStatus` toujours présent. Aucun autre champ financier n'a jamais existé sur ce
 DTO (`PricingRule`/`computedAmount`/`fee`/`invoice`/salaire — hors périmètre de cet

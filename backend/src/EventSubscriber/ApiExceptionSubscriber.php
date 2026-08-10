@@ -2,6 +2,7 @@
 
 namespace App\EventSubscriber;
 
+use App\Exception\InstrumentistIneligibleException;
 use App\Exception\InterventionTypeInactiveException;
 use App\Exception\InterventionTypeNotFoundException;
 use App\Exception\MissionNotDraftException;
@@ -72,6 +73,14 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'MISSION_NOT_DRAFT';
             $message = $e->getMessage() ?: 'Mission is not DRAFT';
+        } elseif ($e instanceof InstrumentistIneligibleException) {
+            $status = 409;
+            $code = 'INSTRUMENTIST_INCOMPATIBLE';
+            $message = $e->getMessage();
+            $violations = array_map(
+                static fn ($r) => ['field' => 'instrumentistId', 'message' => $r->value],
+                $e->getReasons(),
+            );
         } elseif ($e instanceof PricingRulePeriodOverlapException) {
             $status = 409;
             $code = 'PRICING_RULE_PERIOD_OVERLAP';

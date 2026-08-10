@@ -7420,3 +7420,94 @@ de résolution (V1 : `OPEN`/`RESOLVED` seulement). Correction automatique de l'e
 couplée à la résolution (décision explicite contraire, voir plus haut). Historique des
 signalements résolus au-delà du dernier (le chirurgien voit le plus récent ; un
 historique complet n'est pas demandé par ce lot).
+
+---
+
+## D-101 — Planning V2 : revalidation backend obligatoire de toute affectation/réaffectation d'instrumentiste (Lot 1, 2026-08-10)
+
+Date : 2026-08-10
+
+### Contexte — incident réel
+
+Sophie Collette (instrumentiste), absente du 01/08 au 16/08/2026 (absence créée le
+24/06/2026), s'est retrouvée `ASSIGNED` à la mission du 14/08/2026 (Delta, 08:00–18:00),
+en plein milieu de sa propre absence. Investigation en lecture seule sur la production
+(voir chronologie complète établie avant ce lot) : la mission a été créée et affectée
+directement par `PlanningGeneratorServiceV2::generate()`, branche `overrideLines`
+(`$mission->setInstrumentist($newInstrumentist)`, sans aucune revalidation), alors que
+`preview()` — qui, lui, applique correctement `isAbsentFast()` — n'était pas ce qui a
+produit l'affectation finale : l'éditeur (Preview Editor) envoie systématiquement le
+tableau de lignes complet à `generate()`, donc toute ligne avec un `existingMissionId`
+passe par cette branche, éditée ou non. Aucune `PlanningAlert` n'a jamais existé pour ce
+cas — pas un problème de visibilité, un vrai trou de détection côté génération. Un
+manager a corrigé le symptôme à la main le 09/08 (`release()`) sans que le système ne
+l'ait jamais su.
+
+### Décision — une source canonique unique, étendue au cas réassignation
+
+`MissionEligibilityService::evaluate()` (D-057) restait insuffisant pour ce cas : il
+exige `status === OPEN` et traite tout instrumentiste déjà présent comme
+`ALREADY_ASSIGNED` — inutilisable pour un assign/reassign sur une mission déjà
+`ASSIGNED`/`DRAFT`. Nouvelle méthode publique
+`evaluateForReassignment(Mission, User, ?int $excludeMissionId)`, qui réutilise
+exactement les mêmes requêtes (extraites en méthodes privées partagées
+`isAbsentOn()`/`hasScheduleConflict()`) et ne vérifie que les 3 raisons pertinentes à un
+assign/reassign **piloté par un manager** : `ABSENT`, `SCHEDULE_CONFLICT`, `INACTIVE` —
+jamais `INCOMPATIBLE_STATUS`/`ALREADY_ASSIGNED`, qui n'ont pas de sens ici. Une seule
+implémentation de la requête absence et une seule du conflit dans tout le code, partagée
+par `evaluate()` et `evaluateForReassignment()`.
+
+**Décision explicite — `NO_SITE_MEMBERSHIP` volontairement exclu ici.** Câbler ce
+contrôle dans `assign()`/`reassign()`/`updateSchedule()`/`createPostDeploy()` cassait 13
+tests fonctionnels (`MissionAssignInstrumentistControllerTest`,
+`MissionLifecycleControllerTest`, `PlanningModificationControllerTest`,
+`PlanningModificationTimezoneTest`, `PlanningCrossSiteConflictTest`) — aucun d'entre eux
+n'a jamais configuré de `SiteMembership` pour l'instrumentiste affecté/réaffecté,
+confirmant qu'un manager a toujours pu cibler n'importe quel instrumentiste
+indépendamment de son affiliation formelle au site sur ces chemins. Transformer cela en
+nouvelle règle bloquante aurait dépassé le périmètre de ce lot (le bug réel ne portait
+que sur `ABSENT`) et entériné silencieusement une politique métier jamais discutée.
+`NO_SITE_MEMBERSHIP` reste vérifié exactement où il l'était déjà avant ce lot :
+`evaluate()` (`claim()` self-service) et les listes de candidats
+(`evaluateAllCandidates()`/`findEligible()`). Étendre cette contrainte aux
+affectations manager reste une décision métier/UX distincte, à auditer séparément si
+besoin — non tranchée ici.
+
+### Décision — chemins gardés
+
+Revalidation ajoutée avant toute mutation d'instrumentiste, partout où elle manquait :
+`MissionService::assignInstrumentistDraft()`, `MissionPostDeployService::assign()`,
+`reassign()`, `updateSchedule()` (revalide l'instrumentiste courant contre le *nouveau*
+horaire, réversion complète avant de lever l'exception si incompatible),
+`createPostDeploy()`, et les quatre points de `PlanningGeneratorServiceV2::generate()`
+qui appellent `setInstrumentist()` (branche `overrideLines`, branche `MODIFIED`, cas
+`freedFrom`, et la création d'une mission entièrement nouvelle). Chemins déjà corrects,
+non touchés : `claim()` (`evaluate()`), `PlanningAlertActionService::reassign()` (délègue
+déjà à `PlanningConflictDetectionService`, D-091), le moteur `preview()` lui-même (hors
+périmètre — "ne pas refaire le moteur de génération").
+
+### Décision — contrat d'erreur partagé : `409 INSTRUMENTIST_INCOMPATIBLE`
+
+Nouvelle exception `InstrumentistIneligibleException` (mappée par
+`ApiExceptionSubscriber`), `error.violations` = une entrée
+`{field: "instrumentistId", message: "<raison>"}` par cause en échec — même convention
+que les autres 409/422 métier de ce contrôleur, aucun nouveau format de réponse.
+
+### Décision — `generate()` ne bloque jamais tout un mois pour une ligne incompatible
+
+Contrairement aux autres chemins (qui rejettent l'appel HTTP), la branche `overrideLines`
+de `generate()` ne lève jamais d'exception : un candidat inéligible est silencieusement
+rétrogradé à "sans instrumentiste" (la ligne devient `UNCOVERED`) plutôt que de faire
+échouer toute la génération du mois — mais jamais silencieux pour autant. Nouveau champ
+additif `rejectedAssignments` dans la réponse (`{missionId, date,
+requestedInstrumentistId, requestedInstrumentistName, reasons[]}`), pour que le manager
+soit informé explicitement de chaque neutralisation. Documenté dans `docs/api.md`.
+
+### Non traité dans ce lot
+
+UX "fantôme" (personne indisponible visible mais non sélectionnable dans les
+sélecteurs) — Lot 2. Absence chirurgien/instrumentiste comme événement métier actif
+(neutralisation réversible, restauration après suppression d'absence, notifications
+enrichies, postes récurrents) — Lots 3–5. Bouton manuel "Vérifier les conflits" par
+`PlanningVersion` — Lot 6. Ces lots seront chacun redétaillés et validés séparément
+avant implémentation.

@@ -40,6 +40,18 @@ class PlanningGeneratorServiceV2GenerateTest extends TestCase
     private array $shiftConfigRows  = [];
     private array $persisted        = [];
 
+    /**
+     * D-101 — PlanningGeneratorServiceV2::generate() now revalidates every instrumentist
+     * assignment via MissionEligibilityService::evaluateForReassignment() before persisting
+     * it. These tests weren't written against that dependency, so by default every
+     * candidate is treated as eligible (has a site membership, no absence, no conflict) —
+     * exactly the assumption every pre-existing test in this file already made implicitly.
+     * Individual tests can flip these to exercise the guard itself.
+     */
+    private bool $eligibilityHasSiteMembership = true;
+    private bool $eligibilityIsAbsent          = false;
+    private bool $eligibilityHasConflict       = false;
+
     private static int $idSeq = 0;
 
     protected function setUp(): void
@@ -77,6 +89,21 @@ class PlanningGeneratorServiceV2GenerateTest extends TestCase
                     $q->method('getArrayResult')->willReturnCallback(fn () => $this->shiftConfigRows);
                 } elseif (str_contains($dql, 'exceptionPostIds')) {
                     $q->method('getResult')->willReturn([]);
+                } elseif (str_contains($dql, 'SiteMembership sm')) {
+                    // MissionEligibilityService::evaluateForReassignment() — Q1
+                    $q->method('getSingleScalarResult')->willReturnCallback(
+                        fn () => $this->eligibilityHasSiteMembership ? 1 : 0,
+                    );
+                } elseif (str_contains($dql, 'App\Entity\Absence a')) {
+                    // MissionEligibilityService::evaluateForReassignment() — Q2
+                    $q->method('getSingleScalarResult')->willReturnCallback(
+                        fn () => $this->eligibilityIsAbsent ? 1 : 0,
+                    );
+                } elseif (str_contains($dql, 'm.instrumentist = :user')) {
+                    // MissionEligibilityService::evaluateForReassignment() — Q3
+                    $q->method('getSingleScalarResult')->willReturnCallback(
+                        fn () => $this->eligibilityHasConflict ? 1 : 0,
+                    );
                 }
 
                 return $q;
@@ -95,7 +122,11 @@ class PlanningGeneratorServiceV2GenerateTest extends TestCase
     {
         // D-091 — conflict-alert sync is a discarded-return-value side effect of generate();
         // an unconfigured mock (returns null) is sufficient for these unit tests.
-        return new PlanningGeneratorServiceV2($this->em, $this->createMock(\App\Service\PlanningConflictDetectionService::class));
+        return new PlanningGeneratorServiceV2(
+            $this->em,
+            $this->createMock(\App\Service\PlanningConflictDetectionService::class),
+            new \App\Service\MissionEligibilityService($this->em),
+        );
     }
 
     private function makeSite(string $name = 'Alpha'): Hospital

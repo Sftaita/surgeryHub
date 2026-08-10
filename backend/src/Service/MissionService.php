@@ -21,6 +21,7 @@ use App\Enum\MissionType;
 use App\Enum\PublicationChannel;
 use App\Enum\PublicationScope;
 use App\Enum\SchedulePrecision;
+use App\Exception\InstrumentistIneligibleException;
 use App\Exception\MissionNotDraftException;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
@@ -40,6 +41,7 @@ class MissionService
         private readonly AuditService $auditService,
         private readonly NotificationService $notificationService,
         private readonly MissionEncodingWorkflowService $encodingWorkflowService,
+        private readonly MissionEligibilityService $eligibilityService,
     ) {}
 
     public function create(MissionCreateRequest $dto, User $creator): Mission
@@ -306,6 +308,14 @@ class MissionService
         } else {
             $instrumentist = $this->em->find(User::class, $instrumentistId)
                 ?? throw new NotFoundHttpException('Instrumentiste introuvable.');
+
+            // D-101 — DRAFT assignment is still a real affectation; revalidate the same
+            // way as every post-deploy assign/reassign path.
+            $eligibility = $this->eligibilityService->evaluateForReassignment($mission, $instrumentist);
+            if (!$eligibility->eligible) {
+                throw new InstrumentistIneligibleException($eligibility->reasons);
+            }
+
             $mission->setInstrumentist($instrumentist);
         }
 

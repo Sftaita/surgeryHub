@@ -507,4 +507,173 @@ final class MissionEligibilityServiceTest extends TestCase
 
         $this->assertContains($freelancer, $result[$site->getId()] ?? []);
     }
+
+    // ── evaluateForReassignment() — D-101, single canonical source of truth ────
+    //
+    // Only 2 queries (absence, conflict) — unlike evaluate()'s 3 — since
+    // NO_SITE_MEMBERSHIP is deliberately NOT checked here (see the method's own
+    // docblock): a manager assign/reassign has never required formal site affiliation
+    // in this codebase, only claim() self-service does.
+
+    /** Set up em->createQuery for evaluateForReassignment() calls: Q1 = absence, Q2 = conflict. */
+    private function setupReassignmentQueries(int $absenceCount, int $conflictCount): void
+    {
+        $call = 0;
+        $this->em->method('createQuery')
+            ->willReturnCallback(function () use (&$call, $absenceCount, $conflictCount): Query {
+                $call++;
+                $q = $this->createMock(Query::class);
+                $q->method('setParameter')->willReturnSelf();
+                $q->method('getSingleScalarResult')->willReturn(match ($call) {
+                    1 => $absenceCount,
+                    2 => $conflictCount,
+                    default => 0,
+                });
+                return $q;
+            });
+    }
+
+    public function test_evaluate_for_reassignment_returns_eligible_when_all_checks_pass(): void
+    {
+        $mission   = $this->makeMission(status: MissionStatus::ASSIGNED, instrumentist: $this->makeUser());
+        $candidate = $this->makeUser();
+
+        $this->setupReassignmentQueries(absenceCount: 0, conflictCount: 0);
+
+        $result = $this->service->evaluateForReassignment($mission, $candidate);
+
+        $this->assertTrue($result->eligible);
+    }
+
+    /**
+     * D-101 — cas Sophie Collette : evaluateForReassignment() ne doit JAMAIS ignorer une
+     * absence sous prétexte que la mission est déjà ASSIGNED (contrairement à evaluate(),
+     * qui est réservé au flux claim() sur mission OPEN).
+     */
+    public function test_evaluate_for_reassignment_absent_candidate_returns_absent_reason(): void
+    {
+        $mission   = $this->makeMission(status: MissionStatus::ASSIGNED);
+        $candidate = $this->makeUser();
+
+        $this->setupReassignmentQueries(absenceCount: 1, conflictCount: 0);
+
+        $result = $this->service->evaluateForReassignment($mission, $candidate);
+
+        $this->assertFalse($result->eligible);
+        $this->assertContains(EligibilityReason::ABSENT, $result->reasons);
+    }
+
+    public function test_evaluate_for_reassignment_conflicting_candidate_returns_schedule_conflict(): void
+    {
+        $mission   = $this->makeMission(status: MissionStatus::ASSIGNED);
+        $candidate = $this->makeUser();
+
+        $this->setupReassignmentQueries(absenceCount: 0, conflictCount: 1);
+
+        $result = $this->service->evaluateForReassignment($mission, $candidate);
+
+        $this->assertFalse($result->eligible);
+        $this->assertContains(EligibilityReason::SCHEDULE_CONFLICT, $result->reasons);
+    }
+
+    public function test_evaluate_for_reassignment_does_not_flag_already_assigned_or_incompatible_status(): void
+    {
+        $existing  = $this->makeUser();
+        $mission   = $this->makeMission(status: MissionStatus::ASSIGNED, instrumentist: $existing);
+        $candidate = $this->makeUser();
+
+        $this->setupReassignmentQueries(absenceCount: 0, conflictCount: 0);
+
+        $result = $this->service->evaluateForReassignment($mission, $candidate);
+
+        $this->assertTrue($result->eligible, 'reassignment onto a non-OPEN, already-assigned mission is the normal case');
+        $this->assertNotContains(EligibilityReason::ALREADY_ASSIGNED, $result->reasons);
+        $this->assertNotContains(EligibilityReason::INCOMPATIBLE_STATUS, $result->reasons);
+    }
+
+    /**
+     * Explicit regression: confirms the deliberate scope boundary decided for this lot —
+     * a manager assign/reassign is never blocked for lack of site affiliation, even when
+     * the candidate genuinely has none (unlike evaluate()/claim(), see the method's own
+     * docblock). This is a documented, intentional carve-out — not an oversight.
+     */
+    public function test_evaluate_for_reassignment_never_checks_site_membership(): void
+    {
+        $mission   = $this->makeMission(status: MissionStatus::ASSIGNED);
+        $candidate = $this->makeUser();
+        $candidate->setEmploymentType(\App\Enum\EmploymentType::EMPLOYEE);
+
+        // No SiteMembership query configured at all — if evaluateForReassignment() ever
+        // queried it, the unconfigured mock would return null, and (int) null === 0 would
+        // silently look like "eligible" here too, defeating the point of this test. Assert
+        // directly on the query count instead: exactly 2 (absence, conflict), never 3.
+        $queryCount = 0;
+        $this->em->method('createQuery')
+            ->willReturnCallback(function (string $dql) use (&$queryCount): Query {
+                $queryCount++;
+                self::assertStringNotContainsString('SiteMembership', $dql, 'evaluateForReassignment() must never query SiteMembership');
+                $q = $this->createMock(Query::class);
+                $q->method('setParameter')->willReturnSelf();
+                $q->method('getSingleScalarResult')->willReturn(0);
+                return $q;
+            });
+
+        $result = $this->service->evaluateForReassignment($mission, $candidate);
+
+        $this->assertTrue($result->eligible);
+        $this->assertSame(2, $queryCount, 'evaluateForReassignment() must run exactly 2 queries (absence, conflict) — never a site-membership check');
+    }
+
+    public function test_evaluate_for_reassignment_inactive_candidate_returns_inactive_reason(): void
+    {
+        $mission   = $this->makeMission(status: MissionStatus::ASSIGNED);
+        $candidate = $this->makeUser(active: false);
+
+        $this->setupReassignmentQueries(absenceCount: 0, conflictCount: 0);
+
+        $result = $this->service->evaluateForReassignment($mission, $candidate);
+
+        $this->assertFalse($result->eligible);
+        $this->assertContains(EligibilityReason::INACTIVE, $result->reasons);
+    }
+
+    /** Adjacent slots (end-exclusive) must never be reported as a conflict. */
+    public function test_evaluate_for_reassignment_adjacent_slots_are_not_a_conflict(): void
+    {
+        $mission   = $this->makeMission(status: MissionStatus::ASSIGNED);
+        $candidate = $this->makeUser();
+
+        // conflictCount=0 simulates the real DQL (m.startAt < :endAt AND m.endAt > :startAt)
+        // correctly excluding a mission ending exactly when this one starts (08:00–10:00 vs
+        // 10:00–12:00) — the query itself is exercised end-to-end in the functional test.
+        $this->setupReassignmentQueries(absenceCount: 0, conflictCount: 0);
+
+        $result = $this->service->evaluateForReassignment($mission, $candidate);
+
+        $this->assertTrue($result->eligible);
+    }
+
+    public function test_evaluate_for_reassignment_excludes_own_mission_id_by_default(): void
+    {
+        $instrumentist = $this->makeUser();
+        $mission       = $this->makeMission(status: MissionStatus::ASSIGNED, instrumentist: $instrumentist);
+
+        $excludedId = null;
+        $this->em->method('createQuery')
+            ->willReturnCallback(function (string $dql) use (&$excludedId, $mission): Query {
+                $q = $this->createMock(Query::class);
+                $q->method('setParameter')->willReturnCallback(function (string $name, $value) use (&$excludedId, $q) {
+                    if ($name === 'missionId') {
+                        $excludedId = $value;
+                    }
+                    return $q;
+                });
+                $q->method('getSingleScalarResult')->willReturn(0);
+                return $q;
+            });
+
+        $this->service->evaluateForReassignment($mission, $instrumentist);
+
+        $this->assertSame($mission->getId(), $excludedId, 'a mission must never conflict against itself');
+    }
 }

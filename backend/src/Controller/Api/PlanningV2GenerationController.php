@@ -98,6 +98,7 @@ class PlanningV2GenerationController extends AbstractController
             created: $result['created'],
             updated: $result['updated'],
             skipped: $result['skipped'],
+            rejectedAssignments: $result['rejectedAssignments'] ?? [],
         ));
     }
 

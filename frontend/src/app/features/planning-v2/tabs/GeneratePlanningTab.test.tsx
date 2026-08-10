@@ -20,8 +20,9 @@ vi.mock("../../planning-manager/api/planning.api", () => ({
 // success/error spies for assertions like "no success toast fired" to be meaningful.
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
+const toastWarning = vi.fn();
 vi.mock("../../../ui/toast/useToast", () => ({
-  useToast: () => ({ success: toastSuccess, error: toastError }),
+  useToast: () => ({ success: toastSuccess, error: toastError, warning: toastWarning }),
 }));
 
 vi.mock("../api/planningV2.api", () => ({
@@ -254,6 +255,66 @@ describe("GeneratePlanningTab — réaffectation d'instrumentiste (Preview Edito
     expect(call.previewVersion).toBe("v-1");
     expect(call.lines).toHaveLength(1);
     expect(call.lines[0]).toMatchObject({ instrumentistId: 9, instrumentistName: "Diane Lefebvre", status: "COVERED" });
+  });
+
+  it("D-101 — signale explicitement au manager une affectation refusée par le backend (jamais silencieuse)", async () => {
+    toastSuccess.mockClear();
+    toastWarning.mockClear();
+    const user = userEvent.setup();
+    const now = new Date();
+    const currentMonthDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-14`;
+    const preview: PreviewResponseV2 = {
+      lines: [line({ date: currentMonthDate, status: "COVERED", instrumentistId: 9, instrumentistName: "Diane Lefebvre" })],
+      summary: { total: 1, covered: 1, uncovered: 0, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "v-1",
+      generatedAt: "2026-06-01T00:00:00Z",
+    };
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
+    (planningV2Api.generatePlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue({
+      versionId: 1, created: 1, updated: 0, skipped: 0,
+      rejectedAssignments: [{
+        missionId: 398, date: currentMonthDate,
+        requestedInstrumentistId: 9, requestedInstrumentistName: "Diane Lefebvre",
+        reasons: ["ABSENT"],
+      }],
+    });
+
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+    await screen.findByText("Diane Lefebvre");
+    await user.click(await screen.findByRole("button", { name: "Générer les missions" }));
+
+    await waitFor(() => expect(planningV2Api.generatePlanningV2).toHaveBeenCalled());
+    await waitFor(() => expect(toastWarning).toHaveBeenCalledTimes(1));
+    expect(toastWarning.mock.calls[0][0]).toContain("Diane Lefebvre");
+    expect(toastWarning.mock.calls[0][0]).toContain("Absent ce jour");
+  });
+
+  it("ne signale rien quand aucune affectation n'a été refusée (non-régression)", async () => {
+    toastSuccess.mockClear();
+    toastWarning.mockClear();
+    const user = userEvent.setup();
+    const preview: PreviewResponseV2 = {
+      lines: [line({ status: "UNCOVERED", instrumentistId: null, instrumentistName: null })],
+      summary: { total: 1, covered: 0, uncovered: 1, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "v-1",
+      generatedAt: "2026-06-01T00:00:00Z",
+    };
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
+    (planningV2Api.generatePlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue({
+      versionId: 1, created: 1, updated: 0, skipped: 0, rejectedAssignments: [],
+    });
+
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+    await screen.findByText("À pourvoir");
+    await user.click(await screen.findByRole("button", { name: "Générer les missions" }));
+
+    await waitFor(() => expect(planningV2Api.generatePlanningV2).toHaveBeenCalled());
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    expect(toastWarning).not.toHaveBeenCalled();
   });
 
   it("réaffecte en masse via la sélection multiple", async () => {

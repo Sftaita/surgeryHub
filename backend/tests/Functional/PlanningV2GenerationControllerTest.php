@@ -2,6 +2,7 @@
 
 namespace App\Tests\Functional;
 
+use App\Entity\Absence;
 use App\Entity\AuditEvent;
 use App\Entity\Hospital;
 use App\Entity\Mission;
@@ -18,6 +19,7 @@ use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PlanningVersionStatus;
 use App\Enum\RecurrenceFrequency;
+use App\Enum\SchedulePrecision;
 use App\Enum\ShiftPeriod;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\WithoutErrorHandler;
@@ -40,7 +42,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
     private EntityManagerInterface $em;
     private array $createdIds = [
         'versions' => [], 'missions' => [], 'posts' => [], 'shiftPeriods' => [],
-        'siteGroups' => [], 'memberships' => [], 'sites' => [], 'users' => [],
+        'siteGroups' => [], 'memberships' => [], 'sites' => [], 'users' => [], 'absences' => [],
     ];
 
     protected function setUp(): void
@@ -52,6 +54,11 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            foreach ($this->createdIds['absences'] as $id) {
+                $e = $this->em->find(Absence::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
             // AuditEvent has a FK to Mission — must be deleted before the mission itself.
             // (claim()/release()/etc. all create one via MissionPostDeployService — D-055.)
             foreach ($this->createdIds['missions'] as $id) {
@@ -556,6 +563,151 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         foreach ($missions as $m) {
             $this->createdIds['missions'][] = $m->getId();
         }
+    }
+
+    // ── D-101: Sophie Collette regression — overrideLines instrumentist revalidation ──
+
+    private function makeDraftMission(
+        Hospital $site, User $surgeon, \DateTimeImmutable $startAt, \DateTimeImmutable $endAt,
+    ): Mission {
+        $m = new Mission();
+        $m->setStatus(MissionStatus::DRAFT);
+        $m->setType(MissionType::BLOCK);
+        $m->setSchedulePrecision(SchedulePrecision::EXACT);
+        $m->setSite($site);
+        $m->setSurgeon($surgeon);
+        $m->setCreatedBy($surgeon);
+        $m->setStartAt($startAt);
+        $m->setEndAt($endAt);
+        $this->em->persist($m);
+        $this->em->flush();
+        $this->createdIds['missions'][] = $m->getId();
+        return $m;
+    }
+
+    private function makeAbsence(User $user, \DateTimeImmutable $start, \DateTimeImmutable $end): Absence
+    {
+        $a = new Absence();
+        $a->setUser($user);
+        $a->setDateStart($start);
+        $a->setDateEnd($end);
+        $a->setCreatedBy($user);
+        $this->em->persist($a);
+        $this->em->flush();
+        $this->createdIds['absences'][] = $a->getId();
+        return $a;
+    }
+
+    /**
+     * D-101 — exact real-world case that triggered this audit: Sophie Collette, absent
+     * 01/08→16/08/2026, was still ASSIGNED to a mission on 14/08 because
+     * PlanningGeneratorServiceV2::generate()'s overrideLines branch trusted the
+     * client-supplied instrumentistId without revalidating it. Reproduces the precise
+     * mechanism: a pre-existing DRAFT Mission (matching the real mission's shape) +
+     * a real, prior absence + a generate() call whose lines still carry her id (exactly
+     * what the shipped Preview Editor does — it always resends the full line set).
+     */
+    #[WithoutErrorHandler]
+    public function test_generate_override_lines_never_keeps_an_absent_instrumentist_assigned(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+        ['user' => $sophie] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        // Both authenticate() calls trigger a real HTTP request each, which detaches every
+        // previously-loaded entity from $this->em's identity map (see the comment on the
+        // RC1-A test below) — all fixture entities are created AFTER both logins so nothing
+        // needs re-fetching except $sophie, whose employmentType we're about to mutate.
+        $sophie = $this->em->find(User::class, $sophie->getId());
+        $sophie->setEmploymentType(EmploymentType::FREELANCER); // employment type is irrelevant here — kept for fixture parity with real prod data
+        $this->em->flush();
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+
+        $missionStart = new \DateTimeImmutable(sprintf('%04d-%02d-14 08:00:00', self::YEAR, self::MONTH));
+        $missionEnd   = new \DateTimeImmutable(sprintf('%04d-%02d-14 18:00:00', self::YEAR, self::MONTH));
+        $mission = $this->makeDraftMission($site, $surgeon, $missionStart, $missionEnd);
+
+        // The absence pre-dates generate() — exactly the real case (absence created
+        // 24/06, generation happened 13/07).
+        $this->makeAbsence(
+            $sophie,
+            new \DateTimeImmutable(sprintf('%04d-%02d-01', self::YEAR, self::MONTH)),
+            new \DateTimeImmutable(sprintf('%04d-%02d-16', self::YEAR, self::MONTH)),
+        );
+
+        $response = $this->postJson($client, $token, '/api/planning/v2/generate', [
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+            'lines' => [[
+                'status'             => 'COVERED',
+                'existingMissionId'  => $mission->getId(),
+                'instrumentistId'    => $sophie->getId(),
+            ]],
+        ]);
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $this->createdIds['versions'][] = $body['versionId'];
+
+        // ── Never silent ────────────────────────────────────────────────────────
+        self::assertArrayHasKey('rejectedAssignments', $body);
+        self::assertCount(1, $body['rejectedAssignments']);
+        $rejection = $body['rejectedAssignments'][0];
+        self::assertSame($mission->getId(), $rejection['missionId']);
+        self::assertSame($sophie->getId(), $rejection['requestedInstrumentistId']);
+        self::assertContains('ABSENT', $rejection['reasons']);
+
+        // ── Never ASSIGNED to the absent candidate ────────────────────────────────
+        $this->em->clear();
+        $refreshed = $this->em->find(Mission::class, $mission->getId());
+        self::assertNull(
+            $refreshed->getInstrumentist(),
+            'Sophie Collette must never come back as this mission\'s instrumentist while absent.',
+        );
+    }
+
+    /**
+     * Non-regression companion: an ELIGIBLE candidate sent via overrideLines must still
+     * be assigned normally — the fix must not turn every override assignment into a
+     * silent no-op.
+     */
+    #[WithoutErrorHandler]
+    public function test_generate_override_lines_still_assigns_eligible_instrumentist(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon       = $this->makeUser('ROLE_SURGEON');
+        $site          = $this->makeSite();
+        $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
+        $this->em->find(User::class, $instrumentist->getId())
+            ->setEmploymentType(EmploymentType::FREELANCER);
+        $this->em->flush();
+
+        $missionStart = new \DateTimeImmutable(sprintf('%04d-%02d-14 08:00:00', self::YEAR, self::MONTH));
+        $missionEnd   = new \DateTimeImmutable(sprintf('%04d-%02d-14 18:00:00', self::YEAR, self::MONTH));
+        $mission = $this->makeDraftMission($site, $surgeon, $missionStart, $missionEnd);
+
+        $response = $this->postJson($client, $token, '/api/planning/v2/generate', [
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+            'lines' => [[
+                'status'             => 'COVERED',
+                'existingMissionId'  => $mission->getId(),
+                'instrumentistId'    => $instrumentist->getId(),
+            ]],
+        ]);
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $this->createdIds['versions'][] = $body['versionId'];
+        self::assertEmpty($body['rejectedAssignments']);
+
+        $this->em->clear();
+        $refreshed = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame($instrumentist->getId(), $refreshed->getInstrumentist()?->getId());
     }
 
     // ── Security ──────────────────────────────────────────────────────────────

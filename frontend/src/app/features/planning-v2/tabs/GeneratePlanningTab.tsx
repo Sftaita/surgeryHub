@@ -74,6 +74,18 @@ function defaultYearMonth(): { year: number; month: number } {
   return { year: now.getFullYear(), month: now.getMonth() + 1 };
 }
 
+// D-101 — mirrors EligibilityReason::label() (backend/src/Enum/EligibilityReason.php).
+const REJECTED_ASSIGNMENT_REASON_LABELS: Record<string, string> = {
+  INACTIVE: "Compte inactif",
+  NO_SITE_MEMBERSHIP: "Pas d'affiliation au site",
+  ABSENT: "Absent ce jour",
+  SCHEDULE_CONFLICT: "Conflit d'horaire",
+};
+
+function reasonLabel(reason: string): string {
+  return REJECTED_ASSIGNMENT_REASON_LABELS[reason] ?? reason;
+}
+
 export function GeneratePlanningTab() {
   const toast = useToast();
   const { year: defYear, month: defMonth } = defaultYearMonth();
@@ -272,6 +284,21 @@ export function GeneratePlanningTab() {
     onSuccess: (data) => {
       setGenerated(data);
       toast.success(`Brouillon créé — ${data.created} mission(s) créée(s)`);
+
+      // D-101 — never silent: the backend refused to keep an ABSENT/SCHEDULE_CONFLICT/
+      // INACTIVE/NO_SITE_MEMBERSHIP candidate on a line (e.g. an instrumentiste absent on
+      // the mission's own date), and generated it UNCOVERED instead. Surface every
+      // rejection explicitly rather than letting the manager discover an uncovered slot
+      // with no explanation.
+      const rejections = data.versions.flatMap((v) => v.rejectedAssignments ?? []);
+      if (rejections.length > 0) {
+        const detail = rejections
+          .map((r) => `${r.requestedInstrumentistName} — ${r.date ?? "date inconnue"} (${r.reasons.map(reasonLabel).join(", ")})`)
+          .join(" · ");
+        toast.warning(
+          `${rejections.length} affectation(s) refusée(s) et laissée(s) non couverte(s) : ${detail}`,
+        );
+      }
     },
     onError: (err: any) => {
       if (err?.response?.status === 409 && err?.response?.data?.code === "PREVIEW_EXPIRED") {

@@ -3,6 +3,7 @@
 namespace App\Tests\Functional;
 
 use App\Doctrine\Type\BusinessDateTimeImmutableType;
+use App\Entity\Absence;
 use App\Entity\AuditEvent;
 use App\Entity\Hospital;
 use App\Entity\Mission;
@@ -31,10 +32,11 @@ final class PlanningModificationControllerTest extends WebTestCase
     private const PASSWORD = 'Modification16A!';
 
     private EntityManagerInterface $em;
-    private array $createdMissionIds = [];
-    private array $createdUserIds    = [];
-    private array $createdSiteIds    = [];
-    private array $createdVersionIds = [];
+    private array $createdMissionIds  = [];
+    private array $createdUserIds     = [];
+    private array $createdSiteIds     = [];
+    private array $createdVersionIds  = [];
+    private array $createdAbsenceIds  = [];
 
     protected function setUp(): void
     {
@@ -85,6 +87,12 @@ final class PlanningModificationControllerTest extends WebTestCase
 
             foreach ($this->createdVersionIds as $id) {
                 $e = $this->em->find(PlanningVersion::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
+
+            foreach ($this->createdAbsenceIds as $id) {
+                $e = $this->em->find(Absence::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
             }
             $this->em->flush();
@@ -205,6 +213,19 @@ final class PlanningModificationControllerTest extends WebTestCase
         return $client->getResponse();
     }
 
+    private function makeAbsence(User $user, string $dateStart, string $dateEnd): Absence
+    {
+        $a = new Absence();
+        $a->setUser($user);
+        $a->setDateStart(new \DateTimeImmutable($dateStart));
+        $a->setDateEnd(new \DateTimeImmutable($dateEnd));
+        $a->setCreatedBy($user);
+        $this->em->persist($a);
+        $this->em->flush();
+        $this->createdAbsenceIds[] = $a->getId();
+        return $a;
+    }
+
     private function lineFor(Mission $m, array $overrides = []): array
     {
         return array_merge([
@@ -254,6 +275,71 @@ final class PlanningModificationControllerTest extends WebTestCase
         $this->em->clear();
         $reloaded = $this->em->find(Mission::class, $mission->getId());
         self::assertSame($instr2->getId(), $reloaded->getInstrumentist()?->getId());
+    }
+
+    /**
+     * D-101 — PLANNING_MODIFICATION policy: ABSENT blocks even in Mode Modification, no
+     * exception for a "conscious manager override" the way SCHEDULE_CONFLICT has.
+     */
+    public function test_reassign_to_absent_instrumentist_is_rejected(): void
+    {
+        $client   = $this->boot();
+        $manager  = $this->createUser('ROLE_MANAGER');
+        $token    = $this->login($client, $manager);
+        $surgeon  = $this->createUser('ROLE_SURGEON');
+        $instr1   = $this->createUser('ROLE_INSTRUMENTIST');
+        $instr2   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site     = $this->makeSite();
+        $version  = $this->makeVersion($site, $manager);
+        $mission  = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $instr1);
+        // Mission is on 2026-09-15 (makeMission's fixed date) — absence covers it.
+        $this->makeAbsence($instr2, '2026-09-10', '2026-09-20');
+
+        $response = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            ['lines' => [$this->lineFor($mission, ['instrumentistId' => $instr2->getId()])]],
+        );
+
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame('INSTRUMENTIST_INCOMPATIBLE', $body['error']['code']);
+        self::assertContains('ABSENT', array_column($body['error']['violations'], 'message'));
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame($instr1->getId(), $reloaded->getInstrumentist()?->getId(), 'must not have been reassigned to the absent candidate');
+    }
+
+    /** D-101 — PLANNING_MODIFICATION policy: INACTIVE (deactivated account) also blocks. */
+    public function test_reassign_to_inactive_instrumentist_is_rejected(): void
+    {
+        $client   = $this->boot();
+        $manager  = $this->createUser('ROLE_MANAGER');
+        $token    = $this->login($client, $manager);
+        $surgeon  = $this->createUser('ROLE_SURGEON');
+        $instr1   = $this->createUser('ROLE_INSTRUMENTIST');
+        $instr2   = $this->createUser('ROLE_INSTRUMENTIST');
+        $instr2->setActive(false);
+        $this->em->flush();
+        $site     = $this->makeSite();
+        $version  = $this->makeVersion($site, $manager);
+        $mission  = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $instr1);
+
+        $response = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            ['lines' => [$this->lineFor($mission, ['instrumentistId' => $instr2->getId()])]],
+        );
+
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame('INSTRUMENTIST_INCOMPATIBLE', $body['error']['code']);
+        self::assertContains('INACTIVE', array_column($body['error']['violations'], 'message'));
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame($instr1->getId(), $reloaded->getInstrumentist()?->getId(), 'must not have been reassigned to the inactive candidate');
     }
 
     // ── Cancellation ──────────────────────────────────────────────────────────

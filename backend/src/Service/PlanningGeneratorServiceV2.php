@@ -30,6 +30,7 @@ class PlanningGeneratorServiceV2
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly PlanningConflictDetectionService $conflictDetection,
+        private readonly MissionEligibilityService $eligibilityService,
     ) {}
 
     /**
@@ -347,9 +348,10 @@ class PlanningGeneratorServiceV2
 
         $this->em->persist($version);
 
-        $created = 0;
-        $updated = 0;
-        $skipped = 0;
+        $created  = 0;
+        $updated  = 0;
+        $skipped  = 0;
+        $rejected = [];
 
         foreach ($lines as $line) {
             if ($line['status'] === 'SKIPPED') {
@@ -368,6 +370,7 @@ class PlanningGeneratorServiceV2
                 $newInstrumentist = ($line['instrumentistId'] ?? null) !== null
                     ? $this->em->find(User::class, $line['instrumentistId'])
                     : null;
+                $newInstrumentist = $this->guardInstrumentist($mission, $newInstrumentist, $rejected);
                 $mission->setInstrumentist($newInstrumentist);
                 $updated++;
                 continue;
@@ -383,6 +386,7 @@ class PlanningGeneratorServiceV2
                     $newInstrumentist = $line['instrumentistId'] !== null
                         ? $this->em->find(User::class, $line['instrumentistId'])
                         : null;
+                    $newInstrumentist = $this->guardInstrumentist($mission, $newInstrumentist, $rejected);
                     $mission->setInstrumentist($newInstrumentist);
                     $mission->setPlanningVersion($version);
                     $updated++;
@@ -397,6 +401,7 @@ class PlanningGeneratorServiceV2
 
                     if (($line['freedFrom'] ?? false) && $line['instrumentistId'] !== null && $mission->getInstrumentist() === null) {
                         $freed = $this->em->find(User::class, $line['instrumentistId']);
+                        $freed = $this->guardInstrumentist($mission, $freed, $rejected);
                         if ($freed !== null) {
                             $mission->setInstrumentist($freed);
                             $updated++;
@@ -434,13 +439,13 @@ class PlanningGeneratorServiceV2
             $mission->setStatus(MissionStatus::DRAFT);
             $mission->setType($post->getType());
             $mission->setSurgeon($surgeon);
-            $mission->setInstrumentist($instrumentist);
             $mission->setSite($site);
             $mission->setStartAt($day->setTime((int) $h1, (int) $m1));
             $mission->setEndAt($day->setTime((int) $h2, (int) $m2));
             $mission->setSchedulePrecision(SchedulePrecision::EXACT);
             $mission->setCreatedBy($generatedBy);
             $mission->setPlanningVersion($version);
+            $mission->setInstrumentist($this->guardInstrumentist($mission, $instrumentist, $rejected));
 
             $this->em->persist($mission);
             $created++;
@@ -457,11 +462,50 @@ class PlanningGeneratorServiceV2
         $this->conflictDetection->syncAlertsForVersion($version);
 
         return [
-            'versionId' => $version->getId(),
-            'created'   => $created,
-            'updated'   => $updated,
-            'skipped'   => $skipped,
+            'versionId'           => $version->getId(),
+            'created'             => $created,
+            'updated'             => $updated,
+            'skipped'             => $skipped,
+            'rejectedAssignments' => $rejected,
         ];
+    }
+
+    /**
+     * D-101 — Niveau 1 prevention, cas Sophie Collette. overrideLines carries whatever the
+     * editor currently holds (the shipped Preview Editor always sends the full line set —
+     * previewVersion invalidation only catches a STALE preview, never guarantees the
+     * instrumistant on a given line is still compatible with the CURRENT database absences/
+     * conflicts). Revalidating here — the one place every instrumentist actually gets
+     * persisted onto a Mission by this method — closes every call site at once instead of
+     * duplicating the check per branch.
+     *
+     * Never blocks generate(): an ineligible candidate is silently downgraded to "no
+     * instrumentist" (the line stays/becomes UNCOVERED) rather than aborting the whole
+     * month, but the rejection itself is never silent — it's recorded in $rejected and
+     * returned to the caller so the frontend can surface it to the manager.
+     *
+     * @param array<int,array<string,mixed>> $rejected
+     */
+    private function guardInstrumentist(Mission $mission, ?User $candidate, array &$rejected): ?User
+    {
+        if ($candidate === null) {
+            return null;
+        }
+
+        $eligibility = $this->eligibilityService->evaluateForReassignment($mission, $candidate);
+        if ($eligibility->eligible) {
+            return $candidate;
+        }
+
+        $rejected[] = [
+            'missionId'                  => $mission->getId(),
+            'date'                       => $mission->getStartAt()?->format('Y-m-d'),
+            'requestedInstrumentistId'   => $candidate->getId(),
+            'requestedInstrumentistName' => $this->displayName($candidate),
+            'reasons'                    => array_map(static fn ($r) => $r->value, $eligibility->reasons),
+        ];
+
+        return null;
     }
 
     // ── Recurrence expansion (in-memory, no DB hits) ────────────────────────

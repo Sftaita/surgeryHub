@@ -7,6 +7,7 @@ use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Exception\MissionNotDraftException;
 use App\Service\AuditService;
+use App\Service\MissionEligibilityService;
 use App\Service\MissionEncodingGuard;
 use App\Service\MissionEncodingWorkflowService;
 use App\Service\MissionService;
@@ -43,6 +44,7 @@ final class MissionServiceAssignInstrumentistDraftTest extends TestCase
                 $this->createMock(AuditService::class),
                 $this->createMock(MessageBusInterface::class),
             ),
+            new MissionEligibilityService($this->em),
         );
     }
 
@@ -137,5 +139,35 @@ final class MissionServiceAssignInstrumentistDraftTest extends TestCase
         $this->expectException(NotFoundHttpException::class);
 
         $this->service->assignInstrumentistDraft($mission, 9999);
+    }
+
+    /**
+     * D-101 regression — cas Sophie Collette : une affectation DRAFT vers un
+     * instrumentiste absent sur le créneau de la mission doit être refusée, jamais
+     * persistée silencieusement.
+     */
+    public function test_throws_ineligible_exception_when_instrumentist_is_absent_on_mission_date(): void
+    {
+        $mission = $this->makeMission(MissionStatus::DRAFT);
+        $mission->setStartAt(new \DateTimeImmutable('2026-08-14 08:00:00'));
+        $mission->setEndAt(new \DateTimeImmutable('2026-08-14 18:00:00'));
+
+        $instrumentist = $this->makeInstrumentist();
+
+        $this->em->method('find')->willReturn($instrumentist);
+        $this->em->method('createQuery')->willReturnCallback(function (string $dql) {
+            $q = $this->createMock(\Doctrine\ORM\Query::class);
+            $q->method('setParameter')->willReturnSelf();
+            // Absence query (Q2 of evaluateForReassignment): candidate is absent.
+            $q->method('getSingleScalarResult')->willReturn(
+                str_contains($dql, 'App\Entity\Absence a') ? 1 : 0,
+            );
+            return $q;
+        });
+        $this->em->expects($this->never())->method('flush');
+
+        $this->expectException(\App\Exception\InstrumentistIneligibleException::class);
+
+        $this->service->assignInstrumentistDraft($mission, $instrumentist->getId());
     }
 }

@@ -9,11 +9,13 @@ use App\Entity\MissionClaim;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\AuditEventType;
+use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\EligibilityReason;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\SchedulePrecision;
+use App\Exception\InstrumentistIneligibleException;
 use App\Message\MissionLifecycleChangedMessage;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
@@ -291,8 +293,13 @@ class MissionPostDeployService
      * Assigns a specific instrumentist; transitions OPEN→ASSIGNED when needed.
      * Throws 409 if the mission is not in a mutable post-deploy state, 404 if target not found.
      */
-    public function assign(Mission $mission, User $actor, int $newInstrumentistId, bool $notify = true): void
-    {
+    public function assign(
+        Mission $mission,
+        User $actor,
+        int $newInstrumentistId,
+        bool $notify = true,
+        EligibilityEnforcementPolicy $policy = EligibilityEnforcementPolicy::STRICT_ASSIGNMENT,
+    ): void {
         if (!in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
             throw new ConflictHttpException('Mission must be OPEN or ASSIGNED to assign');
         }
@@ -301,6 +308,8 @@ class MissionPostDeployService
         if ($newInstrumentist === null) {
             throw new NotFoundHttpException('Instrumentist not found');
         }
+
+        $this->guardEligibility($mission, $newInstrumentist, $policy);
 
         $fromInstrumentist     = $mission->getInstrumentist();
         $fromInstrumentistId   = $fromInstrumentist?->getId();
@@ -346,8 +355,13 @@ class MissionPostDeployService
      *
      * $notify — see release() doc.
      */
-    public function reassign(Mission $mission, User $actor, int $newInstrumentistId, bool $notify = true): void
-    {
+    public function reassign(
+        Mission $mission,
+        User $actor,
+        int $newInstrumentistId,
+        bool $notify = true,
+        EligibilityEnforcementPolicy $policy = EligibilityEnforcementPolicy::STRICT_ASSIGNMENT,
+    ): void {
         if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
             throw new ConflictHttpException('Mission must be ASSIGNED to reassign');
         }
@@ -356,6 +370,8 @@ class MissionPostDeployService
         if ($newInstrumentist === null) {
             throw new NotFoundHttpException('Instrumentist not found');
         }
+
+        $this->guardEligibility($mission, $newInstrumentist, $policy);
 
         $fromInstrumentist     = $mission->getInstrumentist();
         $fromInstrumentistId   = $fromInstrumentist?->getId();
@@ -408,6 +424,7 @@ class MissionPostDeployService
         ?Hospital $site,
         ?MissionType $type,
         bool $notify = true,
+        EligibilityEnforcementPolicy $policy = EligibilityEnforcementPolicy::STRICT_ASSIGNMENT,
     ): void {
         if (!in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
             throw new ConflictHttpException('Mission must be OPEN or ASSIGNED to change its schedule');
@@ -429,6 +446,23 @@ class MissionPostDeployService
         }
         if ($type !== null) {
             $mission->setType($type);
+        }
+
+        // D-101 — a schedule/site change can introduce a new incompatibility (the
+        // instrumentist wasn't absent/conflicted for the OLD slot but is for the NEW one).
+        // Revalidate the current instrumentist (if any) against the mission's now-updated
+        // fields; revert before throwing so nothing incompatible is ever left staged.
+        $currentInstrumentist = $mission->getInstrumentist();
+        if ($currentInstrumentist !== null) {
+            try {
+                $this->guardEligibility($mission, $currentInstrumentist, $policy);
+            } catch (InstrumentistIneligibleException $e) {
+                $mission->setStartAt($fromStartAt);
+                $mission->setEndAt($fromEndAt);
+                $mission->setSite($fromSite);
+                $mission->setType($fromType);
+                throw $e;
+            }
         }
 
         $payload = [
@@ -480,6 +514,7 @@ class MissionPostDeployService
         \DateTimeImmutable $startAt,
         \DateTimeImmutable $endAt,
         bool $notify = true,
+        EligibilityEnforcementPolicy $policy = EligibilityEnforcementPolicy::STRICT_ASSIGNMENT,
     ): Mission {
         if ($endAt <= $startAt) {
             throw new ConflictHttpException('endAt must be after startAt');
@@ -492,11 +527,16 @@ class MissionPostDeployService
             ->setType($type)
             ->setSchedulePrecision(SchedulePrecision::EXACT)
             ->setSurgeon($surgeon)
-            ->setInstrumentist($instrumentist)
             ->setCreatedBy($actor)
-            ->setStatus($instrumentist !== null ? MissionStatus::ASSIGNED : MissionStatus::OPEN)
             ->setStartAt($startAt)
             ->setEndAt($endAt);
+
+        // D-101 — "ajout post-deploy" is still a real affectation.
+        if ($instrumentist !== null) {
+            $this->guardEligibility($mission, $instrumentist, $policy);
+        }
+        $mission->setInstrumentist($instrumentist);
+        $mission->setStatus($instrumentist !== null ? MissionStatus::ASSIGNED : MissionStatus::OPEN);
 
         $this->em->persist($mission);
 
@@ -526,6 +566,30 @@ class MissionPostDeployService
         ));
 
         return $mission;
+    }
+
+    /**
+     * D-101 — single canonical eligibility gate for every assign/reassign/schedule-change/
+     * add-mission mutation in this service. `evaluateForReassignment()` always computes
+     * every applicable reason (single source of truth, never duplicated); the caller's
+     * `$policy` decides which of those reasons actually block the mutation here — never a
+     * free-form reasons list invented per call site. Throws with only the reasons that are
+     * actually blocking under this policy (e.g. under `PLANNING_MODIFICATION`, a
+     * `SCHEDULE_CONFLICT`-only result never throws — the caller's own
+     * `syncAlertsForMission()` is the intended non-blocking surface for that case).
+     */
+    private function guardEligibility(Mission $mission, User $candidate, EligibilityEnforcementPolicy $policy): void
+    {
+        $eligibility = $this->eligibilityService->evaluateForReassignment($mission, $candidate);
+
+        $blocking = array_values(array_filter(
+            $eligibility->reasons,
+            static fn (EligibilityReason $r) => in_array($r, $policy->blockingReasons(), true),
+        ));
+
+        if (!empty($blocking)) {
+            throw new InstrumentistIneligibleException($blocking);
+        }
     }
 
     private function displayName(User $user): string

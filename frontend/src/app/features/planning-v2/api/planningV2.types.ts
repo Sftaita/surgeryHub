@@ -246,11 +246,21 @@ export interface PreviewResponseV2 {
   generatedAt: string;
 }
 
+/** D-101 — an instrumentist the backend refused to keep (ABSENT/SCHEDULE_CONFLICT/INACTIVE/NO_SITE_MEMBERSHIP). */
+export interface RejectedAssignmentV2 {
+  missionId: number | null;
+  date: string | null;
+  requestedInstrumentistId: number;
+  requestedInstrumentistName: string;
+  reasons: string[];
+}
+
 export interface GeneratedPlanningV2 {
   versionId: number;
   created: number;
   updated: number;
   skipped: number;
+  rejectedAssignments: RejectedAssignmentV2[];
 }
 
 export interface DeployResponseV2 {

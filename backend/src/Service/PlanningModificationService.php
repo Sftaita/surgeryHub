@@ -7,6 +7,7 @@ use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
+use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -220,10 +221,12 @@ class PlanningModificationService
                 $this->postDeploy->release($mission, $actor, notify: false);
                 $changed = true;
             } elseif ($newInstrumentistId !== null && $mission->getStatus() === MissionStatus::OPEN) {
-                $this->postDeploy->assign($mission, $actor, (int) $newInstrumentistId, notify: false);
+                // D-101 — Mode Modification: ABSENT/INACTIVE block, SCHEDULE_CONFLICT does
+                // not (D-091/D-052 — surfaced instead via syncAlertsForMission() below).
+                $this->postDeploy->assign($mission, $actor, (int) $newInstrumentistId, notify: false, policy: EligibilityEnforcementPolicy::PLANNING_MODIFICATION);
                 $changed = true;
             } elseif ($newInstrumentistId !== null && $mission->getStatus() === MissionStatus::ASSIGNED) {
-                $this->postDeploy->reassign($mission, $actor, (int) $newInstrumentistId, notify: false);
+                $this->postDeploy->reassign($mission, $actor, (int) $newInstrumentistId, notify: false, policy: EligibilityEnforcementPolicy::PLANNING_MODIFICATION);
                 $changed = true;
             }
         }
@@ -242,7 +245,7 @@ class PlanningModificationService
             || ($newType !== null && $newType !== $mission->getType());
 
         if ($scheduleChanged && in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
-            $this->postDeploy->updateSchedule($mission, $actor, $newStartAt, $newEndAt, $newSite, $newType, notify: false);
+            $this->postDeploy->updateSchedule($mission, $actor, $newStartAt, $newEndAt, $newSite, $newType, notify: false, policy: EligibilityEnforcementPolicy::PLANNING_MODIFICATION);
             $changed = true;
         }
 
@@ -267,6 +270,7 @@ class PlanningModificationService
 
         return $this->postDeploy->createPostDeploy(
             $version, $actor, $site, $surgeon, $instrumentist, $type, $startAt, $endAt, notify: false,
+            policy: EligibilityEnforcementPolicy::PLANNING_MODIFICATION,
         );
     }
 

@@ -51,62 +51,132 @@ class MissionEligibilityService
         $startAt = $mission->getStartAt();
         $endAt   = $mission->getEndAt();
 
-        // Q1 — site membership. FREELANCER bypasses this requirement, consistent with
-        // findEligible() and MissionVoter::isEligibleInstrumentistForOpenMission() (D-057).
-        $isFreelancer = $candidate->getEmploymentType() === EmploymentType::FREELANCER;
-        if ($site !== null && !$isFreelancer) {
-            $count = (int) $this->em->createQuery(
-                'SELECT COUNT(sm.id) FROM App\Entity\SiteMembership sm
-                 WHERE sm.user = :user AND sm.site = :site'
-            )
-                ->setParameter('user', $candidate)
-                ->setParameter('site', $site)
-                ->getSingleScalarResult();
-
-            if ($count === 0) {
-                $reasons[] = EligibilityReason::NO_SITE_MEMBERSHIP;
-            }
+        if ($site !== null && $this->lacksSiteMembership($candidate, $site)) {
+            $reasons[] = EligibilityReason::NO_SITE_MEMBERSHIP;
         }
 
-        // Q2 — approved absence covering the mission date
-        if ($startAt !== null) {
-            $day = new \DateTimeImmutable($startAt->format('Y-m-d'));
-            $absenceCount = (int) $this->em->createQuery(
-                'SELECT COUNT(a.id) FROM App\Entity\Absence a
-                 WHERE a.user = :user
-                   AND a.dateStart <= :day AND a.dateEnd >= :day'
-            )
-                ->setParameter('user', $candidate)
-                ->setParameter('day', $day)
-                ->getSingleScalarResult();
-
-            if ($absenceCount > 0) {
-                $reasons[] = EligibilityReason::ABSENT;
-            }
+        if ($startAt !== null && $this->isAbsentOn($candidate, $startAt)) {
+            $reasons[] = EligibilityReason::ABSENT;
         }
 
-        // Q3 — overlapping assigned mission
+        if ($startAt !== null && $endAt !== null
+            && $this->hasScheduleConflict($candidate, $startAt, $endAt, $mission->getId() ?? 0)) {
+            $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
+        }
+
+        return new EligibilityResult($candidate, $reasons);
+    }
+
+    /**
+     * Single source of truth (D-101) for "can this candidate be assigned/reassigned to
+     * this mission's current slot?" — used by every MANAGER-driven assign/reassign/
+     * schedule-change path (MissionService::assignInstrumentistDraft,
+     * MissionPostDeployService::assign()/reassign()/updateSchedule()/createPostDeploy(),
+     * PlanningModificationService, PlanningGeneratorServiceV2's overrideLines branch).
+     *
+     * Deliberately checks only INACTIVE, ABSENT, SCHEDULE_CONFLICT — never
+     * NO_SITE_MEMBERSHIP, and never INCOMPATIBLE_STATUS/ALREADY_ASSIGNED (evaluate()'s
+     * OPEN/claim()-specific concerns, wrong here since the whole point of reassign is that
+     * the mission already has someone, or isn't OPEN).
+     *
+     * NO_SITE_MEMBERSHIP is intentionally scoped to evaluate() (claim() self-service) and
+     * to the candidate-listing methods (evaluateAllCandidates()/findEligible()) only — a
+     * manager reassigning a mission has always been able to target any instrumentist
+     * regardless of formal site affiliation (confirmed: no existing manager-facing
+     * assign/reassign functional test ever set up a SiteMembership row), and this lot's
+     * scope is strictly "an inactive/absent/already-busy person must never be assigned
+     * silently" — not a new site-affiliation policy for manager overrides. Whether a
+     * manager should ALSO be blocked from assigning outside site affiliation is an explicit,
+     * separate business/UX decision, not decided by this lot.
+     *
+     * Reuses the exact same absence/conflict queries as evaluate() — no second
+     * implementation of either check.
+     *
+     * $excludeMissionId defaults to the mission's own id (a schedule change on mission #42
+     * must never conflict against mission #42 itself); callers evaluating a hypothetical
+     * *new* slot not yet attached to this mission may pass a different id.
+     */
+    public function evaluateForReassignment(Mission $mission, User $candidate, ?int $excludeMissionId = null): EligibilityResult
+    {
+        $reasons = [];
+
+        if (!$candidate->isActive()) {
+            $reasons[] = EligibilityReason::INACTIVE;
+        }
+
+        $startAt = $mission->getStartAt();
+        $endAt   = $mission->getEndAt();
+
+        if ($startAt !== null && $this->isAbsentOn($candidate, $startAt)) {
+            $reasons[] = EligibilityReason::ABSENT;
+        }
+
         if ($startAt !== null && $endAt !== null) {
-            $conflictCount = (int) $this->em->createQuery(
-                'SELECT COUNT(m.id) FROM App\Entity\Mission m
-                 WHERE m.instrumentist = :user
-                   AND m.id <> :missionId
-                   AND m.startAt < :endAt AND m.endAt > :startAt
-                   AND m.status NOT IN (:excluded)'
-            )
-                ->setParameter('user', $candidate)
-                ->setParameter('missionId', $mission->getId() ?? 0)
-                ->setParameter('startAt', $startAt)
-                ->setParameter('endAt', $endAt)
-                ->setParameter('excluded', [MissionStatus::CANCELLED, MissionStatus::REJECTED])
-                ->getSingleScalarResult();
-
-            if ($conflictCount > 0) {
+            $excludeId = $excludeMissionId ?? ($mission->getId() ?? 0);
+            if ($this->hasScheduleConflict($candidate, $startAt, $endAt, $excludeId)) {
                 $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
             }
         }
 
         return new EligibilityResult($candidate, $reasons);
+    }
+
+    /** Q1 — site membership. FREELANCER bypasses this requirement (D-057). */
+    private function lacksSiteMembership(User $candidate, \App\Entity\Hospital $site): bool
+    {
+        if ($candidate->getEmploymentType() === EmploymentType::FREELANCER) {
+            return false;
+        }
+
+        $count = (int) $this->em->createQuery(
+            'SELECT COUNT(sm.id) FROM App\Entity\SiteMembership sm
+             WHERE sm.user = :user AND sm.site = :site'
+        )
+            ->setParameter('user', $candidate)
+            ->setParameter('site', $site)
+            ->getSingleScalarResult();
+
+        return $count === 0;
+    }
+
+    /** Q2 — approved absence covering the given day. */
+    private function isAbsentOn(User $candidate, \DateTimeImmutable $startAt): bool
+    {
+        $day = new \DateTimeImmutable($startAt->format('Y-m-d'));
+        $count = (int) $this->em->createQuery(
+            'SELECT COUNT(a.id) FROM App\Entity\Absence a
+             WHERE a.user = :user
+               AND a.dateStart <= :day AND a.dateEnd >= :day'
+        )
+            ->setParameter('user', $candidate)
+            ->setParameter('day', $day)
+            ->getSingleScalarResult();
+
+        return $count > 0;
+    }
+
+    /**
+     * Q3 — overlapping active mission (cross-site, cross-PlanningVersion by construction —
+     * scoped by person only, matches PlanningConflictDetectionService::findConflict()'s
+     * same end-exclusive overlap rule: A.startAt < B.endAt AND A.endAt > B.startAt).
+     */
+    private function hasScheduleConflict(User $candidate, \DateTimeImmutable $startAt, \DateTimeImmutable $endAt, int $excludeMissionId): bool
+    {
+        $count = (int) $this->em->createQuery(
+            'SELECT COUNT(m.id) FROM App\Entity\Mission m
+             WHERE m.instrumentist = :user
+               AND m.id <> :missionId
+               AND m.startAt < :endAt AND m.endAt > :startAt
+               AND m.status NOT IN (:excluded)'
+        )
+            ->setParameter('user', $candidate)
+            ->setParameter('missionId', $excludeMissionId)
+            ->setParameter('startAt', $startAt)
+            ->setParameter('endAt', $endAt)
+            ->setParameter('excluded', [MissionStatus::CANCELLED, MissionStatus::REJECTED])
+            ->getSingleScalarResult();
+
+        return $count > 0;
     }
 
     /**

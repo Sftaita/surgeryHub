@@ -86,6 +86,17 @@ final class PlanningGeneratorServiceV2PreviewVersionTest extends TestCase
                     $q->method('getArrayResult')->willReturnCallback(fn () => $this->shiftConfigRows);
                 } elseif (str_contains($dql, 'exceptionPostIds')) {
                     $q->method('getResult')->willReturn([]);
+                } elseif (str_contains($dql, 'SiteMembership sm')) {
+                    // D-101 — MissionEligibilityService::evaluateForReassignment() Q1;
+                    // default eligible (has membership), matching every pre-existing
+                    // test's implicit assumption in this file.
+                    $q->method('getSingleScalarResult')->willReturn(1);
+                } elseif (str_contains($dql, 'App\Entity\Absence a')) {
+                    // Q2 — default not absent.
+                    $q->method('getSingleScalarResult')->willReturn(0);
+                } elseif (str_contains($dql, 'm.instrumentist = :user')) {
+                    // Q3 — default no conflict.
+                    $q->method('getSingleScalarResult')->willReturn(0);
                 }
 
                 return $q;
@@ -104,7 +115,11 @@ final class PlanningGeneratorServiceV2PreviewVersionTest extends TestCase
     {
         // D-091 — conflict-alert sync is a discarded-return-value side effect of generate();
         // an unconfigured mock (returns null) is sufficient for these unit tests.
-        return new PlanningGeneratorServiceV2($this->em, $this->createMock(\App\Service\PlanningConflictDetectionService::class));
+        return new PlanningGeneratorServiceV2(
+            $this->em,
+            $this->createMock(\App\Service\PlanningConflictDetectionService::class),
+            new \App\Service\MissionEligibilityService($this->em),
+        );
     }
 
     private function makeSite(string $name = 'Alpha'): Hospital

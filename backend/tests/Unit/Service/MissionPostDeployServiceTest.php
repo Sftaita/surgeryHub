@@ -6,6 +6,7 @@ use App\Dto\EligibilityResult;
 use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\AuditEventType;
+use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\EligibilityReason;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
@@ -42,6 +43,11 @@ final class MissionPostDeployServiceTest extends TestCase
         // Default: any evaluate() call returns eligible
         $this->eligibilityService->method('evaluate')
             ->willReturnCallback(fn (Mission $m, User $u) => new EligibilityResult($u, []));
+
+        // D-101 — assign()/reassign()/updateSchedule() now revalidate via
+        // evaluateForReassignment(); default eligible, same as evaluate() above.
+        $this->eligibilityService->method('evaluateForReassignment')
+            ->willReturnCallback(fn (Mission $m, User $u, ?int $excludeId = null) => new EligibilityResult($u, []));
 
         $this->service = new MissionPostDeployService(
             $this->em, $this->bus, $this->audit, $this->eligibilityService,
@@ -436,6 +442,118 @@ final class MissionPostDeployServiceTest extends TestCase
         $this->service->reassign($mission, $actor, 99);
     }
 
+    /** D-101 — reassign() must never place an ineligible instrumentist on a mission. */
+    public function test_reassign_throws_ineligible_exception_and_does_not_mutate(): void
+    {
+        $fromInstrumentist = $this->makeInstrumentist('Ole', 'Salve');
+        $toInstrumentist   = $this->makeInstrumentist('Sophie', 'Collette');
+        $mission           = $this->makeMission(MissionStatus::ASSIGNED, $fromInstrumentist);
+        $actor             = $this->makeActor();
+
+        $this->em->method('find')->willReturn($toInstrumentist);
+        $this->em->expects($this->never())->method('flush');
+
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('evaluateForReassignment')
+            ->willReturn(new EligibilityResult($toInstrumentist, [EligibilityReason::ABSENT]));
+        $this->service = new MissionPostDeployService(
+            $this->em, $this->bus, $this->audit, $this->eligibilityService,
+        );
+
+        try {
+            $this->service->reassign($mission, $actor, 99);
+            $this->fail('Expected InstrumentistIneligibleException');
+        } catch (\App\Exception\InstrumentistIneligibleException $e) {
+            $this->assertSame([EligibilityReason::ABSENT], $e->getReasons());
+        }
+
+        $this->assertSame($fromInstrumentist, $mission->getInstrumentist(), 'instrumentist must be unchanged');
+    }
+
+    /**
+     * D-101 — PLANNING_MODIFICATION policy: SCHEDULE_CONFLICT must NEVER block (D-091/
+     * D-052 — the manager's own conflict-alert mechanism, syncAlertsForMission(), is the
+     * intended non-blocking surface, called by PlanningModificationService after this
+     * succeeds).
+     */
+    public function test_reassign_with_planning_modification_policy_allows_schedule_conflict(): void
+    {
+        $fromInstrumentist = $this->makeInstrumentist('Ole', 'Salve');
+        $toInstrumentist   = $this->makeInstrumentist('Perrine', 'Pineux');
+        $mission           = $this->makeMission(MissionStatus::ASSIGNED, $fromInstrumentist);
+        $actor             = $this->makeActor();
+
+        $this->em->method('flush');
+        $this->em->method('find')->willReturn($toInstrumentist);
+
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('evaluateForReassignment')
+            ->willReturn(new EligibilityResult($toInstrumentist, [EligibilityReason::SCHEDULE_CONFLICT]));
+        $this->service = new MissionPostDeployService(
+            $this->em, $this->bus, $this->audit, $this->eligibilityService,
+        );
+
+        // Must NOT throw.
+        $this->service->reassign($mission, $actor, 99, policy: EligibilityEnforcementPolicy::PLANNING_MODIFICATION);
+
+        $this->assertSame($toInstrumentist, $mission->getInstrumentist());
+    }
+
+    /**
+     * D-101 — PLANNING_MODIFICATION policy still blocks ABSENT: no legitimate scenario
+     * exists for a manager to consciously override someone's declared absence, unlike a
+     * schedule conflict.
+     */
+    public function test_reassign_with_planning_modification_policy_still_blocks_absent(): void
+    {
+        $fromInstrumentist = $this->makeInstrumentist('Ole', 'Salve');
+        $toInstrumentist   = $this->makeInstrumentist('Sophie', 'Collette');
+        $mission           = $this->makeMission(MissionStatus::ASSIGNED, $fromInstrumentist);
+        $actor             = $this->makeActor();
+
+        $this->em->method('find')->willReturn($toInstrumentist);
+        $this->em->expects($this->never())->method('flush');
+
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('evaluateForReassignment')
+            ->willReturn(new EligibilityResult($toInstrumentist, [EligibilityReason::ABSENT]));
+        $this->service = new MissionPostDeployService(
+            $this->em, $this->bus, $this->audit, $this->eligibilityService,
+        );
+
+        try {
+            $this->service->reassign($mission, $actor, 99, policy: EligibilityEnforcementPolicy::PLANNING_MODIFICATION);
+            $this->fail('Expected InstrumentistIneligibleException');
+        } catch (\App\Exception\InstrumentistIneligibleException $e) {
+            $this->assertSame([EligibilityReason::ABSENT], $e->getReasons());
+        }
+
+        $this->assertSame($fromInstrumentist, $mission->getInstrumentist(), 'instrumentist must be unchanged');
+    }
+
+    /** D-101 — PLANNING_MODIFICATION policy still blocks INACTIVE (deactivated account). */
+    public function test_reassign_with_planning_modification_policy_still_blocks_inactive(): void
+    {
+        $fromInstrumentist = $this->makeInstrumentist('Ole', 'Salve');
+        $toInstrumentist   = $this->makeInstrumentist('Marc', 'Petit');
+        $mission           = $this->makeMission(MissionStatus::ASSIGNED, $fromInstrumentist);
+        $actor             = $this->makeActor();
+
+        $this->em->method('find')->willReturn($toInstrumentist);
+        $this->em->expects($this->never())->method('flush');
+
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('evaluateForReassignment')
+            ->willReturn(new EligibilityResult($toInstrumentist, [EligibilityReason::INACTIVE]));
+        $this->service = new MissionPostDeployService(
+            $this->em, $this->bus, $this->audit, $this->eligibilityService,
+        );
+
+        $this->expectException(\App\Exception\InstrumentistIneligibleException::class);
+
+        $this->service->reassign($mission, $actor, 99, policy: EligibilityEnforcementPolicy::PLANNING_MODIFICATION);
+    }
+
     public function test_reassign_dispatches_lifecycle_message_with_reassigned_change_type(): void
     {
         $fromInstrumentist = $this->makeInstrumentist();
@@ -571,6 +689,34 @@ final class MissionPostDeployServiceTest extends TestCase
         $this->expectExceptionMessage('Mission must be OPEN or ASSIGNED to assign');
 
         $this->service->assign($mission, $actor, 99);
+    }
+
+    /** D-101 — assign() must never place an ineligible instrumentist on a mission. */
+    public function test_assign_throws_ineligible_exception_and_does_not_mutate(): void
+    {
+        $candidate = $this->makeInstrumentist('Sophie', 'Collette');
+        $mission   = $this->makeMission(MissionStatus::OPEN);
+        $actor     = $this->makeActor();
+
+        $this->em->method('find')->willReturn($candidate);
+        $this->em->expects($this->never())->method('flush');
+
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('evaluateForReassignment')
+            ->willReturn(new EligibilityResult($candidate, [EligibilityReason::SCHEDULE_CONFLICT]));
+        $this->service = new MissionPostDeployService(
+            $this->em, $this->bus, $this->audit, $this->eligibilityService,
+        );
+
+        try {
+            $this->service->assign($mission, $actor, 99);
+            $this->fail('Expected InstrumentistIneligibleException');
+        } catch (\App\Exception\InstrumentistIneligibleException $e) {
+            $this->assertSame([EligibilityReason::SCHEDULE_CONFLICT], $e->getReasons());
+        }
+
+        $this->assertNull($mission->getInstrumentist(), 'instrumentist must be unchanged');
+        $this->assertSame(MissionStatus::OPEN, $mission->getStatus());
     }
 
     // ── claim() ───────────────────────────────────────────────────────────────
@@ -772,6 +918,49 @@ final class MissionPostDeployServiceTest extends TestCase
         );
     }
 
+    /**
+     * D-101 — a schedule change can introduce a NEW incompatibility for the currently
+     * assigned instrumentist (they weren't absent/conflicted for the old slot, but are
+     * for the new one). Must revert, never persist the change.
+     */
+    public function test_update_schedule_throws_ineligible_exception_and_reverts_when_new_slot_conflicts(): void
+    {
+        $instrumentist = $this->makeInstrumentist('Sophie', 'Collette');
+        $mission       = $this->makeMission(MissionStatus::ASSIGNED, $instrumentist);
+        $originalStart = new \DateTimeImmutable('2026-09-15 08:00:00');
+        $originalEnd   = new \DateTimeImmutable('2026-09-15 09:00:00');
+        $mission->setStartAt($originalStart);
+        $mission->setEndAt($originalEnd);
+        $originalSite = new \App\Entity\Hospital();
+        $originalSite->setName('Delta');
+        $this->setId($originalSite, 900);
+        $mission->setSite($originalSite);
+        $mission->setType(\App\Enum\MissionType::BLOCK);
+        $actor = $this->makeActor();
+
+        $this->em->expects($this->never())->method('flush');
+
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('evaluateForReassignment')
+            ->willReturn(new EligibilityResult($instrumentist, [EligibilityReason::ABSENT]));
+        $this->service = new MissionPostDeployService(
+            $this->em, $this->bus, $this->audit, $this->eligibilityService,
+        );
+
+        $newStart = new \DateTimeImmutable('2026-09-15 10:00:00');
+        $newEnd   = new \DateTimeImmutable('2026-09-15 11:00:00');
+
+        try {
+            $this->service->updateSchedule($mission, $actor, $newStart, $newEnd, null, null);
+            $this->fail('Expected InstrumentistIneligibleException');
+        } catch (\App\Exception\InstrumentistIneligibleException $e) {
+            $this->assertSame([EligibilityReason::ABSENT], $e->getReasons());
+        }
+
+        $this->assertEquals($originalStart, $mission->getStartAt(), 'startAt must be reverted');
+        $this->assertEquals($originalEnd, $mission->getEndAt(), 'endAt must be reverted');
+    }
+
     public function test_update_schedule_on_cancelled_mission_throws_conflict(): void
     {
         $mission = $this->makeMission(MissionStatus::CANCELLED);
@@ -810,6 +999,38 @@ final class MissionPostDeployServiceTest extends TestCase
         $this->assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
         $this->assertSame($instrumentist, $mission->getInstrumentist());
         $this->assertSame($version, $mission->getPlanningVersion());
+    }
+
+    /** D-101 — an "ajout post-deploy" mission must never be created ASSIGNED to an ineligible candidate. */
+    public function test_create_post_deploy_throws_ineligible_exception_and_does_not_persist(): void
+    {
+        $site          = new \App\Entity\Hospital();
+        $site->setName('Delta');
+        $this->setId($site, 502);
+        $surgeon       = $this->makeActor('Dr', 'Surgeon');
+        $instrumentist = $this->makeInstrumentist('Sophie', 'Collette');
+        $actor         = $this->makeActor('Manager', 'Actor');
+        $version       = new \App\Entity\PlanningVersion();
+        $this->setId($version, 701);
+
+        $this->em->expects($this->never())->method('persist');
+        $this->em->expects($this->never())->method('flush');
+
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
+        $this->eligibilityService->method('evaluateForReassignment')
+            ->willReturn(new EligibilityResult($instrumentist, [EligibilityReason::ABSENT]));
+        $this->service = new MissionPostDeployService(
+            $this->em, $this->bus, $this->audit, $this->eligibilityService,
+        );
+
+        $this->expectException(\App\Exception\InstrumentistIneligibleException::class);
+
+        $this->service->createPostDeploy(
+            $version, $actor, $site, $surgeon, $instrumentist,
+            \App\Enum\MissionType::BLOCK,
+            new \DateTimeImmutable('2026-09-20 08:00:00'),
+            new \DateTimeImmutable('2026-09-20 13:00:00'),
+        );
     }
 
     public function test_create_post_deploy_without_instrumentist_is_open(): void
