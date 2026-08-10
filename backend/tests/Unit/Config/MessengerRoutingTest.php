@@ -6,6 +6,7 @@ use App\Message\MissionLifecycleChangedMessage;
 use App\Message\PlanningAlertRaisedMessage;
 use App\Message\PlanningDeployPdfsMessage;
 use App\Message\SendBillingEmailMessage;
+use App\Message\SurgeonAbsenceOccurrencesNeutralizedMessage;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Yaml\Yaml;
 
@@ -119,6 +120,27 @@ class MessengerRoutingTest extends TestCase
             'async',
             self::$routing[MissionLifecycleChangedMessage::class],
             'MissionLifecycleChangedMessage must be routed to "async" (R-08).'
+        );
+    }
+
+    // ── SurgeonAbsenceOccurrencesNeutralizedMessage (Lot 3, D-103) ────────────
+
+    /**
+     * Dispatched from AbsenceController/SelfAbsenceController's create()/update() — DB
+     * writes (PlanningOccurrenceException/AuditEvent) plus a per-recipient email fan-out
+     * must not run synchronously in the HTTP request that recorded the absence.
+     */
+    public function test_surgeon_absence_occurrences_neutralized_message_is_routed_to_async(): void
+    {
+        $this->assertArrayHasKey(
+            SurgeonAbsenceOccurrencesNeutralizedMessage::class,
+            self::$routing,
+            'SurgeonAbsenceOccurrencesNeutralizedMessage has no transport routing — it would run synchronously in the HTTP request that created/updated the absence.'
+        );
+        $this->assertSame(
+            'async',
+            self::$routing[SurgeonAbsenceOccurrencesNeutralizedMessage::class],
+            'SurgeonAbsenceOccurrencesNeutralizedMessage must be routed to "async".'
         );
     }
 

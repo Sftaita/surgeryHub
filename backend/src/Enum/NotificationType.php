@@ -49,6 +49,19 @@ enum NotificationType: string
     // urgent the way an alert-raising absence already is via PLANNING_ALERT.
     case ABSENCE_SELF_DECLARED = 'ABSENCE_SELF_DECLARED';
 
+    // ── Surgeon absence, future Post occurrence with no Mission yet (Lot 3, D-103) ──
+    // Distinct from the "post-deploy mission reactions" block above: this fires for a
+    // theoretical SurgeonSchedulePost occurrence that falls inside a surgeon absence
+    // window but has no generated Mission at all — nothing to release/cancel, just a
+    // neutralization to record and surface before generation ever runs. Grouped by
+    // absence + recipient (never one notification per occurrence — see
+    // SurgeonAbsenceOccurrencesNeutralizedMessageHandler). Named ..._CANCELLED (not
+    // ..._NEUTRALIZED) to fit the 32-char notification_preference.notification_type
+    // column (VARCHAR(32), see DefaultNotificationPreferenceResolverTest) and to match
+    // the underlying PlanningOccurrenceException type it mirrors (CANCELLED).
+    case ABSENCE_OCCURRENCE_CANCELLED     = 'ABSENCE_OCCURRENCE_CANCELLED';     // to the post's default instrumentist
+    case ABSENCE_OCCURRENCE_CANCELLED_MGR = 'ABSENCE_OCCURRENCE_CANCELLED_MGR'; // to every active manager/admin
+
     // ── Manual resend (D-090, anomalie fonctionnelle 1) ──────────────────────
     // A manager explicitly re-sending one person's currently-published plan on demand —
     // never diff-driven, never fanned out to anyone else. Not gated by

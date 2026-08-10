@@ -9,6 +9,7 @@ use App\Entity\PlanningVersion;
 use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
 use App\Enum\MissionStatus;
+use App\Enum\OccurrenceExceptionSource;
 use App\Enum\OccurrenceExceptionType;
 use App\Enum\PlanningVersionStatus;
 use App\Enum\RecurrenceFrequency;
@@ -98,8 +99,17 @@ class PlanningGeneratorServiceV2
                 // An exception exists for this post's natural occurrence on this date.
                 // CANCELLED / MOVED both suppress the natural occurrence entirely — the
                 // recurring rule and every other occurrence are untouched either way.
-                if ($exception->getType() === OccurrenceExceptionType::CANCELLED
-                    || $exception->getType() === OccurrenceExceptionType::MOVED) {
+                if ($exception->getType() === OccurrenceExceptionType::CANCELLED) {
+                    // D-103 (Lot 3) — a manager's manual cancellation stays silent (pre-
+                    // existing behavior, unchanged): they already know why. An automatic
+                    // surgeon-absence neutralization instead surfaces explicitly (SKIPPED),
+                    // so the line doesn't just vanish without explanation.
+                    if ($exception->getSource() === OccurrenceExceptionSource::SURGEON_ABSENCE) {
+                        $this->emitSurgeonAbsenceNeutralizedLine($post, $current, $shiftConfigs, $lines);
+                    }
+                    continue;
+                }
+                if ($exception->getType() === OccurrenceExceptionType::MOVED) {
                     continue;
                 }
 
@@ -248,6 +258,37 @@ class PlanningGeneratorServiceV2
             $current, $post, $site, $surgeonName, $startTime, $endTime,
             $slotInstrumentist, $status, $existingMission?->getId(),
             $status === 'MODIFIED' ? $existingMissionInstrumentist : null,
+        );
+    }
+
+    /**
+     * D-103 (Lot 3) — a Post occurrence neutralized before generation ever ran (no Mission
+     * exists yet) surfaces in Preview the same way an absence-driven skip inside the
+     * current month's natural computation already does: status SKIPPED, so the manager
+     * sees why the slot is missing instead of the line silently disappearing. Unlike the
+     * natural-occurrence path, this does NOT re-check isAbsentFast() — the
+     * PlanningOccurrenceException itself is the authoritative, already-computed record
+     * (it may outlive a later-shortened absence; restoring it is Lot 4's job, this lot
+     * only ever surfaces what was decided at the time the absence was created/updated).
+     */
+    private function emitSurgeonAbsenceNeutralizedLine(
+        SurgeonSchedulePost $post,
+        \DateTimeImmutable $current,
+        array $shiftConfigs,
+        array &$lines,
+    ): void {
+        $site      = $post->getSite();
+        $configKey = $site->getId() . '_' . $post->getPeriod()->value;
+        if (!isset($shiftConfigs[$configKey])) {
+            // No shift config for this site/period — nothing sensible to render; the
+            // occurrence stays silently absent from Preview, same as before this lot.
+            return;
+        }
+        [$startTime, $endTime] = $shiftConfigs[$configKey];
+
+        $lines[] = $this->buildLine(
+            $current, $post, $site, $this->displayName($post->getSurgeon()), $startTime, $endTime,
+            $post->getInstrumentist(), 'SKIPPED', null,
         );
     }
 
@@ -509,6 +550,31 @@ class PlanningGeneratorServiceV2
     }
 
     // ── Recurrence expansion (in-memory, no DB hits) ────────────────────────
+
+    /**
+     * D-103 (Lot 3) — public read-only wrapper around the recurrence engine, for callers
+     * that need theoretical occurrence dates of a Post within a range WITHOUT running a
+     * full preview() (no absence/mission/conflict resolution — just the pure recurrence
+     * rule). Reuses isOccurrenceActive() as the single source of truth for interval/
+     * weekdays/monthWeeks math — never reimplemented outside this class.
+     *
+     * @return \DateTimeImmutable[] ascending, date-only
+     */
+    public function theoreticalOccurrenceDates(SurgeonSchedulePost $post, \DateTimeImmutable $from, \DateTimeImmutable $to): array
+    {
+        $current = $from > $post->getStartDate() ? $from : $post->getStartDate();
+        $end     = $post->getEndDate() !== null && $post->getEndDate() < $to ? $post->getEndDate() : $to;
+
+        $dates = [];
+        while ($current <= $end) {
+            if ($this->isOccurrenceActive($post, $current, (int) $current->format('N'))) {
+                $dates[] = $current;
+            }
+            $current = $current->modify('+1 day');
+        }
+
+        return $dates;
+    }
 
     private function isOccurrenceActive(SurgeonSchedulePost $post, \DateTimeImmutable $date, int $isoDay): bool
     {

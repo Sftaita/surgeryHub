@@ -7598,3 +7598,101 @@ sélectionnable pour *chaque* créneau sélectionné).
 
 Lots 3–6 (absence chirurgien avant génération, restauration réversible, email manager,
 bouton "Vérifier les conflits") — inchangés, toujours à détailler séparément.
+
+---
+
+## D-103 — Planning V2 : absence chirurgien avant génération, occurrences de Post neutralisées (Lot 3, 2026-08-10)
+
+Date : 2026-08-10
+
+### Contexte
+
+Avant ce lot, une absence chirurgien enregistrée pour une date où aucune `Mission` n'a
+encore été générée ne laissait aucune trace : `PlanningGeneratorServiceV2::preview()`
+calcule bien `SKIPPED` à la volée quand on ouvre l'aperçu, mais rien n'est persisté tant
+que personne n'a cliqué sur "Prévisualiser" pour ce mois précis. Le chirurgien, le
+manager, et l'instrumentiste habituel du poste n'apprenaient donc l'impact qu'au moment
+(tardif) de la génération, voire jamais si le mois n'était jamais prévisualisé.
+
+### Décision — réutilisation intégrale du moteur de récurrence, aucune nouvelle structure de calcul
+
+`PlanningGeneratorServiceV2::isOccurrenceActive()` (privée) reste l'unique implémentation
+du calcul d'occurrence — nouvelle méthode publique `theoreticalOccurrenceDates(post, from,
+to)`, simple boucle jour par jour qui l'appelle, aucune règle dupliquée. Nouveau service
+`SurgeonAbsenceOccurrenceImpactService`, séparé de `AbsenceMissionReactionService`
+(missions déjà matérialisées) et `AbsenceImpactService` (alertes manager sur missions non
+auto-mutables) — le domaine de ce lot est strictement le complément : occurrences
+théoriques sans aucune `Mission`.
+
+### Décision — `PlanningOccurrenceException(type: CANCELLED)` réutilisée, avec provenance
+
+`PlanningOccurrenceException::CANCELLED` représentait déjà exactement ce concept
+("occurrence neutralisée, Post intact") mais uniquement pour une action manager manuelle,
+sans lien vers une `Absence`. **Migration** (`Version20260810120000`) : `source`
+(`OccurrenceExceptionSource` : `MANAGER` défaut / `SURGEON_ABSENCE`) et
+`source_absence_id` (FK nullable vers `absence`, `ON DELETE SET NULL` — même convention
+que `planning_alert.absence_id`, `Version20260621100004` : une absence supprimée ne doit
+jamais bloquer ni effacer l'historique dépendant). Alternative rejetée : encoder la
+provenance uniquement dans le payload JSON d'un `AuditEvent` — rendrait impossible une
+requête directe "quelles exceptions viennent de cette absence", nécessaire au Lot 4.
+
+**Règle d'idempotence et de non-écrasement** : `SurgeonAbsenceOccurrenceImpactService` ne
+crée **jamais** d'exception si une existe déjà pour `(post, occurrenceDate)` — peu importe
+son type ou sa provenance. Une annulation manuelle du manager n'est jamais dupliquée ni
+réattribuée à l'absence ; réexécuter le traitement pour la même absence (ou une mise à
+jour) ne recrée jamais une exception déjà posée.
+
+### Décision — instrumentiste "potentiellement impacté" : champ direct uniquement
+
+`SurgeonSchedulePost::$instrumentist`, jamais d'inférence depuis l'historique des missions
+ni depuis le site. Un poste sans instrumentiste par défaut est quand même neutralisé
+(traçabilité manager conservée), simplement sans destinataire instrumentiste.
+
+### Décision — Mission déjà existante : aucun double traitement
+
+Avant de créer une exception, le service vérifie qu'aucune `Mission` (n'importe quel
+statut) n'existe déjà pour ce couple chirurgien+site+créneau — si une existe, l'occurrence
+relève déjà de `AbsenceMissionReactionService`, ce lot ne fait rien.
+
+### Décision — Preview : occurrence neutralisée visible, jamais silencieusement absente
+
+`preview()` ignorait déjà totalement toute occurrence portant une exception
+CANCELLED/MOVED (`continue`, aucune ligne émise) — comportement inchangé pour une
+annulation manager (elle sait déjà pourquoi). Pour `source = SURGEON_ABSENCE`, nouvelle
+méthode `emitSurgeonAbsenceNeutralizedLine()` : émet une ligne `status = SKIPPED`
+identique à celle que le calcul d'absence "naturel" produit déjà dans le mois courant —
+aucun nouveau statut, aucun changement frontend nécessaire (le Preview Editor traite déjà
+`SKIPPED` comme "chirurgien absent"). Ne re-vérifie pas l'absence en direct : l'exception
+elle-même fait foi, y compris si l'absence a depuis été raccourcie (cohérent avec §16/17 —
+la restauration reste au Lot 4).
+
+### Décision — notifications groupées, deux nouveaux `NotificationType`
+
+`ABSENCE_OCCURRENCE_CANCELLED` (instrumentiste habituel) et
+`ABSENCE_OCCURRENCE_CANCELLED_MGR` (chaque manager/admin actif) — noms raccourcis pour
+tenir dans la colonne `notification_preference.notification_type VARCHAR(32)` (guard-test
+`DefaultNotificationPreferenceResolverTest`) — additifs,
+aucune migration. Un seul `SurgeonAbsenceOccurrencesNeutralizedMessage` par traitement
+d'absence (jamais un par occurrence), géré par
+`SurgeonAbsenceOccurrencesNeutralizedMessageHandler` sur le même gabarit que
+`AbsenceMissionsReactedMessageHandler` (D-062) : groupement par destinataire, email
+batché, in-app unitaire par occurrence, `NotificationPreferenceResolver`. Sur mise à jour
+de l'absence en libre-service (`SelfAbsenceController::reactAndSync()`), le garde-fou
+`ABSENCE_SELF_DECLARED` ("rien n'a été impacté") est étendu pour tenir compte des
+neutralisations de ce lot, en plus des alertes mission existantes — jamais de double
+notification pour le même événement.
+
+### Décision — suppression d'absence : aucun code ajouté dans ce lot
+
+Le FK `ON DELETE SET NULL` et le snapshot `AuditEvent`
+(`PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE`, `mission = null`) suffisent à
+rendre l'information "détectable et traçable" pour le Lot 4, sans qu'aucun nouveau chemin
+de code soit nécessaire ici — cohérent avec le no-op déjà existant
+d'`AbsenceMissionReactionService::onAbsenceDeleted()`.
+
+### Non traité dans ce lot
+
+Restauration automatique après suppression/réduction d'une absence (Lot 4). Email
+manager récapitulatif enrichi de deep-links (Lot 5, hors scope actuel). Bouton "Vérifier
+les conflits" (Lot 6). Absence instrumentiste sur Post futur sans Mission — symétrique
+mais explicitement exclue (§22), traitée dans un lot séparé le cas échéant.

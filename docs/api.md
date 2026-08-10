@@ -3625,6 +3625,13 @@ Retourne la liste de tous les sites (hôpitaux).
 | Postes chirurgien | `GET/POST /api/planning/surgeon-posts`, `GET/PATCH/DELETE /api/planning/surgeon-posts/{id}` — `DELETE` désactive, ne supprime jamais |
 | Exceptions d'occurrence | `GET/POST /api/planning/surgeon-posts/{postId}/exceptions`, `PATCH/DELETE /api/planning/exceptions/{id}` — `DELETE` ici est une vraie suppression (métadonnée de planification pure, pas de donnée historique/auditée) |
 
+**D-103 (Lot 3) — `source`/`sourceAbsenceId` sur chaque exception.** `source` :
+`"MANAGER"` (défaut, toute exception créée via ces endpoints) ou `"SURGEON_ABSENCE"`
+(créée automatiquement par `SurgeonAbsenceOccurrenceImpactService`, jamais via ces
+endpoints REST). `sourceAbsenceId` : id de l'`Absence` à l'origine, ou `null`. Ces deux
+champs sont en lecture seule ici — les endpoints manager ne permettent jamais de
+créer/modifier une exception avec `source = SURGEON_ABSENCE`.
+
 `SurgeonSchedulePost.recurrence` (objet `RecurrenceRule`) :
 
 ```json

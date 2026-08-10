@@ -36,6 +36,10 @@ enum AuditEventType: string
     case MISSION_ADDED_POST_DEPLOY         = 'MISSION_ADDED_POST_DEPLOY';
     case MISSION_CLAIMED_FROM_POOL         = 'MISSION_CLAIMED_FROM_POOL';
 
+    // Surgeon absence vs. future Post occurrences, no Mission generated yet (Lot 3, D-103).
+    // mission is always null on this event — nothing to link to, that's the whole point.
+    case PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE = 'PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE';
+
     // Automated (D-064) — MissionStartDueCommand, ASSIGNED -> IN_PROGRESS on startAt.
     case MISSION_STARTED = 'MISSION_STARTED';
 

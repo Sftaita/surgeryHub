@@ -7,6 +7,7 @@ use App\Entity\User;
 use App\Security\Voter\PlanningVoter;
 use App\Service\AbsenceImpactService;
 use App\Service\AbsenceMissionReactionService;
+use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -21,6 +22,7 @@ class AbsenceController extends AbstractController
         private readonly EntityManagerInterface $em,
         private readonly AbsenceImpactService $absenceImpactService,
         private readonly AbsenceMissionReactionService $absenceMissionReactionService,
+        private readonly SurgeonAbsenceOccurrenceImpactService $surgeonAbsenceOccurrenceImpactService,
     ) {}
 
     #[Route('', name: 'api_absences_list', methods: ['GET'])]
@@ -98,6 +100,9 @@ class AbsenceController extends AbstractController
         // class docblock for the full reasoning.
         $this->absenceMissionReactionService->onAbsenceCreated($absence, $currentUser);
         $this->absenceImpactService->onAbsenceCreated($absence);
+        // Lot 3 (D-103) — future Post occurrences with no Mission yet, independent of the
+        // two calls above (they only ever act on already-materialized Mission rows).
+        $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceCreated($absence, $currentUser);
 
         return $this->json($this->serialize($absence), 201);
     }
@@ -146,6 +151,7 @@ class AbsenceController extends AbstractController
         // See create() — same ordering reasoning.
         $this->absenceMissionReactionService->onAbsenceUpdated($absence, $currentUser);
         $this->absenceImpactService->onAbsenceUpdated($absence);
+        $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceUpdated($absence, $currentUser);
 
         return $this->json($this->serialize($absence));
     }

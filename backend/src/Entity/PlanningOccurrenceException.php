@@ -2,6 +2,7 @@
 
 namespace App\Entity;
 
+use App\Enum\OccurrenceExceptionSource;
 use App\Enum\OccurrenceExceptionType;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
@@ -57,6 +58,21 @@ class PlanningOccurrenceException
     #[Groups(['planning:read'])]
     private \DateTimeImmutable $createdAt;
 
+    /**
+     * D-103 (Lot 3) — provenance: a manager's deliberate manual action (default, and the
+     * only origin before this lot), or an automatic neutralization caused by a surgeon
+     * absence recorded before any Mission existed for this occurrence.
+     */
+    #[ORM\Column(enumType: OccurrenceExceptionSource::class, length: 16, options: ['default' => 'MANAGER'])]
+    #[Groups(['planning:read'])]
+    private OccurrenceExceptionSource $source = OccurrenceExceptionSource::MANAGER;
+
+    /** Set only when source = SURGEON_ABSENCE. ON DELETE SET NULL — a hard-deleted Absence never blocks or erases this row's history (same convention as PlanningAlert.absence). */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(name: 'source_absence_id', nullable: true, onDelete: 'SET NULL')]
+    #[Groups(['planning:read'])]
+    private ?Absence $sourceAbsence = null;
+
     public function __construct()
     {
         $this->createdAt = new \DateTimeImmutable();
@@ -95,4 +111,10 @@ class PlanningOccurrenceException
     public function setCreatedBy(User $createdBy): static { $this->createdBy = $createdBy; return $this; }
 
     public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }
+
+    public function getSource(): OccurrenceExceptionSource { return $this->source; }
+    public function setSource(OccurrenceExceptionSource $source): static { $this->source = $source; return $this; }
+
+    public function getSourceAbsence(): ?Absence { return $this->sourceAbsence; }
+    public function setSourceAbsence(?Absence $sourceAbsence): static { $this->sourceAbsence = $sourceAbsence; return $this; }
 }

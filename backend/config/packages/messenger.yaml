@@ -29,6 +29,7 @@ framework:
             App\Message\SurgeonMissionRequestDecidedMessage: async
             App\Message\EncodingAnomalyReportCreatedMessage: async
             App\Message\EncodingAnomalyReportResolvedMessage: async
+            App\Message\SurgeonAbsenceOccurrencesNeutralizedMessage: async
 
 when@test:
     framework:

@@ -9,6 +9,7 @@ use App\Repository\UserRepository;
 use App\Security\Voter\AbsenceVoter;
 use App\Service\AbsenceImpactService;
 use App\Service\AbsenceMissionReactionService;
+use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use App\Message\AbsenceSelfDeclaredMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -37,6 +38,7 @@ class SelfAbsenceController extends AbstractController
         private readonly EntityManagerInterface $em,
         private readonly AbsenceImpactService $absenceImpactService,
         private readonly AbsenceMissionReactionService $absenceMissionReactionService,
+        private readonly SurgeonAbsenceOccurrenceImpactService $surgeonAbsenceOccurrenceImpactService,
         private readonly UserRepository $userRepository,
         private readonly MessageBusInterface $bus,
     ) {}
@@ -185,16 +187,20 @@ class SelfAbsenceController extends AbstractController
     /**
      * Same call order as AbsenceController::create()/update() (reaction service before impact
      * service — see AbsenceMissionReactionService's class docblock for why the order matters).
-     * If the impact sync raised zero new alerts, the manager would otherwise learn nothing
-     * about this self-declared absence at all — dispatches ABSENCE_SELF_DECLARED for that case
-     * only, never when PLANNING_ALERT already covers it (no duplication).
+     * Lot 3 (D-103) — surgeonAbsenceOccurrenceImpactService runs after both (independent of
+     * either; it only ever acts on Post occurrences with no Mission at all). If NEITHER the
+     * impact sync raised a new alert NOR Lot 3 neutralized any future occurrence, the manager
+     * would otherwise learn nothing about this self-declared absence at all — dispatches
+     * ABSENCE_SELF_DECLARED for that case only, never when either already covers it (no
+     * duplication, §14).
      */
     private function reactAndSync(Absence $absence, User $currentUser): void
     {
         $this->absenceMissionReactionService->onAbsenceCreated($absence, $currentUser);
         $result = $this->absenceImpactService->onAbsenceCreated($absence);
+        $occurrenceResult = $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceCreated($absence, $currentUser);
 
-        if (!empty($result['created'])) {
+        if (!empty($result['created']) || !empty($occurrenceResult['created'])) {
             return;
         }
 

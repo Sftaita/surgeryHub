@@ -185,6 +185,11 @@ class PlanningOccurrenceExceptionController extends AbstractController
             'overrideStartTime'      => $exception->getOverrideStartTime()?->format('H:i'),
             'overrideEndTime'        => $exception->getOverrideEndTime()?->format('H:i'),
             'createdAt'              => $exception->getCreatedAt()->format(\DateTimeInterface::ATOM),
+            // D-103 (Lot 3) — provenance: a manual manager action here (default), or an
+            // automatic neutralization from a surgeon absence (never created via these
+            // REST endpoints — read-only visibility only).
+            'source'                 => $exception->getSource()->value,
+            'sourceAbsenceId'        => $exception->getSourceAbsence()?->getId(),
         ];
     }
 }

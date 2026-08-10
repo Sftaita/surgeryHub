@@ -22,6 +22,10 @@ use Doctrine\ORM\EntityManagerInterface;
  *                                           did NOT impact any mission, informational only; see
  *                                           AbsenceSelfDeclaredMessageHandler, which never sends email
  *                                           for this type regardless of stored preference)
+ *   - ABSENCE_OCCURRENCE_CANCELLED / _MGR (Lot 3, D-103):  inApp=true, email=true — same
+ *                                           urgency as the rest of the ABSENCE_* family: a habitual
+ *                                           future Post occurrence is neutralized before any Mission
+ *                                           was ever generated for it.
  *   - CATALOGUE_REQUEST_RESOLVED/IGNORED:  inApp=true, email=true  (actionable — the instrumentist is
  *                                           waiting on a yes/no for a catalogue proposal, D-093)
  *   - CATALOGUE_REQUEST_CREATED:           inApp=true, email=false (follow-up to D-093 — a manager
@@ -60,6 +64,8 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::SURGEON_MISSION_REQUEST_ACCEPTED,
         NotificationType::SURGEON_MISSION_REQUEST_REJECTED,
         NotificationType::ENCODING_ANOMALY_RESOLVED,
+        NotificationType::ABSENCE_OCCURRENCE_CANCELLED,
+        NotificationType::ABSENCE_OCCURRENCE_CANCELLED_MGR,
     ];
 
     public function __construct(
