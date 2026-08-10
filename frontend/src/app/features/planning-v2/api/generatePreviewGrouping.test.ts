@@ -77,8 +77,8 @@ describe("mergePreviewResponses()", () => {
 describe("aggregateGenerated() / aggregateDeploy()", () => {
   it("sums created/updated/skipped across per-month versions", () => {
     const versions: GeneratedPlanningV2[] = [
-      { versionId: 10, created: 5, updated: 1, skipped: 0 },
-      { versionId: 11, created: 3, updated: 0, skipped: 2 },
+      { versionId: 10, created: 5, updated: 1, skipped: 0, rejectedAssignments: [] },
+      { versionId: 11, created: 3, updated: 0, skipped: 2, rejectedAssignments: [] },
     ];
     expect(aggregateGenerated(versions)).toEqual({ versions, created: 8, updated: 1, skipped: 2 });
   });

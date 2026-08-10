@@ -145,23 +145,36 @@ sinon, aucune donnée patient). Voir `MissionPublishedMessageHandler`.
 
 **AuthZ :** `MANAGER` / `ADMIN` (`MissionVoter::VIEW_ELIGIBLE_INSTRUMENTISTS`)
 
-Retourne la liste de tous les instrumentistes du site de la mission, séparés en éligibles et inéligibles, avec les raisons de non-éligibilité.
+Retourne le roster complet des instrumentistes du site de la mission — chacun annoté de
+son éligibilité, **jamais filtré** (D-102) : une personne indisponible reste dans la
+liste pour que le frontend puisse l'afficher en fantôme (visible, non sélectionnable)
+plutôt que de la faire disparaître sans explication.
 
-**Réponse — 200 :**
+**Query params :**
+
+| Param | Description |
+|---|---|
+| `policy` | `STRICT_ASSIGNMENT` (défaut) ou `PLANNING_MODIFICATION` — voir encadré D-102 ci-dessous |
+
+**Réponse — 200 (D-102, remplace l'ancien `{eligible[], ineligible[]}`) :**
 
 ```json
 {
   "missionId": 42,
   "missionStatus": "OPEN",
-  "eligible": [
-    { "id": 5, "name": "Alice Martin", "email": "alice@example.com" }
-  ],
-  "ineligible": [
+  "policy": "STRICT_ASSIGNMENT",
+  "candidates": [
     {
-      "id": 7,
-      "name": "Bob Dupont",
-      "email": "bob@example.com",
-      "reasons": ["ABSENT", "SCHEDULE_CONFLICT"]
+      "id": 5, "name": "Alice Martin", "email": "alice@example.com",
+      "eligible": true, "selectable": true,
+      "reasons": [], "unavailability": null, "conflict": null
+    },
+    {
+      "id": 7, "name": "Bob Dupont", "email": "bob@example.com",
+      "eligible": false, "selectable": false,
+      "reasons": ["ABSENT", "SCHEDULE_CONFLICT"],
+      "unavailability": { "type": "ABSENCE", "dateStart": "2026-08-01", "dateEnd": "2026-08-16" },
+      "conflict": { "missionId": 55, "siteName": "Alpha", "startAt": "2026-08-14T08:00:00", "endAt": "2026-08-14T18:00:00" }
     }
   ]
 }
@@ -172,15 +185,20 @@ Retourne la liste de tous les instrumentistes du site de la mission, séparés e
 | Valeur | Signification |
 |---|---|
 | `INACTIVE` | Compte inactif |
-| `NO_SITE_MEMBERSHIP` | Pas d'affiliation au site |
+| `NO_SITE_MEMBERSHIP` | Pas d'affiliation au site — jamais bloquant, voir D-101/D-102 |
 | `ABSENT` | Absent ce jour |
 | `SCHEDULE_CONFLICT` | Conflit d'horaire avec une autre mission |
 | `ALREADY_ASSIGNED` | Mission déjà attribuée à un autre |
 | `INCOMPATIBLE_STATUS` | Statut de la mission incompatible (non `OPEN`) |
 
 **Notes :**
-- Délégue à `MissionEligibilityService::evaluateAllCandidates()` (≤ 3 requêtes DB — D-036)
-- Ajouté en Batch 15D
+- `eligible` = fait brut, indépendant du contexte (`reasons` vide). `selectable` =
+  contextualisé sous la `policy` de la réponse (`EligibilityResult::selectableUnder()`) —
+  c'est le seul champ que le frontend doit utiliser pour désactiver une option ; il ne
+  doit jamais recalculer l'éligibilité côté client (D-102).
+- Délègue à `MissionEligibilityService::evaluateAllCandidates()` + `serializeCandidate()`
+  (≤ 3 requêtes DB — D-036)
+- Ajouté en Batch 15D, réponse enrichie en D-102 (Lot 2)
 
 ---
 
@@ -3627,7 +3645,14 @@ Retourne la liste de tous les sites (hôpitaux).
 | `POST /api/planning/alerts/{id}/ignore` | OPEN/ACKNOWLEDGED → IGNORED |
 | `POST /api/planning/alerts/{id}/reassign` | `{instrumentistId, note?}` — change l'instrumentiste de la mission, résout l'alerte |
 | `POST /api/planning/alerts/{id}/open-as-available` | Vide l'instrumentiste, mission → `OPEN`, résout l'alerte |
-| `GET /api/planning/alerts/{id}/eligible-instrumentists` | Instrumentistes actifs, affiliés au site, ni absents ni en conflit — `{items: [{id, email, name, sites: string[]}]}` (`sites` ajouté Batch 12 pour le modal de réassignation) |
+| `GET /api/planning/alerts/{id}/eligible-instrumentists` | D-102 (Lot 2) — roster complet du site, annoté d'éligibilité (jamais filtré) : `{missionId, policy, candidates: CandidateEligibility[]}`, chaque candidat portant `sites: string[]` en plus (ajouté Batch 12, conservé). Toujours `STRICT_ASSIGNMENT`. Délègue à `evaluateAllCandidates()`/`serializeCandidate()`, plus de logique dupliquée dans `PlanningAlertActionService` |
+| `GET /api/planning/v2/eligible-instrumentists` | D-102 (Lot 2, nouveau) — roster éligibilité pour un créneau hypothétique/sans mission persistée (Preview Editor : ligne éditée, bulk-assign, création de mission en Mode Modification). Query : `siteId?`, `date`, `startTime`, `endTime` (requis), `excludeMissionId?`, `policy?`. Réponse : `{policy, candidates: CandidateEligibility[]}`. Délègue à `evaluateRoster()` (4 requêtes DB) |
+
+`CandidateEligibility` (forme partagée par les 3 endpoints ci-dessus, D-102) :
+`{ id, name, email, eligible, selectable, reasons: string[], unavailability: {type: "ABSENCE", dateStart, dateEnd} | null, conflict: {missionId, siteName, startAt, endAt} | null, sites?: string[] }`
+— `eligible` est le fait brut (raisons vides) ; `selectable` est déjà contextualisé sous
+la `policy` de la réponse et c'est le seul champ que le frontend doit lire pour
+désactiver une option (jamais recalculé côté client).
 
 Statuts : `OPEN`/`ACKNOWLEDGED`/`RESOLVED`/`IGNORED`. Répéter la même transition est
 idempotent (200, pas d'erreur — la première résolution gagne). Croiser les deux états

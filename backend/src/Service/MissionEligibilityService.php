@@ -4,8 +4,10 @@ namespace App\Service;
 
 use App\Dto\EligibilityResult;
 use App\Entity\Absence;
+use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\EligibilityReason;
 use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
@@ -353,12 +355,19 @@ class MissionEligibilityService
     }
 
     /**
-     * Evaluates all active site members as potential candidates for a single mission.
+     * Evaluates all site members as potential candidates for a single mission — the
+     * mission-scoped candidate LIST used by manager-facing pickers (D-102, Lot 2).
      * Uses exactly 3 DB queries (D-036). Designed for the manager endpoint.
      *
-     * Reports ABSENT and SCHEDULE_CONFLICT reasons per candidate.
-     * Does not report ALREADY_ASSIGNED or INCOMPATIBLE_STATUS — those are mission-level
-     * concerns the caller can surface independently.
+     * Reports INACTIVE, ABSENT and SCHEDULE_CONFLICT reasons per candidate — deliberately
+     * includes inactive site members in the pool (rather than excluding them from the
+     * query, as before Lot 2) so a deactivated account can be shown as a disabled ghost
+     * ("Compte inactif") instead of silently disappearing. Never reports
+     * NO_SITE_MEMBERSHIP: this method's candidate pool is site-membership-scoped by
+     * construction (the JOIN below), so every candidate it can ever return already has
+     * one — structurally impossible to be the reason here. Does not report
+     * ALREADY_ASSIGNED or INCOMPATIBLE_STATUS — those are mission-level concerns the
+     * caller can surface independently.
      *
      * @return EligibilityResult[]
      */
@@ -369,12 +378,12 @@ class MissionEligibilityService
             return [];
         }
 
-        // Q1 — all active ROLE_INSTRUMENTIST at the mission's site
+        // Q1 — all ROLE_INSTRUMENTIST at the mission's site (active or not — Lot 2).
         /** @var User[] $candidates */
         $candidates = $this->em->createQuery(
             'SELECT u FROM App\Entity\User u
              JOIN u.siteMemberships sm
-             WHERE sm.site = :site AND u.active = true AND u.roles LIKE :role'
+             WHERE sm.site = :site AND u.roles LIKE :role'
         )
             ->setParameter('site', $site)
             ->setParameter('role', '%ROLE_INSTRUMENTIST%')
@@ -443,11 +452,18 @@ class MissionEligibilityService
         foreach ($candidates as $candidate) {
             $uid     = $candidate->getId();
             $reasons = [];
+            $matchedAbsence  = null;
+            $matchedConflict = null;
+
+            if (!$candidate->isActive()) {
+                $reasons[] = EligibilityReason::INACTIVE;
+            }
 
             if ($missionDay !== null) {
                 foreach ($absencesByUser[$uid] ?? [] as $absence) {
                     if ($absence->getDateStart() <= $missionDay && $absence->getDateEnd() >= $missionDay) {
                         $reasons[] = EligibilityReason::ABSENT;
+                        $matchedAbsence = $absence;
                         break;
                     }
                 }
@@ -457,15 +473,199 @@ class MissionEligibilityService
                 foreach ($conflictsByUser[$uid] ?? [] as $conflict) {
                     if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt) {
                         $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
+                        $matchedConflict = $conflict;
                         break;
                     }
                 }
             }
 
-            $results[] = new EligibilityResult($candidate, $reasons);
+            $results[] = new EligibilityResult($candidate, $reasons, $matchedAbsence, $matchedConflict);
         }
 
         return $results;
+    }
+
+    /**
+     * D-102 (Lot 2) — evaluates the FULL active-instrumentist roster (not site-scoped —
+     * matches the existing, historically unscoped `GET /api/instrumentists` picker used
+     * by the Preview Editor and Mode Modification) against a HYPOTHETICAL slot that may
+     * not have a persisted Mission yet (a new preview line, a bulk-assign target, a
+     * Mode Modification "add mission" draft). Reports INACTIVE (roster is
+     * already active-only, so structurally never fires — kept for interface symmetry
+     * with evaluateAllCandidates()/EligibilityReason completeness), NO_SITE_MEMBERSHIP,
+     * ABSENT, SCHEDULE_CONFLICT. 4 DB queries (roster, membership, absence, conflict) —
+     * the same batch-query discipline as findEligible()/evaluateAllCandidates() (D-036),
+     * one more query than those because this method is not pre-scoped to a single site
+     * by its JOIN the way evaluateAllCandidates() is.
+     *
+     * $excludeMissionId — the mission being edited, if any (so it never conflicts
+     * against its own current slot). Null for a genuinely new line/mission.
+     *
+     * @return EligibilityResult[]
+     */
+    public function evaluateRoster(
+        ?Hospital $site,
+        \DateTimeImmutable $startAt,
+        \DateTimeImmutable $endAt,
+        ?int $excludeMissionId = null,
+    ): array {
+        // Q1 — full active ROLE_INSTRUMENTIST roster (matches GET /api/instrumentists?active=true).
+        /** @var User[] $candidates */
+        $candidates = $this->em->createQuery(
+            'SELECT u FROM App\Entity\User u
+             WHERE u.active = true AND u.roles LIKE :role'
+        )
+            ->setParameter('role', '%ROLE_INSTRUMENTIST%')
+            ->getResult();
+
+        if (empty($candidates)) {
+            return [];
+        }
+
+        // Q2 — site membership, only for non-FREELANCER candidates (D-057) when a site is given.
+        $membershipUserIds = [];
+        if ($site !== null) {
+            $nonFreelancers = array_values(array_filter(
+                $candidates,
+                static fn (User $u) => $u->getEmploymentType() !== EmploymentType::FREELANCER,
+            ));
+            if (!empty($nonFreelancers)) {
+                $rows = $this->em->createQuery(
+                    'SELECT IDENTITY(sm.user) AS userId FROM App\Entity\SiteMembership sm
+                     WHERE sm.user IN (:users) AND sm.site = :site'
+                )
+                    ->setParameter('users', $nonFreelancers)
+                    ->setParameter('site', $site)
+                    ->getResult();
+                foreach ($rows as $row) {
+                    $membershipUserIds[(int) $row['userId']] = true;
+                }
+            }
+        }
+
+        $day = new \DateTimeImmutable($startAt->format('Y-m-d'));
+
+        // Q3 — absences covering that day
+        /** @var Absence[] $absences */
+        $absences = $this->em->createQuery(
+            'SELECT a FROM App\Entity\Absence a
+             WHERE a.user IN (:users) AND a.dateStart <= :day AND a.dateEnd >= :day'
+        )
+            ->setParameter('users', $candidates)
+            ->setParameter('day', $day)
+            ->getResult();
+        $absencesByUser = [];
+        foreach ($absences as $absence) {
+            $uid = $absence->getUser()?->getId();
+            if ($uid !== null) {
+                $absencesByUser[$uid][] = $absence;
+            }
+        }
+
+        // Q4 — overlapping active missions
+        /** @var Mission[] $conflicts */
+        $conflicts = $this->em->createQuery(
+            'SELECT m FROM App\Entity\Mission m
+             WHERE m.instrumentist IN (:users)
+               AND m.id <> :missionId
+               AND m.startAt < :endAt AND m.endAt > :startAt
+               AND m.status NOT IN (:excluded)'
+        )
+            ->setParameter('users', $candidates)
+            ->setParameter('missionId', $excludeMissionId ?? 0)
+            ->setParameter('startAt', $startAt)
+            ->setParameter('endAt', $endAt)
+            ->setParameter('excluded', [MissionStatus::CANCELLED, MissionStatus::REJECTED])
+            ->getResult();
+        $conflictsByUser = [];
+        foreach ($conflicts as $conflict) {
+            $uid = $conflict->getInstrumentist()?->getId();
+            if ($uid !== null) {
+                $conflictsByUser[$uid][] = $conflict;
+            }
+        }
+
+        $results = [];
+        foreach ($candidates as $candidate) {
+            $uid     = $candidate->getId();
+            $reasons = [];
+            $matchedAbsence  = null;
+            $matchedConflict = null;
+
+            if ($site !== null
+                && $candidate->getEmploymentType() !== EmploymentType::FREELANCER
+                && !isset($membershipUserIds[$uid])
+            ) {
+                $reasons[] = EligibilityReason::NO_SITE_MEMBERSHIP;
+            }
+
+            foreach ($absencesByUser[$uid] ?? [] as $absence) {
+                if ($absence->getDateStart() <= $day && $absence->getDateEnd() >= $day) {
+                    $reasons[] = EligibilityReason::ABSENT;
+                    $matchedAbsence = $absence;
+                    break;
+                }
+            }
+
+            foreach ($conflictsByUser[$uid] ?? [] as $conflict) {
+                if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt) {
+                    $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
+                    $matchedConflict = $conflict;
+                    break;
+                }
+            }
+
+            $results[] = new EligibilityResult($candidate, $reasons, $matchedAbsence, $matchedConflict);
+        }
+
+        return $results;
+    }
+
+    /**
+     * D-102 (Lot 2) — single, canonical candidate serialization for every manager-facing
+     * instrumentist picker (`GET /api/missions/{id}/eligible-instrumentists`,
+     * `GET /api/planning/alerts/{id}/eligible-instrumentists`, the Preview Editor roster
+     * endpoint). `eligible` is the raw, policy-agnostic fact (empty reasons); `selectable`
+     * is contextualized under `$policy` (D-101's `EligibilityEnforcementPolicy` — the
+     * SAME enum, never a frontend-side reimplementation of which reasons block where).
+     * `reasons` always lists everything found, even when non-blocking under this policy,
+     * so a UI can still show an informational badge (e.g. a non-blocking
+     * SCHEDULE_CONFLICT warning under PLANNING_MODIFICATION).
+     */
+    public function serializeCandidate(EligibilityResult $result, EligibilityEnforcementPolicy $policy): array
+    {
+        $candidate = $result->candidate;
+        $name      = trim(($candidate->getFirstname() ?? '') . ' ' . ($candidate->getLastname() ?? ''));
+
+        $unavailability = null;
+        if ($result->absence !== null) {
+            $unavailability = [
+                'type'      => 'ABSENCE',
+                'dateStart' => $result->absence->getDateStart()->format('Y-m-d'),
+                'dateEnd'   => $result->absence->getDateEnd()->format('Y-m-d'),
+            ];
+        }
+
+        $conflict = null;
+        if ($result->conflictingMission !== null) {
+            $conflict = [
+                'missionId' => $result->conflictingMission->getId(),
+                'siteName'  => $result->conflictingMission->getSite()?->getName(),
+                'startAt'   => $result->conflictingMission->getStartAt()?->format(\DateTimeInterface::ATOM),
+                'endAt'     => $result->conflictingMission->getEndAt()?->format(\DateTimeInterface::ATOM),
+            ];
+        }
+
+        return [
+            'id'             => $candidate->getId(),
+            'name'           => $name !== '' ? $name : $candidate->getEmail(),
+            'email'          => $candidate->getEmail(),
+            'eligible'       => $result->eligible,
+            'selectable'     => $result->selectableUnder($policy),
+            'reasons'        => array_map(static fn (EligibilityReason $r) => $r->value, $result->reasons),
+            'unavailability' => $unavailability,
+            'conflict'       => $conflict,
+        ];
     }
 
     private function isEligibleForMission(

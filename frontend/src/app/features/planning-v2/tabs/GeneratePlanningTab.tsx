@@ -24,7 +24,7 @@ import {
   getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2,
   applyModifications, cancelAllMissions, resendPlanning, extractErrorV2, type ApplyModificationsResult,
 } from "../api/planningV2.api";
-import { listPlanningVersions, getAbsences } from "../../planning-manager/api/planning.api";
+import { listPlanningVersions } from "../../planning-manager/api/planning.api";
 import type { PreviewLineStatus, PreviewLineV2, PreviewResponseV2 } from "../api/planningV2.types";
 import {
   buildMonthChipIds, monthIdToYearMonth, mergePreviewResponses,
@@ -33,6 +33,8 @@ import {
   groupLinesByDayAndSurgeon, formatDayHeader,
   lineKeyV2, getFreedInstrumentists, findSameDayAssignmentElsewhere, missionToPreviewLine,
 } from "../api/generatePreviewGrouping";
+import { useRosterEligibility, useMergedRosterEligibility, type RosterSlot } from "../api/useRosterEligibility";
+import { candidateGhostLabel, eligibilityReasonLabel } from "../api/eligibilityReasons";
 import { useToast } from "../../../ui/toast/useToast";
 import { SearchableSelect, type SearchableOption } from "../components/SearchableSelect";
 import { Inspector, type NewMissionDraft } from "../components/Inspector";
@@ -74,17 +76,8 @@ function defaultYearMonth(): { year: number; month: number } {
   return { year: now.getFullYear(), month: now.getMonth() + 1 };
 }
 
-// D-101 — mirrors EligibilityReason::label() (backend/src/Enum/EligibilityReason.php).
-const REJECTED_ASSIGNMENT_REASON_LABELS: Record<string, string> = {
-  INACTIVE: "Compte inactif",
-  NO_SITE_MEMBERSHIP: "Pas d'affiliation au site",
-  ABSENT: "Absent ce jour",
-  SCHEDULE_CONFLICT: "Conflit d'horaire",
-};
-
-function reasonLabel(reason: string): string {
-  return REJECTED_ASSIGNMENT_REASON_LABELS[reason] ?? reason;
-}
+// D-101/D-102 — shared reason labels (eligibilityReasons.ts), not duplicated here.
+const reasonLabel = eligibilityReasonLabel;
 
 export function GeneratePlanningTab() {
   const toast = useToast();
@@ -565,37 +558,78 @@ export function GeneratePlanningTab() {
 
   const selectedLine = selectedLineKey ? effectiveLines.find((l) => lineKeyV2(l) === selectedLineKey) ?? null : null;
 
-  // Absences overlapping the day of the line currently selected in the inspector.
-  const absencesQuery = useQuery({
-    queryKey: ["absences-on-day", selectedLine?.date],
-    queryFn: () => getAbsences({ from: selectedLine!.date, to: selectedLine!.date }),
-    enabled: !!selectedLine,
-    staleTime: 60_000,
-  });
-  const absentInstrumentistIds = React.useMemo(() => {
-    const ids = new Set<number>();
-    for (const a of absencesQuery.data ?? []) {
-      if (a.user.role === "INSTRUMENTIST") ids.add(a.user.id);
-    }
-    return ids;
-  }, [absencesQuery.data]);
+  // D-102 — eligibility-aware roster for the line currently selected in the inspector,
+  // scoped to its exact slot (site/date/times). Backend is the sole source of truth for
+  // ABSENT/SCHEDULE_CONFLICT/INACTIVE/NO_SITE_MEMBERSHIP — never recomputed client-side.
+  // PLANNING_MODIFICATION in Mode Modification (SCHEDULE_CONFLICT stays non-blocking,
+  // surfaced as a PlanningAlert per D-091), STRICT_ASSIGNMENT in Génération.
+  const selectedLineSlot: RosterSlot | null = selectedLine
+    ? {
+        siteId: selectedLine.siteId,
+        date: selectedLine.date,
+        startTime: selectedLine.startTime,
+        endTime: selectedLine.endTime,
+        excludeMissionId: selectedLine.existingMissionId,
+      }
+    : null;
+  const selectedLineRosterQuery = useRosterEligibility(
+    selectedLineSlot,
+    isModification ? "PLANNING_MODIFICATION" : "STRICT_ASSIGNMENT",
+  );
 
-  // Per-option annotations scoped to the line currently selected — absence and
-  // same-day-elsewhere are both relative to *that* line's date, not a global property.
+  // Per-option annotations scoped to the line currently selected — the backend roster
+  // already reflects that exact slot for ABSENT/SCHEDULE_CONFLICT (persisted Missions)/
+  // INACTIVE/NO_SITE_MEMBERSHIP; while it's loading (or nothing is selected), fall back to
+  // the raw unannotated list rather than blocking the picker. Layered on top: a purely
+  // local, preview-only "already assigned elsewhere the same day" check — this can't come
+  // from the backend since these Preview lines aren't persisted Missions yet, so it stays
+  // client-side, non-blocking, and doesn't override a harder backend-sourced ghost.
   const instrumentistOptionsForSelected: SearchableOption[] = React.useMemo(() => {
-    if (!selectedLine) return instrumentistOptions;
-    return instrumentistOptions.map((opt) => {
-      const absent = absentInstrumentistIds.has(opt.id);
-      const elsewhere = !absent && findSameDayAssignmentElsewhere(effectiveLines, selectedLine, opt.id);
+    if (!selectedLine || !selectedLineRosterQuery.data) return instrumentistOptions;
+    return selectedLineRosterQuery.data.candidates.map((c) => {
+      const base = instrumentistOptions.find((o) => o.id === c.id);
+      if (!c.selectable) {
+        return {
+          id: c.id, label: c.name, avatarUrl: base?.avatarUrl,
+          disabled: true, badge: candidateGhostLabel(c) ?? undefined,
+        };
+      }
+      const elsewhere = findSameDayAssignmentElsewhere(effectiveLines, selectedLine, c.id);
       return {
-        ...opt,
-        muted: absent,
-        badge: absent ? "En congé" : elsewhere ? "Déjà affecté ailleurs" : undefined,
+        id: c.id, label: c.name, avatarUrl: base?.avatarUrl,
+        muted: !!elsewhere,
+        badge: elsewhere ? "Déjà affecté ailleurs" : (candidateGhostLabel(c) ?? undefined),
       };
     });
-  }, [instrumentistOptions, selectedLine, absentInstrumentistIds, effectiveLines]);
+  }, [instrumentistOptions, selectedLine, selectedLineRosterQuery.data, effectiveLines]);
 
   const freedForSelected = selectedLine ? getFreedInstrumentists(effectiveLines, selectedLine) : [];
+
+  // D-102 — bulk-assign bar: eligibility merged across every selected line's own slot
+  // (conservative — a candidate must be selectable for all of them to appear selectable).
+  const bulkSlots: RosterSlot[] = React.useMemo(
+    () => [...selectedKeys]
+      .map((key) => effectiveLines.find((l) => lineKeyV2(l) === key))
+      .filter((l): l is PreviewLineV2 => !!l && l.status !== "SKIPPED")
+      .map((l) => ({ siteId: l.siteId, date: l.date, startTime: l.startTime, endTime: l.endTime, excludeMissionId: l.existingMissionId })),
+    [selectedKeys, effectiveLines],
+  );
+  const bulkRoster = useMergedRosterEligibility(bulkSlots, isModification ? "PLANNING_MODIFICATION" : "STRICT_ASSIGNMENT");
+  const bulkInstrumentistOptions: SearchableOption[] = React.useMemo(() => {
+    if (bulkSlots.length === 0 || bulkRoster.candidates.length === 0) return instrumentistOptions;
+    return bulkRoster.candidates.map((c) => {
+      const base = instrumentistOptions.find((o) => o.id === c.id);
+      return {
+        id: c.id,
+        label: c.name,
+        avatarUrl: base?.avatarUrl,
+        disabled: !c.selectable,
+        badge: !c.selectable
+          ? (bulkSlots.length > 1 ? "Indisponible pour cette sélection" : candidateGhostLabel(c) ?? undefined)
+          : undefined,
+      };
+    });
+  }, [instrumentistOptions, bulkSlots.length, bulkRoster.candidates]);
 
   const monthsLabel = selectedMonthIds.length === 0
     ? "Sélectionnez au moins un mois"
@@ -1011,7 +1045,7 @@ export function GeneratePlanningTab() {
               <Box sx={{ minWidth: 200 }}>
                 <SearchableSelect
                   label="Assigner à" required
-                  options={instrumentistOptions}
+                  options={bulkInstrumentistOptions}
                   value={bulkInstrumentistId === "" ? null : bulkInstrumentistId}
                   onChange={(id) => setBulkInstrumentistId(id ?? "")}
                   placeholder="Choisir un instrumentiste…"
@@ -1213,7 +1247,7 @@ export function GeneratePlanningTab() {
           isModification={isModification}
           instrumentistOptions={instrumentistOptionsForSelected}
           freedInstrumentists={freedForSelected}
-          absencesLoading={absencesQuery.isLoading}
+          absencesLoading={!!selectedLine && selectedLineRosterQuery.isLoading}
           accent={accent}
           onInstrumentistChange={(newId) => selectedLine && handleInstrumentistChange(selectedLine, newId)}
           onScheduleChange={(patch) => selectedLine && handleScheduleChange(selectedLine, patch)}

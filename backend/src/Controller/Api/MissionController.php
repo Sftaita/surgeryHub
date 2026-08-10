@@ -11,7 +11,7 @@ use App\Dto\Request\MissionSubmitRequest;
 use App\Entity\AuditEvent;
 use App\Entity\Mission;
 use App\Entity\User;
-use App\Enum\EligibilityReason;
+use App\Enum\EligibilityEnforcementPolicy;
 use App\Message\MissionPublishedMessage;
 use App\Security\Voter\MissionVoter;
 use App\Service\MissionEligibilityService;
@@ -167,40 +167,35 @@ class MissionController extends AbstractController
 
     // ── Eligibility (Batch 15D) ───────────────────────────────────────────────
 
+    /**
+     * D-102 (Lot 2) — single flat `candidates[]` list (superseded the old `eligible[]`/
+     * `ineligible[]` split — only consumer was ReassignMissionDialog.tsx, low blast
+     * radius), each entry `eligible`+`selectable`+`reasons`+optional detail (see
+     * MissionEligibilityService::serializeCandidate()). `?policy=` defaults to
+     * STRICT_ASSIGNMENT (this endpoint's only real caller today, direct single-mission
+     * reassign) — accepts `PLANNING_MODIFICATION` for a future Mode-Modification-aware
+     * consumer without ever duplicating the blocking-reasons decision frontend-side.
+     */
     #[Route(path: '/{id}/eligible-instrumentists', name: 'api_missions_eligible_instrumentists', methods: ['GET'])]
-    public function eligibleInstrumentists(int $id): JsonResponse
+    public function eligibleInstrumentists(int $id, Request $request): JsonResponse
     {
         $mission = $this->missionService->getOr404($id);
         $this->denyAccessUnlessGranted(MissionVoter::VIEW_ELIGIBLE_INSTRUMENTISTS, $mission);
 
-        $results   = $this->eligibilityService->evaluateAllCandidates($mission);
-        $eligible  = [];
-        $ineligible = [];
+        $policy = EligibilityEnforcementPolicy::tryFrom($request->query->get('policy', ''))
+            ?? EligibilityEnforcementPolicy::STRICT_ASSIGNMENT;
 
-        foreach ($results as $result) {
-            $candidate = $result->candidate;
-            $entry = [
-                'id'    => $candidate->getId(),
-                'name'  => trim(($candidate->getFirstname() ?? '') . ' ' . ($candidate->getLastname() ?? '')),
-                'email' => $candidate->getEmail(),
-            ];
-
-            if ($result->eligible) {
-                $eligible[] = $entry;
-            } else {
-                $entry['reasons'] = array_map(
-                    fn (EligibilityReason $r) => $r->value,
-                    $result->reasons,
-                );
-                $ineligible[] = $entry;
-            }
-        }
+        $results    = $this->eligibilityService->evaluateAllCandidates($mission);
+        $candidates = array_map(
+            fn ($result) => $this->eligibilityService->serializeCandidate($result, $policy),
+            $results,
+        );
 
         return $this->json([
             'missionId'     => $mission->getId(),
             'missionStatus' => $mission->getStatus()->value,
-            'eligible'      => $eligible,
-            'ineligible'    => $ineligible,
+            'policy'        => $policy->value,
+            'candidates'    => $candidates,
         ]);
     }
 

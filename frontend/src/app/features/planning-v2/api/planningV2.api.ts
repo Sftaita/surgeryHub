@@ -9,7 +9,6 @@ import type {
   SiteGroupV2,
   PlanningAlertV2,
   PlanningAlertListResponse,
-  EligibleInstrumentistV2,
   PreviewLineV2,
   PreviewResponseV2,
   GeneratedPlanningV2,
@@ -17,6 +16,9 @@ import type {
   CoverageSummary,
   MissionAuditEvent,
   MissionEligibilityResponse,
+  AlertEligibilityResponse,
+  RosterEligibilityResponse,
+  EligibilityEnforcementPolicy,
 } from "./planningV2.types";
 
 /** Same pattern as every other page-local helper in this codebase (no shared util exists). */
@@ -195,9 +197,9 @@ export async function openAlertAsAvailable(id: number, note?: string): Promise<P
   return res.data;
 }
 
-export async function getEligibleInstrumentists(alertId: number): Promise<{ items: EligibleInstrumentistV2[] }> {
+export async function getEligibleInstrumentists(alertId: number): Promise<AlertEligibilityResponse> {
   const res = await apiClient.get(`/api/planning/alerts/${alertId}/eligible-instrumentists`);
-  return res.data;
+  return res.data as AlertEligibilityResponse;
 }
 
 // ── Generation (Batch 9) ─────────────────────────────────────────────────────
@@ -325,7 +327,39 @@ export async function fetchMissionAudit(id: number): Promise<MissionAuditEvent[]
   return res.data as MissionAuditEvent[];
 }
 
-export async function fetchMissionEligibleInstrumentists(missionId: number): Promise<MissionEligibilityResponse> {
-  const res = await apiClient.get(`/api/missions/${missionId}/eligible-instrumentists`);
+export async function fetchMissionEligibleInstrumentists(
+  missionId: number,
+  policy?: EligibilityEnforcementPolicy,
+): Promise<MissionEligibilityResponse> {
+  const res = await apiClient.get(`/api/missions/${missionId}/eligible-instrumentists`, {
+    params: policy ? { policy } : undefined,
+  });
   return res.data as MissionEligibilityResponse;
+}
+
+/**
+ * D-102 (Lot 2) — eligibility-aware roster for a slot with no persisted Mission yet
+ * (Preview Editor: new/edited preview line, bulk-assign, Mode Modification "add
+ * mission" draft). Backend is the source of truth for ABSENT/SCHEDULE_CONFLICT/
+ * NO_SITE_MEMBERSHIP — never recomputed here.
+ */
+export async function fetchRosterEligibility(params: {
+  siteId?: number | null;
+  date: string;
+  startTime: string;
+  endTime: string;
+  excludeMissionId?: number | null;
+  policy?: EligibilityEnforcementPolicy;
+}): Promise<RosterEligibilityResponse> {
+  const res = await apiClient.get(`/api/planning/v2/eligible-instrumentists`, {
+    params: {
+      siteId: params.siteId ?? undefined,
+      date: params.date,
+      startTime: params.startTime,
+      endTime: params.endTime,
+      excludeMissionId: params.excludeMissionId ?? undefined,
+      policy: params.policy,
+    },
+  });
+  return res.data as RosterEligibilityResponse;
 }

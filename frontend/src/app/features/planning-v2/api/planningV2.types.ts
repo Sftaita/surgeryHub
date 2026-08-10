@@ -202,6 +202,7 @@ export interface PlanningAlertListResponse {
   limit: number;
 }
 
+/** @deprecated D-102 (Lot 2) — superseded by CandidateEligibility, kept only if referenced elsewhere. */
 export interface EligibleInstrumentistV2 {
   id: number;
   email: string;
@@ -292,7 +293,7 @@ export interface MissionAuditEvent {
   payload: Record<string, unknown> | null;
 }
 
-// ── Eligibility — Batch 15D/15G ───────────────────────────────────────────────
+// ── Eligibility — D-101/D-102 (Lot 1/Lot 2) ──────────────────────────────────
 
 export type EligibilityReason =
   | "INACTIVE"
@@ -302,19 +303,58 @@ export type EligibilityReason =
   | "ALREADY_ASSIGNED"
   | "INCOMPATIBLE_STATUS";
 
-export interface EligibleCandidate {
+/** Mirrors backend App\Enum\EligibilityEnforcementPolicy (D-101) — never reimplemented client-side. */
+export type EligibilityEnforcementPolicy = "STRICT_ASSIGNMENT" | "PLANNING_MODIFICATION";
+
+export interface UnavailabilityDetail {
+  type: "ABSENCE";
+  dateStart: string;
+  dateEnd: string;
+}
+
+export interface ConflictDetail {
+  missionId: number;
+  siteName: string | null;
+  startAt: string | null;
+  endAt: string | null;
+}
+
+/**
+ * D-102 — single canonical candidate shape for every manager-facing instrumentist
+ * picker. `eligible` is the raw, policy-agnostic fact (empty reasons); `selectable` is
+ * contextualized under the response's `policy` (never recomputed client-side — see
+ * `MissionEligibilityService::serializeCandidate()`/`selectableUnder()`). `reasons`
+ * always lists everything found, even when non-blocking under this policy (e.g. a
+ * SCHEDULE_CONFLICT warning that stays selectable under PLANNING_MODIFICATION).
+ */
+export interface CandidateEligibility {
   id: number;
   name: string;
   email: string;
-}
-
-export interface IneligibleCandidate extends EligibleCandidate {
+  eligible: boolean;
+  selectable: boolean;
   reasons: EligibilityReason[];
+  unavailability: UnavailabilityDetail | null;
+  conflict: ConflictDetail | null;
+  /** Only present on the PlanningAlert-scoped endpoint. */
+  sites?: string[];
 }
 
 export interface MissionEligibilityResponse {
   missionId: number;
   missionStatus: string;
-  eligible: EligibleCandidate[];
-  ineligible: IneligibleCandidate[];
+  policy: EligibilityEnforcementPolicy;
+  candidates: CandidateEligibility[];
+}
+
+export interface AlertEligibilityResponse {
+  missionId: number;
+  policy: EligibilityEnforcementPolicy;
+  candidates: CandidateEligibility[];
+}
+
+/** D-102 — Preview Editor missionless/hypothetical-slot roster (no persisted Mission yet). */
+export interface RosterEligibilityResponse {
+  policy: EligibilityEnforcementPolicy;
+  candidates: CandidateEligibility[];
 }

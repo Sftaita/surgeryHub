@@ -13,6 +13,13 @@ export interface SearchableOption {
   avatarUrl?: string | null;
   /** Greyed-out styling — e.g. on leave that day, still selectable, just visually deprioritized. */
   muted?: boolean;
+  /**
+   * D-102 — real ghost: visible for context but not selectable (ABSENT/INACTIVE, or
+   * SCHEDULE_CONFLICT under STRICT_ASSIGNMENT). Never computed client-side — mirrors the
+   * backend's `selectable` field (see eligibilityReasons.ts / MissionEligibilityService).
+   * Implies `muted` visually; unlike `muted` alone, it also blocks the click/keyboard selection.
+   */
+  disabled?: boolean;
   /** Small informational pill after the label — e.g. "En congé", "Déjà affecté ailleurs". */
   badge?: string;
 }
@@ -54,12 +61,22 @@ export function SearchableSelect({ label, placeholder, options, value, onChange,
         disabled={disabled}
         options={options}
         value={selected}
-        onChange={(_, v) => onChange(v?.id ?? null)}
+        onChange={(_, v) => {
+          if (v?.disabled) return;
+          onChange(v?.id ?? null);
+        }}
         getOptionLabel={(o) => o.label}
         isOptionEqualToValue={(o, v) => o.id === v.id}
+        getOptionDisabled={(o) => !!o.disabled}
         noOptionsText="Aucun résultat"
         renderOption={(props, option) => (
-          <Box component="li" {...props} key={option.id} sx={{ display: "flex", alignItems: "center", gap: 1, opacity: option.muted ? 0.5 : 1 }}>
+          <Box
+            component="li"
+            {...props}
+            key={option.id}
+            aria-disabled={option.disabled || undefined}
+            sx={{ display: "flex", alignItems: "center", gap: 1, opacity: option.disabled || option.muted ? 0.5 : 1 }}
+          >
             {option.avatarUrl !== undefined && <PersonAvatar name={option.label} photoUrl={option.avatarUrl} size="xs" />}
             <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-start", flex: 1, minWidth: 0 }}>
               <Typography sx={{ fontSize: 13.5 }}>{option.label}</Typography>
@@ -71,7 +88,8 @@ export function SearchableSelect({ label, placeholder, options, value, onChange,
               <Typography
                 sx={{
                   fontSize: 10, fontWeight: 700, flexShrink: 0, whiteSpace: "nowrap",
-                  color: planningV2Colors.warnFg, bgcolor: planningV2Colors.warnBg,
+                  color: option.disabled ? planningV2Colors.textSecondary : planningV2Colors.warnFg,
+                  bgcolor: option.disabled ? "#F1F4F7" : planningV2Colors.warnBg,
                   px: 0.9, py: 0.3, borderRadius: planningV2Radii.pill,
                 }}
               >

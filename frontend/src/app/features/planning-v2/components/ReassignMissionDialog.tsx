@@ -2,21 +2,13 @@ import * as React from "react";
 import {
   Alert, Box, Button, Chip, CircularProgress,
   Dialog, DialogActions, DialogContent,
-  DialogTitle, FormControl, InputLabel,
-  MenuItem, Select, Stack, Typography,
+  DialogTitle, Stack, Typography,
 } from "@mui/material";
+import CheckIcon from "@mui/icons-material/Check";
 import { useQuery } from "@tanstack/react-query";
 import { fetchMissionEligibleInstrumentists } from "../api/planningV2.api";
-import type { EligibilityReason } from "../api/planningV2.types";
-
-const REASON_LABELS: Record<EligibilityReason, string> = {
-  INACTIVE:            "Compte inactif",
-  NO_SITE_MEMBERSHIP:  "Non affilié au site",
-  ABSENT:              "Absent ce jour",
-  SCHEDULE_CONFLICT:   "Conflit d'horaire",
-  ALREADY_ASSIGNED:    "Déjà assigné",
-  INCOMPATIBLE_STATUS: "Statut incompatible",
-};
+import { eligibilityReasonLabel } from "../api/eligibilityReasons";
+import type { CandidateEligibility } from "../api/planningV2.types";
 
 interface ReassignMissionDialogProps {
   open: boolean;
@@ -42,13 +34,20 @@ export function ReassignMissionDialog({
     staleTime: 0,
   });
 
+  function selectCandidate(c: CandidateEligibility) {
+    if (!c.selectable) return;
+    setSelected(c.id);
+  }
+
   function handleConfirm() {
     if (selected === "" || !data) return;
-    const candidate = data.eligible.find((c) => c.id === selected);
+    const candidate = data.candidates.find((c) => c.id === selected);
+    if (!candidate?.selectable) return;
     onConfirm(selected as number, candidate?.name ?? "");
   }
 
-  const noEligible = data && data.eligible.length === 0;
+  const candidates = data?.candidates ?? [];
+  const noSelectable = data !== undefined && candidates.every((c) => !c.selectable);
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
@@ -67,74 +66,64 @@ export function ReassignMissionDialog({
         )}
 
         {data && (
-          <Stack spacing={2} sx={{ pt: 0.5 }}>
-            {data.eligible.length === 0 && data.ineligible.length === 0 && (
+          <Stack spacing={1.5} sx={{ pt: 0.5 }}>
+            {candidates.length === 0 && (
               <Typography variant="body2" color="text.secondary">
                 Aucun instrumentiste disponible pour cette mission.
               </Typography>
             )}
 
-            {noEligible && data.ineligible.length > 0 && (
+            {noSelectable && candidates.length > 0 && (
               <Alert severity="warning">
-                Aucun instrumentiste éligible — tous les candidats ont des contraintes.
+                Aucun instrumentiste sélectionnable — tous les candidats ont des contraintes.
               </Alert>
             )}
 
-            {data.eligible.length > 0 && (
-              <FormControl fullWidth size="small">
-                <InputLabel id="reassign-eligible-label">Instrumentiste éligible</InputLabel>
-                <Select
-                  labelId="reassign-eligible-label"
-                  label="Instrumentiste éligible"
-                  value={selected}
-                  onChange={(e) => setSelected(e.target.value as number)}
-                  data-testid="reassign-eligible-select"
-                >
-                  {data.eligible.map((c) => (
-                    <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            )}
-
-            {data.ineligible.length > 0 && (
-              <Box>
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  fontWeight={600}
-                  sx={{ mb: 0.75, display: "block" }}
-                >
-                  Non éligibles
-                </Typography>
-                <Stack spacing={0.5} data-testid="ineligible-list">
-                  {data.ineligible.map((c) => (
+            {candidates.length > 0 && (
+              <Stack spacing={0.75} data-testid="reassign-candidate-list">
+                {candidates.map((c) => {
+                  const isSelected = c.id === selected && c.selectable;
+                  return (
                     <Stack
                       key={c.id}
                       direction="row"
                       alignItems="center"
-                      spacing={1}
-                      sx={{ py: 0.25 }}
+                      spacing={1.25}
+                      onClick={() => selectCandidate(c)}
+                      aria-disabled={!c.selectable}
+                      data-testid={`reassign-candidate-${c.id}`}
+                      sx={{
+                        p: 1,
+                        borderRadius: 1.5,
+                        cursor: c.selectable ? "pointer" : "not-allowed",
+                        border: "1px solid",
+                        borderColor: isSelected ? "primary.main" : "divider",
+                        bgcolor: isSelected ? "action.selected" : "transparent",
+                        opacity: c.selectable ? 1 : 0.5,
+                      }}
                     >
-                      <Typography variant="body2" color="text.disabled" sx={{ flex: 1 }}>
+                      <Typography variant="body2" fontWeight={600} sx={{ flex: 1 }}>
                         {c.name}
                       </Typography>
-                      <Stack direction="row" spacing={0.5} flexWrap="wrap">
-                        {c.reasons.map((r) => (
-                          <Chip
-                            key={r}
-                            label={REASON_LABELS[r] ?? r}
-                            size="small"
-                            variant="outlined"
-                            sx={{ fontSize: 10, height: 18 }}
-                            data-testid={`reason-chip-${r}`}
-                          />
-                        ))}
-                      </Stack>
+                      {!c.selectable && (
+                        <Stack direction="row" spacing={0.5} flexWrap="wrap" justifyContent="flex-end">
+                          {c.reasons.map((r) => (
+                            <Chip
+                              key={r}
+                              label={eligibilityReasonLabel(r)}
+                              size="small"
+                              variant="outlined"
+                              sx={{ fontSize: 10, height: 18 }}
+                              data-testid={`reason-chip-${r}`}
+                            />
+                          ))}
+                        </Stack>
+                      )}
+                      {isSelected && <CheckIcon fontSize="small" color="primary" />}
                     </Stack>
-                  ))}
-                </Stack>
-              </Box>
+                  );
+                })}
+              </Stack>
             )}
           </Stack>
         )}
@@ -143,7 +132,7 @@ export function ReassignMissionDialog({
         <Button onClick={onClose} disabled={loading}>Annuler</Button>
         <Button
           onClick={handleConfirm}
-          disabled={loading || selected === "" || !!noEligible}
+          disabled={loading || selected === "" || !!noSelectable}
           variant="contained"
           disableElevation
         >

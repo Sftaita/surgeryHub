@@ -324,6 +324,100 @@ final class MissionEligibilityServiceTest extends TestCase
         $this->assertContains(EligibilityReason::ABSENT, $absentResult->reasons);
     }
 
+    /**
+     * D-102 (Lot 2) — cas Christine Vanmessem (§3 de la spec) : un instrumentiste
+     * inactif du site doit rester dans la liste, marqué INACTIVE, jamais silencieusement
+     * exclu de la requête Q1.
+     */
+    public function test_evaluate_all_candidates_includes_inactive_site_member_as_ghost(): void
+    {
+        $site     = $this->makeSite();
+        $mission  = $this->makeMission(site: $site);
+        $inactive = $this->makeUser(active: false);
+
+        $callCount = 0;
+        $this->em->method('createQuery')
+            ->willReturnCallback(function () use (&$callCount, $inactive): Query {
+                $callCount++;
+                $q = $this->createMock(Query::class);
+                $q->method('setParameter')->willReturnSelf();
+                $q->method('getResult')->willReturn(match ($callCount) {
+                    1 => [$inactive],
+                    default => [],
+                });
+                return $q;
+            });
+
+        $results = $this->service->evaluateAllCandidates($mission);
+
+        $this->assertCount(1, $results, 'inactive candidate must still appear in the list');
+        $this->assertFalse($results[0]->eligible);
+        $this->assertContains(EligibilityReason::INACTIVE, $results[0]->reasons);
+    }
+
+    /**
+     * D-102 (Lot 2) — cas Sophie Collette : le résultat doit porter l'Absence réelle
+     * (pas juste le code ABSENT) pour qu'une UI affiche "Absente — 01/08 → 16/08".
+     */
+    public function test_evaluate_all_candidates_populates_absence_detail(): void
+    {
+        $site    = $this->makeSite();
+        $mission = $this->makeMission(site: $site, status: MissionStatus::ASSIGNED);
+        $sophie  = $this->makeUser();
+        $absence = $this->makeAbsence($sophie, '2026-08-01', '2026-08-16');
+        $mission->setStartAt(new \DateTimeImmutable('2026-08-14 08:00:00'));
+        $mission->setEndAt(new \DateTimeImmutable('2026-08-14 18:00:00'));
+
+        $callCount = 0;
+        $this->em->method('createQuery')
+            ->willReturnCallback(function () use (&$callCount, $sophie, $absence): Query {
+                $callCount++;
+                $q = $this->createMock(Query::class);
+                $q->method('setParameter')->willReturnSelf();
+                $q->method('getResult')->willReturn(match ($callCount) {
+                    1 => [$sophie],
+                    2 => [$absence],
+                    default => [],
+                });
+                return $q;
+            });
+
+        $results = $this->service->evaluateAllCandidates($mission);
+
+        $this->assertCount(1, $results);
+        $this->assertSame($absence, $results[0]->absence);
+        $this->assertSame('2026-08-01', $results[0]->absence->getDateStart()->format('Y-m-d'));
+        $this->assertSame('2026-08-16', $results[0]->absence->getDateEnd()->format('Y-m-d'));
+    }
+
+    /** D-102 (Lot 2) — same for SCHEDULE_CONFLICT: the conflicting Mission is carried too. */
+    public function test_evaluate_all_candidates_populates_conflicting_mission_detail(): void
+    {
+        $site      = $this->makeSite();
+        $mission   = $this->makeMission(site: $site, status: MissionStatus::ASSIGNED);
+        $candidate = $this->makeUser();
+        $conflict  = $this->makeConflictMission($candidate);
+
+        $callCount = 0;
+        $this->em->method('createQuery')
+            ->willReturnCallback(function () use (&$callCount, $candidate, $conflict): Query {
+                $callCount++;
+                $q = $this->createMock(Query::class);
+                $q->method('setParameter')->willReturnSelf();
+                $q->method('getResult')->willReturn(match ($callCount) {
+                    1 => [$candidate],
+                    3 => [$conflict],
+                    default => [],
+                });
+                return $q;
+            });
+
+        $results = $this->service->evaluateAllCandidates($mission);
+
+        $this->assertCount(1, $results);
+        $this->assertSame($conflict, $results[0]->conflictingMission);
+    }
+
     public function test_evaluate_all_candidates_returns_empty_when_no_site(): void
     {
         $mission = new Mission();
@@ -675,5 +769,249 @@ final class MissionEligibilityServiceTest extends TestCase
         $this->service->evaluateForReassignment($mission, $instrumentist);
 
         $this->assertSame($mission->getId(), $excludedId, 'a mission must never conflict against itself');
+    }
+
+    // ── EligibilityResult::selectableUnder() — D-102 (Lot 2) ────────────────────
+
+    public function test_selectable_under_strict_assignment_blocks_absent(): void
+    {
+        $result = new \App\Dto\EligibilityResult($this->makeUser(), [EligibilityReason::ABSENT]);
+
+        $this->assertFalse($result->selectableUnder(\App\Enum\EligibilityEnforcementPolicy::STRICT_ASSIGNMENT));
+    }
+
+    public function test_selectable_under_planning_modification_blocks_absent(): void
+    {
+        $result = new \App\Dto\EligibilityResult($this->makeUser(), [EligibilityReason::ABSENT]);
+
+        $this->assertFalse($result->selectableUnder(\App\Enum\EligibilityEnforcementPolicy::PLANNING_MODIFICATION));
+    }
+
+    public function test_selectable_under_planning_modification_blocks_inactive(): void
+    {
+        $result = new \App\Dto\EligibilityResult($this->makeUser(), [EligibilityReason::INACTIVE]);
+
+        $this->assertFalse($result->selectableUnder(\App\Enum\EligibilityEnforcementPolicy::PLANNING_MODIFICATION));
+    }
+
+    /**
+     * D-101/D-102 — the whole point of the PLANNING_MODIFICATION policy: a
+     * SCHEDULE_CONFLICT-only candidate stays selectable (D-091/D-052), even though the
+     * raw $eligible fact is false.
+     */
+    public function test_selectable_under_planning_modification_allows_schedule_conflict_only(): void
+    {
+        $result = new \App\Dto\EligibilityResult($this->makeUser(), [EligibilityReason::SCHEDULE_CONFLICT]);
+
+        $this->assertFalse($result->eligible, 'raw eligibility is still false — reasons[] is never hidden');
+        $this->assertTrue($result->selectableUnder(\App\Enum\EligibilityEnforcementPolicy::PLANNING_MODIFICATION));
+    }
+
+    public function test_selectable_under_strict_assignment_blocks_schedule_conflict(): void
+    {
+        $result = new \App\Dto\EligibilityResult($this->makeUser(), [EligibilityReason::SCHEDULE_CONFLICT]);
+
+        $this->assertFalse($result->selectableUnder(\App\Enum\EligibilityEnforcementPolicy::STRICT_ASSIGNMENT));
+    }
+
+    public function test_selectable_true_when_no_reasons(): void
+    {
+        $result = new \App\Dto\EligibilityResult($this->makeUser(), []);
+
+        $this->assertTrue($result->selectableUnder(\App\Enum\EligibilityEnforcementPolicy::STRICT_ASSIGNMENT));
+        $this->assertTrue($result->selectableUnder(\App\Enum\EligibilityEnforcementPolicy::PLANNING_MODIFICATION));
+    }
+
+    // ── serializeCandidate() — D-102 (Lot 2) ─────────────────────────────────────
+
+    public function test_serialize_candidate_includes_unavailability_detail_for_absent(): void
+    {
+        $user = $this->makeUser();
+        $user->setFirstname('Sophie');
+        $user->setLastname('Collette');
+        $absence = $this->makeAbsence($user, '2026-08-01', '2026-08-16');
+        $result  = new \App\Dto\EligibilityResult($user, [EligibilityReason::ABSENT], $absence, null);
+
+        $entry = $this->service->serializeCandidate($result, \App\Enum\EligibilityEnforcementPolicy::STRICT_ASSIGNMENT);
+
+        $this->assertSame('Sophie Collette', $entry['name']);
+        $this->assertFalse($entry['eligible']);
+        $this->assertFalse($entry['selectable']);
+        $this->assertSame(['ABSENT'], $entry['reasons']);
+        $this->assertSame(['type' => 'ABSENCE', 'dateStart' => '2026-08-01', 'dateEnd' => '2026-08-16'], $entry['unavailability']);
+        $this->assertNull($entry['conflict']);
+    }
+
+    public function test_serialize_candidate_schedule_conflict_selectable_under_planning_modification(): void
+    {
+        $user     = $this->makeUser();
+        $conflict = $this->makeConflictMission($user);
+        $result   = new \App\Dto\EligibilityResult($user, [EligibilityReason::SCHEDULE_CONFLICT], null, $conflict);
+
+        $entry = $this->service->serializeCandidate($result, \App\Enum\EligibilityEnforcementPolicy::PLANNING_MODIFICATION);
+
+        $this->assertFalse($entry['eligible']);
+        $this->assertTrue($entry['selectable'], 'PLANNING_MODIFICATION: SCHEDULE_CONFLICT never blocks');
+        $this->assertSame(['SCHEDULE_CONFLICT'], $entry['reasons']);
+        $this->assertNotNull($entry['conflict']);
+        $this->assertSame($conflict->getId(), $entry['conflict']['missionId']);
+    }
+
+    public function test_serialize_candidate_eligible_candidate_has_no_detail(): void
+    {
+        $result = new \App\Dto\EligibilityResult($this->makeUser(), []);
+
+        $entry = $this->service->serializeCandidate($result, \App\Enum\EligibilityEnforcementPolicy::STRICT_ASSIGNMENT);
+
+        $this->assertTrue($entry['eligible']);
+        $this->assertTrue($entry['selectable']);
+        $this->assertSame([], $entry['reasons']);
+        $this->assertNull($entry['unavailability']);
+        $this->assertNull($entry['conflict']);
+    }
+
+    // ── evaluateRoster() — D-102 (Lot 2), Preview Editor missionless slots ───────
+
+    /**
+     * evaluateRoster()'s Q2 (membership) is conditional — skipped entirely when every
+     * candidate is FREELANCER — so mapping by call-count would misalign; branch on DQL
+     * content instead (same pattern already used across this file's other query-content
+     * mocks and the PlanningGeneratorServiceV2 test suites).
+     */
+    private function setupRosterQueries(array $roster, array $absenceRows, array $conflictRows, array $membershipRows = []): void
+    {
+        $this->em->method('createQuery')
+            ->willReturnCallback(function (string $dql) use ($roster, $absenceRows, $conflictRows, $membershipRows): Query {
+                $q = $this->createMock(Query::class);
+                $q->method('setParameter')->willReturnSelf();
+                $q->method('getResult')->willReturn(match (true) {
+                    str_contains($dql, 'FROM App\Entity\User u') => $roster,
+                    str_contains($dql, 'SiteMembership sm') => $membershipRows,
+                    str_contains($dql, 'FROM App\Entity\Absence a') => $absenceRows,
+                    str_contains($dql, 'FROM App\Entity\Mission m') => $conflictRows,
+                    default => [],
+                });
+                return $q;
+            });
+    }
+
+    public function test_evaluate_roster_absent_candidate_is_flagged(): void
+    {
+        $site      = $this->makeSite();
+        $candidate = $this->makeUser();
+        $candidate->setEmploymentType(\App\Enum\EmploymentType::FREELANCER); // skip membership query content
+        $absence   = $this->makeAbsence($candidate, '2026-08-01', '2026-08-16');
+
+        $this->setupRosterQueries([$candidate], [$absence], []);
+
+        $results = $this->service->evaluateRoster(
+            $site,
+            new \DateTimeImmutable('2026-08-14 08:00:00'),
+            new \DateTimeImmutable('2026-08-14 18:00:00'),
+        );
+
+        $this->assertCount(1, $results);
+        $this->assertContains(EligibilityReason::ABSENT, $results[0]->reasons);
+    }
+
+    public function test_evaluate_roster_non_freelancer_without_membership_flagged_no_site_membership(): void
+    {
+        $site      = $this->makeSite();
+        $candidate = $this->makeUser();
+        $candidate->setEmploymentType(\App\Enum\EmploymentType::EMPLOYEE);
+
+        $this->setupRosterQueries([$candidate], [], [], []);
+
+        $results = $this->service->evaluateRoster(
+            $site,
+            new \DateTimeImmutable('2026-08-14 08:00:00'),
+            new \DateTimeImmutable('2026-08-14 18:00:00'),
+        );
+
+        $this->assertCount(1, $results);
+        $this->assertContains(EligibilityReason::NO_SITE_MEMBERSHIP, $results[0]->reasons);
+    }
+
+    public function test_evaluate_roster_freelancer_bypasses_site_membership(): void
+    {
+        $site      = $this->makeSite();
+        $candidate = $this->makeUser();
+        $candidate->setEmploymentType(\App\Enum\EmploymentType::FREELANCER);
+
+        $this->setupRosterQueries([$candidate], [], []);
+
+        $results = $this->service->evaluateRoster(
+            $site,
+            new \DateTimeImmutable('2026-08-14 08:00:00'),
+            new \DateTimeImmutable('2026-08-14 18:00:00'),
+        );
+
+        $this->assertCount(1, $results);
+        $this->assertTrue($results[0]->eligible);
+        $this->assertNotContains(EligibilityReason::NO_SITE_MEMBERSHIP, $results[0]->reasons);
+    }
+
+    public function test_evaluate_roster_no_site_given_skips_membership_check(): void
+    {
+        $candidate = $this->makeUser();
+        $candidate->setEmploymentType(\App\Enum\EmploymentType::EMPLOYEE);
+
+        $this->setupRosterQueries([$candidate], [], []);
+
+        $results = $this->service->evaluateRoster(
+            null,
+            new \DateTimeImmutable('2026-08-14 08:00:00'),
+            new \DateTimeImmutable('2026-08-14 18:00:00'),
+        );
+
+        $this->assertTrue($results[0]->eligible);
+    }
+
+    public function test_evaluate_roster_conflicting_candidate_is_flagged(): void
+    {
+        $site      = $this->makeSite();
+        $candidate = $this->makeUser();
+        $candidate->setEmploymentType(\App\Enum\EmploymentType::FREELANCER);
+        $conflict  = $this->makeConflictMission($candidate);
+
+        $this->setupRosterQueries([$candidate], [], [$conflict]);
+
+        $results = $this->service->evaluateRoster(
+            $site,
+            new \DateTimeImmutable('2026-07-15 08:00:00'),
+            new \DateTimeImmutable('2026-07-15 13:00:00'),
+        );
+
+        $this->assertContains(EligibilityReason::SCHEDULE_CONFLICT, $results[0]->reasons);
+    }
+
+    public function test_evaluate_roster_excludes_own_mission_id(): void
+    {
+        $site      = $this->makeSite();
+        $candidate = $this->makeUser();
+        $candidate->setEmploymentType(\App\Enum\EmploymentType::FREELANCER);
+
+        $excludedId = null;
+        $this->em->method('createQuery')
+            ->willReturnCallback(function (string $dql) use (&$excludedId, $candidate): Query {
+                $q = $this->createMock(Query::class);
+                $q->method('setParameter')->willReturnCallback(function (string $name, $value) use (&$excludedId, $q) {
+                    if ($name === 'missionId') {
+                        $excludedId = $value;
+                    }
+                    return $q;
+                });
+                $q->method('getResult')->willReturnCallback(fn () => str_contains($dql, 'App\Entity\User u') ? [$candidate] : []);
+                return $q;
+            });
+
+        $this->service->evaluateRoster(
+            $site,
+            new \DateTimeImmutable('2026-08-14 08:00:00'),
+            new \DateTimeImmutable('2026-08-14 18:00:00'),
+            42,
+        );
+
+        $this->assertSame(42, $excludedId);
     }
 }

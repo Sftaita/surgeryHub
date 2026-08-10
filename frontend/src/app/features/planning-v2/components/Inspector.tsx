@@ -8,6 +8,8 @@ import AddCircleOutlineOutlinedIcon from "@mui/icons-material/AddCircleOutlineOu
 import type { PreviewLineV2 } from "../api/planningV2.types";
 import type { FreedInstrumentist } from "../api/generatePreviewGrouping";
 import { SearchableSelect, type SearchableOption } from "./SearchableSelect";
+import { useRosterEligibility, type RosterSlot } from "../api/useRosterEligibility";
+import { candidateGhostLabel } from "../api/eligibilityReasons";
 import { planningV2Colors, planningV2Radii } from "../theme/tokens";
 
 export interface InspectorAccent {
@@ -69,6 +71,27 @@ export function Inspector({
 
   const canSubmitCreate = draft.date !== "" && draft.surgeonId !== null && draft.siteId !== null;
 
+  // D-102 — create-mission draft has no persisted Mission yet: eligibility is fetched for
+  // the slot as filled in so far (site/date/times), same backend source of truth as the
+  // edit picker. Falls back to the raw unannotated list until the slot is complete.
+  const createSlot: RosterSlot | null = isCreating && draft.siteId !== null && draft.date !== ""
+    ? { siteId: draft.siteId, date: draft.date, startTime: draft.startTime, endTime: draft.endTime }
+    : null;
+  const createRosterQuery = useRosterEligibility(createSlot, isModification ? "PLANNING_MODIFICATION" : "STRICT_ASSIGNMENT");
+  const createInstrumentistOptions: SearchableOption[] = React.useMemo(() => {
+    if (!createSlot || !createRosterQuery.data) return instrumentistOptions;
+    return createRosterQuery.data.candidates.map((c) => {
+      const base = instrumentistOptions.find((o) => o.id === c.id);
+      return {
+        id: c.id,
+        label: c.name,
+        avatarUrl: base?.avatarUrl,
+        disabled: !c.selectable,
+        badge: candidateGhostLabel(c) ?? undefined,
+      };
+    });
+  }, [instrumentistOptions, createSlot, createRosterQuery.data]);
+
   return (
     <Box
       sx={{
@@ -125,7 +148,20 @@ export function Inspector({
             </Stack>
             <SearchableSelect label="Chirurgien" required options={surgeonOptions} value={draft.surgeonId} onChange={(id) => setDraft((d) => ({ ...d, surgeonId: id }))} placeholder="Rechercher un chirurgien…" />
             <SearchableSelect label="Site" required options={siteOptions} value={draft.siteId} onChange={(id) => setDraft((d) => ({ ...d, siteId: id }))} placeholder="Rechercher un site…" />
-            <SearchableSelect label="Instrumentiste" options={instrumentistOptions} value={draft.instrumentistId} onChange={(id) => setDraft((d) => ({ ...d, instrumentistId: id }))} placeholder="Rechercher un instrumentiste…" />
+            <Box>
+              <SearchableSelect
+                label="Instrumentiste"
+                options={createInstrumentistOptions}
+                value={draft.instrumentistId}
+                onChange={(id) => setDraft((d) => ({ ...d, instrumentistId: id }))}
+                placeholder="Rechercher un instrumentiste…"
+              />
+              {createSlot && createRosterQuery.isLoading && (
+                <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary, mt: 0.5 }}>
+                  Vérification des disponibilités…
+                </Typography>
+              )}
+            </Box>
             <Stack direction="row" spacing={1} sx={{ pt: 1 }}>
               <Button fullWidth size="small" color="inherit" onClick={onCancelCreate} sx={{ textTransform: "none" }}>Annuler</Button>
               <Button
@@ -180,7 +216,7 @@ export function Inspector({
               />
               {absencesLoading && (
                 <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary, mt: 0.5 }}>
-                  Vérification des congés…
+                  Vérification des disponibilités…
                 </Typography>
               )}
             </Box>

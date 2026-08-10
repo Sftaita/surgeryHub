@@ -10,7 +10,7 @@ namespace App\Enum;
  * policies — never a free-form reasons array passed by each call site, which would let
  * every caller invent its own ad-hoc rule.
  */
-enum EligibilityEnforcementPolicy
+enum EligibilityEnforcementPolicy: string
 {
     /**
      * Direct manager actions: `assign()`, `reassign()`, `updateSchedule()`,
@@ -18,7 +18,7 @@ enum EligibilityEnforcementPolicy
      * generation (`PlanningGeneratorServiceV2::generate()`). Every reason blocks — this is
      * what closes the real Sophie Collette incident.
      */
-    case STRICT_ASSIGNMENT;
+    case STRICT_ASSIGNMENT = 'STRICT_ASSIGNMENT';
 
     /**
      * `PlanningModificationService::apply()` (Mode Modification / planning vivant,
@@ -31,7 +31,7 @@ enum EligibilityEnforcementPolicy
      * `PlanningConflictDetectionService::syncAlertsForMission()` after every touched
      * mission, which is the intended, non-blocking surface for this case.
      */
-    case PLANNING_MODIFICATION;
+    case PLANNING_MODIFICATION = 'PLANNING_MODIFICATION';
 
     /** @return EligibilityReason[] */
     public function blockingReasons(): array

@@ -103,45 +103,12 @@ class PlanningAlertActionService
         return ['mission' => $mission, 'alert' => $alert];
     }
 
-    /**
-     * Active ROLE_INSTRUMENTIST users affiliated with the mission's site, excluding
-     * anyone absent during the mission's interval or already conflicting. Same
-     * eligibility rules as assertEligible(), just returning candidates instead of
-     * validating one specific choice.
-     *
-     * @return User[]
-     */
-    public function findEligibleInstrumentists(Mission $mission): array
-    {
-        $site = $mission->getSite();
-        if ($site === null) {
-            return [];
-        }
-
-        $candidates = $this->em->createQuery(
-            'SELECT u FROM App\Entity\User u
-             JOIN u.siteMemberships sm
-             WHERE sm.site = :site
-               AND u.active = true'
-        )
-            ->setParameter('site', $site)
-            ->getResult();
-
-        $candidates = array_filter($candidates, static fn (User $u) => in_array('ROLE_INSTRUMENTIST', $u->getRoles(), true));
-
-        $eligible = [];
-        foreach ($candidates as $candidate) {
-            if ($this->isAbsentDuring($candidate, $mission)) {
-                continue;
-            }
-            if ($this->hasConflict($candidate, $mission)) {
-                continue;
-            }
-            $eligible[] = $candidate;
-        }
-
-        return array_values($eligible);
-    }
+    // D-102 (Lot 2): findEligibleInstrumentists() removed — was a third, independent
+    // duplicate of the eligible-candidates-list logic (silently pre-filtered ineligible
+    // candidates, unlike MissionEligibilityService::evaluateAllCandidates()).
+    // PlanningAlertController::eligibleInstrumentists() now calls the canonical service
+    // directly. isAbsentDuring()/hasConflict() below remain — still used by
+    // assertEligible() at mutation time (reassign()).
 
     // ── Guards ────────────────────────────────────────────────────────────────
 

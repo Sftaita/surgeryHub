@@ -391,31 +391,7 @@ class PlanningAlertActionServiceTest extends TestCase
         $this->makeService()->openAsAvailable($alert, null, null);
     }
 
-    // ── Eligible instrumentists ───────────────────────────────────────────────
-
-    public function test_find_eligible_instrumentists_excludes_absent_and_conflicting(): void
-    {
-        $site = $this->makeSite();
-        $mission = $this->makeMission($site, MissionStatus::OPEN);
-        $eligible = $this->makeUser('eligible@test.com');
-        $this->candidateRows = [$eligible];
-        $this->absent = false;
-        $this->conflicting = false;
-
-        $result = $this->makeService()->findEligibleInstrumentists($mission);
-
-        $this->assertSame([$eligible], $result);
-    }
-
-    public function test_find_eligible_instrumentists_returns_empty_when_all_unavailable(): void
-    {
-        $site = $this->makeSite();
-        $mission = $this->makeMission($site, MissionStatus::OPEN);
-        $this->candidateRows = [$this->makeUser('busy@test.com')];
-        $this->conflicting = true;
-
-        $result = $this->makeService()->findEligibleInstrumentists($mission);
-
-        $this->assertSame([], $result);
-    }
+    // D-102 (Lot 2): findEligibleInstrumentists() removed — PlanningAlertController's
+    // eligible-instrumentists endpoint now uses the canonical
+    // MissionEligibilityService::evaluateAllCandidates() (see MissionEligibilityServiceTest).
 }

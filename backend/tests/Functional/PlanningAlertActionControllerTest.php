@@ -30,7 +30,7 @@ final class PlanningAlertActionControllerTest extends WebTestCase
     private const PASSWORD = 'Batch5Test123!';
 
     private EntityManagerInterface $em;
-    private array $createdIds = ['alerts' => [], 'missions' => [], 'sites' => [], 'users' => [], 'memberships' => []];
+    private array $createdIds = ['alerts' => [], 'missions' => [], 'sites' => [], 'users' => [], 'memberships' => [], 'absences' => []];
 
     protected function setUp(): void
     {
@@ -41,6 +41,11 @@ final class PlanningAlertActionControllerTest extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            foreach ($this->createdIds['absences'] as $id) {
+                $e = $this->em->find(\App\Entity\Absence::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
             foreach ($this->createdIds['alerts'] as $id) {
                 $e = $this->em->find(PlanningAlert::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
@@ -405,12 +410,62 @@ final class PlanningAlertActionControllerTest extends WebTestCase
         $body = $this->json($client->getResponse());
 
         self::assertSame(Response::HTTP_OK, $client->getResponse()->getStatusCode());
-        $ids = array_map(fn ($i) => $i['id'], $body['items']);
+        // D-102 (Lot 2): a candidate affiliated with a DIFFERENT site than the mission's
+        // is genuinely outside this site-scoped candidate pool (never returned at all —
+        // distinct from the "ghost with NO_SITE_MEMBERSHIP" case, which only applies to
+        // the full-roster Preview Editor endpoint, not this mission-site-scoped one).
+        $ids = array_map(fn ($i) => $i['id'], $body['candidates']);
         self::assertContains($eligible->getId(), $ids);
         self::assertNotContains($notAffiliated->getId(), $ids);
 
-        $eligibleEntry = current(array_filter($body['items'], fn ($i) => $i['id'] === $eligible->getId()));
+        $eligibleEntry = current(array_filter($body['candidates'], fn ($i) => $i['id'] === $eligible->getId()));
+        self::assertTrue($eligibleEntry['eligible']);
+        self::assertTrue($eligibleEntry['selectable']);
         self::assertContains($site->getName(), $eligibleEntry['sites']);
+    }
+
+    /**
+     * D-102 (Lot 2) regression — cas Sophie Collette : avant ce lot,
+     * `PlanningAlertActionService::findEligibleInstrumentists()` excluait silencieusement
+     * tout candidat absent ou en conflit ; l'endpoint doit désormais le renvoyer, marqué
+     * non sélectionnable, avec le détail de son absence.
+     */
+    #[WithoutErrorHandler]
+    public function test_eligible_instrumentists_includes_absent_candidate_as_non_selectable(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($surgeon, null, $site, MissionStatus::OPEN);
+        $mission->setStartAt(new \DateTimeImmutable('2026-08-14 08:00:00'));
+        $mission->setEndAt(new \DateTimeImmutable('2026-08-14 18:00:00'));
+        $this->em->flush();
+        $alert = $this->makeAlert($mission, PlanningAlertType::REASSIGNMENT_REQUIRED);
+
+        $sophie = $this->makeUser('ROLE_INSTRUMENTIST');
+        $this->affiliate($sophie, $site);
+        $absence = new \App\Entity\Absence();
+        $absence->setUser($sophie);
+        $absence->setDateStart(new \DateTimeImmutable('2026-08-01'));
+        $absence->setDateEnd(new \DateTimeImmutable('2026-08-16'));
+        $absence->setCreatedBy($sophie);
+        $this->em->persist($absence);
+        $this->em->flush();
+        $this->createdIds['absences'][] = $absence->getId();
+
+        $client->request('GET', '/api/planning/alerts/' . $alert->getId() . '/eligible-instrumentists', server: $this->auth($token));
+        $body = $this->json($client->getResponse());
+
+        self::assertSame(Response::HTTP_OK, $client->getResponse()->getStatusCode());
+        $entry = current(array_filter($body['candidates'], fn ($i) => $i['id'] === $sophie->getId()));
+        self::assertNotFalse($entry, 'Sophie must still appear in the list, not silently excluded');
+        self::assertFalse($entry['eligible']);
+        self::assertFalse($entry['selectable']);
+        self::assertContains('ABSENT', $entry['reasons']);
+        self::assertSame(['type' => 'ABSENCE', 'dateStart' => '2026-08-01', 'dateEnd' => '2026-08-16'], $entry['unavailability']);
     }
 
     // ── Security ──────────────────────────────────────────────────────────────

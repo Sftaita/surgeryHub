@@ -22,6 +22,8 @@ import { CoverageBanner }      from "../../../features/planning-v2/components/Co
 import { MissionHistoryDrawer } from "../../../features/planning-v2/components/MissionHistoryDrawer";
 import { CancelMissionDialog }  from "../../../features/planning-v2/components/CancelMissionDialog";
 import { ReassignMissionDialog } from "../../../features/planning-v2/components/ReassignMissionDialog";
+import { useRosterEligibility, type RosterSlot } from "../../../features/planning-v2/api/useRosterEligibility";
+import { candidateGhostLabel } from "../../../features/planning-v2/api/eligibilityReasons";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -69,6 +71,7 @@ interface ScheduleRow {
   endTime:            string;
   instrumentistId:    number | null;
   instrumentistName:  string | null;
+  siteId:             number | null;
   siteName:           string | null;
   status:             MissionStatus;
   canEdit:            boolean;
@@ -91,6 +94,7 @@ function toRow(m: Mission): ScheduleRow {
     endTime,
     instrumentistId:   m.instrumentist?.id ?? null,
     instrumentistName: m.instrumentist ? displayName(m.instrumentist) : null,
+    siteId:            m.site?.id ?? null,
     siteName:          m.site?.name ?? null,
     status,
     canEdit:    status === "OPEN",
@@ -164,6 +168,15 @@ function ScheduleInstrumentistCell({
 }) {
   const toast = useToast();
 
+  // D-102 — real-time eligibility for this mission's exact slot (STRICT_ASSIGNMENT: this
+  // is a direct assign, same policy the backend guard applies on assign-instrumentist).
+  // Never recomputed client-side — the backend roster is the sole source of truth.
+  const slot: RosterSlot | null = row.canEdit
+    ? { siteId: row.siteId, date: row.date, startTime: row.startTime, endTime: row.endTime, excludeMissionId: row.missionId }
+    : null;
+  const rosterQuery = useRosterEligibility(slot, "STRICT_ASSIGNMENT");
+  const candidates = rosterQuery.data?.candidates ?? null;
+
   const assignMutation = useMutation({
     mutationFn: ({ instrumentistId }: { instrumentistId: number | null }) =>
       apiClient.post(`/api/missions/${row.missionId}/assign-instrumentist`, { instrumentistId }),
@@ -206,9 +219,22 @@ function ScheduleInstrumentistCell({
       }}
     >
       <MenuItem value=""><em>Non assigné</em></MenuItem>
-      {instrumentists.map((i) => (
-        <MenuItem key={i.id} value={i.id}>{i.displayName}</MenuItem>
-      ))}
+      {candidates
+        ? candidates.map((c) => (
+            <MenuItem
+              key={c.id}
+              value={c.id}
+              disabled={!c.selectable}
+              aria-disabled={!c.selectable}
+              data-testid={`schedule-instrumentist-option-${c.id}`}
+              sx={{ opacity: c.selectable ? 1 : 0.5 }}
+            >
+              {c.name}{!c.selectable ? ` — ${candidateGhostLabel(c) ?? ""}` : ""}
+            </MenuItem>
+          ))
+        : instrumentists.map((i) => (
+            <MenuItem key={i.id} value={i.id}>{i.displayName}</MenuItem>
+          ))}
     </Select>
   );
 }

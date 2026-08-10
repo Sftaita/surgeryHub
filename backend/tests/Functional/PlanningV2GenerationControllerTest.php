@@ -151,6 +151,12 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         return $client->getResponse();
     }
 
+    private function getJson(KernelBrowser $client, string $token, string $uri): Response
+    {
+        $client->request('GET', $uri, server: $this->auth($token));
+        return $client->getResponse();
+    }
+
     private function makeUser(string $role): User
     {
         $u = new User();
@@ -856,5 +862,190 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         self::assertSame(Response::HTTP_OK, $client->getResponse()->getStatusCode());
         $managerIds = array_column($this->json($client->getResponse())['items'], 'id');
         self::assertContains($missionId, $managerIds, 'Manager list scoped to this deploy must include all its missions regardless of status');
+    }
+
+    // ── D-102 (Lot 2): GET /api/planning/v2/eligible-instrumentists ───────────
+
+    #[WithoutErrorHandler]
+    public function test_roster_eligible_instrumentists_returns_eligible_candidate(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+        ['user' => $instrumentist] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        $instrumentist = $this->em->find(User::class, $instrumentist->getId());
+        $instrumentist->setEmploymentType(EmploymentType::FREELANCER);
+        $this->em->flush();
+
+        $site = $this->makeSite();
+
+        $response = $this->getJson($client, $token, sprintf(
+            '/api/planning/v2/eligible-instrumentists?siteId=%d&date=2026-08-14&startTime=08:00&endTime=18:00',
+            $site->getId(),
+        ));
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        self::assertSame('STRICT_ASSIGNMENT', $body['policy']);
+        $entry = current(array_filter($body['candidates'], fn ($c) => $c['id'] === $instrumentist->getId()));
+        self::assertNotFalse($entry);
+        self::assertTrue($entry['eligible']);
+        self::assertTrue($entry['selectable']);
+    }
+
+    /** D-102 — cas Sophie Collette, chemin Preview Editor (pas de Mission persistée). */
+    #[WithoutErrorHandler]
+    public function test_roster_eligible_instrumentists_flags_absent_candidate(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+        ['user' => $sophie] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        $sophie = $this->em->find(User::class, $sophie->getId());
+        $sophie->setEmploymentType(EmploymentType::FREELANCER);
+        $this->em->flush();
+        $this->makeAbsence($sophie, new \DateTimeImmutable('2026-08-01'), new \DateTimeImmutable('2026-08-16'));
+
+        $site = $this->makeSite();
+
+        $response = $this->getJson($client, $token, sprintf(
+            '/api/planning/v2/eligible-instrumentists?siteId=%d&date=2026-08-14&startTime=08:00&endTime=18:00',
+            $site->getId(),
+        ));
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        $entry = current(array_filter($body['candidates'], fn ($c) => $c['id'] === $sophie->getId()));
+        self::assertNotFalse($entry, 'Sophie must appear, not be silently filtered out');
+        self::assertFalse($entry['eligible']);
+        self::assertFalse($entry['selectable']);
+        self::assertContains('ABSENT', $entry['reasons']);
+        self::assertSame(['type' => 'ABSENCE', 'dateStart' => '2026-08-01', 'dateEnd' => '2026-08-16'], $entry['unavailability']);
+    }
+
+    /** D-102 — NO_SITE_MEMBERSHIP is informational only, never blocking (D-101). */
+    #[WithoutErrorHandler]
+    public function test_roster_eligible_instrumentists_flags_non_affiliated_but_selectable(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+        ['user' => $instrumentist] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+        // Deliberately NOT freelancer and NOT affiliated to $site.
+        $site = $this->makeSite();
+
+        $response = $this->getJson($client, $token, sprintf(
+            '/api/planning/v2/eligible-instrumentists?siteId=%d&date=2026-08-14&startTime=08:00&endTime=18:00',
+            $site->getId(),
+        ));
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        $entry = current(array_filter($body['candidates'], fn ($c) => $c['id'] === $instrumentist->getId()));
+        self::assertNotFalse($entry);
+        self::assertFalse($entry['eligible'], 'raw fact: not affiliated');
+        self::assertTrue($entry['selectable'], 'D-101: NO_SITE_MEMBERSHIP never blocks a manager-driven assignment');
+        self::assertContains('NO_SITE_MEMBERSHIP', $entry['reasons']);
+    }
+
+    #[WithoutErrorHandler]
+    public function test_roster_eligible_instrumentists_requires_date_and_times(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $response = $this->getJson($client, $token, '/api/planning/v2/eligible-instrumentists');
+
+        self::assertSame(Response::HTTP_BAD_REQUEST, $response->getStatusCode());
+    }
+
+    // ── D-102 (Lot 2): GET /api/missions/{id}/eligible-instrumentists ─────────
+
+    #[WithoutErrorHandler]
+    public function test_mission_eligible_instrumentists_includes_inactive_as_ghost(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+        ['user' => $inactive] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+        // Both authenticate() calls (each a real HTTP request) happen before any fixture
+        // entity is created — see the comment on the Sophie regression test above for why.
+        $inactive = $this->em->find(User::class, $inactive->getId());
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $membership = new \App\Entity\SiteMembership();
+        $membership->setUser($inactive)->setSite($site)->setSiteRole('INSTRUMENTIST');
+        $this->em->persist($membership);
+        $inactive->setActive(false);
+        $this->em->flush();
+
+        $mission = $this->makeDraftMission(
+            $site, $surgeon,
+            new \DateTimeImmutable('2026-08-14 08:00:00'),
+            new \DateTimeImmutable('2026-08-14 18:00:00'),
+        );
+        $mission->setStatus(MissionStatus::OPEN);
+        $this->em->flush();
+
+        $response = $this->getJson($client, $token, "/api/missions/{$mission->getId()}/eligible-instrumentists");
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $entry = current(array_filter($body['candidates'], fn ($c) => $c['id'] === $inactive->getId()));
+        self::assertNotFalse($entry, 'inactive site member must still appear, not be silently excluded');
+        self::assertFalse($entry['eligible']);
+        self::assertFalse($entry['selectable']);
+        self::assertContains('INACTIVE', $entry['reasons']);
+    }
+
+    /** D-101/D-102 — same SCHEDULE_CONFLICT candidate: blocked under STRICT, selectable + warned under PLANNING_MODIFICATION. */
+    #[WithoutErrorHandler]
+    public function test_mission_eligible_instrumentists_schedule_conflict_selectable_depends_on_policy(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+        ['user' => $busy] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+        $busy = $this->em->find(User::class, $busy->getId());
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $surgeonB = $this->makeUser('ROLE_SURGEON');
+        $site     = $this->makeSite();
+        $otherSite = $this->makeSite();
+        // evaluateAllCandidates() discovers candidates via an INNER JOIN on SiteMembership
+        // at the target mission's site — must be a real member of $site to be discoverable
+        // at all (the FREELANCER bypass only applies to the membership *check*, not this
+        // candidate-discovery query, D-057). The conflicting mission itself is on
+        // $otherSite — that cross-site reach is exactly what's under test.
+        $membership = new \App\Entity\SiteMembership();
+        $membership->setUser($busy)->setSite($site)->setSiteRole('INSTRUMENTIST');
+        $this->em->persist($membership);
+        $this->em->flush();
+
+        // busy already has a mission 08:00-13:00 elsewhere (cross-site conflict, D-091 territory).
+        $busyMission = $this->makeDraftMission($otherSite, $surgeonB, new \DateTimeImmutable('2026-08-14 08:00:00'), new \DateTimeImmutable('2026-08-14 13:00:00'));
+        $busyMission->setStatus(MissionStatus::ASSIGNED);
+        $busyMission->setInstrumentist($busy);
+        $this->em->flush();
+
+        // The mission we're picking a candidate for overlaps that window.
+        $mission = $this->makeDraftMission($site, $surgeonA, new \DateTimeImmutable('2026-08-14 11:00:00'), new \DateTimeImmutable('2026-08-14 17:00:00'));
+        $mission->setStatus(MissionStatus::OPEN);
+        $this->em->flush();
+
+        $strictResponse = $this->getJson($client, $token, "/api/missions/{$mission->getId()}/eligible-instrumentists");
+        $strictBody = $this->json($strictResponse);
+        $strictEntry = current(array_filter($strictBody['candidates'], fn ($c) => $c['id'] === $busy->getId()));
+        self::assertFalse($strictEntry['selectable'], 'STRICT_ASSIGNMENT (default): SCHEDULE_CONFLICT blocks');
+
+        $modResponse = $this->getJson($client, $token, "/api/missions/{$mission->getId()}/eligible-instrumentists?policy=PLANNING_MODIFICATION");
+        $modBody = $this->json($modResponse);
+        $modEntry = current(array_filter($modBody['candidates'], fn ($c) => $c['id'] === $busy->getId()));
+        self::assertContains('SCHEDULE_CONFLICT', $modEntry['reasons'], 'reason still reported, just not blocking under this policy');
+        self::assertTrue($modEntry['selectable'], 'PLANNING_MODIFICATION: SCHEDULE_CONFLICT never blocks (D-091/D-052)');
+        self::assertNotNull($modEntry['conflict']);
+        self::assertSame($busyMission->getId(), $modEntry['conflict']['missionId']);
     }
 }

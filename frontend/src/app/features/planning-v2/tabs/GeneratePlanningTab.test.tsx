@@ -33,6 +33,16 @@ vi.mock("../api/planningV2.api", () => ({
   deployPlanningV2: vi.fn(),
   applyModifications: vi.fn(),
   cancelAllMissions: vi.fn(),
+  // D-102 — Preview Editor's instrumentist pickers now source eligibility from this
+  // endpoint; defaults to "everyone selectable" (mirrors the /api/instrumentists mock
+  // below) unless a test overrides it.
+  fetchRosterEligibility: vi.fn().mockResolvedValue({
+    policy: "STRICT_ASSIGNMENT",
+    candidates: [
+      { id: 9, name: "Diane Lefebvre", email: "diane@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+      { id: 10, name: "Marc Petit", email: "marc@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+    ],
+  }),
   // Real logic (not a dumb String(e) stub) — the 401 special-case is exactly what the
   // session-expiry tests below exercise, and a stub here would silently bypass it.
   extractErrorV2: (err: unknown) => {
@@ -288,7 +298,7 @@ describe("GeneratePlanningTab — réaffectation d'instrumentiste (Preview Edito
     await waitFor(() => expect(planningV2Api.generatePlanningV2).toHaveBeenCalled());
     await waitFor(() => expect(toastWarning).toHaveBeenCalledTimes(1));
     expect(toastWarning.mock.calls[0][0]).toContain("Diane Lefebvre");
-    expect(toastWarning.mock.calls[0][0]).toContain("Absent ce jour");
+    expect(toastWarning.mock.calls[0][0]).toContain("Absente");
   });
 
   it("ne signale rien quand aucune affectation n'a été refusée (non-régression)", async () => {
@@ -353,11 +363,18 @@ describe("GeneratePlanningTab — réaffectation d'instrumentiste (Preview Edito
 });
 
 describe("GeneratePlanningTab — indicateurs congé / déjà affecté dans le sélecteur", () => {
-  it("affiche un badge 'En congé' pour un instrumentiste absent ce jour-là", async () => {
+  it("affiche un badge 'Absente' pour un instrumentiste absent ce jour-là (source: backend)", async () => {
     const user = userEvent.setup();
-    (planningManagerApi.getAbsences as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      { id: 1, user: { id: 9, name: "Diane Lefebvre", role: "INSTRUMENTIST" }, dateStart: "2026-06-01", dateEnd: "2026-06-01", reason: null, createdAt: "2026-05-01" },
-    ]);
+    (planningV2Api.fetchRosterEligibility as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      policy: "STRICT_ASSIGNMENT",
+      candidates: [
+        {
+          id: 9, name: "Diane Lefebvre", email: "diane@test.com", eligible: false, selectable: false,
+          reasons: ["ABSENT"], unavailability: { type: "ABSENCE", dateStart: "2026-06-01", dateEnd: "2026-06-01" }, conflict: null,
+        },
+        { id: 10, name: "Marc Petit", email: "marc@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+      ],
+    });
     const preview: PreviewResponseV2 = {
       lines: [line({ status: "UNCOVERED" })],
       summary: { total: 1, covered: 0, uncovered: 1, skipped: 0, conflict: 0, modified: 0 },
@@ -377,10 +394,11 @@ describe("GeneratePlanningTab — indicateurs congé / déjà affecté dans le s
     await user.click(input);
 
     const dianeOption = (await screen.findAllByRole("option")).find((o) => o.textContent?.includes("Diane Lefebvre"))!;
-    expect(within(dianeOption).getByText("En congé")).toBeInTheDocument();
+    expect(dianeOption).toHaveAttribute("aria-disabled", "true");
+    expect(within(dianeOption).getByText(/Absente/)).toBeInTheDocument();
   });
 
-  it("affiche 'Déjà affecté ailleurs' et libère l'autre poste au moment de la réaffectation", async () => {
+  it("affiche 'Déjà affecté ailleurs' et libère l'autre poste au moment de la réaffectation (préview locale, non persistée)", async () => {
     const user = userEvent.setup();
     const preview: PreviewResponseV2 = {
       lines: [
@@ -405,7 +423,10 @@ describe("GeneratePlanningTab — indicateurs congé / déjà affecté dans le s
     await user.click(input);
 
     const dianeOption = (await screen.findAllByRole("option")).find((o) => o.textContent?.includes("Diane Lefebvre"))!;
+    // Backend has no opinion on this (the "other slot" is an unsaved Preview line, not a
+    // persisted Mission) — this stays a purely local, non-blocking warning, still selectable.
     expect(within(dianeOption).getByText("Déjà affecté ailleurs")).toBeInTheDocument();
+    expect(dianeOption).not.toHaveAttribute("aria-disabled", "true");
     await user.click(dianeOption);
 
     // Diane now covers the previously-uncovered slot; her original slot is freed instead of
@@ -413,6 +434,42 @@ describe("GeneratePlanningTab — indicateurs congé / déjà affecté dans le s
     await waitFor(() => expect(screen.getAllByText("Édité")).toHaveLength(2));
     expect(screen.getAllByText("À pourvoir")).toHaveLength(1);
     expect(screen.getAllByText("Diane Lefebvre").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("D-102 — un conflit d'horaire (backend) bloque la sélection en Génération (STRICT_ASSIGNMENT)", async () => {
+    const user = userEvent.setup();
+    (planningV2Api.fetchRosterEligibility as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      policy: "STRICT_ASSIGNMENT",
+      candidates: [
+        {
+          id: 9, name: "Diane Lefebvre", email: "diane@test.com", eligible: false, selectable: false,
+          reasons: ["SCHEDULE_CONFLICT"], unavailability: null,
+          conflict: { missionId: 77, siteName: "Alpha", startAt: "2026-06-01T08:00:00", endAt: "2026-06-01T13:00:00" },
+        },
+        { id: 10, name: "Marc Petit", email: "marc@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+      ],
+    });
+    const preview: PreviewResponseV2 = {
+      lines: [line({ status: "UNCOVERED" })],
+      summary: { total: 1, covered: 0, uncovered: 1, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "v-1",
+      generatedAt: "2026-06-01T00:00:00Z",
+    };
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
+
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+    await screen.findByText("À pourvoir");
+    await user.click(screen.getByText("À pourvoir"));
+
+    const popoverLabel = await screen.findByText("Instrumentiste");
+    const input = popoverLabel.closest("div")!.querySelector("input")!;
+    await user.click(input);
+
+    const dianeOption = (await screen.findAllByRole("option")).find((o) => o.textContent?.includes("Diane Lefebvre"))!;
+    expect(dianeOption).toHaveAttribute("aria-disabled", "true");
+    expect(within(dianeOption).getByText(/Conflit d'horaire/)).toBeInTheDocument();
   });
 });
 
@@ -492,6 +549,37 @@ describe("GeneratePlanningTab — Mode Modification (éditeur unifié)", () => {
     const [versionId, lines] = (planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(versionId).toBe(42);
     expect(lines[0]).toMatchObject({ existingMissionId: 501, startTime: "09:00" });
+  });
+
+  it("D-102 — un conflit d'horaire reste non-bloquant (sélectionnable) en Mode Modification (PLANNING_MODIFICATION, D-091)", async () => {
+    mockHistoryWithOneVersion();
+    (planningV2Api.fetchRosterEligibility as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      policy: "PLANNING_MODIFICATION",
+      candidates: [
+        { id: 9, name: "Diane Lefebvre", email: "diane@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+        {
+          id: 10, name: "Marc Petit", email: "marc@test.com", eligible: false, selectable: true,
+          reasons: ["SCHEDULE_CONFLICT"], unavailability: null,
+          conflict: { missionId: 77, siteName: "Alpha", startAt: "2026-06-15T08:00:00", endAt: "2026-06-15T13:00:00" },
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await user.click(await screen.findByText("Diane Lefebvre"));
+
+    const popoverLabel = await screen.findByText("Instrumentiste");
+    const input = popoverLabel.closest("div")!.querySelector("input")!;
+    await user.click(input);
+
+    const marcOption = await screen.findByRole("option", { name: /Marc Petit/ });
+    // Non-blocking under PLANNING_MODIFICATION: visible with a warning badge, but still
+    // clickable — a manager may deliberately accept a cross-site double-booking (D-091),
+    // surfaced instead as a PlanningAlert rather than a hard block.
+    expect(marcOption).not.toHaveAttribute("aria-disabled", "true");
+    expect(within(marcOption).getByText(/Conflit d'horaire/)).toBeInTheDocument();
   });
 
   it("un 401 définitif sur Redéployer n'affiche jamais de succès, ne perd pas l'édition locale, et affiche le message de session expirée", async () => {

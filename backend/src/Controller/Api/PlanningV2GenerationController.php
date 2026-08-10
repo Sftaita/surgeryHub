@@ -7,11 +7,15 @@ use App\Dto\Request\Response\GeneratedPlanningResponse;
 use App\Dto\Request\Response\PreviewLineResponse;
 use App\Dto\Request\Response\PreviewResponse;
 use App\Dto\Request\Response\PreviewSummaryResponse;
+use App\Doctrine\Type\BusinessDateTimeImmutableType;
+use App\Entity\Hospital;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
+use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\PlanningVersionStatus;
 use App\Exception\PlanningDraftConflictException;
 use App\Security\Voter\PlanningVoter;
+use App\Service\MissionEligibilityService;
 use App\Service\PlanningDeploymentService;
 use App\Service\PlanningGeneratorServiceV2;
 use Doctrine\ORM\EntityManagerInterface;
@@ -40,6 +44,7 @@ class PlanningV2GenerationController extends AbstractController
         private readonly PlanningGeneratorServiceV2 $generator,
         private readonly PlanningDeploymentService $deploymentService,
         private readonly EntityManagerInterface $em,
+        private readonly MissionEligibilityService $eligibilityService,
     ) {}
 
     #[Route('/api/planning/v2/preview', name: 'api_planning_v2_preview', methods: ['POST'])]
@@ -142,6 +147,67 @@ class PlanningV2GenerationController extends AbstractController
             missionCount: $result['missionCount'],
             openPoolCount: $result['openPoolCount'],
         ));
+    }
+
+    /**
+     * D-102 (Lot 2) — eligibility-aware instrumentist roster for the Preview Editor's
+     * candidate pickers (single-line Inspector, bulk-assign, Mode Modification
+     * "add mission" draft), none of which have a persisted Mission to query against
+     * (a new/edited preview line, before generate()). Delegates to
+     * `MissionEligibilityService::evaluateRoster()` — the SAME full active roster the
+     * Preview Editor already fetches today (`GET /api/instrumentists?active=true`),
+     * now annotated with real ABSENT/SCHEDULE_CONFLICT/NO_SITE_MEMBERSHIP reasons
+     * instead of the frontend recomputing absence/conflict itself. `?policy=` defaults
+     * to STRICT_ASSIGNMENT (generation) — the Preview Editor passes
+     * PLANNING_MODIFICATION when editing an already-deployed month.
+     */
+    #[Route('/api/planning/v2/eligible-instrumentists', name: 'api_planning_v2_eligible_instrumentists', methods: ['GET'])]
+    public function eligibleInstrumentistsForSlot(Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $siteId = $request->query->get('siteId') !== null ? (int) $request->query->get('siteId') : null;
+        $date   = $request->query->get('date');
+        $start  = $request->query->get('startTime');
+        $end    = $request->query->get('endTime');
+
+        if ($date === null || $start === null || $end === null) {
+            throw new BadRequestHttpException('date, startTime et endTime sont requis.');
+        }
+
+        $site = $siteId !== null ? $this->em->find(Hospital::class, $siteId) : null;
+        if ($siteId !== null && $site === null) {
+            throw new BadRequestHttpException('Site introuvable.');
+        }
+
+        $businessTz = new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE);
+        try {
+            $startAt = new \DateTimeImmutable("{$date}T{$start}:00", $businessTz);
+            $endAt   = new \DateTimeImmutable("{$date}T{$end}:00", $businessTz);
+        } catch (\Throwable) {
+            throw new BadRequestHttpException('Format de date/heure invalide.');
+        }
+        if ($endAt <= $startAt) {
+            throw new BadRequestHttpException('endTime doit être après startTime.');
+        }
+
+        $excludeMissionId = $request->query->get('excludeMissionId') !== null
+            ? (int) $request->query->get('excludeMissionId')
+            : null;
+
+        $policy = EligibilityEnforcementPolicy::tryFrom((string) $request->query->get('policy', ''))
+            ?? EligibilityEnforcementPolicy::STRICT_ASSIGNMENT;
+
+        $results    = $this->eligibilityService->evaluateRoster($site, $startAt, $endAt, $excludeMissionId);
+        $candidates = array_map(
+            fn ($result) => $this->eligibilityService->serializeCandidate($result, $policy),
+            $results,
+        );
+
+        return $this->json([
+            'policy'     => $policy->value,
+            'candidates' => $candidates,
+        ]);
     }
 
     // ── Private ───────────────────────────────────────────────────────────────

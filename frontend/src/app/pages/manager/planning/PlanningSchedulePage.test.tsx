@@ -32,8 +32,18 @@ vi.mock("../../../features/planning-v2/api/planningV2.api", () => ({
   fetchMissionEligibleInstrumentists: vi.fn().mockResolvedValue({
     missionId: 1,
     missionStatus: "ASSIGNED",
-    eligible: [{ id: 20, name: "Claire Dubois", email: "claire@test.com" }],
-    ineligible: [{ id: 21, name: "Marc Leroy", email: "marc@test.com", reasons: ["ABSENT"] }],
+    policy: "STRICT_ASSIGNMENT",
+    candidates: [
+      { id: 20, name: "Claire Dubois", email: "claire@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+      { id: 21, name: "Marc Leroy", email: "marc@test.com", eligible: false, selectable: false, reasons: ["ABSENT"], unavailability: null, conflict: null },
+    ],
+  }),
+  // D-102 — ScheduleInstrumentistCell's OPEN-mission picker; default everyone selectable.
+  fetchRosterEligibility: vi.fn().mockResolvedValue({
+    policy: "STRICT_ASSIGNMENT",
+    candidates: [
+      { id: 20, name: "Claire Dubois", email: "claire@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+    ],
   }),
 }));
 
@@ -245,8 +255,9 @@ describe("PlanningSchedulePage — Reassign action", () => {
     await user.click(screen.getByRole("button", { name: /réassigner la mission/i }));
 
     // Wait for eligibility data to load in dialog
-    await waitFor(() => expect(screen.getByTestId("ineligible-list")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("reassign-candidate-list")).toBeInTheDocument());
     expect(screen.getByText("Marc Leroy")).toBeInTheDocument();
+    expect(screen.getByTestId("reassign-candidate-21")).toHaveAttribute("aria-disabled", "true");
   });
 
   it("calls reassignMission API on reassign confirm", async () => {
@@ -257,15 +268,10 @@ describe("PlanningSchedulePage — Reassign action", () => {
     );
     await user.click(screen.getByRole("button", { name: /réassigner la mission/i }));
 
-    await waitFor(() => screen.getByTestId("reassign-eligible-select"));
+    await waitFor(() => screen.getByTestId("reassign-candidate-list"));
 
     // Select eligible candidate
-    const selectEl = screen.getByTestId("reassign-eligible-select").querySelector("[role='combobox']");
-    if (selectEl) {
-      fireEvent.mouseDown(selectEl);
-      const option = await screen.findByRole("option", { name: "Claire Dubois" });
-      fireEvent.click(option);
-    }
+    fireEvent.click(screen.getByTestId("reassign-candidate-20"));
 
     // Confirm
     const dialog = screen.getByRole("dialog");
@@ -325,5 +331,46 @@ describe("PlanningSchedulePage — coverage banner", () => {
   it("does not show CoverageBanner when no versionId is entered", () => {
     renderPage();
     expect(screen.queryByTestId("coverage-banner")).toBeNull();
+  });
+});
+
+describe("PlanningSchedulePage — ScheduleInstrumentistCell D-102 ghost UX (OPEN mission picker)", () => {
+  it("shows an ABSENT candidate as a disabled, ghost option", async () => {
+    vi.mocked(planningApi.fetchRosterEligibility).mockResolvedValueOnce({
+      policy: "STRICT_ASSIGNMENT",
+      candidates: [
+        { id: 20, name: "Claire Dubois", email: "claire@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+        {
+          id: 19, name: "Sophie Collette", email: "sophie@test.com", eligible: false, selectable: false,
+          reasons: ["ABSENT"], unavailability: { type: "ABSENCE", dateStart: "2026-07-01", dateEnd: "2026-07-01" }, conflict: null,
+        },
+      ],
+    });
+    const user = await loadMissions([makeMission({ status: "OPEN" })]);
+
+    await waitFor(() => expect(screen.getByText("À réserver")).toBeInTheDocument());
+    const trigger = screen.getByText("Non assigné");
+    await user.click(trigger);
+
+    const sophieOption = await screen.findByTestId("schedule-instrumentist-option-19");
+    expect(sophieOption).toHaveAttribute("aria-disabled", "true");
+    expect(sophieOption.textContent).toContain("Absente");
+  });
+
+  it("allows selecting a fully eligible candidate", async () => {
+    vi.mocked(planningApi.fetchRosterEligibility).mockResolvedValueOnce({
+      policy: "STRICT_ASSIGNMENT",
+      candidates: [
+        { id: 20, name: "Claire Dubois", email: "claire@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+      ],
+    });
+    const user = await loadMissions([makeMission({ status: "OPEN" })]);
+
+    await waitFor(() => expect(screen.getByText("À réserver")).toBeInTheDocument());
+    const trigger = screen.getByText("Non assigné");
+    await user.click(trigger);
+
+    const claireOption = await screen.findByTestId("schedule-instrumentist-option-20");
+    expect(claireOption).not.toHaveAttribute("aria-disabled", "true");
   });
 });

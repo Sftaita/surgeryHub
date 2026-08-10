@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ReassignMissionDialog } from "./ReassignMissionDialog";
-import type { MissionEligibilityResponse } from "../api/planningV2.types";
+import type { CandidateEligibility, MissionEligibilityResponse } from "../api/planningV2.types";
 
 vi.mock("../api/planningV2.api", () => ({
   fetchMissionEligibleInstrumentists: vi.fn(),
@@ -10,14 +10,28 @@ vi.mock("../api/planningV2.api", () => ({
 
 import * as api from "../api/planningV2.api";
 
+function makeCandidate(overrides: Partial<CandidateEligibility> = {}): CandidateEligibility {
+  return {
+    id: 5,
+    name: "Alice Martin",
+    email: "alice@test.com",
+    eligible: true,
+    selectable: true,
+    reasons: [],
+    unavailability: null,
+    conflict: null,
+    ...overrides,
+  };
+}
+
 function makeEligibilityResponse(
   overrides: Partial<MissionEligibilityResponse> = {},
 ): MissionEligibilityResponse {
   return {
     missionId: 42,
     missionStatus: "ASSIGNED",
-    eligible: [{ id: 5, name: "Alice Martin", email: "alice@test.com" }],
-    ineligible: [],
+    policy: "STRICT_ASSIGNMENT",
+    candidates: [makeCandidate()],
     ...overrides,
   };
 }
@@ -47,24 +61,27 @@ function renderDialog(props: {
 describe("ReassignMissionDialog", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("shows eligible instrumentists from API", async () => {
+  it("shows selectable candidates from API", async () => {
     vi.mocked(api.fetchMissionEligibleInstrumentists).mockResolvedValue(
-      makeEligibilityResponse({ eligible: [{ id: 5, name: "Alice Martin", email: "alice@test.com" }] }),
+      makeEligibilityResponse({ candidates: [makeCandidate({ id: 5, name: "Alice Martin" })] }),
     );
 
     renderDialog({});
 
     await waitFor(() => {
-      expect(screen.getByTestId("reassign-eligible-select")).toBeInTheDocument();
+      expect(screen.getByTestId("reassign-candidate-list")).toBeInTheDocument();
+      expect(screen.getByText("Alice Martin")).toBeInTheDocument();
     });
   });
 
-  it("shows ineligible candidates with reason chips", async () => {
+  it("shows non-selectable candidates as ghost rows with reason chips", async () => {
     vi.mocked(api.fetchMissionEligibleInstrumentists).mockResolvedValue(
       makeEligibilityResponse({
-        eligible: [],
-        ineligible: [
-          { id: 7, name: "Bob Dupont", email: "bob@test.com", reasons: ["ABSENT", "SCHEDULE_CONFLICT"] },
+        candidates: [
+          makeCandidate({
+            id: 7, name: "Bob Dupont", eligible: false, selectable: false,
+            reasons: ["ABSENT", "SCHEDULE_CONFLICT"],
+          }),
         ],
       }),
     );
@@ -72,7 +89,8 @@ describe("ReassignMissionDialog", () => {
     renderDialog({});
 
     await waitFor(() => {
-      expect(screen.getByTestId("ineligible-list")).toBeInTheDocument();
+      const row = screen.getByTestId("reassign-candidate-7");
+      expect(row).toHaveAttribute("aria-disabled", "true");
       expect(screen.getByText("Bob Dupont")).toBeInTheDocument();
       expect(screen.getByTestId("reason-chip-ABSENT")).toBeInTheDocument();
       expect(screen.getByTestId("reason-chip-SCHEDULE_CONFLICT")).toBeInTheDocument();
@@ -82,9 +100,11 @@ describe("ReassignMissionDialog", () => {
   it("shows French labels for rejection reasons", async () => {
     vi.mocked(api.fetchMissionEligibleInstrumentists).mockResolvedValue(
       makeEligibilityResponse({
-        eligible: [],
-        ineligible: [
-          { id: 7, name: "Bob Dupont", email: "bob@test.com", reasons: ["ABSENT", "NO_SITE_MEMBERSHIP"] },
+        candidates: [
+          makeCandidate({
+            id: 7, name: "Bob Dupont", eligible: false, selectable: false,
+            reasons: ["ABSENT", "NO_SITE_MEMBERSHIP"],
+          }),
         ],
       }),
     );
@@ -92,14 +112,14 @@ describe("ReassignMissionDialog", () => {
     renderDialog({});
 
     await waitFor(() => {
-      expect(screen.getByText("Absent ce jour")).toBeInTheDocument();
-      expect(screen.getByText("Non affilié au site")).toBeInTheDocument();
+      expect(screen.getByText("Absente")).toBeInTheDocument();
+      expect(screen.getByText("Non affiliée à ce site")).toBeInTheDocument();
     });
   });
 
-  it("shows empty state when no eligible and no ineligible candidates", async () => {
+  it("shows empty state when there are no candidates", async () => {
     vi.mocked(api.fetchMissionEligibleInstrumentists).mockResolvedValue(
-      makeEligibilityResponse({ eligible: [], ineligible: [] }),
+      makeEligibilityResponse({ candidates: [] }),
     );
 
     renderDialog({});
@@ -111,43 +131,52 @@ describe("ReassignMissionDialog", () => {
     });
   });
 
-  it("shows warning when no eligible but there are ineligible candidates", async () => {
+  it("shows warning when no candidate is selectable", async () => {
     vi.mocked(api.fetchMissionEligibleInstrumentists).mockResolvedValue(
       makeEligibilityResponse({
-        eligible: [],
-        ineligible: [{ id: 7, name: "Bob", email: "bob@test.com", reasons: ["ABSENT"] }],
+        candidates: [makeCandidate({ id: 7, name: "Bob", eligible: false, selectable: false, reasons: ["ABSENT"] })],
       }),
     );
 
     renderDialog({});
 
     await waitFor(() => {
-      expect(screen.getByText(/Aucun instrumentiste éligible/i)).toBeInTheDocument();
+      expect(screen.getByText(/Aucun instrumentiste sélectionnable/i)).toBeInTheDocument();
     });
   });
 
-  it("calls onConfirm with id and name after selecting eligible candidate", async () => {
+  it("does not allow clicking a non-selectable candidate", async () => {
     vi.mocked(api.fetchMissionEligibleInstrumentists).mockResolvedValue(
       makeEligibilityResponse({
-        eligible: [{ id: 5, name: "Alice Martin", email: "alice@test.com" }],
+        candidates: [
+          makeCandidate({ id: 5, name: "Alice", selectable: true }),
+          makeCandidate({ id: 7, name: "Bob", eligible: false, selectable: false, reasons: ["ABSENT"] }),
+        ],
+      }),
+    );
+
+    renderDialog({});
+
+    await waitFor(() => screen.getByTestId("reassign-candidate-7"));
+    fireEvent.click(screen.getByTestId("reassign-candidate-7"));
+
+    const confirmBtn = screen.getByRole("button", { name: /Réassigner/i });
+    expect(confirmBtn).toBeDisabled();
+  });
+
+  it("calls onConfirm with id and name after selecting a selectable candidate", async () => {
+    vi.mocked(api.fetchMissionEligibleInstrumentists).mockResolvedValue(
+      makeEligibilityResponse({
+        candidates: [makeCandidate({ id: 5, name: "Alice Martin", selectable: true })],
       }),
     );
 
     const onConfirm = vi.fn();
     renderDialog({ onConfirm });
 
-    // Wait for dialog content to load
-    await waitFor(() => screen.getByTestId("reassign-eligible-select"));
+    await waitFor(() => screen.getByTestId("reassign-candidate-5"));
+    fireEvent.click(screen.getByTestId("reassign-candidate-5"));
 
-    // Select the eligible candidate via MUI Select (use fireEvent.mouseDown)
-    const selectEl = screen.getByTestId("reassign-eligible-select").querySelector("[role='combobox']");
-    if (selectEl) {
-      fireEvent.mouseDown(selectEl);
-      const option = await screen.findByRole("option", { name: "Alice Martin" });
-      fireEvent.click(option);
-    }
-
-    // Click confirm
     const confirmBtn = screen.getByRole("button", { name: /Réassigner/i });
     fireEvent.click(confirmBtn);
 

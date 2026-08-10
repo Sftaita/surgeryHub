@@ -9,7 +9,9 @@ use App\Enum\AuditEventType;
 use App\Enum\MissionStatus;
 use App\Enum\PlanningAlertStatus;
 use App\Enum\PlanningAlertType;
+use App\Enum\EligibilityEnforcementPolicy;
 use App\Security\Voter\PlanningVoter;
+use App\Service\MissionEligibilityService;
 use App\Service\PlanningAlertActionService;
 use App\Service\PlanningAlertService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -34,6 +36,7 @@ class PlanningAlertController extends AbstractController
         private readonly EntityManagerInterface $em,
         private readonly PlanningAlertService $alertService,
         private readonly PlanningAlertActionService $actionService,
+        private readonly MissionEligibilityService $eligibilityService,
     ) {}
 
     // ── List ──────────────────────────────────────────────────────────────────
@@ -193,24 +196,36 @@ class PlanningAlertController extends AbstractController
         return $this->json($this->alertService->serialize($alert));
     }
 
+    /**
+     * D-102 (Lot 2) — repointed to the canonical `MissionEligibilityService::
+     * evaluateAllCandidates()` (was `PlanningAlertActionService::findEligibleInstrumentists()`,
+     * a separate implementation that silently pre-filtered ineligible candidates out
+     * entirely — the exact "silently hiding" pattern this lot eliminates). Always
+     * STRICT_ASSIGNMENT: this endpoint feeds `POST /api/planning/alerts/{id}/reassign`,
+     * a direct single-mission reassignment, never Mode Modification.
+     */
     #[Route('/api/planning/alerts/{id}/eligible-instrumentists', name: 'api_planning_alert_eligible_instrumentists', methods: ['GET'])]
     public function eligibleInstrumentists(int $id): JsonResponse
     {
         $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
 
-        $alert      = $this->findOrFail($id);
-        $candidates = $this->actionService->findEligibleInstrumentists($alert->getMission());
+        $alert   = $this->findOrFail($id);
+        $mission = $alert->getMission();
+        $results = $this->eligibilityService->evaluateAllCandidates($mission);
+
+        $candidates = array_map(function ($result) {
+            $entry = $this->eligibilityService->serializeCandidate($result, EligibilityEnforcementPolicy::STRICT_ASSIGNMENT);
+            $entry['sites'] = array_values(array_filter(array_map(
+                static fn ($sm) => $sm->getSite()?->getName(),
+                $result->candidate->getSiteMemberships()->toArray(),
+            )));
+            return $entry;
+        }, $results);
 
         return $this->json([
-            'items' => array_map(static fn (User $u) => [
-                'id'    => $u->getId(),
-                'email' => $u->getEmail(),
-                'name'  => trim(($u->getFirstname() ?? '') . ' ' . ($u->getLastname() ?? '')) ?: $u->getEmail(),
-                'sites' => array_values(array_filter(array_map(
-                    static fn ($sm) => $sm->getSite()?->getName(),
-                    $u->getSiteMemberships()->toArray(),
-                ))),
-            ], $candidates),
+            'missionId'  => $mission->getId(),
+            'policy'     => EligibilityEnforcementPolicy::STRICT_ASSIGNMENT->value,
+            'candidates' => $candidates,
         ]);
     }
 

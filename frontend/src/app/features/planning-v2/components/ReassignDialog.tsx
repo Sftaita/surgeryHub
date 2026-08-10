@@ -6,8 +6,9 @@ import CloseIcon from "@mui/icons-material/Close";
 import CheckIcon from "@mui/icons-material/Check";
 import { useQuery } from "@tanstack/react-query";
 
-import type { PlanningAlertV2 } from "../api/planningV2.types";
+import type { CandidateEligibility, PlanningAlertV2 } from "../api/planningV2.types";
 import { getEligibleInstrumentists, extractErrorV2 } from "../api/planningV2.api";
+import { candidateGhostLabel } from "../api/eligibilityReasons";
 import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 
@@ -42,8 +43,13 @@ export function ReassignDialog({ open, onClose, alert, onConfirm, submitting }: 
 
   if (!alert) return null;
 
-  const candidates = eligibleQuery.data?.items ?? [];
-  const selected = candidates.find((c) => c.id === selectedId) ?? null;
+  const candidates = eligibleQuery.data?.candidates ?? [];
+  const selected = candidates.find((c) => c.id === selectedId && c.selectable) ?? null;
+
+  function selectCandidate(c: CandidateEligibility) {
+    if (!c.selectable) return;
+    setSelectedId(c.id);
+  }
 
   return (
     <Dialog
@@ -78,24 +84,33 @@ export function ReassignDialog({ open, onClose, alert, onConfirm, submitting }: 
         ) : view === "list" ? (
           <Stack spacing={1.1}>
             {candidates.map((c) => {
-              const isSelected = c.id === selectedId;
+              const isSelected = c.id === selectedId && c.selectable;
+              const ghostLabel = candidateGhostLabel(c);
               return (
                 <Stack
                   key={c.id} direction="row" alignItems="center" spacing={1.75}
-                  onClick={() => setSelectedId(c.id)}
+                  onClick={() => selectCandidate(c)}
+                  aria-disabled={!c.selectable}
+                  data-testid={`reassign-candidate-${c.id}`}
                   sx={{
-                    p: 1.5, borderRadius: planningV2Radii.card, cursor: "pointer",
+                    p: 1.5, borderRadius: planningV2Radii.card, cursor: c.selectable ? "pointer" : "not-allowed",
                     border: `1.5px solid ${isSelected ? planningV2Colors.brand : planningV2Colors.cardBorder}`,
                     bgcolor: isSelected ? planningV2Colors.selectedBg : "#fff",
+                    opacity: c.selectable ? 1 : 0.5,
                   }}
                 >
                   <PersonAvatar name={c.name} size="md" />
                   <Box sx={{ flex: 1, minWidth: 0 }}>
                     <Typography sx={{ fontSize: 14, fontWeight: 700, color: planningV2Colors.textTitle }}>{c.name}</Typography>
                     <Typography sx={{ fontSize: 12, color: planningV2Colors.textMuted, mt: 0.3 }}>
-                      {c.sites.length > 0 ? c.sites.join(", ") : c.email}
+                      {c.sites && c.sites.length > 0 ? c.sites.join(", ") : c.email}
                     </Typography>
                   </Box>
+                  {ghostLabel && (
+                    <Typography sx={{ fontSize: 11, fontWeight: 600, color: planningV2Colors.textMuted, flex: "none" }}>
+                      {ghostLabel}
+                    </Typography>
+                  )}
                   <Box sx={{
                     width: 32, height: 32, borderRadius: "999px", flex: "none", display: "flex", alignItems: "center", justifyContent: "center",
                     border: `2px solid ${isSelected ? planningV2Colors.brand : "#E7EBEF"}`,
@@ -111,14 +126,18 @@ export function ReassignDialog({ open, onClose, alert, onConfirm, submitting }: 
         ) : (
           <Box sx={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 1.25 }}>
             {candidates.map((c) => {
-              const isSelected = c.id === selectedId;
+              const isSelected = c.id === selectedId && c.selectable;
+              const ghostLabel = candidateGhostLabel(c);
               return (
                 <Box
-                  key={c.id} onClick={() => setSelectedId(c.id)}
+                  key={c.id} onClick={() => selectCandidate(c)}
+                  aria-disabled={!c.selectable}
+                  data-testid={`reassign-candidate-compare-${c.id}`}
                   sx={{
-                    p: 1.5, borderRadius: planningV2Radii.card, cursor: "pointer", position: "relative",
+                    p: 1.5, borderRadius: planningV2Radii.card, cursor: c.selectable ? "pointer" : "not-allowed", position: "relative",
                     border: `1.5px solid ${isSelected ? planningV2Colors.brand : planningV2Colors.cardBorder}`,
                     bgcolor: isSelected ? planningV2Colors.selectedBg : "#fff",
+                    opacity: c.selectable ? 1 : 0.5,
                   }}
                 >
                   <Box sx={{ mb: 1.25 }}>
@@ -126,8 +145,13 @@ export function ReassignDialog({ open, onClose, alert, onConfirm, submitting }: 
                   </Box>
                   <Typography sx={{ fontSize: 13.5, fontWeight: 700 }}>{c.name}</Typography>
                   <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary, mt: 0.3, mb: 1 }}>
-                    {c.sites.length > 0 ? c.sites.join(", ") : c.email}
+                    {c.sites && c.sites.length > 0 ? c.sites.join(", ") : c.email}
                   </Typography>
+                  {ghostLabel && (
+                    <Typography sx={{ fontSize: 10.5, fontWeight: 600, color: planningV2Colors.textMuted }}>
+                      {ghostLabel}
+                    </Typography>
+                  )}
                 </Box>
               );
             })}

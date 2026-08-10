@@ -7511,3 +7511,90 @@ sélecteurs) — Lot 2. Absence chirurgien/instrumentiste comme événement mét
 enrichies, postes récurrents) — Lots 3–5. Bouton manuel "Vérifier les conflits" par
 `PlanningVersion` — Lot 6. Ces lots seront chacun redétaillés et validés séparément
 avant implémentation.
+
+---
+
+## D-102 — Planning V2 : UX fantôme uniforme des instrumentistes inéligibles (Lot 2, 2026-08-10)
+
+Date : 2026-08-10
+
+### Contexte
+
+Suite du Lot 1 (D-101) : chaque sélecteur d'instrumentiste lié au planning (Preview
+Editor, assignation manuelle, réassignation, alerte, ajout post-déploiement) affichait
+soit la liste brute et non filtrée (aucune indication d'indisponibilité), soit une
+annotation ad hoc calculée côté frontend (absence du jour via un appel séparé à
+`getAbsences()`, "déjà affecté ailleurs" recalculé localement) — deux implémentations
+divergentes de la même règle métier, aucune ne couvrant `INACTIVE`/`SCHEDULE_CONFLICT`.
+Objectif : une personne indisponible reste **visible** (pour expliquer pourquoi elle
+n'est pas choisie) mais **non sélectionnable**, partout, à partir d'une unique source de
+vérité backend.
+
+### Décision — DTO `CandidateEligibility` unique, jamais filtré
+
+Chaque endpoint de liste (`/api/missions/{id}/eligible-instrumentists`,
+`/api/planning/alerts/{id}/eligible-instrumentists`, nouveau
+`/api/planning/v2/eligible-instrumentists`) retourne désormais tout le roster annoté,
+plus jamais un split `{eligible[], ineligible[]}` ni une liste pré-filtrée :
+`{id, name, email, eligible, selectable, reasons[], unavailability, conflict}`, plus
+`sites[]` sur l'endpoint alerte. `eligible` est un fait brut (raisons vides) ;
+`selectable` est **déjà contextualisé côté backend** sous la `policy` de la réponse
+(`EligibilityResult::selectableUnder(EligibilityEnforcementPolicy)`) — le frontend ne lit
+que ce champ pour désactiver une option, il ne recalcule jamais l'éligibilité.
+
+### Décision — `evaluateRoster()`, nouvelle méthode pour les créneaux sans mission persistée
+
+Le Preview Editor édite des lignes qui n'ont pas encore de `Mission` en base (génération
+avant déploiement, création de mission en Mode Modification, brouillon bulk-assign).
+`evaluateAllCandidates()`/`evaluateForReassignment()` (D-101) exigent une `Mission`
+existante — nouvelle méthode `evaluateRoster(?Hospital $site, DateTimeImmutable $start,
+DateTimeImmutable $end, ?int $excludeMissionId)` : roster actif complet (pas de filtre
+site sur la requête candidats — `NO_SITE_MEMBERSHIP` reste une raison informative, pas un
+filtre d'exclusion), 4 requêtes DB (D-036), même détection absence/conflit que les autres
+méthodes. Nouvel endpoint `GET /api/planning/v2/eligible-instrumentists`
+(`siteId?, date, startTime, endTime, excludeMissionId?, policy?`).
+
+### Décision — politique explicite, jamais recalculée côté frontend
+
+`EligibilityEnforcementPolicy` (D-101) devient *string-backed* pour transiter en query
+param. `STRICT_ASSIGNMENT` (défaut) bloque `ABSENT`/`SCHEDULE_CONFLICT`/`INACTIVE` ;
+`PLANNING_MODIFICATION` ne bloque que `ABSENT`/`INACTIVE` — `SCHEDULE_CONFLICT` reste
+visible (badge d'avertissement) mais sélectionnable, cohérent avec D-091/D-052 (un
+manager peut délibérément accepter un chevauchement cross-site en Mode Modification,
+surfacé ensuite comme `PlanningAlert` plutôt que bloqué). Le frontend transmet la
+`policy` selon le contexte (`isModification ? PLANNING_MODIFICATION :
+STRICT_ASSIGNMENT`) mais ne réimplémente jamais `blockingReasons()`.
+
+### Décision — `NO_SITE_MEMBERSHIP` reste non bloquant (rappel D-101)
+
+Conformément à D-101 : `NO_SITE_MEMBERSHIP` continue à apparaître dans `reasons[]` à
+titre informatif ("Non affiliée à ce site") mais **ne rend jamais `selectable: false`**,
+sous aucune des deux politiques. Aucune régression introduite ici — ce lot ne fait
+qu'exposer ce que le backend savait déjà via un canal uniforme.
+
+### Décision — un concern purement local reste local : "déjà affecté ailleurs" (Preview Editor)
+
+Le Preview Editor peut réassigner une personne sur un autre créneau du même aperçu, non
+encore persisté — le backend ne peut pas le voir (ce ne sont pas des `Mission` en base).
+Ce contrôle reste calculé côté client (`findSameDayAssignmentElsewhere`, inchangé), en
+warning non bloquant, superposé *après* le ghosting backend (qui garde priorité s'il
+bloque déjà pour une autre raison). Ce n'est pas une duplication de règle métier
+backend — c'est une information que le backend ne peut structurellement pas avoir avant
+déploiement.
+
+### Décision — composants factorisés
+
+`SearchableSelect` (`SearchableOption.disabled`, nouveau — distinct de `muted` qui reste
+purement cosmétique) devient le seul endroit qui sait rendre un vrai fantôme
+(`getOptionDisabled`, `aria-disabled`, blocage clic/clavier). `eligibilityReasons.ts`
+centralise le libellé FR par raison (remplace les copies locales dans
+`GeneratePlanningTab.tsx` et `ReassignMissionDialog.tsx`) et le calcul du badge compact
+(`candidateGhostLabel`). `useRosterEligibility.ts` fournit les hooks React Query
+(`useRosterEligibility` pour un créneau, `useMergedRosterEligibility` pour un bulk-assign
+multi-créneaux — intersection conservative : un candidat n'est offert que s'il est
+sélectionnable pour *chaque* créneau sélectionné).
+
+### Non traité dans ce lot
+
+Lots 3–6 (absence chirurgien avant génération, restauration réversible, email manager,
+bouton "Vérifier les conflits") — inchangés, toujours à détailler séparément.
