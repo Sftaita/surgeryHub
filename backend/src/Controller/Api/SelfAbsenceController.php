@@ -9,6 +9,7 @@ use App\Repository\UserRepository;
 use App\Security\Voter\AbsenceVoter;
 use App\Service\AbsenceImpactReconciliationService;
 use App\Service\AbsenceImpactService;
+use App\Service\AbsenceImpactSummaryService;
 use App\Service\AbsenceMissionReactionService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use App\Message\AbsenceSelfDeclaredMessage;
@@ -41,6 +42,7 @@ class SelfAbsenceController extends AbstractController
         private readonly AbsenceMissionReactionService $absenceMissionReactionService,
         private readonly SurgeonAbsenceOccurrenceImpactService $surgeonAbsenceOccurrenceImpactService,
         private readonly AbsenceImpactReconciliationService $reconciliationService,
+        private readonly AbsenceImpactSummaryService $absenceImpactSummaryService,
         private readonly UserRepository $userRepository,
         private readonly MessageBusInterface $bus,
     ) {}
@@ -183,6 +185,11 @@ class SelfAbsenceController extends AbstractController
         // Same ordering/two-phase split as AbsenceController::delete() (D-104, Lot 4) —
         // see AbsenceImpactReconciliationService's class docblock.
         $absenceId = $absence->getId();
+        $ownerUser = $absence->getUser();
+        $ownerRole = $ownerUser !== null ? self::personRole($ownerUser) : null;
+        $dateStart = $absence->getDateStart()->format('Y-m-d');
+        $dateEnd   = $absence->getDateEnd()->format('Y-m-d');
+
         $this->absenceImpactService->onAbsenceDeleted($absence);
         $restoredOccurrences = $this->reconciliationService->beginDeletion($absence, $currentUser);
         $this->absenceMissionReactionService->onAbsenceDeleted($absence, $currentUser);
@@ -190,7 +197,22 @@ class SelfAbsenceController extends AbstractController
         $this->em->remove($absence);
         $this->em->flush();
 
-        $this->reconciliationService->completeDeletion($absence, $absenceId, $currentUser, $restoredOccurrences);
+        $reconciliation = $this->reconciliationService->completeDeletion($absence, $absenceId, $currentUser, $restoredOccurrences);
+
+        // Lot 5 (D-105) — same consolidation as AbsenceController::delete().
+        if ($ownerUser !== null && $ownerRole !== null) {
+            $this->absenceImpactSummaryService->dispatch(
+                absenceId: $absenceId,
+                absentUserId: $ownerUser->getId(),
+                absentUserName: self::displayName($ownerUser),
+                absentUserRole: $ownerRole,
+                dateStart: $dateStart,
+                dateEnd: $dateEnd,
+                actor: $currentUser,
+                action: 'DELETED',
+                reconciliation: $reconciliation,
+            );
+        }
 
         return $this->json(null, 204);
     }
@@ -205,10 +227,15 @@ class SelfAbsenceController extends AbstractController
      * present, reconciliation runs last (restoring whatever fell out of a shortened range).
      * null from create() — a brand-new absence has nothing to reconcile.
      *
-     * If NEITHER the impact sync raised a new alert, NOR Lot 3 neutralized a future
-     * occurrence, NOR Lot 4 restored anything, the manager would otherwise learn nothing
-     * about this self-declared absence at all — dispatches ABSENCE_SELF_DECLARED for that
-     * case only, never when any of the three already covers it (no duplication, §14).
+     * If NEITHER the mission reaction, NOR the impact sync raised a new alert, NOR Lot 3
+     * neutralized a future occurrence, NOR Lot 4 restored anything, the manager would
+     * otherwise learn nothing about this self-declared absence at all — dispatches
+     * ABSENCE_SELF_DECLARED for that case only, never when any of the four already covers
+     * it (no duplication, §14). Before Lot 5 (D-105), the mission reaction's own result was
+     * never checked here at all — a self-declared absence that auto-released/cancelled a
+     * mission could still trigger this generic "nothing happened" notice, since
+     * AbsenceMissionReactionService's own handler never notified managers either. Fixed by
+     * including $missionSummaries in the condition below.
      */
     private function reactAndSync(
         Absence $absence,
@@ -216,16 +243,35 @@ class SelfAbsenceController extends AbstractController
         ?\DateTimeImmutable $previousDateStart = null,
         ?\DateTimeImmutable $previousDateEnd = null,
     ): void {
-        $this->absenceMissionReactionService->onAbsenceCreated($absence, $currentUser);
+        $missionSummaries = $previousDateStart !== null
+            ? $this->absenceMissionReactionService->onAbsenceUpdated($absence, $currentUser)
+            : $this->absenceMissionReactionService->onAbsenceCreated($absence, $currentUser);
         $result = $this->absenceImpactService->onAbsenceCreated($absence);
-        $occurrenceResult = $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceCreated($absence, $currentUser);
+        $occurrenceResult = $previousDateStart !== null
+            ? $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceUpdated($absence, $currentUser)
+            : $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceCreated($absence, $currentUser);
 
-        $reconciliationResult = ['restoredOccurrences' => 0, 'restoredMissions' => 0];
+        $reconciliationResult = ['restoredOccurrences' => [], 'restoredMissions' => []];
         if ($previousDateStart !== null && $previousDateEnd !== null) {
             $reconciliationResult = $this->reconciliationService->reconcileForUpdate($absence, $previousDateStart, $previousDateEnd, $currentUser);
         }
 
-        if (!empty($result['created']) || !empty($occurrenceResult['created'])
+        // Lot 5 (D-105) — ONE consolidated manager recap for this self-service create/update.
+        $this->absenceImpactSummaryService->dispatch(
+            absenceId: $absence->getId(),
+            absentUserId: $currentUser->getId(),
+            absentUserName: self::displayName($currentUser),
+            absentUserRole: self::personRole($currentUser) ?? 'INSTRUMENTIST',
+            dateStart: $absence->getDateStart()->format('Y-m-d'),
+            dateEnd: $absence->getDateEnd()->format('Y-m-d'),
+            actor: $currentUser,
+            action: $previousDateStart !== null ? 'UPDATED' : 'CREATED',
+            missionReactionSummaries: $missionSummaries,
+            occurrenceNeutralized: $occurrenceResult['occurrences'],
+            reconciliation: $reconciliationResult,
+        );
+
+        if (!empty($missionSummaries) || !empty($result['created']) || !empty($occurrenceResult['created'])
             || !empty($reconciliationResult['restoredOccurrences']) || !empty($reconciliationResult['restoredMissions'])
         ) {
             return;

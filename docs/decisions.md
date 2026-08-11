@@ -7789,3 +7789,109 @@ ajusté (ne prétend plus "jamais restauré automatiquement").
 Email manager enrichi de deep-links (Lot 5, si applicable). Bouton "Vérifier les
 conflits" (Lot 6). Restauration en cas de modification manuelle en Mode Modification
 (hors périmètre — jamais un chemin traversé par ce lot).
+
+## D-105 — Planning V2 : email manager consolidé après impact d'une absence (Lot 5, 2026-08-11)
+
+Date : 2026-08-11
+
+### Contexte
+
+Avant ce lot, trois pipelines manager-facing indépendants existaient pour un seul
+événement métier "absence" :
+`AbsenceMissionsReactedMessageHandler` (Lot "mission reaction", n'envoyait en réalité
+**rien** au manager — seulement à l'instrumentiste/chirurgien concerné),
+`SurgeonAbsenceOccurrencesNeutralizedMessageHandler` (Lot 3, `ABSENCE_OCCURRENCE_CANCELLED_MGR`),
+et `PlanningRestoredAfterAbsenceMessageHandler` (Lot 4, `MISSION_RESTORED_MGR`). Une
+même absence créée pouvant simultanément annuler des Missions déjà générées ET
+neutraliser des occurrences futures, un manager pouvait recevoir deux emails distincts
+pour un seul geste ("Absence Dr X" → email A puis email B), et rien n'empêchait un
+troisième canal parallèle d'apparaître au fil des lots suivants.
+
+### Décision — un point de consolidation unique, pas un canal parallèle
+
+`AbsenceController`/`SelfAbsenceController` sont déjà les seuls points du code qui
+appellent les trois (quatre, en comptant `AbsenceImpactReconciliationService`) services
+métier en séquence pour une même requête HTTP create()/update()/delete() — c'est donc le
+seul endroit qui voit déjà tous leurs résultats ensemble. Chaque service a été étendu
+pour **retourner** ses données structurées (au lieu de se contenter de dispatcher son
+propre message individuel) : `AbsenceMissionReactionService::onAbsenceCreated()/
+onAbsenceUpdated()` retournent désormais les résumés de mission au lieu de `void` ;
+`SurgeonAbsenceOccurrenceImpactService` retourne `occurrences` en plus de `created` ;
+`AbsenceImpactReconciliationService::completeDeletion()/reconcileForUpdate()` retournent
+les tableaux `restoredOccurrences`/`restoredMissions` au lieu de simples compteurs.
+Nouveau service `AbsenceImpactSummaryService::dispatch()`, appelé une seule fois en fin
+de `create()`/`update()`/`delete()`, agrège ces résultats en six compartiments
+(`missionsCancelled`, `missionsReleased`, `missionsRestoredAssigned`,
+`missionsRestoredOpen`, `futureOccurrencesCancelled`, `futureOccurrencesRestored`) et
+dispatche un unique `AbsenceImpactSummaryMessage`, uniquement si au moins un
+compartiment est non vide. Alternative écartée : généraliser directement le message Lot 4
+existant plutôt que d'en créer un nouveau — rejetée parce que `PlanningRestoredAfterAbsenceMessage`
+ne porte que la moitié des cas (restauration), jamais les nouveaux impacts (annulation/
+libération), et le retyper aurait cassé sa sémantique "restauration uniquement" utilisée
+ailleurs pour les notifications individuelles (conservées telles quelles, voir plus bas).
+
+### Décision — canaux individuels conservés, seul le canal manager est retiré des anciens handlers
+
+Les trois notifications individuelles préexistantes (`ABSENCE_OCCURRENCE_CANCELLED` à
+l'instrumentiste habituel du poste, `ABSENCE_OCCURRENCE_RESTORED`/`MISSION_RESTORED` au
+chirurgien/instrumentiste concerné, `ABSENCE_INSTRUMENTIST_RELEASED`/
+`ABSENCE_SURGEON_MISSION_OPENED`/`ABSENCE_MISSION_CANCELLED` via
+`AbsenceMissionsReactedMessageHandler`) ne sont **pas** dupliquées par ce lot — seul le
+problème réel (deux emails manager pour un seul événement) est résolu. Les méthodes
+`notifyManagers()` de `SurgeonAbsenceOccurrencesNeutralizedMessageHandler` et
+`PlanningRestoredAfterAbsenceMessageHandler` sont supprimées ; les types `NotificationType`
+`ABSENCE_OCCURRENCE_CANCELLED_MGR`/`ABSENCE_OCCURRENCE_RESTORED_MGR`/`MISSION_RESTORED_MGR`
+sont **conservés comme cas d'enum morts** (jamais plus dispatchés) plutôt que supprimés —
+un `NotificationPreference` déjà enregistré en base pour l'un de ces types lèverait un
+`ValueError` illisible à la lecture si le cas disparaissait purement et simplement.
+Nouveau type unique `ABSENCE_IMPACT_SUMMARY` (in-app + email par défaut), quel que soit
+le rôle (chirurgien/instrumentiste) ou l'action (créée/modifiée/supprimée) — un manager
+configure une seule préférence "impact absence", pas quatre.
+
+### Décision — le no-op générique de suppression est retiré, pas seulement inchangé
+
+`AbsenceMissionReactionService::onAbsenceDeleted()` envoyait auparavant une notice
+in-app générique et systématique ("l'absence a été supprimée, réévaluez manuellement")
+à chaque suppression, **même quand rien n'avait réellement été restauré** — ce qui
+contredit directement la règle §3/§4 du lot ("ne parler que des changements réellement
+effectués", "aucun email/notice sans impact réel"). Cette notice est retirée ; la méthode
+devient un no-op véritable. Le résumé consolidé la remplace entièrement pour le cas où
+une restauration réelle a eu lieu ; dans le cas contraire (rien à restaurer), silence
+total — comportement voulu, pas une régression.
+
+### Trou trouvé et corrigé — `ABSENCE_SELF_DECLARED` pouvait mentir
+
+`SelfAbsenceController::reactAndSync()` décidait d'envoyer la notice de repli
+`ABSENCE_SELF_DECLARED` ("rien ne s'est passé") en vérifiant les résultats
+d'`AbsenceImpactService`, `SurgeonAbsenceOccurrenceImpactService` et
+`AbsenceImpactReconciliationService` — **jamais** celui d'`AbsenceMissionReactionService`,
+dont le retour était `void` avant ce lot. Une absence auto-déclarée qui libérait/annulait
+réellement une Mission pouvait donc déclencher la notice générique "aucune action
+requise" alors qu'un vrai changement venait d'avoir lieu. Corrigé en incluant
+`$missionSummaries` dans la condition de garde.
+
+### Décision — déduplication Messenger : garantie documentée, pas de nouvel outbox
+
+Aucun mécanisme d'idempotence/outbox n'existe pour `AbsenceImpactSummaryMessageHandler`
+(ni pour les handlers des Lots 3/4 avant lui) — un replay Messenger du même message
+re-persiste une seconde `NotificationEvent` et redispatch un second email. Documenté
+explicitement par un test dédié
+(`test_replaying_the_same_message_is_not_deduplicated_documented_current_behavior`)
+plutôt que masqué. Construire un outbox était explicitement hors périmètre (§15).
+
+### Décision — un seul template paramétré, pas trois quasi identiques
+
+`emails/absence_manager_impact_summary.html.twig` remplace les deux anciens templates
+manager (`absence_surgeon_occurrence_neutralized_manager.html.twig`,
+`absence_restored_manager.html.twig`, supprimés) avec une structure unique séparant
+"Impact automatique" (`missionsCancelled`, `futureOccurrencesCancelled`,
+`missionsRestoredAssigned`, `futureOccurrencesRestored`) de "Action requise"
+(`missionsReleased`, `missionsRestoredOpen`) — c'est cette distinction, pas
+l'action/le rôle, qui détermine si l'objet de l'email doit alerter ("Planning à
+couvrir") ou simplement informer ("Impact planning"/"Planning mis à jour").
+
+### Non traité dans ce lot
+
+Deep links vers mission/planning/alerte (aucun mécanisme de génération de lien
+réutilisable n'existe dans le code — introduire ce pattern est hors périmètre, §12).
+Bouton "Vérifier les conflits" (Lot 6).

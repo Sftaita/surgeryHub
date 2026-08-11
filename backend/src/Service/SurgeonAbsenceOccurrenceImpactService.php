@@ -11,7 +11,6 @@ use App\Enum\AuditEventType;
 use App\Enum\OccurrenceExceptionSource;
 use App\Enum\OccurrenceExceptionType;
 use App\Message\SurgeonAbsenceOccurrencesNeutralizedMessage;
-use App\Repository\UserRepository;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -55,34 +54,33 @@ class SurgeonAbsenceOccurrenceImpactService
         private readonly PlanningGeneratorServiceV2 $generator,
         private readonly AuditService $auditService,
         private readonly MessageBusInterface $bus,
-        private readonly UserRepository $userRepository,
         private readonly LoggerInterface $logger,
     ) {
     }
 
-    /** @return array{created: int} */
+    /** @return array{created: int, occurrences: array<int, array<string, mixed>>} */
     public function onSurgeonAbsenceCreated(Absence $absence, User $actor): array
     {
         return $this->react($absence, $actor);
     }
 
-    /** @return array{created: int} */
+    /** @return array{created: int, occurrences: array<int, array<string, mixed>>} */
     public function onSurgeonAbsenceUpdated(Absence $absence, User $actor): array
     {
         return $this->react($absence, $actor);
     }
 
-    /** @return array{created: int} */
+    /** @return array{created: int, occurrences: array<int, array<string, mixed>>} */
     private function react(Absence $absence, User $actor): array
     {
         $surgeon = $absence->getUser();
         if ($surgeon === null || self::roleOf($surgeon) !== 'SURGEON') {
-            return ['created' => 0];
+            return ['created' => 0, 'occurrences' => []];
         }
 
         $posts = $this->loadActivePosts($surgeon, $absence->getDateStart(), $absence->getDateEnd());
         if (empty($posts)) {
-            return ['created' => 0];
+            return ['created' => 0, 'occurrences' => []];
         }
 
         $neutralized = [];
@@ -150,15 +148,10 @@ class SurgeonAbsenceOccurrenceImpactService
         }
 
         if (empty($neutralized)) {
-            return ['created' => 0];
+            return ['created' => 0, 'occurrences' => []];
         }
 
         $this->em->flush();
-
-        $managerIds = array_map(
-            static fn (User $m) => $m->getId(),
-            $this->userRepository->findManagersAndAdmins(true),
-        );
 
         $this->bus->dispatch(new SurgeonAbsenceOccurrencesNeutralizedMessage(
             absenceId: $absence->getId(),
@@ -168,11 +161,10 @@ class SurgeonAbsenceOccurrenceImpactService
             dateEnd: $absence->getDateEnd()->format('Y-m-d'),
             actorId: $actor->getId(),
             occurrences: $neutralized,
-            recipientManagerIds: $managerIds,
             occurredAt: new \DateTimeImmutable(),
         ));
 
-        return ['created' => count($neutralized)];
+        return ['created' => count($neutralized), 'occurrences' => $neutralized];
     }
 
     /** @return SurgeonSchedulePost[] */

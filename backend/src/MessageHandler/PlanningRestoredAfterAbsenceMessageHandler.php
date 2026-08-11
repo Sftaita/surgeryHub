@@ -23,8 +23,12 @@ use Symfony\Component\Messenger\MessageBusInterface;
  * A mission restored to OPEN (old instrumentist no longer eligible) does NOT get a
  * per-recipient MISSION_RESTORED notification here — that outcome already surfaces via the
  * REASSIGNMENT_REQUIRED PlanningAlert the reconciliation service creates for it (§10), and
- * via the existing SURGEON_POST_UNCOVERED pipeline. It is still counted in the manager
- * summary (§21's example explicitly lists both outcomes).
+ * via the existing SURGEON_POST_UNCOVERED pipeline.
+ *
+ * Manager notification for this event moved to AbsenceImpactSummaryMessageHandler (Lot 5,
+ * D-105) — this handler used to also email every manager/admin separately here, which meant
+ * a single absence could produce two independent manager emails for what felt like one
+ * event. It now only ever notifies the individual surgeon/instrumentist.
  */
 #[AsMessageHandler]
 final class PlanningRestoredAfterAbsenceMessageHandler
@@ -49,7 +53,6 @@ final class PlanningRestoredAfterAbsenceMessageHandler
 
         $this->notifyOccurrenceInstrumentists($message);
         $this->notifyMissionRecipients($message);
-        $this->notifyManagers($message);
     }
 
     // ── Occurrences restored (pre-generation) — post's default instrumentist ─────
@@ -126,76 +129,6 @@ final class PlanningRestoredAfterAbsenceMessageHandler
                 ? sprintf('%d missions ont été réaffectées à votre planning', $count)
                 : 'Une mission a été réaffectée à votre planning';
             $this->notifyRecipient($instrumentist, NotificationType::MISSION_RESTORED, $missions, 'emails/mission_restored.html.twig', $subject);
-        }
-    }
-
-    // ── Manager — one combined summary (§21) ──────────────────────────────────
-
-    private function notifyManagers(PlanningRestoredAfterAbsenceMessage $message): void
-    {
-        $assignedCount = count(array_filter($message->restoredMissions, static fn (array $m) => $m['restoredStatus'] === 'ASSIGNED'));
-        $openCount     = count(array_filter($message->restoredMissions, static fn (array $m) => $m['restoredStatus'] === 'OPEN'));
-        $occCount      = count($message->restoredOccurrences);
-
-        $parts = [];
-        if ($occCount > 0)      { $parts[] = sprintf('%d occurrence(s) réactivée(s)', $occCount); }
-        if ($assignedCount > 0) { $parts[] = sprintf('%d mission(s) restaurée(s) ASSIGNED', $assignedCount); }
-        if ($openCount > 0)     { $parts[] = sprintf('%d mission(s) restaurée(s) OPEN', $openCount); }
-        $subject = sprintf('Absence modifiée — %s', $message->absentUserName);
-
-        $summary = [
-            'absenceId'      => $message->absenceId,
-            'absentUserName' => $message->absentUserName,
-            'occurrences'    => $message->restoredOccurrences,
-            'missions'       => $message->restoredMissions,
-            'assignedCount'  => $assignedCount,
-            'openCount'      => $openCount,
-            'occurrenceCount' => $occCount,
-            'summaryLine'    => implode(' · ', $parts),
-        ];
-
-        foreach ($message->recipientManagerIds as $managerId) {
-            $manager = $this->em->find(User::class, $managerId);
-            if ($manager === null) {
-                continue;
-            }
-
-            $channels = $this->resolveChannelsSafely($manager, NotificationType::MISSION_RESTORED_MGR);
-
-            if ($channels->inApp) {
-                try {
-                    $evt = (new NotificationEvent())
-                        ->setUser($manager)
-                        ->setEventType(NotificationType::MISSION_RESTORED_MGR->value)
-                        ->setChannel(PublicationChannel::IN_APP)
-                        ->setSentAt(new \DateTimeImmutable())
-                        ->setPayload($summary);
-                    $this->em->persist($evt);
-                    $this->em->flush();
-                } catch (\Throwable $e) {
-                    $this->logger->error('PlanningRestoredAfterAbsence: manager inApp notification failed', [
-                        'userId' => $manager->getId(), 'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-
-            if ($channels->email && $manager->getEmail()) {
-                try {
-                    $this->bus->dispatch(new SendBillingEmailMessage(
-                        to: $manager->getEmail(),
-                        cc: [],
-                        subject: $subject,
-                        fromAddress: $this->fromAddress,
-                        fromName: $this->fromName,
-                        htmlTemplate: 'emails/absence_restored_manager.html.twig',
-                        context: array_merge(['recipientName' => self::displayName($manager)], $summary),
-                    ));
-                } catch (\Throwable $e) {
-                    $this->logger->error('PlanningRestoredAfterAbsence: manager email dispatch failed', [
-                        'userId' => $manager->getId(), 'error' => $e->getMessage(),
-                    ]);
-                }
-            }
         }
     }
 

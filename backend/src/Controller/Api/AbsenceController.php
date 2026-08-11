@@ -7,6 +7,7 @@ use App\Entity\User;
 use App\Security\Voter\PlanningVoter;
 use App\Service\AbsenceImpactReconciliationService;
 use App\Service\AbsenceImpactService;
+use App\Service\AbsenceImpactSummaryService;
 use App\Service\AbsenceMissionReactionService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -25,6 +26,7 @@ class AbsenceController extends AbstractController
         private readonly AbsenceMissionReactionService $absenceMissionReactionService,
         private readonly SurgeonAbsenceOccurrenceImpactService $surgeonAbsenceOccurrenceImpactService,
         private readonly AbsenceImpactReconciliationService $reconciliationService,
+        private readonly AbsenceImpactSummaryService $absenceImpactSummaryService,
     ) {}
 
     #[Route('', name: 'api_absences_list', methods: ['GET'])]
@@ -100,11 +102,26 @@ class AbsenceController extends AbstractController
         // now null, or status now CANCELLED), so it never raises a stale alert asking the
         // manager to do what was already done automatically. See AbsenceMissionReactionService's
         // class docblock for the full reasoning.
-        $this->absenceMissionReactionService->onAbsenceCreated($absence, $currentUser);
+        $missionSummaries = $this->absenceMissionReactionService->onAbsenceCreated($absence, $currentUser);
         $this->absenceImpactService->onAbsenceCreated($absence);
         // Lot 3 (D-103) — future Post occurrences with no Mission yet, independent of the
         // two calls above (they only ever act on already-materialized Mission rows).
-        $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceCreated($absence, $currentUser);
+        $occurrenceResult = $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceCreated($absence, $currentUser);
+
+        // Lot 5 (D-105) — ONE consolidated manager recap for this create, combining both
+        // results above; never dispatched if neither produced a real impact.
+        $this->absenceImpactSummaryService->dispatch(
+            absenceId: $absence->getId(),
+            absentUserId: $user->getId(),
+            absentUserName: self::displayName($user),
+            absentUserRole: self::personRole($user) ?? 'INSTRUMENTIST',
+            dateStart: $absence->getDateStart()->format('Y-m-d'),
+            dateEnd: $absence->getDateEnd()->format('Y-m-d'),
+            actor: $currentUser,
+            action: 'CREATED',
+            missionReactionSummaries: $missionSummaries,
+            occurrenceNeutralized: $occurrenceResult['occurrences'],
+        );
 
         return $this->json($this->serialize($absence), 201);
     }
@@ -159,10 +176,29 @@ class AbsenceController extends AbstractController
         // See create() — same ordering reasoning. Reconciliation (restoring what fell out of
         // a shortened range) runs last, after the "create new impacts" services above have
         // already reacted to the new (already-flushed) range.
-        $this->absenceMissionReactionService->onAbsenceUpdated($absence, $currentUser);
+        $missionSummaries = $this->absenceMissionReactionService->onAbsenceUpdated($absence, $currentUser);
         $this->absenceImpactService->onAbsenceUpdated($absence);
-        $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceUpdated($absence, $currentUser);
-        $this->reconciliationService->reconcileForUpdate($absence, $previousDateStart, $previousDateEnd, $currentUser);
+        $occurrenceResult = $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceUpdated($absence, $currentUser);
+        $reconciliation = $this->reconciliationService->reconcileForUpdate($absence, $previousDateStart, $previousDateEnd, $currentUser);
+
+        // Lot 5 (D-105) — ONE consolidated manager recap covering both new impacts (if the
+        // range grew) and restorations (if it shrank) from this single update.
+        $user = $absence->getUser();
+        if ($user !== null) {
+            $this->absenceImpactSummaryService->dispatch(
+                absenceId: $absence->getId(),
+                absentUserId: $user->getId(),
+                absentUserName: self::displayName($user),
+                absentUserRole: self::personRole($user) ?? 'INSTRUMENTIST',
+                dateStart: $absence->getDateStart()->format('Y-m-d'),
+                dateEnd: $absence->getDateEnd()->format('Y-m-d'),
+                actor: $currentUser,
+                action: 'UPDATED',
+                missionReactionSummaries: $missionSummaries,
+                occurrenceNeutralized: $occurrenceResult['occurrences'],
+                reconciliation: $reconciliation,
+            );
+        }
 
         return $this->json($this->serialize($absence));
     }
@@ -186,6 +222,11 @@ class AbsenceController extends AbstractController
         // needs the Absence row physically gone for eligibility re-validation to be
         // accurate (completeDeletion(), after removal+flush).
         $absenceId = $absence->getId();
+        $user      = $absence->getUser();
+        $role      = $user !== null ? self::personRole($user) : null;
+        $dateStart = $absence->getDateStart()->format('Y-m-d');
+        $dateEnd   = $absence->getDateEnd()->format('Y-m-d');
+
         $this->absenceImpactService->onAbsenceDeleted($absence);
         $restoredOccurrences = $this->reconciliationService->beginDeletion($absence, $currentUser);
         $this->absenceMissionReactionService->onAbsenceDeleted($absence, $currentUser);
@@ -193,7 +234,23 @@ class AbsenceController extends AbstractController
         $this->em->remove($absence);
         $this->em->flush();
 
-        $this->reconciliationService->completeDeletion($absence, $absenceId, $currentUser, $restoredOccurrences);
+        $reconciliation = $this->reconciliationService->completeDeletion($absence, $absenceId, $currentUser, $restoredOccurrences);
+
+        // Lot 5 (D-105) — ONE consolidated manager recap, only ever covering restorations
+        // (deletion never produces a new impact) — never dispatched if nothing was restored.
+        if ($user !== null && $role !== null) {
+            $this->absenceImpactSummaryService->dispatch(
+                absenceId: $absenceId,
+                absentUserId: $user->getId(),
+                absentUserName: self::displayName($user),
+                absentUserRole: $role,
+                dateStart: $dateStart,
+                dateEnd: $dateEnd,
+                actor: $currentUser,
+                action: 'DELETED',
+                reconciliation: $reconciliation,
+            );
+        }
 
         return $this->json(null, 204);
     }
@@ -226,6 +283,12 @@ class AbsenceController extends AbstractController
      * for any other role rather than guessing (defensive, should not normally happen since
      * only those two roles can be selected when creating an absence).
      */
+    private static function displayName(User $user): string
+    {
+        $name = trim(($user->getFirstname() ?? '') . ' ' . ($user->getLastname() ?? ''));
+        return $name !== '' ? $name : ($user->getEmail() ?? '');
+    }
+
     private static function personRole(User $user): ?string
     {
         $roles = $user->getRoles();

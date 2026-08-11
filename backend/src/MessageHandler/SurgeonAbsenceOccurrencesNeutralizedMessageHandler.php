@@ -17,17 +17,19 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * D-103 (Lot 3) — recap notifications for SurgeonAbsenceOccurrenceImpactService, mirroring
+ * D-103 (Lot 3) — recap notification for SurgeonAbsenceOccurrenceImpactService, mirroring
  * AbsenceMissionsReactedMessageHandler's pattern for the "no Mission exists yet" case:
+ * the post's default instrumentist (when set) gets ONE recap per absence-processing run,
+ * grouping every occurrence they'd habitually have covered (§12 — never one notification
+ * per occurrence).
  *
- *   - The post's default instrumentist (when set): ONE recap per absence-processing run,
- *     grouping every occurrence they'd habitually have covered (§12 — never one
- *     notification per occurrence).
- *   - Every active manager/admin: ONE recap listing every neutralized occurrence across
- *     every affected post (§13).
+ * In-app + email, batched exactly like the D-062 template — no Mission to attach to the
+ * NotificationEvent (nullable field, this is the one path that leaves it unset).
  *
- * Both in-app + email, batched exactly like the D-062 template — no Mission to attach to
- * the NotificationEvent (nullable field, this is the one path that leaves it unset).
+ * Manager notification for this event moved to AbsenceImpactSummaryMessageHandler (Lot 5,
+ * D-105) — this handler used to also email every manager/admin separately here, which meant
+ * a single absence could produce two independent manager emails (this one, plus Lot 4's) for
+ * what felt like one event. It now only ever notifies the individual instrumentist.
  */
 #[AsMessageHandler]
 final class SurgeonAbsenceOccurrencesNeutralizedMessageHandler
@@ -51,7 +53,6 @@ final class SurgeonAbsenceOccurrencesNeutralizedMessageHandler
         }
 
         $this->notifyInstrumentists($message);
-        $this->notifyManagers($message);
     }
 
     // ── Post's default instrumentist, grouped by absence ──────────────────────
@@ -81,36 +82,6 @@ final class SurgeonAbsenceOccurrencesNeutralizedMessageHandler
                 NotificationType::ABSENCE_OCCURRENCE_CANCELLED,
                 $occurrences,
                 'emails/absence_surgeon_occurrence_neutralized.html.twig',
-                $subject,
-                [
-                    'surgeonName' => $message->surgeonName,
-                    'dateStart'   => (new \DateTimeImmutable($message->dateStart))->format('d/m/Y'),
-                    'dateEnd'     => (new \DateTimeImmutable($message->dateEnd))->format('d/m/Y'),
-                ],
-            );
-        }
-    }
-
-    // ── Every active manager/admin, one summary covering every occurrence ─────
-
-    private function notifyManagers(SurgeonAbsenceOccurrencesNeutralizedMessage $message): void
-    {
-        $count   = count($message->occurrences);
-        $subject = $count > 1
-            ? sprintf('%d postes futurs impactés par l\'absence de %s', $count, $message->surgeonName)
-            : sprintf('Un poste futur impacté par l\'absence de %s', $message->surgeonName);
-
-        foreach ($message->recipientManagerIds as $managerId) {
-            $manager = $this->em->find(User::class, $managerId);
-            if ($manager === null) {
-                continue;
-            }
-
-            $this->notifyRecipient(
-                $manager,
-                NotificationType::ABSENCE_OCCURRENCE_CANCELLED_MGR,
-                $message->occurrences,
-                'emails/absence_surgeon_occurrence_neutralized_manager.html.twig',
                 $subject,
                 [
                     'surgeonName' => $message->surgeonName,

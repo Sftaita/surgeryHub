@@ -15,7 +15,6 @@ use App\Enum\OccurrenceExceptionSource;
 use App\Enum\PlanningAlertType;
 use App\Exception\InstrumentistIneligibleException;
 use App\Message\PlanningRestoredAfterAbsenceMessage;
-use App\Repository\UserRepository;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -83,7 +82,6 @@ class AbsenceImpactReconciliationService
         private readonly PlanningAlertService $alertService,
         private readonly AuditService $auditService,
         private readonly MessageBusInterface $bus,
-        private readonly UserRepository $userRepository,
         private readonly LoggerInterface $logger,
     ) {
     }
@@ -119,18 +117,18 @@ class AbsenceImpactReconciliationService
      * Every AuditEvent/notification payload below needs a real int, never $absence->getId().
      *
      * @param array<int, array<string, mixed>> $restoredOccurrences from beginDeletion()
-     * @return array{restoredOccurrences: int, restoredMissions: int}
+     * @return array{restoredOccurrences: array<int, array<string, mixed>>, restoredMissions: array<int, array<string, mixed>>}
      */
     public function completeDeletion(Absence $absence, int $absenceId, User $actor, array $restoredOccurrences): array
     {
         $user = $absence->getUser();
         if ($user === null) {
-            return ['restoredOccurrences' => count($restoredOccurrences), 'restoredMissions' => 0];
+            return ['restoredOccurrences' => $restoredOccurrences, 'restoredMissions' => []];
         }
 
         $role = self::roleOf($user);
         if ($role === null) {
-            return ['restoredOccurrences' => count($restoredOccurrences), 'restoredMissions' => 0];
+            return ['restoredOccurrences' => $restoredOccurrences, 'restoredMissions' => []];
         }
 
         $restoredMissions = $role === 'SURGEON'
@@ -152,18 +150,18 @@ class AbsenceImpactReconciliationService
      * missions) — both already run against the (already-flushed) new range before this
      * method is called.
      *
-     * @return array{restoredOccurrences: int, restoredMissions: int}
+     * @return array{restoredOccurrences: array<int, array<string, mixed>>, restoredMissions: array<int, array<string, mixed>>}
      */
     public function reconcileForUpdate(Absence $absence, \DateTimeImmutable $previousDateStart, \DateTimeImmutable $previousDateEnd, User $actor): array
     {
         $user = $absence->getUser();
         if ($user === null) {
-            return ['restoredOccurrences' => 0, 'restoredMissions' => 0];
+            return ['restoredOccurrences' => [], 'restoredMissions' => []];
         }
 
         $role = self::roleOf($user);
         if ($role === null) {
-            return ['restoredOccurrences' => 0, 'restoredMissions' => 0];
+            return ['restoredOccurrences' => [], 'restoredMissions' => []];
         }
 
         $restoredOccurrences = $role === 'SURGEON'
@@ -179,19 +177,14 @@ class AbsenceImpactReconciliationService
 
     // ── Shared: flush + combined notification ─────────────────────────────────
 
-    /** @return array{restoredOccurrences: int, restoredMissions: int} */
+    /** @return array{restoredOccurrences: array<int, array<string, mixed>>, restoredMissions: array<int, array<string, mixed>>} */
     private function flushAndNotify(int $absenceId, User $user, string $role, User $actor, array $restoredOccurrences, array $restoredMissions): array
     {
         if (empty($restoredOccurrences) && empty($restoredMissions)) {
-            return ['restoredOccurrences' => 0, 'restoredMissions' => 0];
+            return ['restoredOccurrences' => [], 'restoredMissions' => []];
         }
 
         $this->em->flush();
-
-        $managerIds = array_map(
-            static fn (User $m) => $m->getId(),
-            $this->userRepository->findManagersAndAdmins(true),
-        );
 
         $this->bus->dispatch(new PlanningRestoredAfterAbsenceMessage(
             absenceId: $absenceId,
@@ -201,11 +194,10 @@ class AbsenceImpactReconciliationService
             actorId: $actor->getId(),
             restoredOccurrences: $restoredOccurrences,
             restoredMissions: $restoredMissions,
-            recipientManagerIds: $managerIds,
             occurredAt: new \DateTimeImmutable(),
         ));
 
-        return ['restoredOccurrences' => count($restoredOccurrences), 'restoredMissions' => count($restoredMissions)];
+        return ['restoredOccurrences' => $restoredOccurrences, 'restoredMissions' => $restoredMissions];
     }
 
     // ── Future occurrences (no Mission yet) ───────────────────────────────────

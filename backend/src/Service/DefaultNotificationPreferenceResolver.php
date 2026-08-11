@@ -26,10 +26,18 @@ use Doctrine\ORM\EntityManagerInterface;
  *                                           urgency as the rest of the ABSENCE_* family: a habitual
  *                                           future Post occurrence is neutralized before any Mission
  *                                           was ever generated for it.
- *   - ABSENCE_OCCURRENCE_RESTORED / _MGR,
- *     MISSION_RESTORED / _MGR (Lot 4, D-104): inApp=true, email=true — same urgency as the
+ *   - ABSENCE_OCCURRENCE_RESTORED,
+ *     MISSION_RESTORED (Lot 4, D-104):       inApp=true, email=true — same urgency as the
  *                                           reversal they undo; only ever dispatched on a real,
  *                                           safe restoration (never a blanket "absence deleted" notice).
+ *   - ABSENCE_OCCURRENCE_CANCELLED_MGR, ABSENCE_OCCURRENCE_RESTORED_MGR,
+ *     MISSION_RESTORED_MGR:                  dead since Lot 5 (D-105) — kept in
+ *                                           EMAIL_ON_BY_DEFAULT only so a previously-stored
+ *                                           preference row's default lookup stays meaningful;
+ *                                           no handler dispatches these types anymore.
+ *   - ABSENCE_IMPACT_SUMMARY (Lot 5, D-105): inApp=true, email=true — the single consolidated
+ *                                           manager recap for any absence create/update/delete,
+ *                                           replacing the three types above.
  *   - CATALOGUE_REQUEST_RESOLVED/IGNORED:  inApp=true, email=true  (actionable — the instrumentist is
  *                                           waiting on a yes/no for a catalogue proposal, D-093)
  *   - CATALOGUE_REQUEST_CREATED:           inApp=true, email=false (follow-up to D-093 — a manager
@@ -74,6 +82,7 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::ABSENCE_OCCURRENCE_RESTORED_MGR,
         NotificationType::MISSION_RESTORED,
         NotificationType::MISSION_RESTORED_MGR,
+        NotificationType::ABSENCE_IMPACT_SUMMARY,
     ];
 
     public function __construct(

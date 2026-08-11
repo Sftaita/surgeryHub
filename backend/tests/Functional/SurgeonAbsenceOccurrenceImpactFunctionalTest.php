@@ -730,10 +730,17 @@ final class SurgeonAbsenceOccurrenceImpactFunctionalTest extends WebTestCase
         self::assertCount(2, $this->exceptionsForPost($post));
     }
 
-    // ── §13 — Manager receives a summary of every impacted occurrence ────────────
+    // ── §13 — Manager recap moved to the Lot 5 consolidated summary (D-105) ──────
 
+    /**
+     * Before Lot 5, this handler emailed managers directly (ABSENCE_OCCURRENCE_CANCELLED_MGR).
+     * That path is now dead — the manager recap comes exclusively from
+     * AbsenceImpactSummaryMessageHandler, which combines this event with any mission-level
+     * impact into ONE email instead of up to two independent ones (see
+     * AbsenceImpactSummaryMessageHandlerFunctionalTest for that coverage).
+     */
     #[WithoutErrorHandler]
-    public function test_manager_receives_a_summary_notification_covering_every_neutralized_occurrence(): void
+    public function test_manager_no_longer_receives_a_notification_from_this_handler_directly(): void
     {
         $client = static::createClient();
         $client->disableReboot();
@@ -765,7 +772,6 @@ final class SurgeonAbsenceOccurrenceImpactFunctionalTest extends WebTestCase
             }
         }
         self::assertNotNull($envelope);
-        self::assertContains($manager->getId(), $envelope->getMessage()->recipientManagerIds);
 
         static::getContainer()->get(SurgeonAbsenceOccurrencesNeutralizedMessageHandler::class)
             ->__invoke($envelope->getMessage());
@@ -777,6 +783,6 @@ final class SurgeonAbsenceOccurrenceImpactFunctionalTest extends WebTestCase
             ->select('n')->from(NotificationEvent::class, 'n')
             ->where('n.user = :u')->setParameter('u', $manager)
             ->getQuery()->getResult();
-        self::assertCount(2, $managerNotifications, 'One notification per neutralized occurrence for the manager summary');
+        self::assertCount(0, $managerNotifications, 'Manager notification for this event now comes exclusively from AbsenceImpactSummaryMessageHandler (Lot 5, D-105)');
     }
 }

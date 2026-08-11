@@ -2711,6 +2711,13 @@ Utilisé notamment pour les déplacements drag & drop (changement de `dayOfWeek`
 > chirurgien devient absent est annulée (`CANCELLED`). Voir D-062 pour le détail complet
 > (statuts concernés, notifications, idempotence). La forme de la requête/réponse de ces
 > endpoints n'a pas changé — seul cet effet de bord est nouveau.
+>
+> **Lot 5 (D-105)** : chaque appel `create()`/`update()`/`delete()` dispatche au plus **un**
+> email/notice manager consolidé (`NotificationType::ABSENCE_IMPACT_SUMMARY`), combinant
+> missions annulées/relâchées/restaurées et occurrences futures neutralisées/restaurées —
+> jamais un email par catégorie. `delete()` ne restaure jamais rien à l'aveugle (revalidation
+> systématique, voir D-104) et n'envoie plus aucune notice si rien n'a réellement été
+> restauré. Voir docs/decisions.md D-105 pour l'architecture complète.
 
 **Modèle Absence :**
 
@@ -5850,9 +5857,15 @@ bas), cohérent avec `AbsenceController` qui n'en impose pas non plus.
    bloquant** pour la création elle-même.
 3. `AbsenceImpactService::onAbsenceCreated()` — lève les `PlanningAlert` pour les
    missions restantes (celles que l'étape 2 n'a pas déjà traitées).
-4. Si aucune nouvelle alerte n'a été levée à l'étape 3, dispatche
-   `AbsenceSelfDeclaredMessage` (async) vers tous les managers/admins — sinon, aucun
-   doublon avec la notification `PLANNING_ALERT` déjà envoyée par l'étape 3.
+4. `SurgeonAbsenceOccurrenceImpactService::onSurgeonAbsenceCreated()` — neutralise les
+   occurrences futures de `SurgeonSchedulePost` sans Mission générée (D-103).
+5. `AbsenceImpactSummaryService::dispatch()` (Lot 5, D-105) — **un seul** email/notice
+   manager consolidé (`ABSENCE_IMPACT_SUMMARY`) combinant les résultats des étapes 2 et
+   4, dispatché uniquement si au moins un impact réel existe.
+6. Si NI l'étape 2 (missions), NI l'étape 3 (nouvelle alerte), NI l'étape 4
+   (occurrences) n'a produit d'effet, dispatche `AbsenceSelfDeclaredMessage` (async,
+   in-app uniquement) vers tous les managers/admins — jamais en doublon avec les
+   notifications déjà envoyées par les étapes précédentes.
 
 **Réponse — 201 :** l'absence sérialisée + `missionsImpactedCount` (nombre de
 missions concernées, capturé **avant** les étapes 2-3 via
@@ -5871,9 +5884,13 @@ plage de dates.
 
 **AuthZ supplémentaire :** `AbsenceVoter::SELF_MANAGE` (identique à `PATCH`). Même
 ordre que `AbsenceController::delete()` : `AbsenceImpactService::onAbsenceDeleted()`
-(résout/re-pointe les alertes tant que la FK existe encore) puis
-`AbsenceMissionReactionService::onAbsenceDeleted()` (notice manager générique,
-**ne restaure jamais** une mission libérée/annulée) puis suppression réelle. `204`.
+(résout/re-pointe les alertes tant que la FK existe encore), `AbsenceImpactReconciliationService::
+beginDeletion()` (occurrences, avant suppression), `AbsenceMissionReactionService::
+onAbsenceDeleted()` (**true no-op depuis Lot 5, D-105** — ne restaure jamais rien, et
+n'envoie plus de notice générique non plus), suppression réelle, puis `completeDeletion()`
+(missions, après suppression) et `AbsenceImpactSummaryService::dispatch()` — un seul
+email/notice manager consolidé, uniquement si quelque chose a réellement été restauré.
+`204`.
 
 ### Règle passé/futur (self-service uniquement)
 
@@ -5897,9 +5914,24 @@ l'utilisateur : le frontend (`AbsenceFormSheet`) impose un choix explicite
 In-app uniquement — jamais email/push, même si un manager active manuellement ce
 canal en préférence (voir `AbsenceSelfDeclaredMessageHandler`, qui ne consulte que le
 flag `inApp` du résolveur de préférences). Dispatché **uniquement** quand
-`AbsenceImpactService` n'a levé aucune nouvelle alerte pour la création/modification
-en cours — jamais en doublon de `PLANNING_ALERT`, qui couvre déjà le cas avec
-recouvrement.
+`AbsenceImpactService` n'a levé aucune nouvelle alerte, `SurgeonAbsenceOccurrenceImpactService`
+n'a neutralisé aucune occurrence, ET `AbsenceMissionReactionService` n'a mutaté aucune
+mission — jamais en doublon d'une notification déjà envoyée par l'une de ces trois voies
+(le troisième critère a été ajouté au Lot 5, D-105 : avant, une absence auto-déclarée qui
+libérait/annulait réellement une mission pouvait encore déclencher cette notice
+"rien ne s'est passé", faute de vérifier le retour d'`AbsenceMissionReactionService`).
+
+### `NotificationType::ABSENCE_IMPACT_SUMMARY` (Lot 5, D-105)
+
+Le seul canal manager pour un événement d'absence (création, modification, suppression),
+in-app + email par défaut. Remplace les anciens `ABSENCE_OCCURRENCE_CANCELLED_MGR`
+(Lot 3) et `MISSION_RESTORED_MGR` (Lot 4), conservés comme cas d'enum morts (compatibilité
+avec d'éventuelles préférences déjà enregistrées) mais plus jamais dispatchés. Dispatché
+au plus une fois par requête `create()`/`update()`/`delete()`, uniquement si au moins un
+des six compartiments d'impact (`missionsCancelled`, `missionsReleased`,
+`missionsRestoredAssigned`, `missionsRestoredOpen`, `futureOccurrencesCancelled`,
+`futureOccurrencesRestored`) est non vide — voir docs/decisions.md D-105 pour
+l'architecture de consolidation complète.
 
 ## 43. Activité chirurgien + podium personnel (Lot 4, D-098)
 

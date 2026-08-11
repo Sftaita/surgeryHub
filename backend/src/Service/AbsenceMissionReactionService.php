@@ -4,15 +4,11 @@ namespace App\Service;
 
 use App\Entity\Absence;
 use App\Entity\Mission;
-use App\Entity\NotificationEvent;
 use App\Entity\User;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
-use App\Enum\NotificationType;
-use App\Enum\PublicationChannel;
 use App\Message\AbsenceMissionsReactedMessage;
 use App\Message\MissionLifecycleChangedMessage;
-use App\Repository\UserRepository;
 use Doctrine\DBAL\LockMode;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
@@ -71,9 +67,12 @@ use Symfony\Component\Messenger\MessageBusInterface;
  * transaction is still open would let an async worker observe the message before the mutation
  * is durably visible to other connections).
  *
- * onAbsenceDeleted() is deliberately a no-op here (never restores a released/cancelled
- * mission) — see the class-level note on AbsenceController for where the manager
- * "reassess manually" notice on delete lives.
+ * onAbsenceDeleted() is deliberately a true no-op here (never restores a released/cancelled
+ * mission, and — since Lot 5, D-105 — no longer posts a generic manager notice either). That
+ * notice used to fire unconditionally on every delete regardless of real impact; it has been
+ * replaced by AbsenceImpactSummaryService's consolidated summary, which only ever notifies
+ * when AbsenceImpactReconciliationService actually restored something (see AbsenceController::
+ * delete()). Restoration itself is AbsenceImpactReconciliationService's job (Lot 4).
  */
 class AbsenceMissionReactionService
 {
@@ -87,86 +86,42 @@ class AbsenceMissionReactionService
         private readonly EntityManagerInterface $em,
         private readonly MissionPostDeployService $missionPostDeployService,
         private readonly MessageBusInterface $bus,
-        private readonly UserRepository $userRepository,
     ) {
     }
 
-    public function onAbsenceCreated(Absence $absence, User $actor): void
+    /** @return array<int, array<string, mixed>> mission summaries — see buildMissionSummary() */
+    public function onAbsenceCreated(Absence $absence, User $actor): array
     {
-        $this->react($absence, $actor);
+        return $this->react($absence, $actor);
     }
 
-    public function onAbsenceUpdated(Absence $absence, User $actor): void
+    /** @return array<int, array<string, mixed>> mission summaries — see buildMissionSummary() */
+    public function onAbsenceUpdated(Absence $absence, User $actor): array
     {
-        $this->react($absence, $actor);
+        return $this->react($absence, $actor);
     }
 
     /**
-     * Never itself restores a released/cancelled mission — this method only ever leaves a
-     * generic in-app fallback notice for managers/admins. Since D-104 (Lot 4),
-     * AbsenceImpactReconciliationService runs alongside this method (called separately by
-     * AbsenceController/SelfAbsenceController) and performs the actual, precisely-scoped
-     * automatic restoration where it's safe to do so — this notice remains as a general
-     * "an absence was deleted, some effects may need your attention" signal, deliberately
-     * generic since this service still has no durable, resolved answer to "exactly what did
-     * this absence mutate and is any of it still safely restorable" (that determination is
-     * AbsenceImpactReconciliationService's job, which sends its own specific notifications
-     * only when it actually restores something — see §20/§21 of the Lot 4 spec: no false
-     * "nothing changed" implication when something in fact did). A no-op for absences on any
-     * role other than surgeon/instrumentist, consistent with react()'s own scope.
+     * True no-op since Lot 5 (D-105) — see class docblock. Kept as an explicit method (rather
+     * than removed outright) so AbsenceController/SelfAbsenceController's call sites document
+     * the two-phase deletion ordering unchanged from Lot 4, even though this particular step
+     * no longer does anything itself.
      */
     public function onAbsenceDeleted(Absence $absence, User $actor): void
     {
-        $user = $absence->getUser();
-        if ($user === null || self::roleOf($user) === null) {
-            return;
-        }
-
-        $managers = $this->userRepository->findManagersAndAdmins(true);
-        if (empty($managers)) {
-            return;
-        }
-
-        $payload = [
-            'absenceId'        => $absence->getId(),
-            'absentUserId'     => $user->getId(),
-            'absentUserName'   => self::displayName($user),
-            'absenceDateStart' => $absence->getDateStart()->format('Y-m-d'),
-            'absenceDateEnd'   => $absence->getDateEnd()->format('Y-m-d'),
-            'deletedById'      => $actor->getId(),
-            'message'          => sprintf(
-                "L'absence de %s (%s → %s) a été supprimée. Ce qui pouvait être restauré "
-                . "automatiquement en toute sécurité l'a été — voir les notifications "
-                . 'dédiées le cas échéant. Le reste doit être réévalué manuellement.',
-                self::displayName($user),
-                $absence->getDateStart()->format('d/m/Y'),
-                $absence->getDateEnd()->format('d/m/Y'),
-            ),
-        ];
-
-        foreach ($managers as $manager) {
-            $evt = (new NotificationEvent())
-                ->setUser($manager)
-                ->setEventType(NotificationType::PLANNING_ALERT->value)
-                ->setChannel(PublicationChannel::IN_APP)
-                ->setSentAt(new \DateTimeImmutable())
-                ->setPayload($payload);
-            $this->em->persist($evt);
-        }
-
-        $this->em->flush();
     }
 
-    private function react(Absence $absence, User $actor): void
+    /** @return array<int, array<string, mixed>> mission summaries — see buildMissionSummary() */
+    private function react(Absence $absence, User $actor): array
     {
         $user = $absence->getUser();
         if ($user === null) {
-            return;
+            return [];
         }
 
         $role = self::roleOf($user);
         if ($role === null) {
-            return; // absences only ever concern surgeons/instrumentists in practice
+            return []; // absences only ever concern surgeons/instrumentists in practice
         }
 
         $missions = $role === 'INSTRUMENTIST'
@@ -174,7 +129,7 @@ class AbsenceMissionReactionService
             : $this->findOverlapping($user, $absence, false, self::SURGEON_ACTIONABLE_STATUSES);
 
         if (empty($missions)) {
-            return;
+            return [];
         }
 
         $summaries = [];
@@ -192,7 +147,7 @@ class AbsenceMissionReactionService
             // Every candidate mission had already moved out of the actionable status
             // between the query above and processing (concurrent claim/reassign/cancel) —
             // nothing left to report.
-            return;
+            return [];
         }
 
         $this->bus->dispatch(new AbsenceMissionsReactedMessage(
@@ -203,6 +158,8 @@ class AbsenceMissionReactionService
             missions: $summaries,
             occurredAt: new \DateTimeImmutable(),
         ));
+
+        return $summaries;
     }
 
     /** @return array<string, mixed>|null null if the mission was no longer ASSIGNED under lock */

@@ -60,16 +60,28 @@ enum NotificationType: string
     // column (VARCHAR(32), see DefaultNotificationPreferenceResolverTest) and to match
     // the underlying PlanningOccurrenceException type it mirrors (CANCELLED).
     case ABSENCE_OCCURRENCE_CANCELLED     = 'ABSENCE_OCCURRENCE_CANCELLED';     // to the post's default instrumentist
-    case ABSENCE_OCCURRENCE_CANCELLED_MGR = 'ABSENCE_OCCURRENCE_CANCELLED_MGR'; // to every active manager/admin
+    case ABSENCE_OCCURRENCE_CANCELLED_MGR = 'ABSENCE_OCCURRENCE_CANCELLED_MGR'; // dead since Lot 5 (D-105) — kept, see below
 
     // ── Reversal: absence deleted/shortened, restoration performed (Lot 4, D-104) ────
     // Only ever dispatched on a REAL, safe restoration — never a blanket "your absence was
     // deleted" notice (that stays ABSENCE_SELF_DECLARED-adjacent territory, see
     // AbsenceMissionReactionService::onAbsenceDeleted()'s generic manager-only fallback).
     case ABSENCE_OCCURRENCE_RESTORED     = 'ABSENCE_OCCURRENCE_RESTORED';     // to the post's default instrumentist
-    case ABSENCE_OCCURRENCE_RESTORED_MGR = 'ABSENCE_OCCURRENCE_RESTORED_MGR'; // to every active manager/admin
+    case ABSENCE_OCCURRENCE_RESTORED_MGR = 'ABSENCE_OCCURRENCE_RESTORED_MGR'; // dead since Lot 5 (D-105) — kept, see below
     case MISSION_RESTORED                = 'MISSION_RESTORED';               // to the surgeon and/or the re-assigned instrumentist
-    case MISSION_RESTORED_MGR            = 'MISSION_RESTORED_MGR';           // to every active manager/admin
+    case MISSION_RESTORED_MGR            = 'MISSION_RESTORED_MGR';           // dead since Lot 5 (D-105) — kept, see below
+
+    // ── Consolidated manager recap (Lot 5, D-105) ─────────────────────────────
+    // Replaces ABSENCE_OCCURRENCE_CANCELLED_MGR and MISSION_RESTORED_MGR above as the ONLY
+    // manager-facing notification for any absence create/update/delete — those two are kept
+    // as enum cases (never dispatched again) purely so a previously-stored
+    // NotificationPreference row referencing them doesn't throw a ValueError on read; they
+    // are never referenced by any handler anymore. One category regardless of action
+    // (CREATED/UPDATED/DELETED) or role (SURGEON/INSTRUMENTIST) carried in the payload —
+    // a manager configures ONE preference for "absence impact", not four. In-app + email,
+    // dispatched at most once per absence-processing run, and only when at least one of the
+    // six impact buckets is non-empty (see AbsenceImpactSummaryMessage).
+    case ABSENCE_IMPACT_SUMMARY = 'ABSENCE_IMPACT_SUMMARY';
 
     // ── Manual resend (D-090, anomalie fonctionnelle 1) ──────────────────────
     // A manager explicitly re-sending one person's currently-published plan on demand —

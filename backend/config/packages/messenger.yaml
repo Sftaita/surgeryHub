@@ -31,6 +31,7 @@ framework:
             App\Message\EncodingAnomalyReportResolvedMessage: async
             App\Message\SurgeonAbsenceOccurrencesNeutralizedMessage: async
             App\Message\PlanningRestoredAfterAbsenceMessage: async
+            App\Message\AbsenceImpactSummaryMessage:         async
 
 when@test:
     framework:

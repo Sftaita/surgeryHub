@@ -8,6 +8,9 @@ namespace App\Message;
  * neutralized (never dispatched for a no-op run — see the service's idempotency
  * contract). Never one message per occurrence — the handler groups by recipient.
  *
+ * Manager notification for this event moved to AbsenceImpactSummaryMessage (Lot 5, D-105) —
+ * this message only ever reaches the post's default instrumentist now, never a manager.
+ *
  * @phpstan-type OccurrenceSnapshot array{
  *   postId: int, occurrenceDate: string, siteId: int|null, siteName: string|null,
  *   surgeonId: int, surgeonName: string, instrumentistId: int|null,
@@ -16,10 +19,7 @@ namespace App\Message;
  */
 final class SurgeonAbsenceOccurrencesNeutralizedMessage
 {
-    /**
-     * @param OccurrenceSnapshot[] $occurrences
-     * @param int[]                $recipientManagerIds every active manager/admin at dispatch time
-     */
+    /** @param OccurrenceSnapshot[] $occurrences */
     public function __construct(
         public readonly int $absenceId,
         public readonly int $surgeonId,
@@ -28,7 +28,6 @@ final class SurgeonAbsenceOccurrencesNeutralizedMessage
         public readonly string $dateEnd,
         public readonly int $actorId,
         public readonly array $occurrences,
-        public readonly array $recipientManagerIds,
         public readonly \DateTimeImmutable $occurredAt,
     ) {
     }

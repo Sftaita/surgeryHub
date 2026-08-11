@@ -11,7 +11,6 @@ use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Message\AbsenceMissionsReactedMessage;
 use App\Message\MissionLifecycleChangedMessage;
-use App\Repository\UserRepository;
 use App\Service\AbsenceMissionReactionService;
 use App\Service\MissionPostDeployService;
 use Doctrine\ORM\AbstractQuery;
@@ -39,7 +38,6 @@ final class AbsenceMissionReactionServiceTest extends TestCase
     private EntityManagerInterface&MockObject $em;
     private MissionPostDeployService&MockObject $missionPostDeployService;
     private MessageBusInterface&MockObject $bus;
-    private UserRepository&MockObject $userRepository;
     private AbsenceMissionReactionService $service;
 
     private array $dispatched = [];
@@ -50,7 +48,6 @@ final class AbsenceMissionReactionServiceTest extends TestCase
         $this->em = $this->createMock(EntityManagerInterface::class);
         $this->missionPostDeployService = $this->createMock(MissionPostDeployService::class);
         $this->bus = $this->createMock(MessageBusInterface::class);
-        $this->userRepository = $this->createMock(UserRepository::class);
 
         $this->dispatched = [];
         $this->bus->method('dispatch')->willReturnCallback(function (object $msg): Envelope {
@@ -64,7 +61,7 @@ final class AbsenceMissionReactionServiceTest extends TestCase
         $this->em->method('lock');
 
         $this->service = new AbsenceMissionReactionService(
-            $this->em, $this->missionPostDeployService, $this->bus, $this->userRepository,
+            $this->em, $this->missionPostDeployService, $this->bus,
         );
     }
 
@@ -321,42 +318,26 @@ final class AbsenceMissionReactionServiceTest extends TestCase
         $this->service->onAbsenceUpdated($absence, $actor);
     }
 
-    // ── onAbsenceDeleted: manager notification, never a mission mutation ─────
+    // ── onAbsenceDeleted: true no-op since Lot 5 (D-105) ──────────────────────
+    // Used to leave a generic manager notice unconditionally; that path was removed in
+    // favor of AbsenceImpactSummaryService's real-impact-only consolidated summary (built
+    // from AbsenceImpactReconciliationService's restoration results, dispatched by
+    // AbsenceController/SelfAbsenceController — never by this service).
 
-    public function test_onAbsenceDeleted_never_touches_missions(): void
+    public function test_onAbsenceDeleted_never_touches_missions_or_dispatches_anything(): void
     {
         $instr   = $this->makeUser(['ROLE_INSTRUMENTIST'], 'Ole', 'Salve');
         $absence = $this->makeAbsence($instr);
         $actor   = $this->actor();
 
-        $this->userRepository->method('findManagersAndAdmins')->willReturn([]);
-
         $this->missionPostDeployService->expects($this->never())->method('release');
         $this->missionPostDeployService->expects($this->never())->method('cancel');
         $this->em->expects($this->never())->method('createQuery');
+        $this->em->expects($this->never())->method('persist');
+        $this->em->expects($this->never())->method('flush');
+        $this->bus->expects($this->never())->method('dispatch');
 
         $this->service->onAbsenceDeleted($absence, $actor);
-    }
-
-    public function test_onAbsenceDeleted_notifies_every_manager_and_admin(): void
-    {
-        $instr    = $this->makeUser(['ROLE_INSTRUMENTIST'], 'Ole', 'Salve');
-        $absence  = $this->makeAbsence($instr);
-        $actor    = $this->actor();
-        $manager1 = $this->makeUser(['ROLE_MANAGER'], 'Marc', 'Un');
-        $manager2 = $this->makeUser(['ROLE_ADMIN'], 'Alix', 'Deux');
-
-        $this->userRepository->method('findManagersAndAdmins')->willReturn([$manager1, $manager2]);
-
-        $persisted = [];
-        $this->em->method('persist')->willReturnCallback(function ($e) use (&$persisted): void {
-            $persisted[] = $e;
-        });
-        $this->em->expects($this->once())->method('flush');
-
-        $this->service->onAbsenceDeleted($absence, $actor);
-
-        self::assertCount(2, $persisted);
     }
 
     public function test_onAbsenceDeleted_for_non_surgeon_non_instrumentist_does_nothing(): void
@@ -365,7 +346,6 @@ final class AbsenceMissionReactionServiceTest extends TestCase
         $absence = $this->makeAbsence($manager);
         $actor   = $this->actor();
 
-        $this->userRepository->expects($this->never())->method('findManagersAndAdmins');
         $this->em->expects($this->never())->method('flush');
 
         $this->service->onAbsenceDeleted($absence, $actor);
