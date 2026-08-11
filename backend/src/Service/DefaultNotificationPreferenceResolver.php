@@ -26,6 +26,10 @@ use Doctrine\ORM\EntityManagerInterface;
  *                                           urgency as the rest of the ABSENCE_* family: a habitual
  *                                           future Post occurrence is neutralized before any Mission
  *                                           was ever generated for it.
+ *   - ABSENCE_OCCURRENCE_RESTORED / _MGR,
+ *     MISSION_RESTORED / _MGR (Lot 4, D-104): inApp=true, email=true — same urgency as the
+ *                                           reversal they undo; only ever dispatched on a real,
+ *                                           safe restoration (never a blanket "absence deleted" notice).
  *   - CATALOGUE_REQUEST_RESOLVED/IGNORED:  inApp=true, email=true  (actionable — the instrumentist is
  *                                           waiting on a yes/no for a catalogue proposal, D-093)
  *   - CATALOGUE_REQUEST_CREATED:           inApp=true, email=false (follow-up to D-093 — a manager
@@ -66,6 +70,10 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::ENCODING_ANOMALY_RESOLVED,
         NotificationType::ABSENCE_OCCURRENCE_CANCELLED,
         NotificationType::ABSENCE_OCCURRENCE_CANCELLED_MGR,
+        NotificationType::ABSENCE_OCCURRENCE_RESTORED,
+        NotificationType::ABSENCE_OCCURRENCE_RESTORED_MGR,
+        NotificationType::MISSION_RESTORED,
+        NotificationType::MISSION_RESTORED_MGR,
     ];
 
     public function __construct(

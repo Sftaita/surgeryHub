@@ -7,6 +7,7 @@ use App\Entity\Mission;
 use App\Entity\User;
 use App\Repository\UserRepository;
 use App\Security\Voter\AbsenceVoter;
+use App\Service\AbsenceImpactReconciliationService;
 use App\Service\AbsenceImpactService;
 use App\Service\AbsenceMissionReactionService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
@@ -39,6 +40,7 @@ class SelfAbsenceController extends AbstractController
         private readonly AbsenceImpactService $absenceImpactService,
         private readonly AbsenceMissionReactionService $absenceMissionReactionService,
         private readonly SurgeonAbsenceOccurrenceImpactService $surgeonAbsenceOccurrenceImpactService,
+        private readonly AbsenceImpactReconciliationService $reconciliationService,
         private readonly UserRepository $userRepository,
         private readonly MessageBusInterface $bus,
     ) {}
@@ -130,6 +132,11 @@ class SelfAbsenceController extends AbstractController
 
         $data = json_decode($request->getContent(), true) ?? [];
 
+        // Captured BEFORE any mutation — see AbsenceController::update() for the same
+        // reasoning (D-104, Lot 4).
+        $previousDateStart = $absence->getDateStart();
+        $previousDateEnd   = $absence->getDateEnd();
+
         $dateStart = $absence->getDateStart();
         $dateEnd   = $absence->getDateEnd();
 
@@ -156,7 +163,7 @@ class SelfAbsenceController extends AbstractController
 
         $this->em->flush();
 
-        $this->reactAndSync($absence, $currentUser);
+        $this->reactAndSync($absence, $currentUser, $previousDateStart, $previousDateEnd);
 
         return $this->json(array_merge(
             $this->serialize($absence),
@@ -173,13 +180,17 @@ class SelfAbsenceController extends AbstractController
         }
         $this->denyAccessUnlessGranted(AbsenceVoter::SELF_MANAGE, $absence);
 
-        // Same ordering as AbsenceController::delete() — resolve/re-point alerts while the
-        // FK still exists, then let AbsenceMissionReactionService leave its manager notice.
+        // Same ordering/two-phase split as AbsenceController::delete() (D-104, Lot 4) —
+        // see AbsenceImpactReconciliationService's class docblock.
+        $absenceId = $absence->getId();
         $this->absenceImpactService->onAbsenceDeleted($absence);
+        $restoredOccurrences = $this->reconciliationService->beginDeletion($absence, $currentUser);
         $this->absenceMissionReactionService->onAbsenceDeleted($absence, $currentUser);
 
         $this->em->remove($absence);
         $this->em->flush();
+
+        $this->reconciliationService->completeDeletion($absence, $absenceId, $currentUser, $restoredOccurrences);
 
         return $this->json(null, 204);
     }
@@ -188,19 +199,35 @@ class SelfAbsenceController extends AbstractController
      * Same call order as AbsenceController::create()/update() (reaction service before impact
      * service — see AbsenceMissionReactionService's class docblock for why the order matters).
      * Lot 3 (D-103) — surgeonAbsenceOccurrenceImpactService runs after both (independent of
-     * either; it only ever acts on Post occurrences with no Mission at all). If NEITHER the
-     * impact sync raised a new alert NOR Lot 3 neutralized any future occurrence, the manager
-     * would otherwise learn nothing about this self-declared absence at all — dispatches
-     * ABSENCE_SELF_DECLARED for that case only, never when either already covers it (no
-     * duplication, §14).
+     * either; it only ever acts on Post occurrences with no Mission at all).
+     *
+     * $previousDateStart/$previousDateEnd — passed only from update() (D-104, Lot 4): when
+     * present, reconciliation runs last (restoring whatever fell out of a shortened range).
+     * null from create() — a brand-new absence has nothing to reconcile.
+     *
+     * If NEITHER the impact sync raised a new alert, NOR Lot 3 neutralized a future
+     * occurrence, NOR Lot 4 restored anything, the manager would otherwise learn nothing
+     * about this self-declared absence at all — dispatches ABSENCE_SELF_DECLARED for that
+     * case only, never when any of the three already covers it (no duplication, §14).
      */
-    private function reactAndSync(Absence $absence, User $currentUser): void
-    {
+    private function reactAndSync(
+        Absence $absence,
+        User $currentUser,
+        ?\DateTimeImmutable $previousDateStart = null,
+        ?\DateTimeImmutable $previousDateEnd = null,
+    ): void {
         $this->absenceMissionReactionService->onAbsenceCreated($absence, $currentUser);
         $result = $this->absenceImpactService->onAbsenceCreated($absence);
         $occurrenceResult = $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceCreated($absence, $currentUser);
 
-        if (!empty($result['created']) || !empty($occurrenceResult['created'])) {
+        $reconciliationResult = ['restoredOccurrences' => 0, 'restoredMissions' => 0];
+        if ($previousDateStart !== null && $previousDateEnd !== null) {
+            $reconciliationResult = $this->reconciliationService->reconcileForUpdate($absence, $previousDateStart, $previousDateEnd, $currentUser);
+        }
+
+        if (!empty($result['created']) || !empty($occurrenceResult['created'])
+            || !empty($reconciliationResult['restoredOccurrences']) || !empty($reconciliationResult['restoredMissions'])
+        ) {
             return;
         }
 

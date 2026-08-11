@@ -102,16 +102,18 @@ class AbsenceMissionReactionService
     }
 
     /**
-     * Never restores a released/cancelled mission (§5 "Suppression d'une absence" — a
-     * released mission may already have been claimed by someone else; a cancelled mission
-     * has already generated its own notifications; reconstructing the previous state would
-     * silently overwrite whatever happened in between). Instead, always leaves a lightweight
-     * in-app notice for managers/admins that missions possibly affected by this absence must
-     * be reassessed by hand — deliberately generic (no attempt to determine exactly which
-     * missions this specific absence had mutated; there is no durable link from Absence to
-     * the missions it once triggered a mutation for, and reconstructing one would risk being
-     * wrong in either direction). A no-op for absences on any role other than
-     * surgeon/instrumentist, consistent with react()'s own scope.
+     * Never itself restores a released/cancelled mission — this method only ever leaves a
+     * generic in-app fallback notice for managers/admins. Since D-104 (Lot 4),
+     * AbsenceImpactReconciliationService runs alongside this method (called separately by
+     * AbsenceController/SelfAbsenceController) and performs the actual, precisely-scoped
+     * automatic restoration where it's safe to do so — this notice remains as a general
+     * "an absence was deleted, some effects may need your attention" signal, deliberately
+     * generic since this service still has no durable, resolved answer to "exactly what did
+     * this absence mutate and is any of it still safely restorable" (that determination is
+     * AbsenceImpactReconciliationService's job, which sends its own specific notifications
+     * only when it actually restores something — see §20/§21 of the Lot 4 spec: no false
+     * "nothing changed" implication when something in fact did). A no-op for absences on any
+     * role other than surgeon/instrumentist, consistent with react()'s own scope.
      */
     public function onAbsenceDeleted(Absence $absence, User $actor): void
     {
@@ -133,9 +135,9 @@ class AbsenceMissionReactionService
             'absenceDateEnd'   => $absence->getDateEnd()->format('Y-m-d'),
             'deletedById'      => $actor->getId(),
             'message'          => sprintf(
-                "L'absence de %s (%s → %s) a été supprimée. Les missions éventuellement "
-                . 'libérées ou annulées suite à cette absence ne sont jamais restaurées '
-                . 'automatiquement — à réévaluer manuellement si nécessaire.',
+                "L'absence de %s (%s → %s) a été supprimée. Ce qui pouvait être restauré "
+                . "automatiquement en toute sécurité l'a été — voir les notifications "
+                . 'dédiées le cas échéant. Le reste doit être réévalué manuellement.',
                 self::displayName($user),
                 $absence->getDateStart()->format('d/m/Y'),
                 $absence->getDateEnd()->format('d/m/Y'),
@@ -215,7 +217,7 @@ class AbsenceMissionReactionService
         $captured = null;
         $summary  = null;
 
-        $this->em->wrapInTransaction(function () use ($mission, $actor, $reason, &$captured, &$summary): void {
+        $this->em->wrapInTransaction(function () use ($mission, $actor, $reason, $absence, &$captured, &$summary): void {
             $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
 
             if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
@@ -229,7 +231,7 @@ class AbsenceMissionReactionService
             ];
             $summary = $this->buildMissionSummary($mission, 'RELEASED');
 
-            $this->missionPostDeployService->release($mission, $actor, notify: false, reason: $reason);
+            $this->missionPostDeployService->release($mission, $actor, notify: false, reason: $reason, causedByAbsenceId: $absence->getId());
         });
 
         if ($summary === null) {
@@ -271,7 +273,7 @@ class AbsenceMissionReactionService
         $captured = null;
         $summary  = null;
 
-        $this->em->wrapInTransaction(function () use ($mission, $actor, $reason, &$captured, &$summary): void {
+        $this->em->wrapInTransaction(function () use ($mission, $actor, $reason, $absence, &$captured, &$summary): void {
             $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
 
             if (!in_array($mission->getStatus(), self::SURGEON_ACTIONABLE_STATUSES, true)) {
@@ -285,7 +287,7 @@ class AbsenceMissionReactionService
             ];
             $summary = $this->buildMissionSummary($mission, 'CANCELLED');
 
-            $this->missionPostDeployService->cancel($mission, $actor, reason: $reason, notify: false);
+            $this->missionPostDeployService->cancel($mission, $actor, reason: $reason, notify: false, causedByAbsenceId: $absence->getId());
         });
 
         if ($summary === null) {

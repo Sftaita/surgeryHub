@@ -7,6 +7,7 @@ use App\Message\PlanningAlertRaisedMessage;
 use App\Message\PlanningDeployPdfsMessage;
 use App\Message\SendBillingEmailMessage;
 use App\Message\SurgeonAbsenceOccurrencesNeutralizedMessage;
+use App\Message\PlanningRestoredAfterAbsenceMessage;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Yaml\Yaml;
 
@@ -141,6 +142,22 @@ class MessengerRoutingTest extends TestCase
             'async',
             self::$routing[SurgeonAbsenceOccurrencesNeutralizedMessage::class],
             'SurgeonAbsenceOccurrencesNeutralizedMessage must be routed to "async".'
+        );
+    }
+
+    // ── PlanningRestoredAfterAbsenceMessage (Lot 4, D-104) ────────────────────
+
+    public function test_planning_restored_after_absence_message_is_routed_to_async(): void
+    {
+        $this->assertArrayHasKey(
+            PlanningRestoredAfterAbsenceMessage::class,
+            self::$routing,
+            'PlanningRestoredAfterAbsenceMessage has no transport routing — it would run synchronously in the HTTP request that deleted/updated the absence.'
+        );
+        $this->assertSame(
+            'async',
+            self::$routing[PlanningRestoredAfterAbsenceMessage::class],
+            'PlanningRestoredAfterAbsenceMessage must be routed to "async".'
         );
     }
 

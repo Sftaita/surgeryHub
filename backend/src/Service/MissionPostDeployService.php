@@ -58,12 +58,21 @@ class MissionPostDeployService
      *
      * $reason — free-text audit context (e.g. "Absence instrumentiste enregistrée"). Purely
      * informational, stored in the AuditEvent payload; does not change the transition itself.
+     *
+     * $causedByAbsenceId — set only by AbsenceMissionReactionService (D-104, Lot 4): the
+     * structured (not free-text) id of the Absence that triggered this release, so a later
+     * reconciliation can verify "is the mission's most recent AuditEvent still exactly this
+     * absence's own reaction?" before ever attempting an automatic restore. previousStatus is
+     * always ASSIGNED here (enforced by the guard above) but is still stored explicitly for a
+     * uniform payload shape with cancel().
      */
-    public function release(Mission $mission, User $actor, bool $notify = true, ?string $reason = null): void
+    public function release(Mission $mission, User $actor, bool $notify = true, ?string $reason = null, ?int $causedByAbsenceId = null): void
     {
         if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
             throw new ConflictHttpException('Mission must be ASSIGNED to release');
         }
+
+        $previousStatus = $mission->getStatus()->value;
 
         $fromInstrumentist     = $mission->getInstrumentist();
         $fromInstrumentistId   = $fromInstrumentist?->getId();
@@ -77,6 +86,8 @@ class MissionPostDeployService
         $payload = [
             'fromInstrumentistId'   => $fromInstrumentistId,
             'fromInstrumentistName' => $fromInstrumentistName,
+            'previousStatus'        => $previousStatus,
+            'causedByAbsenceId'     => $causedByAbsenceId,
             'reason'                => $reason,
             'actorId'               => $actor->getId(),
             'actorName'             => $this->displayName($actor),
@@ -174,12 +185,16 @@ class MissionPostDeployService
      * mission whose surgeon is now absent, right before deploy() publishes it, reuses this
      * exact same mutation/audit path rather than a bespoke one. Every existing caller only
      * ever invokes this on OPEN/ASSIGNED (unchanged), so widening the guard is purely additive.
+     *
+     * $causedByAbsenceId — see release() doc (D-104, Lot 4).
      */
-    public function cancel(Mission $mission, User $actor, ?string $reason = null, bool $notify = true): void
+    public function cancel(Mission $mission, User $actor, ?string $reason = null, bool $notify = true, ?int $causedByAbsenceId = null): void
     {
         if (!in_array($mission->getStatus(), [MissionStatus::DRAFT, MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
             throw new ConflictHttpException('Mission must be DRAFT, OPEN or ASSIGNED to cancel');
         }
+
+        $previousStatus = $mission->getStatus()->value;
 
         $fromInstrumentist     = $mission->getInstrumentist();
         $fromInstrumentistId   = $fromInstrumentist?->getId();
@@ -194,6 +209,8 @@ class MissionPostDeployService
             'reason'                => $reason,
             'fromInstrumentistId'   => $fromInstrumentistId,
             'fromInstrumentistName' => $fromInstrumentistName,
+            'previousStatus'        => $previousStatus,
+            'causedByAbsenceId'     => $causedByAbsenceId,
             'actorId'               => $actor->getId(),
             'actorName'             => $this->displayName($actor),
         ];
@@ -209,6 +226,76 @@ class MissionPostDeployService
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
             missionId:  $mission->getId(),
             changeType: MissionChangeType::CANCELLED,
+            actorId:    $actor->getId(),
+            payload:    $payload,
+            occurredAt: new \DateTimeImmutable(),
+        ));
+    }
+
+    /**
+     * CANCELLED → ASSIGNED|OPEN (D-104, Lot 4).
+     *
+     * Narrow, purpose-built transition — CANCELLED is otherwise terminal everywhere else in
+     * this codebase (see cancel()'s guard and every other transition's guard, none of which
+     * accept CANCELLED as a source status). Exists solely for
+     * AbsenceImpactReconciliationService::reconcileForDeletion()/reconcileForUpdate(), which
+     * is exclusively responsible for deciding WHEN it is safe to call this (the caller must
+     * already have verified: this mission's most recent AuditEvent is exactly the
+     * absence-driven MISSION_CANCELLED_POST_DEPLOY caused by the absence now being deleted/
+     * shrunk — i.e. nothing else has touched this mission since). This method itself only
+     * enforces the mechanical status guard and, when $instrumentistId is given, eligibility
+     * (STRICT_ASSIGNMENT — ABSENT/SCHEDULE_CONFLICT/INACTIVE per D-101) — it has no opinion
+     * on absence causality.
+     *
+     * $instrumentistId — the previously-assigned instrumentist to re-validate and restore.
+     * Pass null to restore straight to OPEN (no previous instrumentist, or the caller has
+     * already determined the previous one is no longer eligible).
+     */
+    public function restoreAfterCancellation(
+        Mission $mission,
+        User $actor,
+        ?int $instrumentistId,
+        int $causedByAbsenceId,
+        bool $notify = false,
+    ): void {
+        if ($mission->getStatus() !== MissionStatus::CANCELLED) {
+            throw new ConflictHttpException('Mission must be CANCELLED to restore');
+        }
+
+        $newInstrumentist = null;
+        if ($instrumentistId !== null) {
+            $newInstrumentist = $this->em->find(User::class, $instrumentistId);
+            if ($newInstrumentist === null) {
+                throw new NotFoundHttpException('Instrumentist not found');
+            }
+            $this->guardEligibility($mission, $newInstrumentist, EligibilityEnforcementPolicy::STRICT_ASSIGNMENT);
+        }
+
+        $restoredStatus = $newInstrumentist !== null ? MissionStatus::ASSIGNED : MissionStatus::OPEN;
+
+        $mission->setStatus($restoredStatus);
+        $mission->setInstrumentist($newInstrumentist);
+
+        $payload = [
+            'previousStatus'         => MissionStatus::CANCELLED->value,
+            'restoredStatus'         => $restoredStatus->value,
+            'restoredInstrumentistId' => $newInstrumentist?->getId(),
+            'causedByAbsenceId'      => $causedByAbsenceId,
+            'actorId'                => $actor->getId(),
+            'actorName'              => $this->displayName($actor),
+        ];
+
+        $this->audit->record($mission, $actor, AuditEventType::MISSION_RESTORED_AFTER_SURGEON_ABSENCE, $payload);
+
+        $this->em->flush();  // R-05: flush before dispatch
+
+        if (!$notify) {
+            return;
+        }
+
+        $this->bus->dispatch(new MissionLifecycleChangedMessage(
+            missionId:  $mission->getId(),
+            changeType: $restoredStatus === MissionStatus::ASSIGNED ? MissionChangeType::REASSIGNED : MissionChangeType::RELEASED,
             actorId:    $actor->getId(),
             payload:    $payload,
             occurredAt: new \DateTimeImmutable(),

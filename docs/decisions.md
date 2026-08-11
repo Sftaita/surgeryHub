@@ -7696,3 +7696,96 @@ Restauration automatique après suppression/réduction d'une absence (Lot 4). Em
 manager récapitulatif enrichi de deep-links (Lot 5, hors scope actuel). Bouton "Vérifier
 les conflits" (Lot 6). Absence instrumentiste sur Post futur sans Mission — symétrique
 mais explicitement exclue (§22), traitée dans un lot séparé le cas échéant.
+
+---
+
+## D-104 — Planning V2 : restauration réversible après suppression/réduction d'une absence (Lot 4, 2026-08-11)
+
+Date : 2026-08-11
+
+### Contexte
+
+Avant ce lot, `AbsenceMissionReactionService::onAbsenceDeleted()` était un no-op délibéré
+(D-062) : supprimer une absence ne restaurait jamais rien, seule une notice générique
+"à réévaluer manuellement" était envoyée aux managers — aucun lien durable entre une
+`Absence` et ce qu'elle avait provoqué n'existait. Le Lot 3 a introduit exactement ce lien
+pour les occurrences futures (`source`/`sourceAbsence`) ; ce lot ajoute son équivalent pour
+les Missions déjà générées, via l'enrichissement du payload `AuditEvent` déjà existant
+(colonne `json`, aucune migration), et implémente la restauration effective des deux.
+
+### Décision — aucune nouvelle structure de tracking, `AuditEvent.payload` suffit
+
+`MissionPostDeployService::release()`/`cancel()` gagnent un paramètre optionnel
+`causedByAbsenceId` (jamais renseigné par un appelant manager), stocké dans le payload
+existant aux côtés de `previousStatus` (nouveau) et `fromInstrumentistId`
+(préexistant). Cela répond exactement à la question du §13 : *"l'état actuel de la
+Mission est-il toujours exactement celui produit par la réaction à l'absence ?"* — en
+comparant le **dernier** `AuditEvent` de la Mission (`ORDER BY id DESC LIMIT 1`) au
+`causedByAbsenceId` de l'absence en cours de suppression. Toute action manager
+intermédiaire (`assign`/`reassign`/`updateSchedule`/`createPostDeploy`) écrit un
+`AuditEventType` différent, qui casse la correspondance et bloque toute restauration
+automatique — sans aucun champ dédié "verrou manager".
+
+### Décision — restauration Mission toujours revalidée, jamais aveugle
+
+Nouvelle méthode `MissionPostDeployService::restoreAfterCancellation()`
+(`CANCELLED → ASSIGNED|OPEN`, transition qui n'existait nulle part ailleurs — `CANCELLED`
+reste terminal partout ailleurs dans le code). Revalide systématiquement l'ancien
+instrumentiste via `guardEligibility()`/`evaluateForReassignment()` (D-101) avant de le
+réaffecter ; en cas d'inéligibilité, restaure quand même la Mission (`OPEN` plutôt que de
+la laisser `CANCELLED`) et crée une alerte `REASSIGNMENT_REQUIRED`. Côté instrumentiste,
+`assign()` (déjà existant, `OPEN|ASSIGNED` accepté) suffit — pas de nouvelle méthode.
+
+### Décision — suppression en deux phases (le seul point d'ordonnancement réel)
+
+Piège découvert en testant : `MissionEligibilityService::evaluateForReassignment()`
+interroge la table `Absence` en direct pour `ABSENT` — si la réconciliation Mission
+tournait *avant* la suppression réelle de la ligne, l'ancien instrumentiste paraîtrait
+encore absent à cause de l'absence qu'on est justement en train de supprimer, et la
+revalidation échouerait systématiquement. Autre piège : Doctrine remet l'identifiant
+auto-généré à `null` sur l'objet PHP une fois la ligne réellement supprimée (`getId()`
+ne peut plus être utilisé après `remove()+flush()` — capturer l'id en amont).
+Résultat : `beginDeletion()` (occurrences, a besoin du FK encore intact, tourne *avant*
+`remove()`) puis `completeDeletion()` (missions, a besoin de la ligne réellement partie,
+tourne *après* `remove()+flush()`), un seul message combiné dispatché à la fin. La mise à
+jour (réduction) n'a pas ce problème — la ligne n'est jamais supprimée, sa nouvelle plage
+déjà flushée suffit à ce que la revalidation soit correcte du premier coup.
+
+### Décision — occurrences : recherche non liée au FK `sourceAbsence`
+
+Le FK `sourceAbsence` ne référence que la **première** absence à avoir neutralisé une
+occurrence (règle d'idempotence du Lot 3 : jamais d'écrasement). Avec deux absences
+chevauchantes, supprimer la seconde (qui ne possède jamais le FK) doit quand même
+redéclencher l'examen. La requête candidate est donc scopée par chirurgien + fenêtre de
+dates + `source = SURGEON_ABSENCE`, jamais par `sourceAbsence = :cetteAbsence` — la
+décision finale reste toujours le contrôle "une autre absence couvre-t-elle encore cette
+date, en excluant celle-ci" (déjà correct par construction, indépendant du FK).
+
+### Décision — `PlanningOccurrenceException` : suppression (Option A), pas de nouveau statut
+
+Cohérent avec la convention déjà établie par `PlanningOccurrenceExceptionService::
+deleteException()` ("métadonnée de planification pure, pas de donnée historique") :
+restaurer une occurrence supprime la ligne, un `AuditEvent`
+(`PLANNING_OCCURRENCE_RESTORED_AFTER_ABSENCE`) conserve l'historique. Aucune migration.
+
+### Décision — PlanningAlert : zéro code nouveau
+
+`AbsenceImpactService::onAbsenceDeleted()`/`onAbsenceUpdated()` (inchangés) résolvaient
+déjà exactement les alertes portant un FK `absence` non nul
+(`SURGEON_ABSENCE`/`INSTRUMENTIST_ABSENCE`/`REASSIGNMENT_REQUIRED`), avec re-pointage
+vers une absence encore active si elle existe (D-050) — et laissaient déjà
+`SCHEDULE_CONFLICT`/`OCCURRENCE_CANCELLED` (FK `absence` toujours nul) complètement
+intacts. Aucun changement nécessaire.
+
+### Décision — notifications uniquement sur restauration réelle
+
+Un seul `PlanningRestoredAfterAbsenceMessage` par traitement (jamais un par
+occurrence/mission), combinant les deux catégories pour le résumé manager (§21).
+`AbsenceMissionReactionService::onAbsenceDeleted()`'s notice générique reste, texte
+ajusté (ne prétend plus "jamais restauré automatiquement").
+
+### Non traité dans ce lot
+
+Email manager enrichi de deep-links (Lot 5, si applicable). Bouton "Vérifier les
+conflits" (Lot 6). Restauration en cas de modification manuelle en Mode Modification
+(hors périmètre — jamais un chemin traversé par ce lot).

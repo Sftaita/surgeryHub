@@ -40,6 +40,14 @@ enum AuditEventType: string
     // mission is always null on this event — nothing to link to, that's the whole point.
     case PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE = 'PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE';
 
+    // Reversal of the two events above, when an absence is deleted/shortened and the
+    // reconciliation determines it's safe (D-104, Lot 4). Never written unless the mission/
+    // occurrence's most recent state was still exactly the one that absence had produced —
+    // see AbsenceImpactReconciliationService.
+    case PLANNING_OCCURRENCE_RESTORED_AFTER_ABSENCE               = 'PLANNING_OCCURRENCE_RESTORED_AFTER_ABSENCE';
+    case MISSION_RESTORED_AFTER_SURGEON_ABSENCE                   = 'MISSION_RESTORED_AFTER_SURGEON_ABSENCE';
+    case MISSION_ASSIGNMENT_RESTORED_AFTER_INSTRUMENTIST_ABSENCE  = 'MISSION_ASSIGNMENT_RESTORED_AFTER_INSTRUMENTIST_ABSENCE';
+
     // Automated (D-064) — MissionStartDueCommand, ASSIGNED -> IN_PROGRESS on startAt.
     case MISSION_STARTED = 'MISSION_STARTED';
 

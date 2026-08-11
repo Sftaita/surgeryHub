@@ -62,6 +62,15 @@ enum NotificationType: string
     case ABSENCE_OCCURRENCE_CANCELLED     = 'ABSENCE_OCCURRENCE_CANCELLED';     // to the post's default instrumentist
     case ABSENCE_OCCURRENCE_CANCELLED_MGR = 'ABSENCE_OCCURRENCE_CANCELLED_MGR'; // to every active manager/admin
 
+    // ── Reversal: absence deleted/shortened, restoration performed (Lot 4, D-104) ────
+    // Only ever dispatched on a REAL, safe restoration — never a blanket "your absence was
+    // deleted" notice (that stays ABSENCE_SELF_DECLARED-adjacent territory, see
+    // AbsenceMissionReactionService::onAbsenceDeleted()'s generic manager-only fallback).
+    case ABSENCE_OCCURRENCE_RESTORED     = 'ABSENCE_OCCURRENCE_RESTORED';     // to the post's default instrumentist
+    case ABSENCE_OCCURRENCE_RESTORED_MGR = 'ABSENCE_OCCURRENCE_RESTORED_MGR'; // to every active manager/admin
+    case MISSION_RESTORED                = 'MISSION_RESTORED';               // to the surgeon and/or the re-assigned instrumentist
+    case MISSION_RESTORED_MGR            = 'MISSION_RESTORED_MGR';           // to every active manager/admin
+
     // ── Manual resend (D-090, anomalie fonctionnelle 1) ──────────────────────
     // A manager explicitly re-sending one person's currently-published plan on demand —
     // never diff-driven, never fanned out to anyone else. Not gated by

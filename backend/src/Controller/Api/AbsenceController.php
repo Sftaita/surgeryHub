@@ -5,6 +5,7 @@ namespace App\Controller\Api;
 use App\Entity\Absence;
 use App\Entity\User;
 use App\Security\Voter\PlanningVoter;
+use App\Service\AbsenceImpactReconciliationService;
 use App\Service\AbsenceImpactService;
 use App\Service\AbsenceMissionReactionService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
@@ -23,6 +24,7 @@ class AbsenceController extends AbstractController
         private readonly AbsenceImpactService $absenceImpactService,
         private readonly AbsenceMissionReactionService $absenceMissionReactionService,
         private readonly SurgeonAbsenceOccurrenceImpactService $surgeonAbsenceOccurrenceImpactService,
+        private readonly AbsenceImpactReconciliationService $reconciliationService,
     ) {}
 
     #[Route('', name: 'api_absences_list', methods: ['GET'])]
@@ -119,6 +121,12 @@ class AbsenceController extends AbstractController
 
         $data = json_decode($request->getContent(), true) ?? [];
 
+        // Captured BEFORE any mutation — D-104 (Lot 4) needs the range as it was before this
+        // update, to reconcile whatever falls OUT of the new range (a shortened absence). The
+        // Absence row itself only ever holds the current range once flushed below.
+        $previousDateStart = $absence->getDateStart();
+        $previousDateEnd   = $absence->getDateEnd();
+
         $dateStart = $absence->getDateStart();
         $dateEnd   = $absence->getDateEnd();
 
@@ -148,10 +156,13 @@ class AbsenceController extends AbstractController
 
         $this->em->flush();
 
-        // See create() — same ordering reasoning.
+        // See create() — same ordering reasoning. Reconciliation (restoring what fell out of
+        // a shortened range) runs last, after the "create new impacts" services above have
+        // already reacted to the new (already-flushed) range.
         $this->absenceMissionReactionService->onAbsenceUpdated($absence, $currentUser);
         $this->absenceImpactService->onAbsenceUpdated($absence);
         $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceUpdated($absence, $currentUser);
+        $this->reconciliationService->reconcileForUpdate($absence, $previousDateStart, $previousDateEnd, $currentUser);
 
         return $this->json($this->serialize($absence));
     }
@@ -169,11 +180,20 @@ class AbsenceController extends AbstractController
         // Resolve linked alerts BEFORE removing the row — PlanningAlert.absence is
         // ON DELETE SET NULL so history survives, but resolution must happen while
         // the association still exists for findActiveAlertsForAbsence() to find them.
+        // Reconciliation (D-104, Lot 4) is deliberately split around the removal itself —
+        // see AbsenceImpactReconciliationService's class docblock: occurrence restoration
+        // needs the FK still intact (beginDeletion(), before removal), mission restoration
+        // needs the Absence row physically gone for eligibility re-validation to be
+        // accurate (completeDeletion(), after removal+flush).
+        $absenceId = $absence->getId();
         $this->absenceImpactService->onAbsenceDeleted($absence);
+        $restoredOccurrences = $this->reconciliationService->beginDeletion($absence, $currentUser);
         $this->absenceMissionReactionService->onAbsenceDeleted($absence, $currentUser);
 
         $this->em->remove($absence);
         $this->em->flush();
+
+        $this->reconciliationService->completeDeletion($absence, $absenceId, $currentUser, $restoredOccurrences);
 
         return $this->json(null, 204);
     }
