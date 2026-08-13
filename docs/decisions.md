@@ -7984,3 +7984,78 @@ la version auditée (scope volontairement limité au site+période de la version
 "si pertinent"). Deep links dans le résumé frontend (aucun mécanisme réutilisable,
 inchangé depuis D-105).
 
+## D-107 — Absence instrumentiste avant génération : notifier le chirurgien via le binôme théorique du Post (2026-08-12)
+
+Date : 2026-08-12
+
+### Contexte
+
+D-103 (Lot 3) ne traitait que l'absence CHIRURGIEN avant génération : neutraliser les
+occurrences théoriques et prévenir l'instrumentiste par défaut du Post. Le cas
+symétrique — une instrumentiste absente, dont le nom apparaît comme `instrumentist` par
+défaut sur des `SurgeonSchedulePost` de un ou plusieurs chirurgiens — n'avait jamais été
+construit (documenté comme trou volontaire dans le docblock de
+`SurgeonAbsenceOccurrenceImpactService`, §22 de son propre historique). Audit confirmé :
+aucune fonctionnalité existante ne couvrait ce cas ; ce n'était pas un manque de tests,
+un vrai service manquait.
+
+### Décision — service notification-only, jamais de `PlanningOccurrenceException`
+
+Contrairement à l'absence chirurgien (qui neutralise réellement l'occurrence — personne
+pour opérer), une absence instrumentiste ne change rien à ce qui doit se passer :
+l'occurrence doit toujours être planifiée, seulement pas avec cette instrumentiste-là.
+La sécurité à la génération est déjà garantie par D-101
+(`MissionEligibilityService::evaluateForReassignment()`, jamais de réaffectation
+silencieuse à un instrumentiste absent). Nouveau
+`InstrumentistAbsenceOccurrenceImpactService` : symétrique de
+`SurgeonAbsenceOccurrenceImpactService` dans sa structure (réutilise
+`theoreticalOccurrenceDates()` sans dupliquer la logique de récurrence), mais ne crée
+**aucune** `PlanningOccurrenceException` — rien à neutraliser, donc rien à persister
+pour la correction de la génération. Ce choix évite explicitement toute nouvelle
+migration : ni nouvelle table, ni nouvelle colonne.
+
+### Décision — idempotence par différence de plage, sans marqueur persistant
+
+Sans `PlanningOccurrenceException` pour servir de garde-fou "déjà traité" (comme le fait
+le service chirurgien), il fallait un autre mécanisme pour éviter de renotifier le
+chirurgien à chaque `PATCH` (y compris ceux qui ne changent que `reason`, sans toucher
+aux dates — `AbsenceController::update()` relance systématiquement tout le pipeline,
+sans garde de "dates inchangées"). Solution retenue : chaque appel reçoit l'ancienne
+plage de dates de l'absence (`null` à la création) et calcule
+`theoreticalOccurrenceDates()` sur l'ancienne ET la nouvelle plage ; seule la différence
+(dates nouvellement couvertes = "impacté", dates qui sortent de la plage = "n'est plus
+impacté") est communiquée. Une mise à jour qui ne touche pas `dateStart`/`dateEnd`
+produit une différence vide dans les deux sens → aucune notification. Aucune table, aucun
+champ, aucune requête JSON fragile — juste de l'arithmétique de dates, correcte par
+construction et strictement plus simple qu'une alternative basée sur `AuditEvent`
+(payload JSON non interrogeable proprement en DQL) ou sur un nouveau type
+`PlanningOccurrenceException` (risque de pollution sémantique d'une table dont le rôle
+est justement "cette occurrence dévie du planning normal").
+
+### Décision — un seul type de notification consolidé, pas de doublon `_MGR`
+
+Une seule recap par chirurgien par run, couvrant à la fois les occurrences nouvellement
+impactées et celles redevenues couvertes (`NotificationType::ABSENCE_OCCURRENCE_UNCOVERED`,
+28 caractères, sous la contrainte `length: 32` de `notification_preference`). Suit la
+philosophie de consolidation du Lot 5 (D-105) plutôt que d'ajouter un second type
+`_RESTORED` symétrique à `ABSENCE_OCCURRENCE_CANCELLED`/`ABSENCE_OCCURRENCE_RESTORED` —
+un seul message porte les deux directions (`newlyImpacted`/`noLongerImpacted`), le
+handler groupe par chirurgien et construit un email avec deux sections.
+
+### Décision — pas de fuite entre chirurgiens, pas de doublon avec le chemin Mission
+
+`loadActivePosts()` filtre strictement sur `post.instrumentist = :instrumentist` — une
+instrumentiste sur plusieurs Posts de chirurgiens différents ne notifie jamais que le(s)
+chirurgien(s) réellement concerné(s) par au moins une occurrence théorique dans la
+fenêtre. `hasExistingMission()` (même requête que le service chirurgien) court-circuite
+toute occurrence déjà matérialisée en Mission — déjà géré par
+`AbsenceMissionReactionService`, jamais de double traitement.
+
+### Non traité dans ce lot
+
+UX de l'espace chirurgien/instrumentiste au moment de l'encodage d'une absence (aucun
+résumé "postes futurs potentiellement impactés" distinct de "missions déjà planifiées
+impactées" dans l'écran de confirmation — signalé comme amélioration possible, pas fait
+ici). Migration `notification_preference.notification_type` (aurait permis un nom non
+abrégé mais évitée entièrement grâce au choix d'un seul type consolidé).
+

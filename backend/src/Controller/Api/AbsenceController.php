@@ -10,6 +10,7 @@ use App\Service\AbsenceImpactService;
 use App\Service\AbsenceImpactSummaryService;
 use App\Service\AbsenceMissionReactionService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
+use App\Service\InstrumentistAbsenceOccurrenceImpactService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -25,6 +26,7 @@ class AbsenceController extends AbstractController
         private readonly AbsenceImpactService $absenceImpactService,
         private readonly AbsenceMissionReactionService $absenceMissionReactionService,
         private readonly SurgeonAbsenceOccurrenceImpactService $surgeonAbsenceOccurrenceImpactService,
+        private readonly InstrumentistAbsenceOccurrenceImpactService $instrumentistAbsenceOccurrenceImpactService,
         private readonly AbsenceImpactReconciliationService $reconciliationService,
         private readonly AbsenceImpactSummaryService $absenceImpactSummaryService,
     ) {}
@@ -107,6 +109,10 @@ class AbsenceController extends AbstractController
         // Lot 3 (D-103) — future Post occurrences with no Mission yet, independent of the
         // two calls above (they only ever act on already-materialized Mission rows).
         $occurrenceResult = $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceCreated($absence, $currentUser);
+        // Complementary lot — symmetric case, an INSTRUMENTIST absence covering future Post
+        // occurrences with no Mission yet. Independent of everything above (they only ever
+        // act on SURGEON absences or already-materialized Mission rows).
+        $this->instrumentistAbsenceOccurrenceImpactService->onInstrumentistAbsenceCreated($absence, $currentUser);
 
         // Lot 5 (D-105) — ONE consolidated manager recap for this create, combining both
         // results above; never dispatched if neither produced a real impact.
@@ -179,6 +185,7 @@ class AbsenceController extends AbstractController
         $missionSummaries = $this->absenceMissionReactionService->onAbsenceUpdated($absence, $currentUser);
         $this->absenceImpactService->onAbsenceUpdated($absence);
         $occurrenceResult = $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceUpdated($absence, $currentUser);
+        $this->instrumentistAbsenceOccurrenceImpactService->onInstrumentistAbsenceUpdated($absence, $currentUser, $previousDateStart, $previousDateEnd);
         $reconciliation = $this->reconciliationService->reconcileForUpdate($absence, $previousDateStart, $previousDateEnd, $currentUser);
 
         // Lot 5 (D-105) — ONE consolidated manager recap covering both new impacts (if the

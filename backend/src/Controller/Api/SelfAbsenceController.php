@@ -12,6 +12,7 @@ use App\Service\AbsenceImpactService;
 use App\Service\AbsenceImpactSummaryService;
 use App\Service\AbsenceMissionReactionService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
+use App\Service\InstrumentistAbsenceOccurrenceImpactService;
 use App\Message\AbsenceSelfDeclaredMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -41,6 +42,7 @@ class SelfAbsenceController extends AbstractController
         private readonly AbsenceImpactService $absenceImpactService,
         private readonly AbsenceMissionReactionService $absenceMissionReactionService,
         private readonly SurgeonAbsenceOccurrenceImpactService $surgeonAbsenceOccurrenceImpactService,
+        private readonly InstrumentistAbsenceOccurrenceImpactService $instrumentistAbsenceOccurrenceImpactService,
         private readonly AbsenceImpactReconciliationService $reconciliationService,
         private readonly AbsenceImpactSummaryService $absenceImpactSummaryService,
         private readonly UserRepository $userRepository,
@@ -228,14 +230,17 @@ class SelfAbsenceController extends AbstractController
      * null from create() — a brand-new absence has nothing to reconcile.
      *
      * If NEITHER the mission reaction, NOR the impact sync raised a new alert, NOR Lot 3
-     * neutralized a future occurrence, NOR Lot 4 restored anything, the manager would
-     * otherwise learn nothing about this self-declared absence at all — dispatches
-     * ABSENCE_SELF_DECLARED for that case only, never when any of the four already covers
-     * it (no duplication, §14). Before Lot 5 (D-105), the mission reaction's own result was
-     * never checked here at all — a self-declared absence that auto-released/cancelled a
-     * mission could still trigger this generic "nothing happened" notice, since
-     * AbsenceMissionReactionService's own handler never notified managers either. Fixed by
-     * including $missionSummaries in the condition below.
+     * neutralized a future occurrence, NOR Lot 4 restored anything, NOR the complementary
+     * instrumentist-side occurrence impact (D-107) fired, the manager would otherwise learn
+     * nothing about this self-declared absence at all — dispatches ABSENCE_SELF_DECLARED for
+     * that case only, never when any of the five already covers it (no duplication, §14).
+     * Before Lot 5 (D-105), the mission reaction's own result was never checked here at all —
+     * a self-declared absence that auto-released/cancelled a mission could still trigger this
+     * generic "nothing happened" notice, since AbsenceMissionReactionService's own handler
+     * never notified managers either. Fixed by including $missionSummaries in the condition
+     * below. D-107 added the same care for its own result — an instrumentist self-declaring
+     * an absence that only impacts future (non-Mission) Post occurrences must never ALSO
+     * receive the generic "rien ne s'est passé" notice alongside the real one.
      */
     private function reactAndSync(
         Absence $absence,
@@ -250,6 +255,9 @@ class SelfAbsenceController extends AbstractController
         $occurrenceResult = $previousDateStart !== null
             ? $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceUpdated($absence, $currentUser)
             : $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceCreated($absence, $currentUser);
+        $instrumentistOccurrenceResult = $previousDateStart !== null
+            ? $this->instrumentistAbsenceOccurrenceImpactService->onInstrumentistAbsenceUpdated($absence, $currentUser, $previousDateStart, $previousDateEnd)
+            : $this->instrumentistAbsenceOccurrenceImpactService->onInstrumentistAbsenceCreated($absence, $currentUser);
 
         $reconciliationResult = ['restoredOccurrences' => [], 'restoredMissions' => []];
         if ($previousDateStart !== null && $previousDateEnd !== null) {
@@ -273,6 +281,7 @@ class SelfAbsenceController extends AbstractController
 
         if (!empty($missionSummaries) || !empty($result['created']) || !empty($occurrenceResult['created'])
             || !empty($reconciliationResult['restoredOccurrences']) || !empty($reconciliationResult['restoredMissions'])
+            || !empty($instrumentistOccurrenceResult['newlyImpacted']) || !empty($instrumentistOccurrenceResult['noLongerImpacted'])
         ) {
             return;
         }

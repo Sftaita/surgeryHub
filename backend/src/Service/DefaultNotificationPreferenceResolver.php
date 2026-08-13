@@ -78,6 +78,7 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::ENCODING_ANOMALY_RESOLVED,
         NotificationType::ABSENCE_OCCURRENCE_CANCELLED,
         NotificationType::ABSENCE_OCCURRENCE_CANCELLED_MGR,
+        NotificationType::ABSENCE_OCCURRENCE_UNCOVERED,
         NotificationType::ABSENCE_OCCURRENCE_RESTORED,
         NotificationType::ABSENCE_OCCURRENCE_RESTORED_MGR,
         NotificationType::MISSION_RESTORED,

@@ -62,6 +62,14 @@ enum NotificationType: string
     case ABSENCE_OCCURRENCE_CANCELLED     = 'ABSENCE_OCCURRENCE_CANCELLED';     // to the post's default instrumentist
     case ABSENCE_OCCURRENCE_CANCELLED_MGR = 'ABSENCE_OCCURRENCE_CANCELLED_MGR'; // dead since Lot 5 (D-105) — kept, see below
 
+    // Symmetric case: an INSTRUMENTIST absence covers a future Post occurrence with no
+    // Mission generated yet (complementary lot to D-103 — see
+    // InstrumentistAbsenceOccurrenceImpactService). One consolidated recap per surgeon per
+    // absence-processing run, covering both newly-impacted and no-longer-impacted
+    // occurrences in the same message (mirrors the Lot 5 consolidation philosophy instead of
+    // adding a second _RESTORED-style case).
+    case ABSENCE_OCCURRENCE_UNCOVERED = 'ABSENCE_OCCURRENCE_UNCOVERED'; // to the surgeon(s) concerned
+
     // ── Reversal: absence deleted/shortened, restoration performed (Lot 4, D-104) ────
     // Only ever dispatched on a REAL, safe restoration — never a blanket "your absence was
     // deleted" notice (that stays ABSENCE_SELF_DECLARED-adjacent territory, see

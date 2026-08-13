@@ -40,6 +40,15 @@ enum AuditEventType: string
     // mission is always null on this event — nothing to link to, that's the whole point.
     case PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE = 'PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE';
 
+    // Symmetric case: an INSTRUMENTIST absence covers a future Post occurrence with no
+    // Mission generated yet. Purely informational — mission is always null, and unlike the
+    // surgeon case above this NEVER corresponds to a PlanningOccurrenceException (the
+    // occurrence still happens, only the usual instrumentist is unavailable; generation-time
+    // safety is Lot 1's revalidation, not a static exception). 'direction' in the payload
+    // distinguishes NEWLY_IMPACTED from NO_LONGER_IMPACTED — see
+    // InstrumentistAbsenceOccurrenceImpactService.
+    case PLANNING_OCCURRENCE_INSTRUMENTIST_ABSENCE_NOTICE = 'PLANNING_OCCURRENCE_INSTRUMENTIST_ABSENCE_NOTICE';
+
     // Reversal of the two events above, when an absence is deleted/shortened and the
     // reconciliation determines it's safe (D-104, Lot 4). Never written unless the mission/
     // occurrence's most recent state was still exactly the one that absence had produced —
