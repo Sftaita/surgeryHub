@@ -8113,3 +8113,32 @@ pour mémoriser "escalade déjà envoyée" par Mission (sans quoi la commande re
 chaque jour). Les deux déclenchent la règle d'arrêt explicite demandée avant toute
 implémentation — non fait, présenté comme choix à trancher séparément.
 
+## D-109 — Correction d'une race condition réelle sur les alertes de conflit (2026-08-12)
+
+Date : 2026-08-12
+
+### Contexte
+
+Découvert en testant en direct deux scans "Vérifier les conflits" simultanés sur le
+même `PlanningVersion` (deux requêtes HTTP concurrentes réelles, `Promise.all`) : **4
+lignes d'alerte créées pour une seule paire de missions en conflit** (2×
+`SURGEON_CONFLICT` + 2× `INSTRUMENTIST_CONFLICT`), confirmé par lecture SQL fraîche. Un
+vrai bug, pas un artefact d'environnement.
+
+### Cause racine
+
+`PlanningAlertService::createIfNotDuplicate()` est un simple "vérifier puis créer" —
+sans sérialisation, deux appelants concurrents sur exactement la même paire peuvent
+tous deux lire "aucune alerte active" avant que l'un ou l'autre ne committe son INSERT.
+
+### Correction — verrou pessimiste sur la mission-ancre, aucune migration
+
+`PlanningConflictDetectionService::applySync()` enveloppe désormais le "vérifier puis
+créer" dans `$this->em->wrapInTransaction()` avec `$this->em->lock($anchor,
+LockMode::PESSIMISTIC_WRITE)` — exactement la même convention déjà utilisée partout
+ailleurs dans ce dépôt pour les mutations liées à une Mission (voir
+`MissionPostDeployService::start()`/`claim()`). Le second appelant bloque jusqu'à ce que
+le premier committe, puis retrouve correctement l'alerte déjà créée. Rejoué en direct
+après correction : exactement 2 alertes (une par type), plus aucun doublon. Suite
+`PlanningVersionAuditFunctionalTest` (16/16) et suite complète rejouées sans régression.
+

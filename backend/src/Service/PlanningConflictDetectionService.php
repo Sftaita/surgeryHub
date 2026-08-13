@@ -10,6 +10,7 @@ use App\Enum\MissionStatus;
 use App\Enum\PlanningAlertType;
 use App\Message\PlanningAlertRaisedMessage;
 use App\Repository\UserRepository;
+use Doctrine\DBAL\LockMode;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
@@ -264,12 +265,23 @@ class PlanningConflictDetectionService
             $anchor = $mission->getId() < $conflict->getId() ? $mission : $conflict;
             $other  = $anchor === $mission ? $conflict : $mission;
 
-            $result = $this->alertService->createIfNotDuplicate(
-                $anchor, $type, null, $this->buildSnapshot($type, $anchor, $other, $person),
-            );
+            // Concurrency guard (D-109, found via a live two-simultaneous-scans test):
+            // createIfNotDuplicate() is a plain check-then-create — without serialization,
+            // two callers racing on the exact same pair (e.g. two "Vérifier les conflits"
+            // scans fired at once) can both read "no active alert yet" before either commits
+            // its INSERT, producing duplicate alerts. Locking the anchor mission's row for the
+            // duration of the check-then-create — the same PESSIMISTIC_WRITE convention
+            // already used everywhere else in this codebase for Mission-adjacent mutations
+            // (see MissionPostDeployService) — makes the second caller block until the first
+            // commits, so it then correctly finds the alert already created.
+            $result = $this->em->wrapInTransaction(function () use ($anchor, $type, $other, $person) {
+                $this->em->lock($anchor, LockMode::PESSIMISTIC_WRITE);
+                return $this->alertService->createIfNotDuplicate(
+                    $anchor, $type, null, $this->buildSnapshot($type, $anchor, $other, $person),
+                );
+            });
             if ($result['created']) {
                 $created[] = $result['alert'];
-                $this->em->flush(); // populate the alert's id before it's referenced by the message
                 $this->dispatchNotification($result['alert'], $anchor, $other, $type);
             }
 
