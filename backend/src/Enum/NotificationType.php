@@ -70,6 +70,14 @@ enum NotificationType: string
     // adding a second _RESTORED-style case).
     case ABSENCE_OCCURRENCE_UNCOVERED = 'ABSENCE_OCCURRENCE_UNCOVERED'; // to the surgeon(s) concerned
 
+    // Email fallback for the existing OPEN_MISSION_AVAILABLE push-only pool fan-out
+    // (MissionLifecycleChangedMessageHandler::sendOpenMissionAvailableNotifications), scoped
+    // to missions released by an instrumentist absence and restricted to eligible
+    // instrumentists with NO push subscription at all — never a duplicate of the push that
+    // already went out to everyone else. Grouped: one email per recipient per
+    // absence-processing run, covering every mission they're eligible for in that run.
+    case ABSENCE_POOL_MISSION_AVAILABLE = 'ABSENCE_POOL_MISSION_AVAILABLE'; // to eligible instrumentists without push
+
     // ── Reversal: absence deleted/shortened, restoration performed (Lot 4, D-104) ────
     // Only ever dispatched on a REAL, safe restoration — never a blanket "your absence was
     // deleted" notice (that stays ABSENCE_SELF_DECLARED-adjacent territory, see

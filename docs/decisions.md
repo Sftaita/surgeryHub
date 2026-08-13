@@ -8059,3 +8059,57 @@ impactées" dans l'écran de confirmation — signalé comme amélioration possi
 ici). Migration `notification_preference.notification_type` (aurait permis un nom non
 abrégé mais évitée entièrement grâce au choix d'un seul type consolidé).
 
+## D-108 — Diffusion OPEN + escalade J-14 : audit, email de repli groupé, escalade différée (2026-08-12)
+
+Date : 2026-08-12
+
+### Contexte
+
+Audit préalable (sans rien supposer) de ce qui existe déjà quand une absence
+instrumentiste ouvre une Mission déjà générée (ASSIGNED→OPEN). Résultat : l'essentiel
+existait déjà et fonctionne — `MissionPostDeployService::release()` → `MissionLifecycleChangedMessage`
+→ `MissionLifecycleChangedMessageHandler::sendOpenMissionAvailableNotifications()`
+notifie déjà en in-app + push **tous** les instrumentistes éligibles via
+`MissionEligibilityService::findEligible()` (qui exclut déjà ABSENT/INACTIF par
+construction, aucune logique dupliquée) ; le chirurgien est déjà informé immédiatement
+via deux canaux indépendants (`SURGEON_POST_UNCOVERED` in-app+push, pipeline "libre" ;
+`ABSENCE_SURGEON_MISSION_OPENED` in-app+email, recap absence Lot 3bis/D-062). Le seul
+vrai trou : **aucun repli email** quand le push est indisponible.
+
+### Décision — repli email groupé, jamais un doublon du push
+
+Nouveau `NotificationType::ABSENCE_POOL_MISSION_AVAILABLE` (28 caractères, sous la
+contrainte `length: 32`), envoyé uniquement aux instrumentistes éligibles
+**sans aucun abonnement push enregistré** — signal binaire non ambigu (existence d'un
+`PushSubscription`), volontairement différent de "push tenté et échoué" pour ne jamais
+toucher au pipeline générique partagé (`sendOpenMissionAvailableNotifications()`, utilisé
+par tous les appelants, pas seulement les absences) et donc ne jamais risquer un double
+envoi. Un seul email par destinataire par traitement d'absence, regroupant toutes les
+missions nouvellement disponibles pour lui dans ce run (`AbsenceMissionsReactedMessageHandler::
+notifyEligiblePoolWithoutPushByEmail()`) — même philosophie de consolidation que D-105.
+Zéro migration : aucune nouvelle table, réutilise `PushSubscription` (déjà existante) en
+lecture seule.
+
+### Limite connue, documentée plutôt que cachée
+
+Un abonnement push existant mais dont l'envoi échoue réellement (clé expirée,
+signature VAPID invalide, etc.) ne déclenche **pas** ce repli — seul l'absence totale
+d'abonnement le fait. Confirmé en direct : un faux `PushSubscription` de test a produit
+une erreur `push.flush_failed` sans email de secours. Corriger ce cas précis
+nécessiterait de faire remonter un statut par-destinataire depuis le pipeline générique
+partagé (actuellement `sendToUsers()` est un envoi par lot sans suivi individuel) —
+changement plus large que le périmètre de ce lot, non fait ici.
+
+### J-14 — non implémenté, arrêt volontaire avant toute nouvelle architecture
+
+Audit confirmé : **aucun mécanisme de planification récurrente n'existe dans ce
+dépôt** — pas de `symfony/scheduler`, pas de transport Messenger planifié, pas de cron
+dans `docker-compose.yml`. Les deux commandes `#[AsCommand]` qui y ressemblent
+(`MissionStartDueCommand`, `PlanningDeploymentReconcileStuckCommand`) documentent
+elles-mêmes explicitement ne pas être branchées sur un déclencheur automatique. Un J-14
+réel nécessiterait : (1) une nouvelle architecture de planification (nouveau paquet ou
+nouveau service cron/systemd externe à ce dépôt), et (2) un nouveau champ persistant
+pour mémoriser "escalade déjà envoyée" par Mission (sans quoi la commande renotifierait
+chaque jour). Les deux déclenchent la règle d'arrêt explicite demandée avant toute
+implémentation — non fait, présenté comme choix à trancher séparément.
+

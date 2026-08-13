@@ -3,13 +3,16 @@
 namespace App\Tests\Unit\MessageHandler;
 
 use App\Entity\Mission;
+use App\Entity\PushSubscription;
 use App\Entity\User;
 use App\Message\AbsenceMissionsReactedMessage;
 use App\Message\SendBillingEmailMessage;
 use App\MessageHandler\AbsenceMissionsReactedMessageHandler;
+use App\Service\MissionEligibilityService;
 use App\Service\NotificationChannels;
 use App\Service\NotificationPreferenceResolver;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\EntityRepository;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
@@ -26,17 +29,25 @@ final class AbsenceMissionsReactedMessageHandlerTest extends TestCase
 {
     private EntityManagerInterface&MockObject $em;
     private NotificationPreferenceResolver&MockObject $preferenceResolver;
+    private MissionEligibilityService&MockObject $eligibilityService;
     private MessageBusInterface&MockObject $bus;
     private LoggerInterface&MockObject $logger;
 
     private array $dispatched = [];
     private array $persisted  = [];
     private array $usersById  = [];
+    /** @var Mission[] indexed by id — what App\Entity\Mission's repository findBy() returns */
+    private array $missionsById = [];
+    /** @var array<int, true> userIds considered to have a push subscription */
+    private array $pushSubscribedUserIds = [];
+    /** @var array<int, array<int, User[]>> siteId => userId => User — what findEligible() returns, keyed the same way as the real service */
+    private array $eligibleBySiteId = [];
 
     protected function setUp(): void
     {
         $this->em = $this->createMock(EntityManagerInterface::class);
         $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
+        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
         $this->bus = $this->createMock(MessageBusInterface::class);
         $this->logger = $this->createMock(LoggerInterface::class);
 
@@ -62,14 +73,60 @@ final class AbsenceMissionsReactedMessageHandlerTest extends TestCase
 
         $this->usersById = [];
         $this->em->method('find')->willReturnCallback(fn ($class, $id) => $this->usersById[$id] ?? null);
+
+        // Pool-email-fallback plumbing — empty by default so every pre-existing test (which
+        // knows nothing about this feature) exercises notifyEligiblePoolWithoutPushByEmail()
+        // as a true no-op, exactly as it would with no eligible candidates in production.
+        $this->missionsById = [];
+        $this->pushSubscribedUserIds = [];
+        $this->eligibleBySiteId = [];
+
+        $missionRepo = $this->createMock(EntityRepository::class);
+        $missionRepo->method('findBy')->willReturnCallback(
+            fn (array $criteria) => array_values(array_intersect_key($this->missionsById, array_flip($criteria['id'] ?? [])))
+        );
+
+        $pushRepo = $this->createMock(EntityRepository::class);
+        $pushRepo->method('count')->willReturnCallback(
+            fn (array $criteria) => in_array(($criteria['user'] ?? null)?->getId(), $this->pushSubscribedUserIds, true) ? 1 : 0
+        );
+
+        $this->em->method('getRepository')->willReturnCallback(function (string $class) use ($missionRepo, $pushRepo) {
+            return match ($class) {
+                Mission::class => $missionRepo,
+                PushSubscription::class => $pushRepo,
+                default => $this->createMock(EntityRepository::class),
+            };
+        });
+
+        $this->eligibilityService->method('findEligible')->willReturnCallback(
+            fn () => $this->eligibleBySiteId
+        );
     }
 
     private function makeHandler(): AbsenceMissionsReactedMessageHandler
     {
         return new AbsenceMissionsReactedMessageHandler(
-            $this->em, $this->preferenceResolver, $this->bus, $this->logger,
+            $this->em, $this->preferenceResolver, $this->eligibilityService, $this->bus, $this->logger,
             'noreply@test.com', 'SurgicalHub',
         );
+    }
+
+    private function registerMission(int $id, int $siteId): Mission
+    {
+        $m = new Mission();
+        $ref = new \ReflectionProperty($m, 'id');
+        $ref->setAccessible(true);
+        $ref->setValue($m, $id);
+
+        $site = new \App\Entity\Hospital();
+        $siteRef = new \ReflectionProperty($site, 'id');
+        $siteRef->setAccessible(true);
+        $siteRef->setValue($site, $siteId);
+        $m->setSite($site);
+
+        $this->missionsById[$id] = $m;
+        return $m;
     }
 
     private static int $nextId = 1;
@@ -263,5 +320,68 @@ final class AbsenceMissionsReactedMessageHandlerTest extends TestCase
         $this->makeHandler()->__invoke($message);
 
         self::assertEmpty($this->dispatched);
+    }
+
+    // ── Pool email fallback (D-108) — eligible instrumentists with no push ────
+
+    public function test_eligible_instrumentist_with_no_push_subscription_gets_a_grouped_fallback_email(): void
+    {
+        $instr = $this->registerUser('absent-instr@test.com');
+        $pool  = $this->registerUser('pool-instr@test.com'); // no push subscription registered
+        $this->registerMission(10, siteId: 5);
+        $this->registerMission(11, siteId: 5);
+
+        $this->eligibleBySiteId = [5 => [$pool->getId() => $pool]];
+
+        $message = new AbsenceMissionsReactedMessage(
+            absenceId: 1, absentUserId: $instr->getId(), absentUserRole: 'INSTRUMENTIST', actorId: 99,
+            missions: [$this->missionRow(['missionId' => 10]), $this->missionRow(['missionId' => 11])],
+            occurredAt: new \DateTimeImmutable(),
+        );
+
+        $this->makeHandler()->__invoke($message);
+
+        $toPool = array_values(array_filter($this->dispatched, fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'pool-instr@test.com'));
+        self::assertCount(1, $toPool, 'Exactly one grouped fallback email, never one per mission');
+        self::assertCount(2, $toPool[0]->context['missions'], 'Both missions this instrumentist is eligible for must be grouped in the single email');
+    }
+
+    public function test_eligible_instrumentist_with_a_push_subscription_gets_no_fallback_email(): void
+    {
+        $instr = $this->registerUser('absent-instr@test.com');
+        $pool  = $this->registerUser('pool-instr@test.com');
+        $this->registerMission(10, siteId: 5);
+        $this->pushSubscribedUserIds = [$pool->getId()];
+        $this->eligibleBySiteId = [5 => [$pool->getId() => $pool]];
+
+        $message = new AbsenceMissionsReactedMessage(
+            absenceId: 1, absentUserId: $instr->getId(), absentUserRole: 'INSTRUMENTIST', actorId: 99,
+            missions: [$this->missionRow(['missionId' => 10])],
+            occurredAt: new \DateTimeImmutable(),
+        );
+
+        $this->makeHandler()->__invoke($message);
+
+        $toPool = array_filter($this->dispatched, fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'pool-instr@test.com');
+        self::assertEmpty($toPool, 'Already covered by the push pipeline — must never receive a duplicate email');
+    }
+
+    public function test_no_eligible_instrumentists_sends_no_pool_email(): void
+    {
+        $instr = $this->registerUser('absent-instr@test.com');
+        $this->registerMission(10, siteId: 5);
+        $this->eligibleBySiteId = [5 => []];
+
+        $message = new AbsenceMissionsReactedMessage(
+            absenceId: 1, absentUserId: $instr->getId(), absentUserRole: 'INSTRUMENTIST', actorId: 99,
+            missions: [$this->missionRow(['missionId' => 10])],
+            occurredAt: new \DateTimeImmutable(),
+        );
+
+        $this->makeHandler()->__invoke($message);
+
+        $emails = array_map(fn ($m) => $m->to, array_filter($this->dispatched, fn ($m) => $m instanceof SendBillingEmailMessage));
+        // Only the absent instrumentist's own recap should be dispatched — no pool email at all.
+        self::assertSame(['absent-instr@test.com'], $emails);
     }
 }

@@ -4,11 +4,13 @@ namespace App\MessageHandler;
 
 use App\Entity\Mission;
 use App\Entity\NotificationEvent;
+use App\Entity\PushSubscription;
 use App\Entity\User;
 use App\Enum\NotificationType;
 use App\Enum\PublicationChannel;
 use App\Message\AbsenceMissionsReactedMessage;
 use App\Message\SendBillingEmailMessage;
+use App\Service\MissionEligibilityService;
 use App\Service\NotificationChannels;
 use App\Service\NotificationPreferenceResolver;
 use Doctrine\ORM\EntityManagerInterface;
@@ -43,6 +45,7 @@ final class AbsenceMissionsReactedMessageHandler
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly NotificationPreferenceResolver $preferenceResolver,
+        private readonly MissionEligibilityService $eligibilityService,
         private readonly MessageBusInterface $bus,
         private readonly LoggerInterface $logger,
         #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
@@ -115,6 +118,103 @@ final class AbsenceMissionsReactedMessageHandler
                 $subject,
             );
         }
+
+        $this->notifyEligiblePoolWithoutPushByEmail($message);
+    }
+
+    // ── Email fallback for the OPEN_MISSION_AVAILABLE pool push (D-108) ──────
+    //
+    // MissionLifecycleChangedMessageHandler::sendOpenMissionAvailableNotifications() already
+    // sends OPEN_MISSION_AVAILABLE (in-app + push) to every eligible instrumentist for EACH
+    // released mission individually — that pipeline runs regardless of cause and must never be
+    // duplicated here. This method only ever reaches instrumentists who have ZERO push
+    // subscription at all (an unambiguous "push indisponible" signal, not a delivery-failure
+    // guess), and groups every mission they're eligible for across this whole
+    // absence-processing run into ONE email — never one per mission.
+
+    private function notifyEligiblePoolWithoutPushByEmail(AbsenceMissionsReactedMessage $message): void
+    {
+        $missionIds = array_map(static fn (array $m) => $m['missionId'], $message->missions);
+        $missions   = $this->em->getRepository(Mission::class)->findBy(['id' => $missionIds]);
+        if (empty($missions)) {
+            return;
+        }
+
+        try {
+            $eligibleBySiteId = $this->eligibilityService->findEligible($missions);
+        } catch (\Throwable $e) {
+            $this->logger->error('AbsenceMissionsReacted: pool eligibility query failed', [
+                'absenceId' => $message->absenceId,
+                'error'     => $e->getMessage(),
+            ]);
+            return;
+        }
+
+        $snapshotByMissionId = [];
+        foreach ($message->missions as $m) {
+            $snapshotByMissionId[$m['missionId']] = $m;
+        }
+
+        /** @var array<int, array{user: User, missions: array}> $byInstrumentist */
+        $byInstrumentist = [];
+        foreach ($missions as $mission) {
+            $siteId        = $mission->getSite()?->getId();
+            $eligibleUsers = $eligibleBySiteId[$siteId] ?? [];
+            $snapshot      = $snapshotByMissionId[$mission->getId()] ?? null;
+            if ($snapshot === null) {
+                continue;
+            }
+
+            foreach ($eligibleUsers as $user) {
+                if ($this->hasAnyPushSubscription($user)) {
+                    // Already covered by the push pipeline — never a duplicate channel.
+                    continue;
+                }
+                $byInstrumentist[$user->getId()]['user'] ??= $user;
+                $byInstrumentist[$user->getId()]['missions'][] = $snapshot;
+            }
+        }
+
+        foreach ($byInstrumentist as $entry) {
+            /** @var User $user */
+            $user     = $entry['user'];
+            $missionsForUser = $entry['missions'];
+            $channels = $this->resolveChannelsSafely($user, NotificationType::ABSENCE_POOL_MISSION_AVAILABLE);
+            if (!$channels->email || !$user->getEmail()) {
+                continue;
+            }
+
+            $count   = count($missionsForUser);
+            $subject = $count > 1
+                ? sprintf('%d nouvelles missions disponibles', $count)
+                : 'Une nouvelle mission disponible';
+
+            try {
+                $this->bus->dispatch(new SendBillingEmailMessage(
+                    to: $user->getEmail(),
+                    cc: [],
+                    subject: $subject,
+                    fromAddress: $this->fromAddress,
+                    fromName: $this->fromName,
+                    htmlTemplate: 'emails/absence_pool_missions_available.html.twig',
+                    context: [
+                        'recipientName' => self::displayName($user),
+                        'missions'      => $missionsForUser,
+                        'missionCount'  => $count,
+                    ],
+                ));
+            } catch (\Throwable $e) {
+                $this->logger->error('AbsenceMissionsReacted: pool email fallback dispatch failed', [
+                    'userId' => $user->getId(),
+                    'error'  => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    private function hasAnyPushSubscription(User $user): bool
+    {
+        return $this->em->getRepository(PushSubscription::class)->count(['user' => $user]) > 0;
     }
 
     // ── Surgeon absence: notify each affected instrumentist ──────────────────
