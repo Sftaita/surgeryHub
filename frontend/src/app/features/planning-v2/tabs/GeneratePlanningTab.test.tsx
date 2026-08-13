@@ -33,6 +33,7 @@ vi.mock("../api/planningV2.api", () => ({
   deployPlanningV2: vi.fn(),
   applyModifications: vi.fn(),
   cancelAllMissions: vi.fn(),
+  verifyConflicts: vi.fn(),
   // D-102 — Preview Editor's instrumentist pickers now source eligibility from this
   // endpoint; defaults to "everyone selectable" (mirrors the /api/instrumentists mock
   // below) unless a test overrides it.
@@ -86,6 +87,7 @@ vi.mock("../../../api/apiClient", () => ({
 
 import * as planningV2Api from "../api/planningV2.api";
 import * as planningManagerApi from "../../planning-manager/api/planning.api";
+import { apiClient } from "../../../api/apiClient";
 
 function line(overrides: Partial<PreviewLineV2>): PreviewLineV2 {
   return {
@@ -715,5 +717,168 @@ describe("GeneratePlanningTab — Mode Modification (éditeur unifié)", () => {
     await waitFor(() => expect(screen.queryByText(/Toutes les missions assignées ou ouvertes/)).not.toBeInTheDocument());
     expect(planningV2Api.cancelAllMissions).not.toHaveBeenCalled();
     expect(screen.getByText("Modification · Planning déployé")).toBeInTheDocument();
+  });
+});
+
+// ── Lot 6 (D-106) — "Vérifier les conflits" ──────────────────────────────────
+
+describe("GeneratePlanningTab — Vérifier les conflits (Lot 6, D-106)", () => {
+  function mockHistoryWithOneVersion() {
+    (planningManagerApi.listPlanningVersions as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [{
+        id: 42, status: "ACTIVE", periodStart: "2026-06-01T00:00:00Z", deployedAt: "2026-06-02T00:00:00Z",
+        site: { id: 1, name: "Delta" }, summary: { total: 1, open: 0 },
+      }],
+      total: 1, page: 1, limit: 10,
+    });
+  }
+
+  it("le bouton est visible en Mode Modification, absent en Génération", async () => {
+    mockHistoryWithOneVersion();
+    const user = userEvent.setup();
+    renderTab();
+
+    // Génération mode (default screen): no version open, no button.
+    expect(screen.queryByRole("button", { name: "Vérifier les conflits" })).not.toBeInTheDocument();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+
+    expect(screen.getByRole("button", { name: "Vérifier les conflits" })).toBeInTheDocument();
+  });
+
+  it("état loading pendant la requête — empêche le double-clic", async () => {
+    mockHistoryWithOneVersion();
+    let resolvePromise: (v: unknown) => void = () => {};
+    (planningV2Api.verifyConflicts as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise((resolve) => { resolvePromise = resolve; }),
+    );
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+
+    const verifyBtn = screen.getByRole("button", { name: "Vérifier les conflits" });
+    await user.click(verifyBtn);
+
+    // Disabled while pending (MUI sets pointer-events: none on it too, so a real user
+    // literally cannot click it again) — the guard against a double-submit request.
+    await waitFor(() => expect(verifyBtn).toBeDisabled());
+    expect(planningV2Api.verifyConflicts).toHaveBeenCalledTimes(1);
+
+    resolvePromise({ checkedMissions: 1, issuesFound: 0, automaticCorrections: 0, alertsCreated: 0, alertsResolved: 0, issues: [] });
+    await waitFor(() => expect(verifyBtn).toBeEnabled());
+  });
+
+  it("aucun problème → message clair, aucune anomalie listée", async () => {
+    mockHistoryWithOneVersion();
+    (planningV2Api.verifyConflicts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      checkedMissions: 3, issuesFound: 0, automaticCorrections: 0, alertsCreated: 0, alertsResolved: 0, issues: [],
+    });
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+    await user.click(screen.getByRole("button", { name: "Vérifier les conflits" }));
+
+    expect(await screen.findByText("Vérification terminée")).toBeInTheDocument();
+    expect(await screen.findByText(/Aucun conflit détecté/)).toBeInTheDocument();
+  });
+
+  it("corrections trouvées → résumé avec les compteurs", async () => {
+    mockHistoryWithOneVersion();
+    (planningV2Api.verifyConflicts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      checkedMissions: 5,
+      issuesFound: 2,
+      automaticCorrections: 1,
+      alertsCreated: 1,
+      alertsResolved: 0,
+      issues: [
+        { type: "INSTRUMENTIST_ABSENCE", missionId: 398, action: "RELEASED_TO_POOL" },
+        { type: "INSTRUMENTIST_CONFLICT", missionId: 410, conflictingMissionId: 411, action: "ALERT_CREATED" },
+      ],
+    });
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+    await user.click(screen.getByRole("button", { name: "Vérifier les conflits" }));
+
+    expect(await screen.findByText(/2 anomalies détectées/)).toBeInTheDocument();
+    expect(screen.getByText(/1 corrigée automatiquement/)).toBeInTheDocument();
+    expect(screen.getByText(/1 alerte signalée/)).toBeInTheDocument();
+  });
+
+  it("mission laissée non couverte → message d'action requise", async () => {
+    mockHistoryWithOneVersion();
+    (planningV2Api.verifyConflicts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      checkedMissions: 1,
+      issuesFound: 1,
+      automaticCorrections: 1,
+      alertsCreated: 0,
+      alertsResolved: 0,
+      issues: [{ type: "INSTRUMENTIST_ABSENCE", missionId: 398, action: "RELEASED_TO_POOL" }],
+    });
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+    await user.click(screen.getByRole("button", { name: "Vérifier les conflits" }));
+
+    expect(await screen.findByText(/laissée non couverte et doit être réaffectée/)).toBeInTheDocument();
+  });
+
+  it("erreur API → message clair, pas de crash", async () => {
+    mockHistoryWithOneVersion();
+    (planningV2Api.verifyConflicts as ReturnType<typeof vi.fn>).mockRejectedValue({
+      response: { data: { error: { message: "PlanningVersion must be ACTIVE." } } },
+    });
+    toastError.mockClear();
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+    await user.click(screen.getByRole("button", { name: "Vérifier les conflits" }));
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("PlanningVersion must be ACTIVE."));
+    // No result dialog on error — nothing to report.
+    expect(screen.queryByText("Vérification terminée")).not.toBeInTheDocument();
+    // Still in Modification mode — an audit failure must not kick the manager back out.
+    expect(screen.getByText("Modification · Planning déployé")).toBeInTheDocument();
+  });
+
+  it("succès → invalide les alertes et rafraîchit les missions affichées", async () => {
+    mockHistoryWithOneVersion();
+    (planningV2Api.verifyConflicts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      checkedMissions: 1, issuesFound: 1, automaticCorrections: 1, alertsCreated: 0, alertsResolved: 0,
+      issues: [{ type: "INSTRUMENTIST_ABSENCE", missionId: 501, action: "RELEASED_TO_POOL" }],
+    });
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+    // Real Mission 501 was ASSIGNED to Diane before the scan.
+    expect(await screen.findByText("Diane Lefebvre")).toBeInTheDocument();
+
+    const missionsCallsBefore = (apiClient.get as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([url, cfg]) => url === "/api/missions" && cfg?.params?.planningVersionId).length;
+
+    await user.click(screen.getByRole("button", { name: "Vérifier les conflits" }));
+    await screen.findByText("Vérification terminée");
+
+    // The mission list refetch was triggered — same query used elsewhere in Modification
+    // mode (fetchMissions scoped to planningVersionId), proving the scan's result is
+    // reflected without a full page reload.
+    await waitFor(() => {
+      const missionsCallsAfter = (apiClient.get as ReturnType<typeof vi.fn>).mock.calls
+        .filter(([url, cfg]) => url === "/api/missions" && cfg?.params?.planningVersionId).length;
+      expect(missionsCallsAfter).toBeGreaterThan(missionsCallsBefore);
+    });
   });
 });

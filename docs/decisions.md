@@ -7895,3 +7895,92 @@ couvrir") ou simplement informer ("Impact planning"/"Planning mis à jour").
 Deep links vers mission/planning/alerte (aucun mécanisme de génération de lien
 réutilisable n'existe dans le code — introduire ce pattern est hors périmètre, §12).
 Bouton "Vérifier les conflits" (Lot 6).
+
+## D-106 — Planning V2 : vérification manuelle des conflits d'un planning déjà généré (Lot 6, 2026-08-12)
+
+Date : 2026-08-12
+
+### Contexte
+
+Trois niveaux de sécurité existent désormais sur Planning V2 : prévention (D-101),
+réaction automatique aux absences (D-103/D-104), et email manager consolidé (D-105).
+Aucun ne couvre le cas d'un trou résiduel — donnée historique, race condition, ou lot
+futur avec un gap similaire — sur un `PlanningVersion` déjà `ACTIVE`. Ce lot ajoute un
+filet de sécurité manuel : un bouton "Vérifier les conflits" qui re-audite l'état
+courant sans jamais régénérer.
+
+### Décision — orchestrateur pur, aucune réimplémentation métier
+
+L'audit préalable a confirmé que l'essentiel du moteur existait déjà :
+`PlanningConflictDetectionService::syncAlertsForMission()` (D-091, cross-site/cross-
+version par construction, dédoublonnage et résolution d'alertes obsolètes déjà
+corrects) est réutilisé tel quel pour `SCHEDULE_CONFLICT` — aucune ligne de logique de
+conflit n'a été réécrite. Nouveau `PlanningVersionAuditService` : un pur orchestrateur
+qui appelle les services métier existants dans l'ordre, n'appelle jamais
+`mission->setStatus()`/`setInstrumentist()` directement.
+
+### Décision — deux nouvelles primitives "mission-first", factorisées proprement
+
+`AbsenceMissionReactionService` et `AbsenceImpactReconciliationService` partaient tous
+les deux d'une `Absence` connue (créée/supprimée) pour trouver les Missions concernées
+— l'inverse de ce qu'il faut ici ("étant donné cette Mission, est-elle actuellement
+incohérente ?"). Plutôt que dupliquer leur logique de mutation, deux primitives
+"mission-first" ont été ajoutées à ces mêmes classes, réutilisant leurs méthodes
+privées existantes (`processInstrumentistAbsence()`/`processSurgeonAbsence()` pour la
+réaction, `restoreAfterCancellation()`/`assign()` pour la reconciliation) :
+`AbsenceMissionReactionService::reconcileMissionAgainstCurrentAbsences()` (résout
+l'absence couvrante via une requête directe, jamais depuis un événement) et
+`AbsenceImpactReconciliationService::reconcile{Cancelled,Released}MissionIfNoLongerJustified()`
+(même contrôle "encore justifié ?" que la reconciliation Lot 4, avec l'id sentinelle
+`0` — qu'aucune vraie `Absence` ne porte jamais — à la place d'un id d'absence
+spécifique à exclure, puisqu'aucune suppression n'est en cours ici).
+
+### Décision — INACTIVE : alerte uniquement, jamais de correction automatique
+
+Contrairement à `ABSENT` (entité temporelle avec cycle de vie complet, restauration
+Lot 4 incluse), un compte `User.active = false` n'a pas de contrepartie "réactivation"
+outillée — aucune mécanique n'existerait pour restaurer une mission libérée
+automatiquement si l'instrumentiste redevient actif. Choix validé explicitement : un
+nouveau `PlanningAlertType::INSTRUMENTIST_INACTIVE` (alerte uniquement, jamais de
+mutation), symétrique à `SCHEDULE_CONFLICT` dans sa philosophie ("fait" mais sans
+restauration outillée → jugement manager), bidirectionnel comme toute alerte de ce
+service (créée si absente, résolue si l'instrumentiste redevient actif ou est
+réaffecté — indépendamment de tout autre type d'alerte sur la même mission, §14).
+
+### Décision — statuts PlanningVersion supportés
+
+Seul `ACTIVE` est audité (`ConflictHttpException` → 400 sinon). `DRAFT` a déjà son
+propre chemin de revalidation (`PlanningDraftRevalidationService`, au moment du
+déploiement) ; `ARCHIVED` est superseded, l'auditer n'a pas de sens opérationnel.
+
+### Décision — occurrences futures : primitive dédiée, sans forcer la réutilisation de `occurrenceStillJustified()`
+
+`AbsenceImpactReconciliationService::occurrenceStillJustified()` (Lot 4) exige un objet
+`Absence $excluding` non nullable pour en extraire l'id à exclure — inapplicable ici
+(aucune absence précise n'est en cours de suppression). Plutôt que forcer cette
+signature à accepter `null`, une nouvelle méthode
+`reconcileOccurrenceIfNoLongerJustified()` réimplémente le même contrôle minimal ("le
+poste est-il encore actif, la date est-elle encore théorique, une absence couvre-t-elle
+encore ce chirurgien à cette date — sans exclusion") — quelques lignes dupliquées,
+préférées à une signature élargie qui aurait complexifié l'appelant Lot 4 existant pour
+un cas qui ne le concerne pas.
+
+### Décision — performance et transactions
+
+Chaque Mission du `PlanningVersion` audité est chargée en une requête (statuts
+`OPEN`/`ASSIGNED`/`CANCELLED`), puis traitée individuellement — chaque mutation
+réutilise sa propre transaction déjà existante (verrou pessimiste inclus, côté
+`MissionPostDeployService`/`AbsenceMissionReactionService`), jamais une transaction
+globale enveloppant tout le scan. Une anomalie sur une Mission (exception inattendue)
+est journalisée et n'interrompt jamais l'examen des autres — un résultat partiel
+contrôlé vaut mieux qu'un 500 qui masque tout le reste. Pas de nouveau verrou
+distribué : les primitives déjà verrouillées suffisent à empêcher deux scans
+concurrents de produire un double release/cancel sur la même Mission.
+
+### Non traité dans ce lot
+
+Réconciliation des occurrences futures pour un chirurgien qui n'a aucune Mission dans
+la version auditée (scope volontairement limité au site+période de la version, §6F
+"si pertinent"). Deep links dans le résumé frontend (aucun mécanisme réutilisable,
+inchangé depuis D-105).
+

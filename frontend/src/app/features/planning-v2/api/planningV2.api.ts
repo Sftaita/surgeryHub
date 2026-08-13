@@ -19,6 +19,7 @@ import type {
   AlertEligibilityResponse,
   RosterEligibilityResponse,
   EligibilityEnforcementPolicy,
+  VerifyConflictsResponse,
 } from "./planningV2.types";
 
 /** Same pattern as every other page-local helper in this codebase (no shared util exists). */
@@ -278,6 +279,20 @@ export async function applyModifications(
 export async function cancelAllMissions(versionId: number): Promise<ApplyModificationsResult> {
   const res = await apiClient.post(
     `/api/planning/versions/${versionId}/cancel-all`,
+    {},
+    { timeout: 30_000 },
+  );
+  return res.data;
+}
+
+/**
+ * "Vérifier les conflits" — a manual safety-net audit of an already-ACTIVE PlanningVersion,
+ * never a regeneration. See backend PlanningVersionAuditService (D-106) for the full rule
+ * set; this call is idempotent and safe to invoke repeatedly.
+ */
+export async function verifyConflicts(versionId: number): Promise<VerifyConflictsResponse> {
+  const res = await apiClient.post(
+    `/api/planning/versions/${versionId}/verify-conflicts`,
     {},
     { timeout: 30_000 },
   );

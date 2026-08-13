@@ -15,17 +15,18 @@ import CheckIcon from "@mui/icons-material/Check";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import ArrowBackOutlinedIcon from "@mui/icons-material/ArrowBackOutlined";
 import DeleteOutlineOutlinedIcon from "@mui/icons-material/DeleteOutlineOutlined";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import ShieldOutlinedIcon from "@mui/icons-material/ShieldOutlined";
 
 import { fetchSites } from "../../sites/api/sites.api";
 import { getSurgeons } from "../../manager-surgeons/api/surgeons.api";
 import { fetchMissions } from "../../missions/api/missions.api";
 import {
   getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2,
-  applyModifications, cancelAllMissions, resendPlanning, extractErrorV2, type ApplyModificationsResult,
+  applyModifications, cancelAllMissions, resendPlanning, verifyConflicts, extractErrorV2, type ApplyModificationsResult,
 } from "../api/planningV2.api";
 import { listPlanningVersions } from "../../planning-manager/api/planning.api";
-import type { PreviewLineStatus, PreviewLineV2, PreviewResponseV2 } from "../api/planningV2.types";
+import type { PreviewLineStatus, PreviewLineV2, PreviewResponseV2, VerifyConflictsResponse } from "../api/planningV2.types";
 import {
   buildMonthChipIds, monthIdToYearMonth, mergePreviewResponses,
   aggregateGenerated, aggregateDeploy, type AggregatedGenerated, type AggregatedDeploy,
@@ -81,6 +82,7 @@ const reasonLabel = eligibilityReasonLabel;
 
 export function GeneratePlanningTab() {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const { year: defYear, month: defMonth } = defaultYearMonth();
 
   const monthChipIds = React.useMemo(() => buildMonthChipIds({ year: defYear, month: defMonth }, 6), [defYear, defMonth]);
@@ -125,6 +127,10 @@ export function GeneratePlanningTab() {
   // version — resend must never target a DRAFT.
   const [resendDialogOpen, setResendDialogOpen] = React.useState(false);
   const [resendUserId, setResendUserId] = React.useState<number | "">("");
+  // Lot 6 (D-106) — manual "Vérifier les conflits" scan result, shown in its own dialog
+  // (never the resend/delete dialogs) so a manager clicking it never confuses a safety-net
+  // audit with a generation/deploy action.
+  const [verifyResult, setVerifyResult] = React.useState<VerifyConflictsResponse | null>(null);
   const nextDraftIdRef = React.useRef(-1);
 
   const mode: PlanningEditorMode = modificationVersionId !== null ? "modification" : "generation";
@@ -377,6 +383,23 @@ export function GeneratePlanningTab() {
       setDeleteMonthConfirmOpen(false);
       toast.error(extractErrorV2(err));
     },
+  });
+
+  // Lot 6 (D-106) — never a regeneration: re-audits the already-ACTIVE version's current
+  // state and applies the same corrections the automatic pipelines would have. Query
+  // invalidation covers everything the scan could have changed: alerts (badge + tab list),
+  // and the modification-mode mission list (a mission's own status/instrumentist can change).
+  const verifyConflictsMutation = useMutation({
+    mutationFn: () => verifyConflicts(modificationVersionId!),
+    onSuccess: async (result) => {
+      setVerifyResult(result);
+      queryClient.invalidateQueries({ queryKey: ["planning-v2", "alerts"] });
+      const refreshed = await modificationMissionsQuery.refetch();
+      if (refreshed.isError) {
+        toast.error("La vérification est terminée, mais l'affichage n'a pas pu être actualisé — rechargez la page.");
+      }
+    },
+    onError: (err) => toast.error(extractErrorV2(err)),
   });
 
   function resetGen() {
@@ -730,6 +753,56 @@ export function GeneratePlanningTab() {
             sx={{ textTransform: "none", fontWeight: 600 }}
           >
             {resendMutation.isPending ? "Envoi…" : "Envoyer"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Lot 6 (D-106) — "Vérifier les conflits" result. A pure report of what the scan
+          found/corrected — never a form, nothing to confirm; closing it is the only action. */}
+      <Dialog open={verifyResult !== null} onClose={() => setVerifyResult(null)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>Vérification terminée</DialogTitle>
+        <DialogContent>
+          {verifyResult && verifyResult.issuesFound === 0 ? (
+            <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted }}>
+              Aucun conflit détecté — {verifyResult.checkedMissions} mission{verifyResult.checkedMissions > 1 ? "s" : ""} vérifiée{verifyResult.checkedMissions > 1 ? "s" : ""}.
+            </Typography>
+          ) : verifyResult && (
+            <Stack spacing={1.5}>
+              <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textStrong, fontWeight: 600 }}>
+                {verifyResult.issuesFound} anomalie{verifyResult.issuesFound > 1 ? "s" : ""} détectée{verifyResult.issuesFound > 1 ? "s" : ""} sur {verifyResult.checkedMissions} mission{verifyResult.checkedMissions > 1 ? "s" : ""} vérifiée{verifyResult.checkedMissions > 1 ? "s" : ""}
+              </Typography>
+              {verifyResult.automaticCorrections > 0 && (
+                <Typography sx={{ fontSize: 13, color: planningV2Colors.textMuted }}>
+                  · {verifyResult.automaticCorrections} corrigée{verifyResult.automaticCorrections > 1 ? "s" : ""} automatiquement (absence, restauration oubliée)
+                </Typography>
+              )}
+              {verifyResult.alertsCreated > 0 && (
+                <Typography sx={{ fontSize: 13, color: planningV2Colors.textMuted }}>
+                  · {verifyResult.alertsCreated} alerte{verifyResult.alertsCreated > 1 ? "s" : ""} signalée{verifyResult.alertsCreated > 1 ? "s" : ""} (conflit horaire, instrumentiste inactif) — à traiter dans l&apos;onglet Alertes
+                </Typography>
+              )}
+              {verifyResult.alertsResolved > 0 && (
+                <Typography sx={{ fontSize: 13, color: planningV2Colors.textMuted }}>
+                  · {verifyResult.alertsResolved} alerte{verifyResult.alertsResolved > 1 ? "s" : ""} obsolète{verifyResult.alertsResolved > 1 ? "s" : ""} résolue{verifyResult.alertsResolved > 1 ? "s" : ""}
+                </Typography>
+              )}
+              {(() => {
+                const uncovered = verifyResult.issues.filter((i) => i.action === "RELEASED_TO_POOL" || i.action === "RESTORED_OPEN").length;
+                if (uncovered === 0) return null;
+                return (
+                  <Box sx={{ p: 1.5, borderRadius: 1.5, bgcolor: "#FAF5E9", border: "1px solid #EEDFC0", mt: 0.5 }}>
+                    <Typography sx={{ fontSize: 13, fontWeight: 600, color: "#8A6420" }}>
+                      {uncovered} mission{uncovered > 1 ? "s ont" : " a"} été laissée{uncovered > 1 ? "s" : ""} non couverte{uncovered > 1 ? "s" : ""} et doit{uncovered > 1 ? "vent" : ""} être réaffectée{uncovered > 1 ? "s" : ""}.
+                    </Typography>
+                  </Box>
+                );
+              })()}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button variant="contained" disableElevation onClick={() => setVerifyResult(null)} sx={{ textTransform: "none", fontWeight: 600 }}>
+            Fermer
           </Button>
         </DialogActions>
       </Dialog>
@@ -1197,6 +1270,14 @@ export function GeneratePlanningTab() {
               )}
               {isModification ? (
                 <>
+                  <Button
+                    disabled={verifyConflictsMutation.isPending}
+                    onClick={() => verifyConflictsMutation.mutate()}
+                    startIcon={verifyConflictsMutation.isPending ? <CircularProgress size={15} /> : <ShieldOutlinedIcon sx={{ fontSize: 17 }} />}
+                    sx={{ height: 40, px: 2, borderRadius: planningV2Radii.button, border: "1px solid #DDE2E8", color: planningV2Colors.textStrong, textTransform: "none", fontWeight: 600 }}
+                  >
+                    Vérifier les conflits
+                  </Button>
                   <Button
                     onClick={() => setResendDialogOpen(true)}
                     sx={{ height: 40, px: 2, borderRadius: planningV2Radii.button, border: "1px solid #DDE2E8", color: planningV2Colors.textStrong, textTransform: "none", fontWeight: 600 }}

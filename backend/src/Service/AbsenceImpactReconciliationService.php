@@ -456,6 +456,152 @@ class AbsenceImpactReconciliationService
         return $restored;
     }
 
+    // ── Lot 6 (D-106) — single-item entry points for the manual "verify conflicts" scan ──
+    //
+    // Mirror the per-candidate bodies of reconcileSurgeonMissions()/
+    // reconcileInstrumentistMissions()/reconcileOccurrences() exactly, but for an arbitrary
+    // Mission/PlanningOccurrenceException found during a manual scan rather than one scoped
+    // to a specific absence being deleted/updated. There is no absence "being excluded" in
+    // this context (nothing is being deleted right now) — surgeonStillAbsentForMission() is
+    // called with the sentinel id 0 (no real Absence row is ever id 0), which is equivalent
+    // to "is ANY absence still covering this person on this date".
+
+    /** @return array<string, mixed>|null mission snapshot — see missionSnapshot() */
+    public function reconcileCancelledMissionIfNoLongerJustified(Mission $mission, User $actor): ?array
+    {
+        if ($mission->getStatus() !== MissionStatus::CANCELLED) {
+            return null;
+        }
+        $surgeon = $mission->getSurgeon();
+        if ($surgeon === null) {
+            return null;
+        }
+
+        $latest = $this->latestAuditEvent($mission);
+        if ($latest === null || $latest->getEventType() !== AuditEventType::MISSION_CANCELLED_POST_DEPLOY) {
+            return null;
+        }
+        $payload = $latest->getPayload() ?? [];
+        $causedByAbsenceId = $payload['causedByAbsenceId'] ?? null;
+        if ($causedByAbsenceId === null) {
+            return null; // manager-caused — never touch it
+        }
+
+        if ($this->surgeonStillAbsentForMission($surgeon, $mission, excludingAbsenceId: 0)) {
+            return null; // still justified by a currently-active absence
+        }
+
+        $oldInstrumentistId = $payload['fromInstrumentistId'] ?? null;
+        $restoredToAssigned = false;
+
+        if ($oldInstrumentistId !== null) {
+            try {
+                $this->missionPostDeployService->restoreAfterCancellation($mission, $actor, $oldInstrumentistId, $causedByAbsenceId);
+                $restoredToAssigned = true;
+            } catch (InstrumentistIneligibleException) {
+                // Old instrumentist no longer eligible — fall through to OPEN restore below.
+            }
+        }
+
+        if (!$restoredToAssigned) {
+            $this->missionPostDeployService->restoreAfterCancellation($mission, $actor, null, $causedByAbsenceId);
+
+            $this->alertService->createIfNotDuplicate($mission, PlanningAlertType::REASSIGNMENT_REQUIRED, null, [
+                'missionId' => $mission->getId(),
+                'reason'    => "Mission restaurée par la vérification manuelle des conflits — l'ancien instrumentiste n'est plus disponible.",
+            ]);
+        }
+
+        return $this->missionSnapshot($mission, $restoredToAssigned ? 'ASSIGNED' : 'OPEN');
+    }
+
+    /** @return array<string, mixed>|null mission snapshot — see missionSnapshot() */
+    public function reconcileReleasedMissionIfNoLongerJustified(Mission $mission, User $actor): ?array
+    {
+        if ($mission->getStatus() !== MissionStatus::OPEN) {
+            return null;
+        }
+
+        $latest = $this->latestAuditEvent($mission);
+        if ($latest === null || $latest->getEventType() !== AuditEventType::MISSION_RELEASED_TO_POOL) {
+            return null;
+        }
+        $payload = $latest->getPayload() ?? [];
+        $causedByAbsenceId   = $payload['causedByAbsenceId'] ?? null;
+        $fromInstrumentistId = $payload['fromInstrumentistId'] ?? null;
+        if ($causedByAbsenceId === null || $fromInstrumentistId === null) {
+            return null;
+        }
+
+        try {
+            $this->missionPostDeployService->assign($mission, $actor, $fromInstrumentistId, notify: false);
+        } catch (InstrumentistIneligibleException) {
+            return null; // stays OPEN — no genuine change to report
+        }
+
+        $this->auditService->record($mission, $actor, AuditEventType::MISSION_ASSIGNMENT_RESTORED_AFTER_INSTRUMENTIST_ABSENCE, [
+            'causedByAbsenceId'       => $causedByAbsenceId,
+            'restoredInstrumentistId' => $fromInstrumentistId,
+        ]);
+
+        return $this->missionSnapshot($mission, 'ASSIGNED');
+    }
+
+    /** @return array<string, mixed>|null occurrence snapshot */
+    public function reconcileOccurrenceIfNoLongerJustified(PlanningOccurrenceException $exception, User $actor): ?array
+    {
+        if ($exception->getSource() !== OccurrenceExceptionSource::SURGEON_ABSENCE) {
+            return null; // never touch a MANAGER exception
+        }
+
+        $post    = $exception->getPost();
+        $surgeon = $post->getSurgeon();
+        $date    = $exception->getOccurrenceDate();
+
+        if (!$post->isActive() || empty($this->generator->theoreticalOccurrenceDates($post, $date, $date))) {
+            return null; // recurrence no longer produces this date — not this scan's concern
+        }
+
+        $stillAbsentCount = $this->em->createQuery(
+            'SELECT COUNT(a.id) FROM App\Entity\Absence a
+             WHERE a.user = :user AND a.dateStart <= :date AND a.dateEnd >= :date'
+        )
+            ->setParameter('user', $surgeon)
+            ->setParameter('date', $date, Types::DATE_IMMUTABLE)
+            ->getSingleScalarResult();
+
+        if (((int) $stillAbsentCount) > 0) {
+            return null; // still justified
+        }
+
+        $shift         = $this->shiftTimes($post);
+        $instrumentist = $post->getInstrumentist();
+        $site          = $post->getSite();
+
+        $snapshot = [
+            'postId'            => $post->getId(),
+            'occurrenceDate'    => $date->format('Y-m-d'),
+            'siteId'            => $site?->getId(),
+            'siteName'          => $site?->getName(),
+            'surgeonName'       => self::displayName($surgeon),
+            'instrumentistId'   => $instrumentist?->getId(),
+            'instrumentistName' => $instrumentist !== null ? self::displayName($instrumentist) : null,
+            'startTime'         => $shift[0] ?? null,
+            'endTime'           => $shift[1] ?? null,
+        ];
+
+        $this->auditService->recordGlobal(
+            $actor,
+            AuditEventType::PLANNING_OCCURRENCE_RESTORED_AFTER_ABSENCE,
+            array_merge($snapshot, ['absenceId' => $exception->getSourceAbsence()?->getId()]),
+        );
+
+        $this->em->remove($exception);
+        $this->em->flush();
+
+        return $snapshot;
+    }
+
     // ── Shared helpers ─────────────────────────────────────────────────────────
 
     private function latestAuditEvent(Mission $mission): ?AuditEvent

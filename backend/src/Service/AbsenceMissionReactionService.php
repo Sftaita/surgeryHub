@@ -111,6 +111,60 @@ class AbsenceMissionReactionService
     {
     }
 
+    /**
+     * Lot 6 (D-106) — mission-first entry point for PlanningVersionAuditService's manual
+     * "verify conflicts" scan. Every other public method here starts FROM an Absence and
+     * finds the missions it affects; this one starts FROM an arbitrary Mission and asks "is
+     * either of its two people currently absent, right now?" — reusing the exact same
+     * mutation primitives (processInstrumentistAbsence()/processSurgeonAbsence()) once the
+     * covering Absence row is found, so the correction (and its audit trail/notifications)
+     * is byte-for-byte identical to what would have happened had the absence reaction run
+     * at creation time. Never called by react() itself — only by the manual audit.
+     *
+     * Surgeon absence is checked first and returns immediately: cancel() clears the
+     * instrumentist too, making a separate instrumentist-absence check on the same mission
+     * moot for this pass. Returns null if neither person is currently absent, or if the
+     * mission's own status makes it not (or no longer) actionable.
+     *
+     * @return array<string, mixed>|null mission summary — see buildMissionSummary()
+     */
+    public function reconcileMissionAgainstCurrentAbsences(Mission $mission, User $actor): ?array
+    {
+        $surgeon = $mission->getSurgeon();
+        if ($surgeon !== null && in_array($mission->getStatus(), self::SURGEON_ACTIONABLE_STATUSES, true)) {
+            $absence = $this->findCoveringAbsence($surgeon, $mission->getStartAt());
+            if ($absence !== null) {
+                return $this->processSurgeonAbsence($mission, $actor, $absence);
+            }
+        }
+
+        if ($mission->getStatus() === MissionStatus::ASSIGNED) {
+            $instrumentist = $mission->getInstrumentist();
+            if ($instrumentist !== null) {
+                $absence = $this->findCoveringAbsence($instrumentist, $mission->getStartAt());
+                if ($absence !== null) {
+                    return $this->processInstrumentistAbsence($mission, $actor, $absence);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /** Earliest-starting Absence row currently covering this user on this date, if any. */
+    private function findCoveringAbsence(User $user, \DateTimeImmutable $date): ?Absence
+    {
+        return $this->em->createQuery(
+            'SELECT a FROM App\Entity\Absence a
+             WHERE a.user = :user AND a.dateStart <= :date AND a.dateEnd >= :date
+             ORDER BY a.dateStart ASC'
+        )
+            ->setParameter('user', $user)
+            ->setParameter('date', $date, Types::DATE_IMMUTABLE)
+            ->setMaxResults(1)
+            ->getOneOrNullResult();
+    }
+
     /** @return array<int, array<string, mixed>> mission summaries — see buildMissionSummary() */
     private function react(Absence $absence, User $actor): array
     {

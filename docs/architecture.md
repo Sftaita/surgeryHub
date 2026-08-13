@@ -1744,6 +1744,39 @@ EntityManager::flush()            — chaque effet de bord isolé dans try/catch
 
 **Traçabilité** : chaque action post-deploy crée un `AuditEvent` (acteur, type, payload snapshot) et déclenche les `NotificationEvent` appropriés via `NotificationPreferenceResolver`. Les noms des personnes sont snapshotés dans le payload pour préserver la lisibilité à long terme.
 
+### Vérification manuelle des conflits — filet de sécurité (Lot 6, D-106)
+
+Trois niveaux de sécurité coexistent sur Planning V2 : **prévention** (D-101, revalidation
+backend systématique de toute affectation), **réaction automatique** (D-103/D-104/D-105,
+neutralisation/restauration déclenchée par les événements Absence), et **audit manuel** —
+`POST /api/planning/versions/{id}/verify-conflicts` (manager uniquement, `PlanningVoter::
+PLANNING_MANAGE`), qui re-scanne un `PlanningVersion` déjà `ACTIVE` pour rattraper ce qui
+aurait échappé aux deux premiers niveaux (données historiques, race condition, trou d'un
+lot antérieur). **Jamais une régénération** — travaille sur l'état courant, missions
+comprises.
+
+```
+Contrôleur (PlanningVersionController::verifyConflicts)
+        │
+        ▼
+PlanningVersionAuditService::verify()   — orchestrateur pur, aucune règle métier propre
+        │
+        ├── AbsenceMissionReactionService::reconcileMissionAgainstCurrentAbsences()
+        │       → fait objectif (absence en cours) → correction automatique (release/cancel)
+        ├── AbsenceImpactReconciliationService::reconcile{Cancelled,Released}MissionIfNoLongerJustified()
+        │       → restauration oubliée, jamais si une absence/décision manager la justifie encore
+        ├── PlanningConflictDetectionService::syncAlertsForMission()
+        │       → SCHEDULE_CONFLICT (D-091, inchangé) — jamais une mutation, toujours une PlanningAlert
+        └── PlanningAlertService::createIfNotDuplicate()/resolve()
+                → INSTRUMENTIST_INACTIVE (D-106) — alerte uniquement, décision utilisateur explicite
+```
+
+Chaque primitive réutilisée est déjà individuellement idempotente (garde de statut,
+`createIfNotDuplicate()`, `resolve()`) — un second scan sur données inchangées retourne
+`issuesFound: 0`. Aucune transaction globale : chaque Mission a sa propre mutation déjà
+transactionnelle ; une anomalie isolée est journalisée et n'interrompt jamais le reste du
+scan. Voir docs/decisions.md D-106 pour le détail des catégories et des choix de conception.
+
 **Notifications post-déploiement :**
 
 | Acteur | Déclencheur | Type de notification | Handler |
@@ -2832,3 +2865,4 @@ Résolution instrumentiste (V1 : manager/admin uniquement). Workflow multi-étap
 résolution (V1 : `OPEN`/`RESOLVED`). Correction automatique de l'encodage couplée à la
 résolution (décision explicite contraire, voir D-100). Carte dédiée sur
 `SurgeonHomePage` (statut visible uniquement sur l'écran d'encodage + notifications).
+

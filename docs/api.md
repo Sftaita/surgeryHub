@@ -3464,6 +3464,61 @@ personne d'autre — avec `payload.status` (`SENT`/`FAILED`) et `payload.error` 
 
 ---
 
+### 26.6f Vérification manuelle des conflits (Lot 6, D-106)
+
+#### `POST /api/planning/versions/{id}/verify-conflicts`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Filet de sécurité manuel, **jamais une régénération** — re-audite l'état courant d'un
+`PlanningVersion` déjà `ACTIVE` : instrumentiste/chirurgien actuellement absent mais
+toujours affecté, conflit d'horaire (`SCHEDULE_CONFLICT`, même moteur que D-091,
+same-site/cross-site/cross-PlanningVersion), instrumentiste devenu inactif, restauration
+Lot 4 jamais appliquée. Réutilise exclusivement les services métier existants — voir
+docs/architecture.md "Vérification manuelle des conflits" et docs/decisions.md D-106.
+
+Deux catégories de résultat, jamais confondues :
+- **fait objectif** (absence en cours, restauration due) → corrigé automatiquement, avec
+  les mêmes `AuditEvent`/notifications que le déclenchement normal ;
+- **jugement manager** (conflit d'horaire, instrumentiste inactif) → jamais de mutation,
+  uniquement une `PlanningAlert` créée/résolue.
+
+**Body :** aucun (POST sans payload).
+
+**Réponse — 200 :**
+```json
+{
+  "checkedMissions": 42,
+  "issuesFound": 3,
+  "automaticCorrections": 1,
+  "alertsCreated": 2,
+  "alertsResolved": 1,
+  "issues": [
+    { "type": "INSTRUMENTIST_ABSENCE", "missionId": 398, "action": "RELEASED_TO_POOL" },
+    { "type": "INSTRUMENTIST_CONFLICT", "missionId": 410, "conflictingMissionId": 411, "action": "ALERT_CREATED" }
+  ]
+}
+```
+
+`issues[].type` : `SURGEON_ABSENCE` | `INSTRUMENTIST_ABSENCE` | `FORGOTTEN_RESTORATION` |
+`FORGOTTEN_OCCURRENCE_RESTORATION` | `INSTRUMENTIST_INACTIVE` | `SURGEON_CONFLICT` |
+`INSTRUMENTIST_CONFLICT`. `issues[].action` : `CANCELLED` | `RELEASED_TO_POOL` |
+`RESTORED_ASSIGNED` | `RESTORED_OPEN` | `RESTORED` | `ALERT_CREATED`.
+
+**Idempotent** : un second appel sans mutation entre-temps retourne `issuesFound: 0`.
+
+**Réponse — 400 :** la version n'est pas `ACTIVE` (`DRAFT` a son propre chemin de
+revalidation au déploiement ; `ARCHIVED` est superseded).
+
+**Réponse — 404 :** version introuvable.
+
+**Notifications/AuditEvent :** aucun événement propre au scan lui-même (pas de
+`VERIFY_CONFLICTS_CLICKED`) — chaque mutation réelle qu'il déclenche conserve
+exactement les `AuditEvent`/notifications que sa cause normale (absence, restauration)
+produit déjà ; un scan sans changement réel ne notifie personne.
+
+---
+
 ### 26.7 Instrumentistes suggérés
 
 #### `GET /api/missions/{missionId}/suggested-instrumentists`

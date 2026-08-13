@@ -12,6 +12,7 @@ use App\Security\Voter\PlanningVoter;
 use App\Service\PlanningCoverageService;
 use App\Service\PlanningModificationService;
 use App\Service\PlanningResendService;
+use App\Service\PlanningVersionAuditService;
 use App\Service\PlanningVersionHistoryService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -30,6 +31,7 @@ class PlanningVersionController extends AbstractController
         private readonly PlanningVersionHistoryService  $historyService,
         private readonly PlanningModificationService    $modificationService,
         private readonly PlanningResendService          $resendService,
+        private readonly PlanningVersionAuditService    $auditService,
     ) {}
 
     // ── List ──────────────────────────────────────────────────────────────────
@@ -198,6 +200,36 @@ class PlanningVersionController extends AbstractController
         }
 
         $result = $this->modificationService->cancelAll($version, $user);
+
+        return $this->json($result);
+    }
+
+    // ── Manual conflict audit (Lot 6, D-106) ──────────────────────────────────
+
+    /**
+     * "Vérifier les conflits" — a manual safety-net scan, never a regeneration. Re-audits
+     * an already-ACTIVE PlanningVersion's current missions/occurrences against the same
+     * rules the automatic pipelines already enforce (absence, schedule conflict, forgotten
+     * restoration, inactive instrumentist), applying the same objective-fact corrections
+     * those pipelines would have applied, and raising/resolving PlanningAlerts for the
+     * judgment-call cases. Idempotent — a second call against unchanged data returns
+     * issuesFound=0. See PlanningVersionAuditService for the full rule set.
+     */
+    #[Route('/api/planning/versions/{id}/verify-conflicts', name: 'api_planning_version_verify_conflicts', methods: ['POST'])]
+    public function verifyConflicts(int $id, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $version = $this->em->find(PlanningVersion::class, $id);
+        if ($version === null) {
+            return $this->json(['error' => ['message' => 'PlanningVersion not found.']], 404);
+        }
+
+        try {
+            $result = $this->auditService->verify($version, $actor);
+        } catch (ConflictHttpException $e) {
+            return $this->json(['error' => ['message' => $e->getMessage()]], 400);
+        }
 
         return $this->json($result);
     }

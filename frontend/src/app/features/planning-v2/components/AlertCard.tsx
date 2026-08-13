@@ -13,6 +13,7 @@ const TYPE_LABELS: Record<PlanningAlertType, string> = {
   INSTRUMENTIST_CONFLICT: "Conflit instrumentiste",
   REASSIGNMENT_REQUIRED: "Réassignation nécessaire",
   OCCURRENCE_CANCELLED: "Mission annulée",
+  INSTRUMENTIST_INACTIVE: "Instrumentiste inactif",
 };
 
 type Severity = "crit" | "warn" | "info";
@@ -24,6 +25,7 @@ const TYPE_SEVERITY: Record<PlanningAlertType, Severity> = {
   SURGEON_ABSENCE: "warn",
   INSTRUMENTIST_ABSENCE: "warn",
   OCCURRENCE_CANCELLED: "warn",
+  INSTRUMENTIST_INACTIVE: "warn",
 };
 
 const STATUS_LABELS: Record<PlanningAlertStatus, string> = {
@@ -73,6 +75,8 @@ function buildProbleme(alert: PlanningAlertV2): string {
         return `${c.personName ?? "Instrumentiste"} déjà prévu(e) sur ${c.missionSiteName ?? "un site"} (${formatTime(c.missionStartAt)}–${formatTime(c.missionEndAt)}) — chevauche ${c.conflictingSiteName ?? "un autre site"} (${formatTime(c.conflictingStartAt)}–${formatTime(c.conflictingEndAt)}) le ${formatFr(date)}`;
       }
       return `Conflit d'instrumentiste le ${formatFr(date)}`;
+    case "INSTRUMENTIST_INACTIVE":
+      return `Instrumentiste devenu(e) inactif(ve) — mission du ${formatFr(date)} toujours assignée`;
   }
 }
 

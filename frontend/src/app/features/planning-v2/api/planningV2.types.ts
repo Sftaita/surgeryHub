@@ -11,7 +11,8 @@ export type PlanningAlertType =
   | "SURGEON_CONFLICT"
   | "INSTRUMENTIST_CONFLICT"
   | "REASSIGNMENT_REQUIRED"
-  | "OCCURRENCE_CANCELLED";
+  | "OCCURRENCE_CANCELLED"
+  | "INSTRUMENTIST_INACTIVE";
 export type PlanningAlertStatus = "OPEN" | "ACKNOWLEDGED" | "RESOLVED" | "IGNORED";
 export type PreviewLineStatus = "SKIPPED" | "UNCOVERED" | "COVERED" | "MODIFIED" | "CONFLICT";
 export type MissionStatus =
@@ -268,6 +269,34 @@ export interface DeployResponseV2 {
   deploymentId: number | null;
   missionCount: number;
   openPoolCount: number;
+}
+
+// ── Manual conflict audit — Lot 6, D-106 ─────────────────────────────────────
+
+export type VerifyConflictsIssueType =
+  | "SURGEON_ABSENCE"
+  | "INSTRUMENTIST_ABSENCE"
+  | "FORGOTTEN_RESTORATION"
+  | "FORGOTTEN_OCCURRENCE_RESTORATION"
+  | "INSTRUMENTIST_INACTIVE"
+  | "SURGEON_CONFLICT"
+  | "INSTRUMENTIST_CONFLICT";
+
+export interface VerifyConflictsIssue {
+  type: VerifyConflictsIssueType;
+  action: "CANCELLED" | "RELEASED_TO_POOL" | "RESTORED_ASSIGNED" | "RESTORED_OPEN" | "RESTORED" | "ALERT_CREATED";
+  missionId?: number;
+  postId?: number;
+  conflictingMissionId?: number | null;
+}
+
+export interface VerifyConflictsResponse {
+  checkedMissions: number;
+  issuesFound: number;
+  automaticCorrections: number;
+  alertsCreated: number;
+  alertsResolved: number;
+  issues: VerifyConflictsIssue[];
 }
 
 export type GenerationTarget =

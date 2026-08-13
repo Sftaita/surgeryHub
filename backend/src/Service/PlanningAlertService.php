@@ -313,6 +313,7 @@ class PlanningAlertService
             PlanningAlertType::REASSIGNMENT_REQUIRED,
             PlanningAlertType::INSTRUMENTIST_ABSENCE,
             PlanningAlertType::INSTRUMENTIST_CONFLICT,
+            PlanningAlertType::INSTRUMENTIST_INACTIVE,
         ], true);
 
         $canOpenAsAvailable = $active && $missionMutable
@@ -322,6 +323,7 @@ class PlanningAlertService
                 PlanningAlertType::INSTRUMENTIST_ABSENCE,
                 PlanningAlertType::SURGEON_ABSENCE,
                 PlanningAlertType::INSTRUMENTIST_CONFLICT,
+                PlanningAlertType::INSTRUMENTIST_INACTIVE,
             ], true);
 
         return [
@@ -342,7 +344,8 @@ class PlanningAlertService
 
         return match ($alert->getType()) {
             PlanningAlertType::REASSIGNMENT_REQUIRED,
-            PlanningAlertType::INSTRUMENTIST_CONFLICT => 'REASSIGN',
+            PlanningAlertType::INSTRUMENTIST_CONFLICT,
+            PlanningAlertType::INSTRUMENTIST_INACTIVE => 'REASSIGN',
             PlanningAlertType::INSTRUMENTIST_ABSENCE => $alert->getMission()->getStatus() === MissionStatus::OPEN ? 'NONE' : 'REVIEW',
             PlanningAlertType::SURGEON_ABSENCE,
             PlanningAlertType::OCCURRENCE_CANCELLED,
