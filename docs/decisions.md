@@ -8142,3 +8142,107 @@ le premier committe, puis retrouve correctement l'alerte déjà créée. Rejoué
 après correction : exactement 2 alertes (une par type), plus aucun doublon. Suite
 `PlanningVersionAuditFunctionalTest` (16/16) et suite complète rejouées sans régression.
 
+## D-110 — Escalade J-14 des Missions OPEN (2026-08-12)
+
+Date : 2026-08-12
+
+### Contexte
+
+Suite directe de D-108 : le J-14 y avait été explicitement laissé de côté ("arrêt
+volontaire avant toute nouvelle architecture") car il exigeait deux décisions non
+encore prises — comment planifier une exécution récurrente, et comment mémoriser
+"escalade déjà envoyée" sans jamais renotifier deux fois pour la même Mission couverte
+puis redevenue non couverte. Design validé séparément par l'utilisateur : **Option A**
+(commande Symfony classique + cron/systemd externe, pas de `symfony/scheduler` pour ce
+seul besoin) et un champ persistant **réinitialisable**, pas un simple horodatage figé.
+
+### Décision — `mission.uncoveredEscalationSentAt`, réinitialisé à chaque sortie réelle d'OPEN
+
+Nouvelle colonne nullable `mission.uncovered_escalation_sent_at`
+(`Version20260812115428`). Sémantique : "une escalade a été envoyée pour l'épisode OPEN
+**courant**" — pas "une escalade a déjà été envoyée un jour pour cette Mission". Le
+champ est remis à `NULL` par un point unique et centralisé,
+`MissionPostDeployService::resetEscalationIfLeavingOpen(Mission $mission, MissionStatus
+$previousStatus)`, appelé depuis les 6 méthodes qui mutent réellement le statut d'une
+Mission (audit exhaustif confirmé : `MissionPostDeployService` est la seule classe du
+dépôt à appeler `Mission::setStatus()` pour OPEN/ASSIGNED/CANCELLED — tout le reste,
+`AbsenceMissionReactionService`, `AbsenceImpactReconciliationService`,
+`PlanningVersionAuditService`, `PlanningAlertActionService`, `PlanningModificationService`,
+délègue à 100 % à ces mêmes méthodes) : `release()`, `start()`, `cancel()`,
+`restoreAfterCancellation()`, `claim()`, `assign()`. La règle est purement
+comportementale (`previousStatus === OPEN && nouveauStatus !== OPEN`), donc s'applique
+identiquement à **tous** les chemins de sortie d'OPEN présents et futurs sans liste
+d'exceptions à maintenir — y compris OPEN→CANCELLED (`cancel()`) et la restauration
+réelle CANCELLED→OPEN (`restoreAfterCancellation()`, chemin Lot 4 utilisé exclusivement
+par `AbsenceImpactReconciliationService`), qui redémarre un nouvel épisode avec le
+marqueur à `NULL`.
+
+Nouvelle commande `app:planning:check-uncovered-escalations`
+(`CheckUncoveredEscalationsCommand`) : sélectionne les Missions `status = OPEN`,
+`startAt` dans le futur et `<= now + 14 jours` (calculé en `Europe/Brussels`, même
+convention que D-064/D-083 — un Mission qui devient OPEN directement à l'intérieur de
+la fenêtre, ex. libérée à J-7, est escaladée dès le prochain run, pas retenue jusqu'à
+une date J-14 déjà passée), et `uncoveredEscalationSentAt IS NULL`. Pour chaque
+candidate : `MissionPostDeployService::markUncoveredEscalationSent()` prend un verrou
+`PESSIMISTIC_WRITE` (même convention que `claim()`/`start()`), revalide "toujours OPEN
+ET pas encore escaladée" **après** l'acquisition du verrou, marque, journalise un
+`AuditEvent::MISSION_UNCOVERED_ESCALATION_SENT` (acteur `system@surgicalhub.internal`,
+même convention que les autres tâches automatisées) et committe — le message
+`MissionUncoveredEscalationMessage` n'est dispatché qu'après ce commit, jamais avant.
+Deux exécutions simultanées (cron + lancement manuel) sur la même Mission : la seconde
+trouve le marqueur déjà posé après son propre verrou et repart sans rien muter ni
+notifier — aucun double envoi possible par construction, pas par convention fragile.
+L'échec d'une Mission (log + comptage) n'interrompt jamais le reste du batch.
+
+Notification (`MissionUncoveredEscalationMessageHandler`, nouveau
+`NotificationType::MISSION_UNCOVERED_ESCALATION`, canaux in-app + push + email via
+`NotificationPreferenceResolver`/Messenger existants, aucun pipeline parallèle) : au
+chirurgien uniquement, contenu générique sans donnée patient, avec la formulation
+demandée ("Nous vous invitons désormais à anticiper une solution alternative et, si
+nécessaire, à demander une aide opératoire auprès de la firme concernée") — aucune
+résolution automatique de quelle firme contacter, volontairement laissée à
+l'appréciation humaine.
+
+### Risque de double message — audité, pas de nouvelle décision nécessaire
+
+Un release direct à l'intérieur de la fenêtre J-14 déclenche déjà une notification
+immédiate (`SURGEON_POST_UNCOVERED` et/ou `ABSENCE_SURGEON_MISSION_OPENED`). Risque de
+collision quasi simultanée avec l'escalade J-14 ? Non, structurellement : aucun
+mécanisme de planification différée (`DelayStamp` ou équivalent) n'existe dans ce
+dépôt, et `check-uncovered-escalations` n'est déclenché que par une exécution cron
+distincte et journalière — jamais par l'évènement de libération lui-même. Les deux
+notifications restent donc temporellement disjointes par construction (immédiate vs.
+prochain tick cron, au minimum plusieurs heures d'écart en pratique), sans recouper le
+même instant. Aucune modification de pipeline nécessaire.
+
+### Tests
+
+18 tests automatisés nouveaux : 4 unitaires (`MissionUncoveredEscalationMessageHandlerTest`),
+12 d'intégration (`CheckUncoveredEscalationsCommandIntegrationTest` — sélection,
+fenêtre J-14 exacte incluant le cas "OPEN directement à J-7", idempotence sur double
+run, OPEN→CANCELLED réinitialise, restauration réelle CANCELLED→OPEN redémarre un
+épisode escaladable, OPEN→ASSIGNED→OPEN redémarre un épisode escaladable, erreur sur
+une Mission n'interrompt pas le batch), 2 de concurrence
+(`CheckUncoveredEscalationsConcurrencyTest` — deux exécutions simultanées sur la même
+Mission). Validation live complémentaire (fixture réelle, nettoyée après coup) : cycle
+complet OPEN escaladée → `assign()` (marqueur réinitialisé, confirmé en lecture DB
+fraîche) → `release()` légal à l'intérieur de la fenêtre → nouvelle escalade confirmée
+(nouvel `AuditEvent`, nouveau message traité par le worker Messenger réel, email
+intercepté par MAIL_SAFE_MODE) → second run confirmé sans doublon (toujours exactement
+2 `AuditEvent` d'escalade sur la Mission, un par épisode). Suite backend complète
+rejouée après implémentation : une régression réelle détectée et corrigée avant
+validation finale — `BusinessDateTimeColumnConventionTest` (garde architecturale D-066)
+a signalé `Mission::uncoveredEscalationSentAt` comme colonne `DateTimeImmutable` non
+classifiée ; le champ n'étant jamais alimenté que par `new \DateTimeImmutable()` côté
+serveur (jamais une valeur client), il a été ajouté à la liste blanche de ce test avec
+la même justification que les champs `*SentAt` existants (`encodingReminderSentAt`,
+`OutboundNotification::sentAt`, etc.). Après correction : suite complète verte, seuls
+les 3 échecs préexistants et sans rapport de `OffersUnreadCountControllerTest` (déjà
+identifiés indépendamment lors de runs précédents) subsistent.
+
+### Non fait dans ce lot — décision opérationnelle séparée
+
+Aucun cron ni systemd réel n'a été configuré ni activé, conformément à la demande
+explicite. Procédure d'activation documentée dans `docs/production.md` (même schéma
+que D-083 : script `flock`, fréquence recommandée, vérification de la timezone
+serveur), prête à exécuter avec une autorisation de déploiement séparée.

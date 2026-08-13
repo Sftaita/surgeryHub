@@ -85,6 +85,7 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::MISSION_RESTORED,
         NotificationType::MISSION_RESTORED_MGR,
         NotificationType::ABSENCE_IMPACT_SUMMARY,
+        NotificationType::MISSION_UNCOVERED_ESCALATION,
     ];
 
     public function __construct(

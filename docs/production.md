@@ -550,6 +550,120 @@ crontab -l   # confirmer l'absence de la ligne, les autres jobs intacts
 
 ---
 
+## Tâche planifiée — escalade J-14 des Missions OPEN (D-110) — PAS ENCORE ACTIVÉE
+
+`app:planning:check-uncovered-escalations` (`CheckUncoveredEscalationsCommand`) notifie
+le chirurgien une fois par épisode OPEN quand une Mission reste non couverte à moins de
+14 jours de son début. Développée et testée en local (voir D-110), **non déployée et
+non planifiée en production** au moment de la rédaction — instructions ci-dessous
+prêtes pour l'activation, à exécuter seulement avec une autorisation explicite de
+déploiement/configuration prod. Option retenue (validée explicitement) : **Option A —
+commande Symfony + cron/systemd externe**, pas de `symfony/scheduler` pour ce seul
+besoin, cohérent avec D-064/D-083.
+
+### Mécanisme prévu (même schéma que D-064/D-083)
+
+| | |
+|---|---|
+| Planificateur | cron utilisateur `deploy` (aucun systemd timer existant sur ce serveur — voir alternative ci-dessous si un jour préféré) |
+| Fréquence recommandée | quotidienne, un seul tick (`0 7 * * *`) |
+| Script | `/home/deploy/scripts/check_uncovered_escalations.sh` (à créer, même style que `missions_start_due.sh`/`send_encoding_reminders.sh` : `set -uo pipefail`, `flock -n`, vérification `docker inspect`) |
+| Commande exécutée | `docker compose exec -T php php bin/console app:planning:check-uncovered-escalations --env=prod` |
+| Répertoire d'exécution | `/opt/stack/apps/surgicalhub` |
+| Journal | `/home/deploy/logs/check-uncovered-escalations.log` |
+| Verrou anti-chevauchement (shell) | `flock -n` sur `/home/deploy/locks/check-uncovered-escalations.lock` |
+| Garde métier (applicatif) | la fenêtre J-14 est calculée par la commande elle-même en `Europe/Brussels` (`CheckUncoveredEscalationsCommand::MISSION_TIMEZONE`), indépendamment de l'heure du tick |
+
+**Pourquoi un seul tick quotidien suffit, contrairement à D-083** : D-083 nécessite
+15-30 min de granularité car il doit détecter le franchissement d'une heure précise
+(08h00 locale) le jour même. D-110 n'a pas cette contrainte — la fenêtre "≤ 14 jours"
+est une comparaison de plage, pas un instant précis à ne pas rater ; un tick unique par
+jour à une heure fixe couvre déjà tous les cas dans un délai acceptable (au pire, ~24h
+de latence entre le moment où une Mission entre dans la fenêtre et le prochain
+passage). Vérifier la timezone réelle du serveur avant activation (le cron `deploy`
+existant pour D-064 tourne en UTC, voir plus haut) — un tick à `0 7 * * *` en UTC
+correspond à 08h00/09h00 heure de Bruxelles selon l'heure d'été/hiver, ce qui reste une
+heure raisonnable ; la garde interne rend de toute façon le calcul de fenêtre correct
+quel que soit l'écart, seul le confort du créneau matinal en dépend.
+
+Entrée crontab prévue (à ajouter après les jobs existants, jamais réécrits) :
+
+```
+# D-110 — Escalade J-14 des Missions OPEN (fenêtre calculée en Europe/Brussels par la commande)
+0 7 * * * /home/deploy/scripts/check_uncovered_escalations.sh >> /home/deploy/logs/check-uncovered-escalations.log 2>&1
+```
+
+### Avant activation
+
+1. Confirmer la timezone réelle du serveur (`docker exec surgicalhub-php-1 date -u` et
+   `date` côté hôte) — documenter l'écart avec Europe/Brussels s'il existe ; sans
+   incidence sur la justesse de la fenêtre J-14 (calculée en interne par la commande),
+   seulement sur le confort de l'heure choisie pour le tick.
+2. Appliquer la migration `Version20260812115428` en prod
+   (`doctrine:migrations:migrate --env=prod`) avant tout déploiement du code
+   applicatif qui la suppose.
+3. Créer `/home/deploy/scripts/check_uncovered_escalations.sh` sur le modèle exact de
+   `missions_start_due.sh`/`send_encoding_reminders.sh` (même garde `flock`, même
+   vérification `docker inspect`, `log()` écrivant directement dans le fichier — pas de
+   `tee`, pour éviter le doublon déjà rencontré et documenté pour D-064).
+4. Sauvegarder la crontab avant modification
+   (`crontab -l > /home/deploy/backups/cron/crontab_before_uncovered_escalations_<horodatage>.txt`).
+
+### Vérification (une fois activée)
+
+```bash
+tail -50 /home/deploy/logs/check-uncovered-escalations.log
+ps aux | grep check-uncovered-escalations
+crontab -l | grep check_uncovered_escalations
+```
+
+### Désactivation
+
+```bash
+crontab -l | grep -v 'check_uncovered_escalations.sh' | crontab -
+crontab -l   # confirmer l'absence de la ligne, les autres jobs intacts
+```
+
+### Alternative non retenue — timer systemd
+
+Ce serveur n'utilise systemd pour aucune tâche planifiée existante (D-064/D-083 sont
+toutes deux en cron utilisateur `deploy`) ; par cohérence, D-110 suit la même
+convention et **n'utilise pas** systemd. Alternative documentée pour référence
+uniquement, si ce choix devait changer un jour :
+
+```ini
+# /etc/systemd/system/surgicalhub-uncovered-escalations.service
+[Unit]
+Description=SurgicalHub — D-110 escalade J-14 des Missions OPEN
+After=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/stack/apps/surgicalhub
+ExecStart=/usr/bin/docker compose exec -T php php bin/console app:planning:check-uncovered-escalations --env=prod
+```
+
+```ini
+# /etc/systemd/system/surgicalhub-uncovered-escalations.timer
+[Unit]
+Description=Quotidien — D-110 escalade J-14
+
+[Timer]
+OnCalendar=*-*-* 07:00:00 Europe/Brussels
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+`OnCalendar` avec un fuseau explicite (`Europe/Brussels`) évite la question de dérive
+DST que le cron `deploy` (en UTC) doit gérer via la garde applicative — avantage réel
+de systemd sur cron ici, mais insuffisant à lui seul pour justifier de s'écarter de la
+convention existante de ce serveur sans décision opérationnelle séparée.
+
+---
+
 ## Rollback
 
 Le tag `*-prod` précédent (voir "Historique des versions déployées"

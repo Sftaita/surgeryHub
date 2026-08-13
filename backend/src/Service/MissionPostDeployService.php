@@ -72,7 +72,8 @@ class MissionPostDeployService
             throw new ConflictHttpException('Mission must be ASSIGNED to release');
         }
 
-        $previousStatus = $mission->getStatus()->value;
+        $previousStatusEnum = $mission->getStatus();
+        $previousStatus     = $previousStatusEnum->value;
 
         $fromInstrumentist     = $mission->getInstrumentist();
         $fromInstrumentistId   = $fromInstrumentist?->getId();
@@ -82,6 +83,7 @@ class MissionPostDeployService
 
         $mission->setStatus(MissionStatus::OPEN);
         $mission->setInstrumentist(null);
+        $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
 
         $payload = [
             'fromInstrumentistId'   => $fromInstrumentistId,
@@ -141,7 +143,9 @@ class MissionPostDeployService
                 throw new ConflictHttpException('Mission must be ASSIGNED to start');
             }
 
+            $previousStatusEnum = $mission->getStatus();
             $mission->setStatus(MissionStatus::IN_PROGRESS);
+            $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
 
             $payload = [
                 'actorId'   => $actor->getId(),
@@ -194,7 +198,8 @@ class MissionPostDeployService
             throw new ConflictHttpException('Mission must be DRAFT, OPEN or ASSIGNED to cancel');
         }
 
-        $previousStatus = $mission->getStatus()->value;
+        $previousStatusEnum = $mission->getStatus();
+        $previousStatus     = $previousStatusEnum->value;
 
         $fromInstrumentist     = $mission->getInstrumentist();
         $fromInstrumentistId   = $fromInstrumentist?->getId();
@@ -204,6 +209,7 @@ class MissionPostDeployService
 
         $mission->setStatus(MissionStatus::CANCELLED);
         $mission->setInstrumentist(null);
+        $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
 
         $payload = [
             'reason'                => $reason,
@@ -273,8 +279,10 @@ class MissionPostDeployService
 
         $restoredStatus = $newInstrumentist !== null ? MissionStatus::ASSIGNED : MissionStatus::OPEN;
 
+        $previousStatusEnum = $mission->getStatus();
         $mission->setStatus($restoredStatus);
         $mission->setInstrumentist($newInstrumentist);
+        $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
 
         $payload = [
             'previousStatus'         => MissionStatus::CANCELLED->value,
@@ -341,8 +349,10 @@ class MissionPostDeployService
                     ->setInstrumentist($actor)
                     ->setClaimedAt(new \DateTimeImmutable());
 
+                $previousStatusEnum = $mission->getStatus();
                 $mission->setInstrumentist($actor);
                 $mission->setStatus(MissionStatus::ASSIGNED);
+                $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
 
                 $this->em->persist($claim);
 
@@ -404,10 +414,12 @@ class MissionPostDeployService
             ? $this->displayName($fromInstrumentist)
             : null;
 
+        $previousStatusEnum = $mission->getStatus();
         $mission->setInstrumentist($newInstrumentist);
         if ($mission->getStatus() === MissionStatus::OPEN) {
             $mission->setStatus(MissionStatus::ASSIGNED);
         }
+        $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
 
         $payload = [
             'fromInstrumentistId'   => $fromInstrumentistId,
@@ -656,6 +668,56 @@ class MissionPostDeployService
     }
 
     /**
+     * D-110 (J-14) — marks the current OPEN episode's escalation as sent. Never changes
+     * Mission status. Same pessimistic-lock convention as claim()/start(): re-validates
+     * "still OPEN AND not yet escalated" AFTER acquiring the lock, so two overlapping
+     * command runs (cron + a manual trigger) racing on the same Mission can't both send
+     * the escalation — the second one's re-check finds the marker already set and returns
+     * false without mutating or auditing anything.
+     *
+     * Returns true only when THIS call actually won the race and persisted the marker —
+     * the caller must only dispatch the notification message when this returns true, and
+     * only after this method returns (i.e. after the transaction has committed).
+     */
+    public function markUncoveredEscalationSent(Mission $mission, User $actor): bool
+    {
+        $marked = false;
+
+        $this->em->wrapInTransaction(function () use ($mission, $actor, &$marked): void {
+            $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
+
+            if ($mission->getStatus() !== MissionStatus::OPEN || $mission->getUncoveredEscalationSentAt() !== null) {
+                return;
+            }
+
+            $mission->setUncoveredEscalationSentAt(new \DateTimeImmutable());
+
+            $surgeon = $mission->getSurgeon();
+            $site    = $mission->getSite();
+            $payload = [
+                'startAt'          => $mission->getStartAt()?->format(\DateTimeInterface::ATOM),
+                'siteId'           => $site?->getId(),
+                'siteName'         => $site?->getName(),
+                'surgeonId'        => $surgeon?->getId(),
+                'surgeonName'      => $surgeon !== null ? $this->displayName($surgeon) : null,
+                'daysUntilMission' => $mission->getStartAt() !== null
+                    ? (int) (new \DateTimeImmutable())->diff($mission->getStartAt())->days
+                    : null,
+                'actorId'          => $actor->getId(),
+                'actorName'        => $this->displayName($actor),
+            ];
+
+            $this->audit->record($mission, $actor, AuditEventType::MISSION_UNCOVERED_ESCALATION_SENT, $payload);
+
+            $this->em->flush(); // R-05: flush before dispatch
+
+            $marked = true;
+        });
+
+        return $marked;
+    }
+
+    /**
      * D-101 — single canonical eligibility gate for every assign/reassign/schedule-change/
      * add-mission mutation in this service. `evaluateForReassignment()` always computes
      * every applicable reason (single source of truth, never duplicated); the caller's
@@ -676,6 +738,24 @@ class MissionPostDeployService
 
         if (!empty($blocking)) {
             throw new InstrumentistIneligibleException($blocking);
+        }
+    }
+
+    /**
+     * D-110 (J-14) — single centralized rule: whenever a Mission truly leaves OPEN (to
+     * ASSIGNED or CANCELLED), its uncovered-escalation marker must reset to NULL so a later,
+     * genuinely new episode of non-coverage can trigger a fresh escalation instead of being
+     * silently suppressed by a marker left over from a previous, already-resolved episode.
+     * Called from every status-mutating method in this service (the sole place Mission
+     * status is ever written in production, per the D-110 audit) rather than duplicated
+     * per-call-site, so a future new transition can't silently forget it. A no-op whenever
+     * the previous status wasn't OPEN, or the new status still is (defensive — no current
+     * caller hits that case, but the guard costs nothing).
+     */
+    private function resetEscalationIfLeavingOpen(Mission $mission, MissionStatus $previousStatus): void
+    {
+        if ($previousStatus === MissionStatus::OPEN && $mission->getStatus() !== MissionStatus::OPEN) {
+            $mission->setUncoveredEscalationSentAt(null);
         }
     }
 

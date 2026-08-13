@@ -32,6 +32,16 @@ class Mission
     #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
     private MissionStatus $status = MissionStatus::DRAFT;
 
+    /**
+     * D-110 (J-14) — NULL means "no escalation sent for the CURRENT OPEN episode" (including
+     * "never been OPEN" / "not OPEN right now"). Reset to NULL by MissionPostDeployService
+     * every time this Mission truly leaves OPEN (to ASSIGNED or CANCELLED) — see
+     * MissionPostDeployService::resetEscalationIfLeavingOpen(). Only ever set by
+     * CheckUncoveredEscalationsCommand.
+     */
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $uncoveredEscalationSentAt = null;
+
     #[ORM\Column(enumType: SchedulePrecision::class)]
     #[Groups(['mission:read', 'mission:read_manager', 'service:read', 'service:read_manager', 'export:read'])]
     private SchedulePrecision $schedulePrecision = SchedulePrecision::EXACT;
@@ -206,6 +216,9 @@ class Mission
 
     public function getStatus(): MissionStatus { return $this->status; }
     public function setStatus(MissionStatus $status): static { $this->status = $status; return $this; }
+
+    public function getUncoveredEscalationSentAt(): ?\DateTimeImmutable { return $this->uncoveredEscalationSentAt; }
+    public function setUncoveredEscalationSentAt(?\DateTimeImmutable $at): static { $this->uncoveredEscalationSentAt = $at; return $this; }
 
     public function getSchedulePrecision(): SchedulePrecision { return $this->schedulePrecision; }
     public function setSchedulePrecision(SchedulePrecision $schedulePrecision): static { $this->schedulePrecision = $schedulePrecision; return $this; }

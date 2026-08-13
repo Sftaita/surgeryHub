@@ -129,6 +129,11 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         // Rappel d'encodage D+1, D-083.
         'App\Entity\Mission::encodingReminderSentAt' => 'set from the cron command\'s own "now" (SendEncodingRemindersCommand::now(), Europe/Brussels-computed) inside EncodingReminderService::processMission(), never client input',
 
+        // Escalade J-14 des Missions OPEN, D-110. Only ever set from new \DateTimeImmutable()
+        // inside MissionPostDeployService::markUncoveredEscalationSent() (cron-triggered) or
+        // reset to null by resetEscalationIfLeavingOpen() — never hydrated from client input.
+        'App\Entity\Mission::uncoveredEscalationSentAt' => 'set from new \DateTimeImmutable() in MissionPostDeployService::markUncoveredEscalationSent(), never client input',
+
         // Historique des notifications sortantes, D-084 — every timestamp on both entities
         // is set from new \DateTimeImmutable() inside OutboundNotificationService, never
         // hydrated from a client-submitted value (the API is read-only, admin history only).

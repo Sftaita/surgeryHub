@@ -78,6 +78,11 @@ enum NotificationType: string
     // absence-processing run, covering every mission they're eligible for in that run.
     case ABSENCE_POOL_MISSION_AVAILABLE = 'ABSENCE_POOL_MISSION_AVAILABLE'; // to eligible instrumentists without push
 
+    // D-110 (J-14) — a Mission stayed OPEN into the 14-day-before-start window with no
+    // escalation yet sent for the current episode. One per episode (never a daily repeat —
+    // see mission.uncoveredEscalationSentAt), to the surgeon. 28 chars, fits length: 32.
+    case MISSION_UNCOVERED_ESCALATION = 'MISSION_UNCOVERED_ESCALATION'; // to the surgeon
+
     // ── Reversal: absence deleted/shortened, restoration performed (Lot 4, D-104) ────
     // Only ever dispatched on a REAL, safe restoration — never a blanket "your absence was
     // deleted" notice (that stays ABSENCE_SELF_DECLARED-adjacent territory, see

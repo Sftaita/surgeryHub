@@ -32,6 +32,12 @@ enum AuditEventType: string
     case MISSION_RELEASED_TO_POOL          = 'MISSION_RELEASED_TO_POOL';
     case MISSION_CANCELLED_POST_DEPLOY     = 'MISSION_CANCELLED_POST_DEPLOY';
     case MISSION_REASSIGNED_POST_DEPLOY    = 'MISSION_REASSIGNED_POST_DEPLOY';
+
+    // D-110 (J-14) — a Mission stayed OPEN into the 14-day-before-start window with no
+    // escalation yet sent for the current OPEN episode; dispatched by
+    // CheckUncoveredEscalationsCommand, at most once per episode (see
+    // mission.uncoveredEscalationSentAt).
+    case MISSION_UNCOVERED_ESCALATION_SENT = 'MISSION_UNCOVERED_ESCALATION_SENT';
     case MISSION_TIME_CHANGED_POST_DEPLOY  = 'MISSION_TIME_CHANGED_POST_DEPLOY';
     case MISSION_ADDED_POST_DEPLOY         = 'MISSION_ADDED_POST_DEPLOY';
     case MISSION_CLAIMED_FROM_POOL         = 'MISSION_CLAIMED_FROM_POOL';

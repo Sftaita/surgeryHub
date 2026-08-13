@@ -2866,3 +2866,50 @@ résolution (V1 : `OPEN`/`RESOLVED`). Correction automatique de l'encodage coupl
 résolution (décision explicite contraire, voir D-100). Carte dédiée sur
 `SurgeonHomePage` (statut visible uniquement sur l'écran d'encodage + notifications).
 
+## 20. Escalade J-14 des Missions OPEN (D-110)
+
+Notifie le chirurgien une fois par épisode OPEN quand une Mission reste non couverte à
+moins de 14 jours de son début, avec invitation explicite à chercher une solution
+alternative (aide opératoire firme).
+
+### 20.1 Composants
+
+- `CheckUncoveredEscalationsCommand` (`app:planning:check-uncovered-escalations`) —
+  commande planifiée, orchestration uniquement : sélection DQL des candidates
+  (`status = OPEN`, `startAt` dans `]now, now+14j]` calculé en Europe/Brussels,
+  `uncoveredEscalationSentAt IS NULL`), boucle isolée par mission (une erreur ne bloque
+  pas le batch), résumé final. Pas de logique métier — délègue entièrement à
+  `MissionPostDeployService`.
+- `MissionPostDeployService::markUncoveredEscalationSent()` — verrou `PESSIMISTIC_WRITE`,
+  revalidation après verrou, mutation + `AuditEvent` + flush, dans une transaction ;
+  retourne `false` sans rien muter si une exécution concurrente a déjà traité la
+  Mission entretemps. Même convention que `claim()`/`start()`.
+- `MissionPostDeployService::resetEscalationIfLeavingOpen()` — point unique de
+  réinitialisation du marqueur, appelé depuis les 6 méthodes qui mutent réellement le
+  statut d'une Mission (`release()`, `start()`, `cancel()`, `restoreAfterCancellation()`,
+  `claim()`, `assign()`). Règle purement comportementale (sortie réelle d'OPEN), pas une
+  liste de cas particuliers à maintenir.
+- `Mission.uncoveredEscalationSentAt` — champ nullable ; sémantique "épisode OPEN
+  courant déjà escaladé", pas "escaladé un jour dans le passé" — c'est la
+  réinitialisation systématique à la sortie d'OPEN qui rend un nouvel épisode
+  éligible à sa propre escalade.
+- `MissionUncoveredEscalationMessageHandler` — in-app + Push + email via
+  `NotificationPreferenceResolver`/Messenger existants (aucun pipeline parallèle),
+  contenu générique sans donnée patient, pas de résolution automatique de firme.
+
+### 20.2 Idempotence et concurrence
+
+Le marqueur persistant (pas un simple log ni un verrou applicatif éphémère) garantit
+qu'une Mission ne reçoit jamais deux escalades pour le même épisode OPEN, y compris
+sous exécutions concurrentes (cron + lancement manuel simultanés) — la seconde
+exécution trouve le marqueur déjà posé après avoir acquis son propre verrou et repart
+sans muter ni notifier.
+
+### 20.3 Planification
+
+Cron serveur (pas de Symfony Scheduler dans ce projet, cohérent avec D-064/D-083),
+fenêtre J-14 calculée en interne par la commande en Europe/Brussels — absorbe tout
+décalage été/hiver même si le cron serveur est planifié en UTC fixe. Un seul tick
+quotidien suffit (pas de garde horaire à la minute près comme D-083, la fenêtre étant
+une comparaison de plage et non un instant précis). Voir docs/production.md pour le
+déploiement — non activé au moment de la rédaction.
