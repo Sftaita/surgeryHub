@@ -34,6 +34,7 @@ réécrire une ligne existante — c'est un historique._
 
 | Tag | Commit | Date | Notes |
 |---|---|---|---|
+| `v2026.08.14-prod` | `01bf651` | 2026-08-14 | **Lot 6 (D-106) + D-107/D-108/D-109/D-110, rattrapage complet d'un backlog de 18 commits non poussés depuis `v2026.08.05-prod-2`** (dernier tag connu). Écart présenté et validé explicitement avant tout déploiement (`docs/deployment-versioning.md` §3, écart > 1 commit — pas de cherry-pick partiel, HEAD complet déployé). Commits rattrapés (`bdf66b7`→`01bf651`, ordre chronologique) : D-095 (socle mobile partagé chirurgien/instrumentiste), D-096 (Home + Planning chirurgien réels), D-097 (absences self-service partagées), D-098 (activité chirurgien + podium), D-099 (demande de mission chirurgien), D-100 (consultation encodage chirurgien + signalement d'anomalie), 2 correctifs polish mobile chirurgien, D-101 (revalidation backend systématique de toute affectation — correctif du bug réel Sophie Collette), D-102 (UX fantôme instrumentistes inéligibles), D-103 (absence chirurgien avant génération), D-104 (restauration réversible), D-105 (email manager consolidé), **D-106 (vérification manuelle des conflits "Vérifier les conflits", filet de sécurité manager)**, **D-107 (absence instrumentiste avant génération, complément symétrique à D-103)**, **D-108 (repli email groupé pool OPEN sans push)**, **D-109 (fix race condition alertes de conflit sous scans simultanés)**, **D-110 (escalade J-14 des Missions OPEN, activée en cron le jour même)**. Les 5 commits de ce jour ont été committés séparément par lot (jamais un commit fourre-tout), chaque fichier à hunks entrelacés (`NotificationType.php`, `DefaultNotificationPreferenceResolver.php`, `docs/decisions.md`, `AuditEventType.php`, `messenger.yaml`, `docs/architecture.md`) découpé précisément par lot puis vérifié byte-à-byte identique à l'état final testé avant commit — 0 régression de contenu introduite par le découpage. 4 migrations exécutées (`Version20260807120000`→`Version20260812115428`) : `surgeon_mission_request` (D-099), `encoding_anomaly_report` (D-100), `planning_occurrence_exception.source`/`source_absence_id` (D-103), `mission.uncovered_escalation_sent_at` (D-110) — toutes purement additives en `up()` (`CREATE TABLE`/`ADD COLUMN`), aucune instruction destructrice hors `down()`, vérifiées avant exécution réelle. Sauvegardes : dump MySQL `/home/deploy/backups/mysql/all_20260813_055623.sql.gz` (916 Ko), archive code `/home/deploy/backups/code/src_pre_deploy_20260813_055629.tar.gz` (16 102 080 octets). Rebuild complet `--no-cache` (`BUILD_EXIT=0`), 3/3 containers recréés (`php`/`nginx`/`worker`), `cache:clear` + `restart php` + `restart worker` après `migrate`. **Tests fonctionnels réels en prod** : compte manager jetable `deploy-test-20260814@surgicalhub.internal` créé via `app:user:create` (aucun email) ; login JWT réel → `200` ; `/api/me` → rôle `MANAGER` correct ; `GET /api/planning/versions` → `200` ; `GET /api/absences` → `200` ; `POST /api/planning/versions/8/verify-conflicts` (D-106, sur une vraie PlanningVersion ACTIVE, données réelles, `MAIL_SAFE_MODE=on` activé pour la durée du test) → `200`, 29 missions réelles vérifiées, **3 vrais conflits d'horaire préexistants détectés et remontés en `PlanningAlert`** (missions #410/#411, #413/#414 — jamais auto-mutés, laissés pour revue manager, conservés volontairement), rejoué une 2e fois → `issuesFound: 0` (idempotence confirmée) ; commande J-14 (`app:planning:check-uncovered-escalations`) exécutée manuellement pour la première fois en prod → **6 Missions réelles authentiquement OPEN et à l'intérieur de la fenêtre J-14 escaladées** (activation initiale, pas une anomalie), `0` erreur, `0` message en échec (`messenger:failed:show`), rejouée une 2e fois → `0` nouvelle escalade (idempotence confirmée sur le chemin réel), 6 `AuditEvent::MISSION_UNCOVERED_ESCALATION_SENT` confirmés en base ; script wrapper cron (`check_uncovered_escalations.sh`) testé séparément avec succès (`exit=0`). `MAIL_SAFE_MODE` retiré immédiatement après ces tests (`docker compose up -d` pour recharger, confirmé absent du `.env` final). Compte de test et ses `notification_event`/`refresh_tokens` supprimés, `0` résidu confirmé. Tests santé génériques : frontend `200`, login `401` (repli JWT sur identifiants invalides — jamais `500`, écart mineur avec le `400` historiquement documenté, non bloquant), `.env` `404`, 3/3 containers `Up`, migrations `Already at latest version`, logs PHP/worker sans `CRITICAL`/`exception` liée au déploiement. **J-14 activé en cron** le jour même (voir section dédiée ci-dessous) : `CRON_TZ=Europe/Brussels`, tick quotidien 07:00 heure belge réelle (timezone serveur vérifiée : `Etc/UTC`), script `flock`-protégé, crontab précédente sauvegardée avant modification. **Anomalie détectée, non bloquante** : Docker Desktop et le MySQL hôte WAMP local (environnement de développement, sans rapport avec ce serveur de production) s'étaient arrêtés pendant une interruption de session plus tôt le même jour — sans impact sur ce déploiement, mentionné pour traçabilité complète. **Limite assumée** : les 3 conflits d'horaire réels détectés par D-106 restent non résolus en `PlanningAlert` — décision manager délibérément laissée en attente, pas une omission de ce déploiement. |
 | `v2026.08.05-prod-2` | `6e2b618` | 2026-08-05 | **Favicon refresh (ancien placeholder → vrai logo SurgicalHub) + redémarrage de l'animation des vagues du header mobile à chaque navigation (bug iOS).** 2 commits depuis `v2026.08.05-prod` (`10c2505`) : `9c6a839` (docs-only, hors périmètre de l'archive déployée) et `6e2b618` (ce lot). **Favicon** : `icon-16.png`/`icon-32.png` (référencés par `index.html` pour le favicon d'onglet) contenaient encore l'ancien logo placeholder alors que toutes les icônes PWA ≥72px avaient déjà été remplacées le 2026-07-29 — pas un problème de cache, le contenu source lui-même était resté périmé. Cause racine plus profonde : `scripts/generate-icons.mjs` (le générateur officiel) embarquait encore l'ancien SVG comme source unique ; un futur re-run aurait tout écrasé avec l'ancien logo. Générateur corrigé pour utiliser `logo-mark-transparent.png` (le vrai logo), vérifié en isolation qu'il ne réintroduit plus jamais le placeholder et qu'il ne modifie pas inutilement les icônes déjà correctes. Favicon régénéré sous un nom de fichier différent (`icon-16-v2.png`/`icon-32-v2.png`) pour casser le cache favicon persistant des navigateurs (indépendant des en-têtes HTTP classiques) plutôt qu'un hack JS ; anciens fichiers (`icon-16/32/48.png`, `icon-192/512.svg`) supprimés du dépôt **et explicitement supprimés sur le serveur après extraction** (l'extraction `git archive` ne retire jamais les fichiers absents de la nouvelle archive — 5 fichiers concernés, pas de nettoyage `rm -rf backend/frontend` nécessaire pour un si petit ensemble). `STATIC_CACHE_VERSION` du service worker bump v2→v3. **Vagues iOS** : le "kick" d'animation du bandeau (`BandWaves` dans `MobileLayout.tsx`) était piloté par un state levé dans `MobileLayout` et rejoué par transition CSS `d` sur un nœud déjà monté — peu fiable sur iOS/Safari, et de toute façon jamais déclenché sur une navigation générale (seulement montage initial + sortie d'écran d'encodage). `BandWaves` gère désormais son propre état et est remonté via `key={pathname}` à chaque changement de route réel, garantissant un redémarrage fiable sur tous les moteurs de rendu ; seul le petit SVG des vagues remonte, jamais `MobileLayout`/la nav. `prefers-reduced-motion` respecté. Aucune migration (lot frontend pur). Suite complète avant déploiement : 932/932 tests frontend, tests ciblés `layouts/` 83/83, `tsc -b` et `git diff --check` propres. Sauvegardes déploiement : dump MySQL `/home/deploy/backups/mysql/all_20260805_171335.sql.gz` (912 Ko), archive code `/home/deploy/backups/code/src_pre_deploy_20260805_171337.tar.gz` (16 100 547 octets). Rebuild complet `--no-cache` (`BUILD_EXIT=0`), 3/3 containers recréés, `cache:clear` + `restart php` + `restart worker` exécutés immédiatement après `migrate` (no-op, déjà à jour). **Test fonctionnel réel en prod** (lecture seule, aucun compte de test nécessaire pour ce lot purement frontend) : `GET https://surgicalhub.be/icons/icon-32-v2.png` → `200`/`image/png` ; `GET .../icon-16-v2.png` → `200`/`image/png` ; `GET .../icons/icon-180.png` (apple-touch-icon) → `200` ; `GET .../manifest.json` → `200` ; `index.html` servi réellement inspecté → référence bien `icon-16-v2.png`/`icon-32-v2.png` ; `GET .../icons/icon-32.png` (ancien fichier supprimé) → `200` mais `Content-Type: text/html` (repli SPA vers `index.html`, confirmant l'absence réelle du fichier, pas un cache stale). Tests santé génériques : frontend `200`, login `400` (jamais `500`), `.env` `404`, 3/3 containers `Up`, migrations `Already at latest version`, logs PHP sans `CRITICAL`/`exception` liée au déploiement, worker actif (`Consuming messages from transport "async"` confirmé après restart). **Limite assumée** : la validation de l'animation des vagues elle-même n'a pu être testée qu'en local (Chrome, navigation réelle avec preuve de remount DOM) avant ce déploiement — aucune vérification empirique possible sur iOS/Safari réel dans cet environnement d'automatisation (Chromium uniquement) ; la correction élimine cependant la dépendance à un comportement de transition CSS spécifique à un moteur (remount garanti par les specs React/DOM), ce qui est la raison structurelle de la correction. |
 | `v2026.08.05-prod` | `10c2505` | 2026-08-05 | **Visibilité tarif horaire instrumentiste + tuile "missions validées sans calcul" (amendement D-072).** 2 commits depuis `v2026.08.04-prod-3` (`46d7413`) : `e13bcf2` (docs-only, hors périmètre de l'archive déployée) et `10c2505` (ce lot). **Contexte** : diagnostic prod lecture-seule antérieur (2026-08-05) avait trouvé 9/10 instrumentistes réels sans `InstrumentistRate`, faisant échouer silencieusement le calcul financier (`MISSING_INSTRUMENTIST_RATE`) sans aucun signal visible côté manager. **Ajouts** : `GET /api/instrumentists` expose désormais `hasCurrentHourlyRate` (résolu via `InstrumentistRateResolver`, même règle que `FinancialCalculationService` — jamais recalculé côté frontend) ; badge "Tarif configuré"/"Tarif manquant" dans la liste manager ; avertissement dans la fiche instrumentiste tant qu'aucun tarif horaire n'est actif ; filtre `validatedWithoutCalculation` sur `GET /api/missions` relié à la tuile dashboard "Missions validées sans calcul" (qui pointait auparavant vers un écran de stats non filtré). **Vérification explicite du cas 0€** (demande utilisateur avant commit) : un `InstrumentistRate` à `0.00 EUR` doit être traité comme un tarif configuré, jamais comme une absence de tarif — audit complet (resolver, calcul financier, DTO, validation, formulaires frontend) n'a trouvé aucune occurrence de `if (!$amount)`/`empty()`/`> 0` utilisée pour déterminer l'existence d'un tarif (l'existence est déterminée uniquement par couverture de date) ; confirmé par 3 nouveaux tests backend dédiés et un test navigateur de bout en bout en local sur données prod copiées (Christine Vanmessem, tarif 0€ créé → badge "Tarif configuré" → calcul financier sur mission réelle #269 → ligne instrumentiste exactement `0.00 EUR`, aucune anomalie → nettoyage → retour confirmé à "Tarif manquant"). Aucune migration. Suite complète avant déploiement : 1795/1795 tests backend (0 échec/0 erreur, 3 skipped sans rapport, 1 *risky* préexistant sans rapport), 32/32 tests frontend ciblés, `tsc -b` et `git diff --check` propres. Sauvegardes déploiement : dump MySQL `/home/deploy/backups/mysql/all_20260805_094552.sql.gz` (912 Ko), archive code `/home/deploy/backups/code/src_pre_deploy_20260805_094555.tar.gz` (16 093 796 octets). Rebuild complet `--no-cache` (`BUILD_EXIT=0`), 3/3 containers recréés, `cache:clear` + `restart php` + `restart worker` exécutés immédiatement après `migrate` (no-op, déjà à jour). **Test fonctionnel réel en prod** : compte jetable `deploytest1785935331@surgicalhub.internal` (MANAGER) créé via `app:user:create` ; login JWT réel → `200`, `/api/me` correct ; `GET /api/instrumentists?limit=200` → `200`, `hasCurrentHourlyRate` présent sur les 10 instrumentistes réels, distribution `9 false / 1 true` cohérente avec le diagnostic initial (lecture seule, aucune mutation de donnée métier réelle) ; `GET /api/missions?validatedWithoutCalculation=true` → `200`, forme JSON valide (`0` résultat au moment du test, état réel des données). Compte jetable + `refresh_tokens` supprimés, `0` résidu confirmé. Tests santé génériques : frontend `200`, login `400` (jamais `500`), `.env` `404`, 3/3 containers `Up`, migrations `Already at latest version`, logs PHP sans `CRITICAL`/`exception` liée au déploiement, worker confirmé actif (`docker top` — process `messenger:consume` en cours, `RestartCount=0`). **Limite assumée** : le cas 0€ n'a pas été rejoué en prod avec un instrumentiste réel (aurait modifié le tarif réel d'une personne réelle) — déjà validé de façon équivalente et exhaustive en local sur données prod copiées juste avant ce déploiement (voir ci-dessus, même code, même règle de résolution). |
 | `v2026.08.04-prod-3` | `46d7413` | 2026-08-04 | **Fix : logo firme absent sur `/app/m/firms`.** 2 commits depuis `v2026.08.04-prod-2` (`0e90469`) : `a2409d0` (docs-only) et `46d7413` (ce fix). Le backend renvoyait déjà `logoPath` sur `GET /api/firms` (déployé le 2026-08-03) ; l'interface `Firm` locale de `FirmsPage.tsx` ne le déclarait pas, donc le champ n'atteignait jamais le rendu. Réutilise `FirmAvatar` (seule implémentation logo/fallback-initiales pour une firme, déjà utilisée sur Prestations) au lieu de réimplémenter. Aucune migration, aucun changement backend. `tsc -b` propre. Sauvegardes déploiement : dump MySQL `/home/deploy/backups/mysql/all_20260804_180130.sql.gz` (912 Ko), archive code `/home/deploy/backups/code/src_pre_deploy_20260804_180132.tar.gz` (16 092 563 octets). Rebuild complet `--no-cache` (`BUILD_EXIT=0`), 3/3 containers recréés — `cache:clear` + `restart php` exécutés immédiatement après `migrate` cette fois (leçon du déploiement précédent), aucune fenêtre d'erreur transitoire observée. Vérifié dans le bundle déployé : `FirmsPage-CM6yRycy.js` référence `logoPath`, `FirmAvatar-C3PKqmmi.js` présent. **Test réel en prod** : compte jetable `deploytest1785866808@surgicalhub.internal` créé via `app:user:create` (finalement inutilisé — la session manager déjà active dans le navigateur a suffi), vérification visuelle directe sur `https://surgicalhub.be/app/m/firms` avec les 7 vraies firmes réelles (Adler Ortho, Arthrex, Conmed, Globus Medical, Medacta, Smith & Nephew, Zimmer Biomet) — logos/initiales tous corrects. Compte jetable nettoyé (`0` résidu confirmé). Tests santé génériques : frontend `200`, login `400`, `.env` `404`, migrations à jour, logs PHP/worker propres. |
@@ -550,78 +551,69 @@ crontab -l   # confirmer l'absence de la ligne, les autres jobs intacts
 
 ---
 
-## Tâche planifiée — escalade J-14 des Missions OPEN (D-110) — PAS ENCORE ACTIVÉE
+## Tâche planifiée — escalade J-14 des Missions OPEN (D-110) — ACTIVÉE (2026-08-14)
 
 `app:planning:check-uncovered-escalations` (`CheckUncoveredEscalationsCommand`) notifie
 le chirurgien une fois par épisode OPEN quand une Mission reste non couverte à moins de
-14 jours de son début. Développée et testée en local (voir D-110), **non déployée et
-non planifiée en production** au moment de la rédaction — instructions ci-dessous
-prêtes pour l'activation, à exécuter seulement avec une autorisation explicite de
-déploiement/configuration prod. Option retenue (validée explicitement) : **Option A —
-commande Symfony + cron/systemd externe**, pas de `symfony/scheduler` pour ce seul
-besoin, cohérent avec D-064/D-083.
+14 jours de son début. Activée en production le 2026-08-14, sur autorisation explicite,
+immédiatement après le déploiement de `v2026.08.14-prod`. Option retenue (validée
+explicitement) : **Option A — commande Symfony + cron externe**, pas de
+`symfony/scheduler` pour ce seul besoin, cohérent avec D-064/D-083.
 
-### Mécanisme prévu (même schéma que D-064/D-083)
+### Mécanisme réel (même schéma que D-064/D-083)
 
 | | |
 |---|---|
-| Planificateur | cron utilisateur `deploy` (aucun systemd timer existant sur ce serveur — voir alternative ci-dessous si un jour préféré) |
-| Fréquence recommandée | quotidienne, un seul tick (`0 7 * * *`) |
-| Script | `/home/deploy/scripts/check_uncovered_escalations.sh` (à créer, même style que `missions_start_due.sh`/`send_encoding_reminders.sh` : `set -uo pipefail`, `flock -n`, vérification `docker inspect`) |
+| Planificateur | cron utilisateur `deploy` (aucun systemd timer existant sur ce serveur — voir alternative ci-dessous, non retenue) |
+| Fréquence | quotidienne, un seul tick à **07:00 Europe/Brussels réel** |
+| Timezone du serveur (vérifiée le 2026-08-14) | `Etc/UTC` — un tick UTC fixe aurait dérivé d'une heure entre été/hiver ; `CRON_TZ=Europe/Brussels` est posé sur la ligne crontab elle-même (`cron` 3.0pl1 sur Ubuntu 24.04 le supporte nativement, `tzdata` Europe/Brussels confirmée présente sur l'hôte) — le tick est donc réellement 07:00 heure belge toute l'année, sans dépendre de la garde interne pour ce confort (la garde interne calcule quand même la fenêtre en Europe/Brussels indépendamment, comme filet supplémentaire) |
+| Script | `/home/deploy/scripts/check_uncovered_escalations.sh` (créé, même style que `missions_start_due.sh` : `set -uo pipefail`, `flock -n`, vérification `docker inspect`) |
 | Commande exécutée | `docker compose exec -T php php bin/console app:planning:check-uncovered-escalations --env=prod` |
 | Répertoire d'exécution | `/opt/stack/apps/surgicalhub` |
 | Journal | `/home/deploy/logs/check-uncovered-escalations.log` |
-| Verrou anti-chevauchement (shell) | `flock -n` sur `/home/deploy/locks/check-uncovered-escalations.lock` |
+| Verrou anti-chevauchement (shell) | `flock -n` sur `/home/deploy/locks/check-uncovered-escalations.lock` — en plus du verrou `PESSIMISTIC_WRITE` par Mission déjà présent côté applicatif (D-110) |
 | Garde métier (applicatif) | la fenêtre J-14 est calculée par la commande elle-même en `Europe/Brussels` (`CheckUncoveredEscalationsCommand::MISSION_TIMEZONE`), indépendamment de l'heure du tick |
 
-**Pourquoi un seul tick quotidien suffit, contrairement à D-083** : D-083 nécessite
-15-30 min de granularité car il doit détecter le franchissement d'une heure précise
-(08h00 locale) le jour même. D-110 n'a pas cette contrainte — la fenêtre "≤ 14 jours"
-est une comparaison de plage, pas un instant précis à ne pas rater ; un tick unique par
-jour à une heure fixe couvre déjà tous les cas dans un délai acceptable (au pire, ~24h
-de latence entre le moment où une Mission entre dans la fenêtre et le prochain
-passage). Vérifier la timezone réelle du serveur avant activation (le cron `deploy`
-existant pour D-064 tourne en UTC, voir plus haut) — un tick à `0 7 * * *` en UTC
-correspond à 08h00/09h00 heure de Bruxelles selon l'heure d'été/hiver, ce qui reste une
-heure raisonnable ; la garde interne rend de toute façon le calcul de fenêtre correct
-quel que soit l'écart, seul le confort du créneau matinal en dépend.
-
-Entrée crontab prévue (à ajouter après les jobs existants, jamais réécrits) :
+Entrée crontab réellement installée (après les jobs existants, aucun réécrit ;
+sauvegarde de la crontab précédente :
+`/home/deploy/backups/cron/crontab_before_uncovered_escalations_20260814_071401.txt`) :
 
 ```
-# D-110 — Escalade J-14 des Missions OPEN (fenêtre calculée en Europe/Brussels par la commande)
+# D-110 — Escalade J-14 des Missions OPEN (quotidien, 07:00 Europe/Brussels reel via CRON_TZ)
+CRON_TZ=Europe/Brussels
 0 7 * * * /home/deploy/scripts/check_uncovered_escalations.sh >> /home/deploy/logs/check-uncovered-escalations.log 2>&1
 ```
 
-### Avant activation
+### Test d'activation (2026-08-14)
 
-1. Confirmer la timezone réelle du serveur (`docker exec surgicalhub-php-1 date -u` et
-   `date` côté hôte) — documenter l'écart avec Europe/Brussels s'il existe ; sans
-   incidence sur la justesse de la fenêtre J-14 (calculée en interne par la commande),
-   seulement sur le confort de l'heure choisie pour le tick.
-2. Appliquer la migration `Version20260812115428` en prod
-   (`doctrine:migrations:migrate --env=prod`) avant tout déploiement du code
-   applicatif qui la suppose.
-3. Créer `/home/deploy/scripts/check_uncovered_escalations.sh` sur le modèle exact de
-   `missions_start_due.sh`/`send_encoding_reminders.sh` (même garde `flock`, même
-   vérification `docker inspect`, `log()` écrivant directement dans le fichier — pas de
-   `tee`, pour éviter le doublon déjà rencontré et documenté pour D-064).
-4. Sauvegarder la crontab avant modification
-   (`crontab -l > /home/deploy/backups/cron/crontab_before_uncovered_escalations_<horodatage>.txt`).
+Exécution manuelle de la commande (première fois en production) : 6 Missions réelles
+étaient effectivement OPEN et à l'intérieur de la fenêtre J-14 sans jamais avoir été
+escaladées — comportement attendu pour une activation initiale, pas une anomalie.
+`MAIL_SAFE_MODE=on` activé temporairement pour cette vérification (retiré juste après,
+`docker compose up -d` pour recharger) : tous les destinataires à domaine réel
+correctement bloqués (`keptRecipients: []` en log), seuls les domaines
+`@surgicalhub.internal`/`.test` traversent le garde-fou. Push/in-app (non concernés par
+`MAIL_SAFE_MODE`) ont bien atteint les 6 chirurgiens réels concernés — comportement
+correct et attendu : ce sont de vraies Missions non couvertes, l'information est exacte
+et due. Script wrapper testé séparément (`check_uncovered_escalations.sh`, pas
+seulement la commande brute) : `exit=0`, log correctement écrit. Second passage (rerun
+manuel) : `0 escalade` — idempotence confirmée sur le chemin réel. 6
+`AuditEvent::MISSION_UNCOVERED_ESCALATION_SENT` confirmés en base, `0` message en échec
+(`messenger:failed:show`).
 
-### Vérification (une fois activée)
+### Vérification
 
 ```bash
 tail -50 /home/deploy/logs/check-uncovered-escalations.log
 ps aux | grep check-uncovered-escalations
-crontab -l | grep check_uncovered_escalations
+crontab -l | grep -A1 check_uncovered_escalations   # doit inclure la ligne CRON_TZ
 ```
 
 ### Désactivation
 
 ```bash
-crontab -l | grep -v 'check_uncovered_escalations.sh' | crontab -
-crontab -l   # confirmer l'absence de la ligne, les autres jobs intacts
+crontab -l | grep -v -e 'check_uncovered_escalations.sh' -e 'CRON_TZ=Europe/Brussels' | crontab -
+crontab -l   # confirmer l'absence des deux lignes, les autres jobs intacts
 ```
 
 ### Alternative non retenue — timer systemd

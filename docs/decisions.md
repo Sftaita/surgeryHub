@@ -8242,7 +8242,13 @@ identifiés indépendamment lors de runs précédents) subsistent.
 
 ### Non fait dans ce lot — décision opérationnelle séparée
 
-Aucun cron ni systemd réel n'a été configuré ni activé, conformément à la demande
-explicite. Procédure d'activation documentée dans `docs/production.md` (même schéma
-que D-083 : script `flock`, fréquence recommandée, vérification de la timezone
-serveur), prête à exécuter avec une autorisation de déploiement séparée.
+Au moment de l'implémentation, aucun cron ni systemd réel n'a été configuré ni activé,
+conformément à la demande explicite. Procédure d'activation documentée dans
+`docs/production.md` (même schéma que D-083 : script `flock`, fréquence recommandée,
+vérification de la timezone serveur).
+
+**Mise à jour (2026-08-14)** — activé en production sur autorisation explicite
+séparée, immédiatement après le déploiement de `v2026.08.14-prod` : cron `deploy`,
+`CRON_TZ=Europe/Brussels` (timezone serveur réelle vérifiée : `Etc/UTC`), tick
+quotidien 07:00 heure belge réelle. Détail complet (script, test d'activation, 6
+Missions réelles escaladées lors du premier run) dans `docs/production.md`.

@@ -2911,5 +2911,6 @@ Cron serveur (pas de Symfony Scheduler dans ce projet, cohérent avec D-064/D-08
 fenêtre J-14 calculée en interne par la commande en Europe/Brussels — absorbe tout
 décalage été/hiver même si le cron serveur est planifié en UTC fixe. Un seul tick
 quotidien suffit (pas de garde horaire à la minute près comme D-083, la fenêtre étant
-une comparaison de plage et non un instant précis). Voir docs/production.md pour le
-déploiement — non activé au moment de la rédaction.
+une comparaison de plage et non un instant précis). Activé en production le
+2026-08-14 (`CRON_TZ=Europe/Brussels`, 07:00 heure belge réelle — voir
+docs/production.md pour le détail et la preuve d'activation).
