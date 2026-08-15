@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Entity\ChoiceOption;
 use App\Entity\Firm;
 use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
@@ -52,8 +53,9 @@ final class PricingRuleVersioningService
         ?\DateTimeImmutable $validFrom,
         ?\DateTimeImmutable $validTo,
         User $actor,
+        ?ChoiceOption $choiceOption = null,
     ): PricingRule {
-        $rule = $this->persistNewRule($firm, $ruleType, $interventionType, $materialItem, $amount, $currency, $validFrom, $validTo);
+        $rule = $this->persistNewRule($firm, $ruleType, $interventionType, $materialItem, $amount, $currency, $validFrom, $validTo, $choiceOption);
 
         $this->audit->recordGlobal($actor, AuditEventType::PRICING_RULE_CREATED, $this->scopePayload($rule) + [
             'amount' => $amount, 'currency' => $rule->getCurrency(),
@@ -75,12 +77,13 @@ final class PricingRuleVersioningService
         \DateTimeImmutable $validFrom,
         ?\DateTimeImmutable $validTo,
         User $actor,
+        ?ChoiceOption $choiceOption = null,
     ): PricingRule {
         if ($validFrom <= new \DateTimeImmutable('today')) {
             throw new PricingRuleImmutableException('scheduleRule() exige une date de début strictement future — utilisez createInitialRule() sinon.');
         }
 
-        $rule = $this->persistNewRule($firm, $ruleType, $interventionType, $materialItem, $amount, $currency, $validFrom, $validTo);
+        $rule = $this->persistNewRule($firm, $ruleType, $interventionType, $materialItem, $amount, $currency, $validFrom, $validTo, $choiceOption);
 
         $this->audit->recordGlobal($actor, AuditEventType::PRICING_RULE_SCHEDULED, $this->scopePayload($rule) + [
             'amount' => $amount, 'currency' => $rule->getCurrency(),
@@ -131,6 +134,7 @@ final class PricingRuleVersioningService
         if ($currentRule->getMaterialItem() !== null) {
             $newRule->setMaterialItem($currentRule->getMaterialItem());
         }
+        $newRule->setChoiceOption($currentRule->getChoiceOption());
         $newRule->setUnitPrice($newAmount);
         $newRule->setCurrency($newCurrency);
         $newRule->setValidFrom($effectiveFrom);
@@ -234,12 +238,13 @@ final class PricingRuleVersioningService
         ?InterventionType $interventionType,
         ?MaterialItem $materialItem,
         \DateTimeImmutable $effectiveAt,
+        ?ChoiceOption $choiceOption = null,
     ): ?PricingRule {
         if ($ruleType === PricingRuleType::INTERVENTION_FEE) {
             if ($interventionType === null) {
                 throw new \InvalidArgumentException('interventionType requis pour résoudre une règle INTERVENTION_FEE.');
             }
-            return $this->resolver->resolveInterventionFee($firm, $interventionType, $effectiveAt);
+            return $this->resolver->resolveInterventionFee($firm, $interventionType, $effectiveAt, $choiceOption);
         }
 
         if ($materialItem === null) {
@@ -259,12 +264,17 @@ final class PricingRuleVersioningService
         string $currency,
         ?\DateTimeImmutable $validFrom,
         ?\DateTimeImmutable $validTo,
+        ?ChoiceOption $choiceOption = null,
     ): PricingRule {
         $this->assertPositiveAmount($amount);
         $this->assertValidCurrency($currency);
 
         if ($validFrom !== null && $validTo !== null && $validTo <= $validFrom) {
             throw new PricingRuleImmutableException('validTo doit être strictement postérieure à validFrom.');
+        }
+
+        if ($choiceOption !== null && $ruleType !== PricingRuleType::INTERVENTION_FEE) {
+            throw new \InvalidArgumentException('choiceOption ne peut être renseignée que pour une règle INTERVENTION_FEE.');
         }
 
         $rule = new PricingRule();
@@ -275,6 +285,7 @@ final class PricingRuleVersioningService
                 throw new \InvalidArgumentException('interventionType requis pour une règle INTERVENTION_FEE.');
             }
             $rule->setInterventionType($interventionType);
+            $rule->setChoiceOption($choiceOption);
         } else {
             if ($materialItem === null) {
                 throw new \InvalidArgumentException('materialItem requis pour une règle MATERIAL_FEE.');
@@ -339,6 +350,8 @@ final class PricingRuleVersioningService
             'interventionTypeCode' => $rule->getInterventionType()?->getCode(),
             'materialItemId' => $rule->getMaterialItem()?->getId(),
             'materialItemLabel' => $rule->getMaterialItem()?->getLabel(),
+            'choiceOptionId' => $rule->getChoiceOption()?->getId(),
+            'choiceOptionLabel' => $rule->getChoiceOption()?->getLabel(),
         ];
     }
 }

@@ -13,6 +13,7 @@ import type {
   CreateInterventionTypeRequestResponse,
   InterventionTypeEncodingContext,
   CatalogInterventionType,
+  ChoiceGroupSummary,
 } from "./encoding.types";
 
 export async function fetchMissionEncoding(
@@ -155,6 +156,12 @@ export type FirmServiceOfferingSummary = {
   active: boolean;
   /** Refonte Catalogue/Prestations (D-092) — voir AddInterventionDialog/EditInterventionDialog. */
   representativePresenceRelevant: boolean;
+  /**
+   * Tarification firme conditionnée à un choix obligatoire — présent (non null) et
+   * "opérationnel" seulement (≥2 options actives) : voir AddInterventionDialog/
+   * EditInterventionDialog. Jamais un montant.
+   */
+  choiceGroup: ChoiceGroupSummary | null;
 };
 
 export async function fetchFirmServiceOfferings(firmId: number): Promise<FirmServiceOfferingSummary[]> {

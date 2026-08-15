@@ -86,6 +86,20 @@ class MissionIntervention implements MaterialAttachmentTarget
     private ?bool $representativePresent = null;
 
     /**
+     * Tarification firme conditionnée à un choix obligatoire — réponse de l'instrumentiste
+     * à la question posée par RequiredChoiceGroup::question quand la prestation
+     * (firm, interventionType) en configure un. `null` = prestation standard (forfait
+     * unique, immense majorité des cas) ou groupe pas encore répondu (bloquant si le
+     * groupe est opérationnel — voir InterventionService::assertChoiceAnswered()).
+     * Jamais un montant : cette entité ignore totalement PricingRule, comme
+     * representativePresent ci-dessus (D-092).
+     */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(name: 'selected_choice_option_id', nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager'])]
+    private ?ChoiceOption $selectedChoiceOption = null;
+
+    /**
      * @var Collection<int, MaterialLine>
      */
     #[ORM\OneToMany(mappedBy: 'missionIntervention', targetEntity: MaterialLine::class)]
@@ -183,6 +197,17 @@ class MissionIntervention implements MaterialAttachmentTarget
     public function setRepresentativePresent(?bool $representativePresent): static
     {
         $this->representativePresent = $representativePresent;
+        return $this;
+    }
+
+    public function getSelectedChoiceOption(): ?ChoiceOption
+    {
+        return $this->selectedChoiceOption;
+    }
+
+    public function setSelectedChoiceOption(?ChoiceOption $selectedChoiceOption): static
+    {
+        $this->selectedChoiceOption = $selectedChoiceOption;
         return $this;
     }
 

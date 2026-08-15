@@ -19,6 +19,7 @@ use App\Service\InstrumentistRateResolver;
 use App\Service\MissionExecutionService;
 use App\Service\PricingRuleResolver;
 use App\Service\RepresentativePolicyResolver;
+use App\Service\RequiredChoiceGroupResolver;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
@@ -91,6 +92,7 @@ final class FinancialCalculationConcurrencyTest extends KernelTestCase
             new InstrumentistRateResolver($em),
             new MissionExecutionService($em, $audit),
             new RepresentativePolicyResolver($em),
+            new RequiredChoiceGroupResolver($em),
             $audit,
         );
     }

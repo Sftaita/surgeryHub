@@ -82,7 +82,7 @@ describe("EditInterventionDialog — présence d'un délégué (D-092)", () => {
     expect(screen.getByRole("button", { name: "Enregistrer" })).not.toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Enregistrer" }));
-    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, representativePresent: true });
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, representativePresent: true, selectedChoiceOptionId: null });
   });
 
   it("préremplit la réponse Non existante", async () => {
@@ -115,7 +115,7 @@ describe("EditInterventionDialog — présence d'un délégué (D-092)", () => {
     await user.click(screen.getByText("Non"));
     await user.click(screen.getByRole("button", { name: "Enregistrer" }));
 
-    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, representativePresent: false });
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, representativePresent: false, selectedChoiceOptionId: null });
   });
 
   it("prestation non concernée : la question n'apparaît jamais", async () => {
@@ -157,7 +157,7 @@ describe("EditInterventionDialog — présence d'un délégué (D-092)", () => {
 
     await user.click(screen.getByText("Oui"));
     await user.click(screen.getByRole("button", { name: "Enregistrer" }));
-    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 2, primaryFirmId: 10, representativePresent: true });
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 2, primaryFirmId: 10, representativePresent: true, selectedChoiceOptionId: null });
   });
 
   it("changer de type vers une prestation non pertinente fait disparaître la question et efface explicitement l'ancienne réponse", async () => {
@@ -186,7 +186,7 @@ describe("EditInterventionDialog — présence d'un délégué (D-092)", () => {
     // La réponse "Oui" liée à l'ancienne prestation (LCA) ne doit jamais rester
     // orpheline en base une fois la prestation devenue non pertinente (PTG) — clé
     // envoyée explicitement à null, jamais omise.
-    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 2, primaryFirmId: 10, representativePresent: null });
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 2, primaryFirmId: 10, representativePresent: null, selectedChoiceOptionId: null });
   });
 
   it("changer de firme (Arthrex → Medacta) ne réutilise jamais l'ancienne réponse même si la nouvelle prestation est aussi pertinente", async () => {
@@ -212,6 +212,66 @@ describe("EditInterventionDialog — présence d'un délégué (D-092)", () => {
 
     await user.click(screen.getByText("Non"));
     await user.click(screen.getByRole("button", { name: "Enregistrer" }));
-    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 11, representativePresent: false });
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 11, representativePresent: false, selectedChoiceOptionId: null });
+  });
+});
+
+describe("EditInterventionDialog — tarification firme conditionnée à un choix obligatoire", () => {
+  const CHOICE_GROUP = {
+    id: 900,
+    question: "Quel implant intersomatique a été utilisé ?",
+    options: [
+      { id: 1, label: "Signature", active: true },
+      { id: 2, label: "Altera", active: true },
+    ],
+  };
+
+  it("préremplit le choix existant et permet d'enregistrer sans y retoucher", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/firms/10/service-offerings")) {
+        return Promise.resolve({ data: [{ id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: false, choiceGroup: CHOICE_GROUP }] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    const { onSubmit } = renderDialog({ intervention: makeIntervention({ selectedChoiceOptionId: 2 }) });
+
+    expect(await screen.findByText(`${CHOICE_GROUP.question} *`)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enregistrer" })).not.toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, representativePresent: null, selectedChoiceOptionId: 2 });
+  });
+
+  it("aucune sélection : le formulaire exige une réponse avant sauvegarde", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/firms/10/service-offerings")) {
+        return Promise.resolve({ data: [{ id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: false, choiceGroup: CHOICE_GROUP }] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    const { onSubmit } = renderDialog({ intervention: makeIntervention({ selectedChoiceOptionId: null }) });
+
+    expect(await screen.findByText(`${CHOICE_GROUP.question} *`)).toBeInTheDocument();
+    expect(screen.getByText("Une réponse est requise pour cette prestation.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enregistrer" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Signature" }));
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, representativePresent: null, selectedChoiceOptionId: 1 });
+  });
+
+  it("prestation sans groupe : la question n'apparaît jamais", async () => {
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/firms/10/service-offerings")) {
+        return Promise.resolve({ data: [{ id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: false, choiceGroup: null }] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    renderDialog();
+
+    await screen.findByRole("button", { name: "Enregistrer" });
+    expect(screen.queryByText(CHOICE_GROUP.question)).not.toBeInTheDocument();
   });
 });

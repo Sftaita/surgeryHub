@@ -40,6 +40,7 @@ import {
 import AddInterventionDialog, { type DraftSubmitValues } from "./AddInterventionDialog";
 import EditInterventionDialog from "./EditInterventionDialog";
 import ConfirmDeleteDialog from "./ConfirmDeleteDialog";
+import ConfirmChoiceChangeDialog from "./ConfirmChoiceChangeDialog";
 import MaterialWizard, { type MaterialTarget } from "./MaterialWizard";
 import EditMaterialLineDialog from "./EditMaterialLineDialog";
 import MaterialItemRequestDialog from "./MaterialItemRequestDialog";
@@ -123,6 +124,14 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
   const [openAddIntervention, setOpenAddIntervention] = React.useState(false);
   const [editIntervention, setEditIntervention] = React.useState<MissionEncodingInterventionEntry | null>(null);
   const [deleteInterventionTarget, setDeleteInterventionTarget] = React.useState<MissionEncodingInterventionEntry | null>(null);
+  // Tarification firme conditionnée à un choix obligatoire, §8 du prompt — 409
+  // CHOICE_OPTION_CHANGE_REQUIRES_CONFIRMATION intercepté ici pour reproposer le même
+  // PATCH avec confirmRemoveIncompatibleMaterial=true après confirmation explicite.
+  const [choiceChangeConfirm, setChoiceChangeConfirm] = React.useState<{
+    interventionId: number;
+    body: PatchInterventionBody;
+    message: string;
+  } | null>(null);
 
   const [openAddMaterial, setOpenAddMaterial] = React.useState(false);
   const [preferredTarget, setPreferredTarget] = React.useState<MaterialTarget | null>(null);
@@ -215,8 +224,15 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
   const patchInterventionMutation = useMutation({
     mutationFn: (args: { interventionId: number; body: PatchInterventionBody }) =>
       patchMissionIntervention(missionId, args.interventionId, args.body),
-    onSuccess: () => { toast.success("Intervention mise à jour"); setEditIntervention(null); invalidate(); onSaved?.(); },
-    onError: (err: any) => toast.error(extractErrorMessage(err)),
+    onSuccess: () => { toast.success("Intervention mise à jour"); setEditIntervention(null); setChoiceChangeConfirm(null); invalidate(); onSaved?.(); },
+    onError: (err: any, args) => {
+      const apiError = err?.response?.data?.error;
+      if (apiError?.code === "CHOICE_OPTION_CHANGE_REQUIRES_CONFIRMATION") {
+        setChoiceChangeConfirm({ interventionId: args.interventionId, body: args.body, message: apiError.message ?? "" });
+        return;
+      }
+      toast.error(extractErrorMessage(err));
+    },
   });
 
   const deleteInterventionMutation = useMutation({
@@ -861,6 +877,20 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
         onClose={() => (isBusy ? null : setDeleteInterventionTarget(null))}
         onConfirm={() => { if (!deleteInterventionTarget) return; deleteInterventionMutation.mutate(deleteInterventionTarget.id); }}
         helpTopicId="mission-encoding"
+      />
+
+      <ConfirmChoiceChangeDialog
+        open={!!choiceChangeConfirm}
+        loading={patchInterventionMutation.isPending}
+        message={choiceChangeConfirm?.message ?? ""}
+        onClose={() => (isBusy ? null : setChoiceChangeConfirm(null))}
+        onConfirm={() => {
+          if (!choiceChangeConfirm) return;
+          patchInterventionMutation.mutate({
+            interventionId: choiceChangeConfirm.interventionId,
+            body: { ...choiceChangeConfirm.body, confirmRemoveIncompatibleMaterial: true },
+          });
+        }}
       />
 
       <MaterialWizard

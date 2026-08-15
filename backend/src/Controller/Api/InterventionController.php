@@ -54,6 +54,7 @@ class InterventionController extends AbstractController
             'id' => $intervention->getId(),
             'orderIndex' => $intervention->getOrderIndex(),
             'representativePresent' => $intervention->getRepresentativePresent(),
+            'selectedChoiceOptionId' => $intervention->getSelectedChoiceOption()?->getId(),
         ], Response::HTTP_CREATED);
     }
 
@@ -98,6 +99,13 @@ class InterventionController extends AbstractController
             $dto->representativePresentProvided = true;
             $dto->representativePresent = $body['representativePresent'] !== null ? (bool) $body['representativePresent'] : null;
         }
+
+        if (array_key_exists('selectedChoiceOptionId', $body)) {
+            $dto->selectedChoiceOptionIdProvided = true;
+            $dto->selectedChoiceOptionId = $body['selectedChoiceOptionId'] !== null ? (int) $body['selectedChoiceOptionId'] : null;
+        }
+
+        $dto->confirmRemoveIncompatibleMaterial = (bool) ($body['confirmRemoveIncompatibleMaterial'] ?? false);
 
         $this->service->update($intervention, $dto);
 

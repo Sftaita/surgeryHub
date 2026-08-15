@@ -2,10 +2,14 @@
 
 namespace App\Controller\Api;
 
+use App\Entity\ChoiceOption;
 use App\Entity\Firm;
 use App\Entity\FirmServiceOffering;
 use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
+use App\Entity\MissionIntervention;
+use App\Entity\PricingRule;
+use App\Entity\RequiredChoiceGroup;
 use App\Entity\SuggestedMaterial;
 use App\Security\Voter\BillingVoter;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
@@ -235,6 +239,221 @@ final class FirmServiceOfferingController extends AbstractController
         return $this->json(['id' => $suggestionId, 'deleted' => true]);
     }
 
+    // ── Tarification firme conditionnée à un choix obligatoire ─────────
+    // RequiredChoiceGroup/ChoiceOption — jamais de montant ici (voir docblock de classe) :
+    // le forfait par option vit exclusivement dans PricingRule.choiceOption, configuré
+    // via FirmBillingController. V1 : un seul groupe actif par prestation (voir
+    // docblock de RequiredChoiceGroup) — ce contrôleur applique cet invariant.
+
+    /**
+     * Crée le groupe actif de cette prestation (mode "Selon un choix obligatoire") ou met
+     * à jour sa question s'il en existe déjà un. Ne crée jamais d'option — voir
+     * addChoiceOption().
+     */
+    #[Route('/{offeringId}/choice-group', name: 'api_firm_offering_choice_group_upsert', methods: ['PUT'], requirements: ['offeringId' => '\d+'])]
+    public function upsertChoiceGroup(int $firmId, int $offeringId, Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $offering = $this->getOfferingOr404($firmId, $offeringId);
+        if ($offering instanceof JsonResponse) {
+            return $offering;
+        }
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $question = isset($data['question']) ? trim((string) $data['question']) : '';
+        if ($question === '') {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'question est requise.']], 422);
+        }
+
+        // V1 — un seul groupe par prestation (actif ou non) : une bascule "Forfait unique"
+        // → "Selon un choix obligatoire" réutilise et réactive toujours le même groupe
+        // (question/options déjà configurées conservées), jamais une recréation qui
+        // perdrait silencieusement l'historique de configuration à chaque aller-retour.
+        $group = $offering->getGroup();
+        if ($group === null) {
+            $group = new RequiredChoiceGroup();
+            $group->setOffering($offering);
+            $this->em->persist($group);
+        }
+        $group->setActive(true);
+        $group->setQuestion($question);
+
+        $this->em->flush();
+
+        return $this->json($this->serializeChoiceGroup($group));
+    }
+
+    /**
+     * Revient au mode "Forfait unique" — désactive le groupe (jamais de suppression) :
+     * les options, les PricingRule liées et l'historique des sélections instrumentiste
+     * restent intacts.
+     */
+    #[Route('/{offeringId}/choice-group', name: 'api_firm_offering_choice_group_deactivate', methods: ['DELETE'], requirements: ['offeringId' => '\d+'])]
+    public function deactivateChoiceGroup(int $firmId, int $offeringId): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $offering = $this->getOfferingOr404($firmId, $offeringId);
+        if ($offering instanceof JsonResponse) {
+            return $offering;
+        }
+
+        $group = $offering->getActiveChoiceGroup();
+        if ($group !== null) {
+            $group->setActive(false);
+            $this->em->flush();
+        }
+
+        return $this->json(['deactivated' => true]);
+    }
+
+    #[Route('/{offeringId}/choice-group/options', name: 'api_firm_offering_choice_option_create', methods: ['POST'], requirements: ['offeringId' => '\d+'])]
+    public function addChoiceOption(int $firmId, int $offeringId, Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $offering = $this->getOfferingOr404($firmId, $offeringId);
+        if ($offering instanceof JsonResponse) {
+            return $offering;
+        }
+
+        $group = $offering->getActiveChoiceGroup();
+        if ($group === null) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Configurez d\'abord la question du groupe (PUT .../choice-group).']], 422);
+        }
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $label = isset($data['label']) ? trim((string) $data['label']) : '';
+        if ($label === '') {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'label est requis.']], 422);
+        }
+
+        $materialItem = null;
+        if (!empty($data['materialItemId'])) {
+            $materialItem = $this->em->find(MaterialItem::class, (int) $data['materialItemId']);
+            if (!$materialItem instanceof MaterialItem) {
+                return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Matériel introuvable.']], 404);
+            }
+            if ($materialItem->getFirm()?->getId() !== $offering->getFirm()->getId()) {
+                return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Le matériel associé doit appartenir à la même firme que la prestation.']], 422);
+            }
+            foreach ($group->getOptions() as $existing) {
+                if ($existing->isActive() && $existing->getMaterialItem()?->getId() === $materialItem->getId()) {
+                    return $this->json(['error' => ['status' => 409, 'code' => 'CONFLICT', 'message' => 'Ce matériel est déjà associé à une autre option de ce groupe.']], 409);
+                }
+            }
+        }
+
+        $maxOrder = 0;
+        foreach ($group->getOptions() as $existing) {
+            $maxOrder = max($maxOrder, $existing->getDisplayOrder() + 1);
+        }
+
+        $option = new ChoiceOption();
+        $option->setGroup($group);
+        $option->setLabel($label);
+        $option->setMaterialItem($materialItem);
+        $option->setDisplayOrder($maxOrder);
+
+        $this->em->persist($option);
+        $this->em->flush();
+
+        return $this->json($this->serializeChoiceOption($option), Response::HTTP_CREATED);
+    }
+
+    #[Route('/{offeringId}/choice-group/options/{optionId}', name: 'api_firm_offering_choice_option_update', methods: ['PATCH'], requirements: ['offeringId' => '\d+', 'optionId' => '\d+'])]
+    public function updateChoiceOption(int $firmId, int $offeringId, int $optionId, Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $offering = $this->getOfferingOr404($firmId, $offeringId);
+        if ($offering instanceof JsonResponse) {
+            return $offering;
+        }
+
+        $option = $this->getChoiceOptionOr404($offering, $optionId);
+        if ($option instanceof JsonResponse) {
+            return $option;
+        }
+
+        $data = json_decode($request->getContent(), true) ?? [];
+
+        if (array_key_exists('label', $data)) {
+            $label = trim((string) $data['label']);
+            if ($label === '') {
+                return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'label ne peut pas être vide.']], 422);
+            }
+            $option->setLabel($label);
+        }
+
+        if (array_key_exists('materialItemId', $data)) {
+            if ($data['materialItemId'] === null) {
+                $option->setMaterialItem(null);
+            } else {
+                $materialItem = $this->em->find(MaterialItem::class, (int) $data['materialItemId']);
+                if (!$materialItem instanceof MaterialItem) {
+                    return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Matériel introuvable.']], 404);
+                }
+                if ($materialItem->getFirm()?->getId() !== $offering->getFirm()->getId()) {
+                    return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Le matériel associé doit appartenir à la même firme que la prestation.']], 422);
+                }
+                foreach ($option->getGroup()->getOptions() as $existing) {
+                    if ($existing->getId() !== $option->getId() && $existing->isActive() && $existing->getMaterialItem()?->getId() === $materialItem->getId()) {
+                        return $this->json(['error' => ['status' => 409, 'code' => 'CONFLICT', 'message' => 'Ce matériel est déjà associé à une autre option de ce groupe.']], 409);
+                    }
+                }
+                $option->setMaterialItem($materialItem);
+            }
+        }
+
+        if (array_key_exists('active', $data)) {
+            $option->setActive((bool) $data['active']);
+        }
+
+        $this->em->flush();
+
+        return $this->json($this->serializeChoiceOption($option));
+    }
+
+    /**
+     * Suppression physique uniquement si l'option n'a jamais été utilisée (aucune
+     * PricingRule, aucune sélection instrumentiste réelle) — sinon 409, désactivez-la
+     * (active=false) à la place. Jamais de perte d'historique financier/encodage.
+     */
+    #[Route('/{offeringId}/choice-group/options/{optionId}', name: 'api_firm_offering_choice_option_delete', methods: ['DELETE'], requirements: ['offeringId' => '\d+', 'optionId' => '\d+'])]
+    public function deleteChoiceOption(int $firmId, int $offeringId, int $optionId): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $offering = $this->getOfferingOr404($firmId, $offeringId);
+        if ($offering instanceof JsonResponse) {
+            return $offering;
+        }
+
+        $option = $this->getChoiceOptionOr404($offering, $optionId);
+        if ($option instanceof JsonResponse) {
+            return $option;
+        }
+
+        $rulesCount = (int) $this->em->getRepository(PricingRule::class)->count(['choiceOption' => $option]);
+        $selectionsCount = (int) $this->em->getRepository(MissionIntervention::class)->count(['selectedChoiceOption' => $option]);
+        if ($rulesCount > 0 || $selectionsCount > 0) {
+            return $this->json([
+                'error' => [
+                    'status' => 409,
+                    'code' => 'CONFLICT',
+                    'message' => 'Cette option a déjà été utilisée (tarif et/ou encodage) — désactivez-la plutôt que de la supprimer.',
+                ],
+            ], 409);
+        }
+
+        $this->em->remove($option);
+        $this->em->flush();
+
+        return $this->json(['id' => $optionId, 'deleted' => true]);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────
 
     /**
@@ -276,6 +495,45 @@ final class FirmServiceOfferingController extends AbstractController
         return $offering;
     }
 
+    private function getChoiceOptionOr404(FirmServiceOffering $offering, int $optionId): ChoiceOption|JsonResponse
+    {
+        $option = $this->em->find(ChoiceOption::class, $optionId);
+        if (!$option instanceof ChoiceOption || $option->getGroup()->getOffering()->getId() !== $offering->getId()) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Option introuvable.']], 404);
+        }
+        return $option;
+    }
+
+    private function serializeChoiceGroup(RequiredChoiceGroup $group): array
+    {
+        return [
+            'id' => $group->getId(),
+            'question' => $group->getQuestion(),
+            'active' => $group->isActive(),
+            'operational' => $group->isOperational(),
+            'options' => array_map(
+                fn (ChoiceOption $o) => $this->serializeChoiceOption($o),
+                iterator_to_array($group->getOptions()),
+            ),
+        ];
+    }
+
+    private function serializeChoiceOption(ChoiceOption $o): array
+    {
+        $item = $o->getMaterialItem();
+        return [
+            'id' => $o->getId(),
+            'label' => $o->getLabel(),
+            'displayOrder' => $o->getDisplayOrder(),
+            'active' => $o->isActive(),
+            'materialItem' => $item ? [
+                'id' => $item->getId(),
+                'label' => $item->getLabel(),
+                'referenceCode' => $item->getReferenceCode(),
+            ] : null,
+        ];
+    }
+
     /**
      * Refonte Catalogue/Prestations (D-092) — correctif revue de sécurité : `list()`
      * n'a jamais eu de garde `BillingVoter::MANAGE` (par conception — c'est cet
@@ -309,12 +567,24 @@ final class FirmServiceOfferingController extends AbstractController
                 fn (SuggestedMaterial $s) => $this->serializeSuggestion($s),
                 iterator_to_array($o->getSuggestedMaterials()),
             ),
+            // Tarification firme conditionnée à un choix obligatoire — question + options
+            // uniquement, jamais un montant (voir docblock de RequiredChoiceGroup) :
+            // c'est ce que l'écran instrumentiste consomme via ce même endpoint.
+            'choiceGroup' => $o->getActiveChoiceGroup() !== null && $o->getActiveChoiceGroup()->isOperational()
+                ? $this->serializeChoiceGroup($o->getActiveChoiceGroup())
+                : null,
         ];
 
         if ($this->isGranted(BillingVoter::MANAGE)) {
             $base['representativeSuppressesInterventionFee'] = $o->isRepresentativeSuppressesInterventionFee();
             $base['representativeSuppressesOwnMaterialFees'] = $o->isRepresentativeSuppressesOwnMaterialFees();
             $base['feeApplicable'] = $o->isFeeApplicable();
+            // Vue complète (y compris groupe non encore opérationnel, options
+            // désactivées) — réservée au manager pour la configuration ; l'instrumentiste
+            // ne voit que 'choiceGroup' ci-dessus (jamais de montant nulle part ici).
+            $base['choiceGroupConfig'] = $o->getGroup() !== null
+                ? $this->serializeChoiceGroup($o->getGroup())
+                : null;
         }
 
         return $base;

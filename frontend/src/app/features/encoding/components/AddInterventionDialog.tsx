@@ -95,6 +95,7 @@ export default function AddInterventionDialog({
   const [typeId, setTypeId] = React.useState<number | null>(null);
   const [firmAutoSuggested, setFirmAutoSuggested] = React.useState(false);
   const [representativePresent, setRepresentativePresent] = React.useState<boolean | null>(null);
+  const [selectedChoiceOptionId, setSelectedChoiceOptionId] = React.useState<number | null>(null);
 
   const [draftLabel, setDraftLabel] = React.useState("");
   const [draftSuggestedCode, setDraftSuggestedCode] = React.useState("");
@@ -110,6 +111,7 @@ export default function AddInterventionDialog({
     setTypeId(null);
     setFirmAutoSuggested(false);
     setRepresentativePresent(null);
+    setSelectedChoiceOptionId(null);
     setDraftLabel("");
     setDraftSuggestedCode("");
     setDraftComment("");
@@ -159,12 +161,14 @@ export default function AddInterventionDialog({
     setTypeId(null);
     setFirmAutoSuggested(false);
     setRepresentativePresent(null);
+    setSelectedChoiceOptionId(null);
     setStep(2);
   }
 
   function pickType(v: number | null) {
     setTypeId(v);
     setRepresentativePresent(null);
+    setSelectedChoiceOptionId(null);
   }
 
   // Refonte Catalogue/Prestations (D-092) — ne demander la présence du délégué que si
@@ -174,9 +178,17 @@ export default function AddInterventionDialog({
     : undefined;
   const showRepresentativeQuestion = !!currentOffering?.representativePresenceRelevant;
 
+  // Tarification firme conditionnée à un choix obligatoire — même règle : question posée
+  // seulement si le groupe est opérationnel pour la firme × type effectivement choisis.
+  const choiceGroup = currentOffering?.choiceGroup ?? null;
+  const activeChoiceOptions = (choiceGroup?.options ?? []).filter((o) => o.active);
+  const showChoiceQuestion = choiceGroup != null;
+
   const notInCatalog = typeId === NOT_IN_CATALOG;
   const canSubmitIntervention =
-    !notInCatalog && typeId != null && !loading && (!showRepresentativeQuestion || representativePresent !== null);
+    !notInCatalog && typeId != null && !loading
+    && (!showRepresentativeQuestion || representativePresent !== null)
+    && (!showChoiceQuestion || selectedChoiceOptionId !== null);
   const canSubmitDraft = notInCatalog && draftLabel.trim() !== "" && !loading;
 
   function handleSubmit() {
@@ -196,6 +208,7 @@ export default function AddInterventionDialog({
       primaryFirmId: firmId ?? undefined,
       orderIndex: existingCount,
       ...(showRepresentativeQuestion && representativePresent !== null ? { representativePresent } : {}),
+      ...(showChoiceQuestion && selectedChoiceOptionId !== null ? { selectedChoiceOptionId } : {}),
     });
   }
 
@@ -354,6 +367,38 @@ export default function AddInterventionDialog({
               {representativePresent === null && (
                 <Box sx={{ mt: "10px", fontSize: 12.5, color: RED_600, fontWeight: 600 }}>
                   Indiquez si un délégué de {selectedFirm !== NO_FIRM ? selectedFirm?.name : ""} était présent.
+                </Box>
+              )}
+            </Box>
+          )}
+
+          {showChoiceQuestion && (
+            <Box sx={{ mt: "16px", background: "#F5F7FA", borderRadius: "12px", padding: "14px" }}>
+              <Box sx={{ fontSize: 14, fontWeight: 700, mb: "10px" }}>{choiceGroup!.question} *</Box>
+              <Box sx={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {activeChoiceOptions.map((option) => (
+                  <Box
+                    key={option.id}
+                    component="button"
+                    type="button"
+                    onClick={() => setSelectedChoiceOptionId(option.id)}
+                    disabled={loading}
+                    sx={{
+                      display: "flex", alignItems: "center", gap: "10px", height: 44, borderRadius: "10px",
+                      cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, textAlign: "left",
+                      padding: "0 14px",
+                      border: "1.5px solid", borderColor: selectedChoiceOptionId === option.id ? GREEN_500 : BORDER_DEFAULT,
+                      background: selectedChoiceOptionId === option.id ? "rgba(66,168,130,.12)" : "#fff",
+                      color: selectedChoiceOptionId === option.id ? GREEN_800 : GRAY_800,
+                    }}
+                  >
+                    {option.label}
+                  </Box>
+                ))}
+              </Box>
+              {selectedChoiceOptionId === null && (
+                <Box sx={{ mt: "10px", fontSize: 12.5, color: RED_600, fontWeight: 600 }}>
+                  Une réponse est requise pour cette prestation.
                 </Box>
               )}
             </Box>

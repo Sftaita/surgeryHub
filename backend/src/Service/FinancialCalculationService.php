@@ -44,6 +44,7 @@ final class FinancialCalculationService
         private readonly InstrumentistRateResolver $instrumentistRateResolver,
         private readonly MissionExecutionService $missionExecutionService,
         private readonly RepresentativePolicyResolver $representativePolicyResolver,
+        private readonly RequiredChoiceGroupResolver $choiceGroupResolver,
         private readonly AuditService $audit,
     ) {}
 
@@ -363,7 +364,24 @@ final class FinancialCalculationService
             return null;
         }
 
-        $rule = $this->pricingRuleResolver->resolveInterventionFee($firm, $interventionType, $effectiveAt);
+        // Tarification firme conditionnée à un choix obligatoire — défense en
+        // profondeur : InterventionService bloque déjà un encodage sans réponse quand le
+        // groupe est opérationnel (même principe que MISSING_REPRESENTATIVE_PRESENCE_
+        // ANSWER ci-dessus), mais un intervalle entre configuration manager et calcul
+        // financier reste possible (ex. groupe activé après l'encodage) — jamais un
+        // calcul silencieux avec le mauvais forfait dans ce cas.
+        $choicePolicy = $this->choiceGroupResolver->resolve($firm, $interventionType);
+        $selectedChoiceOption = $intervention->getSelectedChoiceOption();
+        if ($choicePolicy->required && $selectedChoiceOption === null) {
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'MISSING_REQUIRED_CHOICE_ANSWER',
+                sprintf('Une réponse est requise pour l\'intervention #%d (firm=%d) avant tout calcul : "%s".', $intervention->getId(), $firm->getId(), $choicePolicy->question ?? ''),
+                ['missionInterventionId' => $intervention->getId(), 'firmId' => $firm->getId(), 'interventionTypeId' => $interventionType->getId()],
+            );
+            return null;
+        }
+
+        $rule = $this->pricingRuleResolver->resolveInterventionFee($firm, $interventionType, $effectiveAt, $selectedChoiceOption);
         if ($rule === null) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_FIRM_INTERVENTION_RATE',
@@ -419,6 +437,9 @@ final class FinancialCalculationService
                 'representativePresentSnapshot' => $representativePresent,
                 'representativePolicySnapshot' => $this->policySnapshot($policy),
                 'adjustmentReasonSnapshot' => $adjustmentReason,
+                'choiceOptionIdSnapshot' => $selectedChoiceOption?->getId(),
+                'choiceOptionLabelSnapshot' => $selectedChoiceOption?->getLabel(),
+                'choiceQuestionSnapshot' => $selectedChoiceOption !== null ? $choicePolicy->question : null,
             ],
         ];
     }

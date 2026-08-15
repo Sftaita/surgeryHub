@@ -53,5 +53,8 @@ final class MissionEncodingEntryDto
          * spécifique à une MissionIntervention réelle). Jamais financière.
          */
         public readonly ?bool $representativePresent = null,
+        /** Tarification firme conditionnée à un choix obligatoire — toujours null pour kind=DRAFT. */
+        public readonly ?int $selectedChoiceOptionId = null,
+        public readonly ?string $selectedChoiceOptionLabel = null,
     ) {}
 }

@@ -12,6 +12,7 @@ import {
   Divider,
   FormControlLabel,
   IconButton,
+  MenuItem,
   Paper,
   Radio,
   RadioGroup,
@@ -39,8 +40,14 @@ import {
   addSuggestedMaterial,
   reorderSuggestedMaterials,
   deleteSuggestedMaterial,
+  upsertChoiceGroup,
+  deactivateChoiceGroup,
+  createChoiceOption,
+  updateChoiceOption,
+  deleteChoiceOption,
   type PricingRule,
   type FirmServiceOffering,
+  type ChoiceOptionDto,
 } from "../../features/billing-firm/api/firmBilling.api";
 import RateVersionManager, { getActiveVersion } from "../../features/billing-shared/components/RateVersionManager";
 import {
@@ -365,15 +372,231 @@ function NewMaterialModal({
   );
 }
 
+// ── Carte : une option de choix (label + matériel associé + forfait versionné) ─────
+// Tarification firme conditionnée à un choix obligatoire — chaque option porte son
+// propre historique de tarifs, exactement comme le forfait unique standard
+// (RateVersionManager réutilisé tel quel), discriminé par choiceOptionId côté PricingRule.
+function ChoiceOptionCard({
+  firmId, interventionTypeId, offering, option, rules, materials,
+}: {
+  firmId: number;
+  interventionTypeId: number;
+  offering: FirmServiceOffering;
+  option: ChoiceOptionDto;
+  rules: PricingRule[];
+  materials: MaterialItemDTO[];
+}) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [expanded, setExpanded] = React.useState(false);
+  const [label, setLabel] = React.useState(option.label);
+  const [materialItemId, setMaterialItemId] = React.useState<number | "">(option.materialItem?.id ?? "");
+
+  React.useEffect(() => { setLabel(option.label); setMaterialItemId(option.materialItem?.id ?? ""); }, [option.id, option.label, option.materialItem?.id]);
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["service-offerings", firmId] });
+    qc.invalidateQueries({ queryKey: ["pricing-rules", firmId] });
+  };
+
+  const updateOptionMutation = useMutation({
+    mutationFn: (body: { label?: string; materialItemId?: number | null; active?: boolean }) => updateChoiceOption(firmId, offering.id, option.id, body),
+    onSuccess: () => { toast.success("Option mise à jour"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const deleteOptionMutation = useMutation({
+    mutationFn: () => deleteChoiceOption(firmId, offering.id, option.id),
+    onSuccess: () => { toast.success("Option supprimée"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (body: { amount: number; currency: string; validFrom: string | null; validTo: string | null }) =>
+      createPricingRule(firmId, { ruleType: "INTERVENTION_FEE", interventionTypeId, choiceOptionId: option.id, unitPrice: body.amount, currency: body.currency, validFrom: body.validFrom, validTo: body.validTo }),
+    onSuccess: () => { toast.success("Tarif créé"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const replaceMutation = useMutation({
+    mutationFn: ({ id, body }: { id: number; body: { amount: number; currency: string; effectiveFrom: string } }) =>
+      replacePricingRule(firmId, id, { unitPrice: body.amount, currency: body.currency, effectiveFrom: body.effectiveFrom }),
+    onSuccess: () => { toast.success("Tarif remplacé à partir de la date choisie"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const editMutation = useMutation({
+    mutationFn: ({ id, body }: { id: number; body: { amount?: number; currency?: string; validFrom?: string | null; validTo?: string | null } }) =>
+      updatePricingRule(firmId, id, { unitPrice: body.amount, currency: body.currency, validFrom: body.validFrom, validTo: body.validTo }),
+    onSuccess: () => { toast.success("Tarif programmé modifié"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const cancelMutation = useMutation({
+    mutationFn: (id: number) => deletePricingRule(firmId, id),
+    onSuccess: () => { toast.success("Tarif programmé annulé"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+
+  const isSaving = createMutation.isPending || replaceMutation.isPending || editMutation.isPending || cancelMutation.isPending;
+  const activeVersion = getActiveVersion(rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo })));
+
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, opacity: option.active ? 1 : 0.55 }}>
+      <Stack direction="row" alignItems="flex-start" spacing={1.5}>
+        <Stack sx={{ flex: 1, minWidth: 0 }} spacing={0.5}>
+          <TextField
+            size="small" variant="standard" value={label} disabled={updateOptionMutation.isPending}
+            onChange={(e) => setLabel(e.target.value)}
+            onBlur={() => { if (label.trim() && label.trim() !== option.label) updateOptionMutation.mutate({ label: label.trim() }); }}
+            sx={{ "& .MuiInputBase-input": { fontWeight: 700, fontSize: 14.5 } }}
+          />
+          <TextField
+            select size="small" variant="standard" label="Matériel associé (optionnel)"
+            value={materialItemId} disabled={updateOptionMutation.isPending}
+            onChange={(e) => {
+              const v = e.target.value === "" ? "" : Number(e.target.value);
+              setMaterialItemId(v);
+              updateOptionMutation.mutate({ materialItemId: v === "" ? null : v });
+            }}
+            sx={{ maxWidth: 260 }}
+          >
+            <MenuItem value="">— Aucun</MenuItem>
+            {materials.map((m) => (
+              <MenuItem key={m.id} value={m.id}>{m.label}</MenuItem>
+            ))}
+          </TextField>
+          <Typography variant="caption" color={activeVersion ? "text.secondary" : "warning.main"} fontWeight={activeVersion ? 400 : 600}>
+            {activeVersion ? `${Number(activeVersion.amount).toFixed(2)} ${activeVersion.currency} HTVA` : "Tarif à définir"}
+          </Typography>
+        </Stack>
+        <Stack direction="row" spacing={0.5} alignItems="center">
+          <MuiButton size="small" onClick={() => setExpanded((v) => !v)}>{expanded ? "Fermer" : "Tarif"}</MuiButton>
+          <MuiButton
+            size="small" color="inherit"
+            disabled={updateOptionMutation.isPending}
+            onClick={() => updateOptionMutation.mutate({ active: !option.active })}
+          >
+            {option.active ? "Désactiver" : "Réactiver"}
+          </MuiButton>
+          <Tooltip title="Supprimer">
+            <span>
+              <IconButton size="small" color="error" disabled={deleteOptionMutation.isPending} onClick={() => deleteOptionMutation.mutate()}>
+                <DeleteIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+        </Stack>
+      </Stack>
+      {expanded && (
+        <Box sx={{ mt: 1.5 }}>
+          <RateVersionManager
+            versions={rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo }))}
+            onCreateFirst={(b) => createMutation.mutate(b)}
+            onReplaceActive={(id, b) => replaceMutation.mutate({ id, body: b })}
+            onEditFuture={(id, b) => editMutation.mutate({ id, body: b })}
+            onCancelFuture={(id) => cancelMutation.mutate(id)}
+            isSaving={isSaving}
+          />
+        </Box>
+      )}
+    </Paper>
+  );
+}
+
+// ── Bloc : configuration du groupe de choix obligatoire (question + options) ───────
+// Générique et réutilisable (§2 du prompt) — aucune sémantique clinique en dur : la
+// question et les labels d'options viennent entièrement du manager.
+function ChoiceGroupEditor({
+  firmId, offering, rules, materials,
+}: {
+  firmId: number;
+  offering: FirmServiceOffering;
+  rules: PricingRule[];
+  materials: MaterialItemDTO[];
+}) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const group = offering.choiceGroupConfig;
+  const [question, setQuestion] = React.useState(group?.question ?? "");
+  const [newOptionLabel, setNewOptionLabel] = React.useState("");
+
+  React.useEffect(() => { setQuestion(group?.question ?? ""); }, [group?.question]);
+
+  const invalidateOfferings = () => qc.invalidateQueries({ queryKey: ["service-offerings", firmId] });
+
+  const upsertGroupMutation = useMutation({
+    mutationFn: (q: string) => upsertChoiceGroup(firmId, offering.id, q),
+    onSuccess: () => { toast.success("Question enregistrée"); invalidateOfferings(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const addOptionMutation = useMutation({
+    mutationFn: (label: string) => createChoiceOption(firmId, offering.id, { label }),
+    onSuccess: () => { toast.success("Option ajoutée"); setNewOptionLabel(""); invalidateOfferings(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
+
+  const activeOptionsCount = (group?.options ?? []).filter((o) => o.active).length;
+
+  return (
+    <Stack spacing={2}>
+      <TextField
+        label="Question affichée à l'instrumentiste" fullWidth size="small"
+        value={question} disabled={upsertGroupMutation.isPending}
+        onChange={(e) => setQuestion(e.target.value)}
+        onBlur={() => { if (question.trim() && question.trim() !== group?.question) upsertGroupMutation.mutate(question.trim()); }}
+        placeholder="Ex. Quel implant intersomatique a été utilisé ?"
+      />
+
+      {activeOptionsCount < 2 && (
+        <Alert severity="warning" variant="outlined">
+          Au moins deux options actives sont nécessaires pour que la question soit posée à l'instrumentiste ({activeOptionsCount}/2).
+        </Alert>
+      )}
+
+      <Stack spacing={1.5}>
+        {(group?.options ?? []).map((option) => (
+          <ChoiceOptionCard
+            key={option.id}
+            firmId={firmId}
+            interventionTypeId={offering.interventionType.id}
+            offering={offering}
+            option={option}
+            rules={rules.filter((r) => r.choiceOption?.id === option.id)}
+            materials={materials}
+          />
+        ))}
+      </Stack>
+
+      <Stack direction="row" spacing={1}>
+        <TextField
+          size="small" fullWidth placeholder="Nom de la nouvelle option (ex. Signature)"
+          value={newOptionLabel} disabled={addOptionMutation.isPending || !group}
+          onChange={(e) => setNewOptionLabel(e.target.value)}
+        />
+        <MuiButton
+          variant="outlined" startIcon={<AddIcon fontSize="small" />}
+          disabled={!group || !newOptionLabel.trim() || addOptionMutation.isPending}
+          onClick={() => addOptionMutation.mutate(newOptionLabel.trim())}
+        >
+          Ajouter une option
+        </MuiButton>
+      </Stack>
+      {!group && (
+        <Typography variant="caption" color="text.secondary">
+          Enregistrez d'abord la question ci-dessus pour pouvoir ajouter des options.
+        </Typography>
+      )}
+    </Stack>
+  );
+}
+
 // ── Dialog : forfait d'intervention (historique de tarifs versionné + existence) ───
 function ForfaitDialog({
-  open, onClose, firmId, offering, rules,
+  open, onClose, firmId, offering, rules, materials,
 }: {
   open: boolean;
   onClose: () => void;
   firmId: number;
   offering: FirmServiceOffering | null;
   rules: PricingRule[];
+  materials: MaterialItemDTO[];
 }) {
   const toast = useToast();
   const qc = useQueryClient();
@@ -411,10 +634,25 @@ function ForfaitDialog({
     onSuccess: () => invalidateOfferings(),
     onError: (e) => toast.error(extractError(e)),
   });
+  // Tarification firme conditionnée à un choix obligatoire — mutation déclarée ici (avant
+  // le "if (!offering) return null" ci-dessous) pour respecter les règles des Hooks :
+  // offering!.id est sûr, ce dialog n'est jamais rendu ouvert sans offering (voir appelant).
+  const toggleModeMutation = useMutation({
+    mutationFn: (toChoice: boolean) =>
+      toChoice ? upsertChoiceGroup(firmId, offering!.id, "Question à définir") : deactivateChoiceGroup(firmId, offering!.id),
+    onSuccess: () => invalidateOfferings(),
+    onError: (e) => toast.error(extractError(e)),
+  });
 
   const isSaving = createMutation.isPending || replaceMutation.isPending || editMutation.isPending || cancelMutation.isPending;
 
   if (!offering) return null;
+
+  // Tarification firme conditionnée à un choix obligatoire — le forfait unique standard
+  // ne doit jamais afficher l'historique des règles posées pour une option précise (et
+  // inversement) : deux moteurs de versioning distincts sur le même écran, jamais mélangés.
+  const standardRules = rules.filter((r) => r.choiceOption === null);
+  const hasChoiceGroup = !!offering.choiceGroupConfig?.active;
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
@@ -431,14 +669,29 @@ function ForfaitDialog({
 
           {offering.feeApplicable ? (
             <Box sx={{ mt: 2 }}>
-              <RateVersionManager
-                versions={rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo }))}
-                onCreateFirst={(b) => createMutation.mutate(b)}
-                onReplaceActive={(id, b) => replaceMutation.mutate({ id, body: b })}
-                onEditFuture={(id, b) => editMutation.mutate({ id, body: b })}
-                onCancelFuture={(id) => cancelMutation.mutate(id)}
-                isSaving={isSaving}
-              />
+              <Typography variant="overline" color="text.secondary">Mode de tarification</Typography>
+              <RadioGroup
+                row
+                value={hasChoiceGroup ? "choice" : "single"}
+                onChange={(e) => toggleModeMutation.mutate(e.target.value === "choice")}
+                sx={{ mb: 1.5 }}
+              >
+                <FormControlLabel value="single" control={<Radio size="small" />} disabled={toggleModeMutation.isPending} label="Forfait unique" />
+                <FormControlLabel value="choice" control={<Radio size="small" />} disabled={toggleModeMutation.isPending} label="Selon un choix obligatoire" />
+              </RadioGroup>
+
+              {hasChoiceGroup ? (
+                <ChoiceGroupEditor firmId={firmId} offering={offering} rules={rules} materials={materials} />
+              ) : (
+                <RateVersionManager
+                  versions={standardRules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo }))}
+                  onCreateFirst={(b) => createMutation.mutate(b)}
+                  onReplaceActive={(id, b) => replaceMutation.mutate({ id, body: b })}
+                  onEditFuture={(id, b) => editMutation.mutate({ id, body: b })}
+                  onCancelFuture={(id) => cancelMutation.mutate(id)}
+                  isSaving={isSaving}
+                />
+              )}
             </Box>
           ) : (
             <Alert severity="info" variant="outlined" sx={{ mt: 2 }}>
@@ -701,6 +954,7 @@ function SuggestedMaterialsDialog({
 // décision volontaire). Tous les montants sont HTVA.
 function forfaitSummary(offering: FirmServiceOffering, forfait: PricingRule | null): string {
   if (!offering.feeApplicable) return "Pas de forfait";
+  if (offering.choiceGroupConfig?.active) return "Selon un choix obligatoire";
   if (forfait) return `${Number(forfait.unitPrice).toFixed(2)} € HTVA`;
   return "Tarif à définir";
 }
@@ -1008,7 +1262,11 @@ export default function PrestationsPage() {
     return rules.filter((r) => r.ruleType === "INTERVENTION_FEE" && r.interventionType?.id === interventionTypeId);
   }
   function forfaitFor(interventionTypeId: number): PricingRule | null {
-    const lineage = rulesForIntervention(interventionTypeId);
+    // Tarification firme conditionnée à un choix obligatoire — ne considère jamais les
+    // règles posées pour une ChoiceOption précise ici : ce forfait "unique" n'a de sens
+    // que pour choiceOption=null (voir ForfaitDialog/ChoiceGroupEditor pour les forfaits
+    // par option, versionnés séparément).
+    const lineage = rulesForIntervention(interventionTypeId).filter((r) => r.choiceOption === null);
     const activeVersion = getActiveVersion(lineage.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo })));
     return activeVersion ? lineage.find((r) => r.id === activeVersion.id) ?? null : null;
   }
@@ -1279,6 +1537,7 @@ export default function PrestationsPage() {
             firmId={selectedFirmId}
             offering={forfaitTarget}
             rules={forfaitTarget ? rulesForIntervention(forfaitTarget.interventionType.id) : []}
+            materials={materials}
           />
           <SuggestedMaterialsDialog
             open={suggestionsTargetId !== null}

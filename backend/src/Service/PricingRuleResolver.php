@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Entity\ChoiceOption;
 use App\Entity\Firm;
 use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
@@ -23,14 +24,20 @@ final class PricingRuleResolver
 {
     public function __construct(private readonly EntityManagerInterface $em) {}
 
-    public function resolveInterventionFee(Firm $firm, InterventionType $interventionType, \DateTimeImmutable $date): ?PricingRule
+    /**
+     * $choiceOption : discriminant optionnel (tarification firme conditionnée à un choix
+     * obligatoire) — `null` résout le forfait standard (comportement inchangé, immense
+     * majorité des prestations), une ChoiceOption ne résout QUE les règles posées pour
+     * cette option précise (jamais un repli silencieux vers une règle sans discriminant).
+     */
+    public function resolveInterventionFee(Firm $firm, InterventionType $interventionType, \DateTimeImmutable $date, ?ChoiceOption $choiceOption = null): ?PricingRule
     {
-        $matching = $this->matchingRules($firm, PricingRuleType::INTERVENTION_FEE, $date, interventionType: $interventionType);
+        $matching = $this->matchingRules($firm, PricingRuleType::INTERVENTION_FEE, $date, interventionType: $interventionType, choiceOption: $choiceOption);
 
         if (count($matching) > 1) {
             throw new \LogicException(sprintf(
-                'Plusieurs PricingRule INTERVENTION_FEE actives se chevauchent pour firm=%d, interventionType=%d à la date %s.',
-                $firm->getId(), $interventionType->getId(), $date->format('Y-m-d'),
+                'Plusieurs PricingRule INTERVENTION_FEE actives se chevauchent pour firm=%d, interventionType=%d, choiceOption=%s à la date %s.',
+                $firm->getId(), $interventionType->getId(), $choiceOption?->getId() ?? 'null', $date->format('Y-m-d'),
             ));
         }
 
@@ -69,6 +76,11 @@ final class PricingRuleResolver
 
         if ($candidate->getRuleType() === PricingRuleType::INTERVENTION_FEE) {
             $qb->andWhere('r.interventionType = :it')->setParameter('it', $candidate->getInterventionType());
+            if ($candidate->getChoiceOption() !== null) {
+                $qb->andWhere('r.choiceOption = :co')->setParameter('co', $candidate->getChoiceOption());
+            } else {
+                $qb->andWhere('r.choiceOption IS NULL');
+            }
         } else {
             $qb->andWhere('r.materialItem = :mi')->setParameter('mi', $candidate->getMaterialItem());
         }
@@ -96,6 +108,7 @@ final class PricingRuleResolver
         \DateTimeImmutable $date,
         ?InterventionType $interventionType = null,
         ?MaterialItem $materialItem = null,
+        ?ChoiceOption $choiceOption = null,
     ): array {
         if ($firm === null) {
             return [];
@@ -110,6 +123,11 @@ final class PricingRuleResolver
 
         if ($type === PricingRuleType::INTERVENTION_FEE) {
             $qb->andWhere('r.interventionType = :it')->setParameter('it', $interventionType);
+            if ($choiceOption !== null) {
+                $qb->andWhere('r.choiceOption = :co')->setParameter('co', $choiceOption);
+            } else {
+                $qb->andWhere('r.choiceOption IS NULL');
+            }
         } else {
             $qb->andWhere('r.materialItem = :mi')->setParameter('mi', $materialItem);
         }

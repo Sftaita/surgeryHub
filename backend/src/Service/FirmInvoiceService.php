@@ -78,7 +78,7 @@ class FirmInvoiceService
                 if (in_array($intervention->getId(), $alreadyBilledInterventionIds, true)) {
                     continue;
                 }
-                $rule = $this->findInterventionRule($rules, $intervention->getCode(), $mission->getStartAt());
+                $rule = $this->findInterventionRule($rules, $intervention, $mission->getStartAt());
                 if ($rule === null) {
                     continue;
                 }
@@ -145,7 +145,7 @@ class FirmInvoiceService
                 if (in_array($intervention->getId(), $alreadyBilledInterventionIds, true)) {
                     continue;
                 }
-                $rule = $this->findInterventionRule($rules, $intervention->getCode(), $mission->getStartAt());
+                $rule = $this->findInterventionRule($rules, $intervention, $mission->getStartAt());
                 if ($rule === null) {
                     continue;
                 }
@@ -319,13 +319,23 @@ class FirmInvoiceService
      * inchangé jusqu'au Lot 5) plutôt que par l'ancien PricingRule.interventionCode
      * supprimé. Filtre aussi par date de validité (coversDate) — absent avant l'ajout de
      * validFrom/validTo dans ce lot, corrigé au passage.
+     *
+     * Tarification firme conditionnée à un choix obligatoire — filtre également par
+     * ChoiceOption (nullable-aware, même sémantique que PricingRuleResolver) : sans ce
+     * filtre, deux règles posées pour Signature/Altera sur le même InterventionType
+     * matcheraient toutes les deux ce rapprochement maison au premier trouvé, un vrai
+     * risque de forfait erroné/non déterministe sur ce chemin legacy encore actif.
      */
-    private function findInterventionRule(array $rules, string $code, \DateTimeImmutable $missionDate): ?PricingRule
+    private function findInterventionRule(array $rules, MissionIntervention $intervention, \DateTimeImmutable $missionDate): ?PricingRule
     {
+        $code = $intervention->getCode();
+        $selectedChoiceOptionId = $intervention->getSelectedChoiceOption()?->getId();
+
         foreach ($rules as $rule) {
             if (
                 $rule->getRuleType() === PricingRuleType::INTERVENTION_FEE
                 && $rule->getInterventionType()?->getCode() === $code
+                && $rule->getChoiceOption()?->getId() === $selectedChoiceOptionId
                 && $rule->coversDate($missionDate)
             ) {
                 return $rule;

@@ -8252,3 +8252,136 @@ séparée, immédiatement après le déploiement de `v2026.08.14-prod` : cron `d
 `CRON_TZ=Europe/Brussels` (timezone serveur réelle vérifiée : `Etc/UTC`), tick
 quotidien 07:00 heure belge réelle. Détail complet (script, test d'activation, 6
 Missions réelles escaladées lors du premier run) dans `docs/production.md`.
+
+## D-111 — Tarification firme conditionnée à un choix obligatoire (2026-08-15)
+
+Date : 2026-08-15
+
+### Contexte
+
+Cas réel remonté : Globus facture un forfait différent pour une TLIF selon l'implant
+intersomatique effectivement posé (`Signature` vs `Altera`, montants distincts pour 1 et
+2 niveaux). Le modèle standard `Firm × InterventionType → PricingRule` (D-067, D-072)
+ne porte qu'un seul forfait par couple — insuffisant pour ce cas, qui doit rester
+l'exception, jamais le comportement par défaut des autres prestations. Exigence
+explicite du prompt : généricité totale, aucune sémantique clinique en dur (« Signature »/
+« implant » ne doivent jamais apparaître dans le code, seulement dans la configuration
+saisie par le manager), et aucun tarif ni notion de `PricingRule` jamais visible côté
+instrumentiste.
+
+### Décision — discriminant optionnel sur `PricingRule`, jamais un second moteur
+
+Deux entités génériques, `RequiredChoiceGroup` (question libre + `active`) et
+`ChoiceOption` (label libre + `MaterialItem` facultatif), rattachées à
+`FirmServiceOffering` en `OneToMany` — relation choisie délibérément (coût quasi nul)
+pour ne jamais enfermer le modèle dans « un seul groupe par prestation », même si l'API
+V1 n'expose et n'autorise qu'un seul groupe actif à la fois par prestation (choix V1
+documenté ici, pas une limite technique : `FirmServiceOffering::getGroup()` retourne
+le groupe unique en pratique, `getActiveChoiceGroup()` le filtre par état opérationnel).
+
+`PricingRule` gagne une colonne `choice_option_id` nullable (`Version20260814130000`) :
+`null` = comportement strictement inchangé (forfait unique, immense majorité des
+prestations) ; renseignée = la règle ne s'applique qu'aux `MissionIntervention` ayant
+sélectionné exactement cette option. **`PricingRuleResolver` reste l'unique moteur de
+résolution** (même invariant que D-067) : `resolveInterventionFee()` gagne un paramètre
+`?ChoiceOption $choiceOption = null`, jamais lu depuis `FirmServiceOffering` — la
+`ChoiceOption` est résolue et passée en paramètre par l'appelant
+(`FinancialCalculationService`), exactement comme `InterventionType`/`MaterialItem`
+aujourd'hui. `hasOverlap()`/`matchingRules()` traitent ce discriminant comme faisant
+partie de la cible (nullable-aware : une règle `choiceOption=null` et une règle
+`choiceOption=X` ne se chevauchent jamais, deux options différentes du même groupe non
+plus) — vérifié par `PricingRuleResolverChoiceOptionTest`.
+
+Nouveau service `RequiredChoiceGroupResolver`, même nature et même exception scopée à
+l'invariant D-067 que `RepresentativePolicyResolver` (D-092) : seul point de lecture de
+`RequiredChoiceGroup`/`ChoiceOption` côté résolution, jamais importé par
+`PricingRuleResolver`. Consommé par `InterventionService` (validation d'encodage — une
+réponse est exigée dès que le groupe est « opérationnel », défini comme `active` **et**
+au moins 2 options actives : un choix à une seule option n'en est pas un) et par
+`FinancialCalculationService::resolveFirmInterventionLine()` (défense en profondeur,
+anomalie `MISSING_REQUIRED_CHOICE_ANSWER` si un intervalle de configuration laisse un
+calcul sans réponse malgré le blocage à l'encodage).
+
+**Chemin legacy corrigé** — `FirmInvoiceService::preview()/generate()` (Lot 1/D-067,
+toujours actif en parallèle du nouveau chemin `FinancialCalculationLine`) résolvait la
+`PricingRule` par un matcher maison filtrant uniquement par code + date, sans notion de
+discriminant : deux règles `Signature`/`Altera` sur le même `InterventionType` auraient
+matché indifféremment au premier trouvé, un risque réel de forfait erroné et non
+déterministe. `findInterventionRule()` prend désormais la `MissionIntervention` entière
+et filtre aussi par `choiceOption` (nullable-aware, même sémantique que le resolver) —
+seule façon de garder les deux chemins de facturation cohérents entre eux sans dupliquer
+la logique de résolution.
+
+### Encodage instrumentiste — persistance et exclusivité matérielle
+
+`MissionIntervention.selectedChoiceOption` (FK nullable) suit exactement le pattern déjà
+établi pour `representativePresent` (D-092) : tri-état à la mise à jour
+(absent/`null` explicite/valeur), validation serveur (`assertChoiceAnswered()`), jamais
+un montant dans aucune réponse HTTP d'encodage. `resolveChoiceOption()` revalide qu'une
+option fournie par le client appartient bien au groupe de la prestation (firm, type)
+effectivement concernée — défense contre un id arbitraire.
+
+Exclusivité automatique entre options d'un même groupe (§4/§7 du prompt) : nouveau
+`ChoiceMaterialExclusivityService`, ignorant tout `PricingRule`/montant, qui (1) rejette
+l'ajout d'un `MaterialLine` dont le `MaterialItem` appartient à une AUTRE option du
+groupe que celle sélectionnée (`IncompatibleChoiceMaterialException`, 409
+`INCOMPATIBLE_CHOICE_MATERIAL`) et (2) détecte les lignes déjà encodées qui deviendraient
+incompatibles lors d'un changement de sélection. Un changement de choix qui laisserait du
+matériel incompatible exige une confirmation explicite
+(`confirmRemoveIncompatibleMaterial=true`, sinon 409
+`CHOICE_OPTION_CHANGE_REQUIRES_CONFIRMATION` portant la liste des lignes concernées) —
+jamais de suppression silencieuse ; confirmé, la suppression et la nouvelle sélection
+sont appliquées dans la même transaction.
+
+### Configuration manager
+
+`FirmOfferingChoiceGroupController` (endpoints sous
+`/api/firms/{firmId}/service-offerings/{offeringId}/choice-group[...]`, `BillingVoter::
+MANAGE`) : `PUT` crée ou réutilise/réactive toujours le même groupe (jamais une
+recréation à chaque bascule de mode, qui perdrait silencieusement question/options déjà
+configurées), `DELETE` désactive sans jamais rien supprimer. Les options suivent la même
+convention que `InterventionType`/`MaterialItem` : `active=false` pour retirer un choix
+de la circulation, suppression physique refusée (409) dès qu'une `PricingRule` ou une
+sélection instrumentiste réelle la référence — jamais de perte d'historique
+financier/encodage. `FirmServiceOfferingController::serialize()` expose deux vues
+distinctes : `choiceGroup` (question + options actives uniquement, **seulement si
+opérationnel**, visible à tout rôle authentifié — c'est ce que consomme l'écran
+instrumentiste) et `choiceGroupConfig` (vue complète, y compris non opérationnelle et
+options désactivées, réservée au manager) — jamais un montant dans l'une ou l'autre.
+
+Manager Catalogue (`ForfaitDialog`, `PrestationsPage.tsx`) : nouveau toggle « Forfait
+unique / Selon un choix obligatoire », visible uniquement si la prestation a un forfait
+attendu (`feeApplicable`). Le forfait unique standard exclut désormais explicitement les
+`PricingRule` scopées à une `ChoiceOption` de son propre historique versionné
+(`RateVersionManager`) — les deux moteurs de versioning affichés sur le même écran ne se
+mélangent jamais. Chaque option porte son propre historique de tarifs versionné,
+identique dans son fonctionnement au forfait standard.
+
+### Compatibilité rétroactive
+
+Toutes les prestations existantes continuent de fonctionner sans aucune migration
+métier manuelle : `choice_option_id` nullable partout, `RequiredChoiceGroupResolver`
+retourne `RequiredChoicePolicy::none()` par défaut (aucune `FirmServiceOffering`, aucun
+groupe, ou groupe non opérationnel) — comportement 100% inchangé tant qu'un manager ne
+configure pas explicitement un groupe.
+
+### Tests
+
+25 tests automatisés nouveaux : intégration (`PricingRuleResolverChoiceOptionTest` —
+discriminant, chevauchement nullable-aware ; `FinancialCalculationServiceChoiceOptionTest`
+— scénario réel TLIF 1/2 niveaux × Signature/Altera, prestation standard non affectée,
+absence de double comptage avec `MATERIAL_FEE`, anomalie de défense en profondeur),
+fonctionnels (`FirmOfferingChoiceGroupControllerTest` — configuration manager, validations,
+sécurité de la vue filtrée instrumentiste ; `InterventionControllerChoiceOptionTest` —
+réponse obligatoire, exclusivité matérielle, confirmation de changement). Suite backend
+complète rejouée après implémentation.
+
+### Non fait dans ce lot
+
+Aucun déploiement, aucune configuration de production — implémentation, tests et
+documentation uniquement, sur demande explicite. Le picker de matériel instrumentiste
+(`MaterialWizard`/`FirmItemPicker`) ne grise pas proactivement les options incompatibles
+avec une explication inline (§7 du prompt) : l'exclusivité est entièrement appliquée
+côté serveur (409 avec message précis, déjà relayé par le toast d'erreur existant), une
+UX de désactivation proactive dans le picker reste un axe d'amélioration possible, non
+requis pour la correction fonctionnelle.

@@ -2914,3 +2914,84 @@ quotidien suffit (pas de garde horaire à la minute près comme D-083, la fenêt
 une comparaison de plage et non un instant précis). Activé en production le
 2026-08-14 (`CRON_TZ=Europe/Brussels`, 07:00 heure belge réelle — voir
 docs/production.md pour le détail et la preuve d'activation).
+
+## 21. Tarification firme conditionnée à un choix obligatoire (D-111)
+
+### 21.1 Principe
+
+Certaines prestations facturent un forfait différent selon une réponse obligatoire
+saisie à l'encodage (ex. Globus TLIF — forfait différent selon l'implant intersomatique
+posé, Signature vs Altera). Le modèle standard `Firm × InterventionType →
+PricingRule` (D-067) reste inchangé et couvre l'immense majorité des prestations ; ce
+mécanisme est une extension optionnelle, générique, jamais une sémantique clinique en
+dur — la question et les labels d'options viennent entièrement de la configuration
+manager.
+
+```text
+FirmServiceOffering
+└── RequiredChoiceGroup (question, active)   [1-N en base, 1 seul actif en pratique — V1]
+    └── ChoiceOption[] (label, materialItem?, active)
+
+PricingRule
+└── choiceOption: ChoiceOption | null         [discriminant optionnel, INTERVENTION_FEE uniquement]
+
+MissionIntervention
+└── selectedChoiceOption: ChoiceOption | null [réponse instrumentiste, jamais un montant]
+```
+
+### 21.2 Invariant D-067 préservé — un seul moteur de résolution
+
+`PricingRuleResolver` reste l'unique porte d'entrée du calcul financier et ne lit
+jamais `FirmServiceOffering`/`RequiredChoiceGroup` (vérifié par
+`PricingRuleResolverArchitectureTest`, inchangé). `ChoiceOption` est un paramètre
+optionnel de `resolveInterventionFee()`, résolu et transmis par l'appelant
+(`FinancialCalculationService`) — exactement le même patron que `InterventionType`/
+`MaterialItem`. `hasOverlap()` traite ce discriminant comme faisant partie de la cible :
+deux options d'un même groupe, ou une règle scopée vs une règle standard (`null`), ne
+se chevauchent jamais entre elles même sur des dates identiques.
+
+Nouveau `RequiredChoiceGroupResolver`, même nature et même exception scopée à
+l'invariant D-067 que `RepresentativePolicyResolver` (D-092) — seul point de lecture de
+`RequiredChoiceGroup`/`ChoiceOption`, jamais importé par `PricingRuleResolver`. Consommé
+par `InterventionService` (validation d'encodage) et
+`FinancialCalculationService::resolveFirmInterventionLine()` (défense en profondeur,
+anomalie `MISSING_REQUIRED_CHOICE_ANSWER`).
+
+Le chemin legacy `FirmInvoiceService::preview()/generate()` (Lot 1/D-067, toujours actif
+en parallèle du chemin `FinancialCalculationLine`) a été corrigé pour filtrer aussi par
+`choiceOption` — sans ce correctif, deux règles scopées à des options différentes
+auraient matché indifféremment au premier trouvé sur ce chemin.
+
+### 21.3 Encodage instrumentiste
+
+`MissionIntervention.selectedChoiceOption` suit le patron déjà établi pour
+`representativePresent` (D-092) : tri-état à la mise à jour, validation serveur
+(réponse exigée dès que le groupe est « opérationnel » — `active` et ≥ 2 options
+actives), jamais un montant dans aucune réponse HTTP d'encodage.
+
+`ChoiceMaterialExclusivityService` (ignore tout `PricingRule`/montant) applique
+l'exclusivité automatique entre options d'un même groupe : rejette l'attachement d'un
+`MaterialLine` dont le matériel appartient à une autre option que celle sélectionnée
+(409), et détecte les lignes déjà encodées qui deviendraient incompatibles lors d'un
+changement de choix (409 avec confirmation explicite requise avant toute suppression —
+jamais silencieuse).
+
+### 21.4 Configuration manager
+
+`FirmOfferingChoiceGroupController` (`BillingVoter::MANAGE`) — `PUT` réutilise et
+réactive toujours le même groupe (jamais une recréation à chaque bascule de mode).
+Options : suppression physique refusée dès qu'une `PricingRule` ou une sélection
+instrumentiste réelle les référence (même convention que `InterventionType`/
+`MaterialItem` — désactiver, ne jamais perdre l'historique).
+
+`FirmServiceOfferingController::serialize()` expose deux vues : `choiceGroup` (question
++ options actives uniquement, **seulement si opérationnel**, visible à tout rôle — ce
+que consomme l'écran instrumentiste) et `choiceGroupConfig` (vue complète, réservée au
+manager, même filtrage que les indicateurs de politique délégué existants).
+
+### 21.5 Rétrocompatibilité
+
+Toutes les prestations existantes continuent de fonctionner sans migration métier
+manuelle : `choice_option_id`/`selected_choice_option_id` nullables partout,
+`RequiredChoiceGroupResolver` retourne « aucun groupe requis » par défaut. Voir
+`docs/decisions.md` D-111 pour le détail complet (migration, tests, endpoints).

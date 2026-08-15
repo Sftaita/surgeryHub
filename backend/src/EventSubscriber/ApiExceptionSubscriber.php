@@ -33,6 +33,8 @@ use App\Exception\RefundExceedsOverpaidException;
 use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
 use App\Exception\SurgeonMissionRequestConflictException;
 use App\Exception\EncodingAnomalyReportAlreadyResolvedException;
+use App\Exception\IncompatibleChoiceMaterialException;
+use App\Exception\ChoiceOptionChangeRequiresConfirmationException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -164,6 +166,18 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'DRAFT_ALREADY_EXISTS';
             $message = $e->getMessage() ?: 'Cette demande a déjà une intervention provisoire associée.';
+        } elseif ($e instanceof IncompatibleChoiceMaterialException) {
+            $status = 409;
+            $code = 'INCOMPATIBLE_CHOICE_MATERIAL';
+            $message = $e->getMessage() ?: 'Ce matériel n\'est pas compatible avec le choix actuellement sélectionné pour cette intervention.';
+        } elseif ($e instanceof ChoiceOptionChangeRequiresConfirmationException) {
+            $status = 409;
+            $code = 'CHOICE_OPTION_CHANGE_REQUIRES_CONFIRMATION';
+            $message = $e->getMessage();
+            $violations = array_map(static fn ($l) => [
+                'materialLineId' => $l->getId(),
+                'materialItemLabel' => $l->getItem()->getLabel(),
+            ], $e->getConflictingLines());
         } elseif ($e instanceof ConflictingMaterialAttachmentInputException) {
             $status = 422;
             $code = 'CONFLICTING_MATERIAL_ATTACHMENT_INPUT';

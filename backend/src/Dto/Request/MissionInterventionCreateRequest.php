@@ -29,6 +29,14 @@ class MissionInterventionCreateRequest
     public ?bool $representativePresent = null;
 
     /**
+     * Tarification firme conditionnée à un choix obligatoire (voir docs/decisions.md) —
+     * facultative à la création tant que la prestation (firm, interventionType) ne
+     * l'exige pas ; bloquant sinon (voir InterventionService::assertChoiceAnswered()).
+     */
+    #[Assert\Positive]
+    public ?int $selectedChoiceOptionId = null;
+
+    /**
      * @deprecated EPIC Revue instrumentiste, Lot 3 — n'est plus utilisé par
      * InterventionService::create() : le serveur alloue seul la position via
      * MissionEntryOrderAllocator (voir son docblock). Le champ reste accepté en entrée

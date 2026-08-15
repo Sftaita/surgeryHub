@@ -41,12 +41,14 @@ export default function EditInterventionDialog({
   const [typeId, setTypeId] = React.useState<number | null>(null);
   const [firmId, setFirmId] = React.useState<number>(NO_FIRM);
   const [representativePresent, setRepresentativePresent] = React.useState<boolean | null>(null);
+  const [selectedChoiceOptionId, setSelectedChoiceOptionId] = React.useState<number | null>(null);
 
   React.useEffect(() => {
     if (!open || !intervention) return;
     setTypeId(intervention.interventionType?.id ?? null);
     setFirmId(intervention.firm?.id ?? NO_FIRM);
     setRepresentativePresent(intervention.representativePresent ?? null);
+    setSelectedChoiceOptionId(intervention.selectedChoiceOptionId ?? null);
   }, [open, intervention]);
 
   const offeringsQuery = useQuery({
@@ -61,7 +63,14 @@ export default function EditInterventionDialog({
   const showRepresentativeQuestion = firmId !== NO_FIRM && !!currentOffering?.representativePresenceRelevant;
   const selectedFirmName = firms.find((f) => f.id === firmId)?.name ?? "";
 
-  const canSubmit = typeId != null && (!showRepresentativeQuestion || representativePresent !== null);
+  // Tarification firme conditionnée à un choix obligatoire — même règle.
+  const choiceGroup = currentOffering?.choiceGroup ?? null;
+  const activeChoiceOptions = (choiceGroup?.options ?? []).filter((o) => o.active);
+  const showChoiceQuestion = firmId !== NO_FIRM && choiceGroup != null;
+
+  const canSubmit = typeId != null
+    && (!showRepresentativeQuestion || representativePresent !== null)
+    && (!showChoiceQuestion || selectedChoiceOptionId !== null);
 
   const submit = () => {
     if (!canSubmit || typeId == null) return;
@@ -72,6 +81,7 @@ export default function EditInterventionDialog({
       // ancienne réponse (jamais laissée orpheline, liée à une firme/type qui n'est plus
       // celui sélectionné — voir D-092 section 3 du lot instrumentiste).
       representativePresent: showRepresentativeQuestion ? representativePresent : null,
+      selectedChoiceOptionId: showChoiceQuestion ? selectedChoiceOptionId : null,
     });
   };
 
@@ -90,7 +100,7 @@ export default function EditInterventionDialog({
           placeholder="Sélectionner un type"
           value={typeId}
           options={typeOptions}
-          onChange={(v) => { setTypeId(v); setRepresentativePresent(null); }}
+          onChange={(v) => { setTypeId(v); setRepresentativePresent(null); setSelectedChoiceOptionId(null); }}
           disabled={loading}
         />
 
@@ -100,7 +110,7 @@ export default function EditInterventionDialog({
           placeholder="Sélectionner une firme"
           value={firmId}
           options={firmOptions}
-          onChange={(v) => { setFirmId(v); setRepresentativePresent(null); }}
+          onChange={(v) => { setFirmId(v); setRepresentativePresent(null); setSelectedChoiceOptionId(null); }}
           disabled={loading}
         />
 
@@ -133,6 +143,38 @@ export default function EditInterventionDialog({
             {representativePresent === null && (
               <Box sx={{ mt: "10px", fontSize: 12.5, color: RED_600, fontWeight: 600 }}>
                 Indiquez si un délégué de {selectedFirmName} était présent.
+              </Box>
+            )}
+          </Box>
+        )}
+
+        {showChoiceQuestion && (
+          <Box sx={{ background: "#F5F7FA", borderRadius: "12px", padding: "14px" }}>
+            <Box sx={{ fontSize: 14, fontWeight: 700, mb: "10px" }}>{choiceGroup!.question} *</Box>
+            <Box sx={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {activeChoiceOptions.map((option) => (
+                <Box
+                  key={option.id}
+                  component="button"
+                  type="button"
+                  onClick={() => setSelectedChoiceOptionId(option.id)}
+                  disabled={loading}
+                  sx={{
+                    display: "flex", alignItems: "center", gap: "10px", height: 44, borderRadius: "10px",
+                    cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, textAlign: "left",
+                    padding: "0 14px",
+                    border: "1.5px solid", borderColor: selectedChoiceOptionId === option.id ? GREEN_500 : BORDER_DEFAULT,
+                    background: selectedChoiceOptionId === option.id ? "rgba(66,168,130,.12)" : "#fff",
+                    color: selectedChoiceOptionId === option.id ? GREEN_800 : GRAY_800,
+                  }}
+                >
+                  {option.label}
+                </Box>
+              ))}
+            </Box>
+            {selectedChoiceOptionId === null && (
+              <Box sx={{ mt: "10px", fontSize: 12.5, color: RED_600, fontWeight: 600 }}>
+                Une réponse est requise pour cette prestation.
               </Box>
             )}
           </Box>

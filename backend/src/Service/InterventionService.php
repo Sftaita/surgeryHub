@@ -6,6 +6,7 @@ use App\Dto\Request\MaterialLineCreateRequest;
 use App\Dto\Request\MaterialLineUpdateRequest;
 use App\Dto\Request\MissionInterventionCreateRequest;
 use App\Dto\Request\MissionInterventionUpdateRequest;
+use App\Entity\ChoiceOption;
 use App\Entity\Firm;
 use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
@@ -14,6 +15,7 @@ use App\Entity\Mission;
 use App\Entity\MissionIntervention;
 use App\Entity\MissionInterventionDraft;
 use App\Entity\User;
+use App\Exception\ChoiceOptionChangeRequiresConfirmationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -28,6 +30,8 @@ class InterventionService
         private readonly ActiveInterventionTypeResolver $interventionTypeResolver,
         private readonly MaterialAttachmentResolver $attachmentResolver,
         private readonly RepresentativePolicyResolver $representativePolicyResolver,
+        private readonly RequiredChoiceGroupResolver $choiceGroupResolver,
+        private readonly ChoiceMaterialExclusivityService $exclusivityService,
     ) {}
 
     /**
@@ -47,11 +51,15 @@ class InterventionService
         $type = $this->interventionTypeResolver->resolveActive((int) $dto->interventionTypeId);
         $firm = $dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null;
         $representativePresent = $dto->representativePresent;
+        $selectedChoiceOption = $dto->selectedChoiceOptionId !== null
+            ? $this->resolveChoiceOption($dto->selectedChoiceOptionId, $firm, $type)
+            : null;
 
         $this->assertRepresentativePresenceAnswered($firm, $type, $representativePresent);
+        $this->assertChoiceAnswered($firm, $type, $selectedChoiceOption);
 
         $intervention = null;
-        $this->em->wrapInTransaction(function () use (&$intervention, $mission, $type, $firm, $representativePresent): void {
+        $this->em->wrapInTransaction(function () use (&$intervention, $mission, $type, $firm, $representativePresent, $selectedChoiceOption): void {
             $orderIndex = $this->orderAllocator->nextIndexForNewEntry($mission);
 
             $intervention = new MissionIntervention();
@@ -62,7 +70,8 @@ class InterventionService
                 ->setCode($type->getCode())
                 ->setLabel($type->getLabel())
                 ->setOrderIndex($orderIndex)
-                ->setRepresentativePresent($representativePresent);
+                ->setRepresentativePresent($representativePresent)
+                ->setSelectedChoiceOption($selectedChoiceOption);
 
             $this->em->persist($intervention);
             $this->em->flush();
@@ -91,35 +100,66 @@ class InterventionService
             ? $dto->representativePresent
             : $intervention->getRepresentativePresent();
 
+        $selectedChoiceOption = $dto->selectedChoiceOptionIdProvided
+            ? ($dto->selectedChoiceOptionId !== null ? $this->resolveChoiceOption($dto->selectedChoiceOptionId, $firm, $type) : null)
+            : $intervention->getSelectedChoiceOption();
+
         // Refonte Catalogue/Prestations (D-092) — la validation ne se déclenche que si la
-        // requête touche réellement un champ métier (type/firme/réponse délégué), jamais
-        // sur un simple réordonnancement (orderIndex seul) : une ancienne intervention
-        // jamais répondue reste réordonnable tant qu'on ne la modifie pas au sens métier
-        // (voir docblock de section "rétrocompatibilité" — l'ouverture/la consultation ne
-        // doivent jamais être cassées par cette règle).
-        if ($dto->interventionTypeId !== null || $dto->primaryFirmIdProvided || $dto->representativePresentProvided) {
+        // requête touche réellement un champ métier (type/firme/réponse délégué/choix
+        // tarifaire), jamais sur un simple réordonnancement (orderIndex seul) : une
+        // ancienne intervention jamais répondue reste réordonnable tant qu'on ne la
+        // modifie pas au sens métier (voir docblock de section "rétrocompatibilité" —
+        // l'ouverture/la consultation ne doivent jamais être cassées par cette règle).
+        if ($dto->interventionTypeId !== null || $dto->primaryFirmIdProvided || $dto->representativePresentProvided || $dto->selectedChoiceOptionIdProvided) {
             $this->assertRepresentativePresenceAnswered($firm, $type, $representativePresent);
+            $this->assertChoiceAnswered($firm, $type, $selectedChoiceOption);
         }
 
-        if ($dto->interventionTypeId !== null) {
-            $intervention->setInterventionType($type);
-            $intervention->setCode($type->getCode());
-            $intervention->setLabel($type->getLabel());
+        // §8 du prompt — un changement de choix ne supprime jamais silencieusement du
+        // matériel déjà encodé devenu incompatible : bloquant tant que le client n'a pas
+        // explicitement confirmé (confirmRemoveIncompatibleMaterial).
+        $choiceChanged = $dto->selectedChoiceOptionIdProvided
+            && $intervention->getSelectedChoiceOption()?->getId() !== $selectedChoiceOption?->getId();
+        $linesToRemove = [];
+        if ($choiceChanged) {
+            $linesToRemove = $this->exclusivityService->findLinesIncompatibleWith($intervention, $selectedChoiceOption);
+            if ($linesToRemove !== [] && !$dto->confirmRemoveIncompatibleMaterial) {
+                throw new ChoiceOptionChangeRequiresConfirmationException($linesToRemove, sprintf(
+                    'Le matériel « %s » est actuellement encodé pour cette intervention. En sélectionnant « %s », il devra être retiré.',
+                    $linesToRemove[0]->getItem()?->getLabel() ?? '—',
+                    $selectedChoiceOption?->getLabel() ?? '—',
+                ));
+            }
         }
 
-        if ($dto->primaryFirmIdProvided) {
-            $intervention->setPrimaryFirm($firm);
-        }
+        $this->em->wrapInTransaction(function () use ($intervention, $dto, $type, $firm, $selectedChoiceOption, $choiceChanged, $linesToRemove): void {
+            if ($dto->interventionTypeId !== null) {
+                $intervention->setInterventionType($type);
+                $intervention->setCode($type->getCode());
+                $intervention->setLabel($type->getLabel());
+            }
 
-        if ($dto->orderIndex !== null) {
-            $intervention->setOrderIndex($dto->orderIndex);
-        }
+            if ($dto->primaryFirmIdProvided) {
+                $intervention->setPrimaryFirm($firm);
+            }
 
-        if ($dto->representativePresentProvided) {
-            $intervention->setRepresentativePresent($dto->representativePresent);
-        }
+            if ($dto->orderIndex !== null) {
+                $intervention->setOrderIndex($dto->orderIndex);
+            }
 
-        $this->em->flush();
+            if ($dto->representativePresentProvided) {
+                $intervention->setRepresentativePresent($dto->representativePresent);
+            }
+
+            if ($choiceChanged) {
+                foreach ($linesToRemove as $line) {
+                    $this->em->remove($line);
+                }
+                $intervention->setSelectedChoiceOption($selectedChoiceOption);
+            }
+
+            $this->em->flush();
+        });
     }
 
     /**
@@ -141,6 +181,44 @@ class InterventionService
                 'Indiquez si un délégué de %s était présent.',
                 $firm->getName(),
             ));
+        }
+    }
+
+    /**
+     * Résout et valide une ChoiceOption fournie par le client : doit exister, être
+     * active, et appartenir au groupe de la prestation (firm, type) effectivement
+     * concernée — jamais une option d'une autre prestation/firme (défense contre un id
+     * arbitraire envoyé par un client compromis ou obsolète).
+     */
+    private function resolveChoiceOption(int $id, ?Firm $firm, ?InterventionType $type): ChoiceOption
+    {
+        $option = $this->em->find(ChoiceOption::class, $id);
+        if (!$option instanceof ChoiceOption || !$option->isActive()) {
+            throw new NotFoundHttpException('Option de choix introuvable.');
+        }
+
+        $offering = $option->getGroup()->getOffering();
+        if ($firm === null || $type === null || $offering->getFirm()->getId() !== $firm->getId() || $offering->getInterventionType()->getId() !== $type->getId()) {
+            throw new UnprocessableEntityHttpException('Cette option ne correspond pas à la prestation de cette intervention.');
+        }
+
+        return $option;
+    }
+
+    /**
+     * Tarification firme conditionnée à un choix obligatoire — même défense serveur que
+     * assertRepresentativePresenceAnswered() : si la prestation (firm × type) effective
+     * exige une réponse, elle doit être fournie, jamais null.
+     */
+    private function assertChoiceAnswered(?Firm $firm, ?InterventionType $type, ?ChoiceOption $selected): void
+    {
+        if ($firm === null || $type === null) {
+            return;
+        }
+
+        $policy = $this->choiceGroupResolver->resolve($firm, $type);
+        if ($policy->required && $selected === null) {
+            throw new UnprocessableEntityHttpException($policy->question ?? 'Une réponse est requise pour cette prestation.');
         }
     }
 
@@ -182,6 +260,7 @@ class InterventionService
                 ->setCreatedBy($createdBy);
 
             if ($target instanceof MissionIntervention) {
+                $this->exclusivityService->assertMaterialCompatible($target, $item);
                 $line->setMissionIntervention($target);
             } elseif ($target instanceof MissionInterventionDraft) {
                 $line->setInterventionDraft($target);
@@ -208,6 +287,7 @@ class InterventionService
                 throw new BadRequestHttpException('Intervention does not belong to mission');
             }
 
+            $this->exclusivityService->assertMaterialCompatible($intervention, $line->getItem());
             $line->setMissionIntervention($intervention);
         }
 

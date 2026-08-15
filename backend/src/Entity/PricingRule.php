@@ -42,6 +42,18 @@ class PricingRule
     #[ORM\JoinColumn(nullable: true)]
     private ?MaterialItem $materialItem = null;
 
+    /**
+     * Discriminant optionnel — quand renseigné, cette règle INTERVENTION_FEE ne s'applique
+     * qu'aux MissionIntervention ayant sélectionné exactement cette ChoiceOption (jamais
+     * lu au travers de FirmServiceOffering : ChoiceOption est passée en paramètre par
+     * l'appelant, comme InterventionType/MaterialItem — voir PricingRuleResolver).
+     * `null` = comportement standard inchangé (forfait unique, immense majorité des
+     * prestations).
+     */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(name: 'choice_option_id', nullable: true)]
+    private ?ChoiceOption $choiceOption = null;
+
     #[ORM\Column(type: 'decimal', precision: 10, scale: 2)]
     private ?string $unitPrice = null;
 
@@ -119,6 +131,17 @@ class PricingRule
     public function setMaterialItem(?MaterialItem $materialItem): static
     {
         $this->materialItem = $materialItem;
+        return $this;
+    }
+
+    public function getChoiceOption(): ?ChoiceOption
+    {
+        return $this->choiceOption;
+    }
+
+    public function setChoiceOption(?ChoiceOption $choiceOption): static
+    {
+        $this->choiceOption = $choiceOption;
         return $this;
     }
 

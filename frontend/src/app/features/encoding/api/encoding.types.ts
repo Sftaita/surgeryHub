@@ -101,6 +101,9 @@ export type EncodingIntervention = {
    * de test existantes qui ne le fournissent pas encore.
    */
   representativePresent?: boolean | null;
+  /** Tarification firme conditionnée à un choix obligatoire — donnée factuelle, jamais un montant. */
+  selectedChoiceOptionId?: number | null;
+  selectedChoiceOptionLabel?: string | null;
 };
 
 /** "Demande de nouveau type" (Lot 5, D-068) — pas rattachée à une intervention : elle
@@ -140,6 +143,9 @@ export type MissionEncodingInterventionEntry = {
   materialItemRequests: EncodingEntryMaterialItemRequest[];
   /** Refonte Catalogue/Prestations (D-092) — donnée factuelle, jamais financière. */
   representativePresent?: boolean | null;
+  /** Tarification firme conditionnée à un choix obligatoire — donnée factuelle, jamais un montant. */
+  selectedChoiceOptionId?: number | null;
+  selectedChoiceOptionLabel?: string | null;
 };
 
 export type MissionEncodingDraftEntry = {
@@ -179,6 +185,24 @@ export type FirmServiceOfferingEncodingContext = {
    * montant, jamais une politique de calcul.
    */
   representativePresenceRelevant: boolean;
+};
+
+/**
+ * Tarification firme conditionnée à un choix obligatoire — question + options libres
+ * définies par le manager, jamais un montant ni une notion clinique en dur (voir
+ * docs/decisions.md). `null` (sur FirmServiceOfferingSummary.choiceGroup) = prestation
+ * standard, aucun changement d'UX.
+ */
+export type ChoiceGroupOption = {
+  id: number;
+  label: string;
+  active: boolean;
+};
+
+export type ChoiceGroupSummary = {
+  id: number;
+  question: string;
+  options: ChoiceGroupOption[];
 };
 
 export type InterventionTypeEncodingContext = {
@@ -250,6 +274,8 @@ export type MissionInterventionDto = {
   orderIndex?: number;
   /** Refonte Catalogue/Prestations (D-092) — présent uniquement sur la réponse de création. */
   representativePresent?: boolean | null;
+  /** Tarification firme conditionnée à un choix obligatoire — présent uniquement sur la réponse de création. */
+  selectedChoiceOptionId?: number | null;
 };
 
 /**
@@ -263,18 +289,23 @@ export type CreateInterventionBody = {
   orderIndex: number;
   /** Refonte Catalogue/Prestations (D-092) — facultatif, uniquement si déjà connu à la création. */
   representativePresent?: boolean;
+  /** Tarification firme conditionnée à un choix obligatoire — facultatif tant que non exigé. */
+  selectedChoiceOptionId?: number;
 };
 
 /**
  * `primaryFirmId` supporte le retrait explicite : omettre la clé = ne pas toucher à la
  * firme actuelle ; `primaryFirmId: null` = la retirer. Même tri-état pour
- * `representativePresent` (D-092).
+ * `representativePresent` (D-092) et `selectedChoiceOptionId`.
  */
 export type PatchInterventionBody = {
   interventionTypeId?: number;
   primaryFirmId?: number | null;
   orderIndex?: number;
   representativePresent?: boolean | null;
+  selectedChoiceOptionId?: number | null;
+  /** §8 du prompt — requis pour confirmer le retrait de matériel devenu incompatible. */
+  confirmRemoveIncompatibleMaterial?: boolean;
 };
 
 /**

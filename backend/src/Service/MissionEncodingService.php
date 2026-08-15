@@ -404,6 +404,8 @@ final class MissionEncodingService
             suggestedMaterials: $suggestedMaterials,
             coherence: $coherence,
             representativePresent: $i->getRepresentativePresent(),
+            selectedChoiceOptionId: $i->getSelectedChoiceOption()?->getId(),
+            selectedChoiceOptionLabel: $i->getSelectedChoiceOption()?->getLabel(),
         );
     }
 
@@ -430,6 +432,8 @@ final class MissionEncodingService
             materialLines: $dto->materialLines,
             materialItemRequests: $dto->materialItemRequests,
             representativePresent: $dto->representativePresent,
+            selectedChoiceOptionId: $dto->selectedChoiceOptionId,
+            selectedChoiceOptionLabel: $dto->selectedChoiceOptionLabel,
         );
     }
 

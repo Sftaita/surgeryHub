@@ -10,6 +10,8 @@ export interface PricingRule {
     referenceCode: string | null;
     firm: { id: number; name: string };
   } | null;
+  /** Tarification firme conditionnée à un choix obligatoire — null = forfait unique standard. */
+  choiceOption: { id: number; label: string } | null;
   unitPrice: string;
   currency: string;
   validFrom: string | null;
@@ -40,6 +42,28 @@ export interface SuggestedMaterialDto {
  * un montant : uniquement des indicateurs consommés par le backend (voir
  * RepresentativePolicyResolver) pour ajuster un tarif déjà résolu.
  */
+export interface ChoiceOptionDto {
+  id: number;
+  label: string;
+  displayOrder: number;
+  active: boolean;
+  materialItem: { id: number; label: string; referenceCode: string | null } | null;
+}
+
+/**
+ * Tarification firme conditionnée à un choix obligatoire — question + options, jamais
+ * un montant (le forfait par option vit dans PricingRule.choiceOption). Vue complète
+ * réservée au manager (BillingVoter::MANAGE) — voir choiceGroup pour la vue filtrée
+ * consommée par l'écran instrumentiste.
+ */
+export interface ChoiceGroupConfigDto {
+  id: number;
+  question: string;
+  active: boolean;
+  operational: boolean;
+  options: ChoiceOptionDto[];
+}
+
 export interface FirmServiceOffering {
   id: number;
   firmId: number;
@@ -51,6 +75,7 @@ export interface FirmServiceOffering {
   representativeSuppressesOwnMaterialFees: boolean;
   feeApplicable: boolean;
   suggestedMaterials: SuggestedMaterialDto[];
+  choiceGroupConfig: ChoiceGroupConfigDto | null;
 }
 
 // ── Pricing rules ────────────────────────────────────────────────────────────
@@ -67,6 +92,8 @@ export async function createPricingRule(
     unitPrice: number;
     interventionTypeId?: number;
     materialItemId?: number;
+    /** Tarification firme conditionnée à un choix obligatoire — facultatif, INTERVENTION_FEE uniquement. */
+    choiceOptionId?: number;
     currency?: string;
     validFrom?: string | null;
     validTo?: string | null;
@@ -168,4 +195,42 @@ export async function deleteSuggestedMaterial(
   suggestionId: number,
 ): Promise<void> {
   await apiClient.delete(`/api/firms/${firmId}/service-offerings/${offeringId}/suggested-materials/${suggestionId}`);
+}
+
+// ── Tarification firme conditionnée à un choix obligatoire ──────────────────
+
+export async function upsertChoiceGroup(
+  firmId: number,
+  offeringId: number,
+  question: string,
+): Promise<ChoiceGroupConfigDto> {
+  const res = await apiClient.put(`/api/firms/${firmId}/service-offerings/${offeringId}/choice-group`, { question });
+  return res.data;
+}
+
+export async function deactivateChoiceGroup(firmId: number, offeringId: number): Promise<void> {
+  await apiClient.delete(`/api/firms/${firmId}/service-offerings/${offeringId}/choice-group`);
+}
+
+export async function createChoiceOption(
+  firmId: number,
+  offeringId: number,
+  body: { label: string; materialItemId?: number },
+): Promise<ChoiceOptionDto> {
+  const res = await apiClient.post(`/api/firms/${firmId}/service-offerings/${offeringId}/choice-group/options`, body);
+  return res.data;
+}
+
+export async function updateChoiceOption(
+  firmId: number,
+  offeringId: number,
+  optionId: number,
+  body: { label?: string; materialItemId?: number | null; active?: boolean },
+): Promise<ChoiceOptionDto> {
+  const res = await apiClient.patch(`/api/firms/${firmId}/service-offerings/${offeringId}/choice-group/options/${optionId}`, body);
+  return res.data;
+}
+
+export async function deleteChoiceOption(firmId: number, offeringId: number, optionId: number): Promise<void> {
+  await apiClient.delete(`/api/firms/${firmId}/service-offerings/${offeringId}/choice-group/options/${optionId}`);
 }

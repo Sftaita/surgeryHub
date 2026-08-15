@@ -83,9 +83,14 @@ class FirmServiceOffering
     #[Groups(['offering:read'])]
     private Collection $suggestedMaterials;
 
+    /** @var Collection<int, RequiredChoiceGroup> */
+    #[ORM\OneToMany(mappedBy: 'offering', targetEntity: RequiredChoiceGroup::class, orphanRemoval: true)]
+    private Collection $choiceGroups;
+
     public function __construct()
     {
         $this->suggestedMaterials = new ArrayCollection();
+        $this->choiceGroups = new ArrayCollection();
     }
 
     public function getId(): ?int
@@ -141,6 +146,40 @@ class FirmServiceOffering
     public function getSuggestedMaterials(): Collection
     {
         return $this->suggestedMaterials;
+    }
+
+    /** @return Collection<int, RequiredChoiceGroup> */
+    public function getChoiceGroups(): Collection
+    {
+        return $this->choiceGroups;
+    }
+
+    /**
+     * V1 — un seul groupe actif à la fois par prestation (voir docblock de
+     * RequiredChoiceGroup). Retourne le premier trouvé si l'invariant est jamais violé
+     * (défensif, ne devrait jamais arriver — appliqué par FirmOfferingChoiceGroupService).
+     */
+    public function getActiveChoiceGroup(): ?RequiredChoiceGroup
+    {
+        foreach ($this->choiceGroups as $group) {
+            if ($group->isActive()) {
+                return $group;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * V1 — le groupe de cette prestation quel que soit son état actif/inactif (au plus un
+     * en pratique, voir docblock de la classe : upsertChoiceGroup() réutilise toujours ce
+     * même groupe plutôt que d'en recréer un nouveau à chaque bascule de mode). Utilisé
+     * pour la vue de configuration manager (choiceGroupConfig) — jamais pour la vue
+     * instrumentiste, qui doit rester filtrée sur le groupe réellement opérationnel
+     * (getActiveChoiceGroup()).
+     */
+    public function getGroup(): ?RequiredChoiceGroup
+    {
+        return $this->choiceGroups->isEmpty() ? null : $this->choiceGroups->first();
     }
 
     public function isRepresentativePresenceRelevant(): bool

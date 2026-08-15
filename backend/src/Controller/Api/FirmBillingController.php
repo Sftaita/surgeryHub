@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Entity\ChoiceOption;
 use App\Entity\Firm;
 use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
@@ -77,10 +78,11 @@ class FirmBillingController extends AbstractController
         if ($firm instanceof JsonResponse) return $firm;
 
         $rules = $this->em->createQueryBuilder()
-            ->select('r', 'mi', 'it')
+            ->select('r', 'mi', 'it', 'co')
             ->from(PricingRule::class, 'r')
             ->leftJoin('r.materialItem', 'mi')
             ->leftJoin('r.interventionType', 'it')
+            ->leftJoin('r.choiceOption', 'co')
             ->where('r.firm = :firm')
             ->orderBy('r.ruleType', 'ASC')
             ->addOrderBy('r.id', 'ASC')
@@ -126,6 +128,7 @@ class FirmBillingController extends AbstractController
 
         $interventionType = null;
         $materialItem = null;
+        $choiceOption = null;
 
         if ($ruleType === PricingRuleType::INTERVENTION_FEE) {
             $interventionTypeId = $data['interventionTypeId'] ?? null;
@@ -135,6 +138,19 @@ class FirmBillingController extends AbstractController
             $interventionType = $this->em->find(InterventionType::class, (int) $interventionTypeId);
             if (!$interventionType instanceof InterventionType) {
                 return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Type d\'intervention introuvable.']], 404);
+            }
+
+            // Tarification firme conditionnée à un choix obligatoire — choiceOptionId
+            // facultatif : null = forfait unique standard (comportement inchangé).
+            if (!empty($data['choiceOptionId'])) {
+                $choiceOption = $this->em->find(ChoiceOption::class, (int) $data['choiceOptionId']);
+                if (!$choiceOption instanceof ChoiceOption) {
+                    return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Option de choix introuvable.']], 404);
+                }
+                $optionOffering = $choiceOption->getGroup()->getOffering();
+                if ($optionOffering->getFirm()->getId() !== $firm->getId() || $optionOffering->getInterventionType()->getId() !== $interventionType->getId()) {
+                    return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Cette option ne correspond pas à cette firme et ce type d\'intervention.']], 422);
+                }
             }
         } elseif ($ruleType === PricingRuleType::MATERIAL_FEE) {
             $materialItemId = $data['materialItemId'] ?? null;
@@ -156,8 +172,8 @@ class FirmBillingController extends AbstractController
         // PricingRulePeriodOverlapException → 409 en cas de conflit.
         $today = new \DateTimeImmutable('today');
         $rule = ($validFrom !== null && $validFrom > $today)
-            ? $this->versioningService->scheduleRule($firm, $ruleType, $interventionType, $materialItem, (string) $unitPrice, $currency, $validFrom, $validTo, $actor)
-            : $this->versioningService->createInitialRule($firm, $ruleType, $interventionType, $materialItem, (string) $unitPrice, $currency, $validFrom, $validTo, $actor);
+            ? $this->versioningService->scheduleRule($firm, $ruleType, $interventionType, $materialItem, (string) $unitPrice, $currency, $validFrom, $validTo, $actor, $choiceOption)
+            : $this->versioningService->createInitialRule($firm, $ruleType, $interventionType, $materialItem, (string) $unitPrice, $currency, $validFrom, $validTo, $actor, $choiceOption);
 
         return $this->json($this->serializeRule($rule), 201);
     }
@@ -304,6 +320,10 @@ class FirmBillingController extends AbstractController
                 'label' => $r->getMaterialItem()->getLabel(),
                 'referenceCode' => $r->getMaterialItem()->getReferenceCode(),
                 'firm' => ['id' => $r->getMaterialItem()->getFirm()->getId(), 'name' => $r->getMaterialItem()->getFirm()->getName()],
+            ] : null,
+            'choiceOption' => $r->getChoiceOption() ? [
+                'id' => $r->getChoiceOption()->getId(),
+                'label' => $r->getChoiceOption()->getLabel(),
             ] : null,
             'unitPrice' => $r->getUnitPrice(),
             'currency' => $r->getCurrency(),

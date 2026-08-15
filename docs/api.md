@@ -562,8 +562,9 @@ DECLARED → REJECTED
 | `primaryFirmId` | — | Doit exister et être `active` si fourni |
 | `orderIndex` | ✓ | Position d'affichage |
 | `representativePresent` | — | D-101 — donnée factuelle ("délégué présent ?"), jamais financière |
+| `selectedChoiceOptionId` | — | D-111 — tarification firme conditionnée à un choix obligatoire, donnée factuelle, jamais financière |
 
-**Réponse — 201 :** `{ "id": 88, "orderIndex": 0, "representativePresent": true }`
+**Réponse — 201 :** `{ "id": 88, "orderIndex": 0, "representativePresent": true, "selectedChoiceOptionId": null }`
 
 **Validation serveur — présence du délégué (D-101, finalisation UX instrumentiste) :** si la
 prestation effective (`primaryFirm` × `interventionType` résolus, via `FirmServiceOffering`)
@@ -571,6 +572,11 @@ a `representativePresenceRelevant = true`, `representativePresent` **doit** valo
 `false` — jamais `null`/absent. Sans firme résolue (`primaryFirmId` omis), la question n'est
 jamais pertinente et aucune réponse n'est exigée. Défendu côté serveur (`InterventionService`),
 pas uniquement côté frontend.
+
+**Validation serveur — choix obligatoire (D-111) :** même principe : si la prestation
+effective a un `choiceGroup` opérationnel (actif, ≥ 2 options actives), `selectedChoiceOptionId`
+est requis (422 sinon) et doit désigner une option appartenant à ce groupe (422 sinon —
+défense contre un id arbitraire).
 
 **Erreurs (codes stables, voir `ApiExceptionSubscriber`) :**
 
@@ -581,6 +587,8 @@ pas uniquement côté frontend.
 | `PRIMARY_FIRM_NOT_FOUND` | 404 | `primaryFirmId` inexistant |
 | `PRIMARY_FIRM_INACTIVE` | 422 | Firme désactivée |
 | — (422, message brut) | 422 | `representativePresent` manquant alors que la prestation l'exige — message : "Indiquez si un délégué de {Firme} était présent." |
+| — (422, message brut) | 422 | `selectedChoiceOptionId` manquant alors que la prestation l'exige, ou option ne correspondant pas à cette prestation |
+| `INCOMPATIBLE_CHOICE_MATERIAL` | 409 | (sur `POST/PATCH .../material-lines`) matériel appartenant à une AUTRE option du même groupe que celle sélectionnée |
 
 ### `PATCH /api/missions/{missionId}/interventions/{interventionId}`
 
@@ -591,14 +599,18 @@ pas uniquement côté frontend.
   "interventionTypeId": 15,
   "primaryFirmId": null,
   "orderIndex": 2,
-  "representativePresent": null
+  "representativePresent": null,
+  "selectedChoiceOptionId": 57,
+  "confirmRemoveIncompatibleMaterial": false
 }
 ```
 
 - `interventionTypeId`, si fourni, ré-dérive aussi le snapshot `code`/`label` depuis le nouveau type (jamais de retrait — un type reste toujours obligatoire).
 - `primaryFirmId` supporte le **tri-état** : clé absente = inchangé ; `null` explicite = retrait ; valeur = définit/remplace.
 - `representativePresent` supporte le même tri-état (D-101) : clé absente = inchangé ; `null` explicite = efface une réponse devenue obsolète (ex: changement vers une firme/prestation non pertinente — voir `EditInterventionDialog.tsx`) ; `true`/`false` = répond.
-- **Validation serveur** : dès que la requête touche `interventionTypeId`, `primaryFirmId` ou `representativePresent`, le serveur recalcule la prestation effective (valeurs fournies fusionnées avec l'existant) et applique la même règle qu'à la création — `representativePresent` ne peut pas rester `null` si la prestation résultante l'exige. Un PATCH qui ne touche à aucun de ces trois champs (ex: réordonnancement via `orderIndex` seul) n'est jamais bloqué par cette règle, y compris sur une ancienne intervention jamais répondue.
+- `selectedChoiceOptionId` supporte le même tri-état (D-111) : clé absente = inchangé ; `null` explicite = retire la sélection ; valeur = nouvelle option.
+- **Validation serveur** : dès que la requête touche `interventionTypeId`, `primaryFirmId`, `representativePresent` ou `selectedChoiceOptionId`, le serveur recalcule la prestation effective (valeurs fournies fusionnées avec l'existant) et applique les mêmes règles qu'à la création. Un PATCH qui ne touche à aucun de ces champs (ex: réordonnancement via `orderIndex` seul) n'est jamais bloqué par ces règles, y compris sur une ancienne intervention jamais répondue.
+- **D-111 — changement de choix avec matériel déjà encodé** : si le nouveau choix rendrait incompatible un `MaterialLine` déjà attaché à cette intervention, la requête échoue avec `409 CHOICE_OPTION_CHANGE_REQUIRES_CONFIRMATION` (corps `error.violations: [{ materialLineId, materialItemLabel }]`) tant que `confirmRemoveIncompatibleMaterial: true` n'est pas explicitement fourni — jamais de suppression silencieuse. Confirmé, la ligne incompatible est retirée et la nouvelle sélection appliquée dans la même transaction.
 - Réponse — **204** (pas de corps).
 
 ### `DELETE /api/missions/{missionId}/interventions/{interventionId}`
@@ -613,6 +625,8 @@ _(Inchangé.)_
   "code": "PTG", "label": "Prothèse totale de genou",
   "interventionType": { "id": 12, "code": "PTG", "label": "Prothèse totale de genou" },
   "primaryFirm": { "id": 4, "name": "Zimmer Biomet" },
+  "selectedChoiceOptionId": null,
+  "selectedChoiceOptionLabel": null,
   "suggestedMaterials": [
     { "id": 45, "firm": { "id": 4, "name": "Zimmer Biomet" }, "label": "Anchor suture 5.5mm", "referenceCode": "AR-1234", "unit": "pièce", "isImplant": false, "active": true }
   ],
@@ -4586,6 +4600,50 @@ d'un seul `displayOrder`.
 
 Suppression toujours physique — aucune incidence historique.
 
+### 30.1 Tarification firme conditionnée à un choix obligatoire (D-111)
+
+Générique (aucune sémantique clinique en dur, voir `docs/decisions.md` D-111) — un
+groupe de choix détermine quelle `PricingRule` INTERVENTION_FEE s'applique, à la place
+du forfait unique standard. **Jamais un montant** dans les réponses ci-dessous.
+
+#### `PUT /api/firms/{firmId}/service-offerings/{offeringId}/choice-group`
+
+`{ question: string }` — crée le groupe de cette prestation ou réutilise/réactive
+toujours celui déjà existant (jamais une recréation à chaque bascule de mode, question/
+options déjà configurées conservées). `422` si `question` vide.
+
+#### `DELETE /api/firms/{firmId}/service-offerings/{offeringId}/choice-group`
+
+Désactive le groupe (repli vers le forfait unique standard) — jamais de suppression :
+options, `PricingRule` liées et sélections instrumentiste historiques restent intactes.
+
+#### `POST /api/firms/{firmId}/service-offerings/{offeringId}/choice-group/options`
+
+`{ label: string, materialItemId?: number }` — `422` si `label` vide, si aucun groupe
+n'est encore configuré, ou si `materialItemId` n'appartient pas à la même firme que la
+prestation ; `409` si ce matériel est déjà associé à une autre option active du même
+groupe.
+
+#### `PATCH .../choice-group/options/{optionId}`
+
+`{ label?, materialItemId?, active? }` — mêmes validations que la création.
+`materialItemId: null` retire l'association matérielle.
+
+#### `DELETE .../choice-group/options/{optionId}`
+
+Suppression physique uniquement si l'option n'a jamais été utilisée (aucune
+`PricingRule`, aucune `MissionIntervention.selectedChoiceOption` réelle) — sinon `409`,
+désactiver (`active: false`) à la place. Jamais de perte d'historique financier/encodage.
+
+#### `GET /api/firms/{firmId}/service-offerings` — champs additionnels
+
+`choiceGroup` (visible à tout rôle authentifié, **seulement si opérationnel** — groupe
+`active` et ≥ 2 options actives) : `{ id, question, options: [{ id, label, active }] }`.
+`choiceGroupConfig` (réservé à `BillingVoter::MANAGE`, comme les 4 indicateurs de
+politique délégué existants) : vue complète y compris non opérationnelle et options
+désactivées, `{ id, question, active, operational, options: [{ id, label, active,
+materialItem }] }`.
+
 ### `GET|POST|PATCH|DELETE /api/firms/{firmId}/pricing-rules` (évolution)
 
 `ruleType`: `INTERVENTION_FEE` (nécessite `interventionTypeId`) ou `MATERIAL_FEE`
@@ -4594,6 +4652,14 @@ rôle dans la décision de facturabilité). Nouveaux champs : `currency` (défau
 `validFrom`/`validTo` (nullables, `null` = borne ouverte). `409` si la règle créée ou
 modifiée chevauche, en dates, une autre règle active déjà posée sur la même cible
 (refus bloquant, jamais un choix silencieux — voir `PricingRuleResolver`).
+
+**D-111 — `choiceOptionId`** (`POST` uniquement, `INTERVENTION_FEE` seulement) :
+facultatif, discrimine le forfait par `ChoiceOption` au lieu du forfait unique standard
+(`null`). `422` si l'option ne correspond pas à cette firme et ce type d'intervention.
+Le chevauchement de dates (§ ci-dessus) est vérifié séparément par option — deux options
+du même groupe ne se chevauchent jamais entre elles. `PATCH`/`DELETE`/`replace`
+n'acceptent pas ce champ : la cible (y compris `choiceOptionId`) est immuable après
+création, `replace` la copie automatiquement depuis la règle remplacée.
 
 **D-072 (Lot 2) — voir §34 pour le détail complet :** `PATCH`/`DELETE` restreints aux
 règles futures (`409 PRICING_RULE_IMMUTABLE` sinon) ; `validTo` devient EXCLUSIF

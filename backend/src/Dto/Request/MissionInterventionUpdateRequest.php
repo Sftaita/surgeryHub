@@ -27,4 +27,20 @@ final class MissionInterventionUpdateRequest
      */
     public bool $representativePresentProvided = false;
     public ?bool $representativePresent = null;
+
+    /**
+     * Tarification firme conditionnée à un choix obligatoire — même tri-état que
+     * representativePresent : absent = inchangé, présent avec null = retire
+     * explicitement le choix (rare), présent avec une valeur = nouvelle option.
+     */
+    public bool $selectedChoiceOptionIdProvided = false;
+    public ?int $selectedChoiceOptionId = null;
+
+    /**
+     * §8 du prompt — un changement de choix qui rendrait du matériel déjà encodé
+     * incompatible exige cette confirmation explicite (sinon 409, voir
+     * ChoiceOptionChangeRequiresConfirmationException) ; jamais de suppression
+     * silencieuse.
+     */
+    public bool $confirmRemoveIncompatibleMaterial = false;
 }

@@ -31,5 +31,12 @@ final class MissionEncodingInterventionDto
          * null = jamais répondu (legacy, ou question non pertinente pour cette prestation).
          */
         public readonly ?bool $representativePresent = null,
+        /**
+         * Tarification firme conditionnée à un choix obligatoire — jamais un montant
+         * (voir docblock de ChoiceOption). null = prestation standard ou groupe pas
+         * encore répondu.
+         */
+        public readonly ?int $selectedChoiceOptionId = null,
+        public readonly ?string $selectedChoiceOptionLabel = null,
     ) {}
 }

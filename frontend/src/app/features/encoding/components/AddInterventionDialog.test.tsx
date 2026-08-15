@@ -378,3 +378,91 @@ describe("AddInterventionDialog — présence d'un délégué (D-092)", () => {
     expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 11, orderIndex: 2, representativePresent: false });
   });
 });
+
+describe("AddInterventionDialog — tarification firme conditionnée à un choix obligatoire", () => {
+  const CHOICE_GROUP = {
+    id: 900,
+    question: "Quel implant intersomatique a été utilisé ?",
+    options: [
+      { id: 1, label: "Signature", active: true },
+      { id: 2, label: "Altera", active: true },
+    ],
+  };
+
+  it("ne pose jamais la question quand la prestation n'a aucun groupe de choix", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/service-offerings")) {
+        return Promise.resolve({ data: [{ id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: false, choiceGroup: null }] });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    const { onSubmit } = renderDialog();
+
+    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
+
+    expect(screen.queryByText(CHOICE_GROUP.question)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, orderIndex: 2 });
+  });
+
+  it("pose la question configurée par le manager et bloque la soumission tant qu'aucune option n'est choisie", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/service-offerings")) {
+        return Promise.resolve({ data: [{ id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: false, choiceGroup: CHOICE_GROUP }] });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    const { onSubmit } = renderDialog();
+
+    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
+
+    expect(await screen.findByText(`${CHOICE_GROUP.question} *`)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Signature" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Altera" })).toBeInTheDocument();
+    // Jamais un montant affiché à l'instrumentiste.
+    expect(screen.queryByText(/€/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ajouter" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Signature" }));
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, orderIndex: 2, selectedChoiceOptionId: 1 });
+  });
+
+  it("changer de type vers une prestation sans groupe fait disparaître la question et n'envoie plus selectedChoiceOptionId", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/service-offerings")) {
+        return Promise.resolve({
+          data: [
+            { id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: false, choiceGroup: CHOICE_GROUP },
+            { id: 502, interventionType: TYPES[1], active: true, representativePresenceRelevant: false, choiceGroup: null },
+          ],
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    const { onSubmit } = renderDialog();
+
+    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
+    await user.click(await screen.findByRole("button", { name: "Altera" }));
+
+    await user.click(screen.getByLabelText(/type d'intervention/i));
+    await user.click(await screen.findByText("PTG — Prothèse totale de genou"));
+
+    expect(screen.queryByText(CHOICE_GROUP.question)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 2, primaryFirmId: 10, orderIndex: 2 });
+  });
+});
