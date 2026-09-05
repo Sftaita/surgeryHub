@@ -8493,3 +8493,134 @@ simplement l'onglet En attente sans mise en évidence — dégradation gracieuse
 échec. `SurgeonMissionRequest` (D-099) reste sur son propre pipeline de notification,
 volontairement non fusionné avec `CatalogueRequestKind` (objet métier réellement
 différent).
+
+## D-114 — Communication des absences chirurgiens : « Libération de salle » (Lot A), bypass volontaire de NotificationPreferenceResolver (2026-09-05)
+
+Date : 2026-09-05
+
+### Contexte
+
+Nouveau besoin métier : lorsqu'un chirurgien encode une absence, deux communications
+distinctes doivent pouvoir être déclenchées, chacune activable/désactivable par site par le
+manager — (1) informer les chirurgiens collègues du même site que des blocs opératoires se
+libèrent, (2) informer la gestion du bloc du congé à venir avec un délai configurable. Le
+travail est découpé en 3 sous-lots (A/B/C) ; cette ADR couvre le Lot A (« Libération de
+salle » uniquement) et pose la décision architecturale valable pour les trois.
+
+### Décision — pas de passage par `NotificationPreferenceResolver`/`NotificationType`
+
+Ces deux communications sont des **diffusions organisationnelles obligatoires**, gouvernées
+par un réglage de site que seul le manager contrôle — pas des préférences personnelles de
+destinataire. `NotificationPreferenceResolver::resolve(User $user, NotificationType $type)`
+est structurellement conçu pour l'inverse : un choix individuel, par utilisateur, révocable
+par cet utilisateur lui-même, sans aucune notion de site ni de destinataire hors `User`
+(confirmé par audit du code existant avant implémentation).
+
+Faire transiter « Libération de salle » par ce resolver introduirait deux niveaux de
+décision contradictoires : le manager active la communication pour le site, mais un
+chirurgien collègue pourrait individuellement la désactiver pour lui-même — ce n'est pas le
+modèle voulu. Pour « gestion du bloc » (Lot B), le destinataire n'est de toute façon pas un
+`User` (une adresse mailbox configurée par site), donc structurellement hors du domaine du
+resolver.
+
+**Décision actée :**
+- Aucun nouveau cas `NotificationType` pour ces deux flux.
+- Aucun passage par `NotificationPreferenceResolver`.
+- Activation/désactivation exclusivement via `AbsenceCommunicationSiteConfig` (nouvelle
+  entité, une ligne par site).
+- Traçabilité via un journal dédié (`SurgeonAbsenceCommunication` +
+  `SurgeonAbsenceCommunicationDelivery`), pas via `OutboundNotification` (voir plus bas).
+
+**Portée du bypass, volontairement limitée** : cette décision ne s'applique qu'à cette
+catégorie précise de communication — une diffusion organisationnelle obligatoire, configurée
+par le manager au niveau du site, avec un destinataire qui peut ne pas être un `User`
+SurgicalHub. Elle ne doit jamais servir de précédent pour contourner
+`NotificationPreferenceResolver` sur une notification personnelle classique ailleurs dans le
+projet.
+
+### Journal dédié plutôt que `OutboundNotification`
+
+`OutboundNotification` (D-084) suppose un `recipientUser` non nul et est visible uniquement
+en `ROLE_ADMIN` (`OutboundNotificationVoter`) — deux contraintes incompatibles avec ce
+besoin : la gestion du bloc (Lot B) n'a pas de `User` associé, et ce journal doit être
+visible par le manager, pas seulement l'admin. Plutôt que de relâcher les contraintes d'une
+entité existante au risque de la rendre incohérente pour son usage actuel, une entité dédiée
+est introduite : `SurgeonAbsenceCommunication` (la décision logique — snapshot immuable
+« quoi/pour qui/quelles occurrences ») et `SurgeonAbsenceCommunicationDelivery` (un envoi
+réel par destinataire, avec son propre statut). Une « Libération de salle » donnant lieu à
+plusieurs emails individuels distincts (un par chirurgien collègue), le statut de livraison
+ne peut pas être un champ unique agrégé au niveau de la communication logique : l'échec d'un
+envoi à un collègue ne doit jamais masquer le succès des autres, ni inversement.
+
+Le statut d'une `SurgeonAbsenceCommunicationDelivery` ne passe à `SENT`/`FAILED` que par
+confirmation réelle du pipeline d'envoi (`SendTemplatedEmailMessageHandler` une fois
+`$mailer->send()` confirmé sans exception, ou `OutboundNotificationEmailFailureListener`
+une fois les retries Messenger épuisés) — jamais de manière optimiste au moment du dispatch
+Messenger, qui ne prouve rien côté SMTP. `SendTemplatedEmailMessage` gagne un champ
+`absenceCommunicationDeliveryId`, indépendant et symétrique à `outboundNotificationId`
+(D-084) — le listener d'échec existant est étendu pour couvrir les deux journaux plutôt que
+dupliqué.
+
+### Calcul des occurrences BLOCK libérées (§2 de la demande)
+
+Nouveau service `SurgeonAbsenceBlockOccurrenceResolver`, strictement en lecture — ne modifie
+jamais `SurgeonSchedulePost`/`RecurrenceRule` (invariant R-02 du freeze Planning V2).
+Réutilise `PlanningGeneratorServiceV2::theoreticalOccurrenceDates()` comme unique moteur de
+récurrence (jamais réimplémenté) et le pattern de requête de
+`SurgeonAbsenceOccurrenceImpactService::loadActivePosts()` (Lot 3/D-103), avec un filtre
+`type = BLOCK` en plus — les `CONSULTATION` ne sont jamais concernées. Une occurrence portant
+déjà une `PlanningOccurrenceException` (quel qu'en soit le type) est exclue, même convention
+que `SurgeonAbsenceOccurrenceImpactService::hasExistingException()` : il n'y a rien à libérer
+si l'occurrence n'aura de toute façon pas lieu.
+
+Seules les occurrences **encore futures** au moment du traitement sont retenues (jamais un
+bloc déjà passé), aussi bien à la création qu'au moment d'un complément.
+
+### Aucune rétractation, mais un complément sur allongement (§3/§7)
+
+Une fois une « Libération de salle » envoyée, elle n'est jamais corrigée ni rétractée —
+raccourcir ou supprimer le congé ne déclenche rien côté collègues. En revanche, un
+allongement qui révèle de **nouvelles** occurrences BLOCK jamais annoncées déclenche un
+complément ne listant que ces nouvelles dates. Le calcul du delta compare les occurrences
+théoriques actuelles à l'union des `occurrencesSnapshot` déjà journalisés pour
+`(absence, site)`, toutes révisions confondues (clé `postId|date`).
+
+`revisionNumber` (0 pour le premier envoi, incrémenté pour chaque complément légitime) +
+contrainte unique DB `(absence_id, site_id, type, revision_number)` garantissent
+l'idempotence : le calcul du prochain `revisionNumber` a lieu sous verrou pessimiste sur
+l'`Absence`, dans une transaction Doctrine réelle (`recordRoomRelease()`), la contrainte
+unique restant le dernier garde-fou en cas de course concurrente.
+
+### Envoi individuel, jamais groupé (§16)
+
+Chaque chirurgien collègue reçoit un email individuel et distinct (`SendTemplatedEmailMessage`,
+un `To` unique) — aucune adresse n'est exposée entre destinataires, aucune extension du
+Mailer n'était nécessaire pour ce lot (contrairement à la gestion du bloc, Lot B, qui
+nécessitera `cc`/`replyTo`).
+
+### Worker Messenger — restart obligatoire au déploiement de ce lot
+
+`SendTemplatedEmailMessage` gagne un nouveau champ (`absenceCommunicationDeliveryId`) et son
+handler ainsi que `OutboundNotificationEmailFailureListener` changent de comportement. Le
+worker Messenger étant un process long-running (les classes déjà chargées ne sont jamais
+rechargées en cours de vie du process), un restart est **obligatoire** lors du déploiement de
+ce lot — vérifié en conditions réelles lors du test Docker/Mailpit de ce lot : sans restart,
+le worker continue silencieusement d'exécuter l'ancienne version du handler (l'email part
+correctement, mais `recordDeliverySuccess()`/`recordDeliveryFailure()` ne sont jamais
+appelés, laissant les livraisons bloquées en `SCHEDULED` indéfiniment). Ceci n'est pas un bug
+applicatif : c'est la règle déjà documentée dans `docs/deployment-versioning.md` §4.5
+(« Si le worker doit reprendre une nouvelle version du code des handlers Messenger »),
+qui s'applique ici parce que le contrat de `SendTemplatedEmailMessage` a changé — pas une
+exception ni un cas particulier à ce lot.
+
+### Non fait dans ce lot (Lots B/C)
+
+Email « gestion du bloc » (délai configurable, scheduling différé, `cc`/`replyTo`),
+modification/suppression avec choix Oui/Non pour la gestion du bloc, rattrapage historique
+des absences déjà existantes, journal manager complet (UI). Le schéma des tables créées ici
+(`AbsenceCommunicationSiteConfig`, `SurgeonAbsenceCommunication`,
+`SurgeonAbsenceCommunicationDelivery`) est déjà dimensionné pour ces lots (champs
+`notifyBlockManagementEnabled`/`blockManagementEmailTo`/`blockManagementEmailCc`/
+`blockManagementDelayDays`, `scheduledAt`/`cancelledAt` sur la delivery) afin d'éviter une
+seconde migration structurelle, mais aucune logique d'envoi ni contrat API ne les exploite
+avant le Lot B.

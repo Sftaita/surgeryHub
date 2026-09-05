@@ -3,6 +3,7 @@
 namespace App\MessageHandler;
 
 use App\Message\SendTemplatedEmailMessage;
+use App\Service\AbsenceCommunicationJournalService;
 use App\Service\OutboundNotificationService;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Mailer\MailerInterface;
@@ -19,6 +20,7 @@ final class SendTemplatedEmailMessageHandler
         private readonly Environment $twig,
         private readonly LoggerInterface $logger,
         private readonly OutboundNotificationService $outboundNotificationService,
+        private readonly AbsenceCommunicationJournalService $absenceCommunicationJournalService,
     ) {
     }
 
@@ -65,6 +67,14 @@ final class SendTemplatedEmailMessageHandler
                 bodyText: $textBody,
                 bodyHtml: $htmlBody,
             );
+        }
+
+        // Communication des absences chirurgiens, Lot A (D-114) — même discipline honnête
+        // que ci-dessus : la livraison ne passe à SENT qu'ici, jamais de manière optimiste
+        // au moment du dispatch. Le chemin d'échec est couvert par
+        // OutboundNotificationEmailFailureListener (une fois les retries épuisés).
+        if ($message->absenceCommunicationDeliveryId !== null) {
+            $this->absenceCommunicationJournalService->recordDeliverySuccess($message->absenceCommunicationDeliveryId);
         }
     }
 }

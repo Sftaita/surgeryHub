@@ -77,6 +77,41 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
         return $res;
     }
 
+    /**
+     * @return list<User>
+     *
+     * Chirurgiens actifs affiliés à un site donné, à l'exclusion optionnelle d'un
+     * utilisateur (Communication des absences, Lot A/D-114 — collègues du même site que le
+     * chirurgien absent). Même style que findInstrumentists() (innerJoin sur
+     * siteMemberships), pas de nouveau repository dédié.
+     */
+    public function findSurgeonsAffiliatedToSite(int $siteId, ?int $excludeUserId = null, bool $activeOnly = true): array
+    {
+        $qb = $this->createQueryBuilder('u')
+            ->innerJoin('u.siteMemberships', 'sm')
+            ->andWhere('sm.site = :siteId')
+            ->andWhere('u.roles LIKE :role')
+            ->setParameter('siteId', $siteId)
+            ->setParameter('role', '%"ROLE_SURGEON"%')
+            ->orderBy('u.lastname', 'ASC')
+            ->addOrderBy('u.firstname', 'ASC')
+            ->addOrderBy('u.email', 'ASC');
+
+        if ($activeOnly) {
+            $qb->andWhere('u.active = :active')
+               ->setParameter('active', true);
+        }
+
+        if ($excludeUserId !== null) {
+            $qb->andWhere('u.id != :excludeUserId')
+               ->setParameter('excludeUserId', $excludeUserId);
+        }
+
+        /** @var list<User> $res */
+        $res = $qb->getQuery()->getResult();
+        return $res;
+    }
+
     public function findSurgeonById(int $id): ?User
     {
         return $this->createQueryBuilder('u')

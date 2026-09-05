@@ -4,6 +4,7 @@ namespace App\Tests\Unit\EventListener;
 
 use App\EventListener\OutboundNotificationEmailFailureListener;
 use App\Message\SendTemplatedEmailMessage;
+use App\Service\AbsenceCommunicationJournalService;
 use App\Service\OutboundNotificationService;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
@@ -18,15 +19,17 @@ use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
 class OutboundNotificationEmailFailureListenerTest extends TestCase
 {
     private OutboundNotificationService&MockObject $outboundNotificationService;
+    private AbsenceCommunicationJournalService&MockObject $absenceCommunicationJournalService;
 
     protected function setUp(): void
     {
         $this->outboundNotificationService = $this->createMock(OutboundNotificationService::class);
+        $this->absenceCommunicationJournalService = $this->createMock(AbsenceCommunicationJournalService::class);
     }
 
     private function listener(): OutboundNotificationEmailFailureListener
     {
-        return new OutboundNotificationEmailFailureListener($this->outboundNotificationService);
+        return new OutboundNotificationEmailFailureListener($this->outboundNotificationService, $this->absenceCommunicationJournalService);
     }
 
     private function makeEvent(SendTemplatedEmailMessage $message, \Throwable $error, bool $willRetry): WorkerMessageFailedEvent
@@ -66,6 +69,7 @@ class OutboundNotificationEmailFailureListenerTest extends TestCase
         $message = new SendTemplatedEmailMessage('to@x.test', 'S', 'from@x.test', 'F', 'tpl.html.twig', [], null, null);
 
         $this->outboundNotificationService->expects($this->never())->method('recordEmailAttempt');
+        $this->absenceCommunicationJournalService->expects($this->never())->method('recordDeliveryFailure');
 
         $this->listener()->__invoke($this->makeEvent($message, new \RuntimeException('x'), willRetry: false));
     }
@@ -76,9 +80,37 @@ class OutboundNotificationEmailFailureListenerTest extends TestCase
         };
 
         $this->outboundNotificationService->expects($this->never())->method('recordEmailAttempt');
+        $this->absenceCommunicationJournalService->expects($this->never())->method('recordDeliveryFailure');
 
         $event = new WorkerMessageFailedEvent(new Envelope($other), 'async', new \RuntimeException('x'));
         $this->listener()->__invoke($event);
+    }
+
+    /**
+     * Communication des absences chirurgiens, Lot A (D-114) — même discipline honnête que
+     * OutboundNotification : FAILED seulement une fois les retries épuisés.
+     */
+    public function test_records_absence_communication_delivery_failure_but_leaves_scheduled_when_retry_will_happen(): void
+    {
+        $message = new SendTemplatedEmailMessage('to@x.test', 'S', 'from@x.test', 'F', 'tpl.html.twig', [], null, null, 42);
+
+        $this->outboundNotificationService->expects($this->never())->method('recordEmailAttempt');
+        $this->absenceCommunicationJournalService->expects($this->once())
+            ->method('recordDeliveryFailure')
+            ->with(42, $this->anything(), false);
+
+        $this->listener()->__invoke($this->makeEvent($message, new \RuntimeException('Connection timed out'), willRetry: true));
+    }
+
+    public function test_marks_absence_communication_delivery_failed_final_when_retries_are_exhausted(): void
+    {
+        $message = new SendTemplatedEmailMessage('to@x.test', 'S', 'from@x.test', 'F', 'tpl.html.twig', [], null, null, 42);
+
+        $this->absenceCommunicationJournalService->expects($this->once())
+            ->method('recordDeliveryFailure')
+            ->with(42, $this->anything(), true);
+
+        $this->listener()->__invoke($this->makeEvent($message, new \RuntimeException('Connection timed out'), willRetry: false));
     }
 
     public function test_never_persists_a_raw_dsn_looking_string_in_the_reason(): void

@@ -2820,6 +2820,53 @@ Utilisé notamment pour les déplacements drag & drop (changement de `dayOfWeek`
 
 ---
 
+### 26.3a Communication des absences chirurgiens — Lot A « Libération de salle » (D-114)
+
+Effet de bord asynchrone (aucun endpoint dédié — déclenché automatiquement par `POST
+/api/absences`, `PATCH /api/absences/{id}`, `POST /api/absences/mine` et `PATCH
+/api/absences/mine/{id}`, jamais par `DELETE`) : si l'utilisateur de l'absence est un
+`SURGEON` et que le réglage `notifyColleaguesEnabled` est activé pour un site où au moins une
+occurrence `BLOCK` future (jamais `CONSULTATION`) de son planning habituel tombe dans la
+période de l'absence, un email individuel « Libération de salle » est envoyé à chaque
+chirurgien collègue actif affilié à ce site (le chirurgien absent lui-même exclu). Voir
+`docs/decisions.md` D-114.
+
+**Aucune correction/rétractation** : raccourcir ou supprimer l'absence ne déclenche jamais
+rien pour ce flux. Un allongement révélant de **nouvelles** occurrences BLOCK jamais
+annoncées déclenche un complément (email ne listant que les nouvelles dates uniquement).
+
+#### `GET /api/planning/absence-communication-settings`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Réponse — 200 :**
+
+```json
+{
+  "items": [
+    { "site": { "id": 3, "name": "CHIREC - Hôpital Delta" }, "notifyColleaguesEnabled": true }
+  ]
+}
+```
+
+Un item par site existant (`Hospital`), y compris un site sans réglage explicite
+(`notifyColleaguesEnabled: false` par défaut). En Lot A, seul ce champ est exposé — les 4
+champs « gestion du bloc » (Lot B) existent déjà en base mais ne sont pas encore dans ce
+contrat.
+
+#### `PATCH /api/planning/absence-communication-settings/{siteId}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Body JSON :** `{ "notifyColleaguesEnabled": true }`
+
+**Réponse — 200 :** `{ "site": {...}, "notifyColleaguesEnabled": true }`
+
+**Erreurs :** `404` site introuvable, `400` champ manquant/invalide (même convention que
+`ShiftPeriodController`).
+
+---
+
 ### 26.3b Relances congés manager (D-051)
 
 Cible : instrumentistes + chirurgiens actifs uniquement. **Les deux actions envoient

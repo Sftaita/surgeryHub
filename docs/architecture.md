@@ -1789,6 +1789,54 @@ Chaque primitive réutilisée est déjà individuellement idempotente (garde de 
 transactionnelle ; une anomalie isolée est journalisée et n'interrompt jamais le reste du
 scan. Voir docs/decisions.md D-106 pour le détail des catégories et des choix de conception.
 
+### Communication des absences chirurgiens — Lot A « Libération de salle » (D-114)
+
+Nouvelle couche, indépendante des réactions D-062/D-103/D-104/D-105/D-107/D-112 ci-dessus
+(aucune Mission/PlanningAlert/PlanningOccurrenceException mutée) : quand un chirurgien
+encode ou allonge une absence, informe les chirurgiens collègues du même site que des blocs
+opératoires se libèrent — jamais rétracté, jamais pour une CONSULTATION.
+
+```
+AbsenceController::create()/update() / SelfAbsenceController::reactAndSync()
+        │  (7ᵉ collaborateur, après les 6 existants — jamais depuis delete())
+        ▼
+RoomReleaseCommunicationService::onAbsenceCreated()/onAbsenceUpdated()
+        │
+        ├── SurgeonAbsenceBlockOccurrenceResolver::resolveForWindow()
+        │       → réutilise PlanningGeneratorServiceV2::theoreticalOccurrenceDates()
+        │       → filtre type=BLOCK, exclut les occurrences déjà exceptées, groupe par site
+        ├── AbsenceCommunicationSiteConfig (site) — notifyColleaguesEnabled ?
+        ├── filtre "occurrences encore futures" + (sur update) delta vs déjà annoncé
+        ├── UserRepository::findSurgeonsAffiliatedToSite() — collègues actifs, exclut l'absent
+        └── AbsenceCommunicationJournalService::recordRoomRelease()
+                → transaction : lock pessimiste Absence, revisionNumber, persist
+                  SurgeonAbsenceCommunication (parent) + N SurgeonAbsenceCommunicationDelivery
+        ▼ (strictement après commit)
+SendTemplatedEmailMessage × N (un par collègue, absenceCommunicationDeliveryId)
+        ▼
+SendTemplatedEmailMessageHandler → $mailer->send() → recordDeliverySuccess() (SENT réel)
+OutboundNotificationEmailFailureListener (étendu) → recordDeliveryFailure() (retries épuisés)
+```
+
+**Bypass volontaire de `NotificationPreferenceResolver`** (voir D-114) : diffusion
+organisationnelle obligatoire gouvernée par le réglage de site, pas une préférence
+personnelle de destinataire. Journal dédié (`SurgeonAbsenceCommunication` +
+`SurgeonAbsenceCommunicationDelivery`) plutôt que `OutboundNotification` (D-084), qui
+suppose un `recipientUser` non nul et n'est visible qu'en `ROLE_ADMIN`.
+
+**Idempotence** : `revisionNumber` (0 = envoi initial, incrémenté pour chaque complément
+d'allongement légitime) + contrainte unique DB `(absence_id, site_id, type,
+revision_number)` — le calcul du prochain `revisionNumber` a lieu sous verrou pessimiste
+réel sur l'`Absence`, la contrainte unique restant le dernier garde-fou. Le statut d'une
+`SurgeonAbsenceCommunicationDelivery` ne passe à `SENT`/`FAILED` que par confirmation réelle
+du pipeline d'envoi, jamais de manière optimiste au moment du dispatch Messenger.
+
+Réglage par site : `AbsenceCommunicationSiteConfig` (façon `ShiftPeriodConfig`, une ligne
+par site), exposé en Lot A via `GET/PATCH /api/planning/absence-communication-settings`
+(voir docs/api.md §26.3a) — UI dans `PlanningSettingsTab.tsx` (4ᵉ section, « Communication
+des absences »). Les champs « gestion du bloc » (Lots B/C) existent déjà en base mais ne
+sont exploités par aucune logique avant le Lot B.
+
 **Notifications post-déploiement :**
 
 | Acteur | Déclencheur | Type de notification | Handler |

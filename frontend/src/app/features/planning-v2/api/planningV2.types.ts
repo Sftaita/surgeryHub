@@ -139,6 +139,13 @@ export interface ShiftPeriodConfigV2 {
   active: boolean;
 }
 
+// ── Communication des absences chirurgiens (Lot A, D-114) ───────────────────
+
+export interface AbsenceCommunicationSiteSettingV2 {
+  site: SiteRefV2;
+  notifyColleaguesEnabled: boolean;
+}
+
 // ── Site groups ──────────────────────────────────────────────────────────────
 
 export interface SiteGroupV2 {
@@ -230,6 +237,8 @@ export interface PreviewLineV2 {
   existingInstrumentistId: number | null;
   existingInstrumentistName: string | null;
   freedFrom: boolean;
+  surgeonPhotoPath?: string | null;
+  instrumentistPhotoPath?: string | null;
 }
 
 export interface PreviewSummaryV2 {

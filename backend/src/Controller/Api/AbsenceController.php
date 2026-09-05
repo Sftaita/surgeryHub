@@ -11,6 +11,7 @@ use App\Service\AbsenceImpactSummaryService;
 use App\Service\AbsenceMissionReactionService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use App\Service\InstrumentistAbsenceOccurrenceImpactService;
+use App\Service\RoomReleaseCommunicationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -29,6 +30,7 @@ class AbsenceController extends AbstractController
         private readonly InstrumentistAbsenceOccurrenceImpactService $instrumentistAbsenceOccurrenceImpactService,
         private readonly AbsenceImpactReconciliationService $reconciliationService,
         private readonly AbsenceImpactSummaryService $absenceImpactSummaryService,
+        private readonly RoomReleaseCommunicationService $roomReleaseCommunicationService,
     ) {}
 
     #[Route('', name: 'api_absences_list', methods: ['GET'])]
@@ -129,6 +131,12 @@ class AbsenceController extends AbstractController
             occurrenceNeutralized: $occurrenceResult['occurrences'],
         );
 
+        // Communication des absences chirurgiens, Lot A (D-114) — « Libération de salle »
+        // aux chirurgiens collègues du même site. Indépendant des 6 services ci-dessus
+        // (aucun impact sur les Missions/PlanningAlert/PlanningOccurrenceException), jamais
+        // appelé depuis delete() (une libération déjà communiquée n'est jamais rétractée).
+        $this->roomReleaseCommunicationService->onAbsenceCreated($absence, $currentUser);
+
         return $this->json($this->serialize($absence), 201);
     }
 
@@ -206,6 +214,11 @@ class AbsenceController extends AbstractController
                 reconciliation: $reconciliation,
             );
         }
+
+        // Lot A (D-114) — complément « Libération de salle » uniquement si l'allongement du
+        // congé révèle de nouvelles occurrences BLOCK jamais annoncées (voir
+        // RoomReleaseCommunicationService::onAbsenceUpdated() pour le calcul du delta).
+        $this->roomReleaseCommunicationService->onAbsenceUpdated($absence, $currentUser);
 
         return $this->json($this->serialize($absence));
     }

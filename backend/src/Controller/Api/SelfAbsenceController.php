@@ -13,6 +13,7 @@ use App\Service\AbsenceImpactSummaryService;
 use App\Service\AbsenceMissionReactionService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use App\Service\InstrumentistAbsenceOccurrenceImpactService;
+use App\Service\RoomReleaseCommunicationService;
 use App\Message\AbsenceSelfDeclaredMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -47,6 +48,7 @@ class SelfAbsenceController extends AbstractController
         private readonly AbsenceImpactSummaryService $absenceImpactSummaryService,
         private readonly UserRepository $userRepository,
         private readonly MessageBusInterface $bus,
+        private readonly RoomReleaseCommunicationService $roomReleaseCommunicationService,
     ) {}
 
     #[Route('', name: 'api_self_absences_list', methods: ['GET'])]
@@ -262,6 +264,15 @@ class SelfAbsenceController extends AbstractController
         $reconciliationResult = ['restoredOccurrences' => [], 'restoredMissions' => []];
         if ($previousDateStart !== null && $previousDateEnd !== null) {
             $reconciliationResult = $this->reconciliationService->reconcileForUpdate($absence, $previousDateStart, $previousDateEnd, $currentUser);
+        }
+
+        // Communication des absences chirurgiens, Lot A (D-114) — même service et même
+        // logique create/update que AbsenceController, jamais dupliqué. Jamais appelé
+        // depuis delete() (une libération déjà communiquée n'est jamais rétractée).
+        if ($previousDateStart !== null) {
+            $this->roomReleaseCommunicationService->onAbsenceUpdated($absence, $currentUser);
+        } else {
+            $this->roomReleaseCommunicationService->onAbsenceCreated($absence, $currentUser);
         }
 
         // Lot 5 (D-105) — ONE consolidated manager recap for this self-service create/update.

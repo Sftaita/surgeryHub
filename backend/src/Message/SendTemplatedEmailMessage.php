@@ -22,6 +22,15 @@ final class SendTemplatedEmailMessage
          * predating D-084 (invitations, absences, billing emails) that don't track history yet.
          */
         public readonly ?int $outboundNotificationId = null,
+        /**
+         * Communication des absences chirurgiens, Lot A (D-114) — id de la
+         * SurgeonAbsenceCommunicationDelivery déjà persistée (statut SCHEDULED) avant ce
+         * dispatch, pour que le handler/listener de cette même livraison passent réellement
+         * à SENT/FAILED — jamais un statut posé de manière optimiste au moment du dispatch,
+         * qui ne prouve rien côté SMTP. Indépendant de $outboundNotificationId (deux
+         * journaux distincts, jamais les deux à la fois sur un même message).
+         */
+        public readonly ?int $absenceCommunicationDeliveryId = null,
     ) {
     }
 }

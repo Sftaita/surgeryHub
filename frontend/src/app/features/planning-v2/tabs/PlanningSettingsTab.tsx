@@ -3,17 +3,20 @@ import { Box, Stack, Typography } from "@mui/material";
 import AccessTimeOutlinedIcon from "@mui/icons-material/AccessTimeOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
+import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 
 import { ShiftPeriodSettings } from "../components/ShiftPeriodSettings";
 import { SiteGroupSettings } from "../components/SiteGroupSettings";
+import { AbsenceCommunicationSettings } from "../components/AbsenceCommunicationSettings";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 
-type Section = "periodes" | "groupes" | "notifications";
+type Section = "periodes" | "groupes" | "absences" | "notifications";
 
 const NAV: Array<{ key: Section; label: string; icon: React.ReactNode }> = [
   { key: "periodes", label: "Périodes", icon: <AccessTimeOutlinedIcon sx={{ fontSize: 17 }} /> },
   { key: "groupes", label: "Groupes de sites", icon: <AccountTreeOutlinedIcon sx={{ fontSize: 17 }} /> },
+  { key: "absences", label: "Communication des absences", icon: <CampaignOutlinedIcon sx={{ fontSize: 17 }} /> },
   { key: "notifications", label: "Notifications", icon: <NotificationsNoneOutlinedIcon sx={{ fontSize: 17 }} /> },
 ];
 
@@ -65,6 +68,7 @@ export function PlanningSettingsTab() {
         <Box sx={{ flex: 1, minWidth: 0 }}>
           {section === "periodes" && <ShiftPeriodSettings />}
           {section === "groupes" && <SiteGroupSettings />}
+          {section === "absences" && <AbsenceCommunicationSettings />}
           {section === "notifications" && (
             <Box>
               <Box sx={{ bgcolor: "#fff", border: `1px solid ${planningV2Colors.cardBorder}`, borderRadius: planningV2Radii.cardLg, overflow: "hidden", boxShadow: planningV2Shadows.card }}>

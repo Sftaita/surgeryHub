@@ -3,6 +3,7 @@
 namespace App\EventListener;
 
 use App\Message\SendTemplatedEmailMessage;
+use App\Service\AbsenceCommunicationJournalService;
 use App\Service\OutboundNotificationService;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
@@ -16,28 +17,44 @@ use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
  *
  * The success path is NOT handled here — see SendTemplatedEmailMessageHandler, which
  * records the successful attempt itself once `$mailer->send()` returns without throwing.
+ *
+ * Communication des absences chirurgiens, Lot A (D-114) — this listener also covers
+ * `SendTemplatedEmailMessage::$absenceCommunicationDeliveryId`, an independent journal with
+ * the exact same honesty discipline (FAILED only once retries are exhausted). Extended here
+ * rather than duplicated in a second listener class.
  */
 #[AsEventListener(event: WorkerMessageFailedEvent::class)]
 final class OutboundNotificationEmailFailureListener
 {
     public function __construct(
         private readonly OutboundNotificationService $outboundNotificationService,
+        private readonly AbsenceCommunicationJournalService $absenceCommunicationJournalService,
     ) {
     }
 
     public function __invoke(WorkerMessageFailedEvent $event): void
     {
         $message = $event->getEnvelope()->getMessage();
-        if (!$message instanceof SendTemplatedEmailMessage || $message->outboundNotificationId === null) {
+        if (!$message instanceof SendTemplatedEmailMessage) {
             return;
         }
 
-        $this->outboundNotificationService->recordEmailAttempt(
-            $message->outboundNotificationId,
-            success: false,
-            reason: self::normalizeThrowableMessage($event->getThrowable()),
-            final: !$event->willRetry(),
-        );
+        if ($message->outboundNotificationId !== null) {
+            $this->outboundNotificationService->recordEmailAttempt(
+                $message->outboundNotificationId,
+                success: false,
+                reason: self::normalizeThrowableMessage($event->getThrowable()),
+                final: !$event->willRetry(),
+            );
+        }
+
+        if ($message->absenceCommunicationDeliveryId !== null) {
+            $this->absenceCommunicationJournalService->recordDeliveryFailure(
+                $message->absenceCommunicationDeliveryId,
+                reason: self::normalizeThrowableMessage($event->getThrowable()),
+                final: !$event->willRetry(),
+            );
+        }
     }
 
     /**

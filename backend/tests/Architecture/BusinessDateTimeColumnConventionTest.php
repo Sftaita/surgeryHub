@@ -157,6 +157,15 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         // entrée client.
         'App\Entity\MaterialItemRequest::decidedAt' => 'set from new \DateTimeImmutable() in MaterialItemRequestService::ignore(), never client input',
         'App\Entity\InterventionTypeRequest::decidedAt' => 'set from new \DateTimeImmutable() in MissionInterventionDraftService::ignore(), never client input',
+
+        // Communication des absences chirurgiens, Lot A (D-114) — SurgeonAbsenceCommunication
+        // (parent, immuable) et SurgeonAbsenceCommunicationDelivery (un envoi réel par
+        // destinataire — statut/dates de livraison vivent ici, jamais sur le parent).
+        'App\Entity\SurgeonAbsenceCommunication::absenceDateStartSnapshot' => 'date-only (date_immutable, Y-m-d) — copied from the owning Absence.dateStart, never a client instant',
+        'App\Entity\SurgeonAbsenceCommunication::absenceDateEndSnapshot' => 'date-only (date_immutable, Y-m-d) — copied from the owning Absence.dateEnd, never a client instant',
+        'App\Entity\SurgeonAbsenceCommunicationDelivery::scheduledAt' => 'Lot B — set from new \DateTimeImmutable() in the scheduling service, never client input',
+        'App\Entity\SurgeonAbsenceCommunicationDelivery::sentAt' => 'set from new \DateTimeImmutable() in AbsenceCommunicationJournalService::recordDeliverySuccess(), called only after SendTemplatedEmailMessageHandler confirms $mailer->send() did not throw — never client input',
+        'App\Entity\SurgeonAbsenceCommunicationDelivery::cancelledAt' => 'Lot B — set from new \DateTimeImmutable() when a scheduled communication is cancelled, never client input',
     ];
 
     /** Exempt by name, not by allowlist entry — the project-wide TimestampableTrait convention. */
