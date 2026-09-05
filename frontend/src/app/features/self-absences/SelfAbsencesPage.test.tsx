@@ -17,6 +17,7 @@ const createMyAbsenceMock = vi.fn();
 const updateMyAbsenceMock = vi.fn();
 const deleteMyAbsenceMock = vi.fn();
 const fetchAbsenceImpactPreviewMock = vi.fn();
+const fetchMyAbsenceDeletionInfoMock = vi.fn();
 
 vi.mock("./api/selfAbsences.api", () => ({
   fetchMyAbsences: (...args: unknown[]) => fetchMyAbsencesMock(...args),
@@ -24,6 +25,7 @@ vi.mock("./api/selfAbsences.api", () => ({
   updateMyAbsence: (...args: unknown[]) => updateMyAbsenceMock(...args),
   deleteMyAbsence: (...args: unknown[]) => deleteMyAbsenceMock(...args),
   fetchAbsenceImpactPreview: (...args: unknown[]) => fetchAbsenceImpactPreviewMock(...args),
+  fetchMyAbsenceDeletionInfo: (...args: unknown[]) => fetchMyAbsenceDeletionInfoMock(...args),
 }));
 
 const toastSuccess = vi.fn();
@@ -61,6 +63,10 @@ beforeEach(() => {
   updateMyAbsenceMock.mockReset();
   deleteMyAbsenceMock.mockReset();
   fetchAbsenceImpactPreviewMock.mockReset().mockResolvedValue([]);
+  // Communication des absences chirurgiens — Lot B (D-114). Défaut "jamais notifié" pour ne
+  // pas casser les tests de suppression existants (confirmation simple, sans choix Oui/Non) —
+  // les tests Lot B dédiés ci-dessous surchargent explicitement cette valeur par défaut.
+  fetchMyAbsenceDeletionInfoMock.mockReset().mockResolvedValue({ blockManagementAlreadyNotified: false, sites: [] });
   toastSuccess.mockReset();
   toastError.mockReset();
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -339,7 +345,7 @@ describe("SelfAbsencesPage — suppression", () => {
 
     await user.click(screen.getByRole("button", { name: "Supprimer" }));
 
-    await waitFor(() => expect(deleteMyAbsenceMock).toHaveBeenCalledWith(7));
+    await waitFor(() => expect(deleteMyAbsenceMock).toHaveBeenCalledWith(7, undefined));
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Absence supprimée"));
   });
 
@@ -353,6 +359,100 @@ describe("SelfAbsencesPage — suppression", () => {
     await screen.findByText("Supprimer cette absence ?");
     await user.click(screen.getByRole("button", { name: "Annuler" }));
 
+    expect(screen.queryByText("Supprimer cette absence ?")).not.toBeInTheDocument();
+    expect(deleteMyAbsenceMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("SelfAbsencesPage — suppression, communication des absences chirurgiens (Lot B, D-114)", () => {
+  it("déjà notifiée : affiche le dialogue Oui/Non avec la liste des sites, jamais de déduction locale", async () => {
+    fetchMyAbsencesMock.mockResolvedValue([makeAbsence({ id: 9, dateStart: "2026-08-12", dateEnd: "2026-08-12" })]);
+    fetchMyAbsenceDeletionInfoMock.mockResolvedValue({
+      blockManagementAlreadyNotified: true,
+      sites: [{ siteId: 5, siteName: "CHIREC - Hôpital Delta", notificationSentAt: "2026-07-01T10:00:00Z" }],
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderPage();
+
+    await screen.findByText("12 août");
+    await user.click(screen.getByLabelText("Supprimer"));
+
+    expect(await screen.findByText("Confirmer la suppression")).toBeInTheDocument();
+    expect(screen.getByText(/CHIREC - Hôpital Delta/)).toBeInTheDocument();
+    expect(screen.queryByText("Supprimer cette absence ?")).not.toBeInTheDocument();
+    expect(deleteMyAbsenceMock).not.toHaveBeenCalled();
+  });
+
+  it("« Non, supprimer uniquement » supprime sans notifier le bloc", async () => {
+    fetchMyAbsencesMock.mockResolvedValue([makeAbsence({ id: 10, dateStart: "2026-08-12", dateEnd: "2026-08-12" })]);
+    fetchMyAbsenceDeletionInfoMock.mockResolvedValue({
+      blockManagementAlreadyNotified: true,
+      sites: [{ siteId: 5, siteName: "Delta", notificationSentAt: "2026-07-01T10:00:00Z" }],
+    });
+    deleteMyAbsenceMock.mockResolvedValue(undefined);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderPage();
+
+    await screen.findByText("12 août");
+    await user.click(screen.getByLabelText("Supprimer"));
+    await screen.findByText("Confirmer la suppression");
+
+    await user.click(screen.getByRole("button", { name: "Non, supprimer uniquement" }));
+
+    await waitFor(() => expect(deleteMyAbsenceMock).toHaveBeenCalledWith(10, false));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Absence supprimée"));
+  });
+
+  it("« Oui, prévenir le bloc et supprimer » supprime en demandant la notification", async () => {
+    fetchMyAbsencesMock.mockResolvedValue([makeAbsence({ id: 11, dateStart: "2026-08-12", dateEnd: "2026-08-12" })]);
+    fetchMyAbsenceDeletionInfoMock.mockResolvedValue({
+      blockManagementAlreadyNotified: true,
+      sites: [{ siteId: 5, siteName: "Delta", notificationSentAt: "2026-07-01T10:00:00Z" }],
+    });
+    deleteMyAbsenceMock.mockResolvedValue(undefined);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderPage();
+
+    await screen.findByText("12 août");
+    await user.click(screen.getByLabelText("Supprimer"));
+    await screen.findByText("Confirmer la suppression");
+
+    await user.click(screen.getByRole("button", { name: "Oui, prévenir le bloc et supprimer" }));
+
+    await waitFor(() => expect(deleteMyAbsenceMock).toHaveBeenCalledWith(11, true));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Absence supprimée"));
+  });
+
+  it("annuler le dialogue Oui/Non ne fait aucun appel", async () => {
+    fetchMyAbsencesMock.mockResolvedValue([makeAbsence({ id: 12, dateStart: "2026-08-12", dateEnd: "2026-08-12" })]);
+    fetchMyAbsenceDeletionInfoMock.mockResolvedValue({
+      blockManagementAlreadyNotified: true,
+      sites: [{ siteId: 5, siteName: "Delta", notificationSentAt: "2026-07-01T10:00:00Z" }],
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderPage();
+
+    await screen.findByText("12 août");
+    await user.click(screen.getByLabelText("Supprimer"));
+    await screen.findByText("Confirmer la suppression");
+
+    await user.click(screen.getByRole("button", { name: "Annuler" }));
+
+    expect(screen.queryByText("Confirmer la suppression")).not.toBeInTheDocument();
+    expect(deleteMyAbsenceMock).not.toHaveBeenCalled();
+  });
+
+  it("une erreur lors de la vérification affiche un toast, sans jamais supprimer ni ouvrir de dialogue", async () => {
+    fetchMyAbsencesMock.mockResolvedValue([makeAbsence({ id: 13, dateStart: "2026-08-12", dateEnd: "2026-08-12" })]);
+    fetchMyAbsenceDeletionInfoMock.mockRejectedValue(new Error("network error"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderPage();
+
+    await screen.findByText("12 août");
+    await user.click(screen.getByLabelText("Supprimer"));
+
+    await waitFor(() => expect(fetchMyAbsenceDeletionInfoMock).toHaveBeenCalled());
+    expect(screen.queryByText("Confirmer la suppression")).not.toBeInTheDocument();
     expect(screen.queryByText("Supprimer cette absence ?")).not.toBeInTheDocument();
     expect(deleteMyAbsenceMock).not.toHaveBeenCalled();
   });

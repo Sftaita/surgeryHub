@@ -89,8 +89,27 @@ export async function createIsolatedDayAbsences(data: {
   return created;
 }
 
-export async function deleteAbsence(id: number): Promise<void> {
-  await apiClient.delete(`/api/absences/${id}`);
+export async function deleteAbsence(id: number, notifyBlockManagementCancellation?: boolean): Promise<void> {
+  await apiClient.delete(`/api/absences/${id}`, {
+    params: notifyBlockManagementCancellation !== undefined ? { notifyBlockManagementCancellation } : undefined,
+  });
+}
+
+/** Communication des absences chirurgiens — Lot B (D-114). */
+export interface AbsenceDeletionInfoSite {
+  siteId: number;
+  siteName: string | null;
+  notificationSentAt: string | null;
+}
+
+export interface AbsenceDeletionInfo {
+  blockManagementAlreadyNotified: boolean;
+  sites: AbsenceDeletionInfoSite[];
+}
+
+export async function getAbsenceDeletionInfo(id: number): Promise<AbsenceDeletionInfo> {
+  const res = await apiClient.get(`/api/absences/${id}/deletion-info`);
+  return res.data;
 }
 
 // ─── Absences — manager reminder emails (D-051) ───────────────────────────────

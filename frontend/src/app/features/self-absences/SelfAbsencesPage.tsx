@@ -4,7 +4,10 @@ import { Alert, Box, CircularProgress, Dialog, DialogActions, DialogContent, Dia
 import dayjs from "dayjs";
 import "dayjs/locale/fr";
 
-import { fetchMyAbsences, createMyAbsence, updateMyAbsence, deleteMyAbsence } from "./api/selfAbsences.api";
+import {
+  fetchMyAbsences, createMyAbsence, updateMyAbsence, deleteMyAbsence, fetchMyAbsenceDeletionInfo,
+  type AbsenceDeletionInfoSite,
+} from "./api/selfAbsences.api";
 import type { SelfAbsence } from "./api/selfAbsences.types";
 import { AbsenceFormSheet, type AbsenceFormSubmitBody } from "./components/AbsenceFormSheet";
 import { AbsenceListItem } from "./components/AbsenceListItem";
@@ -80,13 +83,16 @@ function EmptyState({ scope, onAdd }: { scope: Scope; onAdd: () => void }) {
 
 function ConfirmDeleteDialog({
   absence,
+  blockManagementSites,
   onCancel,
   onConfirm,
   pending,
 }: {
   absence: SelfAbsence | null;
+  /** Communication des absences chirurgiens — Lot B (D-114). null = pas encore vérifié (dialog pas encore ouvert), [] = jamais prévenu, non-vide = choix Oui/Non requis. */
+  blockManagementSites: AbsenceDeletionInfoSite[] | null;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: (notifyBlockManagementCancellation?: boolean) => void;
   pending: boolean;
 }) {
   if (!absence) return null;
@@ -94,21 +100,48 @@ function ConfirmDeleteDialog({
   const label = isSingleDay
     ? capitalize(dayjs(absence.dateStart).format("D MMMM"))
     : `${dayjs(absence.dateStart).format("D MMM")} → ${dayjs(absence.dateEnd).format("D MMM")}`;
+  const hasBlockManagementNotice = !!blockManagementSites && blockManagementSites.length > 0;
 
   return (
     <Dialog open onClose={pending ? undefined : onCancel} maxWidth="xs" fullWidth>
-      <DialogTitle sx={{ fontWeight: 700 }}>Supprimer cette absence ?</DialogTitle>
+      <DialogTitle sx={{ fontWeight: 700 }}>
+        {hasBlockManagementNotice ? "Confirmer la suppression" : "Supprimer cette absence ?"}
+      </DialogTitle>
       <DialogContent>
         <Typography sx={{ fontWeight: 700, mb: 0.5 }}>{label}</Typography>
-        <Typography variant="body2" color="text.secondary">Cette absence sera retirée.</Typography>
+        {hasBlockManagementNotice ? (
+          <>
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              Cette absence a déjà été communiquée à la gestion du bloc. Souhaitez-vous prévenir le bloc de l'annulation de votre congé ?
+            </Typography>
+            <Stack spacing={0.5} sx={{ mt: 1 }}>
+              {blockManagementSites!.map((s) => (
+                <Typography key={s.siteId} variant="body2" color="text.secondary">— {s.siteName ?? `Site #${s.siteId}`}</Typography>
+              ))}
+            </Stack>
+          </>
+        ) : (
+          <Typography variant="body2" color="text.secondary">Cette absence sera retirée.</Typography>
+        )}
       </DialogContent>
       <DialogActions>
         <Box component="button" type="button" onClick={onCancel} disabled={pending} sx={{ border: "none", background: "transparent", color: GRAY_600, fontFamily: "inherit", fontSize: 14, fontWeight: 600, cursor: "pointer", px: 2, py: 1 }}>
           Annuler
         </Box>
-        <Box component="button" type="button" onClick={onConfirm} disabled={pending} sx={{ border: "none", background: "#E5484D", color: "#fff", fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: "pointer", borderRadius: "10px", px: 2.5, py: 1 }}>
-          {pending ? "…" : "Supprimer"}
-        </Box>
+        {hasBlockManagementNotice ? (
+          <>
+            <Box component="button" type="button" onClick={() => onConfirm(false)} disabled={pending} sx={{ border: "none", background: "transparent", color: GRAY_600, fontFamily: "inherit", fontSize: 14, fontWeight: 600, cursor: "pointer", px: 2, py: 1 }}>
+              Non, supprimer uniquement
+            </Box>
+            <Box component="button" type="button" onClick={() => onConfirm(true)} disabled={pending} sx={{ border: "none", background: "#E5484D", color: "#fff", fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: "pointer", borderRadius: "10px", px: 2.5, py: 1 }}>
+              {pending ? "…" : "Oui, prévenir le bloc et supprimer"}
+            </Box>
+          </>
+        ) : (
+          <Box component="button" type="button" onClick={() => onConfirm()} disabled={pending} sx={{ border: "none", background: "#E5484D", color: "#fff", fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: "pointer", borderRadius: "10px", px: 2.5, py: 1 }}>
+            {pending ? "…" : "Supprimer"}
+          </Box>
+        )}
       </DialogActions>
     </Dialog>
   );
@@ -129,6 +162,7 @@ export default function SelfAbsencesPage() {
   const [formOpen, setFormOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<SelfAbsence | null>(null);
   const [deleting, setDeleting] = React.useState<SelfAbsence | null>(null);
+  const [blockManagementSites, setBlockManagementSites] = React.useState<AbsenceDeletionInfoSite[] | null>(null);
 
   const absencesQuery = useQuery({ queryKey: ["self-absences"], queryFn: fetchMyAbsences });
 
@@ -167,17 +201,36 @@ export default function SelfAbsencesPage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => deleteMyAbsence(id),
+    mutationFn: (vars: { id: number; notifyBlockManagementCancellation?: boolean }) =>
+      deleteMyAbsence(vars.id, vars.notifyBlockManagementCancellation),
     onSuccess: () => {
       setDeleting(null);
+      setBlockManagementSites(null);
       invalidateAfterMutation();
       toast.success("Absence supprimée");
     },
     onError: (err) => {
       setDeleting(null);
+      setBlockManagementSites(null);
       toast.error(extractError(err));
     },
   });
+
+  // Communication des absences chirurgiens — Lot B (D-114). Jamais de déduction locale : le
+  // choix Oui/Non n'apparaît que si le backend confirme qu'au moins un site a déjà reçu la
+  // communication "gestion du bloc" pour cette absence précise.
+  const deletionInfoMutation = useMutation({
+    mutationFn: async (a: SelfAbsence) => ({ absence: a, info: await fetchMyAbsenceDeletionInfo(a.id) }),
+    onSuccess: ({ absence, info }) => {
+      setBlockManagementSites(info.blockManagementAlreadyNotified ? info.sites : []);
+      setDeleting(absence);
+    },
+    onError: (err) => toast.error(extractError(err)),
+  });
+
+  function requestDelete(absence: SelfAbsence) {
+    deletionInfoMutation.mutate(absence);
+  }
 
   const absences = absencesQuery.data ?? [];
   const todayYmd = React.useMemo(() => dayjs().format("YYYY-MM-DD"), []);
@@ -275,7 +328,7 @@ export default function SelfAbsencesPage() {
               </Typography>
               <Stack spacing={1.25}>
                 {items.map((a) => (
-                  <AbsenceListItem key={a.id} absence={a} onEdit={() => openEdit(a)} onDelete={() => setDeleting(a)} />
+                  <AbsenceListItem key={a.id} absence={a} onEdit={() => openEdit(a)} onDelete={() => requestDelete(a)} />
                 ))}
               </Stack>
             </Stack>
@@ -294,8 +347,9 @@ export default function SelfAbsencesPage() {
 
       <ConfirmDeleteDialog
         absence={deleting}
-        onCancel={() => setDeleting(null)}
-        onConfirm={() => { if (deleting) deleteMutation.mutate(deleting.id); }}
+        blockManagementSites={blockManagementSites}
+        onCancel={() => { setDeleting(null); setBlockManagementSites(null); }}
+        onConfirm={(notify) => { if (deleting) deleteMutation.mutate({ id: deleting.id, notifyBlockManagementCancellation: notify }); }}
         pending={deleteMutation.isPending}
       />
     </Stack>

@@ -10,6 +10,7 @@ vi.mock("../../../features/planning-manager/api/planning.api", () => ({
   createAbsence: vi.fn(),
   createIsolatedDayAbsences: vi.fn(),
   deleteAbsence: vi.fn(),
+  getAbsenceDeletionInfo: vi.fn(),
   getMissingAbsencesPreview: vi.fn().mockResolvedValue({ count: 0, people: [] }),
   getEncodedAbsencesPreview: vi.fn().mockResolvedValue({ count: 0, groups: [] }),
   requestMissingAbsences: vi.fn(),
@@ -60,6 +61,10 @@ beforeEach(() => {
   vi.mocked(planningApi.getAbsences).mockResolvedValue([]);
   vi.mocked(instrumentistsApi.getInstrumentists).mockResolvedValue({ items: [], total: 0 });
   vi.mocked(surgeonsApi.getSurgeons).mockResolvedValue({ items: [], total: 0 });
+  // Communication des absences chirurgiens — Lot B (D-114). Défaut "jamais notifié" pour ne
+  // pas casser les tests existants (suppression directe, sans dialogue Oui/Non) — les tests
+  // Lot B dédiés ci-dessous surchargent explicitement cette valeur par défaut.
+  vi.mocked(planningApi.getAbsenceDeletionInfo).mockResolvedValue({ blockManagementAlreadyNotified: false, sites: [] });
 });
 
 /** Mocks the surgeon "Jean Martin" as part of PersonSearchSelect's once-loaded active list. */
@@ -275,6 +280,97 @@ describe("AbsencesPage — mise à jour optimiste", () => {
     await waitFor(() => expect(screen.queryByText(/Jean Martin/)).not.toBeInTheDocument());
     resolveDelete();
     await waitFor(() => expect(planningApi.deleteAbsence).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("AbsencesPage — suppression, communication des absences chirurgiens (Lot B, D-114)", () => {
+  it("jamais notifiée : supprime directement, sans jamais afficher de dialogue", async () => {
+    vi.mocked(planningApi.getAbsences).mockResolvedValue([makeAbsence({ id: 1 })]);
+    vi.mocked(planningApi.getAbsenceDeletionInfo).mockResolvedValue({ blockManagementAlreadyNotified: false, sites: [] });
+    vi.mocked(planningApi.deleteAbsence).mockResolvedValue(undefined);
+
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/Jean Martin/);
+
+    await user.click(screen.getByRole("button", { name: "Supprimer" }));
+
+    await waitFor(() => expect(planningApi.getAbsenceDeletionInfo).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(planningApi.deleteAbsence).toHaveBeenCalledWith(1, undefined));
+    expect(screen.queryByRole("heading", { name: "Confirmer la suppression" })).not.toBeInTheDocument();
+  });
+
+  it("déjà notifiée : affiche le dialogue Oui/Non avec la liste des sites, jamais de déduction locale", async () => {
+    vi.mocked(planningApi.getAbsences).mockResolvedValue([makeAbsence({ id: 1 })]);
+    vi.mocked(planningApi.getAbsenceDeletionInfo).mockResolvedValue({
+      blockManagementAlreadyNotified: true,
+      sites: [{ siteId: 5, siteName: "CHIREC - Hôpital Delta", notificationSentAt: "2026-07-01T10:00:00Z" }],
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/Jean Martin/);
+
+    await user.click(screen.getByRole("button", { name: "Supprimer" }));
+
+    expect(await screen.findByRole("heading", { name: "Confirmer la suppression" })).toBeInTheDocument();
+    expect(screen.getByText(/CHIREC - Hôpital Delta/)).toBeInTheDocument();
+    expect(planningApi.deleteAbsence).not.toHaveBeenCalled();
+  });
+
+  it("« Non, supprimer uniquement » supprime sans notifier le bloc", async () => {
+    vi.mocked(planningApi.getAbsences).mockResolvedValue([makeAbsence({ id: 1 })]);
+    vi.mocked(planningApi.getAbsenceDeletionInfo).mockResolvedValue({
+      blockManagementAlreadyNotified: true,
+      sites: [{ siteId: 5, siteName: "Delta", notificationSentAt: "2026-07-01T10:00:00Z" }],
+    });
+    vi.mocked(planningApi.deleteAbsence).mockResolvedValue(undefined);
+
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/Jean Martin/);
+    await user.click(screen.getByRole("button", { name: "Supprimer" }));
+    await screen.findByRole("heading", { name: "Confirmer la suppression" });
+
+    await user.click(screen.getByRole("button", { name: "Non, supprimer uniquement" }));
+
+    await waitFor(() => expect(planningApi.deleteAbsence).toHaveBeenCalledWith(1, false));
+    // MUI Dialog keeps the node mounted during its exit transition — wait it out.
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Confirmer la suppression" })).not.toBeInTheDocument());
+  });
+
+  it("« Oui, prévenir le bloc et supprimer » supprime en demandant la notification", async () => {
+    vi.mocked(planningApi.getAbsences).mockResolvedValue([makeAbsence({ id: 1 })]);
+    vi.mocked(planningApi.getAbsenceDeletionInfo).mockResolvedValue({
+      blockManagementAlreadyNotified: true,
+      sites: [{ siteId: 5, siteName: "Delta", notificationSentAt: "2026-07-01T10:00:00Z" }],
+    });
+    vi.mocked(planningApi.deleteAbsence).mockResolvedValue(undefined);
+
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/Jean Martin/);
+    await user.click(screen.getByRole("button", { name: "Supprimer" }));
+    await screen.findByRole("heading", { name: "Confirmer la suppression" });
+
+    await user.click(screen.getByRole("button", { name: "Oui, prévenir le bloc et supprimer" }));
+
+    await waitFor(() => expect(planningApi.deleteAbsence).toHaveBeenCalledWith(1, true));
+  });
+
+  it("une erreur lors de la vérification affiche un toast, sans jamais supprimer ni ouvrir de dialogue", async () => {
+    vi.mocked(planningApi.getAbsences).mockResolvedValue([makeAbsence({ id: 1 })]);
+    vi.mocked(planningApi.getAbsenceDeletionInfo).mockRejectedValue(new Error("network error"));
+
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/Jean Martin/);
+
+    await user.click(screen.getByRole("button", { name: "Supprimer" }));
+
+    await waitFor(() => expect(planningApi.getAbsenceDeletionInfo).toHaveBeenCalled());
+    expect(screen.queryByRole("heading", { name: "Confirmer la suppression" })).not.toBeInTheDocument();
+    expect(planningApi.deleteAbsence).not.toHaveBeenCalled();
   });
 });
 

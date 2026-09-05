@@ -2820,20 +2820,27 @@ Utilisé notamment pour les déplacements drag & drop (changement de `dayOfWeek`
 
 ---
 
-### 26.3a Communication des absences chirurgiens — Lot A « Libération de salle » (D-114)
+### 26.3a Communication des absences chirurgiens — Lot A « Libération de salle » + Lot B « Gestion du bloc » (D-114)
 
-Effet de bord asynchrone (aucun endpoint dédié — déclenché automatiquement par `POST
-/api/absences`, `PATCH /api/absences/{id}`, `POST /api/absences/mine` et `PATCH
-/api/absences/mine/{id}`, jamais par `DELETE`) : si l'utilisateur de l'absence est un
-`SURGEON` et que le réglage `notifyColleaguesEnabled` est activé pour un site où au moins une
-occurrence `BLOCK` future (jamais `CONSULTATION`) de son planning habituel tombe dans la
-période de l'absence, un email individuel « Libération de salle » est envoyé à chaque
-chirurgien collègue actif affilié à ce site (le chirurgien absent lui-même exclu). Voir
-`docs/decisions.md` D-114.
-
-**Aucune correction/rétractation** : raccourcir ou supprimer l'absence ne déclenche jamais
-rien pour ce flux. Un allongement révélant de **nouvelles** occurrences BLOCK jamais
-annoncées déclenche un complément (email ne listant que les nouvelles dates uniquement).
+Effet de bord asynchrone (aucun endpoint dédié pour la création/modification — déclenché
+automatiquement par `POST /api/absences`, `PATCH /api/absences/{id}`, `POST
+/api/absences/mine` et `PATCH /api/absences/mine/{id}`) : si l'utilisateur de l'absence est
+un `SURGEON`, deux communications indépendantes peuvent se déclencher par site concerné (au
+moins une occurrence `BLOCK` future de son planning habituel dans la période de l'absence,
+jamais `CONSULTATION`) :
+- **Libération de salle (Lot A)** — `notifyColleaguesEnabled` : un email individuel à chaque
+  chirurgien collègue actif affilié au site (le chirurgien absent exclu). Aucune
+  correction/rétractation : raccourcir ou supprimer l'absence ne déclenche jamais rien pour ce
+  flux ; un allongement révélant de nouvelles occurrences BLOCK jamais annoncées déclenche un
+  complément (email ne listant que les nouvelles dates).
+- **Gestion du bloc (Lot B)** — `notifyBlockManagementEnabled` : un email à l'adresse `To` +
+  `CC` configurées pour le site (le chirurgien concerné toujours ajouté en copie), avec
+  `Reply-To` = son adresse (jamais une usurpation du `From` SMTP). Envoyé immédiatement si le
+  délai configuré est déjà écoulé (`dateStart - blockManagementDelayDays <= maintenant`),
+  sinon programmé et envoyé par le cron `app:absences:send-scheduled-communications`
+  (recommandé horaire). Une modification **avant** le premier envoi reprogramme silencieusement
+  (aucun email) ; une modification **après** envoi (dates réellement différentes) déclenche un
+  nouvel email de modification. Voir `docs/decisions.md` D-114 (Lot A et Lot B).
 
 #### `GET /api/planning/absence-communication-settings`
 
@@ -2844,26 +2851,87 @@ annoncées déclenche un complément (email ne listant que les nouvelles dates u
 ```json
 {
   "items": [
-    { "site": { "id": 3, "name": "CHIREC - Hôpital Delta" }, "notifyColleaguesEnabled": true }
+    {
+      "site": { "id": 3, "name": "CHIREC - Hôpital Delta" },
+      "notifyColleaguesEnabled": true,
+      "notifyBlockManagementEnabled": true,
+      "blockManagementEmailTo": "bloc@example.com",
+      "blockManagementEmailCc": ["secretariat@example.com"],
+      "blockManagementDelayDays": 14
+    }
   ]
 }
 ```
 
 Un item par site existant (`Hospital`), y compris un site sans réglage explicite
-(`notifyColleaguesEnabled: false` par défaut). En Lot A, seul ce champ est exposé — les 4
-champs « gestion du bloc » (Lot B) existent déjà en base mais ne sont pas encore dans ce
-contrat.
+(`notifyColleaguesEnabled: false`, `notifyBlockManagementEnabled: false`,
+`blockManagementEmailTo: null`, `blockManagementEmailCc: []`,
+`blockManagementDelayDays: null` par défaut).
 
 #### `PATCH /api/planning/absence-communication-settings/{siteId}`
 
 **AuthZ :** `MANAGER` / `ADMIN`
 
-**Body JSON :** `{ "notifyColleaguesEnabled": true }`
+**Body JSON (mise à jour partielle — chaque champ optionnel, absent = inchangé) :**
 
-**Réponse — 200 :** `{ "site": {...}, "notifyColleaguesEnabled": true }`
+```json
+{
+  "notifyColleaguesEnabled": true,
+  "notifyBlockManagementEnabled": true,
+  "blockManagementEmailTo": "bloc@example.com",
+  "blockManagementEmailCc": ["secretariat@example.com"],
+  "blockManagementDelayDays": 14
+}
+```
 
-**Erreurs :** `404` site introuvable, `400` champ manquant/invalide (même convention que
+**Réponse — 200 :** même forme qu'un item de `GET` ci-dessus.
+
+**Validation (Lot B) :** si `notifyBlockManagementEnabled` résultant (après application du
+patch) est `true`, `blockManagementEmailTo` doit être une adresse valide et
+`blockManagementDelayDays` un entier ∈ [0, 365] → `400` sinon. `blockManagementEmailCc` est
+normalisé silencieusement (trim, déduplication insensible à la casse, retire l'adresse
+principale si dupliquée) plutôt que rejeté sur une variante triviale. Désactiver
+(`notifyBlockManagementEnabled: false`) conserve les valeurs déjà configurées (pas de
+ré-saisie nécessaire à la réactivation). Corps vide → `200` no-op (pas de `400`, contrairement
+à l'ancien contrat Lot A qui exigeait `notifyColleaguesEnabled`).
+
+**Erreurs :** `404` site introuvable, `400` validation ci-dessus (même convention que
 `ShiftPeriodController`).
+
+#### `GET /api/absences/{id}/deletion-info` et `GET /api/absences/mine/{id}/deletion-info`
+
+**AuthZ :** `MANAGER`/`ADMIN` (`PlanningVoter::PLANNING_MANAGE`) pour la première,
+propriétaire de l'absence (`AbsenceVoter::SELF_MANAGE`) pour la seconde.
+
+Calcule côté backend, **jamais déduit côté client**, si la gestion du bloc a déjà été
+réellement notifiée (delivery `SENT`) pour au moins un site concerné par cette absence — sert
+à décider si l'UI doit poser la question Oui/Non avant suppression.
+
+**Réponse — 200 :**
+
+```json
+{
+  "blockManagementAlreadyNotified": true,
+  "sites": [{ "siteId": 3, "siteName": "CHIREC - Hôpital Delta", "notificationSentAt": "2026-09-01T08:00:00+00:00" }]
+}
+```
+
+`sites` ne liste que les sites déjà `SENT` — un site encore `SCHEDULED` (jamais envoyé) n'y
+figure jamais, puisqu'il sera de toute façon annulé silencieusement à la suppression.
+
+#### `DELETE /api/absences/{id}` et `DELETE /api/absences/mine/{id}` — query param Lot B
+
+Gagnent le query param optionnel `notifyBlockManagementCancellation` (bool, défaut `false`),
+pertinent uniquement si `deletion-info` a signalé au moins un site déjà notifié : `true`
+déclenche un email `BLOCK_MANAGEMENT_CANCELLATION` pour chaque site réellement `SENT`
+(texte : « Je vous informe que mon congé prévu du [...] est annulé. », jamais de mention
+laissant entendre que des vacations pourraient être maintenues) ; `false` ou absent
+n'envoie rien. Un site encore `SCHEDULED` (jamais envoyé) est **toujours** annulé
+silencieusement, indépendamment de ce paramètre.
+
+```
+DELETE /api/absences/42?notifyBlockManagementCancellation=true
+```
 
 ---
 

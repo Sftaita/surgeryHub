@@ -31,6 +31,23 @@ final class SendTemplatedEmailMessage
          * journaux distincts, jamais les deux à la fois sur un même message).
          */
         public readonly ?int $absenceCommunicationDeliveryId = null,
+        /**
+         * Communication des absences chirurgiens, Lot B (D-114) — emails « gestion du
+         * bloc » : adresses CC configurées par site + le chirurgien concerné (déduplication
+         * faite en amont par AbsenceCommunicationJournalService::resolveRecipients()).
+         * Jamais utilisé par Lot A (un email individuel par collègue n'a pas de CC).
+         *
+         * @var list<string>
+         */
+        public readonly array $cc = [],
+        /**
+         * Communication des absences chirurgiens, Lot B (D-114) — Reply-To du chirurgien
+         * concerné pour les emails « gestion du bloc » : si le bloc répond, la réponse doit
+         * naturellement atteindre le chirurgien, sans jamais usurper le From SMTP
+         * (l'expéditeur reste l'adresse SurgicalHub configurée). Aucun précédent dans ce
+         * message avant ce lot.
+         */
+        public readonly ?string $replyTo = null,
     ) {
     }
 }

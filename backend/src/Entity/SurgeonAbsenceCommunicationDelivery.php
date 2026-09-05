@@ -83,6 +83,22 @@ class SurgeonAbsenceCommunicationDelivery
     #[Groups(['planning:read'])]
     private ?string $lastError = null;
 
+    /**
+     * Lot B (D-114) — garde-fou de claim atomique pour `SendScheduledAbsenceCommunicationsCommand` :
+     * `status` seul ne suffit PAS à empêcher un second run (cron concurrent, ou un run qui
+     * suit de près) de redispatcher la même communication programmée, puisque `status` reste
+     * volontairement `SCHEDULED` tant que le pipeline d'envoi réel n'a pas confirmé `SENT`/
+     * `FAILED` — il existe donc une fenêtre entre "dispatché" et "confirmé" où `status` seul
+     * ne distingue pas "jamais tenté" de "déjà en cours d'envoi". Posé sous le même verrou
+     * pessimiste que le claim, filtré par la commande (`dispatchClaimedAt IS NULL`) — jamais
+     * réinitialisé (même en cas d'échec final, `lastError`/`status=FAILED` suffisent alors à
+     * comprendre l'état ; un nouvel envoi pour la même communication passe toujours par une
+     * NOUVELLE ligne, jamais une remise à zéro de celle-ci).
+     */
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['planning:read'])]
+    private ?\DateTimeImmutable $dispatchClaimedAt = null;
+
     public function getId(): ?int { return $this->id; }
 
     public function getCommunication(): ?SurgeonAbsenceCommunication { return $this->communication; }
@@ -116,4 +132,7 @@ class SurgeonAbsenceCommunicationDelivery
 
     public function getLastError(): ?string { return $this->lastError; }
     public function setLastError(?string $lastError): static { $this->lastError = $lastError; return $this; }
+
+    public function getDispatchClaimedAt(): ?\DateTimeImmutable { return $this->dispatchClaimedAt; }
+    public function setDispatchClaimedAt(?\DateTimeImmutable $dispatchClaimedAt): static { $this->dispatchClaimedAt = $dispatchClaimedAt; return $this; }
 }

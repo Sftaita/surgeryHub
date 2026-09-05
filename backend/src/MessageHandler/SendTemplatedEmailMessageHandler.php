@@ -39,6 +39,19 @@ final class SendTemplatedEmailMessageHandler
             ->text($textBody)
             ->html($htmlBody);
 
+        // Communication des absences chirurgiens, Lot B (D-114) — gestion du bloc : To
+        // unique + plusieurs CC (contrairement au flux collègues du Lot A, un email
+        // individuel par destinataire). Même pattern que SendBillingEmailMessageHandler.
+        if ($message->cc !== []) {
+            $email->cc(...$message->cc);
+        }
+        // Jamais d'usurpation du From SMTP — l'expéditeur reste l'adresse SurgicalHub
+        // configurée ; Reply-To permet seulement qu'une réponse du bloc atteigne
+        // naturellement le chirurgien concerné.
+        if ($message->replyTo !== null) {
+            $email->replyTo($message->replyTo);
+        }
+
         $this->mailer->send($email);
 
         // "Sent" here means "handed off" — not a delivery confirmation. See

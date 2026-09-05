@@ -21,6 +21,7 @@ import type {
   EligibilityEnforcementPolicy,
   VerifyConflictsResponse,
   AbsenceCommunicationSiteSettingV2,
+  AbsenceCommunicationSiteSettingUpdateV2,
 } from "./planningV2.types";
 
 /** Same pattern as every other page-local helper in this codebase (no shared util exists). */
@@ -120,7 +121,7 @@ export async function deactivateShiftPeriod(id: number): Promise<void> {
   await apiClient.delete(`/api/planning/shift-periods/${id}`);
 }
 
-// ── Communication des absences chirurgiens — Lot A (D-114) ──────────────────
+// ── Communication des absences chirurgiens — Lot A/B (D-114) ────────────────
 
 export async function getAbsenceCommunicationSettings(): Promise<{ items: AbsenceCommunicationSiteSettingV2[] }> {
   const res = await apiClient.get("/api/planning/absence-communication-settings");
@@ -129,7 +130,7 @@ export async function getAbsenceCommunicationSettings(): Promise<{ items: Absenc
 
 export async function updateAbsenceCommunicationSettings(
   siteId: number,
-  data: { notifyColleaguesEnabled: boolean },
+  data: AbsenceCommunicationSiteSettingUpdateV2,
 ): Promise<AbsenceCommunicationSiteSettingV2> {
   const res = await apiClient.patch(`/api/planning/absence-communication-settings/${siteId}`, data);
   return res.data;

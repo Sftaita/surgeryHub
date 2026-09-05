@@ -12,6 +12,7 @@ use App\Service\AbsenceMissionReactionService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use App\Service\InstrumentistAbsenceOccurrenceImpactService;
 use App\Service\RoomReleaseCommunicationService;
+use App\Service\BlockManagementCommunicationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -31,6 +32,7 @@ class AbsenceController extends AbstractController
         private readonly AbsenceImpactReconciliationService $reconciliationService,
         private readonly AbsenceImpactSummaryService $absenceImpactSummaryService,
         private readonly RoomReleaseCommunicationService $roomReleaseCommunicationService,
+        private readonly BlockManagementCommunicationService $blockManagementCommunicationService,
     ) {}
 
     #[Route('', name: 'api_absences_list', methods: ['GET'])]
@@ -137,6 +139,11 @@ class AbsenceController extends AbstractController
         // appelé depuis delete() (une libération déjà communiquée n'est jamais rétractée).
         $this->roomReleaseCommunicationService->onAbsenceCreated($absence, $currentUser);
 
+        // Lot B (D-114) — « gestion du bloc », 8ᵉ collaborateur indépendant. Aucun ordre
+        // requis vis-à-vis de RoomReleaseCommunicationService (domaines disjoints : deux
+        // destinataires, deux journaux de communications distincts).
+        $this->blockManagementCommunicationService->onAbsenceCreated($absence, $currentUser);
+
         return $this->json($this->serialize($absence), 201);
     }
 
@@ -220,11 +227,16 @@ class AbsenceController extends AbstractController
         // RoomReleaseCommunicationService::onAbsenceUpdated() pour le calcul du delta).
         $this->roomReleaseCommunicationService->onAbsenceUpdated($absence, $currentUser);
 
+        // Lot B (D-114) — reschedule/annule/crée les communications « gestion du bloc »
+        // selon les sites BLOCK désormais concernés (§14 : mutation en place tant que
+        // jamais envoyée, sinon BLOCK_MANAGEMENT_MODIFICATION si les dates ont changé).
+        $this->blockManagementCommunicationService->onAbsenceUpdated($absence, $currentUser, $previousDateStart, $previousDateEnd);
+
         return $this->json($this->serialize($absence));
     }
 
-    #[Route('/{id}', name: 'api_absences_delete', methods: ['DELETE'])]
-    public function delete(int $id, #[CurrentUser] User $currentUser): JsonResponse
+    #[Route('/{id}/deletion-info', name: 'api_absences_deletion_info', methods: ['GET'])]
+    public function deletionInfo(int $id): JsonResponse
     {
         $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
 
@@ -232,6 +244,27 @@ class AbsenceController extends AbstractController
         if (!$absence) {
             return $this->json(['error' => ['message' => 'Absence introuvable.']], 404);
         }
+
+        return $this->json($this->blockManagementCommunicationService->deletionInfo($absence));
+    }
+
+    #[Route('/{id}', name: 'api_absences_delete', methods: ['DELETE'])]
+    public function delete(int $id, Request $request, #[CurrentUser] User $currentUser): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $absence = $this->em->find(Absence::class, $id);
+        if (!$absence) {
+            return $this->json(['error' => ['message' => 'Absence introuvable.']], 404);
+        }
+
+        // Lot B (D-114) — décision explicite transmise par le frontend (jamais déduite
+        // localement, §19-20) : n'a d'effet que sur les sites déjà SENT, voir
+        // BlockManagementCommunicationService::onAbsenceDeleted(). Appelé AVANT le
+        // remove() ci-dessous, comme les autres collaborateurs de suppression — a besoin
+        // de l'absence encore vivante pour construire le contenu de l'email d'annulation.
+        $notifyBlockManagementCancellation = $request->query->getBoolean('notifyBlockManagementCancellation', false);
+        $this->blockManagementCommunicationService->onAbsenceDeleted($absence, $currentUser, $notifyBlockManagementCancellation);
 
         // Resolve linked alerts BEFORE removing the row — PlanningAlert.absence is
         // ON DELETE SET NULL so history survives, but resolution must happen while

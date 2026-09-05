@@ -12,7 +12,8 @@ import MailOutlineIcon from "@mui/icons-material/MailOutline";
 import FactCheckOutlinedIcon from "@mui/icons-material/FactCheckOutlined";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  getAbsences, createAbsence, createIsolatedDayAbsences, deleteAbsence, type Absence, type PersonRole,
+  getAbsences, createAbsence, createIsolatedDayAbsences, deleteAbsence, getAbsenceDeletionInfo,
+  type Absence, type PersonRole, type AbsenceDeletionInfoSite,
 } from "../../../features/planning-manager/api/planning.api";
 import { useToast } from "../../../ui/toast/useToast";
 import { PersonAvatar } from "../../../ui/avatar/PersonAvatar";
@@ -201,21 +202,44 @@ export default function AbsencesPage() {
     });
   }
 
+  type DeleteAbsenceVariables = { id: number; notifyBlockManagementCancellation?: boolean };
+
   const deleteMutation = useMutation({
-    mutationFn: deleteAbsence,
-    onMutate: async (id: number) => {
+    mutationFn: (vars: DeleteAbsenceVariables) => deleteAbsence(vars.id, vars.notifyBlockManagementCancellation),
+    onMutate: async (vars: DeleteAbsenceVariables) => {
       await qc.cancelQueries({ queryKey: absencesKey });
       const previous = qc.getQueryData<Absence[]>(absencesKey);
-      qc.setQueryData<Absence[]>(absencesKey, (old) => (old ?? []).filter((a) => a.id !== id));
+      qc.setQueryData<Absence[]>(absencesKey, (old) => (old ?? []).filter((a) => a.id !== vars.id));
       return { previous };
     },
     onSuccess: () => toast.success("Absence supprimée"),
-    onError: (err, _id, ctx) => {
+    onError: (err, _vars, ctx) => {
       if (ctx?.previous) qc.setQueryData(absencesKey, ctx.previous);
       toast.error(extractError(err));
     },
     onSettled: () => { qc.invalidateQueries({ queryKey: ["absences"] }); },
   });
+
+  // Communication des absences chirurgiens — Lot B (D-114). Jamais de déduction locale :
+  // le choix Oui/Non n'est proposé que si le backend confirme qu'au moins un site a déjà
+  // reçu la communication "gestion du bloc" pour cette absence précise.
+  const [pendingDeletion, setPendingDeletion] = React.useState<{ id: number; sites: AbsenceDeletionInfoSite[] } | null>(null);
+
+  const deletionInfoMutation = useMutation({
+    mutationFn: (id: number) => getAbsenceDeletionInfo(id),
+    onSuccess: (info, id) => {
+      if (!info.blockManagementAlreadyNotified) {
+        deleteMutation.mutate({ id });
+      } else {
+        setPendingDeletion({ id, sites: info.sites });
+      }
+    },
+    onError: (err) => toast.error(extractError(err)),
+  });
+
+  function requestDelete(id: number) {
+    deletionInfoMutation.mutate(id);
+  }
 
   const absences = absencesQuery.data ?? [];
 
@@ -357,8 +381,8 @@ export default function AbsencesPage() {
                       <IconButton
                         size="small" color="error"
                         aria-label="Supprimer"
-                        onClick={() => deleteMutation.mutate(abs.id)}
-                        disabled={deleteMutation.isPending || abs.id < 0}
+                        onClick={() => requestDelete(abs.id)}
+                        disabled={deleteMutation.isPending || deletionInfoMutation.isPending || abs.id < 0}
                       >
                         <DeleteIcon fontSize="small" />
                       </IconButton>
@@ -463,6 +487,45 @@ export default function AbsencesPage() {
 
       <AbsenceReminderDialog mode="missing" open={requestDialogOpen} onClose={() => setRequestDialogOpen(false)} />
       <AbsenceReminderDialog mode="encoded" open={confirmDialogOpen} onClose={() => setConfirmDialogOpen(false)} />
+
+      {/* Communication des absences chirurgiens — Lot B (D-114) */}
+      <Dialog open={pendingDeletion !== null} onClose={() => setPendingDeletion(null)} maxWidth="xs" fullWidth>
+        <DialogTitle fontWeight={700}>Confirmer la suppression</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ mb: pendingDeletion && pendingDeletion.sites.length > 0 ? 1.5 : 0 }}>
+            Cette absence a déjà été communiquée à la gestion du bloc. Souhaitez-vous prévenir le bloc de l'annulation de votre congé ?
+          </Typography>
+          {pendingDeletion && pendingDeletion.sites.length > 0 && (
+            <Stack spacing={0.5}>
+              {pendingDeletion.sites.map((s) => (
+                <Typography key={s.siteId} variant="body2" color="text.secondary">— {s.siteName ?? `Site #${s.siteId}`}</Typography>
+              ))}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            color="inherit"
+            disabled={deleteMutation.isPending}
+            onClick={() => {
+              if (pendingDeletion) deleteMutation.mutate({ id: pendingDeletion.id, notifyBlockManagementCancellation: false });
+              setPendingDeletion(null);
+            }}
+          >
+            Non, supprimer uniquement
+          </Button>
+          <Button
+            variant="contained" disableElevation color="error"
+            disabled={deleteMutation.isPending}
+            onClick={() => {
+              if (pendingDeletion) deleteMutation.mutate({ id: pendingDeletion.id, notifyBlockManagementCancellation: true });
+              setPendingDeletion(null);
+            }}
+          >
+            Oui, prévenir le bloc et supprimer
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

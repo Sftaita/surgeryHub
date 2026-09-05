@@ -14,6 +14,7 @@ use App\Service\AbsenceMissionReactionService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use App\Service\InstrumentistAbsenceOccurrenceImpactService;
 use App\Service\RoomReleaseCommunicationService;
+use App\Service\BlockManagementCommunicationService;
 use App\Message\AbsenceSelfDeclaredMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -49,6 +50,7 @@ class SelfAbsenceController extends AbstractController
         private readonly UserRepository $userRepository,
         private readonly MessageBusInterface $bus,
         private readonly RoomReleaseCommunicationService $roomReleaseCommunicationService,
+        private readonly BlockManagementCommunicationService $blockManagementCommunicationService,
     ) {}
 
     #[Route('', name: 'api_self_absences_list', methods: ['GET'])]
@@ -177,14 +179,31 @@ class SelfAbsenceController extends AbstractController
         ));
     }
 
-    #[Route('/{id}', name: 'api_self_absences_delete', methods: ['DELETE'])]
-    public function delete(int $id, #[CurrentUser] User $currentUser): JsonResponse
+    #[Route('/{id}/deletion-info', name: 'api_self_absences_deletion_info', methods: ['GET'])]
+    public function deletionInfo(int $id): JsonResponse
     {
         $absence = $this->em->find(Absence::class, $id);
         if (!$absence) {
             return $this->json(['error' => ['message' => 'Absence introuvable.']], 404);
         }
         $this->denyAccessUnlessGranted(AbsenceVoter::SELF_MANAGE, $absence);
+
+        return $this->json($this->blockManagementCommunicationService->deletionInfo($absence));
+    }
+
+    #[Route('/{id}', name: 'api_self_absences_delete', methods: ['DELETE'])]
+    public function delete(int $id, Request $request, #[CurrentUser] User $currentUser): JsonResponse
+    {
+        $absence = $this->em->find(Absence::class, $id);
+        if (!$absence) {
+            return $this->json(['error' => ['message' => 'Absence introuvable.']], 404);
+        }
+        $this->denyAccessUnlessGranted(AbsenceVoter::SELF_MANAGE, $absence);
+
+        // Lot B (D-114) — même contrat que AbsenceController::delete() (décision explicite
+        // transmise par le frontend, jamais déduite localement).
+        $notifyBlockManagementCancellation = $request->query->getBoolean('notifyBlockManagementCancellation', false);
+        $this->blockManagementCommunicationService->onAbsenceDeleted($absence, $currentUser, $notifyBlockManagementCancellation);
 
         // Same ordering/two-phase split as AbsenceController::delete() (D-104, Lot 4) —
         // see AbsenceImpactReconciliationService's class docblock.
@@ -271,8 +290,11 @@ class SelfAbsenceController extends AbstractController
         // depuis delete() (une libération déjà communiquée n'est jamais rétractée).
         if ($previousDateStart !== null) {
             $this->roomReleaseCommunicationService->onAbsenceUpdated($absence, $currentUser);
+            // Lot B (D-114) — même service et même logique que AbsenceController, jamais dupliqué.
+            $this->blockManagementCommunicationService->onAbsenceUpdated($absence, $currentUser, $previousDateStart, $previousDateEnd);
         } else {
             $this->roomReleaseCommunicationService->onAbsenceCreated($absence, $currentUser);
+            $this->blockManagementCommunicationService->onAbsenceCreated($absence, $currentUser);
         }
 
         // Lot 5 (D-105) — ONE consolidated manager recap for this self-service create/update.

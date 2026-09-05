@@ -1833,9 +1833,60 @@ du pipeline d'envoi, jamais de manière optimiste au moment du dispatch Messenge
 
 Réglage par site : `AbsenceCommunicationSiteConfig` (façon `ShiftPeriodConfig`, une ligne
 par site), exposé en Lot A via `GET/PATCH /api/planning/absence-communication-settings`
-(voir docs/api.md §26.3a) — UI dans `PlanningSettingsTab.tsx` (4ᵉ section, « Communication
-des absences »). Les champs « gestion du bloc » (Lots B/C) existent déjà en base mais ne
-sont exploités par aucune logique avant le Lot B.
+(voir docs/api.md §26.3a) — UI dans `AbsenceCommunicationSettings.tsx` (section « Communication
+des absences » de `PlanningSettingsTab.tsx`).
+
+### Communication des absences chirurgiens — Lot B « Gestion du bloc » (D-114)
+
+Second sous-lot, réutilisant intégralement le modèle de données et les composants du Lot A
+ci-dessus (`AbsenceCommunicationSiteConfig`, `SurgeonAbsenceCommunication`/`Delivery`,
+`SurgeonAbsenceBlockOccurrenceResolver`, `AbsenceCommunicationJournalService`) — aucun second
+journal. Contrairement au Lot A (email individuel par collègue, `ROOM_RELEASE`), une seule
+communication + une seule delivery par site, adressée à une mailbox « gestion du bloc »
+(`To`/`CC` configurés par site, chirurgien concerné toujours ajouté en copie, `Reply-To` =
+son adresse) — jamais un `User` SurgicalHub.
+
+```
+AbsenceController::create()/update()/delete() / SelfAbsenceController équivalents
+        │  (8ᵉ collaborateur — création/modification ; onAbsenceDeleted() appelé AVANT
+        │   la suppression réelle, avec le choix Oui/Non explicite du frontend)
+        ▼
+BlockManagementCommunicationService::onAbsenceCreated()/onAbsenceUpdated()/onAbsenceDeleted()
+        │
+        ├── SurgeonAbsenceBlockOccurrenceResolver::resolveForWindow() (même resolver que Lot A,
+        │       période complète du congé, pas de filtre "futur uniquement" — §9)
+        ├── AbsenceCommunicationSiteConfig (site) — notifyBlockManagementEnabled ?
+        └── AbsenceCommunicationJournalService
+                ├── upsertPendingBlockManagementNotice() — création, ou mutation EN PLACE
+                │     tant que la delivery est encore SCHEDULED/CANCELLED-avant-envoi
+                ├── recordBlockManagementFollowUp() — nouvelle révision MODIFICATION/
+                │     CANCELLATION, uniquement une fois SENT (jamais de correction en place)
+                └── resolveLiveBlockManagementRecipients() — To/CC/statut résolus À CHAQUE
+                      dispatch réel (immédiat ou cron), jamais figés à la programmation
+        ▼ (scheduledAt <= maintenant → immédiat ; sinon SCHEDULED, cron ci-dessous)
+SendTemplatedEmailMessage (cc: [...], replyTo: chirurgien) → handler → recordDeliverySuccess()
+```
+
+**Scheduling différé — cron + claim atomique.** `app:absences:send-scheduled-communications`
+(calqué sur `CheckUncoveredEscalationsCommand`, D-110 ; cron recommandé `0 * * * *`) scanne les
+deliveries `SCHEDULED` dont `scheduledAt` est échu et `dispatchClaimedAt IS NULL`, claim
+chacune sous verrou pessimiste (`AbsenceCommunicationJournalService::claimScheduledBlockManagementDelivery()`
+— re-vérifie `SCHEDULED`, résout To/CC live, marque `CANCELLED`/`FAILED` si la config a changé
+entretemps), dispatche strictement après commit. `dispatchClaimedAt` (nouveau champ sur
+`SurgeonAbsenceCommunicationDelivery`, migration `Version20260905130000`) garantit qu'un
+second scan (cron concurrent, ou rapproché) ne peut jamais redispatcher la même communication
+tant que `status` reste `SCHEDULED` en attendant la confirmation réelle du handler — voir
+D-114 (Lot B) dans `docs/decisions.md` pour le détail du gap de concurrence identifié et de sa
+correction.
+
+**Mutable en place vs immuable** : contrairement à `ROOM_RELEASE` (toujours immuable dès la
+création), `BLOCK_MANAGEMENT_ABSENCE` reste mutable en place tant que sa delivery est encore
+`SCHEDULED`/`CANCELLED`-avant-envoi (rien n'a encore été communiqué) ; une fois `SENT`, tout
+changement de dates crée une nouvelle communication `BLOCK_MANAGEMENT_MODIFICATION`
+(revision propre). Suppression : `GET .../deletion-info` calcule côté backend si au moins un
+site a déjà été notifié (`SENT`) ; si oui, une seule question Oui/Non globale (jamais par
+site) transmise via `DELETE .../{id}?notifyBlockManagementCancellation=` — un site encore
+`SCHEDULED` est toujours annulé silencieusement, indépendamment de ce choix.
 
 **Notifications post-déploiement :**
 

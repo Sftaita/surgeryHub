@@ -34,6 +34,25 @@ export async function updateMyAbsence(id: number, body: UpdateSelfAbsenceBody): 
   return data;
 }
 
-export async function deleteMyAbsence(id: number): Promise<void> {
-  await apiClient.delete(`/api/absences/mine/${id}`);
+export async function deleteMyAbsence(id: number, notifyBlockManagementCancellation?: boolean): Promise<void> {
+  await apiClient.delete(`/api/absences/mine/${id}`, {
+    params: notifyBlockManagementCancellation !== undefined ? { notifyBlockManagementCancellation } : undefined,
+  });
+}
+
+/** Communication des absences chirurgiens — Lot B (D-114). */
+export interface AbsenceDeletionInfoSite {
+  siteId: number;
+  siteName: string | null;
+  notificationSentAt: string | null;
+}
+
+export interface AbsenceDeletionInfo {
+  blockManagementAlreadyNotified: boolean;
+  sites: AbsenceDeletionInfoSite[];
+}
+
+export async function fetchMyAbsenceDeletionInfo(id: number): Promise<AbsenceDeletionInfo> {
+  const { data } = await apiClient.get(`/api/absences/mine/${id}/deletion-info`);
+  return data;
 }

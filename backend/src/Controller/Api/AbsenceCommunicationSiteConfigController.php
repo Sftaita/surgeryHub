@@ -14,13 +14,13 @@ use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 
 /**
- * Réglage par site de la communication des absences chirurgiens (Lot A/D-114). Manager/Admin
+ * Réglage par site de la communication des absences chirurgiens (D-114). Manager/Admin
  * uniquement, même voter que le reste des réglages Planning V2 (PlanningVoter::PLANNING_MANAGE).
  *
- * Contrat volontairement restreint en Lot A : seul `notifyColleaguesEnabled` est exposé en
- * écriture. Les 4 champs "gestion du bloc" existent déjà en base (schéma stabilisé pour B/C)
- * mais ne sont pas encore exploitables — les exposer en écriture avant que la logique
- * d'envoi n'existe donnerait une fausse impression de fonctionnalité active.
+ * Lot B : les 4 champs "gestion du bloc" sont désormais exposés en écriture (la logique
+ * d'envoi existe — BlockManagementCommunicationService) en plus de `notifyColleaguesEnabled`
+ * (Lot A, inchangé). Mise à jour partielle — seules les clés présentes dans le body sont
+ * appliquées (AbsenceCommunicationSiteConfigService::updateSettings()).
  */
 class AbsenceCommunicationSiteConfigController extends AbstractController
 {
@@ -51,10 +51,7 @@ class AbsenceCommunicationSiteConfigController extends AbstractController
 
         $items = array_map(function (Hospital $site) use ($configsBySite) {
             $config = $configsBySite[$site->getId()] ?? null;
-            return [
-                'site' => ['id' => $site->getId(), 'name' => $site->getName()],
-                'notifyColleaguesEnabled' => $config?->isNotifyColleaguesEnabled() ?? false,
-            ];
+            return self::serialize($site, $config);
         }, $sites);
 
         return $this->json(['items' => $items]);
@@ -71,15 +68,34 @@ class AbsenceCommunicationSiteConfigController extends AbstractController
         }
 
         $data = json_decode($request->getContent() ?: '{}', true) ?? [];
-        if (!array_key_exists('notifyColleaguesEnabled', $data) || !is_bool($data['notifyColleaguesEnabled'])) {
-            throw new BadRequestHttpException('notifyColleaguesEnabled (booléen) est requis.');
+
+        if (array_key_exists('notifyColleaguesEnabled', $data) && !is_bool($data['notifyColleaguesEnabled'])) {
+            throw new BadRequestHttpException('notifyColleaguesEnabled doit être un booléen.');
+        }
+        if (array_key_exists('notifyBlockManagementEnabled', $data) && !is_bool($data['notifyBlockManagementEnabled'])) {
+            throw new BadRequestHttpException('notifyBlockManagementEnabled doit être un booléen.');
+        }
+        if (array_key_exists('blockManagementDelayDays', $data) && $data['blockManagementDelayDays'] !== null && !is_int($data['blockManagementDelayDays'])) {
+            throw new BadRequestHttpException('blockManagementDelayDays doit être un entier.');
+        }
+        if (array_key_exists('blockManagementEmailCc', $data) && !is_array($data['blockManagementEmailCc'])) {
+            throw new BadRequestHttpException('blockManagementEmailCc doit être un tableau d\'emails.');
         }
 
-        $config = $this->service->setNotifyColleaguesEnabled($site, $data['notifyColleaguesEnabled']);
+        $config = $this->service->updateSettings($site, $data);
 
-        return $this->json([
+        return $this->json(self::serialize($site, $config));
+    }
+
+    private static function serialize(Hospital $site, ?AbsenceCommunicationSiteConfig $config): array
+    {
+        return [
             'site' => ['id' => $site->getId(), 'name' => $site->getName()],
-            'notifyColleaguesEnabled' => $config->isNotifyColleaguesEnabled(),
-        ]);
+            'notifyColleaguesEnabled' => $config?->isNotifyColleaguesEnabled() ?? false,
+            'notifyBlockManagementEnabled' => $config?->isNotifyBlockManagementEnabled() ?? false,
+            'blockManagementEmailTo' => $config?->getBlockManagementEmailTo(),
+            'blockManagementEmailCc' => $config?->getBlockManagementEmailCc() ?? [],
+            'blockManagementDelayDays' => $config?->getBlockManagementDelayDays(),
+        ];
     }
 }

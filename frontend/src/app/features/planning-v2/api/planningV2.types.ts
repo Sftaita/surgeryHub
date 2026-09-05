@@ -139,11 +139,24 @@ export interface ShiftPeriodConfigV2 {
   active: boolean;
 }
 
-// ── Communication des absences chirurgiens (Lot A, D-114) ───────────────────
+// ── Communication des absences chirurgiens (Lot A/B, D-114) ─────────────────
 
 export interface AbsenceCommunicationSiteSettingV2 {
   site: SiteRefV2;
   notifyColleaguesEnabled: boolean;
+  /** Lot B */
+  notifyBlockManagementEnabled: boolean;
+  blockManagementEmailTo: string | null;
+  blockManagementEmailCc: string[];
+  blockManagementDelayDays: number | null;
+}
+
+export interface AbsenceCommunicationSiteSettingUpdateV2 {
+  notifyColleaguesEnabled?: boolean;
+  notifyBlockManagementEnabled?: boolean;
+  blockManagementEmailTo?: string | null;
+  blockManagementEmailCc?: string[];
+  blockManagementDelayDays?: number | null;
 }
 
 // ── Site groups ──────────────────────────────────────────────────────────────

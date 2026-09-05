@@ -166,6 +166,7 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\SurgeonAbsenceCommunicationDelivery::scheduledAt' => 'Lot B — set from new \DateTimeImmutable() in the scheduling service, never client input',
         'App\Entity\SurgeonAbsenceCommunicationDelivery::sentAt' => 'set from new \DateTimeImmutable() in AbsenceCommunicationJournalService::recordDeliverySuccess(), called only after SendTemplatedEmailMessageHandler confirms $mailer->send() did not throw — never client input',
         'App\Entity\SurgeonAbsenceCommunicationDelivery::cancelledAt' => 'Lot B — set from new \DateTimeImmutable() when a scheduled communication is cancelled, never client input',
+        'App\Entity\SurgeonAbsenceCommunicationDelivery::dispatchClaimedAt' => 'set from new \DateTimeImmutable() in AbsenceCommunicationJournalService::claimScheduledBlockManagementDelivery(), never client input',
     ];
 
     /** Exempt by name, not by allowlist entry — the project-wide TimestampableTrait convention. */

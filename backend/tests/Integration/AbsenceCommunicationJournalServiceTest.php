@@ -253,4 +253,110 @@ final class AbsenceCommunicationJournalServiceTest extends KernelTestCase
         self::assertSame(AbsenceCommunicationStatus::FAILED, $a->getStatus(), 'one recipient failing must never affect another');
         self::assertSame(AbsenceCommunicationStatus::SENT, $b->getStatus());
     }
+
+    // ── Revue finale Lot B (§10) — cancelPendingDelivery() vs claim concurrent ─────────
+
+    /**
+     * Construit directement une communication/delivery « gestion du bloc » SCHEDULED, sans
+     * passer par BlockManagementCommunicationService — seul le mécanisme de verrouillage de
+     * cancelPendingDelivery() est sous test ici.
+     */
+    private function makeBlockManagementDelivery(User $surgeon, Hospital $site): SurgeonAbsenceCommunicationDelivery
+    {
+        $absence = $this->makeAbsence($surgeon);
+
+        $communication = new SurgeonAbsenceCommunication();
+        $communication->setAbsence($absence);
+        $communication->setSurgeon($surgeon);
+        $communication->setSite($site);
+        $communication->setType(\App\Enum\AbsenceCommunicationType::BLOCK_MANAGEMENT_ABSENCE);
+        $communication->setRevisionNumber(0);
+        $communication->setSubjectSnapshot('Test');
+        $communication->setBodySnapshot('Test');
+        $communication->setOccurrencesSnapshot([]);
+        $communication->setAbsenceDateStartSnapshot($absence->getDateStart());
+        $communication->setAbsenceDateEndSnapshot($absence->getDateEnd());
+        $this->em->persist($communication);
+
+        $delivery = new SurgeonAbsenceCommunicationDelivery();
+        $delivery->setStatus(AbsenceCommunicationStatus::SCHEDULED);
+        $delivery->setRecipientEmailSnapshot('bloc@example.com');
+        $delivery->setRecipientCcSnapshot([]);
+        $communication->addDelivery($delivery);
+        $this->em->persist($delivery);
+        $this->em->flush();
+
+        $this->createdIds['communications'][] = $communication->getId();
+
+        return $delivery;
+    }
+
+    public function test_cancel_pending_delivery_cancels_a_genuinely_still_scheduled_delivery(): void
+    {
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site = $this->makeSite();
+        $delivery = $this->makeBlockManagementDelivery($surgeon, $site);
+
+        $this->service->cancelPendingDelivery($delivery, 'test reason');
+
+        $this->em->clear();
+        $fresh = $this->em->find(SurgeonAbsenceCommunicationDelivery::class, $delivery->getId());
+        self::assertSame(AbsenceCommunicationStatus::CANCELLED, $fresh->getStatus());
+        self::assertNotNull($fresh->getCancelledAt());
+        self::assertSame('test reason', $fresh->getLastError());
+    }
+
+    /**
+     * Simule le Cas 2 de la revue finale (§10) : le scheduler gagne la course avant la
+     * suppression. Le claim concurrent est appliqué directement en base (représentant une
+     * AUTRE transaction déjà committée) — la variable PHP `$delivery` utilisée ci-dessous a
+     * été chargée AVANT cette mise à jour et reste, en mémoire, "SCHEDULED"/`dispatchClaimedAt`
+     * null. Sans le verrou pessimiste + `refresh()` de `cancelPendingDelivery()`, cette
+     * information périmée provoquerait une annulation à tort d'une communication déjà
+     * réellement confiée au pipeline d'envoi.
+     */
+    public function test_cancel_pending_delivery_is_a_no_op_once_the_scheduler_has_already_claimed_it_concurrently(): void
+    {
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site = $this->makeSite();
+        $delivery = $this->makeBlockManagementDelivery($surgeon, $site);
+
+        $this->em->getConnection()->executeStatement(
+            'UPDATE surgeon_absence_communication_delivery SET dispatch_claimed_at = ? WHERE id = ?',
+            [(new \DateTimeImmutable())->format('Y-m-d H:i:s.u'), $delivery->getId()],
+        );
+
+        $this->service->cancelPendingDelivery($delivery, 'site plus concerné');
+
+        $this->em->clear();
+        $fresh = $this->em->find(SurgeonAbsenceCommunicationDelivery::class, $delivery->getId());
+        self::assertSame(AbsenceCommunicationStatus::SCHEDULED, $fresh->getStatus(), 'never cancelled once the scheduler has claimed it, even if the in-memory object looked SCHEDULED before the refresh');
+        self::assertNotNull($fresh->getDispatchClaimedAt());
+        self::assertNull($fresh->getCancelledAt());
+        self::assertNull($fresh->getLastError());
+    }
+
+    /**
+     * Cas 1 de la revue finale (§10) : la suppression gagne avant le claim — la delivery est
+     * réellement CANCELLED en base ; un claim ultérieur du scheduler doit alors se voir
+     * comme `already-handled`, jamais redispatcher.
+     */
+    public function test_a_delivery_cancelled_before_claim_is_never_claimed_afterward(): void
+    {
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site = $this->makeSite();
+        $delivery = $this->makeBlockManagementDelivery($surgeon, $site);
+
+        $this->service->cancelPendingDelivery($delivery, 'absence supprimée');
+        $this->em->clear();
+
+        $fresh = $this->em->find(SurgeonAbsenceCommunicationDelivery::class, $delivery->getId());
+        $claim = $this->service->claimScheduledBlockManagementDelivery($fresh);
+        self::assertSame('already-handled', $claim['outcome']);
+
+        $this->em->clear();
+        $reloaded = $this->em->find(SurgeonAbsenceCommunicationDelivery::class, $delivery->getId());
+        self::assertSame(AbsenceCommunicationStatus::CANCELLED, $reloaded->getStatus());
+        self::assertNull($reloaded->getDispatchClaimedAt());
+    }
 }

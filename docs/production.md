@@ -686,6 +686,75 @@ mais le "dernier tag prod" reste celui d'avant le déploiement raté.
 
 ---
 
+## Tâche planifiée — communications « gestion du bloc » programmées (D-114 Lot B) — PAS ENCORE ACTIVÉE
+
+`app:absences:send-scheduled-communications` (`SendScheduledAbsenceCommunicationsCommand`)
+envoie les emails « gestion du bloc » programmés (délai configurable avant le début d'un
+congé chirurgien) dont l'échéance est atteinte. Développée et testée en local (voir D-114
+Lot B dans `docs/decisions.md`), **non déployée et non planifiée en production** au moment
+de la rédaction — instructions ci-dessous prêtes pour l'activation, à exécuter seulement
+avec une autorisation explicite de déploiement/configuration prod.
+
+### Mécanisme prévu (même schéma que D-064/D-083/D-110)
+
+| | |
+|---|---|
+| Planificateur | cron utilisateur `deploy` |
+| Fréquence recommandée | horaire (`0 * * * *`) — le délai se compte en jours, une granularité plus fine n'a aucune utilité réelle |
+| Script | `/home/deploy/scripts/send_scheduled_absence_communications.sh` (à créer, même style que `missions_start_due.sh` : `set -uo pipefail`, `flock -n`, vérification `docker inspect`) |
+| Commande exécutée | `docker compose exec -T php php bin/console app:absences:send-scheduled-communications --env=prod` |
+| Répertoire d'exécution | `/opt/stack/apps/surgicalhub` |
+| Journal | `/home/deploy/logs/scheduled-absence-communications.log` |
+| Verrou anti-chevauchement (shell) | `flock -n` sur `/home/deploy/locks/scheduled-absence-communications.lock` |
+| Garde métier (applicatif) | claim atomique sous verrou pessimiste par delivery (`dispatchClaimedAt`) — un run concurrent/rapproché ne peut jamais redispatcher la même communication, voir D-114 (Lot B) |
+
+**Migration requise avant activation** : `Version20260905130000` (ajoute
+`dispatch_claimed_at` sur `surgeon_absence_communication_delivery`, additive, sans risque sur
+les données existantes) doit être appliquée en prod
+(`doctrine:migrations:migrate --env=prod`) avant tout déploiement du code applicatif qui la
+suppose — même règle que pour toute migration précédente.
+
+**Worker Messenger — restart obligatoire** : `SendTemplatedEmailMessage` gagne `cc`/`replyTo`
+dans ce lot (déjà étendu une première fois en Lot A avec `absenceCommunicationDeliveryId`).
+Le worker Messenger étant un process long-running, un restart est **obligatoire** au
+déploiement de ce lot, pour la même raison exactement documentée dans
+`docs/deployment-versioning.md` §4.5 et déjà vécue lors du Lot A — sans quoi le worker
+continuerait silencieusement d'exécuter l'ancien handler.
+
+Entrée crontab prévue (à ajouter après les jobs existants, jamais réécrits) :
+
+```
+# D-114 Lot B — Communications "gestion du bloc" programmées (horaire)
+0 * * * * /home/deploy/scripts/send_scheduled_absence_communications.sh >> /home/deploy/logs/scheduled-absence-communications.log 2>&1
+```
+
+### Avant activation
+
+1. Appliquer la migration `Version20260905130000` en prod.
+2. Redémarrer le worker Messenger après déploiement du code (contrat
+   `SendTemplatedEmailMessage` étendu — voir ci-dessus).
+3. Créer `/home/deploy/scripts/send_scheduled_absence_communications.sh` sur le modèle exact
+   de `missions_start_due.sh` (même garde `flock`, même vérification `docker inspect`).
+4. Sauvegarder la crontab avant modification
+   (`crontab -l > /home/deploy/backups/cron/crontab_before_scheduled_absence_communications_<horodatage>.txt`).
+
+### Vérification (une fois activée)
+
+```bash
+tail -50 /home/deploy/logs/scheduled-absence-communications.log
+ps aux | grep send-scheduled-communications
+crontab -l | grep send_scheduled_absence_communications
+```
+
+### Désactivation
+
+```bash
+crontab -l | grep -v 'send_scheduled_absence_communications.sh' | crontab -
+crontab -l   # confirmer l'absence de la ligne, les autres jobs intacts
+```
+
+---
+
 ## Historique des incidents
 
 _Traçabilité complète — ne jamais réécrire une entrée existante. Chaque

@@ -8494,7 +8494,7 @@ simplement l'onglet En attente sans mise en évidence — dégradation gracieuse
 volontairement non fusionné avec `CatalogueRequestKind` (objet métier réellement
 différent).
 
-## D-114 — Communication des absences chirurgiens : « Libération de salle » (Lot A), bypass volontaire de NotificationPreferenceResolver (2026-09-05)
+## D-114 — Communication des absences chirurgiens : « Libération de salle » (Lot A) et « Gestion du bloc » (Lot B), bypass volontaire de NotificationPreferenceResolver (2026-09-05)
 
 Date : 2026-09-05
 
@@ -8613,7 +8613,7 @@ applicatif : c'est la règle déjà documentée dans `docs/deployment-versioning
 qui s'applique ici parce que le contrat de `SendTemplatedEmailMessage` a changé — pas une
 exception ni un cas particulier à ce lot.
 
-### Non fait dans ce lot (Lots B/C)
+### Non fait dans le Lot A (repris ci-dessous par le Lot B)
 
 Email « gestion du bloc » (délai configurable, scheduling différé, `cc`/`replyTo`),
 modification/suppression avec choix Oui/Non pour la gestion du bloc, rattrapage historique
@@ -8624,3 +8624,121 @@ des absences déjà existantes, journal manager complet (UI). Le schéma des tab
 `blockManagementDelayDays`, `scheduledAt`/`cancelledAt` sur la delivery) afin d'éviter une
 seconde migration structurelle, mais aucune logique d'envoi ni contrat API ne les exploite
 avant le Lot B.
+
+## Lot B — « Gestion du bloc » : configuration, scheduling, modification et suppression (2026-09-05)
+
+### Contexte
+
+Second sous-lot de D-114 : informer une adresse mailbox « gestion du bloc » configurée par
+site (pas un `User` SurgicalHub) qu'un chirurgien crée, modifie ou supprime un congé, avec
+un délai configurable avant le début du congé, un `Reply-To` vers le chirurgien concerné
+(jamais une usurpation du `From` SMTP), et une adresse `To` + plusieurs `CC` configurables
+côté site, le chirurgien étant automatiquement ajouté en copie. Réutilise intégralement le
+modèle de données et les composants du Lot A (`AbsenceCommunicationSiteConfig`,
+`SurgeonAbsenceCommunication`/`Delivery`, `SurgeonAbsenceBlockOccurrenceResolver`,
+`AbsenceCommunicationJournalService`) — aucun second journal, aucune nouvelle entité pour
+la communication elle-même.
+
+### Résolution live au moment de l'envoi (jamais figée à la programmation)
+
+Contrairement à un scénario où To/CC seraient résolus une fois pour toutes à la création de
+la communication, `AbsenceCommunicationJournalService::resolveLiveBlockManagementRecipients()`
+relit l'état ACTUEL de `AbsenceCommunicationSiteConfig` et l'email courant du chirurgien
+juste avant chaque dispatch réel (immédiat ou via le cron, potentiellement des jours plus
+tard) — décision actée explicitement avec l'utilisateur. Conséquence directe :
+- Fonction désactivée entre la programmation et l'échéance → la delivery passe `CANCELLED`
+  (`lastError` explicite), jamais un envoi silencieux ni une erreur bloquante.
+- Fonction toujours activée mais adresse `To` devenue invalide/manquante → `FAILED` avec
+  `lastError`, jamais de fallback inventé (pas d'adresse générique, pas de silence).
+- Les snapshots `recipientEmailSnapshot`/`recipientCcSnapshot` du journal représentent
+  toujours ce qui a **réellement été utilisé** pour l'email envoyé, jamais les valeurs
+  historiques prévues à la programmation.
+
+### Mutable en place tant que jamais envoyée, immuable dès `SENT` (contraste avec le Lot A)
+
+`ROOM_RELEASE` (Lot A) est immuable dès la création. `BLOCK_MANAGEMENT_ABSENCE` (Lot B) est
+volontairement différente : tant que sa delivery unique est encore `SCHEDULED` (ou
+`CANCELLED`-avant-envoi), rien n'a réellement été communiqué — `AbsenceCommunicationJournalService::upsertPendingBlockManagementNotice()`
+peut donc muter la même ligne en place (recalcul de `scheduledAt`, aperçu de destinataires,
+réactivation) sans jamais créer de doublon, à chaque création/modification de l'absence tant
+qu'aucun envoi réel n'a eu lieu. Une fois `SENT` (ou `FAILED`, une tentative a déjà eu lieu),
+la ligne devient immuable comme le reste du journal : tout changement de dates ultérieur crée
+une **nouvelle** communication `BLOCK_MANAGEMENT_MODIFICATION` (revision propre, séquence
+indépendante de celle de `BLOCK_MANAGEMENT_ABSENCE`), jamais une correction en place — et
+jamais générée si les dates n'ont en réalité pas changé (comparaison stricte des snapshots).
+
+### Scheduling réel — cron horaire + claim atomique (`dispatchClaimedAt`)
+
+`app:absences:send-scheduled-communications` (calqué sur `CheckUncoveredEscalationsCommand`,
+D-110) scanne les deliveries `SCHEDULED` dont `scheduledAt` est échu, claim chacune sous
+verrou pessimiste (re-vérifie `SCHEDULED` — une exécution concurrente ou une suppression a pu
+déjà la traiter entre le scan et le claim), résout To/CC live, puis dispatche strictement
+après le commit de la transaction de claim. Cron recommandé : `0 * * * *` (le délai se compte
+en jours, une granularité plus fine n'a aucune utilité réelle).
+
+**Gap de concurrence identifié et corrigé pendant l'implémentation, hors plan initial** : le
+plan prévoyait de s'appuyer uniquement sur `status = SCHEDULED` comme garde-fou, avec le
+principe déjà établi (Lot A) que `status` n'est mis à jour qu'après confirmation réelle
+d'envoi (`SendTemplatedEmailMessageHandler`). Or ce principe crée précisément la fenêtre de
+risque que la demande initiale (§11) mettait en garde explicitement contre : entre le moment
+où une delivery est dispatchée vers Messenger et le moment où le handler confirme
+`SENT`/`FAILED`, `status` reste `SCHEDULED` — un second scan (cron concurrent, ou un run qui
+suit de près) retrouverait la même ligne encore `SCHEDULED` et la redispatcherait, provoquant
+un double envoi réel au bloc opératoire. Corrigé par l'ajout d'un nouveau champ
+`dispatchClaimedAt` (`\DateTimeImmutable`, nullable) sur `SurgeonAbsenceCommunicationDelivery`
+— posé une seule fois, atomiquement, sous le même verrou pessimiste que le claim, jamais
+réinitialisé. Le scan initial du cron filtre déjà `dispatchClaimedAt IS NULL` (évite de
+re-sélectionner une ligne en cours de traitement), et le claim lui-même re-vérifie cette
+condition sous verrou avant de la poser — une ligne déjà claim (par ce run ou un run
+concurrent/rapproché précédent) retourne `already-handled` sans jamais redispatcher, même si
+son `status` est encore `SCHEDULED`. `dispatchClaimedAt` répond à la question « a-t-on déjà
+tenté ? », `status` répond à « quel est le résultat confirmé ? » — deux questions
+distinctes, jamais confondues. **Nouvelle migration additive** (`Version20260905130000`,
+`ALTER TABLE ... ADD dispatch_claimed_at DATETIME DEFAULT NULL`) malgré le Lot A qui annonçait
+« aucune migration nécessaire pour le Lot B » — déviation justifiée : purement additive,
+aucun risque sur les données existantes (Lot A ne l'utilise jamais), et directement requise
+par l'exigence de robustesse explicite de la demande (§11 : « ne pas faire confiance
+uniquement à `status = SCHEDULED` sans stratégie de verrou/claim atomique »). Couvert par
+`SendScheduledAbsenceCommunicationsCommandIntegrationTest::test_a_delivery_already_claimed_is_never_redispatched_even_if_still_scheduled`.
+
+### Modification et suppression
+
+Modification avant envoi (delivery encore `SCHEDULED`) : mutation en place, jamais d'email —
+rien n'a encore été communiqué. Modification après envoi (dates réellement différentes du
+dernier snapshot connu) : nouvelle communication `BLOCK_MANAGEMENT_MODIFICATION`, dispatch
+immédiat. Suppression : un site encore `SCHEDULED` est **toujours** annulé silencieusement
+(`cancelPendingDelivery()`), quel que soit le choix utilisateur — ce choix ne gouverne que les
+sites déjà `SENT`. `GET /api/absences/{id}/deletion-info` calcule côté backend, jamais déduit
+côté client, si au moins un site a réellement déjà reçu la communication ; si oui, une seule
+question Oui/Non globale couvre tous les sites déjà notifiés (décision actée : pas une
+question par site). « Oui » crée une communication `BLOCK_MANAGEMENT_CANCELLATION` par site
+réellement notifié, réutilisant la configuration **actuelle** du site (§23 : le toggle
+désactivé empêche les nouveaux préavis automatiques, jamais la correction/annulation d'un
+message déjà envoyé). Le texte de l'email d'annulation ne contient jamais la phrase
+« Mes vacations opératoires prévues sur cette période peuvent donc être maintenues. »,
+explicitement proscrite par la demande — vérifié par test
+(`BlockManagementCommunicationFunctionalTest::test_deletion_after_send_with_yes_sends_cancellation_with_exact_text_and_no_forbidden_sentence`).
+
+### Extension du Mailer — `cc`/`replyTo`
+
+`SendTemplatedEmailMessage` gagne `cc: array = []` et `replyTo: ?string = null` (positionnels
+après `absenceCommunicationDeliveryId`, tous par défaut vides — rétrocompatible avec le Lot A
+et tous les appelants antérieurs). `SendTemplatedEmailMessageHandler` applique `->cc(...)` si
+non vide et `->replyTo(...)` si non nul. Le `From` SMTP reste systématiquement l'adresse
+SurgicalHub configurée (`MAILER_FROM_ADDRESS`) — jamais usurpé par l'adresse du chirurgien,
+qui n'apparaît qu'en `Reply-To`.
+
+### Worker Messenger — second restart obligatoire
+
+Même raisonnement que le Lot A (§ ci-dessus) : le contrat de `SendTemplatedEmailMessage`
+change une seconde fois (`cc`/`replyTo`). Le worker Messenger doit être redémarré au
+déploiement de ce lot, pour la même raison exacte (process long-running, classes jamais
+rechargées) — voir `docs/deployment-versioning.md` §4.5.
+
+### Non fait dans ce lot
+
+Rattrapage historique des absences déjà existantes au moment du déploiement (seules les
+créations/modifications/suppressions **après** déploiement déclenchent la gestion du bloc),
+journal manager complet (UI de consultation de l'historique des communications — hors
+périmètre, seul le réglage de configuration a une UI). Aucune modification du Lot A.
+Non déployé en production — sur instruction explicite répétée.
