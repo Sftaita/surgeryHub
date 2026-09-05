@@ -491,6 +491,8 @@ final class MissionEncodingEntriesTest extends WebTestCase
         $ignore = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
             'strategy' => 'REASSIGN',
             'missionInterventionId' => $targetId,
+            'reason' => 'DUPLICATE',
+            'comment' => 'Demande en doublon.',
         ]);
         self::assertSame(Response::HTTP_OK, $ignore->getStatusCode(), $ignore->getContent());
 
@@ -516,6 +518,8 @@ final class MissionEncodingEntriesTest extends WebTestCase
         $managerToken = $this->login($client, $manager);
         $ignore = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
             'strategy' => 'KEEP_AS_HISTORY',
+            'reason' => 'DUPLICATE',
+            'comment' => 'Demande en doublon.',
         ]);
         self::assertSame(Response::HTTP_OK, $ignore->getStatusCode(), $ignore->getContent());
 
@@ -536,7 +540,10 @@ final class MissionEncodingEntriesTest extends WebTestCase
 
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
-        $ignore = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, []);
+        $ignore = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
+            'reason' => 'DUPLICATE',
+            'comment' => 'Demande en doublon.',
+        ]);
         self::assertSame(Response::HTTP_OK, $ignore->getStatusCode(), $ignore->getContent());
         self::assertSame('KEPT_AS_HISTORY', json_decode($ignore->getContent(), true)['draftStatus']);
 

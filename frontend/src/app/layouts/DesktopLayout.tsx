@@ -166,13 +166,24 @@ export function DesktopLayout() {
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const menuOpen = Boolean(menuAnchor);
 
+  // Correctif workflow Demandes Catalogue (D-113) — même clé + même queryFn (donc même
+  // forme de donnée en cache, {items,total}) que CatalogueRequestsPage : avant ce
+  // correctif, ce badge et la liste partageaient la clé ["material-requests","PENDING"]
+  // avec des queryFn renvoyant des formes DIFFÉRENTES (ici un number, là {items,total}),
+  // ce qui corrompait le cache React Query selon l'ordre de montage — voir
+  // docs/decisions.md D-113. `select` réduit ici à `total` (jamais `items.length`, pour
+  // rester correct si la liste devient un jour paginée/limitée).
   const pendingMaterialCount = useNavBadgeCount(
     ["material-requests", "PENDING"],
-    async () => (await getMaterialRequests({ status: "PENDING" })).items.length,
+    () => getMaterialRequests({ status: "PENDING" }),
+    60_000,
+    (data) => data.total,
   );
   const pendingInterventionCount = useNavBadgeCount(
     ["intervention-type-requests", "PENDING"],
-    async () => (await getInterventionTypeRequests({ status: "PENDING" })).items.length,
+    () => getInterventionTypeRequests({ status: "PENDING" }),
+    60_000,
+    (data) => data.total,
   );
   const pendingCount = pendingMaterialCount + pendingInterventionCount;
   const unreadNotificationsCount = useNavBadgeCount(

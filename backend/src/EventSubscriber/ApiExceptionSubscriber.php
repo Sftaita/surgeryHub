@@ -28,6 +28,7 @@ use App\Exception\DraftAlreadyResolvedException;
 use App\Exception\InterventionTypeRequestWithoutDraftException;
 use App\Exception\MaterialAttachmentTargetClosedException;
 use App\Exception\MaterialAttachmentTargetNotFoundException;
+use App\Exception\MaterialItemRequestAlreadyProcessedException;
 use App\Exception\MissingIgnoreStrategyException;
 use App\Exception\RefundExceedsOverpaidException;
 use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
@@ -197,6 +198,10 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
         } elseif ($e instanceof DraftAlreadyResolvedException) {
             $status = 409;
             $code = 'DRAFT_ALREADY_RESOLVED';
+            $message = $e->getMessage() ?: 'Cette demande a déjà été traitée.';
+        } elseif ($e instanceof MaterialItemRequestAlreadyProcessedException) {
+            $status = 409;
+            $code = 'MATERIAL_ITEM_REQUEST_ALREADY_PROCESSED';
             $message = $e->getMessage() ?: 'Cette demande a déjà été traitée.';
         } elseif ($e instanceof MissingIgnoreStrategyException) {
             $status = 422;

@@ -52,4 +52,20 @@ describe("useNavBadgeCount", () => {
 
     vi.useRealTimers();
   });
+
+  /**
+   * Correctif workflow Demandes Catalogue (D-113) — `select` permet au badge de lire le
+   * compte depuis la MÊME forme de donnée ({items,total}) que la liste qui partage sa
+   * clé, au lieu de forcer une queryFn dédiée renvoyant un `number` sous une clé déjà
+   * utilisée ailleurs avec une forme différente (la collision corrigée par ce lot).
+   */
+  it("réduit la donnée via select quand la queryFn ne renvoie pas déjà un number", async () => {
+    const queryFn = vi.fn().mockResolvedValue({ items: [{ id: 1 }], total: 4 });
+    const { result } = renderHook(
+      () => useNavBadgeCount(["test-badge-select"], queryFn, 60_000, (data: { total: number }) => data.total),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current).toBe(4));
+  });
 });

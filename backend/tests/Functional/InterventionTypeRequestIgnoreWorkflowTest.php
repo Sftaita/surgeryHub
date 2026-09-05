@@ -291,6 +291,8 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
 
         $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
             'strategy' => 'KEEP_AS_HISTORY',
+            'reason' => 'DUPLICATE',
+            'comment' => 'Demande en doublon.',
         ]);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
@@ -331,6 +333,8 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
         $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
             'strategy' => 'REASSIGN',
             'missionInterventionId' => $target->getId(),
+            'reason' => 'DUPLICATE',
+            'comment' => 'Demande en doublon.',
         ]);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
@@ -363,6 +367,8 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
         $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
             'strategy' => 'REASSIGN',
             'missionInterventionId' => $foreignTarget->getId(),
+            'reason' => 'DUPLICATE',
+            'comment' => 'Demande en doublon.',
         ]);
 
         self::assertSame(Response::HTTP_NOT_FOUND, $response->getStatusCode());
@@ -380,6 +386,8 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
         $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
             'strategy' => 'REASSIGN',
             'missionInterventionId' => 999999999,
+            'reason' => 'DUPLICATE',
+            'comment' => 'Demande en doublon.',
         ]);
 
         self::assertSame(Response::HTTP_NOT_FOUND, $response->getStatusCode());
@@ -395,6 +403,8 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
 
         $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
             'strategy' => 'REASSIGN',
+            'reason' => 'DUPLICATE',
+            'comment' => 'Demande en doublon.',
         ]);
 
         self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
@@ -418,7 +428,10 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, []);
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
+            'reason' => 'DUPLICATE',
+            'comment' => 'Demande en doublon.',
+        ]);
 
         self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
         self::assertSame('MISSING_IGNORE_STRATEGY', json_decode($response->getContent(), true)['error']['code']);
@@ -434,9 +447,65 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
 
         $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
             'strategy' => 'NOT_A_REAL_STRATEGY',
+            'reason' => 'DUPLICATE',
+            'comment' => 'Demande en doublon.',
         ]);
 
         self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
+    }
+
+    // ── Motif / explication (correctif workflow Demandes Catalogue) ──
+
+    public function test_ignore_without_reason_returns_422(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $requestId = $this->createPendingRequest($client, $mission, $instrToken);
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
+            'comment' => 'Demande en doublon.',
+        ]);
+
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
+    }
+
+    public function test_ignore_without_comment_returns_422(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $requestId = $this->createPendingRequest($client, $mission, $instrToken);
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
+            'reason' => 'OTHER',
+        ]);
+
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
+    }
+
+    public function test_ignore_persists_reason_and_comment_and_decider(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $requestId = $this->createPendingRequest($client, $mission, $instrToken);
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
+            'reason' => 'ALREADY_EXISTS',
+            'comment' => 'Intervention déjà existante sous le nom « Prothèse totale de hanche ».',
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $this->em->clear();
+        $req = $this->em->find(InterventionTypeRequest::class, $requestId);
+        self::assertSame('ALREADY_EXISTS', $req->getIgnoreReason()?->value);
+        self::assertSame('Intervention déjà existante sous le nom « Prothèse totale de hanche ».', $req->getIgnoreComment());
+        self::assertSame($manager->getId(), $req->getDecidedBy()?->getId());
+        self::assertNotNull($req->getDecidedAt());
     }
 
     public function test_legacy_request_without_draft_returns_409(): void
@@ -467,10 +536,11 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
 
-        $first = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, []);
+        $ignoreBody = ['reason' => 'DUPLICATE', 'comment' => 'Demande en doublon.'];
+        $first = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, $ignoreBody);
         self::assertSame(Response::HTTP_OK, $first->getStatusCode(), $first->getContent());
 
-        $second = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, []);
+        $second = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, $ignoreBody);
         self::assertSame(Response::HTTP_CONFLICT, $second->getStatusCode());
         self::assertSame('DRAFT_ALREADY_RESOLVED', json_decode($second->getContent(), true)['error']['code']);
     }
@@ -483,7 +553,10 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
         $admin = $this->createUser('ROLE_ADMIN');
         $adminToken = $this->login($client, $admin);
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $adminToken, []);
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $adminToken, [
+            'reason' => 'DUPLICATE',
+            'comment' => 'Demande en doublon.',
+        ]);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
     }
@@ -516,7 +589,10 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
         $transport = static::getContainer()->get('messenger.transport.async');
         $transport->reset();
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, []);
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
+            'reason' => 'ALREADY_EXISTS',
+            'comment' => 'Intervention déjà existante.',
+        ]);
         self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
 
         $sent = array_values(array_filter($transport->getSent(), static fn ($e) => $e->getMessage() instanceof CatalogueRequestProcessedMessage));
@@ -526,5 +602,7 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
         self::assertFalse($message->accepted);
         self::assertSame('INTERVENTION_TYPE', $message->kind->value);
         self::assertSame($instr->getId(), $message->recipientUserId);
+        self::assertSame('ALREADY_EXISTS', $message->ignoreReason?->value);
+        self::assertSame('Intervention déjà existante.', $message->explanation);
     }
 }

@@ -1,5 +1,6 @@
 import { apiClient } from "../../../api/apiClient";
 import type {
+  CatalogueRequestIgnoreReason,
   CreateMaterialItemBody,
   FirmDTO,
   MaterialItemDTO,
@@ -73,11 +74,23 @@ export const resolveMaterialRequest = async (
   return res.data.request;
 };
 
-export const ignoreMaterialRequest = async (
-  id: number,
-): Promise<MaterialRequestDTO> => {
+/**
+ * Correctif workflow Demandes Catalogue (D-113) — reason/comment toujours obligatoires
+ * (validés côté backend, 422 sinon) : le demandeur doit toujours recevoir une réponse
+ * utile, jamais un simple flip de statut.
+ */
+export const ignoreMaterialRequest = async ({
+  id,
+  reason,
+  comment,
+}: {
+  id: number;
+  reason: CatalogueRequestIgnoreReason;
+  comment: string;
+}): Promise<MaterialRequestDTO> => {
   const res = await apiClient.post(
     `/api/material-item-requests/${id}/ignore`,
+    { reason, comment },
   );
   return res.data;
 };

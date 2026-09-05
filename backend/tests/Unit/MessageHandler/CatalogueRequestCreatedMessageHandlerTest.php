@@ -18,6 +18,7 @@ use App\MessageHandler\CatalogueRequestCreatedMessageHandler;
 use App\Repository\UserRepository;
 use App\Service\NotificationChannels;
 use App\Service\NotificationPreferenceResolver;
+use App\Service\NotificationService;
 use App\Service\NotificationTargetResolver;
 use App\Service\OutboundNotificationService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -28,8 +29,13 @@ use Psr\Log\LoggerInterface;
 /**
  * Follow-up D-093 — CatalogueRequestCreatedMessageHandler prévient les managers/admins
  * actifs (jamais l'instrumentiste créateur) qu'une nouvelle proposition catalogue attend
- * leur traitement. In-app + push uniquement — jamais d'email, ni en défaut ni en repli
- * push-échoué (contrairement à CatalogueRequestProcessedMessageHandler).
+ * leur traitement.
+ *
+ * D-113 (amende D-094, 2026-09-04) — in-app + push + **email désormais**, les trois
+ * canaux gouvernés indépendamment par NotificationPreferenceResolver
+ * (CATALOGUE_REQUEST_CREATED ajouté à EMAIL_ON_BY_DEFAULT). L'email n'est PAS un repli du
+ * push (contrairement à CatalogueRequestProcessedMessageHandler) : c'est un canal
+ * indépendant, envoyé dès que la préférence l'autorise, que le push ait réussi ou non.
  */
 final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
 {
@@ -38,6 +44,7 @@ final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
     private OutboundNotificationService&MockObject $outboundNotificationService;
     private NotificationPreferenceResolver&MockObject $preferenceResolver;
     private NotificationTargetResolver $targetResolver;
+    private NotificationService&MockObject $notificationService;
     private LoggerInterface&MockObject $logger;
 
     private static int $nextId = 1;
@@ -49,6 +56,7 @@ final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
         $this->outboundNotificationService = $this->createMock(OutboundNotificationService::class);
         $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
         $this->targetResolver = new NotificationTargetResolver();
+        $this->notificationService = $this->createMock(NotificationService::class);
         $this->logger = $this->createMock(LoggerInterface::class);
     }
 
@@ -99,6 +107,7 @@ final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
             $this->outboundNotificationService,
             $this->preferenceResolver,
             $this->targetResolver,
+            $this->notificationService,
             $this->logger,
         );
     }
@@ -243,14 +252,14 @@ final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
         $this->handler()->__invoke($this->message($mission));
     }
 
+    // ── Email (D-113, canal indépendant du push) ─────────────────────────────
+
     /**
-     * Le point central du lot : contrairement à CatalogueRequestProcessedMessageHandler,
-     * un push non livrable (SKIPPED) ne doit JAMAIS déclencher de repli email ici — le
-     * handler n'a même pas de dépendance capable d'envoyer un email applicatif
-     * (NotificationService n'est pas injecté), donc "aucun repli" n'est pas juste un
-     * comportement observé, c'est structurellement impossible à violer par erreur.
+     * Le point central du lot D-113 : l'email est un canal indépendant, pas un repli du
+     * push — contrairement à CatalogueRequestProcessedMessageHandler, il est envoyé dès
+     * que la préférence l'autorise, même si le push a réussi (SENT).
      */
-    public function test_undeliverable_push_never_falls_back_to_email(): void
+    public function test_email_sent_by_default_alongside_a_successful_push(): void
     {
         $mission = $this->makeMission();
         $this->mockEmFindMission($mission);
@@ -259,8 +268,66 @@ final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
         $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: true, push: true));
 
         $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SKIPPED));
-        $this->outboundNotificationService->expects($this->never())->method('recordEmailQueued');
+            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
+        $this->notificationService->expects($this->once())
+            ->method('catalogueRequestCreatedNotifyManager')
+            ->with($mission, $mgr, 42, 'PTH', $this->anything(), CatalogueRequestKind::INTERVENTION_TYPE);
+
+        $this->handler()->__invoke($this->message($mission));
+    }
+
+    public function test_no_duplicate_email_per_manager_on_a_single_nominal_processing(): void
+    {
+        $mission = $this->makeMission();
+        $this->mockEmFindMission($mission);
+        $mgr = $this->makeManager();
+        $this->userRepository->method('findManagersAndAdmins')->willReturn([$mgr]);
+        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: true, push: false));
+
+        $this->notificationService->expects($this->once())->method('catalogueRequestCreatedNotifyManager');
+
+        $this->handler()->__invoke($this->message($mission));
+    }
+
+    /**
+     * catalogueRequestCreatedNotifyManager() n'accepte structurellement que
+     * (Mission, User manager, requestId, label, kindLabel, kind) — aucun paramètre
+     * patient n'existe dans sa signature, donc aucune donnée patient ne peut transiter
+     * vers l'email par ce chemin, même par erreur d'appel ultérieure.
+     */
+    public function test_email_call_carries_no_patient_data(): void
+    {
+        $mission = $this->makeMission();
+        $this->mockEmFindMission($mission);
+        $mgr = $this->makeManager();
+        $this->userRepository->method('findManagersAndAdmins')->willReturn([$mgr]);
+        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: false, email: true, push: false));
+
+        $this->notificationService->expects($this->once())
+            ->method('catalogueRequestCreatedNotifyManager')
+            ->with(
+                $this->isInstanceOf(Mission::class),
+                $this->isInstanceOf(User::class),
+                $this->isType('int'),
+                $this->isType('string'),
+                $this->isType('string'),
+                $this->isInstanceOf(CatalogueRequestKind::class),
+            );
+
+        $this->handler()->__invoke($this->message($mission));
+    }
+
+    public function test_email_disabled_by_preference_never_sends_email(): void
+    {
+        $mission = $this->makeMission();
+        $this->mockEmFindMission($mission);
+        $mgr = $this->makeManager();
+        $this->userRepository->method('findManagersAndAdmins')->willReturn([$mgr]);
+        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: false, push: true));
+
+        $this->outboundNotificationService->method('recordPushSend')
+            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
+        $this->notificationService->expects($this->never())->method('catalogueRequestCreatedNotifyManager');
 
         $this->handler()->__invoke($this->message($mission));
     }

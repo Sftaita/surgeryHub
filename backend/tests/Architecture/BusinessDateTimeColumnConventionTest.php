@@ -150,6 +150,13 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
 
         // Lot 6 (D-100) — EncodingAnomalyReportService::resolve().
         'App\Entity\EncodingAnomalyReport::resolvedAt' => 'set from new \DateTimeImmutable() in EncodingAnomalyReportService::resolve(), never client input',
+
+        // Correctif workflow Demandes Catalogue, D-113 — MaterialItemRequestService::ignore()
+        // et MissionInterventionDraftService::ignore() posent decidedAt uniquement via
+        // new \DateTimeImmutable() au moment de la décision manager, jamais depuis une
+        // entrée client.
+        'App\Entity\MaterialItemRequest::decidedAt' => 'set from new \DateTimeImmutable() in MaterialItemRequestService::ignore(), never client input',
+        'App\Entity\InterventionTypeRequest::decidedAt' => 'set from new \DateTimeImmutable() in MissionInterventionDraftService::ignore(), never client input',
     ];
 
     /** Exempt by name, not by allowlist entry — the project-wide TimestampableTrait convention. */

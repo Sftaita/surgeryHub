@@ -12,6 +12,7 @@ use App\Message\CatalogueRequestCreatedMessage;
 use App\Repository\UserRepository;
 use App\Service\NotificationChannels;
 use App\Service\NotificationPreferenceResolver;
+use App\Service\NotificationService;
 use App\Service\NotificationTargetResolver;
 use App\Service\OutboundNotificationService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -28,16 +29,17 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
  * 7), pas de scoping par site : une proposition catalogue impacte le référentiel global,
  * pas seulement le site de la mission.
  *
- * In-app + push uniquement, JAMAIS d'email — ni en défaut, ni en repli si le push
- * échoue : contrairement à CatalogueRequestProcessedMessageHandler (réponse à
- * l'instrumentiste, actionnable/attendue), une nouvelle proposition n'est pas urgente —
- * le manager la retrouve de toute façon sur CatalogueRequestsPage. Ajouter un repli email
- * ici serait du bruit pur (voir demande explicite du lot notifications). channels->email
- * est donc intentionnellement jamais consulté.
+ * D-113 (amende D-094) — in-app + push + **email désormais**, les trois gouvernés
+ * indépendamment par NotificationPreferenceResolver (CATALOGUE_REQUEST_CREATED ajouté à
+ * EMAIL_ON_BY_DEFAULT). D-094 excluait volontairement l'email ("bruit pur") ; le besoin
+ * produit a changé — une proposition catalogue ne doit plus pouvoir rester sans
+ * traitement faute d'avoir été vue dans l'app. L'email n'est PAS un repli du push
+ * (contrairement à CatalogueRequestProcessedMessageHandler) : c'est un canal indépendant,
+ * désactivable individuellement dans les préférences.
  *
  * Failure isolation par destinataire (comme MissionPublishedMessageHandler::
- * notifySiteInstrumentists) — l'échec d'un manager ne doit jamais empêcher les autres
- * d'être notifiés.
+ * notifySiteInstrumentists) — l'échec d'un manager (ou d'un seul canal) ne doit jamais
+ * empêcher les autres destinataires/canaux d'être notifiés.
  */
 #[AsMessageHandler]
 final class CatalogueRequestCreatedMessageHandler
@@ -48,6 +50,7 @@ final class CatalogueRequestCreatedMessageHandler
         private readonly OutboundNotificationService $outboundNotificationService,
         private readonly NotificationPreferenceResolver $preferenceResolver,
         private readonly NotificationTargetResolver $targetResolver,
+        private readonly NotificationService $notificationService,
         private readonly LoggerInterface $logger,
     ) {}
 
@@ -97,11 +100,15 @@ final class CatalogueRequestCreatedMessageHandler
                 $body = sprintf('Un instrumentiste a proposé un(e) %s qui n\'existe pas encore dans le catalogue : « %s ».', $kindLabel, $message->label);
                 $data = [
                     'missionId' => $mission->getId(),
-                    'url' => $this->targetResolver->resolve(NotificationType::CATALOGUE_REQUEST_CREATED, $mission, $manager),
+                    'url' => $this->targetResolver->resolve(
+                        NotificationType::CATALOGUE_REQUEST_CREATED,
+                        $mission,
+                        $manager,
+                        $message->requestId,
+                        $message->kind,
+                    ),
                 ];
 
-                // Pas de repli email en cas d'échec (contrairement à
-                // CatalogueRequestProcessedMessageHandler) — voir docblock de classe.
                 $this->outboundNotificationService->recordPushSend(
                     $manager,
                     NotificationType::CATALOGUE_REQUEST_CREATED->value,
@@ -109,6 +116,18 @@ final class CatalogueRequestCreatedMessageHandler
                     $body,
                     $data,
                     $mission,
+                );
+            }
+
+            // D-113 (amende D-094) — canal indépendant du push, jamais un repli.
+            if ($channels->email) {
+                $this->notificationService->catalogueRequestCreatedNotifyManager(
+                    $mission,
+                    $manager,
+                    $message->requestId,
+                    $message->label,
+                    $kindLabel,
+                    $message->kind,
                 );
             }
         } catch (\Throwable $e) {

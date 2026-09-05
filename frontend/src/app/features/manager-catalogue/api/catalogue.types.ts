@@ -51,6 +51,20 @@ export type UpdateMaterialItemBody = {
 
 export type MaterialRequestStatus = "PENDING" | "RESOLVED" | "IGNORED";
 
+/**
+ * Correctif workflow Demandes Catalogue (D-113) — motif structuré, partagé avec
+ * InterventionTypeRequestDTO (interventionTypeRequests.api.ts). ALREADY_EXISTS
+ * (intervention) et MATERIAL_ALREADY_EXISTS (matériel) sont volontairement distincts :
+ * chaque kind n'affiche que le motif "déjà existant" qui le concerne dans le Select de la
+ * modal Ignorer (voir IgnoreCatalogueRequestDialog).
+ */
+export type CatalogueRequestIgnoreReason =
+  | "ALREADY_EXISTS"
+  | "MATERIAL_ALREADY_EXISTS"
+  | "DUPLICATE"
+  | "INVALID_REQUEST"
+  | "OTHER";
+
 export type MaterialRequestDTO = {
   id: number;
   status: MaterialRequestStatus;
@@ -67,6 +81,11 @@ export type MaterialRequestDTO = {
     displayName: string;
   } | null;
   materialItem: MaterialItemDTO | null;
+  /** Renseignés uniquement pour une demande IGNORED (D-113). */
+  ignoreReason: CatalogueRequestIgnoreReason | null;
+  ignoreComment: string | null;
+  decidedBy: { id: number; displayName: string } | null;
+  decidedAt: string | null;
 };
 
 export type MaterialRequestsListResponseDTO = {

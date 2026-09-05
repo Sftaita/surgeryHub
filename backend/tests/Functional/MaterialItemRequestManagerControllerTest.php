@@ -442,6 +442,44 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         self::assertNull($line->getInterventionDraft());
     }
 
+    /**
+     * Non-régression du refactor MaterialItemRequestService::resolve() (correctif
+     * workflow Demandes Catalogue, 2026-09-04) — le déplacement de la logique du
+     * controller vers le service (verrouillage pessimiste ajouté) ne doit strictement
+     * rien changer à la forme de la réponse API : mêmes clés, mêmes valeurs.
+     */
+    public function test_resolve_response_shape_is_unchanged_by_the_service_refactor(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $firm = $this->makeFirm();
+        $type = $this->makeType();
+        $intervention = $this->makeRealIntervention($mission, $type);
+        $requestId = $this->createMaterialRequestOnIntervention($client, $mission, $instrToken, $intervention, 'Vis titane');
+        $mi = $this->makeMaterialItem($firm);
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $response = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/resolve", $managerToken, [
+            'materialItemId' => $mi->getId(),
+        ]);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+
+        self::assertEqualsCanonicalizing(['request', 'materialLine'], array_keys($body));
+        self::assertEqualsCanonicalizing(['id'], array_keys($body['materialLine']));
+        self::assertSame('RESOLVED', $body['request']['status']);
+        self::assertSame($requestId, $body['request']['id']);
+        self::assertSame('Vis titane', $body['request']['label']);
+        self::assertSame($mi->getId(), $body['request']['materialItem']['id']);
+        // Champs additifs du correctif — présents mais null tant qu'aucun ignore n'a eu
+        // lieu, jamais une régression du contrat existant.
+        self::assertNull($body['request']['ignoreReason']);
+        self::assertNull($body['request']['ignoreComment']);
+        self::assertNull($body['request']['decidedBy']);
+        self::assertNull($body['request']['decidedAt']);
+    }
+
     // ── Erreurs métier ────────────────────────────────────────────────────────
 
     public function test_missing_material_item_id_returns_422(): void
@@ -501,10 +539,89 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
 
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
-        $response = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/ignore", $managerToken);
+        $response = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/ignore", $managerToken, [
+            'reason' => 'MATERIAL_ALREADY_EXISTS',
+            'comment' => 'Matériel déjà existant sous une autre référence.',
+        ]);
 
-        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
         self::assertSame('IGNORED', json_decode($response->getContent(), true)['status']);
+    }
+
+    // ── Motif / explication (correctif workflow Demandes Catalogue) ──────────
+
+    public function test_ignore_without_reason_returns_422(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $intervention = $this->makeRealIntervention($mission, $type);
+        $requestId = $this->createMaterialRequestOnIntervention($client, $mission, $instrToken, $intervention);
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $response = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/ignore", $managerToken, [
+            'comment' => 'Un commentaire.',
+        ]);
+
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
+    }
+
+    public function test_ignore_without_comment_returns_422(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $intervention = $this->makeRealIntervention($mission, $type);
+        $requestId = $this->createMaterialRequestOnIntervention($client, $mission, $instrToken, $intervention);
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $response = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/ignore", $managerToken, [
+            'reason' => 'OTHER',
+        ]);
+
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
+    }
+
+    public function test_ignore_persists_reason_comment_and_decider(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $intervention = $this->makeRealIntervention($mission, $type);
+        $requestId = $this->createMaterialRequestOnIntervention($client, $mission, $instrToken, $intervention);
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $response = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/ignore", $managerToken, [
+            'reason' => 'MATERIAL_ALREADY_EXISTS',
+            'comment' => 'Matériel déjà existant sous une autre référence.',
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $this->em->clear();
+        $req = $this->em->find(MaterialItemRequest::class, $requestId);
+        self::assertSame('MATERIAL_ALREADY_EXISTS', $req->getIgnoreReason()?->value);
+        self::assertSame('Matériel déjà existant sous une autre référence.', $req->getIgnoreComment());
+        self::assertSame($manager->getId(), $req->getDecidedBy()?->getId());
+        self::assertNotNull($req->getDecidedAt());
+    }
+
+    public function test_second_ignore_attempt_returns_409(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $intervention = $this->makeRealIntervention($mission, $type);
+        $requestId = $this->createMaterialRequestOnIntervention($client, $mission, $instrToken, $intervention);
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $ignoreBody = ['reason' => 'DUPLICATE', 'comment' => 'Demande en doublon.'];
+
+        $first = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/ignore", $managerToken, $ignoreBody);
+        self::assertSame(Response::HTTP_OK, $first->getStatusCode());
+
+        $second = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/ignore", $managerToken, $ignoreBody);
+        self::assertSame(Response::HTTP_CONFLICT, $second->getStatusCode());
+        self::assertSame('MATERIAL_ITEM_REQUEST_ALREADY_PROCESSED', json_decode($second->getContent(), true)['error']['code']);
     }
 
     // ── Notification (D-093) ─────────────────────────────────────────────────
@@ -554,14 +671,19 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         $transport = static::getContainer()->get('messenger.transport.async');
         $transport->reset();
 
-        $response = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/ignore", $managerToken);
-        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        $response = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/ignore", $managerToken, [
+            'reason' => 'MATERIAL_ALREADY_EXISTS',
+            'comment' => 'Matériel déjà existant.',
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
 
         $sent = array_values(array_filter($transport->getSent(), static fn ($e) => $e->getMessage() instanceof CatalogueRequestProcessedMessage));
         self::assertCount(1, $sent);
         /** @var CatalogueRequestProcessedMessage $message */
         $message = $sent[0]->getMessage();
         self::assertFalse($message->accepted);
+        self::assertSame('MATERIAL_ALREADY_EXISTS', $message->ignoreReason?->value);
+        self::assertSame('Matériel déjà existant.', $message->explanation);
     }
 
     /**

@@ -1,72 +1,82 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import LoginPage from "./LoginPage";
 
-// ── Mocks ─────────────────────────────────────────────────────────────────────
+const mockNavigate = vi.fn();
+vi.mock("react-router-dom", async () => {
+  const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
+  return { ...actual, useNavigate: () => mockNavigate };
+});
 
-const loginMock = vi.fn().mockResolvedValue(undefined);
-
+let authStatus: "anonymous" | "loading" | "authenticated" = "authenticated";
 vi.mock("../auth/AuthContext", () => ({
-  useAuth: () => ({
-    state: { status: "anonymous" },
-    login: loginMock,
-    logout: vi.fn(),
-  }),
+  useAuth: () => ({ state: { status: authStatus }, login: vi.fn() }),
+}));
+
+vi.mock("../auth/authStorage", () => ({
+  consumeSessionExpired: () => false,
 }));
 
 vi.mock("../ui/toast/useToast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn() }),
 }));
 
-beforeEach(() => {
-  loginMock.mockClear();
-  sessionStorage.clear();
-});
-
-function renderLoginPage() {
+function renderLoginAt(locationState: unknown) {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[{ pathname: "/login", state: locationState }]}>
       <LoginPage />
-    </MemoryRouter>
+    </MemoryRouter>,
   );
 }
 
-describe("LoginPage — Se souvenir de moi", () => {
-  it("affiche la checkbox 'Se souvenir de moi'", () => {
-    renderLoginPage();
-    expect(screen.getByLabelText("Se souvenir de moi")).toBeInTheDocument();
+/**
+ * Correctif auth/router (2026-09-04) — après authentification, LoginPage doit revenir
+ * exactement vers `state.from` (pathname + query string), jamais un pathname tronqué de
+ * sa query string, et jamais une valeur qui ne serait pas une route interne de
+ * l'application (protection open-redirect). Voir aussi RequireAuth.test.tsx (capture) et
+ * safeInternalPath.test.ts (validation).
+ */
+describe("LoginPage — restauration de la destination post-login", () => {
+  beforeEach(() => {
+    mockNavigate.mockReset();
+    authStatus = "authenticated";
   });
 
-  it("envoie rememberMe=true par défaut (cochée par défaut)", async () => {
-    const user = userEvent.setup();
-    renderLoginPage();
+  it("restaure exactement pathname + query string (deep-link Demandes Catalogue)", () => {
+    renderLoginAt({ from: "/app/m/catalogue/requests?kind=MATERIAL_ITEM&requestId=42" });
 
-    await user.type(screen.getByPlaceholderText("votre@email.com"), "user@example.com");
-    await user.type(screen.getByPlaceholderText("••••••••"), "secret123");
-    await user.click(screen.getByRole("button", { name: /Se connecter/i }));
-
-    expect(loginMock).toHaveBeenCalledWith("user@example.com", "secret123", true);
+    expect(mockNavigate).toHaveBeenCalledWith("/app/m/catalogue/requests?kind=MATERIAL_ITEM&requestId=42", { replace: true });
   });
 
-  it("envoie rememberMe=false si la checkbox est décochée", async () => {
-    const user = userEvent.setup();
-    renderLoginPage();
+  it("continue de fonctionner pour une route sans query string", () => {
+    renderLoginAt({ from: "/app/m/dashboard" });
 
-    await user.type(screen.getByPlaceholderText("votre@email.com"), "user@example.com");
-    await user.type(screen.getByPlaceholderText("••••••••"), "secret123");
-    await user.click(screen.getByLabelText("Se souvenir de moi"));
-    await user.click(screen.getByRole("button", { name: /Se connecter/i }));
-
-    expect(loginMock).toHaveBeenCalledWith("user@example.com", "secret123", false);
+    expect(mockNavigate).toHaveBeenCalledWith("/app/m/dashboard", { replace: true });
   });
 
-  it("affiche un message discret si la session a expiré", () => {
-    sessionStorage.setItem("surgicalhub.auth.sessionExpired", "1");
-    renderLoginPage();
+  it("retombe sur le repli habituel (\"/\") quand from est absent", () => {
+    renderLoginAt(null);
 
-    expect(screen.getByText(/session a expiré/i)).toBeInTheDocument();
-    expect(sessionStorage.getItem("surgicalhub.auth.sessionExpired")).toBeNull();
+    expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true });
+  });
+
+  it("rejette une URL externe comme destination de retour et retombe sur le repli habituel", () => {
+    renderLoginAt({ from: "https://evil.com/phishing" });
+
+    expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true });
+  });
+
+  it("rejette une URL protocole-relative (//evil.com) et retombe sur le repli habituel", () => {
+    renderLoginAt({ from: "//evil.com" });
+
+    expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true });
+  });
+
+  it("ne navigue pas tant que l'utilisateur n'est pas authentifié", () => {
+    authStatus = "anonymous";
+    renderLoginAt({ from: "/app/m/catalogue/requests?kind=MATERIAL_ITEM&requestId=42" });
+
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 });

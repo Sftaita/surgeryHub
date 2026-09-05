@@ -14,6 +14,12 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   ABSENCE_SURGEON_MISSION_OPENED: "Mission réouverte suite à une absence",
   ABSENCE_MISSION_CANCELLED: "Mission annulée suite à une absence",
   PLANNING_RESENT_MANUAL: "Planning renvoyé par un manager",
+  // Correctif workflow Demandes Catalogue (D-113) — CATALOGUE_REQUEST_CREATED gagne un
+  // canal email désormais activé par défaut : sans libellé lisible ici, un manager ne
+  // pouvait pas retrouver ce type dans ses préférences pour le désactiver.
+  CATALOGUE_REQUEST_CREATED: "Nouvelle demande Catalogue à traiter",
+  CATALOGUE_REQUEST_RESOLVED: "Votre proposition Catalogue acceptée",
+  CATALOGUE_REQUEST_IGNORED: "Votre proposition Catalogue non retenue",
 };
 
 export function notificationTypeLabel(type: string): string {

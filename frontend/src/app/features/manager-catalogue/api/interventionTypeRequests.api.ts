@@ -1,5 +1,5 @@
 import { apiClient } from "../../../api/apiClient";
-import type { MaterialRequestStatus } from "./catalogue.types";
+import type { CatalogueRequestIgnoreReason, MaterialRequestStatus } from "./catalogue.types";
 
 /**
  * Client frontend pour `InterventionTypeRequestManagerController` (backend
@@ -28,6 +28,11 @@ export type InterventionTypeRequestDTO = {
     code: string;
     label: string;
   } | null;
+  /** Renseignés uniquement pour une demande IGNORED (D-113). */
+  ignoreReason: CatalogueRequestIgnoreReason | null;
+  ignoreComment: string | null;
+  decidedBy: { id: number; displayName: string } | null;
+  decidedAt: string | null;
 };
 
 export type InterventionTypeRequestsListResponseDTO = {
@@ -70,9 +75,21 @@ export const resolveInterventionTypeRequest = async (
   return res.data;
 };
 
-export const ignoreInterventionTypeRequest = async (
-  id: number,
-): Promise<InterventionTypeRequestActionResultDTO> => {
-  const res = await apiClient.post(`/api/intervention-type-requests/${id}/ignore`);
+/**
+ * Correctif workflow Demandes Catalogue (D-113) — reason/comment toujours obligatoires,
+ * orthogonaux à `strategy`/`missionInterventionId` (non exposés ici : la modal Ignorer
+ * unifiée matériel/intervention ne couvre pas la réaffectation de matériel du draft, qui
+ * reste un flux manager distinct — voir MissionInterventionDraftServiceIgnoreTest).
+ */
+export const ignoreInterventionTypeRequest = async ({
+  id,
+  reason,
+  comment,
+}: {
+  id: number;
+  reason: CatalogueRequestIgnoreReason;
+  comment: string;
+}): Promise<InterventionTypeRequestActionResultDTO> => {
+  const res = await apiClient.post(`/api/intervention-type-requests/${id}/ignore`, { reason, comment });
   return res.data;
 };

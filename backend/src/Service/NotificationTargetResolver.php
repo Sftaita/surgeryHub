@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\CatalogueRequestKind;
 use App\Enum\NotificationType;
 
 /**
@@ -25,8 +26,13 @@ use App\Enum\NotificationType;
  */
 final class NotificationTargetResolver
 {
-    public function resolve(NotificationType $type, ?Mission $mission, User $recipient): ?string
-    {
+    public function resolve(
+        NotificationType $type,
+        ?Mission $mission,
+        User $recipient,
+        ?int $requestId = null,
+        ?CatalogueRequestKind $kind = null,
+    ): ?string {
         $roles = $recipient->getRoles();
         $isManager = in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true);
         $isInstrumentist = in_array('ROLE_INSTRUMENTIST', $roles, true);
@@ -37,7 +43,15 @@ final class NotificationTargetResolver
         // (/app/m/catalogue/requests), not from the mission detail screen. The mission
         // FK still exists on the NotificationEvent for context/audit, it's just not
         // where a manager treats the request.
+        //
+        // Correctif workflow Demandes Catalogue (2026-09-04) — le deep-link porte
+        // désormais le couple (kind, requestId) : MaterialItemRequest et
+        // InterventionTypeRequest ont des espaces d'ID indépendants et peuvent partager
+        // le même id, `requestId` seul serait ambigu côté frontend.
         if ($type === NotificationType::CATALOGUE_REQUEST_CREATED && $isManager) {
+            if ($requestId !== null && $kind !== null) {
+                return sprintf('/app/m/catalogue/requests?kind=%s&requestId=%d', $kind->value, $requestId);
+            }
             return '/app/m/catalogue/requests';
         }
 

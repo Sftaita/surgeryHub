@@ -10,7 +10,12 @@ export function RequireAuth() {
   }
 
   if (state.status === "anonymous") {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    // Correctif auth/router (2026-09-04) — inclut la query string (pathname seul avant
+    // ce correctif) : un deep-link avec paramètres (ex. notification Demandes Catalogue,
+    // ?kind=&requestId=) la perdait sur un chargement à froid, avant que le token stocké
+    // n'ait pu être validé (state.status vaut "anonymous" de façon synchrone au tout
+    // premier rendu, voir AuthContext — la validation via /api/me est asynchrone).
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
 
   return <Outlet />;

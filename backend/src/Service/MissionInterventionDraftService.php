@@ -11,6 +11,7 @@ use App\Entity\MissionIntervention;
 use App\Entity\MissionInterventionDraft;
 use App\Entity\User;
 use App\Enum\AuditEventType;
+use App\Enum\CatalogueRequestIgnoreReason;
 use App\Enum\MissionInterventionDraftIgnoreStrategy;
 use App\Exception\DraftAlreadyExistsException;
 use App\Exception\DraftAlreadyResolvedException;
@@ -247,8 +248,10 @@ final class MissionInterventionDraftService
         ?MissionInterventionDraftIgnoreStrategy $strategy,
         ?MissionIntervention $reassignTarget,
         User $actor,
+        ?CatalogueRequestIgnoreReason $ignoreReason = null,
+        ?string $ignoreComment = null,
     ): MissionInterventionDraft {
-        $this->em->wrapInTransaction(function () use ($draft, $strategy, $reassignTarget, $actor): void {
+        $this->em->wrapInTransaction(function () use ($draft, $strategy, $reassignTarget, $actor, $ignoreReason, $ignoreComment): void {
             $this->em->lock($draft, LockMode::PESSIMISTIC_WRITE);
             $this->em->refresh($draft);
 
@@ -307,6 +310,10 @@ final class MissionInterventionDraftService
                 $draft->setStatus(MissionInterventionDraft::STATUS_MATERIAL_REASSIGNED);
                 $draft->setResolvedMissionIntervention($reassignTarget);
                 $request->setStatus(InterventionTypeRequest::STATUS_IGNORED);
+                $request->setIgnoreReason($ignoreReason);
+                $request->setIgnoreComment($ignoreComment);
+                $request->setDecidedBy($actor);
+                $request->setDecidedAt(new \DateTimeImmutable());
 
                 $this->em->flush();
 
@@ -320,6 +327,11 @@ final class MissionInterventionDraftService
                     'label' => $draft->getLabel(),
                     'materialLinesCount' => $moved['lines'],
                     'materialItemRequestsCount' => $moved['materialItemRequests'],
+                    // Correctif workflow Demandes Catalogue — motif/explication du
+                    // rejet manager, ajoutés au payload existant plutôt qu'un nouvel
+                    // AuditEvent (un seul fait métier, voir docblock de classe).
+                    'ignoreReason' => $ignoreReason?->value,
+                    'ignoreComment' => $ignoreComment !== null ? mb_substr($ignoreComment, 0, 500) : null,
                 ]);
             } else {
                 // KEEP_AS_HISTORY — le matériel reste attaché au draft, rien n'est
@@ -327,6 +339,10 @@ final class MissionInterventionDraftService
                 // change.
                 $draft->setStatus(MissionInterventionDraft::STATUS_KEPT_AS_HISTORY);
                 $request->setStatus(InterventionTypeRequest::STATUS_IGNORED);
+                $request->setIgnoreReason($ignoreReason);
+                $request->setIgnoreComment($ignoreComment);
+                $request->setDecidedBy($actor);
+                $request->setDecidedAt(new \DateTimeImmutable());
 
                 $this->em->flush();
 
@@ -340,6 +356,8 @@ final class MissionInterventionDraftService
                     'label' => $draft->getLabel(),
                     'materialLinesCount' => $materialCount['lines'],
                     'materialItemRequestsCount' => $materialCount['materialItemRequests'],
+                    'ignoreReason' => $ignoreReason?->value,
+                    'ignoreComment' => $ignoreComment !== null ? mb_substr($ignoreComment, 0, 500) : null,
                 ]);
             }
 

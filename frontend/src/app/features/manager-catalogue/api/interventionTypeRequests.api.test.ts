@@ -77,19 +77,24 @@ describe("resolveInterventionTypeRequest()", () => {
 });
 
 describe("ignoreInterventionTypeRequest()", () => {
-  it("posts to /ignore with no body", async () => {
+  // Correctif workflow Demandes Catalogue (D-113) — reason/comment toujours
+  // obligatoires, transmis dans le body au lieu du POST sans body d'avant ce lot.
+  it("posts to /ignore with reason and comment", async () => {
     apiPost.mockResolvedValueOnce({ data: { requestId: 7, draftId: 2, status: "IGNORED", draftStatus: "IGNORED", missionInterventionId: null } });
 
-    await ignoreInterventionTypeRequest(7);
+    await ignoreInterventionTypeRequest({ id: 7, reason: "DUPLICATE", comment: "Demande en doublon." });
 
-    expect(apiPost).toHaveBeenCalledWith("/api/intervention-type-requests/7/ignore");
+    expect(apiPost).toHaveBeenCalledWith("/api/intervention-type-requests/7/ignore", {
+      reason: "DUPLICATE",
+      comment: "Demande en doublon.",
+    });
   });
 
   it("returns the response payload as-is", async () => {
     const payload = { requestId: 7, draftId: 2, status: "IGNORED", draftStatus: "IGNORED", missionInterventionId: null };
     apiPost.mockResolvedValueOnce({ data: payload });
 
-    const result = await ignoreInterventionTypeRequest(7);
+    const result = await ignoreInterventionTypeRequest({ id: 7, reason: "DUPLICATE", comment: "Demande en doublon." });
 
     expect(result).toEqual(payload);
   });

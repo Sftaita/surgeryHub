@@ -6638,7 +6638,8 @@ une route qui n'existe pas.
 **Templates concernés** (tous dispatchés via `NotificationService`, tous vers un
 utilisateur SurgicalHub déjà capable de se connecter) : `catalogue_request_resolved`,
 `catalogue_request_ignored`, `mission_encoding_reminder`, `mission_open_notify_surgeon`,
-`absences_request_missing`, `absences_confirm_encoded`.
+`absences_request_missing`, `absences_confirm_encoded`. `catalogue_request_created`
+ajouté en D-113 (2026-09-04) — même famille, même partial.
 
 **Templates explicitement exclus** : `instrumentist_invitation` (avant premier login —
 rien à activer), `user_email_changed_new_address`/`_old_address` (emails de sécurité liés
@@ -8385,3 +8386,110 @@ avec une explication inline (§7 du prompt) : l'exclusivité est entièrement ap
 côté serveur (409 avec message précis, déjà relayé par le toast d'erreur existant), une
 UX de désactivation proactive dans le picker reste un axe d'amélioration possible, non
 requis pour la correction fonctionnelle.
+
+## D-113 — Correctif workflow Demandes Catalogue : révision de D-094 (email manager à la création), motif structuré sur « Ignorer », synchronisation frontend (2026-09-04)
+
+Date : 2026-09-04
+
+### Contexte
+
+Audit de bout en bout de `/app/m/catalogue/requests` sur trois signalements terrain :
+(1) une nouvelle demande n'apparaît pas dans la liste sans un F5 complet du navigateur ;
+(2) l'action « Ignorer la demande » ne transmet aucun motif au demandeur ; (3) les
+managers ne sont pas notifiés par email à la création d'une proposition catalogue.
+
+### Cause racine #1 — collision de clé React Query entre le badge de nav et la liste
+
+`DesktopLayout.tsx` (badge « Demandes », toujours monté) et `CatalogueRequestsPage.tsx`
+utilisaient la **même clé** React Query (`["material-requests","PENDING"]` /
+`["intervention-type-requests","PENDING"]`) avec des `queryFn` renvoyant des **formes
+différentes** : le badge un `number`, la page `{items,total}`. Deux observers partageant
+une clé avec des fetchers incompatibles pollue le cache selon l'ordre de montage —
+combiné à `staleTime: 30_000` global et à l'absence de toute invalidation liée à la
+navigation, seul un rechargement complet (qui vide le cache en mémoire) affichait des
+données fiables. Corrigé en unifiant clé + `queryFn` + forme (`{items,total}`) entre le
+badge et la liste, chacun appliquant son propre `select` (`data.total` pour le badge —
+jamais `items.length`, pour rester correct si la liste devient un jour paginée). La page
+invalide en plus `["material-requests"]`/`["intervention-type-requests"]` à l'ouverture,
+sans jamais recourir à `window.location.reload()`.
+
+Le deep-link notification existant (`NotificationTargetResolver`) pointait vers
+`/app/m/catalogue/requests` sans identifiant de demande. Il porte désormais le couple
+`?kind=MATERIAL_ITEM|INTERVENTION_TYPE&requestId={id}` — jamais `requestId` seul :
+`MaterialItemRequest` et `InterventionTypeRequest` ont des espaces d'ID indépendants et
+peuvent partager le même id, ce qui rendrait un identifiant unique ambigu côté frontend.
+
+### Cause racine #2 — « Ignorer » sans motif, sans verrouillage
+
+`MaterialItemRequestManagerController::ignore()`/`resolve()` mutaient directement
+l'entité en base sans motif, sans décideur/date, et sans verrouillage pessimiste
+(contrairement à `MissionInterventionDraftService::resolve()/ignore()`, qui verrouille
+déjà). Corrigé :
+
+- `App\Enum\CatalogueRequestIgnoreReason` (`ALREADY_EXISTS`, `MATERIAL_ALREADY_EXISTS`,
+  `DUPLICATE`, `INVALID_REQUEST`, `OTHER`) — motif structuré, `label()` porte le seul
+  wording FR (jamais transporté tel quel entre services/messages, voir plus bas) ;
+- `MaterialItemRequest`/`InterventionTypeRequest` gagnent `ignoreReason`, `ignoreComment`,
+  `decidedBy`, `decidedAt` (migration additive `Version20260904120000`) — motif et
+  explication **toujours obligatoires**, jamais seulement pour `OTHER` : le demandeur doit
+  toujours recevoir une réponse utile ;
+- `MaterialItemRequestService::resolve()/ignore()` (nouveau, logique déplacée du
+  controller) verrouille désormais la demande (`em->lock(PESSIMISTIC_WRITE)` +
+  `refresh()`) avant de vérifier son statut — deux managers ouvrant simultanément la même
+  demande obtiennent un 409 propre (`MaterialItemRequestAlreadyProcessedException`,
+  nouveau, même registre que `DraftAlreadyResolvedException`) au lieu d'une double
+  résolution silencieuse. Comportement observable de `resolve()` inchangé — verrouillé par
+  un test dédié (`test_resolve_response_shape_is_unchanged_by_the_service_refactor`) ;
+  `MissionInterventionDraftService::ignore()` reçoit motif/explication en plus de
+  `strategy`/`reassignTarget` (orthogonal) et les pose sur `InterventionTypeRequest`, en
+  enrichissant le payload des `AuditEvent` `MISSION_INTERVENTION_DRAFT_IGNORED_AS_HISTORY`/
+  `MATERIAL_REASSIGNED` existants plutôt que d'en créer un troisième ;
+- `AuditEventType::MATERIAL_ITEM_REQUEST_IGNORED` (nouveau — `MaterialItemRequest`
+  n'avait jusqu'ici aucune obligation d'audit) ;
+- `CatalogueRequestProcessedMessage` transporte désormais `?ignoreReason`
+  (`CatalogueRequestIgnoreReason`, le **code métier**) et `?explanation` (texte brut) —
+  jamais un libellé déjà traduit : les controllers qui dispatchent ce message restent de
+  simples adaptateurs HTTP, le wording FR est produit uniquement par
+  `NotificationService`/les templates (`CatalogueRequestIgnoreReason::label()`).
+  `catalogue_request_ignored.html.twig` affiche désormais motif + explication, le push
+  ignore inclut le motif.
+
+### Décision — D-113 révise D-094 : email manager désormais activé par défaut à la création
+
+D-094 excluait volontairement l'email à la création d'une proposition catalogue ("un
+repli email serait du bruit pur") — `CatalogueRequestCreatedMessageHandler` n'avait même
+pas de dépendance capable d'en envoyer un. Le besoin produit a changé : une proposition
+catalogue ne doit plus pouvoir rester sans traitement faute d'avoir été vue dans l'app.
+**Décision : `CATALOGUE_REQUEST_CREATED` ajouté à `EMAIL_ON_BY_DEFAULT`** — les managers/
+admins destinataires reçoivent désormais in-app + push (inchangés) + **email**, les trois
+canaux restant gouvernés indépendamment par `NotificationPreferenceResolver` (un manager
+peut désactiver l'email dans ses préférences). L'email est un canal **indépendant**, pas
+un repli du push (contrairement à `CatalogueRequestProcessedMessageHandler`) : envoyé dès
+que la préférence l'autorise, que le push ait réussi ou non. `NotificationService` est
+désormais injecté dans `CatalogueRequestCreatedMessageHandler` (adapté plutôt que
+dupliqué dans une seconde chaîne de notification), nouvelle méthode
+`catalogueRequestCreatedNotifyManager()` + template `catalogue_request_created.html.twig`
+(ajouté aux templates couverts par le partial `_notification_preferences_cta.html.twig`
+introduit en D-094). Aucun envoi SMTP synchrone dans le controller : la création dispatche
+toujours `CatalogueRequestCreatedMessage` (async, Messenger), l'email est envoyé par le
+handler. Aucune donnée patient dans le payload/contexte email.
+
+### Limite connue — idempotence Messenger
+
+Un traitement nominal (un message consommé une fois) ne dispatche qu'un seul email par
+destinataire — couvert par test. Comme pour toute autre notification asynchrone déjà
+existante dans le projet, `recordEmailQueued`/`SendTemplatedEmailMessageHandler` ne
+fournissent aujourd'hui aucune garantie de déduplication au-delà de la sémantique de
+livraison de Messenger : une redélivraison après un crash entre l'envoi effectif et l'ack
+du message pourrait en théorie dupliquer un email. Limitation générale déjà présente
+ailleurs dans le projet, pas spécifique à ce lot — non traitée ici pour ne pas ouvrir un
+chantier d'idempotence Messenger transverse hors périmètre.
+
+### Portée non traitée ici
+
+Pas de nouvel endpoint « get single request » : si la demande ciblée par un deep-link
+n'est plus PENDING au moment du clic (déjà traitée par un autre manager), la page ouvre
+simplement l'onglet En attente sans mise en évidence — dégradation gracieuse, pas un
+échec. `SurgeonMissionRequest` (D-099) reste sur son propre pipeline de notification,
+volontairement non fusionné avec `CatalogueRequestKind` (objet métier réellement
+différent).

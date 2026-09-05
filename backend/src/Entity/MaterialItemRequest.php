@@ -3,6 +3,7 @@
 namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
+use App\Enum\CatalogueRequestIgnoreReason;
 use App\Exception\ConflictingAttachmentTargetsException;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
@@ -77,6 +78,29 @@ class MaterialItemRequest
     #[ORM\JoinColumn(nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
     private ?MaterialItem $materialItem = null;
+
+    /**
+     * Correctif workflow Demandes Catalogue (2026-09-04) — posés uniquement sur IGNORED
+     * (jamais sur RESOLVED, qui a déjà $materialItem comme trace de la décision). Motif
+     * structuré + explication toujours obligatoire côté API — voir
+     * MaterialItemRequestService::ignore().
+     */
+    #[ORM\Column(length: 30, nullable: true, enumType: CatalogueRequestIgnoreReason::class)]
+    #[Groups(['mission:read_manager', 'material_request:read'])]
+    private ?CatalogueRequestIgnoreReason $ignoreReason = null;
+
+    #[ORM\Column(type: 'text', nullable: true)]
+    #[Groups(['mission:read_manager', 'material_request:read'])]
+    private ?string $ignoreComment = null;
+
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(nullable: true)]
+    #[Groups(['mission:read_manager', 'material_request:read'])]
+    private ?User $decidedBy = null;
+
+    #[ORM\Column(nullable: true)]
+    #[Groups(['mission:read_manager', 'material_request:read'])]
+    private ?\DateTimeImmutable $decidedAt = null;
 
     public function getId(): ?int
     {
@@ -179,6 +203,50 @@ class MaterialItemRequest
     public function setMaterialItem(?MaterialItem $materialItem): static
     {
         $this->materialItem = $materialItem;
+        return $this;
+    }
+
+    public function getIgnoreReason(): ?CatalogueRequestIgnoreReason
+    {
+        return $this->ignoreReason;
+    }
+
+    public function setIgnoreReason(?CatalogueRequestIgnoreReason $ignoreReason): static
+    {
+        $this->ignoreReason = $ignoreReason;
+        return $this;
+    }
+
+    public function getIgnoreComment(): ?string
+    {
+        return $this->ignoreComment;
+    }
+
+    public function setIgnoreComment(?string $ignoreComment): static
+    {
+        $this->ignoreComment = $ignoreComment;
+        return $this;
+    }
+
+    public function getDecidedBy(): ?User
+    {
+        return $this->decidedBy;
+    }
+
+    public function setDecidedBy(?User $decidedBy): static
+    {
+        $this->decidedBy = $decidedBy;
+        return $this;
+    }
+
+    public function getDecidedAt(): ?\DateTimeImmutable
+    {
+        return $this->decidedAt;
+    }
+
+    public function setDecidedAt(?\DateTimeImmutable $decidedAt): static
+    {
+        $this->decidedAt = $decidedAt;
         return $this;
     }
 

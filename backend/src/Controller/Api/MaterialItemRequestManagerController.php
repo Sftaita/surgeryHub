@@ -4,14 +4,13 @@ namespace App\Controller\Api;
 
 use App\Entity\MaterialItem;
 use App\Entity\MaterialItemRequest;
-use App\Entity\MaterialLine;
-use App\Entity\MissionIntervention;
-use App\Entity\MissionInterventionDraft;
 use App\Entity\User;
+use App\Enum\CatalogueRequestIgnoreReason;
 use App\Enum\CatalogueRequestKind;
 use App\Message\CatalogueRequestProcessedMessage;
 use App\Security\Voter\BillingVoter;
 use App\Service\MaterialItemMapper;
+use App\Service\MaterialItemRequestService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -28,6 +27,7 @@ final class MaterialItemRequestManagerController extends AbstractController
         private readonly EntityManagerInterface $em,
         private readonly MaterialItemMapper $mapper,
         private readonly MessageBusInterface $bus,
+        private readonly MaterialItemRequestService $requestService,
     ) {}
 
     /**
@@ -78,10 +78,6 @@ final class MaterialItemRequestManagerController extends AbstractController
             return $this->json(['message' => 'Request not found'], Response::HTTP_NOT_FOUND);
         }
 
-        if ($req->getStatus() !== MaterialItemRequest::STATUS_PENDING) {
-            return $this->json(['message' => 'Request is not pending'], Response::HTTP_CONFLICT);
-        }
-
         $body           = json_decode($request->getContent(), true) ?? [];
         $materialItemId = $body['materialItemId'] ?? null;
 
@@ -94,32 +90,11 @@ final class MaterialItemRequestManagerController extends AbstractController
             return $this->json(['message' => 'MaterialItem not found'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        // 1. Associer la demande au matériel
-        $req->setMaterialItem($mi);
-        $req->setStatus(MaterialItemRequest::STATUS_RESOLVED);
-
-        // 2. Créer une MaterialLine sur la mission (réconciliation) — attachée à la
-        // MÊME cible que la demande (attachmentTarget(), jamais getMissionIntervention()
-        // seul) : si la demande est encore rattachée à un draft ouvert (intervention pas
-        // encore validée par le manager), la ligne doit l'être aussi, sinon elle ne serait
-        // jamais reprise par MissionInterventionDraftService::repointMaterial() lors de la
-        // résolution ultérieure du draft — elle resterait orpheline (ni intervention réelle,
-        // ni draft) sur la mission.
-        $target = $req->attachmentTarget();
-        $line = new MaterialLine();
-        $line->setMission($req->getMission());
-        if ($target instanceof MissionIntervention) {
-            $line->setMissionIntervention($target);
-        } elseif ($target instanceof MissionInterventionDraft) {
-            $line->setInterventionDraft($target);
-        }
-        $line->setItem($mi);
-        $line->setQuantity('1.00');
-        $line->setComment($req->getComment());
-        $line->setCreatedBy($user);
-
-        $this->em->persist($line);
-        $this->em->flush();
+        // Verrouillage pessimiste + vérification PENDING délégués au service (§ 7 de
+        // l'audit — deux managers ouvrant simultanément la même demande) ; une demande
+        // déjà traitée lève MaterialItemRequestAlreadyProcessedException, traduite en 409
+        // par ApiExceptionSubscriber.
+        [$req, $line] = $this->requestService->resolve($req, $mi, $user);
 
         // D-093 — prévient l'instrumentiste (jamais bloquant, voir handler async).
         $this->bus->dispatch(new CatalogueRequestProcessedMessage(
@@ -140,10 +115,11 @@ final class MaterialItemRequestManagerController extends AbstractController
 
     /**
      * POST /api/material-item-requests/{id}/ignore
-     * Ignore une demande.
+     * Ignore une demande. Body : { reason: CatalogueRequestIgnoreReason, comment: string }
+     * — motif et explication toujours obligatoires (jamais seulement pour OTHER).
      */
     #[Route('/{id}/ignore', name: 'api_material_item_requests_ignore', methods: ['POST'], requirements: ['id' => '\d+'])]
-    public function ignore(int $id): JsonResponse
+    public function ignore(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
 
@@ -152,12 +128,21 @@ final class MaterialItemRequestManagerController extends AbstractController
             return $this->json(['message' => 'Request not found'], Response::HTTP_NOT_FOUND);
         }
 
-        if ($req->getStatus() !== MaterialItemRequest::STATUS_PENDING) {
-            return $this->json(['message' => 'Request is not pending'], Response::HTTP_CONFLICT);
+        $body = json_decode($request->getContent(), true) ?? [];
+
+        $reason = CatalogueRequestIgnoreReason::tryFrom((string) ($body['reason'] ?? ''));
+        if ($reason === null) {
+            return $this->json(['message' => 'reason is required'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        $req->setStatus(MaterialItemRequest::STATUS_IGNORED);
-        $this->em->flush();
+        $comment = trim((string) ($body['comment'] ?? ''));
+        if ($comment === '') {
+            return $this->json(['message' => 'comment is required'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        // Verrouillage pessimiste + vérification PENDING délégués au service (même
+        // raisonnement que resolve() ci-dessus).
+        $req = $this->requestService->ignore($req, $reason, $comment, $user);
 
         $this->bus->dispatch(new CatalogueRequestProcessedMessage(
             kind: CatalogueRequestKind::MATERIAL_ITEM,
@@ -167,6 +152,8 @@ final class MaterialItemRequestManagerController extends AbstractController
             missionId: $req->getMission()->getId(),
             label: $req->getLabel(),
             occurredAt: new \DateTimeImmutable(),
+            ignoreReason: $reason,
+            explanation: $comment,
         ));
 
         return $this->json($this->serialize($req));
@@ -174,9 +161,10 @@ final class MaterialItemRequestManagerController extends AbstractController
 
     private function serialize(MaterialItemRequest $r): array
     {
-        $mission = $r->getMission();
-        $by      = $r->getCreatedBy();
-        $mi      = $r->getMaterialItem();
+        $mission   = $r->getMission();
+        $by        = $r->getCreatedBy();
+        $mi        = $r->getMaterialItem();
+        $decidedBy = $r->getDecidedBy();
 
         return [
             'id'            => $r->getId(),
@@ -194,6 +182,13 @@ final class MaterialItemRequestManagerController extends AbstractController
                 'displayName' => trim(($by->getFirstname() ?? '') . ' ' . ($by->getLastname() ?? '')),
             ] : null,
             'materialItem'  => $mi ? $this->mapper->toSlim($mi) : null,
+            'ignoreReason'  => $r->getIgnoreReason()?->value,
+            'ignoreComment' => $r->getIgnoreComment(),
+            'decidedBy'     => $decidedBy ? [
+                'id'          => $decidedBy->getId(),
+                'displayName' => trim(($decidedBy->getFirstname() ?? '') . ' ' . ($decidedBy->getLastname() ?? '')),
+            ] : null,
+            'decidedAt'     => $r->getDecidedAt()?->format(\DateTimeInterface::ATOM),
         ];
     }
 }

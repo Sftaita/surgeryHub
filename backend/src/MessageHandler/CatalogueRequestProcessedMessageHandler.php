@@ -87,7 +87,12 @@ final class CatalogueRequestProcessedMessageHandler
                 $title = $message->accepted ? 'Proposition acceptée' : 'Proposition non retenue';
                 $body = $message->accepted
                     ? sprintf('Votre proposition de %s « %s » a été acceptée et ajoutée au catalogue.', $kindLabel, $message->label)
-                    : sprintf('Votre proposition de %s « %s » n\'a pas été retenue.', $kindLabel, $message->label);
+                    : sprintf(
+                        'Votre proposition de %s « %s » n\'a pas été retenue. Motif : %s.',
+                        $kindLabel,
+                        $message->label,
+                        $message->ignoreReason?->label() ?? 'non précisé',
+                    );
                 $data = [
                     'missionId' => $mission->getId(),
                     'url' => $this->targetResolver->resolve($type, $mission, $recipient),
@@ -133,6 +138,7 @@ final class CatalogueRequestProcessedMessageHandler
         } else {
             $this->notificationService->catalogueRequestIgnoredNotifyInstrumentist(
                 $mission, $recipient, $message->label, $kindLabel, $fallbackOf, $fallbackReason,
+                $message->ignoreReason, $message->explanation,
             );
         }
     }

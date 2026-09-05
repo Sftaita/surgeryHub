@@ -5,6 +5,7 @@ namespace App\Controller\Api;
 use App\Entity\InterventionTypeRequest;
 use App\Entity\MissionIntervention;
 use App\Entity\User;
+use App\Enum\CatalogueRequestIgnoreReason;
 use App\Enum\CatalogueRequestKind;
 use App\Enum\MissionInterventionDraftIgnoreStrategy;
 use App\Exception\InterventionTypeRequestWithoutDraftException;
@@ -144,9 +145,12 @@ final class InterventionTypeRequestManagerController extends AbstractController
     /**
      * POST /api/intervention-type-requests/{id}/ignore
      * Ignore une demande sans créer d'intervention réelle. Body :
-     * { strategy?: "KEEP_AS_HISTORY" | "REASSIGN", missionInterventionId?: int }
+     * { strategy?: "KEEP_AS_HISTORY" | "REASSIGN", missionInterventionId?: int,
+     *   reason: CatalogueRequestIgnoreReason, comment: string }
      * strategy est requis dès que le draft porte du matériel (sinon 422) ;
      * missionInterventionId est requis (et uniquement pertinent) pour REASSIGN.
+     * reason/comment (motif/explication du rejet transmis au demandeur) sont toujours
+     * obligatoires — correctif workflow Demandes Catalogue, orthogonal à strategy.
      */
     #[Route('/{id}/ignore', name: 'api_intervention_type_requests_ignore', methods: ['POST'], requirements: ['id' => '\d+'])]
     public function ignore(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
@@ -167,6 +171,16 @@ final class InterventionTypeRequestManagerController extends AbstractController
         }
 
         $body = json_decode($request->getContent(), true) ?? [];
+
+        $reason = CatalogueRequestIgnoreReason::tryFrom((string) ($body['reason'] ?? ''));
+        if ($reason === null) {
+            return $this->json(['message' => 'reason is required'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $comment = trim((string) ($body['comment'] ?? ''));
+        if ($comment === '') {
+            return $this->json(['message' => 'comment is required'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
 
         $strategy = null;
         $strategyRaw = $body['strategy'] ?? null;
@@ -192,7 +206,7 @@ final class InterventionTypeRequestManagerController extends AbstractController
             }
         }
 
-        $this->draftService->ignore($draft, $strategy, $reassignTarget, $user);
+        $this->draftService->ignore($draft, $strategy, $reassignTarget, $user, $reason, $comment);
 
         $this->bus->dispatch(new CatalogueRequestProcessedMessage(
             kind: CatalogueRequestKind::INTERVENTION_TYPE,
@@ -202,6 +216,8 @@ final class InterventionTypeRequestManagerController extends AbstractController
             missionId: $draft->getMission()->getId(),
             label: $req->getLabel(),
             occurredAt: new \DateTimeImmutable(),
+            ignoreReason: $reason,
+            explanation: $comment,
         ));
 
         return $this->json([
@@ -218,6 +234,7 @@ final class InterventionTypeRequestManagerController extends AbstractController
         $mission = $r->getMission();
         $by = $r->getCreatedBy();
         $type = $r->getResolvedInterventionType();
+        $decidedBy = $r->getDecidedBy();
 
         return [
             'id' => $r->getId(),
@@ -239,6 +256,13 @@ final class InterventionTypeRequestManagerController extends AbstractController
                 'code' => $type->getCode(),
                 'label' => $type->getLabel(),
             ] : null,
+            'ignoreReason' => $r->getIgnoreReason()?->value,
+            'ignoreComment' => $r->getIgnoreComment(),
+            'decidedBy' => $decidedBy ? [
+                'id' => $decidedBy->getId(),
+                'displayName' => trim(($decidedBy->getFirstname() ?? '') . ' ' . ($decidedBy->getLastname() ?? '')),
+            ] : null,
+            'decidedAt' => $r->getDecidedAt()?->format(\DateTimeInterface::ATOM),
         ];
     }
 }

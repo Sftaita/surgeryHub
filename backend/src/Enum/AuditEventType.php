@@ -219,4 +219,13 @@ enum AuditEventType: string
      */
     case ENCODING_ANOMALY_REPORTED = 'ENCODING_ANOMALY_REPORTED';
     case ENCODING_ANOMALY_RESOLVED = 'ENCODING_ANOMALY_RESOLVED';
+
+    /**
+     * Correctif workflow Demandes Catalogue (2026-09-04) — MaterialItemRequestService::
+     * ignore(). Jusqu'ici aucune obligation d'audit ne portait sur MaterialItemRequest
+     * (ni sa création ni sa résolution/ignore) — voir docblock de
+     * MISSION_INTERVENTION_DRAFT_CREATED. Le payload porte reason/comment (tronqué) pour
+     * que l'audit seul suffise à retrouver la justification sans recharger l'entité.
+     */
+    case MATERIAL_ITEM_REQUEST_IGNORED = 'MATERIAL_ITEM_REQUEST_IGNORED';
 }

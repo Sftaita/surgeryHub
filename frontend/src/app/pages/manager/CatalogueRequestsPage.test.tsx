@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import CatalogueRequestsPage from "./CatalogueRequestsPage";
 
 const getMaterialRequestsMock = vi.fn();
@@ -44,14 +45,23 @@ vi.mock("../../ui/toast/useToast", () => ({
   useToast: () => ({ success: toastSuccess, error: toastError, warning: vi.fn() }),
 }));
 
-function renderPage() {
+function renderPage(initialEntries: string[] = ["/app/m/catalogue/requests"]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const utils = render(
     <QueryClientProvider client={client}>
-      <CatalogueRequestsPage />
+      <MemoryRouter initialEntries={initialEntries}>
+        <CatalogueRequestsPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...utils, client };
 }
+
+// jsdom n'implémente pas scrollIntoView — nécessaire pour le comportement de mise en
+// évidence du deep-link (D-113).
+beforeEach(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+});
 
 const materialRequest = {
   id: 10,
@@ -63,6 +73,10 @@ const materialRequest = {
   mission: { id: 501, site: "Clinique Saint-Jean" },
   requestedBy: { id: 20, displayName: "Ada Lovelace" },
   materialItem: null,
+  ignoreReason: null,
+  ignoreComment: null,
+  decidedBy: null,
+  decidedAt: null,
 };
 
 const interventionRequest = {
@@ -75,6 +89,10 @@ const interventionRequest = {
   mission: { id: 502, site: "Clinique du Parc" },
   requestedBy: { id: 21, displayName: "Grace Hopper" },
   resolvedInterventionType: null,
+  ignoreReason: null,
+  ignoreComment: null,
+  decidedBy: null,
+  decidedAt: null,
 };
 
 beforeEach(() => {
@@ -183,8 +201,41 @@ describe("CatalogueRequestsPage — résolution type d'intervention", () => {
   });
 });
 
-describe("CatalogueRequestsPage — ignorance", () => {
-  it("ignore une demande matériel", async () => {
+describe("CatalogueRequestsPage — ignorance (modal obligatoire, D-113)", () => {
+  it("ouvre une modal au clic sur Ignorer, plutôt que d'agir immédiatement", async () => {
+    const user = userEvent.setup();
+    getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
+    renderPage();
+
+    await screen.findByText("Vis titane 4mm");
+    await user.click(screen.getByRole("button", { name: "Ignorer" }));
+
+    const dialog = await screen.findByRole("dialog");
+    within(dialog).getByText("Ignorer cette demande ?");
+    expect(ignoreMaterialRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("désactive la validation tant que motif et explication ne sont pas renseignés", async () => {
+    const user = userEvent.setup();
+    getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
+    renderPage();
+
+    await screen.findByText("Vis titane 4mm");
+    await user.click(screen.getByRole("button", { name: "Ignorer" }));
+    const dialog = await screen.findByRole("dialog");
+
+    const submit = within(dialog).getByRole("button", { name: "Ignorer la demande" });
+    expect(submit).toBeDisabled();
+
+    await user.click(within(dialog).getByText("Motif"));
+    await user.click(await screen.findByRole("option", { name: "Matériel déjà existant" }));
+    expect(submit).toBeDisabled();
+
+    await user.type(within(dialog).getByLabelText("Explication"), "Déjà référencé sous REF-9.");
+    expect(submit).toBeEnabled();
+  });
+
+  it("ignore une demande matériel avec motif + explication, retire la ligne, avertit le demandeur", async () => {
     const user = userEvent.setup();
     getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
     ignoreMaterialRequestMock.mockResolvedValue({ ...materialRequest, status: "IGNORED" });
@@ -192,15 +243,26 @@ describe("CatalogueRequestsPage — ignorance", () => {
 
     await screen.findByText("Vis titane 4mm");
     await user.click(screen.getByRole("button", { name: "Ignorer" }));
+    const dialog = await screen.findByRole("dialog");
+
+    await user.click(within(dialog).getByText("Motif"));
+    await user.click(await screen.findByRole("option", { name: "Matériel déjà existant" }));
+    await user.type(within(dialog).getByLabelText("Explication"), "Déjà référencé sous REF-9.");
+    await user.click(within(dialog).getByRole("button", { name: "Ignorer la demande" }));
 
     // mutationFn référence directement ignoreMaterialRequest (pas de wrapper) : TanStack
     // Query v5 lui passe un 2e argument de contexte interne — on ne vérifie que le
     // premier argument, celui réellement significatif pour l'appel API.
-    await waitFor(() => expect(ignoreMaterialRequestMock.mock.calls[0]?.[0]).toBe(10));
-    expect(toastSuccess).toHaveBeenCalledWith("Demande ignorée.");
+    await waitFor(() => expect(ignoreMaterialRequestMock.mock.calls[0]?.[0]).toEqual({
+      id: 10,
+      reason: "MATERIAL_ALREADY_EXISTS",
+      comment: "Déjà référencé sous REF-9.",
+    }));
+    expect(toastSuccess).toHaveBeenCalledWith("Demande ignorée et demandeur averti.");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
-  it("ignore une demande de type d'intervention", async () => {
+  it("ignore une demande de type d'intervention avec motif + explication", async () => {
     const user = userEvent.setup();
     getInterventionTypeRequestsMock.mockResolvedValue({ items: [interventionRequest], total: 1 });
     ignoreInterventionTypeRequestMock.mockResolvedValue({ requestId: 11, draftId: 1, status: "IGNORED", draftStatus: "IGNORED", missionInterventionId: null });
@@ -208,9 +270,19 @@ describe("CatalogueRequestsPage — ignorance", () => {
 
     await screen.findByText("Prothèse épaule inversée");
     await user.click(screen.getByRole("button", { name: "Ignorer" }));
+    const dialog = await screen.findByRole("dialog");
 
-    await waitFor(() => expect(ignoreInterventionTypeRequestMock.mock.calls[0]?.[0]).toBe(11));
-    expect(toastSuccess).toHaveBeenCalledWith("Demande ignorée.");
+    await user.click(within(dialog).getByText("Motif"));
+    await user.click(await screen.findByRole("option", { name: "Intervention déjà existante" }));
+    await user.type(within(dialog).getByLabelText("Explication"), "Déjà cataloguée sous PEI-2.");
+    await user.click(within(dialog).getByRole("button", { name: "Ignorer la demande" }));
+
+    await waitFor(() => expect(ignoreInterventionTypeRequestMock.mock.calls[0]?.[0]).toEqual({
+      id: 11,
+      reason: "ALREADY_EXISTS",
+      comment: "Déjà cataloguée sous PEI-2.",
+    }));
+    expect(toastSuccess).toHaveBeenCalledWith("Demande ignorée et demandeur averti.");
   });
 });
 
@@ -222,17 +294,60 @@ describe("CatalogueRequestsPage — erreurs backend", () => {
     await screen.findByText("Impossible de charger les demandes.");
   });
 
-  it("affiche un toast d'erreur quand l'ignorance échoue", async () => {
+  it("conserve la modal Ignorer ouverte avec les valeurs saisies quand l'action échoue, affiche l'erreur en ligne", async () => {
     const user = userEvent.setup();
     getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
-    ignoreMaterialRequestMock.mockRejectedValue({ response: { data: { message: "Déjà résolue par un autre manager." } } });
+    ignoreMaterialRequestMock.mockRejectedValue({
+      response: { status: 409, data: { error: { code: "MATERIAL_ITEM_REQUEST_ALREADY_PROCESSED", message: "Cette demande a déjà été traitée." } } },
+    });
     renderPage();
 
     await screen.findByText("Vis titane 4mm");
     await user.click(screen.getByRole("button", { name: "Ignorer" }));
+    const dialog = await screen.findByRole("dialog");
 
-    await waitFor(() => {
-      expect(toastError).toHaveBeenCalledWith("Déjà résolue par un autre manager.");
-    });
+    await user.click(within(dialog).getByText("Motif"));
+    await user.click(await screen.findByRole("option", { name: "Matériel déjà existant" }));
+    await user.type(within(dialog).getByLabelText("Explication"), "Déjà référencé sous REF-9.");
+    await user.click(within(dialog).getByRole("button", { name: "Ignorer la demande" }));
+
+    await screen.findByText("Cette demande a déjà été traitée.");
+    // La modal reste ouverte — jamais un toast qui laisserait croire à un succès — et les
+    // valeurs saisies sont conservées.
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Explication")).toHaveValue("Déjà référencé sous REF-9.");
+    expect(toastSuccess).not.toHaveBeenCalled();
+  });
+});
+
+describe("CatalogueRequestsPage — synchronisation (D-113, cause racine #1)", () => {
+  it("affiche une nouvelle demande dès l'invalidation du cache, sans reload navigateur", async () => {
+    getMaterialRequestsMock.mockResolvedValueOnce({ items: [], total: 0 });
+    const { client } = renderPage();
+
+    await screen.findByText("Aucune demande.");
+
+    getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
+    await client.invalidateQueries({ queryKey: ["material-requests"] });
+
+    await screen.findByText("Vis titane 4mm");
+  });
+});
+
+describe("CatalogueRequestsPage — deep-link (kind, requestId)", () => {
+  it("force l'onglet En attente et met en évidence la demande ciblée par la notification", async () => {
+    getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
+    renderPage(["/app/m/catalogue/requests?kind=MATERIAL_ITEM&requestId=10"]);
+
+    await screen.findByText("Vis titane 4mm");
+    await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
+  });
+
+  it("un requestId sans kind (ou l'inverse) est ignoré plutôt que de risquer une collision d'id entre les deux types de demande", async () => {
+    getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
+    renderPage(["/app/m/catalogue/requests?requestId=10"]);
+
+    await screen.findByText("Vis titane 4mm");
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
   });
 });

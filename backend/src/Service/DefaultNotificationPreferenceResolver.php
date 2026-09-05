@@ -73,6 +73,9 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::SURGEON_MISSION_OPEN_PUBLISHED,
         NotificationType::CATALOGUE_REQUEST_RESOLVED,
         NotificationType::CATALOGUE_REQUEST_IGNORED,
+        // D-113 (amende D-094) — une proposition catalogue non traitée ne doit plus
+        // pouvoir passer inaperçue faute d'avoir été vue dans l'app.
+        NotificationType::CATALOGUE_REQUEST_CREATED,
         NotificationType::SURGEON_MISSION_REQUEST_ACCEPTED,
         NotificationType::SURGEON_MISSION_REQUEST_REJECTED,
         NotificationType::ENCODING_ANOMALY_RESOLVED,

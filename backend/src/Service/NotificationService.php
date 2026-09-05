@@ -8,6 +8,8 @@ use App\Entity\Mission;
 use App\Entity\NotificationEvent;
 use App\Entity\OutboundNotification;
 use App\Entity\User;
+use App\Enum\CatalogueRequestIgnoreReason;
+use App\Enum\CatalogueRequestKind;
 use App\Enum\OutboundNotificationFallbackReason;
 use App\Enum\PublicationChannel;
 use App\Message\PlanningAlertRaisedMessage;
@@ -324,9 +326,14 @@ class NotificationService
         string $kindLabel,
         ?OutboundNotification $fallbackOf = null,
         ?OutboundNotificationFallbackReason $fallbackReason = null,
+        ?CatalogueRequestIgnoreReason $ignoreReason = null,
+        ?string $explanation = null,
     ): OutboundNotification {
         $missionUrl = sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId());
         $subject = 'SurgicalHub — Votre proposition n\'a pas été retenue';
+        // Wording FR produit ici uniquement — voir docblock de CatalogueRequestProcessedMessage :
+        // le message ne transporte que le code métier stable.
+        $reasonLabel = $ignoreReason?->label();
 
         $notification = $this->outboundNotificationService->recordEmailQueued(
             $instrumentist,
@@ -345,11 +352,62 @@ class NotificationService
             fromName: $this->fromName,
             htmlTemplate: 'emails/catalogue_request_ignored.html.twig',
             context: [
-                'firstname'  => $instrumentist->getFirstname(),
-                'label'      => $label,
-                'kindLabel'  => $kindLabel,
-                'missionUrl' => $missionUrl,
+                'firstname'   => $instrumentist->getFirstname(),
+                'label'       => $label,
+                'kindLabel'   => $kindLabel,
+                'reasonLabel' => $reasonLabel,
+                'explanation' => $explanation,
+                'missionUrl'  => $missionUrl,
                 'notificationPreferencesUrl' => $this->notificationPreferencesUrl($instrumentist),
+            ],
+            outboundNotificationId: $notification->getId(),
+        ));
+
+        return $notification;
+    }
+
+    /**
+     * D-113 (amende D-094) — email manager/admin à la création d'une proposition
+     * catalogue, en plus de l'in-app/push existants (CatalogueRequestCreatedMessageHandler).
+     * Canal indépendant, pas un repli du push (contrairement à
+     * catalogueRequestResolvedNotifyInstrumentist/catalogueRequestIgnoredNotifyInstrumentist
+     * ci-dessus) : géré par CATALOGUE_REQUEST_CREATED désormais présent dans
+     * EMAIL_ON_BY_DEFAULT, chaque canal étant décidé indépendamment par
+     * NotificationPreferenceResolver.
+     */
+    public function catalogueRequestCreatedNotifyManager(
+        Mission $mission,
+        User $manager,
+        int $requestId,
+        string $label,
+        string $kindLabel,
+        CatalogueRequestKind $kind,
+    ): OutboundNotification {
+        $requestsUrl = sprintf('%s/app/m/catalogue/requests?kind=%s&requestId=%d', $this->frontendUrl, $kind->value, $requestId);
+        $subject = 'SurgicalHub — Nouvelle demande Catalogue à valider';
+
+        $notification = $this->outboundNotificationService->recordEmailQueued(
+            $manager,
+            'CATALOGUE_REQUEST_CREATED',
+            $subject,
+            rawData: ['missionId' => $mission->getId(), 'requestId' => $requestId, 'url' => $requestsUrl],
+            mission: $mission,
+        );
+
+        $this->bus->dispatch(new SendTemplatedEmailMessage(
+            to: (string) $manager->getEmail(),
+            subject: $subject,
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: 'emails/catalogue_request_created.html.twig',
+            context: [
+                'firstname'    => $manager->getFirstname(),
+                'requesterName' => trim(($mission->getInstrumentist()?->getFirstname() ?? '') . ' ' . ($mission->getInstrumentist()?->getLastname() ?? '')),
+                'label'        => $label,
+                'kindLabel'    => $kindLabel,
+                'siteName'     => $mission->getSite()?->getName(),
+                'requestsUrl'  => $requestsUrl,
+                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($manager),
             ],
             outboundNotificationId: $notification->getId(),
         ));

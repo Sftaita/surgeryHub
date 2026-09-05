@@ -3,6 +3,7 @@
 namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
+use App\Enum\CatalogueRequestIgnoreReason;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
 
@@ -77,6 +78,27 @@ class InterventionTypeRequest
     #[ORM\OneToOne(mappedBy: 'interventionTypeRequest', targetEntity: MissionInterventionDraft::class)]
     #[Groups(['intervention_type_request:read'])]
     private ?MissionInterventionDraft $draft = null;
+
+    /**
+     * Correctif workflow Demandes Catalogue (2026-09-04) — miroir exact des mêmes champs
+     * sur MaterialItemRequest, posés par MissionInterventionDraftService::ignore().
+     */
+    #[ORM\Column(length: 30, nullable: true, enumType: CatalogueRequestIgnoreReason::class)]
+    #[Groups(['intervention_type_request:read'])]
+    private ?CatalogueRequestIgnoreReason $ignoreReason = null;
+
+    #[ORM\Column(type: 'text', nullable: true)]
+    #[Groups(['intervention_type_request:read'])]
+    private ?string $ignoreComment = null;
+
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(nullable: true)]
+    #[Groups(['intervention_type_request:read'])]
+    private ?User $decidedBy = null;
+
+    #[ORM\Column(nullable: true)]
+    #[Groups(['intervention_type_request:read'])]
+    private ?\DateTimeImmutable $decidedAt = null;
 
     public function getId(): ?int
     {
@@ -175,6 +197,50 @@ class InterventionTypeRequest
     public function setDraft(MissionInterventionDraft $draft): static
     {
         $this->draft = $draft;
+        return $this;
+    }
+
+    public function getIgnoreReason(): ?CatalogueRequestIgnoreReason
+    {
+        return $this->ignoreReason;
+    }
+
+    public function setIgnoreReason(?CatalogueRequestIgnoreReason $ignoreReason): static
+    {
+        $this->ignoreReason = $ignoreReason;
+        return $this;
+    }
+
+    public function getIgnoreComment(): ?string
+    {
+        return $this->ignoreComment;
+    }
+
+    public function setIgnoreComment(?string $ignoreComment): static
+    {
+        $this->ignoreComment = $ignoreComment;
+        return $this;
+    }
+
+    public function getDecidedBy(): ?User
+    {
+        return $this->decidedBy;
+    }
+
+    public function setDecidedBy(?User $decidedBy): static
+    {
+        $this->decidedBy = $decidedBy;
+        return $this;
+    }
+
+    public function getDecidedAt(): ?\DateTimeImmutable
+    {
+        return $this->decidedAt;
+    }
+
+    public function setDecidedAt(?\DateTimeImmutable $decidedAt): static
+    {
+        $this->decidedAt = $decidedAt;
         return $this;
     }
 }

@@ -804,7 +804,10 @@ final class InterventionControllerLot5Test extends WebTestCase
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken);
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
+            'reason' => 'DUPLICATE',
+            'comment' => 'Demande en doublon.',
+        ]);
         self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
         $body = json_decode($response->getContent(), true);
         self::assertSame('IGNORED', $body['status']);

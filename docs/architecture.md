@@ -404,6 +404,18 @@ Le badge "Demandes" utilise `ui/hooks/useNavBadgeCount` (généralisé en D-079 
 `Badge` auparavant câblé en dur pour les seules demandes matériel) — deux appels (matériel PENDING +
 types d'intervention PENDING), un seul nombre affiché, `refetchInterval` 60 s.
 
+**D-113 (2026-09-04)** — avant ce correctif, ce badge et `CatalogueRequestsPage` partageaient la
+clé React Query `["material-requests","PENDING"]`/`["intervention-type-requests","PENDING"]` avec
+des `queryFn` renvoyant des **formes différentes** (`number` côté badge, `{items,total}` côté
+page) : une collision de clé qui corrompait le cache selon l'ordre de montage, expliquant pourquoi
+une nouvelle demande n'apparaissait pas sans rechargement complet du navigateur. Le badge appelle
+désormais la MÊME `queryFn` que la page (`getMaterialRequests`/`getInterventionTypeRequests`,
+forme `{items,total}`) avec un `select: (data) => data.total` (jamais `items.length`, pour rester
+correct si la liste devient un jour paginée) — une seule requête réseau alimente les deux
+consommateurs, toujours cohérents. `CatalogueRequestsPage` invalide en plus les deux familles de
+clés à l'ouverture (`useEffect` au montage), pour garantir des données fraîches sans jamais
+recourir à `window.location.reload()`. Voir `docs/decisions.md` D-113.
+
 "Planning publié" (`PlanningSchedulePage`) et "Configuration" (fondue dans Prestations) n'ont plus
 d'entrée directe dans le menu — leurs routes restent actives (compat liens/favoris/historique) :
 "Planning publié" reste accessible via un bouton dans Construire (`PlanningV2Page.tsx`),

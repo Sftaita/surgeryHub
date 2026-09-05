@@ -103,8 +103,8 @@ beforeEach(() => {
   subscribeToPushMock.mockReset();
   pwaVariant = "actionable";
   pwaOnActionMock.mockReset();
-  getMaterialRequestsMock.mockReset().mockResolvedValue({ items: [] });
-  getInterventionTypeRequestsMock.mockReset().mockResolvedValue({ items: [] });
+  getMaterialRequestsMock.mockReset().mockResolvedValue({ items: [], total: 0 });
+  getInterventionTypeRequestsMock.mockReset().mockResolvedValue({ items: [], total: 0 });
   fetchUnreadNotificationsCountMock.mockReset().mockResolvedValue(0);
 });
 
@@ -271,11 +271,11 @@ describe("DesktopLayout — navigation groupée (D-079)", () => {
   });
 });
 
-describe("DesktopLayout — badges de demandes en attente (D-079)", () => {
+describe("DesktopLayout — badges de demandes en attente (D-079, D-113)", () => {
   it("affiche le badge sur Demandes quand des demandes matériel sont en attente", async () => {
     authRole = "MANAGER";
-    getMaterialRequestsMock.mockResolvedValue({ items: [{ id: 1 }, { id: 2 }, { id: 3 }] });
-    getInterventionTypeRequestsMock.mockResolvedValue({ items: [] });
+    getMaterialRequestsMock.mockResolvedValue({ items: [{ id: 1 }, { id: 2 }, { id: 3 }], total: 3 });
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [], total: 0 });
     renderLayout();
 
     expect(await screen.findByText("3")).toBeInTheDocument();
@@ -283,8 +283,8 @@ describe("DesktopLayout — badges de demandes en attente (D-079)", () => {
 
   it("affiche le badge sur Demandes quand des demandes de type d'intervention sont en attente", async () => {
     authRole = "MANAGER";
-    getMaterialRequestsMock.mockResolvedValue({ items: [] });
-    getInterventionTypeRequestsMock.mockResolvedValue({ items: [{ id: 1 }, { id: 2 }] });
+    getMaterialRequestsMock.mockResolvedValue({ items: [], total: 0 });
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [{ id: 1 }, { id: 2 }], total: 2 });
     renderLayout();
 
     expect(await screen.findByText("2")).toBeInTheDocument();
@@ -292,8 +292,8 @@ describe("DesktopLayout — badges de demandes en attente (D-079)", () => {
 
   it("cumule les deux sources dans un badge unique", async () => {
     authRole = "MANAGER";
-    getMaterialRequestsMock.mockResolvedValue({ items: [{ id: 1 }] });
-    getInterventionTypeRequestsMock.mockResolvedValue({ items: [{ id: 1 }, { id: 2 }] });
+    getMaterialRequestsMock.mockResolvedValue({ items: [{ id: 1 }], total: 1 });
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [{ id: 1 }, { id: 2 }], total: 2 });
     renderLayout();
 
     expect(await screen.findByText("3")).toBeInTheDocument();
@@ -304,6 +304,23 @@ describe("DesktopLayout — badges de demandes en attente (D-079)", () => {
     renderLayout();
     const requestsLink = screen.getByRole("link", { name: "Demandes" });
     expect(requestsLink.textContent).toBe("Demandes");
+  });
+
+  /**
+   * Correctif workflow Demandes Catalogue (D-113) — le badge lit `total`, jamais
+   * `items.length` : avant ce correctif, un badge et CatalogueRequestsPage partageaient
+   * la même clé React Query avec des queryFn renvoyant des formes différentes (`number`
+   * ici, `{items,total}` côté page), corrompant le cache selon l'ordre de montage. Ce
+   * test verrouille la lecture par `total` — une valeur différente de `items.length`
+   * (liste tronquée/paginée) doit être celle affichée.
+   */
+  it("lit le compte depuis `total`, pas `items.length` — robuste à une liste paginée/tronquée", async () => {
+    authRole = "MANAGER";
+    getMaterialRequestsMock.mockResolvedValue({ items: [{ id: 1 }], total: 7 });
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [], total: 0 });
+    renderLayout();
+
+    expect(await screen.findByText("7")).toBeInTheDocument();
   });
 });
 

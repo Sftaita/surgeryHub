@@ -6,6 +6,7 @@ import { useAuth } from "../auth/AuthContext";
 import { consumeSessionExpired } from "../auth/authStorage";
 import { useToast } from "../ui/toast/useToast";
 import { dvh } from "../ui/dvh";
+import { isSafeInternalPath } from "../router/safeInternalPath";
 
 type LocationState = { from?: string } | null;
 
@@ -316,7 +317,11 @@ export default function LoginPage() {
   const { state, login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const from = (location.state as LocationState)?.from ?? "/";
+  // Correctif auth/router (2026-09-04) — validé avant usage : `location.state` transite
+  // par l'historique du navigateur, jamais une valeur de confiance par défaut (protection
+  // open-redirect). Repli sur "/" (comportement historique) si absent ou invalide.
+  const rawFrom = (location.state as LocationState)?.from;
+  const from = isSafeInternalPath(rawFrom) ? rawFrom : "/";
   const toast = useToast();
   const isDesktop = useMediaQuery("(min-width:900px)");
 

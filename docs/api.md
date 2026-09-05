@@ -1683,12 +1683,20 @@ PENDING → IGNORED   (via ignore)
       "createdAt": "2026-03-15T10:00:00+01:00",
       "mission": { "id": 42, "site": "Delta" },
       "requestedBy": { "id": 5, "displayName": "Ole Salve" },
-      "materialItem": null
+      "materialItem": null,
+      "ignoreReason": null,
+      "ignoreComment": null,
+      "decidedBy": null,
+      "decidedAt": null
     }
   ],
   "total": 1
 }
 ```
+
+`ignoreReason`/`ignoreComment`/`decidedBy`/`decidedAt` (correctif Demandes Catalogue,
+D-113) ne sont renseignés que pour une demande `IGNORED` — toujours `null` pour
+`PENDING`/`RESOLVED`.
 
 ---
 
@@ -1724,7 +1732,7 @@ PENDING → IGNORED   (via ignore)
 |---|---|
 | `404` | Demande introuvable |
 | `404` | MaterialItem introuvable |
-| `409` | Demande non `PENDING` |
+| `409` | `MATERIAL_ITEM_REQUEST_ALREADY_PROCESSED` — demande déjà `RESOLVED`/`IGNORED` (verrouillage pessimiste, D-113 — couvre aussi une tentative concurrente) |
 | `422` | `materialItemId` manquant |
 
 **Effet async (D-093) :** dispatche `CatalogueRequestProcessedMessage(accepted: true)` —
@@ -1739,14 +1747,37 @@ pas livrable). Voir `docs/decisions.md` D-093/D-094.
 
 **Précondition :** `status = PENDING`
 
-Body vide.
+**Body JSON (D-113 — motif et explication toujours obligatoires) :**
 
-**Réponse — 200 :** MaterialItemRequest avec `status: "IGNORED"`
+```json
+{
+  "reason": "MATERIAL_ALREADY_EXISTS",
+  "comment": "Matériel déjà existant sous la référence AR-1120."
+}
+```
 
-**Erreurs :** `404` introuvable, `409` non PENDING
+`reason` ∈ `ALREADY_EXISTS` \| `MATERIAL_ALREADY_EXISTS` \| `DUPLICATE` \|
+`INVALID_REQUEST` \| `OTHER` (`App\Enum\CatalogueRequestIgnoreReason`). `comment` est un
+texte libre, toujours requis (jamais seulement pour `OTHER`) : le demandeur doit toujours
+recevoir une réponse utile.
 
-**Effet async (D-093) :** dispatche `CatalogueRequestProcessedMessage(accepted: false)` —
-même orchestration que `resolve()` ci-dessus.
+**Effets backend :** passe `status → IGNORED`, pose `ignoreReason`/`ignoreComment`/
+`decidedBy`/`decidedAt`, écrit un `AuditEvent` `MATERIAL_ITEM_REQUEST_IGNORED`.
+
+**Réponse — 200 :** MaterialItemRequest avec `status: "IGNORED"` et les 4 champs ci-dessus renseignés.
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `404` | Demande introuvable |
+| `409` | `MATERIAL_ITEM_REQUEST_ALREADY_PROCESSED` — déjà traitée (verrouillage pessimiste) |
+| `422` | `reason` manquant/invalide, ou `comment` vide |
+
+**Effet async (D-093/D-113) :** dispatche `CatalogueRequestProcessedMessage(accepted:
+false, ignoreReason, explanation)` — le message transporte le code métier de l'enum,
+jamais un libellé déjà traduit (voir `docs/decisions.md` D-113). Le demandeur reçoit un
+email/push mentionnant le motif et l'explication.
 
 ---
 
@@ -4729,9 +4760,11 @@ l'intervention (jamais l'inverse).
 
 **Réponse — 201 :** `{ "id": 7 }`
 
-**Effet async (D-094) :** dispatche `CatalogueRequestCreatedMessage` — notifie tous les
-managers/admins actifs (in-app + push, jamais d'email) qu'une proposition attend leur
-traitement. Voir `docs/decisions.md` D-094.
+**Effet async (D-094, révisé D-113) :** dispatche `CatalogueRequestCreatedMessage` —
+notifie tous les managers/admins actifs (in-app + push **+ email par défaut depuis
+D-113**, chaque canal désactivable individuellement dans les préférences de
+notification). Deep-link email/push : `/app/m/catalogue/requests?kind=INTERVENTION_TYPE&requestId={id}`.
+Voir `docs/decisions.md` D-094/D-113.
 
 #### `GET /api/intervention-type-requests`
 
@@ -4740,7 +4773,8 @@ traitement. Voir `docs/decisions.md` D-094.
 **Query params :** `status` (`PENDING`\|`RESOLVED`\|`IGNORED`, optionnel).
 
 **Réponse — 200 :** `{ "items": [...], "total": N }` — chaque item :
-`{ id, status, label, suggestedCode, comment, createdAt, mission: {id, site}, requestedBy: {id, displayName}, resolvedInterventionType }`.
+`{ id, status, label, suggestedCode, comment, createdAt, mission: {id, site}, requestedBy: {id, displayName}, resolvedInterventionType, ignoreReason, ignoreComment, decidedBy: {id, displayName} | null, decidedAt }`.
+Les 4 derniers champs (D-113) ne sont renseignés que pour une demande `IGNORED`.
 
 #### `POST /api/intervention-type-requests/{id}/resolve`
 
@@ -4767,12 +4801,23 @@ pas livrable).
 
 #### `POST /api/intervention-type-requests/{id}/ignore`
 
-**AuthZ :** `BillingVoter::MANAGE` — **Précondition :** `status = PENDING` — body vide.
+**AuthZ :** `BillingVoter::MANAGE` — **Précondition :** `status = PENDING`.
 
-**Réponse — 200 :** la demande avec `status: "IGNORED"`. **Erreurs :** `404`, `409`.
+**Body JSON :** `{ "strategy"?: "KEEP_AS_HISTORY"|"REASSIGN", "missionInterventionId"?: number, "reason": "...", "comment": "..." }`
+— `strategy`/`missionInterventionId` inchangés (§8) ; `reason`
+(`App\Enum\CatalogueRequestIgnoreReason`) et `comment` sont **orthogonaux à `strategy`**
+et toujours obligatoires depuis D-113 (motif/explication transmis au demandeur, jamais
+seulement pour `OTHER`).
 
-**Effet async (D-093) :** dispatche `CatalogueRequestProcessedMessage(accepted: false)` —
-même orchestration que `resolve()` ci-dessus.
+**Réponse — 200 :** la demande avec `status: "IGNORED"`.
+
+**Erreurs :** `404` introuvable, `409` `DRAFT_ALREADY_RESOLVED` (déjà traitée, sous
+verrouillage pessimiste), `422` `reason`/`comment` manquant ou `strategy` invalide/requis
+(voir §8 pour les codes liés à `strategy`).
+
+**Effet async (D-093/D-113) :** dispatche `CatalogueRequestProcessedMessage(accepted:
+false, ignoreReason, explanation)` — même orchestration que `resolve()` ci-dessus, motif +
+explication inclus dans l'email/push au demandeur.
 
 ---
 

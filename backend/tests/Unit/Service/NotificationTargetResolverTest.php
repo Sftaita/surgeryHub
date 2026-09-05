@@ -4,6 +4,7 @@ namespace App\Tests\Unit\Service;
 
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\CatalogueRequestKind;
 use App\Enum\NotificationType;
 use App\Service\NotificationTargetResolver;
 use PHPUnit\Framework\TestCase;
@@ -84,6 +85,35 @@ final class NotificationTargetResolverTest extends TestCase
 
         $url = $this->resolver->resolve(NotificationType::SURGEON_POST_COVERED, $mission, $surgeon);
         self::assertSame('/app/s/missions/' . $mission->getId(), $url);
+    }
+
+    // ── Correctif workflow Demandes Catalogue — deep-link (kind, requestId) ──
+
+    public function test_catalogue_request_created_routes_manager_to_the_generic_list_without_requestId(): void
+    {
+        $mission = $this->makeMission();
+        $manager = $this->makeUser('ROLE_MANAGER');
+
+        $url = $this->resolver->resolve(NotificationType::CATALOGUE_REQUEST_CREATED, $mission, $manager);
+        self::assertSame('/app/m/catalogue/requests', $url);
+    }
+
+    /**
+     * Le couple (kind, requestId) est obligatoire pour le deep-link, jamais requestId
+     * seul : MaterialItemRequest et InterventionTypeRequest ont des espaces d'ID
+     * indépendants et peuvent partager le même id.
+     */
+    public function test_catalogue_request_created_deep_links_with_kind_and_request_id(): void
+    {
+        $mission = $this->makeMission();
+        $manager = $this->makeUser('ROLE_MANAGER');
+
+        $url = $this->resolver->resolve(NotificationType::CATALOGUE_REQUEST_CREATED, $mission, $manager, 42, CatalogueRequestKind::MATERIAL_ITEM);
+        self::assertSame('/app/m/catalogue/requests?kind=MATERIAL_ITEM&requestId=42', $url);
+
+        $url2 = $this->resolver->resolve(NotificationType::CATALOGUE_REQUEST_CREATED, $mission, $manager, 42, CatalogueRequestKind::INTERVENTION_TYPE);
+        self::assertSame('/app/m/catalogue/requests?kind=INTERVENTION_TYPE&requestId=42', $url2);
+        self::assertNotSame($url, $url2, 'same numeric id, different kind — must not collide');
     }
 
     // ── Notifications agrégées (aucune Mission unique) ──────────────────────

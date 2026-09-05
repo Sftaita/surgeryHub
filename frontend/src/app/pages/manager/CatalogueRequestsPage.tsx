@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
@@ -35,6 +36,7 @@ import {
   resolveMaterialRequest,
 } from "../../features/manager-catalogue/api/catalogue.api";
 import type {
+  CatalogueRequestIgnoreReason,
   MaterialItemDTO,
   MaterialRequestDTO,
   MaterialRequestStatus,
@@ -374,6 +376,118 @@ function statusColor(status: MaterialRequestStatus): "warning" | "success" | "de
 }
 
 /**
+ * Correctif workflow Demandes Catalogue (D-113) — wording FR local à l'affichage
+ * (historique Résolues/Ignorées, Select de la modal), miroir de
+ * CatalogueRequestIgnoreReason::label() côté backend. Le backend, lui, ne transporte
+ * jamais ce libellé (CatalogueRequestProcessedMessage porte le code brut) — voir
+ * docs/decisions.md D-113.
+ */
+const IGNORE_REASON_LABELS: Record<CatalogueRequestIgnoreReason, string> = {
+  ALREADY_EXISTS: "Intervention déjà existante",
+  MATERIAL_ALREADY_EXISTS: "Matériel déjà existant",
+  DUPLICATE: "Demande en doublon",
+  INVALID_REQUEST: "Demande incorrecte",
+  OTHER: "Autre",
+};
+
+function ignoreReasonsFor(kind: "material" | "intervention"): CatalogueRequestIgnoreReason[] {
+  const alreadyExists: CatalogueRequestIgnoreReason = kind === "material" ? "MATERIAL_ALREADY_EXISTS" : "ALREADY_EXISTS";
+  return [alreadyExists, "DUPLICATE", "INVALID_REQUEST", "OTHER"];
+}
+
+/**
+ * Modal de confirmation "Ignorer" (D-113) — motif structuré + explication toujours
+ * obligatoires (jamais seulement pour OTHER), partagée matériel/intervention (même
+ * forme des deux côtés backend). Bouton de validation désactivé tant que les deux champs
+ * ne sont pas renseignés. Sur échec : la modal reste ouverte avec les valeurs saisies,
+ * l'erreur s'affiche en ligne — jamais un simple toast qui laisserait croire à un succès.
+ */
+function IgnoreCatalogueRequestDialog({
+  open,
+  kind,
+  label,
+  onClose,
+  onConfirm,
+  submitting,
+  error,
+}: {
+  open: boolean;
+  kind: "material" | "intervention" | null;
+  label: string;
+  onClose: () => void;
+  onConfirm: (reason: CatalogueRequestIgnoreReason, comment: string) => void;
+  submitting: boolean;
+  error: string | null;
+}) {
+  const [reason, setReason] = React.useState<CatalogueRequestIgnoreReason | "">("");
+  const [comment, setComment] = React.useState("");
+
+  React.useEffect(() => {
+    if (open) {
+      setReason("");
+      setComment("");
+    }
+  }, [open]);
+
+  if (!kind) return null;
+  const reasons = ignoreReasonsFor(kind);
+  const canSubmit = reason !== "" && comment.trim() !== "";
+
+  return (
+    <Dialog open={open} onClose={submitting ? undefined : onClose} fullWidth maxWidth="sm">
+      <DialogTitle>Ignorer cette demande ?</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ pt: 1 }}>
+          {error ? <Alert severity="error">{error}</Alert> : null}
+          <Typography variant="body2" color="text.secondary">« {label} »</Typography>
+
+          <Select
+            fullWidth
+            size="small"
+            displayEmpty
+            value={reason}
+            onChange={(e) => setReason(e.target.value as CatalogueRequestIgnoreReason)}
+          >
+            <MenuItem value="" disabled>Motif</MenuItem>
+            {reasons.map((r) => (
+              <MenuItem key={r} value={r}>{IGNORE_REASON_LABELS[r]}</MenuItem>
+            ))}
+          </Select>
+
+          <TextField
+            label="Explication"
+            placeholder="Ex. Intervention déjà existante sous le nom « Prothèse totale de hanche »."
+            multiline
+            minRows={3}
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+          />
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={submitting}>Annuler</Button>
+        <Button
+          variant="contained"
+          color="error"
+          disabled={!canSubmit || submitting}
+          onClick={() => {
+            if (reason !== "") onConfirm(reason, comment.trim());
+          }}
+        >
+          {submitting ? <CircularProgress size={18} /> : "Ignorer la demande"}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+/** Deep-link backend ("MATERIAL_ITEM"/"INTERVENTION_TYPE") → kind frontend (UnifiedRequest). */
+const DEEP_LINK_KIND: Record<string, "material" | "intervention"> = {
+  MATERIAL_ITEM: "material",
+  INTERVENTION_TYPE: "intervention",
+};
+
+/**
  * Demandes matériel + demandes de type d'intervention réunies (D-079) — un
  * seul tableau, chaque ligne taguée par nature, mêmes onglets de statut
  * qu'avant. Le backend des demandes d'intervention
@@ -383,10 +497,33 @@ function statusColor(status: MaterialRequestStatus): "warning" | "success" | "de
 export default function CatalogueRequestsPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
 
+  // Correctif workflow Demandes Catalogue (D-113) — deep-link identifié par le couple
+  // (kind, requestId), jamais requestId seul : MaterialItemRequest et
+  // InterventionTypeRequest ont des espaces d'ID indépendants et peuvent partager le
+  // même id. Résolu une seule fois au montage (pas de useMemo qui suivrait
+  // searchParams — une navigation ultérieure vers la même page ne doit pas rouvrir un
+  // vieux surlignage).
+  const [deepLinkTarget] = React.useState<{ kind: "material" | "intervention"; id: number } | null>(() => {
+    const kindParam = searchParams.get("kind");
+    const requestIdParam = searchParams.get("requestId");
+    const kind = kindParam ? DEEP_LINK_KIND[kindParam] : undefined;
+    const id = requestIdParam ? Number(requestIdParam) : NaN;
+    return kind && Number.isFinite(id) ? { kind, id } : null;
+  });
+  const [highlightKey, setHighlightKey] = React.useState<string | null>(
+    deepLinkTarget ? `${deepLinkTarget.kind}-${deepLinkTarget.id}` : null,
+  );
+  const rowRefs = React.useRef(new Map<string, HTMLTableRowElement>());
+
+  // Un deep-link force l'onglet PENDING (comportement déjà par défaut) — explicite ici
+  // pour documenter l'intention plutôt que de dépendre d'une coïncidence.
   const [tab, setTab] = React.useState<TabValue>("PENDING");
   const [resolveMaterialTarget, setResolveMaterialTarget] = React.useState<MaterialRequestDTO | null>(null);
   const [resolveInterventionTarget, setResolveInterventionTarget] = React.useState<InterventionTypeRequestDTO | null>(null);
+  const [ignoreTarget, setIgnoreTarget] = React.useState<{ kind: "material" | "intervention"; id: number; label: string } | null>(null);
+  const [ignoreError, setIgnoreError] = React.useState<string | null>(null);
 
   const materialQuery = useQuery({
     queryKey: ["material-requests", tab],
@@ -397,6 +534,14 @@ export default function CatalogueRequestsPage() {
     queryFn: () => getInterventionTypeRequests({ status: tab }),
   });
 
+  // Données fraîches à l'ouverture de la page, sans jamais recourir à
+  // window.location.reload() — voir docs/decisions.md D-113 (cause racine #1).
+  React.useEffect(() => {
+    queryClient.invalidateQueries({ queryKey: ["material-requests"] });
+    queryClient.invalidateQueries({ queryKey: ["intervention-type-requests"] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const rows: UnifiedRequest[] = React.useMemo(() => {
     const material: UnifiedRequest[] = (materialQuery.data?.items ?? []).map((request) => ({ kind: "material", request }));
     const intervention: UnifiedRequest[] = (interventionQuery.data?.items ?? []).map((request) => ({ kind: "intervention", request }));
@@ -404,6 +549,19 @@ export default function CatalogueRequestsPage() {
       (a, b) => new Date(b.request.createdAt).getTime() - new Date(a.request.createdAt).getTime(),
     );
   }, [materialQuery.data, interventionQuery.data]);
+
+  // Met la ligne ciblée par la notification en évidence + la fait défiler dans le champ
+  // de vision, une fois les données chargées. Si elle n'est plus PENDING (déjà traitée
+  // par un autre manager), elle n'apparaît simplement pas dans cet onglet — dégradation
+  // gracieuse, pas d'échec.
+  React.useEffect(() => {
+    if (!highlightKey || tab !== "PENDING" || materialQuery.isLoading || interventionQuery.isLoading) return;
+    const el = rowRefs.current.get(highlightKey);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const timer = setTimeout(() => setHighlightKey(null), 4000);
+    return () => clearTimeout(timer);
+  }, [highlightKey, tab, materialQuery.isLoading, interventionQuery.isLoading, rows]);
 
   const resolveMaterialMutation = useMutation({
     mutationFn: ({ id, materialItemId }: { id: number; materialItemId: number }) =>
@@ -422,10 +580,18 @@ export default function CatalogueRequestsPage() {
     mutationFn: ignoreMaterialRequest,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["material-requests"] });
-      toast.success("Demande ignorée.");
+      setIgnoreTarget(null);
+      setIgnoreError(null);
+      toast.success("Demande ignorée et demandeur averti.");
     },
     onError: (err: any) => {
-      toast.error(err?.response?.data?.message ?? "Erreur lors de l'action.");
+      // Décision concurrente (409) — un autre manager a déjà traité la demande : on
+      // rafraîchit la liste en fond pour que la ligne reflète l'état réel dès la
+      // fermeture de la modal, sans jamais faire croire que l'action a réussi.
+      if (err?.response?.status === 409) {
+        queryClient.invalidateQueries({ queryKey: ["material-requests"] });
+      }
+      setIgnoreError(err?.response?.data?.error?.message ?? err?.response?.data?.message ?? "Erreur lors de l'action.");
     },
   });
 
@@ -446,10 +612,15 @@ export default function CatalogueRequestsPage() {
     mutationFn: ignoreInterventionTypeRequest,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["intervention-type-requests"] });
-      toast.success("Demande ignorée.");
+      setIgnoreTarget(null);
+      setIgnoreError(null);
+      toast.success("Demande ignorée et demandeur averti.");
     },
     onError: (err: any) => {
-      toast.error(err?.response?.data?.message ?? "Erreur lors de l'action.");
+      if (err?.response?.status === 409) {
+        queryClient.invalidateQueries({ queryKey: ["intervention-type-requests"] });
+      }
+      setIgnoreError(err?.response?.data?.error?.message ?? err?.response?.data?.message ?? "Erreur lors de l'action.");
     },
   });
 
@@ -499,8 +670,21 @@ export default function CatalogueRequestsPage() {
               {rows.map((row) => {
                 const { request } = row;
                 const isMaterial = row.kind === "material";
+                const rowKey = `${row.kind}-${request.id}`;
+                const isHighlighted = highlightKey === rowKey;
                 return (
-                  <TableRow key={`${row.kind}-${request.id}`} hover>
+                  <TableRow
+                    key={rowKey}
+                    hover
+                    ref={(el) => {
+                      if (el) rowRefs.current.set(rowKey, el);
+                      else rowRefs.current.delete(rowKey);
+                    }}
+                    sx={isHighlighted ? {
+                      bgcolor: "warning.light",
+                      transition: "background-color 2s ease",
+                    } : undefined}
+                  >
                     <TableCell>
                       <Chip
                         size="small"
@@ -555,6 +739,24 @@ export default function CatalogueRequestsPage() {
                           → {(request as InterventionTypeRequestDTO).resolvedInterventionType!.label}
                         </Typography>
                       ) : null}
+                      {request.status === "IGNORED" && request.ignoreReason ? (
+                        <Stack spacing={0} sx={{ mt: 0.5 }}>
+                          <Typography variant="caption" display="block" color="text.secondary">
+                            Motif : {IGNORE_REASON_LABELS[request.ignoreReason]}
+                          </Typography>
+                          {request.ignoreComment ? (
+                            <Typography variant="caption" display="block" color="text.secondary">
+                              « {request.ignoreComment} »
+                            </Typography>
+                          ) : null}
+                          {request.decidedBy ? (
+                            <Typography variant="caption" display="block" color="text.secondary">
+                              Par {request.decidedBy.displayName}
+                              {request.decidedAt ? ` le ${new Date(request.decidedAt).toLocaleDateString("fr-BE")}` : ""}
+                            </Typography>
+                          ) : null}
+                        </Stack>
+                      ) : null}
                     </TableCell>
                     {tab === "PENDING" ? (
                       <TableCell align="right">
@@ -575,11 +777,10 @@ export default function CatalogueRequestsPage() {
                             size="small"
                             color="inherit"
                             variant="outlined"
-                            onClick={() =>
-                              isMaterial
-                                ? ignoreMaterialMutation.mutate(request.id)
-                                : ignoreInterventionMutation.mutate(request.id)
-                            }
+                            onClick={() => {
+                              setIgnoreError(null);
+                              setIgnoreTarget({ kind: row.kind, id: request.id, label: request.label });
+                            }}
                             disabled={ignoreMaterialMutation.isPending || ignoreInterventionMutation.isPending}
                           >
                             Ignorer
@@ -614,6 +815,26 @@ export default function CatalogueRequestsPage() {
         onResolve={(interventionTypeId, primaryFirmId) => {
           if (!resolveInterventionTarget) return;
           resolveInterventionMutation.mutate({ id: resolveInterventionTarget.id, interventionTypeId, primaryFirmId });
+        }}
+      />
+
+      <IgnoreCatalogueRequestDialog
+        open={ignoreTarget !== null}
+        kind={ignoreTarget?.kind ?? null}
+        label={ignoreTarget?.label ?? ""}
+        onClose={() => {
+          setIgnoreTarget(null);
+          setIgnoreError(null);
+        }}
+        submitting={ignoreMaterialMutation.isPending || ignoreInterventionMutation.isPending}
+        error={ignoreError}
+        onConfirm={(reason, comment) => {
+          if (!ignoreTarget) return;
+          if (ignoreTarget.kind === "material") {
+            ignoreMaterialMutation.mutate({ id: ignoreTarget.id, reason, comment });
+          } else {
+            ignoreInterventionMutation.mutate({ id: ignoreTarget.id, reason, comment });
+          }
         }}
       />
     </Stack>

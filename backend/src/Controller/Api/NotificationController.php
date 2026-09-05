@@ -4,6 +4,7 @@ namespace App\Controller\Api;
 
 use App\Entity\NotificationEvent;
 use App\Entity\User;
+use App\Enum\CatalogueRequestKind;
 use App\Enum\NotificationType;
 use App\Enum\PublicationChannel;
 use App\Service\NotificationTargetResolver;
@@ -118,8 +119,15 @@ final class NotificationController extends AbstractController
     {
         $recipient = $n->getUser();
         $type = NotificationType::tryFrom($n->getEventType());
+        $payload = $n->getPayload() ?? [];
         $targetUrl = ($type !== null && $recipient !== null)
-            ? $this->targetResolver->resolve($type, $n->getMission(), $recipient)
+            ? $this->targetResolver->resolve(
+                $type,
+                $n->getMission(),
+                $recipient,
+                isset($payload['requestId']) ? (int) $payload['requestId'] : null,
+                isset($payload['kind']) ? CatalogueRequestKind::tryFrom((string) $payload['kind']) : null,
+            )
             : null;
 
         return [
