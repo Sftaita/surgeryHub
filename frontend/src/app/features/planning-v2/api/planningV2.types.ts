@@ -146,16 +146,20 @@ export interface AbsenceCommunicationSiteSettingV2 {
   notifyColleaguesEnabled: boolean;
   /** Lot B */
   notifyBlockManagementEnabled: boolean;
-  blockManagementEmailTo: string | null;
-  blockManagementEmailCc: string[];
+  /**
+   * Revue post-déploiement (D-114) — lecture seule ici, sourcée depuis la fiche
+   * établissement (`Hospital`). Se modifie via `PATCH /api/sites/{id}`
+   * (voir `updateHospitalBlockManagementContact` dans `sites.api.ts`), jamais depuis cet
+   * endpoint.
+   */
+  blockManagementContactEmail: string | null;
+  blockManagementContactCc: string[];
   blockManagementDelayDays: number | null;
 }
 
 export interface AbsenceCommunicationSiteSettingUpdateV2 {
   notifyColleaguesEnabled?: boolean;
   notifyBlockManagementEnabled?: boolean;
-  blockManagementEmailTo?: string | null;
-  blockManagementEmailCc?: string[];
   blockManagementDelayDays?: number | null;
 }
 

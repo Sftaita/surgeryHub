@@ -36,17 +36,13 @@ class AbsenceCommunicationSiteConfig
     #[Groups(['planning:read'])]
     private bool $notifyBlockManagementEnabled = false;
 
-    /** Lot B — inutilisé en Lot A. */
-    #[ORM\Column(length: 255, nullable: true)]
-    #[Groups(['planning:read'])]
-    private ?string $blockManagementEmailTo = null;
-
-    /** Lot B — inutilisé en Lot A. @var list<string> */
-    #[ORM\Column(type: 'json')]
-    #[Groups(['planning:read'])]
-    private array $blockManagementEmailCc = [];
-
-    /** Lot B — inutilisé en Lot A. */
+    /**
+     * Lot B — inutilisé en Lot A. Pur réglage de comportement (activé/désactivé + délai) —
+     * les coordonnées (To/CC) ont été déplacées vers `Hospital::blockManagementContactEmail`/
+     * `blockManagementContactCc` (revue post-déploiement, D-114) : ce sont des données
+     * organisationnelles propres à l'établissement, jamais un paramètre de communication
+     * d'absence.
+     */
     #[ORM\Column(type: 'integer', nullable: true)]
     #[Groups(['planning:read'])]
     private ?int $blockManagementDelayDays = null;
@@ -61,14 +57,6 @@ class AbsenceCommunicationSiteConfig
 
     public function isNotifyBlockManagementEnabled(): bool { return $this->notifyBlockManagementEnabled; }
     public function setNotifyBlockManagementEnabled(bool $notifyBlockManagementEnabled): static { $this->notifyBlockManagementEnabled = $notifyBlockManagementEnabled; return $this; }
-
-    public function getBlockManagementEmailTo(): ?string { return $this->blockManagementEmailTo; }
-    public function setBlockManagementEmailTo(?string $blockManagementEmailTo): static { $this->blockManagementEmailTo = $blockManagementEmailTo; return $this; }
-
-    /** @return list<string> */
-    public function getBlockManagementEmailCc(): array { return $this->blockManagementEmailCc; }
-    /** @param list<string> $blockManagementEmailCc */
-    public function setBlockManagementEmailCc(array $blockManagementEmailCc): static { $this->blockManagementEmailCc = $blockManagementEmailCc; return $this; }
 
     public function getBlockManagementDelayDays(): ?int { return $this->blockManagementDelayDays; }
     public function setBlockManagementDelayDays(?int $blockManagementDelayDays): static { $this->blockManagementDelayDays = $blockManagementDelayDays; return $this; }

@@ -90,6 +90,19 @@ final class AbsenceCommunicationSiteConfigControllerTest extends WebTestCase
         return $h;
     }
 
+    /**
+     * Revue post-déploiement (D-114) — les coordonnées "gestion du bloc" sont désormais
+     * portées par Hospital (fiche établissement, PATCH /api/sites/{id}), jamais par ce
+     * contrôleur. Ce helper simule un établissement déjà configuré, exactement comme le
+     * ferait un manager depuis la fiche établissement avant d'activer le toggle ici.
+     */
+    private function setHospitalContact(Hospital $site, ?string $email, array $cc = []): void
+    {
+        $site->setBlockManagementContactEmail($email);
+        $site->setBlockManagementContactCc($cc);
+        $this->em->flush();
+    }
+
     private function json(Response $response): array
     {
         return json_decode((string) $response->getContent(), true) ?? [];
@@ -160,10 +173,14 @@ final class AbsenceCommunicationSiteConfigControllerTest extends WebTestCase
         self::assertSame(200, $client->getResponse()->getStatusCode());
     }
 
-    // ── Lot B — validation "gestion du bloc" ────────────────────────────────────
+    // ── Revue post-déploiement — validation "gestion du bloc" ───────────────────
+    // Les coordonnées (To/CC) sont désormais des données établissement, gérées par
+    // SiteController (voir SiteControllerTest pour leur validation propre) — ce contrôleur
+    // ne porte plus que le comportement (activé/désactivé + délai), avec un garde-fou
+    // technique qui relit le contact actuel de l'établissement.
 
     #[WithoutErrorHandler]
-    public function test_patch_enabling_block_management_without_email_to_returns_400(): void
+    public function test_patch_enabling_block_management_without_hospital_contact_returns_400(): void
     {
         $client = static::createClient();
         $client->disableReboot();
@@ -171,26 +188,10 @@ final class AbsenceCommunicationSiteConfigControllerTest extends WebTestCase
         ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
 
         $site = $this->makeSite();
+        // Aucun contact configuré sur l'établissement (état par défaut).
 
         $client->request('PATCH', "/api/planning/absence-communication-settings/{$site->getId()}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
             'notifyBlockManagementEnabled' => true,
-        ]));
-        self::assertSame(400, $client->getResponse()->getStatusCode());
-    }
-
-    #[WithoutErrorHandler]
-    public function test_patch_enabling_block_management_with_invalid_email_returns_400(): void
-    {
-        $client = static::createClient();
-        $client->disableReboot();
-        $this->em = static::getContainer()->get(EntityManagerInterface::class);
-        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
-
-        $site = $this->makeSite();
-
-        $client->request('PATCH', "/api/planning/absence-communication-settings/{$site->getId()}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
-            'notifyBlockManagementEnabled' => true,
-            'blockManagementEmailTo' => 'not-an-email',
             'blockManagementDelayDays' => 14,
         ]));
         self::assertSame(400, $client->getResponse()->getStatusCode());
@@ -205,10 +206,10 @@ final class AbsenceCommunicationSiteConfigControllerTest extends WebTestCase
         ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
 
         $site = $this->makeSite();
+        $this->setHospitalContact($site, 'bloc@example.com');
 
         $client->request('PATCH', "/api/planning/absence-communication-settings/{$site->getId()}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
             'notifyBlockManagementEnabled' => true,
-            'blockManagementEmailTo' => 'bloc@example.com',
         ]));
         self::assertSame(400, $client->getResponse()->getStatusCode());
     }
@@ -222,10 +223,10 @@ final class AbsenceCommunicationSiteConfigControllerTest extends WebTestCase
         ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
 
         $site = $this->makeSite();
+        $this->setHospitalContact($site, 'bloc@example.com');
 
         $client->request('PATCH', "/api/planning/absence-communication-settings/{$site->getId()}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
             'notifyBlockManagementEnabled' => true,
-            'blockManagementEmailTo' => 'bloc@example.com',
             'blockManagementDelayDays' => -1,
         ]));
         self::assertSame(400, $client->getResponse()->getStatusCode());
@@ -240,17 +241,17 @@ final class AbsenceCommunicationSiteConfigControllerTest extends WebTestCase
         ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
 
         $site = $this->makeSite();
+        $this->setHospitalContact($site, 'bloc@example.com');
 
         $client->request('PATCH', "/api/planning/absence-communication-settings/{$site->getId()}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
             'notifyBlockManagementEnabled' => true,
-            'blockManagementEmailTo' => 'bloc@example.com',
             'blockManagementDelayDays' => 0,
         ]));
         self::assertSame(200, $client->getResponse()->getStatusCode());
     }
 
     #[WithoutErrorHandler]
-    public function test_patch_valid_block_management_config_with_cc_is_persisted(): void
+    public function test_patch_valid_block_management_config_reflects_hospital_contact_read_only(): void
     {
         $client = static::createClient();
         $client->disableReboot();
@@ -258,22 +259,21 @@ final class AbsenceCommunicationSiteConfigControllerTest extends WebTestCase
         ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
 
         $site = $this->makeSite();
+        $this->setHospitalContact($site, 'bloc@example.com', ['cc1@example.com', 'cc2@example.com']);
 
         $client->request('PATCH', "/api/planning/absence-communication-settings/{$site->getId()}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
             'notifyBlockManagementEnabled' => true,
-            'blockManagementEmailTo' => 'bloc@example.com',
-            'blockManagementEmailCc' => ['cc1@example.com', 'cc2@example.com'],
             'blockManagementDelayDays' => 14,
         ]));
         self::assertSame(200, $client->getResponse()->getStatusCode());
         $data = $this->json($client->getResponse());
         self::assertTrue($data['notifyBlockManagementEnabled']);
-        self::assertSame('bloc@example.com', $data['blockManagementEmailTo']);
-        self::assertSame(['cc1@example.com', 'cc2@example.com'], $data['blockManagementEmailCc']);
+        self::assertSame('bloc@example.com', $data['blockManagementContactEmail'], 'lecture seule, sourcée depuis Hospital');
+        self::assertSame(['cc1@example.com', 'cc2@example.com'], $data['blockManagementContactCc']);
         self::assertSame(14, $data['blockManagementDelayDays']);
     }
 
-    public function test_patch_touching_only_delay_leaves_to_cc_and_enabled_untouched(): void
+    public function test_patch_touching_only_delay_leaves_enabled_and_hospital_contact_untouched(): void
     {
         $client = static::createClient();
         $client->disableReboot();
@@ -281,30 +281,31 @@ final class AbsenceCommunicationSiteConfigControllerTest extends WebTestCase
         ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
 
         $site = $this->makeSite();
+        $this->setHospitalContact($site, 'bloc@example.com', ['cc1@example.com', 'cc2@example.com']);
 
         $client->request('PATCH', "/api/planning/absence-communication-settings/{$site->getId()}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
             'notifyBlockManagementEnabled' => true,
-            'blockManagementEmailTo' => 'bloc@example.com',
-            'blockManagementEmailCc' => ['cc1@example.com', 'cc2@example.com'],
             'blockManagementDelayDays' => 14,
         ]));
         self::assertSame(200, $client->getResponse()->getStatusCode());
 
         // Revue finale §13 — PATCH ne touchant qu'un seul champ ne doit jamais écraser les
         // autres avec null/défaut, même si la ligne reste `notifyBlockManagementEnabled: true`.
+        // Le contact établissement n'est de toute façon plus dans le body de cet endpoint —
+        // il ne peut structurellement plus être écrasé par un patch envoyé ici.
         $client->request('PATCH', "/api/planning/absence-communication-settings/{$site->getId()}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
             'blockManagementDelayDays' => 21,
         ]));
         self::assertSame(200, $client->getResponse()->getStatusCode());
         $data = $this->json($client->getResponse());
         self::assertTrue($data['notifyBlockManagementEnabled'], 'jamais réinitialisé par un patch qui ne le mentionne pas');
-        self::assertSame('bloc@example.com', $data['blockManagementEmailTo'], 'jamais écrasé par un patch qui ne le mentionne pas');
-        self::assertSame(['cc1@example.com', 'cc2@example.com'], $data['blockManagementEmailCc'], 'jamais écrasé par un patch qui ne le mentionne pas');
+        self::assertSame('bloc@example.com', $data['blockManagementContactEmail']);
+        self::assertSame(['cc1@example.com', 'cc2@example.com'], $data['blockManagementContactCc']);
         self::assertSame(21, $data['blockManagementDelayDays']);
     }
 
     #[WithoutErrorHandler]
-    public function test_patch_invalid_cc_email_returns_400(): void
+    public function test_disabling_block_management_preserves_delay_and_hospital_contact(): void
     {
         $client = static::createClient();
         $client->disableReboot();
@@ -312,51 +313,10 @@ final class AbsenceCommunicationSiteConfigControllerTest extends WebTestCase
         ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
 
         $site = $this->makeSite();
+        $this->setHospitalContact($site, 'bloc@example.com', ['cc1@example.com']);
 
         $client->request('PATCH', "/api/planning/absence-communication-settings/{$site->getId()}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
             'notifyBlockManagementEnabled' => true,
-            'blockManagementEmailTo' => 'bloc@example.com',
-            'blockManagementEmailCc' => ['not-an-email'],
-            'blockManagementDelayDays' => 14,
-        ]));
-        self::assertSame(400, $client->getResponse()->getStatusCode());
-    }
-
-    #[WithoutErrorHandler]
-    public function test_patch_cc_duplicates_and_primary_are_normalized_silently(): void
-    {
-        $client = static::createClient();
-        $client->disableReboot();
-        $this->em = static::getContainer()->get(EntityManagerInterface::class);
-        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
-
-        $site = $this->makeSite();
-
-        $client->request('PATCH', "/api/planning/absence-communication-settings/{$site->getId()}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
-            'notifyBlockManagementEnabled' => true,
-            'blockManagementEmailTo' => 'bloc@example.com',
-            'blockManagementEmailCc' => ['cc1@example.com', 'CC1@example.com', 'Bloc@Example.com', ' cc2@example.com '],
-            'blockManagementDelayDays' => 14,
-        ]));
-        self::assertSame(200, $client->getResponse()->getStatusCode());
-        $data = $this->json($client->getResponse());
-        self::assertSame(['cc1@example.com', 'cc2@example.com'], $data['blockManagementEmailCc'], 'dedup insensible à la casse, adresse principale retirée, jamais un rejet pour une variante triviale');
-    }
-
-    #[WithoutErrorHandler]
-    public function test_disabling_block_management_preserves_previously_configured_values(): void
-    {
-        $client = static::createClient();
-        $client->disableReboot();
-        $this->em = static::getContainer()->get(EntityManagerInterface::class);
-        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
-
-        $site = $this->makeSite();
-
-        $client->request('PATCH', "/api/planning/absence-communication-settings/{$site->getId()}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
-            'notifyBlockManagementEnabled' => true,
-            'blockManagementEmailTo' => 'bloc@example.com',
-            'blockManagementEmailCc' => ['cc1@example.com'],
             'blockManagementDelayDays' => 14,
         ]));
         self::assertSame(200, $client->getResponse()->getStatusCode());
@@ -367,9 +327,9 @@ final class AbsenceCommunicationSiteConfigControllerTest extends WebTestCase
         self::assertSame(200, $client->getResponse()->getStatusCode());
         $data = $this->json($client->getResponse());
         self::assertFalse($data['notifyBlockManagementEnabled']);
-        self::assertSame('bloc@example.com', $data['blockManagementEmailTo'], 'décision actée : OFF conserve les valeurs, permet un ré-enable sans ressaisie');
-        self::assertSame(['cc1@example.com'], $data['blockManagementEmailCc']);
-        self::assertSame(14, $data['blockManagementDelayDays']);
+        self::assertSame(14, $data['blockManagementDelayDays'], 'décision actée : OFF conserve le délai, permet un ré-enable sans ressaisie');
+        self::assertSame('bloc@example.com', $data['blockManagementContactEmail'], 'le contact établissement n\'est de toute façon jamais touché par ce endpoint');
+        self::assertSame(['cc1@example.com'], $data['blockManagementContactCc']);
     }
 
     #[WithoutErrorHandler]

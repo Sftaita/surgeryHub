@@ -2834,13 +2834,17 @@ jamais `CONSULTATION`) :
   flux ; un allongement révélant de nouvelles occurrences BLOCK jamais annoncées déclenche un
   complément (email ne listant que les nouvelles dates).
 - **Gestion du bloc (Lot B)** — `notifyBlockManagementEnabled` : un email à l'adresse `To` +
-  `CC` configurées pour le site (le chirurgien concerné toujours ajouté en copie), avec
-  `Reply-To` = son adresse (jamais une usurpation du `From` SMTP). Envoyé immédiatement si le
-  délai configuré est déjà écoulé (`dateStart - blockManagementDelayDays <= maintenant`),
+  `CC` de l'établissement (`Hospital.blockManagementContactEmail`/`blockManagementContactCc`
+  — voir `PATCH /api/sites/{id}` ci-dessous ; **revue post-déploiement** : déplacées hors de
+  cette config, ce sont des coordonnées organisationnelles de l'établissement, pas un
+  paramètre de communication d'absence), le chirurgien concerné toujours ajouté en copie,
+  avec `Reply-To` = son adresse (jamais une usurpation du `From` SMTP). Envoyé immédiatement
+  si le délai configuré est déjà écoulé (`dateStart - blockManagementDelayDays <= maintenant`),
   sinon programmé et envoyé par le cron `app:absences:send-scheduled-communications`
   (recommandé horaire). Une modification **avant** le premier envoi reprogramme silencieusement
   (aucun email) ; une modification **après** envoi (dates réellement différentes) déclenche un
-  nouvel email de modification. Voir `docs/decisions.md` D-114 (Lot A et Lot B).
+  nouvel email de modification. Voir `docs/decisions.md` D-114 (Lot A, Lot B, et la revue
+  post-déploiement pour le déplacement des coordonnées).
 
 #### `GET /api/planning/absence-communication-settings`
 
@@ -2855,8 +2859,8 @@ jamais `CONSULTATION`) :
       "site": { "id": 3, "name": "CHIREC - Hôpital Delta" },
       "notifyColleaguesEnabled": true,
       "notifyBlockManagementEnabled": true,
-      "blockManagementEmailTo": "bloc@example.com",
-      "blockManagementEmailCc": ["secretariat@example.com"],
+      "blockManagementContactEmail": "bloc@example.com",
+      "blockManagementContactCc": ["secretariat@example.com"],
       "blockManagementDelayDays": 14
     }
   ]
@@ -2865,8 +2869,9 @@ jamais `CONSULTATION`) :
 
 Un item par site existant (`Hospital`), y compris un site sans réglage explicite
 (`notifyColleaguesEnabled: false`, `notifyBlockManagementEnabled: false`,
-`blockManagementEmailTo: null`, `blockManagementEmailCc: []`,
-`blockManagementDelayDays: null` par défaut).
+`blockManagementDelayDays: null` par défaut). `blockManagementContactEmail`/
+`blockManagementContactCc` sont **lecture seule ici** — sourcées depuis `Hospital`, jamais
+modifiables via cet endpoint (voir `PATCH /api/sites/{id}`).
 
 #### `PATCH /api/planning/absence-communication-settings/{siteId}`
 
@@ -2878,25 +2883,47 @@ Un item par site existant (`Hospital`), y compris un site sans réglage explicit
 {
   "notifyColleaguesEnabled": true,
   "notifyBlockManagementEnabled": true,
-  "blockManagementEmailTo": "bloc@example.com",
-  "blockManagementEmailCc": ["secretariat@example.com"],
   "blockManagementDelayDays": 14
 }
 ```
 
+**Revue post-déploiement — coordonnées retirées du contrat** : `blockManagementEmailTo`/
+`blockManagementEmailCc` ne sont plus acceptés ici (données établissement, voir
+`PATCH /api/sites/{id}`). Ce endpoint ne porte plus que le comportement.
+
 **Réponse — 200 :** même forme qu'un item de `GET` ci-dessus.
 
-**Validation (Lot B) :** si `notifyBlockManagementEnabled` résultant (après application du
-patch) est `true`, `blockManagementEmailTo` doit être une adresse valide et
-`blockManagementDelayDays` un entier ∈ [0, 365] → `400` sinon. `blockManagementEmailCc` est
-normalisé silencieusement (trim, déduplication insensible à la casse, retire l'adresse
-principale si dupliquée) plutôt que rejeté sur une variante triviale. Désactiver
-(`notifyBlockManagementEnabled: false`) conserve les valeurs déjà configurées (pas de
-ré-saisie nécessaire à la réactivation). Corps vide → `200` no-op (pas de `400`, contrairement
-à l'ancien contrat Lot A qui exigeait `notifyColleaguesEnabled`).
+**Validation :** si `notifyBlockManagementEnabled` résultant (après application du patch) est
+`true`, l'établissement (`Hospital.blockManagementContactEmail`) doit déjà avoir une adresse
+valide et `blockManagementDelayDays` résultant doit être un entier ∈ [0, 365] → `400` sinon
+(garde-fou technique — le parcours normal frontend empêche l'envoi de ce patch tant que
+l'établissement n'a pas de contact configuré, voir `docs/decisions.md`). Désactiver
+(`notifyBlockManagementEnabled: false`) conserve le délai déjà configuré (pas de ré-saisie
+nécessaire à la réactivation). Corps vide → `200` no-op.
 
 **Erreurs :** `404` site introuvable, `400` validation ci-dessus (même convention que
 `ShiftPeriodController`).
+
+#### `PATCH /api/sites/{id}` — coordonnées établissement (D-114, revue post-déploiement)
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+En plus des champs déjà existants (`name`/`address`/`timezone`), accepte désormais (mise à
+jour partielle, comme le reste de ce contrôleur) :
+
+```json
+{
+  "blockManagementContactEmail": "bloc@example.com",
+  "blockManagementContactCc": ["secretariat@example.com", "coordination@example.com"]
+}
+```
+
+`blockManagementContactEmail` doit être une adresse valide ou vide (`null`) → `400` sinon.
+`blockManagementContactCc` est normalisé silencieusement (trim, déduplication insensible à
+la casse, retire l'adresse principale si dupliquée) avant validation — une variante triviale
+n'est jamais rejetée, seule une adresse réellement invalide l'est → `400` sinon. Ces deux
+champs sont retournés en lecture seule par `GET /api/planning/absence-communication-settings`
+pour l'affichage inline côté Communication des absences.
 
 #### `GET /api/absences/{id}/deletion-info` et `GET /api/absences/mine/{id}/deletion-info`
 
@@ -3602,7 +3629,7 @@ déclenchées ligne par ligne ; voir "Emails envoyés" ci-dessous.
 | `lines[]` | array | Même forme que `PreviewLineV2` (l'éditeur unifié Génération/Modification, voir `docs/architecture.md` "Éditeur unifié Génération / Modification") |
 | `existingMissionId` | int \| null | `null` = nouvelle mission à créer (`MissionPostDeployService::createPostDeploy()`). Sinon, ID de la `Mission` existante à muter. |
 | `status` | string | `"SKIPPED"` = annuler la mission (`release()` si `ASSIGNED`, `cancel()` si `OPEN`). Toute autre valeur = pas d'annulation. |
-| `instrumentistId` | int \| null | Comparé à l'instrumentiste courant de la mission — `null`→valeur = `assign()`, valeur→`null` = `release()`, valeur→autre valeur = `reassign()`. |
+| `instrumentistId` | int \| null | Comparé à l'instrumentiste courant de la mission — `null`→valeur = `assign()`, valeur→`null` = `release()` **sauf si le chirurgien de cette Mission est actuellement absent** (D-112) : dans ce cas la Mission est réconciliée en `CANCELLED` (jamais `OPEN`) via `AbsenceMissionReactionService::reconcileMissionAgainstCurrentAbsences()`, quel que soit le `status` envoyé par le client. valeur→autre valeur = `reassign()`. |
 | `date`/`startTime`/`endTime`/`siteId`/`missionType` | — | Comparés à l'état courant ; tout écart sur une mission `OPEN`/`ASSIGNED` déclenche `updateSchedule()`. |
 
 Une ligne dont l'`existingMissionId` référence une mission déjà mutée ailleurs (ou étrangère à cette version) est **silencieusement ignorée** (pas d'échec du lot entier).
@@ -4047,13 +4074,22 @@ Exactement un de `siteId` / `siteGroupId` requis (`400` sinon, dans les deux sen
     "siteId": 1, "siteName": "Alpha", "instrumentistId": 5, "instrumentistName": "Y",
     "status": "COVERED",
     "existingMissionId": null, "existingInstrumentistId": null, "existingInstrumentistName": null,
-    "freedFrom": false
+    "freedFrom": false,
+    "surgeonPhotoPath": "/uploads/profile-pictures/x.jpg", "instrumentistPhotoPath": null
   }],
   "summary": { "total": 8, "covered": 6, "uncovered": 1, "skipped": 1, "conflict": 0, "modified": 0 }
 }
 ```
 
 `status` : `SKIPPED` (chirurgien absent) | `UNCOVERED` | `COVERED` | `MODIFIED` | `CONFLICT`.
+
+`surgeonPhotoPath`/`instrumentistPhotoPath` (D-112) : `User.profilePicturePath` brut
+(`null` si aucune photo), à préfixer côté client par `VITE_API_BASE_URL` — même
+convention que partout ailleurs (`resolveApiAssetUrl`), jamais résolu côté serveur.
+Une ligne `SKIPPED` (chirurgien absent) n'est **jamais** présentée comme affectée dans
+le Planning manager (`/`, jamais l'ancienne instrumentiste, jamais "À pourvoir") et
+aucune action de libération ne peut la faire repasser en mission OPEN — voir D-112 dans
+`docs/decisions.md`.
 
 ##### `POST /api/planning/v2/generate`
 

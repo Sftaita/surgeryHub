@@ -1836,6 +1836,13 @@ par site), exposé en Lot A via `GET/PATCH /api/planning/absence-communication-s
 (voir docs/api.md §26.3a) — UI dans `AbsenceCommunicationSettings.tsx` (section « Communication
 des absences » de `PlanningSettingsTab.tsx`).
 
+**Nom du chirurgien dans le corps (revue post-déploiement, 2026-09-06)** : le corps mentionne
+désormais explicitement qui libère les créneaux (`User::getDrName()` — « Dr {Prénom Nom} »,
+même helper que Lot B), jamais dans l'objet (`Libération de salle — {Site}`, inchangé) ni sous
+forme d'intervalle de congé complet — reste centré sur la libération de salle, jamais sur le
+congé lui-même. Figé dans le `bodySnapshot` au moment de l'envoi, indépendant d'un changement
+ultérieur du profil du chirurgien.
+
 ### Communication des absences chirurgiens — Lot B « Gestion du bloc » (D-114)
 
 Second sous-lot, réutilisant intégralement le modèle de données et les composants du Lot A
@@ -1981,6 +1988,52 @@ Voir D-052, D-053, D-054, D-055, D-056, D-057, D-058, D-059 dans `docs/decisions
 
 ---
 
+### Communication des absences chirurgiens — coordonnées « gestion du bloc » portées par `Hospital` (D-114, revue post-déploiement)
+
+Après déploiement du Lot A/B/C ci-dessus, un défaut de modélisation a été corrigé : le `To`/
+`CC` de la gestion du bloc vivaient dans `AbsenceCommunicationSiteConfig` (scopé « communication
+d'absence ») alors que ce sont des coordonnées organisationnelles de l'établissement,
+indépendantes du fait qu'une communication d'absence existe. Ce correctif résolvait aussi un
+verrou circulaire UX réel : le toggle « Prévenir automatiquement la gestion du bloc » envoyait
+un `PATCH` toggle-seul validé côté backend contre un `blockManagementEmailTo` déjà renseigné —
+impossible à satisfaire pour un site jamais configuré, puisque le formulaire qui aurait permis
+de le saisir n'apparaissait qu'une fois le toggle confirmé actif côté serveur.
+
+```
+Hospital                                    AbsenceCommunicationSiteConfig
+├── blockManagementContactEmail (nullable)  ├── notifyColleaguesEnabled
+└── blockManagementContactCc (JSON, [])     ├── notifyBlockManagementEnabled
+     ↑ édité via PATCH /api/sites/{id}      └── blockManagementDelayDays
+       (SiteController — fiche établissement,       ↑ comportement uniquement,
+        HospitalsPage.tsx « Contacts du bloc          édité via PATCH .../absence-
+        opératoire »)                                communication-settings/{siteId}
+                                                       (AbsenceCommunicationSettings.tsx,
+                                                        contacts affichés en LECTURE SEULE,
+                                                        lien « Modifier les contacts de
+                                                        l'établissement » vers HospitalsPage)
+```
+
+`AbsenceCommunicationSiteConfigController::serialize()` continue d'exposer
+`blockManagementContactEmail`/`blockManagementContactCc` dans `GET .../absence-communication-settings`
+(lues live depuis le `Hospital` associé) pour éviter un second aller-retour frontend — mais ne
+les accepte plus en écriture ; seul `PATCH /api/sites/{id}` les modifie désormais. Le garde-fou
+backend historique (400 si `notifyBlockManagementEnabled` résultant est `true` sans contact
+établissement valide) reste en place comme filet de sécurité technique, mais n'est plus le
+parcours normal : le toggle n'envoie plus jamais de PATCH seul à l'activation — sans contact
+valide, un message bloquant avec accès direct à la fiche établissement s'affiche ; avec contact
+valide, seul le délai est demandé puis envoyé en un seul PATCH combiné avec l'activation.
+
+`resolveLiveBlockManagementRecipients()` et `classifyBlockManagement()` (Lots A/B/C ci-dessus)
+lisent désormais `Hospital::getBlockManagementContactEmail()`/`getBlockManagementContactCc()`
+au lieu de `AbsenceCommunicationSiteConfig` — la résolution reste strictement **live** au
+moment du dispatch réel (immédiat ou cron), jamais figée à la programmation ; le comportement
+de scheduling, d'idempotence (`dispatchClaimedAt`) et d'immuabilité des snapshots déjà envoyés
+est inchangé. Migration `Version20260906100000` : additive (`ADD COLUMN`) puis copie des
+données existantes puis suppression des deux colonnes obsolètes sur
+`absence_communication_site_config`, sans jamais toucher aux communications déjà journalisées.
+Voir `docs/decisions.md` (revue post-déploiement 2026-09-06) pour le détail de l'audit et des
+tests de non-régression.
+
 ### Éditeur unifié Génération / Modification (Batch 15K)
 
 Planning V2 s'appuie sur **un seul composant éditeur** (`GeneratePlanningTab.tsx`) pour les
@@ -2006,6 +2059,16 @@ Seuls changent, selon le mode :
 Deux points d'entrée ouvrent le mode Modification dans le même composant : une ligne
 "Modifier" dans l'historique des plannings, ou un clic sur un chip de mois déjà généré.
 Voir `docs/planning-v2-architecture-freeze.md` §L9 et `docs/planning-v2-roadmap.md` Batch 15K.
+
+**Invariant chirurgien absent (D-112)** : `applyLineToMission()` n'appelle jamais
+`release()` (→ `OPEN`) sans garde — si le chirurgien de la Mission ciblée est
+actuellement absent, l'appel est délégué à
+`AbsenceMissionReactionService::reconcileMissionAgainstCurrentAbsences()` (même
+primitive que le Lot 6/D-106), qui réconcilie en `CANCELLED` à la place. Une occurrence
+couverte par une absence chirurgien n'est jamais présentée comme "à couvrir" côté
+Planning manager (ligne `/`, jamais l'ancienne instrumentiste, jamais de proposition
+d'affectation dans l'inspecteur) et ne peut jamais redevenir OPEN par une action de
+libération. Voir D-112 dans `docs/decisions.md`.
 
 ---
 

@@ -352,7 +352,9 @@ class AbsenceCommunicationBackfillService
             return ['status' => AbsenceBackfillBlockManagementAction::DISABLED->value, 'scheduledAt' => null];
         }
 
-        $to = trim((string) $config->getBlockManagementEmailTo());
+        // Revue post-déploiement (D-114) — coordonnées désormais portées par Hospital, jamais
+        // par la config (voir AbsenceCommunicationJournalService::resolveLiveBlockManagementRecipients()).
+        $to = trim((string) $site->getBlockManagementContactEmail());
         if ($to === '' || filter_var($to, FILTER_VALIDATE_EMAIL) === false || $config->getBlockManagementDelayDays() === null) {
             return ['status' => AbsenceBackfillBlockManagementAction::MISSING_CONFIG->value, 'scheduledAt' => null];
         }

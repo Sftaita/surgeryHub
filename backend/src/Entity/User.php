@@ -203,6 +203,19 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
         return $this;
     }
 
+    /**
+     * Nom d'affichage utilisé dans les communications d'absence (D-114) : "Dr {Prénom Nom}",
+     * ou "Dr {email}" en repli si aucun prénom/nom n'est renseigné. Centralisé ici pour être
+     * partagé entre RoomReleaseCommunicationService et BlockManagementCommunicationService
+     * sans dupliquer la logique de repli.
+     */
+    public function getDrName(): string
+    {
+        $name = trim(($this->firstname ?? '') . ' ' . ($this->lastname ?? ''));
+
+        return 'Dr ' . ($name !== '' ? $name : (string) $this->email);
+    }
+
     public function getPhone(): ?string
     {
         return $this->phone;

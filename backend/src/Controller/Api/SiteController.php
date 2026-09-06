@@ -8,6 +8,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 
 #[Route('/api/sites')]
@@ -43,6 +44,7 @@ class SiteController extends AbstractController
         $site->setName($name);
         $site->setAddress(isset($data['address']) ? trim((string) $data['address']) ?: null : null);
         $site->setTimezone(isset($data['timezone']) ? trim((string) $data['timezone']) ?: null : null);
+        self::applyBlockManagementContact($site, $data);
 
         $em->persist($site);
         $em->flush();
@@ -70,10 +72,72 @@ class SiteController extends AbstractController
         if (array_key_exists('timezone', $data)) {
             $site->setTimezone(trim((string) $data['timezone']) ?: null);
         }
+        self::applyBlockManagementContact($site, $data);
 
         $em->flush();
 
         return $this->json($site, JsonResponse::HTTP_OK, [], ['groups' => ['site:list']]);
+    }
+
+    /**
+     * Communication des absences chirurgiens (D-114, revue post-déploiement) — coordonnées
+     * "gestion du bloc" de l'établissement. Mise à jour partielle comme le reste de ce
+     * contrôleur : seules les clés présentes dans `$data` sont appliquées. Normalisation
+     * (trim, dédoublonnage insensible à la casse, retrait de l'adresse principale si
+     * dupliquée dans les CC) sans jamais rejeter une variante triviale — seule une adresse
+     * réellement invalide est rejetée.
+     */
+    private static function applyBlockManagementContact(Hospital $site, array $data): void
+    {
+        if (array_key_exists('blockManagementContactEmail', $data)) {
+            $raw = $data['blockManagementContactEmail'];
+            $email = $raw !== null ? trim((string) $raw) : '';
+            if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+                throw new BadRequestHttpException('blockManagementContactEmail doit être une adresse email valide.');
+            }
+            $site->setBlockManagementContactEmail($email !== '' ? $email : null);
+        }
+
+        if (array_key_exists('blockManagementContactCc', $data)) {
+            if (!is_array($data['blockManagementContactCc'])) {
+                throw new BadRequestHttpException('blockManagementContactCc doit être un tableau d\'emails.');
+            }
+            // Normaliser (trim/dédoublonnage/retrait du principal) AVANT de valider — une
+            // variante triviale (espace superflu, casse différente de l'adresse principale)
+            // ne doit jamais être rejetée, seule une adresse réellement invalide l'est.
+            $normalized = self::normalizeCc($data['blockManagementContactCc'], $site->getBlockManagementContactEmail());
+            foreach ($normalized as $cc) {
+                if (filter_var($cc, FILTER_VALIDATE_EMAIL) === false) {
+                    throw new BadRequestHttpException(sprintf('Adresse CC invalide : %s', $cc));
+                }
+            }
+            $site->setBlockManagementContactCc($normalized);
+        }
+    }
+
+    /**
+     * @param list<string> $rawList
+     * @return list<string>
+     */
+    private static function normalizeCc(array $rawList, ?string $primary): array
+    {
+        $seen = $primary !== null ? [mb_strtolower(trim($primary))] : [];
+        $result = [];
+
+        foreach ($rawList as $raw) {
+            $address = trim((string) $raw);
+            if ($address === '') {
+                continue;
+            }
+            $key = mb_strtolower($address);
+            if (in_array($key, $seen, true)) {
+                continue;
+            }
+            $seen[] = $key;
+            $result[] = $address;
+        }
+
+        return $result;
     }
 
     #[Route('/{id}', name: 'api_sites_delete', methods: ['DELETE'])]

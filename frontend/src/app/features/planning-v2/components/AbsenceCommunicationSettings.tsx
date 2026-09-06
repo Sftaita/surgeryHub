@@ -1,29 +1,36 @@
 import * as React from "react";
-import { Alert, Box, Button, CircularProgress, IconButton, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Stack, TextField, Typography } from "@mui/material";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import MarkEmailReadOutlinedIcon from "@mui/icons-material/MarkEmailReadOutlined";
-import AddIcon from "@mui/icons-material/Add";
-import CloseIcon from "@mui/icons-material/Close";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 
 import { getAbsenceCommunicationSettings, updateAbsenceCommunicationSettings, extractErrorV2 } from "../api/planningV2.api";
 import type { AbsenceCommunicationSiteSettingV2 } from "../api/planningV2.types";
 import { useToast } from "../../../ui/toast/useToast";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 /**
- * Communication des absences chirurgiens — Lot A/B (D-114). Deux réglages indépendants par
- * site : « Libération de salle » (Lot A, toggle simple, comportement inchangé) et
- * « Gestion du bloc » (Lot B, toggle + To + CC dynamiques + délai). Le chirurgien concerné
- * n'apparaît jamais comme valeur modifiable dans la liste CC — ajouté automatiquement côté
- * backend au moment de l'envoi.
+ * Communication des absences chirurgiens — Lot A/B (D-114), revue post-déploiement. Deux
+ * réglages indépendants par site : « Libération de salle » (Lot A, toggle simple, comportement
+ * inchangé) et « Gestion du bloc » (Lot B) — ce dernier ne porte plus ici que le comportement
+ * (activé/désactivé + délai). Les coordonnées (To/CC) sont des données d'établissement,
+ * éditées depuis la fiche établissement (Établissements → Modifier), affichées ici en lecture
+ * seule uniquement.
+ *
+ * Le toggle n'envoie plus jamais un PATCH `{notifyBlockManagementEnabled: true}` isolé : le
+ * backend exige un contact établissement valide dès que ce champ passe à `true`, ce qu'un
+ * site jamais configuré ne peut structurellement pas satisfaire (verrou circulaire corrigé,
+ * voir l'audit). Activer un site sans contact affiche un message explicite avec un lien direct
+ * vers la fiche établissement, jamais le toast technique du backend.
  */
 export function AbsenceCommunicationSettings() {
   const toast = useToast();
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [editingSiteId, setEditingSiteId] = React.useState<number | null>(null);
+  const [blockedSiteId, setBlockedSiteId] = React.useState<number | null>(null);
 
   const settingsQuery = useQuery({
     queryKey: ["planning-v2", "absence-communication-settings"],
@@ -41,9 +48,8 @@ export function AbsenceCommunicationSettings() {
     onError: (err) => toast.error(extractErrorV2(err)),
   });
 
-  const blockManagementToggleMutation = useMutation({
-    mutationFn: (vars: { siteId: number; notifyBlockManagementEnabled: boolean }) =>
-      updateAbsenceCommunicationSettings(vars.siteId, { notifyBlockManagementEnabled: vars.notifyBlockManagementEnabled }),
+  const blockManagementToggleOffMutation = useMutation({
+    mutationFn: (siteId: number) => updateAbsenceCommunicationSettings(siteId, { notifyBlockManagementEnabled: false }),
     onSuccess: () => { toast.success("Réglage enregistré"); invalidate(); },
     onError: (err) => toast.error(extractErrorV2(err)),
   });
@@ -52,6 +58,26 @@ export function AbsenceCommunicationSettings() {
     () => [...(settingsQuery.data?.items ?? [])].sort((a, b) => a.site.name.localeCompare(b.site.name)),
     [settingsQuery.data],
   );
+
+  function handleBlockManagementToggle(item: AbsenceCommunicationSiteSettingV2) {
+    if (item.notifyBlockManagementEnabled) {
+      blockManagementToggleOffMutation.mutate(item.site.id);
+      setEditingSiteId(null);
+      setBlockedSiteId(null);
+      return;
+    }
+    // Activation : jamais de PATCH toggle-seul — le backend exige un contact établissement
+    // valide au moment même où ce champ passerait à true, ce qu'un site jamais configuré ne
+    // peut pas satisfaire. On ouvre soit le formulaire de délai (contact déjà présent), soit
+    // un message bloquant explicite (contact manquant) — jamais le toast technique brut.
+    if (!item.blockManagementContactEmail) {
+      setBlockedSiteId(item.site.id);
+      setEditingSiteId(null);
+      return;
+    }
+    setEditingSiteId(item.site.id);
+    setBlockedSiteId(null);
+  }
 
   return (
     <Box>
@@ -99,6 +125,7 @@ export function AbsenceCommunicationSettings() {
                   <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textMuted, mt: 0.25 }}>
                     Le chirurgien concerné recevra automatiquement une copie de l'email.
                   </Typography>
+                  <ContactSummary item={item} navigate={navigate} />
                 </Box>
                 <Stack direction="row" spacing={1} alignItems="center">
                   {item.notifyBlockManagementEnabled && (
@@ -111,19 +138,34 @@ export function AbsenceCommunicationSettings() {
                   )}
                   <SwitchPill
                     on={item.notifyBlockManagementEnabled}
-                    disabled={blockManagementToggleMutation.isPending}
-                    onClick={() => {
-                      const nextEnabled = !item.notifyBlockManagementEnabled;
-                      blockManagementToggleMutation.mutate({ siteId: item.site.id, notifyBlockManagementEnabled: nextEnabled });
-                      if (nextEnabled) setEditingSiteId(item.site.id);
-                    }}
+                    disabled={blockManagementToggleOffMutation.isPending}
+                    onClick={() => handleBlockManagementToggle(item)}
                     ariaLabel={`Prévenir la gestion du bloc pour le site ${item.site.name}`}
                   />
                 </Stack>
               </Stack>
 
+              {blockedSiteId === item.site.id && (
+                <Box sx={{ px: 2.25, py: 2, bgcolor: "#FAFBFC", borderTop: `1px solid ${planningV2Colors.divider}` }}>
+                  <Alert severity="warning" action={
+                    <Button
+                      size="small" color="inherit" endIcon={<OpenInNewIcon sx={{ fontSize: 15 }} />}
+                      onClick={() => navigate(`/app/m/hospitals?edit=${item.site.id}`)}
+                      sx={{ textTransform: "none", fontWeight: 600, whiteSpace: "nowrap" }}
+                    >
+                      Configurer l'établissement
+                    </Button>
+                  }>
+                    Configurez d'abord l'adresse de la gestion du bloc dans la fiche de l'établissement.
+                  </Alert>
+                </Box>
+              )}
+
               {item.notifyBlockManagementEnabled && editingSiteId === item.site.id && (
-                <BlockManagementForm item={item} onSaved={invalidate} onClose={() => setEditingSiteId(null)} />
+                <BlockManagementDelayForm item={item} onSaved={invalidate} onClose={() => setEditingSiteId(null)} />
+              )}
+              {!item.notifyBlockManagementEnabled && editingSiteId === item.site.id && (
+                <BlockManagementActivateForm item={item} onSaved={invalidate} onClose={() => setEditingSiteId(null)} />
               )}
             </Box>
           ))}
@@ -133,7 +175,39 @@ export function AbsenceCommunicationSettings() {
   );
 }
 
-function BlockManagementForm({
+function ContactSummary({ item, navigate }: { item: AbsenceCommunicationSiteSettingV2; navigate: ReturnType<typeof useNavigate> }) {
+  return (
+    <Box sx={{ mt: 1, fontSize: 12.5 }}>
+      {item.blockManagementContactEmail ? (
+        <Stack spacing={0.25}>
+          <Typography sx={{ fontSize: 12.5 }}>
+            <Box component="span" sx={{ color: planningV2Colors.textMuted }}>Adresse principale : </Box>
+            <Box component="span" sx={{ fontWeight: 600 }}>{item.blockManagementContactEmail}</Box>
+          </Typography>
+          {item.blockManagementContactCc.length > 0 && (
+            <Typography sx={{ fontSize: 12.5 }}>
+              <Box component="span" sx={{ color: planningV2Colors.textMuted }}>Copies : </Box>
+              {item.blockManagementContactCc.join(", ")}
+            </Typography>
+          )}
+        </Stack>
+      ) : (
+        <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textMuted, fontStyle: "italic" }}>
+          Aucun contact configuré pour cet établissement.
+        </Typography>
+      )}
+      <Button
+        size="small" onClick={() => navigate(`/app/m/hospitals?edit=${item.site.id}`)}
+        sx={{ textTransform: "none", fontSize: 12, fontWeight: 600, px: 0, mt: 0.25, minWidth: 0 }}
+      >
+        Modifier les contacts de l'établissement
+      </Button>
+    </Box>
+  );
+}
+
+/** Site déjà activé (contact déjà valide, forcément) — ne modifie plus que le délai. */
+function BlockManagementDelayForm({
   item, onSaved, onClose,
 }: {
   item: AbsenceCommunicationSiteSettingV2;
@@ -141,72 +215,22 @@ function BlockManagementForm({
   onClose: () => void;
 }) {
   const toast = useToast();
-  const [to, setTo] = React.useState(item.blockManagementEmailTo ?? "");
-  const [cc, setCc] = React.useState<string[]>(item.blockManagementEmailCc);
-  const [newCc, setNewCc] = React.useState("");
   const [delayDays, setDelayDays] = React.useState<string>(item.blockManagementDelayDays !== null ? String(item.blockManagementDelayDays) : "");
 
   const saveMutation = useMutation({
     mutationFn: () =>
       updateAbsenceCommunicationSettings(item.site.id, {
-        blockManagementEmailTo: to.trim() === "" ? null : to.trim(),
-        blockManagementEmailCc: cc,
         blockManagementDelayDays: delayDays.trim() === "" ? null : Number(delayDays),
       }),
     onSuccess: () => { toast.success("Réglage enregistré"); onSaved(); onClose(); },
     onError: (err) => toast.error(extractErrorV2(err)),
   });
 
-  function addCc() {
-    const address = newCc.trim();
-    if (address === "" || !EMAIL_RE.test(address)) {
-      toast.error("Adresse email invalide.");
-      return;
-    }
-    if (cc.some((c) => c.toLowerCase() === address.toLowerCase()) || address.toLowerCase() === to.trim().toLowerCase()) {
-      toast.error("Cette adresse figure déjà dans la liste.");
-      return;
-    }
-    setCc([...cc, address]);
-    setNewCc("");
-  }
-
-  const toValid = to.trim() !== "" && EMAIL_RE.test(to.trim());
   const delayValid = delayDays.trim() !== "" && Number.isInteger(Number(delayDays)) && Number(delayDays) >= 0 && Number(delayDays) <= 365;
 
   return (
     <Box sx={{ px: 2.25, py: 2, bgcolor: "#FAFBFC", borderTop: `1px solid ${planningV2Colors.divider}` }}>
       <Stack spacing={2}>
-        <TextField
-          label="Adresse principale (To)" size="small" fullWidth required
-          value={to} onChange={(e) => setTo(e.target.value)}
-          error={to.trim() !== "" && !toValid}
-        />
-
-        <Box>
-          <Typography sx={{ fontSize: 12.5, fontWeight: 600, mb: 0.75 }}>Adresses en copie (CC)</Typography>
-          <Stack spacing={0.75} sx={{ mb: 1 }}>
-            {cc.map((address) => (
-              <Stack key={address} direction="row" alignItems="center" spacing={1} sx={{ bgcolor: "#fff", border: `1px solid ${planningV2Colors.cardBorder}`, borderRadius: planningV2Radii.button, px: 1.25, py: 0.5 }}>
-                <Typography sx={{ fontSize: 13, flex: 1 }}>{address}</Typography>
-                <IconButton size="small" aria-label={`Supprimer ${address}`} onClick={() => setCc(cc.filter((c) => c !== address))}>
-                  <CloseIcon sx={{ fontSize: 15 }} />
-                </IconButton>
-              </Stack>
-            ))}
-          </Stack>
-          <Stack direction="row" spacing={1}>
-            <TextField
-              size="small" fullWidth placeholder="ajouter une adresse CC"
-              value={newCc} onChange={(e) => setNewCc(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCc(); } }}
-            />
-            <Button size="small" startIcon={<AddIcon sx={{ fontSize: 16 }} />} onClick={addCc} sx={{ textTransform: "none", whiteSpace: "nowrap" }}>
-              Ajouter
-            </Button>
-          </Stack>
-        </Box>
-
         <TextField
           label="Envoyer X jours avant le début du congé" size="small" type="number"
           value={delayDays} onChange={(e) => setDelayDays(e.target.value)}
@@ -214,11 +238,66 @@ function BlockManagementForm({
           slotProps={{ htmlInput: { min: 0, max: 365 } }}
           sx={{ maxWidth: 320 }}
         />
-
         <Stack direction="row" spacing={1} justifyContent="flex-end">
           <Button onClick={onClose} sx={{ textTransform: "none" }}>Annuler</Button>
           <Button
-            variant="contained" disableElevation disabled={!toValid || !delayValid || saveMutation.isPending}
+            variant="contained" disableElevation disabled={!delayValid || saveMutation.isPending}
+            onClick={() => saveMutation.mutate()}
+            sx={{ textTransform: "none", bgcolor: planningV2Colors.brand, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
+          >
+            Enregistrer
+          </Button>
+        </Stack>
+      </Stack>
+    </Box>
+  );
+}
+
+/**
+ * Première activation d'un site dont le contact établissement est déjà valide (sinon le
+ * message bloquant s'affiche à la place, voir `handleBlockManagementToggle`). Envoie un
+ * unique PATCH complet (`notifyBlockManagementEnabled: true` + délai) — jamais le toggle seul.
+ */
+function BlockManagementActivateForm({
+  item, onSaved, onClose,
+}: {
+  item: AbsenceCommunicationSiteSettingV2;
+  onSaved: () => void;
+  onClose: () => void;
+}) {
+  const toast = useToast();
+  const [delayDays, setDelayDays] = React.useState<string>(item.blockManagementDelayDays !== null ? String(item.blockManagementDelayDays) : "");
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      updateAbsenceCommunicationSettings(item.site.id, {
+        notifyBlockManagementEnabled: true,
+        blockManagementDelayDays: delayDays.trim() === "" ? null : Number(delayDays),
+      }),
+    onSuccess: () => { toast.success("Réglage enregistré"); onSaved(); onClose(); },
+    onError: (err) => toast.error(extractErrorV2(err)),
+  });
+
+  const delayValid = delayDays.trim() !== "" && Number.isInteger(Number(delayDays)) && Number(delayDays) >= 0 && Number(delayDays) <= 365;
+
+  return (
+    <Box sx={{ px: 2.25, py: 2, bgcolor: "#FAFBFC", borderTop: `1px solid ${planningV2Colors.divider}` }}>
+      <Stack spacing={2}>
+        <Alert severity="info" sx={{ fontSize: 12.5 }}>
+          Utilisera le contact établissement actuel : <strong>{item.blockManagementContactEmail}</strong>
+          {item.blockManagementContactCc.length > 0 && <> (copie : {item.blockManagementContactCc.join(", ")})</>}.
+        </Alert>
+        <TextField
+          label="Envoyer X jours avant le début du congé" size="small" type="number"
+          value={delayDays} onChange={(e) => setDelayDays(e.target.value)}
+          error={delayDays.trim() !== "" && !delayValid}
+          slotProps={{ htmlInput: { min: 0, max: 365 } }}
+          sx={{ maxWidth: 320 }}
+        />
+        <Stack direction="row" spacing={1} justifyContent="flex-end">
+          <Button onClick={onClose} sx={{ textTransform: "none" }}>Annuler</Button>
+          <Button
+            variant="contained" disableElevation disabled={!delayValid || saveMutation.isPending}
             onClick={() => saveMutation.mutate()}
             sx={{ textTransform: "none", bgcolor: planningV2Colors.brand, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
           >

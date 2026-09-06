@@ -64,7 +64,7 @@ function renderJournal() {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
-    items: [{ site: { id: 3, name: "Delta" }, notifyColleaguesEnabled: true, notifyBlockManagementEnabled: true, blockManagementEmailTo: null, blockManagementEmailCc: [], blockManagementDelayDays: null }],
+    items: [{ site: { id: 3, name: "Delta" }, notifyColleaguesEnabled: true, notifyBlockManagementEnabled: true, blockManagementContactEmail: null, blockManagementContactCc: [], blockManagementDelayDays: null }],
   });
 });
 

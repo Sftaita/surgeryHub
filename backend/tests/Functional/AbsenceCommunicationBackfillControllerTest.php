@@ -147,11 +147,14 @@ final class AbsenceCommunicationBackfillControllerTest extends WebTestCase
 
     private function configureBlockManagement(Hospital $site, bool $enabled, int $delayDays = 0): void
     {
+        // Coordonnées désormais portées par Hospital (revue post-déploiement, D-114) —
+        // AbsenceCommunicationSiteConfig ne porte plus que le comportement.
+        $site->setBlockManagementContactEmail('bloc@example.com');
+        $site->setBlockManagementContactCc([]);
+
         $config = new AbsenceCommunicationSiteConfig();
         $config->setSite($site);
         $config->setNotifyBlockManagementEnabled($enabled);
-        $config->setBlockManagementEmailTo('bloc@example.com');
-        $config->setBlockManagementEmailCc([]);
         $config->setBlockManagementDelayDays($delayDays);
         $this->em->persist($config);
         $this->em->flush();
@@ -368,12 +371,12 @@ final class AbsenceCommunicationBackfillControllerTest extends WebTestCase
         $site = $this->makeSite();
         $this->affiliate($surgeon, $site);
         $this->affiliate($colleague, $site);
+        $site->setBlockManagementContactEmail('bloc@example.com');
+        $site->setBlockManagementContactCc([]);
         $config = new AbsenceCommunicationSiteConfig();
         $config->setSite($site);
         $config->setNotifyColleaguesEnabled(true);
         $config->setNotifyBlockManagementEnabled(true);
-        $config->setBlockManagementEmailTo('bloc@example.com');
-        $config->setBlockManagementEmailCc([]);
         $config->setBlockManagementDelayDays(0);
         $this->em->persist($config);
         $this->em->flush();

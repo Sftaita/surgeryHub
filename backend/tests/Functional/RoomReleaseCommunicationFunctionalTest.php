@@ -280,6 +280,100 @@ final class RoomReleaseCommunicationFunctionalTest extends WebTestCase
         self::assertSame($deliveries[0]->getId(), $emails[0]->getMessage()->absenceCommunicationDeliveryId);
     }
 
+    // ── Revue post-déploiement : nom du chirurgien dans le corps, objet inchangé,
+    //    jamais l'intervalle de congé exposé ─────────────────────────────────────
+
+    #[WithoutErrorHandler]
+    public function test_body_includes_surgeon_name_subject_unchanged_and_absence_interval_never_exposed(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $today = new \DateTimeImmutable('today');
+        $isoDay = (int) $today->format('N');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON', 'Samy');
+        $colleague = $this->makeUser('ROLE_SURGEON', 'Colleague');
+        $site = $this->makeSite();
+        $this->affiliate($surgeon, $site);
+        $this->affiliate($colleague, $site);
+        $this->enableColleagues($site);
+
+        $this->makePost($surgeon, $site, MissionType::BLOCK, RecurrenceFrequency::WEEKLY, [$isoDay], $today, $today->format('Y-m-d'));
+
+        $dateStart = $today;
+        $dateEnd = $today->modify('+10 days');
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => $dateStart->format('Y-m-d'), 'dateEnd' => $dateEnd->format('Y-m-d'),
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $this->createdIds['absences'][] = $this->json($client->getResponse())['id'];
+        $this->em->flush();
+        $this->em->clear();
+
+        $site = $this->em->find(Hospital::class, $site->getId());
+        $comms = $this->communicationsFor($site);
+        self::assertCount(1, $comms);
+
+        self::assertSame(sprintf('Libération de salle — %s', $site->getName()), $comms[0]->getSubjectSnapshot(), 'subject stays site-only, the surgeon name is never in the subject');
+        self::assertStringContainsString('Dr Samy User', $comms[0]->getBodySnapshot(), 'the recipient must immediately know which surgeon releases the slots');
+
+        // Room Release stays centered on the released slots, never on the leave itself: the
+        // absence's own dateStart/dateEnd (its full interval, in d/m/Y form) must never appear
+        // in the body — only the individual BLOCK occurrence dates (rendered as d/m, no year)
+        // are ever shown.
+        self::assertStringNotContainsString($dateStart->format('d/m/Y'), $comms[0]->getBodySnapshot());
+        self::assertStringNotContainsString($dateEnd->format('d/m/Y'), $comms[0]->getBodySnapshot());
+        self::assertStringNotContainsStringIgnoringCase('absent', $comms[0]->getBodySnapshot(), 'never phrase it as "Dr X est absent du ... au ..." — stay centered on the room release');
+    }
+
+    // ── Revue post-déploiement : snapshot figé même si le profil change ensuite ─
+
+    #[WithoutErrorHandler]
+    public function test_body_snapshot_keeps_original_surgeon_name_after_profile_change(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $today = new \DateTimeImmutable('today');
+        $isoDay = (int) $today->format('N');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON', 'Samy');
+        $colleague = $this->makeUser('ROLE_SURGEON', 'Colleague');
+        $site = $this->makeSite();
+        $this->affiliate($surgeon, $site);
+        $this->affiliate($colleague, $site);
+        $this->enableColleagues($site);
+        $this->makePost($surgeon, $site, MissionType::BLOCK, RecurrenceFrequency::WEEKLY, [$isoDay], $today, $today->format('Y-m-d'));
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => $today->format('Y-m-d'), 'dateEnd' => $today->format('Y-m-d'),
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $this->createdIds['absences'][] = $this->json($client->getResponse())['id'];
+        $this->em->flush();
+        $this->em->clear();
+
+        $site = $this->em->find(Hospital::class, $site->getId());
+        $communicationId = $this->communicationsFor($site)[0]->getId();
+        self::assertStringContainsString('Dr Samy User', $this->em->find(SurgeonAbsenceCommunication::class, $communicationId)->getBodySnapshot());
+
+        // The surgeon later changes their profile name — the already-journaled email content
+        // must never be silently rewritten to reflect the new name.
+        $surgeon = $this->em->find(User::class, $surgeon->getId());
+        $surgeon->setFirstname('Renamed');
+        $this->em->flush();
+        $this->em->clear();
+
+        $comm = $this->em->find(SurgeonAbsenceCommunication::class, $communicationId);
+        self::assertStringContainsString('Dr Samy User', $comm->getBodySnapshot(), 'the historical journal keeps the exact body as sent, with the old name');
+        self::assertStringNotContainsString('Renamed', $comm->getBodySnapshot());
+    }
+
     // ── Exclusions : chirurgien absent, autre site, inactif ─────────────────────
 
     #[WithoutErrorHandler]

@@ -17,10 +17,15 @@ use Symfony\Component\Routing\Attribute\Route;
  * Réglage par site de la communication des absences chirurgiens (D-114). Manager/Admin
  * uniquement, même voter que le reste des réglages Planning V2 (PlanningVoter::PLANNING_MANAGE).
  *
- * Lot B : les 4 champs "gestion du bloc" sont désormais exposés en écriture (la logique
- * d'envoi existe — BlockManagementCommunicationService) en plus de `notifyColleaguesEnabled`
- * (Lot A, inchangé). Mise à jour partielle — seules les clés présentes dans le body sont
- * appliquées (AbsenceCommunicationSiteConfigService::updateSettings()).
+ * Lot B : `notifyBlockManagementEnabled`/`blockManagementDelayDays` exposés en écriture ici
+ * en plus de `notifyColleaguesEnabled` (Lot A, inchangé). Mise à jour partielle — seules les
+ * clés présentes dans le body sont appliquées (AbsenceCommunicationSiteConfigService::updateSettings()).
+ *
+ * Revue post-déploiement : les coordonnées "gestion du bloc" (`blockManagementContactEmail`/
+ * `blockManagementContactCc`) ne sont plus écrites depuis cet endpoint — ce sont des données
+ * établissement, gérées par `SiteController` (`PATCH /api/sites/{id}`). Elles restent
+ * exposées ici en LECTURE SEULE (sourcées depuis `Hospital`) pour l'affichage inline dans
+ * Communication des absences, sans round-trip supplémentaire côté frontend.
  */
 class AbsenceCommunicationSiteConfigController extends AbstractController
 {
@@ -78,9 +83,6 @@ class AbsenceCommunicationSiteConfigController extends AbstractController
         if (array_key_exists('blockManagementDelayDays', $data) && $data['blockManagementDelayDays'] !== null && !is_int($data['blockManagementDelayDays'])) {
             throw new BadRequestHttpException('blockManagementDelayDays doit être un entier.');
         }
-        if (array_key_exists('blockManagementEmailCc', $data) && !is_array($data['blockManagementEmailCc'])) {
-            throw new BadRequestHttpException('blockManagementEmailCc doit être un tableau d\'emails.');
-        }
 
         $config = $this->service->updateSettings($site, $data);
 
@@ -93,8 +95,10 @@ class AbsenceCommunicationSiteConfigController extends AbstractController
             'site' => ['id' => $site->getId(), 'name' => $site->getName()],
             'notifyColleaguesEnabled' => $config?->isNotifyColleaguesEnabled() ?? false,
             'notifyBlockManagementEnabled' => $config?->isNotifyBlockManagementEnabled() ?? false,
-            'blockManagementEmailTo' => $config?->getBlockManagementEmailTo(),
-            'blockManagementEmailCc' => $config?->getBlockManagementEmailCc() ?? [],
+            // Lecture seule ici — provient de Hospital, jamais écrit depuis cet endpoint (voir
+            // le docblock de la classe).
+            'blockManagementContactEmail' => $site->getBlockManagementContactEmail(),
+            'blockManagementContactCc' => $site->getBlockManagementContactCc(),
             'blockManagementDelayDays' => $config?->getBlockManagementDelayDays(),
         ];
     }

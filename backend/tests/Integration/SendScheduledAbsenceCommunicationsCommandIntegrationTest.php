@@ -106,11 +106,12 @@ final class SendScheduledAbsenceCommunicationsCommandIntegrationTest extends Ker
 
     private function configureBlockManagement(Hospital $site, bool $enabled, ?string $to = 'bloc@example.com', array $cc = []): void
     {
+        $site->setBlockManagementContactEmail($to);
+        $site->setBlockManagementContactCc($cc);
+
         $config = new AbsenceCommunicationSiteConfig();
         $config->setSite($site);
         $config->setNotifyBlockManagementEnabled($enabled);
-        $config->setBlockManagementEmailTo($to);
-        $config->setBlockManagementEmailCc($cc);
         $config->setBlockManagementDelayDays(14);
         $this->em->persist($config);
         $this->em->flush();
@@ -369,9 +370,8 @@ final class SendScheduledAbsenceCommunicationsCommandIntegrationTest extends Ker
         $absence = $this->makeAbsence($surgeon, '+2 days', '+5 days');
         $delivery = $this->makeScheduledDelivery($absence, $site, $surgeon, new \DateTimeImmutable('-1 hour'));
 
-        // Reconfiguration APRÈS la programmation, AVANT l'échéance.
-        $config = $this->em->getRepository(AbsenceCommunicationSiteConfig::class)->findOneBy(['site' => $site]);
-        $config->setBlockManagementEmailTo('bloc-new@example.com');
+        // Reconfiguration APRÈS la programmation, AVANT l'échéance (désormais sur Hospital).
+        $site->setBlockManagementContactEmail('bloc-new@example.com');
         $this->em->flush();
 
         /** @var InMemoryTransport $transport */
@@ -402,8 +402,7 @@ final class SendScheduledAbsenceCommunicationsCommandIntegrationTest extends Ker
         $absence = $this->makeAbsence($surgeon, '+2 days', '+5 days');
         $delivery = $this->makeScheduledDelivery($absence, $site, $surgeon, new \DateTimeImmutable('-1 hour'));
 
-        $config = $this->em->getRepository(AbsenceCommunicationSiteConfig::class)->findOneBy(['site' => $site]);
-        $config->setBlockManagementEmailCc(['new-cc@example.com']);
+        $site->setBlockManagementContactCc(['new-cc@example.com']);
         $this->em->flush();
 
         /** @var InMemoryTransport $transport */
@@ -456,6 +455,107 @@ final class SendScheduledAbsenceCommunicationsCommandIntegrationTest extends Ker
         }
         self::assertContains('new-surgeon@surgicalhub.test', $envelope->getMessage()->cc);
         self::assertSame('new-surgeon@surgicalhub.test', $envelope->getMessage()->replyTo, 'Reply-To doit aussi refléter la nouvelle adresse');
+    }
+
+    // ── Revue post-déploiement — contacts établissement supprimés avant l'échéance ──────
+
+    /**
+     * Le contact était valide à la programmation, mais l'établissement l'a fait disparaître
+     * (fiche établissement) avant que le cron ne traite la delivery. Jamais un fallback
+     * silencieux sur l'ancien snapshot programmé — la résolution live doit voir l'absence de
+     * contact actuel exactement comme un `to` jamais configuré : `FAILED`, jamais `SENT`.
+     */
+    public function test_contact_email_removed_from_hospital_before_due_date_fails_without_dispatch(): void
+    {
+        $surgeon = $this->makeUser();
+        $site = $this->makeSite();
+        $this->configureBlockManagement($site, true, to: 'bloc@example.com');
+        $absence = $this->makeAbsence($surgeon, '+2 days', '+5 days');
+        $delivery = $this->makeScheduledDelivery($absence, $site, $surgeon, new \DateTimeImmutable('-1 hour'));
+
+        // Contact retiré de l'établissement après la programmation, avant l'échéance.
+        $site->setBlockManagementContactEmail(null);
+        $this->em->flush();
+
+        /** @var InMemoryTransport $transport */
+        $transport = self::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+
+        $tester = $this->runCommand();
+
+        self::assertStringContainsString('échoué (config invalide) 1', $tester->getDisplay());
+        $this->em->clear();
+        $fresh = $this->em->find(SurgeonAbsenceCommunicationDelivery::class, $delivery->getId());
+        self::assertSame(AbsenceCommunicationStatus::FAILED, $fresh->getStatus(), 'jamais un fallback silencieux sur l\'ancien to programmé');
+        self::assertNotNull($fresh->getLastError());
+        self::assertCount(0, array_filter($transport->getSent(), fn ($e) => $e->getMessage() instanceof SendTemplatedEmailMessage));
+    }
+
+    // ── Revue post-déploiement — chirurgien déjà présent dans les CC établissement ──────
+
+    /**
+     * Si le manager a (par erreur ou intentionnellement) déjà mis l'adresse du chirurgien
+     * dans les CC de l'établissement, la résolution live ne doit jamais la dupliquer — même
+     * garantie que testée côté service, reconfirmée ici au niveau du cron réel.
+     */
+    public function test_surgeon_already_present_in_hospital_cc_is_never_duplicated(): void
+    {
+        $surgeon = $this->makeUser();
+        $site = $this->makeSite();
+        $this->configureBlockManagement($site, true, to: 'bloc@example.com', cc: [$surgeon->getEmail()]);
+        $absence = $this->makeAbsence($surgeon, '+2 days', '+5 days');
+        $delivery = $this->makeScheduledDelivery($absence, $site, $surgeon, new \DateTimeImmutable('-1 hour'));
+
+        /** @var InMemoryTransport $transport */
+        $transport = self::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+
+        $this->runCommand();
+
+        $this->em->clear();
+        $fresh = $this->em->find(SurgeonAbsenceCommunicationDelivery::class, $delivery->getId());
+        $ccCount = count(array_filter($fresh->getRecipientCcSnapshot(), fn ($a) => mb_strtolower($a) === mb_strtolower($surgeon->getEmail())));
+        self::assertSame(1, $ccCount, 'jamais dupliqué même si déjà présent dans la config CC de l\'établissement');
+    }
+
+    // ── Revue post-déploiement — immutabilité du journal historique ─────────────────────
+
+    /**
+     * Une fois le dispatch réellement claim (le pipeline d'envoi a figé les valeurs
+     * effectivement utilisées dans le snapshot — même sans attendre la confirmation `SENT`
+     * du handler, hors périmètre de cette commande, voir le commentaire de
+     * `test_due_delivery_is_claimed_and_dispatched`), le snapshot ne doit jamais changer
+     * même si les contacts établissement sont modifiés (ou supprimés) après coup — le
+     * journal manager reste un historique fidèle de ce qui a réellement été confié à l'envoi,
+     * pas une vue live.
+     */
+    public function test_journal_snapshot_stays_immutable_after_hospital_contact_changes_later(): void
+    {
+        $surgeon = $this->makeUser();
+        $site = $this->makeSite();
+        $this->configureBlockManagement($site, true, to: 'bloc-au-moment-envoi@example.com', cc: ['cc-au-moment-envoi@example.com']);
+        $absence = $this->makeAbsence($surgeon, '+2 days', '+5 days');
+        $delivery = $this->makeScheduledDelivery($absence, $site, $surgeon, new \DateTimeImmutable('-1 hour'));
+
+        $this->runCommand();
+
+        $this->em->clear();
+        $claimed = $this->em->find(SurgeonAbsenceCommunicationDelivery::class, $delivery->getId());
+        self::assertNotNull($claimed->getDispatchClaimedAt(), 'réellement confié au pipeline d\'envoi');
+        self::assertSame('bloc-au-moment-envoi@example.com', $claimed->getRecipientEmailSnapshot());
+        self::assertContains('cc-au-moment-envoi@example.com', $claimed->getRecipientCcSnapshot());
+        $ccSnapshot = $claimed->getRecipientCcSnapshot();
+
+        // L'établissement change ses contacts APRÈS le dispatch réel.
+        $site = $this->em->find(Hospital::class, $site->getId());
+        $site->setBlockManagementContactEmail('bloc-tout-nouveau@example.com');
+        $site->setBlockManagementContactCc(['tout-nouveau-cc@example.com']);
+        $this->em->flush();
+        $this->em->clear();
+
+        $stillClaimed = $this->em->find(SurgeonAbsenceCommunicationDelivery::class, $delivery->getId());
+        self::assertSame('bloc-au-moment-envoi@example.com', $stillClaimed->getRecipientEmailSnapshot(), 'le snapshot déjà confié à l\'envoi ne doit jamais changer rétroactivement');
+        self::assertSame($ccSnapshot, $stillClaimed->getRecipientCcSnapshot(), 'le snapshot CC déjà confié à l\'envoi ne doit jamais changer rétroactivement');
     }
 
     // ── Revue finale §1 : un échec du dispatch Messenger lui-même libère le claim ───────

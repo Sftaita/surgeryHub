@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { AbsenceCommunicationSettings } from "./AbsenceCommunicationSettings";
 import type { AbsenceCommunicationSiteSettingV2 } from "../api/planningV2.types";
 
@@ -20,6 +21,12 @@ vi.mock("../../../ui/toast/useToast", () => ({
   useToast: () => ({ success: toastSuccess, error: toastError, warning: vi.fn() }),
 }));
 
+const navigateMock = vi.fn();
+vi.mock("react-router-dom", async () => {
+  const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
+  return { ...actual, useNavigate: () => navigateMock };
+});
+
 import * as api from "../api/planningV2.api";
 
 function makeSetting(overrides: Partial<AbsenceCommunicationSiteSettingV2> = {}): AbsenceCommunicationSiteSettingV2 {
@@ -27,8 +34,8 @@ function makeSetting(overrides: Partial<AbsenceCommunicationSiteSettingV2> = {})
     site: { id: 1, name: "CHIREC - Hôpital Delta" },
     notifyColleaguesEnabled: false,
     notifyBlockManagementEnabled: false,
-    blockManagementEmailTo: null,
-    blockManagementEmailCc: [],
+    blockManagementContactEmail: null,
+    blockManagementContactCc: [],
     blockManagementDelayDays: null,
     ...overrides,
   };
@@ -37,9 +44,11 @@ function makeSetting(overrides: Partial<AbsenceCommunicationSiteSettingV2> = {})
 function renderSettings() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <AbsenceCommunicationSettings />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <AbsenceCommunicationSettings />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -112,10 +121,10 @@ describe("AbsenceCommunicationSettings — Lot A (D-114)", () => {
   });
 });
 
-describe("AbsenceCommunicationSettings — Gestion du bloc (Lot B, D-114)", () => {
-  beforeEach(() => vi.clearAllMocks());
+describe("AbsenceCommunicationSettings — Gestion du bloc (Lot B, D-114, revue post-déploiement)", () => {
+  beforeEach(() => { vi.clearAllMocks(); navigateMock.mockReset(); });
 
-  it("hides the Configurer button and shows no form while the toggle is OFF", async () => {
+  it("hides the Configurer button and shows no delay form while the toggle is OFF", async () => {
     vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
       items: [makeSetting({ site: { id: 1, name: "Delta" } })],
     });
@@ -124,15 +133,99 @@ describe("AbsenceCommunicationSettings — Gestion du bloc (Lot B, D-114)", () =
 
     await screen.findByText("Delta");
     expect(screen.queryByRole("button", { name: "Configurer" })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Adresse principale/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Envoyer X jours/)).not.toBeInTheDocument();
   });
 
-  it("turning the toggle ON calls the API and automatically opens the config form once the list refetches as enabled", async () => {
-    vi.mocked(api.getAbsenceCommunicationSettings)
-      .mockResolvedValueOnce({ items: [makeSetting({ site: { id: 1, name: "Delta" } })] })
-      .mockResolvedValue({ items: [makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true })] });
+  it("displays the establishment's current contact read-only, with a link to edit it", async () => {
+    vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
+      items: [makeSetting({
+        site: { id: 1, name: "Delta" },
+        blockManagementContactEmail: "bloc@delta.test", blockManagementContactCc: ["secretariat@delta.test", "coordination@delta.test"],
+      })],
+    });
+
+    renderSettings();
+
+    expect(await screen.findByText("bloc@delta.test")).toBeInTheDocument();
+    expect(screen.getByText("secretariat@delta.test, coordination@delta.test")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Modifier les contacts de l'établissement" }));
+    expect(navigateMock).toHaveBeenCalledWith("/app/m/hospitals?edit=1");
+  });
+
+  it("shows a placeholder when the establishment has no contact configured", async () => {
+    vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
+      items: [makeSetting({ site: { id: 1, name: "Delta" }, blockManagementContactEmail: null })],
+    });
+
+    renderSettings();
+
+    expect(await screen.findByText("Aucun contact configuré pour cet établissement.")).toBeInTheDocument();
+  });
+
+  // ── Verrou circulaire corrigé (audit) ───────────────────────────────────────
+
+  it("activating a site with no established contact never sends the toggle-only PATCH — shows a blocking message with a link instead", async () => {
+    vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
+      items: [makeSetting({ site: { id: 1, name: "Delta" }, blockManagementContactEmail: null })],
+    });
+
+    renderSettings();
+
+    const toggle = await screen.findByRole("switch", { name: /Prévenir la gestion du bloc pour le site Delta/ });
+    await userEvent.click(toggle);
+
+    expect(api.updateAbsenceCommunicationSettings).not.toHaveBeenCalled();
+    expect(await screen.findByText("Configurez d'abord l'adresse de la gestion du bloc dans la fiche de l'établissement.")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Configurer l'établissement" }));
+    expect(navigateMock).toHaveBeenCalledWith("/app/m/hospitals?edit=1");
+  });
+
+  it("activating a site with a valid established contact opens the delay-only form, never a toggle-only PATCH", async () => {
+    vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
+      items: [makeSetting({ site: { id: 1, name: "Delta" }, blockManagementContactEmail: "bloc@delta.test" })],
+    });
+
+    renderSettings();
+
+    const toggle = await screen.findByRole("switch", { name: /Prévenir la gestion du bloc pour le site Delta/ });
+    await userEvent.click(toggle);
+
+    expect(api.updateAbsenceCommunicationSettings).not.toHaveBeenCalled();
+    expect(await screen.findByLabelText(/Envoyer X jours avant le début du congé/)).toBeInTheDocument();
+    expect(screen.getAllByText(/bloc@delta.test/).length).toBeGreaterThan(0);
+  });
+
+  it("saving the initial activation sends notifyBlockManagementEnabled and the delay together in one PATCH", async () => {
+    vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
+      items: [makeSetting({ site: { id: 1, name: "Delta" }, blockManagementContactEmail: "bloc@delta.test" })],
+    });
     vi.mocked(api.updateAbsenceCommunicationSettings).mockResolvedValue(
-      makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true }),
+      makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true, blockManagementContactEmail: "bloc@delta.test", blockManagementDelayDays: 10 }),
+    );
+
+    renderSettings();
+
+    await userEvent.click(await screen.findByRole("switch", { name: /Prévenir la gestion du bloc pour le site Delta/ }));
+    await userEvent.type(await screen.findByLabelText(/Envoyer X jours avant le début du congé/), "10");
+    await userEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
+
+    await waitFor(() => {
+      expect(api.updateAbsenceCommunicationSettings).toHaveBeenCalledWith(1, {
+        notifyBlockManagementEnabled: true,
+        blockManagementDelayDays: 10,
+      });
+      expect(toastSuccess).toHaveBeenCalled();
+    });
+  });
+
+  it("turning OFF an already-enabled site sends the toggle-only PATCH immediately (always valid)", async () => {
+    vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
+      items: [makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true, blockManagementContactEmail: "bloc@delta.test", blockManagementDelayDays: 14 })],
+    });
+    vi.mocked(api.updateAbsenceCommunicationSettings).mockResolvedValue(
+      makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: false }),
     );
 
     renderSettings();
@@ -141,18 +234,17 @@ describe("AbsenceCommunicationSettings — Gestion du bloc (Lot B, D-114)", () =
     await userEvent.click(toggle);
 
     await waitFor(() => {
-      expect(api.updateAbsenceCommunicationSettings).toHaveBeenCalledWith(1, { notifyBlockManagementEnabled: true });
+      expect(api.updateAbsenceCommunicationSettings).toHaveBeenCalledWith(1, { notifyBlockManagementEnabled: false });
     });
-    // The form only renders once the site is actually reported as enabled — driven by the
-    // invalidated query's refetch, not an optimistic local flag the component doesn't keep.
-    expect(await screen.findByLabelText(/Adresse principale/)).toBeInTheDocument();
   });
 
-  it("Configurer/Fermer toggles the form for an already-enabled site", async () => {
+  // ── Réglage du délai pour un site déjà activé ───────────────────────────────
+
+  it("Configurer/Fermer toggles the delay form for an already-enabled site", async () => {
     vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
       items: [makeSetting({
         site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true,
-        blockManagementEmailTo: "bloc@example.com", blockManagementDelayDays: 14,
+        blockManagementContactEmail: "bloc@example.com", blockManagementDelayDays: 14,
       })],
     });
 
@@ -160,29 +252,15 @@ describe("AbsenceCommunicationSettings — Gestion du bloc (Lot B, D-114)", () =
 
     const configureBtn = await screen.findByRole("button", { name: "Configurer" });
     await userEvent.click(configureBtn);
-    expect(await screen.findByLabelText(/Adresse principale/)).toHaveValue("bloc@example.com");
+    expect(await screen.findByLabelText(/Envoyer X jours avant le début du congé/)).toHaveValue(14);
 
     await userEvent.click(screen.getByRole("button", { name: "Fermer" }));
-    expect(screen.queryByLabelText(/Adresse principale/)).not.toBeInTheDocument();
-  });
-
-  it("an invalid To address disables Enregistrer", async () => {
-    vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
-      items: [makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true, blockManagementDelayDays: 14 })],
-    });
-
-    renderSettings();
-
-    await userEvent.click(await screen.findByRole("button", { name: "Configurer" }));
-    const toField = screen.getByLabelText(/Adresse principale/);
-    await userEvent.type(toField, "pas-un-email");
-
-    expect(screen.getByRole("button", { name: "Enregistrer" })).toBeDisabled();
+    expect(screen.queryByLabelText(/Envoyer X jours/)).not.toBeInTheDocument();
   });
 
   it("an out-of-range delay disables Enregistrer, a valid one enables it", async () => {
     vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
-      items: [makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true, blockManagementEmailTo: "bloc@example.com" })],
+      items: [makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true, blockManagementContactEmail: "bloc@example.com" })],
     });
 
     renderSettings();
@@ -198,66 +276,9 @@ describe("AbsenceCommunicationSettings — Gestion du bloc (Lot B, D-114)", () =
     expect(screen.getByRole("button", { name: "Enregistrer" })).toBeEnabled();
   });
 
-  it("adds a valid CC address and rejects an invalid or duplicate one", async () => {
+  it("Enregistrer sends only the delay for an already-enabled site, shows a success toast, and closes the form", async () => {
     vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
-      items: [makeSetting({
-        site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true,
-        blockManagementEmailTo: "bloc@example.com", blockManagementEmailCc: ["existing@example.com"], blockManagementDelayDays: 14,
-      })],
-    });
-
-    renderSettings();
-
-    await userEvent.click(await screen.findByRole("button", { name: "Configurer" }));
-    const ccInput = screen.getByPlaceholderText("ajouter une adresse CC");
-    const addBtn = screen.getByRole("button", { name: "Ajouter" });
-
-    // Invalid format — rejected, never added.
-    await userEvent.type(ccInput, "pas-un-email");
-    await userEvent.click(addBtn);
-    expect(toastError).toHaveBeenCalledWith("Adresse email invalide.");
-    expect(screen.queryByText("pas-un-email")).not.toBeInTheDocument();
-
-    // Duplicate of an existing CC — rejected.
-    await userEvent.clear(ccInput);
-    await userEvent.type(ccInput, "existing@example.com");
-    await userEvent.click(addBtn);
-    expect(toastError).toHaveBeenCalledWith("Cette adresse figure déjà dans la liste.");
-
-    // Duplicate of the To address — rejected.
-    await userEvent.clear(ccInput);
-    await userEvent.type(ccInput, "bloc@example.com");
-    await userEvent.click(addBtn);
-    expect(toastError).toHaveBeenCalledWith("Cette adresse figure déjà dans la liste.");
-
-    // A genuinely new address is added.
-    await userEvent.clear(ccInput);
-    await userEvent.type(ccInput, "new@example.com");
-    await userEvent.click(addBtn);
-    expect(await screen.findByText("new@example.com")).toBeInTheDocument();
-    expect(ccInput).toHaveValue("");
-  });
-
-  it("removes a CC address via its delete button", async () => {
-    vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
-      items: [makeSetting({
-        site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true,
-        blockManagementEmailTo: "bloc@example.com", blockManagementEmailCc: ["secretariat@example.com"], blockManagementDelayDays: 14,
-      })],
-    });
-
-    renderSettings();
-
-    await userEvent.click(await screen.findByRole("button", { name: "Configurer" }));
-    expect(await screen.findByText("secretariat@example.com")).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "Supprimer secretariat@example.com" }));
-    expect(screen.queryByText("secretariat@example.com")).not.toBeInTheDocument();
-  });
-
-  it("Enregistrer sends the exact payload, shows a success toast, and closes the form", async () => {
-    vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
-      items: [makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true, blockManagementEmailCc: ["cc@example.com"] })],
+      items: [makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true, blockManagementContactEmail: "bloc@example.com" })],
     });
     vi.mocked(api.updateAbsenceCommunicationSettings).mockResolvedValue(
       makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true }),
@@ -266,54 +287,48 @@ describe("AbsenceCommunicationSettings — Gestion du bloc (Lot B, D-114)", () =
     renderSettings();
 
     await userEvent.click(await screen.findByRole("button", { name: "Configurer" }));
-    await userEvent.type(screen.getByLabelText(/Adresse principale/), "bloc@example.com");
     await userEvent.type(screen.getByLabelText(/Envoyer X jours avant le début du congé/), "10");
     await userEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
 
     await waitFor(() => {
-      expect(api.updateAbsenceCommunicationSettings).toHaveBeenCalledWith(1, {
-        blockManagementEmailTo: "bloc@example.com",
-        blockManagementEmailCc: ["cc@example.com"],
-        blockManagementDelayDays: 10,
-      });
+      expect(api.updateAbsenceCommunicationSettings).toHaveBeenCalledWith(1, { blockManagementDelayDays: 10 });
       expect(toastSuccess).toHaveBeenCalled();
     });
     await waitFor(() => {
-      expect(screen.queryByLabelText(/Adresse principale/)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/Envoyer X jours/)).not.toBeInTheDocument();
     });
   });
 
-  it("a failed save shows an error toast and keeps the form open with the entered values", async () => {
+  it("a failed save shows an error toast and keeps the form open with the entered value", async () => {
     vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
-      items: [makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true })],
+      items: [makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true, blockManagementContactEmail: "bloc@example.com" })],
     });
     vi.mocked(api.updateAbsenceCommunicationSettings).mockRejectedValue(new Error("network error"));
 
     renderSettings();
 
     await userEvent.click(await screen.findByRole("button", { name: "Configurer" }));
-    await userEvent.type(screen.getByLabelText(/Adresse principale/), "bloc@example.com");
     await userEvent.type(screen.getByLabelText(/Envoyer X jours avant le début du congé/), "10");
     await userEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
 
     await waitFor(() => {
       expect(toastError).toHaveBeenCalled();
     });
-    expect(screen.getByLabelText(/Adresse principale/)).toHaveValue("bloc@example.com");
+    expect(screen.getByLabelText(/Envoyer X jours avant le début du congé/)).toHaveValue(10);
   });
 
-  it("Annuler closes the form without calling the API", async () => {
+  it("Annuler closes the delay form without calling the API", async () => {
     vi.mocked(api.getAbsenceCommunicationSettings).mockResolvedValue({
-      items: [makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true, blockManagementEmailTo: "bloc@example.com", blockManagementDelayDays: 14 })],
+      items: [makeSetting({ site: { id: 1, name: "Delta" }, notifyBlockManagementEnabled: true, blockManagementContactEmail: "bloc@example.com", blockManagementDelayDays: 14 })],
     });
 
     renderSettings();
 
     await userEvent.click(await screen.findByRole("button", { name: "Configurer" }));
-    await userEvent.type(screen.getByLabelText(/Adresse principale/), "extra text");
+    await userEvent.type(screen.getByLabelText(/Envoyer X jours avant le début du congé/), "5");
     await userEvent.click(screen.getByRole("button", { name: "Annuler" }));
 
-    expect(screen.queryByLabelText(/Adresse principale/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Envoyer X jours/)).not.toBeInTheDocument();
     expect(api.updateAbsenceCommunicationSettings).not.toHaveBeenCalled();
   });
 });

@@ -11,6 +11,11 @@ use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
  * Find-or-create par site (Lot A/D-114) — une ligne AbsenceCommunicationSiteConfig par site,
  * créée à la demande plutôt que pré-seedée (un site sans ligne équivaut à toutes les
  * fonctions désactivées, valeurs par défaut de l'entité).
+ *
+ * Revue post-déploiement : cette config ne porte plus que des réglages de comportement
+ * (activé/désactivé + délai) — les coordonnées "gestion du bloc" (To/CC) vivent désormais
+ * sur `Hospital` (`blockManagementContactEmail`/`blockManagementContactCc`), gérées par
+ * `SiteController`, jamais ici.
  */
 class AbsenceCommunicationSiteConfigService
 {
@@ -55,16 +60,19 @@ class AbsenceCommunicationSiteConfigService
 
     /**
      * Communication des absences chirurgiens — Lot B (D-114). Mise à jour partielle : seules
-     * les clés présentes dans `$patch` sont appliquées (permet de ne toucher que « Libération
-     * de salle » ou que « Gestion du bloc » indépendamment). La validation porte sur l'état
+     * les clés présentes dans `$patch` sont appliquées. La validation porte sur l'état
      * RÉSULTANT après application du patch, jamais seulement sur les champs littéralement
-     * envoyés — un patch qui ne touche que `blockManagementEmailCc` reste valide si
-     * `blockManagementEmailTo`/`blockManagementDelayDays` étaient déjà correctement définis
-     * auparavant.
+     * envoyés — un patch qui ne touche que `blockManagementDelayDays` reste invalide si
+     * l'établissement n'a toujours pas de contact "gestion du bloc" valide.
      *
-     * Toggle OFF (`notifyBlockManagementEnabled = false`) conserve les valeurs déjà
-     * configurées (To/CC/délai) sans y toucher — décision actée, permet un ré-enable sans
-     * ressaisie.
+     * Toggle OFF (`notifyBlockManagementEnabled = false`) ne touche jamais aux coordonnées de
+     * l'établissement (elles ne sont même plus portées ici) ni au délai déjà configuré —
+     * décision actée, permet un ré-enable sans reconfiguration.
+     *
+     * Garde-fou technique (§ revue post-déploiement) : active `notifyBlockManagementEnabled`
+     * exige que l'établissement possède déjà un contact valide — jamais le parcours normal
+     * (le frontend doit empêcher l'envoi de ce patch tant que ce n'est pas le cas, voir
+     * `AbsenceCommunicationSettings.tsx`), seulement un filet de sécurité serveur.
      */
     public function updateSettings(Hospital $site, array $patch): AbsenceCommunicationSiteConfig
     {
@@ -76,42 +84,26 @@ class AbsenceCommunicationSiteConfigService
         if (array_key_exists('notifyBlockManagementEnabled', $patch)) {
             $config->setNotifyBlockManagementEnabled((bool) $patch['notifyBlockManagementEnabled']);
         }
-        if (array_key_exists('blockManagementEmailTo', $patch)) {
-            $raw = $patch['blockManagementEmailTo'];
-            $config->setBlockManagementEmailTo($raw !== null && trim((string) $raw) !== '' ? trim((string) $raw) : null);
-        }
-        if (array_key_exists('blockManagementEmailCc', $patch)) {
-            $config->setBlockManagementEmailCc(self::normalizeCc(
-                is_array($patch['blockManagementEmailCc']) ? $patch['blockManagementEmailCc'] : [],
-                $config->getBlockManagementEmailTo(),
-            ));
-        }
         if (array_key_exists('blockManagementDelayDays', $patch)) {
             $raw = $patch['blockManagementDelayDays'];
             $config->setBlockManagementDelayDays($raw !== null ? (int) $raw : null);
         }
 
-        $this->validate($config);
+        $this->validate($site, $config);
         $this->em->flush();
 
         return $config;
     }
 
-    private function validate(AbsenceCommunicationSiteConfig $config): void
+    private function validate(Hospital $site, AbsenceCommunicationSiteConfig $config): void
     {
-        foreach ($config->getBlockManagementEmailCc() as $cc) {
-            if (filter_var($cc, FILTER_VALIDATE_EMAIL) === false) {
-                throw new BadRequestHttpException(sprintf('Adresse CC invalide : %s', $cc));
-            }
-        }
-
         if (!$config->isNotifyBlockManagementEnabled()) {
             return;
         }
 
-        $to = $config->getBlockManagementEmailTo();
+        $to = $site->getBlockManagementContactEmail();
         if ($to === null || filter_var($to, FILTER_VALIDATE_EMAIL) === false) {
-            throw new BadRequestHttpException('blockManagementEmailTo (email valide) est requis quand la gestion du bloc est activée.');
+            throw new BadRequestHttpException("L'établissement doit avoir une adresse de gestion du bloc valide (fiche établissement) avant d'activer cette fonctionnalité.");
         }
 
         $delay = $config->getBlockManagementDelayDays();
@@ -121,34 +113,5 @@ class AbsenceCommunicationSiteConfigService
         if ($delay < 0 || $delay > 365) {
             throw new BadRequestHttpException('blockManagementDelayDays doit être un entier compris entre 0 et 365.');
         }
-    }
-
-    /**
-     * Trim, dédoublonnage insensible à la casse, retire l'adresse principale si elle a été
-     * dupliquée dans les CC — jamais un rejet pour une variante triviale (§5), une adresse
-     * réellement invalide reste rejetée par validate().
-     *
-     * @param list<string> $rawList
-     * @return list<string>
-     */
-    private static function normalizeCc(array $rawList, ?string $primary): array
-    {
-        $seen = $primary !== null ? [mb_strtolower(trim($primary))] : [];
-        $result = [];
-
-        foreach ($rawList as $raw) {
-            $address = trim((string) $raw);
-            if ($address === '') {
-                continue;
-            }
-            $key = mb_strtolower($address);
-            if (in_array($key, $seen, true)) {
-                continue;
-            }
-            $seen[] = $key;
-            $result[] = $address;
-        }
-
-        return $result;
     }
 }

@@ -310,14 +310,18 @@ class AbsenceCommunicationJournalService
             return ['status' => 'disabled', 'to' => null, 'cc' => []];
         }
 
-        $to = trim((string) $config->getBlockManagementEmailTo());
+        // Revue post-déploiement (D-114) — coordonnées désormais portées par Hospital, jamais
+        // par la config (voir Hospital::blockManagementContactEmail/Cc). $site est déjà
+        // l'entité gérée par Doctrine ici, jamais une valeur détachée : la lecture reflète
+        // toujours l'état actuel, exactement comme avant ce déplacement.
+        $to = trim((string) $site->getBlockManagementContactEmail());
         if ($to === '' || filter_var($to, FILTER_VALIDATE_EMAIL) === false) {
             return ['status' => 'invalid', 'to' => null, 'cc' => []];
         }
 
         $cc = [];
         $seen = [mb_strtolower($to)];
-        foreach ($config->getBlockManagementEmailCc() as $address) {
+        foreach ($site->getBlockManagementContactCc() as $address) {
             $address = trim((string) $address);
             $key = mb_strtolower($address);
             if ($address === '' || in_array($key, $seen, true)) {

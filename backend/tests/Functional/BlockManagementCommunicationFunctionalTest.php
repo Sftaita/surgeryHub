@@ -161,11 +161,14 @@ final class BlockManagementCommunicationFunctionalTest extends WebTestCase
 
     private function configureBlockManagement(Hospital $site, bool $enabled, string $to = 'bloc@example.com', array $cc = [], int $delayDays = 14): void
     {
+        // Coordonnées désormais portées par Hospital (revue post-déploiement, D-114) —
+        // AbsenceCommunicationSiteConfig ne porte plus que le comportement.
+        $site->setBlockManagementContactEmail($to);
+        $site->setBlockManagementContactCc($cc);
+
         $config = new AbsenceCommunicationSiteConfig();
         $config->setSite($site);
         $config->setNotifyBlockManagementEnabled($enabled);
-        $config->setBlockManagementEmailTo($to);
-        $config->setBlockManagementEmailCc($cc);
         $config->setBlockManagementDelayDays($delayDays);
         $this->em->persist($config);
         $this->em->flush();
@@ -1207,10 +1210,10 @@ final class BlockManagementCommunicationFunctionalTest extends WebTestCase
         $site = $this->em->find(Hospital::class, $site->getId());
         $this->confirmSent($this->firstDelivery($this->blockCommunicationsFor($site)[0])->getId());
 
-        // Toggle OFF ET adresse principale supprimée.
+        // Toggle OFF ET adresse principale supprimée (désormais sur Hospital).
         $config = $this->em->getRepository(AbsenceCommunicationSiteConfig::class)->findOneBy(['site' => $site]);
         $config->setNotifyBlockManagementEnabled(false);
-        $config->setBlockManagementEmailTo(null);
+        $site->setBlockManagementContactEmail(null);
         $this->em->flush();
         $this->em->clear();
 

@@ -9,12 +9,17 @@ import EditIcon         from "@mui/icons-material/Edit";
 import DeleteIcon       from "@mui/icons-material/Delete";
 import BusinessIcon     from "@mui/icons-material/Business";
 import PhotoCameraIcon  from "@mui/icons-material/PhotoCamera";
+import CloseIcon        from "@mui/icons-material/Close";
+import AddIcon          from "@mui/icons-material/Add";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { apiClient } from "../../api/apiClient";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { useToast } from "../../ui/toast/useToast";
 import { EmptyState } from "../../ui/EmptyState";
 import { PageHeader } from "../../ui/PageHeader";
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface Hospital {
@@ -23,6 +28,13 @@ interface Hospital {
   address: string | null;
   timezone: string;
   photoPath: string | null;
+  /**
+   * Communication des absences chirurgiens (D-114, revue post-déploiement) — coordonnées
+   * organisationnelles de l'établissement pour la gestion du bloc opératoire. Éditées ici,
+   * jamais depuis Planning → Paramètres → Communication des absences (lecture seule là-bas).
+   */
+  blockManagementContactEmail: string | null;
+  blockManagementContactCc: string[];
 }
 
 // ── API ────────────────────────────────────────────────────────────────────────
@@ -52,16 +64,18 @@ const TIMEZONES = [
   "Europe/Zurich",
 ];
 
-const EMPTY = { name: "", address: "", timezone: "Europe/Brussels" };
+const EMPTY = { name: "", address: "", timezone: "Europe/Brussels", blockManagementContactEmail: "", blockManagementContactCc: [] as string[] };
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 export default function HospitalsPage() {
   const qc    = useQueryClient();
   const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [editing,    setEditing]    = React.useState<Hospital | null>(null);
   const [form,       setForm]       = React.useState(EMPTY);
+  const [newCc,      setNewCc]      = React.useState("");
   const [deleteId,   setDeleteId]   = React.useState<number | null>(null);
 
   // Photo upload state (pendant la session édition/création)
@@ -112,7 +126,12 @@ export default function HospitalsPage() {
   }
   function openEdit(h: Hospital) {
     setEditing(h);
-    setForm({ name: h.name, address: h.address ?? "", timezone: h.timezone });
+    setForm({
+      name: h.name, address: h.address ?? "", timezone: h.timezone,
+      blockManagementContactEmail: h.blockManagementContactEmail ?? "",
+      blockManagementContactCc: h.blockManagementContactCc,
+    });
+    setNewCc("");
     setPendingPhoto(null);
     setPendingPhotoUrl(resolveApiAssetUrl(h.photoPath) ?? null);
     setDialogOpen(true);
@@ -121,18 +140,55 @@ export default function HospitalsPage() {
     setDialogOpen(false);
     setEditing(null);
     setForm(EMPTY);
+    setNewCc("");
     setPendingPhoto(null);
     setPendingPhotoUrl(null);
+    if (searchParams.has("edit")) {
+      searchParams.delete("edit");
+      setSearchParams(searchParams, { replace: true });
+    }
   }
+
+  // Accès direct depuis Planning → Paramètres → Communication des absences
+  // ("Modifier les contacts de l'établissement") — ouvre directement la fiche concernée.
+  React.useEffect(() => {
+    const editId = searchParams.get("edit");
+    if (editId === null || sitesQuery.isLoading || dialogOpen) return;
+    const target = sites.find((s) => s.id === Number(editId));
+    if (target) openEdit(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, sitesQuery.isLoading, sites]);
+
   function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     setPendingPhoto(file);
     setPendingPhotoUrl(URL.createObjectURL(file));
   }
+  function addCc() {
+    const address = newCc.trim();
+    if (address === "" || !EMAIL_RE.test(address)) {
+      toast.error("Adresse email invalide.");
+      return;
+    }
+    if (form.blockManagementContactCc.some((c) => c.toLowerCase() === address.toLowerCase()) || address.toLowerCase() === form.blockManagementContactEmail.trim().toLowerCase()) {
+      toast.error("Cette adresse figure déjà dans la liste.");
+      return;
+    }
+    setForm((f) => ({ ...f, blockManagementContactCc: [...f.blockManagementContactCc, address] }));
+    setNewCc("");
+  }
+  function removeCc(address: string) {
+    setForm((f) => ({ ...f, blockManagementContactCc: f.blockManagementContactCc.filter((c) => c !== address) }));
+  }
+  const contactEmailValid = form.blockManagementContactEmail.trim() === "" || EMAIL_RE.test(form.blockManagementContactEmail.trim());
   function handleSubmit() {
-    if (!form.name.trim()) return;
-    const payload = { name: form.name.trim(), address: form.address.trim() || null, timezone: form.timezone };
+    if (!form.name.trim() || !contactEmailValid) return;
+    const payload = {
+      name: form.name.trim(), address: form.address.trim() || null, timezone: form.timezone,
+      blockManagementContactEmail: form.blockManagementContactEmail.trim() || null,
+      blockManagementContactCc: form.blockManagementContactCc,
+    };
     if (editing) updateMutation.mutate({ id: editing.id, ...payload });
     else         createMutation.mutate(payload);
   }
@@ -296,11 +352,61 @@ export default function HospitalsPage() {
                 {TIMEZONES.map((tz) => <MenuItem key={tz} value={tz}>{tz}</MenuItem>)}
               </Select>
             </Box>
+
+            <Divider />
+
+            <Box>
+              <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.25 }}>
+                Contacts du bloc opératoire
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ mb: 1.5, display: "block" }}>
+                Ces coordonnées sont utilisées pour les communications organisationnelles envoyées
+                à la gestion du bloc (notamment « Prévenir automatiquement la gestion du bloc »,
+                Planning → Paramètres → Communication des absences).
+              </Typography>
+              <Stack spacing={1.5}>
+                <TextField
+                  label="Adresse principale"
+                  size="small"
+                  fullWidth
+                  value={form.blockManagementContactEmail}
+                  onChange={(e) => setForm((f) => ({ ...f, blockManagementContactEmail: e.target.value }))}
+                  error={!contactEmailValid}
+                  helperText={!contactEmailValid ? "Adresse email invalide" : " "}
+                  placeholder="bloc@etablissement.be"
+                />
+                <Box>
+                  <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.75, display: "block" }}>
+                    Adresses en copie
+                  </Typography>
+                  <Stack spacing={0.75} sx={{ mb: 1 }}>
+                    {form.blockManagementContactCc.map((address) => (
+                      <Stack key={address} direction="row" alignItems="center" spacing={1} sx={{ bgcolor: "grey.50", border: "1px solid", borderColor: "divider", borderRadius: 1, px: 1.25, py: 0.5 }}>
+                        <Typography variant="body2" sx={{ flex: 1 }}>{address}</Typography>
+                        <IconButton size="small" aria-label={`Supprimer ${address}`} onClick={() => removeCc(address)}>
+                          <CloseIcon sx={{ fontSize: 15 }} />
+                        </IconButton>
+                      </Stack>
+                    ))}
+                  </Stack>
+                  <Stack direction="row" spacing={1}>
+                    <TextField
+                      size="small" fullWidth placeholder="ajouter une adresse CC"
+                      value={newCc} onChange={(e) => setNewCc(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCc(); } }}
+                    />
+                    <Button size="small" startIcon={<AddIcon sx={{ fontSize: 16 }} />} onClick={addCc} sx={{ textTransform: "none", whiteSpace: "nowrap" }}>
+                      Ajouter
+                    </Button>
+                  </Stack>
+                </Box>
+              </Stack>
+            </Box>
           </Stack>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2.5 }}>
           <Button onClick={closeDialog} color="inherit">Annuler</Button>
-          <Button variant="contained" disableElevation onClick={handleSubmit} disabled={!form.name.trim() || isPending}>
+          <Button variant="contained" disableElevation onClick={handleSubmit} disabled={!form.name.trim() || !contactEmailValid || isPending}>
             {isPending ? <CircularProgress size={16} /> : editing ? "Enregistrer" : "Créer"}
           </Button>
         </DialogActions>

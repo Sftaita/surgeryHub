@@ -40,6 +40,23 @@ class Hospital
     private ?string $photoPath = null;
 
     /**
+     * Communication des absences chirurgiens (D-114) — coordonnées organisationnelles de
+     * l'établissement pour la gestion du bloc opératoire (qui prévenir d'un congé chirurgien
+     * à venir). Déplacé depuis `AbsenceCommunicationSiteConfig` (revue post-déploiement) :
+     * ce sont des données propres à l'établissement, jamais un paramètre de comportement de
+     * la communication d'absence (voir `AbsenceCommunicationSiteConfig::notifyBlockManagementEnabled`/
+     * `blockManagementDelayDays`, qui restent seuls dans cette dernière).
+     */
+    #[ORM\Column(length: 255, nullable: true)]
+    #[Groups(['hospital:read', 'site:list'])]
+    private ?string $blockManagementContactEmail = null;
+
+    /** @var list<string> */
+    #[ORM\Column(type: 'json')]
+    #[Groups(['hospital:read', 'site:list'])]
+    private array $blockManagementContactCc = [];
+
+    /**
      * @var Collection<int, SiteMembership>
      */
     #[ORM\OneToMany(mappedBy: 'site', targetEntity: SiteMembership::class, cascade: ['persist'], orphanRemoval: true)]
@@ -148,5 +165,29 @@ class Hospital
     public function getMissions(): Collection
     {
         return $this->missions;
+    }
+
+    public function getBlockManagementContactEmail(): ?string
+    {
+        return $this->blockManagementContactEmail;
+    }
+
+    public function setBlockManagementContactEmail(?string $blockManagementContactEmail): static
+    {
+        $this->blockManagementContactEmail = $blockManagementContactEmail;
+        return $this;
+    }
+
+    /** @return list<string> */
+    public function getBlockManagementContactCc(): array
+    {
+        return $this->blockManagementContactCc;
+    }
+
+    /** @param list<string> $blockManagementContactCc */
+    public function setBlockManagementContactCc(array $blockManagementContactCc): static
+    {
+        $this->blockManagementContactCc = $blockManagementContactCc;
+        return $this;
     }
 }

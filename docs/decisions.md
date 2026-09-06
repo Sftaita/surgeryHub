@@ -8387,6 +8387,110 @@ côté serveur (409 avec message précis, déjà relayé par le toast d'erreur e
 UX de désactivation proactive dans le picker reste un axe d'amélioration possible, non
 requis pour la correction fonctionnelle.
 
+## D-112 — Planning V2 : occurrence couverte par une absence chirurgien, jamais une mission à couvrir (2026-08-16)
+
+Date : 2026-08-16
+
+### Contexte
+
+Ticket terrain : ligne "Dr Étienne Willemart — lundi 19 octobre" affichant encore
+l'ancienne instrumentiste "Salve Decorte" à côté du badge "Chirurgien absent", inspecteur
+la présentant comme "libérée" à cause de l'absence, et — le plus grave — retirer
+manuellement cette instrumentiste depuis l'éditeur Planning V2 (`/app/m/planning/v2`,
+mode Modification) faisait passer la Mission en OPEN ("Mission ouverte / À pourvoir"),
+comme n'importe quel poste réellement décousert. Or une occurrence dont le chirurgien
+est absent n'a, par construction, plus aucun poste à couvrir : la faire réapparaître dans
+le pool OPEN est une erreur métier, pas seulement un défaut d'affichage.
+
+### Décision — deux défauts distincts, aucun nouveau statut ni second moteur de mutation
+
+**Défaut #1 (affichage) :** dans `GeneratePlanningTab.tsx`, marquer une ligne `SKIPPED`
+côté éditeur (`handleCancelMission`, `handleBulkSkip`) ne réinitialisait pas
+`instrumentistId`/`instrumentistName` — seul `handleInstrumentistChange` le faisait déjà.
+Une ligne fraîchement passée à SKIPPED dans l'état local (non encore soumise) pouvait donc
+continuer d'afficher le nom de l'ancienne instrumentiste. Corrigé en alignant les trois
+handlers : toute transition vers SKIPPED efface systématiquement l'instrumentiste.
+Le rendu de la colonne instrumentiste et de l'inspecteur (`Inspector.tsx`) traite
+désormais `status === "SKIPPED"` comme un cas à part entier — jamais l'ancien nom, jamais
+"À pourvoir" (qui implique un poste à remplir), jamais de dropdown de recherche ni de
+suggestion "Libérés disponibles + Assigner", jamais le bouton "Remettre au pool
+(ouverte)" : un simple `/` accompagné du badge "Chirurgien absent" déjà existant.
+
+**Défaut #2 (métier, le plus important) :** `PlanningModificationService::applyLineToMission()`
+appelait inconditionnellement `MissionPostDeployService::release()` (ASSIGNED → OPEN) dès
+que l'éditeur envoyait `instrumentistId: null` pour une Mission ASSIGNED — sans jamais
+vérifier si le chirurgien de cette Mission est actuellement absent à sa date. Corrigé en
+réutilisant tel quel `AbsenceMissionReactionService::reconcileMissionAgainstCurrentAbsences()`
+(primitive déjà existante depuis le Lot 6/D-106, construite pour l'audit manuel "Vérifier
+les conflits") comme garde-fou avant `release()` : si le chirurgien (ou l'instrumentiste)
+est actuellement absent, la méthode applique elle-même `cancel()`/`release()` — avec le
+même `AuditEvent` et le même `causedByAbsenceId` que la réaction automatique à la création
+d'une absence (D-062) — et `release()` n'est appelé qu'en son absence (cas réellement
+normal). Aucune nouvelle méthode de mutation, aucun nouveau statut : la distinction
+Case A (chirurgien présent, comportement `release()` existant inchangé) / Case B
+(chirurgien absent, jamais OPEN, jamais pool, jamais d'offre à un instrumentiste) est
+entièrement portée par la primitive de réconciliation déjà auditée.
+
+**Règle retenue, formalisée ici :** une occurrence couverte par une absence chirurgien
+n'est jamais une mission à couvrir. L'instrumentiste n'est pas présenté comme affecté
+dans le Planning manager (`/`), et aucune action de libération ne peut transformer cette
+occurrence en mission OPEN.
+
+### Restauration après suppression de l'absence
+
+Aucun changement à `AbsenceImpactReconciliationService` (Lot 4/D-104) : la Mission
+mutée par `reconcileMissionAgainstCurrentAbsences()` porte le même `AuditEvent`
+(`MISSION_CANCELLED_POST_DEPLOY` + `causedByAbsenceId`) que celle mutée par la réaction
+automatique à la création — la restauration (suppression de l'absence) fonctionne donc à
+l'identique, sans code spécifique à ce nouveau chemin. Vérifié en live (voir Tests).
+
+### Photos de profil (§6 du ticket)
+
+`User.profilePicturePath` était déjà porté par les DTOs Mission (`MissionMapper`) mais
+absent des lignes de prévisualisation Planning V2. `PreviewLineResponse`/`buildLine()`
+(`PlanningGeneratorServiceV2`) gagnent `surgeonPhotoPath`/`instrumentistPhotoPath`
+(lus directement sur les entités déjà chargées — aucune requête N+1, y compris pour le
+second passage "instrumentiste libéré" du D-034) ; `missionToPreviewLine()` les lit sur
+`mission.surgeon`/`mission.instrumentist` côté Mode Modification. Les avatars des lignes
+de planning (`GeneratePlanningTab.tsx`) passent désormais `photoUrl` à `PersonAvatar`,
+qui portait déjà la règle photo réelle → sinon initiales (aucun composant dupliqué). Le
+sélecteur d'instrumentiste (`SearchableSelect`) l'utilisait déjà correctement.
+
+### Tests
+
+Backend : 2 tests d'intégration (`PlanningModificationControllerTest`) prouvant
+qu'un retrait d'instrumentiste sur une Mission ASSIGNED dont le chirurgien est
+actuellement absent produit `cancelled:1/released:0` et un statut CANCELLED (jamais
+OPEN), et qu'un retrait normal (chirurgien présent) reste inchangé (`released:1`) ; 1
+test d'intégration prouvant que la suppression de l'absence restaure ensuite la Mission
+(ASSIGNED, instrumentiste réappliqué) via le mécanisme existant du Lot 4 ; 3 tests unitaires
+(`PlanningGeneratorServiceV2Test`) pour la propagation des chemins de photo, y compris le
+second passage "instrumentiste libéré". Frontend : 2 tests (`GeneratePlanningTab.test.tsx`)
+pour l'affichage de ligne/inspecteur avec des données volontairement obsolètes (nom
+d'instrumentiste encore présent malgré SKIPPED), 1 test pour la photo réelle vs repli
+initiales. Suite complète rejouée : 2076/2076 backend (3 échecs pré-existants et sans
+rapport, `OffersUnreadCountControllerTest`, reproductibles isolément avant tout changement
+de ce lot) et 1161/1161 frontend, verts.
+
+### Vérification terrain (dev, données synthétiques)
+
+Scénario rejoué en conditions réelles via une commande de fixture temporaire (site,
+chirurgien, instrumentiste, `PlanningVersion` ACTIVE, Mission ASSIGNED, absence chirurgien
+couvrant la date — supprimée après usage) : appel réel à `POST
+/api/planning/versions/{id}/apply-modifications` retirant l'instrumentiste →
+`cancelled:1/released:0` confirmé par API et par lecture DB directe, `AuditEvent`
+`MISSION_CANCELLED_POST_DEPLOY` avec `causedByAbsenceId` ; `DELETE /api/absences/{id}` →
+Mission restaurée ASSIGNED avec son instrumentiste d'origine, `AuditEvent`
+`MISSION_RESTORED_AFTER_SURGEON_ABSENCE`. Toutes les fixtures nettoyées après coup.
+
+### Non fait dans ce lot
+
+Aucun commit, aucun déploiement — sur instruction explicite. Aucune modification de la
+logique d'absence instrumentiste, de la détection de conflits, ni du système d'avatars
+au-delà du câblage `profilePicturePath` déjà prévu par `PersonAvatar`. Anomalie relevée
+mais hors périmètre : `PlanningV2AbsentSurgeonTerrainCommand` (fixture terrain temporaire)
+supprimée après usage, jamais committée.
+
 ## D-113 — Correctif workflow Demandes Catalogue : révision de D-094 (email manager à la création), motif structuré sur « Ignorer », synchronisation frontend (2026-09-04)
 
 Date : 2026-09-04
@@ -8966,3 +9070,171 @@ ce qui déclenche l'interstitiel de sécurité Chrome et bloque toute automation
 Aucune modification de la configuration Vite ni contournement fragile de Chrome n'a été
 tenté (hors périmètre explicitement demandé). *UI non vérifiée manuellement en navigateur à
 cause du certificat local auto-signé ; couverte par tests composants + API HTTP réelle.*
+
+## Revue post-déploiement — déplacement des coordonnées « gestion du bloc » vers l'établissement (2026-09-06)
+
+### Contexte : verrou circulaire découvert en production
+
+Après déploiement (`v2026.09.06-prod`), un manager a signalé que le toggle « Prévenir
+automatiquement la gestion du bloc » (Planning → Paramètres → Communication des absences)
+était impossible à activer pour un site jamais configuré : le toggle envoyait immédiatement
+un `PATCH {notifyBlockManagementEnabled: true}` seul, alors que le backend
+(`AbsenceCommunicationSiteConfigService::validate()`) exigeait déjà un `blockManagementEmailTo`
+valide dans l'état résultant. Le formulaire qui aurait permis de saisir cette adresse n'était
+lui-même affiché qu'une fois `notifyBlockManagementEnabled` confirmé `true` côté serveur — un
+verrou circulaire strict, sans issue possible depuis l'UI existante.
+
+### Audit et décision architecturale
+
+Au-delà du bug d'implémentation frontend (corrigible seul en changeant l'ordre des appels),
+l'audit a confirmé un défaut de modélisation plus profond : `blockManagementEmailTo`/
+`blockManagementEmailCc` vivaient dans `absence_communication_site_config` — une table dont
+le nom même scope ces colonnes à la communication d'absence — alors que ce sont des
+coordonnées organisationnelles de l'établissement (qui prévenir pour le bloc opératoire),
+indépendantes du fait qu'une communication d'absence existe ou non. `Hospital` ne possédait
+aucune structure de contacts à réutiliser (`name`/`address`/`timezone`/`photoPath`
+uniquement) — décision : déplacer physiquement ces deux champs vers `Hospital`
+(`blockManagementContactEmail`/`blockManagementContactCc`), sans créer de table de contacts
+labellisés séparée (aucun précédent de ce genre ailleurs dans le projet, complexité non
+justifiée par le besoin réel). `AbsenceCommunicationSiteConfig` ne porte désormais plus que
+le comportement : `notifyColleaguesEnabled`/`notifyBlockManagementEnabled`/
+`blockManagementDelayDays`.
+
+### Migration
+
+`Version20260906100000` — additive puis migration de données puis suppression des deux
+colonnes devenues obsolètes, dans le même `up()` (jamais de perte, copie systématique avant
+suppression) : `ALTER TABLE hospital ADD block_management_contact_email`/
+`block_management_contact_cc` (le second avec `DEFAULT (JSON_ARRAY())`, expression par
+défaut supportée depuis MySQL 8.0.13, pour peupler directement `[]` sur toute ligne
+existante sans détour nullable→backfill→NOT NULL), `UPDATE hospital ... JOIN
+absence_communication_site_config` (copie 1:1 par `site_id`), puis `ALTER TABLE
+absence_communication_site_config DROP block_management_email_to`/`block_management_email_cc`.
+N'affecte jamais `surgeon_absence_communication`/`surgeon_absence_communication_delivery` —
+les snapshots déjà journalisés (déjà immuables par construction) restent hors du périmètre
+de cette migration, aucune communication historique n'est modifiée.
+
+### Nouvelle UX
+
+**Fiche établissement** (`Établissements` → `Modifier`, `HospitalsPage.tsx`) — nouvelle
+section « Contacts du bloc opératoire » dans le dialogue d'édition existant (pas de nouvelle
+page dédiée : ce dialogue est déjà, fonctionnellement, la fiche établissement) : adresse
+principale + liste CC dynamique (ajout/suppression, validation email, dédoublonnage insensible
+à la casse, retrait de l'adresse principale si dupliquée dans les CC — même logique que
+l'ancien formulaire, désormais portée par `SiteController::applyBlockManagementContact()`).
+
+**Communication des absences** (`AbsenceCommunicationSettings.tsx`) — plus aucun champ
+To/CC : affichage en lecture seule du contact actuel de l'établissement (« Gestion du bloc :
+… », « Copies : … », ou un texte explicite si aucun contact configuré), avec un lien
+« Modifier les contacts de l'établissement » (`navigate('/app/m/hospitals?edit={siteId}')` —
+`HospitalsPage` lit ce paramètre au montage pour ouvrir directement la fiche concernée).
+
+**Toggle « Prévenir automatiquement la gestion du bloc » — verrou circulaire corrigé.** Le
+toggle n'envoie plus jamais de `PATCH` toggle-seul à l'activation :
+- établissement sans contact valide → aucun appel API, message explicite affiché directement
+  (« Configurez d'abord l'adresse de la gestion du bloc dans la fiche de l'établissement. »)
+  avec un bouton d'accès direct à la fiche établissement concernée ;
+- établissement avec contact valide → ouvre un formulaire ne portant plus que le délai
+  (« Envoyer X jours avant le début du congé »), qui envoie `{notifyBlockManagementEnabled:
+  true, blockManagementDelayDays}` en un seul PATCH une fois validé — jamais le toggle seul.
+
+Désactiver (`notifyBlockManagementEnabled: false`) reste un PATCH immédiat sans condition
+(toujours valide, comme avant). Le garde-fou technique backend (`400` si `notifyBlockManagementEnabled`
+résultant est `true` sans contact établissement valide) reste en place mais n'est plus
+jamais le parcours normal — uniquement un filet de sécurité contre un appel API direct.
+
+### Résolution live et idempotence des Lots A/B/C — inchangées
+
+`AbsenceCommunicationJournalService::resolveLiveBlockManagementRecipients()` lit désormais
+`$site->getBlockManagementContactEmail()`/`getBlockManagementContactCc()` au lieu de
+`$config->...` — mais le principe de résolution **live**, jamais figée à la programmation,
+reste strictement identique : To/CC/chirurgien/Reply-To sont toujours recalculés au moment
+réel du dispatch (immédiat ou cron), qu'ils viennent de `Hospital` ou (avant ce lot) de
+`AbsenceCommunicationSiteConfig`. Si les contacts établissement sont modifiés entre la
+programmation et l'échéance, la nouvelle adresse est utilisée ; s'ils sont supprimés,
+`resolveLiveBlockManagementRecipients()` retourne `status: 'invalid'` exactement comme un
+`blockManagementEmailTo` autrefois vidé — `FAILED`, jamais un fallback silencieux sur
+l'ancien snapshot programmé. `AbsenceCommunicationBackfillService::classifyBlockManagement()`
+lit de même `$site->getBlockManagementContactEmail()` pour la preview — aucune divergence
+introduite entre preview et execute. Room Release, le journal historique (snapshots déjà
+envoyés, jamais modifiés rétroactivement — vérifié par test explicite), le cron
+(`dispatchClaimedAt`, claim atomique) et l'idempotence des trois lots restent
+structurellement inchangés — seule la source de lecture d'un couple de champs a changé.
+
+### Tests
+
+Backend : `SiteControllerTest` (nouveau — validation email/CC, dédoublonnage, mise à jour
+partielle, RBAC) ; `AbsenceCommunicationSiteConfigControllerTest` (adapté — le garde-fou
+technique lit désormais le contact établissement) ; `SendScheduledAbsenceCommunicationsCommandIntegrationTest`
+(3 tests ajoutés : contact supprimé avant échéance → `FAILED` jamais un fallback, chirurgien
+déjà présent dans les CC établissement → jamais dupliqué, snapshot déjà confié à l'envoi
+immuable même après modification ultérieure des contacts) ; tous les fixtures des suites
+Lot A/B/C existantes adaptées pour configurer le contact sur `Hospital` au lieu de
+`AbsenceCommunicationSiteConfig`, sans changement de leur intention. Frontend : formulaire
+contacts (`HospitalsPage.test.tsx`, nouveau describe), affichage lecture seule + lien +
+message bloquant + formulaire délai-seul (`AbsenceCommunicationSettings.test.tsx`, describe
+« Gestion du bloc » réécrit intégralement).
+
+Non déployé.
+
+## Finalisation D-114 — nom du chirurgien dans les emails Room Release (2026-09-06)
+
+### Contexte
+
+Revue métier post-déploiement : l'email « Libération de salle » (Lot A) ne mentionnait que
+le site et les créneaux libérés, jamais **qui** libère ces créneaux — un collègue devait
+deviner ou recouper avec le planning pour savoir quel chirurgien est concerné. Décision :
+ajouter le nom du chirurgien dans le **corps** de l'email, jamais dans l'objet (qui reste
+`Libération de salle — {Site}`, inchangé), et rester strictement centré sur la libération de
+salle — jamais reformuler en « Dr X est absent du ... au ... » (ça révélerait l'intervalle de
+congé complet, hors du périmètre fonctionnel de cet email et hors de ce qui est réellement
+utile au collègue).
+
+### Implémentation
+
+Nouvelle méthode `User::getDrName(): string` (« Dr {Prénom Nom} », repli sur l'email si aucun
+prénom/nom) — centralisée sur l'entité plutôt que dupliquée, puisqu'elle était déjà présente
+en privé et à l'identique dans `BlockManagementCommunicationService::drName()` (Lot B) ;
+`RoomReleaseCommunicationService` n'avait jamais eu besoin de cette logique jusqu'ici. Les
+trois points de rendu du template (`emails/absence_room_release.html.twig`) —
+`recordRoomRelease()` immédiat, `recordRoomReleaseDelta()` (complément d'allongement), et le
+contexte de dispatch final reconstruit depuis la communication persistée — passent tous
+`drName` désormais, `strict_variables: true` dans la config Twig du projet aurait fait
+échouer le rendu si l'un des trois avait été oublié (confirmé par les tests). Corps :
+
+> Bonjour,
+> **Dr {Prénom Nom} libère le(s) créneau(x) opératoire(s) suivant(s) à {Site} :**
+> – {jour} {date} — {période}
+> …
+> Si vous souhaitez disposer de l'un de ces créneaux, veuillez vous rapprocher de
+> l'organisation du bloc selon la procédure habituelle.
+
+Le nom est figé dans le `bodySnapshot` au moment de l'envoi comme le reste du corps (aucun
+changement structurel : Room Release ne recalculait déjà que via un seul rendu Twig,
+directement réutilisé comme snapshot ET comme contexte de dispatch — jamais la double
+représentation texte-brut/HTML du Lot B) : un changement ultérieur du prénom/nom du
+chirurgien sur son profil n'affecte jamais un email déjà envoyé — vérifié par test explicite
+(`test_body_snapshot_keeps_original_surgeon_name_after_profile_change`).
+
+### Tests ajoutés
+
+`RoomReleaseCommunicationFunctionalTest` : nom du chirurgien présent dans le corps + objet
+inchangé + intervalle de congé (dateStart/dateEnd de l'absence, format `d/m/Y`) jamais exposé
++ absence du mot « absent » (2 tests). Les cas déjà couverts par la suite existante
+(extension → nouvelles dates uniquement, raccourcissement → aucun correctif, dates BLOCK
+futures uniquement, CONSULTATION exclue) n'ont pas eu besoin d'ajout, la logique de sélection
+des occurrences étant totalement inchangée — seul le contexte de rendu Twig a gagné un champ.
+
+### Ajustements UX mineurs, même revue
+
+- `HospitalsPage.tsx` — la légende de « Contacts du bloc opératoire » ne scope plus
+  exclusivement ces coordonnées à la communication des absences (« Ces coordonnées sont
+  utilisées pour les communications organisationnelles envoyées à la gestion du bloc »,
+  avec mention de la gestion du bloc comme cas d'usage actuel plutôt qu'exclusif) — anticipe
+  une réutilisation future de ces contacts par d'autres canaux.
+- `AbsenceCommunicationSettings.tsx` — le libellé de l'affichage lecture seule passe de
+  « Gestion du bloc : » à « Adresse principale : » (la ligne « Copies : » reste inchangée),
+  pour rester cohérent avec les libellés du formulaire de la fiche établissement
+  (`HospitalsPage.tsx`) qui utilise déjà ces mêmes termes.
+
+Non déployé.

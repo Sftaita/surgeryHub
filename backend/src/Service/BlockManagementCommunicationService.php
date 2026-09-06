@@ -335,7 +335,7 @@ class BlockManagementCommunicationService
     public static function contextFor(SurgeonAbsenceCommunication $communication): array
     {
         return [
-            'drName' => self::drName($communication->getSurgeon()),
+            'drName' => $communication->getSurgeon()->getDrName(),
             'dateStart' => $communication->getAbsenceDateStartSnapshot()->format('d/m/Y'),
             'dateEnd' => $communication->getAbsenceDateEndSnapshot()->format('d/m/Y'),
         ];
@@ -343,7 +343,7 @@ class BlockManagementCommunicationService
 
     private static function subjectFor(AbsenceCommunicationType $type, User $surgeon): string
     {
-        $name = self::drName($surgeon);
+        $name = $surgeon->getDrName();
 
         return match ($type) {
             AbsenceCommunicationType::BLOCK_MANAGEMENT_ABSENCE => sprintf('Congé — %s', $name),
@@ -359,7 +359,7 @@ class BlockManagementCommunicationService
             "Bonjour,\n\nJe vous informe que je serai en congé du %s au %s inclus.\n\nMerci d'en prendre note pour l'organisation du bloc opératoire.\n\nBien à vous,\n%s",
             $absence->getDateStart()->format('d/m/Y'),
             $absence->getDateEnd()->format('d/m/Y'),
-            self::drName($surgeon),
+            $surgeon->getDrName(),
         );
     }
 
@@ -369,7 +369,7 @@ class BlockManagementCommunicationService
             "Bonjour,\n\nJe vous informe d'une modification concernant la période de congé communiquée précédemment.\n\nJe serai finalement en congé du %s au %s inclus.\n\nMerci d'en prendre note.\n\nBien à vous,\n%s",
             $absence->getDateStart()->format('d/m/Y'),
             $absence->getDateEnd()->format('d/m/Y'),
-            self::drName($surgeon),
+            $surgeon->getDrName(),
         );
     }
 
@@ -379,15 +379,8 @@ class BlockManagementCommunicationService
             "Bonjour,\n\nJe vous informe que mon congé prévu du %s au %s inclus est annulé.\n\nMerci d'en prendre note.\n\nBien à vous,\n%s",
             $absence->getDateStart()->format('d/m/Y'),
             $absence->getDateEnd()->format('d/m/Y'),
-            self::drName($surgeon),
+            $surgeon->getDrName(),
         );
-    }
-
-    private static function drName(User $user): string
-    {
-        $name = trim(($user->getFirstname() ?? '') . ' ' . ($user->getLastname() ?? ''));
-
-        return 'Dr ' . ($name !== '' ? $name : (string) $user->getEmail());
     }
 
     private static function isSurgeon(User $user): bool

@@ -148,11 +148,12 @@ final class BlockManagementCommunicationConcurrencyTest extends KernelTestCase
 
     private function configureBlockManagement(Hospital $site, string $to = 'bloc@example.com', int $delayDays = 5): void
     {
+        $site->setBlockManagementContactEmail($to);
+        $site->setBlockManagementContactCc([]);
+
         $config = new AbsenceCommunicationSiteConfig();
         $config->setSite($site);
         $config->setNotifyBlockManagementEnabled(true);
-        $config->setBlockManagementEmailTo($to);
-        $config->setBlockManagementEmailCc([]);
         $config->setBlockManagementDelayDays($delayDays);
         $this->em->persist($config);
         $this->em->flush();

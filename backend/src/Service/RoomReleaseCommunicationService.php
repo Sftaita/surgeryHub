@@ -108,7 +108,7 @@ class RoomReleaseCommunicationService
                 $result = $this->journal->recordRoomReleaseDelta(
                     $absence, $site, $surgeon, $snapshot, $recipients, $subject,
                     fn (array $finalSnapshot): string => $this->twig->render('emails/absence_room_release.html.twig', [
-                        'siteName' => $site->getName(), 'occurrences' => self::toDisplayLines($finalSnapshot),
+                        'siteName' => $site->getName(), 'drName' => $surgeon->getDrName(), 'occurrences' => self::toDisplayLines($finalSnapshot),
                     ]),
                 );
                 if ($result === null) {
@@ -120,7 +120,7 @@ class RoomReleaseCommunicationService
                 }
             } else {
                 $body = $this->twig->render('emails/absence_room_release.html.twig', [
-                    'siteName' => $site->getName(), 'occurrences' => self::toDisplayLines($snapshot),
+                    'siteName' => $site->getName(), 'drName' => $surgeon->getDrName(), 'occurrences' => self::toDisplayLines($snapshot),
                 ]);
                 $result = $this->journal->recordRoomRelease($absence, $site, $surgeon, $snapshot, $recipients, $subject, $body);
             }
@@ -128,7 +128,11 @@ class RoomReleaseCommunicationService
             // Reconstruit depuis la communication réellement persistée (jamais depuis
             // `$snapshot`, qui peut différer du delta finalement retenu sous verrou) —
             // garantit que l'email dispatché correspond exactement à ce qui a été journalisé.
-            $finalContext = ['siteName' => $site->getName(), 'occurrences' => self::toDisplayLines($result['communication']->getOccurrencesSnapshot())];
+            $finalContext = [
+                'siteName' => $site->getName(),
+                'drName' => $result['communication']->getSurgeon()->getDrName(),
+                'occurrences' => self::toDisplayLines($result['communication']->getOccurrencesSnapshot()),
+            ];
 
             // Dispatch strictement après le commit de la transaction du journal (même
             // discipline que partout ailleurs dans ce domaine — ex.
