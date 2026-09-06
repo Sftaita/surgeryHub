@@ -8496,9 +8496,12 @@ différent).
 
 ## D-114 — Communication des absences chirurgiens : « Libération de salle » (Lot A), « Gestion du bloc » (Lot B), rattrapage et journal manager (Lot C), bypass volontaire de NotificationPreferenceResolver (2026-09-05)
 
-**Statut : Lot A DONE (commit `6085735`), Lot B DONE (commit `d3dd382`), Lot C implémenté et
-vérifié ci-dessous — non commité au moment de la rédaction (revue finale en cours, voir la
-fin de ce document).**
+**Statut : Lot A DONE (commit `6085735`), Lot B DONE (commit `d3dd382`), Lot C DONE (commit
+`6f91bdc`). Déployé en production le 2026-09-06 (`v2026.09.06-prod`) — les trois lots
+ensemble, jamais partiellement (voir `docs/production.md`, historique des versions
+déployées, pour le rapport complet). Tâche planifiée `app:absences:send-scheduled-communications`
+disponible mais **toujours pas activée** en production (décision distincte, voir
+`docs/production.md` §Tâche planifiée).**
 
 Date : 2026-09-05
 
