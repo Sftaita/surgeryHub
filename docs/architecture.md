@@ -1888,6 +1888,65 @@ site a déjà été notifié (`SENT`) ; si oui, une seule question Oui/Non globa
 site) transmise via `DELETE .../{id}?notifyBlockManagementCancellation=` — un site encore
 `SCHEDULED` est toujours annulé silencieusement, indépendamment de ce choix.
 
+### Communication des absences chirurgiens — Lot C « Rattrapage et journal » (D-114)
+
+Dernier sous-lot : aucune nouvelle règle métier de communication — orchestration et lecture
+seule au-dessus des Lots A/B. Deux composants, indépendants l'un de l'autre.
+
+**Rattrapage** (`AbsenceCommunicationBackfillService`) — délibérément fin, jamais un second
+moteur de décision :
+
+```
+POST .../backfill/preview                    POST .../backfill/execute
+        │  (lecture pure)                            │  (revalide tout, jamais confiance
+        ▼                                             │   dans une preview passée)
+AbsenceCommunicationBackfillService                    ▼
+        ├── eligibleAbsences() — Absence.createdAt >= cutoff, jamais dateStart/dateEnd
+        ├── classifyRoomRelease()/classifyBlockManagement() — rejoue EN LECTURE SEULE les
+        │     mêmes conditions que RoomReleaseCommunicationService/BlockManagementCommunicationService
+        │     (jamais leur logique d'écriture) — sert à la fois preview() et au calcul de
+        │     "selectable"
+        └── execute() par absence sélectionnée, indépendamment (try/catch par item) :
+              revalide l'éligibilité, puis appelle directement
+              RoomReleaseCommunicationService::onAbsenceUpdated() et
+              BlockManagementCommunicationService::onAbsenceUpdated() — même chemin qu'une
+              vraie modification sans changement de dates, donc déjà idempotent par
+              construction (aucune seconde couche d'idempotence ajoutée)
+```
+
+Sélection au grain de l'absence complète, jamais par (absence, site) — voir
+`docs/decisions.md` D-114 Lot C pour la justification. Congé déjà entièrement terminé
+(`dateEnd < aujourd'hui`) : jamais de notification rétroactive de gestion du bloc
+(`ABSENCE_ALREADY_ENDED`), la Libération de salle continue de fonctionner normalement pour
+les blocs futurs restants s'il y en a.
+
+**Journal manager** (`SurgeonAbsenceCommunicationRepository` + `AbsenceCommunicationJournalController`)
+— lecture seule, pagination et filtres entièrement en base (jamais en mémoire côté PHP) :
+
+```
+GET /api/planning/absence-communications           GET /api/planning/absence-communications/{id}
+        │  (liste paginée, filtres DB)                       │  (détail complet)
+        ▼                                                     ▼
+SurgeonAbsenceCommunicationRepository::findForManager()   même repository, find() simple
+        ├── filtres site/chirurgien/type/période en DQL       ├── subject/body/occurrences
+        └── filtre statut global via EXISTS/NOT EXISTS        │     snapshots (jamais dépendant
+              corrélées (jamais une colonne persistée          │     de l'Absence source)
+              dérivée) — priorité SCHEDULED > FAILED >          └── deliveries (destinataire,
+              SENT > CANCELLED, documentée dans                      statut, tentatives, erreur)
+              docs/decisions.md D-114 Lot C
+```
+
+Reste entièrement exploitable après suppression de l'`Absence` source (FK `SET NULL` depuis
+le Lot A) — vérifié explicitement par test. RBAC identique au reste de la fonctionnalité :
+`PlanningVoter::PLANNING_MANAGE` uniquement.
+
+**UI manager** : `AbsenceCommunicationJournal.tsx` (liste + filtres + pagination + CTA de
+rattrapage) et `AbsenceCommunicationJournalDrawer.tsx` (détail), sous
+`Planning → Paramètres → Communication des absences`, à côté du sous-onglet Configuration
+existant (Lot A/B) — jamais une page admin séparée, le module reste rattaché à Planning.
+`AbsenceCommunicationBackfillDialog.tsx` porte le cycle cutoff → Analyser (preview) →
+sélection → confirmation explicite → Traiter (execute).
+
 **Notifications post-déploiement :**
 
 | Acteur | Déclencheur | Type de notification | Handler |

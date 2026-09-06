@@ -2935,6 +2935,136 @@ DELETE /api/absences/42?notifyBlockManagementCancellation=true
 
 ---
 
+### 26.3a-C Communication des absences chirurgiens — Lot C : rattrapage et journal (D-114)
+
+#### `POST /api/planning/absence-communications/backfill/preview`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Body JSON :** `{ "createdFrom": "2026-09-01" }` — filtre strict sur `Absence.createdAt`
+(borne inclusive), jamais sur `dateStart`/`dateEnd`. Interprété comme minuit **Europe/Brussels**
+(jamais UTC naïf) puis converti en UTC avant comparaison — voir `docs/decisions.md` D-114 Lot C,
+revue finale, pour la justification. Purement en lecture : aucun journal créé, aucune delivery
+créée, aucun email dispatché, aucun statut modifié, aucune programmation.
+
+**Réponse — 200 :**
+
+```json
+{
+  "createdFrom": "2026-09-01",
+  "summary": {
+    "totalAbsencesAnalyzed": 22, "ignoredOlderAbsences": 14, "eligibleAbsences": 8,
+    "noActionAbsences": 1, "roomReleaseEmailsPotential": 5, "blockManagementImmediate": 2,
+    "blockManagementScheduled": 3, "alreadyProcessedSites": 4
+  },
+  "items": [{
+    "absenceId": 42, "surgeonId": 7, "surgeonName": "Etienne Willemart",
+    "createdAt": "2026-09-03T10:00:00+00:00", "dateStart": "2026-09-10", "dateEnd": "2026-09-15",
+    "selectable": true,
+    "sites": [{
+      "siteId": 3, "siteName": "CHIREC - Hôpital Delta", "futureBlockOccurrenceCount": 2,
+      "roomRelease": { "status": "WILL_SEND", "recipientCount": 4, "newOccurrenceCount": 2 },
+      "blockManagement": { "status": "WILL_SCHEDULE", "scheduledAt": "2026-09-06T00:00:00+00:00" }
+    }]
+  }]
+}
+```
+
+`roomRelease.status` : `WILL_SEND` | `NO_NEW_OCCURRENCE` | `NO_RECIPIENT` | `NO_FUTURE_BLOCK` | `DISABLED`.
+`blockManagement.status` : `WILL_SEND_NOW` | `WILL_SCHEDULE` | `ALREADY_PROCESSED` | `DISABLED` | `MISSING_CONFIG` | `ABSENCE_ALREADY_ENDED`
+(ce dernier : congé déjà entièrement terminé, jamais de notification rétroactive).
+`selectable` : `true` si au moins un site de cette absence produirait un envoi réel —
+l'exécution se fait au grain de l'absence complète, jamais par site (voir `docs/decisions.md`
+D-114 Lot C pour la justification).
+
+**Erreurs :** `400` si `createdFrom` absent ou invalide.
+
+#### `POST /api/planning/absence-communications/backfill/execute`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+**Body JSON :** `{ "createdFrom": "2026-09-01", "absenceIds": [42, 43] }`
+
+Revalide **tout** côté serveur — ne fait jamais confiance au contenu d'une preview
+précédente (une absence a pu être modifiée, supprimée, ou déjà traitée par un autre process
+entretemps). Chaque absence est traitée indépendamment ; un échec isolé n'affecte jamais les
+absences déjà traitées avec succès dans le même appel.
+
+**Réponse — 200 :**
+
+```json
+{
+  "createdFrom": "2026-09-01",
+  "results": [
+    { "absenceId": 42, "status": "PROCESSED", "blockManagementSkippedReason": null, "newCommunicationCount": 2 },
+    { "absenceId": 43, "status": "SKIPPED_NOT_FOUND" }
+  ]
+}
+```
+
+`status` par item : `PROCESSED` | `SKIPPED_NOT_FOUND` (absence supprimée entre preview et
+execute) | `SKIPPED_BEFORE_CUTOFF` | `SKIPPED_NOT_A_SURGEON` | `ERROR` (avec un champ `error`).
+
+**Erreurs :** `400` si `createdFrom` ou `absenceIds` (liste non vide d'entiers) absent/invalide.
+
+#### `GET /api/planning/absence-communications`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Journal manager en lecture. Filtres : `siteId`, `surgeonId`, `type`
+(`ROOM_RELEASE`|`BLOCK_MANAGEMENT_ABSENCE`|`BLOCK_MANAGEMENT_MODIFICATION`|`BLOCK_MANAGEMENT_CANCELLATION`),
+`status` (statut global calculé — voir `docs/decisions.md` D-114 Lot C), `periodFrom`/`periodTo`
+(`Y-m-d`, chevauchement avec la période de congé snapshotée), `page`, `limit` (défaut 25, max 100).
+Tri : `createdAt DESC, id DESC` — le tie-breaker sur `id` garantit une pagination stable même
+quand deux communications partagent exactement le même `createdAt` (rattrapage créant
+plusieurs lignes très rapprochées).
+
+**Réponse — 200 :**
+
+```json
+{
+  "items": [{
+    "id": 12, "type": "BLOCK_MANAGEMENT_ABSENCE", "revisionNumber": 0,
+    "surgeon": { "id": 7, "name": "Etienne Willemart" },
+    "site": { "id": 3, "name": "CHIREC - Hôpital Delta" },
+    "absenceId": 42, "absenceDateStart": "2026-09-10", "absenceDateEnd": "2026-09-15",
+    "createdAt": "2026-09-03T10:00:00+00:00", "globalStatus": "SENT",
+    "deliveryCount": 1, "sentCount": 1, "failedCount": 0, "cancelledCount": 0, "scheduledCount": 0
+  }],
+  "page": 1, "limit": 25, "total": 8
+}
+```
+
+#### `GET /api/planning/absence-communications/{id}`
+
+**AuthZ :** `MANAGER` / `ADMIN`
+
+Reste entièrement exploitable même si l'`Absence` source a été supprimée (`absenceId: null`
+— tout le reste provient des snapshots déjà posés par les Lots A/B, jamais une dépendance à
+l'existence de l'Absence).
+
+**Réponse — 200 :** même forme qu'un item de liste, plus :
+
+```json
+{
+  "subject": "Congé — Dr Etienne Willemart",
+  "body": "Bonjour,\n\nJe vous informe...",
+  "occurrences": [],
+  "replyTo": "etienne@surgicalhub.test",
+  "deliveries": [{
+    "id": 9, "to": "bloc@example.com", "cc": ["secretariat@example.com"], "status": "SENT",
+    "attemptCount": 1, "scheduledAt": null, "sentAt": "2026-09-03T10:05:00+00:00",
+    "cancelledAt": null, "lastError": null
+  }]
+}
+```
+
+`replyTo` n'est jamais présent pour `ROOM_RELEASE` (aucun Reply-To pour ce type).
+
+**Erreurs :** `404` si l'id n'existe pas.
+
+---
+
 ### 26.3b Relances congés manager (D-051)
 
 Cible : instrumentistes + chirurgiens actifs uniquement. **Les deux actions envoient

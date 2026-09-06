@@ -94,6 +94,98 @@ class AbsenceCommunicationJournalService
     }
 
     /**
+     * Revue finale Lot C (§2) — variante de recordRoomRelease() pour le chemin "mise à jour"
+     * (allongement de congé, ou rattrapage). Recalcule le delta d'occurrences jamais
+     * annoncées SOUS LE MÊME VERROU PESSIMISTE que le calcul du `revisionNumber`, jamais
+     * avant : sans cela, deux exécutions concurrentes de ce chemin pour la même absence
+     * (deux managers relançant le même rattrapage, ou un rattrapage concurrent d'une vraie
+     * modification) pourraient toutes deux lire "occurrence jamais annoncée" avant qu'aucune
+     * n'ait committé, puis créer chacune une révision distincte annonçant deux fois les
+     * mêmes dates aux mêmes collègues. Retourne `null` si, une fois recalculé sous verrou,
+     * le delta est vide — jamais de communication vide créée, jamais de correction inutile.
+     *
+     * @param array<int, array{postId: int, date: string, period: string}> $candidateOccurrences
+     *        Occurrences futures candidates, PAS ENCORE filtrées par "déjà annoncées" — ce
+     *        filtrage a lieu ici, sous verrou, jamais chez l'appelant.
+     * @param User[] $recipients
+     * @param \Closure(array<int, array{postId: int, date: string, period: string}>): string $renderBody
+     *        Rendu du corps de l'email à partir du delta FINAL (recalculé sous verrou) —
+     *        jamais du delta pré-calculé par l'appelant, qui pourrait être obsolète face à
+     *        une exécution concurrente déjà committée.
+     *
+     * @return array{communication: SurgeonAbsenceCommunication, deliveries: SurgeonAbsenceCommunicationDelivery[]}|null
+     */
+    public function recordRoomReleaseDelta(
+        Absence $absence,
+        Hospital $site,
+        User $surgeon,
+        array $candidateOccurrences,
+        array $recipients,
+        string $subject,
+        \Closure $renderBody,
+    ): ?array {
+        $communication = null;
+        $deliveries = [];
+        $emptyAfterLockedFilter = false;
+
+        $this->em->wrapInTransaction(function () use (
+            $absence, $site, $surgeon, $candidateOccurrences, $recipients, $subject, $renderBody,
+            &$communication, &$deliveries, &$emptyAfterLockedFilter,
+        ): void {
+            $this->em->lock($absence, LockMode::PESSIMISTIC_WRITE);
+            $this->em->refresh($absence);
+
+            // Relu SOUS VERROU — jamais la valeur pré-calculée par l'appelant avant
+            // l'acquisition du verrou, qui pourrait être obsolète face à une exécution
+            // concurrente déjà committée entretemps.
+            $alreadyAnnounced = $this->alreadyAnnouncedOccurrenceKeys($absence, $site);
+            $snapshot = array_values(array_filter(
+                $candidateOccurrences,
+                static fn (array $o) => !isset($alreadyAnnounced[self::occurrenceKey((int) $o['postId'], (string) $o['date'])]),
+            ));
+
+            if (empty($snapshot)) {
+                $emptyAfterLockedFilter = true;
+                return;
+            }
+
+            $body = $renderBody($snapshot);
+            $revision = $this->nextRevisionNumberLocked($absence, $site, AbsenceCommunicationType::ROOM_RELEASE);
+
+            $communication = new SurgeonAbsenceCommunication();
+            $communication->setAbsence($absence);
+            $communication->setSurgeon($surgeon);
+            $communication->setSite($site);
+            $communication->setType(AbsenceCommunicationType::ROOM_RELEASE);
+            $communication->setRevisionNumber($revision);
+            $communication->setSubjectSnapshot($subject);
+            $communication->setBodySnapshot($body);
+            $communication->setOccurrencesSnapshot($snapshot);
+            $communication->setAbsenceDateStartSnapshot($absence->getDateStart());
+            $communication->setAbsenceDateEndSnapshot($absence->getDateEnd());
+            $this->em->persist($communication);
+
+            foreach ($recipients as $recipient) {
+                $delivery = new SurgeonAbsenceCommunicationDelivery();
+                $delivery->setRecipient($recipient);
+                $delivery->setRecipientEmailSnapshot((string) $recipient->getEmail());
+                $delivery->setStatus(AbsenceCommunicationStatus::SCHEDULED);
+                $communication->addDelivery($delivery);
+                $this->em->persist($delivery);
+                $deliveries[] = $delivery;
+            }
+
+            $this->em->flush();
+        });
+
+        if ($emptyAfterLockedFilter) {
+            return null;
+        }
+
+        return ['communication' => $communication, 'deliveries' => $deliveries];
+    }
+
+    /**
      * Union des clés `postId|date` déjà annoncées pour ce couple (absence, site), toutes
      * révisions ROOM_RELEASE confondues — sert au calcul du delta lors d'un allongement de
      * congé (RoomReleaseCommunicationService::onAbsenceUpdated()).

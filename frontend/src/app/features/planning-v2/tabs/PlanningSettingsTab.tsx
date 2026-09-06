@@ -9,6 +9,7 @@ import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { ShiftPeriodSettings } from "../components/ShiftPeriodSettings";
 import { SiteGroupSettings } from "../components/SiteGroupSettings";
 import { AbsenceCommunicationSettings } from "../components/AbsenceCommunicationSettings";
+import { AbsenceCommunicationJournal } from "../components/AbsenceCommunicationJournal";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 
 type Section = "periodes" | "groupes" | "absences" | "notifications";
@@ -33,8 +34,11 @@ const NOTIF_CHANNELS: NotifChannel[] = [
   { channel: "Push mobile", desc: "Notifications push sur l'application mobile.", active: false, soon: true },
 ];
 
+type AbsenceCommSubSection = "configuration" | "journal";
+
 export function PlanningSettingsTab() {
   const [section, setSection] = React.useState<Section>("periodes");
+  const [absenceCommSubSection, setAbsenceCommSubSection] = React.useState<AbsenceCommSubSection>("configuration");
 
   return (
     <Box>
@@ -68,7 +72,32 @@ export function PlanningSettingsTab() {
         <Box sx={{ flex: 1, minWidth: 0 }}>
           {section === "periodes" && <ShiftPeriodSettings />}
           {section === "groupes" && <SiteGroupSettings />}
-          {section === "absences" && <AbsenceCommunicationSettings />}
+          {section === "absences" && (
+            <Box>
+              <Stack direction="row" spacing={0.5} sx={{ mb: 2.5, bgcolor: "#F1F4F7", borderRadius: planningV2Radii.button, p: 0.4, width: "max-content" }}>
+                {([
+                  ["configuration", "Configuration"],
+                  ["journal", "Journal"],
+                ] as const).map(([key, label]) => {
+                  const active = absenceCommSubSection === key;
+                  return (
+                    <Box
+                      key={key} component="button" onClick={() => setAbsenceCommSubSection(key)}
+                      sx={{
+                        border: "none", cursor: "pointer", fontFamily: "inherit", px: 2, py: 0.9,
+                        borderRadius: planningV2Radii.button, fontSize: 13, fontWeight: 700,
+                        bgcolor: active ? "#fff" : "transparent", color: active ? planningV2Colors.brand : planningV2Colors.textMuted,
+                        boxShadow: active ? planningV2Shadows.card : "none",
+                      }}
+                    >
+                      {label}
+                    </Box>
+                  );
+                })}
+              </Stack>
+              {absenceCommSubSection === "configuration" ? <AbsenceCommunicationSettings /> : <AbsenceCommunicationJournal />}
+            </Box>
+          )}
           {section === "notifications" && (
             <Box>
               <Box sx={{ bgcolor: "#fff", border: `1px solid ${planningV2Colors.cardBorder}`, borderRadius: planningV2Radii.cardLg, overflow: "hidden", boxShadow: planningV2Shadows.card }}>

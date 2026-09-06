@@ -159,6 +159,110 @@ export interface AbsenceCommunicationSiteSettingUpdateV2 {
   blockManagementDelayDays?: number | null;
 }
 
+// ── Communication des absences chirurgiens — Lot C (D-114) : rattrapage ──────
+
+export type BackfillRoomReleaseStatus = "WILL_SEND" | "NO_NEW_OCCURRENCE" | "NO_RECIPIENT" | "NO_FUTURE_BLOCK" | "DISABLED";
+export type BackfillBlockManagementStatus = "WILL_SEND_NOW" | "WILL_SCHEDULE" | "ALREADY_PROCESSED" | "DISABLED" | "MISSING_CONFIG" | "ABSENCE_ALREADY_ENDED";
+
+export interface BackfillSiteActionV2 {
+  siteId: number;
+  siteName: string;
+  futureBlockOccurrenceCount: number;
+  roomRelease: { status: BackfillRoomReleaseStatus; recipientCount: number; newOccurrenceCount: number };
+  blockManagement: { status: BackfillBlockManagementStatus; scheduledAt: string | null };
+}
+
+export interface BackfillAbsenceItemV2 {
+  absenceId: number;
+  surgeonId: number | null;
+  surgeonName: string | null;
+  createdAt: string | null;
+  dateStart: string;
+  dateEnd: string;
+  selectable: boolean;
+  sites: BackfillSiteActionV2[];
+}
+
+export interface BackfillPreviewV2 {
+  createdFrom: string;
+  summary: {
+    totalAbsencesAnalyzed: number;
+    ignoredOlderAbsences: number;
+    eligibleAbsences: number;
+    noActionAbsences: number;
+    roomReleaseEmailsPotential: number;
+    blockManagementImmediate: number;
+    blockManagementScheduled: number;
+    alreadyProcessedSites: number;
+  };
+  items: BackfillAbsenceItemV2[];
+}
+
+export type BackfillExecuteItemStatus = "PROCESSED" | "SKIPPED_NOT_FOUND" | "SKIPPED_BEFORE_CUTOFF" | "SKIPPED_NOT_A_SURGEON" | "ERROR";
+
+export interface BackfillExecuteResultItemV2 {
+  absenceId: number;
+  status: BackfillExecuteItemStatus;
+  blockManagementSkippedReason?: string | null;
+  newCommunicationCount?: number;
+  error?: string;
+}
+
+export interface BackfillExecuteResponseV2 {
+  createdFrom: string;
+  results: BackfillExecuteResultItemV2[];
+}
+
+// ── Communication des absences chirurgiens — Lot C (D-114) : journal manager ──
+
+export type AbsenceCommunicationTypeV2 = "ROOM_RELEASE" | "BLOCK_MANAGEMENT_ABSENCE" | "BLOCK_MANAGEMENT_MODIFICATION" | "BLOCK_MANAGEMENT_CANCELLATION";
+export type AbsenceCommunicationGlobalStatusV2 = "SCHEDULED" | "SENT" | "FAILED" | "CANCELLED";
+
+export interface AbsenceCommunicationListItemV2 {
+  id: number;
+  type: AbsenceCommunicationTypeV2;
+  revisionNumber: number;
+  surgeon: { id: number; name: string } | null;
+  site: { id: number; name: string } | null;
+  absenceId: number | null;
+  absenceDateStart: string;
+  absenceDateEnd: string;
+  createdAt: string | null;
+  globalStatus: AbsenceCommunicationGlobalStatusV2;
+  deliveryCount: number;
+  sentCount: number;
+  failedCount: number;
+  cancelledCount: number;
+  scheduledCount: number;
+}
+
+export interface AbsenceCommunicationDeliveryV2 {
+  id: number;
+  to: string;
+  cc: string[];
+  status: AbsenceCommunicationGlobalStatusV2;
+  attemptCount: number;
+  scheduledAt: string | null;
+  sentAt: string | null;
+  cancelledAt: string | null;
+  lastError: string | null;
+}
+
+export interface AbsenceCommunicationDetailV2 extends AbsenceCommunicationListItemV2 {
+  subject: string;
+  body: string;
+  occurrences: Array<{ postId: number; date: string; period: string }>;
+  replyTo: string | null;
+  deliveries: AbsenceCommunicationDeliveryV2[];
+}
+
+export interface AbsenceCommunicationListResponseV2 {
+  items: AbsenceCommunicationListItemV2[];
+  page: number;
+  limit: number;
+  total: number;
+}
+
 // ── Site groups ──────────────────────────────────────────────────────────────
 
 export interface SiteGroupV2 {

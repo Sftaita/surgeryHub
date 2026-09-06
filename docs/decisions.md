@@ -8494,7 +8494,11 @@ simplement l'onglet En attente sans mise en évidence — dégradation gracieuse
 volontairement non fusionné avec `CatalogueRequestKind` (objet métier réellement
 différent).
 
-## D-114 — Communication des absences chirurgiens : « Libération de salle » (Lot A) et « Gestion du bloc » (Lot B), bypass volontaire de NotificationPreferenceResolver (2026-09-05)
+## D-114 — Communication des absences chirurgiens : « Libération de salle » (Lot A), « Gestion du bloc » (Lot B), rattrapage et journal manager (Lot C), bypass volontaire de NotificationPreferenceResolver (2026-09-05)
+
+**Statut : Lot A DONE (commit `6085735`), Lot B DONE (commit `d3dd382`), Lot C implémenté et
+vérifié ci-dessous — non commité au moment de la rédaction (revue finale en cours, voir la
+fin de ce document).**
 
 Date : 2026-09-05
 
@@ -8741,4 +8745,221 @@ Rattrapage historique des absences déjà existantes au moment du déploiement (
 créations/modifications/suppressions **après** déploiement déclenchent la gestion du bloc),
 journal manager complet (UI de consultation de l'historique des communications — hors
 périmètre, seul le réglage de configuration a une UI). Aucune modification du Lot A.
-Non déployé en production — sur instruction explicite répétée.
+
+## Lot C — Rattrapage historique et journal manager (2026-09-05)
+
+### Contexte
+
+Troisième et dernier sous-lot de D-114. Les Lots A et B ne réagissent qu'aux
+créations/modifications/suppressions d'absence survenant **après** leur déploiement — toute
+absence déjà encodée avant cette date n'a jamais déclenché ni « Libération de salle » ni
+« Gestion du bloc ». Le Lot C ajoute (1) un rattrapage explicite, filtré par date de création
+de l'absence, avec preview obligatoire et exécution idempotente, et (2) un journal manager en
+lecture consultant l'historique complet des communications déjà envoyées par les Lots A/B.
+Aucune nouvelle règle métier de communication n'est introduite : ce lot orchestre et expose
+en lecture ce que les Lots A/B savent déjà faire.
+
+### Rattrapage — filtre strict sur `Absence.createdAt`, jamais une règle permanente
+
+Le cutoff (`createdFrom`) filtre exclusivement sur la date de création de l'absence en base
+— jamais `dateStart`/`dateEnd`, jamais une date de BLOCK, jamais une date d'envoi. Une
+absence créée avant le cutoff est ignorée quelle que soit la période de son congé (même
+future) ; une absence créée à partir du cutoff (borne inclusive) est éligible quelle que
+soit la période de son congé (même passée — voir plus bas). Ce cutoff n'est un paramètre que
+de l'appel `preview`/`execute` : il n'est **jamais persisté** comme réglage permanent, et ne
+gouverne en rien le traitement des absences créées après le rattrapage, qui continue de
+suivre exactement le comportement standard des Lots A/B, indépendamment de tout cutoff
+choisi lors d'un rattrapage antérieur.
+
+### `AbsenceCommunicationBackfillService` — un orchestrateur volontairement fin
+
+`preview()` et `execute()` partagent une classification en lecture
+(`classifyRoomRelease()`/`classifyBlockManagement()`) qui rejoue fidèlement les MÊMES
+conditions que `RoomReleaseCommunicationService::react()` et la branche "neverSent" de
+`BlockManagementCommunicationService::react()`, sans jamais rien écrire. C'est une
+duplication assumée de leur logique de **décision** (jamais de leur logique d'**écriture**)
+— seul moyen d'offrir une preview strictement sans effet de bord (§5 de la demande) tout en
+gardant les deux chemins alignés ; toute dérive future entre cette classification et le
+comportement réel des deux services serait un bug, verrouillé par les tests qui les exercent
+côte à côte.
+
+`execute()` ne relit jamais le résultat d'une preview passée — il ne prend en entrée que le
+cutoff et la sélection d'IDs d'absence, puis pour chaque absence : revalide entièrement
+l'éligibilité (créée depuis le cutoff, utilisateur toujours chirurgien), puis appelle
+directement `RoomReleaseCommunicationService::onAbsenceUpdated()` et
+`BlockManagementCommunicationService::onAbsenceUpdated()` (avec les dates courantes de
+l'absence comme "précédentes", ce qui les fait suivre exactement le même chemin qu'une vraie
+modification sans changement réel de dates). Aucune seconde couche d'idempotence n'a été
+nécessaire : `onAbsenceUpdated()` des deux services est déjà idempotent par construction
+(delta d'occurrences jamais annoncées pour la Libération de salle, find-or-create +
+comparaison de snapshot pour la Gestion du bloc) — rejouer le rattrapage plusieurs fois sur
+la même absence ne crée donc jamais de doublon, exactement comme un `PATCH` réel sans
+changement de dates ne le ferait pas. Chaque absence est traitée indépendamment (try/catch
+par absence) : un échec isolé n'affecte jamais les absences déjà traitées avec succès dans
+la même exécution — aucune transaction globale sur le lot entier.
+
+### Sélection au grain de l'absence complète, jamais par (absence, site)
+
+Décision actée : la sélection dans `execute()` porte sur l'absence entière, jamais sur un
+couple (absence, site) individuel — bien que la demande initiale ait envisagé cette
+granularité plus fine (§8). `onAbsenceUpdated()` des deux services traite déjà, en un seul
+appel, tous les sites concernés d'une absence avec son propre filtrage par site (config
+activée, occurrences BLOCK, destinataires éligibles, etc.) — filtrage déjà correct et déjà
+testé par les Lots A/B. Reproduire un filtrage par site dans le rattrapage aurait dupliqué
+exactement la logique que ce lot doit au contraire réutiliser telle quelle, à l'encontre du
+principe « rester fin » explicitement demandé (§11). La preview reste néanmoins détaillée
+par site pour la transparence (§7) : le manager voit précisément ce qui va se passer pour
+chaque site avant de décider d'inclure ou d'exclure l'absence entière.
+
+### Congé déjà terminé — jamais de notification rétroactive de gestion du bloc (§14)
+
+Cas distinct du filtre de cutoff : une absence peut être éligible au cutoff (créée
+récemment) tout en portant une période de congé entièrement passée (`dateEnd < aujourd'hui`)
+— scénario réaliste pour un rattrapage exécuté longtemps après la mise en production. Pour
+la Libération de salle, rien de spécifique n'était nécessaire : `react()` ne retient déjà que
+les occurrences BLOCK **futures**, donc un congé entièrement passé ne produit naturellement
+aucun email. Pour la Gestion du bloc en revanche, `resolveForWindow()` n'a aucune notion de
+« futur » — sans garde-fou, un congé déjà terminé aurait pu déclencher une notification
+rétroactive absurde. Nouveau statut `ABSENCE_ALREADY_ENDED` (`AbsenceBackfillBlockManagementAction`,
+n'existait pas dans le vocabulaire proposé par la demande) : si `dateEnd < aujourd'hui`,
+aucune communication de gestion du bloc n'est jamais créée ni programmée pour cette absence,
+quel que soit le réglage du site — la Libération de salle continue, elle, de fonctionner
+normalement (blocs futurs restants s'il y en a).
+
+### Statut global d'une communication — convention pour le journal (§19)
+
+Aucune colonne persistée dérivée n'a été ajoutée : le statut global affiché dans le journal
+est calculé à la volée à partir des `SurgeonAbsenceCommunicationDelivery` du parent, jamais
+stocké. Convention retenue, valable en liste comme en détail :
+priorité **SCHEDULED > FAILED > SENT > CANCELLED** — le premier statut, dans cet ordre, porté
+par au moins une delivery, l'emporte. Pour `BLOCK_MANAGEMENT_*` (toujours exactement une
+delivery, invariant verrouillé au Lot B), cette règle se réduit trivialement au statut de
+l'unique delivery, sans jamais de contradiction possible. Pour `ROOM_RELEASE` (une delivery
+par collègue), une seule delivery encore `SCHEDULED` classe tout le parent `SCHEDULED` (envoi
+encore en cours) ; une seule `FAILED` (aucune `SCHEDULED` restante) classe `FAILED` — signal
+le plus utile pour un manager, qui doit alors ouvrir le détail pour voir quelles deliveries
+ont réellement échoué, plutôt que d'inventer un état `PARTIAL` absent du modèle existant. Le
+filtre `status` du journal applique la même convention via des sous-requêtes SQL
+EXISTS/NOT EXISTS corrélées (jamais un filtre en mémoire côté PHP).
+
+### Journal manager — lecture seule, snapshots uniquement
+
+`SurgeonAbsenceCommunicationRepository` (nouveau, câblé sur l'entité déjà existante — aucune
+migration) porte la pagination et les filtres, entièrement en base (site, chirurgien, type,
+statut global, chevauchement de période). Le détail comme la liste ne dépendent jamais de
+l'existence de l'`Absence` source (`absence_id` peut être `NULL, ON DELETE SET NULL depuis le
+Lot A) — chirurgien, site, période, sujet, corps et deliveries proviennent exclusivement des
+snapshots déjà posés par les Lots A/B, vérifié explicitement par test après suppression réelle
+de l'absence source (§20). RBAC identique à toute la fonctionnalité : `PlanningVoter::PLANNING_MANAGE`
+uniquement, aucune donnée patient/tarif/clinique n'y transite jamais (§21).
+
+### Non fait dans ce lot
+
+Filtre `status` sur une combinaison de plusieurs statuts à la fois (un seul à la fois pour
+l'instant, suffisant pour l'usage manager identifié) ; recherche texte libre dans le journal
+(jamais demandée comme prioritaire — §17 : « ne pas surcharger l'écran ») ; nouvel index SQL
+dédié (`created_at`, `type`) — les index déjà posés par le Lot A (`surgeon_id`, `site_id`)
+couvrent les filtres les plus déterminants ; à ajouter seulement si un audit SQL réel en
+production en démontre le besoin (§23, jamais par anticipation). Non déployé en production —
+sur instruction explicite répétée.
+
+### Revue finale Lot C — corrections et invariants confirmés (2026-09-06)
+
+**Cutoff interprété en `Europe/Brussels`, jamais en UTC naïf.** `Absence.createdAt` est posé
+par `new \DateTimeImmutable()` dans un runtime PHP dont le fuseau par défaut est UTC (vérifié
+en conteneur) — une convention distincte et non interchangeable avec les champs de type
+`Mission.startAt`, documentés ailleurs comme wall-clock déjà traité comme
+`Europe/Brussels`. Le cutoff saisi par le manager (une simple date) est donc interprété comme
+minuit `Europe/Brussels` puis converti en UTC avant comparaison
+(`AbsenceCommunicationBackfillController::parseCreatedFrom()`) — sans cette conversion, une
+absence créée entre minuit UTC et minuit Brussels (1h ou 2h selon la saison) aurait été
+classée du mauvais côté du cutoff. Verrouillé par 4 tests de bornes autour de minuit Brussels.
+
+**Concurrence réelle entre deux `execute()` sur la même absence — Room Release.**
+`alreadyAnnouncedOccurrenceKeys()` était lu par un simple SELECT AVANT l'acquisition du
+verrou pessimiste dans le chemin "mise à jour" de `RoomReleaseCommunicationService::react()`
+— deux exécutions concurrentes (deux managers relançant le même rattrapage, ou un rattrapage
+concurrent d'une vraie modification) pouvaient toutes deux lire "jamais annoncé" avant qu'aucune
+n'ait committé, puis annoncer deux fois les mêmes dates aux mêmes collègues sous deux révisions
+distinctes. Nouvelle méthode `AbsenceCommunicationJournalService::recordRoomReleaseDelta()` :
+recalcule le delta d'occurrences jamais annoncées SOUS LE MÊME VERROU que le calcul du
+`revisionNumber`, jamais avant ; retourne `null` (no-op) si le delta est vide une fois
+recalculé sous verrou. Prouvé par deux connexions DBAL indépendantes (une tient le verrou sans
+committer, l'autre doit être réellement bloquée sous `innodb_lock_wait_timeout` court) —
+`RoomReleaseCommunicationDeltaConcurrencyTest`. Le chemin "création" (`recordRoomRelease()`,
+Lot A, inchangé) n'était pas concerné : il n'a par construction aucune notion de delta à
+recalculer. Le chemin "gestion du bloc, jamais encore traité"
+(`upsertPendingBlockManagementNotice()`) était déjà correct — son find-or-create s'exécute
+intégralement sous verrou depuis le Lot B ; prouvé par
+`BlockManagementCommunicationConcurrencyTest`.
+
+**Limite assumée, non corrigée dans ce lot : `recordBlockManagementFollowUp()` (MODIFICATION)
+n'a pas de déduplication de contenu sous verrou** — seule l'unicité du `revisionNumber` est
+garantie (déjà documenté ainsi depuis le Lot B). Deux appels concurrents à
+`BlockManagementCommunicationService::react()` pour un site déjà `SENT` dont les dates ont
+réellement changé pourraient en théorie produire deux communications `MODIFICATION`
+distinctes portant le même nouveau snapshot de dates. Non exploitable par le rattrapage du
+Lot C (qui n'emprunte jamais ce chemin pour une absence jamais traitée, sa cible normale) ;
+laissé en l'état comme décision Lot B pré-existante, hors périmètre d'une régression
+directement introduite par ce lot.
+
+**`classifyBlockManagement()` — divergence preview/execute corrigée.** La preview classait à
+tort TOUTE communication existante (y compris une dont l'unique delivery a été `CANCELLED`
+avant tout envoi réel) comme `ALREADY_PROCESSED`, alors que le vrai `$neverSent` de
+`BlockManagementCommunicationService::react()` traite une delivery `SCHEDULED` ou `CANCELLED`
+comme "jamais réellement communiqué" (réactivable en place). Corrigé pour reproduire
+exactement ce `$neverSent` — la preview annonce désormais ce qu'`execute()` fera réellement.
+
+**Pagination du journal — tie-breaker stable (§18).** `findForManager()` trie désormais par
+`createdAt DESC, id DESC` : deux communications créées à la même microseconde (rattrapage
+créant plusieurs lignes très rapprochées) ne changent jamais d'ordre relatif d'une page à
+l'autre, `id` étant strictement monotone contrairement à `createdAt`.
+
+**Granularité transactionnelle par absence (§17), confirmée par test.** `execute()` n'ouvre
+aucune transaction globale sur le lot : chaque absence est traitée dans son propre
+`try`/`catch`, et chaque écriture réelle (Room Release, Gestion du bloc) commit sa propre
+transaction indépendamment via `wrapInTransaction()`. Un échec sur une absence (verrou tenu
+par une transaction concurrente, remonté comme `ERROR` avec message, jamais une exception
+HTTP 500) ne fait jamais annuler ce qui a déjà été committé pour une autre absence du même
+lot — prouvé par un test à deux absences dont l'une est bloquée par une connexion DBAL
+concurrente tenant le verrou pessimiste.
+
+**Configuration relue en temps réel à `execute()`, jamais depuis la preview (§15).**
+`execute()` ne prend en entrée que le cutoff et la sélection d'IDs — jamais un payload de
+preview. Un site désactivé entre preview et execute ne produit plus rien (même si la preview
+promettait `WILL_SEND`) ; symétriquement, un site activé après une preview `DISABLED` est
+correctement traité par `execute()`. Vérifié par deux tests dédiés.
+
+**Rattrapage partiel Room Release (§12).** Un site déjà partiellement annoncé (ex. un envoi
+manuel antérieur au Lot C) ne reçoit, via le rattrapage, que le delta réel des occurrences
+jamais annoncées — jamais une réannonce complète des dates déjà connues ; un second
+rattrapage n'envoie plus rien. Vérifié par test avec un envoi partiel pré-existant (1 date sur
+3) suivi d'un rattrapage puis d'un relaunch.
+
+**Contenu de `lastError` — déjà sûr pour affichage manager, aucun changement nécessaire.**
+Le chemin d'échec SMTP réel (`OutboundNotificationEmailFailureListener::normalizeThrowableMessage()`,
+D-084, réutilisé tel quel par ce domaine) redacte déjà toute sous-chaîne de type URI (DSN
+pouvant porter un mot de passe) et tronque à 200 caractères ; les autres messages
+(désactivation, config invalide, absence supprimée, site plus concerné) sont des phrases
+métier écrites explicitement, jamais un message d'exception brut.
+
+**Affichage `CANCELLED` — déjà distinct d'un échec, aucun changement nécessaire.** Le journal
+frontend affiche `CANCELLED` comme « Annulé » avec un token de couleur neutre
+(`textSecondary`/gris clair), visuellement distinct du token critique utilisé pour `FAILED` —
+jamais présenté comme une erreur.
+
+**Confirmation du rattrapage — texte et libellé renforcés (§23/§24).** Le texte d'alerte avant
+exécution énonce désormais explicitement « Des emails seront réellement envoyés et des
+programmations réellement créées (...). Cette action n'est pas une simple sauvegarde. » ; le
+bouton de confirmation est libellé « Traiter » (jamais « Enregistrer » ni un « Confirmer »
+ambigu). Le bouton est protégé côté frontend contre un double-clic rapide (`disabled` pendant
+`isPending`, plus une garde explicite dans le handler) — la garantie réelle contre un double
+traitement reste, comme documenté plus haut, l'idempotence côté backend.
+
+**Vérification navigateur — limite confirmée, aucun contournement tenté.** Le plugin
+`@vitejs/plugin-basic-ssl` est inconditionnellement actif dans `frontend/vite.config.ts`
+(aucune bascule HTTP conditionnelle réelle malgré une note ambiguë dans `docs/docker.md`),
+ce qui déclenche l'interstitiel de sécurité Chrome et bloque toute automation DevTools.
+Aucune modification de la configuration Vite ni contournement fragile de Chrome n'a été
+tenté (hors périmètre explicitement demandé). *UI non vérifiée manuellement en navigateur à
+cause du certificat local auto-signé ; couverte par tests composants + API HTTP réelle.*

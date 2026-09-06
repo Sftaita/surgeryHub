@@ -22,6 +22,12 @@ import type {
   VerifyConflictsResponse,
   AbsenceCommunicationSiteSettingV2,
   AbsenceCommunicationSiteSettingUpdateV2,
+  BackfillPreviewV2,
+  BackfillExecuteResponseV2,
+  AbsenceCommunicationTypeV2,
+  AbsenceCommunicationGlobalStatusV2,
+  AbsenceCommunicationListResponseV2,
+  AbsenceCommunicationDetailV2,
 } from "./planningV2.types";
 
 /** Same pattern as every other page-local helper in this codebase (no shared util exists). */
@@ -133,6 +139,41 @@ export async function updateAbsenceCommunicationSettings(
   data: AbsenceCommunicationSiteSettingUpdateV2,
 ): Promise<AbsenceCommunicationSiteSettingV2> {
   const res = await apiClient.patch(`/api/planning/absence-communication-settings/${siteId}`, data);
+  return res.data;
+}
+
+// ── Communication des absences chirurgiens — Lot C (D-114) : rattrapage ──────
+
+export async function previewAbsenceCommunicationBackfill(createdFrom: string): Promise<BackfillPreviewV2> {
+  const res = await apiClient.post("/api/planning/absence-communications/backfill/preview", { createdFrom });
+  return res.data;
+}
+
+export async function executeAbsenceCommunicationBackfill(createdFrom: string, absenceIds: number[]): Promise<BackfillExecuteResponseV2> {
+  const res = await apiClient.post("/api/planning/absence-communications/backfill/execute", { createdFrom, absenceIds });
+  return res.data;
+}
+
+// ── Communication des absences chirurgiens — Lot C (D-114) : journal manager ──
+
+export interface AbsenceCommunicationJournalFilters {
+  siteId?: number;
+  surgeonId?: number;
+  type?: AbsenceCommunicationTypeV2;
+  status?: AbsenceCommunicationGlobalStatusV2;
+  periodFrom?: string;
+  periodTo?: string;
+  page?: number;
+  limit?: number;
+}
+
+export async function getAbsenceCommunicationJournal(filters: AbsenceCommunicationJournalFilters = {}): Promise<AbsenceCommunicationListResponseV2> {
+  const res = await apiClient.get("/api/planning/absence-communications", { params: filters });
+  return res.data;
+}
+
+export async function getAbsenceCommunicationDetail(id: number): Promise<AbsenceCommunicationDetailV2> {
+  const res = await apiClient.get(`/api/planning/absence-communications/${id}`);
   return res.data;
 }
 

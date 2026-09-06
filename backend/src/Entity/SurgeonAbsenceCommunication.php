@@ -4,6 +4,7 @@ namespace App\Entity;
 
 use App\Entity\Traits\TimestampableTrait;
 use App\Enum\AbsenceCommunicationType;
+use App\Repository\SurgeonAbsenceCommunicationRepository;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
@@ -28,7 +29,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
  * PlanningOccurrenceException::sourceAbsence) : la suppression d'une Absence ne doit jamais
  * effacer ou bloquer cet historique.
  */
-#[ORM\Entity]
+#[ORM\Entity(repositoryClass: SurgeonAbsenceCommunicationRepository::class)]
 #[ORM\HasLifecycleCallbacks]
 #[ORM\Table(
     name: 'surgeon_absence_communication',

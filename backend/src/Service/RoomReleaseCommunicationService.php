@@ -94,27 +94,41 @@ class RoomReleaseCommunicationService
             }
 
             $snapshot = self::toSnapshot($futureOccurrences);
+            $recipients = $this->userRepository->findSurgeonsAffiliatedToSite($site->getId(), excludeUserId: $surgeon->getId(), activeOnly: true);
+            $subject = sprintf('Libération de salle — %s', $site->getName());
 
             if ($alreadyAnnouncedFilter) {
-                $alreadyAnnounced = $this->journal->alreadyAnnouncedOccurrenceKeys($absence, $site);
-                $snapshot = array_values(array_filter(
-                    $snapshot,
-                    static fn (array $o) => !isset($alreadyAnnounced[AbsenceCommunicationJournalService::occurrenceKey($o['postId'], $o['date'])]),
-                ));
-                if (empty($snapshot)) {
-                    // Raccourcissement, ou allongement ne révélant aucune nouvelle
-                    // occurrence — aucun complément (§3/§7 : jamais de correction inutile).
+                // Revue finale Lot C (§2) — le delta "déjà annoncé" est recalculé SOUS LE
+                // VERROU pessimiste de l'absence par recordRoomReleaseDelta(), jamais ici
+                // (un calcul avant verrouillage permettrait à deux exécutions concurrentes de
+                // ce chemin — deux managers relançant le même rattrapage, ou un rattrapage
+                // concurrent d'une vraie modification — de lire toutes deux "jamais annoncé"
+                // avant qu'aucune n'ait committé, puis d'annoncer deux fois les mêmes dates
+                // aux mêmes collègues sous deux révisions distinctes).
+                $result = $this->journal->recordRoomReleaseDelta(
+                    $absence, $site, $surgeon, $snapshot, $recipients, $subject,
+                    fn (array $finalSnapshot): string => $this->twig->render('emails/absence_room_release.html.twig', [
+                        'siteName' => $site->getName(), 'occurrences' => self::toDisplayLines($finalSnapshot),
+                    ]),
+                );
+                if ($result === null) {
+                    // Delta vide une fois recalculé sous verrou — raccourcissement, allongement
+                    // ne révélant réellement aucune nouvelle occurrence, ou déjà annoncé
+                    // entretemps par une exécution concurrente (§3/§7/§2 : jamais de correction
+                    // inutile, jamais un doublon).
                     continue;
                 }
+            } else {
+                $body = $this->twig->render('emails/absence_room_release.html.twig', [
+                    'siteName' => $site->getName(), 'occurrences' => self::toDisplayLines($snapshot),
+                ]);
+                $result = $this->journal->recordRoomRelease($absence, $site, $surgeon, $snapshot, $recipients, $subject, $body);
             }
 
-            $recipients = $this->userRepository->findSurgeonsAffiliatedToSite($site->getId(), excludeUserId: $surgeon->getId(), activeOnly: true);
-
-            $subject = sprintf('Libération de salle — %s', $site->getName());
-            $context = ['siteName' => $site->getName(), 'occurrences' => self::toDisplayLines($snapshot)];
-            $body = $this->twig->render('emails/absence_room_release.html.twig', $context);
-
-            $result = $this->journal->recordRoomRelease($absence, $site, $surgeon, $snapshot, $recipients, $subject, $body);
+            // Reconstruit depuis la communication réellement persistée (jamais depuis
+            // `$snapshot`, qui peut différer du delta finalement retenu sous verrou) —
+            // garantit que l'email dispatché correspond exactement à ce qui a été journalisé.
+            $finalContext = ['siteName' => $site->getName(), 'occurrences' => self::toDisplayLines($result['communication']->getOccurrencesSnapshot())];
 
             // Dispatch strictement après le commit de la transaction du journal (même
             // discipline que partout ailleurs dans ce domaine — ex.
@@ -127,7 +141,7 @@ class RoomReleaseCommunicationService
                     fromAddress: $this->mailerFromAddress,
                     fromName: $this->mailerFromName,
                     htmlTemplate: 'emails/absence_room_release.html.twig',
-                    context: $context,
+                    context: $finalContext,
                     absenceCommunicationDeliveryId: $delivery->getId(),
                 ));
             }
