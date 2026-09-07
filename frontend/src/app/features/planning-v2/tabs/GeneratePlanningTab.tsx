@@ -453,7 +453,14 @@ export function GeneratePlanningTab() {
   function handleInstrumentistChange(line: PreviewLineV2, newId: number | null) {
     const key = lineKeyV2(line);
     if (newId === null) {
-      handleEditLine(key, { instrumentistId: null, instrumentistName: null, status: "UNCOVERED" });
+      // Chirurgien absent (SKIPPED): there is no post to cover, so removing the instrumentist
+      // must never reopen this line to the pool (UNCOVERED) — it stays SKIPPED. Only a line that
+      // was genuinely covered goes back to UNCOVERED when its instrumentist is removed.
+      handleEditLine(key, {
+        instrumentistId: null,
+        instrumentistName: null,
+        status: line.status === "SKIPPED" ? "SKIPPED" : "UNCOVERED",
+      });
     } else {
       const inst = instrumentists.find((i) => i.id === newId);
       handleEditLine(key, {
@@ -505,7 +512,9 @@ export function GeneratePlanningTab() {
     setEditedLines((prev) => {
       const next = new Map(prev);
       for (const key of selectedKeys) {
-        next.set(key, { ...(next.get(key) ?? {}), status: "SKIPPED" as PreviewLineStatus });
+        // Clear the instrumentist together with the status — a SKIPPED line must never keep
+        // showing a stale name/avatar as if still assigned (matches handleInstrumentistChange).
+        next.set(key, { ...(next.get(key) ?? {}), status: "SKIPPED" as PreviewLineStatus, instrumentistId: null, instrumentistName: null });
       }
       return next;
     });
@@ -535,7 +544,8 @@ export function GeneratePlanningTab() {
       setSelectedLineKey((prev) => (prev === key ? null : prev));
       return;
     }
-    handleEditLine(key, { status: "SKIPPED" });
+    // Clear the instrumentist together with the status — see handleBulkSkip() for why.
+    handleEditLine(key, { status: "SKIPPED", instrumentistId: null, instrumentistName: null });
   }
 
   function handleReleaseMission(line: PreviewLineV2) {
@@ -1179,7 +1189,7 @@ export function GeneratePlanningTab() {
                     {day.surgeons.map((surgeon, sIdx) => (
                       <Box key={surgeon.surgeonId} sx={{ borderTop: sIdx > 0 ? `1px solid ${planningV2Colors.divider}` : "none" }}>
                         <Stack direction="row" alignItems="center" spacing={1.1} sx={{ px: 2, py: 1.1, bgcolor: "#FAFBFC" }}>
-                          <PersonAvatar name={surgeon.surgeonName} size="xs" />
+                          <PersonAvatar name={surgeon.surgeonName} photoUrl={resolveApiAssetUrl(surgeon.surgeonPhotoPath)} size="xs" />
                           <Typography sx={{ fontSize: 12.5, fontWeight: 700, color: planningV2Colors.textTitle }}>{surgeon.surgeonName}</Typography>
                           <Typography sx={{ fontSize: 11.5, color: planningV2Colors.textSecondary }}>
                             {surgeon.lines.length} poste{surgeon.lines.length > 1 ? "s" : ""}
@@ -1215,9 +1225,14 @@ export function GeneratePlanningTab() {
                               <Stack
                                 direction="row" alignItems="center" spacing={0.9} sx={{ flex: 1, minWidth: 0 }}
                               >
-                                {line.instrumentistName ? (
+                                {line.status === "SKIPPED" ? (
+                                  // Chirurgien absent — there is no post to cover: never the old
+                                  // instrumentist, never "À pourvoir" (which implies a slot to
+                                  // fill), never an assignment affordance. See docs/decisions.md.
+                                  <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textSecondary }}>/</Typography>
+                                ) : line.instrumentistName ? (
                                   <>
-                                    <PersonAvatar name={line.instrumentistName} size="xs" />
+                                    <PersonAvatar name={line.instrumentistName} photoUrl={resolveApiAssetUrl(line.instrumentistPhotoPath)} size="xs" />
                                     <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textStrong }} noWrap>{line.instrumentistName}</Typography>
                                   </>
                                 ) : (
@@ -1228,7 +1243,9 @@ export function GeneratePlanningTab() {
                                     </Typography>
                                   </>
                                 )}
-                                <EditOutlinedIcon sx={{ fontSize: 13, color: planningV2Colors.textSecondary, flex: "none" }} />
+                                {line.status !== "SKIPPED" && (
+                                  <EditOutlinedIcon sx={{ fontSize: 13, color: planningV2Colors.textSecondary, flex: "none" }} />
+                                )}
                                 {dirty && (
                                   <Chip
                                     label="Édité" size="small"

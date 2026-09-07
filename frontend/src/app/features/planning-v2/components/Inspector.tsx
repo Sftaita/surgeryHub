@@ -206,22 +206,33 @@ export function Inspector({
               </Box>
             )}
 
-            <Box>
-              <SearchableSelect
-                label="Instrumentiste"
-                options={instrumentistOptions}
-                value={line.instrumentistId}
-                onChange={onInstrumentistChange}
-                placeholder="Rechercher un instrumentiste…"
-              />
-              {absencesLoading && (
-                <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary, mt: 0.5 }}>
-                  Vérification des disponibilités…
-                </Typography>
-              )}
-            </Box>
+            {line.status === "SKIPPED" ? (
+              // Chirurgien absent — no post to cover: a neutral, explicit state, never a
+              // dropdown/active-assignment UX that could suggest this line needs an
+              // instrumentiste. See docs/decisions.md.
+              <Box>
+                <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary }}>Instrumentiste</Typography>
+                <Typography sx={{ fontSize: 13.5, fontWeight: 700 }}>/</Typography>
+                <Typography sx={{ fontSize: 11.5, color: planningV2Colors.warnFg, mt: 0.25 }}>Chirurgien absent</Typography>
+              </Box>
+            ) : (
+              <Box>
+                <SearchableSelect
+                  label="Instrumentiste"
+                  options={instrumentistOptions}
+                  value={line.instrumentistId}
+                  onChange={onInstrumentistChange}
+                  placeholder="Rechercher un instrumentiste…"
+                />
+                {absencesLoading && (
+                  <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary, mt: 0.5 }}>
+                    Vérification des disponibilités…
+                  </Typography>
+                )}
+              </Box>
+            )}
 
-            {freedInstrumentists.length > 0 && (
+            {line.status !== "SKIPPED" && freedInstrumentists.length > 0 && (
               <Box>
                 <Typography sx={{ fontSize: 11, fontWeight: 700, color: planningV2Colors.textSecondary, mb: 0.5 }}>
                   Libérés disponibles
@@ -246,7 +257,7 @@ export function Inspector({
             )}
 
             <Stack spacing={0.75} sx={{ pt: 1, borderTop: `1px dashed ${planningV2Colors.divider}` }}>
-              {isModification && line.instrumentistId !== null && (
+              {isModification && line.status !== "SKIPPED" && line.instrumentistId !== null && (
                 <Button
                   size="small" color="inherit" startIcon={<UnpublishedOutlinedIcon sx={{ fontSize: 15 }} />}
                   onClick={onReleaseMission}

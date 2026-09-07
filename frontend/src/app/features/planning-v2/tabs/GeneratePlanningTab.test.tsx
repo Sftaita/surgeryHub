@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -717,6 +717,118 @@ describe("GeneratePlanningTab — Mode Modification (éditeur unifié)", () => {
     await waitFor(() => expect(screen.queryByText(/Toutes les missions assignées ou ouvertes/)).not.toBeInTheDocument());
     expect(planningV2Api.cancelAllMissions).not.toHaveBeenCalled();
     expect(screen.getByText("Modification · Planning déployé")).toBeInTheDocument();
+  });
+});
+
+// ── Correctif Planning V2 — ligne avec chirurgien absent ─────────────────────
+
+describe("GeneratePlanningTab — ligne avec chirurgien absent (SKIPPED)", () => {
+  beforeEach(() => {
+    // A preceding test in this file (Mode Modification block) leaves listPlanningVersions
+    // mocked with a "Delta" history entry and never restores it — guarantee a clean slate
+    // here regardless of execution order, so selectSite()'s "Delta" match stays unambiguous.
+    (planningManagerApi.listPlanningVersions as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], total: 0, page: 1, limit: 10 });
+  });
+
+  it("scénario A — n'affiche jamais l'ancien instrumentiste ni 'À pourvoir'/'Mission ouverte' sur une ligne chirurgien absent", async () => {
+    const user = userEvent.setup();
+    // Deliberately carries a stale instrumentistId/instrumentistName (as a SKIPPED line
+    // legitimately does server-side for the D-034 "freed instrumentist" mechanism) — the
+    // display layer itself, not just clean upstream data, must never surface it as if the
+    // line still needed (or still had) coverage.
+    const preview: PreviewResponseV2 = {
+      lines: [line({
+        surgeonName: "Dr Étienne Willemart", status: "SKIPPED",
+        instrumentistId: 9, instrumentistName: "Salve Decorte",
+      })],
+      summary: { total: 1, covered: 0, uncovered: 0, skipped: 1, conflict: 0, modified: 0 },
+      previewVersion: "v-1",
+      generatedAt: "2026-06-01T00:00:00Z",
+    };
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
+
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+
+    await screen.findByText("Dr Étienne Willemart");
+    expect(screen.getByText("Chirurgien absent")).toBeInTheDocument();
+    expect(screen.getByText("/")).toBeInTheDocument();
+    expect(screen.queryByText("Salve Decorte")).not.toBeInTheDocument();
+    expect(screen.queryByText("À pourvoir")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Mission ouverte/)).not.toBeInTheDocument();
+  });
+
+  it("scénario B — l'inspecteur affiche un état neutre pour une ligne chirurgien absent, sans dropdown ni proposition d'affectation", async () => {
+    const user = userEvent.setup();
+    const preview: PreviewResponseV2 = {
+      lines: [line({
+        surgeonName: "Dr Étienne Willemart", status: "SKIPPED",
+        instrumentistId: 9, instrumentistName: "Salve Decorte",
+      })],
+      summary: { total: 1, covered: 0, uncovered: 0, skipped: 1, conflict: 0, modified: 0 },
+      previewVersion: "v-1",
+      generatedAt: "2026-06-01T00:00:00Z",
+    };
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
+
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+    await screen.findByText("Dr Étienne Willemart");
+
+    // Select the SKIPPED row to load it into the permanent inspector panel.
+    await user.click(screen.getByText("Chirurgien absent"));
+
+    // Neutral state, reusing "Chirurgien absent" — never the searchable instrumentist
+    // dropdown, never "Salve Decorte" presented as currently selected/active, never a
+    // "Libérés disponibles + Assigner" suggestion implying this line needs coverage.
+    await waitFor(() => expect(screen.queryByPlaceholderText("Rechercher un instrumentiste…")).not.toBeInTheDocument());
+    expect(screen.queryByText("Libérés disponibles")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remettre au pool (ouverte)" })).not.toBeInTheDocument();
+  });
+});
+
+describe("GeneratePlanningTab — photos de profil (§6)", () => {
+  beforeEach(() => {
+    (planningManagerApi.listPlanningVersions as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], total: 0, page: 1, limit: 10 });
+  });
+
+  it("scénario F — affiche la vraie photo quand profilePicturePath existe, sinon les initiales", async () => {
+    const user = userEvent.setup();
+    const preview: PreviewResponseV2 = {
+      lines: [
+        line({
+          surgeonName: "Dr Martin", surgeonPhotoPath: "/uploads/profile-pictures/martin.jpg",
+          status: "COVERED", instrumentistId: 9, instrumentistName: "Diane Lefebvre",
+          instrumentistPhotoPath: "/uploads/profile-pictures/diane.jpg",
+        }),
+        line({
+          postId: 2, surgeonId: 2, surgeonName: "Dr Dupont", surgeonPhotoPath: null,
+          status: "UNCOVERED",
+        }),
+      ],
+      summary: { total: 2, covered: 1, uncovered: 1, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "v-1",
+      generatedAt: "2026-06-01T00:00:00Z",
+    };
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
+
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+
+    await screen.findByText("Dr Martin");
+    // Real photo → an <img> with the resolved src, not just initials.
+    const surgeonImg = screen.getByAltText("Dr Martin") as HTMLImageElement;
+    expect(surgeonImg.tagName).toBe("IMG");
+    expect(surgeonImg.src).toContain("/uploads/profile-pictures/martin.jpg");
+    const instrImg = screen.getByAltText("Diane Lefebvre") as HTMLImageElement;
+    expect(instrImg.src).toContain("/uploads/profile-pictures/diane.jpg");
+
+    // No profilePicturePath → falls back to the existing initials pastille, no broken <img>.
+    expect(screen.queryByAltText("Dr Dupont")).not.toBeInTheDocument();
+    expect(screen.getByText("DD")).toBeInTheDocument();
   });
 });
 

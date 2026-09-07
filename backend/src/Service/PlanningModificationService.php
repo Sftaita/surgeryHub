@@ -33,6 +33,7 @@ class PlanningModificationService
         private readonly PlanningDiffService                  $diffService,
         private readonly PlanningChangeSummaryService          $changeSummary,
         private readonly PlanningConflictDetectionService      $conflictDetection,
+        private readonly AbsenceMissionReactionService         $absenceMissionReaction,
     ) {}
 
     /**
@@ -218,7 +219,15 @@ class PlanningModificationService
         $currentInstrumentistId = $mission->getInstrumentist()?->getId();
         if ($newInstrumentistId !== $currentInstrumentistId) {
             if ($newInstrumentistId === null && $mission->getStatus() === MissionStatus::ASSIGNED) {
-                $this->postDeploy->release($mission, $actor, notify: false);
+                // Backend invariant (never rely solely on the editor sending the right status):
+                // if this mission's surgeon is currently absent, releasing must never reopen it
+                // to the pool — reuse the exact same reconciliation MissionPostDeployService's
+                // callers already trust (D-062/D-106) instead of unconditionally calling
+                // release(). Returns null when neither person is currently absent, in which case
+                // this really is a normal release-to-pool and proceeds exactly as before.
+                if ($this->absenceMissionReaction->reconcileMissionAgainstCurrentAbsences($mission, $actor) === null) {
+                    $this->postDeploy->release($mission, $actor, notify: false);
+                }
                 $changed = true;
             } elseif ($newInstrumentistId !== null && $mission->getStatus() === MissionStatus::OPEN) {
                 // D-101 — Mode Modification: ABSENT/INACTIVE block, SCHEDULE_CONFLICT does

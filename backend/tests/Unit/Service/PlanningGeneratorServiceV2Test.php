@@ -418,6 +418,69 @@ class PlanningGeneratorServiceV2Test extends TestCase
         $this->assertNull($lines[0]['instrumentistId']);
     }
 
+    // ── Avatar photo propagation (Planning V2 correctif — surgeon absent, §6) ────────────
+
+    public function test_preview_line_carries_surgeon_and_instrumentist_photo_paths(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com');
+        $surgeon->setProfilePicturePath('/uploads/profile-pictures/surgeon.jpg');
+        $instrumentist = $this->makeUser('inst@test.com');
+        $instrumentist->setProfilePicturePath('/uploads/profile-pictures/inst.jpg');
+        $site = $this->makeSite();
+        $this->addShiftConfig($site, ShiftPeriod::MATIN, '08:00:00', '13:00:00');
+
+        $recurrence  = $this->makeRecurrence(RecurrenceFrequency::WEEKLY, 1, [1], new \DateTimeImmutable('2026-01-05'));
+        $this->posts = [$this->makePost($surgeon, $site, $recurrence, $instrumentist, startDate: '2026-01-05', endDate: '2026-01-05')];
+
+        $lines = $this->makeService()->preview(self::MONTH, $site->getId(), null, null);
+
+        $this->assertCount(1, $lines);
+        $this->assertSame('/uploads/profile-pictures/surgeon.jpg', $lines[0]['surgeonPhotoPath']);
+        $this->assertSame('/uploads/profile-pictures/inst.jpg', $lines[0]['instrumentistPhotoPath']);
+    }
+
+    public function test_preview_line_photo_path_is_null_when_no_profile_picture_or_no_instrumentist(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, ShiftPeriod::MATIN, '08:00:00', '13:00:00');
+
+        $recurrence  = $this->makeRecurrence(RecurrenceFrequency::WEEKLY, 1, [1], new \DateTimeImmutable('2026-01-05'));
+        $this->posts = [$this->makePost($surgeon, $site, $recurrence, null, startDate: '2026-01-05', endDate: '2026-01-05')];
+
+        $lines = $this->makeService()->preview(self::MONTH, $site->getId(), null, null);
+
+        $this->assertCount(1, $lines);
+        $this->assertNull($lines[0]['surgeonPhotoPath']);
+        $this->assertNull($lines[0]['instrumentistPhotoPath']);
+    }
+
+    /** The D-034 "freed instrumentist" second pass must carry the photo along with the name. */
+    public function test_freed_instrumentist_second_pass_carries_photo_path(): void
+    {
+        $absentSurgeon  = $this->makeUser('absent-surgeon@test.com');
+        $uncoveredSurgeon = $this->makeUser('uncovered-surgeon@test.com');
+        $freedInstrumentist = $this->makeUser('freed-inst@test.com');
+        $freedInstrumentist->setProfilePicturePath('/uploads/profile-pictures/freed.jpg');
+        $site = $this->makeSite();
+        $this->addShiftConfig($site, ShiftPeriod::MATIN, '08:00:00', '13:00:00');
+        $this->markAbsent($absentSurgeon, '2026-01-05');
+
+        $recurrence = $this->makeRecurrence(RecurrenceFrequency::WEEKLY, 1, [1], new \DateTimeImmutable('2026-01-05'));
+        $this->posts = [
+            $this->makePost($absentSurgeon, $site, $recurrence, $freedInstrumentist, startDate: '2026-01-05', endDate: '2026-01-05'),
+            $this->makePost($uncoveredSurgeon, $site, $recurrence, null, startDate: '2026-01-05', endDate: '2026-01-05'),
+        ];
+
+        $lines = $this->makeService()->preview(self::MONTH, $site->getId(), null, null);
+
+        $this->assertCount(2, $lines);
+        $covered = array_values(array_filter($lines, fn (array $l) => $l['status'] === 'COVERED'));
+        $this->assertCount(1, $covered, 'The previously-uncovered post must be auto-covered by the freed instrumentist.');
+        $this->assertSame($freedInstrumentist->getId(), $covered[0]['instrumentistId']);
+        $this->assertSame('/uploads/profile-pictures/freed.jpg', $covered[0]['instrumentistPhotoPath']);
+    }
+
     // ── Query budget (D-036 carried over) ────────────────────────────────────
 
     public function test_single_site_preview_uses_exactly_five_queries(): void

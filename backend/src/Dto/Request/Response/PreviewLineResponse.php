@@ -22,6 +22,8 @@ final class PreviewLineResponse
         public ?int $existingInstrumentistId,
         public ?string $existingInstrumentistName,
         public bool $freedFrom,
+        public ?string $surgeonPhotoPath = null,
+        public ?string $instrumentistPhotoPath = null,
     ) {
     }
 
@@ -45,6 +47,8 @@ final class PreviewLineResponse
             existingInstrumentistId: $line['existingInstrumentistId'],
             existingInstrumentistName: $line['existingInstrumentistName'],
             freedFrom: $line['freedFrom'] ?? false,
+            surgeonPhotoPath: $line['surgeonPhotoPath'] ?? null,
+            instrumentistPhotoPath: $line['instrumentistPhotoPath'] ?? null,
         );
     }
 }

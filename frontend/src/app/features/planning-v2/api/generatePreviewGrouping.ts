@@ -113,6 +113,7 @@ export function countBySeverity(lines: PreviewLineV2[]): Record<Exclude<Severity
 export interface SurgeonGroup {
   surgeonId: number;
   surgeonName: string;
+  surgeonPhotoPath?: string | null;
   lines: PreviewLineV2[];
 }
 
@@ -134,7 +135,7 @@ export function groupLinesByDayAndSurgeon(lines: PreviewLineV2[]): DayGroup[] {
     }
     let group = surgeons.get(line.surgeonId);
     if (!group) {
-      group = { surgeonId: line.surgeonId, surgeonName: line.surgeonName, lines: [] };
+      group = { surgeonId: line.surgeonId, surgeonName: line.surgeonName, surgeonPhotoPath: line.surgeonPhotoPath, lines: [] };
       surgeons.set(line.surgeonId, group);
     }
     group.lines.push(line);
@@ -206,6 +207,8 @@ export function missionToPreviewLine(mission: Mission): PreviewLineV2 {
     existingInstrumentistId: mission.instrumentist?.id ?? null,
     existingInstrumentistName: instrumentistName,
     freedFrom: false,
+    surgeonPhotoPath: mission.surgeon?.profilePicturePath ?? null,
+    instrumentistPhotoPath: mission.instrumentist?.profilePicturePath ?? null,
   };
 }
 

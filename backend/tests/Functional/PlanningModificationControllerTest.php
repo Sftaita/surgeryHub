@@ -342,6 +342,116 @@ final class PlanningModificationControllerTest extends WebTestCase
         self::assertSame($instr1->getId(), $reloaded->getInstrumentist()?->getId(), 'must not have been reassigned to the inactive candidate');
     }
 
+    // ── Surgeon-absence invariant — removing the instrumentist on a surgeon-absent line
+    // must never reopen the mission to the pool (Case B), while an ordinary release with
+    // no absence involved (Case A) must behave exactly as before ─────────────────────────
+
+    /**
+     * Simulates a mission still ASSIGNED while a covering surgeon absence already exists
+     * but hasn't (yet) been reconciled by AbsenceMissionReactionService's automatic reaction
+     * — makeAbsence() here persists the Absence entity directly, bypassing AbsenceController,
+     * exactly like PlanningVersionAuditFunctionalTest's own "stale mission" fixtures. This is
+     * the defense-in-depth scenario PlanningModificationService::applyLineToMission() now
+     * guards against: whatever the editor sends, a currently-surgeon-absent mission must
+     * never come out of apply-modifications as OPEN.
+     */
+    public function test_removing_instrumentist_when_surgeon_absent_cancels_never_reopens_to_pool(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+        $mission = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $instr);
+        $this->makeAbsence($surgeon, '2026-09-10', '2026-09-20');
+
+        $response = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            ['lines' => [$this->lineFor($mission, ['instrumentistId' => null, 'status' => 'UNCOVERED'])]],
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame(1, $body['cancelled'] ?? null, json_encode($body));
+        self::assertSame(0, $body['released'] ?? null, 'Must never be counted as a release-to-pool: ' . json_encode($body));
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::CANCELLED, $reloaded->getStatus(), 'A surgeon-absent occurrence must never become OPEN.');
+        self::assertNull($reloaded->getInstrumentist());
+    }
+
+    /** Case A regression guard — no absence at all, ordinary release-to-pool must be unaffected. */
+    public function test_removing_instrumentist_when_surgeon_present_still_releases_to_pool(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+        $mission = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $instr);
+
+        $response = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            ['lines' => [$this->lineFor($mission, ['instrumentistId' => null, 'status' => 'UNCOVERED'])]],
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame(1, $body['released'] ?? null, json_encode($body));
+        self::assertSame(0, $body['cancelled'] ?? null);
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::OPEN, $reloaded->getStatus(), 'Normal release-to-pool must be unaffected when the surgeon is not absent.');
+        self::assertNull($reloaded->getInstrumentist());
+    }
+
+    /**
+     * Scenario E — deleting the covering surgeon absence afterwards must still restore the
+     * mission through AbsenceImpactReconciliationService's existing mechanism, proving the
+     * new reconciliation call above produces an AuditEvent indistinguishable from the one the
+     * already-tested automatic-reaction path produces (same MissionPostDeployService::cancel()
+     * call, same causedByAbsenceId payload).
+     */
+    public function test_absence_deletion_after_editor_driven_cancellation_still_restores_mission(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+        $mission = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $instr);
+        $absence = $this->makeAbsence($surgeon, '2026-09-10', '2026-09-20');
+
+        $applyResponse = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            ['lines' => [$this->lineFor($mission, ['instrumentistId' => null, 'status' => 'UNCOVERED'])]],
+        );
+        self::assertSame(Response::HTTP_OK, $applyResponse->getStatusCode(), $applyResponse->getContent());
+        $this->em->clear();
+        self::assertSame(MissionStatus::CANCELLED, $this->em->find(Mission::class, $mission->getId())->getStatus());
+
+        $client->request('DELETE', '/api/absences/' . $absence->getId(),
+            server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token],
+        );
+        self::assertSame(Response::HTTP_NO_CONTENT, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
+
+        $this->em->clear();
+        $restored = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $restored->getStatus(), 'Restoration must bring the mission back once nothing else justifies the cancellation.');
+        self::assertSame($instr->getId(), $restored->getInstrumentist()?->getId(), 'The original instrumentist must be re-applied.');
+    }
+
     // ── Cancellation ──────────────────────────────────────────────────────────
 
     public function test_cancel_line_on_open_mission_transitions_to_cancelled(): void

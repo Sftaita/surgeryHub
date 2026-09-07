@@ -964,7 +964,10 @@ class PlanningGeneratorServiceV2
         $freedByDate = [];
         foreach ($lines as $line) {
             if ($line['status'] === 'SKIPPED' && $line['instrumentistId'] !== null) {
-                $freedByDate[$line['date']][$line['instrumentistId']] = $line['instrumentistName'];
+                $freedByDate[$line['date']][$line['instrumentistId']] = [
+                    $line['instrumentistName'],
+                    $line['instrumentistPhotoPath'] ?? null,
+                ];
             }
         }
         foreach ($lines as $line) {
@@ -994,7 +997,7 @@ class PlanningGeneratorServiceV2
             $lineStart = $this->hhmm2mins($line['startTime']);
             $lineEnd   = $this->hhmm2mins($line['endTime']);
 
-            foreach ($available as $instId => $freedName) {
+            foreach ($available as $instId => [$freedName, $freedPhotoPath]) {
                 $hasOverlap = false;
                 foreach ($lines as $other) {
                     if (
@@ -1019,9 +1022,10 @@ class PlanningGeneratorServiceV2
                 }
 
                 if (!$hasOverlap) {
-                    $line['instrumentistId']   = $instId;
-                    $line['instrumentistName'] = $freedName;
-                    $line['status']            = 'COVERED';
+                    $line['instrumentistId']        = $instId;
+                    $line['instrumentistName']      = $freedName;
+                    $line['instrumentistPhotoPath'] = $freedPhotoPath;
+                    $line['status']                 = 'COVERED';
                     $line['freedFrom']         = true;
                     $secondPassAssignments[$instId][] = [$date, $lineStart, $lineEnd];
                     break;
@@ -1041,7 +1045,7 @@ class PlanningGeneratorServiceV2
      *   instrumentistId: int|null, instrumentistName: string|null,
      *   status: string, existingMissionId: int|null,
      *   existingInstrumentistId: int|null, existingInstrumentistName: string|null,
-     *   freedFrom: bool
+     *   freedFrom: bool, surgeonPhotoPath: string|null, instrumentistPhotoPath: string|null
      * }
      */
     private function buildLine(
@@ -1073,6 +1077,8 @@ class PlanningGeneratorServiceV2
             'existingInstrumentistId'   => $existingInstrumentist?->getId(),
             'existingInstrumentistName' => $existingInstrumentist !== null ? $this->displayName($existingInstrumentist) : null,
             'freedFrom'                 => false,
+            'surgeonPhotoPath'          => $post->getSurgeon()->getProfilePicturePath(),
+            'instrumentistPhotoPath'    => $instrumentist?->getProfilePicturePath(),
         ];
     }
 }

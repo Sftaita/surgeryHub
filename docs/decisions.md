@@ -8491,6 +8491,28 @@ au-delà du câblage `profilePicturePath` déjà prévu par `PersonAvatar`. Anom
 mais hors périmètre : `PlanningV2AbsentSurgeonTerrainCommand` (fixture terrain temporaire)
 supprimée après usage, jamais committée.
 
+### Addendum — récupération Git (2026-09-07)
+
+Le code ci-dessus est resté non committé dans l'arbre de travail pendant plusieurs
+semaines après cette session — jamais perdu (confirmé : `git log --all -S`, `git fsck
+--unreachable` et `git reflog` ne montrent aucun commit contenant ce code, à aucun
+moment, sur aucune branche), mais jamais recommis non plus. `docs/production.md`
+(déploiement `v2026.09.06-prod`) en trace explicitement l'existence à cette date : *«
+D-112 (Planning V2, chantier séparé et toujours en cours) mis de côté par `git stash`
+avant la construction de l'archive — jamais inclus dans `git archive HEAD`, restauré à
+l'identique juste après »* — confirmant que le code existait déjà, restait à l'état
+« en cours » de façon assumée, et n'a jamais atteint la production à aucune date,
+contrairement à ce que le titre de cette section pourrait laisser croire par sa seule
+date de ticket (2026-08-16, jamais une date de commit ou de déploiement).
+
+Audit complet mené le 2026-09-07 (session de récupération de l'agenda Lot D après une
+coupure de courant, qui a mis ce même code au jour) : voir le commit
+`fix(planning): recover D-112 absent-surgeon modification safeguards` qui committe
+enfin ce code, séparément et sans date rétroactive. Le correctif indépendant sur
+`getFreedInstrumentists()` (auto-suggestion d'une ligne à elle-même — jamais documenté
+ici, découvert dans le même fichier de travail) en est délibérément exclu ; voir commit
+séparé `fix(planning): exclude inspected line from freed instrumentist suggestions`.
+
 ## D-113 — Correctif workflow Demandes Catalogue : révision de D-094 (email manager à la création), motif structuré sur « Ignorer », synchronisation frontend (2026-09-04)
 
 Date : 2026-09-04
