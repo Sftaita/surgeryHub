@@ -2069,10 +2069,15 @@ un slot déjà publié (`site`/`surgeon` deviennent `null`, affichés « — » 
 snapshot du nom (limite documentée, voir `docs/decisions.md` D-114 Lot D) — contrairement à
 `SurgeonAbsenceCommunication`, qui fige subject/body au moment de l'envoi.
 
-**Backfill à usage unique** : `app:available-rooms:backfill-from-room-release` projette les
-`SurgeonAbsenceCommunication` de type `ROOM_RELEASE` encore futures vers
-`ReleasedOperatingRoomSlot` (historique jamais recalculé depuis les absences), idempotent par
-la même contrainte unique.
+**Backfill** (`app:available-rooms:backfill`, `--dry-run` disponible) : parcourt les
+`Absence` encore pertinentes (`dateEnd >= aujourd'hui`) et réutilise
+`ReleasedOperatingRoomSlotService::resolveFutureOccurrences()`/`onAbsenceUpdated()` — jamais
+le journal `ROOM_RELEASE` (ancienne version, `app:available-rooms:backfill-from-room-release`,
+supprimée le 2026-09-07 après un audit prod ayant révélé un angle mort structurel : toute
+absence sans communication `ROOM_RELEASE`, ex. site avec `notifyColleaguesEnabled=false`,
+restait invisible). Répond à « quelles salles ont réellement été libérées et ont encore une
+occurrence future ? », jamais à « quels emails ont déjà été envoyés ? » — voir
+`docs/decisions.md`, correction du 2026-09-07.
 
 Endpoints : `GET /api/planning/available-rooms` (manager, `PlanningVoter::PLANNING_MANAGE`)
 et `GET /api/me/available-rooms` (chirurgien, scopé `SiteMembership`) — voir `docs/api.md`

@@ -9388,3 +9388,88 @@ second statut au-delà d'`AVAILABLE`, Google Calendar. Proposé et discuté avec
 explicitement non codé sur instruction (« Ne code pas Lot E maintenant »).
 
 Non déployé.
+
+## Correction — backfill Lot D basé sur les absences, jamais sur le journal ROOM_RELEASE (2026-09-07)
+
+### Angle mort découvert par audit prod
+
+Après déploiement (`v2026.09.07-prod`), un audit demandé en amont de l'exécution du backfill
+(§Backfill ci-dessus) a révélé que `released_operating_room_slot` était vide en production
+alors que 7 communications `ROOM_RELEASE` portaient des occurrences futures — confirmant que
+le backfill n'avait jamais tourné (aucune trace en base ni en logs). Le dry-run réel (requête
+SQL reproduisant fidèlement `occurrencesSnapshot` → slot) a montré qu'un run couvrirait 14
+occurrences futures distinctes. Mais l'audit a aussi croisé, via l'endpoint de preview
+existant du Lot C (`POST .../backfill/preview`, qui réutilise le vrai
+`SurgeonAbsenceBlockOccurrenceResolver`), la liste des absences ayant réellement des
+occurrences `BLOCK` futures avec la liste des absences possédant au moins une communication
+`ROOM_RELEASE` — révélant **l'absence #42** (chirurgien réel, congé 2026-10-19 → 2026-10-30,
+4 occurrences `BLOCK` futures confirmées par le resolver) : **zéro** `SurgeonAbsenceCommunication`
+de quelque type que ce soit pour cette absence. Le backfill initial (`app:available-rooms:
+backfill-from-room-release`, §Backfill ci-dessus), en lisant exclusivement le journal
+`ROOM_RELEASE`, ne pouvait structurellement jamais la voir — angle mort confirmé, jamais un
+cas isolé : toute absence dont le site avait `notifyColleaguesEnabled=false`, ou sans
+collègue affilié, ou créée avant le déploiement du Lot A sans être rattrapée par le Lot C,
+produit exactement le même trou.
+
+### Reformulation de la question posée par le backfill
+
+Décision actée avec l'utilisateur : le backfill des salles disponibles doit répondre à
+« quelles salles ont réellement été libérées par des absences existantes et ont encore une
+occurrence future ? », jamais à « quels emails `ROOM_RELEASE` ont déjà été envoyés ? » — deux
+questions distinctes, la seconde n'étant qu'un sous-ensemble incomplet de la première.
+
+### `app:available-rooms:backfill` remplace `app:available-rooms:backfill-from-room-release`
+
+L'ancienne commande (jamais exécutée en production — aucune donnée historique à préserver)
+est supprimée, avec son test dédié. La nouvelle commande ne lit plus jamais
+`SurgeonAbsenceCommunication` : elle sélectionne toutes les `Absence` dont `dateEnd >=
+aujourd'hui` (pur filtre de performance — une fenêtre entièrement passée ne peut structurellement
+produire aucune occurrence future, jamais un changement de comportement), puis appelle pour
+chacune la même logique que le 9ᵉ collaborateur temps réel.
+
+**Aucune duplication de la logique d'écriture** — extraction, jamais duplication : la partie
+lecture de `ReleasedOperatingRoomSlotService::react()` (resolveForWindow + filtre futur +
+`existsFor()`) est extraite dans une nouvelle méthode publique `resolveFutureOccurrences()`,
+réutilisée à la fois par `react()` (persist réel, chemin temps réel inchangé) et par la
+commande (dry-run en lecture pure, exécution réelle qui rappelle `onAbsenceUpdated()` —
+jamais une réimplémentation du persist). Contrairement au rattrapage Lot C
+(`AbsenceCommunicationBackfillService`, qui duplique volontairement une lecture pour ne
+jamais dépendre du service réel dans son mode preview), ici l'extraction est directement
+partagée par les deux chemins : aucune dérive future possible entre ce que la commande
+annonce et ce que le service fait réellement, par construction.
+
+Conséquence directe de la réutilisation de `resolveFutureOccurrences()`/`onAbsenceUpdated()` :
+la nouvelle commande hérite structurellement de toutes les garanties déjà établies du service
+— indépendance de `notifyColleaguesEnabled`, exclusion `CONSULTATION`, exclusion du passé,
+idempotence par `(site_id, post_id, occurrence_date)`, non-rétractation (une absence
+supprimée après coup n'efface jamais un slot déjà créé, `sourceAbsence` devient `NULL` via
+`ON DELETE SET NULL`) — et n'importe jamais aucun concept d'email/communication : le service
+qu'elle appelle ne connaît ni `SendTemplatedEmailMessage`, ni `SurgeonAbsenceCommunication`,
+ni `AbsenceCommunicationJournalService`. Aucun email ne peut donc jamais partir, aucun
+historique D-114 (Lots A/B/C) n'est jamais touché — vérifié explicitement par test
+(`test_backfill_creates_no_communication_journal_entry`).
+
+### `--dry-run`
+
+Nouvelle option, lecture strictement pure (aucun `persist`/`flush` — garanti structurellement
+par le fait que le mode dry-run n'appelle jamais `onAbsenceUpdated()`, seulement
+`resolveFutureOccurrences()`) : affiche absences analysées, occurrences `BLOCK` futures
+trouvées, déjà existantes, et celles qui seraient créées (détail chirurgien/site/date/
+période/postId). Vérifié par test que le dry-run ne modifie rien puis que le run réel produit
+exactement ce que le dry-run annonçait.
+
+### Tests
+
+`AvailableRoomsBackfillCommandTest` (remplace `BackfillAvailableRoomsFromRoomReleaseCommandTest`,
+supprimé) : absence avec historique `ROOM_RELEASE` → slot créé ; absence sans historique
+(réplique exacte du cas #42) → slot créé quand même ; `notifyColleaguesEnabled=false` → slot
+créé quand même ; `CONSULTATION` → jamais créée ; occurrence passée au sein d'une absence
+encore sélectionnée → exclue, seule l'occurrence future produit un slot ; second run →
+idempotent, mêmes IDs ; absence supprimée après coup → jamais recréée, slot déjà créé
+survivant confirmé ; multi-site → un slot par site concerné ; aucune
+`SurgeonAbsenceCommunication` créée ; dry-run sans écriture puis run réel identique à
+l'annonce. 10/10 verts en local, aucune régression sur `ReleasedOperatingRoomSlotFunctionalTest`/
+`AvailableRoomsControllerTest` (18/18 verts) après le refactor du service.
+
+Non déployé — le backfill réel en production reste en attente d'une décision explicite
+séparée, après revue du diff/dry-run par l'utilisateur.

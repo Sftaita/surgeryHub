@@ -34,6 +34,15 @@ use Doctrine\ORM\EntityManagerInterface;
  * double création concurrente. Règle de non-rétractation : ni le raccourcissement d'une
  * absence, ni sa suppression, ne suppriment jamais un slot déjà créé — structurellement
  * garanti par l'absence délibérée de toute méthode `onAbsenceDeleted()` ici.
+ *
+ * `resolveFutureOccurrences()` (revue post-audit, 2026-09-07) est la source de vérité unique
+ * pour « quelles occurrences BLOCK futures existent réellement pour cette absence, et
+ * lesquelles ont déjà un slot ? » — réutilisée à la fois par `react()` (chemin temps réel,
+ * 9ᵉ collaborateur) et par `AvailableRoomsBackfillCommand` (rattrapage basé sur les absences
+ * elles-mêmes, jamais sur le journal `ROOM_RELEASE` — l'ancien `app:available-rooms:
+ * backfill-from-room-release` ratait toute absence n'ayant jamais généré d'email Room
+ * Release, ex. site avec `notifyColleaguesEnabled=false` à l'époque : un angle mort confirmé
+ * par audit prod, absence #42, 2026-09-07).
  */
 class ReleasedOperatingRoomSlotService
 {
@@ -57,18 +66,31 @@ class ReleasedOperatingRoomSlotService
         $this->react($absence);
     }
 
-    private function react(Absence $absence): void
+    /**
+     * Lecture stricte — jamais de persist/flush ici. Extrait de `react()` (revue post-audit,
+     * 2026-09-07) pour être réutilisable par `AvailableRoomsBackfillCommand` (rattrapage basé
+     * sur la réalité des absences, jamais sur le journal `ROOM_RELEASE`) sans jamais dupliquer
+     * la logique d'écriture — même convention que `AbsenceCommunicationBackfillService`, qui
+     * ne duplique que la lecture, jamais l'écriture, des services qu'il rattrape. `react()`
+     * est l'unique appelant qui persiste ; le dry-run de la commande de backfill n'appelle
+     * jamais que celle-ci.
+     *
+     * @return list<array{site: Hospital, post: SurgeonSchedulePost, date: \DateTimeImmutable, period: ShiftPeriod, surgeon: User, alreadyExists: bool}>
+     */
+    public function resolveFutureOccurrences(Absence $absence): array
     {
         $surgeon = $absence->getUser();
         if ($surgeon === null || !self::isSurgeon($surgeon)) {
-            return;
+            return [];
         }
 
         $today = new \DateTimeImmutable('today');
         $bySite = $this->resolver->resolveForWindow($surgeon, $absence->getDateStart(), $absence->getDateEnd());
         if (empty($bySite)) {
-            return;
+            return [];
         }
+
+        $result = [];
 
         foreach ($bySite as $siteGroup) {
             /** @var Hospital $site */
@@ -84,39 +106,55 @@ class ReleasedOperatingRoomSlotService
                     continue;
                 }
 
-                if ($this->slots->existsFor($site->getId(), $post->getId(), $date)) {
-                    continue;
-                }
+                $result[] = [
+                    'site' => $site,
+                    'post' => $post,
+                    'date' => $date,
+                    'period' => $post->getPeriod(),
+                    'surgeon' => $surgeon,
+                    'alreadyExists' => $this->slots->existsFor($site->getId(), $post->getId(), $date),
+                ];
+            }
+        }
 
-                $slot = new ReleasedOperatingRoomSlot();
-                $slot->setSite($site);
-                $slot->setPostId($post->getId());
-                $slot->setSchedulePost($post);
-                $slot->setOccurrenceDate($date);
-                $slot->setPeriod($post->getPeriod());
-                $slot->setSurgeon($surgeon);
-                $slot->setSourceAbsence($absence);
+        return $result;
+    }
 
-                $config = $this->shiftPeriodConfig($site, $post->getPeriod());
-                if ($config !== null) {
-                    $slot->setStartTime($config->getStartTime());
-                    $slot->setEndTime($config->getEndTime());
-                }
+    private function react(Absence $absence): void
+    {
+        foreach ($this->resolveFutureOccurrences($absence) as $occurrence) {
+            if ($occurrence['alreadyExists']) {
+                continue;
+            }
 
-                $this->em->persist($slot);
+            $slot = new ReleasedOperatingRoomSlot();
+            $slot->setSite($occurrence['site']);
+            $slot->setPostId($occurrence['post']->getId());
+            $slot->setSchedulePost($occurrence['post']);
+            $slot->setOccurrenceDate($occurrence['date']);
+            $slot->setPeriod($occurrence['period']);
+            $slot->setSurgeon($occurrence['surgeon']);
+            $slot->setSourceAbsence($absence);
 
-                try {
-                    // Un flush par slot, jamais un seul flush groupé en fin de boucle : une
-                    // course concurrente sur UN (site, post, date) ne doit jamais faire échouer
-                    // la création des autres occurrences de cette même réaction.
-                    $this->em->flush();
-                } catch (UniqueConstraintViolationException) {
-                    // La ligne existe déjà (créée entretemps par une exécution concurrente) —
-                    // jamais une erreur pour l'appelant, même esprit que le claim atomique du
-                    // Lot B : la contrainte unique est le dernier garde-fou, pas le mécanisme
-                    // principal d'idempotence.
-                    $this->em->detach($slot);
-                }
+            $config = $this->shiftPeriodConfig($occurrence['site'], $occurrence['period']);
+            if ($config !== null) {
+                $slot->setStartTime($config->getStartTime());
+                $slot->setEndTime($config->getEndTime());
+            }
+
+            $this->em->persist($slot);
+
+            try {
+                // Un flush par slot, jamais un seul flush groupé en fin de boucle : une
+                // course concurrente sur UN (site, post, date) ne doit jamais faire échouer
+                // la création des autres occurrences de cette même réaction.
+                $this->em->flush();
+            } catch (UniqueConstraintViolationException) {
+                // La ligne existe déjà (créée entretemps par une exécution concurrente) —
+                // jamais une erreur pour l'appelant, même esprit que le claim atomique du
+                // Lot B : la contrainte unique est le dernier garde-fou, pas le mécanisme
+                // principal d'idempotence.
+                $this->em->detach($slot);
             }
         }
     }
