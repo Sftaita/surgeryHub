@@ -227,9 +227,13 @@ export interface FreedInstrumentist { id: number; name: string; reason: string }
 export function getFreedInstrumentists(lines: PreviewLineV2[], target: PreviewLineV2): FreedInstrumentist[] {
   const tStart = timeToMin(target.startTime);
   const tEnd = timeToMin(target.endTime);
+  const targetKey = lineKeyV2(target);
   const freed = new Map<number, FreedInstrumentist>();
 
   for (const l of lines) {
+    // Never suggest the inspected line's own (chirurgien-absent) instrumentist back to itself —
+    // this is a candidate list for OTHER uncovered/conflict lines, never the SKIPPED line itself.
+    if (lineKeyV2(l) === targetKey) continue;
     if (l.date === target.date && l.status === "SKIPPED" && l.instrumentistId && l.instrumentistName) {
       freed.set(l.instrumentistId, {
         id: l.instrumentistId,

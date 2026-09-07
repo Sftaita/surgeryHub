@@ -202,6 +202,36 @@ describe("getFreedInstrumentists()", () => {
 
     expect(getFreedInstrumentists([freedLine, target], target)).toEqual([]);
   });
+
+  it("never suggests the inspected SKIPPED line's own instrumentist back to itself", () => {
+    // A SKIPPED line can still carry a stale instrumentistId/instrumentistName (the
+    // assignment that existed before the surgeon's absence was detected) — inspecting
+    // that same line must never list it as its own "freed" candidate.
+    const target = line({
+      date: "2026-06-01", postId: 1, status: "SKIPPED",
+      instrumentistId: 7, instrumentistName: "Diane Lefebvre", surgeonName: "Dr Absent",
+      startTime: "08:00", endTime: "13:00",
+    });
+
+    expect(getFreedInstrumentists([target], target)).toEqual([]);
+  });
+
+  it("still suggests a different freed instrumentist when the inspected line is itself SKIPPED with a stale assignment", () => {
+    const target = line({
+      date: "2026-06-01", postId: 1, status: "SKIPPED",
+      instrumentistId: 7, instrumentistName: "Diane Lefebvre", surgeonName: "Dr Absent",
+      startTime: "08:00", endTime: "13:00",
+    });
+    const otherFreedLine = line({
+      date: "2026-06-01", postId: 2, status: "SKIPPED",
+      instrumentistId: 9, instrumentistName: "Marc Dubois", surgeonName: "Dr Autre",
+      startTime: "14:00", endTime: "18:00",
+    });
+
+    const freed = getFreedInstrumentists([target, otherFreedLine], target);
+    expect(freed).toHaveLength(1);
+    expect(freed[0]).toMatchObject({ id: 9, name: "Marc Dubois" });
+  });
 });
 
 describe("findSameDayAssignmentElsewhere()", () => {
