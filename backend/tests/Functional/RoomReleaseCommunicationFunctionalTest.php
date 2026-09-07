@@ -374,6 +374,58 @@ final class RoomReleaseCommunicationFunctionalTest extends WebTestCase
         self::assertStringNotContainsString('Renamed', $comm->getBodySnapshot());
     }
 
+    // ── Revue post-implémentation Lot D : deep link « Salles disponibles » ──────
+
+    #[WithoutErrorHandler]
+    public function test_body_includes_deep_link_that_survives_the_plain_text_fallback(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $today = new \DateTimeImmutable('today');
+        $isoDay = (int) $today->format('N');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $colleague = $this->makeUser('ROLE_SURGEON', 'Colleague');
+        $site = $this->makeSite();
+        $this->affiliate($surgeon, $site);
+        $this->affiliate($colleague, $site);
+        $this->enableColleagues($site);
+        $this->makePost($surgeon, $site, MissionType::BLOCK, RecurrenceFrequency::WEEKLY, [$isoDay], $today, $today->format('Y-m-d'));
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => $today->format('Y-m-d'), 'dateEnd' => $today->format('Y-m-d'),
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $this->createdIds['absences'][] = $this->json($client->getResponse())['id'];
+        $this->em->flush();
+        $this->em->clear();
+
+        $site = $this->em->find(Hospital::class, $site->getId());
+        $body = $this->communicationsFor($site)[0]->getBodySnapshot();
+
+        // Lien exact vers /app/s/planning/salles-disponibles.
+        self::assertStringContainsString('/app/s/planning/salles-disponibles', $body);
+        self::assertMatchesRegularExpression(
+            '#href="[^"]*/app/s/planning/salles-disponibles"#',
+            $body,
+            'le lien HTML pointe précisément vers la vue Salles disponibles',
+        );
+
+        // Même convention que mission_encoding_reminder.html.twig : le texte visible du lien
+        // EST l'URL elle-même, jamais un libellé (« Voir les salles disponibles… ») qui
+        // disparaîtrait avec l'URL lors du strip_tags() de repli en texte brut
+        // (SendTemplatedEmailMessageHandler n'a pas de textTemplate pour Room Release).
+        if (!preg_match('#href="([^"]*/app/s/planning/salles-disponibles)"#', $body, $matches)) {
+            self::fail('lien deep link introuvable dans le corps');
+        }
+        $url = $matches[1];
+        $plainText = trim(html_entity_decode(strip_tags($body)));
+        self::assertStringContainsString($url, $plainText, 'l\'URL complète doit rester lisible même dans la version texte brut de repli');
+    }
+
     // ── Exclusions : chirurgien absent, autre site, inactif ─────────────────────
 
     #[WithoutErrorHandler]

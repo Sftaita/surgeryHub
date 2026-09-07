@@ -4,15 +4,17 @@ import PeopleAltOutlinedIcon from "@mui/icons-material/PeopleAltOutlined";
 import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline";
 import NotificationsActiveOutlinedIcon from "@mui/icons-material/NotificationsActiveOutlined";
 import TuneOutlinedIcon from "@mui/icons-material/TuneOutlined";
+import MeetingRoomOutlinedIcon from "@mui/icons-material/MeetingRoomOutlined";
 
 import { planningV2Colors } from "../theme/tokens";
 
-export type PlanningV2TabKey = "posts" | "generate" | "alerts" | "settings";
+export type PlanningV2TabKey = "posts" | "generate" | "alerts" | "rooms" | "settings";
 
 const TABS: Array<{ key: PlanningV2TabKey; label: string; icon: React.ReactElement }> = [
   { key: "posts", label: "Postes", icon: <PeopleAltOutlinedIcon fontSize="small" /> },
   { key: "generate", label: "Générer planning", icon: <PlayCircleOutlineIcon fontSize="small" /> },
   { key: "alerts", label: "Alertes", icon: <NotificationsActiveOutlinedIcon fontSize="small" /> },
+  { key: "rooms", label: "Salles disponibles", icon: <MeetingRoomOutlinedIcon fontSize="small" /> },
   { key: "settings", label: "Paramètres", icon: <TuneOutlinedIcon fontSize="small" /> },
 ];
 

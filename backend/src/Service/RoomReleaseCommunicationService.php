@@ -46,6 +46,8 @@ class RoomReleaseCommunicationService
         private readonly string $mailerFromAddress,
         #[Autowire('%env(string:MAILER_FROM_NAME)%')]
         private readonly string $mailerFromName,
+        #[Autowire('%env(string:FRONTEND_URL)%')]
+        private readonly string $frontendUrl,
     ) {
     }
 
@@ -71,6 +73,11 @@ class RoomReleaseCommunicationService
         if (empty($bySite)) {
             return;
         }
+
+        // Lot D (post D-114) — deep link vers la vue « Salles disponibles » ; simple lien
+        // texte, jamais une dépendance fonctionnelle (Lot D peut être désactivé/absent sans
+        // casser cet email, qui reste lisible et complet sans lui).
+        $roomsUrl = rtrim($this->frontendUrl, '/') . '/app/s/planning/salles-disponibles';
 
         foreach ($bySite as $siteGroup) {
             /** @var Hospital $site */
@@ -108,7 +115,7 @@ class RoomReleaseCommunicationService
                 $result = $this->journal->recordRoomReleaseDelta(
                     $absence, $site, $surgeon, $snapshot, $recipients, $subject,
                     fn (array $finalSnapshot): string => $this->twig->render('emails/absence_room_release.html.twig', [
-                        'siteName' => $site->getName(), 'drName' => $surgeon->getDrName(), 'occurrences' => self::toDisplayLines($finalSnapshot),
+                        'siteName' => $site->getName(), 'drName' => $surgeon->getDrName(), 'roomsUrl' => $roomsUrl, 'occurrences' => self::toDisplayLines($finalSnapshot),
                     ]),
                 );
                 if ($result === null) {
@@ -120,7 +127,7 @@ class RoomReleaseCommunicationService
                 }
             } else {
                 $body = $this->twig->render('emails/absence_room_release.html.twig', [
-                    'siteName' => $site->getName(), 'drName' => $surgeon->getDrName(), 'occurrences' => self::toDisplayLines($snapshot),
+                    'siteName' => $site->getName(), 'drName' => $surgeon->getDrName(), 'roomsUrl' => $roomsUrl, 'occurrences' => self::toDisplayLines($snapshot),
                 ]);
                 $result = $this->journal->recordRoomRelease($absence, $site, $surgeon, $snapshot, $recipients, $subject, $body);
             }
@@ -131,6 +138,7 @@ class RoomReleaseCommunicationService
             $finalContext = [
                 'siteName' => $site->getName(),
                 'drName' => $result['communication']->getSurgeon()->getDrName(),
+                'roomsUrl' => $roomsUrl,
                 'occurrences' => self::toDisplayLines($result['communication']->getOccurrencesSnapshot()),
             ];
 

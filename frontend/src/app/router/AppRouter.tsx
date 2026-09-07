@@ -35,6 +35,8 @@ const ProfilePage         = React.lazy(() => import("../pages/common/ProfilePage
 // MissionDetailPageI (même composant que l'instrumentiste, allowedActions-driven).
 const SurgeonHomePage     = React.lazy(() => import("../pages/surgeon/SurgeonHomePage"));
 const SurgeonPlanningPage = React.lazy(() => import("../pages/surgeon/SurgeonPlanningPage"));
+// « Salles libérées » (Lot D, post D-114) — vue chirurgien, scopée à ses affiliations.
+const SurgeonAvailableRoomsPage = React.lazy(() => import("../pages/surgeon/SurgeonAvailableRoomsPage"));
 
 // Partagé instrumentiste + chirurgien (Lot 3, D-097) — un seul SelfAbsencesPage, jamais
 // SurgeonAbsencesPage/InstrumentistAbsencesPage, voir docs/decisions.md.
@@ -171,6 +173,7 @@ export function AppRouter() {
               <Route element={<MobileLayout />}>
                 <Route path="s" element={<SurgeonHomePage />} />
                 <Route path="s/planning" element={<SurgeonPlanningPage />} />
+                <Route path="s/planning/salles-disponibles" element={<SurgeonAvailableRoomsPage />} />
                 <Route path="s/activity" element={<SurgeonActivityPage />} />
                 <Route path="s/requests" element={<SurgeonMissionRequestsPage />} />
                 <Route path="s/mission-requests/new" element={<SurgeonMissionRequestFormPage />} />

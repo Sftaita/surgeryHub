@@ -8,6 +8,7 @@ import { PlanningV2Tabs, type PlanningV2TabKey } from "../../../features/plannin
 import { SurgeonPostsTab } from "../../../features/planning-v2/tabs/SurgeonPostsTab";
 import { GeneratePlanningTab } from "../../../features/planning-v2/tabs/GeneratePlanningTab";
 import { PlanningAlertsTab } from "../../../features/planning-v2/tabs/PlanningAlertsTab";
+import { AvailableRoomsTab } from "../../../features/planning-v2/tabs/AvailableRoomsTab";
 import { PlanningSettingsTab } from "../../../features/planning-v2/tabs/PlanningSettingsTab";
 import { useQuery } from "@tanstack/react-query";
 import { getAlerts } from "../../../features/planning-v2/api/planningV2.api";
@@ -64,6 +65,7 @@ export default function PlanningV2Page() {
           {tab === "posts" && <SurgeonPostsTab />}
           {tab === "generate" && <GeneratePlanningTab />}
           {tab === "alerts" && <PlanningAlertsTab />}
+          {tab === "rooms" && <AvailableRoomsTab />}
           {tab === "settings" && <PlanningSettingsTab />}
         </Box>
       </Box>

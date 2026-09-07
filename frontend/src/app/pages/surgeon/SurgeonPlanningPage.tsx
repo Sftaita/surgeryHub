@@ -271,14 +271,24 @@ export default function SurgeonPlanningPage() {
 
       <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5} flexWrap="wrap" useFlexGap>
         <CoverageFilterControl value={filter} onChange={(v) => updateSearchParams({ filter: v })} />
-        {/* CTA demande de mission (Lot 5, D-099, §14) — accessible depuis le planning,
-            jamais une 6e entrée navbar. */}
-        <Box
-          component="button" type="button" onClick={() => navigate("/app/s/mission-requests/new")}
-          sx={{ border: "none", background: "none", color: "#1F6B4F", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}
-        >
-          + Demander une mission
-        </Box>
+        <Stack direction="row" alignItems="center" spacing={2}>
+          {/* Lot D (post D-114) — accès à la vue "Salles disponibles", jamais une 6e entrée
+              navbar (même raisonnement que le CTA "Demander une mission" ci-dessous). */}
+          <Box
+            component="button" type="button" onClick={() => navigate("/app/s/planning/salles-disponibles")}
+            sx={{ border: "none", background: "none", color: "#1B5FD0", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}
+          >
+            Salles disponibles
+          </Box>
+          {/* CTA demande de mission (Lot 5, D-099, §14) — accessible depuis le planning,
+              jamais une 6e entrée navbar. */}
+          <Box
+            component="button" type="button" onClick={() => navigate("/app/s/mission-requests/new")}
+            sx={{ border: "none", background: "none", color: "#1F6B4F", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}
+          >
+            + Demander une mission
+          </Box>
+        </Stack>
       </Stack>
 
       {missionsQuery.isError && (

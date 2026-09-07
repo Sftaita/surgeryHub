@@ -28,6 +28,7 @@ import type {
   AbsenceCommunicationGlobalStatusV2,
   AbsenceCommunicationListResponseV2,
   AbsenceCommunicationDetailV2,
+  ReleasedRoomSlotListResponse,
 } from "./planningV2.types";
 
 /** Same pattern as every other page-local helper in this codebase (no shared util exists). */
@@ -435,4 +436,29 @@ export async function fetchRosterEligibility(params: {
     },
   });
   return res.data as RosterEligibilityResponse;
+}
+
+/** « Salles libérées » (Lot D) — vue manager, tous les sites. */
+export async function getAvailableRoomsForManager(params?: {
+  siteId?: number;
+  status?: string;
+  surgeonId?: number;
+  includePast?: boolean;
+  page?: number;
+  limit?: number;
+}): Promise<ReleasedRoomSlotListResponse> {
+  const res = await apiClient.get("/api/planning/available-rooms", { params });
+  return res.data;
+}
+
+/** « Salles libérées » (Lot D) — vue chirurgien, scopée serveur à ses propres affiliations. */
+export async function getMyAvailableRooms(params?: {
+  siteId?: number;
+  status?: string;
+  includePast?: boolean;
+  page?: number;
+  limit?: number;
+}): Promise<ReleasedRoomSlotListResponse> {
+  const res = await apiClient.get("/api/me/available-rooms", { params });
+  return res.data;
 }

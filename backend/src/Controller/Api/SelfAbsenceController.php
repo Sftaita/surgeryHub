@@ -15,6 +15,7 @@ use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use App\Service\InstrumentistAbsenceOccurrenceImpactService;
 use App\Service\RoomReleaseCommunicationService;
 use App\Service\BlockManagementCommunicationService;
+use App\Service\ReleasedOperatingRoomSlotService;
 use App\Message\AbsenceSelfDeclaredMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -51,6 +52,7 @@ class SelfAbsenceController extends AbstractController
         private readonly MessageBusInterface $bus,
         private readonly RoomReleaseCommunicationService $roomReleaseCommunicationService,
         private readonly BlockManagementCommunicationService $blockManagementCommunicationService,
+        private readonly ReleasedOperatingRoomSlotService $releasedOperatingRoomSlotService,
     ) {}
 
     #[Route('', name: 'api_self_absences_list', methods: ['GET'])]
@@ -292,9 +294,12 @@ class SelfAbsenceController extends AbstractController
             $this->roomReleaseCommunicationService->onAbsenceUpdated($absence, $currentUser);
             // Lot B (D-114) — même service et même logique que AbsenceController, jamais dupliqué.
             $this->blockManagementCommunicationService->onAbsenceUpdated($absence, $currentUser, $previousDateStart, $previousDateEnd);
+            // Lot D (post D-114) — idem, même service que AbsenceController.
+            $this->releasedOperatingRoomSlotService->onAbsenceUpdated($absence, $currentUser);
         } else {
             $this->roomReleaseCommunicationService->onAbsenceCreated($absence, $currentUser);
             $this->blockManagementCommunicationService->onAbsenceCreated($absence, $currentUser);
+            $this->releasedOperatingRoomSlotService->onAbsenceCreated($absence, $currentUser);
         }
 
         // Lot 5 (D-105) — ONE consolidated manager recap for this self-service create/update.

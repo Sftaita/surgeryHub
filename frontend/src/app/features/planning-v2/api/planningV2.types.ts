@@ -517,3 +517,27 @@ export interface RosterEligibilityResponse {
   policy: EligibilityEnforcementPolicy;
   candidates: CandidateEligibility[];
 }
+
+/**
+ * « Salles libérées » (Lot D, post D-114) — indépendant des emails Room Release et du toggle
+ * `notifyColleaguesEnabled` : un créneau BLOCK réellement libéré est visible ici même si les
+ * emails collègues sont désactivés pour ce site.
+ */
+export interface ReleasedRoomSlotV2 {
+  id: number;
+  site: { id: number; name: string } | null;
+  occurrenceDate: string;
+  period: ShiftPeriod;
+  startTime: string | null;
+  endTime: string | null;
+  surgeon: { id: number; name: string } | null;
+  status: "AVAILABLE";
+  createdAt: string;
+}
+
+export interface ReleasedRoomSlotListResponse {
+  items: ReleasedRoomSlotV2[];
+  page: number;
+  limit: number;
+  total: number;
+}

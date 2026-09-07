@@ -2034,6 +2034,56 @@ données existantes puis suppression des deux colonnes obsolètes sur
 Voir `docs/decisions.md` (revue post-déploiement 2026-09-06) pour le détail de l'audit et des
 tests de non-régression.
 
+### Communication des absences chirurgiens — Lot D « Salles disponibles » (D-114)
+
+Quatrième sous-lot : vue native SurgicalHub (jamais Google Calendar) des créneaux `BLOCK`
+réellement libérés, indépendante du canal email et de `notifyColleaguesEnabled`. Nouvelle
+entité dédiée `ReleasedOperatingRoomSlot` (jamais une réutilisation de
+`SurgeonAbsenceCommunication`, propre au canal email) — seul statut possible pour ce lot :
+`AVAILABLE`.
+
+```
+AbsenceController::create()/update() / SelfAbsenceController équivalents
+        │  (9ᵉ collaborateur, après Room Release/Gestion du bloc — jamais depuis delete())
+        ▼
+ReleasedOperatingRoomSlotService::onAbsenceCreated()/onAbsenceUpdated()
+        │
+        ├── SurgeonAbsenceBlockOccurrenceResolver::resolveForWindow() (même resolver que
+        │       Lots A/B/C — aucun second moteur de récurrence)
+        ├── existsFor(site, postId, date) — idempotence applicative avant la contrainte
+        │       unique DB (site_id, post_id, occurrence_date), dernier garde-fou
+        ├── ShiftPeriodConfig (site, période, actif) → startTime/endTime snapshotés,
+        │       sinon restent NULL (jamais d'horaire inventé)
+        └── persist + flush par slot (jamais un flush groupé — une collision unique sur UNE
+              occurrence ne doit jamais faire échouer les autres occurrences de la même
+              réaction)
+```
+
+**Non-rétractation structurelle** : aucune méthode `onAbsenceDeleted()`/de suppression
+n'existe sur ce service — un raccourcissement ou une suppression d'absence ne retire jamais
+un slot déjà publié, une extension ne fait qu'ajouter (filtré par `existsFor()`).
+
+**Résilience aux suppressions** : `site`/`surgeon`/`schedulePost`/`sourceAbsence` sont tous
+`ON DELETE SET NULL` — un `Hospital`/`User` supprimé après coup n'efface ni ne casse jamais
+un slot déjà publié (`site`/`surgeon` deviennent `null`, affichés « — » côté UI). Aucun
+snapshot du nom (limite documentée, voir `docs/decisions.md` D-114 Lot D) — contrairement à
+`SurgeonAbsenceCommunication`, qui fige subject/body au moment de l'envoi.
+
+**Backfill à usage unique** : `app:available-rooms:backfill-from-room-release` projette les
+`SurgeonAbsenceCommunication` de type `ROOM_RELEASE` encore futures vers
+`ReleasedOperatingRoomSlot` (historique jamais recalculé depuis les absences), idempotent par
+la même contrainte unique.
+
+Endpoints : `GET /api/planning/available-rooms` (manager, `PlanningVoter::PLANNING_MANAGE`)
+et `GET /api/me/available-rooms` (chirurgien, scopé `SiteMembership`) — voir `docs/api.md`
+§26.3a-D. UX : nouvel onglet « Salles disponibles » dans le Planning V2 manager, nouvelle
+page `/app/s/planning/salles-disponibles` côté chirurgien, lien direct depuis le corps de
+l'email « Libération de salle » (Lot A) — vérifié pour survivre au repli texte brut
+(`strip_tags()`) de `SendTemplatedEmailMessageHandler`.
+
+Futur « Lot E — Intérêt et attribution » (`assignedToSurgeon`/`assignedAt`/`closedAt`) :
+proposé, discuté, explicitement non codé dans ce lot.
+
 ### Éditeur unifié Génération / Modification (Batch 15K)
 
 Planning V2 s'appuie sur **un seul composant éditeur** (`GeneratePlanningTab.tsx`) pour les

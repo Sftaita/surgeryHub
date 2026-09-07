@@ -9238,3 +9238,153 @@ des occurrences étant totalement inchangée — seul le contexte de rendu Twig 
   (`HospitalsPage.tsx`) qui utilise déjà ces mêmes termes.
 
 Non déployé.
+
+## Lot D — « Salles disponibles » : vue structurée des créneaux BLOCK libérés (2026-09-07)
+
+### Contexte
+
+Réorientation explicite d'un « Lot D » initialement envisagé autour de Google Calendar : le
+besoin réel est une vue **native** SurgicalHub des créneaux opératoires `BLOCK` réellement
+libérés — indépendante du canal email (Room Release, Lot A), qui reste un canal d'alerte
+séparé et jamais la source de vérité. Réutilise entièrement la source de vérité déjà posée
+par D-114 (`SurgeonAbsenceBlockOccurrenceResolver`) : un créneau n'apparaît ici que selon
+exactement la même règle que Room Release/Gestion du bloc (une occurrence `BLOCK` théorique
+réelle, jamais `CONSULTATION`, jamais un créneau passé) — jamais un second moteur de
+récurrence. Google Calendar n'est pas implémenté (décision produit explicite). Le futur
+« Lot E — Intérêt et attribution » (`assignedToSurgeon`/`assignedAt`/`closedAt`) reste
+volontairement hors périmètre — proposé mais non codé, comme demandé.
+
+### Modèle volontairement minimal — `ReleasedOperatingRoomSlot`
+
+Nouvelle entité dédiée (pas de réutilisation de `SurgeonAbsenceCommunication`, qui reste
+propre au canal email) : `site`, `postId` (identité stable de la récurrence, distincte de la
+relation `schedulePost` — simple jointure de confort), `occurrenceDate`, `period`,
+`startTime`/`endTime` (nullable), `surgeon`, `sourceAbsence` (nullable), `status` (**seule
+valeur possible pour ce lot : `AVAILABLE`** — l'enum `ReleasedRoomSlotStatus` ne porte
+aujourd'hui aucun autre cas, donc aucun statut Lot E non fonctionnel ne peut jamais fuiter
+dans l'UI), `createdAt`. Contrainte unique `(site_id, post_id, occurrence_date)` — une ligne
+par occurrence, jamais mise à jour ni supprimée après création (non-rétractation
+structurellement garantie par l'absence délibérée de toute méthode de suppression :
+raccourcissement ou suppression d'une absence ne retire jamais un slot déjà publié ;
+extension ⇒ nouvelles occurrences seulement, via `existsFor()`).
+
+Vue **indépendante de `AbsenceCommunicationSiteConfig::notifyColleaguesEnabled`** (décision
+produit actée) : un site avec l'email « Libération de salle » désactivé voit quand même ses
+créneaux ici — ce toggle ne gouverne que le canal email, jamais la visibilité opérationnelle
+du fait métier lui-même.
+
+`ReleasedOperatingRoomSlotService` s'insère comme **9ᵉ collaborateur indépendant** dans
+`AbsenceController`/`SelfAbsenceController::create()`/`update()` (jamais dans `delete()`,
+cohérent avec la non-rétractation), après les collaborateurs Room Release/Gestion du bloc,
+même convention établie depuis le Lot A : chacun interroge ce dont il a besoin, aucun
+orchestrateur partagé, aucun couplage de succès/échec entre canaux.
+
+### Revue post-implémentation (2026-09-07) — résilience aux suppressions et contrainte unique
+
+**Suppression de `Hospital`/`User`.** `site`/`surgeon` sont `ON DELETE SET NULL` (corrigé en
+cours d'implémentation : la première version de la migration posait un `RESTRICT` implicite,
+qui cassait ~34 tests pré-existants dont le `tearDown()` supprime librement leurs fixtures
+Hospital/User sans connaître cette nouvelle table). Un établissement ou un chirurgien
+supprimé après coup ne fait jamais planter l'API ni disparaître le créneau : celui-ci reste
+visible avec `site`/`surgeon` à `null`, affiché « — » côté UI. **Limite documentée et
+assumée** : contrairement à `SurgeonAbsenceCommunication` (qui fige subject/body/dates), ni
+le nom du site ni celui du chirurgien ne sont snapshotés sur cette ligne — un nom est donc
+irrémédiablement perdu si l'entité source est supprimée plus tard. Accepté pour ce lot
+(aucun flux de suppression réelle de site/chirurgien identifié en production aujourd'hui) ;
+si ce besoin apparaît, ajouter `siteNameSnapshot`/`surgeonNameSnapshot` par une migration
+additive dédiée — jamais en réutilisant la relation existante comme historique. Vérifié par
+`ReleasedOperatingRoomSlotFunctionalTest::test_slot_survives_hospital_and_surgeon_deletion_with_no_crash`.
+
+**Contrainte unique et `site_id` nullable.** MySQL ne compare jamais deux `NULL` comme égaux
+dans un index UNIQUE — un doublon `(NULL, 5, date)` ne se bloquerait donc jamais lui-même.
+Sans conséquence ici : `ReleasedOperatingRoomSlotService::react()` ne construit jamais une
+ligne avec `site` à `null` (le paramètre est un `Hospital` non-nullable, toujours résolu
+depuis un `SurgeonSchedulePost` réel via le resolver) — `site_id` ne devient `NULL` qu'après
+coup, via `ON DELETE SET NULL`, jamais à l'écriture (verrouillé par un test de réflexion sur
+la signature de `setSite()`). Un doublon orphelin est de plus structurellement impossible :
+supprimer un `Hospital` suppose d'abord la suppression de ses `SurgeonSchedulePost` (FK
+`RESTRICT`), après quoi le resolver ne peut plus jamais retrouver d'occurrence pour cet
+établissement disparu — aucune nouvelle ligne ne peut donc plus jamais être créée pour lui,
+orpheline ou non.
+
+### Backfill — `app:available-rooms:backfill-from-room-release`
+
+Job à exécuter **une fois** au déploiement : projette les `occurrencesSnapshot` des
+`SurgeonAbsenceCommunication` de type `ROOM_RELEASE` **encore futures** vers
+`ReleasedOperatingRoomSlot` — jamais l'historique passé, jamais un recalcul depuis les
+absences elles-mêmes (respecte exactement ce que le Lot A a déjà considéré comme libéré,
+sans réinterpréter). Idempotent par la même contrainte unique que le service temps réel.
+
+Clarification demandée en revue sur un premier essai manuel (« 41 créés puis 0/47 ») : les
+deux runs n'ont pas scanné le même total de communications `ROOM_RELEASE` — de nouvelles
+communications ont continué d'être créées entre les deux exécutions (activité réelle du 9ᵉ
+collaborateur en temps réel, qui tourne déjà en continu depuis le déploiement du service).
+Le nombre total examiné diffère donc légitimement d'un run à l'autre ; ce qui compte est que
+**zéro nouvelle ligne n'a été créée** au second run, chaque occurrence étant déjà connue
+(soit du premier backfill, soit déjà projetée en temps réel par le service). Démontré
+explicitement, indépendamment de toute pollution de la base de test partagée, par
+`BackfillAvailableRoomsFromRoomReleaseCommandTest::test_second_run_creates_nothing_and_reports_all_as_already_existing`
+— assertions scopées aux lignes propres du test (comparaison d'ID avant/après), jamais au
+compteur global affiché par la commande (qui porte sur l'intégralité de la table, non fiable
+en base de test partagée entre classes).
+
+### Horaires — jamais inventés
+
+`startTime`/`endTime` sont snapshotés uniquement depuis `ShiftPeriodConfig` (site + période,
+actif) **au moment de la création** du slot — jamais recalculés ni inventés si aucune
+configuration n'existe pour ce site/période, auquel cas les deux champs restent `null` et
+l'UI affiche la période seule sans horaire. Aucune conversion de fuseau horaire n'est
+nécessaire : `ShiftPeriodConfig` porte déjà des heures wall-clock `Europe/Brussels`, copiées
+telles quelles (`type: time_immutable`), cohérent avec la convention déjà établie pour ce
+type de champ ailleurs dans le projet.
+
+### Endpoints et RBAC
+
+`GET /api/planning/available-rooms` (manager, `PlanningVoter::PLANNING_MANAGE` — aucun
+scoping par site pour ce rôle, comme partout ailleurs dans le projet) et
+`GET /api/me/available-rooms` (chirurgien, strictement scopé à ses propres affiliations
+`SiteMembership` — jamais un `siteId` client de confiance au-delà de cette intersection).
+Filtres `siteId`/`status`/`surgeonId` (manager uniquement)/`includePast`, pagination
+`page`/`limit` (borné à 100).
+
+### Deep link email — bug de repli texte brut trouvé et corrigé
+
+Ajout d'un lien vers `/app/s/planning/salles-disponibles` dans le corps de l'email « Libération
+de salle » (Lot A). Bug réel trouvé en revue : `SendTemplatedEmailMessageHandler` dérive le
+corps texte brut via `strip_tags($htmlBody)` en l'absence de `textTemplate` dédié — une
+marque `<a href="{{ url }}">Voir les salles disponibles →</a>` aurait perdu l'URL de
+l'attribut `href` dans cette version texte, laissant une phrase orpheline non actionnable
+pour les clients email en texte brut. Corrigé en alignant sur la convention déjà établie
+ailleurs dans le projet (`mission_encoding_reminder.html.twig`) : l'URL sert elle-même de
+texte visible du lien (`<a href="{{ roomsUrl }}">{{ roomsUrl }}</a>`), garantissant qu'elle
+survit au `strip_tags()`. Vérifié par
+`RoomReleaseCommunicationFunctionalTest::test_body_includes_deep_link_that_survives_the_plain_text_fallback`
+(applique le même `strip_tags()`/`html_entity_decode()` que le handler réel et vérifie que
+l'URL complète reste présente). Le lien ne bénéficie d'aucune règle de visibilité
+supplémentaire au-delà du scoping normal de la page cible (`/me/available-rooms`, scopé aux
+affiliations du destinataire) — un collègue sans accès au site concerné suit le lien vers une
+page qui, simplement, ne lui montrera jamais ce créneau.
+
+### UX
+
+`/app/s/planning/salles-disponibles` (chirurgien, nouvelle page dédiée + lien depuis
+`SurgeonPlanningPage.tsx`) et un nouvel onglet « Salles disponibles » dans le Planning V2
+manager (`PlanningV2Tabs.tsx`/`PlanningV2Page.tsx`) — vue liste uniquement pour ce lot (pas
+de vue calendrier, jugée non nécessaire pour ce volume). Champs obligatoires affichés :
+date, site, période, horaires (si connus), « Libérée par {Dr X} », statut « Disponible ».
+
+### Migration
+
+`Version20260906140000` écrite à la main (`doctrine:migrations:diff` échoue sur ce projet à
+cause d'un problème d'introspection DBAL pré-existant, sans rapport avec ce lot) — crée
+`released_operating_room_slot`, FK `site_id`/`surgeon_id`/`schedule_post_id`/`source_absence_id`
+toutes `ON DELETE SET NULL`, contrainte unique `(site_id, post_id, occurrence_date)`, index
+`(surgeon_id)` et `(site_id, status, occurrence_date)`.
+
+### Non fait dans ce lot (Lot E)
+
+`assignedToSurgeon`/`assignedAt`/`closedAt`, tout mécanisme d'« Intérêt »/attribution, tout
+second statut au-delà d'`AVAILABLE`, Google Calendar. Proposé et discuté avec l'utilisateur,
+explicitement non codé sur instruction (« Ne code pas Lot E maintenant »).
+
+Non déployé.

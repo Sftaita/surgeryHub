@@ -3092,6 +3092,59 @@ l'existence de l'Absence).
 
 ---
 
+### 26.3a-D Communication des absences chirurgiens — Lot D « Salles disponibles » (D-114)
+
+Vue native SurgicalHub (pas Google Calendar) des créneaux opératoires `BLOCK` réellement
+libérés — indépendante du canal email et de `notifyColleaguesEnabled`. Voir
+`docs/decisions.md` D-114 Lot D pour l'architecture, le modèle minimal
+(`ReleasedOperatingRoomSlot`, seul statut possible `AVAILABLE`), la non-rétractation, et les
+limites documentées (pas de snapshot nom site/chirurgien).
+
+#### `GET /api/planning/available-rooms`
+
+**AuthZ :** `PlanningVoter::PLANNING_MANAGE` (aucun scoping par site pour ce rôle).
+
+**Query params :** `siteId?`, `status?`, `surgeonId?`, `includePast?` (bool, défaut `false`),
+`page?` (défaut 1), `limit?` (défaut 25, borné à 100).
+
+#### `GET /api/me/available-rooms`
+
+**AuthZ :** `ROLE_SURGEON`. Scopé strictement aux sites du chirurgien courant
+(`SiteMembership`) — `surgeonId` non disponible sur cet endpoint.
+
+**Query params :** `siteId?`, `status?`, `includePast?`, `page?`, `limit?` (mêmes bornes).
+
+**Réponse — 200 (commune aux deux endpoints) :**
+
+```json
+{
+  "items": [{
+    "id": 42,
+    "site": { "id": 3, "name": "Clinique Saint-Luc" },
+    "occurrenceDate": "2026-09-14",
+    "period": "MATIN",
+    "startTime": "08:00",
+    "endTime": "13:00",
+    "surgeon": { "id": 7, "name": "Dr Étienne Dupont" },
+    "status": "AVAILABLE",
+    "createdAt": "2026-09-07T09:00:00+00:00"
+  }],
+  "page": 1,
+  "limit": 25,
+  "total": 1
+}
+```
+
+`site`/`surgeon` peuvent être `null` (établissement/utilisateur supprimé après coup —
+`ON DELETE SET NULL`, jamais un crash). `startTime`/`endTime` peuvent être `null` (aucun
+`ShiftPeriodConfig` actif au moment de la création du slot) : afficher la période seule dans
+ce cas.
+
+L'email « Libération de salle » (Lot A) inclut désormais un lien direct vers
+`/app/s/planning/salles-disponibles` dans son corps (HTML et texte brut).
+
+---
+
 ### 26.3b Relances congés manager (D-051)
 
 Cible : instrumentistes + chirurgiens actifs uniquement. **Les deux actions envoient

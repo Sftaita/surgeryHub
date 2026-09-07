@@ -13,6 +13,7 @@ use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use App\Service\InstrumentistAbsenceOccurrenceImpactService;
 use App\Service\RoomReleaseCommunicationService;
 use App\Service\BlockManagementCommunicationService;
+use App\Service\ReleasedOperatingRoomSlotService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -33,6 +34,7 @@ class AbsenceController extends AbstractController
         private readonly AbsenceImpactSummaryService $absenceImpactSummaryService,
         private readonly RoomReleaseCommunicationService $roomReleaseCommunicationService,
         private readonly BlockManagementCommunicationService $blockManagementCommunicationService,
+        private readonly ReleasedOperatingRoomSlotService $releasedOperatingRoomSlotService,
     ) {}
 
     #[Route('', name: 'api_absences_list', methods: ['GET'])]
@@ -144,6 +146,11 @@ class AbsenceController extends AbstractController
         // destinataires, deux journaux de communications distincts).
         $this->blockManagementCommunicationService->onAbsenceCreated($absence, $currentUser);
 
+        // Lot D (post D-114) — « Salles libérées », 9ᵉ collaborateur indépendant. Aucun
+        // couplage avec les deux services ci-dessus : un échec ici n'affecte jamais les
+        // emails déjà dispatchés, et réciproquement (§23).
+        $this->releasedOperatingRoomSlotService->onAbsenceCreated($absence, $currentUser);
+
         return $this->json($this->serialize($absence), 201);
     }
 
@@ -231,6 +238,11 @@ class AbsenceController extends AbstractController
         // selon les sites BLOCK désormais concernés (§14 : mutation en place tant que
         // jamais envoyée, sinon BLOCK_MANAGEMENT_MODIFICATION si les dates ont changé).
         $this->blockManagementCommunicationService->onAbsenceUpdated($absence, $currentUser, $previousDateStart, $previousDateEnd);
+
+        // Lot D (post D-114) — nouveaux slots pour les occurrences révélées par un
+        // allongement ; un raccourcissement ne retire jamais les slots déjà créés (aucune
+        // méthode de suppression dans le service).
+        $this->releasedOperatingRoomSlotService->onAbsenceUpdated($absence, $currentUser);
 
         return $this->json($this->serialize($absence));
     }
