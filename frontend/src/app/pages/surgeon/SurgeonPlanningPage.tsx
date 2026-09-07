@@ -3,7 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Alert,
+  Badge,
   Box,
+  Button,
   CircularProgress,
   Dialog,
   DialogTitle,
@@ -14,27 +16,33 @@ import {
 } from "@mui/material";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import MeetingRoomOutlinedIcon from "@mui/icons-material/MeetingRoomOutlined";
 
 import { fetchMissions } from "../../features/missions/api/missions.api";
 import { MissionDetailContent } from "../instrumentist/MissionDetailPage";
 import type { Mission } from "../../features/missions/api/missions.types";
 import type { DateTileVariant } from "../../ui/mobile/DateTile";
 import type { StatusPillVariant } from "../../ui/mobile/StatusPill";
+import { getMyAvailableRooms, getMyAvailableRoomsCount } from "../../features/planning-v2/api/planningV2.api";
+import type { ReleasedRoomSlotV2 } from "../../features/planning-v2/api/planningV2.types";
 import {
   type ViewMode,
   type MonthDayMeta,
   formatDateToYmd,
   isValidYmd,
   getRange,
+  getYmdRange,
   getSafeView,
   shiftDate,
   formatDisplayDate,
+  parseYmdToLocalDate,
   getMissionStartDayKey,
   compareMissionsByStart,
   SegmentedControl,
   WeekStrip,
   MonthGrid,
   MissionListRow,
+  AvailableRoomsListSection,
   EmptyStateRow,
 } from "../../features/mobile-planning/planningPrimitives";
 
@@ -61,6 +69,16 @@ type CoverageFilter = "all" | "covered" | "uncovered";
 
 function isActionableUncovered(mission: Mission): boolean {
   return mission.status === "OPEN";
+}
+
+/** Libellé d'un jour unique pour le panneau détail — jamais une plage (formatDisplayDate
+ *  ne couvre que "mois" et "semaine"). */
+function formatSingleDayLabel(dayKey: string): string {
+  return parseYmdToLocalDate(dayKey).toLocaleDateString("fr-BE", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  });
 }
 
 function getInstrumentistLabel(mission: Mission): string {
@@ -127,6 +145,10 @@ export default function SurgeonPlanningPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedMissionId, setSelectedMissionId] = React.useState<number | null>(null);
+  // Intégration ReleasedOperatingRoomSlot dans l'agenda (revue 2026-09-07) — panneau détail
+  // du jour, distinct du détail mission : un jour avec au moins une salle disponible ouvre
+  // toujours ce panneau (missions + salles listées séparément), jamais mélangées.
+  const [selectedDayKey, setSelectedDayKey] = React.useState<string | null>(null);
   const touchStartXRef = React.useRef<number | null>(null);
   const touchStartYRef = React.useRef<number | null>(null);
 
@@ -175,24 +197,65 @@ export default function SurgeonPlanningPage() {
     return buckets;
   }, [missions]);
 
+  // Salles disponibles (ReleasedOperatingRoomSlot, intégration agenda, revue 2026-09-07) —
+  // fenêtre visible uniquement (dateFrom/dateTo = range affiché), jamais tout l'historique
+  // (§13 de la demande). Source unique : GET /api/me/available-rooms, jamais un recalcul
+  // frontend des absences ni le journal email (§11).
+  // `getYmdRange()`, jamais `range` (ISO/`.toISOString()`) : le backend exige strictement
+  // `Y-m-d` et rejette (400) tout ce qui porte une heure/un `Z` — vérifié en live, le premier
+  // câblage utilisant `range` ici renvoyait silencieusement une liste vide (requête en échec
+  // jamais surfacée à l'utilisateur, seul le badge compteur — appel séparé — restait correct).
+  const roomsRange = React.useMemo(() => getYmdRange(view, date), [view, date]);
+  const roomsQuery = useQuery({
+    queryKey: ["available-rooms", "mine", "planning", { from: roomsRange.from, to: roomsRange.to }],
+    queryFn: () => getMyAvailableRooms({ dateFrom: roomsRange.from, dateTo: roomsRange.to, limit: 100 }),
+  });
+  const roomsInView = roomsQuery.data?.items ?? [];
+
+  // Badge CTA : nombre total de créneaux futurs visibles par ce chirurgien, jamais borné à
+  // la fenêtre affichée — endpoint léger dédié (§12/§13), jamais la liste complète chargée
+  // seulement pour compter.
+  const roomsCountQuery = useQuery({
+    queryKey: ["available-rooms", "mine", "count"],
+    queryFn: () => getMyAvailableRoomsCount(),
+  });
+
+  const roomsByDay = React.useMemo(() => {
+    const buckets = new Map<string, ReleasedRoomSlotV2[]>();
+    for (const slot of roomsInView) {
+      const dayKey = slot.occurrenceDate.slice(0, 10);
+      const existing = buckets.get(dayKey);
+      if (existing) existing.push(slot);
+      else buckets.set(dayKey, [slot]);
+    }
+    return buckets;
+  }, [roomsInView]);
+
   const dayMeta = React.useMemo(() => {
-    const meta = new Map<string, MonthDayMeta & { firstMissionId: number }>();
-    for (const [dayKey, list] of dayBuckets.entries()) {
-      const first = list[0];
-      if (!first) continue;
+    const meta = new Map<string, MonthDayMeta & { firstMissionId: number | null }>();
+    const dayKeys = new Set<string>([...dayBuckets.keys(), ...roomsByDay.keys()]);
+    for (const dayKey of dayKeys) {
+      const missionList = dayBuckets.get(dayKey);
+      const roomList = roomsByDay.get(dayKey);
       meta.set(dayKey, {
         hasConflict: false,
-        hasSecondary: list.some(isActionableUncovered),
-        hasMission: true,
-        firstMissionId: first.id,
+        hasSecondary: missionList?.some(isActionableUncovered) ?? false,
+        hasMission: Boolean(missionList?.length),
+        firstMissionId: missionList?.[0]?.id ?? null,
+        availableRoomCount: roomList?.length ?? 0,
       });
     }
     return meta;
-  }, [dayBuckets]);
+  }, [dayBuckets, roomsByDay]);
 
   const sortedMissions = React.useMemo(
     () => [...missions].sort(compareMissionsByStart),
     [missions],
+  );
+
+  const sortedRoomsInView = React.useMemo(
+    () => [...roomsInView].sort((a, b) => a.occurrenceDate.localeCompare(b.occurrenceDate) || a.id - b.id),
+    [roomsInView],
   );
 
   const updateSearchParams = React.useCallback(
@@ -216,7 +279,16 @@ export default function SurgeonPlanningPage() {
   const handleDayClick = React.useCallback(
     (dayKey: string) => {
       const meta = dayMeta.get(dayKey);
-      if (meta) setSelectedMissionId(meta.firstMissionId);
+      if (!meta) return;
+      // Zéro régression : un jour sans salle disponible garde exactement le comportement
+      // existant (ouverture directe de la première mission). Dès qu'il y a au moins une
+      // salle ce jour-là, on passe par le panneau détail du jour — jamais de salle
+      // silencieusement absorbée dans le dialogue mission.
+      if ((meta.availableRoomCount ?? 0) === 0) {
+        if (meta.firstMissionId !== null) setSelectedMissionId(meta.firstMissionId);
+        return;
+      }
+      setSelectedDayKey(dayKey);
     },
     [dayMeta],
   );
@@ -271,15 +343,26 @@ export default function SurgeonPlanningPage() {
 
       <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5} flexWrap="wrap" useFlexGap>
         <CoverageFilterControl value={filter} onChange={(v) => updateSearchParams({ filter: v })} />
-        <Stack direction="row" alignItems="center" spacing={2}>
-          {/* Lot D (post D-114) — accès à la vue "Salles disponibles", jamais une 6e entrée
-              navbar (même raisonnement que le CTA "Demander une mission" ci-dessous). */}
-          <Box
-            component="button" type="button" onClick={() => navigate("/app/s/planning/salles-disponibles")}
-            sx={{ border: "none", background: "none", color: "#1B5FD0", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}
+        <Stack direction="row" alignItems="center" spacing={1.5}>
+          {/* Lot D (post D-114, intégration agenda revue 2026-09-07) — accès à la vue
+              "Salles disponibles", jamais une 6e entrée navbar. Badge = nombre total de
+              créneaux futurs visibles par ce chirurgien (endpoint count dédié, §7/§12). */}
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<MeetingRoomOutlinedIcon fontSize="small" />}
+            onClick={() => navigate("/app/s/planning/salles-disponibles")}
+            sx={{ borderColor: "#1B5FD0", color: "#1B5FD0", fontWeight: 700, fontSize: 13, textTransform: "none", borderRadius: "10px" }}
           >
             Salles disponibles
-          </Box>
+            {Boolean(roomsCountQuery.data?.count) && (
+              <Badge
+                badgeContent={roomsCountQuery.data?.count}
+                color="primary"
+                sx={{ ml: 1.5, "& .MuiBadge-badge": { position: "static", transform: "none", background: "#1B5FD0" } }}
+              />
+            )}
+          </Button>
           {/* CTA demande de mission (Lot 5, D-099, §14) — accessible depuis le planning,
               jamais une 6e entrée navbar. */}
           <Box
@@ -302,7 +385,13 @@ export default function SurgeonPlanningPage() {
       ) : (
         <>
           {view === "week" ? (
-            <WeekStrip date={date} todayYmd={todayYmd} hasMissionOn={(k) => dayBuckets.has(k)} onDayClick={handleDayClick} />
+            <WeekStrip
+              date={date}
+              todayYmd={todayYmd}
+              hasMissionOn={(k) => dayBuckets.has(k)}
+              hasAvailableRoomOn={(k) => (roomsByDay.get(k)?.length ?? 0) > 0}
+              onDayClick={handleDayClick}
+            />
           ) : (
             <MonthGrid
               date={date}
@@ -347,6 +436,9 @@ export default function SurgeonPlanningPage() {
               })
             )}
           </Stack>
+
+          {/* Section séparée, jamais mélangée à MISSIONS — intégration agenda 2026-09-07. */}
+          <AvailableRoomsListSection slots={sortedRoomsInView} />
         </>
       )}
 
@@ -365,6 +457,44 @@ export default function SurgeonPlanningPage() {
               onCloseEmbedded={() => setSelectedMissionId(null)}
             />
           ) : null}
+        </DialogContent>
+      </Dialog>
+
+      {/* Panneau détail du jour — missions et salles disponibles listées séparément, jamais
+          mélangées. N'ouvre jamais directement le détail d'une salle (elle n'a pas de "détail"
+          au sens mission) ; cliquer une mission ici ouvre le dialogue mission ci-dessus. */}
+      <Dialog
+        open={selectedDayKey !== null}
+        onClose={() => setSelectedDayKey(null)}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>{selectedDayKey ? formatSingleDayLabel(selectedDayKey) : ""}</DialogTitle>
+        <DialogContent dividers sx={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          {selectedDayKey && (dayBuckets.get(selectedDayKey)?.length ?? 0) > 0 && (
+            <Stack spacing={1.375}>
+              <Box sx={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.07em", color: "#2C7D5F" }}>MISSIONS</Box>
+              {(dayBuckets.get(selectedDayKey) ?? []).map((m) => {
+                const status = surgeonMissionRowStatus(m);
+                return (
+                  <MissionListRow
+                    key={m.id}
+                    mission={m}
+                    subtitlePerson={getInstrumentistLabel(m)}
+                    statusInfo={status}
+                    dateTileVariant={dateTileVariantFor(status)}
+                    onClick={() => {
+                      setSelectedDayKey(null);
+                      setSelectedMissionId(m.id);
+                    }}
+                  />
+                );
+              })}
+            </Stack>
+          )}
+          {selectedDayKey && (
+            <AvailableRoomsListSection slots={roomsByDay.get(selectedDayKey) ?? []} />
+          )}
         </DialogContent>
       </Dialog>
     </Box>

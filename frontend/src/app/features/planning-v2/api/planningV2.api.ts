@@ -29,6 +29,7 @@ import type {
   AbsenceCommunicationListResponseV2,
   AbsenceCommunicationDetailV2,
   ReleasedRoomSlotListResponse,
+  ReleasedRoomSlotCountResponse,
 } from "./planningV2.types";
 
 /** Same pattern as every other page-local helper in this codebase (no shared util exists). */
@@ -446,19 +447,41 @@ export async function getAvailableRoomsForManager(params?: {
   includePast?: boolean;
   page?: number;
   limit?: number;
+  dateFrom?: string;
+  dateTo?: string;
+  period?: ShiftPeriod;
 }): Promise<ReleasedRoomSlotListResponse> {
   const res = await apiClient.get("/api/planning/available-rooms", { params });
   return res.data;
 }
 
-/** « Salles libérées » (Lot D) — vue chirurgien, scopée serveur à ses propres affiliations. */
+/**
+ * « Salles libérées » (Lot D) — vue chirurgien, scopée serveur à ses propres affiliations.
+ * `dateFrom`/`dateTo` (intégration planning chirurgien, revue 2026-09-07) permettent au
+ * calendrier de ne requêter que la fenêtre visible (mois/semaine affiché) — jamais tout
+ * l'historique. `includePast` n'existe volontairement pas ici : le backend l'ignore de toute
+ * façon côté chirurgien (§9), inutile de l'exposer côté client.
+ */
 export async function getMyAvailableRooms(params?: {
   siteId?: number;
   status?: string;
-  includePast?: boolean;
   page?: number;
   limit?: number;
+  dateFrom?: string;
+  dateTo?: string;
+  period?: ShiftPeriod;
 }): Promise<ReleasedRoomSlotListResponse> {
   const res = await apiClient.get("/api/me/available-rooms", { params });
+  return res.data;
+}
+
+/** Compteur seul (badge CTA planning chirurgien) — jamais la liste complète. */
+export async function getMyAvailableRoomsCount(params?: {
+  siteId?: number;
+  dateFrom?: string;
+  dateTo?: string;
+  period?: ShiftPeriod;
+}): Promise<ReleasedRoomSlotCountResponse> {
+  const res = await apiClient.get("/api/me/available-rooms/count", { params });
   return res.data;
 }

@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Box, Stack, Typography } from "@mui/material";
+import MeetingRoomOutlinedIcon from "@mui/icons-material/MeetingRoomOutlined";
 import { DateTile, type DateTileVariant } from "../../ui/mobile/DateTile";
 import { StatusPill, type StatusPillVariant } from "../../ui/mobile/StatusPill";
 
@@ -32,6 +33,13 @@ const GRAY_300 = "#C2C9D1";
 const GRAY_400 = "#98A2AE";
 const GRAY_600 = "#566270";
 const GRAY_900 = "#16202B";
+// Palette "salle disponible" — même bleu que DateTileVariant "aVenir" (#EDF4FF/#1B5FD0),
+// jamais le vert mission ni l'ambre "à couvrir"/"à encoder" : canal visuel indépendant,
+// jamais superposé au point mission/couverture existant (intégration planning
+// chirurgien, revue 2026-09-07 — voir docs/decisions.md pour le raisonnement complet).
+const BLUE_50 = "#EDF4FF";
+const BLUE_500 = "#4E8FE0";
+const BLUE_700 = "#1B5FD0";
 const SHADOW_XS = "0 1px 2px rgba(22,32,43,.05)";
 const SHADOW_SM = "0 1px 2px rgba(22,32,43,.05), 0 2px 6px rgba(22,32,43,.06)";
 
@@ -93,6 +101,26 @@ export function getRange(view: ViewMode, dateYmd: string): { from: string; to: s
   const from = startOfWeek(baseDate);
   const to = addDays(from, 7);
   return { from: from.toISOString(), to: to.toISOString() };
+}
+
+/**
+ * Même fenêtre que `getRange()`, mais en `Y-m-d` local — jamais `.toISOString()`, qui décale
+ * la date en UTC et casse le format strict attendu par `dateFrom`/`dateTo` côté backend
+ * (`available-rooms`, intégration agenda 2026-09-07). `to` est ici inclusif (dernier jour du
+ * mois/de la semaine affiché·e), contrairement au `to` exclusif de `getRange()`.
+ */
+export function getYmdRange(view: ViewMode, dateYmd: string): { from: string; to: string } {
+  const baseDate = parseYmdToLocalDate(dateYmd);
+
+  if (view === "month") {
+    const from = startOfMonth(baseDate);
+    const to = new Date(from.getFullYear(), from.getMonth() + 1, 0, 0, 0, 0, 0);
+    return { from: formatDateToYmd(from), to: formatDateToYmd(to) };
+  }
+
+  const from = startOfWeek(baseDate);
+  const to = addDays(from, 6);
+  return { from: formatDateToYmd(from), to: formatDateToYmd(to) };
 }
 
 export function getSafeView(value: string | null): ViewMode {
@@ -212,12 +240,16 @@ export function SegmentedControl({ view, onChange }: { view: ViewMode; onChange:
 
 // ── Vue semaine : 7 chips jour ───────────────────────────────────────────────
 export function WeekStrip({
-  date, todayYmd, hasMissionOn, onDayClick,
+  date, todayYmd, hasMissionOn, onDayClick, hasAvailableRoomOn,
 }: {
   date: string;
   todayYmd: string;
   hasMissionOn: (dayKey: string) => boolean;
   onDayClick: (dayKey: string) => void;
+  /** Intégration planning chirurgien (revue 2026-09-07) — optionnel, jamais renseigné par
+   *  l'instrumentiste : un second point, bleu, distinct du point mission vert, jamais un
+   *  remplacement de celui-ci. */
+  hasAvailableRoomOn?: (dayKey: string) => boolean;
 }) {
   const start = startOfWeek(parseYmdToLocalDate(date));
   const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
@@ -228,6 +260,7 @@ export function WeekStrip({
         const dayKey = formatDateToYmd(d);
         const isToday = dayKey === todayYmd;
         const hasMission = hasMissionOn(dayKey);
+        const hasAvailableRoom = hasAvailableRoomOn?.(dayKey) ?? false;
         return (
           <Box
             key={dayKey}
@@ -248,7 +281,15 @@ export function WeekStrip({
               {DOW_ABBR[i]}
             </Box>
             <Box sx={{ fontSize: 17, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{d.getDate()}</Box>
-            <Box sx={{ width: 5, height: 5, borderRadius: "999px", background: hasMission ? (isToday ? "#fff" : GREEN_500) : "transparent" }} />
+            <Box sx={{ display: "flex", gap: "3px", height: 5 }}>
+              <Box sx={{ width: 5, height: 5, borderRadius: "999px", background: hasMission ? (isToday ? "#fff" : GREEN_500) : "transparent" }} />
+              {hasAvailableRoom && (
+                <Box
+                  data-testid={`week-room-dot-${dayKey}`}
+                  sx={{ width: 5, height: 5, borderRadius: "999px", background: isToday ? "#fff" : BLUE_500 }}
+                />
+              )}
+            </Box>
           </Box>
         );
       })}
@@ -256,7 +297,16 @@ export function WeekStrip({
   );
 }
 
-export type MonthDayMeta = { hasConflict: boolean; hasSecondary: boolean; hasMission: boolean };
+export type MonthDayMeta = {
+  hasConflict: boolean;
+  hasSecondary: boolean;
+  hasMission: boolean;
+  /** Intégration planning chirurgien (revue 2026-09-07) — optionnel, jamais renseigné par
+   *  l'instrumentiste. Nombre de ReleasedOperatingRoomSlot ce jour-là, jamais confondu avec
+   *  hasSecondary (qui porte un sens métier différent : "à couvrir"/"à encoder" selon le
+   *  rôle). Rendu comme un badge bleu séparé, jamais en réutilisant le point mission. */
+  availableRoomCount?: number;
+};
 
 // ── Vue mois : grille + légende ──────────────────────────────────────────────
 // `hasSecondary`/`secondaryLabel`/`secondaryColor` remplacent l'ancien "hasToEncode"
@@ -276,6 +326,12 @@ export function MonthGrid({
   secondaryDot?: string;
 }) {
   const cells = React.useMemo(() => buildMonthGridCells(date), [date]);
+  // Légende "Salle disponible" affichée uniquement si l'appelant renseigne réellement
+  // availableRoomCount (chirurgien) — jamais pour l'instrumentiste, qui ne le passe pas.
+  const usesAvailableRooms = React.useMemo(
+    () => cells.some((c) => dayMeta.get(c.dateYmd)?.availableRoomCount !== undefined),
+    [cells, dayMeta],
+  );
 
   return (
     <Box sx={{ background: "#fff", borderRadius: "18px", padding: "12px", boxShadow: SHADOW_XS }}>
@@ -288,7 +344,9 @@ export function MonthGrid({
         {cells.map((cell) => {
           const meta = dayMeta.get(cell.dateYmd);
           const isToday = cell.dateYmd === todayYmd;
-          const bg = isToday ? GREEN_900 : meta?.hasSecondary ? secondaryBg : meta?.hasMission ? GREEN_50 : "transparent";
+          const roomCount = meta?.availableRoomCount ?? 0;
+          const isClickable = Boolean(meta?.hasMission) || roomCount > 0;
+          const bg = isToday ? GREEN_900 : meta?.hasSecondary ? secondaryBg : meta?.hasMission ? GREEN_50 : roomCount > 0 ? BLUE_50 : "transparent";
           const dotColor = isToday ? GREEN_300 : meta?.hasSecondary ? secondaryDot : meta?.hasMission ? GREEN_500 : "transparent";
           const textColor = isToday ? "#fff" : !cell.inCurrentMonth ? GRAY_300 : "inherit";
           return (
@@ -296,10 +354,11 @@ export function MonthGrid({
               key={cell.dateYmd}
               component="button"
               type="button"
+              data-testid={`month-day-${cell.dateYmd}`}
               onClick={() => onDayClick(cell.dateYmd)}
-              disabled={!meta?.hasMission}
+              disabled={!isClickable}
               sx={{
-                height: 44, borderRadius: "10px", border: "none", cursor: meta?.hasMission ? "pointer" : "default",
+                height: 44, borderRadius: "10px", border: "none", cursor: isClickable ? "pointer" : "default",
                 background: bg, color: textColor, position: "relative",
                 display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "3px",
                 fontFamily: "inherit",
@@ -310,11 +369,26 @@ export function MonthGrid({
               {meta?.hasConflict && (
                 <Box sx={{ position: "absolute", top: 2, right: 4, fontSize: 9, lineHeight: 1 }} title="Conflit potentiel">⚠</Box>
               )}
+              {roomCount > 0 && (
+                <Box
+                  data-testid={`month-room-badge-${cell.dateYmd}`}
+                  title={`${roomCount} salle${roomCount > 1 ? "s" : ""} disponible${roomCount > 1 ? "s" : ""}`}
+                  sx={{
+                    position: "absolute", bottom: 2, right: 3, minWidth: 13, height: 13, px: "2px",
+                    borderRadius: "999px", background: isToday ? "#fff" : BLUE_500,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 8.5, fontWeight: 800, lineHeight: 1, color: isToday ? BLUE_700 : "#fff",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {roomCount}
+                </Box>
+              )}
             </Box>
           );
         })}
       </Box>
-      <Box sx={{ display: "flex", gap: "16px", mt: "12px", pt: "12px", borderTop: "1px dashed", borderColor: "grey.200" }}>
+      <Box sx={{ display: "flex", gap: "16px", mt: "12px", pt: "12px", borderTop: "1px dashed", borderColor: "grey.200", flexWrap: "wrap" }}>
         <Stack direction="row" alignItems="center" spacing={0.75}>
           <Box sx={{ width: 6, height: 6, borderRadius: "999px", background: GREEN_500 }} />
           <Typography sx={{ fontSize: 12, color: GRAY_600 }}>Mission</Typography>
@@ -323,6 +397,12 @@ export function MonthGrid({
           <Box sx={{ width: 6, height: 6, borderRadius: "999px", background: secondaryDot }} />
           <Typography sx={{ fontSize: 12, color: GRAY_600 }}>{secondaryLabel}</Typography>
         </Stack>
+        {usesAvailableRooms && (
+          <Stack direction="row" alignItems="center" spacing={0.75}>
+            <Box sx={{ width: 6, height: 6, borderRadius: "999px", background: BLUE_500 }} />
+            <Typography sx={{ fontSize: 12, color: GRAY_600 }}>Salle disponible</Typography>
+          </Stack>
+        )}
       </Box>
     </Box>
   );
@@ -370,6 +450,88 @@ export function MissionListRow({
       </Box>
       <StatusPill variant={statusInfo.variant} label={statusInfo.label} withDot={statusInfo.withDot} />
     </Box>
+  );
+}
+
+// ── Salle disponible (Lot D, intégration planning chirurgien, revue 2026-09-07) ─────
+// Jamais MissionListRow : une salle libérée n'a aucun statut mission, jamais de
+// StatusPillVariant mission (proposee/confirmee/aEncoder/refusee) — toujours la même
+// pastille "Disponible" bleue, jamais présentée comme une mission du chirurgien connecté.
+export const AVAILABLE_ROOM_PERIOD_LABELS: Record<string, string> = {
+  MATIN: "Matin",
+  APRES_MIDI: "Après-midi",
+  JOURNEE: "Journée",
+};
+
+export type AvailableRoomSlotLike = {
+  id: number;
+  site?: { name?: string | null } | null;
+  occurrenceDate: string;
+  period: string;
+  startTime?: string | null;
+  endTime?: string | null;
+  surgeon?: { name?: string | null } | null;
+};
+
+export function AvailableRoomRow({ slot, onClick }: { slot: AvailableRoomSlotLike; onClick?: () => void }) {
+  const start = parseYmdToLocalDate(slot.occurrenceDate.slice(0, 10));
+  const periodLabel = AVAILABLE_ROOM_PERIOD_LABELS[slot.period] ?? slot.period;
+  const timeLabel = slot.startTime && slot.endTime ? `${slot.startTime}–${slot.endTime}` : periodLabel;
+
+  return (
+    <Box
+      component={onClick ? "button" : "div"}
+      type={onClick ? "button" : undefined}
+      onClick={onClick}
+      data-testid={`available-room-row-${slot.id}`}
+      sx={{
+        display: "flex", alignItems: "center", gap: "14px", width: "100%", textAlign: "left",
+        background: "#fff", border: "1px solid #E7EBEF", borderRadius: "16px", padding: "14px 16px",
+        boxShadow: SHADOW_XS, cursor: onClick ? "pointer" : "default", fontFamily: "inherit",
+      }}
+    >
+      <DateTile
+        day={String(start.getDate()).padStart(2, "0")}
+        month={start.toLocaleDateString("fr-BE", { month: "short" }).replace(".", "").toUpperCase()}
+        variant="aVenir"
+        preset="list"
+      />
+      <MeetingRoomOutlinedIcon sx={{ color: BLUE_700, fontSize: 20 }} />
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography sx={{ fontSize: 15, fontWeight: 700 }} noWrap>
+          {slot.site?.name ?? "—"} — {timeLabel}
+        </Typography>
+        <Typography sx={{ mt: "3px", fontSize: 13, color: "text.secondary" }} noWrap>
+          Libérée par {slot.surgeon?.name ?? "—"}
+        </Typography>
+      </Box>
+      <StatusPill variant="aVenir" label="Disponible" />
+    </Box>
+  );
+}
+
+/** Section liste "SALLES DISPONIBLES" — même style d'en-tête pointillé que la section
+ *  MISSIONS (accent bleu au lieu de vert), jamais mélangée avec la liste des missions. */
+export function AvailableRoomsListSection({
+  slots, onSlotClick,
+}: {
+  slots: AvailableRoomSlotLike[];
+  onSlotClick?: (slotId: number) => void;
+}) {
+  if (slots.length === 0) return null;
+
+  return (
+    <Stack spacing={1.375}>
+      <Stack direction="row" alignItems="center" spacing={1.5}>
+        <Box sx={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.07em", color: BLUE_700, whiteSpace: "nowrap" }}>
+          SALLES DISPONIBLES
+        </Box>
+        <Box sx={{ flex: 1, borderTop: "1px dashed", borderColor: "grey.200" }} />
+      </Stack>
+      {slots.map((slot) => (
+        <AvailableRoomRow key={slot.id} slot={slot} onClick={onSlotClick ? () => onSlotClick(slot.id) : undefined} />
+      ))}
+    </Stack>
   );
 }
 

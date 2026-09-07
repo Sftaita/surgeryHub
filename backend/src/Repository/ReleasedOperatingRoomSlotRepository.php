@@ -30,6 +30,9 @@ class ReleasedOperatingRoomSlotRepository extends ServiceEntityRepository
         bool $includePast = false,
         int $page = 1,
         int $limit = 25,
+        ?\DateTimeImmutable $dateFrom = null,
+        ?\DateTimeImmutable $dateTo = null,
+        ?string $period = null,
     ): array {
         $itemsQb = $this->createQueryBuilder('s')
             ->leftJoin('s.site', 'site')->addSelect('site')
@@ -38,16 +41,38 @@ class ReleasedOperatingRoomSlotRepository extends ServiceEntityRepository
             ->addOrderBy('s.id', 'ASC')
             ->setMaxResults($limit)
             ->setFirstResult(max($page - 1, 0) * $limit);
-        $this->applyFilters($itemsQb, 's', $siteIds, $siteId, $status, $surgeonId, $includePast);
+        $this->applyFilters($itemsQb, 's', $siteIds, $siteId, $status, $surgeonId, $includePast, $dateFrom, $dateTo, $period);
 
         $countQb = $this->createQueryBuilder('s')->select('COUNT(s.id)');
-        $this->applyFilters($countQb, 's', $siteIds, $siteId, $status, $surgeonId, $includePast);
+        $this->applyFilters($countQb, 's', $siteIds, $siteId, $status, $surgeonId, $includePast, $dateFrom, $dateTo, $period);
 
         /** @var list<ReleasedOperatingRoomSlot> $items */
         $items = $itemsQb->getQuery()->getResult();
         $total = (int) $countQb->getQuery()->getSingleScalarResult();
 
         return ['items' => $items, 'total' => $total];
+    }
+
+    /**
+     * Compteur seul — même filtres que `findForList()`, sans charger les lignes. Utilisé par
+     * l'endpoint léger `GET /api/me/available-rooms/count` (badge CTA planning chirurgien).
+     *
+     * @param list<int>|null $siteIds
+     */
+    public function countForList(
+        ?array $siteIds,
+        ?int $siteId = null,
+        ?string $status = null,
+        ?int $surgeonId = null,
+        bool $includePast = false,
+        ?\DateTimeImmutable $dateFrom = null,
+        ?\DateTimeImmutable $dateTo = null,
+        ?string $period = null,
+    ): int {
+        $qb = $this->createQueryBuilder('s')->select('COUNT(s.id)');
+        $this->applyFilters($qb, 's', $siteIds, $siteId, $status, $surgeonId, $includePast, $dateFrom, $dateTo, $period);
+
+        return (int) $qb->getQuery()->getSingleScalarResult();
     }
 
     /** @param list<int>|null $siteIds */
@@ -59,6 +84,9 @@ class ReleasedOperatingRoomSlotRepository extends ServiceEntityRepository
         ?string $status,
         ?int $surgeonId,
         bool $includePast,
+        ?\DateTimeImmutable $dateFrom = null,
+        ?\DateTimeImmutable $dateTo = null,
+        ?string $period = null,
     ): void {
         if ($siteIds !== null) {
             if (empty($siteIds)) {
@@ -81,6 +109,18 @@ class ReleasedOperatingRoomSlotRepository extends ServiceEntityRepository
         if (!$includePast) {
             $qb->andWhere("$alias.occurrenceDate >= :today")
                 ->setParameter('today', new \DateTimeImmutable('today'), 'date_immutable');
+        }
+        // dateFrom/dateTo resserrent la fenêtre en plus du plancher includePast ci-dessus —
+        // jamais un moyen de contourner le "jamais de passé" côté chirurgien (§9) : le
+        // contrôleur self n'expose de toute façon jamais includePast=true.
+        if ($dateFrom !== null) {
+            $qb->andWhere("$alias.occurrenceDate >= :dateFrom")->setParameter('dateFrom', $dateFrom, 'date_immutable');
+        }
+        if ($dateTo !== null) {
+            $qb->andWhere("$alias.occurrenceDate <= :dateTo")->setParameter('dateTo', $dateTo, 'date_immutable');
+        }
+        if ($period !== null) {
+            $qb->andWhere("$alias.period = :period")->setParameter('period', $period);
         }
     }
 

@@ -6,6 +6,7 @@ import {
   WeekStrip,
   MissionListRow,
   EmptyStateRow,
+  getYmdRange,
   type MonthDayMeta,
 } from "./planningPrimitives";
 
@@ -155,5 +156,50 @@ describe("EmptyStateRow", () => {
   it("affiche le texte fourni tel quel", () => {
     render(<EmptyStateRow text="Aucune mission sur cette période" />);
     expect(screen.getByText("Aucune mission sur cette période")).toBeInTheDocument();
+  });
+});
+
+/**
+ * `getYmdRange()` — intégration agenda Lot D (revue 2026-09-07). Contrat : `Y-m-d` local
+ * strict des deux côtés (jamais `.toISOString()`, qui décale la date en UTC et a causé le
+ * bug réel corrigé dans ce lot — voir `SurgeonPlanningPage.test.tsx` pour la régression au
+ * niveau composant), `to` inclusif (dernier jour affiché, contrairement à `getRange()` dont
+ * le `to` est exclusif). Ces tests couvrent les frontières de calendrier — mois à 28/30/31
+ * jours, changement de mois, semaine chevauchant deux mois, et les deux bascules
+ * heure d'été/hiver belges 2026 — pour qu'aucun créneau du premier/dernier jour visible ne
+ * disparaisse jamais, y compris quand le fuseau Europe/Brussels change d'offset UTC en
+ * cours de fenêtre.
+ */
+describe("getYmdRange — frontières mois/semaine, jamais un décalage UTC", () => {
+  it("mois d'août 2026 (31 jours) — from/to au format Y-m-d strict", () => {
+    expect(getYmdRange("month", "2026-08-15")).toEqual({ from: "2026-08-01", to: "2026-08-31" });
+  });
+
+  it("mois de septembre 2026 (30 jours) — transition août → septembre", () => {
+    expect(getYmdRange("month", "2026-09-07")).toEqual({ from: "2026-09-01", to: "2026-09-30" });
+  });
+
+  it("mois d'octobre 2026 (31 jours) — transition septembre → octobre, contient le passage heure d'hiver du 25/10", () => {
+    expect(getYmdRange("month", "2026-10-01")).toEqual({ from: "2026-10-01", to: "2026-10-31" });
+  });
+
+  it("mois de février 2026 (28 jours, année non bissextile) — jamais un 29 ni un débordement sur mars", () => {
+    expect(getYmdRange("month", "2026-02-10")).toEqual({ from: "2026-02-01", to: "2026-02-28" });
+  });
+
+  it("mois de mars 2026 — contient le passage heure d'été du 29/03, aucun impact sur les bornes date-only", () => {
+    expect(getYmdRange("month", "2026-03-15")).toEqual({ from: "2026-03-01", to: "2026-03-31" });
+  });
+
+  it("semaine chevauchant août → septembre 2026 (lundi 31/08 → dimanche 06/09) — aucun des deux mois perdu", () => {
+    expect(getYmdRange("week", "2026-09-03")).toEqual({ from: "2026-08-31", to: "2026-09-06" });
+  });
+
+  it("semaine contenant le passage heure d'hiver (dimanche 25/10/2026, dernier jour de la semaine) — jamais tronquée", () => {
+    expect(getYmdRange("week", "2026-10-21")).toEqual({ from: "2026-10-19", to: "2026-10-25" });
+  });
+
+  it("semaine contenant le passage heure d'été (dimanche 29/03/2026, milieu de semaine) — jamais tronquée", () => {
+    expect(getYmdRange("week", "2026-03-27")).toEqual({ from: "2026-03-23", to: "2026-03-29" });
   });
 });

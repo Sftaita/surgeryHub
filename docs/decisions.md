@@ -9473,3 +9473,137 @@ l'annonce. 10/10 verts en local, aucune régression sur `ReleasedOperatingRoomSl
 
 Non déployé — le backfill réel en production reste en attente d'une décision explicite
 séparée, après revue du diff/dry-run par l'utilisateur.
+
+## Revue intégration agenda — Lot D dans le planning chirurgien (2026-09-07)
+
+**Suite à une coupure de courant ayant interrompu la session initiale**, cette revue a été
+reprise et vérifiée en live dans le navigateur (§17 de la demande) sur les conteneurs Docker
+locaux (MySQL natif WAMP redémarré manuellement, `docker compose up -d`). Cette vérification a
+immédiatement révélé un bug bloquant, corrigé avant tout déploiement — voir « Bug découvert en
+vérification live » ci-dessous.
+
+### Contexte
+
+Après le Lot D initial (vue « Salles disponibles » en liste seule, ci-dessus), revue avec
+l'utilisateur pour intégrer ces créneaux directement dans le planning chirurgien
+(`SurgeonPlanningPage`) plutôt que de laisser la liste comme seul point d'accès. Deux volets
+distincts en sont ressortis, livrés ensemble dans ce commit :
+
+### 1. Filtres de fenêtre + endpoint `count` dédié
+
+`GET /api/planning/available-rooms` et `GET /api/me/available-rooms` gagnent `dateFrom?`/
+`dateTo?` (`Y-m-d`, 400 si malformé) et `period?` (`MATIN`/`APRES_MIDI`/`JOURNEE`, 400 si
+invalide) — le calendrier chirurgien ne requête ainsi que la fenêtre affichée (mois/semaine),
+jamais tout l'historique. `includePast` reste réservé au manager : côté chirurgien il n'est
+même pas lu par `parseFilters()` (`allowIncludePast: false`), pas seulement ignoré après coup
+— un chirurgien ne doit structurellement jamais pouvoir demander le passé sur son propre
+espace, y compris en le forçant explicitement dans la query string (couvert par
+`test_surgeon_never_sees_the_past_even_with_includePast_forced`).
+
+Nouvel endpoint `GET /api/me/available-rooms/count` (`ReleasedOperatingRoomSlotRepository::
+countForList()`, un seul `SELECT COUNT`) pour le badge CTA « Salles disponibles (N) » du
+planning chirurgien — jamais charger la liste complète seulement pour afficher un nombre.
+
+`SurgeonAvailableRoomsPage` (vue liste existante) expose ces filtres à l'utilisateur : chips
+de plage rapide (Aujourd'hui/Cette semaine/30 prochains jours/À venir — défaut), Autocomplete
+établissement (dérivé d'une requête large non bornée par les filtres actifs, pour que les
+options ne se rétrécissent jamais elles-mêmes), sélecteur période — tous synchronisés dans
+l'URL pour un deep-link filtrable.
+
+### 2. Intégration calendrier + panneau détail du jour
+
+`SurgeonPlanningPage` requête `GET /api/me/available-rooms` bornée à la fenêtre affichée et
+affiche les créneaux comme un second canal visuel — pastille/badge bleu (`#1B5FD0` en accent,
+même famille que la variante `aVenir` de `DateTile`), jamais le vert mission ni l'ambre
+« à couvrir »/« à encoder » : un point mission et un badge salle peuvent coexister sur le même
+jour sans se confondre, ni en vue semaine (`WeekStrip`, deux pastilles séparées) ni en vue
+mois (`MonthGrid`, badge numérique superposé à la cellule).
+
+Cliquer un jour qui n'a aucune salle disponible garde le comportement historique inchangé
+(ouverture directe du dialogue mission). Dès qu'il y a au moins une salle ce jour-là, un
+nouveau panneau « détail du jour » s'ouvre à la place, listant missions et salles disponibles
+dans deux sections distinctes (`AvailableRoomsListSection`, réutilisée telle quelle depuis
+`SurgeonAvailableRoomsPage`) — jamais une salle absorbée silencieusement dans le dialogue
+mission, qui n'a pas de sens pour un objet sans statut de mission.
+
+### Bug découvert en vérification live — format de date UTC cassait la liste calendrier
+
+Tous les tests (backend et frontend) passaient et la revue de code n'a rien détecté, mais la
+vérification en navigateur réel (§17) a montré que **le calendrier chirurgien n'affichait
+jamais aucune salle**, alors que le badge compteur du CTA affichait le bon total (`31`) — deux
+appels API distincts, un seul cassé. Cause : `SurgeonPlanningPage.tsx` réutilisait le `range`
+déjà calculé pour la requête missions (`getRange()`, qui retourne `.toISOString()` — un
+horodatage UTC complet, ex. `2026-08-31T22:00:00.000Z` pour le 1ᵉʳ septembre local) comme
+`dateFrom`/`dateTo` de `getMyAvailableRooms()`. Le backend exige strictement `Y-m-d`
+(`DateTimeImmutable::createFromFormat('!Y-m-d', ...)`) et renvoie 400 sur tout ce qui porte une
+heure — la requête échouait silencieusement (`roomsQuery.data?.items ?? []` retombe sur une
+liste vide sans UI d'erreur dédiée), et `.toISOString()` décale en plus la date d'un jour en
+arrière pour un fuseau Bruxelles (UTC+1/+2), donc même une conversion naïve en tronquant la
+partie horaire aurait été fausse d'un jour.
+
+**Pourquoi aucun test ne l'a attrapé** : les mocks `getMyAvailableRoomsMock` de
+`SurgeonPlanningPage.test.tsx` vérifiaient uniquement que les valeurs passées correspondaient à
+`range.from`/`range.to` (peu importe leur format), jamais que ces valeurs respectaient le
+contrat `Y-m-d` réellement imposé par le backend — un mock au niveau module ne peut structurellement
+pas détecter un problème de contrat d'API. C'est exactement le type de régression que seule une
+vérification live/E2E peut révéler.
+
+**Correctif** : nouvelle fonction `getYmdRange()` dans `planningPrimitives.tsx`, miroir de
+`getRange()` mais qui construit le `Y-m-d` local directement (`formatDateToYmd()`) depuis les
+mêmes `Date` locales, jamais via `.toISOString()` — `to` y est inclusif (dernier jour affiché),
+contrairement au `to` exclusif de `getRange()` (dimensionné pour une requête missions qui
+compare des `startAt` datetime). `SurgeonPlanningPage.tsx` calcule désormais `roomsRange` via
+`getYmdRange(view, date)`, indépendamment de `range`. Régression couverte par un nouveau test
+dédié (`dateFrom`/`dateTo` envoyés au format Y-m-d, jamais un ISO horodaté) qui aurait détecté
+ce bug exact — vérifié en relisant l'ancien code avec ce test : il aurait échoué.
+
+### Tests
+
+Backend : `AvailableRoomsControllerTest` (dateFrom/dateTo/period/count/400 malformé/
+`includePast` chirurgien toujours ignoré/siteId au sein des sites affiliés/tri chronologique
+croissant). Frontend : `SurgeonPlanningPage.test.tsx` (badge, panneau détail jour, pastilles
+semaine/mois, régression format `Y-m-d`), `SurgeonAvailableRoomsPage.test.tsx` (nouveau
+fichier — chips de plage, filtre établissement/période, deep-link URL). 16/16 verts sur
+`AvailableRoomsControllerTest` seule (2262/2262 sur la suite backend complète, hors un flake
+préexistant sans rapport —
+`InterventionTypeControllerTest::test_similar_suggests_a_high_confidence_candidate_without_blocking_creation`,
+reproduit identique sur `main` avant ce commit) ; 35/35 verts sur les deux fichiers de tests
+frontend touchés.
+
+Note de périmètre : trois correctifs indépendants découverts en marge de cette revue —
+affichage de l'état `SKIPPED` dans l'inspecteur planning-v2 (`Inspector.tsx`,
+`GeneratePlanningTab.tsx`), photos chirurgien/instrumentiste dans les lignes de preview
+(`PreviewLineResponse`, `PlanningGeneratorServiceV2`, `generatePreviewGrouping.ts`), et
+réconciliation d'absence lors du retrait manuel d'un instrumentiste
+(`PlanningModificationService`) — appartiennent au chantier **D-112** déjà documenté ci-dessus
+(2026-08-16) et restent volontairement hors de ce commit ; un correctif indépendant
+supplémentaire (auto-suggestion de `getFreedInstrumentists()`) reste également hors commit.
+
+### Vérification live (§17)
+
+Sur les conteneurs Docker locaux (`docker compose up -d`, MySQL natif WAMP redémarré
+manuellement suite à la coupure de courant) avec 34 créneaux réels backfillés depuis les
+absences fixtures D-114 restées en base (`app:available-rooms:backfill`, aucune donnée
+synthétique inventée) :
+
+- **Manager** (`manager@surgeryhub.be`) : `GET /api/planning/available-rooms` → 34 créneaux,
+  tous sites confondus, triés chronologiquement — confirmé par API directe.
+- **Chirurgien affilié à Delta Test** (compte fixture `d114-delta-colleague-1@d114test.invalid`,
+  mot de passe repositionné localement via `app:create-dev-user` pour la vérification) : badge
+  CTA « Salles disponibles 31 », grille mois avec badges numériques bleus sur les jours
+  concernés (9, 10, 12, 14, 16, 17, 21-24, 29, 30), légende « Salle disponible » affichée, clic
+  sur un jour à 2 créneaux → panneau détail affichant les deux lignes avec pastille
+  « Disponible », jamais un statut de mission. Page `/app/s/planning/salles-disponibles` :
+  liste triée, chip « 30 prochains jours » → URL `?range=30d`, `dateFrom`/`dateTo` corrects
+  (`2026-09-07`/`2026-10-07`). Rechargement direct de l'URL avec `?range=30d` → même état
+  restauré (deep-link confirmé).
+- **Chirurgien non affilié** (compte de test dédié, aucune `SiteMembership`) : badge CTA absent
+  (`count: 0`), aucun badge dans la grille mois, aucune section « Salles disponibles » —
+  confirmé à la fois par `GET /api/me/available-rooms/count` (`{"count":0}`) et visuellement
+  dans le navigateur.
+
+C'est cette vérification qui a révélé le bug `Y-m-d` ci-dessus — la grille mois du chirurgien
+affilié ne montrait initialement aucun badge malgré un badge CTA correct à 31, jusqu'au
+correctif `getYmdRange()`.
+
+Non déployé.

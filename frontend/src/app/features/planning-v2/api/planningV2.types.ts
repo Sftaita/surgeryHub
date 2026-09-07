@@ -541,3 +541,8 @@ export interface ReleasedRoomSlotListResponse {
   limit: number;
   total: number;
 }
+
+/** Intégration planning chirurgien (revue 2026-09-07) — badge CTA, `GET /api/me/available-rooms/count`. */
+export interface ReleasedRoomSlotCountResponse {
+  count: number;
+}

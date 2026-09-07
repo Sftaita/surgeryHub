@@ -3105,16 +3105,35 @@ limites documentées (pas de snapshot nom site/chirurgien).
 **AuthZ :** `PlanningVoter::PLANNING_MANAGE` (aucun scoping par site pour ce rôle).
 
 **Query params :** `siteId?`, `status?`, `surgeonId?`, `includePast?` (bool, défaut `false`),
-`page?` (défaut 1), `limit?` (défaut 25, borné à 100).
+`page?` (défaut 1), `limit?` (défaut 25, borné à 100), `dateFrom?`/`dateTo?` (`Y-m-d`, 400 si
+malformé), `period?` (`MATIN`/`APRES_MIDI`/`JOURNEE`, 400 si invalide).
 
 #### `GET /api/me/available-rooms`
 
 **AuthZ :** `ROLE_SURGEON`. Scopé strictement aux sites du chirurgien courant
-(`SiteMembership`) — `surgeonId` non disponible sur cet endpoint.
+(`SiteMembership`) — `surgeonId` non disponible sur cet endpoint. **`includePast` n'est
+jamais lu côté serveur pour cet endpoint** (revue intégration agenda, 2026-09-07, §9) — même
+envoyé explicitement par le client, il est ignoré : le passé n'est jamais visible dans
+l'espace chirurgien, contrairement au manager ci-dessus.
 
-**Query params :** `siteId?`, `status?`, `includePast?`, `page?`, `limit?` (mêmes bornes).
+**Query params :** `siteId?`, `status?`, `page?`, `limit?`, `dateFrom?`/`dateTo?`, `period?`
+(mêmes formats/bornes que l'endpoint manager).
 
-**Réponse — 200 (commune aux deux endpoints) :**
+#### `GET /api/me/available-rooms/count`
+
+**AuthZ :** `ROLE_SURGEON`, mêmes scoping/filtres que `GET /api/me/available-rooms`
+(`siteId?`, `dateFrom?`, `dateTo?`, `period?`, jamais `includePast`). Compteur seul, jamais la
+liste — utilisé par le badge CTA « Salles disponibles (N) » du planning chirurgien, pour
+éviter de charger toute la liste seulement pour afficher un nombre (revue intégration agenda,
+2026-09-07, §12/§13).
+
+**Réponse — 200 :**
+
+```json
+{ "count": 4 }
+```
+
+**Réponse — 200 (liste, commune aux deux endpoints de liste) :**
 
 ```json
 {
