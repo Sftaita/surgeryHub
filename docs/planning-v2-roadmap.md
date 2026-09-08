@@ -2381,4 +2381,47 @@ Implementation of the P0/P1 fixes follows these validated ADRs in a separate tic
 
 ---
 
+### CAS D — Reopen/edit/delete an already-persisted draft (D-115, 2026-09-08)
+
+**Backend + frontend DONE (uncommitted), tested green.** See D-115 in `docs/decisions.md` for the
+full architecture decision (source of truth, `SKIPPED` handling, uniqueness, divergence
+detection) and §26.10bis in `docs/api.md` for the endpoint contracts.
+
+**Problem:** a manager who generates a draft (`generate()` → `PlanningVersion` DRAFT +
+`Mission[]` DRAFT) then leaves the page had no way to reopen, continue editing, or delete it —
+the month stayed "already generated" to a fresh `generate()` call (Batch 8/9's duplicate guard
+already refused a silent second draft), but nothing let the manager pick the existing one back
+up.
+
+**Backend:**
+- `PlanningDraftService` (`reopen()`, `update()`, `delete()`) — the only place that mutates a
+  draft's `Mission`s; reuses `MissionEligibilityService` and the `PlanningGeneratorServiceV2::createMissionFromLine()`
+  helper extracted from `generate()` (identical mission-construction rules, one call site).
+- `GET`/`PATCH /api/planning/v2/drafts/{id}`, `DELETE /api/planning/versions/{id}` (D-079's
+  orphaned V1-only delete route, reactivated with the V2 draft guard).
+- `PlanningVersion.previewHash` (migration `Version20260908090000`) — informational-only
+  divergence flag when a Post/absence/ShiftPeriodConfig changed since the draft was generated.
+- `PlanningDraftAlreadyExistsException`/`PlanningVersionNotDraftException` — the existing
+  409-on-duplicate-generate guard (Batch 8/9) now carries the existing draft's id.
+
+**Tests:** `PlanningV2DraftControllerTest` (10 functional scenarios, real HTTP/DB), plus the
+existing `PlanningV2GenerationControllerTest` duplicate-generate assertion updated for the new
+409 shape.
+
+**Known limitation (not fixed):** a site-group draft persists with `site = null`, indistinguishable
+from the "no site filter" bucket (no `siteGroupId` column on `PlanningVersion`, same limitation
+already documented in Batch 8 §B/§I) — reopening such a draft is refused explicitly (`400`)
+rather than previewing the wrong scope.
+
+**Frontend:** `GeneratePlanningTab.tsx` reuses the Génération flow unchanged (no second editor) —
+a reopened draft populates `preview`/`generated` exactly like a fresh preview/generate cycle, so
+the existing line list, Inspector, and "Déployer" step all work with zero duplication. Month
+chip + history list now distinguish ACTIVE ("· déjà généré", Modifier)/DRAFT ("· Brouillon",
+Ouvrir)/ARCHIVED (inert) from the same unfiltered `GET /api/planning/versions` list; "Ouvrir"
+calls `reopenDraft()`, "Enregistrer les modifications" calls `updateDraft()`, "Supprimer"
+(header or list) opens a confirmation before `deletePlanningVersionDraft()`. 36/36
+`GeneratePlanningTab.test.tsx` (5 new CAS D scenarios), full frontend suite 1270/1270.
+
+---
+
 *This document is the definitive implementation reference for Planning V2. All future batches must check the relevant sections of this roadmap before starting implementation and must mark their Definition of Done criteria as complete before merging.*

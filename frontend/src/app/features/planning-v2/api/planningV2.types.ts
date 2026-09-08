@@ -401,6 +401,37 @@ export interface DeployResponseV2 {
   openPoolCount: number;
 }
 
+// ── Drafts — CAS D (D-115) ───────────────────────────────────────────────────
+
+export interface DraftVersionSummaryV2 {
+  id: number;
+  status: "DRAFT" | "ACTIVE" | "ARCHIVED";
+  periodStart: string;
+  periodEnd: string;
+  siteId: number | null;
+  siteName: string | null;
+  generatedAt: string;
+}
+
+export interface DraftReopenResponseV2 {
+  version: DraftVersionSummaryV2;
+  lines: PreviewLineV2[];
+  summary: PreviewSummaryV2;
+  previewVersion: string;
+  /** Informational only — a Post/ShiftPeriodConfig/absence changed since this draft was
+   *  generated. Never blocks the reopen, never replaces anything already saved. */
+  divergent: boolean;
+  generatedAt: string;
+}
+
+export interface DraftUpdateResultV2 {
+  created: number;
+  updated: number;
+  removed: number;
+  skipped: number;
+  rejectedAssignments: RejectedAssignmentV2[];
+}
+
 // ── Manual conflict audit — Lot 6, D-106 ─────────────────────────────────────
 
 export type VerifyConflictsIssueType =

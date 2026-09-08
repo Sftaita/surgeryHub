@@ -24,11 +24,14 @@ import { fetchMissions } from "../../missions/api/missions.api";
 import {
   getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2,
   applyModifications, cancelAllMissions, resendPlanning, verifyConflicts, extractErrorV2, type ApplyModificationsResult,
+  reopenDraft, updateDraft, deletePlanningVersionDraft,
 } from "../api/planningV2.api";
 import { listPlanningVersions } from "../../planning-manager/api/planning.api";
 import type { PreviewLineStatus, PreviewLineV2, PreviewResponseV2, VerifyConflictsResponse } from "../api/planningV2.types";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import FolderOpenOutlinedIcon from "@mui/icons-material/FolderOpenOutlined";
 import {
-  buildMonthChipIds, monthIdToYearMonth, mergePreviewResponses,
+  buildMonthChipIds, monthIdToYearMonth, yearMonthToMonthId, mergePreviewResponses,
   aggregateGenerated, aggregateDeploy, type AggregatedGenerated, type AggregatedDeploy,
   severityOf, filterLines, countBySeverity, type SeverityFilter,
   groupLinesByDayAndSurgeon, formatDayHeader,
@@ -50,6 +53,9 @@ type PlanningEditorMode = "generation" | "modification";
 // production; your changes only take effect after redeploy" (handoff: MODES-Generation-vs-Modification.md).
 const MODIFICATION_ACCENT = { main: "#B5761A", hover: "#7A4E12", bg: "#FBF6E9" };
 const GENERATION_ACCENT = { main: planningV2Colors.brand, hover: planningV2Colors.brandHover, bg: planningV2Colors.infoBg };
+// CAS D (D-115) — a reopened draft still uses the Génération flow/accent, this is only for
+// the "Brouillon" pill/border so it reads as distinct from a fresh, never-generated preview.
+const DRAFT_ACCENT = { main: "#8A6420", hover: "#6B4D18", bg: "#FAF5E9" };
 
 const STATUS_TOKENS: Record<PreviewLineStatus, { label: string; fg: string; bg: string; dot: string; icon: React.ReactElement }> = {
   COVERED:   { label: "OK",                   fg: "#2C7D5F", bg: "#EFFAF5", dot: "#5BBE96", icon: <CheckCircleOutlinedIcon sx={{ fontSize: 14 }} /> },
@@ -133,8 +139,21 @@ export function GeneratePlanningTab() {
   const [verifyResult, setVerifyResult] = React.useState<VerifyConflictsResponse | null>(null);
   const nextDraftIdRef = React.useRef(-1);
 
+  // ── CAS D (D-115) — reopening an already-persisted DRAFT PlanningVersion for further
+  // editing. Distinct from Mode Modification: a draft still uses the Génération accent/
+  // flow (preview/generated/deployed), its lines come from reopenDraft() (real Missions,
+  // overlaid with a fresh SKIPPED/UNCOVERED computation), and further edits are saved onto
+  // the SAME version via updateDraft() — never generate() again (409 guard would refuse it).
+  const [draftVersionId, setDraftVersionId] = React.useState<number | null>(null);
+  const [draftDivergent, setDraftDivergent] = React.useState(false);
+  const [deleteDraftTarget, setDeleteDraftTarget] = React.useState<{ id: number; label: string } | null>(null);
+
   const mode: PlanningEditorMode = modificationVersionId !== null ? "modification" : "generation";
   const isModification = mode === "modification";
+  // CAS D (D-115) — a reopened draft stays in the "generation" flow (preview/generated/
+  // deployed), this only flags it for the header badge/actions and the save-vs-generate
+  // button swap below.
+  const isDraft = draftVersionId !== null;
   const accent = isModification ? MODIFICATION_ACCENT : GENERATION_ACCENT;
 
   // ── Preview Editor: local instrumentist reassignment before generate/redeploy ────────────
@@ -241,6 +260,77 @@ export function GeneratePlanningTab() {
     setIsCreatingMission(false);
     setModificationApplied(null);
   }
+
+  // ── CAS D (D-115) — reopen an already-persisted draft ───────────────────────
+
+  function exitDraft() {
+    resetGen();
+  }
+
+
+  const openDraftMutation = useMutation({
+    mutationFn: (versionId: number) => reopenDraft(versionId),
+    onSuccess: (data) => {
+      // A draft reopen always supersedes whatever the screen was showing before —
+      // Modification mode, a fresh unsaved preview, all of it.
+      setModificationVersionId(null);
+      setModificationLabel(null);
+      setPreview({ lines: data.lines, summary: data.summary, previewVersion: data.previewVersion, generatedAt: data.generatedAt });
+      setPreviewResponses([{ lines: data.lines, summary: data.summary, previewVersion: data.previewVersion, generatedAt: data.generatedAt }]);
+      setGenerated(null);
+      setDeployed(null);
+      setGenFilter("all");
+      setEditedLines(new Map());
+      setSelectedKeys(new Set());
+      setSelectedLineKey(null);
+      setDraftVersionId(data.version.id);
+      setDraftDivergent(data.divergent);
+      const d = new Date(data.version.periodStart);
+      setSelectedMonthIds([yearMonthToMonthId({ year: d.getFullYear(), month: d.getMonth() + 1 })]);
+      if (data.version.siteId !== null) {
+        setTargetId(data.version.siteId);
+      }
+      if (data.divergent) {
+        toast.warning("Le modèle de planning (postes, absences…) a changé depuis la création de ce brouillon — les lignes ci-dessous reflètent l'état actuel, vos affectations déjà enregistrées sont conservées.");
+      }
+    },
+    onError: (err) => toast.error(extractErrorV2(err)),
+  });
+
+  const saveDraftMutation = useMutation({
+    mutationFn: () => updateDraft(draftVersionId!, effectiveLines),
+    onSuccess: (result) => {
+      toast.success(`Brouillon enregistré — ${result.created} créée(s), ${result.updated} mise(s) à jour, ${result.removed} retirée(s)`);
+      setGenerated({
+        versions: [{ versionId: draftVersionId!, created: result.created, updated: result.updated, skipped: result.skipped, rejectedAssignments: result.rejectedAssignments }],
+        created: result.created, updated: result.updated, skipped: result.skipped,
+      });
+      setEditedLines(new Map());
+      if (result.rejectedAssignments.length > 0) {
+        const detail = result.rejectedAssignments
+          .map((r) => `${r.requestedInstrumentistName} — ${r.date ?? "date inconnue"} (${r.reasons.map(reasonLabel).join(", ")})`)
+          .join(" · ");
+        toast.warning(`${result.rejectedAssignments.length} affectation(s) refusée(s) et laissée(s) non couverte(s) : ${detail}`);
+      }
+    },
+    onError: (err) => toast.error(extractErrorV2(err)),
+  });
+
+  const deleteDraftMutation = useMutation({
+    mutationFn: (versionId: number) => deletePlanningVersionDraft(versionId),
+    onSuccess: (_data, versionId) => {
+      toast.success("Brouillon supprimé — ce mois est de nouveau générable.");
+      setDeleteDraftTarget(null);
+      if (draftVersionId === versionId) {
+        resetGen();
+      }
+      queryClient.invalidateQueries({ queryKey: ["planning-v2", "versions-history"] });
+    },
+    onError: (err) => {
+      setDeleteDraftTarget(null);
+      toast.error(extractErrorV2(err));
+    },
+  });
 
   const previewMutation = useMutation({
     mutationFn: async () => {
@@ -410,6 +500,8 @@ export function GeneratePlanningTab() {
     setGenFilter("all");
     setEditedLines(new Map());
     setSelectedKeys(new Set());
+    setDraftVersionId(null);
+    setDraftDivergent(false);
   }
 
   // Génération sources lines from the backend Preview; Modification sources them from the real
@@ -674,7 +766,7 @@ export function GeneratePlanningTab() {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={2} sx={{ mb: isModification ? 2.25 : 0 }}>
+      <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={2} sx={{ mb: isModification || isDraft ? 2.25 : 0 }}>
         <Box>
           {isModification && (
             <Box sx={{
@@ -685,14 +777,34 @@ export function GeneratePlanningTab() {
               Modification · Planning déployé
             </Box>
           )}
+          {isDraft && (
+            <Box sx={{
+              display: "inline-flex", alignItems: "center", gap: 0.6, fontSize: 11, fontWeight: 700,
+              letterSpacing: "0.04em", textTransform: "uppercase", color: DRAFT_ACCENT.main, bgcolor: DRAFT_ACCENT.bg,
+              px: 1.1, py: 0.35, borderRadius: planningV2Radii.pill, mb: 1,
+            }}>
+              Brouillon existant
+            </Box>
+          )}
           <Typography sx={{ fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" }}>
             {isModification ? `Modifier le planning — ${modificationLabel}` : "Générer le planning"}
           </Typography>
           <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted, mt: 0.5 }}>
             {isModification
               ? "Vous retrouvez exactement le planning déployé. Vos changements ne prennent effet qu'après redéploiement."
-              : "Prévisualisez, vérifiez, puis déployez les missions des mois sélectionnés."}
+              : isDraft
+                ? "Vous reprenez un brouillon déjà enregistré. Vos modifications sont sauvegardées sur ce même brouillon."
+                : "Prévisualisez, vérifiez, puis déployez les missions des mois sélectionnés."}
           </Typography>
+          {isDraft && draftDivergent && (
+            <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mt: 1, p: 1, borderRadius: planningV2Radii.button, bgcolor: DRAFT_ACCENT.bg, border: `1px solid ${DRAFT_ACCENT.main}33`, maxWidth: 560 }}>
+              <InfoOutlinedIcon sx={{ fontSize: 16, color: DRAFT_ACCENT.main, flex: "none" }} />
+              <Typography sx={{ fontSize: 12, color: DRAFT_ACCENT.main, fontWeight: 600 }}>
+                Le modèle de planning (postes, absences…) a changé depuis la création de ce brouillon —
+                les lignes ci-dessous reflètent l&apos;état actuel, vos affectations déjà enregistrées sont conservées.
+              </Typography>
+            </Stack>
+          )}
         </Box>
         {isModification && (
           <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
@@ -712,7 +824,50 @@ export function GeneratePlanningTab() {
             </Button>
           </Stack>
         )}
+        {isDraft && (
+          <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
+            <Button
+              startIcon={<DeleteOutlineOutlinedIcon sx={{ fontSize: 16 }} />}
+              onClick={() => setDeleteDraftTarget({ id: draftVersionId!, label: monthsLabel })}
+              sx={{ height: 38, px: 2, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, color: "#B42318", border: "1px solid #FDA29B", "&:hover": { bgcolor: "#FEF3F2" } }}
+            >
+              Supprimer le brouillon
+            </Button>
+            <Button
+              startIcon={<ArrowBackOutlinedIcon sx={{ fontSize: 16 }} />}
+              onClick={exitDraft}
+              sx={{ height: 38, px: 2, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, color: planningV2Colors.textStrong, border: "1px solid #DDE2E8" }}
+            >
+              Quitter le brouillon
+            </Button>
+          </Stack>
+        )}
       </Stack>
+
+      {/* CAS D (D-115) — "Supprimer ce brouillon ?" confirmation, from the header action above
+          or from the idle-state "Brouillon existant" card / history list below. */}
+      <Dialog open={deleteDraftTarget !== null} onClose={() => setDeleteDraftTarget(null)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>Supprimer le brouillon {deleteDraftTarget?.label} ?</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted }}>
+            Les modifications apportées à ce brouillon seront perdues.
+            <br />
+            Aucune mission déjà publiée ne sera supprimée, et les postes récurrents des chirurgiens ne seront pas modifiés.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button onClick={() => setDeleteDraftTarget(null)} sx={{ textTransform: "none", fontWeight: 600 }}>
+            Annuler
+          </Button>
+          <Button
+            variant="contained" disableElevation color="error" disabled={deleteDraftMutation.isPending}
+            onClick={() => deleteDraftTarget && deleteDraftMutation.mutate(deleteDraftTarget.id)}
+            sx={{ textTransform: "none", fontWeight: 600 }}
+          >
+            {deleteDraftMutation.isPending ? "Suppression…" : "Supprimer le brouillon"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={deleteMonthConfirmOpen} onClose={() => setDeleteMonthConfirmOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>Supprimer {modificationLabel} ?</DialogTitle>
@@ -869,23 +1024,32 @@ export function GeneratePlanningTab() {
               {monthChipIds.map((id) => {
                 const ym = monthIdToYearMonth(id);
                 const selected = selectedMonthIds.includes(id);
+                const matchesScope = (v: { site?: { id: number } | null }) =>
+                  targetId === null || targetId >= GROUP_ID_OFFSET || v.site?.id === targetId;
                 // Only an ACTIVE (currently live) version is eligible for Modification mode —
                 // a DRAFT was never deployed (nothing to redeploy against post-deploy), and an
                 // ARCHIVED one is already superseded by a newer ACTIVE version for this same
                 // period+site (editing it would be a dead end: apply-modifications/cancel-all
                 // both reject anything that isn't ACTIVE server-side).
-                const matchedVersion = historyQuery.data?.items.find((v) => {
+                const matchedActiveVersion = historyQuery.data?.items.find((v) => {
                   const d = new Date(v.periodStart);
-                  return v.status === "ACTIVE" && d.getFullYear() === ym.year && d.getMonth() + 1 === ym.month
-                    && (targetId === null || targetId >= GROUP_ID_OFFSET || v.site?.id === targetId);
+                  return v.status === "ACTIVE" && d.getFullYear() === ym.year && d.getMonth() + 1 === ym.month && matchesScope(v);
                 });
+                // CAS D (D-115) — a DRAFT for this exact month/scope is reopenable, never a
+                // dead end: "Ouvrir le brouillon" continues editing the SAME PlanningVersion.
+                const matchedDraftVersion = !matchedActiveVersion ? historyQuery.data?.items.find((v) => {
+                  const d = new Date(v.periodStart);
+                  return v.status === "DRAFT" && d.getFullYear() === ym.year && d.getMonth() + 1 === ym.month && matchesScope(v);
+                }) : undefined;
+                const matchedVersion = matchedActiveVersion ?? matchedDraftVersion;
+                const suffix = matchedActiveVersion ? " · déjà généré" : matchedDraftVersion ? " · Brouillon" : "";
                 return (
                   <Stack key={id} direction="row" alignItems="center" spacing={0.5}>
                     <Chip
                       clickable
                       onClick={() => toggleMonth(id)}
                       icon={selected ? <CheckIcon sx={{ fontSize: 14, color: "#fff !important" }} /> : undefined}
-                      label={`${MONTH_LABELS[ym.month - 1]} ${ym.year}${matchedVersion ? " · déjà généré" : ""}`}
+                      label={`${MONTH_LABELS[ym.month - 1]} ${ym.year}${suffix}`}
                       sx={{
                         height: 36, fontSize: 13, fontWeight: 600, borderRadius: planningV2Radii.pill,
                         bgcolor: selected ? planningV2Colors.brand : "#F8FAFC",
@@ -894,18 +1058,34 @@ export function GeneratePlanningTab() {
                         "&:hover": { bgcolor: selected ? planningV2Colors.brandHover : "#F1F4F7" },
                       }}
                     />
-                    {matchedVersion && (
+                    {matchedActiveVersion && (
                       <Tooltip title="Modifier ce mois déjà généré">
                         <IconButton
                           size="small"
                           aria-label="Modifier ce mois déjà généré"
-                          onClick={() => enterModification(matchedVersion)}
+                          onClick={() => enterModification(matchedActiveVersion)}
                           sx={{
                             width: 30, height: 30, border: `1px solid ${MODIFICATION_ACCENT.main}`,
                             color: MODIFICATION_ACCENT.main, "&:hover": { bgcolor: MODIFICATION_ACCENT.bg },
                           }}
                         >
                           <EditOutlinedIcon sx={{ fontSize: 15 }} />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                    {matchedDraftVersion && (
+                      <Tooltip title="Ouvrir le brouillon">
+                        <IconButton
+                          size="small"
+                          aria-label="Ouvrir le brouillon"
+                          onClick={() => openDraftMutation.mutate(matchedDraftVersion.id)}
+                          disabled={openDraftMutation.isPending}
+                          sx={{
+                            width: 30, height: 30, border: `1px solid ${MODIFICATION_ACCENT.main}`,
+                            color: MODIFICATION_ACCENT.main, "&:hover": { bgcolor: MODIFICATION_ACCENT.bg },
+                          }}
+                        >
+                          <FolderOpenOutlinedIcon sx={{ fontSize: 15 }} />
                         </IconButton>
                       </Tooltip>
                     )}
@@ -979,15 +1159,17 @@ export function GeneratePlanningTab() {
                 </Typography>
               ) : (
                 historyQuery.data!.items.map((v) => {
-                  // Only an ACTIVE version can enter Modification mode — see the month-chip
-                  // comment above for why DRAFT/ARCHIVED are dead ends (apply-modifications/
-                  // cancel-all both reject non-ACTIVE server-side).
-                  const isEditable = v.status === "ACTIVE";
+                  // ACTIVE enters Modification mode; DRAFT reopens via CAS D (D-115) — both
+                  // real, live-editable states. ARCHIVED alone is a dead end (already
+                  // superseded by a newer ACTIVE version for this same period+site).
+                  const isDraft = v.status === "DRAFT";
+                  const isEditable = v.status === "ACTIVE" || isDraft;
                   const statusLabel = v.status === "ACTIVE" ? "Déployé" : v.status === "ARCHIVED" ? "Archivé" : "Brouillon";
+                  const openRow = () => (isDraft ? openDraftMutation.mutate(v.id) : enterModification(v));
                   return (
                     <Stack
                       key={v.id} direction="row" alignItems="center" spacing={2}
-                      onClick={isEditable ? () => enterModification(v) : undefined}
+                      onClick={isEditable ? openRow : undefined}
                       sx={{
                         px: 2.25, py: 1.75, cursor: isEditable ? "pointer" : "default",
                         borderBottom: `1px solid ${planningV2Colors.divider}`,
@@ -1026,9 +1208,27 @@ export function GeneratePlanningTab() {
                           color: v.status === "ACTIVE" ? "#2C7D5F" : v.status === "ARCHIVED" ? planningV2Colors.textSecondary : planningV2Colors.warnFg,
                         }}
                       />
+                      {isDraft && (
+                        <Tooltip title="Supprimer le brouillon">
+                          <IconButton
+                            size="small"
+                            aria-label="Supprimer le brouillon"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteDraftTarget({
+                                id: v.id,
+                                label: `${MONTH_LABELS[new Date(v.periodStart).getMonth()]} ${new Date(v.periodStart).getFullYear()}`,
+                              });
+                            }}
+                            sx={{ width: 30, height: 30, color: planningV2Colors.textSecondary, "&:hover": { color: "#A8554F", bgcolor: "#FBF2F1" } }}
+                          >
+                            <DeleteOutlineOutlinedIcon sx={{ fontSize: 16 }} />
+                          </IconButton>
+                        </Tooltip>
+                      )}
                       {isEditable && (
                         <Stack direction="row" alignItems="center" spacing={0.4} sx={{ color: MODIFICATION_ACCENT.main, flex: "none" }}>
-                          <Typography sx={{ fontSize: 12, fontWeight: 700 }}>Modifier</Typography>
+                          <Typography sx={{ fontSize: 12, fontWeight: 700 }}>{isDraft ? "Ouvrir" : "Modifier"}</Typography>
                           <ChevronRightOutlinedIcon sx={{ fontSize: 18 }} />
                         </Stack>
                       )}
@@ -1311,12 +1511,21 @@ export function GeneratePlanningTab() {
                   </Button>
                 </>
               ) : !generated ? (
-                <Button
-                  variant="contained" disableElevation disabled={generateMutation.isPending} onClick={() => generateMutation.mutate()}
-                  sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: planningV2Colors.brand, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
-                >
-                  {dirtyCount > 0 ? "Générer avec modifications" : "Générer les missions"}
-                </Button>
+                draftVersionId !== null ? (
+                  <Button
+                    variant="contained" disableElevation disabled={saveDraftMutation.isPending} onClick={() => saveDraftMutation.mutate()}
+                    sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: planningV2Colors.brand, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
+                  >
+                    {saveDraftMutation.isPending ? "Enregistrement…" : "Enregistrer les modifications"}
+                  </Button>
+                ) : (
+                  <Button
+                    variant="contained" disableElevation disabled={generateMutation.isPending} onClick={() => generateMutation.mutate()}
+                    sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: planningV2Colors.brand, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
+                  >
+                    {dirtyCount > 0 ? "Générer avec modifications" : "Générer les missions"}
+                  </Button>
+                )
               ) : (
                 <Button
                   variant="contained" disableElevation disabled={deployMutation.isPending} onClick={() => deployMutation.mutate()}

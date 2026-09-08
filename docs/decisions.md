@@ -9629,3 +9629,133 @@ affilié ne montrait initialement aucun badge malgré un badge CTA correct à 31
 correctif `getYmdRange()`.
 
 Non déployé.
+
+## D-115 — Planning V2 : réouverture, modification et suppression des brouillons persistés (CAS D, 2026-09-08)
+
+**Statut : backend + frontend DONE, testé (backend et frontend verts), non commité. Non déployé.**
+
+Date : 2026-09-08
+
+### Contexte
+
+Un manager qui génère un brouillon (`generate()` → `PlanningVersion` DRAFT + `Mission[]`
+DRAFT) puis quitte la page n'avait aucun moyen de le rouvrir, le modifier ou le supprimer :
+le mois restait « déjà généré » aux yeux d'une nouvelle génération (le doublon silencieux
+était déjà refusé, voir Batch 8/9), mais rien ne permettait de reprendre le brouillon
+existant. Le manager se retrouvait bloqué.
+
+### Décision
+
+**Source de vérité d'un brouillon** : `PlanningVersion` + ses `Mission[]` en statut `DRAFT`
+— jamais reconstruite silencieusement à partir d'un nouveau `preview()`. Un `SurgeonSchedulePost`,
+une absence ou un `ShiftPeriodConfig` peuvent avoir changé depuis la création du brouillon ;
+un re-preview produirait un planning différent de celui réellement enregistré et effacerait
+implicitement le travail du manager. `preview()` reste utilisé par `PlanningDraftService::reopen()`,
+mais uniquement pour re-dériver de l'information non persistée et purement d'affichage
+(occurrences `SKIPPED` d'un chirurgien actuellement absent) — jamais comme source de vérité.
+Le rattachement des lignes du preview aux vraies `Mission` DRAFT persistées se fait par le même
+mécanisme de `claimMission()` que `preview()` utilise déjà pour toute occurrence `COVERED`/`MODIFIED`
+(aucun nouveau matching introduit).
+
+**`SKIPPED` reste non persisté.** Une occurrence ignorée (chirurgien absent au moment du
+`preview()`/`reopen()`) ne crée et n'a jamais créé de `Mission` — c'est un statut calculé, pas
+un choix du manager à mémoriser. Elle ne dépend que de l'état d'absence courant, recalculé à
+chaque `reopen()` : si le chirurgien redevient disponible, l'occurrence redevient normalement
+`UNCOVERED`/`COVERED` sans action manuelle. Aucune structure persistante dédiée n'a donc été
+nécessaire ; le cycle de vie de `MissionStatus` n'a pas été détourné (voir §7 du brief CAS D).
+
+**Unicité** : au plus un brouillon (`PlanningVersionStatus::DRAFT`) non déployé par période +
+scope exact (`site` ou bucket `site=null`), déjà imposé par le garde-fou Batch 8/9
+(`PlanningV2GenerationController::assertNoUndeployedDraftExists()`). Ce lot ne fait
+qu'enrichir le 409 existant : `PlanningDraftAlreadyExistsException` porte désormais l'id du
+brouillon existant, exposé au frontend sous `{code: 'PLANNING_DRAFT_ALREADY_EXISTS', versionId}`
+au lieu d'un `{error:{code:'CONFLICT'}}` générique — jamais de suppression automatique de
+l'ancien brouillon.
+
+**Divergence du modèle source** : `PlanningVersion.previewHash` (nouvelle colonne, migration
+`Version20260908090000`) capture `computePreviewVersion()` au moment du `generate()`. À la
+réouverture, `PlanningDraftService::reopen()` recalcule ce hash et le compare — `divergent:
+bool` dans la réponse est **purement informationnel** : il ne bloque jamais la réouverture, ne
+remplace jamais rien, et vaut toujours `false` pour un brouillon créé avant ce lot (`previewHash`
+nullable, pas de détection rétroactive).
+
+**Suppression** : refusée avec `PlanningVersionNotDraftException` → 409
+`PLANNING_VERSION_NOT_DRAFT` dès que la version elle-même n'est pas DRAFT, ou qu'au moins une
+de ses missions a quitté DRAFT par un autre chemin (déploiement partiel, modification directe).
+Restaure la sémantique de suppression DRAFT d'avant D-079 (route orpheline V1 retirée sans
+remplacement V2 au commit `570a551`).
+
+### Backend
+
+- **Endpoints** (intégrés aux contrôleurs existants — pas de nouveau contrôleur dédié, cohérence
+  architecturale préférée à l'URL exacte du brief) :
+  - `GET /api/planning/v2/drafts/{id}` — réouvre un brouillon (`PlanningV2GenerationController::reopenDraft()`).
+  - `PATCH /api/planning/v2/drafts/{id}` — applique des modifications de lignes au brouillon
+    (`updateDraft()`).
+  - `DELETE /api/planning/versions/{id}` — supprime un brouillon entièrement DRAFT
+    (`PlanningVersionController::delete()`) ; route V1 orpheline (D-079) réactivée avec la
+    bonne garde V2.
+  - `GET /api/planning/versions?status=DRAFT&...` (déjà existant, Batch 15F) — sert de liste
+    des brouillons ; pas de doublon `GET /api/planning/v2/drafts` créé.
+- **Service** : `PlanningDraftService` (`reopen()`, `update()`, `delete()`) — toute mutation
+  passe par lui, jamais le contrôleur. Réutilise `MissionEligibilityService::evaluateForReassignment()`
+  pour toute réaffectation (aucune règle d'éligibilité dupliquée) et `PlanningGeneratorServiceV2::createMissionFromLine()`
+  (méthode extraite de `generate()`, comportement inchangé) pour toute ligne sans `Mission`
+  existante (ex. un Post ajouté au scope après la création du brouillon).
+- **Migration** : `Version20260908090000` — `planning_version.preview_hash VARCHAR(64) NULL`,
+  purement additive.
+- **Limitation connue (non corrigée)** : un brouillon de groupe de sites persiste avec
+  `site = null`, indistinguable du bucket « aucun filtre de site » — `PlanningVersion` n'a pas
+  de colonne `siteGroupId`. `PlanningDraftService::requireSingleSiteScope()` refuse
+  explicitement la réouverture d'un tel brouillon (`400`) plutôt que de prévisualiser le
+  mauvais (ou tous les) site(s). Même limitation déjà documentée en Batch 8 §B/§I pour la
+  détection de doublon.
+
+### Tests
+
+10/10 scénarios du brief couverts par `PlanningV2DraftControllerTest` (génération → liste →
+réouverture → modification → persistance après « quitter/revenir » → suppression → refus si
+non-DRAFT → refus de double génération → Post ajouté après coup → instrumentiste inéligible
+refusé), plus la mise à jour de l'assertion 409 dans `PlanningV2GenerationControllerTest`. Voir
+le rapport de validation CAS D pour le détail des résultats d'exécution.
+
+### Frontend
+
+`GeneratePlanningTab.tsx` — aucun second éditeur créé : un brouillon rouvert reste dans le
+flux « Génération » existant (`preview`/`generated`/`deployed`), jamais le flux « Modification »
+(réservé aux versions ACTIVE, sémantique de mutation différente — `MissionPostDeployService`
+post-déploiement vs. mutation directe pré-déploiement ici).
+
+- **Détection** : le chip du mois et la liste « Plannings déjà générés » distinguent désormais
+  trois états à partir de la même liste non filtrée (`GET /api/planning/versions`) — ACTIVE
+  (« · déjà généré », action Modifier), DRAFT (« · Brouillon », action Ouvrir), ARCHIVED
+  (inerte, déjà supersédé).
+- **Ouvrir** : `openDraftMutation` appelle `reopenDraft()`, peuple `preview`/`previewResponses`
+  avec les lignes retournées (déjà rattachées aux vraies `Mission` via `existingMissionId`),
+  aligne `selectedMonthIds`/`targetId` sur la version, et bascule un flag `draftVersionId` qui
+  remplace le bouton « Générer les missions » par « Enregistrer les modifications » — sans
+  dupliquer l'écran d'édition.
+- **Bannière de divergence** : affichée dans l'en-tête quand `divergent: true` (toast au moment
+  de l'ouverture + encart persistant) — jamais bloquante, jamais un remplacement silencieux des
+  lignes déjà enregistrées.
+- **Enregistrer** : `saveDraftMutation` appelle `updateDraft()` avec les `effectiveLines`
+  courantes (mêmes lignes que celles envoyées à `generate()` en mode génération neuve) et
+  peuple `generated` avec la même forme que `generatePlanningV2()` — le bouton « Déployer »
+  existant fonctionne donc sans aucune modification supplémentaire.
+- **Supprimer** : confirmation (`deleteDraftTarget`) accessible depuis l'en-tête du brouillon
+  ouvert et depuis chaque ligne DRAFT de la liste historique ; `deleteDraftMutation` appelle
+  `deletePlanningVersionDraft()` puis invalide `["planning-v2", "versions-history"]`.
+
+### Tests exécutés
+
+Backend : suite complète 2273/2273 (hors 2 échecs préexistants confirmés sans rapport —
+`test_open_mission_pipeline_v2_deploy_to_claim` et
+`ReleasedOperatingRoomSlotFunctionalTest::test_slot_survives_hospital_and_surgeon_deletion_with_no_crash`,
+ni l'un ni l'autre touchés par ce lot, reproduits identiquement sur `HEAD` avant tout
+changement CAS D) + 8/8 `PlanningV2DraftControllerTest`. Frontend : 1270/1270 (dont 36/36
+`GeneratePlanningTab.test.tsx`, 5 nouveaux scénarios CAS D). `tsc -b --noEmit` : une seule
+erreur préexistante et sans rapport (`PrestationsPage.tsx`, hors périmètre) — aucune erreur
+introduite par ce lot ; `npm run build` bloqué par cette même erreur préexistante (déjà
+documentée ailleurs comme dette non liée à Planning V2).
+
+Non déployé.

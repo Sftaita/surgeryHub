@@ -34,6 +34,10 @@ vi.mock("../api/planningV2.api", () => ({
   applyModifications: vi.fn(),
   cancelAllMissions: vi.fn(),
   verifyConflicts: vi.fn(),
+  // CAS D (D-115)
+  reopenDraft: vi.fn(),
+  updateDraft: vi.fn(),
+  deletePlanningVersionDraft: vi.fn(),
   // D-102 — Preview Editor's instrumentist pickers now source eligibility from this
   // endpoint; defaults to "everyone selectable" (mirrors the /api/instrumentists mock
   // below) unless a test overrides it.
@@ -500,28 +504,26 @@ describe("GeneratePlanningTab — Mode Modification (éditeur unifié)", () => {
     expect(screen.getByRole("button", { name: "Redéployer" })).toBeInTheDocument();
   });
 
-  it("un planning DRAFT ou ARCHIVED n'est pas ouvrable en mode Modification — seul un ACTIVE l'est", async () => {
+  it("un planning ARCHIVED n'est pas ouvrable (dead end) — seuls ACTIVE et DRAFT le sont", async () => {
     (planningManagerApi.listPlanningVersions as ReturnType<typeof vi.fn>).mockResolvedValue({
       items: [
-        { id: 90, status: "DRAFT", periodStart: "2026-06-01T00:00:00Z", deployedAt: null, site: { id: 1, name: "Delta (historique)" }, summary: { total: 1, open: 0 } },
         { id: 91, status: "ARCHIVED", periodStart: "2026-07-01T00:00:00Z", deployedAt: "2026-07-02T00:00:00Z", site: { id: 1, name: "Delta (historique)" }, summary: { total: 1, open: 0 } },
       ],
-      total: 2, page: 1, limit: 10,
+      total: 1, page: 1, limit: 10,
     });
     const user = userEvent.setup();
     renderTab();
     await selectSite(user);
 
-    // Neither row exposes the "Modifier" affordance or the amber "déjà généré" month chip —
-    // apply-modifications/cancel-all both reject anything that isn't ACTIVE server-side, so
-    // the entry points into Modification mode must not be offered for these two statuses.
-    await screen.findByText("Brouillon");
-    expect(screen.getByText("Archivé")).toBeInTheDocument();
+    // No "Modifier"/"Ouvrir" affordance, no "déjà généré" month chip — an ARCHIVED version is
+    // already superseded, apply-modifications/cancel-all reject anything that isn't ACTIVE.
+    await screen.findByText("Archivé");
     expect(screen.queryByText("Modifier")).not.toBeInTheDocument();
+    expect(screen.queryByText("Ouvrir")).not.toBeInTheDocument();
     expect(screen.queryByText(/\d{4} · déjà généré/)).not.toBeInTheDocument();
 
-    // Clicking the DRAFT/ARCHIVED row itself does nothing (no onClick wired).
-    await user.click(screen.getByText("Brouillon"));
+    // Clicking the ARCHIVED row itself does nothing (no onClick wired).
+    await user.click(screen.getByText("Archivé"));
     expect(screen.queryByText("Modification · Planning déployé")).not.toBeInTheDocument();
 
     (planningManagerApi.listPlanningVersions as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], total: 0, page: 1, limit: 10 });
@@ -992,5 +994,120 @@ describe("GeneratePlanningTab — Vérifier les conflits (Lot 6, D-106)", () => 
         .filter(([url, cfg]) => url === "/api/missions" && cfg?.params?.planningVersionId).length;
       expect(missionsCallsAfter).toBeGreaterThan(missionsCallsBefore);
     });
+  });
+});
+
+describe("GeneratePlanningTab — Brouillons (CAS D, D-115)", () => {
+  // The month chips only ever span "current month + next 5" (buildMonthChipIds) — the draft's
+  // periodStart must fall inside that window for the chip-level assertions below, so it's
+  // derived from the real clock rather than a hardcoded month that could drift outside it.
+  const MONTH_LABELS_FR = [
+    "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+    "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+  ];
+  const now = new Date();
+  const draftPeriodStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01T00:00:00Z`;
+  const draftMonthLabel = MONTH_LABELS_FR[now.getMonth()];
+
+  function mockHistoryWithOneDraft() {
+    // "Delta (historique)" (not the bare "Delta" the site selector option also renders as) —
+    // same convention as the Mode Modification tests above, avoids an ambiguous findByText.
+    (planningManagerApi.listPlanningVersions as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [{
+        id: 77, status: "DRAFT", periodStart: draftPeriodStart, deployedAt: null,
+        site: { id: 1, name: "Delta (historique)" }, summary: { total: 1, open: 1 },
+      }],
+      total: 1, page: 1, limit: 10,
+    });
+  }
+
+  function draftReopenResponse(overrides: Partial<{ divergent: boolean }> = {}) {
+    return {
+      version: { id: 77, status: "DRAFT" as const, periodStart: "2026-06-01", periodEnd: "2026-06-30", siteId: 1, siteName: "Delta", generatedAt: "2026-06-01T00:00:00Z" },
+      lines: [line({ existingMissionId: 501, instrumentistId: 9, instrumentistName: "Diane Lefebvre" })],
+      summary: { total: 1, covered: 1, uncovered: 0, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "hash-now",
+      divergent: overrides.divergent ?? false,
+      generatedAt: "2026-06-02T00:00:00Z",
+    };
+  }
+
+  it("un mois avec un brouillon existant propose 'Ouvrir', jamais 'Modifier' ni un second 'Générer'", async () => {
+    mockHistoryWithOneDraft();
+    const user = userEvent.setup();
+    renderTab();
+    await selectSite(user);
+
+    await screen.findByText("Brouillon");
+    expect(screen.getByText("Ouvrir")).toBeInTheDocument();
+    expect(screen.queryByText("Modifier")).not.toBeInTheDocument();
+    expect(await screen.findByText(new RegExp(`${now.getFullYear()} · Brouillon`))).toBeInTheDocument();
+  });
+
+  it("'Ouvrir le brouillon' charge les lignes réelles via reopenDraft et propose 'Enregistrer les modifications'", async () => {
+    mockHistoryWithOneDraft();
+    (planningV2Api.reopenDraft as ReturnType<typeof vi.fn>).mockResolvedValue(draftReopenResponse());
+    const user = userEvent.setup();
+    renderTab();
+    await selectSite(user);
+
+    await user.click(await screen.findByText("Ouvrir"));
+
+    expect(planningV2Api.reopenDraft).toHaveBeenCalledWith(77);
+    expect(await screen.findByText("Diane Lefebvre")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enregistrer les modifications" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Générer les missions" })).not.toBeInTheDocument();
+  });
+
+  it("affiche la bannière de divergence sans bloquer ni remplacer les lignes déjà enregistrées", async () => {
+    mockHistoryWithOneDraft();
+    (planningV2Api.reopenDraft as ReturnType<typeof vi.fn>).mockResolvedValue(draftReopenResponse({ divergent: true }));
+    const user = userEvent.setup();
+    renderTab();
+    await selectSite(user);
+
+    await user.click(await screen.findByText("Ouvrir"));
+
+    expect(await screen.findByText(/a chang[ée] depuis la cr[ée]ation de ce brouillon/)).toBeInTheDocument();
+    // The persisted assignment is still shown as-is, never silently dropped/replaced.
+    expect(screen.getByText("Diane Lefebvre")).toBeInTheDocument();
+  });
+
+  it("'Enregistrer les modifications' appelle updateDraft avec la version et les lignes courantes", async () => {
+    mockHistoryWithOneDraft();
+    (planningV2Api.reopenDraft as ReturnType<typeof vi.fn>).mockResolvedValue(draftReopenResponse());
+    (planningV2Api.updateDraft as ReturnType<typeof vi.fn>).mockResolvedValue({ created: 0, updated: 1, removed: 0, skipped: 0, rejectedAssignments: [] });
+    const user = userEvent.setup();
+    renderTab();
+    await selectSite(user);
+    await user.click(await screen.findByText("Ouvrir"));
+    await screen.findByText("Diane Lefebvre");
+
+    await user.click(screen.getByRole("button", { name: "Enregistrer les modifications" }));
+
+    await waitFor(() => expect(planningV2Api.updateDraft).toHaveBeenCalled());
+    const [versionId, lines] = (planningV2Api.updateDraft as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(versionId).toBe(77);
+    expect(lines[0]).toMatchObject({ existingMissionId: 501, instrumentistId: 9 });
+    // Reuses the exact same post-generate() UI (Déployer becomes available) — no separate draft-save screen.
+    expect(await screen.findByRole("button", { name: /Déployer/ })).toBeInTheDocument();
+  });
+
+  it("'Supprimer' un brouillon demande confirmation puis appelle deletePlanningVersionDraft", async () => {
+    mockHistoryWithOneDraft();
+    (planningV2Api.deletePlanningVersionDraft as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderTab();
+    await selectSite(user);
+    await screen.findByText("Brouillon");
+
+    await user.click(screen.getByLabelText("Supprimer le brouillon"));
+
+    expect(await screen.findByText(new RegExp(`Supprimer le brouillon ${draftMonthLabel} ${now.getFullYear()}`))).toBeInTheDocument();
+    expect(screen.getByText(/postes récurrents des chirurgiens ne seront pas modifiés/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Supprimer le brouillon" }));
+
+    await waitFor(() => expect(planningV2Api.deletePlanningVersionDraft).toHaveBeenCalledWith(77));
   });
 });

@@ -3,6 +3,9 @@
 namespace App\Controller\Api;
 
 use App\Dto\Request\Response\DeployResponse;
+use App\Dto\Request\Response\DraftReopenResponse;
+use App\Dto\Request\Response\DraftUpdateResponse;
+use App\Dto\Request\Response\DraftVersionSummaryResponse;
 use App\Dto\Request\Response\GeneratedPlanningResponse;
 use App\Dto\Request\Response\PreviewLineResponse;
 use App\Dto\Request\Response\PreviewResponse;
@@ -13,17 +16,18 @@ use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\PlanningVersionStatus;
+use App\Exception\PlanningDraftAlreadyExistsException;
 use App\Exception\PlanningDraftConflictException;
 use App\Security\Voter\PlanningVoter;
 use App\Service\MissionEligibilityService;
 use App\Service\PlanningDeploymentService;
+use App\Service\PlanningDraftService;
 use App\Service\PlanningGeneratorServiceV2;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
-use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 
@@ -45,6 +49,7 @@ class PlanningV2GenerationController extends AbstractController
         private readonly PlanningDeploymentService $deploymentService,
         private readonly EntityManagerInterface $em,
         private readonly MissionEligibilityService $eligibilityService,
+        private readonly PlanningDraftService $draftService,
     ) {}
 
     #[Route('/api/planning/v2/preview', name: 'api_planning_v2_preview', methods: ['POST'])]
@@ -75,7 +80,18 @@ class PlanningV2GenerationController extends AbstractController
         [$siteId, $siteGroupId, $month] = $this->parseTargetAndMonth($request);
         [$periodStart, $periodEnd]      = $this->monthRange($month);
 
-        $this->assertNoUndeployedDraftExists($siteId, $periodStart, $periodEnd);
+        try {
+            $this->assertNoUndeployedDraftExists($siteId, $periodStart, $periodEnd);
+        } catch (PlanningDraftAlreadyExistsException $e) {
+            // CAS D (D-115) — structured, so the frontend can offer "Ouvrir le brouillon"
+            // directly instead of a dead-end message. Fallback path only: the primary UX
+            // already shows "Brouillon existant" before generate() is ever called again.
+            return $this->json([
+                'code'      => 'PLANNING_DRAFT_ALREADY_EXISTS',
+                'message'   => $e->getMessage(),
+                'versionId' => $e->getExistingVersionId(),
+            ], 409);
+        }
 
         $data = json_decode($request->getContent() ?: '{}', true) ?? [];
 
@@ -281,10 +297,67 @@ class PlanningV2GenerationController extends AbstractController
 
         $existing = $qb->getQuery()->getOneOrNullResult();
         if ($existing !== null) {
-            throw new ConflictHttpException(sprintf(
-                'Un brouillon (version #%d) existe déjà pour cette période — déployez-le ou supprimez-le avant de régénérer.',
-                $existing->getId(),
-            ));
+            throw new PlanningDraftAlreadyExistsException($existing->getId());
         }
+    }
+
+    // ── CAS D (D-115) — reopen / update / delete an already-persisted draft ────
+
+    /**
+     * "Ouvrir le brouillon" — reconstructs the Preview Editor from this draft's real,
+     * persisted Missions (never a silent re-preview-as-source-of-truth — see
+     * PlanningDraftService's docblock). `divergent` is informational only: it never
+     * blocks the reopen or replaces anything already saved.
+     */
+    #[Route('/api/planning/v2/drafts/{id}', name: 'api_planning_v2_draft_reopen', methods: ['GET'])]
+    public function reopenDraft(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $version = $this->em->find(PlanningVersion::class, $id);
+        if ($version === null) {
+            throw $this->createNotFoundException('PlanningVersion introuvable.');
+        }
+
+        $result = $this->draftService->reopen($version);
+
+        return $this->json(new DraftReopenResponse(
+            version: DraftVersionSummaryResponse::fromVersion($version),
+            lines: array_map(PreviewLineResponse::fromLine(...), $result['lines']),
+            summary: PreviewSummaryResponse::fromLines($result['lines']),
+            previewVersion: $result['previewVersion'],
+            divergent: $result['divergent'],
+            generatedAt: (new \DateTimeImmutable())->format(\DateTimeInterface::RFC3339),
+        ));
+    }
+
+    /**
+     * Saves further editor changes (reassign/remove/add a line) directly onto this
+     * draft's own Missions — never a new generate()/PlanningVersion. Body: `{lines:
+     * PreviewLineV2[]}`, the exact same shape the editor already sends to generate()'s
+     * override mode.
+     */
+    #[Route('/api/planning/v2/drafts/{id}', name: 'api_planning_v2_draft_update', methods: ['PATCH'])]
+    public function updateDraft(int $id, Request $request, #[CurrentUser] User $currentUser): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $version = $this->em->find(PlanningVersion::class, $id);
+        if ($version === null) {
+            throw $this->createNotFoundException('PlanningVersion introuvable.');
+        }
+
+        $data  = $request->toArray();
+        $lines = isset($data['lines']) && is_array($data['lines']) ? $data['lines'] : [];
+
+        $result = $this->draftService->update($version, $lines, $currentUser);
+
+        return $this->json(new DraftUpdateResponse(
+            created: $result['created'],
+            updated: $result['updated'],
+            removed: $result['removed'],
+            skipped: $result['skipped'],
+            rejectedAssignments: $result['rejectedAssignments'],
+        ));
     }
 }

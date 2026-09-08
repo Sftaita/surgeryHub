@@ -14,6 +14,8 @@ import type {
   GeneratedPlanningV2,
   DeployResponseV2,
   CoverageSummary,
+  DraftReopenResponseV2,
+  DraftUpdateResultV2,
   MissionAuditEvent,
   MissionEligibilityResponse,
   AlertEligibilityResponse,
@@ -294,6 +296,36 @@ export async function deployPlanningV2(planningVersionId: number, sendPdf: boole
     { timeout: 30_000 },
   );
   return res.data;
+}
+
+// ── Drafts — CAS D (D-115) ───────────────────────────────────────────────────
+
+/**
+ * "Ouvrir le brouillon" — reconstructs the editor from this draft's real, persisted
+ * Missions (via the same claimMission() matching preview() already does for any
+ * COVERED/MODIFIED line), never a blank re-preview. `divergent` is informational only.
+ */
+export async function reopenDraft(versionId: number): Promise<DraftReopenResponseV2> {
+  const res = await apiClient.get(`/api/planning/v2/drafts/${versionId}`);
+  return res.data;
+}
+
+/**
+ * Saves further editor changes directly onto this draft's own Missions — never a new
+ * generate()/PlanningVersion. Same `lines` shape the editor already sends to generate().
+ */
+export async function updateDraft(versionId: number, lines: PreviewLineV2[]): Promise<DraftUpdateResultV2> {
+  const res = await apiClient.patch(`/api/planning/v2/drafts/${versionId}`, { lines }, { timeout: 30_000 });
+  return res.data;
+}
+
+/**
+ * "Supprimer le brouillon" — only ever succeeds for a version that is still entirely
+ * DRAFT (backend enforces this, 409 PLANNING_VERSION_NOT_DRAFT otherwise). Never touches
+ * a SurgeonSchedulePost or any mission outside this version.
+ */
+export async function deletePlanningVersionDraft(versionId: number): Promise<void> {
+  await apiClient.delete(`/api/planning/versions/${versionId}`);
 }
 
 // ── Modification mode (Planning V2 unified editor) — Batch 16 ────────────────

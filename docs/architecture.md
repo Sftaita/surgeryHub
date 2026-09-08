@@ -2179,6 +2179,16 @@ dernière fois lors de la suppression V1 de D-079) : `PlanningVersion`, `Mission
 `PlanningTemplate`/`PlanningSlot`/PAIR/IMPAIR/TOUTES — ce qui a permis de supprimer le
 moteur V1 en D-079 sans toucher à aucun de ces éléments partagés.
 
+**Réouverture/modification/suppression d'un brouillon persisté (CAS D, D-115)** : un
+brouillon (`PlanningVersion` `DRAFT` + `Mission[]` `DRAFT`) créé par ② est un objet
+persistant — jamais reconstruit silencieusement par un nouveau ①. `PlanningDraftService`
+(seul point de mutation d'un brouillon, jamais le contrôleur) expose `reopen()` (recharge
+les vraies `Mission` `DRAFT`, combinées à un ① frais pour l'information non persistée —
+occurrences `SKIPPED`, nouveaux Posts ajoutés au scope), `update()` (réaffecte/retire une
+ligne sur les `Mission` réelles de ce même brouillon, jamais un nouveau ②) et `delete()`
+(refuse dès qu'une seule `Mission` de la version n'est plus `DRAFT`). Voir D-115
+(`docs/decisions.md`) et §26.10bis (`docs/api.md`).
+
 **Alertes (Batch 3–5)** : `PlanningAlert` détecte l'impact d'une absence sur des
 missions déjà générées/publiées (`AbsenceImpactService`), jamais avant. Types
 implémentés : `SURGEON_ABSENCE`, `INSTRUMENTIST_ABSENCE`, `REASSIGNMENT_REQUIRED`,

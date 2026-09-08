@@ -1,0 +1,614 @@
+<?php
+
+namespace App\Tests\Functional;
+
+use App\Entity\Absence;
+use App\Entity\AuditEvent;
+use App\Entity\Hospital;
+use App\Entity\Mission;
+use App\Entity\PlanningVersion;
+use App\Entity\RecurrenceRule;
+use App\Entity\ShiftPeriodConfig;
+use App\Entity\SurgeonSchedulePost;
+use App\Entity\User;
+use App\Enum\MissionStatus;
+use App\Enum\MissionType;
+use App\Enum\PlanningVersionStatus;
+use App\Enum\RecurrenceFrequency;
+use App\Enum\ShiftPeriod;
+use Doctrine\ORM\EntityManagerInterface;
+use PHPUnit\Framework\Attributes\WithoutErrorHandler;
+use Symfony\Bundle\FrameworkBundle\KernelBrowser;
+use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+
+/**
+ * CAS D (D-115) — real-HTTP tests for reopening, editing, and deleting an already-
+ * persisted Planning V2 draft. Fixture pattern copied from PlanningV2GenerationControllerTest
+ * (Batch 9) — same helpers, same teardown discipline.
+ */
+final class PlanningV2DraftControllerTest extends WebTestCase
+{
+    private const PASSWORD = 'CasDTest123!';
+    private const YEAR     = 2026;
+    private const MONTH    = 11;
+
+    private EntityManagerInterface $em;
+    private array $createdIds = [
+        'versions' => [], 'missions' => [], 'posts' => [], 'shiftPeriods' => [],
+        'users' => [], 'sites' => [], 'absences' => [],
+    ];
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        self::ensureKernelShutdown();
+    }
+
+    protected function tearDown(): void
+    {
+        if (isset($this->em) && $this->em->isOpen()) {
+            foreach ($this->createdIds['absences'] as $id) {
+                $e = $this->em->find(Absence::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
+            foreach ($this->createdIds['missions'] as $id) {
+                foreach ($this->em->getRepository(AuditEvent::class)->findBy(['mission' => $id]) as $evt) {
+                    $this->em->remove($evt);
+                }
+            }
+            $this->em->flush();
+            foreach ($this->createdIds['missions'] as $id) {
+                $e = $this->em->find(Mission::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
+            foreach ($this->createdIds['versions'] as $id) {
+                $e = $this->em->find(PlanningVersion::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
+            foreach ($this->createdIds['posts'] as $id) {
+                $e = $this->em->find(SurgeonSchedulePost::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
+            foreach ($this->createdIds['shiftPeriods'] as $id) {
+                $e = $this->em->find(ShiftPeriodConfig::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
+            foreach ($this->createdIds['users'] as $id) {
+                $e = $this->em->find(User::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            foreach ($this->createdIds['sites'] as $id) {
+                $e = $this->em->find(Hospital::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
+        }
+        parent::tearDown();
+    }
+
+    /** @return array{user: User, token: string} */
+    private function authenticate($client, string $role): array
+    {
+        /** @var UserPasswordHasherInterface $hasher */
+        $hasher = static::getContainer()->get(UserPasswordHasherInterface::class);
+
+        $user = new User();
+        $user->setEmail('casd-' . bin2hex(random_bytes(4)) . '@surgicalhub.test');
+        $user->setRoles([$role]);
+        $user->setActive(true);
+        $user->setPassword($hasher->hashPassword($user, self::PASSWORD));
+        $this->em->persist($user);
+        $this->em->flush();
+        $this->createdIds['users'][] = $user->getId();
+
+        $client->request('POST', '/api/auth/login', server: ['CONTENT_TYPE' => 'application/json'], content: json_encode(['email' => $user->getEmail(), 'password' => self::PASSWORD]));
+        $data = json_decode((string) $client->getResponse()->getContent(), true) ?? [];
+        self::assertArrayHasKey('token', $data, (string) $client->getResponse()->getContent());
+
+        return ['user' => $user, 'token' => $data['token']];
+    }
+
+    private function auth(string $token, array $extra = []): array
+    {
+        return array_merge(['HTTP_AUTHORIZATION' => 'Bearer ' . $token], $extra);
+    }
+
+    private function postJson($client, string $token, string $uri, array $body): Response
+    {
+        $client->request('POST', $uri, server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode($body));
+        return $client->getResponse();
+    }
+
+    private function patchJson($client, string $token, string $uri, array $body): Response
+    {
+        $client->request('PATCH', $uri, server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode($body));
+        return $client->getResponse();
+    }
+
+    private function getJson($client, string $token, string $uri): Response
+    {
+        $client->request('GET', $uri, server: $this->auth($token));
+        return $client->getResponse();
+    }
+
+    private function deleteJson($client, string $token, string $uri): Response
+    {
+        $client->request('DELETE', $uri, server: $this->auth($token));
+        return $client->getResponse();
+    }
+
+    private function makeUser(string $role): User
+    {
+        $u = new User();
+        $u->setEmail('casd-' . bin2hex(random_bytes(4)) . '@surgicalhub.test');
+        $u->setRoles([$role]);
+        $u->setActive(true);
+        $this->em->persist($u);
+        $this->em->flush();
+        $this->createdIds['users'][] = $u->getId();
+        return $u;
+    }
+
+    private function makeSite(): Hospital
+    {
+        $h = new Hospital();
+        $h->setName('CasD Site ' . bin2hex(random_bytes(3)));
+        $this->em->persist($h);
+        $this->em->flush();
+        $this->createdIds['sites'][] = $h->getId();
+        return $h;
+    }
+
+    private function addShiftConfig(Hospital $site, string $start, string $end): void
+    {
+        $c = new ShiftPeriodConfig();
+        $c->setSite($site);
+        $c->setPeriod(ShiftPeriod::MATIN);
+        $c->setStartTime(new \DateTimeImmutable($start));
+        $c->setEndTime(new \DateTimeImmutable($end));
+        $this->em->persist($c);
+        $this->em->flush();
+        $this->createdIds['shiftPeriods'][] = $c->getId();
+    }
+
+    private function firstMondayOfTestMonth(): \DateTimeImmutable
+    {
+        $first = new \DateTimeImmutable(sprintf('%04d-%02d-01', self::YEAR, self::MONTH));
+        $isoDay = (int) $first->format('N');
+        return $isoDay === 1 ? $first : $first->modify('+' . (8 - $isoDay) . ' days');
+    }
+
+    /** $singleOccurrence caps the post to its anchor Monday only — avoids 4-5 Mondays/month when a test needs exactly one line/mission. */
+    private function makePost(User $surgeon, Hospital $site, ?User $instrumentist = null, bool $singleOccurrence = false): SurgeonSchedulePost
+    {
+        $rule = new RecurrenceRule();
+        $rule->setFrequency(RecurrenceFrequency::WEEKLY);
+        $rule->setInterval(1);
+        $rule->setWeekdays([1]);
+        $rule->setAnchorDate($this->firstMondayOfTestMonth());
+
+        $p = new SurgeonSchedulePost();
+        $p->setSurgeon($surgeon);
+        $p->setSite($site);
+        $p->setType(MissionType::BLOCK);
+        $p->setPeriod(ShiftPeriod::MATIN);
+        $p->setRecurrence($rule);
+        $p->setInstrumentist($instrumentist);
+        $p->setStartDate(new \DateTimeImmutable(sprintf('%04d-%02d-01', self::YEAR, self::MONTH)));
+        if ($singleOccurrence) {
+            $p->setEndDate($this->firstMondayOfTestMonth());
+        }
+        $p->setCreatedBy($surgeon);
+        $this->em->persist($p);
+        $this->em->flush();
+        $this->createdIds['posts'][] = $p->getId();
+        return $p;
+    }
+
+    private function json(Response $response): array
+    {
+        return json_decode((string) $response->getContent(), true) ?? [];
+    }
+
+    /** Generates a draft for a single-surgeon/single-site scope and returns its versionId + the created Mission id. */
+    private function generateDraft($client, string $token, Hospital $site, User $surgeon, ?User $instrumentist = null): array
+    {
+        $response = $this->postJson($client, $token, '/api/planning/v2/generate', [
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+        ]);
+        $body = $this->json($response);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $this->createdIds['versions'][] = $body['versionId'];
+
+        $this->em->clear();
+        $missions = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->setParameter('v', $body['versionId'])
+            ->getQuery()->getResult();
+        foreach ($missions as $m) { $this->createdIds['missions'][] = $m->getId(); }
+
+        return ['versionId' => $body['versionId'], 'missionId' => $missions[0]->getId()];
+    }
+
+    // ── Test 2 (list) + Test 8 (409 already exists) ─────────────────────────────
+
+    #[WithoutErrorHandler]
+    public function test_draft_appears_in_list_filtered_by_status(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site);
+
+        ['versionId' => $versionId] = $this->generateDraft($client, $token, $site, $surgeon);
+
+        $response = $this->getJson($client, $token, sprintf(
+            '/api/planning/versions?status=DRAFT&siteId=%d&periodFrom=%04d-%02d-01&periodTo=%04d-%02d-01',
+            $site->getId(), self::YEAR, self::MONTH, self::YEAR, self::MONTH,
+        ));
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        $ids = array_column($body['items'], 'id');
+        self::assertContains($versionId, $ids);
+    }
+
+    #[WithoutErrorHandler]
+    public function test_second_generate_same_scope_refused_with_existing_version_id(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site);
+
+        ['versionId' => $versionId] = $this->generateDraft($client, $token, $site, $surgeon);
+
+        $response = $this->postJson($client, $token, '/api/planning/v2/generate', [
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+        ]);
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode());
+        self::assertSame('PLANNING_DRAFT_ALREADY_EXISTS', $body['code']);
+        self::assertSame($versionId, $body['versionId']);
+    }
+
+    // ── Test 3 (reopen matches persisted) ────────────────────────────────────────
+
+    #[WithoutErrorHandler]
+    public function test_reopen_draft_reflects_persisted_missions(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon       = $this->makeUser('ROLE_SURGEON');
+        $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
+        $site          = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site, $instrumentist);
+
+        ['versionId' => $versionId] = $this->generateDraft($client, $token, $site, $surgeon, $instrumentist);
+
+        $response = $this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}");
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        self::assertSame($versionId, $body['version']['id']);
+        self::assertSame('DRAFT', $body['version']['status']);
+        self::assertFalse($body['divergent']);
+        self::assertGreaterThanOrEqual(1, count($body['lines']));
+        self::assertSame('COVERED', $body['lines'][0]['status']);
+        self::assertSame($instrumentist->getId(), $body['lines'][0]['instrumentistId']);
+        self::assertNotNull($body['lines'][0]['existingMissionId']);
+    }
+
+    // ── Test 4 + Test 5 (update persists, reopen shows it) ───────────────────────
+
+    #[WithoutErrorHandler]
+    public function test_update_draft_persists_instrumentist_change_and_survives_reopen(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $instrA  = $this->makeUser('ROLE_INSTRUMENTIST');
+        $instrB  = $this->makeUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site, $instrA, singleOccurrence: true);
+
+        ['versionId' => $versionId, 'missionId' => $missionId] = $this->generateDraft($client, $token, $site, $surgeon, $instrA);
+
+        $reopen = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $lines = $reopen['lines'];
+        $lines[0]['instrumentistId'] = $instrB->getId();
+
+        $update = $this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => $lines]);
+        $updateBody = $this->json($update);
+
+        self::assertSame(Response::HTTP_OK, $update->getStatusCode(), (string) $update->getContent());
+        self::assertSame(1, $updateBody['updated']);
+
+        // "Quitter puis revenir" — reopen again, confirm it survived. The Post's own
+        // template instrumentist is still instrA (never touched — only the Mission was
+        // reassigned) — preview() alone would report `instrumentistId: instrA` (the
+        // template) here, but PlanningDraftService::normalizeForDraftEditing() overrides it
+        // to the real persisted value (instrB) precisely so that resending this exact line
+        // unchanged — e.g. while editing a *different* line — writes back what's actually
+        // there instead of silently reverting to the template default. `status` stays
+        // `MODIFIED`: still useful information (this occurrence diverges from its Post's
+        // current template), just no longer the field the editor reads/resubmits.
+        $this->em->clear();
+        $reopenAgain = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        self::assertSame('MODIFIED', $reopenAgain['lines'][0]['status']);
+        self::assertSame($instrB->getId(), $reopenAgain['lines'][0]['existingInstrumentistId']);
+        self::assertSame($instrB->getId(), $reopenAgain['lines'][0]['instrumentistId']);
+
+        $mission = $this->em->find(Mission::class, $missionId);
+        self::assertSame($instrB->getId(), $mission->getInstrumentist()->getId());
+        self::assertSame(MissionStatus::DRAFT, $mission->getStatus());
+    }
+
+    // ── Regression — a PATCH touching one line must never revert another line's real,
+    //    already-persisted instrumentist back to its Post template's default. Found via
+    //    real HTTP+DB end-to-end testing (§17, CAS D validation) before any unit test
+    //    caught it: every existing test always resent every line exactly as reopen()
+    //    returned it, which happened to mask this because nothing ever diverged from its
+    //    template. Root cause: preview()'s `instrumentistId` on a MODIFIED line is the
+    //    template default, but `PlanningDraftService::update()` writes `instrumentistId`
+    //    verbatim as the new assignment — see normalizeForDraftEditing().
+
+    #[WithoutErrorHandler]
+    public function test_update_draft_does_not_revert_other_lines_when_saving_one(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $site   = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $surgeonB = $this->makeUser('ROLE_SURGEON');
+        $instrA   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $instrB   = $this->makeUser('ROLE_INSTRUMENTIST');
+        // Both posts template no instrumentist — the reassignment below diverges from the
+        // template on both lines (MODIFIED), the exact case normalizeForDraftEditing() fixes.
+        $this->makePost($surgeonA, $site, null, singleOccurrence: true);
+        $this->makePost($surgeonB, $site, null, singleOccurrence: true);
+
+        $generateResponse = $this->postJson($client, $token, '/api/planning/v2/generate', [
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+        ]);
+        $versionId = $this->json($generateResponse)['versionId'];
+        $this->createdIds['versions'][] = $versionId;
+        $this->em->clear();
+        $missions = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->setParameter('v', $versionId)
+            ->getQuery()->getResult();
+        foreach ($missions as $m) { $this->createdIds['missions'][] = $m->getId(); }
+        $missionIdA = current(array_filter($missions, fn (Mission $m) => $m->getSurgeon()->getId() === $surgeonA->getId()))->getId();
+        $missionIdB = current(array_filter($missions, fn (Mission $m) => $m->getSurgeon()->getId() === $surgeonB->getId()))->getId();
+
+        // First save — assign instrA to line A only.
+        $reopen1 = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $lines1 = $reopen1['lines'];
+        foreach ($lines1 as &$l) {
+            if ($l['existingMissionId'] === $missionIdA) { $l['instrumentistId'] = $instrA->getId(); }
+        }
+        unset($l);
+        $update1 = $this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => $lines1]);
+        self::assertSame(Response::HTTP_OK, $update1->getStatusCode(), (string) $update1->getContent());
+
+        // Second save — assign instrB to line B, resending line A exactly as this reopen()
+        // returned it (never locally re-touched — this is what the editor does for every
+        // line the manager didn't personally edit in the current session).
+        $this->em->clear();
+        $reopen2 = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $lines2 = $reopen2['lines'];
+        foreach ($lines2 as &$l) {
+            if ($l['existingMissionId'] === $missionIdB) { $l['instrumentistId'] = $instrB->getId(); }
+        }
+        unset($l);
+        $update2 = $this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => $lines2]);
+        self::assertSame(Response::HTTP_OK, $update2->getStatusCode(), (string) $update2->getContent());
+
+        // Line A's real, persisted instrumentist must have survived the second save.
+        $this->em->clear();
+        $missionA = $this->em->find(Mission::class, $missionIdA);
+        $missionB = $this->em->find(Mission::class, $missionIdB);
+        self::assertNotNull($missionA->getInstrumentist(), 'line A must keep its instrumentist across an unrelated save');
+        self::assertSame($instrA->getId(), $missionA->getInstrumentist()->getId());
+        self::assertSame($instrB->getId(), $missionB->getInstrumentist()->getId());
+    }
+
+    // ── Test 10 — ineligible instrumentist refused, not silently kept ────────────
+
+    #[WithoutErrorHandler]
+    public function test_update_draft_rejects_absent_instrumentist(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $instr   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site, singleOccurrence: true);
+
+        ['versionId' => $versionId, 'missionId' => $missionId] = $this->generateDraft($client, $token, $site, $surgeon);
+
+        // generateDraft() clears the EM to prove persistence — $instr/$manager are now
+        // detached references; re-fetch them before attaching them to a new entity.
+        $instr = $this->em->find(User::class, $instr->getId());
+        $manager = $this->em->find(User::class, $manager->getId());
+
+        $absence = new Absence();
+        $absence->setUser($instr);
+        $absence->setCreatedBy($manager);
+        $absence->setDateStart($this->firstMondayOfTestMonth());
+        $absence->setDateEnd($this->firstMondayOfTestMonth());
+        $this->em->persist($absence);
+        $this->em->flush();
+        $this->createdIds['absences'][] = $absence->getId();
+
+        $reopen = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $lines = $reopen['lines'];
+        $lines[0]['instrumentistId'] = $instr->getId();
+
+        $update = $this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => $lines]);
+        $updateBody = $this->json($update);
+
+        self::assertSame(Response::HTTP_OK, $update->getStatusCode());
+        self::assertCount(1, $updateBody['rejectedAssignments']);
+        self::assertContains('ABSENT', $updateBody['rejectedAssignments'][0]['reasons']);
+
+        $mission = $this->em->find(Mission::class, $missionId);
+        self::assertNull($mission->getInstrumentist());
+    }
+
+    // ── Test 6 (delete fully-DRAFT version) ──────────────────────────────────────
+
+    #[WithoutErrorHandler]
+    public function test_delete_draft_removes_version_and_its_missions(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site);
+
+        ['versionId' => $versionId, 'missionId' => $missionId] = $this->generateDraft($client, $token, $site, $surgeon);
+
+        $response = $this->deleteJson($client, $token, "/api/planning/versions/{$versionId}");
+        self::assertSame(Response::HTTP_NO_CONTENT, $response->getStatusCode());
+
+        $this->em->clear();
+        self::assertNull($this->em->find(PlanningVersion::class, $versionId));
+        self::assertNull($this->em->find(Mission::class, $missionId));
+
+        // Cleanup bookkeeping: both are already gone, don't try to remove them again in tearDown.
+        $this->createdIds['versions'] = array_diff($this->createdIds['versions'], [$versionId]);
+        $this->createdIds['missions'] = array_diff($this->createdIds['missions'], [$missionId]);
+
+        // Mois à nouveau générable.
+        $again = $this->postJson($client, $token, '/api/planning/v2/generate', [
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+        ]);
+        $againBody = $this->json($again);
+        self::assertSame(Response::HTTP_OK, $again->getStatusCode());
+        $this->createdIds['versions'][] = $againBody['versionId'];
+        foreach ($this->em->createQueryBuilder()->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->setParameter('v', $againBody['versionId'])
+            ->getQuery()->getResult() as $m
+        ) {
+            $this->createdIds['missions'][] = $m->getId();
+        }
+    }
+
+    // ── Test 7 (delete refused once part of the version is no longer DRAFT) ──────
+
+    #[WithoutErrorHandler]
+    public function test_delete_draft_refused_when_a_mission_left_draft(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site);
+
+        ['versionId' => $versionId, 'missionId' => $missionId] = $this->generateDraft($client, $token, $site, $surgeon);
+
+        $mission = $this->em->find(Mission::class, $missionId);
+        $mission->setStatus(MissionStatus::OPEN);
+        $this->em->flush();
+
+        $response = $this->deleteJson($client, $token, "/api/planning/versions/{$versionId}");
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode());
+        self::assertSame('PLANNING_VERSION_NOT_DRAFT', $body['error']['code']);
+
+        $this->em->clear();
+        self::assertNotNull($this->em->find(PlanningVersion::class, $versionId));
+        self::assertNotNull($this->em->find(Mission::class, $missionId));
+    }
+
+    // ── Test 9 — a Post added after the draft was created never overwrites it ────
+
+    #[WithoutErrorHandler]
+    public function test_reopen_reflects_new_post_without_touching_existing_missions(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon1 = $this->makeUser('ROLE_SURGEON');
+        $instr    = $this->makeUser('ROLE_INSTRUMENTIST');
+        $site     = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon1, $site, $instr, singleOccurrence: true);
+
+        ['versionId' => $versionId, 'missionId' => $missionId] = $this->generateDraft($client, $token, $site, $surgeon1, $instr);
+
+        // generateDraft() clears the EM to prove persistence — $site is now a detached
+        // reference; re-fetch it before attaching a new Post to it.
+        $site = $this->em->find(Hospital::class, $site->getId());
+
+        // A second surgeon's Post is added to the scope AFTER this draft was generated.
+        $surgeon2 = $this->makeUser('ROLE_SURGEON');
+        $this->makePost($surgeon2, $site, singleOccurrence: true);
+
+        $reopen = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        self::assertCount(2, $reopen['lines']);
+
+        $line1 = current(array_filter($reopen['lines'], fn ($l) => $l['existingMissionId'] === $missionId));
+        self::assertSame($instr->getId(), $line1['instrumentistId'], 'the original line must not be silently touched');
+
+        $line2 = current(array_filter($reopen['lines'], fn ($l) => $l['existingMissionId'] === null));
+        self::assertSame('UNCOVERED', $line2['status']);
+
+        // Saving now must create the new line's mission without touching the first one's
+        // actual assignment. `updated` still counts the resent, unchanged first line — same
+        // unconditional counting as generate()'s own override mode (matches existing
+        // precedent, not a CAS D regression) — the assertion below on the real Mission row
+        // is what actually proves it was never mutated.
+        $update = $this->json($this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => $reopen['lines']]));
+        self::assertSame(1, $update['created']);
+        self::assertSame(1, $update['updated']);
+
+        $missions = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->setParameter('v', $versionId)
+            ->getQuery()->getResult();
+        self::assertCount(2, $missions);
+        foreach ($missions as $m) { $this->createdIds['missions'][] = $m->getId(); }
+
+        $originalMission = $this->em->find(Mission::class, $missionId);
+        self::assertSame($instr->getId(), $originalMission->getInstrumentist()->getId(), 'the original mission must not be silently touched');
+    }
+}

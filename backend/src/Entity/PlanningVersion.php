@@ -50,6 +50,15 @@ class PlanningVersion
     #[ORM\Column(type: 'json', nullable: true)]
     private ?array $summaryJson = null;
 
+    /**
+     * CAS D (D-115) — snapshot of PlanningGeneratorServiceV2::computePreviewVersion() at the
+     * moment generate() created this DRAFT. Compared against a freshly-computed hash when the
+     * draft is reopened, purely to surface "the model changed since" — never to block the
+     * reopen or silently replace what's persisted. Null for versions created before this lot.
+     */
+    #[ORM\Column(type: 'string', length: 64, nullable: true)]
+    private ?string $previewHash = null;
+
     #[ORM\OneToMany(mappedBy: 'planningVersion', targetEntity: Mission::class)]
     private Collection $missions;
 
@@ -89,6 +98,9 @@ class PlanningVersion
 
     public function getSummaryJson(): ?array { return $this->summaryJson; }
     public function setSummaryJson(?array $summaryJson): static { $this->summaryJson = $summaryJson; return $this; }
+
+    public function getPreviewHash(): ?string { return $this->previewHash; }
+    public function setPreviewHash(?string $previewHash): static { $this->previewHash = $previewHash; return $this; }
 
     /** @return Collection<int, Mission> */
     public function getMissions(): Collection { return $this->missions; }

@@ -4169,11 +4169,20 @@ Même body que preview. Crée une `PlanningVersion` (`DRAFT`) + des `Mission` (`
 réutilise intégralement le cycle de vie `PlanningVersion`/`Mission` existant, aucune
 table V2-spécifique pour les missions. Ne déploie pas, n'envoie aucun PDF.
 
-**Rejet explicite des doublons (`409 CONFLICT`)** : si un brouillon (`DRAFT`) non déployé
+**Rejet explicite des doublons (`409`)** : si un brouillon (`DRAFT`) non déployé
 existe déjà pour exactement le même site/groupe + période, le second appel est rejeté
 plutôt que de créer un second brouillon silencieusement. Une fois la version
 déployée/archivée, regénérer la même période est autorisé (nouvelle version, numéro
 incrémenté — comportement V1 inchangé).
+
+> **CAS D (D-115)** : ce 409 porte désormais l'id du brouillon existant plutôt qu'un
+> `{error:{code:'CONFLICT'}}` générique, pour que le frontend propose directement
+> « Ouvrir le brouillon » :
+> ```json
+> { "code": "PLANNING_DRAFT_ALREADY_EXISTS", "message": "...", "versionId": 7 }
+> ```
+> Chemin de repli uniquement — le parcours normal montre déjà « Brouillon existant »
+> avant que le manager n'atteigne `generate()` une seconde fois (voir §26.10bis).
 
 > **Limite connue** : pour une génération par groupe de sites, `PlanningVersion.site`
 > vaut `null` (pas de colonne `siteGroupId` sur `PlanningVersion`) — deux groupes
@@ -4270,6 +4279,82 @@ existant — sans bloquer le reste du déploiement : ce cas ne produit jamais de
 `DRAFT_CONFLICTS`, la mission est simplement absente du `missionCount` publié. Voir
 D-090 (`docs/decisions.md`) pour le détail complet et la cause racine de ces deux
 anomalies.
+
+### 26.10bis Réouverture / modification / suppression d'un brouillon Planning V2 (CAS D, D-115)
+
+Un brouillon (`PlanningVersion` `DRAFT` + ses `Mission` `DRAFT`) est un objet persistant dès
+`generate()` — jamais reconstruit silencieusement à partir d'un nouveau `preview()`. Voir
+D-115 dans `docs/decisions.md` pour la décision d'architecture complète (source de vérité,
+gestion des occurrences `SKIPPED`, unicité, divergence de modèle).
+
+##### `GET /api/planning/v2/drafts/{id}`
+
+Réouvre un brouillon : recharge ses `Mission` `DRAFT` réelles, réaffectations comprises, en
+les combinant à un calcul `preview()` frais pour l'information non persistée (occurrences
+`SKIPPED` d'un chirurgien actuellement absent, nouveau Post ajouté au scope depuis).
+
+**AuthZ :** `PLANNING_MANAGE` (Voter).
+
+**Réponse — 200 :**
+
+```json
+{
+  "version": {
+    "id": 7, "status": "DRAFT", "periodStart": "2026-09-01", "periodEnd": "2026-09-30",
+    "siteId": 3, "siteName": "CHIREC", "generatedAt": "2026-09-08T09:00:00+02:00"
+  },
+  "lines": [ /* même forme que 26.4 Preview planning */ ],
+  "summary": { /* même forme que 26.4 */ },
+  "previewVersion": "sha256:...",
+  "divergent": false,
+  "generatedAt": "2026-09-08T10:30:00+02:00"
+}
+```
+
+`divergent: true` signifie qu'un `SurgeonSchedulePost`, une absence ou un `ShiftPeriodConfig`
+a changé depuis la génération de ce brouillon (comparaison de `previewHash`, colonne ajoutée
+par la migration `Version20260908090000`) — **purement informationnel**, ne bloque jamais la
+réouverture et ne remplace rien.
+
+**Réponse — 409 `PLANNING_VERSION_NOT_DRAFT`** : la version n'est plus `DRAFT` (déjà
+déployée/archivée).
+
+**Réponse — 400** : brouillon de groupe de sites (`site = null`, limite connue — voir 26.5,
+« Limite connue »).
+
+##### `PATCH /api/planning/v2/drafts/{id}`
+
+Enregistre des modifications de lignes directement sur les `Mission` réelles de ce brouillon
+— jamais un nouveau `generate()`/`PlanningVersion`. Même corps que `lines` en 26.5
+(`overrideLines`).
+
+**Réponse — 200 :**
+
+```json
+{ "created": 1, "updated": 1, "removed": 0, "skipped": 0, "rejectedAssignments": [] }
+```
+
+Mêmes règles d'éligibilité que 26.5 (`rejectedAssignments`, jamais une réaffectation
+silencieusement invalide conservée). `removed` compte les lignes marquées `SKIPPED` sur une
+occurrence déjà couverte par une `Mission` persistée — celle-ci est supprimée (jamais annulée
+: elle n'aurait jamais dû exister pour cette occurrence).
+
+**Réponse — 409 `PLANNING_VERSION_NOT_DRAFT`** : idem `GET`.
+
+##### `DELETE /api/planning/versions/{id}`
+
+Supprime un brouillon entièrement `DRAFT` — la `PlanningVersion` et ses `Mission`. Ne touche
+jamais une mission publiée ni un `SurgeonSchedulePost`. Route V1 orpheline (retirée sans
+remplacement V2 par D-079, commit `570a551`) réactivée avec la bonne garde.
+
+**Réponse — 204** si toutes les missions de la version sont encore `DRAFT`.
+
+**Réponse — 409 `PLANNING_VERSION_NOT_DRAFT`** dès qu'une seule mission de la version a
+quitté `DRAFT` par un autre chemin (déploiement partiel, modification directe) :
+
+```json
+{ "error": { "code": "PLANNING_VERSION_NOT_DRAFT", "message": "This planning version contains published missions and cannot be deleted as a draft." } }
+```
 
 ---
 

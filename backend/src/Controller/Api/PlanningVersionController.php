@@ -10,6 +10,7 @@ use App\Enum\MissionStatus;
 use App\Enum\PlanningVersionStatus;
 use App\Security\Voter\PlanningVoter;
 use App\Service\PlanningCoverageService;
+use App\Service\PlanningDraftService;
 use App\Service\PlanningModificationService;
 use App\Service\PlanningResendService;
 use App\Service\PlanningVersionAuditService;
@@ -32,6 +33,7 @@ class PlanningVersionController extends AbstractController
         private readonly PlanningModificationService    $modificationService,
         private readonly PlanningResendService          $resendService,
         private readonly PlanningVersionAuditService    $auditService,
+        private readonly PlanningDraftService           $draftService,
     ) {}
 
     // ── List ──────────────────────────────────────────────────────────────────
@@ -104,6 +106,31 @@ class PlanningVersionController extends AbstractController
         $items = array_map(fn (PlanningVersion $v) => $this->serializeListItem($v), $versions);
 
         return $this->json(['items' => $items, 'total' => $total, 'page' => $page, 'limit' => $limit]);
+    }
+
+    // ── CAS D (D-115) — delete an undeployed draft ────────────────────────────
+
+    /**
+     * "Supprimer le brouillon" — restores the pre-D-079 DRAFT-delete semantics, removed
+     * as an orphaned V1-only route (its only caller, PlanningVersionDetailPage, was
+     * deleted with the rest of V1) without a V2 replacement ever being built. Refuses
+     * (409 PLANNING_VERSION_NOT_DRAFT) if the version isn't DRAFT, or if any of its
+     * missions already left DRAFT some other way — see PlanningDraftService::delete().
+     * Never touches a SurgeonSchedulePost or any mission outside this version.
+     */
+    #[Route('/api/planning/versions/{id}', name: 'api_planning_version_delete', methods: ['DELETE'])]
+    public function delete(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $version = $this->em->find(PlanningVersion::class, $id);
+        if ($version === null) {
+            throw new NotFoundHttpException('PlanningVersion introuvable.');
+        }
+
+        $this->draftService->delete($version);
+
+        return new JsonResponse(null, 204);
     }
 
     // ── Modification mode (Planning V2 unified editor) ────────────────────────

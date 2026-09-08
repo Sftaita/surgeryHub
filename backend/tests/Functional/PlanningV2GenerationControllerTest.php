@@ -393,7 +393,12 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
 
         $second = $this->postJson($client, $token, '/api/planning/v2/generate', $body);
         self::assertSame(Response::HTTP_CONFLICT, $second->getStatusCode(), 'A second generate for the same undeployed period must be explicitly rejected, not silently duplicated');
-        self::assertSame('CONFLICT', $this->json($second)['error']['code']);
+        // CAS D (D-115) — structured, carries the existing draft's id so the frontend can
+        // offer "Ouvrir le brouillon" directly instead of a dead-end message (flat shape,
+        // same convention as PREVIEW_EXPIRED/DRAFT_CONFLICTS elsewhere in this controller).
+        $secondBody = $this->json($second);
+        self::assertSame('PLANNING_DRAFT_ALREADY_EXISTS', $secondBody['code']);
+        self::assertSame($firstData['versionId'], $secondBody['versionId']);
 
         // Clean up missions created by the first (successful) generate too.
         $this->em->clear();

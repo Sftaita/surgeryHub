@@ -378,6 +378,8 @@ class PlanningGeneratorServiceV2
         $version->setPeriodEnd($end);
         $version->setGeneratedBy($generatedBy);
         $version->setStatus(PlanningVersionStatus::DRAFT);
+        // CAS D (D-115) — snapshot for divergence detection on reopen, never for blocking.
+        $version->setPreviewHash($this->computePreviewVersion($month, $siteId, $siteGroupId));
 
         // PlanningVersion has no siteGroup column (kept unchanged, see Batch 2 deviations) —
         // a group-wide version stores site=null, same as V1's "no site filter" case.
@@ -454,39 +456,8 @@ class PlanningGeneratorServiceV2
                 continue;
             }
 
-            $post = $this->em->find(SurgeonSchedulePost::class, $line['postId']);
-            if ($post === null) { $skipped++; continue; }
-
-            $surgeon = $this->em->find(User::class, $line['surgeonId']);
-            if ($surgeon === null) { $skipped++; continue; }
-
-            $site = $line['siteId'] !== null ? $this->em->find(Hospital::class, $line['siteId']) : null;
-            if ($site === null) { $skipped++; continue; }
-
-            $instrumentist = $line['instrumentistId'] !== null
-                ? $this->em->find(User::class, $line['instrumentistId'])
-                : null;
-
-            // D-066: Mission.startAt/endAt are business_datetime_immutable — the type
-            // converts whatever timezone the incoming DateTimeImmutable carries to its
-            // true Europe/Brussels wall-clock equivalent before storing. $day must
-            // therefore be explicitly Brussels-labeled, or a naive (container-default
-            // UTC) construction would get shifted by the DST offset on write.
-            $day = new \DateTimeImmutable($line['date'], new \DateTimeZone(\App\Doctrine\Type\BusinessDateTimeImmutableType::BUSINESS_TIMEZONE));
-            [$h1, $m1] = explode(':', $line['startTime']);
-            [$h2, $m2] = explode(':', $line['endTime']);
-
-            $mission = new Mission();
-            $mission->setStatus(MissionStatus::DRAFT);
-            $mission->setType($post->getType());
-            $mission->setSurgeon($surgeon);
-            $mission->setSite($site);
-            $mission->setStartAt($day->setTime((int) $h1, (int) $m1));
-            $mission->setEndAt($day->setTime((int) $h2, (int) $m2));
-            $mission->setSchedulePrecision(SchedulePrecision::EXACT);
-            $mission->setCreatedBy($generatedBy);
-            $mission->setPlanningVersion($version);
-            $mission->setInstrumentist($this->guardInstrumentist($mission, $instrumentist, $rejected));
+            $mission = $this->createMissionFromLine($line, $version, $generatedBy, $rejected);
+            if ($mission === null) { $skipped++; continue; }
 
             $this->em->persist($mission);
             $created++;
@@ -547,6 +518,53 @@ class PlanningGeneratorServiceV2
         ];
 
         return null;
+    }
+
+    /**
+     * Builds one new DRAFT Mission from a preview/override line — extracted so both
+     * generate() (a fresh occurrence with no existingMissionId) and PlanningDraftService
+     * (CAS D — a line added to an already-persisted draft since it was first generated,
+     * e.g. a new SurgeonSchedulePost) create missions the exact same way. Returns null
+     * (caller counts as skipped) when the post/surgeon/site referenced by the line can no
+     * longer be resolved — never throws, matching generate()'s existing defensive style.
+     */
+    public function createMissionFromLine(array $line, PlanningVersion $version, User $actor, array &$rejected): ?Mission
+    {
+        $post = $this->em->find(SurgeonSchedulePost::class, $line['postId']);
+        if ($post === null) { return null; }
+
+        $surgeon = $this->em->find(User::class, $line['surgeonId']);
+        if ($surgeon === null) { return null; }
+
+        $site = $line['siteId'] !== null ? $this->em->find(Hospital::class, $line['siteId']) : null;
+        if ($site === null) { return null; }
+
+        $instrumentist = $line['instrumentistId'] !== null
+            ? $this->em->find(User::class, $line['instrumentistId'])
+            : null;
+
+        // D-066: Mission.startAt/endAt are business_datetime_immutable — the type converts
+        // whatever timezone the incoming DateTimeImmutable carries to its true
+        // Europe/Brussels wall-clock equivalent before storing. $day must therefore be
+        // explicitly Brussels-labeled, or a naive (container-default UTC) construction
+        // would get shifted by the DST offset on write.
+        $day = new \DateTimeImmutable($line['date'], new \DateTimeZone(\App\Doctrine\Type\BusinessDateTimeImmutableType::BUSINESS_TIMEZONE));
+        [$h1, $m1] = explode(':', $line['startTime']);
+        [$h2, $m2] = explode(':', $line['endTime']);
+
+        $mission = new Mission();
+        $mission->setStatus(MissionStatus::DRAFT);
+        $mission->setType($post->getType());
+        $mission->setSurgeon($surgeon);
+        $mission->setSite($site);
+        $mission->setStartAt($day->setTime((int) $h1, (int) $m1));
+        $mission->setEndAt($day->setTime((int) $h2, (int) $m2));
+        $mission->setSchedulePrecision(SchedulePrecision::EXACT);
+        $mission->setCreatedBy($actor);
+        $mission->setPlanningVersion($version);
+        $mission->setInstrumentist($this->guardInstrumentist($mission, $instrumentist, $rejected));
+
+        return $mission;
     }
 
     // ── Recurrence expansion (in-memory, no DB hits) ────────────────────────
