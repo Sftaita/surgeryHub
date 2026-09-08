@@ -449,7 +449,19 @@ export function GeneratePlanningTab() {
         toast.error("Les changements sont enregistrés, mais l'affichage n'a pas pu être actualisé — rechargez la page.");
       }
     },
-    onError: (err) => toast.error(extractErrorV2(err)),
+    onError: (err: any) => {
+      // CAS C (D-116) — this session's version was archived by a concurrent redeploy for
+      // the same site/month. Nothing was silently written to a stale/invisible version:
+      // the backend refused up front. Exit back to the fresh list rather than let the
+      // manager keep editing a version that no longer exists as "the" published planning.
+      if (err?.response?.status === 409 && err?.response?.data?.error?.code === "PLANNING_VERSION_NOT_ACTIVE") {
+        toast.error("Ce planning a été republié entre-temps par quelqu'un d'autre — rien n'a été enregistré. Rouvrez-le pour reprendre vos modifications sur la version actuelle.");
+        exitModification();
+        queryClient.invalidateQueries({ queryKey: ["planning-v2", "versions-history"] });
+        return;
+      }
+      toast.error(extractErrorV2(err));
+    },
   });
 
   const resendMutation = useMutation({

@@ -10,6 +10,8 @@ use App\Entity\User;
 use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Enum\PlanningVersionStatus;
+use App\Exception\PlanningVersionNotActiveException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
@@ -54,6 +56,19 @@ class PlanningModificationService
      */
     public function apply(PlanningVersion $version, array $lines, User $actor): array
     {
+        // CAS C (D-116) — a stale Modification-mode session (opened while $version was
+        // ACTIVE, since archived by a concurrent redeploy for the same site/period — see
+        // PlanningDeploymentService::deploy()) must never silently attach/mutate missions
+        // on a version nobody is looking at anymore. Every published-planning view resolves
+        // to the CURRENT ACTIVE version, so anything written here would be invisible from
+        // that point on. Checked first, before any snapshot/mutation.
+        if ($version->getStatus() !== PlanningVersionStatus::ACTIVE) {
+            throw new PlanningVersionNotActiveException(sprintf(
+                'This planning version is %s, not the active one — reload the page to continue editing the current published planning.',
+                $version->getStatus()->value,
+            ));
+        }
+
         // ── Snapshot every mission currently in this version, before any mutation ──────
         /** @var Mission[] $allMissionsBefore */
         $allMissionsBefore = $version->getMissions()->filter(

@@ -9,7 +9,9 @@ use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningAlert;
 use App\Entity\PlanningVersion;
+use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PlanningVersionStatus;
@@ -246,6 +248,280 @@ final class PlanningModificationControllerTest extends WebTestCase
             'existingInstrumentistName'=> null,
             'freedFrom'                => false,
         ], $overrides);
+    }
+
+    /**
+     * CAS C (D-116) — a brand-new line as sent by the "Ajouter" button in ACTIVE/
+     * Modification mode: no existingMissionId, postId null (never a real Post — this is a
+     * genuinely one-off addition, per the CAS C rule of never minting a SurgeonSchedulePost
+     * for it).
+     */
+    private function newLineFor(Hospital $site, User $surgeon, ?User $instrumentist, string $date = '2026-09-15', string $startTime = '08:00', string $endTime = '13:00'): array
+    {
+        return [
+            'date'                     => $date,
+            'postId'                   => null,
+            'surgeonId'                => $surgeon->getId(),
+            'surgeonName'              => '',
+            'missionType'              => MissionType::BLOCK->value,
+            'startTime'                => $startTime,
+            'endTime'                  => $endTime,
+            'siteId'                   => $site->getId(),
+            'siteName'                 => '',
+            'instrumentistId'          => $instrumentist?->getId(),
+            'instrumentistName'        => null,
+            'status'                   => $instrumentist !== null ? 'COVERED' : 'UNCOVERED',
+            'existingMissionId'        => null,
+            'existingInstrumentistId'  => null,
+            'existingInstrumentistName'=> null,
+            'freedFrom'                => false,
+        ];
+    }
+
+    private function findCreatedMission(PlanningVersion $version, User $surgeon): ?Mission
+    {
+        $this->em->clear();
+        $results = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->andWhere('m.surgeon = :s')
+            ->setParameter('v', $version->getId())->setParameter('s', $surgeon->getId())
+            ->getQuery()->getResult();
+        return $results[0] ?? null;
+    }
+
+    // ── CAS C (D-116) — "Ajouter" in ACTIVE/Modification mode ────────────────────
+
+    public function test_add_new_mission_with_instrumentist_is_assigned_and_visible_immediately(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+
+        $response = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            ['lines' => [$this->newLineFor($site, $surgeon, $instr)]],
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame(1, $body['created'] ?? null, json_encode($body));
+
+        $mission = $this->findCreatedMission($version, $surgeon);
+        self::assertNotNull($mission, 'the new mission must be persisted and immediately queryable, no F5 needed');
+        $this->createdMissionIds[] = $mission->getId();
+        self::assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
+        self::assertSame($instr->getId(), $mission->getInstrumentist()?->getId());
+        self::assertSame($version->getId(), $mission->getPlanningVersion()?->getId());
+    }
+
+    public function test_add_new_mission_without_instrumentist_is_open(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+
+        $response = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            ['lines' => [$this->newLineFor($site, $surgeon, null)]],
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame(1, $body['created'] ?? null, json_encode($body));
+
+        $mission = $this->findCreatedMission($version, $surgeon);
+        self::assertNotNull($mission);
+        $this->createdMissionIds[] = $mission->getId();
+        self::assertSame(MissionStatus::OPEN, $mission->getStatus());
+        self::assertNull($mission->getInstrumentist());
+    }
+
+    public function test_add_new_mission_never_calls_generate_or_creates_a_post(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+
+        $postCountBefore = (int) $this->em->createQuery('SELECT COUNT(p) FROM ' . SurgeonSchedulePost::class . ' p')->getSingleScalarResult();
+        $versionCountBefore = (int) $this->em->createQueryBuilder()
+            ->select('COUNT(v.id)')->from(PlanningVersion::class, 'v')
+            ->where('v.site = :s')->setParameter('s', $site->getId())
+            ->getQuery()->getSingleScalarResult();
+
+        $response = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            ['lines' => [$this->newLineFor($site, $surgeon, $instr)]],
+        );
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $mission = $this->findCreatedMission($version, $surgeon);
+        self::assertNotNull($mission);
+        $this->createdMissionIds[] = $mission->getId();
+
+        // No SurgeonSchedulePost was ever minted for this one-off addition...
+        $postCountAfter = (int) $this->em->createQuery('SELECT COUNT(p) FROM ' . SurgeonSchedulePost::class . ' p')->getSingleScalarResult();
+        self::assertSame($postCountBefore, $postCountAfter, 'apply-modifications must never create a SurgeonSchedulePost');
+
+        // ...and no second PlanningVersion was minted for this site (i.e. generate() was
+        // never invoked — the new Mission was attached to the SAME, already-deployed version).
+        $versionCountAfter = (int) $this->em->createQueryBuilder()
+            ->select('COUNT(v.id)')->from(PlanningVersion::class, 'v')
+            ->where('v.site = :s')->setParameter('s', $site->getId())
+            ->getQuery()->getSingleScalarResult();
+        self::assertSame($versionCountBefore, $versionCountAfter, 'apply-modifications must never call generate() / mint a new PlanningVersion');
+    }
+
+    public function test_add_new_mission_writes_the_post_deploy_audit_event(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+
+        $response = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            ['lines' => [$this->newLineFor($site, $surgeon, $instr)]],
+        );
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $mission = $this->findCreatedMission($version, $surgeon);
+        self::assertNotNull($mission);
+        $this->createdMissionIds[] = $mission->getId();
+
+        $events = $this->em->getRepository(AuditEvent::class)->findBy(['mission' => $mission->getId()]);
+        self::assertNotEmpty($events, 'a post-deploy addition must be audited');
+        $types = array_map(static fn (AuditEvent $e) => $e->getEventType(), $events);
+        self::assertContains(AuditEventType::MISSION_ADDED_POST_DEPLOY, $types);
+    }
+
+    public function test_add_new_mission_to_absent_instrumentist_is_rejected(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+        // Line is on 2026-09-15 (newLineFor's default date) — absence covers it.
+        $this->makeAbsence($instr, '2026-09-10', '2026-09-20');
+
+        $response = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            ['lines' => [$this->newLineFor($site, $surgeon, $instr)]],
+        );
+
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame('INSTRUMENTIST_INCOMPATIBLE', $body['error']['code']);
+        self::assertContains('ABSENT', array_column($body['error']['violations'], 'message'));
+
+        self::assertNull($this->findCreatedMission($version, $surgeon), 'nothing must be persisted when the new assignment is refused');
+    }
+
+    /**
+     * D-091/D-052 — under PLANNING_MODIFICATION policy, SCHEDULE_CONFLICT is deliberately
+     * NON-blocking (see EligibilityEnforcementPolicy's own doc comment: a double-booking may
+     * be a conscious manager choice). "Refusé selon les règles existantes" here means the
+     * EXISTING rule applies unchanged: the mission is still created/assigned, and the
+     * conflict surfaces as a non-blocking PlanningAlert instead of a 409 — exactly like any
+     * other Modification-mode reassignment that creates a conflict.
+     */
+    public function test_add_new_mission_with_schedule_conflict_is_created_and_flagged_not_rejected(): void
+    {
+        $client   = $this->boot();
+        $manager  = $this->createUser('ROLE_MANAGER');
+        $token    = $this->login($client, $manager);
+        $surgeon1 = $this->createUser('ROLE_SURGEON');
+        $surgeon2 = $this->createUser('ROLE_SURGEON');
+        $instr    = $this->createUser('ROLE_INSTRUMENTIST');
+        $site     = $this->makeSite();
+        $version  = $this->makeVersion($site, $manager);
+        // instr already busy 08:00-13:00 on 2026-09-15.
+        $existingMission = $this->makeMission($version, $site, $surgeon1, $manager, MissionStatus::ASSIGNED, $instr);
+
+        $response = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            // Overlapping slot, same instrumentist, different surgeon — a real double-booking.
+            ['lines' => [$this->newLineFor($site, $surgeon2, $instr)]],
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame(1, $body['created'] ?? null, json_encode($body));
+
+        $mission = $this->findCreatedMission($version, $surgeon2);
+        self::assertNotNull($mission);
+        $this->createdMissionIds[] = $mission->getId();
+        self::assertSame(MissionStatus::ASSIGNED, $mission->getStatus(), 'a schedule conflict must not block Modification-mode assignment');
+        self::assertSame($instr->getId(), $mission->getInstrumentist()?->getId());
+
+        // The alert is always anchored on the lower-id mission of the conflicting pair
+        // (PlanningConflictDetectionService::applySync doc comment) — that's the
+        // pre-existing $existingMission here, not necessarily the just-created one.
+        $alerts = $this->em->createQueryBuilder()
+            ->select('a')->from(PlanningAlert::class, 'a')
+            ->where('a.mission IN (:ids)')->setParameter('ids', [$existingMission->getId(), $mission->getId()])
+            ->getQuery()->getResult();
+        self::assertNotEmpty($alerts, 'the conflict must surface as a non-blocking PlanningAlert');
+    }
+
+    /**
+     * CAS C (D-116) root-cause guard — the bug this whole lot exists to fix: a stale
+     * Modification-mode session targeting a version a concurrent redeploy has since
+     * archived must be refused outright, never silently swallow a new mission into an
+     * invisible ARCHIVED version.
+     */
+    public function test_apply_modifications_on_archived_version_is_refused_and_mutates_nothing(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+        $existing = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $instr);
+        $version->setStatus(PlanningVersionStatus::ARCHIVED);
+        $this->em->flush();
+
+        $response = $this->postJson(
+            $client, $token,
+            '/api/planning/versions/' . $version->getId() . '/apply-modifications',
+            ['lines' => [
+                $this->lineFor($existing, ['instrumentistId' => null, 'status' => 'UNCOVERED']),
+                $this->newLineFor($site, $this->createUser('ROLE_SURGEON'), null),
+            ]],
+        );
+
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame('PLANNING_VERSION_NOT_ACTIVE', $body['error']['code'], json_encode($body));
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $existing->getId());
+        self::assertSame($instr->getId(), $reloaded->getInstrumentist()?->getId(), 'the existing mission must not have been touched');
+        self::assertSame(MissionStatus::ASSIGNED, $reloaded->getStatus());
     }
 
     // ── Reassignment ──────────────────────────────────────────────────────────
