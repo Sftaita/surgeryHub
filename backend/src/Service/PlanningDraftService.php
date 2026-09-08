@@ -2,7 +2,17 @@
 
 namespace App\Service;
 
+use App\Entity\AuditEvent;
+use App\Entity\EncodingAnomalyReport;
+use App\Entity\FinancialCalculation;
+use App\Entity\FirmInvoiceLine;
+use App\Entity\InstrumentistStatementLine;
 use App\Entity\Mission;
+use App\Entity\MissingMaterialReport;
+use App\Entity\MissionExecutionDispute;
+use App\Entity\MissionInterventionDraft;
+use App\Entity\NotificationEvent;
+use App\Entity\PlanningAlert;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\MissionStatus;
@@ -192,6 +202,49 @@ final class PlanningDraftService
     }
 
     /**
+     * Entities that are purely derived from a Mission's existence (never independently
+     * meaningful once that Mission is gone) and are NOT already covered by an
+     * orphanRemoval=true collection on Mission itself — so Doctrine's own cascade-on-
+     * remove() never reaches them, and their FK to mission is a plain RESTRICT (no
+     * ON DELETE clause) at the DB level. Found by a full audit of every FK referencing
+     * `mission` (2026-09-08, prompted by a real 500 on planning_alert in production —
+     * see docs/decisions.md D-115 errata). Explicitly cleaned up here, scoped to exactly
+     * this version's own missions — never a row belonging to a mission outside this
+     * version, and never the Absence/whatever else *caused* the row (e.g. a
+     * PlanningAlert's source Absence is untouched; only the alert row itself, which is
+     * intrinsically mission-scoped, is removed).
+     *
+     * @var list<class-string>
+     */
+    private const CLEANUP_ON_MISSION_DELETE = [
+        PlanningAlert::class,
+        AuditEvent::class,
+        NotificationEvent::class,
+    ];
+
+    /**
+     * Entities that require a Mission to have gone through a post-deploy/post-encoding
+     * lifecycle stage (claimed+encoded+validated+invoiced, or disputed after encoding) —
+     * structurally impossible on a Mission that has never left DRAFT. Their presence
+     * would mean this "draft" isn't actually untouched, so deletion is refused outright
+     * (never silently force-deleted — some of these are financial/audit-adjacent records
+     * explicitly marked non-cascading elsewhere, e.g. FinancialCalculation/
+     * MissionInterventionDraft both have orphanRemoval=false on Mission by deliberate
+     * design). Same audit as CLEANUP_ON_MISSION_DELETE above.
+     *
+     * @var list<class-string>
+     */
+    private const PROTECTED_IF_MISSION_TOUCHED = [
+        MissingMaterialReport::class,
+        MissionExecutionDispute::class,
+        EncodingAnomalyReport::class,
+        FirmInvoiceLine::class,
+        InstrumentistStatementLine::class,
+        FinancialCalculation::class,
+        MissionInterventionDraft::class,
+    ];
+
+    /**
      * Restores the pre-D-079 DRAFT-delete semantics (removed as an orphaned V1-only route
      * in commit 570a551, "retire Planning V1", without a V2 replacement — see
      * docs/decisions.md D-115): refuses outright if the version itself isn't DRAFT, or if
@@ -199,7 +252,9 @@ final class PlanningDraftService
      * version is never a "simple brouillon" — the manager must resolve that state
      * manually, this is not the place to silently reconcile it). Only ever removes DRAFT
      * missions and the version itself — never a SurgeonSchedulePost, never a published
-     * Mission belonging to any other version.
+     * Mission belonging to any other version, never the Absence behind a cleaned-up
+     * PlanningAlert. Whole operation is one atomic transaction — any failure rolls back
+     * everything, never a partial deletion.
      */
     public function delete(PlanningVersion $version): void
     {
@@ -210,7 +265,8 @@ final class PlanningDraftService
             ));
         }
 
-        foreach ($version->getMissions() as $mission) {
+        $missions = $version->getMissions();
+        foreach ($missions as $mission) {
             if ($mission->getStatus() !== MissionStatus::DRAFT) {
                 throw new PlanningVersionNotDraftException(
                     'This planning version contains published missions and cannot be deleted as a draft.',
@@ -218,11 +274,48 @@ final class PlanningDraftService
             }
         }
 
-        foreach ($version->getMissions() as $mission) {
-            $this->em->remove($mission);
+        $missionIds = array_map(static fn (Mission $m) => $m->getId(), $missions->toArray());
+
+        if ($missionIds !== []) {
+            $this->assertNoProtectedArtifacts($missionIds);
         }
-        $this->em->remove($version);
-        $this->em->flush();
+
+        $this->em->wrapInTransaction(function () use ($version, $missions, $missionIds): void {
+            foreach (self::CLEANUP_ON_MISSION_DELETE as $entityClass) {
+                if ($missionIds === []) {
+                    break;
+                }
+                $this->em->createQuery(sprintf('DELETE FROM %s e WHERE e.mission IN (:ids)', $entityClass))
+                    ->setParameter('ids', $missionIds)
+                    ->execute();
+            }
+
+            foreach ($missions as $mission) {
+                $this->em->remove($mission);
+            }
+            $this->em->remove($version);
+            $this->em->flush();
+        });
+    }
+
+    /**
+     * @param list<int> $missionIds
+     */
+    private function assertNoProtectedArtifacts(array $missionIds): void
+    {
+        foreach (self::PROTECTED_IF_MISSION_TOUCHED as $entityClass) {
+            $count = (int) $this->em->createQuery(sprintf('SELECT COUNT(e) FROM %s e WHERE e.mission IN (:ids)', $entityClass))
+                ->setParameter('ids', $missionIds)
+                ->getSingleScalarResult();
+
+            if ($count > 0) {
+                throw new PlanningVersionNotDraftException(sprintf(
+                    'This planning version has %d %s record(s) referencing its missions — a mission that reached this stage should never still be DRAFT, and cannot be deleted as a draft.',
+                    $count,
+                    (new \ReflectionClass($entityClass))->getShortName(),
+                ));
+            }
+        }
     }
 
     private function assertDraft(PlanningVersion $version): void

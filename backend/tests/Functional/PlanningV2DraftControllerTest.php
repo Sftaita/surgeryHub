@@ -6,6 +6,7 @@ use App\Entity\Absence;
 use App\Entity\AuditEvent;
 use App\Entity\Hospital;
 use App\Entity\Mission;
+use App\Entity\PlanningAlert;
 use App\Entity\PlanningVersion;
 use App\Entity\RecurrenceRule;
 use App\Entity\ShiftPeriodConfig;
@@ -37,7 +38,7 @@ final class PlanningV2DraftControllerTest extends WebTestCase
     private EntityManagerInterface $em;
     private array $createdIds = [
         'versions' => [], 'missions' => [], 'posts' => [], 'shiftPeriods' => [],
-        'users' => [], 'sites' => [], 'absences' => [],
+        'users' => [], 'sites' => [], 'absences' => [], 'alerts' => [],
     ];
 
     protected function setUp(): void
@@ -54,9 +55,20 @@ final class PlanningV2DraftControllerTest extends WebTestCase
                 if ($e !== null) { $this->em->remove($e); }
             }
             $this->em->flush();
+            // Defensive only — the delete() call under test is expected to have already
+            // removed these itself; this just guards against a failed assertion leaving
+            // orphaned rows behind for the next test run.
+            foreach ($this->createdIds['alerts'] as $id) {
+                $e = $this->em->find(PlanningAlert::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
             foreach ($this->createdIds['missions'] as $id) {
                 foreach ($this->em->getRepository(AuditEvent::class)->findBy(['mission' => $id]) as $evt) {
                     $this->em->remove($evt);
+                }
+                foreach ($this->em->getRepository(PlanningAlert::class)->findBy(['mission' => $id]) as $alert) {
+                    $this->em->remove($alert);
                 }
             }
             $this->em->flush();
@@ -610,5 +622,212 @@ final class PlanningV2DraftControllerTest extends WebTestCase
 
         $originalMission = $this->em->find(Mission::class, $missionId);
         self::assertSame($instr->getId(), $originalMission->getInstrumentist()->getId(), 'the original mission must not be silently touched');
+    }
+
+    // ── Regression — real prod 500 (2026-09-08): PlanningAlert FK blocked delete() ───
+
+    /**
+     * Reproduces exactly the scenario that failed in production: a draft with an
+     * absence-triggered PlanningAlert on one of its own missions. Before the fix,
+     * delete() removed the Mission first and MySQL rejected it (FK_PA_MISSION,
+     * ON DELETE RESTRICT). The Absence itself must survive — it's an independent
+     * business record, never touched by draft deletion.
+     */
+    #[WithoutErrorHandler]
+    public function test_delete_draft_cleans_up_planning_alert_and_preserves_absence(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site, singleOccurrence: true);
+
+        ['versionId' => $versionId, 'missionId' => $missionId] = $this->generateDraft($client, $token, $site, $surgeon);
+
+        // Real HTTP call, not a direct entity persist: AbsenceImpactService (which raises
+        // the PlanningAlert) is wired into AbsenceController::create(), not onto the
+        // Absence entity's lifecycle — the exact reproduction of the real prod failure
+        // requires going through the actual endpoint, same as the live QA session did.
+        $absenceResponse = $this->postJson($client, $token, '/api/absences', [
+            'userId' => $surgeon->getId(),
+            'dateStart' => $this->firstMondayOfTestMonth()->format('Y-m-d'),
+            'dateEnd' => $this->firstMondayOfTestMonth()->format('Y-m-d'),
+            'reason' => 'CAS D regression test',
+        ]);
+        self::assertSame(Response::HTTP_CREATED, $absenceResponse->getStatusCode(), (string) $absenceResponse->getContent());
+        $absenceId = $this->json($absenceResponse)['id'];
+        $this->createdIds['absences'][] = $absenceId;
+
+        // AbsenceImpactService raises a SURGEON_ABSENCE PlanningAlert against the DRAFT
+        // mission — confirmed present before attempting the delete (proves this test
+        // reproduces the real failure mode, not a no-op).
+        $this->em->clear();
+        $alerts = $this->em->getRepository(PlanningAlert::class)->findBy(['mission' => $missionId]);
+        self::assertCount(1, $alerts, 'setup must reproduce the real prod condition: exactly one alert on the draft mission');
+        $alertId = $alerts[0]->getId();
+        $this->createdIds['alerts'][] = $alertId;
+
+        $response = $this->deleteJson($client, $token, "/api/planning/versions/{$versionId}");
+        self::assertSame(Response::HTTP_NO_CONTENT, $response->getStatusCode(), (string) $response->getContent());
+
+        $this->em->clear();
+        self::assertNull($this->em->find(PlanningVersion::class, $versionId), 'version must be deleted');
+        self::assertNull($this->em->find(Mission::class, $missionId), 'mission must be deleted');
+        self::assertNull($this->em->find(PlanningAlert::class, $alertId), 'the alert on the deleted mission must be cleaned up');
+        self::assertNotNull($this->em->find(Absence::class, $absenceId), 'the source Absence is independent business data — must survive draft deletion');
+
+        // Bookkeeping: already gone, don't try to remove again in tearDown.
+        $this->createdIds['versions'] = array_diff($this->createdIds['versions'], [$versionId]);
+        $this->createdIds['missions'] = array_diff($this->createdIds['missions'], [$missionId]);
+        $this->createdIds['alerts']   = array_diff($this->createdIds['alerts'], [$alertId]);
+
+        // Mois à nouveau générable.
+        $again = $this->postJson($client, $token, '/api/planning/v2/generate', [
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+        ]);
+        self::assertSame(Response::HTTP_OK, $again->getStatusCode(), (string) $again->getContent());
+        $againBody = $this->json($again);
+        $this->createdIds['versions'][] = $againBody['versionId'];
+        foreach ($this->em->createQueryBuilder()->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->setParameter('v', $againBody['versionId'])
+            ->getQuery()->getResult() as $m
+        ) {
+            $this->createdIds['missions'][] = $m->getId();
+        }
+    }
+
+    /**
+     * Same regression, but with several missions and several alerts — guards against a
+     * fix that only happens to work for a single row (e.g. an off-by-one in a loop, or a
+     * query scoped to the wrong mission).
+     */
+    #[WithoutErrorHandler]
+    public function test_delete_draft_cleans_up_multiple_missions_and_alerts(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $surgeonB = $this->makeUser('ROLE_SURGEON');
+        $site     = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeonA, $site, singleOccurrence: true);
+        $this->makePost($surgeonB, $site, singleOccurrence: true);
+
+        $response = $this->postJson($client, $token, '/api/planning/v2/generate', [
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $versionId = $this->json($response)['versionId'];
+        $this->createdIds['versions'][] = $versionId;
+
+        $this->em->clear();
+        $missions = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->setParameter('v', $versionId)
+            ->getQuery()->getResult();
+        self::assertCount(2, $missions);
+        $missionIds = [];
+        foreach ($missions as $m) {
+            $missionIds[] = $m->getId();
+            $this->createdIds['missions'][] = $m->getId();
+        }
+        $surgeonA = $this->em->find(User::class, $surgeonA->getId());
+        $surgeonB = $this->em->find(User::class, $surgeonB->getId());
+
+        // Both surgeons absent on the same occurrence date — two independent alerts on
+        // two independent missions of the same draft. Real HTTP call (not a direct
+        // entity persist): AbsenceImpactService is wired into AbsenceController::create().
+        foreach ([$surgeonA->getId(), $surgeonB->getId()] as $surgeonId) {
+            $absenceResponse = $this->postJson($client, $token, '/api/absences', [
+                'userId' => $surgeonId,
+                'dateStart' => $this->firstMondayOfTestMonth()->format('Y-m-d'),
+                'dateEnd' => $this->firstMondayOfTestMonth()->format('Y-m-d'),
+                'reason' => 'CAS D regression test (multi)',
+            ]);
+            self::assertSame(Response::HTTP_CREATED, $absenceResponse->getStatusCode(), (string) $absenceResponse->getContent());
+            $this->createdIds['absences'][] = $this->json($absenceResponse)['id'];
+        }
+
+        $this->em->clear();
+        $alerts = $this->em->createQueryBuilder()
+            ->select('a')->from(PlanningAlert::class, 'a')
+            ->where('a.mission IN (:ids)')->setParameter('ids', $missionIds)
+            ->getQuery()->getResult();
+        self::assertCount(2, $alerts, 'setup must produce one alert per mission');
+        $alertIds = array_map(fn (PlanningAlert $a) => $a->getId(), $alerts);
+        foreach ($alertIds as $id) { $this->createdIds['alerts'][] = $id; }
+
+        $response = $this->deleteJson($client, $token, "/api/planning/versions/{$versionId}");
+        self::assertSame(Response::HTTP_NO_CONTENT, $response->getStatusCode(), (string) $response->getContent());
+
+        $this->em->clear();
+        self::assertNull($this->em->find(PlanningVersion::class, $versionId));
+        foreach ($missionIds as $id) {
+            self::assertNull($this->em->find(Mission::class, $id), "mission {$id} must be deleted");
+        }
+        foreach ($alertIds as $id) {
+            self::assertNull($this->em->find(PlanningAlert::class, $id), "alert {$id} must be deleted");
+        }
+        self::assertSame(2, (int) $this->em->createQueryBuilder()
+            ->select('COUNT(a.id)')->from(Absence::class, 'a')
+            ->where('a.id IN (:ids)')->setParameter('ids', $this->createdIds['absences'])
+            ->getQuery()->getSingleScalarResult(), 'both source Absences must survive');
+
+        $this->createdIds['versions'] = array_diff($this->createdIds['versions'], [$versionId]);
+        $this->createdIds['missions'] = array_diff($this->createdIds['missions'], $missionIds);
+        $this->createdIds['alerts']   = array_diff($this->createdIds['alerts'], $alertIds);
+    }
+
+    /**
+     * The other side of the audit: a Mission that reached a post-deploy/post-encoding
+     * stage (here, a FinancialCalculation — representative of the whole
+     * PROTECTED_IF_MISSION_TOUCHED family; same code path handles the other six) must
+     * never be silently force-deleted, and must never surface as a raw 500 either — a
+     * clean 409 up front, before any DELETE statement runs. FinancialCalculation is
+     * structurally impossible on a real DRAFT mission through any legitimate flow, so
+     * this is deliberately constructed by direct persistence to simulate the invariant
+     * violation and prove the guard, not a realistic user scenario.
+     */
+    #[WithoutErrorHandler]
+    public function test_delete_draft_refused_when_a_protected_financial_record_exists(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site, singleOccurrence: true);
+
+        ['versionId' => $versionId, 'missionId' => $missionId] = $this->generateDraft($client, $token, $site, $surgeon);
+
+        $mission = $this->em->find(Mission::class, $missionId);
+        $calc = new \App\Entity\FinancialCalculation();
+        $calc->setMission($mission);
+        $calc->setEffectiveAt(new \DateTimeImmutable('2026-01-01'));
+        $calc->setCalculatedAt(new \DateTimeImmutable());
+        $this->em->persist($calc);
+        $this->em->flush();
+        $calcId = $calc->getId();
+
+        $response = $this->deleteJson($client, $token, "/api/planning/versions/{$versionId}");
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode(), (string) $response->getContent());
+        self::assertSame('PLANNING_VERSION_NOT_DRAFT', $body['error']['code']);
+        self::assertStringContainsString('FinancialCalculation', $body['error']['message']);
+
+        $this->em->clear();
+        self::assertNotNull($this->em->find(PlanningVersion::class, $versionId), 'nothing must be deleted when the guard refuses');
+        self::assertNotNull($this->em->find(Mission::class, $missionId));
+
+        $calc = $this->em->find(\App\Entity\FinancialCalculation::class, $calcId);
+        if ($calc !== null) { $this->em->remove($calc); $this->em->flush(); }
     }
 }
