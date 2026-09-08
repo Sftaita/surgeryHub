@@ -638,8 +638,13 @@ function ForfaitDialog({
   // le "if (!offering) return null" ci-dessous) pour respecter les règles des Hooks :
   // offering!.id est sûr, ce dialog n'est jamais rendu ouvert sans offering (voir appelant).
   const toggleModeMutation = useMutation({
-    mutationFn: (toChoice: boolean) =>
-      toChoice ? upsertChoiceGroup(firmId, offering!.id, "Question à définir") : deactivateChoiceGroup(firmId, offering!.id),
+    mutationFn: async (toChoice: boolean): Promise<void> => {
+      if (toChoice) {
+        await upsertChoiceGroup(firmId, offering!.id, "Question à définir");
+      } else {
+        await deactivateChoiceGroup(firmId, offering!.id);
+      }
+    },
     onSuccess: () => invalidateOfferings(),
     onError: (e) => toast.error(extractError(e)),
   });
