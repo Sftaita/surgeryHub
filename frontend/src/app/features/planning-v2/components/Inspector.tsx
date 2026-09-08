@@ -42,7 +42,12 @@ interface InspectorProps {
   onCancelMission: () => void;
   onReleaseMission: () => void;
   onReset: () => void;
-  // ── Create-new-mission mode (Modification only) ──────────────────────────
+  // ── Create-new-mission mode (Modification, or a reopened DRAFT — CAS C) ──
+  /** Whether "Ajouter" itself should be offered — Modification (ACTIVE) or a reopened
+   *  DRAFT, never plain Génération/Preview. Deliberately separate from `isModification`,
+   *  which stays strictly "this line belongs to an ACTIVE version" for every other
+   *  Modification-only affordance below (schedule fields, "Remettre au pool", etc.). */
+  canAddMission: boolean;
   isCreating: boolean;
   surgeonOptions: SearchableOption[];
   siteOptions: SearchableOption[];
@@ -56,7 +61,7 @@ const MISSION_TYPE_LABEL: Record<string, string> = { BLOCK: "Bloc opératoire", 
 export function Inspector({
   line, isDirty, isModification, instrumentistOptions, freedInstrumentists, absencesLoading, accent,
   onInstrumentistChange, onScheduleChange, onCancelMission, onReleaseMission, onReset,
-  isCreating, surgeonOptions, siteOptions, onStartCreate, onSubmitCreate, onCancelCreate,
+  canAddMission, isCreating, surgeonOptions, siteOptions, onStartCreate, onSubmitCreate, onCancelCreate,
 }: InspectorProps) {
   const [draft, setDraft] = React.useState<NewMissionDraft>({
     date: "", startTime: "08:00", endTime: "13:00", missionType: "BLOCK",
@@ -104,7 +109,7 @@ export function Inspector({
         <Typography sx={{ fontSize: 12.5, fontWeight: 700, color: planningV2Colors.textTitle }}>
           {isCreating ? "Nouvelle mission" : "Détail"}
         </Typography>
-        {isModification && !isCreating && (
+        {canAddMission && !isCreating && (
           <Button
             size="small" startIcon={<AddCircleOutlineOutlinedIcon sx={{ fontSize: 15 }} />}
             onClick={onStartCreate}

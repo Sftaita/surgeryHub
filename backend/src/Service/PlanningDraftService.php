@@ -2,10 +2,12 @@
 
 namespace App\Service;
 
+use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Entity\AuditEvent;
 use App\Entity\EncodingAnomalyReport;
 use App\Entity\FinancialCalculation;
 use App\Entity\FirmInvoiceLine;
+use App\Entity\Hospital;
 use App\Entity\InstrumentistStatementLine;
 use App\Entity\Mission;
 use App\Entity\MissingMaterialReport;
@@ -16,7 +18,9 @@ use App\Entity\PlanningAlert;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\MissionStatus;
+use App\Enum\MissionType;
 use App\Enum\PlanningVersionStatus;
+use App\Enum\SchedulePrecision;
 use App\Exception\PlanningVersionNotDraftException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
@@ -57,6 +61,7 @@ final class PlanningDraftService
         $currentHash = $this->generator->computePreviewVersion($month, $siteId, null);
 
         $this->normalizeForDraftEditing($lines);
+        $this->appendAdHocMissions($version, $lines);
 
         return [
             'lines'          => $lines,
@@ -178,10 +183,19 @@ final class PlanningDraftService
                 continue;
             }
 
-            // No existing mission for this occurrence yet — e.g. a SurgeonSchedulePost
-            // added to the scope after this draft's generate() ran. Same construction as
-            // a brand-new generate() line, same eligibility guard, one shared helper.
-            $mission = $this->generator->createMissionFromLine($line, $version, $actor, $rejected);
+            // Two distinct "no existingMissionId yet" origins, told apart by postId's sign —
+            // the same convention the editor already uses for a Modification-mode manual
+            // add (GeneratePlanningTab.tsx's nextDraftIdRef, negative, decrementing):
+            //   > 0  — a real SurgeonSchedulePost added to the scope after this draft's
+            //          generate() ran. Same construction as a brand-new generate() line.
+            //   <= 0 — CAS C (D-116): "Ajouter" used on a reopened draft. A genuinely
+            //          one-off addition — never create a SurgeonSchedulePost for it (per
+            //          CAS C rule), so createMissionFromLine() (Post-required) cannot be
+            //          reused here.
+            $postId   = $line['postId'] ?? null;
+            $mission  = ($postId !== null && $postId > 0)
+                ? $this->generator->createMissionFromLine($line, $version, $actor, $rejected)
+                : $this->createAdHocDraftMission($version, $line, $actor, $rejected);
             if ($mission === null) {
                 $skipped++;
                 continue;
@@ -346,6 +360,112 @@ final class PlanningDraftService
             );
         }
         return $site->getId();
+    }
+
+    /**
+     * CAS C (D-116) — "Ajouter" used on a reopened DRAFT: a genuinely one-off addition,
+     * never tied to a SurgeonSchedulePost (that rule is explicit — never invent a Post for
+     * a punctual add). Mirrors MissionPostDeployService::createPostDeploy()'s field
+     * construction (same Mission, same shape of inputs) but deliberately never calls that
+     * service: the mission must stay DRAFT here, never ASSIGNED/OPEN, and this is pre-
+     * publication — no AuditEvent, no MissionLifecycleChangedMessage (same "draft
+     * mutations aren't audited business events" convention generate()/update() already
+     * follow for every other draft line).
+     */
+    private function createAdHocDraftMission(PlanningVersion $version, array $line, User $actor, array &$rejected): ?Mission
+    {
+        $site = $this->em->find(Hospital::class, $line['siteId'] ?? null);
+        if ($site === null) {
+            return null;
+        }
+        $surgeon = $this->em->find(User::class, $line['surgeonId'] ?? null);
+        if ($surgeon === null) {
+            return null;
+        }
+        $type = MissionType::tryFrom((string) ($line['missionType'] ?? ''));
+        if ($type === null) {
+            return null;
+        }
+
+        $instrumentist = ($line['instrumentistId'] ?? null) !== null
+            ? $this->em->find(User::class, $line['instrumentistId'])
+            : null;
+
+        // Same Brussels wall-clock construction as PlanningGeneratorServiceV2::generate()/
+        // createMissionFromLine() — see D-066.
+        $day = new \DateTimeImmutable($line['date'], new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE));
+        [$h1, $m1] = explode(':', $line['startTime']);
+        [$h2, $m2] = explode(':', $line['endTime']);
+
+        $mission = new Mission();
+        $mission->setStatus(MissionStatus::DRAFT);
+        $mission->setType($type);
+        $mission->setSurgeon($surgeon);
+        $mission->setSite($site);
+        $mission->setStartAt($day->setTime((int) $h1, (int) $m1));
+        $mission->setEndAt($day->setTime((int) $h2, (int) $m2));
+        $mission->setSchedulePrecision(SchedulePrecision::EXACT);
+        $mission->setCreatedBy($actor);
+        $mission->setPlanningVersion($version);
+        $mission->setInstrumentist($this->guardInstrumentist($mission, $instrumentist, $rejected));
+
+        return $mission;
+    }
+
+    /**
+     * CAS C (D-116) — preview()'s line set is built by iterating SurgeonSchedulePost
+     * occurrences (see PlanningGeneratorServiceV2::preview()); a one-off addition made
+     * via createAdHocDraftMission() has no Post to be re-derived from, so it would
+     * silently vanish from every subsequent reopen() — appearing to have been lost —
+     * without this step. Appends one line per DRAFT mission of this version that no
+     * preview() line already claims (existingMissionId); never touches or duplicates a
+     * Post-backed line.
+     *
+     * @param array<int, array<string, mixed>> &$lines
+     */
+    private function appendAdHocMissions(PlanningVersion $version, array &$lines): void
+    {
+        $claimedIds = array_flip(array_filter(array_column($lines, 'existingMissionId')));
+
+        foreach ($version->getMissions() as $mission) {
+            if ($mission->getStatus() !== MissionStatus::DRAFT || isset($claimedIds[$mission->getId()])) {
+                continue;
+            }
+
+            $instrumentist = $mission->getInstrumentist();
+            $lines[] = [
+                'date'                      => $mission->getStartAt()->format('Y-m-d'),
+                // 0 = "no real Post", the same sentinel the editor's own negative-decrementing
+                // convention treats as "not a real post" (postId <= 0) — PreviewLineResponse's
+                // frozen shape (docs/planning-v2-architecture-freeze.md §B) requires a real int.
+                'postId'                    => 0,
+                'surgeonId'                 => $mission->getSurgeon()?->getId(),
+                'surgeonName'               => $this->displayName($mission->getSurgeon()),
+                'missionType'               => $mission->getType()->value,
+                'startTime'                 => $mission->getStartAt()->format('H:i'),
+                'endTime'                   => $mission->getEndAt()->format('H:i'),
+                'siteId'                    => $mission->getSite()?->getId(),
+                'siteName'                  => $mission->getSite()?->getName(),
+                'instrumentistId'           => $instrumentist?->getId(),
+                'instrumentistName'         => $this->displayName($instrumentist),
+                'status'                    => $instrumentist !== null ? 'COVERED' : 'UNCOVERED',
+                'existingMissionId'         => $mission->getId(),
+                'existingInstrumentistId'   => $instrumentist?->getId(),
+                'existingInstrumentistName' => $instrumentist !== null ? $this->displayName($instrumentist) : null,
+                'freedFrom'                 => false,
+                'surgeonPhotoPath'          => $mission->getSurgeon()?->getProfilePicturePath(),
+                'instrumentistPhotoPath'    => $instrumentist?->getProfilePicturePath(),
+            ];
+        }
+    }
+
+    private function displayName(?User $user): string
+    {
+        if ($user === null) {
+            return '';
+        }
+        $name = trim(($user->getFirstname() ?? '') . ' ' . ($user->getLastname() ?? ''));
+        return $name !== '' ? $name : ($user->getEmail() ?? '');
     }
 
     private function guardInstrumentist(Mission $mission, ?User $candidate, array &$rejected): ?User

@@ -12,6 +12,7 @@ use App\Entity\RecurrenceRule;
 use App\Entity\ShiftPeriodConfig;
 use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PlanningVersionStatus;
@@ -227,6 +228,33 @@ final class PlanningV2DraftControllerTest extends WebTestCase
     private function json(Response $response): array
     {
         return json_decode((string) $response->getContent(), true) ?? [];
+    }
+
+    /**
+     * CAS C (D-116) — a brand-new line as sent by "Ajouter" on a reopened DRAFT: never a
+     * real Post (postId <= 0, per the editor's own negative-decrementing convention for a
+     * manual add — see GeneratePlanningTab.tsx's nextDraftIdRef), no existingMissionId.
+     */
+    private function adHocLineFor(Hospital $site, User $surgeon, ?User $instrumentist, string $date): array
+    {
+        return [
+            'date'                     => $date,
+            'postId'                   => -1,
+            'surgeonId'                => $surgeon->getId(),
+            'surgeonName'              => '',
+            'missionType'              => MissionType::BLOCK->value,
+            'startTime'                => '08:00',
+            'endTime'                  => '13:00',
+            'siteId'                   => $site->getId(),
+            'siteName'                 => '',
+            'instrumentistId'          => $instrumentist?->getId(),
+            'instrumentistName'        => null,
+            'status'                   => $instrumentist !== null ? 'COVERED' : 'UNCOVERED',
+            'existingMissionId'        => null,
+            'existingInstrumentistId'  => null,
+            'existingInstrumentistName'=> null,
+            'freedFrom'                => false,
+        ];
     }
 
     /** Generates a draft for a single-surgeon/single-site scope and returns its versionId + the created Mission id. */
@@ -829,5 +857,172 @@ final class PlanningV2DraftControllerTest extends WebTestCase
 
         $calc = $this->em->find(\App\Entity\FinancialCalculation::class, $calcId);
         if ($calc !== null) { $this->em->remove($calc); $this->em->flush(); }
+    }
+
+    // ── CAS C (D-116) — "Ajouter" on a reopened DRAFT ─────────────────────────────
+    // Strictly separate handler from apply-modifications/MissionPostDeployService (see
+    // PlanningModificationControllerTest's own CAS C block for the ACTIVE-path
+    // equivalents): PlanningDraftService::createAdHocDraftMission() only, real Mission
+    // persisted with status DRAFT, never ASSIGNED/OPEN, never audited/notified.
+
+    #[WithoutErrorHandler]
+    public function test_add_mission_on_reopened_draft_with_instrumentist_creates_and_persists_draft_mission(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon1 = $this->makeUser('ROLE_SURGEON');
+        $site     = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon1, $site, singleOccurrence: true);
+
+        ['versionId' => $versionId] = $this->generateDraft($client, $token, $site, $surgeon1);
+
+        $surgeon2 = $this->makeUser('ROLE_SURGEON');
+        $instr    = $this->makeUser('ROLE_INSTRUMENTIST');
+
+        $reopen = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $lines  = $reopen['lines'];
+        $lines[] = $this->adHocLineFor($site, $surgeon2, $instr, $this->firstMondayOfTestMonth()->format('Y-m-d'));
+
+        $update = $this->json($this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => $lines]));
+        self::assertSame(1, $update['created'], json_encode($update));
+
+        $this->em->clear();
+        $mission = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->andWhere('m.surgeon = :s')
+            ->setParameter('v', $versionId)->setParameter('s', $surgeon2->getId())
+            ->getQuery()->getOneOrNullResult();
+
+        self::assertNotNull($mission, 'the ad-hoc line must be persisted as a real Mission');
+        $this->createdIds['missions'][] = $mission->getId();
+        self::assertSame(MissionStatus::DRAFT, $mission->getStatus());
+        self::assertSame($instr->getId(), $mission->getInstrumentist()?->getId());
+        self::assertSame($versionId, $mission->getPlanningVersion()?->getId());
+    }
+
+    #[WithoutErrorHandler]
+    public function test_add_mission_on_reopened_draft_without_instrumentist_creates_draft_mission_with_null_instrumentist(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon1 = $this->makeUser('ROLE_SURGEON');
+        $site     = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon1, $site, singleOccurrence: true);
+
+        ['versionId' => $versionId] = $this->generateDraft($client, $token, $site, $surgeon1);
+
+        $surgeon2 = $this->makeUser('ROLE_SURGEON');
+
+        $reopen = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $lines  = $reopen['lines'];
+        $lines[] = $this->adHocLineFor($site, $surgeon2, null, $this->firstMondayOfTestMonth()->format('Y-m-d'));
+
+        $update = $this->json($this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => $lines]));
+        self::assertSame(1, $update['created'], json_encode($update));
+
+        $this->em->clear();
+        $mission = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->andWhere('m.surgeon = :s')
+            ->setParameter('v', $versionId)->setParameter('s', $surgeon2->getId())
+            ->getQuery()->getOneOrNullResult();
+
+        self::assertNotNull($mission);
+        $this->createdIds['missions'][] = $mission->getId();
+        self::assertSame(MissionStatus::DRAFT, $mission->getStatus());
+        self::assertNull($mission->getInstrumentist());
+    }
+
+    /**
+     * "Quitter/réouvrir → ligne toujours présente" — reopen() re-derives its lines from
+     * preview() (Post-occurrence iteration only), which would otherwise silently drop an
+     * ad-hoc mission with no backing Post. Regression-guards PlanningDraftService::
+     * appendAdHocMissions(), added specifically to keep this line visible.
+     */
+    #[WithoutErrorHandler]
+    public function test_added_draft_mission_survives_reopen(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon1 = $this->makeUser('ROLE_SURGEON');
+        $site     = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon1, $site, singleOccurrence: true);
+
+        ['versionId' => $versionId] = $this->generateDraft($client, $token, $site, $surgeon1);
+
+        $surgeon2 = $this->makeUser('ROLE_SURGEON');
+        $instr    = $this->makeUser('ROLE_INSTRUMENTIST');
+
+        $reopen1 = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $lines   = $reopen1['lines'];
+        $lines[] = $this->adHocLineFor($site, $surgeon2, $instr, $this->firstMondayOfTestMonth()->format('Y-m-d'));
+        $this->json($this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => $lines]));
+
+        $this->em->clear();
+        $mission = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->andWhere('m.surgeon = :s')
+            ->setParameter('v', $versionId)->setParameter('s', $surgeon2->getId())
+            ->getQuery()->getOneOrNullResult();
+        $this->createdIds['missions'][] = $mission->getId();
+
+        // "Quitter" (nothing else to do — the mission is already persisted) then "réouvrir".
+        $reopen2 = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $line = current(array_filter($reopen2['lines'], fn ($l) => $l['existingMissionId'] === $mission->getId()));
+        self::assertNotFalse($line, 'the ad-hoc line must still be present after leaving and reopening the draft');
+        self::assertSame($instr->getId(), $line['instrumentistId']);
+        self::assertSame($surgeon2->getId(), $line['surgeonId']);
+    }
+
+    /**
+     * No confusion between the two CAS C handlers: a DRAFT-context add must never reach
+     * MissionPostDeployService — the surest proof is that it never leaves DRAFT status
+     * (only createPostDeploy() sets ASSIGNED/OPEN) and never gets the post-deploy audit
+     * event type, which createAdHocDraftMission() deliberately never writes.
+     */
+    #[WithoutErrorHandler]
+    public function test_add_mission_on_reopened_draft_never_triggers_post_deploy_audit(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon1 = $this->makeUser('ROLE_SURGEON');
+        $site     = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon1, $site, singleOccurrence: true);
+
+        ['versionId' => $versionId] = $this->generateDraft($client, $token, $site, $surgeon1);
+
+        $surgeon2 = $this->makeUser('ROLE_SURGEON');
+        $instr    = $this->makeUser('ROLE_INSTRUMENTIST');
+
+        $reopen = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $lines  = $reopen['lines'];
+        $lines[] = $this->adHocLineFor($site, $surgeon2, $instr, $this->firstMondayOfTestMonth()->format('Y-m-d'));
+        $this->json($this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => $lines]));
+
+        $this->em->clear();
+        $mission = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->andWhere('m.surgeon = :s')
+            ->setParameter('v', $versionId)->setParameter('s', $surgeon2->getId())
+            ->getQuery()->getOneOrNullResult();
+        $this->createdIds['missions'][] = $mission->getId();
+
+        self::assertSame(MissionStatus::DRAFT, $mission->getStatus(), 'a DRAFT-context add must never become ASSIGNED/OPEN via MissionPostDeployService');
+
+        $events = $this->em->getRepository(AuditEvent::class)->findBy(['mission' => $mission->getId()]);
+        $types  = array_map(static fn (AuditEvent $e) => $e->getEventType(), $events);
+        self::assertNotContains(AuditEventType::MISSION_ADDED_POST_DEPLOY, $types, 'a DRAFT-context add must never write the post-deploy audit event');
     }
 }

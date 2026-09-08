@@ -283,6 +283,8 @@ export function GeneratePlanningTab() {
       setEditedLines(new Map());
       setSelectedKeys(new Set());
       setSelectedLineKey(null);
+      setNewLines([]);
+      setIsCreatingMission(false);
       setDraftVersionId(data.version.id);
       setDraftDivergent(data.divergent);
       const d = new Date(data.version.periodStart);
@@ -306,6 +308,11 @@ export function GeneratePlanningTab() {
         created: result.created, updated: result.updated, skipped: result.skipped,
       });
       setEditedLines(new Map());
+      // CAS C — staged additions just became real, persisted Missions (with a real
+      // existingMissionId on the next reopen). Clearing here prevents resending the same
+      // negative-postId line (and re-creating a duplicate Mission) on a later save.
+      setNewLines([]);
+      setIsCreatingMission(false);
       if (result.rejectedAssignments.length > 0) {
         const detail = result.rejectedAssignments
           .map((r) => `${r.requestedInstrumentistName} — ${r.date ?? "date inconnue"} (${r.reasons.map(reasonLabel).join(", ")})`)
@@ -518,9 +525,14 @@ export function GeneratePlanningTab() {
 
   // Génération sources lines from the backend Preview; Modification sources them from the real
   // Missions of the PlanningVersion being edited, plus any not-yet-applied local draft creations.
-  const lines: PreviewLineV2[] = isModification
-    ? [...(modificationMissionsQuery.data ?? []), ...newLines]
-    : (preview?.lines ?? []);
+  // CAS C — newLines (staged via Inspector's "Ajouter") must flow into whichever base the
+  // current mode actually sources from. Only ever populated when canAddMission was true at
+  // staging time (Modification or a reopened draft) — pure Génération never shows the
+  // button, so this is a no-op there regardless.
+  const lines: PreviewLineV2[] = [
+    ...(isModification ? (modificationMissionsQuery.data ?? []) : (preview?.lines ?? [])),
+    ...newLines,
+  ];
 
   // Merge local edits (reassignment, schedule, cancel, release) over the base lines for display and submit.
   const effectiveLines = React.useMemo<PreviewLineV2[]>(
@@ -1573,6 +1585,7 @@ export function GeneratePlanningTab() {
           onCancelMission={() => selectedLine && handleCancelMission(selectedLine)}
           onReleaseMission={() => selectedLine && handleReleaseMission(selectedLine)}
           onReset={() => selectedLineKey && handleResetLine(selectedLineKey)}
+          canAddMission={isModification || draftVersionId !== null}
           isCreating={isCreatingMission}
           surgeonOptions={surgeonOptions}
           siteOptions={siteOptionsForCreate}

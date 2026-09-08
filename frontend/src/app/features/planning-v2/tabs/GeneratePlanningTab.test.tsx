@@ -1110,4 +1110,64 @@ describe("GeneratePlanningTab — Brouillons (CAS D, D-115)", () => {
 
     await waitFor(() => expect(planningV2Api.deletePlanningVersionDraft).toHaveBeenCalledWith(77));
   });
+
+  // ── CAS C (D-116) — "Ajouter" on a reopened DRAFT ─────────────────────────────
+  // Strictly separate handler from ACTIVE/Modification's applyModifications: a manual
+  // add on a reopened draft must flow through updateDraft only, never applyModifications
+  // (that would route it into MissionPostDeployService and give it ASSIGNED/OPEN — see
+  // PlanningV2DraftControllerTest's backend regressions for the same invariant).
+  it("'Ajouter' est disponible sur un brouillon rouvert et envoie la nouvelle ligne via updateDraft, jamais applyModifications", async () => {
+    mockHistoryWithOneDraft();
+    (planningV2Api.reopenDraft as ReturnType<typeof vi.fn>).mockResolvedValue(draftReopenResponse());
+    (planningV2Api.updateDraft as ReturnType<typeof vi.fn>).mockResolvedValue({ created: 1, updated: 1, removed: 0, skipped: 0, rejectedAssignments: [] });
+    // Shared, never-reset module-level mock — an earlier Modification-mode test in this
+    // file already called applyModifications; the "never called" assertion below must
+    // compare against the count at THIS test's start, not zero.
+    const applyModificationsCallsBefore = (planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mock.calls.length;
+    const user = userEvent.setup();
+    renderTab();
+    await selectSite(user);
+    await user.click(await screen.findByText("Ouvrir"));
+    await screen.findByText("Diane Lefebvre");
+
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+
+    const dateField = await screen.findByLabelText("Date");
+    await user.type(dateField, "2026-06-20");
+
+    // "Dr Martin" already appears as the existing mission's surgeon in the background
+    // list, so scope the click to the dropdown option (role), same convention the "Delta"
+    // site click below already uses for its own pre-existing ambiguous text.
+    const surgeonLabel = screen.getByText("Chirurgien");
+    const surgeonInput = surgeonLabel.closest("div")!.querySelector("input")!;
+    await user.click(surgeonInput);
+    // The option's accessible name also includes the avatar-initials text ("DM"), so
+    // match by regex rather than the exact visible label.
+    await user.click(await screen.findByRole("option", { name: /Dr Martin/ }));
+
+    const siteLabel = screen.getByText("Site");
+    const siteInput = siteLabel.closest("div")!.querySelector("input")!;
+    await user.click(siteInput);
+    await user.click(await screen.findByRole("option", { name: "Delta" }));
+
+    const submitButtons = screen.getAllByRole("button", { name: "Ajouter" });
+    await user.click(submitButtons[submitButtons.length - 1]);
+
+    await user.click(screen.getByRole("button", { name: "Enregistrer les modifications" }));
+
+    await waitFor(() => expect(planningV2Api.updateDraft).toHaveBeenCalled());
+    // .lastCall, not .calls[0] — an earlier test in this file already called updateDraft
+    // once (shared, never-reset module-level mock), so [0] would grab that stale call.
+    const [versionId, lines] = (planningV2Api.updateDraft as ReturnType<typeof vi.fn>).mock.lastCall!;
+    expect(versionId).toBe(77);
+    // The staged addition has no existingMissionId yet — this is what tells
+    // PlanningDraftService::update() to route it to createAdHocDraftMission(), never
+    // createMissionFromLine()/createPostDeploy() (postId <= 0, the editor's own
+    // negative-decrementing convention for a manual, non-Post add).
+    const newLine = lines.find((l: PreviewLineV2) => l.existingMissionId === null);
+    expect(newLine).toBeDefined();
+    expect(newLine.postId).toBeLessThanOrEqual(0);
+    expect(newLine.date).toBe("2026-06-20");
+    expect((planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mock.calls.length).toBe(applyModificationsCallsBefore);
+  });
 });
