@@ -228,4 +228,15 @@ enum AuditEventType: string
      * que l'audit seul suffise à retrouver la justification sans recharger l'entité.
      */
     case MATERIAL_ITEM_REQUEST_IGNORED = 'MATERIAL_ITEM_REQUEST_IGNORED';
+
+    /**
+     * BUG A (2026-09-09) — SelfAbsenceController::removeDay(). Mission-independent (uses
+     * AuditService::recordGlobal(), not record()) since removing a single day from an
+     * absence period has no one Mission to attach to — it may shrink/split/delete the
+     * Absence and affect zero, one, or several missions via the existing reaction/
+     * reconciliation services, which already have their own audit trail. This event is
+     * specifically about the absence-period edit itself: which single date was removed,
+     * and what the period looked like immediately before. No patient data in the payload.
+     */
+    case ABSENCE_DAY_REMOVED = 'ABSENCE_DAY_REMOVED';
 }

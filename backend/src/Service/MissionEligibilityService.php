@@ -158,6 +158,30 @@ class MissionEligibilityService
     }
 
     /**
+     * BUG A (2026-09-09) — same query as isAbsentOn(), but returning the actual Absence row
+     * instead of a boolean, so a caller building a structured error response (which day
+     * exactly, which absence id) never has to re-derive or duplicate this matching rule.
+     * Absence periods for one user are not expected to overlap in practice; if they somehow
+     * do, the earliest (lowest id) is returned — an arbitrary but stable and harmless choice,
+     * since it only feeds a UI message, never a business decision.
+     */
+    public function findBlockingAbsence(User $candidate, \DateTimeImmutable $startAt): ?Absence
+    {
+        $day = new \DateTimeImmutable($startAt->format('Y-m-d'));
+
+        return $this->em->createQuery(
+            'SELECT a FROM App\Entity\Absence a
+             WHERE a.user = :user
+               AND a.dateStart <= :day AND a.dateEnd >= :day
+             ORDER BY a.id ASC'
+        )
+            ->setParameter('user', $candidate)
+            ->setParameter('day', $day)
+            ->setMaxResults(1)
+            ->getOneOrNullResult();
+    }
+
+    /**
      * Q3 — overlapping active mission (cross-site, cross-PlanningVersion by construction —
      * scoped by person only, matches PlanningConflictDetectionService::findConflict()'s
      * same end-exclusive overlap rule: A.startAt < B.endAt AND A.endAt > B.startAt).

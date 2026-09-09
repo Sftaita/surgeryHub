@@ -2377,7 +2377,16 @@ A full production-readiness validation pass (real API/DB/Mailpit end-to-end test
 - `MissionClaim` is an append-only historical entity — it must never again be consulted for a business decision. `Mission.status` + `Mission.instrumentist` remain the exclusive source of truth for current state.
 - `MissionEligibilityService::findEligible()` is to progressively become mission-centric (`array<missionId, User[]>` instead of `array<siteId, User[]>`) — confirmed to require zero additional DB queries (D-036 preserved), since the per-mission eligibility check is already computed internally and simply discarded today.
 
-Implementation of the P0/P1 fixes follows these validated ADRs in a separate ticket — not yet started.
+**P0 fixed 2026-09-09 (D-117)**, surfaced independently by a real instrumentist-reported bug
+(mission re-claim after manager release) rather than by working this backlog item —
+`MissionPostDeployService::claim()`'s stale `MissionClaim::findOneBy(['mission' => $mission])`
+guard removed entirely, per the D-059 target shape above. `release()` itself needed no
+change: it never deletes/mutates `MissionClaim` rows (`MissionClaim` stayed correctly
+append-only), the guard alone was the defect. Anti-double-claim concurrency preserved via
+the existing pessimistic lock + `MissionVoter::canClaim()`. See docs/decisions.md D-117 and
+docs/architecture.md §"Responsabilités — Mission / MissionClaim / AuditEvent" for detail.
+
+P1 (`findEligible()` per-mission scoping) remains not started.
 
 ---
 

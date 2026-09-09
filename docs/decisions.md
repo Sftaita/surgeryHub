@@ -9759,3 +9759,129 @@ introduite par ce lot ; `npm run build` bloqué par cette même erreur préexist
 documentée ailleurs comme dette non liée à Planning V2).
 
 Non déployé.
+
+## D-117 — Signalement Sophie Colette : re-claim impossible après release (BUG B, P0) et absence journalière bloquant un claim (BUG A) (2026-09-09)
+
+**Statut : DONE, non commité, non déployé.**
+
+Date : 2026-09-09
+
+### Contexte
+
+Deux signalements distincts d'une même instrumentiste (Sophie Colette), tous deux
+reproduits avec preuve HTTP+DB réelle (copie de production sanitisée en dev — voir
+§ Copie prod→dev ci-dessous) avant toute correction :
+
+- **Mission de Juan Toussain (11/09)** : `POST /api/missions/{id}/claim` → 409 « Not
+  eligible to claim this mission: Absent ce jour ». Cause : `Absence` est volontairement
+  journalière (`dateStart`/`dateEnd` de type `DATE`, sans heure) — l'instrumentiste avait
+  noté « Juste le matin » en commentaire libre (sans effet structurel), et
+  `MissionEligibilityService::isAbsentOn()` bloque donc toute la journée, y compris une
+  mission l'après-midi. Refus backend correct au regard du modèle actuel — le vrai
+  problème est que l'utilisatrice n'avait aucun moyen de comprendre pourquoi, ni d'agir.
+- **Mission de Jérôme De Muylder (21/09)** : déjà relâchée manuellement par le manager
+  (`MISSION_RELEASED_TO_POOL`) avant ce chantier — `status=OPEN`, `instrumentist=NULL`.
+  Un nouveau claim sur cette même mission échouait pourtant avec 409 « Mission already
+  claimed », alors qu'elle était réellement disponible.
+
+### Décision 1 — `MissionClaim` est un historique, jamais une garde métier
+
+`MissionPostDeployService::claim()` consultait
+`MissionClaim::findOneBy(['mission' => $mission])` comme troisième garde, en plus des
+vérifications déjà suffisantes (`status === OPEN`, `instrumentist === null`, toutes deux
+relues à l'intérieur du verrou pessimiste). Or `MissionClaim` n'a plus d'index unique sur
+`mission_id` depuis `Version20260212093000` (« *replace UNIQUE index on mission_id by
+normal index* ») — le schéma autorise déjà plusieurs lignes historiques par mission,
+exactement pour ce cas (claim → release → re-claim). L'exigence métier est stricte et sans
+ambiguïté : **`MissionClaim` ne doit plus jamais être consulté pour une décision
+métier — uniquement `Mission.status`/`Mission.instrumentist` (source de vérité), toujours
+relus à l'intérieur du verrou pessimiste**. La garde a été supprimée sans aucun
+remplacement — les deux vérifications déjà présentes suffisent, et le verrou pessimiste
+reste l'unique garantie anti-double-claim (aucune régression : un second claim concurrent
+sur une mission déjà `ASSIGNED` reste refusé, désormais par `MissionVoter::canClaim()`
+avant même d'atteindre le service — 403, comportement préexistant inchangé).
+
+### Décision 2 — les absences restent journalières ; retirer un seul jour est une opération de découpage, jamais une nouvelle granularité horaire
+
+Décision explicite de **ne pas** introduire de notion matin/après-midi ni d'heure sur
+`Absence`, et de **ne jamais parser** le commentaire libre (`reason`) pour en déduire une
+règle métier. À la place : une opération dédiée, `SelfAbsenceController::removeDay()`
+(`POST /api/absences/mine/{id}/remove-day`), qui retire une date précise d'une période
+d'absence en la ramenant à l'une des trois opérations déjà connues et déjà testées :
+
+```text
+A. toute la période = ce seul jour           → suppression complète (delete)
+B. le jour est le premier de la période      → raccourcissement du début (update)
+C. le jour est le dernier de la période      → raccourcissement de la fin (update)
+D. le jour est au milieu de la période       → raccourcissement + création d'une 2e période
+```
+
+Les trois cas réutilisent **exactement** le pipeline de réaction déjà existant
+(`reactAndSync()` — `AbsenceImpactService`, `AbsenceMissionReactionService`, les deux
+services d'impact sur occurrences, `AbsenceImpactReconciliationService`, et les trois
+collaborateurs de communication) — jamais de voie parallèle qui contournerait
+`AbsenceImpactService` (§13 du brief). `delete()`/`create()` ont été factorisés en méthodes
+privées réutilisables (`deleteAbsence()`, `createAbsenceAndReact()`) sans changer leur
+comportement — comportement préexistant validé par la suite complète
+`SelfAbsenceControllerTest`/`AbsenceControllerTest` (322/322 verts, zéro régression).
+
+Autorisation : réutilise `AbsenceVoter::SELF_MANAGE` tel quel (déjà « l'instrumentiste ne
+peut agir que sur sa propre absence ») — aucune logique `if ($user->getId() === ...)`
+nouvelle dans le contrôleur.
+
+Traçabilité : un nouvel `AuditEventType::ABSENCE_DAY_REMOVED`, enregistré via
+`AuditService::recordGlobal()` (événement sans Mission associée — D-072 avait déjà ouvert
+cette voie pour les événements mission-indépendants). Payload minimal
+(`absenceId`, `removedDate`, `originalDateStart`, `originalDateEnd`) — aucune donnée
+patient.
+
+### Décision 3 — erreur de claim structurée, jamais de parsing de texte côté frontend
+
+`ConflictHttpException('Not eligible to claim this mission: ' . labels)` (texte libre,
+jamais fiable à parser côté client) remplacée par `MissionClaimIneligibleException`,
+mappée par `ApiExceptionSubscriber` sur `error.code = 'MISSION_CLAIM_INELIGIBLE'` avec
+`error.reason` (raison primaire, valeur brute de `EligibilityReason`) et, uniquement quand
+la raison est `ABSENT`, `error.absenceId`/`error.date`/`error.absenceDateStart`/
+`error.absenceDateEnd` — résolus via `MissionEligibilityService::findBlockingAbsence()`
+(nouvelle méthode publique, même requête que `isAbsentOn()`, aucune règle dupliquée).
+Le frontend (`OffersPage.tsx`) branche exclusivement sur ces champs structurés, jamais sur
+le texte du message.
+
+### UX (BUG A)
+
+Sur un claim refusé avec `reason=ABSENT`, l'écran Offres affiche une modal expliquant la
+cause et proposant, sur confirmation explicite uniquement (**jamais de retrait
+automatique**, §16 du brief), de retirer l'absence pour ce seul jour — texte adapté selon
+qu'il s'agit d'une absence d'un seul jour ou d'une période plus large. Après succès,
+rafraîchissement de `["missions"]`/`["absences"]` et invitation à recliquer sur « Prendre
+la mission » — jamais de claim enchaîné automatiquement.
+
+### Tests
+
+- `MissionLifecycleControllerTest` (+7, BUG B) : claim initial, claim concurrent (403),
+  **claim → release → re-claim par un autre instrumentiste** (RED confirmé avant
+  correction : échouait avec 409 « Mission already claimed » ; vert après), claim → release
+  → re-claim par le même instrumentiste, historique + mission `ASSIGNED` toujours refusé
+  (403, pour la vraie raison), historique + inéligibilité réelle refusé pour la vraie
+  raison (jamais « already claimed »), et l'erreur structurée complète (`reason`,
+  `absenceId`, `date`, `absenceDateStart`/`absenceDateEnd`).
+- `SelfAbsenceControllerTest` (+10, BUG A) : cas A/B/C/D, date hors période (400), absence
+  d'un autre utilisateur (403), absence inexistante (404), claim réel réussissant après
+  retrait, les autres jours de la période restent absents, événement d'audit.
+- Suite complète Mission/Claim/Eligibility : 815/816 (seul échec = flake préexistant sans
+  rapport, date de fixture désormais dans le passé). Suite complète Absence : 322/322.
+
+### Copie prod → dev (investigation, §5-§7 du brief)
+
+Dump `surgicalhub` frais (root, `--single-transaction`), transféré par `scp`, checksum
+SHA-256 vérifié après transfert, fichier temporaire supprimé du serveur immédiatement
+après. Sanitisation avant tout démarrage de l'application sur cette copie : mots de passe
+remplacés par le hash de `password` (généré via `security:hash-password`, jamais en
+clair), `refresh_tokens`/`invitation_token`/`google_id` vidés, `push_subscription` vidée.
+`MAILER_DSN` confirmé pointant exclusivement vers Mailpit local (aucun SMTP réel
+atteignable). Aucun webhook/SMS dans le schéma. Sauvegarde de la base dev locale
+pré-existante effectuée avant import. Reproduction confirmée en conditions réelles
+(connexion navigateur comme l'utilisatrice, claim réel, 409 réel) avant toute écriture de
+test ou de correctif.
+
+Non déployé.

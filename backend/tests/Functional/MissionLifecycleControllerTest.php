@@ -5,7 +5,9 @@ namespace App\Tests\Functional;
 use App\Entity\AuditEvent;
 use App\Entity\Hospital;
 use App\Entity\Mission;
+use App\Entity\MissionClaim;
 use App\Entity\User;
+use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use Doctrine\ORM\EntityManagerInterface;
@@ -135,6 +137,19 @@ final class MissionLifecycleControllerTest extends WebTestCase
             content: json_encode($body),
         );
         return $client->getResponse();
+    }
+
+    /**
+     * FREELANCER bypasses MissionEligibilityService's site-membership check (RC1-C) —
+     * lets the claim() tests below exercise real eligibility/DB round trips without also
+     * having to fixture a SiteMembership for every instrumentist.
+     */
+    private function createFreelancerInstrumentist(): User
+    {
+        $u = $this->createUser('ROLE_INSTRUMENTIST');
+        $u->setEmploymentType(EmploymentType::FREELANCER);
+        $this->em->flush();
+        return $u;
     }
 
     // ── release ───────────────────────────────────────────────────────────────
@@ -390,5 +405,247 @@ final class MissionLifecycleControllerTest extends WebTestCase
         );
 
         self::assertNotSame(500, $client->getResponse()->getStatusCode());
+    }
+
+    // ── claim (BUG B, D-115bis) ───────────────────────────────────────────────
+    //
+    // This file's own docblock has claimed to cover "the migrated claim endpoint" since
+    // Batch 15B — it never did. The only test ever written for claim() lives in
+    // MissionPostDeployServiceTest (unit), which mocks EntityManagerInterface::getRepository()
+    // entirely — MissionClaim::findOneBy() always resolved to the mock's default `null`
+    // return, so a real, persisted, historical MissionClaim row (exactly what a genuine
+    // claim→release cycle leaves behind) was never exercised. These are the first tests
+    // to hit the real HTTP endpoint against a real database for claim().
+
+    public function test_claim_on_open_mission_succeeds(): void
+    {
+        $client  = $this->boot();
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $manager = $this->createUser('ROLE_MANAGER');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::OPEN);
+        $instr   = $this->createFreelancerInstrumentist();
+        $token   = $this->login($client, $instr);
+
+        $response = $this->postJson($client, $token, '/api/missions/' . $mission->getId() . '/claim');
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $reloaded->getStatus());
+        self::assertSame($instr->getId(), $reloaded->getInstrumentist()?->getId());
+        self::assertCount(1, $this->em->getRepository(MissionClaim::class)->findBy(['mission' => $mission->getId()]));
+    }
+
+    /**
+     * "Concurrent" claim, as far as a single-threaded functional test can express it:
+     * two sequential requests for the same mission, only the first must win. The second
+     * gets 403 (not 409) — MissionVoter::canClaim() denies access outright once the
+     * mission is no longer OPEN, before the request ever reaches
+     * MissionPostDeployService::claim()'s own 409 guards. Pre-existing, correct behavior
+     * (OffersPage.tsx's handleClaim() branches on exactly this 403 to show "Accès
+     * refusé" and navigate away) — not part of BUG B, asserted here only so the
+     * anti-double-claim invariant itself has a real HTTP-level test.
+     */
+    public function test_claim_by_second_instrumentist_after_first_claim_returns_403(): void
+    {
+        $client  = $this->boot();
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $manager = $this->createUser('ROLE_MANAGER');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::OPEN);
+        $instrA  = $this->createFreelancerInstrumentist();
+        $instrB  = $this->createFreelancerInstrumentist();
+        $tokenA  = $this->login($client, $instrA);
+        $tokenB  = $this->login($client, $instrB);
+
+        $first  = $this->postJson($client, $tokenA, '/api/missions/' . $mission->getId() . '/claim');
+        $second = $this->postJson($client, $tokenB, '/api/missions/' . $mission->getId() . '/claim');
+
+        self::assertSame(Response::HTTP_OK, $first->getStatusCode(), (string) $first->getContent());
+        self::assertSame(Response::HTTP_FORBIDDEN, $second->getStatusCode());
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame($instrA->getId(), $reloaded->getInstrumentist()?->getId(), 'only the first claimant wins');
+    }
+
+    /**
+     * The RED test (BUG B, primary scenario): OPEN → A claims → ASSIGNED → manager
+     * releases → OPEN, instrumentist NULL, but the MissionClaim row from A's claim is
+     * never deleted (it is an append-only historical record — see docs/decisions.md).
+     * B must still be able to claim it. Before the fix, MissionPostDeployService::claim()
+     * consulted that leftover row as a business guard and refused with 409 "Mission
+     * already claimed" even though the mission was genuinely OPEN and unassigned.
+     */
+    public function test_claim_after_release_by_different_instrumentist_succeeds(): void
+    {
+        $client  = $this->boot();
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::OPEN);
+        $instrA  = $this->createFreelancerInstrumentist();
+        $instrB  = $this->createFreelancerInstrumentist();
+        $tokenA  = $this->login($client, $instrA);
+
+        // 1. A claims.
+        $claimResponse = $this->postJson($client, $tokenA, '/api/missions/' . $mission->getId() . '/claim');
+        self::assertSame(Response::HTTP_OK, $claimResponse->getStatusCode(), (string) $claimResponse->getContent());
+
+        $this->em->clear();
+        $afterClaim = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $afterClaim->getStatus());
+        self::assertSame($instrA->getId(), $afterClaim->getInstrumentist()?->getId());
+        self::assertCount(1, $this->em->getRepository(MissionClaim::class)->findBy(['mission' => $mission->getId()]));
+
+        // 2. Manager releases — ASSIGNED → OPEN, instrumentist cleared, MissionClaim
+        //    history from step 1 deliberately left untouched (append-only, D-059).
+        $releaseResponse = $this->postJson($client, $managerToken, '/api/missions/' . $mission->getId() . '/release');
+        self::assertSame(Response::HTTP_OK, $releaseResponse->getStatusCode(), (string) $releaseResponse->getContent());
+
+        $this->em->clear();
+        $afterRelease = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::OPEN, $afterRelease->getStatus());
+        self::assertNull($afterRelease->getInstrumentist());
+        self::assertCount(1, $this->em->getRepository(MissionClaim::class)->findBy(['mission' => $mission->getId()]), 'the historical claim row must survive release()');
+
+        // 3. B claims the same, now-genuinely-OPEN mission. This is the assertion that
+        //    fails before the fix (409 "Mission already claimed").
+        $tokenB = $this->login($client, $instrB);
+        $secondClaim = $this->postJson($client, $tokenB, '/api/missions/' . $mission->getId() . '/claim');
+        self::assertSame(Response::HTTP_OK, $secondClaim->getStatusCode(), (string) $secondClaim->getContent());
+
+        $this->em->clear();
+        $final = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $final->getStatus());
+        self::assertSame($instrB->getId(), $final->getInstrumentist()?->getId());
+
+        // Both the original (A) and the new (B) MissionClaim rows must exist — history
+        // is additive, never mutated or deleted by a later claim.
+        $claims = $this->em->getRepository(MissionClaim::class)->findBy(['mission' => $mission->getId()]);
+        self::assertCount(2, $claims);
+        $claimantIds = array_map(fn (MissionClaim $c) => $c->getInstrumentist()?->getId(), $claims);
+        self::assertContains($instrA->getId(), $claimantIds);
+        self::assertContains($instrB->getId(), $claimantIds);
+
+        // Audit trail: CLAIM, RELEASE, CLAIM, in order.
+        $events = $this->em->getRepository(AuditEvent::class)->findBy(['mission' => $mission->getId()], ['createdAt' => 'ASC', 'id' => 'ASC']);
+        $eventTypes = array_map(fn (AuditEvent $e) => $e->getEventType()->value, $events);
+        self::assertSame(['MISSION_CLAIMED_FROM_POOL', 'MISSION_RELEASED_TO_POOL', 'MISSION_CLAIMED_FROM_POOL'], $eventTypes);
+    }
+
+    /** B4 — the SAME instrumentist reclaiming after their own release must also succeed. */
+    public function test_claim_after_release_by_same_instrumentist_succeeds(): void
+    {
+        $client  = $this->boot();
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::OPEN);
+        $instr   = $this->createFreelancerInstrumentist();
+        $token   = $this->login($client, $instr);
+
+        $this->postJson($client, $token, '/api/missions/' . $mission->getId() . '/claim');
+        $this->postJson($client, $managerToken, '/api/missions/' . $mission->getId() . '/release');
+
+        $response = $this->postJson($client, $token, '/api/missions/' . $mission->getId() . '/claim');
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $reloaded->getStatus());
+        self::assertSame($instr->getId(), $reloaded->getInstrumentist()?->getId());
+        self::assertCount(2, $this->em->getRepository(MissionClaim::class)->findBy(['mission' => $mission->getId()]));
+    }
+
+    /**
+     * B5 — a mission that is currently ASSIGNED must still refuse a claim (for the
+     * genuinely correct reason: incompatible status), regardless of whether a MissionClaim
+     * history row also happens to exist. Proves the fix didn't just delete a guard without
+     * replacing it with the real one already provided by MissionVoter::canClaim() (the
+     * status check there denies access before the request ever reaches the service).
+     */
+    public function test_claim_refused_when_mission_assigned_despite_claim_history(): void
+    {
+        $client   = $this->boot();
+        $surgeon  = $this->createUser('ROLE_SURGEON');
+        $manager  = $this->createUser('ROLE_MANAGER');
+        $site     = $this->makeSite();
+        $instrA   = $this->createFreelancerInstrumentist();
+        $instrB   = $this->createFreelancerInstrumentist();
+        $mission  = $this->makeMission($site, $surgeon, $manager, MissionStatus::ASSIGNED, $instrA);
+
+        // Historical claim row from an earlier, unrelated cycle — must never leak into
+        // this decision.
+        $claim = new MissionClaim();
+        $claim->setMission($mission)->setInstrumentist($instrA)->setClaimedAt(new \DateTimeImmutable('-1 day'));
+        $this->em->persist($claim);
+        $this->em->flush();
+
+        $tokenB = $this->login($client, $instrB);
+        $response = $this->postJson($client, $tokenB, '/api/missions/' . $mission->getId() . '/claim');
+
+        self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $reloaded->getStatus());
+        self::assertSame($instrA->getId(), $reloaded->getInstrumentist()?->getId(), 'unchanged');
+    }
+
+    /**
+     * B6 — a mission that is OPEN but the candidate is genuinely ineligible (absent) must
+     * be refused for that real eligibility reason — never a stale "already claimed" from
+     * an unrelated historical claim row on the same mission.
+     */
+    public function test_claim_refused_for_ineligibility_not_claim_history_when_open(): void
+    {
+        $client  = $this->boot();
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $manager = $this->createUser('ROLE_MANAGER');
+        $site    = $this->makeSite();
+        $instrA  = $this->createFreelancerInstrumentist();
+        $instrB  = $this->createFreelancerInstrumentist();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::OPEN);
+
+        // Unrelated historical claim (e.g. instrA claimed and was released earlier).
+        $claim = new MissionClaim();
+        $claim->setMission($mission)->setInstrumentist($instrA)->setClaimedAt(new \DateTimeImmutable('-1 day'));
+        $this->em->persist($claim);
+
+        $absence = new \App\Entity\Absence();
+        $absence->setUser($instrB);
+        $absence->setCreatedBy($manager);
+        $absence->setDateStart($mission->getStartAt());
+        $absence->setDateEnd($mission->getStartAt());
+        $this->em->persist($absence);
+        $this->em->flush();
+        $absenceId = $absence->getId();
+
+        $tokenB = $this->login($client, $instrB);
+        $response = $this->postJson($client, $tokenB, '/api/missions/' . $mission->getId() . '/claim');
+
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode());
+        self::assertStringContainsString('Absent', (string) $response->getContent(), (string) $response->getContent());
+        self::assertStringNotContainsString('already claimed', (string) $response->getContent());
+
+        // BUG A (§18) — the frontend must never parse the free-text message to decide
+        // whether to offer "Retirer mon absence pour ce jour"; it needs structured fields.
+        $body = json_decode((string) $response->getContent(), true);
+        self::assertSame('MISSION_CLAIM_INELIGIBLE', $body['error']['code'] ?? null, (string) $response->getContent());
+        self::assertSame('ABSENT', $body['error']['reason'] ?? null, (string) $response->getContent());
+        self::assertSame($mission->getStartAt()->format('Y-m-d'), $body['error']['date'] ?? null);
+        self::assertSame($absenceId, $body['error']['absenceId'] ?? null);
+        self::assertSame($mission->getStartAt()->format('Y-m-d'), $body['error']['absenceDateStart'] ?? null);
+        self::assertSame($mission->getStartAt()->format('Y-m-d'), $body['error']['absenceDateEnd'] ?? null);
+
+        // login()'s HTTP request detaches everything from $this->em — re-fetch before removing.
+        $absence = $this->em->find(\App\Entity\Absence::class, $absenceId);
+
+        $this->em->remove($absence);
+        $this->em->flush();
     }
 }

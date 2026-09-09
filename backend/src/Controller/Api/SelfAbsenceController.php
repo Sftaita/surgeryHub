@@ -5,12 +5,14 @@ namespace App\Controller\Api;
 use App\Entity\Absence;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Repository\UserRepository;
 use App\Security\Voter\AbsenceVoter;
 use App\Service\AbsenceImpactReconciliationService;
 use App\Service\AbsenceImpactService;
 use App\Service\AbsenceImpactSummaryService;
 use App\Service\AbsenceMissionReactionService;
+use App\Service\AuditService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use App\Service\InstrumentistAbsenceOccurrenceImpactService;
 use App\Service\RoomReleaseCommunicationService;
@@ -53,6 +55,7 @@ class SelfAbsenceController extends AbstractController
         private readonly RoomReleaseCommunicationService $roomReleaseCommunicationService,
         private readonly BlockManagementCommunicationService $blockManagementCommunicationService,
         private readonly ReleasedOperatingRoomSlotService $releasedOperatingRoomSlotService,
+        private readonly AuditService $auditService,
     ) {}
 
     #[Route('', name: 'api_self_absences_list', methods: ['GET'])]
@@ -205,6 +208,22 @@ class SelfAbsenceController extends AbstractController
         // Lot B (D-114) — même contrat que AbsenceController::delete() (décision explicite
         // transmise par le frontend, jamais déduite localement).
         $notifyBlockManagementCancellation = $request->query->getBoolean('notifyBlockManagementCancellation', false);
+        $this->deleteAbsence($absence, $currentUser, $notifyBlockManagementCancellation);
+
+        return $this->json(null, 204);
+    }
+
+    /**
+     * Extracted from delete() (2026-09-09, BUG A) so removeDay()'s case A (a single-day
+     * absence — removing its one day is a full delete, same as AbsenceController's
+     * equivalent case) reuses the exact same sequence instead of a second copy of it.
+     * `$notifyBlockManagementCancellation` defaults to false from removeDay() — that flow
+     * has no request-level opt-in for it (unlike the dedicated DELETE route), and a
+     * single-day removal defaulting to "don't force a cancellation email" is the safe
+     * choice.
+     */
+    private function deleteAbsence(Absence $absence, User $currentUser, bool $notifyBlockManagementCancellation): void
+    {
         $this->blockManagementCommunicationService->onAbsenceDeleted($absence, $currentUser, $notifyBlockManagementCancellation);
 
         // Same ordering/two-phase split as AbsenceController::delete() (D-104, Lot 4) —
@@ -238,8 +257,140 @@ class SelfAbsenceController extends AbstractController
                 reconciliation: $reconciliation,
             );
         }
+    }
 
-        return $this->json(null, 204);
+    /**
+     * BUG A (2026-09-09) — "Retirer mon absence pour ce jour", triggered from the claim-
+     * blocked-by-absence UX (never automatically). Absences stay day-only (no AM/PM — see
+     * docs/decisions.md): removing one date from a period is a pure calendar-range edit,
+     * expressed as exactly one of the three operations this controller already knows how to
+     * do safely (delete/shrink-via-update/create) — never a new, parallel absence-impact
+     * pipeline. Four cases, by where `date` falls in [dateStart, dateEnd]:
+     *
+     *   A. date === dateStart === dateEnd  → the whole absence is that one day: delete it.
+     *   B. date === dateStart (range longer) → shrink to [date+1, dateEnd].
+     *   C. date === dateEnd (range longer)   → shrink to [dateStart, date-1].
+     *   D. dateStart < date < dateEnd        → shrink to [dateStart, date-1], then create a
+     *      second Absence for [date+1, dateEnd] (same user/reason/createdBy).
+     *
+     * Cases B/C/D's "shrink" step all reuse shrinkAbsence() → reactAndSync(), the exact
+     * pipeline AbsenceController::update()/SelfAbsenceController::update() already use for
+     * any date-range edit (AbsenceImpactService, AbsenceMissionReactionService, both
+     * occurrence-impact services, AbsenceImpactReconciliationService, and the three
+     * communication collaborators) — nothing here bypasses or re-implements any of it.
+     */
+    #[Route('/{id}/remove-day', name: 'api_self_absences_remove_day', methods: ['POST'])]
+    public function removeDay(int $id, Request $request, #[CurrentUser] User $currentUser): JsonResponse
+    {
+        $absence = $this->em->find(Absence::class, $id);
+        if (!$absence) {
+            return $this->json(['error' => ['message' => 'Absence introuvable.']], 404);
+        }
+        $this->denyAccessUnlessGranted(AbsenceVoter::SELF_MANAGE, $absence);
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $rawDate = $data['date'] ?? null;
+        if (!$rawDate) {
+            return $this->json(['error' => ['message' => 'date est requis.']], 400);
+        }
+        try {
+            $date = new \DateTimeImmutable((string) $rawDate);
+        } catch (\Exception) {
+            return $this->json(['error' => ['message' => 'Format de date invalide.']], 400);
+        }
+
+        $dateStart = $absence->getDateStart();
+        $dateEnd   = $absence->getDateEnd();
+        if ($date < $dateStart || $date > $dateEnd) {
+            return $this->json(['error' => [
+                'code'    => 'DATE_OUTSIDE_ABSENCE',
+                'message' => 'Cette date ne fait pas partie de cette période d\'absence.',
+            ]], 400);
+        }
+
+        $originalDateStart = $dateStart->format('Y-m-d');
+        $originalDateEnd   = $dateEnd->format('Y-m-d');
+        $isSingleDay = $dateStart->format('Y-m-d') === $dateEnd->format('Y-m-d');
+        $isFirstDay  = $date->format('Y-m-d') === $dateStart->format('Y-m-d');
+        $isLastDay   = $date->format('Y-m-d') === $dateEnd->format('Y-m-d');
+
+        $remaining = [];
+        if ($isSingleDay) {
+            // Case A.
+            $this->deleteAbsence($absence, $currentUser, false);
+        } elseif ($isFirstDay) {
+            // Case B.
+            $this->shrinkAbsence($absence, $currentUser, $date->modify('+1 day'), $dateEnd);
+            $remaining[] = $this->serialize($absence);
+        } elseif ($isLastDay) {
+            // Case C.
+            $this->shrinkAbsence($absence, $currentUser, $dateStart, $date->modify('-1 day'));
+            $remaining[] = $this->serialize($absence);
+        } else {
+            // Case D — split. Reason captured before shrinkAbsence() mutates the entity (it
+            // doesn't touch reason, but this keeps the intent explicit rather than relying
+            // on that).
+            $reason = $absence->getReason();
+            $this->shrinkAbsence($absence, $currentUser, $dateStart, $date->modify('-1 day'));
+            $remaining[] = $this->serialize($absence);
+            $second = $this->createAbsenceAndReact($currentUser, $date->modify('+1 day'), $dateEnd, $reason);
+            $remaining[] = $this->serialize($second);
+        }
+
+        // No patient data — just which single date was removed and what the period looked
+        // like immediately before, on the absence's own owner (self-service: always the actor).
+        $this->auditService->recordGlobal($currentUser, AuditEventType::ABSENCE_DAY_REMOVED, [
+            'absenceId'         => $id,
+            'removedDate'       => $date->format('Y-m-d'),
+            'originalDateStart' => $originalDateStart,
+            'originalDateEnd'   => $originalDateEnd,
+        ]);
+        $this->em->flush();
+
+        return $this->json([
+            'removedDate'        => $date->format('Y-m-d'),
+            'remainingAbsences'  => $remaining,
+        ]);
+    }
+
+    /**
+     * The "shrink" step shared by removeDay()'s cases B, C, and the first half of D — exactly
+     * AbsenceController::update()'s own dateStart/dateEnd mutation, followed by the exact
+     * same reaction pipeline via reactAndSync() (D-104's reconciliation included, since
+     * $previousDateStart/$previousDateEnd are always passed).
+     */
+    private function shrinkAbsence(Absence $absence, User $currentUser, \DateTimeImmutable $newStart, \DateTimeImmutable $newEnd): void
+    {
+        $previousDateStart = $absence->getDateStart();
+        $previousDateEnd   = $absence->getDateEnd();
+
+        $absence->setDateStart($newStart);
+        $absence->setDateEnd($newEnd);
+        $this->em->flush();
+
+        $this->reactAndSync($absence, $currentUser, $previousDateStart, $previousDateEnd);
+    }
+
+    /**
+     * The "create the remainder" step for removeDay()'s case D — exactly create()'s own
+     * entity construction, followed by the exact same reaction pipeline via reactAndSync()
+     * (create-mode: no previous range, nothing to reconcile).
+     */
+    private function createAbsenceAndReact(User $currentUser, \DateTimeImmutable $start, \DateTimeImmutable $end, ?string $reason): Absence
+    {
+        $absence = new Absence();
+        $absence->setUser($currentUser);
+        $absence->setDateStart($start);
+        $absence->setDateEnd($end);
+        $absence->setReason($reason);
+        $absence->setCreatedBy($currentUser);
+
+        $this->em->persist($absence);
+        $this->em->flush();
+
+        $this->reactAndSync($absence, $currentUser);
+
+        return $absence;
     }
 
     /**

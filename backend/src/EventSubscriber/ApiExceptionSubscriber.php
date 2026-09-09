@@ -5,6 +5,7 @@ namespace App\EventSubscriber;
 use App\Exception\InstrumentistIneligibleException;
 use App\Exception\InterventionTypeInactiveException;
 use App\Exception\InterventionTypeNotFoundException;
+use App\Exception\MissionClaimIneligibleException;
 use App\Exception\MissionNotDraftException;
 use App\Exception\PlanningVersionNotActiveException;
 use App\Exception\PlanningVersionNotDraftException;
@@ -69,6 +70,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
         $code = 'INTERNAL_ERROR';
         $message = 'Internal server error';
         $violations = [];
+        $extra = [];
 
         if ($e instanceof UniqueConstraintViolationException) {
             $status = 409;
@@ -94,6 +96,23 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
                 static fn ($r) => ['field' => 'instrumentistId', 'message' => $r->value],
                 $e->getReasons(),
             );
+        } elseif ($e instanceof MissionClaimIneligibleException) {
+            $status = 409;
+            $code = 'MISSION_CLAIM_INELIGIBLE';
+            $primary = $e->getPrimaryReason();
+            $message = $primary?->label() ?? $e->getMessage();
+            $violations = array_map(
+                static fn ($r) => ['field' => null, 'message' => $r->value],
+                $e->getReasons(),
+            );
+            $extra['reason'] = $primary?->value;
+            $extra['date'] = $e->getDate()?->format('Y-m-d');
+            $absence = $e->getBlockingAbsence();
+            if ($absence !== null) {
+                $extra['absenceId'] = $absence->getId();
+                $extra['absenceDateStart'] = $absence->getDateStart()->format('Y-m-d');
+                $extra['absenceDateEnd'] = $absence->getDateEnd()->format('Y-m-d');
+            }
         } elseif ($e instanceof PricingRulePeriodOverlapException) {
             $status = 409;
             $code = 'PRICING_RULE_PERIOD_OVERLAP';
@@ -285,12 +304,12 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
         }
 
         $payload = [
-            'error' => [
+            'error' => array_merge([
                 'status' => $status,
                 'code' => $code,
                 'message' => $message,
                 'violations' => $violations,
-            ],
+            ], $extra),
         ];
 
         if ($this->kernel->getEnvironment() === 'dev') {

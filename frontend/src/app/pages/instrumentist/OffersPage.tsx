@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Box, CircularProgress, Stack, Typography } from "@mui/material";
+import { Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Typography } from "@mui/material";
 import { Navigate, useNavigate } from "react-router-dom";
 
 import dayjs from "dayjs";
@@ -12,6 +12,7 @@ import {
   markOffersSeen,
 } from "../../features/missions/api/missions.api";
 import type { Mission, MissionType } from "../../features/missions/api/missions.types";
+import { removeMyAbsenceDay } from "../../features/self-absences/api/selfAbsences.api";
 import { useToast } from "../../ui/toast/useToast";
 import { useAuth } from "../../auth/AuthContext";
 import { isMobileRole } from "../../auth/roles";
@@ -215,6 +216,17 @@ export default function OffersPage() {
   // (elle n'est plus une offre) — conservée localement pour afficher la
   // confirmation "Ajoutée à votre planning" au lieu de la faire disparaître.
   const [claimedMissions, setClaimedMissions] = React.useState<Mission[]>([]);
+  // BUG A (2026-09-09) — le backend expose une cause structurée (jamais parsée depuis le
+  // message texte, voir MissionClaimIneligibleException) quand le claim échoue parce que
+  // l'instrumentiste est déclaré absent ce jour-là. `date` reste toujours une seule date
+  // (celle de la mission) même si l'absence couvre une période plus large.
+  const [absenceBlock, setAbsenceBlock] = React.useState<{
+    absenceId: number;
+    date: string;
+    absenceDateStart: string;
+    absenceDateEnd: string;
+  } | null>(null);
+  const [removingAbsence, setRemovingAbsence] = React.useState(false);
 
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ["missions", "offers"],
@@ -251,7 +263,17 @@ export default function OffersPage() {
       requestMissionSync();
     } catch (err: any) {
       const status = err?.response?.status;
-      if (status === 409) {
+      const apiError = err?.response?.data?.error;
+      if (status === 409 && apiError?.code === "MISSION_CLAIM_INELIGIBLE" && apiError?.reason === "ABSENT" && apiError?.absenceId) {
+        // Jamais de claim automatique ensuite (§16) — on affiche juste l'explication et,
+        // sur confirmation explicite, on retire uniquement ce jour de l'absence.
+        setAbsenceBlock({
+          absenceId: apiError.absenceId,
+          date: apiError.date,
+          absenceDateStart: apiError.absenceDateStart,
+          absenceDateEnd: apiError.absenceDateEnd,
+        });
+      } else if (status === 409) {
         toast.warning(extractErrorMessage(err));
       } else if (status === 403) {
         toast.error("Accès refusé");
@@ -263,6 +285,27 @@ export default function OffersPage() {
       requestMissionSync();
     } finally {
       setLoadingClaimId(null);
+    }
+  };
+
+  const handleRemoveAbsenceDay = async () => {
+    if (!absenceBlock) return;
+    setRemovingAbsence(true);
+    try {
+      await removeMyAbsenceDay(absenceBlock.absenceId, absenceBlock.date);
+      toast.success(
+        `Absence retirée pour le ${dayjs(absenceBlock.date).format("D MMMM")}.\nVous pouvez maintenant prendre la mission.`,
+      );
+      setAbsenceBlock(null);
+      // Rafraîchit offres/missions/absences — l'éligibilité doit refléter le retrait
+      // immédiatement si l'utilisateur reclique sur "Prendre la mission".
+      queryClient.invalidateQueries({ queryKey: ["missions"] });
+      queryClient.invalidateQueries({ queryKey: ["absences"] });
+      requestMissionSync();
+    } catch (err) {
+      toast.error(extractErrorMessage(err));
+    } finally {
+      setRemovingAbsence(false);
     }
   };
 
@@ -329,6 +372,53 @@ export default function OffersPage() {
           ))}
         </Stack>
       )}
+
+      {/* BUG A (2026-09-09) — claim bloqué par une absence. Jamais de retrait automatique :
+          l'action reste une confirmation explicite de l'utilisateur (§9, §16). */}
+      <Dialog open={absenceBlock !== null} onClose={() => setAbsenceBlock(null)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>Impossible de prendre cette mission</DialogTitle>
+        {absenceBlock && (
+          <DialogContent>
+            <Typography sx={{ fontSize: 13.5, mb: 1.5 }}>
+              Vous êtes déclaré(e) absent(e) le {dayjs(absenceBlock.date).format("D MMMM YYYY")}.
+            </Typography>
+            {absenceBlock.absenceDateStart === absenceBlock.absenceDateEnd ? (
+              <Typography sx={{ fontSize: 13.5, color: GRAY_600 }}>
+                Retirer cette absence afin de pouvoir prendre cette mission ?
+              </Typography>
+            ) : (
+              <>
+                <Typography sx={{ fontSize: 13.5, color: GRAY_600, mb: 1 }}>
+                  Vous êtes absent(e) du {dayjs(absenceBlock.absenceDateStart).format("D MMMM")} au{" "}
+                  {dayjs(absenceBlock.absenceDateEnd).format("D MMMM YYYY")}.
+                </Typography>
+                <Typography sx={{ fontSize: 13.5, color: GRAY_600 }}>
+                  Voulez-vous retirer uniquement le {dayjs(absenceBlock.date).format("D MMMM")} de cette période ? Les
+                  autres jours d&apos;absence resteront inchangés.
+                </Typography>
+              </>
+            )}
+          </DialogContent>
+        )}
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button onClick={() => setAbsenceBlock(null)} sx={{ textTransform: "none", fontWeight: 600 }}>
+            Annuler
+          </Button>
+          <Button
+            variant="contained"
+            disableElevation
+            disabled={removingAbsence}
+            onClick={handleRemoveAbsenceDay}
+            sx={{ textTransform: "none", fontWeight: 700, background: GREEN_500, "&:hover": { background: GREEN_600 } }}
+          >
+            {removingAbsence
+              ? "…"
+              : absenceBlock && absenceBlock.absenceDateStart !== absenceBlock.absenceDateEnd
+                ? `Retirer uniquement le ${dayjs(absenceBlock.date).format("D MMMM")}`
+                : "Retirer l'absence"}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

@@ -1983,6 +1983,7 @@ Voir D-052, D-053, D-054, D-055, D-056, D-057, D-058, D-059 dans `docs/decisions
 |---|---|---|
 | `Mission` (entité) | Source de vérité unique et exclusive de l'état courant : `status`, `instrumentist`, horaires, site. Toute décision métier (claim/reassign/cancel possible ?) se base uniquement sur ces champs. | Conserver l'historique de ses propres transitions. |
 | `MissionClaim` (entité) | Enregistrement **append-only** du moment où une mission a été revendiquée (`mission`, `instrumentist`, `claimedAt`). Sert uniquement l'historique/reporting/statistiques de charge par instrumentiste. | Participer à une décision métier — plus jamais consultée comme garde d'état par `claim()` ou tout autre service. |
+| ↳ **D-117 (2026-09-09)** | Cette dernière colonne n'était en réalité **pas encore respectée dans le code** avant D-117 : `MissionPostDeployService::claim()` conservait un garde `findOneBy(['mission' => $mission])` qui refusait tout re-claim dès qu'une ligne `MissionClaim` existait pour la mission — même après un `release()` ramenant la mission à `OPEN`. La contrainte SQL `UNIQUE` correspondante avait déjà été retirée (migration `Version20260212093000`), signe que le schéma anticipait ce cas ; seule la garde applicative manquait sa suppression. Garde supprimée, l'historique `MissionClaim` reste append-only (aucune ligne modifiée/supprimée) et l'anti-double-claim concurrent reste assuré par le verrou pessimiste + `MissionVoter::canClaim()` (`status !== OPEN` ⇒ 403). |
 | `AuditEvent` | Journal général et transverse de tous les changements post-déploiement (claim, release, reassign, cancel — D-055), avec acteur/horodatage/payload snapshot. Source de `GET /api/missions/{id}/audit` et de la timeline `GET /api/planning/versions/{id}/history`. | Remplacer `MissionClaim` pour des requêtes typées/structurées ciblées sur les claims (payload JSON générique, pas des colonnes dédiées). |
 | `MissionEligibilityService` | Seule source de vérité pour l'éligibilité (D-057), progressivement mission-centrique (D-059) : la question canonique est « qui est éligible pour **cette** mission ? », pas « pour ce site ». Depuis D-101, `evaluateForReassignment()` étend cette source unique à tout assign/reassign (pas seulement `claim()` sur mission OPEN) : `assignInstrumentistDraft()`, `assign()`, `reassign()`, `updateSchedule()`, `createPostDeploy()`, et la branche `overrideLines` de `PlanningGeneratorServiceV2::generate()`. | Dupliquer sa logique ailleurs (Voter, handlers) — tout délègue à ce service. |
 
@@ -2905,6 +2906,47 @@ Comme D-095/D-096 : Activité chirurgien réelle, `SurgeonMissionRequest`, disti
 d'`AuditEvent` sur le flux self-service — limite assumée (le flux manager existant
 n'en produit déjà aucun ; en ajouter un uniquement côté self-service aurait été une
 incohérence plutôt qu'une correction), voir D-097.
+
+Exception ouverte par D-117 (§16.8) : `remove-day` reçoit un `AuditEvent`, mais pour
+une raison propre à cette seule opération (destructive, déclenchée depuis un flux de
+blocage de claim, jamais depuis un simple create/update d'absence) — cette limite
+générale sur create/update/delete reste inchangée.
+
+### 16.8 `POST /mine/{id}/remove-day` — retrait d'un jour depuis un claim bloqué (D-117, 2026-09-09)
+
+Motivé par un bug remonté par une instrumentiste : une absence déclarée « le matin
+seulement » (texte libre dans `reason`) bloquait le claim d'une mission l'après-midi du
+même jour, sans que l'UI n'offre de sortie. Le modèle `Absence` reste **strictement
+journalier** (pas de `startTime`/`endTime`, aucun parsing du texte libre) — la
+résolution est un découpage de calendrier explicite, jamais une inférence d'intention.
+
+Quand `MissionEligibilityService::evaluate()` refuse un claim pour `EligibilityReason::ABSENT`,
+`MissionPostDeployService::claim()` lève désormais `MissionClaimIneligibleException`
+(mappée par `ApiExceptionSubscriber` en `409 { code: "MISSION_CLAIM_INELIGIBLE", reason:
+"ABSENT", absenceId, date }` — voir docs/api.md). Le frontend (`OffersPage`) affiche une
+modale explicite « Retirer mon absence pour ce jour » ; **aucun re-claim automatique**
+après retrait, l'utilisateur reclique sur « Prendre la mission ».
+
+`SelfAbsenceController::removeDay()` réduit ce retrait à une combinaison des trois
+opérations déjà existantes (delete/shrink/create), rejouant systématiquement
+`reactAndSync()` (même pipeline de 9 collaborateurs que create/update/delete
+manager — §15/D-062), jamais une voie parallèle :
+
+| Cas | Position du jour | Opération |
+|---|---|---|
+| A | seule journée de la période | suppression complète (`deleteAbsence()`) |
+| B | premier jour d'une période plus longue | `dateStart += 1` |
+| C | dernier jour d'une période plus longue | `dateEnd -= 1` |
+| D | jour au milieu | `dateEnd = jour - 1` sur la période existante + nouvelle `Absence` `[jour + 1, dateEnd original]` |
+
+Invariant testé explicitement (cas D) : retirer un jour du milieu d'une période ne
+touche **jamais** les autres jours au-delà de la coupure — `10→15 sept, retrait du 12`
+donne exactement `10→11` + `13→15`, rien d'autre.
+
+Autorisation par `AbsenceVoter::SELF_MANAGE` (identique à `PATCH`/`DELETE` — jamais de
+comparaison d'id inline dans le controller). Exception à §16.7 : `AuditEvent(ABSENCE_DAY_REMOVED)`
+via `AuditService::recordGlobal()` (mission-indépendant), payload `{ absenceId,
+removedDate, originalDateStart, originalDateEnd }`, aucune donnée patient.
 
 ## 17. Activité chirurgien + podium personnel (Lot 4, D-098, 2026-08-07)
 

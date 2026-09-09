@@ -78,6 +78,13 @@ final class SelfAbsenceControllerTest extends WebTestCase
                     ->where('n.user = :u')->setParameter('u', $user)
                     ->getQuery()->getResult();
                 foreach ($notifications as $notification) { $this->em->remove($notification); }
+                // BUG A — removeDay()'s mission-independent ABSENCE_DAY_REMOVED AuditEvent
+                // (actor = test user, no mission) — not covered by the mission-scoped loop above.
+                $actorEvents = $this->em->createQueryBuilder()
+                    ->select('e')->from(AuditEvent::class, 'e')
+                    ->where('e.actor = :u')->setParameter('u', $user)
+                    ->getQuery()->getResult();
+                foreach ($actorEvents as $event) { $this->em->remove($event); }
             }
             $this->em->flush();
             foreach ($this->createdIds['missions'] as $id) {
@@ -604,5 +611,319 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em->clear();
         $alert = $this->em->find(PlanningAlert::class, $alerts[0]->getId());
         self::assertSame(\App\Enum\PlanningAlertStatus::RESOLVED, $alert->getStatus());
+    }
+
+    // ── BUG A (§19) — remove-day ──────────────────────────────────────────────
+
+    private function createAbsence(KernelBrowser $client, string $token, string $dateStart, string $dateEnd, ?string $reason = 'Congé'): array
+    {
+        $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'dateStart' => $dateStart, 'dateEnd' => $dateEnd, 'reason' => $reason,
+        ]));
+        $body = $this->json($client->getResponse());
+        self::assertSame(201, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+        $this->createdIds['absences'][] = $body['id'];
+        return $body;
+    }
+
+    private function removeDay(KernelBrowser $client, string $token, int $absenceId, string $date): Response
+    {
+        $client->request('POST', '/api/absences/mine/' . $absenceId . '/remove-day', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['date' => $date]));
+        return $client->getResponse();
+    }
+
+    /** A — single-day absence: removing its one day deletes it entirely. */
+    #[WithoutErrorHandler]
+    public function test_remove_day_case_a_single_day_deletes_absence(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        $absence = $this->createAbsence($client, $token, '2026-09-11', '2026-09-11');
+
+        $response = $this->removeDay($client, $token, $absence['id'], '2026-09-11');
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
+        $body = $this->json($response);
+        self::assertSame('2026-09-11', $body['removedDate']);
+        self::assertSame([], $body['remainingAbsences']);
+
+        $this->em->clear();
+        self::assertNull($this->em->find(Absence::class, $absence['id']));
+        $this->createdIds['absences'] = array_diff($this->createdIds['absences'], [$absence['id']]);
+    }
+
+    /** B — first day of a period: shrinks to start the day after. */
+    #[WithoutErrorHandler]
+    public function test_remove_day_case_b_first_day_shrinks_start(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        $absence = $this->createAbsence($client, $token, '2026-09-11', '2026-09-15');
+
+        $response = $this->removeDay($client, $token, $absence['id'], '2026-09-11');
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
+        $body = $this->json($response);
+        self::assertCount(1, $body['remainingAbsences']);
+        self::assertSame('2026-09-12', $body['remainingAbsences'][0]['dateStart']);
+        self::assertSame('2026-09-15', $body['remainingAbsences'][0]['dateEnd']);
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Absence::class, $absence['id']);
+        self::assertSame('2026-09-12', $reloaded->getDateStart()->format('Y-m-d'));
+        self::assertSame('2026-09-15', $reloaded->getDateEnd()->format('Y-m-d'));
+    }
+
+    /** C — last day of a period: shrinks to end the day before. */
+    #[WithoutErrorHandler]
+    public function test_remove_day_case_c_last_day_shrinks_end(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        $absence = $this->createAbsence($client, $token, '2026-09-10', '2026-09-11');
+
+        $response = $this->removeDay($client, $token, $absence['id'], '2026-09-11');
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
+        $body = $this->json($response);
+        self::assertCount(1, $body['remainingAbsences']);
+        self::assertSame('2026-09-10', $body['remainingAbsences'][0]['dateStart']);
+        self::assertSame('2026-09-10', $body['remainingAbsences'][0]['dateEnd']);
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Absence::class, $absence['id']);
+        self::assertSame('2026-09-10', $reloaded->getDateStart()->format('Y-m-d'));
+        self::assertSame('2026-09-10', $reloaded->getDateEnd()->format('Y-m-d'));
+    }
+
+    /**
+     * D — a day in the middle: splits into two periods. This is also the exact scenario
+     * from the brief's §11 invariant: removing one date must never touch any OTHER date's
+     * absent/available status. 10→15 sept, remove 12 sept → 10→11 + 13→15, nothing else.
+     */
+    #[WithoutErrorHandler]
+    public function test_remove_day_case_d_middle_day_splits_into_two_and_touches_nothing_else(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $instr] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        $absence = $this->createAbsence($client, $token, '2026-09-10', '2026-09-15', 'Congé');
+
+        $response = $this->removeDay($client, $token, $absence['id'], '2026-09-12');
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
+        $body = $this->json($response);
+        self::assertSame('2026-09-12', $body['removedDate']);
+        self::assertCount(2, $body['remainingAbsences']);
+
+        $this->em->clear();
+        $rows = $this->em->createQueryBuilder()
+            ->select('a')->from(Absence::class, 'a')
+            ->where('a.user = :u')->setParameter('u', $instr->getId())
+            ->orderBy('a.dateStart', 'ASC')
+            ->getQuery()->getResult();
+        self::assertCount(2, $rows, 'exactly two periods must remain — never more, never fewer');
+        self::assertSame('2026-09-10', $rows[0]->getDateStart()->format('Y-m-d'));
+        self::assertSame('2026-09-11', $rows[0]->getDateEnd()->format('Y-m-d'));
+        self::assertSame('Congé', $rows[0]->getReason(), 'reason carries over to both halves');
+        self::assertSame('2026-09-13', $rows[1]->getDateStart()->format('Y-m-d'));
+        self::assertSame('2026-09-15', $rows[1]->getDateEnd()->format('Y-m-d'));
+        self::assertSame('Congé', $rows[1]->getReason());
+        $this->createdIds['absences'][] = $rows[1]->getId();
+
+        // The invariant, checked directly against MissionEligibilityService's own rule
+        // (isAbsentOn/findBlockingAbsence, same query the claim endpoint uses) rather than
+        // re-deriving it: 10, 11, 13, 14, 15 sept still absent; 12 sept is not.
+        $eligibility = static::getContainer()->get(\App\Service\MissionEligibilityService::class);
+        foreach (['2026-09-10', '2026-09-11', '2026-09-13', '2026-09-14', '2026-09-15'] as $stillAbsentDay) {
+            self::assertNotNull(
+                $eligibility->findBlockingAbsence($instr, new \DateTimeImmutable($stillAbsentDay)),
+                "$stillAbsentDay must still be covered by an absence",
+            );
+        }
+        self::assertNull(
+            $eligibility->findBlockingAbsence($instr, new \DateTimeImmutable('2026-09-12')),
+            '12 sept must no longer be covered by any absence',
+        );
+    }
+
+    /** E — a date outside the absence's own period is refused with a clean 400, not silently accepted or a raw 500. */
+    #[WithoutErrorHandler]
+    public function test_remove_day_case_e_date_outside_period_returns_400(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        $absence = $this->createAbsence($client, $token, '2026-09-10', '2026-09-15');
+
+        $response = $this->removeDay($client, $token, $absence['id'], '2026-09-20');
+        self::assertSame(400, $response->getStatusCode());
+        $body = $this->json($response);
+        self::assertSame('DATE_OUTSIDE_ABSENCE', $body['error']['code'] ?? null);
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Absence::class, $absence['id']);
+        self::assertSame('2026-09-10', $reloaded->getDateStart()->format('Y-m-d'), 'unchanged');
+        self::assertSame('2026-09-15', $reloaded->getDateEnd()->format('Y-m-d'), 'unchanged');
+    }
+
+    /** F — an instrumentist may never remove a day from someone else's absence. */
+    #[WithoutErrorHandler]
+    public function test_remove_day_case_f_other_users_absence_returns_403(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $ownerToken] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+        $absence = $this->createAbsence($client, $ownerToken, '2026-09-10', '2026-09-15');
+
+        ['token' => $otherToken] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+        $response = $this->removeDay($client, $otherToken, $absence['id'], '2026-09-12');
+        self::assertSame(403, $response->getStatusCode());
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Absence::class, $absence['id']);
+        self::assertSame('2026-09-10', $reloaded->getDateStart()->format('Y-m-d'), 'unchanged');
+        self::assertSame('2026-09-15', $reloaded->getDateEnd()->format('Y-m-d'), 'unchanged');
+    }
+
+    /** G — a non-existent absence id returns a clean 404. */
+    #[WithoutErrorHandler]
+    public function test_remove_day_case_g_nonexistent_absence_returns_404(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        $response = $this->removeDay($client, $token, 999999999, '2026-09-12');
+        self::assertSame(404, $response->getStatusCode());
+    }
+
+    /**
+     * H — after remove-day, MissionEligibilityService considers the instrumentist available
+     * that day (no other blocker) — checked end-to-end via a real claim(), not just the
+     * eligibility service in isolation.
+     */
+    #[WithoutErrorHandler]
+    public function test_remove_day_then_claim_succeeds_on_the_freed_day(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $instr] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+        $instr->setEmploymentType(\App\Enum\EmploymentType::FREELANCER);
+        $this->em->flush();
+
+        $surgeon = new User();
+        $surgeon->setEmail('lot3-surgeon-' . bin2hex(random_bytes(4)) . '@surgicalhub.test');
+        $surgeon->setRoles(['ROLE_SURGEON']);
+        $surgeon->setActive(true);
+        $this->em->persist($surgeon);
+        $this->em->flush();
+        $this->createdIds['users'][] = $surgeon->getId();
+
+        $site = $this->makeSite();
+        $mission = $this->makeMission($surgeon, null, $site, MissionStatus::OPEN, '2026-09-11');
+
+        $absence = $this->createAbsence($client, $token, '2026-09-11', '2026-09-11');
+
+        // Blocked while the absence is still active.
+        $blocked = $this->postJsonRaw($client, $token, '/api/missions/' . $mission->getId() . '/claim');
+        self::assertSame(409, $blocked->getStatusCode());
+
+        $removeResponse = $this->removeDay($client, $token, $absence['id'], '2026-09-11');
+        self::assertSame(200, $removeResponse->getStatusCode(), (string) $removeResponse->getContent());
+        $this->createdIds['absences'] = array_diff($this->createdIds['absences'], [$absence['id']]);
+
+        $claimResponse = $this->postJsonRaw($client, $token, '/api/missions/' . $mission->getId() . '/claim');
+        self::assertSame(200, $claimResponse->getStatusCode(), (string) $claimResponse->getContent());
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $reloaded->getStatus());
+        self::assertSame($instr->getId(), $reloaded->getInstrumentist()?->getId());
+    }
+
+    /** I — every OTHER date of the original period must still show the instrumentist as absent. */
+    #[WithoutErrorHandler]
+    public function test_remove_day_other_dates_of_period_still_absent(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $instr] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        $absence = $this->createAbsence($client, $token, '2026-09-10', '2026-09-15');
+        // 11 sept is neither the first (10) nor last (15) day of this range — case D
+        // (split) — which persists a second Absence row not returned by createAbsence().
+        // Track every Absence this user now has so teardown can clean it up regardless of
+        // which case actually fired.
+        $this->removeDay($client, $token, $absence['id'], '2026-09-11');
+        $this->trackAllAbsencesFor($instr);
+
+        $eligibility = static::getContainer()->get(\App\Service\MissionEligibilityService::class);
+        foreach (['2026-09-10', '2026-09-12', '2026-09-13', '2026-09-14', '2026-09-15'] as $stillAbsentDay) {
+            self::assertNotNull($eligibility->findBlockingAbsence($instr, new \DateTimeImmutable($stillAbsentDay)), "$stillAbsentDay must still be absent");
+        }
+    }
+
+    /** Registers every Absence currently belonging to $user in $this->createdIds for teardown — used where a case D split may have persisted a second row this test never directly captured. */
+    private function trackAllAbsencesFor(User $user): void
+    {
+        $rows = $this->em->createQueryBuilder()
+            ->select('a')->from(Absence::class, 'a')
+            ->where('a.user = :u')->setParameter('u', $user->getId())
+            ->getQuery()->getResult();
+        foreach ($rows as $row) {
+            if (!in_array($row->getId(), $this->createdIds['absences'], true)) {
+                $this->createdIds['absences'][] = $row->getId();
+            }
+        }
+    }
+
+    /** Audit — an AuditEvent (ABSENCE_DAY_REMOVED, no Mission attached) is recorded. */
+    #[WithoutErrorHandler]
+    public function test_remove_day_records_audit_event(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $instr] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
+
+        $absence = $this->createAbsence($client, $token, '2026-09-10', '2026-09-15');
+        $this->removeDay($client, $token, $absence['id'], '2026-09-12');
+        $this->trackAllAbsencesFor($instr);
+
+        $this->em->clear();
+        $events = $this->em->createQueryBuilder()
+            ->select('e')->from(AuditEvent::class, 'e')
+            ->where('e.eventType = :t')->andWhere('e.actor = :u')
+            ->setParameter('t', \App\Enum\AuditEventType::ABSENCE_DAY_REMOVED)
+            ->setParameter('u', $instr->getId())
+            ->getQuery()->getResult();
+        self::assertCount(1, $events);
+        self::assertSame('2026-09-12', $events[0]->getPayload()['removedDate'] ?? null);
+        self::assertSame('2026-09-10', $events[0]->getPayload()['originalDateStart'] ?? null);
+        self::assertSame('2026-09-15', $events[0]->getPayload()['originalDateEnd'] ?? null);
+        self::assertNull($events[0]->getMission(), 'mission-independent event');
+
+        $this->em->remove($events[0]);
+        $this->em->flush();
+    }
+
+    private function postJsonRaw(KernelBrowser $client, string $token, string $uri): Response
+    {
+        $client->request('POST', $uri, server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: '{}');
+        return $client->getResponse();
     }
 }

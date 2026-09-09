@@ -134,10 +134,41 @@ sinon, aucune donnée patient). Voir `MissionPublishedMessageHandler`.
 **Transition :** `OPEN → ASSIGNED`
 
 - Transactionnel (verrouillage pessimiste)
-- Anti-double
-- `409` si déjà claimée, non `OPEN`, ou instrumentiste non éligible (`MissionEligibilityService`) (Batch 15D)
+- Anti-double : `MissionVoter::canClaim()` refuse (`403`) dès que la mission n'est plus
+  `OPEN`/déjà assignée — avant même d'atteindre le service. À l'intérieur du verrou
+  pessimiste, `MissionPostDeployService::claim()` relit `status`/`instrumentist` (source de
+  vérité unique) pour fermer la fenêtre TOCTOU.
+- `409` si instrumentiste non éligible (`MissionEligibilityService`) (Batch 15D)
 - Crée un `AuditEvent(MISSION_CLAIMED_FROM_POOL)` (Batch 15B)
 - Dispatche `MissionLifecycleChangedMessage(CLAIMED)` (Batch 15B)
+
+> **D-117 (2026-09-09)** — `MissionClaim` (historique append-only) n'est **plus jamais**
+> consultée par `claim()` pour une décision métier. Une garde `findOneBy(['mission' =>
+> $mission])` bloquait auparavant tout re-claim d'une mission déjà passée par un cycle
+> `claim → release`, même correctement redevenue `OPEN`/non-assignée — supprimée sans
+> remplacement (les deux vérifications `status`/`instrumentist`, déjà relues dans le
+> verrou, suffisaient déjà). Voir `docs/decisions.md` D-117.
+
+**Réponse — 409 `MISSION_CLAIM_INELIGIBLE` (D-117)** — remplace l'ancien message texte
+libre (jamais fiable à parser côté frontend). `error.reason` est la raison primaire
+(valeur brute d'`EligibilityReason`) ; `error.absenceId`/`error.date`/
+`error.absenceDateStart`/`error.absenceDateEnd` ne sont présents que lorsque
+`reason = "ABSENT"` :
+
+```json
+{
+  "error": {
+    "status": 409,
+    "code": "MISSION_CLAIM_INELIGIBLE",
+    "message": "Absent ce jour",
+    "reason": "ABSENT",
+    "date": "2026-09-11",
+    "absenceId": 123,
+    "absenceDateStart": "2026-09-11",
+    "absenceDateEnd": "2026-09-11"
+  }
+}
+```
 
 ---
 
@@ -6495,6 +6526,56 @@ n'envoie plus de notice générique non plus), suppression réelle, puis `comple
 (missions, après suppression) et `AbsenceImpactSummaryService::dispatch()` — un seul
 email/notice manager consolidé, uniquement si quelque chose a réellement été restauré.
 `204`.
+
+### `POST /api/absences/mine/{id}/remove-day` (D-117, BUG A)
+
+**AuthZ supplémentaire :** `AbsenceVoter::SELF_MANAGE` (identique à `PATCH`/`DELETE`).
+« Retirer mon absence pour ce jour », déclenché depuis l'écran Offres quand un claim est
+refusé avec `reason=ABSENT` (voir `POST /api/missions/{id}/claim` ci-dessus) — jamais
+automatique, toujours sur confirmation explicite.
+
+**Body :**
+
+```json
+{ "date": "2026-09-11" }
+```
+
+`400` si `date` absente/invalide ou hors de `[dateStart, dateEnd]` de l'absence
+(`code: "DATE_OUTSIDE_ABSENCE"`). `404` si l'absence n'existe pas.
+
+Les absences restent volontairement journalières (`dateStart`/`dateEnd`, pas d'heure) —
+retirer un jour est une opération de découpage de calendrier, jamais un parsing du
+commentaire libre `reason`. Quatre cas, chacun ramené à une opération déjà existante
+(`delete`/`update`/`create`) et rejouant **exactement** le même pipeline de réaction
+(`AbsenceImpactService`, `AbsenceMissionReactionService`, les deux services d'impact sur
+occurrences, `AbsenceImpactReconciliationService`, communications) — jamais de voie
+parallèle :
+
+| Cas | Position de `date` | Opération |
+|---|---|---|
+| A | toute la période = ce seul jour | suppression complète |
+| B | premier jour d'une période plus longue | `dateStart = date + 1` |
+| C | dernier jour d'une période plus longue | `dateEnd = date - 1` |
+| D | au milieu d'une période | `dateEnd = date - 1` sur la période existante **+** création d'une nouvelle période `[date + 1, dateEnd original]` (même `reason`) |
+
+**Réponse — 200 :**
+
+```json
+{
+  "removedDate": "2026-09-12",
+  "remainingAbsences": [
+    { "id": 42, "dateStart": "2026-09-10", "dateEnd": "2026-09-11", "reason": "Congé", "createdAt": "...", "editable": true },
+    { "id": 57, "dateStart": "2026-09-13", "dateEnd": "2026-09-15", "reason": "Congé", "createdAt": "...", "editable": true }
+  ]
+}
+```
+
+`remainingAbsences` est vide pour le cas A (suppression complète), contient une entrée
+pour B/C, deux pour D.
+
+Traçabilité : `AuditEvent(ABSENCE_DAY_REMOVED)` mission-indépendant (via
+`AuditService::recordGlobal()`), payload `{ absenceId, removedDate, originalDateStart,
+originalDateEnd }` — aucune donnée patient.
 
 ### Règle passé/futur (self-service uniquement)
 

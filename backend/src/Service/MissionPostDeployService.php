@@ -16,6 +16,7 @@ use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\SchedulePrecision;
 use App\Exception\InstrumentistIneligibleException;
+use App\Exception\MissionClaimIneligibleException;
 use App\Message\MissionLifecycleChangedMessage;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
@@ -321,8 +322,16 @@ class MissionPostDeployService
         // TOCTOU window is acceptable: the inner lock re-validates status + instrumentist.
         $eligibility = $this->eligibilityService->evaluate($mission, $actor);
         if (!$eligibility->eligible) {
-            $labels  = array_map(fn (EligibilityReason $r) => $r->label(), $eligibility->reasons);
-            throw new ConflictHttpException('Not eligible to claim this mission: ' . implode(', ', $labels));
+            // BUG A (2026-09-09) — when ABSENT is (one of) the reason(s), resolve which
+            // Absence row is actually blocking so the structured error carries enough for
+            // the frontend to offer "Retirer mon absence pour ce jour" without a second
+            // round trip. Never re-derives the ABSENT rule itself — same query
+            // evaluate() already used, just also returning the row.
+            $blockingAbsence = in_array(EligibilityReason::ABSENT, $eligibility->reasons, true) && $mission->getStartAt() !== null
+                ? $this->eligibilityService->findBlockingAbsence($actor, $mission->getStartAt())
+                : null;
+
+            throw new MissionClaimIneligibleException($eligibility->reasons, $mission->getStartAt(), $blockingAbsence);
         }
 
         try {
@@ -337,12 +346,15 @@ class MissionPostDeployService
                     throw new ConflictHttpException('Mission already claimed');
                 }
 
-                $existingClaim = $this->em->getRepository(MissionClaim::class)
-                    ->findOneBy(['mission' => $mission]);
-                if ($existingClaim !== null) {
-                    throw new ConflictHttpException('Mission already claimed');
-                }
-
+                // D-059 (architecture freeze): MissionClaim is an append-only historical
+                // record and must never again be consulted for a business decision — a
+                // mission that was claimed and later released legitimately keeps its old
+                // MissionClaim row(s) forever, and that history must not block a future
+                // claim. The Mission's own current state — status OPEN (checked above) +
+                // instrumentist NULL (checked above), both read inside this same
+                // pessimistic lock — is the exclusive source of truth for whether this
+                // mission is claimable right now. (A `findOneBy(['mission' => $mission])`
+                // existence guard used to sit here; removed 2026-09-09, see docs/decisions.md.)
                 $claim = new MissionClaim();
                 $claim
                     ->setMission($mission)

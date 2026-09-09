@@ -56,3 +56,14 @@ export async function fetchMyAbsenceDeletionInfo(id: number): Promise<AbsenceDel
   const { data } = await apiClient.get(`/api/absences/mine/${id}/deletion-info`);
   return data;
 }
+
+/** BUG A (2026-09-09) — "Retirer mon absence pour ce jour" from the claim-blocked-by-absence UX. */
+export interface RemoveAbsenceDayResult {
+  removedDate: string;
+  remainingAbsences: SelfAbsence[];
+}
+
+export async function removeMyAbsenceDay(absenceId: number, date: string): Promise<RemoveAbsenceDayResult> {
+  const { data } = await apiClient.post(`/api/absences/mine/${absenceId}/remove-day`, { date });
+  return data;
+}
