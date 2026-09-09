@@ -771,4 +771,246 @@ final class AbsenceImpactReconciliationFunctionalTest extends WebTestCase
             ->getQuery()->getResult();
         self::assertNotEmpty($notifications, 'The instrumentist must receive at least one restoration notification');
     }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // reconcileForUpdate() — fix for the pre-existing bug found during CAS B (D-117):
+    // reconcileSurgeonMissions()/reconcileInstrumentistMissions() never checked whether a
+    // candidate mission's date was still covered by the absence's own CURRENT (already
+    // updated) range — only whether some OTHER absence covered it. A no-op PATCH or a pure
+    // expansion therefore incorrectly restored an already-CANCELLED/OPEN mission. All six
+    // tests below use a materialized Mission (never covered by the pre-existing
+    // occurrence-only shrink/idempotence tests above, §32/§35, which only ever exercised
+    // reconcileOccurrences() — already correct).
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private function auditEventsForMission(Mission $mission): array
+    {
+        return $this->em->createQueryBuilder()
+            ->select('e')->from(AuditEvent::class, 'e')
+            ->where('e.mission = :m')->setParameter('m', $mission)
+            ->getQuery()->getResult();
+    }
+
+    #[WithoutErrorHandler]
+    public function test_reason_only_patch_with_omitted_dates_never_restores_a_still_covered_mission(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $instr   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($surgeon, $instr, $site, MissionStatus::ASSIGNED, '2026-08-12');
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-08-10', 'dateEnd' => '2026-08-14', 'reason' => 'v1',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $absenceId = $this->json($client->getResponse())['id'];
+
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::CANCELLED, $mission->getStatus());
+
+        // dateStart/dateEnd keys entirely omitted — AbsenceController::update() keeps the
+        // Absence's existing dates unchanged, only `reason` is parsed/applied.
+        $client->request('PATCH', "/api/absences/{$absenceId}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'reason' => 'v2',
+        ]));
+        self::assertSame(200, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::CANCELLED, $mission->getStatus(), 'Still fully covered by the unchanged absence — must never be restored');
+        self::assertCount(1, $this->auditEventsForMission($mission), 'No restore-then-recancel dance — exactly the original cancellation event');
+    }
+
+    #[WithoutErrorHandler]
+    public function test_explicit_same_dates_patch_never_restores_a_still_covered_mission(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $instr   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($surgeon, $instr, $site, MissionStatus::ASSIGNED, '2026-08-12');
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-08-10', 'dateEnd' => '2026-08-14',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $absenceId = $this->json($client->getResponse())['id'];
+
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::CANCELLED, $mission->getStatus());
+
+        // dateStart/dateEnd keys present but resent with their exact current values — a
+        // different code path than the previous test (the parse branch DOES run) but the
+        // same net no-op range.
+        $client->request('PATCH', "/api/absences/{$absenceId}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'dateStart' => '2026-08-10', 'dateEnd' => '2026-08-14',
+        ]));
+        self::assertSame(200, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::CANCELLED, $mission->getStatus(), 'Still fully covered by the unchanged absence — must never be restored');
+        self::assertCount(1, $this->auditEventsForMission($mission));
+    }
+
+    #[WithoutErrorHandler]
+    public function test_pushing_the_start_date_later_restores_only_the_mission_that_fell_out(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $instr   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $missionFallsOut  = $this->makeMission($surgeon, $instr, $site, MissionStatus::ASSIGNED, '2026-08-10');
+        $missionStaysCovered = $this->makeMission($surgeon, $instr, $site, MissionStatus::ASSIGNED, '2026-08-13');
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-08-10', 'dateEnd' => '2026-08-14',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $absenceId = $this->json($client->getResponse())['id'];
+
+        $this->em->clear();
+        $missionFallsOut = $this->em->find(Mission::class, $missionFallsOut->getId());
+        $missionStaysCovered = $this->em->find(Mission::class, $missionStaysCovered->getId());
+        self::assertSame(MissionStatus::CANCELLED, $missionFallsOut->getStatus());
+        self::assertSame(MissionStatus::CANCELLED, $missionStaysCovered->getStatus());
+
+        // Shrink from the front: 10/08-11/08 fall out, 12/08-14/08 remain covered.
+        $client->request('PATCH', "/api/absences/{$absenceId}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'dateStart' => '2026-08-12', 'dateEnd' => '2026-08-14',
+        ]));
+        self::assertSame(200, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+
+        $this->em->clear();
+        $missionFallsOut = $this->em->find(Mission::class, $missionFallsOut->getId());
+        $missionStaysCovered = $this->em->find(Mission::class, $missionStaysCovered->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $missionFallsOut->getStatus(), '10/08 fell out of the shrunk range — must be restored');
+        self::assertSame($instr->getId(), $missionFallsOut->getInstrumentist()?->getId());
+        self::assertSame(MissionStatus::CANCELLED, $missionStaysCovered->getStatus(), '13/08 is still covered — must remain cancelled');
+    }
+
+    #[WithoutErrorHandler]
+    public function test_pulling_the_end_date_earlier_restores_only_the_mission_that_fell_out(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $instr   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $missionStaysCovered = $this->makeMission($surgeon, $instr, $site, MissionStatus::ASSIGNED, '2026-08-11');
+        $missionFallsOut  = $this->makeMission($surgeon, $instr, $site, MissionStatus::ASSIGNED, '2026-08-14');
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-08-10', 'dateEnd' => '2026-08-14',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $absenceId = $this->json($client->getResponse())['id'];
+
+        $this->em->clear();
+        $missionFallsOut = $this->em->find(Mission::class, $missionFallsOut->getId());
+        $missionStaysCovered = $this->em->find(Mission::class, $missionStaysCovered->getId());
+        self::assertSame(MissionStatus::CANCELLED, $missionFallsOut->getStatus());
+        self::assertSame(MissionStatus::CANCELLED, $missionStaysCovered->getStatus());
+
+        // Shrink from the back: 12/08-14/08 fall out, 10/08-11/08 remain covered.
+        $client->request('PATCH', "/api/absences/{$absenceId}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'dateStart' => '2026-08-10', 'dateEnd' => '2026-08-11',
+        ]));
+        self::assertSame(200, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+
+        $this->em->clear();
+        $missionFallsOut = $this->em->find(Mission::class, $missionFallsOut->getId());
+        $missionStaysCovered = $this->em->find(Mission::class, $missionStaysCovered->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $missionFallsOut->getStatus(), '14/08 fell out of the shrunk range — must be restored');
+        self::assertSame($instr->getId(), $missionFallsOut->getInstrumentist()?->getId());
+        self::assertSame(MissionStatus::CANCELLED, $missionStaysCovered->getStatus(), '11/08 is still covered — must remain cancelled');
+    }
+
+    #[WithoutErrorHandler]
+    public function test_expanding_the_range_never_restores_anything(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $instr   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($surgeon, $instr, $site, MissionStatus::ASSIGNED, '2026-08-12');
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-08-11', 'dateEnd' => '2026-08-13',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $absenceId = $this->json($client->getResponse())['id'];
+
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::CANCELLED, $mission->getStatus());
+
+        // Pure expansion on both sides — nothing ever falls out of coverage.
+        $client->request('PATCH', "/api/absences/{$absenceId}", server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'dateStart' => '2026-08-08', 'dateEnd' => '2026-08-16',
+        ]));
+        self::assertSame(200, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::CANCELLED, $mission->getStatus(), 'Pure expansion never removes coverage — must never be restored');
+        self::assertCount(1, $this->auditEventsForMission($mission));
+    }
+
+    #[WithoutErrorHandler]
+    public function test_deleting_the_absence_still_restores_the_mission_exactly_as_before_the_fix(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $instr   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($surgeon, $instr, $site, MissionStatus::ASSIGNED, '2026-08-12');
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-08-10', 'dateEnd' => '2026-08-14',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode());
+        $absenceId = $this->json($client->getResponse())['id'];
+
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::CANCELLED, $mission->getStatus());
+
+        // D-104's deletion path passes isDeletion: true — the new "still covered by the
+        // absence's own current range" guard must never apply there (there is no "current
+        // range" once the absence itself is gone); untouched by this fix.
+        $client->request('DELETE', "/api/absences/{$absenceId}", server: $this->auth($token));
+        self::assertSame(204, $client->getResponse()->getStatusCode());
+
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $mission->getStatus(), 'Deletion reconciliation must be unaffected by the update-path fix');
+        self::assertSame($instr->getId(), $mission->getInstrumentist()?->getId());
+    }
 }

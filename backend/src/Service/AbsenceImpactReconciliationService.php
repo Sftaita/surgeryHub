@@ -132,8 +132,8 @@ class AbsenceImpactReconciliationService
         }
 
         $restoredMissions = $role === 'SURGEON'
-            ? $this->reconcileSurgeonMissions($absenceId, $user, $absence->getDateStart(), $absence->getDateEnd(), $actor)
-            : $this->reconcileInstrumentistMissions($absenceId, $user, $absence->getDateStart(), $absence->getDateEnd(), $actor);
+            ? $this->reconcileSurgeonMissions($absence, $absenceId, $user, $absence->getDateStart(), $absence->getDateEnd(), $actor, isDeletion: true)
+            : $this->reconcileInstrumentistMissions($absence, $absenceId, $user, $absence->getDateStart(), $absence->getDateEnd(), $actor, isDeletion: true);
 
         return $this->flushAndNotify($absenceId, $user, $role, $actor, $restoredOccurrences, $restoredMissions);
     }
@@ -149,6 +149,20 @@ class AbsenceImpactReconciliationService
      * AbsenceMissionReactionService::onAbsenceUpdated() (mutates newly-overlapping
      * missions) — both already run against the (already-flushed) new range before this
      * method is called.
+     *
+     * Pre-D-117-hardening bug: reconcileSurgeonMissions()/reconcileInstrumentistMissions()
+     * used to search the OLD range (correct) but never checked whether a candidate's date
+     * was STILL covered by the absence's own CURRENT range — only whether some OTHER
+     * absence covered it (surgeonStillAbsentForMission() excludes by id, not by range). A
+     * genuine no-op PATCH (unchanged dates, e.g. only `reason` edited) or a pure expansion
+     * would still find every previously-cancelled mission in the (old == or ⊆ new) range as
+     * a "candidate" and — since no OTHER absence needed to exist — incorrectly restore it.
+     * reconcileOccurrences() already had the right guard (`isDeletion` false skips a date
+     * still inside `$absence`'s current range); both mission methods now take the same
+     * `$absence` + `isDeletion` and apply the identical skip, so only dates that actually
+     * fell OUT of coverage (front/back shrink) are ever restoration candidates — a no-op or
+     * pure expansion always resolves to zero mission candidates. See
+     * AbsenceImpactReconciliationTest for the shrink/expand/no-op matrix.
      *
      * @return array{restoredOccurrences: array<int, array<string, mixed>>, restoredMissions: array<int, array<string, mixed>>}
      */
@@ -169,8 +183,8 @@ class AbsenceImpactReconciliationService
             : [];
 
         $restoredMissions = $role === 'SURGEON'
-            ? $this->reconcileSurgeonMissions($absence->getId(), $user, $previousDateStart, $previousDateEnd, $actor)
-            : $this->reconcileInstrumentistMissions($absence->getId(), $user, $previousDateStart, $previousDateEnd, $actor);
+            ? $this->reconcileSurgeonMissions($absence, $absence->getId(), $user, $previousDateStart, $previousDateEnd, $actor, isDeletion: false)
+            : $this->reconcileInstrumentistMissions($absence, $absence->getId(), $user, $previousDateStart, $previousDateEnd, $actor, isDeletion: false);
 
         return $this->flushAndNotify($absence->getId(), $user, $role, $actor, $restoredOccurrences, $restoredMissions);
     }
@@ -327,7 +341,7 @@ class AbsenceImpactReconciliationService
     // ── Missions cancelled due to surgeon absence ─────────────────────────────
 
     /** @return array<int, array<string, mixed>> */
-    private function reconcileSurgeonMissions(int $absenceId, User $surgeon, \DateTimeImmutable $searchStart, \DateTimeImmutable $searchEnd, User $actor): array
+    private function reconcileSurgeonMissions(Absence $absence, int $absenceId, User $surgeon, \DateTimeImmutable $searchStart, \DateTimeImmutable $searchEnd, User $actor, bool $isDeletion): array
     {
         $dayStart = $searchStart->setTime(0, 0, 0);
         $dayEnd   = $searchEnd->setTime(23, 59, 59);
@@ -342,6 +356,9 @@ class AbsenceImpactReconciliationService
             ->setParameter('dayStart', $dayStart, Types::DATETIME_IMMUTABLE)
             ->setParameter('dayEnd', $dayEnd, Types::DATETIME_IMMUTABLE)
             ->getResult();
+
+        $currentRangeStart = $absence->getDateStart()->setTime(0, 0, 0);
+        $currentRangeEnd   = $absence->getDateEnd()->setTime(23, 59, 59);
 
         $restored = [];
         foreach ($candidates as $mission) {
@@ -359,6 +376,20 @@ class AbsenceImpactReconciliationService
             // absence never re-touches an already-CANCELLED mission (out of react()'s
             // ASSIGNED/OPEN scope), so it never appears here. Deleting THAT second absence
             // must still be able to trigger restoration once nothing else justifies it.
+
+            // Update (shrink) only — mirrors reconcileOccurrences(): a mission date still
+            // inside THIS absence's own (already-updated, current) range is still justified
+            // by it; only dates that fell OUT of the range (front/back shrink) are
+            // restoration candidates. Not applicable to deletion: there is no "current
+            // range" left once the absence itself is gone. This is the fix for the
+            // pre-existing bug documented on reconcileForUpdate() — without it, a no-op
+            // PATCH (same dates) or a pure expansion found every previously-cancelled
+            // mission in range as a "candidate" and restored it.
+            if (!$isDeletion && $mission->getStartAt() !== null
+                && $mission->getStartAt() >= $currentRangeStart
+                && $mission->getStartAt() <= $currentRangeEnd) {
+                continue;
+            }
 
             // The instrumentist eligibility check inside restoreAfterCancellation() below
             // validates the CANDIDATE instrumentist only — it has no opinion on the
@@ -399,7 +430,7 @@ class AbsenceImpactReconciliationService
     // ── Missions released due to instrumentist absence ────────────────────────
 
     /** @return array<int, array<string, mixed>> */
-    private function reconcileInstrumentistMissions(int $absenceId, User $instrumentist, \DateTimeImmutable $searchStart, \DateTimeImmutable $searchEnd, User $actor): array
+    private function reconcileInstrumentistMissions(Absence $absence, int $absenceId, User $instrumentist, \DateTimeImmutable $searchStart, \DateTimeImmutable $searchEnd, User $actor, bool $isDeletion): array
     {
         $dayStart = $searchStart->setTime(0, 0, 0);
         $dayEnd   = $searchEnd->setTime(23, 59, 59);
@@ -416,6 +447,9 @@ class AbsenceImpactReconciliationService
             ->setParameter('dayEnd', $dayEnd, Types::DATETIME_IMMUTABLE)
             ->getResult();
 
+        $currentRangeStart = $absence->getDateStart()->setTime(0, 0, 0);
+        $currentRangeEnd   = $absence->getDateEnd()->setTime(23, 59, 59);
+
         $restored = [];
         foreach ($candidates as $mission) {
             $latest = $this->latestAuditEvent($mission);
@@ -428,6 +462,15 @@ class AbsenceImpactReconciliationService
             }
             if (($payload['causedByAbsenceId'] ?? null) === null) {
                 continue; // a manager action released it — never touch it
+            }
+
+            // Update (shrink) only — see reconcileSurgeonMissions() for the full rationale
+            // and the bug this fixes: a mission date still inside THIS absence's own
+            // current range is still justified by it, never a restoration candidate.
+            if (!$isDeletion && $mission->getStartAt() !== null
+                && $mission->getStartAt() >= $currentRangeStart
+                && $mission->getStartAt() <= $currentRangeEnd) {
+                continue;
             }
             // Deliberately NOT an exact match against $absenceId — same reasoning as
             // reconcileSurgeonMissions(): a second, later, overlapping instrumentist
