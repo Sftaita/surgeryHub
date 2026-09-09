@@ -401,6 +401,16 @@ class MissionPostDeployService
      * OPEN|ASSIGNED → ASSIGNED (manager-triggered assignment, e.g. via a PlanningAlert action).
      * Assigns a specific instrumentist; transitions OPEN→ASSIGNED when needed.
      * Throws 409 if the mission is not in a mutable post-deploy state, 404 if target not found.
+     *
+     * $causedByAbsenceId / $reassignedFromMissionId — CAS B (D-117): set only by
+     * AbsenceMissionReactionService when this assignment is the automatic reassignment of an
+     * instrumentist just freed from a surgeon-absence-cancelled mission. Same structured,
+     * never-free-text convention as release()/cancel()'s own $causedByAbsenceId (D-104) —
+     * lets a later audit (or AbsenceImpactReconciliationService) reconstruct "mission A
+     * cancelled by absence N, freed instrumentist X, X reassigned to mission B by that same
+     * absence N" purely from AuditEvent.payload on A and B, without a new AuditEventType.
+     * Both default to null and are omitted from the payload comparison every other caller
+     * relies on — purely additive, no existing behavior changes.
      */
     public function assign(
         Mission $mission,
@@ -408,6 +418,8 @@ class MissionPostDeployService
         int $newInstrumentistId,
         bool $notify = true,
         EligibilityEnforcementPolicy $policy = EligibilityEnforcementPolicy::STRICT_ASSIGNMENT,
+        ?int $causedByAbsenceId = null,
+        ?int $reassignedFromMissionId = null,
     ): void {
         if (!in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
             throw new ConflictHttpException('Mission must be OPEN or ASSIGNED to assign');
@@ -434,12 +446,14 @@ class MissionPostDeployService
         $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
 
         $payload = [
-            'fromInstrumentistId'   => $fromInstrumentistId,
-            'fromInstrumentistName' => $fromInstrumentistName,
-            'toInstrumentistId'     => $newInstrumentistId,
-            'toInstrumentistName'   => $this->displayName($newInstrumentist),
-            'actorId'               => $actor->getId(),
-            'actorName'             => $this->displayName($actor),
+            'fromInstrumentistId'      => $fromInstrumentistId,
+            'fromInstrumentistName'    => $fromInstrumentistName,
+            'toInstrumentistId'        => $newInstrumentistId,
+            'toInstrumentistName'      => $this->displayName($newInstrumentist),
+            'causedByAbsenceId'        => $causedByAbsenceId,
+            'reassignedFromMissionId'  => $reassignedFromMissionId,
+            'actorId'                  => $actor->getId(),
+            'actorName'                => $this->displayName($actor),
         ];
 
         $this->audit->record($mission, $actor, AuditEventType::MISSION_REASSIGNED_POST_DEPLOY, $payload);

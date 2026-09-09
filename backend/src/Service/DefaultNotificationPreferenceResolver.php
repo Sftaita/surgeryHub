@@ -17,6 +17,10 @@ use Doctrine\ORM\EntityManagerInterface;
  *   - ABSENCE_*:                           inApp=true, email=true  (urgent — same "your mission just
  *                                           changed" urgency as PLANNING_MISSION_CANCELLED, just
  *                                           triggered by an absence instead of a manual action)
+ *   - ABSENCE_INSTRUMENTIST_REASSIGNED
+ *     (CAS B, D-117):                       inApp=true, email=true — same urgency as
+ *                                           ABSENCE_MISSION_CANCELLED, the other outcome of the
+ *                                           exact same event (mutually exclusive per mission).
  *   - ABSENCE_SELF_DECLARED (Lot 3):       inApp=true, email=false (deliberate exception within the
  *                                           ABSENCE_* family — fires only when a self-declared absence
  *                                           did NOT impact any mission, informational only; see
@@ -70,6 +74,7 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::ABSENCE_INSTRUMENTIST_RELEASED,
         NotificationType::ABSENCE_SURGEON_MISSION_OPENED,
         NotificationType::ABSENCE_MISSION_CANCELLED,
+        NotificationType::ABSENCE_INSTRUMENTIST_REASSIGNED,
         NotificationType::SURGEON_MISSION_OPEN_PUBLISHED,
         NotificationType::CATALOGUE_REQUEST_RESOLVED,
         NotificationType::CATALOGUE_REQUEST_IGNORED,

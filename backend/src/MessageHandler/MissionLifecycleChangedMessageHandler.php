@@ -36,6 +36,12 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
  *                SURGEON_POST_COVERED to surgeon when transitioning OPEN→ASSIGNED
  *   CANCELLED → PLANNING_MISSION_CANCELLED to surgeon; to instrumentist if assigned (defensive)
  *
+ * CAS B (D-117): REASSIGNED with payload['causedByAbsenceId'] set (AbsenceMissionReactionService's
+ * automatic post-absence reassignment) suppresses the "new instrumentist" PLANNING_MISSION_
+ * REASSIGNED branch only — AbsenceMissionsReactedMessageHandler sends that recipient the
+ * richer ABSENCE_INSTRUMENTIST_REASSIGNED instead. The SURGEON_POST_COVERED branch is
+ * unaffected and fires exactly as it would for any other OPEN→ASSIGNED reassignment.
+ *
  * ASSIGNED (MissionChangeType): does not exist in the enum.  Both MissionPostDeployService::assign()
  * and ::reassign() produce REASSIGNED.  The OPEN→ASSIGNED case is distinguished by
  * payload['fromInstrumentistId'] === null.
@@ -105,6 +111,7 @@ final class MissionLifecycleChangedMessageHandler
         $payload = [
             'missionId'         => $mission->getId(),
             'dayLabel'          => $mission->getStartAt()?->format('l'),
+            'missionDate'       => $mission->getStartAt()?->format('d/m/Y'),
             'siteName'          => $mission->getSite()?->getName(),
             'periodLabel'       => $this->periodLabel($mission),
             'instrumentistId'   => $message->payload['instrumentistId'] ?? null,
@@ -287,7 +294,15 @@ final class MissionLifecycleChangedMessageHandler
         }
 
         // ── New instrumentist: assignment notification ────────────────────────
-        if ($toId !== null) {
+        // CAS B (D-117) — suppressed when this is an absence-driven auto-reassignment
+        // (causedByAbsenceId present): AbsenceMissionsReactedMessageHandler already sends
+        // this exact instrumentist a richer, combined-context ABSENCE_INSTRUMENTIST_REASSIGNED
+        // covering both the cancelled mission and this new one — sending the generic "you
+        // were assigned" notification too would be a second, redundant one about the same
+        // event. The surgeon-facing SURGEON_POST_COVERED branch below is NOT suppressed —
+        // reused as-is for that recipient (see MissionPostDeployService::assign() docblock).
+        $isAbsenceDrivenReassignment = ($message->payload['causedByAbsenceId'] ?? null) !== null;
+        if ($toId !== null && !$isAbsenceDrivenReassignment) {
             $toInstrumentist = $this->em->find(User::class, $toId);
             if ($toInstrumentist !== null) {
                 $ch = $this->resolveChannelsSafely($toInstrumentist, NotificationType::PLANNING_MISSION_REASSIGNED);
@@ -338,6 +353,7 @@ final class MissionLifecycleChangedMessageHandler
                 $surgeonPayload = [
                     'missionId'         => $mission->getId(),
                     'dayLabel'          => $mission->getStartAt()?->format('l'),
+                    'missionDate'       => $mission->getStartAt()?->format('d/m/Y'),
                     'siteName'          => $mission->getSite()?->getName(),
                     'periodLabel'       => $this->periodLabel($mission),
                     'instrumentistId'   => $toId,

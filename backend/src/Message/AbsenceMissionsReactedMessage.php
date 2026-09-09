@@ -32,7 +32,13 @@ final class AbsenceMissionsReactedMessage
      *     surgeonName: ?string,
      *     instrumentistId: ?int,
      *     instrumentistName: ?string,
-     * }> $missions
+     *     reassignedTo: list<array{missionId: int, date: string, moment: ?string, horaire: ?string, siteName: ?string, surgeonId: ?int, surgeonName: ?string}>,
+     * }> $missions CAS B (D-117) — 'reassignedTo' is always present (empty array when not
+     *     applicable, e.g. every RELEASED entry). Non-empty on a CANCELLED entry means the
+     *     instrumentist named on that entry was automatically reassigned to each listed
+     *     mission instead of being released — AbsenceMissionsReactedMessageHandler uses this
+     *     to send ABSENCE_INSTRUMENTIST_REASSIGNED instead of ABSENCE_MISSION_CANCELLED for
+     *     that recipient, never both.
      */
     public function __construct(
         public readonly int $absenceId,

@@ -37,7 +37,13 @@ enum NotificationType: string
     // PLANNING_MISSION_REASSIGNED split above for the same underlying event.
     case ABSENCE_INSTRUMENTIST_RELEASED = 'ABSENCE_INSTRUMENTIST_RELEASED'; // to the removed instrumentist
     case ABSENCE_SURGEON_MISSION_OPENED = 'ABSENCE_SURGEON_MISSION_OPENED'; // to the surgeon, instrumentist absence
-    case ABSENCE_MISSION_CANCELLED      = 'ABSENCE_MISSION_CANCELLED';      // to the instrumentist, surgeon absence
+    case ABSENCE_MISSION_CANCELLED      = 'ABSENCE_MISSION_CANCELLED';      // to the instrumentist, surgeon absence, no compatible target found
+
+    // CAS B (D-117) — surgeon-absence reaction found a same-day/same-site OPEN mission for the
+    // freed instrumentist and reassigned them automatically. Mutually exclusive with
+    // ABSENCE_MISSION_CANCELLED for that same instrumentist/mission: never both (see
+    // AbsenceMissionReactionService::react()).
+    case ABSENCE_INSTRUMENTIST_REASSIGNED = 'ABSENCE_INSTRUMENTIST_REASSIGNED'; // to the reassigned instrumentist
 
     // ── Self-service absence, no mission impact (Lot 3, D-097) ───────────────
     // A surgeon/instrumentist declared their own absence (self-service, AbsenceController's

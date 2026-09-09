@@ -219,16 +219,53 @@ final class AbsenceMissionsReactedMessageHandler
 
     // ── Surgeon absence: notify each affected instrumentist ──────────────────
 
+    /**
+     * CAS B (D-117) — split by outcome, never both for the same mission: a mission whose
+     * freed instrumentist was automatically reassigned (non-empty 'reassignedTo', see
+     * AbsenceMissionReactionService::buildMissionSummary()) gets the combined-context
+     * ABSENCE_INSTRUMENTIST_REASSIGNED instead of the pre-existing, unconditional
+     * ABSENCE_MISSION_CANCELLED. If the same instrumentist has both outcomes across several
+     * missions cancelled by this same absence-processing run (rare — a multi-day absence
+     * with more than one affected mission for them), they correctly get one email of each
+     * kind, never a contradictory mix inside a single email.
+     */
     private function handleSurgeonAbsence(AbsenceMissionsReactedMessage $message): void
     {
-        $byInstrumentist = [];
+        $byInstrumentistReassigned = [];
+        $byInstrumentistReleased   = [];
+
         foreach ($message->missions as $m) {
-            if ($m['instrumentistId'] !== null) {
-                $byInstrumentist[$m['instrumentistId']][] = $m;
+            if ($m['instrumentistId'] === null) {
+                continue;
+            }
+            if (!empty($m['reassignedTo'])) {
+                $byInstrumentistReassigned[$m['instrumentistId']][] = $m;
+            } else {
+                $byInstrumentistReleased[$m['instrumentistId']][] = $m;
             }
         }
 
-        foreach ($byInstrumentist as $instrumentistId => $missions) {
+        foreach ($byInstrumentistReassigned as $instrumentistId => $missions) {
+            $instrumentist = $this->em->find(User::class, $instrumentistId);
+            if ($instrumentist === null) {
+                continue;
+            }
+
+            $count   = count($missions);
+            $subject = $count > 1
+                ? sprintf('%d missions réaffectées suite à une absence chirurgien', $count)
+                : 'Mission réaffectée suite à une absence chirurgien';
+
+            $this->notifyRecipient(
+                $instrumentist,
+                NotificationType::ABSENCE_INSTRUMENTIST_REASSIGNED,
+                $missions,
+                'emails/absence_instrumentist_reassigned.html.twig',
+                $subject,
+            );
+        }
+
+        foreach ($byInstrumentistReleased as $instrumentistId => $missions) {
             $instrumentist = $this->em->find(User::class, $instrumentistId);
             if ($instrumentist === null) {
                 continue;
