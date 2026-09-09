@@ -323,9 +323,17 @@ export async function updateDraft(versionId: number, lines: PreviewLineV2[]): Pr
  * "Supprimer le brouillon" — only ever succeeds for a version that is still entirely
  * DRAFT (backend enforces this, 409 PLANNING_VERSION_NOT_DRAFT otherwise). Never touches
  * a SurgeonSchedulePost or any mission outside this version.
+ *
+ * Same extended timeout as updateDraft() above, for the same reason: a large draft (~100
+ * missions) can take longer than apiClient's default 10s to delete server-side. Found via
+ * a real browser walkthrough — the deletion always completed and committed correctly, but
+ * the manager saw a false "timeout" error and a stale "brouillon existant" screen. The
+ * backend delete itself was also sped up (single bulk DELETE instead of one per mission,
+ * see PlanningDraftService::delete()); this timeout bump is a second, independent safety
+ * margin, not a substitute for that fix.
  */
 export async function deletePlanningVersionDraft(versionId: number): Promise<void> {
-  await apiClient.delete(`/api/planning/versions/${versionId}`);
+  await apiClient.delete(`/api/planning/versions/${versionId}`, { timeout: 30_000 });
 }
 
 // ── Modification mode (Planning V2 unified editor) — Batch 16 ────────────────

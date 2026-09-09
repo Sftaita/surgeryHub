@@ -567,6 +567,87 @@ final class PlanningV2DraftControllerTest extends WebTestCase
         }
     }
 
+    // ── Regression — deleting a large draft must not exceed a client-compatible timeout
+    //    (2026-09-08, found via a real browser walkthrough: a 97-mission draft's DELETE
+    //    took long enough to trip apiClient's default 10s axios timeout even though the
+    //    server-side deletion always completed and committed correctly — see
+    //    PlanningDraftService::delete()'s updated docblock). 30 weekly (non-single-
+    //    occurrence) posts over a full month reliably produces well over 100 missions.
+
+    #[WithoutErrorHandler]
+    public function test_delete_large_draft_completes_quickly_and_fully(): void
+    {
+        // Scoped to this test only (PHPUnit's default 128M is exhausted well before the
+        // assertions below run) — the fixture itself is small, but the dev/test env's
+        // Doctrine profiler records a full backtrace per SQL statement, and generating
+        // 100+ missions issues that many INSERTs. Not a production memory concern: the
+        // profiler's per-query backtrace collector isn't active outside dev/test.
+        ini_set('memory_limit', '256M');
+
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $site = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        for ($i = 0; $i < 30; $i++) {
+            $this->makePost($this->makeUser('ROLE_SURGEON'), $site);
+        }
+
+        $generateResponse = $this->postJson($client, $token, '/api/planning/v2/generate', [
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+        ]);
+        $generateBody = $this->json($generateResponse);
+        self::assertSame(Response::HTTP_OK, $generateResponse->getStatusCode(), (string) $generateResponse->getContent());
+        // Guards the test itself: if this ever drops below 100 (fewer Mondays some future
+        // test month, helper changes...) the scenario below no longer exercises "large draft".
+        self::assertGreaterThanOrEqual(100, $generateBody['created'], 'Test setup must produce a genuinely large draft (>=100 missions).');
+        $versionId = $generateBody['versionId'];
+
+        $this->em->clear();
+        $missionIds = array_column(
+            $this->em->createQueryBuilder()->select('m.id')->from(Mission::class, 'm')
+                ->where('m.planningVersion = :v')->setParameter('v', $versionId)
+                ->getQuery()->getArrayResult(),
+            'id',
+        );
+        self::assertCount($generateBody['created'], $missionIds);
+
+        $startedAt = microtime(true);
+        $response  = $this->deleteJson($client, $token, "/api/planning/versions/{$versionId}");
+        $elapsedMs = (microtime(true) - $startedAt) * 1000;
+
+        self::assertSame(Response::HTTP_NO_CONTENT, $response->getStatusCode(), (string) $response->getContent());
+        // Generous margin (the real-world failure took >10s over Docker-to-host MySQL) —
+        // this only needs to catch a regression back to one round trip per mission, not
+        // assert a specific fast number on possibly-slow CI hardware.
+        self::assertLessThan(5000.0, $elapsedMs, sprintf('DELETE took %.0fms — large-draft deletion regressed back toward one round trip per mission.', $elapsedMs));
+
+        $this->em->clear();
+        self::assertNull($this->em->find(PlanningVersion::class, $versionId), 'no residual PlanningVersion');
+        $remaining = $this->em->createQueryBuilder()->select('COUNT(m.id)')->from(Mission::class, 'm')
+            ->where('m.id IN (:ids)')->setParameter('ids', $missionIds)
+            ->getQuery()->getSingleScalarResult();
+        self::assertSame(0, (int) $remaining, 'no residual Mission rows');
+
+        // Cleanup bookkeeping: already gone, don't try to remove them again in tearDown.
+        $this->createdIds['versions'] = array_diff($this->createdIds['versions'], [$versionId]);
+
+        // Mois à nouveau générable — confirms the deletion was truly complete, not partial.
+        $again = $this->postJson($client, $token, '/api/planning/v2/generate', [
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+        ]);
+        self::assertSame(Response::HTTP_OK, $again->getStatusCode(), (string) $again->getContent());
+        $againBody = $this->json($again);
+        $this->createdIds['versions'][] = $againBody['versionId'];
+        foreach ($this->em->createQueryBuilder()->select('m.id')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->setParameter('v', $againBody['versionId'])
+            ->getQuery()->getArrayResult() as $row
+        ) {
+            $this->createdIds['missions'][] = $row['id'];
+        }
+    }
+
     // ── Test 7 (delete refused once part of the version is no longer DRAFT) ──────
 
     #[WithoutErrorHandler]

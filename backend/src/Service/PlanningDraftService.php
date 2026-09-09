@@ -8,14 +8,25 @@ use App\Entity\EncodingAnomalyReport;
 use App\Entity\FinancialCalculation;
 use App\Entity\FirmInvoiceLine;
 use App\Entity\Hospital;
+use App\Entity\ImplantSubMission;
+use App\Entity\InstrumentistRating;
 use App\Entity\InstrumentistStatementLine;
+use App\Entity\InterventionTypeRequest;
+use App\Entity\MaterialItemRequest;
+use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissingMaterialReport;
+use App\Entity\MissionClaim;
+use App\Entity\MissionEncodingComment;
+use App\Entity\MissionExecution;
 use App\Entity\MissionExecutionDispute;
+use App\Entity\MissionIntervention;
 use App\Entity\MissionInterventionDraft;
+use App\Entity\MissionPublication;
 use App\Entity\NotificationEvent;
 use App\Entity\PlanningAlert;
 use App\Entity\PlanningVersion;
+use App\Entity\SurgeonRatingByInstrumentist;
 use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
@@ -246,6 +257,23 @@ final class PlanningDraftService
      * MissionInterventionDraft both have orphanRemoval=false on Mission by deliberate
      * design). Same audit as CLEANUP_ON_MISSION_DELETE above.
      *
+     * Extended 2026-09-08 (delete() performance fix) with every remaining
+     * `orphanRemoval: true` collection Mission itself declares — MissionClaim (an OPEN-
+     * mission claim, structurally impossible pre-deploy), MissionPublication,
+     * MissionExecution, SurgeonRatingByInstrumentist, InstrumentistRating,
+     * ImplantSubMission, MissionIntervention, MaterialLine, MaterialItemRequest,
+     * InterventionTypeRequest, MissionEncodingComment — every one of them a post-deploy or
+     * post-encoding artifact, same "never left DRAFT" argument as the original seven. Until
+     * now these relied entirely on Doctrine's own per-entity orphanRemoval cascade (fired
+     * only inside the removal loop this list now replaces — see delete() below); asserting
+     * them empty here first is what makes it safe to bulk-DELETE Mission directly without
+     * ever bypassing a real cascade. `outbound_notification` needs no entry (`ON DELETE SET
+     * NULL` at the DB level); `service_hours_dispute`/`instrumentist_service` (legacy,
+     * unmapped by any current entity) and `surgeon_mission_request.created_mission_id` (a
+     * different mission-creation origin, can never reference a generate()'d/CAS-D draft
+     * mission) stay out of scope exactly as the original CLEANUP_ON_MISSION_DELETE audit
+     * already concluded.
+     *
      * @var list<class-string>
      */
     private const PROTECTED_IF_MISSION_TOUCHED = [
@@ -256,6 +284,17 @@ final class PlanningDraftService
         InstrumentistStatementLine::class,
         FinancialCalculation::class,
         MissionInterventionDraft::class,
+        MissionClaim::class,
+        MissionPublication::class,
+        MissionExecution::class,
+        SurgeonRatingByInstrumentist::class,
+        InstrumentistRating::class,
+        ImplantSubMission::class,
+        MissionIntervention::class,
+        MaterialLine::class,
+        MaterialItemRequest::class,
+        InterventionTypeRequest::class,
+        MissionEncodingComment::class,
     ];
 
     /**
@@ -269,6 +308,19 @@ final class PlanningDraftService
      * Mission belonging to any other version, never the Absence behind a cleaned-up
      * PlanningAlert. Whole operation is one atomic transaction — any failure rolls back
      * everything, never a partial deletion.
+     *
+     * Performance (2026-09-08): a draft with many missions (~100) used to issue one
+     * individual DELETE per Mission (`$em->remove()` inside a loop, one flush()) — Doctrine
+     * never batches entity removal into a single statement, so this was ~100 sequential
+     * round trips in one transaction, occasionally slow enough to exceed the frontend's
+     * request timeout even though the deletion itself always completed and committed
+     * correctly (found via a real browser walkthrough deleting a 97-mission draft: server
+     * genuinely finished, but the manager saw a timeout error and a stale "brouillon
+     * existant" screen until reloading). `assertNoProtectedArtifacts()` above now also
+     * covers every `orphanRemoval: true` collection Mission declares (not just the
+     * originally non-cascading ones), which makes it safe to delete every Mission of this
+     * version with a single bulk DQL DELETE instead — one statement instead of ~100,
+     * same transaction, same 409 guards, zero change to what gets deleted or refused.
      */
     public function delete(PlanningVersion $version): void
     {
@@ -294,7 +346,7 @@ final class PlanningDraftService
             $this->assertNoProtectedArtifacts($missionIds);
         }
 
-        $this->em->wrapInTransaction(function () use ($version, $missions, $missionIds): void {
+        $this->em->wrapInTransaction(function () use ($version, $missionIds): void {
             foreach (self::CLEANUP_ON_MISSION_DELETE as $entityClass) {
                 if ($missionIds === []) {
                     break;
@@ -304,8 +356,10 @@ final class PlanningDraftService
                     ->execute();
             }
 
-            foreach ($missions as $mission) {
-                $this->em->remove($mission);
+            if ($missionIds !== []) {
+                $this->em->createQuery(sprintf('DELETE FROM %s m WHERE m.id IN (:ids)', Mission::class))
+                    ->setParameter('ids', $missionIds)
+                    ->execute();
             }
             $this->em->remove($version);
             $this->em->flush();
