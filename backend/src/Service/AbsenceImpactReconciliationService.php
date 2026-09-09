@@ -150,7 +150,7 @@ class AbsenceImpactReconciliationService
      * missions) — both already run against the (already-flushed) new range before this
      * method is called.
      *
-     * Pre-D-117-hardening bug: reconcileSurgeonMissions()/reconcileInstrumentistMissions()
+     * Pre-D-118-hardening bug: reconcileSurgeonMissions()/reconcileInstrumentistMissions()
      * used to search the OLD range (correct) but never checked whether a candidate's date
      * was STILL covered by the absence's own CURRENT range — only whether some OTHER
      * absence covered it (surgeonStillAbsentForMission() excludes by id, not by range). A

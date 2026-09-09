@@ -78,7 +78,7 @@ use Symfony\Component\Messenger\MessageBusInterface;
  * when AbsenceImpactReconciliationService actually restored something (see AbsenceController::
  * delete()). Restoration itself is AbsenceImpactReconciliationService's job (Lot 4).
  *
- * CAS B (D-117) — a surgeon-absence cancellation no longer just detaches the instrumentist.
+ * CAS B (D-118) — a surgeon-absence cancellation no longer just detaches the instrumentist.
  * Once cancel() commits, processSurgeonAbsence() searches for a same-day, same-site OPEN
  * mission the just-freed instrumentist can cover instead (findAndReassignFreedInstrumentist()),
  * and — if found — reassigns them via MissionPostDeployService::assign() (never a second
@@ -356,7 +356,7 @@ class AbsenceMissionReactionService
             occurredAt: new \DateTimeImmutable(),
         ));
 
-        // CAS B (D-117) — before letting this instrumentist count as genuinely released, look
+        // CAS B (D-118) — before letting this instrumentist count as genuinely released, look
         // for a same-day/same-site OPEN mission to move them onto instead. Only ever attempted
         // when the cancelled mission actually had an instrumentist to move.
         $freedInstrumentist = $captured['instrumentist'];
@@ -367,7 +367,7 @@ class AbsenceMissionReactionService
         return $summary;
     }
 
-    // ── CAS B (D-117) — automatic reassignment of a freed instrumentist ──────────
+    // ── CAS B (D-118) — automatic reassignment of a freed instrumentist ──────────
 
     /**
      * Repeatedly finds the best same-day/same-site OPEN mission for $instrumentist and
@@ -608,7 +608,7 @@ class AbsenceMissionReactionService
      * has the real instrumentist/surgeon on the mission), never re-derived from a FK at
      * handler read-time later (R-12-style discipline, consistent with the rest of the app).
      *
-     * 'reassignedTo' (CAS B, D-117) — list<array<string,mixed>> of buildTargetSummary()
+     * 'reassignedTo' (CAS B, D-118) — list<array<string,mixed>> of buildTargetSummary()
      * entries, always present (defaults to an empty array here so every summary has a
      * uniform shape regardless of changeType), overwritten by processSurgeonAbsence() with
      * the real result of findAndReassignFreedInstrumentist() when applicable. Never
@@ -648,7 +648,7 @@ class AbsenceMissionReactionService
         $absenceEnd   = $absence->getDateEnd()->setTime(23, 59, 59);
         $field        = $byInstrumentist ? 'm.instrumentist' : 'm.surgeon';
 
-        // CAS B (D-117) — explicit ORDER BY: with no ordering, several ASSIGNED/OPEN missions
+        // CAS B (D-118) — explicit ORDER BY: with no ordering, several ASSIGNED/OPEN missions
         // overlapping one absence (e.g. a multi-day absence covering several occurrences) were
         // processed in whatever order MySQL happened to return them, making the automatic
         // reassignment search below non-deterministic when several instrumentists get freed by

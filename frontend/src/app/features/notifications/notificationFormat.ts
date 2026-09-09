@@ -47,7 +47,7 @@ export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "ev
     return from && to ? `Période du ${from} au ${to}` : "";
   }
 
-  // CAS B (D-117) audit — the generic missionDate+siteName fallback below left this type
+  // CAS B (D-118) audit — the generic missionDate+siteName fallback below left this type
   // showing only the site (no instrumentist, no période), too thin for "who was assigned to
   // my mission and when" — surfaced by both MissionPostDeployService::claim() and the
   // OPEN→ASSIGNED branch of assign()/reassign() (CAS B's automatic post-absence
@@ -61,7 +61,7 @@ export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "ev
     if (parts.length > 0) return parts.join(" — ");
   }
 
-  // CAS B (D-117) — payload is the CANCELLED mission's own summary (date/siteName above
+  // CAS B (D-118) — payload is the CANCELLED mission's own summary (date/siteName above
   // already describe it), plus 'reassignedTo': list<{date, moment, horaire, siteName,
   // surgeonName}> for the mission(s) the instrumentist was automatically moved onto instead
   // (see AbsenceMissionReactionService::buildTargetSummary()). The body leads with the new

@@ -18,7 +18,7 @@ use Doctrine\ORM\EntityManagerInterface;
  *                                           changed" urgency as PLANNING_MISSION_CANCELLED, just
  *                                           triggered by an absence instead of a manual action)
  *   - ABSENCE_INSTRUMENTIST_REASSIGNED
- *     (CAS B, D-117):                       inApp=true, email=true — same urgency as
+ *     (CAS B, D-118):                       inApp=true, email=true — same urgency as
  *                                           ABSENCE_MISSION_CANCELLED, the other outcome of the
  *                                           exact same event (mutually exclusive per mission).
  *   - ABSENCE_SELF_DECLARED (Lot 3):       inApp=true, email=false (deliberate exception within the

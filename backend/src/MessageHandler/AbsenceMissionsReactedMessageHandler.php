@@ -220,7 +220,7 @@ final class AbsenceMissionsReactedMessageHandler
     // ── Surgeon absence: notify each affected instrumentist ──────────────────
 
     /**
-     * CAS B (D-117) — split by outcome, never both for the same mission: a mission whose
+     * CAS B (D-118) — split by outcome, never both for the same mission: a mission whose
      * freed instrumentist was automatically reassigned (non-empty 'reassignedTo', see
      * AbsenceMissionReactionService::buildMissionSummary()) gets the combined-context
      * ABSENCE_INSTRUMENTIST_REASSIGNED instead of the pre-existing, unconditional

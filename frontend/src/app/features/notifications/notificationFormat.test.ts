@@ -36,7 +36,7 @@ describe("formatNotificationTitle — alignement avec NotificationType (backend)
 });
 
 /**
- * CAS B (D-117) — ABSENCE_INSTRUMENTIST_REASSIGNED leads with the new assignment
+ * CAS B (D-118) — ABSENCE_INSTRUMENTIST_REASSIGNED leads with the new assignment
  * (payload.reassignedTo), not a repeat of the cancelled mission already named by the title.
  */
 describe("formatNotificationBody — ABSENCE_INSTRUMENTIST_REASSIGNED", () => {

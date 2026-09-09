@@ -36,7 +36,7 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
  *                SURGEON_POST_COVERED to surgeon when transitioning OPEN→ASSIGNED
  *   CANCELLED → PLANNING_MISSION_CANCELLED to surgeon; to instrumentist if assigned (defensive)
  *
- * CAS B (D-117): REASSIGNED with payload['causedByAbsenceId'] set (AbsenceMissionReactionService's
+ * CAS B (D-118): REASSIGNED with payload['causedByAbsenceId'] set (AbsenceMissionReactionService's
  * automatic post-absence reassignment) suppresses the "new instrumentist" PLANNING_MISSION_
  * REASSIGNED branch only — AbsenceMissionsReactedMessageHandler sends that recipient the
  * richer ABSENCE_INSTRUMENTIST_REASSIGNED instead. The SURGEON_POST_COVERED branch is
@@ -294,7 +294,7 @@ final class MissionLifecycleChangedMessageHandler
         }
 
         // ── New instrumentist: assignment notification ────────────────────────
-        // CAS B (D-117) — suppressed when this is an absence-driven auto-reassignment
+        // CAS B (D-118) — suppressed when this is an absence-driven auto-reassignment
         // (causedByAbsenceId present): AbsenceMissionsReactedMessageHandler already sends
         // this exact instrumentist a richer, combined-context ABSENCE_INSTRUMENTIST_REASSIGNED
         // covering both the cancelled mission and this new one — sending the generic "you

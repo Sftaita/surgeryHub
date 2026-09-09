@@ -402,7 +402,7 @@ class MissionPostDeployService
      * Assigns a specific instrumentist; transitions OPEN→ASSIGNED when needed.
      * Throws 409 if the mission is not in a mutable post-deploy state, 404 if target not found.
      *
-     * $causedByAbsenceId / $reassignedFromMissionId — CAS B (D-117): set only by
+     * $causedByAbsenceId / $reassignedFromMissionId — CAS B (D-118): set only by
      * AbsenceMissionReactionService when this assignment is the automatic reassignment of an
      * instrumentist just freed from a surgeon-absence-cancelled mission. Same structured,
      * never-free-text convention as release()/cancel()'s own $causedByAbsenceId (D-104) —

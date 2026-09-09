@@ -773,7 +773,7 @@ final class AbsenceImpactReconciliationFunctionalTest extends WebTestCase
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // reconcileForUpdate() — fix for the pre-existing bug found during CAS B (D-117):
+    // reconcileForUpdate() — fix for the pre-existing bug found during CAS B (D-118):
     // reconcileSurgeonMissions()/reconcileInstrumentistMissions() never checked whether a
     // candidate mission's date was still covered by the absence's own CURRENT (already
     // updated) range — only whether some OTHER absence covered it. A no-op PATCH or a pure

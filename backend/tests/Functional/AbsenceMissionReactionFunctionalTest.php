@@ -217,7 +217,7 @@ final class AbsenceMissionReactionFunctionalTest extends WebTestCase
         $this->em->clear();
     }
 
-    // ── CAS B (D-117) helpers ─────────────────────────────────────────────────
+    // ── CAS B (D-118) helpers ─────────────────────────────────────────────────
 
     private function makeMissionAt(User $surgeon, ?User $instrumentist, Hospital $site, MissionStatus $status, string $day, string $startTime, string $endTime): Mission
     {
@@ -590,7 +590,7 @@ final class AbsenceMissionReactionFunctionalTest extends WebTestCase
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // CAS B (D-117) — surgeon absence on a published mission: search a compatible
+    // CAS B (D-118) — surgeon absence on a published mission: search a compatible
     // same-day/same-site OPEN mission for the freed instrumentist before treating
     // them as genuinely released.
     // ══════════════════════════════════════════════════════════════════════════
