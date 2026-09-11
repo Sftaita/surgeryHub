@@ -6335,7 +6335,7 @@ préexistante, hors périmètre).
 
 ## D-091 follow-up — dérogation manager pour un conflit « double salle » au déploiement (2026-09-11)
 
-**Statut : DONE, testé (backend et frontend verts, vérifié en direct sur données réelles), committé, déployé.**
+**Statut : DONE, testé (backend et frontend verts, vérifié en direct sur données réelles), committé, déployé (`v2026.09.11-prod-4`).**
 
 ### Contexte
 
