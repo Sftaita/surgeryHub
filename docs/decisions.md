@@ -6333,6 +6333,79 @@ préexistante, hors périmètre).
 
 ---
 
+## D-091 follow-up — dérogation manager pour un conflit « double salle » au déploiement (2026-09-11)
+
+**Statut : DONE, testé (backend et frontend verts, vérifié en direct sur données réelles), committé, déployé.**
+
+### Contexte
+
+D-091 bloque systématiquement le déploiement dès qu'un `CROSS_SITE_CONFLICT` est détecté,
+sans aucune dérogation possible — délibéré ("aucun déploiement silencieux avec un conflit
+actif"), mais sans distinction pour le cas réel signalé par le manager : un chirurgien qui
+opère simultanément dans **deux salles du même site**, avec un **même instrumentiste**
+volant entre les deux. Ce cas n'a rien d'une double réservation involontaire — c'est un
+mode de fonctionnement délibéré du bloc — mais restait aussi bloquant qu'un vrai conflit
+cross-site.
+
+### Décision — dérogation étroite, jamais un `force=true` global
+
+`MissionConflictWaiver` (nouvelle entité, migration `Version20260911170000`) persiste une
+autorisation manager explicite pour **une paire de missions précise**, jamais un
+contournement global du déploiement. Réutilise entièrement
+`PlanningConflictDetectionService` pour la détection (aucun second moteur) —
+`MissionConflictWaiverService` ne fait qu'ajouter une question par-dessus : ce conflit
+précis a-t-il déjà été autorisé, et cette autorisation correspond-elle encore à l'état
+actuel des deux missions ?
+
+Forme éligible à la dérogation, volontairement étroite : **même chirurgien ET même
+instrumentiste ET même site** sur les deux missions. Un chirurgien identique mais sur des
+**sites différents** reste bloquant sans dérogation possible (vrai cross-site, pas une
+double salle) ; deux chirurgiens différents restent bloquants aussi. `ABSENCE` (D-090)
+n'est jamais concerné — pas de deuxième mission à apparier.
+
+**Stabilité** : `MissionConflictWaiver` fige un instantané (site/chirurgien/instrumentiste/
+horaires des deux missions) au moment de l'autorisation. `PlanningDraftRevalidationService`
+recompare cet instantané à l'état réel des deux missions à chaque tentative de déploiement
+— si l'un des champs a changé depuis, la dérogation est invalidée (jamais silencieusement
+ignorée, `invalidatedAt`/`invalidatedReason` tracés) et le conflit redevient bloquant.
+
+Nouvel endpoint `POST /api/planning/v2/conflicts/authorize` — accepte plusieurs paires en
+un appel ("tout autoriser"), chacune traitée indépendamment (`authorized`/`failed`).
+Frontend : case à cocher par conflit `waivable: true` dans la boîte de dialogue de blocage,
+"Tout cocher", et "Autoriser (N) et redéployer" qui enchaîne directement le redéploiement
+sans second clic manuel.
+
+### Deux bugs réels trouvés en testant sur les vraies données de dev (pas seulement des fixtures synthétiques)
+
+1. **Dédoublonnage frontend non symétrique** : le backend signale un `CROSS_SITE_CONFLICT`
+   une fois par personne (côté chirurgien ET côté instrumentiste), donc la même paire réelle
+   apparaît comme `missionId=A, conflictingMissionId=B` ET `missionId=B,
+   conflictingMissionId=A`. La clé de dédoublonnage initiale (`${missionId}-${conflictingId}`)
+   traitait ces deux entrées comme des paires différentes — "Tout cocher" soumettait deux fois
+   la même paire réelle (constaté en direct : 8 soumissions pour 4 paires uniques). Corrigé par
+   une clé canonique triée (`[min,max].join('-')`), alignée sur
+   `MissionConflictWaiverService::canonicalOrder()`.
+2. **`PlanningDraftService::delete()` ne nettoyait pas `MissionConflictWaiver`** — trouvé en
+   supprimant en direct un brouillon dont une mission avait une dérogation active :
+   `ForeignKeyConstraintViolationException` (`mission_low_id`/`mission_high_id` sans `ON
+   DELETE CASCADE`). Exactement le même mode d'échec que celui déjà documenté pour
+   `planning_alert` dans le docblock de `CLEANUP_ON_MISSION_DELETE` — mais `MissionConflictWaiver`
+   ne peut pas rejoindre cette liste generique (deux colonnes référençant `mission`, pas une) ;
+   traité par un `DELETE` dédié dans la même transaction.
+
+### Tests exécutés
+
+`MissionConflictWaiverTest` : 7/7 (dont la régression de suppression ci-dessus). Backend
+`--filter Planning` : 499/499. Backend complet : 2351/2352 (1 échec préexistant confirmé
+sans rapport, `ReleasedOperatingRoomSlotFunctionalTest`). Frontend `GeneratePlanningTab` :
+38/39 (1 flake de timing préexistant confirmé sans rapport). `tsc -b --noEmit` et `npm run
+build` propres. Vérifié en direct dans le navigateur sur les données réelles de dev : 21
+conflits détectés sur un vrai brouillon multi-postes, dont 4 paires réellement waivable
+(double salle) correctement identifiées et autorisées en un lot, 13 conflits non-waivable
+correctement laissés bloquants.
+
+---
+
 ## D-092 — Refonte Catalogue/Prestations : politique commerciale "présence d'un délégué", distinction facturable/non-facturable, explicabilité complète des calculs (2026-08-02)
 
 Date : 2026-08-02
