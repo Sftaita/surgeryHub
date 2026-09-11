@@ -24,7 +24,7 @@ import { fetchMissions } from "../../missions/api/missions.api";
 import {
   getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2,
   applyModifications, cancelAllMissions, resendPlanning, verifyConflicts, extractErrorV2, type ApplyModificationsResult,
-  reopenDraft, updateDraft, deletePlanningVersionDraft, confirmDraftScope,
+  reopenDraft, updateDraft, deletePlanningVersionDraft, confirmDraftScope, authorizeConflicts,
 } from "../api/planningV2.api";
 import { listPlanningVersions } from "../../planning-manager/api/planning.api";
 import type { PreviewLineStatus, PreviewLineV2, PreviewResponseV2, VerifyConflictsResponse } from "../api/planningV2.types";
@@ -125,8 +125,16 @@ export function GeneratePlanningTab() {
   const [draftConflicts, setDraftConflicts] = React.useState<Array<{
     type?: string; missionId: number; date: string; siteName: string | null;
     surgeonName: string | null; instrumentistName: string | null; reason: string;
-    conflictingSiteName?: string | null; conflictingStartAt?: string; conflictingEndAt?: string;
+    conflictingMissionId?: number; conflictingSiteName?: string | null; conflictingStartAt?: string; conflictingEndAt?: string;
+    // D-091 follow-up — only a CROSS_SITE_CONFLICT between the same surgeon + same
+    // instrumentist + same site (a surgeon running two rooms of one site, sharing one
+    // floating instrumentist) can ever be authorized instead of resolved by hand.
+    waivable?: boolean;
   }> | null>(null);
+  // D-091 follow-up — which waivable conflicts the manager has checked in the dialog,
+  // keyed by "missionId-conflictingMissionId" (never a raw index — the list can be
+  // re-fetched on redeploy and indices would silently point at the wrong row).
+  const [selectedWaivableKeys, setSelectedWaivableKeys] = React.useState<Set<string>>(new Set());
   // D-090 (anomalie fonctionnelle 1) — "Renvoyer le planning par e-mail" à un utilisateur,
   // indépendamment de tout redéploiement. Only offered in Modification mode: that's the
   // only place modificationVersionId is guaranteed to be the currently ACTIVE (published)
@@ -452,11 +460,31 @@ export function GeneratePlanningTab() {
     onError: (err: any) => {
       if (err?.response?.status === 409 && err?.response?.data?.code === "DRAFT_CONFLICTS") {
         setDraftConflicts(err.response.data.conflicts ?? []);
+        setSelectedWaivableKeys(new Set());
         toast.error(`Déploiement bloqué — ${(err.response.data.conflicts ?? []).length} conflit(s) à résoudre`);
         return;
       }
       toast.error(extractErrorV2(err));
     },
+  });
+
+  // D-091 follow-up — authorizes every checked waivable conflict, then automatically
+  // retries the deploy that was just blocked (never leaves the manager staring at a dialog
+  // whose whole point was already "deploy anyway" — a second manual click would just repeat
+  // the same 409 loop). Never assumes success — if the backend still reports failures for
+  // some pairs, or deploy still 409s on a conflict this batch didn't cover, the dialog
+  // simply reopens with whatever remains.
+  const authorizeConflictsMutation = useMutation({
+    mutationFn: (pairs: Array<{ missionId: number; conflictingMissionId: number }>) => authorizeConflicts(pairs),
+    onSuccess: (result) => {
+      if (result.failed.length > 0) {
+        toast.warning(`${result.failed.length} conflit(s) n'ont pas pu être autorisés — ${result.failed[0].reason}`);
+      }
+      setDraftConflicts(null);
+      setSelectedWaivableKeys(new Set());
+      deployMutation.mutate();
+    },
+    onError: (err) => toast.error(extractErrorV2(err)),
   });
 
   const applyModsMutation = useMutation({
@@ -1099,36 +1127,124 @@ export function GeneratePlanningTab() {
       {/* D-090/D-091 — deploy() blocked by an absence or a cross-site conflict detected at
           revalidation time. Both causes share the same structured 409 shape (`type` tells
           them apart); the `reason` text on each entry already spells out the specific
-          cause, sites and time slots involved, so a single generic list covers both. */}
-      <Dialog open={draftConflicts !== null} onClose={() => setDraftConflicts(null)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>
-          Déploiement bloqué — {draftConflicts?.length ?? 0} conflit(s) à résoudre
-        </DialogTitle>
-        <DialogContent>
-          <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted, mb: 2 }}>
-            Une absence a été enregistrée, ou une personne est désormais planifiée sur deux
-            créneaux qui se chevauchent, depuis la génération de ce brouillon. Réaffectez,
-            retirez ou corrigez les éléments ci-dessous puis redéployez.
-          </Typography>
-          <Stack spacing={1.25}>
-            {(draftConflicts ?? []).map((c) => (
-              <Box key={c.missionId} sx={{ p: 1.5, borderRadius: 1.5, bgcolor: "#FBF2F1", border: "1px solid #F0D8D6" }}>
-                <Typography sx={{ fontSize: 13, fontWeight: 600 }}>
-                  {c.date} — {c.instrumentistName ?? c.surgeonName ?? "—"}
-                  {c.siteName ? ` (${c.siteName})` : ""}
-                  {c.type === "CROSS_SITE_CONFLICT" && c.conflictingSiteName ? ` ↔ ${c.conflictingSiteName}` : ""}
-                </Typography>
-                <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textMuted }}>{c.reason}</Typography>
-              </Box>
-            ))}
-          </Stack>
-        </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2.5 }}>
-          <Button variant="contained" disableElevation onClick={() => setDraftConflicts(null)} sx={{ textTransform: "none", fontWeight: 600 }}>
-            Fermer
-          </Button>
-        </DialogActions>
-      </Dialog>
+          cause, sites and time slots involved, so a single generic list covers both.
+          D-091 follow-up — a `waivable: true` CROSS_SITE_CONFLICT (same surgeon + same
+          instrumentist + same site — a surgeon running two rooms of one site sharing one
+          floating instrumentist) gets a checkbox to authorize it explicitly instead of
+          having to reassign/cancel a mission by hand. Deduplicated by pair below: the
+          backend checks the surgeon and instrumentist sides independently and can report
+          the exact same pair twice — the manager must see it once, not twice. */}
+      {(() => {
+        // Canonical, direction-agnostic pair key — the backend reports a CROSS_SITE_CONFLICT
+        // once per side (mission A's own entry names B as `conflictingMissionId`, and B's own
+        // entry names A right back), so raw missionId/conflictingMissionId order alone would
+        // treat "648-649" and "649-648" as two different pairs — undercounting the dedupe and,
+        // worse, letting "Tout cocher" submit the same real pair twice (confirmed live: this
+        // produced two authorize() calls for one pair, the second invalidating the first's
+        // waiver before recreating it — harmless end state, but pure churn). Sorted low-high
+        // matches MissionConflictWaiverService's own canonicalOrder() convention.
+        const pairKey = (a: number, b: number) => [a, b].sort((x, y) => x - y).join("-");
+        const raw = draftConflicts ?? [];
+        const seenPairs = new Set<string>();
+        const rows = raw.filter((c) => {
+          if (c.conflictingMissionId === undefined) return true; // ABSENCE — no pair to dedupe
+          const key = pairKey(c.missionId, c.conflictingMissionId);
+          if (seenPairs.has(key)) return false;
+          seenPairs.add(key);
+          return true;
+        });
+        const waivableKeys = rows
+          .filter((c) => c.waivable && c.conflictingMissionId !== undefined)
+          .map((c) => pairKey(c.missionId, c.conflictingMissionId!));
+        const allWaivableSelected = waivableKeys.length > 0 && waivableKeys.every((k) => selectedWaivableKeys.has(k));
+
+        return (
+          <Dialog open={draftConflicts !== null} onClose={() => setDraftConflicts(null)} maxWidth="sm" fullWidth>
+            <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>
+              Déploiement bloqué — {rows.length} conflit(s) à résoudre
+            </DialogTitle>
+            <DialogContent>
+              <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted, mb: 2 }}>
+                Une absence a été enregistrée, ou une personne est désormais planifiée sur deux
+                créneaux qui se chevauchent, depuis la génération de ce brouillon. Réaffectez,
+                retirez ou corrigez les éléments ci-dessous, ou autorisez explicitement un
+                conflit de double salle, puis redéployez.
+              </Typography>
+              {waivableKeys.length > 0 && (
+                <Button
+                  size="small"
+                  onClick={() => setSelectedWaivableKeys(allWaivableSelected ? new Set() : new Set(waivableKeys))}
+                  sx={{ textTransform: "none", fontWeight: 600, mb: 1, px: 0 }}
+                >
+                  {allWaivableSelected ? "Tout décocher" : "Tout cocher"}
+                </Button>
+              )}
+              <Stack spacing={1.25}>
+                {rows.map((c) => {
+                  const key = c.conflictingMissionId !== undefined ? pairKey(c.missionId, c.conflictingMissionId) : null;
+                  const checked = key !== null && selectedWaivableKeys.has(key);
+                  return (
+                    <Box key={key ?? `${c.missionId}-absence`} sx={{ p: 1.5, borderRadius: 1.5, bgcolor: "#FBF2F1", border: "1px solid #F0D8D6" }}>
+                      <Stack direction="row" alignItems="flex-start" spacing={0.5}>
+                        {c.waivable && key !== null && (
+                          <Checkbox
+                            size="small"
+                            checked={checked}
+                            onChange={(e) => {
+                              setSelectedWaivableKeys((prev) => {
+                                const next = new Set(prev);
+                                if (e.target.checked) next.add(key); else next.delete(key);
+                                return next;
+                              });
+                            }}
+                            sx={{ p: 0.25, mt: 0.25 }}
+                          />
+                        )}
+                        <Box sx={{ flex: 1 }}>
+                          <Typography sx={{ fontSize: 13, fontWeight: 600 }}>
+                            {c.date} — {c.instrumentistName ?? c.surgeonName ?? "—"}
+                            {c.siteName ? ` (${c.siteName})` : ""}
+                            {c.type === "CROSS_SITE_CONFLICT" && c.conflictingSiteName ? ` ↔ ${c.conflictingSiteName}` : ""}
+                          </Typography>
+                          <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textMuted }}>{c.reason}</Typography>
+                          {c.waivable && (
+                            <Typography sx={{ fontSize: 12, color: "#8A6420", fontWeight: 600, mt: 0.25 }}>
+                              Double salle — même chirurgien, même instrumentiste, même site : peut être autorisé.
+                            </Typography>
+                          )}
+                        </Box>
+                      </Stack>
+                    </Box>
+                  );
+                })}
+              </Stack>
+            </DialogContent>
+            <DialogActions sx={{ px: 3, pb: 2.5 }}>
+              <Button onClick={() => setDraftConflicts(null)} sx={{ textTransform: "none", fontWeight: 600 }}>
+                Fermer
+              </Button>
+              {waivableKeys.length > 0 && (
+                <Button
+                  variant="contained" disableElevation color="warning"
+                  disabled={selectedWaivableKeys.size === 0 || authorizeConflictsMutation.isPending || deployMutation.isPending}
+                  onClick={() => {
+                    const pairs = Array.from(selectedWaivableKeys).map((k) => {
+                      const [missionId, conflictingMissionId] = k.split("-").map(Number);
+                      return { missionId, conflictingMissionId };
+                    });
+                    authorizeConflictsMutation.mutate(pairs);
+                  }}
+                  sx={{ textTransform: "none", fontWeight: 700 }}
+                >
+                  {authorizeConflictsMutation.isPending || deployMutation.isPending
+                    ? "Autorisation…"
+                    : `Autoriser ${selectedWaivableKeys.size > 1 ? `(${selectedWaivableKeys.size})` : ""} et redéployer`}
+                </Button>
+              )}
+            </DialogActions>
+          </Dialog>
+        );
+      })()}
 
       {!isModification && (
         <>

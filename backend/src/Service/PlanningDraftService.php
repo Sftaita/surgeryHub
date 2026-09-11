@@ -17,6 +17,7 @@ use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissingMaterialReport;
 use App\Entity\MissionClaim;
+use App\Entity\MissionConflictWaiver;
 use App\Entity\MissionEncodingComment;
 use App\Entity\MissionExecution;
 use App\Entity\MissionExecutionDispute;
@@ -360,6 +361,18 @@ final class PlanningDraftService
                     break;
                 }
                 $this->em->createQuery(sprintf('DELETE FROM %s e WHERE e.mission IN (:ids)', $entityClass))
+                    ->setParameter('ids', $missionIds)
+                    ->execute();
+            }
+
+            // MissionConflictWaiver (D-091 follow-up) doesn't fit the generic loop above — it
+            // has TWO mission-referencing columns (missionLow/missionHigh, since a waiver is
+            // about a *pair*), not one. Found live: authorizing a real double-room conflict on
+            // a draft, then deleting that draft, would otherwise hit exactly the same
+            // FK-constraint-violation failure mode CLEANUP_ON_MISSION_DELETE's own docblock
+            // describes for planning_alert — the waiver row survives the draft, dangling.
+            if ($missionIds !== []) {
+                $this->em->createQuery('DELETE FROM ' . MissionConflictWaiver::class . ' w WHERE w.missionLow IN (:ids) OR w.missionHigh IN (:ids)')
                     ->setParameter('ids', $missionIds)
                     ->execute();
             }

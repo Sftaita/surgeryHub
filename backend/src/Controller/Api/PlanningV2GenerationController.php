@@ -12,6 +12,7 @@ use App\Dto\Request\Response\PreviewResponse;
 use App\Dto\Request\Response\PreviewSummaryResponse;
 use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Entity\Hospital;
+use App\Entity\Mission;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\EligibilityEnforcementPolicy;
@@ -19,6 +20,7 @@ use App\Enum\PlanningVersionStatus;
 use App\Exception\PlanningDraftAlreadyExistsException;
 use App\Exception\PlanningDraftConflictException;
 use App\Security\Voter\PlanningVoter;
+use App\Service\MissionConflictWaiverService;
 use App\Service\MissionEligibilityService;
 use App\Service\PlanningDeploymentService;
 use App\Service\PlanningDraftService;
@@ -50,6 +52,7 @@ class PlanningV2GenerationController extends AbstractController
         private readonly EntityManagerInterface $em,
         private readonly MissionEligibilityService $eligibilityService,
         private readonly PlanningDraftService $draftService,
+        private readonly MissionConflictWaiverService $conflictWaiver,
     ) {}
 
     #[Route('/api/planning/v2/preview', name: 'api_planning_v2_preview', methods: ['POST'])]
@@ -168,6 +171,68 @@ class PlanningV2GenerationController extends AbstractController
             missionCount: $result['missionCount'],
             openPoolCount: $result['openPoolCount'],
         ));
+    }
+
+    /**
+     * D-091 follow-up — a manager's explicit, per-pair authorization to deploy despite a
+     * CROSS_SITE_CONFLICT (see MissionConflictWaiverService's own docblock for exactly
+     * which shape qualifies — same surgeon + same instrumentist + same site). Body:
+     * `{conflicts: [{missionId, conflictingMissionId}], reason?: string}` — accepts several
+     * pairs in one call ("tout autoriser") but authorizes each independently: one pair
+     * failing (e.g. it no longer overlaps, or drifted to a non-waivable shape) never blocks
+     * the others. Never trusts the pair ids blindly — MissionConflictWaiverService::
+     * authorize() re-derives eligibility and re-checks the overlap against each mission's
+     * CURRENT state before persisting anything.
+     */
+    #[Route('/api/planning/v2/conflicts/authorize', name: 'api_planning_v2_conflicts_authorize', methods: ['POST'])]
+    public function authorizeConflicts(Request $request, #[CurrentUser] User $currentUser): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $data      = json_decode($request->getContent() ?: '{}', true) ?? [];
+        $conflicts = isset($data['conflicts']) && is_array($data['conflicts']) ? $data['conflicts'] : [];
+        $reason    = isset($data['reason']) && is_string($data['reason']) && trim($data['reason']) !== '' ? trim($data['reason']) : null;
+
+        if ($conflicts === []) {
+            throw new BadRequestHttpException('conflicts est requis et ne peut pas être vide.');
+        }
+
+        $authorized = [];
+        $failed     = [];
+
+        foreach ($conflicts as $pair) {
+            $missionId            = $pair['missionId'] ?? null;
+            $conflictingMissionId = $pair['conflictingMissionId'] ?? null;
+            if (!is_numeric($missionId) || !is_numeric($conflictingMissionId)) {
+                $failed[] = ['missionId' => $missionId, 'conflictingMissionId' => $conflictingMissionId, 'reason' => 'missionId/conflictingMissionId invalides.'];
+                continue;
+            }
+
+            $mission  = $this->em->find(Mission::class, (int) $missionId);
+            $other    = $this->em->find(Mission::class, (int) $conflictingMissionId);
+            if ($mission === null || $other === null) {
+                $failed[] = ['missionId' => (int) $missionId, 'conflictingMissionId' => (int) $conflictingMissionId, 'reason' => 'Mission introuvable.'];
+                continue;
+            }
+
+            try {
+                $waiver = $this->conflictWaiver->authorize($mission, $other, $currentUser, $reason);
+            } catch (BadRequestHttpException $e) {
+                $failed[] = ['missionId' => $mission->getId(), 'conflictingMissionId' => $other->getId(), 'reason' => $e->getMessage()];
+                continue;
+            }
+
+            $authorized[] = [
+                'missionId'            => $mission->getId(),
+                'conflictingMissionId' => $other->getId(),
+                'waiverId'             => $waiver->getId(),
+            ];
+        }
+
+        return $this->json([
+            'authorized' => $authorized,
+            'failed'     => $failed,
+        ]);
     }
 
     /**

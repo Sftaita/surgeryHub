@@ -26,7 +26,12 @@ final class PlanningDraftConflictException extends \RuntimeException
      *   instrumentistId: ?int, instrumentistName: ?string, reason: string,
      *   conflictingMissionId?: int, conflictingSiteId?: ?int, conflictingSiteName?: ?string,
      *   conflictingStartAt?: string, conflictingEndAt?: string,
-     * }> $conflicts
+     *   waivable?: bool,
+     * }> $conflicts A CROSS_SITE_CONFLICT entry with `waivable: true` can be resolved without
+     *   changing anything by a manager explicitly authorizing it via
+     *   MissionConflictWaiverService (POST /api/planning/v2/conflicts/authorize) — see its
+     *   docblock for exactly which shape of conflict qualifies. ABSENCE entries never carry
+     *   `waivable` (absent means absent — see D-090).
      */
     public function __construct(private readonly array $conflicts)
     {

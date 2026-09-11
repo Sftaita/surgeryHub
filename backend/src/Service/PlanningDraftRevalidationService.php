@@ -29,11 +29,16 @@ use Doctrine\ORM\EntityManagerInterface;
  *     just the affected missions — a partially-published plan without explicit manager
  *     intent is the exact failure mode D-090 exists to close.
  *
- * Cross-site conflict outcome (D-091) — always blocking, for either person: unlike an
+ * Cross-site conflict outcome (D-091) — blocking by default, for either person: unlike an
  * absence, there is no safe automatic resolution (neutralizing would silently drop a
  * commitment the manager never reviewed either). Checked for BOTH the surgeon and the
  * instrumentist of every DRAFT mission, using PlanningConflictDetectionService — the same
- * cross-site, end-exclusive overlap rule used everywhere else in Planning V2.
+ * cross-site, end-exclusive overlap rule used everywhere else in Planning V2. The one
+ * deliberate exception (D-091 follow-up, "same surgeon running two rooms of the same site
+ * sharing one instrumentist"): if MissionConflictWaiverService finds a manager already
+ * explicitly authorized exactly this pair, and both missions still match the state that was
+ * authorized, the conflict is skipped here entirely rather than reported — never a second,
+ * looser detection path, just a persisted override of a specific, already-detected pair.
  *
  * A mission whose surgeon AND instrumentist are both absent is reported only as
  * "neutralized" (surgeon check runs first) — once the surgeon's own activity is cancelled,
@@ -49,6 +54,7 @@ class PlanningDraftRevalidationService
         private readonly AbsenceOverlapService $absenceOverlap,
         private readonly MissionPostDeployService $postDeploy,
         private readonly PlanningConflictDetectionService $conflictDetection,
+        private readonly MissionConflictWaiverService $conflictWaiver,
     ) {}
 
     /**
@@ -56,7 +62,7 @@ class PlanningDraftRevalidationService
      * afterward, and only if blockingConflicts is empty.
      *
      * @return array{
-     *   blockingConflicts: list<array{type:string,missionId:int,date:string,siteId:?int,siteName:?string,surgeonId:?int,surgeonName:?string,instrumentistId:?int,instrumentistName:?string,reason:string,conflictingMissionId?:int,conflictingSiteId?:?int,conflictingSiteName?:?string,conflictingStartAt?:string,conflictingEndAt?:string}>,
+     *   blockingConflicts: list<array{type:string,missionId:int,date:string,siteId:?int,siteName:?string,surgeonId:?int,surgeonName:?string,instrumentistId:?int,instrumentistName:?string,reason:string,conflictingMissionId?:int,conflictingSiteId?:?int,conflictingSiteName?:?string,conflictingStartAt?:string,conflictingEndAt?:string,waivable?:bool}>,
      *   neutralized: list<array{missionId:int,date:string,siteId:?int,siteName:?string,surgeonId:int,surgeonName:string,previousInstrumentistId:?int,previousInstrumentistName:?string,reason:string}>,
      * }
      */
@@ -142,6 +148,15 @@ class PlanningDraftRevalidationService
                     continue;
                 }
 
+                // A manager may have explicitly authorized exactly this pair (same surgeon +
+                // same instrumentist + same site — see MissionConflictWaiverService's own
+                // docblock for why that's the only shape that can ever be waived). Never
+                // trusted blindly: findActiveWaiver() re-verifies the waiver's snapshot still
+                // matches both missions' CURRENT state, invalidating it otherwise.
+                if ($this->conflictWaiver->findActiveWaiver($mission, $other) !== null) {
+                    continue;
+                }
+
                 $blockingConflicts[] = [
                     'type'                 => 'CROSS_SITE_CONFLICT',
                     'missionId'            => $mission->getId(),
@@ -157,6 +172,10 @@ class PlanningDraftRevalidationService
                     'conflictingSiteName'  => $other->getSite()?->getName(),
                     'conflictingStartAt'   => $other->getStartAt()->format(\DateTimeInterface::ATOM),
                     'conflictingEndAt'     => $other->getEndAt()->format(\DateTimeInterface::ATOM),
+                    // D-091 follow-up — whether this exact pair is even eligible for a
+                    // manager override (see MissionConflictWaiverService::isWaivable()).
+                    // Always false for the ABSENCE branch above (no pair, no waiver shape).
+                    'waivable'             => $this->conflictWaiver->isWaivable($mission, $other)['waivable'],
                     'reason'               => sprintf(
                         '%s %s déjà prévu(e) sur %s (%s–%s) — chevauche %s (%s–%s) sur %s : déploiement bloqué.',
                         $role === 'SURGEON' ? 'Chirurgien' : 'Instrumentiste',

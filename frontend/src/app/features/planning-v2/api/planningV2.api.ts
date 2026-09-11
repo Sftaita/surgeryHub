@@ -299,6 +299,28 @@ export async function deployPlanningV2(planningVersionId: number, sendPdf: boole
   return res.data;
 }
 
+// ── Conflict waivers — D-091 follow-up ────────────────────────────────────────
+
+export interface ConflictAuthorizeResult {
+  authorized: Array<{ missionId: number; conflictingMissionId: number; waiverId: number }>;
+  failed: Array<{ missionId: number | null; conflictingMissionId: number | null; reason: string }>;
+}
+
+/**
+ * A manager's explicit, per-pair override of a CROSS_SITE_CONFLICT (only ever offered for
+ * `waivable: true` entries — same surgeon + same instrumentist + same site). Accepts
+ * several pairs in one call ("tout autoriser") but the backend authorizes each
+ * independently — always re-check `failed` even on a 200, one pair can fail (no longer
+ * overlapping, drifted to a non-waivable shape) without the others being rejected.
+ */
+export async function authorizeConflicts(
+  pairs: Array<{ missionId: number; conflictingMissionId: number }>,
+  reason?: string,
+): Promise<ConflictAuthorizeResult> {
+  const res = await apiClient.post("/api/planning/v2/conflicts/authorize", { conflicts: pairs, reason });
+  return res.data;
+}
+
 // ── Drafts — CAS D (D-115) ───────────────────────────────────────────────────
 
 /**

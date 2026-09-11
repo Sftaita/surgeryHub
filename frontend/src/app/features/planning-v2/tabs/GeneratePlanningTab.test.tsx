@@ -38,6 +38,8 @@ vi.mock("../api/planningV2.api", () => ({
   reopenDraft: vi.fn(),
   updateDraft: vi.fn(),
   deletePlanningVersionDraft: vi.fn(),
+  // D-091 follow-up
+  authorizeConflicts: vi.fn(),
   // D-102 — Preview Editor's instrumentist pickers now source eligibility from this
   // endpoint; defaults to "everyone selectable" (mirrors the /api/instrumentists mock
   // below) unless a test overrides it.
@@ -1169,5 +1171,99 @@ describe("GeneratePlanningTab — Brouillons (CAS D, D-115)", () => {
     expect(newLine.postId).toBeLessThanOrEqual(0);
     expect(newLine.date).toBe("2026-06-20");
     expect((planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mock.calls.length).toBe(applyModificationsCallsBefore);
+  });
+});
+
+describe("GeneratePlanningTab — conflit de déploiement, autorisation de dérogation (D-091 suite)", () => {
+  function draftConflictsError(conflicts: unknown[]) {
+    return { response: { status: 409, data: { code: "DRAFT_CONFLICTS", conflicts } } };
+  }
+
+  async function reachDeployButton(user: ReturnType<typeof userEvent.setup>) {
+    const now = new Date();
+    const currentMonthDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-10`;
+    const preview: PreviewResponseV2 = {
+      lines: [line({ date: currentMonthDate, status: "COVERED", instrumentistId: 9, instrumentistName: "Diane Lefebvre" })],
+      summary: { total: 1, covered: 1, uncovered: 0, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "v-conflict",
+      generatedAt: "2026-06-01T00:00:00Z",
+    };
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
+    (planningV2Api.generatePlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue({ versionId: 42, created: 1, updated: 0, skipped: 0 });
+
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+    await screen.findByText("Diane Lefebvre");
+    await user.click(screen.getByRole("button", { name: "Générer les missions" }));
+    await user.click(await screen.findByRole("button", { name: "Déployer le planning" }));
+  }
+
+  it("un conflit waivable propose une case à cocher ; un conflit non-waivable n'en propose aucune", async () => {
+    const user = userEvent.setup();
+    // deployPlanningV2/authorizeConflicts are shared, never-reset module-level mocks (this
+    // file's convention) — reset explicitly so this test's queued once-values can never be
+    // shifted by another test's leftover queue, regardless of execution order.
+    (planningV2Api.deployPlanningV2 as ReturnType<typeof vi.fn>).mockReset();
+    (planningV2Api.deployPlanningV2 as ReturnType<typeof vi.fn>).mockRejectedValueOnce(draftConflictsError([
+      {
+        type: "CROSS_SITE_CONFLICT", missionId: 501, date: "2026-06-10",
+        siteId: 1, siteName: "Delta", surgeonId: 1, surgeonName: "Dr Martin",
+        instrumentistId: 9, instrumentistName: "Diane Lefebvre",
+        conflictingMissionId: 502, conflictingSiteId: 1, conflictingSiteName: "Delta",
+        conflictingStartAt: "2026-06-10T08:00:00+02:00", conflictingEndAt: "2026-06-10T13:00:00+02:00",
+        waivable: true, reason: "Double salle — même chirurgien, même instrumentiste.",
+      },
+      {
+        type: "CROSS_SITE_CONFLICT", missionId: 503, date: "2026-06-10",
+        siteId: 1, siteName: "Delta", surgeonId: 2, surgeonName: "Dr Autre",
+        instrumentistId: 9, instrumentistName: "Diane Lefebvre",
+        conflictingMissionId: 504, conflictingSiteId: 2, conflictingSiteName: "Basilique",
+        conflictingStartAt: "2026-06-10T08:00:00+02:00", conflictingEndAt: "2026-06-10T13:00:00+02:00",
+        waivable: false, reason: "Instrumentiste déjà prévue ailleurs.",
+      },
+    ]));
+
+    await reachDeployButton(user);
+
+    expect(await screen.findByText(/Déploiement bloqué — 2 conflit/)).toBeInTheDocument();
+    const checkboxes = screen.getAllByRole("checkbox");
+    // Exactly one checkbox — only the waivable conflict gets one.
+    expect(checkboxes).toHaveLength(1);
+    expect(screen.getByText(/peut être autorisé/)).toBeInTheDocument();
+  });
+
+  it("cocher un conflit waivable puis 'Autoriser et redéployer' appelle authorizeConflicts avec la bonne paire, puis redéploie", async () => {
+    const user = userEvent.setup();
+    (planningV2Api.deployPlanningV2 as ReturnType<typeof vi.fn>).mockReset();
+    (planningV2Api.authorizeConflicts as ReturnType<typeof vi.fn>).mockReset();
+    (planningV2Api.deployPlanningV2 as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(draftConflictsError([{
+        type: "CROSS_SITE_CONFLICT", missionId: 601, date: "2026-06-11",
+        siteId: 1, siteName: "Delta", surgeonId: 1, surgeonName: "Dr Martin",
+        instrumentistId: 9, instrumentistName: "Diane Lefebvre",
+        conflictingMissionId: 602, conflictingSiteId: 1, conflictingSiteName: "Delta",
+        waivable: true, reason: "Double salle.",
+      }]))
+      .mockResolvedValueOnce({ deploymentId: 1, missionCount: 2, openPoolCount: 0 });
+    (planningV2Api.authorizeConflicts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      authorized: [{ missionId: 601, conflictingMissionId: 602, waiverId: 9 }],
+      failed: [],
+    });
+
+    await reachDeployButton(user);
+
+    await screen.findByText(/Déploiement bloqué/);
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: /Autoriser.*redéployer/ }));
+
+    await waitFor(() => expect(planningV2Api.authorizeConflicts).toHaveBeenCalledWith(
+      [{ missionId: 601, conflictingMissionId: 602 }],
+    ));
+    // The dialog's whole point is "deploy anyway" — a second manual click must never be required.
+    await waitFor(() => expect(planningV2Api.deployPlanningV2).toHaveBeenCalledTimes(2));
+    expect(toastSuccess).toHaveBeenCalledWith(expect.stringContaining("Planning déployé"));
+    // MUI's Dialog exit transition lingers in the DOM for a moment — waitFor, not a bare assertion.
+    await waitFor(() => expect(screen.queryByText(/Déploiement bloqué/)).not.toBeInTheDocument());
   });
 });

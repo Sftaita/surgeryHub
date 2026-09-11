@@ -171,6 +171,13 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\SurgeonAbsenceCommunicationDelivery::sentAt' => 'set from new \DateTimeImmutable() in AbsenceCommunicationJournalService::recordDeliverySuccess(), called only after SendTemplatedEmailMessageHandler confirms $mailer->send() did not throw — never client input',
         'App\Entity\SurgeonAbsenceCommunicationDelivery::cancelledAt' => 'Lot B — set from new \DateTimeImmutable() when a scheduled communication is cancelled, never client input',
         'App\Entity\SurgeonAbsenceCommunicationDelivery::dispatchClaimedAt' => 'set from new \DateTimeImmutable() in AbsenceCommunicationJournalService::claimScheduledBlockManagementDelivery(), never client input',
+
+        // D-091 follow-up — MissionConflictWaiver. missionLow/HighStartAt/EndAt (the
+        // actual snapshot of Mission.startAt/endAt) ARE on business_datetime_immutable —
+        // only these two purely-administrative timestamps are plain, since both are always
+        // new \DateTimeImmutable() server-generated ("now"), never client input.
+        'App\Entity\MissionConflictWaiver::authorizedAt' => 'set from new \DateTimeImmutable() in MissionConflictWaiverService::authorize(), never client input',
+        'App\Entity\MissionConflictWaiver::invalidatedAt' => 'set from new \DateTimeImmutable() in MissionConflictWaiver::invalidate(), never client input',
     ];
 
     /** Exempt by name, not by allowlist entry — the project-wide TimestampableTrait convention. */
