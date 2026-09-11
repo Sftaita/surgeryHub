@@ -9764,7 +9764,7 @@ Non déployé.
 
 ## D-115bis — Réouverture d'un brouillon multi-sites / groupe de sites / Tous sites (2026-09-11)
 
-**Statut : DONE, testé (backend et frontend verts), committé, non déployé.**
+**Statut : DONE, testé (backend et frontend verts), committé, déployé (`v2026.09.11-prod-3`).**
 
 Date : 2026-09-11
 
