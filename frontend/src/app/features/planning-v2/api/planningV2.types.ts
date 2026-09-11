@@ -410,6 +410,9 @@ export interface DraftVersionSummaryV2 {
   periodEnd: string;
   siteId: number | null;
   siteName: string | null;
+  /** D-115bis — null for a draft generated before this fix, or a single-site one. */
+  siteGroupId: number | null;
+  siteGroupName: string | null;
   generatedAt: string;
 }
 

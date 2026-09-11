@@ -10,6 +10,8 @@ use App\Entity\PlanningAlert;
 use App\Entity\PlanningVersion;
 use App\Entity\RecurrenceRule;
 use App\Entity\ShiftPeriodConfig;
+use App\Entity\SiteGroup;
+use App\Entity\SiteGroupMembership;
 use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
 use App\Enum\AuditEventType;
@@ -40,6 +42,7 @@ final class PlanningV2DraftControllerTest extends WebTestCase
     private array $createdIds = [
         'versions' => [], 'missions' => [], 'posts' => [], 'shiftPeriods' => [],
         'users' => [], 'sites' => [], 'absences' => [], 'alerts' => [],
+        'siteGroups' => [], 'memberships' => [],
     ];
 
     protected function setUp(): void
@@ -80,6 +83,16 @@ final class PlanningV2DraftControllerTest extends WebTestCase
             $this->em->flush();
             foreach ($this->createdIds['versions'] as $id) {
                 $e = $this->em->find(PlanningVersion::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
+            foreach ($this->createdIds['memberships'] as $id) {
+                $e = $this->em->find(SiteGroupMembership::class, $id);
+                if ($e !== null) { $this->em->remove($e); }
+            }
+            $this->em->flush();
+            foreach ($this->createdIds['siteGroups'] as $id) {
+                $e = $this->em->find(SiteGroup::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
             }
             $this->em->flush();
@@ -275,6 +288,441 @@ final class PlanningV2DraftControllerTest extends WebTestCase
         foreach ($missions as $m) { $this->createdIds['missions'][] = $m->getId(); }
 
         return ['versionId' => $body['versionId'], 'missionId' => $missions[0]->getId()];
+    }
+
+    // ── D-115bis — site-group / "Tous sites" draft reopen ────────────────────────
+
+    /** @param Hospital[] $sites */
+    private function makeSiteGroup(array $sites, User $creator): SiteGroup
+    {
+        $group = new SiteGroup();
+        $group->setName('CasD Group ' . bin2hex(random_bytes(3)));
+        $group->setCreatedBy($creator);
+        $this->em->persist($group);
+        $this->em->flush();
+        $this->createdIds['siteGroups'][] = $group->getId();
+
+        foreach ($sites as $site) {
+            $m = new SiteGroupMembership();
+            $m->setGroup($group);
+            $m->setSite($site);
+            $this->em->persist($m);
+        }
+        $this->em->flush();
+
+        return $group;
+    }
+
+    private function addSiteToGroup(SiteGroup $group, Hospital $site): void
+    {
+        $m = new SiteGroupMembership();
+        $m->setGroup($group);
+        $m->setSite($site);
+        $this->em->persist($m);
+        $this->em->flush();
+        $this->createdIds['memberships'][] = $m->getId();
+    }
+
+    /** Generates a draft for a site-group scope and returns its versionId + every created Mission id. */
+    private function generateGroupDraft($client, string $token, SiteGroup $group): array
+    {
+        $response = $this->postJson($client, $token, '/api/planning/v2/generate', [
+            'siteId' => null, 'siteGroupId' => $group->getId(), 'year' => self::YEAR, 'month' => self::MONTH,
+        ]);
+        $body = $this->json($response);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $this->createdIds['versions'][] = $body['versionId'];
+
+        $this->em->clear();
+        $missions = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->setParameter('v', $body['versionId'])
+            ->getQuery()->getResult();
+        $missionIds = [];
+        foreach ($missions as $m) {
+            $missionIds[] = $m->getId();
+            $this->createdIds['missions'][] = $m->getId();
+        }
+
+        return ['versionId' => $body['versionId'], 'missionIds' => $missionIds];
+    }
+
+    #[WithoutErrorHandler]
+    public function test_reopen_group_scoped_draft_reflects_persisted_missions_across_all_sites(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $surgeonB = $this->makeUser('ROLE_SURGEON');
+        $instrA   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $siteA    = $this->makeSite();
+        $siteB    = $this->makeSite();
+        $this->addShiftConfig($siteA, '08:00', '13:00');
+        $this->addShiftConfig($siteB, '08:00', '13:00');
+        $this->makePost($surgeonA, $siteA, $instrA, singleOccurrence: true);
+        $this->makePost($surgeonB, $siteB, null, singleOccurrence: true);
+
+        $manager = $this->em->find(User::class, $manager->getId());
+        $group   = $this->makeSiteGroup([$siteA, $siteB], $manager);
+
+        ['versionId' => $versionId, 'missionIds' => $missionIds] = $this->generateGroupDraft($client, $token, $group);
+        self::assertCount(2, $missionIds, 'setup must produce one mission per site');
+
+        // This is exactly the "Tous sites" case reported: the frontend's generic label is
+        // only ever a display fallback for any site=null version — there is no separate
+        // third selection mode, and no separate code path either (see audit).
+        $response = $this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}");
+        $body     = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        self::assertNull($body['version']['siteId']);
+        self::assertSame($group->getId(), $body['version']['siteGroupId']);
+        self::assertCount(2, $body['lines']);
+
+        $lineSiteIds = array_values(array_unique(array_map(static fn (array $l) => $l['siteId'], $body['lines'])));
+        sort($lineSiteIds);
+        $expectedSiteIds = [$siteA->getId(), $siteB->getId()];
+        sort($expectedSiteIds);
+        self::assertSame($expectedSiteIds, $lineSiteIds, 'reopen must cover every site of the group, not just one');
+
+        $lineA = current(array_filter($body['lines'], static fn (array $l) => $l['siteId'] === $siteA->getId()));
+        self::assertSame('COVERED', $lineA['status']);
+        self::assertSame($instrA->getId(), $lineA['instrumentistId']);
+        self::assertNotNull($lineA['existingMissionId']);
+    }
+
+    #[WithoutErrorHandler]
+    public function test_group_scoped_draft_update_persists_across_leave_and_reopen(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $surgeonB = $this->makeUser('ROLE_SURGEON');
+        $instrA   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $instrB   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $siteA    = $this->makeSite();
+        $siteB    = $this->makeSite();
+        $this->addShiftConfig($siteA, '08:00', '13:00');
+        $this->addShiftConfig($siteB, '08:00', '13:00');
+        $this->makePost($surgeonA, $siteA, $instrA, singleOccurrence: true);
+        $this->makePost($surgeonB, $siteB, null, singleOccurrence: true);
+
+        $manager = $this->em->find(User::class, $manager->getId());
+        $group   = $this->makeSiteGroup([$siteA, $siteB], $manager);
+
+        ['versionId' => $versionId, 'missionIds' => $missionIds] = $this->generateGroupDraft($client, $token, $group);
+        $missionIdB = current(array_filter(
+            $missionIds,
+            fn (int $id) => $this->em->find(Mission::class, $id)->getSurgeon()->getId() === $surgeonB->getId(),
+        ));
+
+        $reopen = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $lines  = $reopen['lines'];
+        foreach ($lines as &$l) {
+            if ($l['existingMissionId'] === $missionIdB) { $l['instrumentistId'] = $instrB->getId(); }
+        }
+        unset($l);
+
+        // update() counts every resent existing-mission line as "updated" (same
+        // unconditional counting as generate()'s own override mode, see the pre-existing
+        // single-site test's own note) — both lines are resent here, only line B's
+        // instrumentist actually changed. The Mission-level assertions below are what
+        // actually prove only line B was mutated.
+        $update = $this->json($this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => $lines]));
+        self::assertSame(2, $update['updated'], json_encode($update));
+
+        // "Quitter" then "réouvrir" — same PlanningVersion, same persisted Missions.
+        $this->em->clear();
+        $reopenAgain = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        self::assertCount(2, $reopenAgain['lines']);
+        $lineB = current(array_filter($reopenAgain['lines'], static fn (array $l) => $l['existingMissionId'] === $missionIdB));
+        self::assertSame($instrB->getId(), $lineB['instrumentistId']);
+
+        $missionB = $this->em->find(Mission::class, $missionIdB);
+        self::assertSame($instrB->getId(), $missionB->getInstrumentist()->getId());
+        self::assertSame(MissionStatus::DRAFT, $missionB->getStatus());
+    }
+
+    #[WithoutErrorHandler]
+    public function test_add_mission_on_reopened_group_scoped_draft_survives_reopen(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $siteA    = $this->makeSite();
+        $siteB    = $this->makeSite();
+        $this->addShiftConfig($siteA, '08:00', '13:00');
+        $this->addShiftConfig($siteB, '08:00', '13:00');
+        $this->makePost($surgeonA, $siteA, singleOccurrence: true);
+
+        $manager = $this->em->find(User::class, $manager->getId());
+        $group   = $this->makeSiteGroup([$siteA, $siteB], $manager);
+
+        ['versionId' => $versionId] = $this->generateGroupDraft($client, $token, $group);
+
+        $surgeonB = $this->makeUser('ROLE_SURGEON');
+        $instr    = $this->makeUser('ROLE_INSTRUMENTIST');
+
+        // Ad hoc add on siteB — the group's other site, never touched by a Post yet.
+        $reopen1 = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $lines   = $reopen1['lines'];
+        $lines[] = $this->adHocLineFor($siteB, $surgeonB, $instr, $this->firstMondayOfTestMonth()->format('Y-m-d'));
+        $update  = $this->json($this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => $lines]));
+        self::assertSame(1, $update['created'], json_encode($update));
+
+        $this->em->clear();
+        $adHocMission = $this->em->createQueryBuilder()
+            ->select('m')->from(Mission::class, 'm')
+            ->where('m.planningVersion = :v')->andWhere('m.surgeon = :s')
+            ->setParameter('v', $versionId)->setParameter('s', $surgeonB->getId())
+            ->getQuery()->getOneOrNullResult();
+        self::assertNotNull($adHocMission);
+        $this->createdIds['missions'][] = $adHocMission->getId();
+        self::assertSame($siteB->getId(), $adHocMission->getSite()?->getId());
+
+        $reopen2 = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $line = current(array_filter($reopen2['lines'], static fn (array $l) => $l['existingMissionId'] === $adHocMission->getId()));
+        self::assertNotFalse($line, 'the ad-hoc line on the group\'s second site must survive leaving and reopening the draft');
+        self::assertSame($instr->getId(), $line['instrumentistId']);
+    }
+
+    #[WithoutErrorHandler]
+    public function test_group_scoped_draft_rederives_skipped_line_after_absence_created_post_generation(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $surgeonB = $this->makeUser('ROLE_SURGEON');
+        $siteA    = $this->makeSite();
+        $siteB    = $this->makeSite();
+        $this->addShiftConfig($siteA, '08:00', '13:00');
+        $this->addShiftConfig($siteB, '08:00', '13:00');
+        $this->makePost($surgeonA, $siteA, singleOccurrence: true);
+        $this->makePost($surgeonB, $siteB, singleOccurrence: true);
+
+        $manager = $this->em->find(User::class, $manager->getId());
+        $group   = $this->makeSiteGroup([$siteA, $siteB], $manager);
+
+        ['versionId' => $versionId] = $this->generateGroupDraft($client, $token, $group);
+
+        // surgeonA becomes absent AFTER this draft was generated — never re-derived by
+        // this fix's own reconciliation (out of scope, see the AbsenceMissionReactionService
+        // work elsewhere); reopen()'s own preview() pass is what must surface it as SKIPPED.
+        $surgeonA = $this->em->find(User::class, $surgeonA->getId());
+        $manager  = $this->em->find(User::class, $manager->getId());
+        $this->persistAbsenceDirect($surgeonA, $manager, $this->firstMondayOfTestMonth());
+
+        $reopen = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+
+        $lineA = current(array_filter($reopen['lines'], static fn (array $l) => $l['surgeonId'] === $surgeonA->getId()));
+        self::assertNotFalse($lineA);
+        self::assertSame('SKIPPED', $lineA['status'], 'surgeonA\'s occurrence must be re-derived as SKIPPED now that they are absent');
+
+        $lineB = current(array_filter($reopen['lines'], static fn (array $l) => $l['surgeonId'] === $surgeonB->getId()));
+        self::assertNotFalse($lineB);
+        self::assertNotSame('SKIPPED', $lineB['status'], 'the group\'s other site must be entirely unaffected');
+    }
+
+    private function persistAbsenceDirect(User $user, User $createdBy, \DateTimeImmutable $date): Absence
+    {
+        $a = new Absence();
+        $a->setUser($user);
+        $a->setCreatedBy($createdBy);
+        $a->setDateStart($date);
+        $a->setDateEnd($date);
+        $this->em->persist($a);
+        $this->em->flush();
+        $this->createdIds['absences'][] = $a->getId();
+        return $a;
+    }
+
+    #[WithoutErrorHandler]
+    public function test_delete_group_scoped_draft_removes_version_and_its_missions(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $surgeonB = $this->makeUser('ROLE_SURGEON');
+        $siteA    = $this->makeSite();
+        $siteB    = $this->makeSite();
+        $this->addShiftConfig($siteA, '08:00', '13:00');
+        $this->addShiftConfig($siteB, '08:00', '13:00');
+        $this->makePost($surgeonA, $siteA, singleOccurrence: true);
+        $this->makePost($surgeonB, $siteB, singleOccurrence: true);
+
+        $manager = $this->em->find(User::class, $manager->getId());
+        $group   = $this->makeSiteGroup([$siteA, $siteB], $manager);
+
+        ['versionId' => $versionId, 'missionIds' => $missionIds] = $this->generateGroupDraft($client, $token, $group);
+        self::assertCount(2, $missionIds);
+
+        $response = $this->deleteJson($client, $token, "/api/planning/versions/{$versionId}");
+        self::assertSame(Response::HTTP_NO_CONTENT, $response->getStatusCode());
+
+        $this->em->clear();
+        self::assertNull($this->em->find(PlanningVersion::class, $versionId));
+        foreach ($missionIds as $id) {
+            self::assertNull($this->em->find(Mission::class, $id));
+        }
+        $this->createdIds['versions'] = array_diff($this->createdIds['versions'], [$versionId]);
+        $this->createdIds['missions'] = array_diff($this->createdIds['missions'], $missionIds);
+    }
+
+    /**
+     * The historical-stability requirement, tested directly: a SiteGroup's membership is
+     * mutable (a manager can add/remove sites from it at any time, independent of any
+     * draft), but reopening an already-generated draft must never silently pick up that
+     * later change — it must keep exactly the scope it had when generate() ran. This is
+     * precisely why PlanningVersion::$scopeSiteIds is a frozen snapshot rather than a live
+     * re-resolution of $siteGroupId's current membership.
+     */
+    #[WithoutErrorHandler]
+    public function test_group_composition_change_after_generation_does_not_alter_draft_scope(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $surgeonB = $this->makeUser('ROLE_SURGEON');
+        $surgeonC = $this->makeUser('ROLE_SURGEON');
+        $siteA    = $this->makeSite();
+        $siteB    = $this->makeSite();
+        $siteC    = $this->makeSite();
+        $this->addShiftConfig($siteA, '08:00', '13:00');
+        $this->addShiftConfig($siteB, '08:00', '13:00');
+        $this->addShiftConfig($siteC, '08:00', '13:00');
+        $this->makePost($surgeonA, $siteA, singleOccurrence: true);
+        $this->makePost($surgeonB, $siteB, singleOccurrence: true);
+        // Post on siteC created up front too — if reopen() ever re-resolved the group's
+        // *current* membership instead of its frozen snapshot, this occurrence would
+        // wrongly appear once siteC joins the group below.
+        $this->makePost($surgeonC, $siteC, singleOccurrence: true);
+
+        $manager = $this->em->find(User::class, $manager->getId());
+        $group   = $this->makeSiteGroup([$siteA, $siteB], $manager);
+
+        ['versionId' => $versionId, 'missionIds' => $missionIds] = $this->generateGroupDraft($client, $token, $group);
+        self::assertCount(2, $missionIds, 'setup must generate only for the group\'s original two sites');
+
+        // The group's composition changes AFTER this draft was generated.
+        $group = $this->em->find(SiteGroup::class, $group->getId());
+        $siteC = $this->em->find(Hospital::class, $siteC->getId());
+        $this->addSiteToGroup($group, $siteC);
+
+        $reopen = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+
+        self::assertCount(2, $reopen['lines'], 'the old draft must keep exactly its original two-site scope, never pick up the newly-added site');
+        $lineSiteIds = array_values(array_unique(array_map(static fn (array $l) => $l['siteId'], $reopen['lines'])));
+        sort($lineSiteIds);
+        $expected = [$siteA->getId(), $siteB->getId()];
+        sort($expected);
+        self::assertSame($expected, $lineSiteIds);
+        self::assertNotContains($siteC->getId(), $lineSiteIds, 'siteC joined the group after generation — must never leak into this old draft');
+    }
+
+    /**
+     * A group-scoped draft created before D-115bis (site=null, siteGroup=null,
+     * scopeSiteIds=null — exactly the pre-migration row shape) with real persisted DRAFT
+     * Missions: reopen() must self-heal by reconstructing the snapshot from those
+     * Missions' own sites (never the SiteGroup's current membership, which this fixture
+     * doesn't even attach one to — proving the reconstruction needs no SiteGroup at all)
+     * and persist it, so it works exactly like a fresh group-scoped draft from then on.
+     */
+    #[WithoutErrorHandler]
+    public function test_reopen_pre_existing_group_scoped_draft_self_heals_missing_scope_snapshot(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $surgeonB = $this->makeUser('ROLE_SURGEON');
+        $siteA    = $this->makeSite();
+        $siteB    = $this->makeSite();
+        $manager  = $this->em->find(User::class, $manager->getId());
+
+        $version = new PlanningVersion();
+        $version->setPeriodStart(new \DateTimeImmutable(sprintf('%04d-%02d-01', self::YEAR, self::MONTH)));
+        $version->setPeriodEnd(new \DateTimeImmutable(sprintf('%04d-%02d-01', self::YEAR, self::MONTH)));
+        $version->setGeneratedBy($manager);
+        $version->setStatus(PlanningVersionStatus::DRAFT);
+        // Deliberately left as-is: site=null, siteGroup=null, scopeSiteIds=null — the exact
+        // shape a group-scoped draft had before this fix, before any backfill ran.
+        $this->em->persist($version);
+        $this->em->flush();
+        $this->createdIds['versions'][] = $version->getId();
+
+        foreach ([[$surgeonA, $siteA], [$surgeonB, $siteB]] as [$surgeon, $site]) {
+            $m = new Mission();
+            $m->setStatus(MissionStatus::DRAFT);
+            $m->setType(MissionType::BLOCK);
+            $m->setSurgeon($surgeon);
+            $m->setSite($site);
+            $m->setStartAt(new \DateTimeImmutable(sprintf('%04d-%02d-03 08:00', self::YEAR, self::MONTH)));
+            $m->setEndAt(new \DateTimeImmutable(sprintf('%04d-%02d-03 13:00', self::YEAR, self::MONTH)));
+            $m->setCreatedBy($manager);
+            $m->setPlanningVersion($version);
+            $this->em->persist($m);
+            $this->em->flush();
+            $this->createdIds['missions'][] = $m->getId();
+        }
+
+        $response = $this->getJson($client, $token, "/api/planning/v2/drafts/{$version->getId()}");
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        self::assertCount(2, $body['lines']);
+
+        // Self-heal proof: the snapshot is now persisted, so a second reopen no longer
+        // needs to reconstruct anything.
+        $this->em->clear();
+        $healed = $this->em->find(PlanningVersion::class, $version->getId());
+        $expected = [$siteA->getId(), $siteB->getId()];
+        sort($expected);
+        $actual = $healed->getScopeSiteIds();
+        sort($actual);
+        self::assertSame($expected, $actual, 'reopen() must persist the reconstructed snapshot back onto the version');
+    }
+
+    /**
+     * The one residual, explicitly accepted edge case: a group-scoped draft (pre- or
+     * post-fix, doesn't matter) with zero persisted DRAFT Missions has nothing to
+     * reconstruct a scope from. Still refused — same shape of error as before, now
+     * correctly scoped to this one narrow case instead of every group-scoped draft.
+     */
+    #[WithoutErrorHandler]
+    public function test_reopen_group_scoped_draft_with_no_missions_and_no_snapshot_is_refused(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+        $manager = $this->em->find(User::class, $manager->getId());
+
+        $version = new PlanningVersion();
+        $version->setPeriodStart(new \DateTimeImmutable(sprintf('%04d-%02d-01', self::YEAR, self::MONTH)));
+        $version->setPeriodEnd(new \DateTimeImmutable(sprintf('%04d-%02d-01', self::YEAR, self::MONTH)));
+        $version->setGeneratedBy($manager);
+        $version->setStatus(PlanningVersionStatus::DRAFT);
+        $this->em->persist($version);
+        $this->em->flush();
+        $this->createdIds['versions'][] = $version->getId();
+
+        $response = $this->getJson($client, $token, "/api/planning/v2/drafts/{$version->getId()}");
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_BAD_REQUEST, $response->getStatusCode());
+        self::assertStringContainsString('périmètre d\'origine', $body['error']['message'] ?? $body['message'] ?? '');
     }
 
     // ── Test 2 (list) + Test 8 (409 already exists) ─────────────────────────────

@@ -59,6 +59,33 @@ class PlanningVersion
     #[ORM\Column(type: 'string', length: 64, nullable: true)]
     private ?string $previewHash = null;
 
+    /**
+     * D-115bis — informational only, never the source of truth for reopen(). Which
+     * SiteGroup this draft names, purely for display ("Groupe : Bloc Ouest" instead of the
+     * generic "Tous sites" fallback) and so the frontend's site/group selector can
+     * re-select the right entry when reopening. ON DELETE SET NULL: deleting the SiteGroup
+     * later must never break this historical draft — see $scopeSiteIds, which is what
+     * reopen() actually relies on.
+     */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(name: 'site_group_id', nullable: true, onDelete: 'SET NULL')]
+    private ?SiteGroup $siteGroup = null;
+
+    /**
+     * D-115bis — snapshot of the exact Hospital ids in scope at generate() time, for a
+     * site-group ($site === null) draft. Frozen forever: SiteGroupMembership is mutable, so
+     * re-resolving the group's *current* membership at reopen time would let a later
+     * membership change retroactively alter an old draft's scope — this is what makes
+     * reopen() stable across time instead. Null for a single-site draft ($site already
+     * gives the one id there) and, for a draft created before this migration whose backfill
+     * had zero persisted Missions to reconstruct from, the one residual case where reopen()
+     * still refuses (nothing to reconstruct).
+     *
+     * @var int[]|null
+     */
+    #[ORM\Column(type: 'json', nullable: true)]
+    private ?array $scopeSiteIds = null;
+
     #[ORM\OneToMany(mappedBy: 'planningVersion', targetEntity: Mission::class)]
     private Collection $missions;
 
@@ -101,6 +128,14 @@ class PlanningVersion
 
     public function getPreviewHash(): ?string { return $this->previewHash; }
     public function setPreviewHash(?string $previewHash): static { $this->previewHash = $previewHash; return $this; }
+
+    public function getSiteGroup(): ?SiteGroup { return $this->siteGroup; }
+    public function setSiteGroup(?SiteGroup $siteGroup): static { $this->siteGroup = $siteGroup; return $this; }
+
+    /** @return int[]|null */
+    public function getScopeSiteIds(): ?array { return $this->scopeSiteIds; }
+    /** @param int[]|null $scopeSiteIds */
+    public function setScopeSiteIds(?array $scopeSiteIds): static { $this->scopeSiteIds = $scopeSiteIds; return $this; }
 
     /** @return Collection<int, Mission> */
     public function getMissions(): Collection { return $this->missions; }

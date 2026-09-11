@@ -6,6 +6,7 @@ use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningOccurrenceException;
 use App\Entity\PlanningVersion;
+use App\Entity\SiteGroup;
 use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
 use App\Enum\MissionStatus;
@@ -36,8 +37,10 @@ class PlanningGeneratorServiceV2
 
     /**
      * Preview: returns array of preview lines WITHOUT persisting anything.
-     * Exactly one of $siteId / $siteGroupId must be provided.
+     * Exactly one of $siteId / $siteGroupId must be provided, unless $explicitSiteIds is
+     * given (D-115bis — reopen() of a group-scoped draft), in which case both are ignored.
      *
+     * @param int[]|null $explicitSiteIds
      * @return array<int, array{
      *   date: string, postId: int, surgeonId: int, surgeonName: string,
      *   missionType: string, startTime: string, endTime: string,
@@ -48,10 +51,10 @@ class PlanningGeneratorServiceV2
      *   freedFrom: bool
      * }>
      */
-    public function preview(string $month, ?int $siteId, ?int $siteGroupId, ?int $surgeonId): array
+    public function preview(string $month, ?int $siteId, ?int $siteGroupId, ?int $surgeonId, ?array $explicitSiteIds = null): array
     {
         [$start, $end] = $this->monthRange($month);
-        $siteIds        = $this->resolveSiteIds($siteId, $siteGroupId);
+        $siteIds        = $this->resolveSiteIds($siteId, $siteGroupId, $explicitSiteIds);
         $from           = $start->format('Y-m-d');
         $to             = $end->format('Y-m-d');
 
@@ -295,11 +298,13 @@ class PlanningGeneratorServiceV2
     /**
      * Deterministic SHA-256 fingerprint of the planning inputs for the scope.
      * Runs 3 queries independently of preview(). Used as previewVersion token.
+     *
+     * @param int[]|null $explicitSiteIds D-115bis — see preview().
      */
-    public function computePreviewVersion(string $month, ?int $siteId, ?int $siteGroupId): string
+    public function computePreviewVersion(string $month, ?int $siteId, ?int $siteGroupId, ?array $explicitSiteIds = null): string
     {
         [$periodStart, $periodEnd] = $this->monthRange($month);
-        $siteIds = $this->resolveSiteIds($siteId, $siteGroupId);
+        $siteIds = $this->resolveSiteIds($siteId, $siteGroupId, $explicitSiteIds);
         $from    = $periodStart->format('Y-m-d');
         $to      = $periodEnd->format('Y-m-d');
 
@@ -381,10 +386,15 @@ class PlanningGeneratorServiceV2
         // CAS D (D-115) — snapshot for divergence detection on reopen, never for blocking.
         $version->setPreviewHash($this->computePreviewVersion($month, $siteId, $siteGroupId));
 
-        // PlanningVersion has no siteGroup column (kept unchanged, see Batch 2 deviations) —
-        // a group-wide version stores site=null, same as V1's "no site filter" case.
+        // A group-wide version still stores site=null (same "no site filter" bucket V1
+        // uses) — but D-115bis now also freezes exactly which sites that meant at this
+        // moment, so a later reopen() never depends on the SiteGroup's *current*
+        // (mutable) membership. $siteGroup itself is purely informational/display.
         if ($siteId !== null) {
             $version->setSite($this->em->find(Hospital::class, $siteId));
+        } elseif ($siteGroupId !== null) {
+            $version->setSiteGroup($this->em->find(SiteGroup::class, $siteGroupId));
+            $version->setScopeSiteIds($this->resolveSiteIds($siteId, $siteGroupId));
         }
 
         $version->setVersionNumber($this->nextVersionNumber($siteId, $start, $end));
@@ -668,9 +678,21 @@ class PlanningGeneratorServiceV2
         return [$start, $end];
     }
 
-    /** @return int[] */
-    private function resolveSiteIds(?int $siteId, ?int $siteGroupId): array
+    /**
+     * D-115bis — $explicitSiteIds bypasses siteId/siteGroupId resolution entirely when
+     * given: PlanningDraftService::reopen() passes a group-scoped draft's frozen
+     * `PlanningVersion::scopeSiteIds` snapshot here, deliberately never re-resolving the
+     * SiteGroup's *current* membership (which is mutable — that would let a later
+     * membership change retroactively alter an already-generated draft's scope).
+     *
+     * @param int[]|null $explicitSiteIds
+     * @return int[]
+     */
+    private function resolveSiteIds(?int $siteId, ?int $siteGroupId, ?array $explicitSiteIds = null): array
     {
+        if ($explicitSiteIds !== null) {
+            return $explicitSiteIds;
+        }
         if ($siteId !== null && $siteGroupId !== null) {
             throw new \InvalidArgumentException('Fournir siteId OU siteGroupId, pas les deux.');
         }

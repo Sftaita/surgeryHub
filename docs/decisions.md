@@ -9704,12 +9704,14 @@ remplacement V2 au commit `570a551`).
   existante (ex. un Post ajouté au scope après la création du brouillon).
 - **Migration** : `Version20260908090000` — `planning_version.preview_hash VARCHAR(64) NULL`,
   purement additive.
-- **Limitation connue (non corrigée)** : un brouillon de groupe de sites persiste avec
-  `site = null`, indistinguable du bucket « aucun filtre de site » — `PlanningVersion` n'a pas
-  de colonne `siteGroupId`. `PlanningDraftService::requireSingleSiteScope()` refuse
-  explicitement la réouverture d'un tel brouillon (`400`) plutôt que de prévisualiser le
-  mauvais (ou tous les) site(s). Même limitation déjà documentée en Batch 8 §B/§I pour la
-  détection de doublon.
+- **Limitation connue — corrigée par D-115bis** : un brouillon de groupe de sites
+  persistait avec `site = null`, indistinguable du bucket « aucun filtre de site » —
+  `PlanningVersion` n'avait pas de colonne pour mémoriser le groupe/l'ensemble de sites.
+  `PlanningDraftService::requireSingleSiteScope()` refusait explicitement la réouverture
+  d'un tel brouillon (`400`) plutôt que de prévisualiser le mauvais (ou tous les) site(s).
+  Voir D-115bis ci-dessous pour le correctif (snapshot explicite du scope). Limitation
+  analogue toujours ouverte en Batch 8 §B/§I pour la détection de doublon (hors périmètre
+  D-115bis).
 
 ### Tests
 
@@ -9757,6 +9759,97 @@ changement CAS D) + 8/8 `PlanningV2DraftControllerTest`. Frontend : 1270/1270 (d
 erreur préexistante et sans rapport (`PrestationsPage.tsx`, hors périmètre) — aucune erreur
 introduite par ce lot ; `npm run build` bloqué par cette même erreur préexistante (déjà
 documentée ailleurs comme dette non liée à Planning V2).
+
+Non déployé.
+
+## D-115bis — Réouverture d'un brouillon multi-sites / groupe de sites / Tous sites (2026-09-11)
+
+**Statut : DONE, testé (backend et frontend verts), committé, non déployé.**
+
+Date : 2026-09-11
+
+### Contexte
+
+Limitation connue de D-115 : `PlanningDraftService::reopen()` refusait (`400`) la réouverture
+de tout brouillon dont la version avait `site = null` — cas d'un `PlanningVersion` généré
+pour un groupe de sites ou pour « Tous sites ». `preview()`/`computePreviewVersion()`
+supportaient déjà `siteGroupId` en entrée ; seul `reopen()` était bloqué, faute de pouvoir
+reconstruire le scope exact du brouillon au moment de la réouverture.
+
+### Décision — snapshot explicite du scope, jamais de reconstruction dynamique
+
+Reconstruire le scope à la volée à partir des `Mission` DRAFT déjà persistées a été écarté :
+deux défauts rédhibitoires identifiés à l'audit — (1) un site du groupe sans aucune mission
+ce mois-là (aucun `SurgeonSchedulePost` actif) disparaîtrait silencieusement du scope
+reconstruit, sans que rien ne le distingue d'un groupe réellement plus restreint ; (2)
+`SiteGroupMembership` est mutable à tout moment — une reconstruction dynamique ferait dériver
+le scope d'un vieux brouillon si la composition du groupe change après sa création, ce qui
+viole l'exigence de stabilité historique (un brouillon doit rouvrir avec le scope qu'il avait
+à sa génération, jamais celui du groupe aujourd'hui).
+
+**`PlanningVersion` gagne deux colonnes** (migration `Version20260911090000`, additive) :
+- `scopeSiteIds` (JSON nullable) — snapshot figé, à la génération, des ids de sites du scope.
+  **Seule source de vérité pour la réouverture** d'un brouillon `site = null`.
+- `siteGroup` (FK nullable vers `SiteGroup`, `ON DELETE SET NULL`) — purement informatif,
+  utilisé uniquement pour l'affichage (nom du groupe dans l'historique/le sélecteur) ; jamais
+  relu pour reconstruire un scope.
+
+`PlanningGeneratorServiceV2::resolveSiteIds()` accepte désormais un paramètre optionnel
+`explicitSiteIds` : quand fourni (cas `reopen()`), il court-circuite entièrement la
+résolution `siteId`/`siteGroupId` — `preview()`/`computePreviewVersion()`/`generate()`
+en héritent en paramètre additionnel, changement rétrocompatible par construction (paramètres
+optionnels en fin de signature).
+
+### Compatibilité avec les brouillons déjà existants
+
+Un brouillon multi-sites créé avant ce lot n'a pas de `scopeSiteIds` (colonne inexistante à
+l'époque). Deux mécanismes complémentaires, jamais un seul :
+
+1. **Backfill de migration** — `Version20260911090000` peuple `scope_site_ids` pour tout
+   `PlanningVersion` `site IS NULL AND status = 'DRAFT'` à partir des `site_id` distincts de
+   ses propres `Mission` déjà persistées (`JSON_ARRAYAGG` sur sous-requête `DISTINCT`).
+   Vérifié sur les brouillons réels d'octobre/novembre présents en dev (backfillés à
+   `[1, 3]`).
+2. **Auto-réparation applicative** — `PlanningDraftService::resolveGroupScopeSiteIds()` : si
+   `scopeSiteIds` est toujours absent au moment d'un `reopen()` (migration non encore
+   appliquée sur cet environnement, ou brouillon créé entre deux étapes de déploiement),
+   reconstruit le scope à partir des `Mission` DRAFT de la version et le persiste
+   immédiatement — ne lève `BadRequestHttpException` que si la version n'a strictement aucune
+   mission DRAFT à partir de laquelle reconstruire (cas où même le fallback ne peut pas
+   garantir un scope correct).
+
+Le brouillon ne perd donc jamais sa capacité de réouverture, et son scope n'est jamais
+attribué au hasard : soit le snapshot existe, soit il est reconstruit depuis les données
+réellement persistées de ce brouillon précis (jamais depuis l'état courant d'un `SiteGroup`).
+
+### Tests
+
+`PlanningV2DraftControllerTest` — 8 nouveaux scénarios (25/25 au total dans ce fichier) :
+réouverture site unique / groupe / tous sites, persistance après quitter/revenir, ajout de
+mission ad hoc sur brouillon rouvert, re-dérivation `SKIPPED` après absence créée
+post-génération, suppression d'un brouillon multi-sites, **composition du groupe modifiée
+après génération ⇒ le brouillon garde son scope initial** (test de stabilité), auto-réparation
+d'un brouillon pré-existant sans snapshot, refus explicite si aucune mission ne permet de
+reconstruire le scope.
+
+### Frontend
+
+`GeneratePlanningTab.tsx` : le bouton « Ouvrir » fonctionne à l'identique pour un brouillon
+mono-site, groupe ou tous sites. `openDraftMutation` aligne `targetId` sur `siteGroupId` (via
+le même décalage `GROUP_ID_OFFSET` que le sélecteur site/groupe). `matchesScope()` distingue
+désormais deux groupes différents portant tous deux `site = null` par leur `siteGroupId`
+plutôt que de faire correspondre toute sélection de groupe à n'importe quel brouillon
+`site = null`. Libellé de la liste des brouillons : nom du groupe si connu, sinon
+« Tous sites » (fallback inchangé pour les brouillons antérieurs à ce lot, avant backfill).
+
+### Tests exécutés
+
+Backend : suite complète 2332/2332 (hors 1 échec préexistant confirmé sans rapport —
+`ReleasedOperatingRoomSlotFunctionalTest::test_slot_survives_hospital_and_surgeon_deletion_with_no_crash`,
+reproduit à l'identique sans les changements D-115bis) + `--filter Planning` 486/486. Frontend :
+1281/1282 (le seul échec, `GeneratePlanningTab.test.tsx` — scénario « Ajouter » CAS D, est un
+flake de timing préexistant à ~5-6,6s contre un seuil par défaut de 5000ms, reproduit à
+l'identique sans les changements D-115bis). `npm run build` : OK. `git diff --check` : propre.
 
 Non déployé.
 

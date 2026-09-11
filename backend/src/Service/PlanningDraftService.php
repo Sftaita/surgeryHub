@@ -65,11 +65,15 @@ final class PlanningDraftService
     public function reopen(PlanningVersion $version): array
     {
         $this->assertDraft($version);
-        $siteId = $this->requireSingleSiteScope($version);
+
+        $siteId = $version->getSite()?->getId();
+        // D-115bis — a group-scoped draft ($siteId === null) re-previews against its own
+        // frozen scope snapshot, never the SiteGroup's current (mutable) membership.
+        $explicitSiteIds = $siteId === null ? $this->resolveGroupScopeSiteIds($version) : null;
 
         $month = $version->getPeriodStart()->format('Y-m');
-        $lines = $this->generator->preview($month, $siteId, null, null);
-        $currentHash = $this->generator->computePreviewVersion($month, $siteId, null);
+        $lines = $this->generator->preview($month, $siteId, null, null, $explicitSiteIds);
+        $currentHash = $this->generator->computePreviewVersion($month, $siteId, null, $explicitSiteIds);
 
         $this->normalizeForDraftEditing($lines);
         $this->appendAdHocMissions($version, $lines);
@@ -397,23 +401,57 @@ final class PlanningDraftService
     }
 
     /**
-     * Known limitation (same class as the pre-existing site-group / site=null bucket
-     * documented in PlanningV2GenerationController::assertNoUndeployedDraftExists() and
-     * Batch 8/9): a site-GROUP draft persists with `site = null`, indistinguishable from
-     * "no site filter" — there is no siteGroupId column on PlanningVersion to recover
-     * which group it was generated for. Reopening such a draft is refused explicitly
-     * rather than silently previewing the wrong (or every) site. Not fixed here.
+     * D-115bis — a group-scoped draft's own frozen scope, for reopen() only. Never falls
+     * back to resolving the SiteGroup's current membership (that would let a later
+     * membership change retroactively alter this draft's scope — see PlanningVersion::
+     * $scopeSiteIds for why).
+     *
+     * The migration backfills $scopeSiteIds once for every pre-existing group-scoped
+     * DRAFT at deploy time, so this lazy path is normally a no-op for old drafts too. It
+     * still exists — and is what tests exercise directly, without needing to simulate
+     * migration timing — as a self-healing fallback: reconstructed once here from the
+     * version's own persisted DRAFT Missions (never the SiteGroup's current membership)
+     * and persisted back, so every later reopen() of the same draft is O(1) again and
+     * never re-derives it. Same reconstruction the migration itself performs — safe here
+     * specifically because it is scoped to a single already-generated draft's own fixed
+     * set of persisted Missions, never used as an ongoing resolution mechanism.
+     *
+     * The one residual refusal case, explicitly narrower than the old blanket one: a
+     * group-scoped draft with zero persisted DRAFT Missions (everything SKIPPED) — there
+     * is genuinely nothing to reconstruct its original scope from.
      */
-    private function requireSingleSiteScope(PlanningVersion $version): int
+    private function resolveGroupScopeSiteIds(PlanningVersion $version): array
     {
-        $site = $version->getSite();
-        if ($site === null) {
+        $snapshot = $version->getScopeSiteIds();
+        if ($snapshot !== null && $snapshot !== []) {
+            return $snapshot;
+        }
+
+        $ids = [];
+        foreach ($version->getMissions() as $mission) {
+            if ($mission->getStatus() !== MissionStatus::DRAFT) {
+                continue;
+            }
+            $siteId = $mission->getSite()?->getId();
+            if ($siteId !== null) {
+                $ids[$siteId] = $siteId;
+            }
+        }
+
+        if (empty($ids)) {
             throw new BadRequestHttpException(
-                'La réouverture d\'un brouillon généré pour un groupe de sites n\'est pas encore supportée '
-                . '(PlanningVersion ne mémorise pas le groupe — limitation connue, voir docs/decisions.md D-115).',
+                'La réouverture de ce brouillon multi-sites est impossible : aucune mission n\'y est '
+                . 'associée, et son périmètre d\'origine n\'a pas pu être reconstruit (brouillon créé '
+                . 'avant D-115bis, sans mission générée à cette époque).',
             );
         }
-        return $site->getId();
+
+        $ids = array_values($ids);
+        sort($ids);
+        $version->setScopeSiteIds($ids);
+        $this->em->flush();
+
+        return $ids;
     }
 
     /**

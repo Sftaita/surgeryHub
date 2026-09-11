@@ -289,8 +289,12 @@ export function GeneratePlanningTab() {
       setDraftDivergent(data.divergent);
       const d = new Date(data.version.periodStart);
       setSelectedMonthIds([yearMonthToMonthId({ year: d.getFullYear(), month: d.getMonth() + 1 })]);
+      // D-115bis — a group-scoped draft's selector entry is offset the same way the
+      // options list itself builds group ids (see targetOptions above).
       if (data.version.siteId !== null) {
         setTargetId(data.version.siteId);
+      } else if (data.version.siteGroupId !== null) {
+        setTargetId(data.version.siteGroupId + GROUP_ID_OFFSET);
       }
       if (data.divergent) {
         toast.warning("Le modèle de planning (postes, absences…) a changé depuis la création de ce brouillon — les lignes ci-dessous reflètent l'état actuel, vos affectations déjà enregistrées sont conservées.");
@@ -1048,8 +1052,13 @@ export function GeneratePlanningTab() {
               {monthChipIds.map((id) => {
                 const ym = monthIdToYearMonth(id);
                 const selected = selectedMonthIds.includes(id);
-                const matchesScope = (v: { site?: { id: number } | null }) =>
-                  targetId === null || targetId >= GROUP_ID_OFFSET || v.site?.id === targetId;
+                // D-115bis — a selected group must only match ITS OWN drafts, never any
+                // other group's (both persist site=null; siteGroupId is what tells them
+                // apart). A version predating this fix (siteGroupId null) never matches a
+                // group selection — same as before, no worse than the prior blanket 400.
+                const matchesScope = (v: { site?: { id: number } | null; siteGroupId?: number | null }) =>
+                  targetId === null
+                  || (targetId >= GROUP_ID_OFFSET ? v.siteGroupId === targetId - GROUP_ID_OFFSET : v.site?.id === targetId);
                 // Only an ACTIVE (currently live) version is eligible for Modification mode —
                 // a DRAFT was never deployed (nothing to redeploy against post-deploy), and an
                 // ARCHIVED one is already superseded by a newer ACTIVE version for this same
@@ -1208,7 +1217,7 @@ export function GeneratePlanningTab() {
                         <Typography sx={{ fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
                           {MONTH_LABELS[new Date(v.periodStart).getMonth()]} {new Date(v.periodStart).getFullYear()}
                         </Typography>
-                        <Typography sx={{ fontSize: 12, color: planningV2Colors.textSecondary }}>{v.site?.name ?? "Tous sites"}</Typography>
+                        <Typography sx={{ fontSize: 12, color: planningV2Colors.textSecondary }}>{v.site?.name ?? v.siteGroupName ?? "Tous sites"}</Typography>
                       </Box>
                       <Stack direction="row" spacing={2.25} sx={{ flex: 1 }}>
                         <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textBody }}>

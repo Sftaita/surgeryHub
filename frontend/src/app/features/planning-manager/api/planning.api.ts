@@ -198,6 +198,9 @@ export interface PlanningVersionSummary {
   deployedAt: string | null;
   archivedAt: string | null;
   site: { id: number; name: string } | null;
+  /** D-115bis — null for a version generated before this fix, or a single-site one. */
+  siteGroupId: number | null;
+  siteGroupName: string | null;
   generatedBy: { id: number | null; email: string | null };
   summary: {
     total: number;

@@ -307,6 +307,7 @@ class PlanningVersionController extends AbstractController
     private function serializeListItem(PlanningVersion $version): array
     {
         $site = $version->getSite();
+        $siteGroup = $version->getSiteGroup();
 
         return [
             'id'             => $version->getId(),
@@ -318,6 +319,9 @@ class PlanningVersionController extends AbstractController
             'deployedAt'     => $version->getDeployedAt()?->format(\DateTimeInterface::ATOM),
             'archivedAt'     => $version->getArchivedAt()?->format(\DateTimeInterface::ATOM),
             'site'           => $site !== null ? ['id' => $site->getId(), 'name' => $site->getName()] : null,
+            // D-115bis — null for a draft created before this fix, or a single-site one.
+            'siteGroupId'    => $siteGroup?->getId(),
+            'siteGroupName'  => $siteGroup?->getName(),
             'generatedBy'    => [
                 'id'    => $version->getGeneratedBy()?->getId(),
                 'email' => $version->getGeneratedBy()?->getEmail(),
