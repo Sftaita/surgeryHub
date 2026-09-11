@@ -36,8 +36,26 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 final class PlanningV2GenerationControllerTest extends WebTestCase
 {
     private const PASSWORD = 'Batch9Test123!';
-    private const YEAR     = 2026;
-    private const MONTH    = 9;
+
+    /**
+     * Always "next calendar month" relative to whenever the suite actually runs — never a
+     * fixed literal. A hardcoded month (e.g. "2026-09") silently rots: several tests here
+     * compute the month's first Monday and treat every one of its OPEN missions as
+     * available "today or later" (eligibleToMe defaults periodStart to today — see
+     * MissionService::list()); once real time catches up to that first Monday, it falls
+     * into the past and gets silently excluded, failing the test for a reason with nothing
+     * to do with the code under test. "Next month" keeps the whole fixture month safely in
+     * the future indefinitely.
+     */
+    private static function year(): int
+    {
+        return (int) (new \DateTimeImmutable('first day of next month'))->format('Y');
+    }
+
+    private static function month(): int
+    {
+        return (int) (new \DateTimeImmutable('first day of next month'))->format('n');
+    }
 
     private EntityManagerInterface $em;
     private array $createdIds = [
@@ -191,10 +209,10 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         $this->createdIds['shiftPeriods'][] = $c->getId();
     }
 
-    /** First Monday of self::YEAR/self::MONTH — computed, never hardcoded. */
+    /** First Monday of self::year()/self::month() — computed, never hardcoded. */
     private function firstMondayOfTestMonth(): \DateTimeImmutable
     {
-        $first = new \DateTimeImmutable(sprintf('%04d-%02d-01', self::YEAR, self::MONTH));
+        $first = new \DateTimeImmutable(sprintf('%04d-%02d-01', self::year(), self::month()));
         $isoDay = (int) $first->format('N');
         return $isoDay === 1 ? $first : $first->modify('+' . (8 - $isoDay) . ' days');
     }
@@ -214,7 +232,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         $p->setPeriod(ShiftPeriod::MATIN);
         $p->setRecurrence($rule);
         $p->setInstrumentist($instrumentist);
-        $p->setStartDate(new \DateTimeImmutable(sprintf('%04d-%02d-01', self::YEAR, self::MONTH)));
+        $p->setStartDate(new \DateTimeImmutable(sprintf('%04d-%02d-01', self::year(), self::month())));
         $p->setCreatedBy($surgeon);
         $this->em->persist($p);
         $this->em->flush();
@@ -243,7 +261,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         $this->makePost($surgeon, $site, $instrumentist);
 
         $response = $this->postJson($client, $token, '/api/planning/v2/preview', [
-            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month(),
         ]);
         $body = $this->json($response);
 
@@ -291,7 +309,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         }
 
         $response = $this->postJson($client, $token, '/api/planning/v2/preview', [
-            'siteId' => null, 'siteGroupId' => $group->getId(), 'year' => self::YEAR, 'month' => self::MONTH,
+            'siteId' => null, 'siteGroupId' => $group->getId(), 'year' => self::year(), 'month' => self::month(),
         ]);
         $body = $this->json($response);
 
@@ -311,7 +329,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
 
         $response = $this->postJson($client, $token, '/api/planning/v2/preview', [
-            'siteId' => 1, 'siteGroupId' => 2, 'year' => self::YEAR, 'month' => self::MONTH,
+            'siteId' => 1, 'siteGroupId' => 2, 'year' => self::year(), 'month' => self::month(),
         ]);
 
         self::assertSame(Response::HTTP_BAD_REQUEST, $response->getStatusCode());
@@ -326,7 +344,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
 
         $response = $this->postJson($client, $token, '/api/planning/v2/preview', [
-            'year' => self::YEAR, 'month' => self::MONTH,
+            'year' => self::year(), 'month' => self::month(),
         ]);
 
         self::assertSame(Response::HTTP_BAD_REQUEST, $response->getStatusCode());
@@ -347,7 +365,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         $this->makePost($surgeon, $site);
 
         $response = $this->postJson($client, $token, '/api/planning/v2/generate', [
-            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month(),
         ]);
         $body = $this->json($response);
 
@@ -384,7 +402,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         $this->addShiftConfig($site, '08:00', '13:00');
         $this->makePost($surgeon, $site);
 
-        $body = ['siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH];
+        $body = ['siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month()];
 
         $first = $this->postJson($client, $token, '/api/planning/v2/generate', $body);
         self::assertSame(Response::HTTP_OK, $first->getStatusCode());
@@ -428,7 +446,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         $this->makePost($surgeon, $site, $instrumentist);
 
         $generateResponse = $this->postJson($client, $token, '/api/planning/v2/generate', [
-            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month(),
         ]);
         $versionId = $this->json($generateResponse)['versionId'];
         $this->createdIds['versions'][] = $versionId;
@@ -473,7 +491,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         $this->makePost($surgeon, $site);
 
         $response = $this->postJson($client, $token, '/api/planning/v2/preview', [
-            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month(),
         ]);
         $body = $this->json($response);
 
@@ -496,7 +514,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         $this->addShiftConfig($site, '08:00', '13:00');
         $this->makePost($surgeon, $site);
 
-        $target = ['siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH];
+        $target = ['siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month()];
 
         $previewResponse = $this->postJson($client, $token, '/api/planning/v2/preview', $target);
         $previewVersion  = $this->json($previewResponse)['previewVersion'];
@@ -534,7 +552,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         $this->addShiftConfig($site, '08:00', '13:00');
         $this->makePost($surgeon, $site);
 
-        $target = ['siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH];
+        $target = ['siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month()];
 
         $response = $this->postJson($client, $token, '/api/planning/v2/generate', array_merge(
             $target, ['previewVersion' => str_repeat('0', 64)],
@@ -557,7 +575,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         $this->addShiftConfig($site, '08:00', '13:00');
         $this->makePost($surgeon, $site);
 
-        $target   = ['siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH];
+        $target   = ['siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month()];
         $response = $this->postJson($client, $token, '/api/planning/v2/generate', $target);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
@@ -637,20 +655,20 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         $surgeon = $this->makeUser('ROLE_SURGEON');
         $site    = $this->makeSite();
 
-        $missionStart = new \DateTimeImmutable(sprintf('%04d-%02d-14 08:00:00', self::YEAR, self::MONTH));
-        $missionEnd   = new \DateTimeImmutable(sprintf('%04d-%02d-14 18:00:00', self::YEAR, self::MONTH));
+        $missionStart = new \DateTimeImmutable(sprintf('%04d-%02d-14 08:00:00', self::year(), self::month()));
+        $missionEnd   = new \DateTimeImmutable(sprintf('%04d-%02d-14 18:00:00', self::year(), self::month()));
         $mission = $this->makeDraftMission($site, $surgeon, $missionStart, $missionEnd);
 
         // The absence pre-dates generate() — exactly the real case (absence created
         // 24/06, generation happened 13/07).
         $this->makeAbsence(
             $sophie,
-            new \DateTimeImmutable(sprintf('%04d-%02d-01', self::YEAR, self::MONTH)),
-            new \DateTimeImmutable(sprintf('%04d-%02d-16', self::YEAR, self::MONTH)),
+            new \DateTimeImmutable(sprintf('%04d-%02d-01', self::year(), self::month())),
+            new \DateTimeImmutable(sprintf('%04d-%02d-16', self::year(), self::month())),
         );
 
         $response = $this->postJson($client, $token, '/api/planning/v2/generate', [
-            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month(),
             'lines' => [[
                 'status'             => 'COVERED',
                 'existingMissionId'  => $mission->getId(),
@@ -698,12 +716,12 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
             ->setEmploymentType(EmploymentType::FREELANCER);
         $this->em->flush();
 
-        $missionStart = new \DateTimeImmutable(sprintf('%04d-%02d-14 08:00:00', self::YEAR, self::MONTH));
-        $missionEnd   = new \DateTimeImmutable(sprintf('%04d-%02d-14 18:00:00', self::YEAR, self::MONTH));
+        $missionStart = new \DateTimeImmutable(sprintf('%04d-%02d-14 08:00:00', self::year(), self::month()));
+        $missionEnd   = new \DateTimeImmutable(sprintf('%04d-%02d-14 18:00:00', self::year(), self::month()));
         $mission = $this->makeDraftMission($site, $surgeon, $missionStart, $missionEnd);
 
         $response = $this->postJson($client, $token, '/api/planning/v2/generate', [
-            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month(),
             'lines' => [[
                 'status'             => 'COVERED',
                 'existingMissionId'  => $mission->getId(),
@@ -731,7 +749,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
 
         $response = $this->postJson($client, $token, '/api/planning/v2/preview', [
-            'siteId' => 1, 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+            'siteId' => 1, 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month(),
         ]);
 
         self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
@@ -745,7 +763,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         ['token' => $token] = $this->authenticate($client, 'ROLE_SURGEON');
 
         $response = $this->postJson($client, $token, '/api/planning/v2/generate', [
-            'siteId' => 1, 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+            'siteId' => 1, 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month(),
         ]);
 
         self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
@@ -788,7 +806,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
 
         // ── Generate + Deploy ─────────────────────────────────────────────────
         $generateResponse = $this->postJson($client, $managerToken, '/api/planning/v2/generate', [
-            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::YEAR, 'month' => self::MONTH,
+            'siteId' => $site->getId(), 'siteGroupId' => null, 'year' => self::year(), 'month' => self::month(),
         ]);
         self::assertSame(Response::HTTP_OK, $generateResponse->getStatusCode());
         $versionId = $this->json($generateResponse)['versionId'];
@@ -856,7 +874,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
         // list is intentionally NOT auto-scoped like the instrumentist one above (W10-1
         // only restricts non-managers), so an unfiltered query here depends on how many
         // OTHER Mission rows already exist with a startAt at or after this test's own
-        // fixture (self::YEAR/self::MONTH) — a real, pre-existing condition in a shared,
+        // fixture (self::year()/self::month()) — a real, pre-existing condition in a shared,
         // persistent test database (confirmed: 20 unrelated leftover missions from other
         // test runs, unrelated to D-064/D-066, present at investigation time), not
         // something this test can control. planningVersionId narrows the query to
