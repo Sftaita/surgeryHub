@@ -7,6 +7,8 @@ use App\Exception\InterventionTypeInactiveException;
 use App\Exception\InterventionTypeNotFoundException;
 use App\Exception\MissionClaimIneligibleException;
 use App\Exception\MissionNotDraftException;
+use App\Exception\PlanningDraftScopeAlreadyConfirmedException;
+use App\Exception\PlanningDraftScopeConfirmationRequiredException;
 use App\Exception\PlanningVersionNotActiveException;
 use App\Exception\PlanningVersionNotDraftException;
 use App\Exception\PrimaryFirmInactiveException;
@@ -88,6 +90,16 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'PLANNING_VERSION_NOT_ACTIVE';
             $message = $e->getMessage() ?: 'This planning version is not the currently active one.';
+        } elseif ($e instanceof PlanningDraftScopeConfirmationRequiredException) {
+            $status = 409;
+            $code = 'PLANNING_DRAFT_SCOPE_CONFIRMATION_REQUIRED';
+            $message = $e->getMessage();
+            $extra['versionId'] = $e->getVersionId();
+        } elseif ($e instanceof PlanningDraftScopeAlreadyConfirmedException) {
+            $status = 409;
+            $code = 'PLANNING_DRAFT_SCOPE_ALREADY_CONFIRMED';
+            $message = $e->getMessage();
+            $extra['versionId'] = $e->getVersionId();
         } elseif ($e instanceof InstrumentistIneligibleException) {
             $status = 409;
             $code = 'INSTRUMENTIST_INCOMPATIBLE';

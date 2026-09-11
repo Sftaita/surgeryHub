@@ -16,6 +16,7 @@ import type {
   CoverageSummary,
   DraftReopenResponseV2,
   DraftUpdateResultV2,
+  DraftVersionSummaryV2,
   MissionAuditEvent,
   MissionEligibilityResponse,
   AlertEligibilityResponse,
@@ -334,6 +335,19 @@ export async function updateDraft(versionId: number, lines: PreviewLineV2[]): Pr
  */
 export async function deletePlanningVersionDraft(versionId: number): Promise<void> {
   await apiClient.delete(`/api/planning/versions/${versionId}`, { timeout: 30_000 });
+}
+
+/**
+ * D-115bis follow-up — a manager's explicit review of a RECONSTRUCTED scope (a legacy
+ * group-scoped draft whose scope was only ever inferred from persisted Missions, never
+ * captured live at generate() time). `siteIds` is typically the reopen() response's own
+ * `scopeSiteIds` guess, editable before submitting — the manager can add a site the
+ * reconstruction missed or remove one it wrongly kept. Backend refuses (409) if the scope
+ * is already CONFIRMED — never silently re-accepted.
+ */
+export async function confirmDraftScope(versionId: number, siteIds: number[]): Promise<DraftVersionSummaryV2> {
+  const res = await apiClient.post(`/api/planning/v2/drafts/${versionId}/confirm-scope`, { siteIds });
+  return res.data;
 }
 
 // ── Modification mode (Planning V2 unified editor) — Batch 16 ────────────────

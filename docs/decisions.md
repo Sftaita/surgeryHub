@@ -9842,7 +9842,7 @@ plutôt que de faire correspondre toute sélection de groupe à n'importe quel b
 `site = null`. Libellé de la liste des brouillons : nom du groupe si connu, sinon
 « Tous sites » (fallback inchangé pour les brouillons antérieurs à ce lot, avant backfill).
 
-### Tests exécutés
+### Tests exécutés (implémentation initiale)
 
 Backend : suite complète 2332/2332 (hors 1 échec préexistant confirmé sans rapport —
 `ReleasedOperatingRoomSlotFunctionalTest::test_slot_survives_hospital_and_surgeon_deletion_with_no_crash`,
@@ -9851,7 +9851,62 @@ reproduit à l'identique sans les changements D-115bis) + `--filter Planning` 48
 flake de timing préexistant à ~5-6,6s contre un seuil par défaut de 5000ms, reproduit à
 l'identique sans les changements D-115bis). `npm run build` : OK. `git diff --check` : propre.
 
-Non déployé.
+### Complément — confirmation explicite du scope legacy (2026-09-11, même jour)
+
+Un audit en lecture seule de la production (avant tout code) a montré que le backfill
+(`scope_site_ids` reconstruit depuis `DISTINCT Mission.site`) ne peut jamais être certifié
+complet : un site sans aucune Mission persistée ce mois-là (ex. chirurgien absent dès la
+génération) serait silencieusement absent du scope reconstruit, sans que rien ne le
+distingue d'un groupe réellement plus restreint. Les deux seuls brouillons multi-sites
+réels en prod (id 10 octobre, id 11 novembre, backfillés à `[1, 3]`) correspondent au seul
+`SiteGroup` existant (« BOOST », membership actuelle `{1, 3}`) — cohérence forte, mais non
+prouvée : rien ne garantit que la membership n'a pas changé depuis, ni qu'un 3ᵉ site
+(`CHIREC - Edith Cavell`, jamais doté d'un `SurgeonSchedulePost`) n'était pas dans le
+périmètre demandé avec zéro occurrence.
+
+**Décision** : `PlanningVersion` gagne `scopeSource` (`PlanningVersionScopeSource` :
+`SNAPSHOT | RECONSTRUCTED | CONFIRMED`, migration `Version20260911100000`, jamais un simple
+booléen). `SNAPSHOT` posé par `generate()` en même temps que `scopeSiteIds` (certain par
+construction). Le backfill de migration et le self-heal de `reopen()` posent
+`RECONSTRUCTED` — jamais promu silencieusement à certain.
+
+`PlanningDraftService::assertScopeConfirmed()` refuse (409
+`PLANNING_DRAFT_SCOPE_CONFIRMATION_REQUIRED`) `update()` (couvre sauvegarde ET ajout ad hoc,
+même endpoint) et le `deploy()` de `PlanningV2GenerationController` tant que
+`scopeSource === RECONSTRUCTED`. `reopen()` et `delete()` restent volontairement libres — un
+manager doit pouvoir inspecter un brouillon legacy, ou le supprimer, sans d'abord certifier
+un périmètre qu'il souhaite peut-être simplement abandonner.
+
+Nouvel endpoint `POST /api/planning/v2/drafts/{id}/confirm-scope` (`{siteIds: number[]}`) —
+`PlanningDraftService::confirmScope()` : valide chaque id contre `Hospital`, dédoublonne,
+persiste et passe `scopeSource` à `CONFIRMED`. Refuse une reconfirmation
+(`PLANNING_DRAFT_SCOPE_ALREADY_CONFIRMED`) plutôt que d'accepter silencieusement une
+resoumission qui écraserait une décision déjà verrouillée. Ne relit jamais la composition
+courante d'un `SiteGroup` — le manager fournit la liste finale, potentiellement corrigée
+(site ajouté ou retiré) par rapport à la reconstruction proposée.
+
+Frontend : bandeau non ignorable (jamais juste informatif comme celui de divergence) tant
+que `scopeSource === RECONSTRUCTED`, avec dialogue de confirmation (cases à cocher
+pré-remplies depuis `scopeSiteIds`, éditables). « Enregistrer les modifications » désactivé
+(tooltip explicite) et « Ajouter » entièrement absent tant que non confirmé.
+
+**Vérifié en conditions réelles** (pas seulement en tests automatisés) sur les deux
+brouillons réels de dev (copies des id 10/11 de prod) : bandeau affiché sur un vrai
+`RECONSTRUCTED`, dialogue pré-rempli identique à l'audit prod (`Delta` + `Basilique` cochés,
+`Edith Cavell` décoché), confirmation avec ajout d'`Edith Cavell` persistée en base
+(`scope_site_ids: [1, 3, 8]`, `scope_source: CONFIRMED`), sauvegarde fonctionnelle après
+confirmation. Un incident sans rapport (permissions `var/cache/dev` cassées par un `rm -rf`
+antérieur, `www-data` ne pouvait plus écrire) a été trouvé et corrigé au passage — bloquait
+toute requête HTTP réelle en dev, jamais les tests CLI.
+
+### Tests exécutés (complément)
+
+`PlanningV2DraftControllerTest` : 38/38 (12 nouveaux scénarios). `--filter Planning` :
+499/499. Backend complet : 2344/2345 (même échec préexistant `ReleasedOperatingRoomSlot...`,
+sans rapport). Frontend complet : 1281/1282 (même flake de timing préexistant). `tsc -b
+--noEmit` : clean. `npm run build` : OK. `git diff --check` : clean.
+
+Déployé — voir `docs/production.md`.
 
 ## D-117 — Signalement Sophie Colette : re-claim impossible après release (BUG B, P0) et absence journalière bloquant un claim (BUG A) (2026-09-09)
 

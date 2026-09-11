@@ -30,8 +30,11 @@ use App\Entity\SurgeonRatingByInstrumentist;
 use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Enum\PlanningVersionScopeSource;
 use App\Enum\PlanningVersionStatus;
 use App\Enum\SchedulePrecision;
+use App\Exception\PlanningDraftScopeAlreadyConfirmedException;
+use App\Exception\PlanningDraftScopeConfirmationRequiredException;
 use App\Exception\PlanningVersionNotDraftException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
@@ -147,6 +150,7 @@ final class PlanningDraftService
     public function update(PlanningVersion $version, array $lines, User $actor): array
     {
         $this->assertDraft($version);
+        $this->assertScopeConfirmed($version);
 
         $created = 0;
         $updated = 0;
@@ -401,6 +405,69 @@ final class PlanningDraftService
     }
 
     /**
+     * D-115bis follow-up — blocks every draft-mutating action on a group-scoped draft
+     * whose scope was only ever RECONSTRUCTED (migration backfill or reopen()'s self-heal),
+     * never captured live at generate() time. Deliberately NOT called from reopen() itself
+     * (read-only inspection must stay available so a manager can see what a legacy draft
+     * contains before deciding) nor from delete() (discarding a legacy draft outright never
+     * needs its scope to be certified). A single-site draft, or any SNAPSHOT/CONFIRMED
+     * group-scoped one, is entirely unaffected — this only ever fires for RECONSTRUCTED.
+     */
+    public function assertScopeConfirmed(PlanningVersion $version): void
+    {
+        if ($version->getScopeSource() === PlanningVersionScopeSource::RECONSTRUCTED) {
+            throw new PlanningDraftScopeConfirmationRequiredException($version->getId());
+        }
+    }
+
+    /**
+     * A manager's explicit review of a RECONSTRUCTED scope — the only way a legacy draft's
+     * scope can ever become trusted for mutation again. Never auto-fills from the
+     * SiteGroup's current membership (same reasoning as $scopeSiteIds itself: that group
+     * may have changed since, and may not even be the group this draft was really generated
+     * for) — the manager supplies the final site list explicitly, typically pre-filled by
+     * the frontend with the reconstructed guess already shown via reopen(), but free to
+     * add or remove sites before confirming.
+     *
+     * @param list<int> $siteIds
+     */
+    public function confirmScope(PlanningVersion $version, array $siteIds): PlanningVersion
+    {
+        $this->assertDraft($version);
+
+        if ($version->getScopeSource() === PlanningVersionScopeSource::CONFIRMED) {
+            throw new PlanningDraftScopeAlreadyConfirmedException($version->getId());
+        }
+        if ($version->getScopeSource() !== PlanningVersionScopeSource::RECONSTRUCTED) {
+            throw new BadRequestHttpException('Ce brouillon n\'a pas de périmètre reconstruit à confirmer.');
+        }
+        if ($siteIds === []) {
+            throw new BadRequestHttpException('siteIds est requis et ne peut pas être vide.');
+        }
+
+        $ids = [];
+        foreach ($siteIds as $raw) {
+            if (!is_int($raw) && !(is_string($raw) && ctype_digit($raw))) {
+                throw new BadRequestHttpException('siteIds doit être une liste d\'identifiants numériques.');
+            }
+            $siteId = (int) $raw;
+            if ($this->em->find(Hospital::class, $siteId) === null) {
+                throw new BadRequestHttpException(sprintf('Site %d introuvable.', $siteId));
+            }
+            $ids[$siteId] = $siteId; // de-dup
+        }
+
+        $ids = array_values($ids);
+        sort($ids);
+
+        $version->setScopeSiteIds($ids);
+        $version->setScopeSource(PlanningVersionScopeSource::CONFIRMED);
+        $this->em->flush();
+
+        return $version;
+    }
+
+    /**
      * D-115bis — a group-scoped draft's own frozen scope, for reopen() only. Never falls
      * back to resolving the SiteGroup's current membership (that would let a later
      * membership change retroactively alter this draft's scope — see PlanningVersion::
@@ -449,6 +516,11 @@ final class PlanningDraftService
         $ids = array_values($ids);
         sort($ids);
         $version->setScopeSiteIds($ids);
+        // Reconstructed from Missions, exactly like the migration's own backfill — never
+        // SNAPSHOT. A site with only SKIPPED occurrences at generate() time would leave no
+        // Mission here and silently be missing, so this can never be treated as certain on
+        // its own — see PlanningVersionScopeSource and assertScopeConfirmed().
+        $version->setScopeSource(PlanningVersionScopeSource::RECONSTRUCTED);
         $this->em->flush();
 
         return $ids;

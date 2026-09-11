@@ -413,6 +413,15 @@ export interface DraftVersionSummaryV2 {
   /** D-115bis — null for a draft generated before this fix, or a single-site one. */
   siteGroupId: number | null;
   siteGroupName: string | null;
+  /**
+   * D-115bis follow-up — null for a single-site draft. For a group-scoped one: "SNAPSHOT"
+   * (captured live at generate() time — certain) vs. "RECONSTRUCTED" (inferred after the
+   * fact from persisted Missions — never certified complete, blocks save/deploy until a
+   * manager confirms it via confirmDraftScope()) vs. "CONFIRMED".
+   */
+  scopeSource: "SNAPSHOT" | "RECONSTRUCTED" | "CONFIRMED" | null;
+  /** The group's site ids — used to pre-fill the confirm-scope dialog for a RECONSTRUCTED draft. */
+  scopeSiteIds: number[] | null;
   generatedAt: string;
 }
 

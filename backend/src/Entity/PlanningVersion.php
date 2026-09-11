@@ -2,6 +2,7 @@
 
 namespace App\Entity;
 
+use App\Enum\PlanningVersionScopeSource;
 use App\Enum\PlanningVersionStatus;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
@@ -86,6 +87,18 @@ class PlanningVersion
     #[ORM\Column(type: 'json', nullable: true)]
     private ?array $scopeSiteIds = null;
 
+    /**
+     * D-115bis follow-up — provenance of $scopeSiteIds. Null for a single-site draft (where
+     * $scopeSiteIds itself is irrelevant). For a group-scoped draft: SNAPSHOT (captured live
+     * at generate() time — certain) vs. RECONSTRUCTED (inferred after the fact from
+     * persisted Missions — never certified complete, blocks every mutating action until a
+     * manager reviews it via confirmScope()) vs. CONFIRMED (a RECONSTRUCTED scope a manager
+     * has explicitly reviewed/corrected). Never silently promoted from RECONSTRUCTED to
+     * CONFIRMED — only PlanningDraftService::confirmScope() can do that.
+     */
+    #[ORM\Column(type: 'string', length: 16, enumType: PlanningVersionScopeSource::class, nullable: true)]
+    private ?PlanningVersionScopeSource $scopeSource = null;
+
     #[ORM\OneToMany(mappedBy: 'planningVersion', targetEntity: Mission::class)]
     private Collection $missions;
 
@@ -136,6 +149,9 @@ class PlanningVersion
     public function getScopeSiteIds(): ?array { return $this->scopeSiteIds; }
     /** @param int[]|null $scopeSiteIds */
     public function setScopeSiteIds(?array $scopeSiteIds): static { $this->scopeSiteIds = $scopeSiteIds; return $this; }
+
+    public function getScopeSource(): ?PlanningVersionScopeSource { return $this->scopeSource; }
+    public function setScopeSource(?PlanningVersionScopeSource $scopeSource): static { $this->scopeSource = $scopeSource; return $this; }
 
     /** @return Collection<int, Mission> */
     public function getMissions(): Collection { return $this->missions; }

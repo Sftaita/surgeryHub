@@ -12,6 +12,7 @@ use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\OccurrenceExceptionSource;
 use App\Enum\OccurrenceExceptionType;
+use App\Enum\PlanningVersionScopeSource;
 use App\Enum\PlanningVersionStatus;
 use App\Enum\RecurrenceFrequency;
 use App\Enum\SchedulePrecision;
@@ -395,6 +396,10 @@ class PlanningGeneratorServiceV2
         } elseif ($siteGroupId !== null) {
             $version->setSiteGroup($this->em->find(SiteGroup::class, $siteGroupId));
             $version->setScopeSiteIds($this->resolveSiteIds($siteId, $siteGroupId));
+            // Captured live from SiteGroupMembership right above — always exact, never
+            // needs a manager's confirmation (contrast PlanningDraftService's legacy
+            // RECONSTRUCTED path, built from persisted Missions after the fact).
+            $version->setScopeSource(PlanningVersionScopeSource::SNAPSHOT);
         }
 
         $version->setVersionNumber($this->nextVersionNumber($siteId, $start, $end));

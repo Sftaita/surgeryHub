@@ -17,6 +17,7 @@ use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Enum\PlanningVersionScopeSource;
 use App\Enum\PlanningVersionStatus;
 use App\Enum\RecurrenceFrequency;
 use App\Enum\ShiftPeriod;
@@ -632,6 +633,78 @@ final class PlanningV2DraftControllerTest extends WebTestCase
     }
 
     /**
+     * The exact scenario the reconstruction-from-Missions approach cannot handle safely —
+     * this is why scopeSiteIds is captured from SiteGroupMembership at generate() time
+     * (resolveSiteIds()) rather than ever being inferred from which sites happen to have a
+     * persisted Mission. A 3-site group where one site's only surgeon is already absent at
+     * generation time produces zero Missions for that site (100% SKIPPED) — scopeSiteIds
+     * must still list all 3 sites, and a later reopen (with no Mission to anchor on) must
+     * still surface that site's occurrence as SKIPPED rather than silently dropping the
+     * site from the draft entirely.
+     */
+    #[WithoutErrorHandler]
+    public function test_group_scoped_draft_keeps_a_site_with_only_skipped_occurrences_in_its_scope_snapshot(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $surgeonB = $this->makeUser('ROLE_SURGEON');
+        $surgeonC = $this->makeUser('ROLE_SURGEON');
+        $siteA    = $this->makeSite();
+        $siteB    = $this->makeSite();
+        $siteC    = $this->makeSite();
+        $this->addShiftConfig($siteA, '08:00', '13:00');
+        $this->addShiftConfig($siteB, '08:00', '13:00');
+        $this->addShiftConfig($siteC, '08:00', '13:00');
+        $this->makePost($surgeonA, $siteA, singleOccurrence: true);
+        $this->makePost($surgeonB, $siteB, singleOccurrence: true);
+        $this->makePost($surgeonC, $siteC, singleOccurrence: true);
+
+        // surgeonC is already absent BEFORE generate() runs — their siteC occurrence is
+        // SKIPPED from the very first preview, so generate() creates no Mission for siteC
+        // at all (unlike the other post-generation-absence test, which starts with a real
+        // Mission and only turns it SKIPPED on a later reopen).
+        $manager  = $this->em->find(User::class, $manager->getId());
+        $surgeonC = $this->em->find(User::class, $surgeonC->getId());
+        $this->persistAbsenceDirect($surgeonC, $manager, $this->firstMondayOfTestMonth());
+
+        $manager = $this->em->find(User::class, $manager->getId());
+        $group   = $this->makeSiteGroup([$siteA, $siteB, $siteC], $manager);
+
+        ['versionId' => $versionId, 'missionIds' => $missionIds] = $this->generateGroupDraft($client, $token, $group);
+        self::assertCount(2, $missionIds, 'siteC must produce no Mission at generation time — its surgeon is already absent');
+
+        $this->em->clear();
+        $version = $this->em->find(PlanningVersion::class, $versionId);
+        $scopeSiteIds = $version->getScopeSiteIds();
+        sort($scopeSiteIds);
+        $expectedScope = [$siteA->getId(), $siteB->getId(), $siteC->getId()];
+        sort($expectedScope);
+        self::assertSame(
+            $expectedScope,
+            $scopeSiteIds,
+            'scopeSiteIds must capture the full requested group scope, including a site with zero persisted Missions — never just DISTINCT(Mission.site)'
+        );
+        self::assertSame(
+            PlanningVersionScopeSource::SNAPSHOT,
+            $version->getScopeSource(),
+            'captured live at generate() time — always certain, never requires manager confirmation, unlike a legacy RECONSTRUCTED scope'
+        );
+
+        $response = $this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}");
+        $reopen   = $this->json($response);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        self::assertCount(3, $reopen['lines'], 'siteC\'s occurrence must still surface on reopen, purely as a re-derived SKIPPED line');
+
+        $lineC = current(array_filter($reopen['lines'], static fn (array $l) => $l['siteId'] === $siteC->getId()));
+        self::assertNotFalse($lineC, 'siteC must not silently disappear from the reopened draft');
+        self::assertSame('SKIPPED', $lineC['status']);
+        self::assertNull($lineC['existingMissionId'], 'siteC never had a persisted Mission to begin with');
+    }
+
+    /**
      * A group-scoped draft created before D-115bis (site=null, siteGroup=null,
      * scopeSiteIds=null — exactly the pre-migration row shape) with real persisted DRAFT
      * Missions: reopen() must self-heal by reconstructing the snapshot from those
@@ -693,6 +766,11 @@ final class PlanningV2DraftControllerTest extends WebTestCase
         $actual = $healed->getScopeSiteIds();
         sort($actual);
         self::assertSame($expected, $actual, 'reopen() must persist the reconstructed snapshot back onto the version');
+        self::assertSame(
+            PlanningVersionScopeSource::RECONSTRUCTED,
+            $healed->getScopeSource(),
+            'never SNAPSHOT — this scope was inferred from Missions after the fact, so update()/deploy() must stay blocked until a manager confirms it'
+        );
     }
 
     /**
@@ -723,6 +801,312 @@ final class PlanningV2DraftControllerTest extends WebTestCase
 
         self::assertSame(Response::HTTP_BAD_REQUEST, $response->getStatusCode());
         self::assertStringContainsString('périmètre d\'origine', $body['error']['message'] ?? $body['message'] ?? '');
+    }
+
+    // ── D-115bis follow-up — legacy scope confirmation (scopeSource) ────────────
+
+    /**
+     * Builds a group-scoped DRAFT already in the RECONSTRUCTED state — the exact shape a
+     * legacy pre-D-115bis draft ends up in after migration backfill or reopen()'s self-heal
+     * (both marked identically, see resolveGroupScopeSiteIds()). Two real persisted DRAFT
+     * Missions (siteA, siteB) so update()/deploy() have something to act on once a test
+     * confirms the scope.
+     *
+     * @return array{versionId: int, siteA: Hospital, siteB: Hospital, missionIds: list<int>}
+     */
+    private function makeReconstructedGroupDraft(User $manager): array
+    {
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $surgeonB = $this->makeUser('ROLE_SURGEON');
+        $siteA    = $this->makeSite();
+        $siteB    = $this->makeSite();
+
+        $version = new PlanningVersion();
+        $version->setPeriodStart(new \DateTimeImmutable(sprintf('%04d-%02d-01', self::YEAR, self::MONTH)));
+        $version->setPeriodEnd(new \DateTimeImmutable(sprintf('%04d-%02d-01', self::YEAR, self::MONTH)));
+        $version->setGeneratedBy($manager);
+        $version->setStatus(PlanningVersionStatus::DRAFT);
+        $version->setScopeSiteIds([$siteA->getId(), $siteB->getId()]);
+        $version->setScopeSource(PlanningVersionScopeSource::RECONSTRUCTED);
+        $this->em->persist($version);
+        $this->em->flush();
+        $this->createdIds['versions'][] = $version->getId();
+
+        $missionIds = [];
+        foreach ([[$surgeonA, $siteA], [$surgeonB, $siteB]] as [$surgeon, $site]) {
+            $m = new Mission();
+            $m->setStatus(MissionStatus::DRAFT);
+            $m->setType(MissionType::BLOCK);
+            $m->setSurgeon($surgeon);
+            $m->setSite($site);
+            $m->setStartAt(new \DateTimeImmutable(sprintf('%04d-%02d-03 08:00', self::YEAR, self::MONTH)));
+            $m->setEndAt(new \DateTimeImmutable(sprintf('%04d-%02d-03 13:00', self::YEAR, self::MONTH)));
+            $m->setCreatedBy($manager);
+            $m->setPlanningVersion($version);
+            $this->em->persist($m);
+            $this->em->flush();
+            $missionIds[] = $m->getId();
+            $this->createdIds['missions'][] = $m->getId();
+        }
+
+        return ['versionId' => $version->getId(), 'siteA' => $siteA, 'siteB' => $siteB, 'missionIds' => $missionIds];
+    }
+
+    #[WithoutErrorHandler]
+    public function test_new_group_draft_has_snapshot_scope_source(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeonA = $this->makeUser('ROLE_SURGEON');
+        $siteA    = $this->makeSite();
+        $this->addShiftConfig($siteA, '08:00', '13:00');
+        $this->makePost($surgeonA, $siteA, singleOccurrence: true);
+
+        $manager = $this->em->find(User::class, $manager->getId());
+        $group   = $this->makeSiteGroup([$siteA], $manager);
+
+        ['versionId' => $versionId] = $this->generateGroupDraft($client, $token, $group);
+
+        $this->em->clear();
+        $version = $this->em->find(PlanningVersion::class, $versionId);
+        self::assertSame(PlanningVersionScopeSource::SNAPSHOT, $version->getScopeSource(), 'a freshly generated group draft\'s scope is always certain, never reconstructed');
+    }
+
+    #[WithoutErrorHandler]
+    public function test_reopen_reconstructed_draft_is_allowed_read_only_inspection(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+        $manager = $this->em->find(User::class, $manager->getId());
+
+        ['versionId' => $versionId] = $this->makeReconstructedGroupDraft($manager);
+
+        $response = $this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}");
+        $body     = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        self::assertCount(2, $body['lines'], 'a manager must be able to see a legacy draft\'s content before deciding whether to confirm its scope');
+        self::assertSame('RECONSTRUCTED', $body['version']['scopeSource']);
+    }
+
+    #[WithoutErrorHandler]
+    public function test_update_reconstructed_draft_is_refused_until_scope_confirmed(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+        $manager = $this->em->find(User::class, $manager->getId());
+
+        ['versionId' => $versionId, 'siteA' => $siteA, 'missionIds' => $missionIds] = $this->makeReconstructedGroupDraft($manager);
+
+        $response = $this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => [
+            ['existingMissionId' => $missionIds[0], 'instrumentistId' => null, 'status' => 'UNCOVERED'],
+        ]]);
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode(), (string) $response->getContent());
+        self::assertSame('PLANNING_DRAFT_SCOPE_CONFIRMATION_REQUIRED', $body['error']['code']);
+        self::assertSame($versionId, $body['error']['versionId']);
+    }
+
+    #[WithoutErrorHandler]
+    public function test_add_mission_on_reconstructed_draft_is_refused_until_scope_confirmed(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+        $manager = $this->em->find(User::class, $manager->getId());
+        $surgeonC = $this->makeUser('ROLE_SURGEON');
+
+        ['versionId' => $versionId, 'siteA' => $siteA] = $this->makeReconstructedGroupDraft($manager);
+
+        // Same "Ajouter" shape as CAS C (D-116): postId <= 0, no existingMissionId.
+        $response = $this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", [
+            'lines' => [$this->adHocLineFor($siteA, $surgeonC, null, sprintf('%04d-%02d-10', self::YEAR, self::MONTH))],
+        ]);
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode(), (string) $response->getContent());
+        self::assertSame('PLANNING_DRAFT_SCOPE_CONFIRMATION_REQUIRED', $body['error']['code'], 'an ad-hoc add goes through the same update() gate as any other draft mutation');
+    }
+
+    #[WithoutErrorHandler]
+    public function test_deploy_reconstructed_draft_is_refused_until_scope_confirmed(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+        $manager = $this->em->find(User::class, $manager->getId());
+
+        ['versionId' => $versionId] = $this->makeReconstructedGroupDraft($manager);
+
+        $response = $this->postJson($client, $token, '/api/planning/v2/deploy', ['planningVersionId' => $versionId]);
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode(), (string) $response->getContent());
+        self::assertSame('PLANNING_DRAFT_SCOPE_CONFIRMATION_REQUIRED', $body['error']['code']);
+    }
+
+    #[WithoutErrorHandler]
+    public function test_delete_reconstructed_draft_is_allowed_without_confirming_scope(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+        $manager = $this->em->find(User::class, $manager->getId());
+
+        ['versionId' => $versionId, 'missionIds' => $missionIds] = $this->makeReconstructedGroupDraft($manager);
+
+        $response = $this->deleteJson($client, $token, "/api/planning/versions/{$versionId}");
+        self::assertSame(Response::HTTP_NO_CONTENT, $response->getStatusCode(), 'discarding a legacy draft outright never needs its scope to be certified');
+
+        $this->em->clear();
+        self::assertNull($this->em->find(PlanningVersion::class, $versionId));
+        $this->createdIds['versions'] = array_diff($this->createdIds['versions'], [$versionId]);
+        $this->createdIds['missions'] = array_diff($this->createdIds['missions'], $missionIds);
+    }
+
+    #[WithoutErrorHandler]
+    public function test_confirm_scope_as_reconstructed_becomes_confirmed(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+        $manager = $this->em->find(User::class, $manager->getId());
+
+        ['versionId' => $versionId, 'siteA' => $siteA, 'siteB' => $siteB] = $this->makeReconstructedGroupDraft($manager);
+
+        $response = $this->postJson($client, $token, "/api/planning/v2/drafts/{$versionId}/confirm-scope", [
+            'siteIds' => [$siteA->getId(), $siteB->getId()],
+        ]);
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        self::assertSame('CONFIRMED', $body['scopeSource']);
+        $expected = [$siteA->getId(), $siteB->getId()];
+        sort($expected);
+        $actual = $body['scopeSiteIds'];
+        sort($actual);
+        self::assertSame($expected, $actual);
+    }
+
+    #[WithoutErrorHandler]
+    public function test_confirm_scope_can_add_a_site_the_reconstruction_missed(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+        $manager = $this->em->find(User::class, $manager->getId());
+        $siteC = $this->makeSite();
+
+        ['versionId' => $versionId, 'siteA' => $siteA, 'siteB' => $siteB] = $this->makeReconstructedGroupDraft($manager);
+
+        // The manager knows the real group also included siteC (zero Missions there —
+        // exactly the case the reconstruction cannot see on its own) and adds it back.
+        $response = $this->postJson($client, $token, "/api/planning/v2/drafts/{$versionId}/confirm-scope", [
+            'siteIds' => [$siteA->getId(), $siteB->getId(), $siteC->getId()],
+        ]);
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        self::assertSame('CONFIRMED', $body['scopeSource']);
+        $expected = [$siteA->getId(), $siteB->getId(), $siteC->getId()];
+        sort($expected);
+        $actual = $body['scopeSiteIds'];
+        sort($actual);
+        self::assertSame($expected, $actual, 'the manager\'s explicit correction must be trusted, never overridden by what was reconstructed');
+    }
+
+    #[WithoutErrorHandler]
+    public function test_reopen_after_scope_confirmation_reflects_exactly_the_confirmed_scope(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+        $manager = $this->em->find(User::class, $manager->getId());
+
+        ['versionId' => $versionId, 'siteA' => $siteA, 'siteB' => $siteB] = $this->makeReconstructedGroupDraft($manager);
+        $this->postJson($client, $token, "/api/planning/v2/drafts/{$versionId}/confirm-scope", [
+            'siteIds' => [$siteA->getId(), $siteB->getId()],
+        ]);
+
+        $reopen = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+
+        self::assertSame('CONFIRMED', $reopen['version']['scopeSource']);
+        $lineSiteIds = array_values(array_unique(array_map(static fn (array $l) => $l['siteId'], $reopen['lines'])));
+        sort($lineSiteIds);
+        $expected = [$siteA->getId(), $siteB->getId()];
+        sort($expected);
+        self::assertSame($expected, $lineSiteIds);
+    }
+
+    #[WithoutErrorHandler]
+    public function test_update_works_normally_after_scope_confirmation(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+        $manager = $this->em->find(User::class, $manager->getId());
+
+        ['versionId' => $versionId, 'siteA' => $siteA, 'siteB' => $siteB, 'missionIds' => $missionIds] = $this->makeReconstructedGroupDraft($manager);
+        $this->postJson($client, $token, "/api/planning/v2/drafts/{$versionId}/confirm-scope", [
+            'siteIds' => [$siteA->getId(), $siteB->getId()],
+        ]);
+
+        $response = $this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => [
+            ['existingMissionId' => $missionIds[0], 'instrumentistId' => null, 'status' => 'UNCOVERED'],
+            ['existingMissionId' => $missionIds[1], 'instrumentistId' => null, 'status' => 'UNCOVERED'],
+        ]]);
+        $body = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        self::assertSame(2, $body['updated'], 'update() must work exactly as normal once the scope is CONFIRMED');
+    }
+
+    #[WithoutErrorHandler]
+    public function test_confirm_scope_with_invalid_site_id_is_refused(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+        $manager = $this->em->find(User::class, $manager->getId());
+
+        ['versionId' => $versionId] = $this->makeReconstructedGroupDraft($manager);
+
+        $response = $this->postJson($client, $token, "/api/planning/v2/drafts/{$versionId}/confirm-scope", [
+            'siteIds' => [999999999],
+        ]);
+
+        self::assertSame(Response::HTTP_BAD_REQUEST, $response->getStatusCode(), (string) $response->getContent());
+
+        $this->em->clear();
+        self::assertSame(PlanningVersionScopeSource::RECONSTRUCTED, $this->em->find(PlanningVersion::class, $versionId)->getScopeSource(), 'a refused confirmation must never partially apply');
+    }
+
+    #[WithoutErrorHandler]
+    public function test_confirm_scope_called_again_after_confirmed_is_refused_clearly(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token, 'user' => $manager] = $this->authenticate($client, 'ROLE_MANAGER');
+        $manager = $this->em->find(User::class, $manager->getId());
+
+        ['versionId' => $versionId, 'siteA' => $siteA, 'siteB' => $siteB] = $this->makeReconstructedGroupDraft($manager);
+        $first = $this->postJson($client, $token, "/api/planning/v2/drafts/{$versionId}/confirm-scope", [
+            'siteIds' => [$siteA->getId(), $siteB->getId()],
+        ]);
+        self::assertSame(Response::HTTP_OK, $first->getStatusCode());
+
+        $second = $this->postJson($client, $token, "/api/planning/v2/drafts/{$versionId}/confirm-scope", [
+            'siteIds' => [$siteA->getId(), $siteB->getId()],
+        ]);
+        $body = $this->json($second);
+
+        self::assertSame(Response::HTTP_CONFLICT, $second->getStatusCode(), (string) $second->getContent());
+        self::assertSame('PLANNING_DRAFT_SCOPE_ALREADY_CONFIRMED', $body['error']['code'], 'an already-locked-in manager decision is never silently re-accepted or overwritten');
     }
 
     // ── Test 2 (list) + Test 8 (409 already exists) ─────────────────────────────

@@ -24,7 +24,7 @@ import { fetchMissions } from "../../missions/api/missions.api";
 import {
   getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2,
   applyModifications, cancelAllMissions, resendPlanning, verifyConflicts, extractErrorV2, type ApplyModificationsResult,
-  reopenDraft, updateDraft, deletePlanningVersionDraft,
+  reopenDraft, updateDraft, deletePlanningVersionDraft, confirmDraftScope,
 } from "../api/planningV2.api";
 import { listPlanningVersions } from "../../planning-manager/api/planning.api";
 import type { PreviewLineStatus, PreviewLineV2, PreviewResponseV2, VerifyConflictsResponse } from "../api/planningV2.types";
@@ -147,6 +147,15 @@ export function GeneratePlanningTab() {
   const [draftVersionId, setDraftVersionId] = React.useState<number | null>(null);
   const [draftDivergent, setDraftDivergent] = React.useState(false);
   const [deleteDraftTarget, setDeleteDraftTarget] = React.useState<{ id: number; label: string } | null>(null);
+  // D-115bis follow-up — a legacy group-scoped draft whose scope was only ever
+  // reconstructed from persisted Missions (never captured live at generate() time). Backend
+  // refuses (409) every mutating action (save/deploy/ajout) until confirmScopeMutation below
+  // succeeds — these two just drive the read-only banner/dialog and the matching frontend
+  // disable, they are never themselves the source of truth for the block.
+  const [draftScopeSource, setDraftScopeSource] = React.useState<"SNAPSHOT" | "RECONSTRUCTED" | "CONFIRMED" | null>(null);
+  const [draftScopeSiteIds, setDraftScopeSiteIds] = React.useState<number[] | null>(null);
+  const [confirmScopeSelection, setConfirmScopeSelection] = React.useState<Set<number> | null>(null);
+  const draftScopeNeedsConfirmation = draftVersionId !== null && draftScopeSource === "RECONSTRUCTED";
 
   const mode: PlanningEditorMode = modificationVersionId !== null ? "modification" : "generation";
   const isModification = mode === "modification";
@@ -287,6 +296,8 @@ export function GeneratePlanningTab() {
       setIsCreatingMission(false);
       setDraftVersionId(data.version.id);
       setDraftDivergent(data.divergent);
+      setDraftScopeSource(data.version.scopeSource);
+      setDraftScopeSiteIds(data.version.scopeSiteIds);
       const d = new Date(data.version.periodStart);
       setSelectedMonthIds([yearMonthToMonthId({ year: d.getFullYear(), month: d.getMonth() + 1 })]);
       // D-115bis — a group-scoped draft's selector entry is offset the same way the
@@ -341,6 +352,22 @@ export function GeneratePlanningTab() {
       setDeleteDraftTarget(null);
       toast.error(extractErrorV2(err));
     },
+  });
+
+  // D-115bis follow-up — a manager's explicit review of a RECONSTRUCTED draft's scope.
+  // Backend is the actual source of truth (update()/deploy() refuse a RECONSTRUCTED draft
+  // regardless of what this screen shows) — draftScopeSource/draftScopeSiteIds here only
+  // drive the banner/disable and are refreshed from this mutation's own response, never
+  // assumed correct ahead of it.
+  const confirmScopeMutation = useMutation({
+    mutationFn: () => confirmDraftScope(draftVersionId!, Array.from(confirmScopeSelection ?? [])),
+    onSuccess: (version) => {
+      toast.success("Périmètre confirmé — le brouillon peut maintenant être modifié et déployé.");
+      setDraftScopeSource(version.scopeSource);
+      setDraftScopeSiteIds(version.scopeSiteIds);
+      setConfirmScopeSelection(null);
+    },
+    onError: (err) => toast.error(extractErrorV2(err)),
   });
 
   const previewMutation = useMutation({
@@ -525,6 +552,9 @@ export function GeneratePlanningTab() {
     setSelectedKeys(new Set());
     setDraftVersionId(null);
     setDraftDivergent(false);
+    setDraftScopeSource(null);
+    setDraftScopeSiteIds(null);
+    setConfirmScopeSelection(null);
   }
 
   // Génération sources lines from the backend Preview; Modification sources them from the real
@@ -833,6 +863,22 @@ export function GeneratePlanningTab() {
               </Typography>
             </Stack>
           )}
+          {draftScopeNeedsConfirmation && (
+            <Stack direction="row" alignItems="center" spacing={1} sx={{ mt: 1, p: 1, borderRadius: planningV2Radii.button, bgcolor: "#FEF3F2", border: "1px solid #FDA29B", maxWidth: 640 }}>
+              <ErrorOutlineOutlinedIcon sx={{ fontSize: 16, color: "#B42318", flex: "none" }} />
+              <Typography sx={{ fontSize: 12, color: "#B42318", fontWeight: 600, flex: 1 }}>
+                Le périmètre de ce brouillon ancien a été reconstruit automatiquement et doit être
+                confirmé avant toute modification ou déploiement.
+              </Typography>
+              <Button
+                size="small" variant="outlined" color="error"
+                onClick={() => setConfirmScopeSelection(new Set(draftScopeSiteIds ?? []))}
+                sx={{ textTransform: "none", fontWeight: 700, flex: "none", height: 28 }}
+              >
+                Confirmer le périmètre
+              </Button>
+            </Stack>
+          )}
         </Box>
         {isModification && (
           <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
@@ -893,6 +939,56 @@ export function GeneratePlanningTab() {
             sx={{ textTransform: "none", fontWeight: 600 }}
           >
             {deleteDraftMutation.isPending ? "Suppression…" : "Supprimer le brouillon"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* D-115bis follow-up — the manager's explicit review of a RECONSTRUCTED scope. Never
+          re-reads the SiteGroup's current membership: the checklist starts from the
+          reconstructed guess already shown via reopenDraft() (draftScopeSiteIds), and the
+          manager's own additions/removals are what gets sent — see confirmScope() backend-side. */}
+      <Dialog open={confirmScopeSelection !== null} onClose={() => setConfirmScopeSelection(null)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>Confirmer le périmètre du brouillon</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted, mb: 1.5 }}>
+            Ce brouillon a été généré avant que le périmètre exact (sites) ne soit mémorisé. La liste
+            ci-dessous a été reconstruite à partir des missions déjà enregistrées — un site qui n&apos;a eu
+            aucune mission ce mois-là (ex. chirurgien absent) peut y manquer. Vérifiez, ajoutez ou retirez
+            un site si nécessaire, puis confirmez.
+          </Typography>
+          <Stack>
+            {(sitesQuery.data ?? []).map((site) => (
+              <FormControlLabel
+                key={site.id}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={confirmScopeSelection?.has(site.id) ?? false}
+                    onChange={(e) => {
+                      setConfirmScopeSelection((prev) => {
+                        const next = new Set(prev ?? []);
+                        if (e.target.checked) next.add(site.id); else next.delete(site.id);
+                        return next;
+                      });
+                    }}
+                  />
+                }
+                label={<Typography sx={{ fontSize: 13.5 }}>{site.name}</Typography>}
+              />
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button onClick={() => setConfirmScopeSelection(null)} sx={{ textTransform: "none", fontWeight: 600 }}>
+            Annuler
+          </Button>
+          <Button
+            variant="contained" disableElevation
+            disabled={confirmScopeMutation.isPending || (confirmScopeSelection?.size ?? 0) === 0}
+            onClick={() => confirmScopeMutation.mutate()}
+            sx={{ textTransform: "none", fontWeight: 700 }}
+          >
+            {confirmScopeMutation.isPending ? "Confirmation…" : "Confirmer le périmètre"}
           </Button>
         </DialogActions>
       </Dialog>
@@ -1545,12 +1641,16 @@ export function GeneratePlanningTab() {
                 </>
               ) : !generated ? (
                 draftVersionId !== null ? (
-                  <Button
-                    variant="contained" disableElevation disabled={saveDraftMutation.isPending} onClick={() => saveDraftMutation.mutate()}
-                    sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: planningV2Colors.brand, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
-                  >
-                    {saveDraftMutation.isPending ? "Enregistrement…" : "Enregistrer les modifications"}
-                  </Button>
+                  <Tooltip title={draftScopeNeedsConfirmation ? "Confirmez d'abord le périmètre de ce brouillon (voir le bandeau ci-dessus)." : ""}>
+                    <span>
+                      <Button
+                        variant="contained" disableElevation disabled={saveDraftMutation.isPending || draftScopeNeedsConfirmation} onClick={() => saveDraftMutation.mutate()}
+                        sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: planningV2Colors.brand, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
+                      >
+                        {saveDraftMutation.isPending ? "Enregistrement…" : "Enregistrer les modifications"}
+                      </Button>
+                    </span>
+                  </Tooltip>
                 ) : (
                   <Button
                     variant="contained" disableElevation disabled={generateMutation.isPending} onClick={() => generateMutation.mutate()}
@@ -1594,7 +1694,7 @@ export function GeneratePlanningTab() {
           onCancelMission={() => selectedLine && handleCancelMission(selectedLine)}
           onReleaseMission={() => selectedLine && handleReleaseMission(selectedLine)}
           onReset={() => selectedLineKey && handleResetLine(selectedLineKey)}
-          canAddMission={isModification || draftVersionId !== null}
+          canAddMission={isModification || (draftVersionId !== null && !draftScopeNeedsConfirmation)}
           isCreating={isCreatingMission}
           surgeonOptions={surgeonOptions}
           siteOptions={siteOptionsForCreate}

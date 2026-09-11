@@ -139,6 +139,11 @@ class PlanningV2GenerationController extends AbstractController
             throw $this->createNotFoundException('PlanningVersion introuvable.');
         }
 
+        // D-115bis follow-up — a group-scoped draft whose scope was only RECONSTRUCTED
+        // (never captured live at generate() time) must never be deployed until a manager
+        // has explicitly confirmed it — see PlanningDraftService::confirmScope().
+        $this->draftService->assertScopeConfirmed($version);
+
         try {
             $result = $this->deploymentService->deploy(
                 from: $version->getPeriodStart()->format('Y-m-d'),
@@ -359,5 +364,32 @@ class PlanningV2GenerationController extends AbstractController
             skipped: $result['skipped'],
             rejectedAssignments: $result['rejectedAssignments'],
         ));
+    }
+
+    /**
+     * D-115bis follow-up — a manager's explicit review of a RECONSTRUCTED scope (see
+     * PlanningVersionScopeSource). Body: `{siteIds: number[]}`, typically pre-filled by the
+     * frontend with the reconstructed guess already shown via reopenDraft(), but editable —
+     * the manager may add a site the reconstruction missed or remove one it wrongly kept.
+     * Never accepted for a SNAPSHOT/CONFIRMED version, and never idempotently re-accepted
+     * once CONFIRMED (see PlanningDraftScopeAlreadyConfirmedException) — an already-locked-
+     * in manager decision is never silently overwritten.
+     */
+    #[Route('/api/planning/v2/drafts/{id}/confirm-scope', name: 'api_planning_v2_draft_confirm_scope', methods: ['POST'])]
+    public function confirmDraftScope(int $id, Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $version = $this->em->find(PlanningVersion::class, $id);
+        if ($version === null) {
+            throw $this->createNotFoundException('PlanningVersion introuvable.');
+        }
+
+        $data = $request->toArray();
+        $siteIds = isset($data['siteIds']) && is_array($data['siteIds']) ? $data['siteIds'] : [];
+
+        $confirmed = $this->draftService->confirmScope($version, $siteIds);
+
+        return $this->json(DraftVersionSummaryResponse::fromVersion($confirmed));
     }
 }

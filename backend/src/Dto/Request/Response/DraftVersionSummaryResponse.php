@@ -16,6 +16,10 @@ final class DraftVersionSummaryResponse
         public ?string $siteName,
         public ?int $siteGroupId,
         public ?string $siteGroupName,
+        /** D-115bis follow-up — null for a single-site draft. See PlanningVersionScopeSource. */
+        public ?string $scopeSource,
+        /** @var int[]|null D-115bis follow-up — the group's site ids, for a confirm-scope dialog to pre-fill. */
+        public ?array $scopeSiteIds,
         public string $generatedAt,
     ) {
     }
@@ -37,6 +41,8 @@ final class DraftVersionSummaryResponse
             // generic "Tous sites" label, exactly as before.
             siteGroupId: $siteGroup?->getId(),
             siteGroupName: $siteGroup?->getName(),
+            scopeSource: $version->getScopeSource()?->value,
+            scopeSiteIds: $version->getScopeSiteIds(),
             generatedAt: $version->getGeneratedAt()->format(\DateTimeInterface::ATOM),
         );
     }

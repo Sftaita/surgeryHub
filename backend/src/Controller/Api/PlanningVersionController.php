@@ -322,6 +322,8 @@ class PlanningVersionController extends AbstractController
             // D-115bis — null for a draft created before this fix, or a single-site one.
             'siteGroupId'    => $siteGroup?->getId(),
             'siteGroupName'  => $siteGroup?->getName(),
+            // D-115bis follow-up — lets the list badge "à confirmer" without a separate reopen.
+            'scopeSource'    => $version->getScopeSource()?->value,
             'generatedBy'    => [
                 'id'    => $version->getGeneratedBy()?->getId(),
                 'email' => $version->getGeneratedBy()?->getEmail(),
