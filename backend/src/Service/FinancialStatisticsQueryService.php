@@ -56,8 +56,10 @@ final class FinancialStatisticsQueryService
 
     private readonly Connection $connection;
 
-    public function __construct(EntityManagerInterface $em)
-    {
+    public function __construct(
+        EntityManagerInterface $em,
+        private readonly MissionPopulationClauseBuilder $missionPopulation,
+    ) {
         $this->connection = $em->getConnection();
     }
 
@@ -718,45 +720,16 @@ final class FinancialStatisticsQueryService
     // ── Filtres partagés ─────────────────────────────────────────────────
 
     /**
-     * §6 du lot — filtres de population appliqués directement sur la table `mission`
-     * (alias fourni). firmId/interventionTypeId passent par une sous-requête EXISTS sur
-     * mission_intervention (aucune colonne directe sur mission).
+     * §6 du lot — délégué à MissionPopulationClauseBuilder depuis D-092, pour que le
+     * Suivi des encodages filtre exactement la même population que les statistiques
+     * financières. Wrapper conservé : les appels internes sont nombreux et la signature
+     * locale garde les requêtes SQL lisibles.
      *
      * @return array{0: string, 1: array<string, mixed>, 2: array<string, int>}
      */
     private function missionPopulationClause(FinancialStatisticsFilter $filter, string $alias): array
     {
-        $conditions = [];
-        $params = [];
-        $types = [];
-
-        if ($filter->siteId !== null) {
-            $conditions[] = "$alias.site_id = :siteId";
-            $params['siteId'] = $filter->siteId;
-            $types['siteId'] = ParameterType::INTEGER;
-        }
-        if ($filter->surgeonId !== null) {
-            $conditions[] = "$alias.surgeon_id = :surgeonId";
-            $params['surgeonId'] = $filter->surgeonId;
-            $types['surgeonId'] = ParameterType::INTEGER;
-        }
-        if ($filter->instrumentistId !== null) {
-            $conditions[] = "$alias.instrumentist_id = :instrumentistId";
-            $params['instrumentistId'] = $filter->instrumentistId;
-            $types['instrumentistId'] = ParameterType::INTEGER;
-        }
-        if ($filter->firmId !== null) {
-            $conditions[] = "EXISTS (SELECT 1 FROM mission_intervention mif WHERE mif.mission_id = $alias.id AND mif.primary_firm_id = :firmId)";
-            $params['firmId'] = $filter->firmId;
-            $types['firmId'] = ParameterType::INTEGER;
-        }
-        if ($filter->interventionTypeId !== null) {
-            $conditions[] = "EXISTS (SELECT 1 FROM mission_intervention mit WHERE mit.mission_id = $alias.id AND mit.intervention_type_id = :interventionTypeId)";
-            $params['interventionTypeId'] = $filter->interventionTypeId;
-            $types['interventionTypeId'] = ParameterType::INTEGER;
-        }
-
-        return [count($conditions) > 0 ? ('AND ' . implode(' AND ', $conditions)) : '', $params, $types];
+        return $this->missionPopulation->build($filter, $alias);
     }
 
     /**
