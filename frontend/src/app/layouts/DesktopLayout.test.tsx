@@ -223,10 +223,11 @@ describe("DesktopLayout — navigation groupée (D-079)", () => {
     expect(screen.getByRole("link", { name: "Absences" })).toHaveAttribute("href", "/app/m/planning/absences");
   });
 
-  it("affiche le groupe Facturation : Factures Firmes, Décomptes, Statistiques", () => {
+  it("affiche le groupe Facturation : Suivi des encodages, Factures Firmes, Décomptes, Statistiques", () => {
     authRole = "MANAGER";
     renderLayout();
     expect(screen.getByText("Facturation")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Suivi des encodages" })).toHaveAttribute("href", "/app/m/billing/encodings");
     expect(screen.getByRole("link", { name: "Factures Firmes" })).toHaveAttribute("href", "/app/m/billing/firm-invoices");
     expect(screen.getByRole("link", { name: "Décomptes" })).toHaveAttribute("href", "/app/m/billing/statements");
     expect(screen.getByRole("link", { name: "Statistiques" })).toHaveAttribute("href", "/app/m/finance/statistics");

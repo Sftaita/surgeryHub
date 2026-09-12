@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import StatFilterBar, { defaultFilterState, toApiFilter, type FilterState } from "../../features/financial-statistics/components/StatFilterBar";
 import RankingTable, { type RankingColumn } from "../../features/financial-statistics/components/RankingTable";
 import DrilldownTable from "../../features/financial-statistics/components/DrilldownTable";
+import { ZeroFinancialDataExplanation } from "../../features/financial-statistics/components/ZeroFinancialDataExplanation";
 import {
   getByFirm,
   getByInstrumentist,
@@ -60,10 +61,10 @@ export default function FinancialStatisticsPage() {
       <Typography variant="h6" fontWeight={700}>Statistiques financières</Typography>
 
       <Alert severity="info">
-        Ces chiffres distinguent trois couches, qui peuvent diverger : <strong>Généré</strong> (valeur figée par les
-        calculs financiers verrouillés — voir la fiche mission) ; <strong>Documenté</strong> (montants réellement
+        Ces chiffres distinguent trois couches, qui peuvent diverger : <strong>Calculé</strong> (valeur des calculs
+        financiers actifs — voir la fiche mission) ; <strong>Facturé / Décompté</strong> (montants réellement
         inscrits sur une facture firme ou un décompte instrumentiste émis) ; <strong>Encaissé/Décaissé</strong>
-        (paiements et remboursements réellement enregistrés). Un écart entre "Généré" et "Documenté" signale une
+        (paiements et remboursements réellement enregistrés). Un écart entre "Calculé" et "Facturé / Décompté" signale une
         valorisation pas encore facturée — voir l'onglet <strong>Pipeline</strong> pour l'identifier précisément.
       </Alert>
 
@@ -109,26 +110,24 @@ function OverviewTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
         </Box>
       </Paper>
 
-      {currencies.length === 0 && (
-        <Typography color="text.secondary">Aucune donnée financière sur cette période/ces filtres.</Typography>
-      )}
+      {currencies.length === 0 && <ZeroFinancialDataExplanation filter={filter} />}
 
       {currencies.map((c) => (
         <Paper key={c.currency} variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
           <Typography variant="subtitle2" fontWeight={700} mb={1.5}>Devise : {c.currency}</Typography>
           <Stack spacing={2}>
             <Box>
-              <Typography variant="caption" fontWeight={700} color="text.secondary">Valeur générée</Typography>
+              <Typography variant="caption" fontWeight={700} color="text.secondary">Valeur calculée</Typography>
               <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 2, mt: 0.5 }}>
-                <Metric label="CA firme généré" value={c.generatedFirmRevenue} money />
+                <Metric label="CA firme calculé" value={c.generatedFirmRevenue} money />
                 <Metric label="Rémunération instrumentiste" value={c.generatedInstrumentistCompensation} money />
-                <Metric label="Valeur totale générée" value={c.generatedTotalValue} money strong />
+                <Metric label="Valeur totale calculée" value={c.generatedTotalValue} money strong />
                 <Metric label="Contribution margin" value={c.generatedContributionMargin} money />
                 <Metric label="Valeur moyenne / mission" value={c.averageMissionValue} money />
               </Box>
             </Box>
             <Box>
-              <Typography variant="caption" fontWeight={700} color="text.secondary">Valeur documentée — Factures firmes</Typography>
+              <Typography variant="caption" fontWeight={700} color="text.secondary">Facturé — Factures firmes</Typography>
               <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 2, mt: 0.5 }}>
                 <Metric label="Brut facturé" value={c.invoicedGrossAmount} money />
                 <Metric label="Notes de crédit" value={c.invoiceCreditNotesAmount} money />
@@ -138,7 +137,7 @@ function OverviewTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
               </Box>
             </Box>
             <Box>
-              <Typography variant="caption" fontWeight={700} color="text.secondary">Valeur documentée — Décomptes instrumentistes</Typography>
+              <Typography variant="caption" fontWeight={700} color="text.secondary">Décompté — Décomptes instrumentistes</Typography>
               <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 2, mt: 0.5 }}>
                 <Metric label="Brut décompté" value={c.statementGrossAmount} money />
                 <Metric label="Notes de crédit" value={c.statementCreditNotesAmount} money />

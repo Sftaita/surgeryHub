@@ -27,6 +27,7 @@ import EventBusyOutlinedIcon from "@mui/icons-material/EventBusyOutlined";
 import ReceiptLongOutlinedIcon from "@mui/icons-material/ReceiptLongOutlined";
 import ReceiptOutlinedIcon from "@mui/icons-material/ReceiptOutlined";
 import BarChartOutlinedIcon from "@mui/icons-material/BarChartOutlined";
+import TrackChangesOutlinedIcon from "@mui/icons-material/TrackChangesOutlined";
 import PeopleAltOutlinedIcon from "@mui/icons-material/PeopleAltOutlined";
 import MailOutlineIcon from "@mui/icons-material/MailOutline";
 import FactCheckOutlinedIcon from "@mui/icons-material/FactCheckOutlined";
@@ -136,6 +137,7 @@ const NAV_ITEMS = [
   {
     label: "Facturation",
     children: [
+      { label: "Suivi des encodages", href: "/app/m/billing/encodings", icon: TrackChangesOutlinedIcon },
       { label: "Factures Firmes", href: "/app/m/billing/firm-invoices", icon: ReceiptLongOutlinedIcon },
       { label: "Décomptes", href: "/app/m/billing/statements", icon: ReceiptOutlinedIcon },
       { label: "Statistiques", href: "/app/m/finance/statistics", icon: BarChartOutlinedIcon },

@@ -10106,3 +10106,234 @@ pré-existante effectuée avant import. Reproduction confirmée en conditions r�
 test ou de correctif.
 
 Non déployé.
+
+---
+
+## D-118 — Suivi des encodages : `EncodingState` dérivé et ventilation pré-VALIDATED partagée (2026-09-12)
+
+**Statut : backend fait, non commité côté frontend, non déployé.**
+
+Date : 2026-09-12
+
+### Contexte
+
+La page « Statistiques financières » (D-077) était détournée de son rôle : faute d'un
+écran de suivi opérationnel, les managers l'utilisaient pour savoir si les instrumentistes
+avaient encodé leurs missions. Elle ne peut structurellement pas répondre à cette
+question.
+
+Constat reproduit à l'audit : une période pouvait afficher « 104 missions / 11 exécutées /
+0 validées » puis « Aucune donnée financière sur cette période ». Les deux blocs viennent
+de sources disjointes :
+
+- l'activité compte directement sur `mission` / `mission_execution` ;
+- les montants n'existent qu'à travers un `FinancialCalculation`, or
+  `FinancialCalculationService::calculate()` exige `MissionStatus::VALIDATED` et n'est
+  **jamais** déclenché automatiquement.
+
+Avec zéro mission validée sur la période, il est donc **impossible** d'avoir la moindre
+donnée financière — même si les 11 missions exécutées sont intégralement encodées. Le
+message « Aucune donnée » était exact mais n'expliquait rien.
+
+Le pipeline financier existant (D-077 §17, neuf compteurs) ne comble pas ce vide : il
+décrit uniquement l'**après**-VALIDATED (validé sans calcul, calculé sans document, etc.)
+et n'a aucune visibilité sur ce qui empêche une mission d'atteindre VALIDATED.
+
+### Décision 1 — `EncodingState` est dérivé, jamais persisté, jamais un `MissionStatus`
+
+`MissionStatus` mélange trois axes distincts :
+
+- cycle de vie de l'affectation : `DRAFT`, `OPEN`, `ASSIGNED`, `REJECTED`, `CANCELLED` ;
+- fenêtre horaire écoulée : `IN_PROGRESS` (transition automatique, D-064) ;
+- cycle d'encodage : `ENCODING_IN_PROGRESS`, `SUBMITTED`, `VALIDATED`, `CLOSED` (D-070).
+
+Ajouter des statuts pour le suivi aurait aggravé ce mélange. `EncodingState` est donc une
+projection calculée à la lecture, définie **une seule fois** dans
+`App\Service\EncodingStateResolver`.
+
+| État | Règle |
+|---|---|
+| `NOT_APPLICABLE` | `DRAFT`, `OPEN`, `REJECTED`, `CANCELLED` — aucun encodage attendu |
+| `LOCKED` | `invoiceGeneratedAt != null` **ou** statut `CLOSED` |
+| `VALIDATED` | statut `VALIDATED` |
+| `SUBMITTED` | statut `SUBMITTED` |
+| `IN_PROGRESS` | statut `ENCODING_IN_PROGRESS` **ou** trace d'encodage existante |
+| `TO_ENCODE` | mission terminée (`endAt <= now`), aucune trace |
+| `UPCOMING` | mission non terminée, aucune trace |
+
+Précédence stricte, dans cet ordre. Trois points méritent justification :
+
+**`NOT_APPLICABLE` prime sur tout.** Une mission annulée après un début d'encodage ne doit
+jamais rester comptée comme un retard : sans cette priorité, elle polluerait le KPI « à
+encoder » indéfiniment.
+
+**`VALIDATED` reste distinct de `LOCKED` alors que `validate()` pose systématiquement
+`encodingLockedAt`.** Tester `encodingLockedAt` ferait littéralement disparaître l'état
+`VALIDATED`. La distinction utile est ailleurs : une mission `VALIDATED` reste réouvrable
+(`reopen()`), une mission facturée ou `CLOSED` ne l'est pas. `LOCKED` désigne donc le
+verrouillage réellement irréversible, pas la validation manager.
+
+**Une « trace d'encodage » ne se réduit pas à `encodingStartedAt`.** `start()` est optionnel
+(D-070) : l'instrumentiste peut saisir interventions, matériel et heures puis soumettre
+directement depuis `ASSIGNED`. La trace est donc `encodingStartedAt != null` **ou**
+au moins une intervention **ou** au moins une ligne de matériel active **ou** des données
+d'exécution réelles. Sans cela, une mission largement encodée s'afficherait « à encoder ».
+
+### Décision 2 — la dérivation vit en PHP, jamais en `CASE` SQL
+
+Le résumé de période porte sur toute la population, pas sur la page affichée. La tentation
+était de le calculer en SQL. Refusé : cela aurait dupliqué la règle métier en deux
+implémentations condamnées à diverger.
+
+`App\Dto\EncodingStateFacts` est le point de rencontre : les deux chemins d'alimentation
+(liste hydratée par Doctrine, résumé lu en SQL plat) construisent les mêmes faits et
+appellent le même `resolve()`. Le coût assumé est une boucle PHP sur des lignes plates de
+huit colonnes scalaires — jamais une hydratation d'entités, conformément à D-077 §22.
+
+`$now` est **toujours** passé explicitement et calculé une seule fois par réponse : sinon
+une mission qui se termine pendant le parcours basculerait de `UPCOMING` à `TO_ENCODE` en
+cours de route, et le résumé ne totaliserait plus la liste.
+
+### Décision 3 — heures : `plannedMinutes` + `effectiveMinutes` + `effectiveSource`
+
+`MissionExecutionService::resolveEffectiveDuration()` (D-071) reste la source canonique
+unique. Le suivi expose côte à côte la durée planifiée, la durée effective, et la source
+qui dit laquelle a servi (`PLANNED` / `ACTUAL_TIMES` / `ACTUAL_EXPLICIT`).
+
+Le contrat **n'expose délibérément aucun champ `encodedMinutes`** :
+`resolveEffectiveDuration()` peut retomber sur le planifié, et nommer ce résultat
+« encodé » laisserait croire à une saisie qui n'a jamais eu lieu.
+
+**Écart documenté avec la spécification fonctionnelle.** « Planning Instrumentiste v1.0 »
+§5.4 énonce : *mission non SUBMITTED → heures planifiées ; mission SUBMITTED → heures
+encodées*. Cette règle **n'est implémentée nulle part** dans le code : le seul résolveur
+existant se fonde sur la présence de données réelles dans `MissionExecution`, jamais sur
+`Mission.status`. L'écart est conservé tel quel et **non corrigé silencieusement** dans ce
+chantier, pour deux raisons :
+
+1. `SUBMITTED` répond à « l'instrumentiste déclare-t-il avoir fini ? » ; la source
+   temporelle répond à « dispose-t-on de données réelles ? ». Ce sont deux axes
+   indépendants, et masquer des heures réelles au motif que la mission n'est pas encore
+   soumise cacherait une donnée qui existe.
+2. La règle §5.4 est spécifiée dans le contexte du résumé mensuel **personnel de
+   l'instrumentiste**, pas d'un agrégat manager.
+
+`resolveEffectiveDuration()` est donc confirmé comme règle canonique de SurgicalHub. La
+spécification devra être mise à jour ou explicitement restreinte à son écran d'origine.
+
+### Décision 4 — une seule ventilation pré-VALIDATED, deux consommateurs
+
+`App\Dto\EncodingTrackingSummary` est la source unique de la ventilation par état. Elle
+alimente :
+
+- le cockpit `GET /api/billing/encoding-tracking` (KPI du haut de page) ;
+- la page Statistiques financières, pour expliquer une période sans donnée financière
+  (« 11 missions exécutées, mais aucune n'est actuellement éligible : 6 à encoder, 2 en
+  cours, 3 soumises non validées ») au lieu d'afficher « Aucune donnée ».
+
+Les deux ventilations ne se recouvrent jamais : celle-ci décrit l'**avant**-VALIDATED,
+les neuf compteurs de `FinancialPipelineDto` décrivent l'**après**. Elles se lisent bout à
+bout. La sémantique des neuf compteurs existants est inchangée.
+
+La fenêtre de période réutilise **strictement** `COALESCE(me.actual_start_at, m.start_at)`,
+identique à `FinancialStatisticsQueryService::activityRow()`. Sans cette identité, la
+ventilation explicative ne totaliserait pas le nombre de missions affiché juste au-dessus,
+et le message serait incohérent.
+
+`encodingExpected` (total moins `NOT_APPLICABLE`) est le seul dénominateur honnête d'un
+taux d'encodage : une mission annulée n'est pas un encodage manquant.
+
+### Décision 5 — statut financier synthétique, sans rejouer le moteur
+
+Sur ce cockpit, le financier est secondaire : repérer un blocage, jamais analyser des
+montants. `EncodingFinancialState` n'expose aucun montant et ne résout aucun tarif.
+
+Les définitions réutilisent telles quelles celles de D-077 (calcul actif =
+`CALCULATED`/`APPROVED`/`LOCKED` ; document émis = `SENT`/`PAID`, jamais `GENERATED`) pour
+que les deux écrans ne puissent pas se contredire. Le statut `PAID` du document fait foi
+plutôt que de dupliquer `DocumentPaymentService::computeBalance()`.
+
+**Les anomalies ne sont pas un état persisté.** `FinancialCalculationService` les lève en
+exception et les trace via un `AuditEvent FINANCIAL_CALCULATION_FAILED`. Le suivi lit donc
+cet historique — jamais relancer le moteur de tarification depuis un endpoint de lecture.
+Une tentative échouée est considérée résolue dès qu'un calcul actif plus récent existe.
+`ANOMALY` prime sur `CALCULATED` car un `recalculate()` échoué laisse l'ancien calcul actif
+(D-073) : afficher « Calculé » masquerait l'échec.
+
+### Décision 6 — `MissionPopulationClauseBuilder` extrait et partagé
+
+`missionPopulationClause()` était privé dans `FinancialStatisticsQueryService`. Ce que
+« filtré par firme » signifie (la firme principale d'au moins une intervention, pas une
+colonne de `mission`) est une règle métier, pas un utilitaire SQL. Elle est extraite dans
+`App\Service\MissionPopulationClauseBuilder`, utilisée par les deux modules.
+
+`missionType`, propre au suivi des encodages, n'est **pas** ajouté à
+`FinancialStatisticsFilter` : ce serait modifier le contrat gelé de D-077 pour un besoin
+qui ne le concerne pas. Il est passé séparément aux méthodes du repository.
+
+### Endpoints
+
+- `GET /api/billing/encoding-tracking` — résumé de la période + page de missions.
+  Les deux dans une seule réponse : le cockpit les affiche toujours ensemble, et deux
+  endpoints laisseraient les KPI se désynchroniser de la liste entre deux rafraîchissements.
+- `GET /api/billing/encoding-tracking/summary` — ventilation seule, pour la page
+  Statistiques.
+
+Filtres : `from` (inclusif), `to` (exclusif), `siteId`, `surgeonId`, `instrumentistId`,
+`firmId`, `interventionTypeId`, `missionType`, `encodingState` (liste séparée par des
+virgules), `page`, `limit` (max 200). Convention de période et sentinels hérités de D-077 —
+jamais `now()` comme borne fonctionnelle.
+
+`BillingVoter::MANAGE` sur les deux routes. Aucun accès instrumentiste à ces agrégats.
+Consultation non auditée, cohérent avec D-077 §28.
+
+### Confidentialité
+
+Aucune donnée patient n'est exposée : ni nom, ni identifiant, ni motif d'intervention.
+Seuls l'horaire, les intervenants professionnels, le site et des compteurs transitent. Un
+test fonctionnel vérifie explicitement l'absence de ces champs dans le payload brut.
+
+### Performance
+
+Budget de requêtes constant, indépendant du nombre de missions :
+
+- résumé : 1 requête de faits + 1 requête d'anomalies ;
+- liste : 1 comptage + 1 requête d'ids + 1 hydratation + 1 faits + 1 financier.
+
+Les compteurs d'interventions et de matériel viennent de sous-requêtes corrélées
+(`idx_intervention_mission`, `idx_material_line_mission`), jamais d'un parcours de
+collections Doctrine. L'hydratation est bornée à la page et joint l'exécution, sans quoi
+`resolveEffectiveDuration()` déclencherait un lazy-load par mission.
+
+Un test fonctionnel compare le nombre réel de requêtes SQL à 3 puis 12 missions et échoue
+si le budget augmente.
+
+### Migration
+
+**Aucune.** Tous les états sont dérivés de données déjà présentes (`Mission.status`,
+`encodingStartedAt`, `invoiceGeneratedAt`, `MissionExecution`, `mission_intervention`,
+`material_line`, `financial_calculation`, `audit_event`). Aucun champ ajouté, aucun index
+nécessaire — les index requis existent déjà.
+
+### Limite assumée
+
+Le filtre `encodingState` s'applique **après** dérivation, donc après pagination :
+l'état n'existe pas en base et ne peut pas être poussé en SQL. Sur une page filtrée par
+état, `total` reflète la population avant filtrage. C'est acceptable dans l'usage visé —
+le cockpit filtre d'abord par période et par personne, et le filtre d'état sert à isoler
+une vue courte (« à traiter »), pas à paginer un mois entier. À revoir si l'usage réel
+contredit cette hypothèse.
+
+### Addendum — `encoding.isStale` (intégration frontend, 2026-09-12)
+
+Gap découvert en construisant la vue "À traiter" : `EncodingTrackingSummary` sait compter
+`staleInProgress` (IN_PROGRESS + mission déjà terminée) pour la période entière, mais
+`EncodingTrackingItem` n'exposait pas cette information par mission. Sans elle, la vue
+"À traiter" aurait dû comparer `endAt` à "maintenant" elle-même côté frontend — exactement
+la règle métier que ce chantier interdit de dupliquer.
+
+Ajout minimal : `EncodingTrackingItem::$isStale`, calculé dans
+`EncodingTrackingService::list()` avec la même condition que `summarize()`
+(`state === IN_PROGRESS && endAt !== null && endAt <= $now`), exposé sous
+`encoding.isStale`. Aucun changement de la définition de `EncodingState` ni du contrat de
+`summary` — pur ajout additif au niveau de l'item.

@@ -8,7 +8,7 @@ use App\Enum\EncodingState;
 use App\Enum\MissionStatus;
 
 /**
- * Suivi des encodages (D-092) — définition canonique et UNIQUE de EncodingState.
+ * Suivi des encodages (D-118) — définition canonique et UNIQUE de EncodingState.
  *
  * Aucune autre couche (SQL, contrôleur, frontend) ne doit dériver cet état. Le résumé de
  * période et la liste paginée passent tous deux par resolve(), via EncodingStateFacts.

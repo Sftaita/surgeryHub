@@ -7,7 +7,7 @@ use App\Enum\EncodingState;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Suivi des encodages (D-092) — verrouille l'arithmétique du résumé partagé.
+ * Suivi des encodages (D-118) — verrouille l'arithmétique du résumé partagé.
  *
  * Ces totaux sont consommés par DEUX écrans (cockpit d'encodage et explication des zéros
  * de la page Statistiques). Une erreur ici produirait deux messages incohérents entre

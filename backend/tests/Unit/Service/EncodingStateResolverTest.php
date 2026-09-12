@@ -9,7 +9,7 @@ use App\Service\EncodingStateResolver;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Suivi des encodages (D-092) — verrouille la définition canonique de EncodingState.
+ * Suivi des encodages (D-118) — verrouille la définition canonique de EncodingState.
  *
  * Ces tests sont le contrat : toute évolution de la dérivation doit passer ici d'abord.
  * Le test d'exhaustivité en fin de fichier garantit qu'un MissionStatus ajouté à l'enum

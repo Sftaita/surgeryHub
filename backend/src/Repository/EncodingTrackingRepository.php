@@ -4,14 +4,18 @@ namespace App\Repository;
 
 use App\Dto\EncodingStateFacts;
 use App\Dto\FinancialStatisticsFilter;
+use App\Dto\MissionFinancialFacts;
+use App\Entity\Mission;
 use App\Enum\MissionStatus;
+use App\Enum\MissionType;
 use App\Service\MissionPopulationClauseBuilder;
 use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\ParameterType;
+use Doctrine\ORM\EntityManagerInterface;
 
 /**
- * Suivi des encodages (D-092) — accès agrégé, jamais d'hydratation Doctrine.
+ * Suivi des encodages (D-118) — accès agrégé, jamais d'hydratation Doctrine.
  *
  * Même discipline de performance que D-077 §22 : SQL natif, aucun graphe d'entités
  * chargé pour compter. La seule boucle PHP porte sur des lignes plates de 8 colonnes
@@ -28,8 +32,45 @@ final class EncodingTrackingRepository
 {
     public function __construct(
         private readonly Connection $connection,
+        private readonly EntityManagerInterface $em,
         private readonly MissionPopulationClauseBuilder $missionPopulation,
     ) {}
+
+    /**
+     * Seul point d'hydratation Doctrine du module, volontairement borné à une page.
+     *
+     * Les associations affichées (chirurgien, instrumentiste, site) ET l'exécution sont
+     * jointes en une requête : sans le JOIN sur l'exécution, resolveEffectiveDuration()
+     * déclencherait un lazy-load par mission — le N+1 exact que ce module doit éviter.
+     *
+     * @param int[] $missionIds
+     * @return array<int, Mission> indexé par mission id
+     */
+    public function hydrateMissionsForDisplay(array $missionIds): array
+    {
+        if (count($missionIds) === 0) {
+            return [];
+        }
+
+        $missions = $this->em->createQueryBuilder()
+            ->select('m', 'surgeon', 'instrumentist', 'site', 'execution')
+            ->from(Mission::class, 'm')
+            ->leftJoin('m.surgeon', 'surgeon')
+            ->leftJoin('m.instrumentist', 'instrumentist')
+            ->leftJoin('m.site', 'site')
+            ->leftJoin('m.execution', 'execution')
+            ->where('m.id IN (:ids)')
+            ->setParameter('ids', $missionIds)
+            ->getQuery()
+            ->getResult();
+
+        $byId = [];
+        foreach ($missions as $mission) {
+            $byId[(int) $mission->getId()] = $mission;
+        }
+
+        return $byId;
+    }
 
     /**
      * Faits bruts de toute la période, une ligne par mission, sans pagination.
@@ -38,9 +79,9 @@ final class EncodingTrackingRepository
      *
      * @return array<int, EncodingStateFacts> indexé par mission id
      */
-    public function fetchFactsForPeriod(FinancialStatisticsFilter $filter): array
+    public function fetchFactsForPeriod(FinancialStatisticsFilter $filter, ?MissionType $missionType = null): array
     {
-        [$missionWhere, $params, $types] = $this->missionPopulationClause($filter, 'm');
+        [$missionWhere, $params, $types] = $this->missionPopulationClause($filter, 'm', $missionType);
 
         $sql = "SELECT {$this->factColumns()}
                 FROM mission m
@@ -65,9 +106,9 @@ final class EncodingTrackingRepository
      *
      * @return array{ids: int[], total: int}
      */
-    public function fetchPageIds(FinancialStatisticsFilter $filter, int $page, int $limit): array
+    public function fetchPageIds(FinancialStatisticsFilter $filter, int $page, int $limit, ?MissionType $missionType = null): array
     {
-        [$missionWhere, $params, $types] = $this->missionPopulationClause($filter, 'm');
+        [$missionWhere, $params, $types] = $this->missionPopulationClause($filter, 'm', $missionType);
 
         $window = 'COALESCE(me.actual_start_at, m.start_at)';
         $from = "FROM mission m
@@ -213,9 +254,81 @@ final class EncodingTrackingRepository
         return $moment->setTimezone(new \DateTimeZone('Europe/Brussels'))->format('Y-m-d H:i:s');
     }
 
-    /** @return array{0: string, 1: array<string, mixed>, 2: array<string, int>} */
-    private function missionPopulationClause(FinancialStatisticsFilter $filter, string $alias): array
+    /**
+     * Faits financiers bruts pour un lot de missions, en une seule requête.
+     *
+     * Réutilise strictement les définitions de D-077 : calcul actif =
+     * CALCULATED/APPROVED/LOCKED, document émis = SENT/PAID (un document GENERATED n'est
+     * jamais "émis"). Aucun montant n'est lu, aucun solde n'est recalculé — le statut PAID
+     * du document fait foi, plutôt que de dupliquer DocumentPaymentService::computeBalance().
+     *
+     * @param int[] $missionIds
+     * @return array<int, MissionFinancialFacts> indexé par mission id
+     */
+    public function fetchFinancialFacts(array $missionIds): array
     {
-        return $this->missionPopulation->build($filter, $alias);
+        if (count($missionIds) === 0) {
+            return [];
+        }
+
+        $rows = $this->connection->fetchAllAssociative(
+            "SELECT m.id AS missionId,
+                    EXISTS (SELECT 1 FROM financial_calculation fc
+                            WHERE fc.mission_id = m.id
+                              AND fc.status IN ('CALCULATED','APPROVED','LOCKED')) AS hasActiveCalculation,
+                    (SELECT COUNT(*) FROM firm_invoice_line fil
+                       INNER JOIN firm_invoice fi ON fi.id = fil.invoice_id
+                      WHERE fil.mission_id = m.id AND fi.status IN ('SENT','PAID'))
+                  + (SELECT COUNT(*) FROM instrumentist_statement_line isl
+                       INNER JOIN instrumentist_statement ist ON ist.id = isl.statement_id
+                      WHERE isl.mission_id = m.id AND ist.status IN ('SENT','PAID')) AS issuedDocumentLines,
+                    (SELECT COUNT(*) FROM firm_invoice_line fil
+                       INNER JOIN firm_invoice fi ON fi.id = fil.invoice_id
+                      WHERE fil.mission_id = m.id AND fi.status = 'SENT')
+                  + (SELECT COUNT(*) FROM instrumentist_statement_line isl
+                       INNER JOIN instrumentist_statement ist ON ist.id = isl.statement_id
+                      WHERE isl.mission_id = m.id AND ist.status = 'SENT') AS unpaidDocumentLines
+             FROM mission m
+             WHERE m.id IN (:ids)",
+            ['ids' => $missionIds],
+            ['ids' => ArrayParameterType::INTEGER],
+        );
+
+        $failures = $this->findMissionsWithFailedCalculation($missionIds);
+
+        $facts = [];
+        foreach ($rows as $row) {
+            $missionId = (int) $row['missionId'];
+            $issued = (int) $row['issuedDocumentLines'];
+
+            $facts[$missionId] = new MissionFinancialFacts(
+                hasActiveCalculation: (bool) $row['hasActiveCalculation'],
+                hasIssuedDocument: $issued > 0,
+                allIssuedDocumentsPaid: $issued > 0 && (int) $row['unpaidDocumentLines'] === 0,
+                hasUnresolvedCalculationFailure: isset($failures[$missionId]),
+            );
+        }
+
+        return $facts;
+    }
+
+    /**
+     * Filtres partagés + le type de mission, propre à ce module. missionType n'est
+     * délibérément pas ajouté à FinancialStatisticsFilter : ce serait modifier le contrat
+     * gelé de D-077 pour un besoin qui n'appartient qu'au suivi des encodages.
+     *
+     * @return array{0: string, 1: array<string, mixed>, 2: array<string, int>}
+     */
+    private function missionPopulationClause(FinancialStatisticsFilter $filter, string $alias, ?MissionType $missionType = null): array
+    {
+        [$where, $params, $types] = $this->missionPopulation->build($filter, $alias);
+
+        if ($missionType !== null) {
+            $where .= " AND $alias.type = :missionType";
+            $params['missionType'] = $missionType->value;
+            $types['missionType'] = ParameterType::STRING;
+        }
+
+        return [$where, $params, $types];
     }
 }

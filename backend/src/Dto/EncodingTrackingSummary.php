@@ -5,7 +5,7 @@ namespace App\Dto;
 use App\Enum\EncodingState;
 
 /**
- * Suivi des encodages (D-092) — ventilation canonique d'une période par EncodingState.
+ * Suivi des encodages (D-118) — ventilation canonique d'une période par EncodingState.
  *
  * Source UNIQUE et partagée par deux consommateurs volontairement distincts :
  *  - GET /api/billing/encoding-tracking (cockpit opérationnel, KPI du haut de page) ;

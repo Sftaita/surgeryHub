@@ -6911,3 +6911,161 @@ OPEN → RESOLVED
 `RESOLVED` est terminal pour CE signalement — un nouveau signalement (même mission,
 même chirurgien) redevient possible dès que le précédent est `RESOLVED`. Aucun
 `CANCELLED`, aucune suppression.
+
+## Suivi des encodages (D-118)
+
+Cockpit opérationnel manager — répond à « qu'est-ce qui a été encodé, par qui, et
+qu'est-ce qui réclame mon attention ? ». Volontairement distinct des statistiques
+financières (D-077), qui répondent à « combien ».
+
+`BillingVoter::MANAGE` sur toutes les routes (manager/admin). Aucun accès instrumentiste.
+Aucune donnée patient n'est exposée.
+
+### Filtres communs
+
+| Paramètre | Type | Notes |
+|---|---|---|
+| `from` | ISO 8601 | inclusif ; absent = sentinel `1970-01-01`, jamais `now()` |
+| `to` | ISO 8601 | **exclusif** ; absent = sentinel `9999-12-31` |
+| `siteId`, `surgeonId`, `instrumentistId`, `firmId`, `interventionTypeId` | int > 0 | absent = tous |
+| `missionType` | `BLOCK` \| `CONSULTATION` \| … | absent = tous |
+| `encodingState` | liste séparée par des virgules | ex. `TO_ENCODE,SUBMITTED` |
+| `page`, `limit` | int | défaut 1 / 50, `limit` max 200 |
+
+La fenêtre de période porte sur `COALESCE(missionExecution.actualStartAt, mission.startAt)`
+— identique à `/api/financial-statistics/overview`, pour que les deux écrans décrivent
+exactement la même population.
+
+Un filtre invalide retourne `422` avec un message explicite.
+
+### `encodingState` — valeurs
+
+État **dérivé**, jamais persisté, jamais un `MissionStatus` (définition canonique unique :
+`EncodingStateResolver`, voir D-118).
+
+| Valeur | Signification | Libellé FR |
+|---|---|---|
+| `UPCOMING` | mission pas encore terminée, aucun encodage commencé | À venir |
+| `TO_ENCODE` | mission terminée, aucun encodage commencé | À encoder |
+| `IN_PROGRESS` | encodage commencé, pas encore soumis | En cours |
+| `SUBMITTED` | l'instrumentiste déclare avoir fini — action manager attendue | Soumis |
+| `VALIDATED` | validé par le manager, **encore réouvrable** | Validé |
+| `LOCKED` | facture émise ou mission `CLOSED` — irréversible | Verrouillé |
+| `NOT_APPLICABLE` | `DRAFT`/`OPEN`/`REJECTED`/`CANCELLED` — aucun encodage attendu | Sans objet |
+
+`VALIDATED` et `LOCKED` sont distincts bien que `validate()` pose `encodingLockedAt` :
+seule une facture (`invoiceGeneratedAt`) ou `CLOSED` empêche réellement un `reopen()`.
+
+### `financial.state` — valeurs
+
+Statut synthétique, sans montant. Réutilise les définitions de D-077 (calcul actif =
+`CALCULATED`/`APPROVED`/`LOCKED` ; document émis = `SENT`/`PAID`).
+
+| Valeur | Signification | Libellé FR |
+|---|---|---|
+| `NOT_CALCULABLE` | mission pas encore éligible (seul `VALIDATED` l'est) | Pas encore calculable |
+| `TO_CALCULATE` | éligible, calcul jamais lancé (jamais automatique) | À calculer |
+| `CALCULATED` | calcul actif, aucun document émis | Calculé |
+| `DOCUMENTED` | facture firme et/ou décompte émis | Facturé / Décompté |
+| `PAID` | tous les documents rattachés sont `PAID` | Payé |
+| `ANOMALY` | dernière tentative de calcul en échec, non résolue | Anomalie |
+
+### `GET /api/billing/encoding-tracking`
+
+Résumé de la période **et** page de missions dans une seule réponse : le cockpit affiche
+toujours les deux ensemble.
+
+Le `summary` porte sur **toute la période**, `items` sur la page demandée.
+
+**Réponse — 200 :**
+```json
+{
+  "period": { "from": "2026-09-01T00:00:00+02:00", "to": "2026-10-01T00:00:00+02:00" },
+  "summary": {
+    "totalMissions": 28,
+    "encodingExpected": 21,
+    "upcoming": 4,
+    "toEncode": 6,
+    "inProgress": 2,
+    "submitted": 3,
+    "validated": 5,
+    "locked": 1,
+    "notApplicable": 7,
+    "staleInProgress": 1,
+    "financialAnomalies": 2,
+    "encoded": 9,
+    "missingEncoding": 7,
+    "toTreat": 12,
+    "hasFinanciallyEligibleMissions": true
+  },
+  "items": [
+    {
+      "missionId": 123,
+      "startAt": "2026-09-10T08:00:00+02:00",
+      "endAt": "2026-09-10T12:00:00+02:00",
+      "missionType": "BLOCK",
+      "missionStatus": "SUBMITTED",
+      "encodingState": "SUBMITTED",
+      "encodingStateLabel": "Soumis",
+      "instrumentist": { "id": 5, "name": "Salve Decorte" },
+      "surgeon": { "id": 8, "name": "Dr Jean Dupont" },
+      "site": { "id": 2, "name": "Delta" },
+      "hours": {
+        "plannedMinutes": 240,
+        "effectiveMinutes": 312,
+        "effectiveSource": "ACTUAL_TIMES",
+        "hasRealHours": true
+      },
+      "encoding": {
+        "interventionCount": 2,
+        "materialLineCount": 6,
+        "submittedWithoutMaterial": false,
+        "hasNoMaterialJustification": false,
+        "isStale": false
+      },
+      "financial": { "state": "NOT_CALCULABLE", "label": "Pas encore calculable", "isBlocking": false }
+    }
+  ],
+  "total": 28,
+  "page": 1,
+  "limit": 50
+}
+```
+
+**Champs dérivés du résumé** — exposés explicitement pour que le frontend ne les recompose
+jamais (sinon le badge de navigation et la liste pourraient diverger) :
+
+- `encoded` = `submitted + validated + locked`
+- `missingEncoding` = `toEncode + staleInProgress`
+- `toTreat` = `missingEncoding + submitted + financialAnomalies`
+- `encodingExpected` = `totalMissions - notApplicable` — seul dénominateur honnête d'un
+  taux d'encodage (une mission annulée n'est pas un encodage manquant)
+- `staleInProgress` : sous-ensemble de `inProgress` dont la mission est déjà terminée
+- `hasFinanciallyEligibleMissions` : `false` quand il y a de l'activité mais que rien n'a
+  atteint `VALIDATED` — déclenche le message explicatif de la page Statistiques
+
+**Heures** — `plannedMinutes` et `effectiveMinutes` sont exposés côte à côte, avec
+`effectiveSource` (`PLANNED` / `ACTUAL_TIMES` / `ACTUAL_EXPLICIT`) qui indique lequel a
+servi. Il n'existe volontairement **aucun** champ `encodedMinutes` : la résolution peut
+retomber sur le planifié, et ce nom laisserait croire à une saisie inexistante.
+`hasRealHours` est `false` quand la source est `PLANNED`.
+
+**`encoding.isStale`** — `true` quand `encodingState = IN_PROGRESS` et que la mission est
+déjà terminée chronologiquement (même condition que `summary.staleInProgress`, exposée ici
+par mission). Ajouté lors de l'intégration frontend : la vue "À traiter" en a besoin pour
+lister les encodages en cours anormalement longtemps sans comparer `endAt` à "maintenant"
+elle-même, ce qui dupliquerait une règle métier.
+
+**Limite** — `encodingState` filtre après dérivation, donc après pagination : sur une page
+filtrée par état, `total` reflète la population avant filtrage (voir D-118).
+
+### `GET /api/billing/encoding-tracking/summary`
+
+Ventilation seule, sans liste. Mêmes filtres (hors pagination et `encodingState`).
+
+Consommé par la page Statistiques financières pour expliquer une période sans donnée
+financière au lieu d'afficher « Aucune donnée » — même service, même définition canonique,
+les deux écrans ne peuvent pas se contredire.
+
+**Réponse — 200 :** `{ "period": {...}, "summary": {...} }` — `summary` strictement
+identique à celui de l'endpoint ci-dessus.

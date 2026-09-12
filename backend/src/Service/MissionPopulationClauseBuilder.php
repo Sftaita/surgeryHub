@@ -8,7 +8,7 @@ use Doctrine\DBAL\ParameterType;
 /**
  * Traduction canonique d'un FinancialStatisticsFilter en clause SQL sur la table
  * `mission`. Extrait de FinancialStatisticsQueryService (D-077 §6) lors du chantier
- * Suivi des encodages (D-092), pour que les deux modules filtrent une période
+ * Suivi des encodages (D-118), pour que les deux modules filtrent une période
  * EXACTEMENT de la même façon.
  *
  * Ce n'est pas qu'un utilitaire SQL : il porte une règle métier (ce que "filtré par

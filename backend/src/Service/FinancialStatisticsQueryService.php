@@ -720,7 +720,7 @@ final class FinancialStatisticsQueryService
     // ── Filtres partagés ─────────────────────────────────────────────────
 
     /**
-     * §6 du lot — délégué à MissionPopulationClauseBuilder depuis D-092, pour que le
+     * §6 du lot — délégué à MissionPopulationClauseBuilder depuis D-118, pour que le
      * Suivi des encodages filtre exactement la même population que les statistiques
      * financières. Wrapper conservé : les appels internes sont nombreux et la signature
      * locale garde les requêtes SQL lisibles.

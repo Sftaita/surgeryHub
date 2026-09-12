@@ -3335,3 +3335,105 @@ Toutes les prestations existantes continuent de fonctionner sans migration méti
 manuelle : `choice_option_id`/`selected_choice_option_id` nullables partout,
 `RequiredChoiceGroupResolver` retourne « aucun groupe requis » par défaut. Voir
 `docs/decisions.md` D-111 pour le détail complet (migration, tests, endpoints).
+
+---
+
+## 22. Suivi des encodages — cockpit opérationnel manager (D-118)
+
+### 22.1 Pourquoi un module distinct des statistiques financières
+
+Deux questions différentes étaient servies par un seul écran :
+
+- « **Combien** a-t-on généré, facturé, encaissé ? » → statistiques financières (D-077) ;
+- « **Qu'est-ce qui a été encodé**, par qui, et qu'est-ce qui réclame mon attention ? » →
+  aucun écran ne répondait.
+
+Faute de réponse, les managers lisaient les chiffres financiers comme un proxy de
+l'encodage. Ce proxy est structurellement faux : un montant n'existe qu'à travers un
+`FinancialCalculation`, qui exige `MissionStatus::VALIDATED` et n'est jamais déclenché
+automatiquement. Une période entièrement encodée mais non validée affiche donc zéro euro,
+ce qui ne dit rien de l'encodage.
+
+Le suivi des encodages est un module séparé, avec sa propre route, son propre endpoint et
+son propre vocabulaire. La page Statistiques reste dédiée à l'analyse financière ; elle
+consomme seulement la ventilation du suivi pour expliquer ses zéros.
+
+### 22.2 Composants backend
+
+| Composant | Rôle |
+|---|---|
+| `Enum\EncodingState` | 7 états dérivés + libellés FR + prédicats d'action |
+| `Dto\EncodingStateFacts` | faits bruts nécessaires à la dérivation |
+| `Service\EncodingStateResolver` | **définition canonique unique** de `EncodingState` |
+| `Enum\EncodingFinancialState` | statut financier synthétique (sans montant) |
+| `Dto\MissionFinancialFacts` | faits financiers bruts |
+| `Service\EncodingFinancialStateResolver` | dérivation du statut financier |
+| `Dto\EncodingTrackingSummary` | ventilation partagée par les deux écrans |
+| `Dto\EncodingTrackingItem` | une ligne de suivi |
+| `Repository\EncodingTrackingRepository` | agrégats SQL + hydratation bornée |
+| `Service\EncodingTrackingService` | orchestration (n'décide rien) |
+| `Service\EncodingTrackingRequestParser` | params propres au module |
+| `Controller\Api\EncodingTrackingController` | 2 routes, `BillingVoter::MANAGE` |
+| `Service\MissionPopulationClauseBuilder` | filtres partagés avec D-077 |
+
+Aucune entité, aucune migration : tous les états sont dérivés de données existantes.
+
+### 22.3 Un seul point de dérivation, deux chemins d'alimentation
+
+Le résumé porte sur toute la période, la liste sur une page. Les deux ont besoin du même
+`EncodingState`, mais chargent leurs données différemment :
+
+```
+                   ┌──────────────────────────────┐
+  résumé  ──SQL────▶                              │
+  (période entière) │      EncodingStateFacts      │──▶ EncodingStateResolver::resolve()
+  liste   ──ORM────▶                              │         (définition unique)
+  (page bornée)     └──────────────────────────────┘
+```
+
+`EncodingStateFacts` est ce point de rencontre. Sans lui, le résumé aurait été calculé en
+`CASE` SQL et aurait divergé de la liste à la première évolution de la règle.
+
+`$now` est calculé une seule fois par réponse et passé explicitement : une mission qui se
+termine pendant le traitement ne doit pas être classée différemment dans les KPI et dans
+le tableau.
+
+### 22.4 Budget de requêtes
+
+Constant, indépendant du nombre de missions :
+
+- **résumé** : 1 requête de faits (période entière) + 1 requête d'anomalies ;
+- **liste** : 1 comptage + 1 requête d'ids + 1 hydratation + 1 faits + 1 financier.
+
+Les compteurs d'interventions et de lignes de matériel viennent de sous-requêtes corrélées
+appuyées sur `idx_intervention_mission` et `idx_material_line_mission` — jamais d'un
+parcours de collections Doctrine.
+
+L'hydratation ORM est bornée à la page et joint `surgeon`, `instrumentist`, `site` **et**
+`execution` : sans le join sur l'exécution, `resolveEffectiveDuration()` déclencherait un
+lazy-load par mission.
+
+Un test fonctionnel mesure le nombre réel de requêtes SQL à 3 puis 12 missions et échoue
+si le budget augmente.
+
+### 22.5 Réutilisation stricte de l'existant
+
+Le module ne réimplémente aucune règle déjà posée ailleurs :
+
+- heures → `MissionExecutionService::resolveEffectiveDuration()` (D-071) ;
+- éligibilité facturable → `MissionEncodingWorkflowService::isBillable()` (D-070) ;
+- « ligne de matériel active » → `quantity > 0`, même définition que
+  `countActiveMaterialLines()` ;
+- calcul actif / document émis → définitions D-077, inchangées ;
+- filtres de population → `MissionPopulationClauseBuilder`, partagé avec D-077 ;
+- fenêtre de période → `COALESCE(actualStartAt, startAt)`, identique à `activityRow()`.
+
+Le moteur de tarification n'est **jamais** rejoué depuis un endpoint de lecture : les
+anomalies sont lues dans l'historique `AuditEvent FINANCIAL_CALCULATION_FAILED`.
+
+### 22.6 Portée non traitée dans ce lot
+
+- Le filtre `encodingState` s'applique après pagination (l'état n'existe pas en base) :
+  `total` reflète la population avant filtrage par état.
+- Aucune notification/relance n'est déclenchée depuis ce module — il observe, il n'agit
+  pas. Les actions restent dans le détail Mission existant.

@@ -3,7 +3,7 @@
 namespace App\Enum;
 
 /**
- * Suivi des encodages (D-092) — état DÉRIVÉ, jamais persisté, jamais un MissionStatus.
+ * Suivi des encodages (D-118) — état DÉRIVÉ, jamais persisté, jamais un MissionStatus.
  *
  * Répond à une seule question, celle du manager au quotidien : "où en est l'encodage de
  * cette mission ?". Volontairement distinct de MissionStatus, qui mélange trois axes

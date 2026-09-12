@@ -78,6 +78,7 @@ const HospitalsPage                     = React.lazy(() => import("../pages/mana
 const FirmsPage                         = React.lazy(() => import("../pages/manager/FirmsPage"));
 const InterventionTypesPage             = React.lazy(() => import("../pages/manager/InterventionTypesPage"));
 const PrestationsPage                   = React.lazy(() => import("../pages/manager/PrestationsPage"));
+const EncodingTrackingPage              = React.lazy(() => import("../pages/manager/billing/EncodingTrackingPage"));
 const FirmInvoicesPage                  = React.lazy(() => import("../pages/manager/billing/FirmInvoicesPage"));
 const FirmInvoiceDetailPage             = React.lazy(() => import("../pages/manager/billing/FirmInvoiceDetailPage"));
 const InstrumentistStatementsPage       = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementsPage"));
@@ -205,6 +206,7 @@ export function AppRouter() {
                 <Route path="m/catalogue" element={<CataloguePage />} />
                 <Route path="m/catalogue/prestations" element={<PrestationsPage />} />
                 <Route path="m/catalogue/requests" element={<CatalogueRequestsPage />} />
+                <Route path="m/billing/encodings" element={<EncodingTrackingPage />} />
                 <Route path="m/billing/config" element={<Navigate to="/app/m/catalogue/prestations" replace />} />
                 <Route path="m/billing/firm-invoices" element={<FirmInvoicesPage />} />
                 <Route path="m/billing/firm-invoices/:id" element={<FirmInvoiceDetailPage />} />
