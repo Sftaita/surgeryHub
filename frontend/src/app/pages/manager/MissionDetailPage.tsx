@@ -41,7 +41,6 @@ import {
 
 import EditMissionDialog from "../../features/missions/components/EditMissionDialog";
 import PublishMissionDialog from "../../features/missions/components/PublishMissionDialog";
-import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
 import FinancialCalculationCard from "../../features/financial-calculation/components/FinancialCalculationCard";
 import {
   fetchMissionEncoding,
@@ -50,6 +49,7 @@ import {
   validateMissionEncoding,
 } from "../../features/encoding/api/encoding.api";
 import { EncodingStatusPanel } from "../../features/encoding/components/EncodingStatusPanel";
+import { ReadOnlyInterventionCard } from "../../features/surgeon-encoding/components/ReadOnlyInterventionCard";
 import { AnomalyReportsManagerPanel } from "../../features/encoding-anomaly-reports/components/AnomalyReportsManagerPanel";
 import { useToast } from "../../ui/toast/useToast";
 
@@ -80,13 +80,6 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function formatHoursLabel(hours?: string | number | null): string {
-  if (hours === null || hours === undefined || hours === "") return "—";
-  const n = typeof hours === "string" ? Number(hours) : hours;
-  if (!Number.isFinite(n)) return "—";
-  return `${n} h`;
-}
-
 type MissionDetailContentProps = {
   missionId: number;
   embedded?: boolean;
@@ -108,7 +101,7 @@ export function MissionDetailContent({
     enabled: Number.isFinite(missionId),
   });
 
-  /** EPIC Exécution & Valorisation, Lot 1 — le RÉALISÉ, distinct des "heures de service" legacy ci-dessus. */
+  /** EPIC Exécution & Valorisation, Lot 1 — seule source des heures prestées côté manager. */
   const executionQuery = useQuery({
     queryKey: ["mission-execution", missionId],
     queryFn: () => getMissionExecution(missionId),
@@ -132,7 +125,6 @@ export function MissionDetailContent({
 
   const [openEdit, setOpenEdit] = React.useState(false);
   const [openPublish, setOpenPublish] = React.useState(false);
-  const [openEditHours, setOpenEditHours] = React.useState(false);
   const [rejectConfirmOpen, setRejectConfirmOpen] = React.useState(false);
   const [approveConfirmOpen, setApproveConfirmOpen] = React.useState(false);
   const [validateConfirmOpen, setValidateConfirmOpen] = React.useState(false);
@@ -248,7 +240,6 @@ export function MissionDetailContent({
   const canEdit = allowed.includes("edit");
   const canPublish = allowed.includes("publish");
   const canApprove = allowed.includes("approve");
-  const canEditHours = allowed.includes("edit_hours");
   /** `reject` est un libellé d'action partagé entre DECLARED (rejectDeclaredMission)
    *  et SUBMITTED (rejectMissionEncoding, Lot 7) — un statut à la fois, jamais ambigu. */
   const canReject = allowed.includes("reject") && data.status === "DECLARED";
@@ -390,27 +381,7 @@ export function MissionDetailContent({
           </InfoRow>
         </Paper>
 
-        {/* Service */}
-        <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
-          <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" mb={1.5}>
-            <Stack direction="row" spacing={1} alignItems="center">
-              <AccessTimeIcon fontSize="small" color="action" />
-              <Typography variant="subtitle2" fontWeight={600}>Heures de service</Typography>
-            </Stack>
-            {canEditHours && (
-              <Button variant="text" size="small" onClick={() => setOpenEditHours(true)}>
-                Modifier
-              </Button>
-            )}
-          </Stack>
-          <Divider sx={{ mb: 1.5 }} />
-
-          <InfoRow label="Heures prestées">
-            <Typography variant="body2">{formatHoursLabel(data.service?.hours ?? null)}</Typography>
-          </InfoRow>
-        </Paper>
-
-        {/* Exécution réelle (EPIC Exécution & Valorisation, Lot 1) — distinct du planifié et des heures de service legacy ci-dessus ; source de la durée utilisée par la valorisation financière (FinancialCalculationLine). */}
+        {/* Exécution réelle (EPIC Exécution & Valorisation, Lot 1) — seule source des heures prestées ; l'ancien champ mission.service?.hours n'est plus jamais renseigné par le backend depuis le renommage InstrumentistService -> MissionExecution (D-071), voir formatExecutionHours(). */}
         {executionQuery.data && (
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
@@ -473,6 +444,33 @@ export function MissionDetailContent({
           />
         )}
 
+        {/* Interventions & matériel — même endpoint que EncodingStatusPanel ci-dessus
+            (GET .../encoding, déjà interrogé pour coherenceSummary/encodingComments),
+            en lecture seule via le composant partagé avec la consultation chirurgien
+            (ReadOnlyInterventionCard) : le manager doit pouvoir vérifier lui-même le
+            matériel encodé derrière un signal de cohérence comme "sans matériel", pas
+            seulement voir que le signal existe. */}
+        {["ASSIGNED", "IN_PROGRESS", "ENCODING_IN_PROGRESS", "SUBMITTED"].includes(String(data.status)) &&
+          encodingQuery.data && (
+            <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+              <Typography variant="subtitle2" fontWeight={600} mb={1.5}>
+                Interventions & matériel
+              </Typography>
+              <Divider sx={{ mb: 1.5 }} />
+              {encodingQuery.data.entries.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  Aucun encodage disponible pour l'instant.
+                </Typography>
+              ) : (
+                <Stack spacing={1.5}>
+                  {encodingQuery.data.entries.map((entry) => (
+                    <ReadOnlyInterventionCard key={`${entry.kind}:${entry.id}`} entry={entry} />
+                  ))}
+                </Stack>
+              )}
+            </Paper>
+          )}
+
         {/* Lot 6 (D-100) — signalements d'anomalie chirurgien, rattachés à cette Mission.
             N'affiche rien tant qu'aucun signalement n'existe (voir AnomalyReportsManagerPanel) :
             jamais de section vide pour la grande majorité des missions sans anomalie. */}
@@ -522,9 +520,6 @@ export function MissionDetailContent({
       )}
       {canPublish && openPublish && (
         <PublishMissionDialog open={openPublish} onClose={() => setOpenPublish(false)} mission={data} />
-      )}
-      {canEditHours && openEditHours && (
-        <EditServiceHoursDialog open={openEditHours} onClose={() => setOpenEditHours(false)} mission={data} />
       )}
 
       <Dialog open={rejectConfirmOpen} onClose={() => setRejectConfirmOpen(false)}>

@@ -173,3 +173,76 @@ describe("MissionDetailPage (manager) — anomalies d'encodage signalées (Lot 6
     expect(screen.getByText("Marquer comme traité")).toBeInTheDocument();
   });
 });
+
+/**
+ * Bug signalé sur mission #447 en production (2026-09-12) : "Heures prestées"
+ * affichait toujours "—" (lisait le champ mort mission.service?.hours, que le
+ * backend n'expose plus depuis le renommage InstrumentistService -> MissionExecution,
+ * D-071), et le manager ne pouvait jamais voir le matériel encodé derrière un
+ * signal de cohérence "sans matériel". Ce describe couvre les deux corrections :
+ * la carte "Heures de service" morte est retirée, et une carte "Interventions &
+ * matériel" en lecture seule (même endpoint /encoding déjà utilisé par
+ * EncodingStatusPanel) rend le matériel visible.
+ */
+describe("MissionDetailPage (manager) — heures prestées et matériel encodé (bug mission #447)", () => {
+  it("n'affiche plus la carte 'Heures de service' legacy (champ mort côté backend)", async () => {
+    renderDetail(baseMission({ status: "SUBMITTED", allowedActions: ["view", "validate", "reject"] }));
+    await screen.findByText("Mission #42");
+    expect(screen.queryByText("Heures de service")).not.toBeInTheDocument();
+    expect(screen.queryByText("Heures prestées")).not.toBeInTheDocument();
+  });
+
+  it("affiche les interventions et le matériel encodés (lecture seule)", async () => {
+    const mission = baseMission({ status: "SUBMITTED", allowedActions: ["view", "validate", "reject"] });
+    apiGetMock.mockImplementation((url: string) => {
+      if (url === `/api/missions/${mission.id}`) return Promise.resolve({ data: mission });
+      if (url.endsWith("/execution")) {
+        return Promise.resolve({
+          data: {
+            missionId: mission.id, hasExecutionRecord: true, actualStartAt: null, actualEndAt: null,
+            actualDurationMinutes: 360, hoursSource: "INSTRUMENTIST",
+            effectiveDurationMinutes: 360, effectiveDurationSource: "ACTUAL_EXPLICIT", disputes: [],
+          },
+        });
+      }
+      if (url.endsWith("/encoding")) {
+        return Promise.resolve({
+          data: {
+            mission: {}, interventions: [], interventionTypeRequests: [],
+            coherenceSummary: { hasInterventionsWithNoMaterial: true },
+            encodingComments: [],
+            entries: [{
+              kind: "INTERVENTION", id: 1, requestId: null, orderIndex: 0,
+              label: "Prothèse de hanche", interventionType: { id: 1, code: "HIP", label: "Prothèse de hanche" },
+              firm: { id: 1, name: "Firme Alpha" }, requestedFirmNameSnapshot: null,
+              status: "CATALOGUED", readOnly: false,
+              materialLines: [],
+              materialItemRequests: [],
+            }],
+          },
+        });
+      }
+      if (url.endsWith("/encoding-anomaly-reports")) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: {} });
+    });
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <MissionDetailContent missionId={mission.id} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("Interventions & matériel")).toBeInTheDocument();
+    expect(screen.getByText("Prothèse de hanche")).toBeInTheDocument();
+    expect(screen.getByText("Aucun matériel encodé pour cette intervention.")).toBeInTheDocument();
+  });
+
+  it("affiche un état vide quand l'encodage n'a encore aucune entrée", async () => {
+    renderDetail(baseMission({ status: "ASSIGNED" }));
+    expect(await screen.findByText("Interventions & matériel")).toBeInTheDocument();
+    expect(screen.getByText("Aucun encodage disponible pour l'instant.")).toBeInTheDocument();
+  });
+});
