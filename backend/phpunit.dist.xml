@@ -13,6 +13,18 @@
     <php>
         <ini name="display_errors" value="1" />
         <ini name="error_reporting" value="-1" />
+        <!--
+            Stabilisation pré-déploiement D-118 (2026-09-12) — correctif indépendant, sans
+            rapport avec D-118 : le CLI memory_limit par défaut (256M) est épuisé après
+            ~670 tests fonctionnels partageant un seul process PHP (accumulation normale
+            d'un run complet — identity map Doctrine, kernel non rebooté entre tests d'une
+            même classe). 1024M a repoussé le seuil à ~854/2408 (35%) sans le résoudre :
+            croissance cumulative sur toute la suite, pas une fuite isolée dans un test
+            précis. 4096M (machine de test : 31,5 Go RAM, ≥8 Go libres) laisse une marge
+            large sans désactiver le plafond (une vraie fuite pathologique resterait
+            détectable).
+        -->
+        <ini name="memory_limit" value="4096M" />
         <server name="APP_ENV" value="test" force="true" />
         <server name="SHELL_VERBOSITY" value="-1" />
     </php>

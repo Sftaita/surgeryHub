@@ -136,8 +136,29 @@ final class SelfAbsenceControllerTest extends WebTestCase
         return $h;
     }
 
-    private function makeMission(User $surgeon, ?User $instrumentist, Hospital $site, MissionStatus $status, string $day = '2026-09-10'): Mission
+    /**
+     * Ancre calendaire toujours dans le futur, jamais un jour fixe : plusieurs règles
+     * exercées ici (AbsenceVoter::isStillEditable(), AbsenceImpactService) comparent une
+     * date à "aujourd'hui" — un jour codé en dur (ex. "2026-09-11") finit par tomber dans
+     * le passé et fait échouer ces tests pour une raison sans rapport avec le code testé.
+     * Même bug, même correctif que aa3715d (PlanningV2GenerationControllerTest) : calculé
+     * au moment de l'exécution, jamais un literal. "+60 jours" laisse large de marge la
+     * fenêtre de ce fichier (jusqu'à +71 jours de l'ancre).
+     */
+    private static function anchorDay(): \DateTimeImmutable
     {
+        return new \DateTimeImmutable('+60 days');
+    }
+
+    /** Jour de test $offset jours après anchorDay() — jamais un literal absolu. */
+    private static function d(int $offset): string
+    {
+        return self::anchorDay()->modify("+{$offset} days")->format('Y-m-d');
+    }
+
+    private function makeMission(User $surgeon, ?User $instrumentist, Hospital $site, MissionStatus $status, ?string $day = null): Mission
+    {
+        $day ??= self::d(0);
         $m = new Mission();
         $m->setStatus($status);
         $m->setType(MissionType::BLOCK);
@@ -170,12 +191,12 @@ final class SelfAbsenceControllerTest extends WebTestCase
         ['token' => $token, 'user' => $surgeon] = $this->authenticate($client, 'ROLE_SURGEON');
 
         $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
-            'dateStart' => '2026-09-20', 'dateEnd' => '2026-09-20', 'reason' => 'Congé',
+            'dateStart' => self::d(10), 'dateEnd' => self::d(10), 'reason' => 'Congé',
         ]));
         self::assertSame(201, $client->getResponse()->getStatusCode());
         $created = $this->json($client->getResponse());
         $this->createdIds['absences'][] = $created['id'];
-        self::assertSame('2026-09-20', $created['dateStart']);
+        self::assertSame(self::d(10), $created['dateStart']);
         self::assertSame(0, $created['missionsImpactedCount']);
 
         $client->request('GET', '/api/absences/mine', server: $this->auth($token));
@@ -206,15 +227,15 @@ final class SelfAbsenceControllerTest extends WebTestCase
         ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
 
         $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
-            'dateStart' => '2026-09-21', 'dateEnd' => '2026-09-25',
+            'dateStart' => self::d(11), 'dateEnd' => self::d(15),
         ]));
         self::assertSame(201, $client->getResponse()->getStatusCode());
         $created = $this->json($client->getResponse());
         $this->createdIds['absences'][] = $created['id'];
 
-        $client->request('PATCH', '/api/absences/mine/' . $created['id'], server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateEnd' => '2026-09-26']));
+        $client->request('PATCH', '/api/absences/mine/' . $created['id'], server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateEnd' => self::d(16)]));
         self::assertSame(200, $client->getResponse()->getStatusCode());
-        self::assertSame('2026-09-26', $this->json($client->getResponse())['dateEnd']);
+        self::assertSame(self::d(16), $this->json($client->getResponse())['dateEnd']);
 
         $client->request('DELETE', '/api/absences/mine/' . $created['id'], server: $this->auth($token));
         self::assertSame(204, $client->getResponse()->getStatusCode());
@@ -230,7 +251,7 @@ final class SelfAbsenceControllerTest extends WebTestCase
         ['token' => $ownerToken, 'user' => $owner] = $this->authenticate($client, 'ROLE_SURGEON');
 
         $absence = new Absence();
-        $absence->setUser($owner)->setDateStart(new \DateTimeImmutable('2026-09-22'))->setDateEnd(new \DateTimeImmutable('2026-09-22'))->setCreatedBy($owner);
+        $absence->setUser($owner)->setDateStart(new \DateTimeImmutable(self::d(12)))->setDateEnd(new \DateTimeImmutable(self::d(12)))->setCreatedBy($owner);
         $this->em->persist($absence);
         $this->em->flush();
         $this->createdIds['absences'][] = $absence->getId();
@@ -259,7 +280,7 @@ final class SelfAbsenceControllerTest extends WebTestCase
         ['user' => $surgeon] = $this->authenticate($client, 'ROLE_SURGEON');
 
         $absence = new Absence();
-        $absence->setUser($surgeon)->setDateStart(new \DateTimeImmutable('2026-09-23'))->setDateEnd(new \DateTimeImmutable('2026-09-23'))->setCreatedBy($surgeon);
+        $absence->setUser($surgeon)->setDateStart(new \DateTimeImmutable(self::d(13)))->setDateEnd(new \DateTimeImmutable(self::d(13)))->setCreatedBy($surgeon);
         $this->em->persist($absence);
         $this->em->flush();
         $this->createdIds['absences'][] = $absence->getId();
@@ -286,7 +307,7 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->createdIds['users'][] = $victim->getId();
 
         $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
-            'userId' => $victim->getId(), 'dateStart' => '2026-09-24', 'dateEnd' => '2026-09-24',
+            'userId' => $victim->getId(), 'dateStart' => self::d(14), 'dateEnd' => self::d(14),
         ]));
         self::assertSame(201, $client->getResponse()->getStatusCode());
         $created = $this->json($client->getResponse());
@@ -309,7 +330,7 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $client->request('GET', '/api/absences/mine', server: $this->auth($managerToken));
         self::assertSame(403, $client->getResponse()->getStatusCode());
 
-        $client->request('POST', '/api/absences/mine', server: $this->auth($managerToken, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateStart' => '2026-09-20', 'dateEnd' => '2026-09-20']));
+        $client->request('POST', '/api/absences/mine', server: $this->auth($managerToken, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateStart' => self::d(10), 'dateEnd' => self::d(10)]));
         self::assertSame(403, $client->getResponse()->getStatusCode());
 
         // The pre-existing manager-facing endpoint must remain fully functional (unchanged).
@@ -322,7 +343,7 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->createdIds['users'][] = $surgeon->getId();
 
         $client->request('POST', '/api/absences', server: $this->auth($managerToken, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
-            'userId' => $surgeon->getId(), 'dateStart' => '2026-09-20', 'dateEnd' => '2026-09-20',
+            'userId' => $surgeon->getId(), 'dateStart' => self::d(10), 'dateEnd' => self::d(10),
         ]));
         self::assertSame(201, $client->getResponse()->getStatusCode());
         $this->createdIds['absences'][] = $this->json($client->getResponse())['id'];
@@ -338,7 +359,7 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token] = $this->authenticate($client, 'ROLE_SURGEON');
 
-        $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateStart' => '2026-09-12', 'dateEnd' => '2026-09-12']));
+        $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateStart' => self::d(2), 'dateEnd' => self::d(2)]));
         self::assertSame(201, $client->getResponse()->getStatusCode());
         $created = $this->json($client->getResponse());
         $this->createdIds['absences'][] = $created['id'];
@@ -353,7 +374,7 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token] = $this->authenticate($client, 'ROLE_SURGEON');
 
-        $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateStart' => '2026-09-15', 'dateEnd' => '2026-09-10']));
+        $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateStart' => self::d(5), 'dateEnd' => self::d(0)]));
         self::assertSame(400, $client->getResponse()->getStatusCode());
     }
 
@@ -408,16 +429,16 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
 
-        $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateStart' => '2026-10-01', 'dateEnd' => '2026-10-05']));
+        $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateStart' => self::d(21), 'dateEnd' => self::d(25)]));
         $created = $this->json($client->getResponse());
         $this->createdIds['absences'][] = $created['id'];
 
-        $client->request('PATCH', '/api/absences/mine/' . $created['id'], server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateStart' => '2026-10-01', 'dateEnd' => '2026-10-01']));
+        $client->request('PATCH', '/api/absences/mine/' . $created['id'], server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateStart' => self::d(21), 'dateEnd' => self::d(21)]));
         self::assertSame(200, $client->getResponse()->getStatusCode());
         $updated = $this->json($client->getResponse());
         self::assertSame($updated['dateStart'], $updated['dateEnd']);
 
-        $client->request('PATCH', '/api/absences/mine/' . $created['id'], server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateEnd' => '2026-10-03']));
+        $client->request('PATCH', '/api/absences/mine/' . $created['id'], server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['dateEnd' => self::d(23)]));
         self::assertSame(200, $client->getResponse()->getStatusCode());
         $updated2 = $this->json($client->getResponse());
         self::assertNotSame($updated2['dateStart'], $updated2['dateEnd']);
@@ -440,9 +461,9 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em->flush();
         $this->createdIds['users'][] = $instr->getId();
         $site = $this->makeSite();
-        $mission = $this->makeMission($surgeon, $instr, $site, MissionStatus::ASSIGNED, '2026-09-30');
+        $mission = $this->makeMission($surgeon, $instr, $site, MissionStatus::ASSIGNED, self::d(20));
 
-        $client->request('GET', '/api/absences/mine/impact-preview?dateStart=2026-09-30&dateEnd=2026-09-30', server: $this->auth($token));
+        $client->request('GET', '/api/absences/mine/impact-preview?dateStart=' . self::d(20) . '&dateEnd=' . self::d(20), server: $this->auth($token));
         self::assertSame(200, $client->getResponse()->getStatusCode());
         $impact = $this->json($client->getResponse());
         self::assertCount(1, $impact);
@@ -463,10 +484,10 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token, 'user' => $surgeon] = $this->authenticate($client, 'ROLE_SURGEON');
         $site = $this->makeSite();
-        $mission = $this->makeMission($surgeon, null, $site, MissionStatus::OPEN, '2026-10-10');
+        $mission = $this->makeMission($surgeon, null, $site, MissionStatus::OPEN, self::d(30));
 
         $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
-            'dateStart' => '2026-10-10', 'dateEnd' => '2026-10-10',
+            'dateStart' => self::d(30), 'dateEnd' => self::d(30),
         ]));
         self::assertSame(201, $client->getResponse()->getStatusCode());
         $created = $this->json($client->getResponse());
@@ -498,10 +519,10 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $site = $this->makeSite();
         // VALIDATED is alertable but not in AbsenceMissionReactionService's actionable
         // statuses — the mission must stay untouched while a PlanningAlert is raised.
-        $mission = $this->makeMission($surgeon, $instr, $site, MissionStatus::VALIDATED, '2026-10-11');
+        $mission = $this->makeMission($surgeon, $instr, $site, MissionStatus::VALIDATED, self::d(31));
 
         $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
-            'dateStart' => '2026-10-11', 'dateEnd' => '2026-10-11',
+            'dateStart' => self::d(31), 'dateEnd' => self::d(31),
         ]));
         self::assertSame(201, $client->getResponse()->getStatusCode());
         $created = $this->json($client->getResponse());
@@ -531,7 +552,7 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $transport->reset();
 
         $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
-            'dateStart' => '2026-11-01', 'dateEnd' => '2026-11-05',
+            'dateStart' => self::d(52), 'dateEnd' => self::d(56),
         ]));
         self::assertSame(201, $client->getResponse()->getStatusCode());
         $created = $this->json($client->getResponse());
@@ -565,14 +586,14 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token, 'user' => $surgeon] = $this->authenticate($client, 'ROLE_SURGEON');
         $site = $this->makeSite();
-        $this->makeMission($surgeon, null, $site, MissionStatus::DRAFT, '2026-11-12');
+        $this->makeMission($surgeon, null, $site, MissionStatus::DRAFT, self::d(63));
 
         /** @var InMemoryTransport $transport */
         $transport = static::getContainer()->get('messenger.transport.async');
         $transport->reset();
 
         $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
-            'dateStart' => '2026-11-12', 'dateEnd' => '2026-11-12',
+            'dateStart' => self::d(63), 'dateEnd' => self::d(63),
         ]));
         self::assertSame(201, $client->getResponse()->getStatusCode());
         $created = $this->json($client->getResponse());
@@ -592,10 +613,10 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token, 'user' => $surgeon] = $this->authenticate($client, 'ROLE_SURGEON');
         $site = $this->makeSite();
-        $mission = $this->makeMission($surgeon, null, $site, MissionStatus::DRAFT, '2026-11-20');
+        $mission = $this->makeMission($surgeon, null, $site, MissionStatus::DRAFT, self::d(71));
 
         $client->request('POST', '/api/absences/mine', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
-            'dateStart' => '2026-11-20', 'dateEnd' => '2026-11-20',
+            'dateStart' => self::d(71), 'dateEnd' => self::d(71),
         ]));
         $created = $this->json($client->getResponse());
 
@@ -641,12 +662,12 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
 
-        $absence = $this->createAbsence($client, $token, '2026-09-11', '2026-09-11');
+        $absence = $this->createAbsence($client, $token, self::d(1), self::d(1));
 
-        $response = $this->removeDay($client, $token, $absence['id'], '2026-09-11');
+        $response = $this->removeDay($client, $token, $absence['id'], self::d(1));
         self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
         $body = $this->json($response);
-        self::assertSame('2026-09-11', $body['removedDate']);
+        self::assertSame(self::d(1), $body['removedDate']);
         self::assertSame([], $body['remainingAbsences']);
 
         $this->em->clear();
@@ -663,19 +684,19 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
 
-        $absence = $this->createAbsence($client, $token, '2026-09-11', '2026-09-15');
+        $absence = $this->createAbsence($client, $token, self::d(1), self::d(5));
 
-        $response = $this->removeDay($client, $token, $absence['id'], '2026-09-11');
+        $response = $this->removeDay($client, $token, $absence['id'], self::d(1));
         self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
         $body = $this->json($response);
         self::assertCount(1, $body['remainingAbsences']);
-        self::assertSame('2026-09-12', $body['remainingAbsences'][0]['dateStart']);
-        self::assertSame('2026-09-15', $body['remainingAbsences'][0]['dateEnd']);
+        self::assertSame(self::d(2), $body['remainingAbsences'][0]['dateStart']);
+        self::assertSame(self::d(5), $body['remainingAbsences'][0]['dateEnd']);
 
         $this->em->clear();
         $reloaded = $this->em->find(Absence::class, $absence['id']);
-        self::assertSame('2026-09-12', $reloaded->getDateStart()->format('Y-m-d'));
-        self::assertSame('2026-09-15', $reloaded->getDateEnd()->format('Y-m-d'));
+        self::assertSame(self::d(2), $reloaded->getDateStart()->format('Y-m-d'));
+        self::assertSame(self::d(5), $reloaded->getDateEnd()->format('Y-m-d'));
     }
 
     /** C — last day of a period: shrinks to end the day before. */
@@ -687,19 +708,19 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
 
-        $absence = $this->createAbsence($client, $token, '2026-09-10', '2026-09-11');
+        $absence = $this->createAbsence($client, $token, self::d(0), self::d(1));
 
-        $response = $this->removeDay($client, $token, $absence['id'], '2026-09-11');
+        $response = $this->removeDay($client, $token, $absence['id'], self::d(1));
         self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
         $body = $this->json($response);
         self::assertCount(1, $body['remainingAbsences']);
-        self::assertSame('2026-09-10', $body['remainingAbsences'][0]['dateStart']);
-        self::assertSame('2026-09-10', $body['remainingAbsences'][0]['dateEnd']);
+        self::assertSame(self::d(0), $body['remainingAbsences'][0]['dateStart']);
+        self::assertSame(self::d(0), $body['remainingAbsences'][0]['dateEnd']);
 
         $this->em->clear();
         $reloaded = $this->em->find(Absence::class, $absence['id']);
-        self::assertSame('2026-09-10', $reloaded->getDateStart()->format('Y-m-d'));
-        self::assertSame('2026-09-10', $reloaded->getDateEnd()->format('Y-m-d'));
+        self::assertSame(self::d(0), $reloaded->getDateStart()->format('Y-m-d'));
+        self::assertSame(self::d(0), $reloaded->getDateEnd()->format('Y-m-d'));
     }
 
     /**
@@ -715,12 +736,12 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token, 'user' => $instr] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
 
-        $absence = $this->createAbsence($client, $token, '2026-09-10', '2026-09-15', 'Congé');
+        $absence = $this->createAbsence($client, $token, self::d(0), self::d(5), 'Congé');
 
-        $response = $this->removeDay($client, $token, $absence['id'], '2026-09-12');
+        $response = $this->removeDay($client, $token, $absence['id'], self::d(2));
         self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
         $body = $this->json($response);
-        self::assertSame('2026-09-12', $body['removedDate']);
+        self::assertSame(self::d(2), $body['removedDate']);
         self::assertCount(2, $body['remainingAbsences']);
 
         $this->em->clear();
@@ -730,11 +751,11 @@ final class SelfAbsenceControllerTest extends WebTestCase
             ->orderBy('a.dateStart', 'ASC')
             ->getQuery()->getResult();
         self::assertCount(2, $rows, 'exactly two periods must remain — never more, never fewer');
-        self::assertSame('2026-09-10', $rows[0]->getDateStart()->format('Y-m-d'));
-        self::assertSame('2026-09-11', $rows[0]->getDateEnd()->format('Y-m-d'));
+        self::assertSame(self::d(0), $rows[0]->getDateStart()->format('Y-m-d'));
+        self::assertSame(self::d(1), $rows[0]->getDateEnd()->format('Y-m-d'));
         self::assertSame('Congé', $rows[0]->getReason(), 'reason carries over to both halves');
-        self::assertSame('2026-09-13', $rows[1]->getDateStart()->format('Y-m-d'));
-        self::assertSame('2026-09-15', $rows[1]->getDateEnd()->format('Y-m-d'));
+        self::assertSame(self::d(3), $rows[1]->getDateStart()->format('Y-m-d'));
+        self::assertSame(self::d(5), $rows[1]->getDateEnd()->format('Y-m-d'));
         self::assertSame('Congé', $rows[1]->getReason());
         $this->createdIds['absences'][] = $rows[1]->getId();
 
@@ -742,14 +763,14 @@ final class SelfAbsenceControllerTest extends WebTestCase
         // (isAbsentOn/findBlockingAbsence, same query the claim endpoint uses) rather than
         // re-deriving it: 10, 11, 13, 14, 15 sept still absent; 12 sept is not.
         $eligibility = static::getContainer()->get(\App\Service\MissionEligibilityService::class);
-        foreach (['2026-09-10', '2026-09-11', '2026-09-13', '2026-09-14', '2026-09-15'] as $stillAbsentDay) {
+        foreach ([self::d(0), self::d(1), self::d(3), self::d(4), self::d(5)] as $stillAbsentDay) {
             self::assertNotNull(
                 $eligibility->findBlockingAbsence($instr, new \DateTimeImmutable($stillAbsentDay)),
                 "$stillAbsentDay must still be covered by an absence",
             );
         }
         self::assertNull(
-            $eligibility->findBlockingAbsence($instr, new \DateTimeImmutable('2026-09-12')),
+            $eligibility->findBlockingAbsence($instr, new \DateTimeImmutable(self::d(2))),
             '12 sept must no longer be covered by any absence',
         );
     }
@@ -763,17 +784,17 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
 
-        $absence = $this->createAbsence($client, $token, '2026-09-10', '2026-09-15');
+        $absence = $this->createAbsence($client, $token, self::d(0), self::d(5));
 
-        $response = $this->removeDay($client, $token, $absence['id'], '2026-09-20');
+        $response = $this->removeDay($client, $token, $absence['id'], self::d(10));
         self::assertSame(400, $response->getStatusCode());
         $body = $this->json($response);
         self::assertSame('DATE_OUTSIDE_ABSENCE', $body['error']['code'] ?? null);
 
         $this->em->clear();
         $reloaded = $this->em->find(Absence::class, $absence['id']);
-        self::assertSame('2026-09-10', $reloaded->getDateStart()->format('Y-m-d'), 'unchanged');
-        self::assertSame('2026-09-15', $reloaded->getDateEnd()->format('Y-m-d'), 'unchanged');
+        self::assertSame(self::d(0), $reloaded->getDateStart()->format('Y-m-d'), 'unchanged');
+        self::assertSame(self::d(5), $reloaded->getDateEnd()->format('Y-m-d'), 'unchanged');
     }
 
     /** F — an instrumentist may never remove a day from someone else's absence. */
@@ -784,16 +805,16 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $client->disableReboot();
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $ownerToken] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
-        $absence = $this->createAbsence($client, $ownerToken, '2026-09-10', '2026-09-15');
+        $absence = $this->createAbsence($client, $ownerToken, self::d(0), self::d(5));
 
         ['token' => $otherToken] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
-        $response = $this->removeDay($client, $otherToken, $absence['id'], '2026-09-12');
+        $response = $this->removeDay($client, $otherToken, $absence['id'], self::d(2));
         self::assertSame(403, $response->getStatusCode());
 
         $this->em->clear();
         $reloaded = $this->em->find(Absence::class, $absence['id']);
-        self::assertSame('2026-09-10', $reloaded->getDateStart()->format('Y-m-d'), 'unchanged');
-        self::assertSame('2026-09-15', $reloaded->getDateEnd()->format('Y-m-d'), 'unchanged');
+        self::assertSame(self::d(0), $reloaded->getDateStart()->format('Y-m-d'), 'unchanged');
+        self::assertSame(self::d(5), $reloaded->getDateEnd()->format('Y-m-d'), 'unchanged');
     }
 
     /** G — a non-existent absence id returns a clean 404. */
@@ -805,7 +826,7 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
 
-        $response = $this->removeDay($client, $token, 999999999, '2026-09-12');
+        $response = $this->removeDay($client, $token, 999999999, self::d(2));
         self::assertSame(404, $response->getStatusCode());
     }
 
@@ -833,15 +854,15 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->createdIds['users'][] = $surgeon->getId();
 
         $site = $this->makeSite();
-        $mission = $this->makeMission($surgeon, null, $site, MissionStatus::OPEN, '2026-09-11');
+        $mission = $this->makeMission($surgeon, null, $site, MissionStatus::OPEN, self::d(1));
 
-        $absence = $this->createAbsence($client, $token, '2026-09-11', '2026-09-11');
+        $absence = $this->createAbsence($client, $token, self::d(1), self::d(1));
 
         // Blocked while the absence is still active.
         $blocked = $this->postJsonRaw($client, $token, '/api/missions/' . $mission->getId() . '/claim');
         self::assertSame(409, $blocked->getStatusCode());
 
-        $removeResponse = $this->removeDay($client, $token, $absence['id'], '2026-09-11');
+        $removeResponse = $this->removeDay($client, $token, $absence['id'], self::d(1));
         self::assertSame(200, $removeResponse->getStatusCode(), (string) $removeResponse->getContent());
         $this->createdIds['absences'] = array_diff($this->createdIds['absences'], [$absence['id']]);
 
@@ -863,16 +884,16 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token, 'user' => $instr] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
 
-        $absence = $this->createAbsence($client, $token, '2026-09-10', '2026-09-15');
+        $absence = $this->createAbsence($client, $token, self::d(0), self::d(5));
         // 11 sept is neither the first (10) nor last (15) day of this range — case D
         // (split) — which persists a second Absence row not returned by createAbsence().
         // Track every Absence this user now has so teardown can clean it up regardless of
         // which case actually fired.
-        $this->removeDay($client, $token, $absence['id'], '2026-09-11');
+        $this->removeDay($client, $token, $absence['id'], self::d(1));
         $this->trackAllAbsencesFor($instr);
 
         $eligibility = static::getContainer()->get(\App\Service\MissionEligibilityService::class);
-        foreach (['2026-09-10', '2026-09-12', '2026-09-13', '2026-09-14', '2026-09-15'] as $stillAbsentDay) {
+        foreach ([self::d(0), self::d(2), self::d(3), self::d(4), self::d(5)] as $stillAbsentDay) {
             self::assertNotNull($eligibility->findBlockingAbsence($instr, new \DateTimeImmutable($stillAbsentDay)), "$stillAbsentDay must still be absent");
         }
     }
@@ -900,8 +921,8 @@ final class SelfAbsenceControllerTest extends WebTestCase
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token, 'user' => $instr] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
 
-        $absence = $this->createAbsence($client, $token, '2026-09-10', '2026-09-15');
-        $this->removeDay($client, $token, $absence['id'], '2026-09-12');
+        $absence = $this->createAbsence($client, $token, self::d(0), self::d(5));
+        $this->removeDay($client, $token, $absence['id'], self::d(2));
         $this->trackAllAbsencesFor($instr);
 
         $this->em->clear();
@@ -912,9 +933,9 @@ final class SelfAbsenceControllerTest extends WebTestCase
             ->setParameter('u', $instr->getId())
             ->getQuery()->getResult();
         self::assertCount(1, $events);
-        self::assertSame('2026-09-12', $events[0]->getPayload()['removedDate'] ?? null);
-        self::assertSame('2026-09-10', $events[0]->getPayload()['originalDateStart'] ?? null);
-        self::assertSame('2026-09-15', $events[0]->getPayload()['originalDateEnd'] ?? null);
+        self::assertSame(self::d(2), $events[0]->getPayload()['removedDate'] ?? null);
+        self::assertSame(self::d(0), $events[0]->getPayload()['originalDateStart'] ?? null);
+        self::assertSame(self::d(5), $events[0]->getPayload()['originalDateEnd'] ?? null);
         self::assertNull($events[0]->getMission(), 'mission-independent event');
 
         $this->em->remove($events[0]);

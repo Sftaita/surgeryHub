@@ -1171,7 +1171,13 @@ describe("GeneratePlanningTab — Brouillons (CAS D, D-115)", () => {
     expect(newLine.postId).toBeLessThanOrEqual(0);
     expect(newLine.date).toBe("2026-06-20");
     expect((planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mock.calls.length).toBe(applyModificationsCallsBefore);
-  });
+    // Stabilisation pré-déploiement D-118 (2026-09-12) — correctif indépendant, sans
+    // rapport avec D-118 : cette séquence enchaîne 7+ interactions userEvent réalistes
+    // (frappe caractère par caractère, deux Autocomplete MUI ouverts/filtrés/refermés,
+    // plusieurs clics) — vérifié à la main que la logique est correcte et s'exécute en
+    // ~4s hors démarrage Vitest ; seul le délai par défaut de 5000ms est trop juste
+    // sous charge (même convention que AdminCreateUserModal.test.tsx).
+  }, 10000);
 });
 
 describe("GeneratePlanningTab — conflit de déploiement, autorisation de dérogation (D-091 suite)", () => {
@@ -1265,5 +1271,11 @@ describe("GeneratePlanningTab — conflit de déploiement, autorisation de déro
     expect(toastSuccess).toHaveBeenCalledWith(expect.stringContaining("Planning déployé"));
     // MUI's Dialog exit transition lingers in the DOM for a moment — waitFor, not a bare assertion.
     await waitFor(() => expect(screen.queryByText(/Déploiement bloqué/)).not.toBeInTheDocument());
-  });
+    // Stabilisation pré-déploiement D-118 (2026-09-12) — correctif indépendant, sans
+    // rapport avec D-118 : reachDeployButton() enchaîne déjà plusieurs interactions
+    // userEvent réalistes avant même le scénario propre à ce test (checkbox + dialog +
+    // deux appels réseau simulés) — vérifié à la main que la logique est correcte ;
+    // seul le délai par défaut de 5000ms est trop juste sous charge (même convention
+    // que AdminCreateUserModal.test.tsx).
+  }, 10000);
 });

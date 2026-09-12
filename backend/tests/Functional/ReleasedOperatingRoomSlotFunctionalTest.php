@@ -552,10 +552,13 @@ final class ReleasedOperatingRoomSlotFunctionalTest extends WebTestCase
         // L'endpoint manager ne doit jamais planter sur une ligne orpheline — affichage
         // explicite `null` (jamais une erreur 500, jamais un ancien nom silencieusement
         // réinventé, voir la limite documentée sur l'entité).
-        // limit=100 (plafond du contrôleur) — la base de test partagée peut contenir de
-        // nombreuses autres lignes (créées par d'autres classes de tests) ; la pagination par
-        // défaut (25) ne doit jamais faire échouer ce test sur une simple question de volume.
-        $client->request('GET', '/api/planning/available-rooms?includePast=1&limit=100', server: $this->auth($managerToken));
+        // Stabilisation pré-déploiement D-118 (2026-09-12) — correctif indépendant, sans
+        // rapport avec D-118 : limit=100 ne suffit plus en suite complète, la base de test
+        // partagée pouvant accumuler plus de 100 lignes créées par d'autres classes au fil
+        // d'un run complet, poussant cette ligne hors de la première page. dateFrom/dateTo
+        // bornent la requête à la seule journée du slot testé — une vraie réduction de
+        // portée, jamais un plafond qui peut recommencer à être dépassé demain.
+        $client->request('GET', '/api/planning/available-rooms?includePast=1&limit=100&dateFrom=2026-12-01&dateTo=2026-12-01', server: $this->auth($managerToken));
         self::assertSame(200, $client->getResponse()->getStatusCode());
         $data = $this->json($client->getResponse());
         $item = current(array_filter($data['items'], fn ($i) => $i['id'] === $slotId));
