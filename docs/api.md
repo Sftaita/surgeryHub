@@ -4311,6 +4311,33 @@ existant — sans bloquer le reste du déploiement : ce cas ne produit jamais de
 D-090 (`docs/decisions.md`) pour le détail complet et la cause racine de ces deux
 anomalies.
 
+**Conflit `CROSS_SITE_CONFLICT` (D-091, corrigé D-119)** — même revalidation, un second
+type de `conflicts[]` : même personne (chirurgien ou instrumentiste) sur deux missions
+actives qui se chevauchent dans le temps. Champ additionnel `waivable: boolean` sur chaque
+entrée (D-091 follow-up). Règle métier (D-119, 2026-09-13) :
+- **Chirurgien**, même site, chevauchement → **jamais** dans `conflicts[]` (« double salle »
+  autorisée par construction, quels que soient les instrumentistes — D-035). Seul un
+  chirurgien sur des sites **différents** produit une entrée, toujours `waivable: false`.
+- **Instrumentiste**, même site ou non, chevauchement → toujours dans `conflicts[]`
+  (un instrumentiste ne peut pas être dans deux salles à la fois). `waivable: true`
+  uniquement dans la forme étroite même chirurgien + même instrumentiste + même site des
+  deux côtés (D-091 follow-up) ; sinon `false`.
+
+**`POST /api/planning/v2/conflicts/authorize`** (D-091 follow-up) — dérogation manager pour
+une ou plusieurs paires `waivable: true` en un seul appel :
+
+```json
+{ "conflicts": [{ "missionId": 601, "conflictingMissionId": 602 }], "reason": "Double salle validée par le chef de bloc." }
+```
+
+Chaque paire est traitée indépendamment (une paire non waivable ou déjà résolue n'empêche
+jamais les autres) : `{ "authorized": [{missionId, conflictingMissionId, waiverId}], "failed": [{missionId, conflictingMissionId, reason}] }`.
+Ré-dérive toujours l'éligibilité et revérifie le chevauchement réel avant de persister
+(`MissionConflictWaiverService::authorize()`, jamais une confiance aveugle dans le payload).
+La dérogation est figée sur l'état exact des deux missions au moment de l'autorisation ; tout
+changement ultérieur (site, chirurgien, instrumentiste, horaires) sur l'une ou l'autre
+l'invalide silencieusement — le conflit redevient bloquant au prochain `deploy()`.
+
 ### 26.10bis Réouverture / modification / suppression d'un brouillon Planning V2 (CAS D, D-115)
 
 Un brouillon (`PlanningVersion` `DRAFT` + ses `Mission` `DRAFT`) est un objet persistant dès

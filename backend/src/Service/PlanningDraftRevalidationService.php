@@ -33,12 +33,24 @@ use Doctrine\ORM\EntityManagerInterface;
  * absence, there is no safe automatic resolution (neutralizing would silently drop a
  * commitment the manager never reviewed either). Checked for BOTH the surgeon and the
  * instrumentist of every DRAFT mission, using PlanningConflictDetectionService — the same
- * cross-site, end-exclusive overlap rule used everywhere else in Planning V2. The one
- * deliberate exception (D-091 follow-up, "same surgeon running two rooms of the same site
- * sharing one instrumentist"): if MissionConflictWaiverService finds a manager already
- * explicitly authorized exactly this pair, and both missions still match the state that was
- * authorized, the conflict is skipped here entirely rather than reported — never a second,
- * looser detection path, just a persisted override of a specific, already-detected pair.
+ * cross-site, end-exclusive overlap rule used everywhere else in Planning V2.
+ *
+ * SURGEON check only, same-site carve-out (D-035/D-091-amend, 2026-09-13): a surgeon
+ * running two overlapping rooms of the SAME site ("double salle") is never reported here at
+ * all — passed as findConflict()'s $doubleRoomSite so it is filtered at the source, not
+ * merely waived. This is unconditional and does NOT depend on the instrumentists matching —
+ * D-035's own canonical double-salle example is two DIFFERENT instrumentists. A same-
+ * surgeon conflict on a DIFFERENT site is untouched by this and stays fully blocking (real
+ * cross-site double-booking).
+ *
+ * INSTRUMENTIST check — never gets this carve-out (an instrumentist cannot physically be in
+ * two rooms simultaneously, same site or not) — stays a real, unconditionally-detected
+ * conflict. The one remaining deliberate exception (D-091 follow-up, "same surgeon running
+ * two rooms of the same site sharing one floating instrumentist"): if
+ * MissionConflictWaiverService finds a manager already explicitly authorized exactly this
+ * pair, and both missions still match the state that was authorized, the conflict is
+ * skipped here entirely rather than reported — never a second, looser detection path, just
+ * a persisted override of a specific, already-detected pair.
  *
  * A mission whose surgeon AND instrumentist are both absent is reported only as
  * "neutralized" (surgeon check runs first) — once the surgeon's own activity is cancelled,
@@ -143,7 +155,10 @@ class PlanningDraftRevalidationService
                 if ($person === null) {
                     continue;
                 }
-                $other = $this->conflictDetection->findConflict($person, $start, $end, $mission->getId());
+                $other = $this->conflictDetection->findConflict(
+                    $person, $start, $end, $mission->getId(),
+                    $role === 'SURGEON' ? $mission->getSite() : null,
+                );
                 if ($other === null) {
                     continue;
                 }

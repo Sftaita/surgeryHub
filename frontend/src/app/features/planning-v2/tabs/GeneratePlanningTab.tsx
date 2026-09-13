@@ -1209,7 +1209,7 @@ export function GeneratePlanningTab() {
                           <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textMuted }}>{c.reason}</Typography>
                           {c.waivable && (
                             <Typography sx={{ fontSize: 12, color: "#8A6420", fontWeight: 600, mt: 0.25 }}>
-                              Double salle — même chirurgien, même instrumentiste, même site : peut être autorisé.
+                              Instrumentiste partagé entre deux salles — même chirurgien, même instrumentiste, même site : peut être autorisé si voulu.
                             </Typography>
                           )}
                         </Box>

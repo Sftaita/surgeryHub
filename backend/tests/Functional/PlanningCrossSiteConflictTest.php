@@ -352,6 +352,169 @@ final class PlanningCrossSiteConflictTest extends WebTestCase
         self::assertSame(MissionStatus::DRAFT, $fresh->getStatus());
     }
 
+    // ── Double salle (D-035/D-091-amend, 2026-09-13) — même chirurgien, même site ──
+
+    public function test_double_room_same_surgeon_same_site_full_overlap_different_instrumentists_allowed(): void
+    {
+        // D-035's own canonical shape: two DIFFERENT instrumentists is the NORMAL double
+        // salle case, not an edge case — must never block deploy, no waiver required.
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instrA  = $this->createUser('ROLE_INSTRUMENTIST');
+        $instrB  = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite('DoubleRoom');
+
+        $this->makeMission(null, $site, $surgeon, $manager, '2026-10-20', '08:00', '13:00', $instrA, MissionStatus::ASSIGNED);
+
+        $version = $this->makeDraftVersion($site, $manager, '2026-10-01', '2026-10-31');
+        $mission = $this->makeMission($version, $site, $surgeon, $manager, '2026-10-20', '08:00', '13:00', $instrB);
+
+        $response = $this->deploy($client, $token, $version);
+
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
+        $fresh = $this->freshMission($mission->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $fresh->getStatus());
+    }
+
+    public function test_double_room_same_surgeon_same_site_partial_overlap_different_instrumentists_allowed(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instrA  = $this->createUser('ROLE_INSTRUMENTIST');
+        $instrB  = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite('DoubleRoomPartial');
+
+        $this->makeMission(null, $site, $surgeon, $manager, '2026-10-21', '07:45', '18:00', $instrA, MissionStatus::ASSIGNED);
+
+        $version = $this->makeDraftVersion($site, $manager, '2026-10-01', '2026-10-31');
+        $mission = $this->makeMission($version, $site, $surgeon, $manager, '2026-10-21', '13:00', '18:00', $instrB);
+
+        $response = $this->deploy($client, $token, $version);
+
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
+        $fresh = $this->freshMission($mission->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $fresh->getStatus());
+    }
+
+    public function test_double_room_same_surgeon_different_sites_still_blocks_deploy(): void
+    {
+        // Regression guard: the carve-out is SITE-scoped, never a blanket "same surgeon
+        // overlap is fine" — a different site stays a real cross-site double-booking.
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instrA  = $this->createUser('ROLE_INSTRUMENTIST');
+        $instrB  = $this->createUser('ROLE_INSTRUMENTIST');
+        $siteA   = $this->makeSite('DoubleRoomDiffA');
+        $siteB   = $this->makeSite('DoubleRoomDiffB');
+
+        $this->makeMission(null, $siteB, $surgeon, $manager, '2026-10-22', '08:00', '13:00', $instrA, MissionStatus::ASSIGNED);
+
+        $version = $this->makeDraftVersion($siteA, $manager, '2026-10-01', '2026-10-31');
+        $mission = $this->makeMission($version, $siteA, $surgeon, $manager, '2026-10-22', '08:00', '13:00', $instrB);
+
+        $response = $this->deploy($client, $token, $version);
+
+        self::assertSame(409, $response->getStatusCode(), (string) $response->getContent());
+        $body = json_decode((string) $response->getContent(), true);
+        $conflict = current(array_filter($body['conflicts'], fn ($c) => $c['missionId'] === $mission->getId()));
+        self::assertNotFalse($conflict);
+        self::assertSame('CROSS_SITE_CONFLICT', $conflict['type']);
+    }
+
+    public function test_same_instrumentist_overlapping_missions_still_blocks_deploy_even_same_site_same_surgeon(): void
+    {
+        // Regression guard: the carve-out never applies to the instrumentist role. A single
+        // instrumentist genuinely cannot be in two rooms at once — this must remain a real,
+        // blocking SCHEDULE_CONFLICT, even for an otherwise-valid double-salle surgeon/site
+        // shape (D-091 follow-up's narrow waiver still exists for this exact case, but no
+        // waiver was authorized here — it must stay blocked).
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite('DoubleRoomSameInstr');
+
+        $this->makeMission(null, $site, $surgeon, $manager, '2026-10-23', '08:00', '13:00', $instr, MissionStatus::ASSIGNED);
+
+        $version = $this->makeDraftVersion($site, $manager, '2026-10-01', '2026-10-31');
+        $mission = $this->makeMission($version, $site, $surgeon, $manager, '2026-10-23', '10:00', '14:00', $instr);
+
+        $response = $this->deploy($client, $token, $version);
+
+        self::assertSame(409, $response->getStatusCode(), (string) $response->getContent());
+        $body = json_decode((string) $response->getContent(), true);
+        $conflict = current(array_filter($body['conflicts'], fn ($c) => $c['missionId'] === $mission->getId()));
+        self::assertNotFalse($conflict);
+        self::assertSame($instr->getId(), $conflict['instrumentistId'], 'The reported conflict must be the instrumentist overlap, not a stale surgeon one.');
+        self::assertTrue($conflict['waivable'], 'This exact shape (same surgeon+instrumentist+site) is still the D-091 follow-up waivable case.');
+    }
+
+    public function test_arnaud_deltour_delta_double_room_scenario_deploys_without_waiver(): void
+    {
+        // Exact reported scenario: 07/10/2026 — Arnaud Deltour @ CHIREC Hôpital Delta —
+        // 07:45–18:00 with Salve Decorte, 13:00–18:00 with Sophie Colette. Must deploy
+        // clean, with no checkbox/waiver step required.
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $salve   = $this->createUser('ROLE_INSTRUMENTIST');
+        $sophie  = $this->createUser('ROLE_INSTRUMENTIST');
+        $delta   = $this->makeSite('CHIREC-Delta');
+
+        $this->makeMission(null, $delta, $surgeon, $manager, '2026-10-07', '07:45', '18:00', $salve, MissionStatus::ASSIGNED);
+
+        $version = $this->makeDraftVersion($delta, $manager, '2026-10-01', '2026-10-31');
+        $mission = $this->makeMission($version, $delta, $surgeon, $manager, '2026-10-07', '13:00', '18:00', $sophie);
+
+        $response = $this->deploy($client, $token, $version);
+
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
+        $fresh = $this->freshMission($mission->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $fresh->getStatus());
+    }
+
+    public function test_double_room_never_raises_a_surgeon_conflict_alert_at_generation_time(): void
+    {
+        // Consistency check requested explicitly: generation-time alerting
+        // (syncAlertsForVersion, run right after PlanningGeneratorServiceV2::generate())
+        // and deploy-time revalidation must agree — a valid double salle must never produce
+        // a SURGEON_CONFLICT alert either, not just avoid blocking deploy.
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instrA  = $this->createUser('ROLE_INSTRUMENTIST');
+        $instrB  = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite('DoubleRoomAlert');
+
+        $version = $this->makeDraftVersion($site, $manager, '2026-10-24', '2026-10-24');
+        $missionA = $this->makeMission($version, $site, $surgeon, $manager, '2026-10-24', '08:00', '13:00', $instrA, MissionStatus::ASSIGNED);
+        $missionB = $this->makeMission($version, $site, $surgeon, $manager, '2026-10-24', '08:00', '13:00', $instrB, MissionStatus::ASSIGNED);
+
+        /** @var \App\Service\PlanningConflictDetectionService $service */
+        $service = static::getContainer()->get(\App\Service\PlanningConflictDetectionService::class);
+        $service->syncAlertsForMission($this->freshMission($missionA->getId()));
+        $service->syncAlertsForMission($this->freshMission($missionB->getId()));
+
+        $allAlerts = array_merge(
+            array_filter($this->findAlertsForMission($missionA->getId()), fn (PlanningAlert $a) => $a->isOpenOrAcknowledged()),
+            array_filter($this->findAlertsForMission($missionB->getId()), fn (PlanningAlert $a) => $a->isOpenOrAcknowledged()),
+        );
+        self::assertCount(0, $allAlerts, 'A valid double salle (different instrumentists) must never raise any alert, at generation time or otherwise.');
+
+        // And, consistently, deploy is clean too — same version, both missions still DRAFT.
+        $response = $this->deploy($client, $token, $version);
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
+    }
+
     // ── Instrumentiste — déploiement bloqué ──────────────────────────────────
 
     public function test_instrumentist_double_booked_two_sites_blocks_deploy(): void

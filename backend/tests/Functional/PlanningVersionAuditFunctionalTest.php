@@ -359,16 +359,20 @@ final class PlanningVersionAuditFunctionalTest extends WebTestCase
 
     public function test_cross_planning_version_schedule_conflict_raises_alert_without_duplication(): void
     {
+        // Different sites (D-035/D-091-amend, 2026-09-13): a same-site overlap for the same
+        // surgeon is now a legitimate "double salle" and never raises a conflict — this test
+        // needs a REAL cross-site conflict to exercise cross-version dedup.
         $client  = $this->boot();
         $manager = $this->createUser('ROLE_MANAGER');
         $token   = $this->login($client, $manager);
         $surgeon = $this->createUser('ROLE_SURGEON');
-        $site    = $this->makeSite();
+        $siteA   = $this->makeSite('A');
+        $siteB   = $this->makeSite('B');
 
-        $versionA = $this->makeActiveVersion($site, $manager, '2026-11-01', '2026-11-15');
-        $versionB = $this->makeActiveVersion($site, $manager, '2026-11-16', '2026-11-30');
-        $missionA = $this->makeMission($versionA, $site, $surgeon, $manager, '2026-11-14', '08:00', '12:00', null);
-        $missionB = $this->makeMission($versionB, $site, $surgeon, $manager, '2026-11-14', '11:00', '15:00', null);
+        $versionA = $this->makeActiveVersion($siteA, $manager, '2026-11-01', '2026-11-15');
+        $versionB = $this->makeActiveVersion($siteB, $manager, '2026-11-16', '2026-11-30');
+        $missionA = $this->makeMission($versionA, $siteA, $surgeon, $manager, '2026-11-14', '08:00', '12:00', null);
+        $missionB = $this->makeMission($versionB, $siteB, $surgeon, $manager, '2026-11-14', '11:00', '15:00', null);
 
         [$responseA, $bodyA] = $this->verify($client, $token, $versionA);
         self::assertSame(200, $responseA->getStatusCode());

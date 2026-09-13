@@ -355,17 +355,31 @@ final class MissionConflictWaiverTest extends WebTestCase
     #[WithoutErrorHandler]
     public function test_waiver_is_invalidated_when_instrumentist_changes_afterward(): void
     {
-        $client   = $this->boot();
-        $manager  = $this->createUser('ROLE_MANAGER');
-        $token    = $this->login($client, $manager);
-        $surgeon  = $this->createUser('ROLE_SURGEON');
-        $instrA   = $this->createUser('ROLE_INSTRUMENTIST');
-        $instrB   = $this->createUser('ROLE_INSTRUMENTIST');
-        $site     = $this->makeSite('Double');
+        // D-035/D-091-amend (2026-09-13): same surgeon + same site double-room overlaps are
+        // no longer a conflict at all when the instrumentists differ — so reassigning the
+        // draft mission away from instrA (the waived pairing) to a genuinely FREE
+        // instrumentist would now deploy clean with zero waiver involved, which would prove
+        // nothing about waiver staleness. To still exercise "a waiver must not silently
+        // keep applying once the state it was granted for has changed", instrB here is
+        // ALSO busy elsewhere (different surgeon) — so after the reassignment there is a
+        // fresh, genuinely non-waivable INSTRUMENTIST_CONFLICT, unrelated to the original
+        // waiver, which must independently be found stale.
+        $client       = $this->boot();
+        $manager      = $this->createUser('ROLE_MANAGER');
+        $token        = $this->login($client, $manager);
+        $surgeon      = $this->createUser('ROLE_SURGEON');
+        $surgeonOther = $this->createUser('ROLE_SURGEON');
+        $instrA       = $this->createUser('ROLE_INSTRUMENTIST');
+        $instrB       = $this->createUser('ROLE_INSTRUMENTIST');
+        $site         = $this->makeSite('Double');
 
         $existing = $this->makeMission(null, $site, $surgeon, $manager, '2026-11-06', '08:00', '13:00', $instrA, MissionStatus::ASSIGNED);
         $version  = $this->makeDraftVersion($site, $manager, '2026-11-01', '2026-11-30');
         $mission  = $this->makeMission($version, $site, $surgeon, $manager, '2026-11-06', '10:00', '14:00', $instrA);
+
+        // instrB already committed elsewhere (different surgeon), overlapping the window
+        // the draft mission will move into once reassigned below.
+        $this->makeMission(null, $site, $surgeonOther, $manager, '2026-11-06', '11:00', '12:00', $instrB, MissionStatus::ASSIGNED);
 
         $authResponse = $this->authorize($client, $token, [
             ['missionId' => $mission->getId(), 'conflictingMissionId' => $existing->getId()],
@@ -384,11 +398,21 @@ final class MissionConflictWaiverTest extends WebTestCase
         $this->em->flush();
 
         $response = $this->deploy($client, $token, $version);
-        self::assertSame(409, $response->getStatusCode(), 'The waiver was granted for a specific instrumentist pairing — it must not survive one side changing instrumentist.');
+        self::assertSame(409, $response->getStatusCode(), 'instrB is genuinely double-booked with a different surgeon — must block regardless of the stale waiver.');
         $body = json_decode((string) $response->getContent(), true);
         $conflict = current(array_filter($body['conflicts'], fn ($c) => $c['missionId'] === $mission->getId()));
         self::assertNotFalse($conflict);
-        self::assertFalse($conflict['waivable'], 'Now a genuinely different-instrumentist conflict — no longer the waivable shape.');
+        self::assertSame($instrB->getId(), $conflict['instrumentistId']);
+        self::assertFalse($conflict['waivable'], 'Different surgeons on this new pairing — never the waivable shape.');
+
+        // The ORIGINAL waiver (mission ↔ existing, granted for the instrA pairing) must be
+        // found stale the moment it's consulted directly — it no longer describes either
+        // mission's current state (mission's instrumentist is now instrB, not instrA).
+        /** @var \App\Service\MissionConflictWaiverService $waiverService */
+        $waiverService = static::getContainer()->get(\App\Service\MissionConflictWaiverService::class);
+        $freshExisting = $this->freshMission($existing->getId());
+        $freshMissionAgain = $this->em->find(Mission::class, $mission->getId());
+        self::assertNull($waiverService->findActiveWaiver($freshMissionAgain, $freshExisting), 'The waiver must no longer be considered active once the instrumentist it was granted for has changed.');
 
         $waiver = $this->em->getRepository(MissionConflictWaiver::class)->findOneBy(
             ['missionLow' => min($mission->getId(), $existing->getId()), 'missionHigh' => max($mission->getId(), $existing->getId())],

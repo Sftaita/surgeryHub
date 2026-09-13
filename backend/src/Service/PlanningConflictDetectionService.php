@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningAlert;
 use App\Entity\PlanningVersion;
@@ -30,8 +31,18 @@ use Symfony\Component\Messenger\MessageBusInterface;
  *
  * Cross-site by construction: every query here is scoped by PERSON, never by site — a
  * conflict between two different sites is detected exactly the same way as one on the same
- * site (see docs/decisions.md D-091 for why "same site, two missions" is deliberately not
- * a special case).
+ * site (see docs/decisions.md D-091), with exactly ONE carve-out (D-035/D-091-amend,
+ * 2026-09-13): a SURGEON running two overlapping rooms of the SAME site is a deliberate
+ * "double salle" setup, never a conflict, regardless of whether the instrumentists match —
+ * see $doubleRoomSite on findConflict()/hasConflictInPool(). An INSTRUMENTIST overlapping
+ * two missions — same site or not — is never exempt this way; that stays a real,
+ * unconditionally-detected conflict (a person cannot be in two rooms at once), for which
+ * MissionConflictWaiverService still offers a narrow manager-authorized override (D-091
+ * follow-up) — untouched by this carve-out and consulted here in syncAlertsForMission()/
+ * syncAlertsForVersion() so a waived conflict's alert doesn't outlive the waiver that
+ * unblocked its deployment. This service depends on MissionConflictWaiverService (not the
+ * reverse) only for that one alert-lifecycle composition; the overlap math itself is never
+ * duplicated there — see that service's own docblock.
  */
 class PlanningConflictDetectionService
 {
@@ -59,20 +70,31 @@ class PlanningConflictDetectionService
         private readonly PlanningAlertService $alertService,
         private readonly UserRepository $userRepository,
         private readonly MessageBusInterface $bus,
+        private readonly MissionConflictWaiverService $conflictWaiver,
     ) {}
 
     // ── Pure detection ───────────────────────────────────────────────────────
 
     /**
      * Real-time, single-person check. Returns the first other active mission of $person
-     * that overlaps [$start, $end), or null. Never filtered by site — this IS the
-     * cross-site check. Use for one-off validations (deploy revalidation, manual
-     * modification, manual reassignment) where a handful of real-time queries is
+     * that overlaps [$start, $end), or null. Never filtered by site for the person as a
+     * whole — this IS the cross-site check — EXCEPT for the one carve-out $doubleRoomSite
+     * exists for (D-035/D-091-amend, 2026-09-13): a surgeon running two overlapping rooms
+     * of the exact same site is a deliberate, valid "double salle" setup, never a conflict,
+     * regardless of whether the instrumentists match (see D-035's own canonical example —
+     * two DIFFERENT instrumentists is the normal case, not the exception). Pass the
+     * checked mission's site as $doubleRoomSite ONLY when $person is being checked in their
+     * SURGEON role for that mission; pass null for the INSTRUMENTIST role (an instrumentist
+     * cannot physically be in two rooms at once, same site or not — that stays a real,
+     * unconditionally blocking SCHEDULE_CONFLICT, see D-091 follow-up which still allows a
+     * narrow manager waiver for exactly that shape via MissionConflictWaiverService,
+     * untouched by this carve-out). Use for one-off validations (deploy revalidation,
+     * manual modification, manual reassignment) where a handful of real-time queries is
      * acceptable; for a batch (generation), use preloadActiveMissionsForPeriod() +
      * hasConflictInPool() instead to stay within the project's fixed-query-budget
      * discipline (see PlanningGeneratorServiceV2).
      */
-    public function findConflict(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId = null): ?Mission
+    public function findConflict(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null): ?Mission
     {
         $qb = $this->em->createQueryBuilder()
             ->select('m')
@@ -90,6 +112,12 @@ class PlanningConflictDetectionService
 
         if ($excludeMissionId !== null) {
             $qb->andWhere('m.id != :excludeId')->setParameter('excludeId', $excludeMissionId);
+        }
+
+        if ($doubleRoomSite !== null) {
+            $qb->andWhere('NOT (m.surgeon = :doubleRoomPerson AND m.site = :doubleRoomSite)')
+                ->setParameter('doubleRoomPerson', $person)
+                ->setParameter('doubleRoomSite', $doubleRoomSite);
         }
 
         return $qb->getQuery()->getOneOrNullResult();
@@ -110,7 +138,7 @@ class PlanningConflictDetectionService
 
         return [
             'surgeon' => $surgeon !== null
-                ? $this->findConflict($surgeon, $start, $end, $mission->getId())
+                ? $this->findConflict($surgeon, $start, $end, $mission->getId(), $mission->getSite())
                 : null,
             'instrumentist' => $instrumentist !== null
                 ? $this->findConflict($instrumentist, $start, $end, $mission->getId())
@@ -154,11 +182,21 @@ class PlanningConflictDetectionService
         return $index;
     }
 
-    /** In-memory check against a pool built by preloadActiveMissionsForPeriod(). */
-    public function hasConflictInPool(int $personId, \DateTimeImmutable $start, \DateTimeImmutable $end, array $pool, ?int $excludeMissionId = null): ?Mission
+    /**
+     * In-memory check against a pool built by preloadActiveMissionsForPeriod(). Same
+     * $doubleRoomSite carve-out as findConflict() — pass the checked mission's site only
+     * when $personId is being checked in their SURGEON role, null for INSTRUMENTIST.
+     */
+    public function hasConflictInPool(int $personId, \DateTimeImmutable $start, \DateTimeImmutable $end, array $pool, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null): ?Mission
     {
         foreach ($pool[$personId] ?? [] as $mission) {
             if ($excludeMissionId !== null && $mission->getId() === $excludeMissionId) {
+                continue;
+            }
+            if ($doubleRoomSite !== null
+                && $mission->getSurgeon()?->getId() === $personId
+                && $mission->getSite()?->getId() === $doubleRoomSite->getId()
+            ) {
                 continue;
             }
             if ($mission->getStartAt() < $end && $mission->getEndAt() > $start) {
@@ -179,6 +217,12 @@ class PlanningConflictDetectionService
      * against the CURRENT real-time DB state. Idempotent — safe to call repeatedly (e.g.
      * once per touched mission after every apply()). Never mutates the Mission itself.
      *
+     * A manager-authorized MissionConflictWaiver (D-091 follow-up) is consulted here too,
+     * not just at deploy-time revalidation — otherwise a waived INSTRUMENTIST_CONFLICT
+     * would keep its alert badge open forever even after the manager explicitly authorized
+     * it and deployed (found during this same audit, 2026-09-13). Never re-derives the
+     * waiver's own eligibility rule here — findActiveWaiver() already owns that.
+     *
      * @return array{created: PlanningAlert[], resolved: PlanningAlert[]}
      */
     public function syncAlertsForMission(Mission $mission): array
@@ -187,7 +231,11 @@ class PlanningConflictDetectionService
         $resolved = [];
 
         foreach ($this->personChecks($mission) as [$person, $type]) {
-            $conflict = $this->findConflict($person, $mission->getStartAt(), $mission->getEndAt(), $mission->getId());
+            $doubleRoomSite = $type === PlanningAlertType::SURGEON_CONFLICT ? $mission->getSite() : null;
+            $conflict = $this->findConflict($person, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(), $doubleRoomSite);
+            if ($conflict !== null && $this->conflictWaiver->findActiveWaiver($mission, $conflict) !== null) {
+                $conflict = null;
+            }
             $this->applySync($mission, $person, $type, $conflict, $created, $resolved);
         }
 
@@ -227,7 +275,11 @@ class PlanningConflictDetectionService
         $resolved = [];
         foreach ($missions as $mission) {
             foreach ($this->personChecks($mission) as [$person, $type]) {
-                $conflict = $this->hasConflictInPool($person->getId(), $mission->getStartAt(), $mission->getEndAt(), $pool, $mission->getId());
+                $doubleRoomSite = $type === PlanningAlertType::SURGEON_CONFLICT ? $mission->getSite() : null;
+                $conflict = $this->hasConflictInPool($person->getId(), $mission->getStartAt(), $mission->getEndAt(), $pool, $mission->getId(), $doubleRoomSite);
+                if ($conflict !== null && $this->conflictWaiver->findActiveWaiver($mission, $conflict) !== null) {
+                    $conflict = null;
+                }
                 $this->applySync($mission, $person, $type, $conflict, $created, $resolved);
             }
         }

@@ -10337,3 +10337,128 @@ Ajout minimal : `EncodingTrackingItem::$isStale`, calculé dans
 (`state === IN_PROGRESS && endAt !== null && endAt <= $now`), exposé sous
 `encoding.isStale`. Aucun changement de la définition de `EncodingState` ni du contrat de
 `summary` — pur ajout additif au niveau de l'item.
+
+---
+
+## D-119 — Correctif faux SURGEON_CONFLICT « double salle » : la règle doit porter sur le site, jamais sur l'instrumentiste (2026-09-13)
+
+### Contexte
+
+Signalement manager (scénario réel) : Arnaud Deltour, CHIREC Hôpital Delta, 07/10/2026 —
+mission 07:45–18:00 avec Salve Decorte, mission 13:00–18:00 avec Sophie Colette. La preview
+affichait la ligne Sophie Colette « OK », mais le déploiement la bloquait avec un
+`CROSS_SITE_CONFLICT` chirurgien, en exigeant une case à cocher « double salle » pourtant
+absente.
+
+### Cause racine
+
+`PlanningConflictDetectionService::findConflict()` (D-091) est volontairement cross-site :
+il ne filtre jamais par site, donc un chevauchement chirurgien sur le **même** site était
+détecté exactement comme un vrai conflit cross-site — aucune notion de site n'intervenait
+jamais dans la règle chirurgien. Le seul correctif existant, `MissionConflictWaiver`
+(D-091 follow-up, 2026-09-11), ne compensait ce trou que par une **dérogation manuelle**,
+et son éligibilité (`MissionConflictWaiverService::isWaivable()`) exigeait en plus que les
+deux missions aient le **même instrumentiste** — l'inverse du cas canonique documenté en
+D-035 (`docs/decisions.md:1088`), où une double salle normale a précisément **deux
+instrumentistes différents**. Le cas courant (instrumentistes différents) tombait donc dans
+le pire des deux mondes : bloquant, et même pas éligible à la dérogation existante.
+
+Il n'y a jamais eu deux moteurs de détection divergents — `PlanningConflictDetectionService`
+reste le seul point d'entrée, réutilisé partout (génération, modification manuelle,
+revalidation au déploiement, éligibilité de réaffectation). Le bug était une règle
+incomplète dans ce moteur unique, pas une incohérence entre deux implémentations.
+
+Effet de bord trouvé pendant l'audit (non lié au bug rapporté, corrigé dans le même
+chantier) : `syncAlertsForMission()`/`syncAlertsForVersion()` — qui créent le badge
+`PlanningAlert` visible en UI — ne consultaient jamais `MissionConflictWaiverService`.
+Une fois qu'un manager autorisait une dérogation et déployait, l'alerte visuelle restait
+ouverte indéfiniment.
+
+### Décision — règle métier
+
+Deux règles désormais strictement séparées, jamais confondues dans une seule condition :
+
+1. **Conflit chirurgien / double salle** — même chirurgien + même site + chevauchement
+   horaire → **jamais un conflit bloquant**, quels que soient les instrumentistes (identiques,
+   différents, ou l'un des deux absent). Un même chirurgien sur des **sites différents**
+   avec chevauchement reste un vrai conflit chirurgien, inchangé.
+2. **Conflit instrumentiste** — même instrumentiste sur deux missions qui se chevauchent
+   (même site ou non) → reste un **vrai conflit bloquant** sans exception — un instrumentiste
+   ne peut pas être physiquement dans deux salles à la fois. Pour la forme étroite déjà
+   décidée en D-091 follow-up (même chirurgien + même instrumentiste + même site — un
+   instrumentiste volant entre deux salles, mode de fonctionnement délibéré mais à
+   confirmer au cas par cas), la dérogation manager `MissionConflictWaiver` reste
+   **inchangée et pleinement utilisable** — décision explicitement reconfirmée pendant ce
+   chantier avant toute modification, `isWaivable()` non touché.
+
+### Implémentation
+
+`PlanningConflictDetectionService::findConflict()`/`hasConflictInPool()` acceptent un
+nouveau paramètre optionnel `$doubleRoomSite` : quand fourni, exclut de la détection tout
+candidat où `mission.surgeon = personne vérifiée AND mission.site = $doubleRoomSite` — un
+filtre au niveau de la requête, pas un post-traitement. Les appelants ne le passent **que**
+pour la vérification du rôle CHIRURGIEN (jamais pour INSTRUMENTISTE) :
+`PlanningDraftRevalidationService::revalidate()`, `syncAlertsForMission()`,
+`syncAlertsForVersion()`, `findConflictsForMission()`. Aucun second moteur créé — un seul
+paramètre ajouté à la même méthode centrale, réutilisée telle quelle partout.
+
+`syncAlertsForMission()`/`syncAlertsForVersion()` consultent maintenant
+`MissionConflictWaiverService::findActiveWaiver()` avant de créer/maintenir une alerte —
+un conflit couvert par une dérogation active n'est plus jamais traité comme un conflit,
+ni pour bloquer le déploiement, ni pour l'alerte visuelle. `PlanningConflictDetectionService`
+dépend désormais de `MissionConflictWaiverService` (jamais l'inverse) uniquement pour cette
+composition ; le calcul de chevauchement lui-même reste entièrement dans
+`PlanningConflictDetectionService`, jamais dupliqué.
+
+`SurgeonMissionRequestService::accept()` (D-099, acceptation d'une demande chirurgien) n'a
+volontairement **pas** reçu ce même assouplissement — comportement distinct, non testé pour
+le cas double-salle, hors périmètre de ce correctif ; à revisiter séparément si le besoin se
+confirme.
+
+`MissionConflictWaiverService`/`MissionConflictWaiver` : **aucun changement**. La dérogation
+« même chirurgien + même instrumentiste + même site » reste possible telle que documentée en
+D-091 follow-up.
+
+### Frontend
+
+`GeneratePlanningTab.tsx` — texte de la modal de blocage corrigé pour refléter que le seul
+cas encore waivable est un partage d'instrumentiste, pas une double salle générique :
+« Instrumentiste partagé entre deux salles — même chirurgien, même instrumentiste, même
+site : peut être autorisé si voulu. » (remplace « Double salle — même chirurgien, même
+instrumentiste, même site : peut être autorisé. », qui laissait croire que la case à cocher
+concernait toute double salle). Une double salle avec instrumentistes différents ne peut
+plus du tout apparaître dans cette modal — elle n'est plus un conflit remonté par le backend.
+
+### Tests de régression
+
+`PlanningCrossSiteConflictTest` (+7 tests) : double salle chevauchement total/partiel avec
+instrumentistes différents (autorisé, aucune dérogation requise), même chirurgien sites
+différents (reste bloquant), même instrumentiste même chirurgien même site (reste bloquant,
+`waivable: true`), scénario exact Arnaud Deltour/Salve Decorte/Sophie Colette du 07/10/2026
+(déploie sans dérogation), cohérence génération/déploiement (aucune alerte
+`SURGEON_CONFLICT` créée à la génération pour une double salle valide).
+
+`MissionConflictWaiverTest` : 6/7 tests inchangés (le comportement waivable pour « même
+instrumentiste » n'a pas bougé). `test_waiver_is_invalidated_when_instrumentist_changes_afterward`
+réécrit — l'ancien scénario (changer l'instrumentiste transforme un conflit waivable en
+conflit non-waivable) ne produit plus aucun conflit du tout après ce correctif (c'est
+justement l'objectif), donc le test vérifie désormais qu'une dérogation devenue obsolète
+(instrumentiste changé) est bien invalidée quand un **nouveau** conflit instrumentiste réel
+et non lié survient (nouvel instrumentiste occupé ailleurs, chirurgien différent).
+
+`PlanningVersionAuditFunctionalTest::test_cross_planning_version_schedule_conflict_raises_alert_without_duplication`
+adapté : utilisait un chevauchement même site/même chirurgien sans instrumentiste comme
+« vrai conflit » — devenu un cas légitime après ce correctif ; passé à deux sites différents
+pour continuer à exercer le dédoublonnage cross-version avec un vrai conflit.
+
+Suite ciblée (`--filter Planning`) : 505/505 backend verts. `MissionConflictWaiverTest` :
+7/7. `PlanningCrossSiteConflictTest` : 20/20 (14 existants + 6 nouveaux — un test
+supplémentaire fusionné avec le scénario nominal). Frontend `GeneratePlanningTab.test.tsx` :
+39/39, texte de modal mis à jour, aucune régression.
+
+### Portée non traitée ici
+
+`SurgeonMissionRequestService::accept()` garde son comportement pré-existant (tout
+chevauchement chirurgien bloque, même site compris) — décision délibérée de ne pas étendre
+ce correctif à un flux différent (demande chirurgien en libre-service) sans confirmation
+séparée.
