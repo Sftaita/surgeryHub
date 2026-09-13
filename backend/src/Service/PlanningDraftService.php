@@ -128,7 +128,13 @@ final class PlanningDraftService
             }
             if ($line['status'] === 'MODIFIED') {
                 $line['instrumentistId']   = $line['existingInstrumentistId'];
-                $line['instrumentistName'] = $line['existingInstrumentistName'];
+                // 'instrumentistName' is the "live" field — buildLine() guarantees it's
+                // always a string ('' when absent, via displayName(null)), never null.
+                // 'existingInstrumentistName' is a diff-only field and IS legitimately
+                // null when the persisted Mission has no instrumentist — coalesce here or
+                // PreviewLineResponse::fromLine() (non-nullable string) throws a TypeError,
+                // 500ing the whole reopen() on any draft with an unstaffed MODIFIED line.
+                $line['instrumentistName'] = $line['existingInstrumentistName'] ?? '';
             }
             if ($line['instrumentistId'] === null) {
                 $line['status'] = 'UNCOVERED';

@@ -1311,6 +1311,52 @@ final class PlanningV2DraftControllerTest extends WebTestCase
         self::assertSame($instrB->getId(), $missionB->getInstrumentist()->getId());
     }
 
+    // ── Regression (2026-09-13) — reopen() must never 500 when a MODIFIED line's
+    //    persisted Mission has no instrumentist at all. Root cause:
+    //    normalizeForDraftEditing() copied existingInstrumentistName (legitimately null
+    //    when unstaffed — see buildLine()'s own diff-field convention) straight into
+    //    instrumentistName, a field PreviewLineResponse (and buildLine()'s own "live
+    //    field" contract, backed by displayName() always returning a string) guarantees
+    //    is never null. Found live: a manager unassigned the instrumentist from an
+    //    already-persisted DRAFT mission, then reopened the draft — 500 INTERNAL_ERROR
+    //    (TypeError, PreviewLineResponse::__construct()). Pre-existing since D-115
+    //    (2026-09-08), unrelated to D-119.
+
+    #[WithoutErrorHandler]
+    public function test_reopen_draft_after_unassigning_instrumentist_from_a_modified_line_does_not_500(): void
+    {
+        $client = static::createClient();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $instr   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, '08:00', '13:00');
+        $this->makePost($surgeon, $site, $instr, singleOccurrence: true);
+
+        ['versionId' => $versionId] = $this->generateDraft($client, $token, $site, $surgeon, $instr);
+
+        // Unassign the instrumentist entirely — diverges from the Post's own template
+        // (still $instr), so the persisted Mission's line becomes MODIFIED with a null
+        // existingInstrumentistId/Name.
+        $reopen = $this->json($this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}"));
+        $lines  = $reopen['lines'];
+        $lines[0]['instrumentistId'] = null;
+        $update = $this->patchJson($client, $token, "/api/planning/v2/drafts/{$versionId}", ['lines' => $lines]);
+        self::assertSame(Response::HTTP_OK, $update->getStatusCode(), (string) $update->getContent());
+
+        // Reopen again — this is the exact request that 500'd before the fix.
+        $this->em->clear();
+        $response = $this->getJson($client, $token, "/api/planning/v2/drafts/{$versionId}");
+        $body     = $this->json($response);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        self::assertSame('UNCOVERED', $body['lines'][0]['status']);
+        self::assertNull($body['lines'][0]['instrumentistId']);
+        self::assertSame('', $body['lines'][0]['instrumentistName'], 'instrumentistName must be an empty string, never null.');
+    }
+
     // ── Test 10 — ineligible instrumentist refused, not silently kept ────────────
 
     #[WithoutErrorHandler]
