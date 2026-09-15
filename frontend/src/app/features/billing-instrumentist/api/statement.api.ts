@@ -1,5 +1,5 @@
 import { apiClient } from "../../../api/apiClient";
-import type { InvoiceStatus } from "../../billing-firm/api/firmInvoice.api";
+import type { EligibleLinesDiagnostic, InvoiceStatus } from "../../billing-firm/api/firmInvoice.api";
 import type { CorrectionSummary, DocumentType, PaymentStatus } from "../../billing-shared/api/documentFinance.api";
 
 export interface InstrumentistStatement {
@@ -48,33 +48,6 @@ export interface StatementLine {
   originalDocumentLineId?: number | null;
 }
 
-export interface StatementPreviewLine {
-  missionId: number;
-  missionDate: string;
-  lineType: "BLOC" | "CONSULTATION";
-  durationMinutesRaw: number | null;
-  durationMinutesRounded: number | null;
-  rateSnapshot: number;
-  quantity: number;
-  totalAmount: number;
-  surgeonName: string | null;
-  siteName: string | null;
-}
-
-export interface StatementPreview {
-  instrumentist: {
-    id: number;
-    displayName: string;
-    email: string;
-    hourlyRate: string | null;
-    consultationFee: string | null;
-  };
-  period: { year: number; month: number };
-  lines: StatementPreviewLine[];
-  totalAmount: number;
-  alreadyBilledMissionIds: number[];
-}
-
 export async function getStatements(params?: {
   instrumentistId?: number;
   status?: InvoiceStatus;
@@ -84,27 +57,9 @@ export async function getStatements(params?: {
   return res.data;
 }
 
-export async function previewStatement(body: {
-  instrumentistId: number;
-  year: number;
-  month: number;
-}): Promise<StatementPreview> {
-  const res = await apiClient.post("/api/instrumentist-statements/preview", body);
-  return res.data;
-}
-
-export async function generateStatement(body: {
-  instrumentistId: number;
-  year: number;
-  month: number;
-  selectedMissionIds: number[];
-}): Promise<InstrumentistStatement> {
-  const res = await apiClient.post("/api/instrumentist-statements", body);
-  return res.data;
-}
-
-// ── EPIC Exécution & Valorisation, Lot 4 (D-074) — nouveau flux, sourcé sur
-// FinancialCalculationLine (calcul verrouillé) plutôt que recalculé à la volée. ────
+// ── EPIC Exécution & Valorisation, Lot 4 (D-074), nettoyage architectural (D-121) —
+// unique flux : sourcé sur FinancialCalculationLine (calcul verrouillé), jamais
+// recalculé à la volée. ────────────────────────────────────────────────────────
 
 export interface EligibleStatementCalculationLine {
   id: number;
@@ -127,6 +82,7 @@ export interface StatementEligibleLinesPreview {
   period: { year: number; month: number };
   lines: EligibleStatementCalculationLine[];
   totalAmount: string;
+  diagnostic?: EligibleLinesDiagnostic;
 }
 
 export async function getStatementEligibleLines(params: {

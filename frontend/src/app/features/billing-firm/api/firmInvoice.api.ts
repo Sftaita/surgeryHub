@@ -57,26 +57,6 @@ export interface FirmInvoiceLine {
   originalDocumentLineId?: number | null;
 }
 
-export interface PreviewLine {
-  missionId: number;
-  missionDate: string;
-  interventionId: number | null;
-  materialLineId: number | null;
-  lineType: "INTERVENTION_FEE" | "MATERIAL_FEE";
-  descriptionSnapshot: string;
-  firmNameSnapshot: string;
-  unitPrice: number;
-  quantity: number;
-  totalAmount: number;
-}
-
-export interface FirmInvoicePreview {
-  firm: { id: number; name: string };
-  period: { start: string; end: string };
-  lines: PreviewLine[];
-  totalAmount: number;
-}
-
 export async function getFirmInvoices(params?: {
   firmId?: number;
   status?: InvoiceStatus;
@@ -86,28 +66,34 @@ export async function getFirmInvoices(params?: {
   return res.data;
 }
 
-export async function previewFirmInvoice(body: {
-  firmId: number;
-  periodStart: string;
-  periodEnd: string;
-}): Promise<FirmInvoicePreview> {
-  const res = await apiClient.post("/api/firm-invoices/preview", body);
-  return res.data;
-}
+// ── EPIC Exécution & Valorisation, Lot 4 (D-074), nettoyage architectural (D-121) —
+// unique flux : sourcé sur FinancialCalculationLine (calcul verrouillé), jamais
+// recalculé à la volée. ────────────────────────────────────────────────────────
 
-export async function generateFirmInvoice(body: {
-  firmId: number;
-  periodStart: string;
-  periodEnd: string;
-  selectedInterventionIds: number[];
-  selectedMaterialLineIds: number[];
-}): Promise<FirmInvoice> {
-  const res = await apiClient.post("/api/firm-invoices", body);
-  return res.data;
+/**
+ * Diagnostic explicatif (D-121, §6) — présent uniquement quand `lines` est vide.
+ * Codes stables renvoyés par le backend, jamais un message déduit côté frontend.
+ */
+export interface EligibleLinesDiagnostic {
+  code: "NO_ELIGIBLE_LINES";
+  validatedMissionCount: number;
+  calculationCount: number;
+  calculatedCount: number;
+  approvedCount: number;
+  lockedCount: number;
+  missingPricingCount: number;
+  currencyMismatchCount: number;
+  alreadyInvoicedCount: number;
+  reasons: (
+    | "NO_VALIDATED_MISSIONS"
+    | "NO_FINANCIAL_CALCULATIONS"
+    | "CALCULATIONS_PENDING_APPROVAL"
+    | "MISSING_PRICING"
+    | "CURRENCY_MISMATCH"
+    | "ALREADY_INVOICED"
+    | "NO_LINES_FOR_BENEFICIARY"
+  )[];
 }
-
-// ── EPIC Exécution & Valorisation, Lot 4 (D-074) — nouveau flux, sourcé sur
-// FinancialCalculationLine (calcul verrouillé) plutôt que recalculé à la volée. ────
 
 export interface EligibleCalculationLine {
   id: number;
@@ -129,6 +115,7 @@ export interface FirmEligibleLinesPreview {
   period: { start: string; end: string };
   lines: EligibleCalculationLine[];
   totalAmount: string;
+  diagnostic?: EligibleLinesDiagnostic;
 }
 
 export async function getFirmEligibleLines(params: {

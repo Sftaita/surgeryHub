@@ -23,6 +23,7 @@ import {
   type EligibleCalculationLine,
   type FirmInvoice,
 } from "../api/firmInvoice.api";
+import EligibleLinesEmptyState from "../../billing-shared/components/EligibleLinesEmptyState";
 import { useToast } from "../../../ui/toast/useToast";
 
 const MONTHS = [
@@ -136,9 +137,7 @@ export default function EligibleLinesInvoiceWizard({ onCreated, onCancel }: Prop
         <>
           <Divider />
           {preview.lines.length === 0 ? (
-            <Typography color="text.secondary">
-              Aucune ligne éligible — aucun calcul verrouillé avec lignes libres pour cette firme sur cette période.
-            </Typography>
+            <EligibleLinesEmptyState diagnostic={preview.diagnostic} />
           ) : (
             <>
               <Table size="small">

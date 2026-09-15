@@ -23,6 +23,7 @@ import {
   type EligibleStatementCalculationLine,
   type InstrumentistStatement,
 } from "../api/statement.api";
+import EligibleLinesEmptyState from "../../billing-shared/components/EligibleLinesEmptyState";
 import { useToast } from "../../../ui/toast/useToast";
 
 const MONTHS = [
@@ -138,9 +139,7 @@ export default function EligibleLinesStatementWizard({ onCreated, onCancel }: Pr
         <>
           <Divider />
           {preview.lines.length === 0 ? (
-            <Typography color="text.secondary">
-              Aucune ligne éligible — aucun calcul verrouillé avec lignes libres pour cet instrumentiste sur cette période.
-            </Typography>
+            <EligibleLinesEmptyState diagnostic={preview.diagnostic} />
           ) : (
             <>
               <Table size="small">

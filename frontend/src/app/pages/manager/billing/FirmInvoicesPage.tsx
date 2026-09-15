@@ -1,6 +1,5 @@
 import * as React from "react";
 import {
-  Alert,
   Box,
   Button,
   Chip,
@@ -9,7 +8,6 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  Divider,
   IconButton,
   MenuItem,
   Paper,
@@ -30,21 +28,13 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
   getFirmInvoices,
-  previewFirmInvoice,
-  generateFirmInvoice,
   markFirmInvoicePaid,
   getFirmInvoicePdfUrl,
   type FirmInvoice,
   type InvoiceStatus,
-  type PreviewLine,
 } from "../../../features/billing-firm/api/firmInvoice.api";
 import EligibleLinesInvoiceWizard from "../../../features/billing-firm/components/EligibleLinesInvoiceWizard";
 import { useToast } from "../../../ui/toast/useToast";
-
-const MONTHS = [
-  "Janvier","Février","Mars","Avril","Mai","Juin",
-  "Juillet","Août","Septembre","Octobre","Novembre","Décembre",
-];
 
 const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {
   DRAFT: "default",
@@ -71,13 +61,6 @@ export default function FirmInvoicesPage() {
   // ── Wizard state ──────────────────────────────────────────────────
   const [tutorialOpen, setTutorialOpen] = React.useState(false);
   const [showWizard, setShowWizard] = React.useState(false);
-  const [wizardMode, setWizardMode] = React.useState<"calculations" | "legacy">("calculations");
-  const [firmId, setFirmId] = React.useState("");
-  const [periodYear, setPeriodYear] = React.useState(new Date().getFullYear());
-  const [periodMonth, setPeriodMonth] = React.useState(new Date().getMonth() + 1);
-  const [preview, setPreview] = React.useState<Awaited<ReturnType<typeof previewFirmInvoice>> | null>(null);
-  const [selectedInterventionIds, setSelectedInterventionIds] = React.useState<number[]>([]);
-  const [selectedMaterialLineIds, setSelectedMaterialLineIds] = React.useState<number[]>([]);
 
   // ── Filters ───────────────────────────────────────────────────────
   const [filterStatus, setFilterStatus] = React.useState<InvoiceStatus | "">("");
@@ -92,79 +75,11 @@ export default function FirmInvoicesPage() {
       }),
   });
 
-  // ── Firms list (reuse existing endpoint) ─────────────────────────
-  const firmsQuery = useQuery({
-    queryKey: ["firms"],
-    queryFn: async () => {
-      const { apiClient } = await import("../../../api/apiClient");
-      const res = await apiClient.get("/api/firms");
-      return res.data as { id: number; name: string }[];
-    },
-  });
-
-  // ── Preview mutation ──────────────────────────────────────────────
-  const previewMutation = useMutation({
-    mutationFn: () => {
-      const start = new Date(periodYear, periodMonth - 1, 1).toISOString();
-      const end = new Date(periodYear, periodMonth, 0, 23, 59, 59).toISOString();
-      return previewFirmInvoice({ firmId: Number(firmId), periodStart: start, periodEnd: end });
-    },
-    onSuccess: (data) => {
-      setPreview(data);
-      const iIds = data.lines.filter((l) => l.interventionId !== null).map((l) => l.interventionId!);
-      const mIds = data.lines.filter((l) => l.materialLineId !== null).map((l) => l.materialLineId!);
-      setSelectedInterventionIds(iIds);
-      setSelectedMaterialLineIds(mIds);
-    },
-    onError: (err) => toast.error(extractError(err)),
-  });
-
-  const generateMutation = useMutation({
-    mutationFn: () => {
-      const start = new Date(periodYear, periodMonth - 1, 1).toISOString();
-      const end = new Date(periodYear, periodMonth, 0, 23, 59, 59).toISOString();
-      return generateFirmInvoice({
-        firmId: Number(firmId),
-        periodStart: start,
-        periodEnd: end,
-        selectedInterventionIds,
-        selectedMaterialLineIds,
-      });
-    },
-    onSuccess: () => {
-      toast.success("Facture générée");
-      qc.invalidateQueries({ queryKey: ["firm-invoices"] });
-      setShowWizard(false);
-      setPreview(null);
-    },
-    onError: (err) => toast.error(extractError(err)),
-  });
-
   const markPaidMutation = useMutation({
     mutationFn: markFirmInvoicePaid,
     onSuccess: () => { toast.success("Facture marquée payée"); qc.invalidateQueries({ queryKey: ["firm-invoices"] }); },
     onError: (err) => toast.error(extractError(err)),
   });
-
-  function toggleLine(line: PreviewLine) {
-    if (line.interventionId !== null) {
-      const id = line.interventionId;
-      setSelectedInterventionIds((prev) =>
-        prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-      );
-    } else if (line.materialLineId !== null) {
-      const id = line.materialLineId;
-      setSelectedMaterialLineIds((prev) =>
-        prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-      );
-    }
-  }
-
-  function isLineSelected(line: PreviewLine) {
-    if (line.interventionId !== null) return selectedInterventionIds.includes(line.interventionId);
-    if (line.materialLineId !== null) return selectedMaterialLineIds.includes(line.materialLineId);
-    return false;
-  }
 
   return (
     <Stack spacing={3}>
@@ -185,149 +100,10 @@ export default function FirmInvoicesPage() {
         <Paper variant="outlined" sx={{ p: 3, borderRadius: 2 }}>
           <Typography variant="subtitle1" fontWeight={700} mb={1}>Générer une facture</Typography>
 
-          <Stack direction="row" spacing={1} mb={2}>
-            <Button
-              size="small"
-              variant={wizardMode === "calculations" ? "contained" : "outlined"}
-              disableElevation
-              onClick={() => setWizardMode("calculations")}
-            >
-              Nouveau flux (recommandé)
-            </Button>
-            <Button
-              size="small"
-              variant={wizardMode === "legacy" ? "contained" : "outlined"}
-              disableElevation
-              onClick={() => setWizardMode("legacy")}
-            >
-              Flux classique
-            </Button>
-          </Stack>
-
-          {wizardMode === "calculations" ? (
-            <EligibleLinesInvoiceWizard
-              onCreated={(invoice) => { setShowWizard(false); navigate(`/app/m/billing/firm-invoices/${invoice.id}`); }}
-              onCancel={() => setShowWizard(false)}
-            />
-          ) : (
-          <Stack spacing={2}>
-            <Alert severity="warning">
-              Flux classique : relit les tarifs actuellement en vigueur au moment de la génération, sans passer par un
-              calcul financier figé. Conservé pour compatibilité — préférez le nouveau flux ci-dessus dès qu'un calcul
-              financier existe pour les missions concernées.
-            </Alert>
-            <Stack direction="row" spacing={2} alignItems="center">
-              <Select
-                value={firmId}
-                onChange={(e) => { setFirmId(e.target.value); setPreview(null); }}
-                displayEmpty
-                size="small"
-                sx={{ minWidth: 200 }}
-              >
-                <MenuItem value="" disabled>Sélectionner une firme</MenuItem>
-                {(firmsQuery.data ?? []).map((f) => (
-                  <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>
-                ))}
-              </Select>
-
-              <Select value={periodMonth} onChange={(e) => { setPeriodMonth(Number(e.target.value)); setPreview(null); }} size="small">
-                {MONTHS.map((m, i) => <MenuItem key={i + 1} value={i + 1}>{m}</MenuItem>)}
-              </Select>
-
-              <TextField
-                type="number"
-                value={periodYear}
-                onChange={(e) => { setPeriodYear(Number(e.target.value)); setPreview(null); }}
-                size="small"
-                sx={{ width: 100 }}
-                label="Année"
-              />
-
-              <Button
-                variant="outlined"
-                onClick={() => previewMutation.mutate()}
-                disabled={!firmId || previewMutation.isPending}
-              >
-                {previewMutation.isPending ? <CircularProgress size={16} /> : "Prévisualiser"}
-              </Button>
-
-              <Button onClick={() => { setShowWizard(false); setPreview(null); }} color="inherit">
-                Annuler
-              </Button>
-            </Stack>
-
-            {preview && (
-              <>
-                <Divider />
-                {preview.lines.length === 0 ? (
-                  <Typography color="text.secondary">Aucune ligne facturable pour cette période.</Typography>
-                ) : (
-                  <>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell padding="checkbox"></TableCell>
-                          <TableCell>Date</TableCell>
-                          <TableCell>Description</TableCell>
-                          <TableCell>Type</TableCell>
-                          <TableCell align="right">Qté</TableCell>
-                          <TableCell align="right">P.U.</TableCell>
-                          <TableCell align="right">Total</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {preview.lines.map((line, idx) => (
-                          <TableRow
-                            key={idx}
-                            hover
-                            onClick={() => toggleLine(line)}
-                            sx={{ cursor: "pointer", opacity: isLineSelected(line) ? 1 : 0.4 }}
-                          >
-                            <TableCell padding="checkbox">
-                              <input type="checkbox" checked={isLineSelected(line)} readOnly />
-                            </TableCell>
-                            <TableCell>{line.missionDate}</TableCell>
-                            <TableCell>{line.descriptionSnapshot}</TableCell>
-                            <TableCell>
-                              <Chip
-                                label={line.lineType === "INTERVENTION_FEE" ? "Intervention" : "Matériel"}
-                                size="small"
-                                color={line.lineType === "INTERVENTION_FEE" ? "primary" : "secondary"}
-                                variant="outlined"
-                              />
-                            </TableCell>
-                            <TableCell align="right">{line.quantity}</TableCell>
-                            <TableCell align="right">{line.unitPrice.toFixed(2)} €</TableCell>
-                            <TableCell align="right"><strong>{line.totalAmount.toFixed(2)} €</strong></TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-
-                    <Stack direction="row" justifyContent="space-between" alignItems="center">
-                      <Typography variant="body2" color="text.secondary">
-                        {selectedInterventionIds.length + selectedMaterialLineIds.length} ligne(s) sélectionnée(s)
-                      </Typography>
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <Typography variant="h6" fontWeight={700}>
-                          Total : {preview.lines.filter(isLineSelected).reduce((acc, l) => acc + l.totalAmount, 0).toFixed(2)} €
-                        </Typography>
-                        <Button
-                          variant="contained"
-                          disableElevation
-                          onClick={() => generateMutation.mutate()}
-                          disabled={generateMutation.isPending || (selectedInterventionIds.length + selectedMaterialLineIds.length) === 0}
-                        >
-                          {generateMutation.isPending ? <CircularProgress size={16} /> : "Générer la facture"}
-                        </Button>
-                      </Stack>
-                    </Stack>
-                  </>
-                )}
-              </>
-            )}
-          </Stack>
-          )}
+          <EligibleLinesInvoiceWizard
+            onCreated={(invoice) => { setShowWizard(false); navigate(`/app/m/billing/firm-invoices/${invoice.id}`); }}
+            onCancel={() => setShowWizard(false)}
+          />
         </Paper>
       )}
 
