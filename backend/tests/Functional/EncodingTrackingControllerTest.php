@@ -266,6 +266,51 @@ final class EncodingTrackingControllerTest extends WebTestCase
         self::assertSame(Response::HTTP_UNAUTHORIZED, $client->getResponse()->getStatusCode());
     }
 
+    // ── D-121 — badge "à valider" (GET .../pending-validation-count) ────────
+
+    private function getPendingValidationCount(KernelBrowser $client, string $token): int
+    {
+        $client->request('GET', self::ENDPOINT . '/pending-validation-count', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+        $response = $client->getResponse();
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        return json_decode((string) $response->getContent(), true)['count'];
+    }
+
+    public function test_pending_validation_count_reflects_submitted_missions_exactly(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token = $this->login($client, $manager);
+        $site = $this->createSite();
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instrumentist = $this->createUser('ROLE_INSTRUMENTIST');
+
+        // Baseline lue directement en base (jamais via l'endpoint) — comme tout le reste
+        // de ce fichier, toute la création de fixtures via $this->em doit précéder l'unique
+        // appel HTTP de fin de test ; un aller-retour HTTP intercalé entre deux persist()
+        // casse le rattachement des entités déjà managées (ORMInvalidArgumentException).
+        $before = (int) $this->em->getConnection()->fetchOne("SELECT COUNT(*) FROM mission WHERE status = 'SUBMITTED'");
+
+        // Deux missions SUBMITTED — comptées. Une VALIDATED et une ASSIGNED — jamais
+        // comptées (seul SUBMITTED représente une validation manager en attente).
+        $this->makeMission(MissionStatus::SUBMITTED, $site, $surgeon, $instrumentist, start: '2026-03-11 08:00:00');
+        $this->makeMission(MissionStatus::SUBMITTED, $site, $surgeon, $instrumentist, start: '2026-03-12 08:00:00');
+        $this->makeMission(MissionStatus::VALIDATED, $site, $surgeon, $instrumentist, start: '2026-03-13 08:00:00');
+        $this->makeMission(MissionStatus::ASSIGNED, $site, $surgeon, $instrumentist, start: '2026-03-14 08:00:00');
+
+        self::assertSame($before + 2, $this->getPendingValidationCount($client, $token));
+    }
+
+    public function test_pending_validation_count_instrumentist_is_denied(): void
+    {
+        $client = $this->boot();
+        $token = $this->login($client, $this->createUser('ROLE_INSTRUMENTIST'));
+
+        $client->request('GET', self::ENDPOINT . '/pending-validation-count', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+
+        self::assertSame(Response::HTTP_FORBIDDEN, $client->getResponse()->getStatusCode());
+    }
+
     // ── Dérivation des états contre une vraie base ───────────────────────
 
     public function test_derives_every_encoding_state_from_real_rows(): void

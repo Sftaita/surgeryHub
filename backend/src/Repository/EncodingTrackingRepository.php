@@ -313,6 +313,17 @@ final class EncodingTrackingRepository
     }
 
     /**
+     * D-121, §funnel encodage — nombre EXACT de missions SUBMITTED en attente de
+     * validation manager, sans filtre de période : le badge de navigation représente la
+     * file d'attente réelle à l'instant présent, pas seulement la période affichée dans le
+     * cockpit "Suivi des encodages" (dont le résumé, lui, est filtré par période).
+     */
+    public function countPendingEncodingValidation(): int
+    {
+        return (int) $this->connection->fetchOne("SELECT COUNT(*) FROM mission WHERE status = 'SUBMITTED'");
+    }
+
+    /**
      * Filtres partagés + le type de mission, propre à ce module. missionType n'est
      * délibérément pas ajouté à FinancialStatisticsFilter : ce serait modifier le contrat
      * gelé de D-077 pour un besoin qui n'appartient qu'au suivi des encodages.

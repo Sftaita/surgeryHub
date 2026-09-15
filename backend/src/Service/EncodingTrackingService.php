@@ -164,6 +164,12 @@ final class EncodingTrackingService
         );
     }
 
+    /** D-121 — voir EncodingTrackingRepository::countPendingEncodingValidation(). */
+    public function countPendingValidation(): int
+    {
+        return $this->repository->countPendingEncodingValidation();
+    }
+
     /** Chirurgiens exceptés (getDrName()), un nom d'affichage simple avec repli e-mail. */
     private function displayName(?User $user): ?string
     {

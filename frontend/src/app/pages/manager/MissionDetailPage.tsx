@@ -140,6 +140,10 @@ export function MissionDetailContent({
     await queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] });
     await queryClient.invalidateQueries({ queryKey: ["missions"], exact: false });
     await queryClient.refetchQueries({ queryKey: ["missions"], exact: false });
+    // D-121 — validate/reject/reopen changent tous le nombre de missions SUBMITTED :
+    // le badge de nav doit refléter l'action immédiatement, pas seulement au prochain
+    // polling (60s, voir useNavBadgeCount).
+    await queryClient.invalidateQueries({ queryKey: ["encoding-tracking", "pending-validation-count"] });
   }
 
   const approveMutation = useMutation({

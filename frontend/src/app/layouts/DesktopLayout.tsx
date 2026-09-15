@@ -43,6 +43,7 @@ import { usePwaInstallMenuState } from "../features/pwa-install/usePwaInstallMen
 import { getMaterialRequests } from "../features/manager-catalogue/api/catalogue.api";
 import { getInterventionTypeRequests } from "../features/manager-catalogue/api/interventionTypeRequests.api";
 import { fetchUnreadNotificationsCount } from "../features/notifications/api/notifications.api";
+import { getPendingEncodingValidationCount } from "../features/encoding-tracking/api/encodingTracking.api";
 import { useNavBadgeCount } from "../ui/hooks/useNavBadgeCount";
 import { dvh } from "../ui/dvh";
 import { PersonAvatar } from "../ui/avatar/PersonAvatar";
@@ -192,6 +193,12 @@ export function DesktopLayout() {
     ["notifications", "unread-count"],
     fetchUnreadNotificationsCount,
   );
+  // D-121 — file d'attente réelle "à valider", pas un état déduit côté frontend
+  // (voir EncodingTrackingRepository::countPendingEncodingValidation()).
+  const pendingValidationCount = useNavBadgeCount(
+    ["encoding-tracking", "pending-validation-count"],
+    getPendingEncodingValidationCount,
+  );
 
   const fullName = isAuthenticated
     ? `${state.user.firstname ?? ""} ${state.user.lastname ?? ""}`.trim() || "Mon compte"
@@ -230,11 +237,13 @@ export function DesktopLayout() {
                       <Stack spacing="6px">
                         {item.children.map((child) => {
                           const isRequests = child.href === "/app/m/catalogue/requests";
+                          const isEncodingTracking = child.href === "/app/m/billing/encodings";
+                          const badgeCount = isRequests ? pendingCount : isEncodingTracking ? pendingValidationCount : 0;
                           return (
                             <NavItem key={child.href} href={child.href} icon={child.icon}>
-                              {isRequests && pendingCount > 0 ? (
+                              {badgeCount > 0 ? (
                                 <Badge
-                                  badgeContent={pendingCount}
+                                  badgeContent={badgeCount}
                                   color="error"
                                   sx={{ "& .MuiBadge-badge": { right: -14, top: 1 } }}
                                 >

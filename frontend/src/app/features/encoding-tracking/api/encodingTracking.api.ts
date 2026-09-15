@@ -153,3 +153,13 @@ export async function getEncodingTrackingSummary(filter: EncodingTrackingFilter)
   const res = await apiClient.get("/api/billing/encoding-tracking/summary", { params: toParams(filter) });
   return res.data;
 }
+
+/**
+ * D-121 — badge de navigation "Suivi des encodages" : nombre exact de missions en
+ * attente de validation manager, sans filtre de période (distinct de `summary.submitted`
+ * ci-dessus, qui est filtré par période).
+ */
+export async function getPendingEncodingValidationCount(): Promise<number> {
+  const res = await apiClient.get("/api/billing/encoding-tracking/pending-validation-count");
+  return res.data.count;
+}

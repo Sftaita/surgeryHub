@@ -93,6 +93,22 @@ final class EncodingTrackingController extends AbstractController
         ]);
     }
 
+    /**
+     * D-121, §funnel encodage — badge de navigation : nombre exact de missions en attente
+     * de validation manager, sans filtre de période (voir
+     * EncodingTrackingRepository::countPendingEncodingValidation()). Endpoint séparé et
+     * volontairement minimal — `list()`/`summary()` ci-dessus sont filtrés par période et
+     * ne peuvent pas répondre à "combien au total, là, maintenant ?" sans changer leur
+     * contrat existant.
+     */
+    #[Route('/pending-validation-count', name: 'api_encoding_tracking_pending_validation_count', methods: ['GET'])]
+    public function pendingValidationCount(): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        return $this->json(['count' => $this->service->countPendingValidation()]);
+    }
+
     /** @return array<string, mixed> */
     private function serializeSummary(EncodingTrackingSummary $summary): array
     {
