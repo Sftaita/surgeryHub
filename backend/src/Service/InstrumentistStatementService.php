@@ -3,6 +3,8 @@
 namespace App\Service;
 
 use App\Dto\DocumentLineSelectionAnomaly;
+use App\Dto\EligibleLinesDiagnostic;
+use App\Repository\EncodingTrackingRepository;
 use App\Entity\FinancialCalculation;
 use App\Entity\FinancialCalculationLine;
 use App\Entity\InstrumentistStatement;
@@ -16,7 +18,6 @@ use App\Enum\FinancialDocumentType;
 use App\Enum\FinancialLineType;
 use App\Enum\InvoiceStatus;
 use App\Enum\MissionStatus;
-use App\Enum\MissionType;
 use App\Enum\StatementLineType;
 use App\Exception\DocumentAlreadyIssuedException;
 use App\Exception\DocumentLineSelectionException;
@@ -24,16 +25,12 @@ use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
- * EPIC Exécution & Valorisation, Lot 4 (D-074) — preview()/generate()/markSent()/
- * markPaid() ci-dessous sont le chemin LEGACY, conservés strictement inchangés : ils
- * relisent encore User.hourlyRate/consultationFee et recalculent la durée depuis
- * Mission.startAt/endAt (jamais MissionExecution ni InstrumentistRate) — c'est le seul
- * chemin utilisé par le frontend actuel. Les nouvelles méthodes en bas de fichier
- * (previewEligibleLines()/createFromEligibleLines()/cancel()) consomment exclusivement
- * des FinancialCalculationLine déjà valorisées (Lot 3) : aucun accès à User.hourlyRate/
- * consultationFee, aucune relecture de MissionExecution, aucun recalcul de durée. Les
- * deux chemins coexistent (§18 du lot), jamais mélangés au sein d'un même décompte
- * (InstrumentistStatementLine::isLegacy()).
+ * EPIC Exécution & Valorisation, Lot 4 (D-074) puis nettoyage architectural (D-121) —
+ * ce service ne consomme plus que des FinancialCalculationLine déjà valorisées et
+ * figées (Lot 3) : jamais d'accès à User.hourlyRate/consultationFee, jamais de
+ * relecture de MissionExecution, aucun recalcul de durée au moment de la génération.
+ * Le chemin LEGACY (preview()/generate()) a été supprimé — aucun décompte n'avait
+ * jamais été produit par ce chemin en production (voir D-121).
  */
 class InstrumentistStatementService
 {
@@ -41,103 +38,8 @@ class InstrumentistStatementService
         private readonly EntityManagerInterface $em,
         private readonly FinancialCalculationService $financialCalculationService,
         private readonly AuditService $audit,
+        private readonly EncodingTrackingRepository $encodingTrackingRepository,
     ) {}
-
-    /**
-     * Prévisualise les lignes facturables pour un instrumentiste + mois.
-     * Exclut les missions déjà incluses dans un décompte GENERATED/SENT/PAID.
-     */
-    public function preview(User $instrumentist, int $year, int $month): array
-    {
-        $missions = $this->findBillableMissions($instrumentist, $year, $month);
-        $alreadyBilledIds = $this->getAlreadyBilledMissionIds($instrumentist, $year, $month);
-
-        $lines = [];
-        foreach ($missions as $mission) {
-            if (in_array($mission->getId(), $alreadyBilledIds, true)) {
-                continue;
-            }
-            $lines[] = $this->buildPreviewLine($mission, $instrumentist);
-        }
-
-        $total = array_sum(array_column($lines, 'totalAmount'));
-
-        return [
-            'instrumentist' => [
-                'id' => $instrumentist->getId(),
-                'displayName' => $this->buildDisplayName($instrumentist),
-                'email' => $instrumentist->getEmail(),
-                'hourlyRate' => $instrumentist->getHourlyRate(),
-                'consultationFee' => $instrumentist->getConsultationFee(),
-            ],
-            'period' => ['year' => $year, 'month' => $month],
-            'lines' => $lines,
-            'totalAmount' => round($total, 2),
-            'alreadyBilledMissionIds' => $alreadyBilledIds,
-        ];
-    }
-
-    /**
-     * Génère un décompte définitif (snapshot + verrouillage).
-     */
-    public function generate(User $instrumentist, int $year, int $month, array $selectedMissionIds): InstrumentistStatement
-    {
-        // Vérifie qu'il n'existe pas déjà un décompte GENERATED+ pour ce mois
-        $existing = $this->findExistingGeneratedStatement($instrumentist, $year, $month);
-        if ($existing !== null) {
-            throw new \DomainException(sprintf(
-                'Un décompte existe déjà pour %02d/%d (statut : %s).',
-                $month, $year, $existing->getStatus()->value
-            ));
-        }
-
-        $missions = $this->findBillableMissions($instrumentist, $year, $month);
-        $alreadyBilled = $this->getAlreadyBilledMissionIds($instrumentist, $year, $month);
-
-        $statement = new InstrumentistStatement();
-        $statement->setInstrumentist($instrumentist);
-        $statement->setPeriodYear($year);
-        $statement->setPeriodMonth($month);
-        $statement->setStatus(InvoiceStatus::GENERATED);
-        $statement->setInstrumentistNameSnapshot($this->buildDisplayName($instrumentist));
-        $statement->setInstrumentistEmailSnapshot($instrumentist->getEmail());
-
-        $total = '0.00';
-
-        foreach ($missions as $mission) {
-            if (!in_array($mission->getId(), $selectedMissionIds, true)) {
-                continue;
-            }
-            if (in_array($mission->getId(), $alreadyBilled, true)) {
-                continue;
-            }
-
-            $lineData = $this->buildPreviewLine($mission, $instrumentist);
-
-            $line = new InstrumentistStatementLine();
-            $line->setMission($mission);
-            $line->setLineType($lineData['lineType'] === 'BLOC' ? StatementLineType::BLOC : StatementLineType::CONSULTATION);
-            $line->setDurationMinutesRaw($lineData['durationMinutesRaw']);
-            $line->setDurationMinutesRounded($lineData['durationMinutesRounded']);
-            $line->setRateSnapshot((string) $lineData['rateSnapshot']);
-            $line->setQuantity((string) $lineData['quantity']);
-            $line->setTotalAmount((string) $lineData['totalAmount']);
-            $line->setSurgeonNameSnapshot($lineData['surgeonName']);
-            $line->setSiteNameSnapshot($lineData['siteName']);
-            $line->setMissionDateSnapshot(new \DateTimeImmutable($mission->getStartAt()->format('Y-m-d')));
-
-            $statement->addLine($line);
-
-            $total = (string) round((float) $total + (float) $lineData['totalAmount'], 2);
-        }
-
-        $statement->setTotalAmount($total);
-
-        $this->em->persist($statement);
-        $this->em->flush();
-
-        return $statement;
-    }
 
     /**
      * Conservé pour compatibilité (POST /{id}/send, existant) — délègue à issue()
@@ -215,114 +117,6 @@ class InstrumentistStatementService
 
     // ── Helpers ──────────────────────────────────────────────────────
 
-    /** @return Mission[] */
-    private function findBillableMissions(User $instrumentist, int $year, int $month): array
-    {
-        $start = new \DateTimeImmutable(sprintf('%04d-%02d-01 00:00:00', $year, $month));
-        $end = $start->modify('last day of this month')->setTime(23, 59, 59);
-
-        return $this->em->createQueryBuilder()
-            ->select('m')
-            ->from(Mission::class, 'm')
-            ->leftJoin('m.services', 's')
-            ->where('m.instrumentist = :user')
-            ->andWhere('m.status = :status')
-            ->andWhere('m.startAt >= :start')
-            ->andWhere('m.startAt <= :end')
-            ->setParameter('user', $instrumentist)
-            ->setParameter('status', MissionStatus::VALIDATED)
-            ->setParameter('start', $start)
-            ->setParameter('end', $end)
-            ->orderBy('m.startAt', 'ASC')
-            ->getQuery()
-            ->getResult();
-    }
-
-    private function getAlreadyBilledMissionIds(User $instrumentist, int $year, int $month): array
-    {
-        $rows = $this->em->createQueryBuilder()
-            ->select('IDENTITY(l.mission) as missionId')
-            ->from(InstrumentistStatementLine::class, 'l')
-            ->join('l.statement', 's')
-            ->where('s.instrumentist = :user')
-            ->andWhere('s.periodYear = :year')
-            ->andWhere('s.periodMonth = :month')
-            ->andWhere('s.status IN (:statuses)')
-            ->setParameter('user', $instrumentist)
-            ->setParameter('year', $year)
-            ->setParameter('month', $month)
-            ->setParameter('statuses', [InvoiceStatus::GENERATED, InvoiceStatus::SENT, InvoiceStatus::PAID])
-            ->getQuery()
-            ->getArrayResult();
-
-        return array_column($rows, 'missionId');
-    }
-
-    private function findExistingGeneratedStatement(User $instrumentist, int $year, int $month): ?InstrumentistStatement
-    {
-        return $this->em->createQueryBuilder()
-            ->select('s')
-            ->from(InstrumentistStatement::class, 's')
-            ->where('s.instrumentist = :user')
-            ->andWhere('s.periodYear = :year')
-            ->andWhere('s.periodMonth = :month')
-            ->andWhere('s.status IN (:statuses)')
-            ->setParameter('user', $instrumentist)
-            ->setParameter('year', $year)
-            ->setParameter('month', $month)
-            ->setParameter('statuses', [InvoiceStatus::GENERATED, InvoiceStatus::SENT, InvoiceStatus::PAID])
-            ->getQuery()
-            ->getOneOrNullResult();
-    }
-
-    private function buildPreviewLine(Mission $mission, User $instrumentist): array
-    {
-        $isConsultation = $mission->getType() === MissionType::CONSULTATION;
-
-        $surgeonName = $mission->getSurgeon()
-            ? $this->buildDisplayName($mission->getSurgeon())
-            : null;
-
-        $siteName = $mission->getSite()?->getName();
-
-        if ($isConsultation) {
-            $rate = (float) ($instrumentist->getConsultationFee() ?? '0');
-            return [
-                'missionId' => $mission->getId(),
-                'missionDate' => $mission->getStartAt()->format('Y-m-d'),
-                'lineType' => 'CONSULTATION',
-                'durationMinutesRaw' => null,
-                'durationMinutesRounded' => null,
-                'rateSnapshot' => $rate,
-                'quantity' => 1.0,
-                'totalAmount' => round($rate, 2),
-                'surgeonName' => $surgeonName,
-                'siteName' => $siteName,
-            ];
-        }
-
-        // BLOC — durée à partir de l'heure de début/fin
-        $raw = (int) ($mission->getEndAt()->getTimestamp() - $mission->getStartAt()->getTimestamp()) / 60;
-        $raw = max(0, $raw);
-        $rounded = (int) (ceil($raw / 15) * 15);
-        $hours = round($rounded / 60, 4);
-        $rate = (float) ($instrumentist->getHourlyRate() ?? '0');
-        $total = round($hours * $rate, 2);
-
-        return [
-            'missionId' => $mission->getId(),
-            'missionDate' => $mission->getStartAt()->format('Y-m-d'),
-            'lineType' => 'BLOC',
-            'durationMinutesRaw' => $raw,
-            'durationMinutesRounded' => $rounded,
-            'rateSnapshot' => $rate,
-            'quantity' => $hours,
-            'totalAmount' => $total,
-            'surgeonName' => $surgeonName,
-            'siteName' => $siteName,
-        ];
-    }
-
     private function buildDisplayName(User $user): string
     {
         $name = trim(($user->getFirstname() ?? '') . ' ' . ($user->getLastname() ?? ''));
@@ -346,13 +140,172 @@ class InstrumentistStatementService
         [$start, $end] = $this->periodBounds($year, $month);
         $lines = $this->findEligibleInstrumentistLines($instrumentist, $currency, $start, $end);
 
-        return [
+        $result = [
             'instrumentist' => ['id' => $instrumentist->getId(), 'displayName' => $this->buildDisplayName($instrumentist)],
             'currency' => $currency,
             'period' => ['year' => $year, 'month' => $month],
             'lines' => array_map($this->serializeEligibleLine(...), $lines),
             'totalAmount' => $this->sumLineTotals($lines),
         ];
+
+        if (count($lines) === 0) {
+            $result['diagnostic'] = $this->buildDiagnostic($instrumentist, $currency, $start, $end)->toArray();
+        }
+
+        return $result;
+    }
+
+    /** Diagnostic explicatif (D-121, §6) — miroir exact de FirmInvoiceService::buildDiagnostic(). */
+    private function buildDiagnostic(User $instrumentist, string $currency, \DateTimeImmutable $periodStart, \DateTimeImmutable $periodEnd): EligibleLinesDiagnostic
+    {
+        $missionIds = $this->findValidatedMissionIdsForInstrumentist($instrumentist, $periodStart, $periodEnd);
+        $validatedMissionCount = count($missionIds);
+
+        $byStatus = $this->countCalculationsByStatusForMissions($missionIds);
+        $calculatedCount = $byStatus[FinancialCalculationStatus::CALCULATED->value] ?? 0;
+        $approvedCount = $byStatus[FinancialCalculationStatus::APPROVED->value] ?? 0;
+        $lockedCount = $byStatus[FinancialCalculationStatus::LOCKED->value] ?? 0;
+        $calculationCount = $calculatedCount + $approvedCount + $lockedCount;
+
+        $missingPricingCount = $missionIds === [] ? 0 : $this->countMissionsWithCalculationFailure($missionIds);
+        $currencyMismatchCount = $this->countInstrumentistLines($instrumentist, $periodStart, $periodEnd, currency: null, excludeCurrency: strtoupper($currency));
+        $alreadyInvoicedCount = $this->countInstrumentistLines($instrumentist, $periodStart, $periodEnd, currency: strtoupper($currency), excludeCurrency: null, onlyAssigned: true);
+
+        $reasons = [];
+        if ($validatedMissionCount === 0) {
+            $reasons[] = 'NO_VALIDATED_MISSIONS';
+        } elseif ($calculationCount === 0) {
+            $reasons[] = 'NO_FINANCIAL_CALCULATIONS';
+            if ($missingPricingCount > 0) {
+                $reasons[] = 'MISSING_PRICING';
+            }
+        } else {
+            if ($calculatedCount > 0) {
+                $reasons[] = 'CALCULATIONS_PENDING_APPROVAL';
+            }
+            if ($missingPricingCount > 0) {
+                $reasons[] = 'MISSING_PRICING';
+            }
+            if ($currencyMismatchCount > 0) {
+                $reasons[] = 'CURRENCY_MISMATCH';
+            }
+            if ($alreadyInvoicedCount > 0) {
+                $reasons[] = 'ALREADY_INVOICED';
+            }
+            if (($approvedCount + $lockedCount) > 0 && $reasons === []) {
+                $reasons[] = 'NO_LINES_FOR_BENEFICIARY';
+            }
+        }
+
+        return new EligibleLinesDiagnostic(
+            validatedMissionCount: $validatedMissionCount,
+            calculationCount: $calculationCount,
+            calculatedCount: $calculatedCount,
+            approvedCount: $approvedCount,
+            lockedCount: $lockedCount,
+            missingPricingCount: $missingPricingCount,
+            currencyMismatchCount: $currencyMismatchCount,
+            alreadyInvoicedCount: $alreadyInvoicedCount,
+            reasons: $reasons,
+        );
+    }
+
+    /** @return int[] */
+    private function findValidatedMissionIdsForInstrumentist(User $instrumentist, \DateTimeImmutable $periodStart, \DateTimeImmutable $periodEnd): array
+    {
+        $rows = $this->em->createQueryBuilder()
+            ->select('m.id')
+            ->from(Mission::class, 'm')
+            ->leftJoin('m.execution', 'exec')
+            ->where('m.instrumentist = :instrumentist')
+            ->andWhere('m.status = :status')
+            ->andWhere('COALESCE(exec.actualStartAt, m.startAt) >= :start')
+            ->andWhere('COALESCE(exec.actualStartAt, m.startAt) <= :end')
+            ->setParameter('instrumentist', $instrumentist)
+            ->setParameter('status', MissionStatus::VALIDATED)
+            ->setParameter('start', $periodStart)
+            ->setParameter('end', $periodEnd)
+            ->getQuery()
+            ->getArrayResult();
+
+        return array_column($rows, 'id');
+    }
+
+    /** @param int[] $missionIds @return array<string, int> statut => nombre de calculs actifs */
+    private function countCalculationsByStatusForMissions(array $missionIds): array
+    {
+        if ($missionIds === []) {
+            return [];
+        }
+
+        $rows = $this->em->createQueryBuilder()
+            ->select('fc.status as status', 'COUNT(fc.id) as cnt')
+            ->from(FinancialCalculation::class, 'fc')
+            ->where('IDENTITY(fc.mission) IN (:missionIds)')
+            ->andWhere('fc.status IN (:statuses)')
+            ->setParameter('missionIds', $missionIds)
+            ->setParameter('statuses', [
+                FinancialCalculationStatus::CALCULATED,
+                FinancialCalculationStatus::APPROVED,
+                FinancialCalculationStatus::LOCKED,
+            ])
+            ->groupBy('fc.status')
+            ->getQuery()
+            ->getArrayResult();
+
+        $byStatus = [];
+        foreach ($rows as $row) {
+            $status = $row['status'] instanceof FinancialCalculationStatus ? $row['status']->value : $row['status'];
+            $byStatus[$status] = (int) $row['cnt'];
+        }
+        return $byStatus;
+    }
+
+    /**
+     * @param int[] $missionIds
+     * Miroir exact de FirmInvoiceService::countMissionsWithCalculationFailure() — voir son
+     * docblock.
+     */
+    private function countMissionsWithCalculationFailure(array $missionIds): int
+    {
+        return count($this->encodingTrackingRepository->findMissionsWithFailedCalculation($missionIds));
+    }
+
+    private function countInstrumentistLines(
+        User $instrumentist,
+        \DateTimeImmutable $periodStart,
+        \DateTimeImmutable $periodEnd,
+        ?string $currency,
+        ?string $excludeCurrency,
+        bool $onlyAssigned = false,
+    ): int {
+        $qb = $this->em->createQueryBuilder()
+            ->select('COUNT(l.id)')
+            ->from(FinancialCalculationLine::class, 'l')
+            ->join('l.financialCalculation', 'fc')
+            ->leftJoin('l.instrumentistStatementLine', 'sl')
+            ->where('l.beneficiaryType = :beneficiaryType')
+            ->andWhere('l.beneficiaryInstrumentist = :instrumentist')
+            ->andWhere('fc.status IN (:statuses)')
+            ->andWhere('l.effectiveAt >= :start')
+            ->andWhere('l.effectiveAt <= :end')
+            ->setParameter('beneficiaryType', FinancialBeneficiaryType::INSTRUMENTIST)
+            ->setParameter('instrumentist', $instrumentist)
+            ->setParameter('statuses', [FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED])
+            ->setParameter('start', $periodStart)
+            ->setParameter('end', $periodEnd);
+
+        if ($currency !== null) {
+            $qb->andWhere('l.currency = :currency')->setParameter('currency', $currency);
+        }
+        if ($excludeCurrency !== null) {
+            $qb->andWhere('l.currency != :excludeCurrency')->setParameter('excludeCurrency', $excludeCurrency);
+        }
+        if ($onlyAssigned) {
+            $qb->andWhere('sl.id IS NOT NULL');
+        }
+
+        return (int) $qb->getQuery()->getSingleScalarResult();
     }
 
     /**

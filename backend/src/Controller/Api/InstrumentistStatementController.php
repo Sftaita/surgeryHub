@@ -63,58 +63,6 @@ class InstrumentistStatementController extends AbstractController
         return $this->json(array_map(fn($s) => $this->serializeStatement($s), $statements));
     }
 
-    #[Route('/preview', name: 'api_statements_preview', methods: ['POST'])]
-    public function preview(Request $request, #[CurrentUser] User $user): JsonResponse
-    {
-        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
-
-        $data = json_decode($request->getContent(), true) ?? [];
-        $instrumentistId = $data['instrumentistId'] ?? null;
-        $year = (int) ($data['year'] ?? 0);
-        $month = (int) ($data['month'] ?? 0);
-
-        if (!$instrumentistId || !$year || !$month || $month < 1 || $month > 12) {
-            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'instrumentistId, year et month sont requis.']], 422);
-        }
-
-        $instrumentist = $this->em->find(User::class, $instrumentistId);
-        if (!$instrumentist || !in_array('ROLE_INSTRUMENTIST', $instrumentist->getRoles(), true)) {
-            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Instrumentiste introuvable.']], 404);
-        }
-
-        $preview = $this->statementService->preview($instrumentist, $year, $month);
-        return $this->json($preview);
-    }
-
-    #[Route('', name: 'api_statements_generate', methods: ['POST'])]
-    public function generate(Request $request, #[CurrentUser] User $user): JsonResponse
-    {
-        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
-
-        $data = json_decode($request->getContent(), true) ?? [];
-        $instrumentistId = $data['instrumentistId'] ?? null;
-        $year = (int) ($data['year'] ?? 0);
-        $month = (int) ($data['month'] ?? 0);
-        $selectedMissionIds = $data['selectedMissionIds'] ?? [];
-
-        if (!$instrumentistId || !$year || !$month || empty($selectedMissionIds)) {
-            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'instrumentistId, year, month et selectedMissionIds sont requis.']], 422);
-        }
-
-        $instrumentist = $this->em->find(User::class, $instrumentistId);
-        if (!$instrumentist || !in_array('ROLE_INSTRUMENTIST', $instrumentist->getRoles(), true)) {
-            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Instrumentiste introuvable.']], 404);
-        }
-
-        try {
-            $statement = $this->statementService->generate($instrumentist, $year, $month, $selectedMissionIds);
-        } catch (\DomainException $e) {
-            return $this->json(['error' => ['status' => 409, 'code' => 'CONFLICT', 'message' => $e->getMessage()]], 409);
-        }
-
-        return $this->json($this->serializeStatementDetail($statement), 201);
-    }
-
     #[Route('/{id}', name: 'api_statements_get', methods: ['GET'], requirements: ['id' => '\d+'])]
     public function get(int $id): JsonResponse
     {

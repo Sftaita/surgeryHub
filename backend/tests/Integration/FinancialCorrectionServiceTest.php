@@ -230,25 +230,22 @@ final class FinancialCorrectionServiceTest extends KernelTestCase
         return [$invoice, $invoice->getLines()->first(), $mission, $firm];
     }
 
-    /** Variante "legacy" (chemin Lot 1 inchangé, jamais de FinancialCalculationLine). */
+    /**
+     * D-121 — le chemin de génération legacy (FirmInvoiceService::generate()) a été
+     * supprimé, aucune FirmInvoice legacySource=true n'ayant jamais été créée en
+     * production. Ce fixture construit directement, par persistance d'entités, la même
+     * forme de document que produisait l'ancien chemin (legacySource=true,
+     * FirmInvoiceLine.financialCalculationLine=null) — le seul point testé ici est que
+     * FinancialCorrectionService gère correctement un document historique de cette forme
+     * sans tenter de reconstruire une FinancialCalculationLine (§24), pas la génération
+     * elle-même.
+     */
     private function makeIssuedLegacyInvoiceWithLine(string $unitPrice, User $actor): array
     {
         $firm = new Firm();
         $firm->setName('FCS-Legacy-' . bin2hex(random_bytes(3)));
         $this->em->persist($firm); $this->em->flush();
         $this->created['firms'][] = $firm->getId();
-
-        $type = new InterventionType();
-        $type->setCode('FCS-Legacy-' . bin2hex(random_bytes(3)));
-        $type->setLabel('FCS-Legacy');
-        $rule = new PricingRule();
-        $rule->setFirm($firm);
-        $rule->setRuleType(PricingRuleType::INTERVENTION_FEE);
-        $rule->setInterventionType($type);
-        $rule->setUnitPrice($unitPrice);
-        $this->em->persist($type); $this->em->persist($rule); $this->em->flush();
-        $this->created['types'][] = $type->getId();
-        $this->created['rules'][] = $rule->getId();
 
         $site = new Hospital();
         $site->setName('FCS-LegacySite-' . bin2hex(random_bytes(3)));
@@ -268,28 +265,33 @@ final class FinancialCorrectionServiceTest extends KernelTestCase
         $this->em->persist($mission); $this->em->flush();
         $this->created['missions'][] = $mission->getId();
 
-        $intervention = new MissionIntervention();
-        $intervention->setMission($mission);
-        $intervention->setCode($type->getCode());
-        $intervention->setLabel('FCS-Legacy');
-        $this->em->persist($intervention); $this->em->flush();
-        $this->created['interventions'][] = $intervention->getId();
-
-        $this->em->clear();
-        $firm = $this->em->find(Firm::class, $firm->getId());
-        $mission = $this->em->find(Mission::class, $mission->getId());
-        $actor = $this->em->find(User::class, $actor->getId());
-
-        $invoice = $this->invoiceService->generate(
-            $firm, $today->modify('-1 day'), $today->modify('+1 day'), [$intervention->getId()], [],
-        );
-        $this->created['invoices'][] = $invoice->getId();
+        $invoice = new FirmInvoice();
+        $invoice->setFirm($firm);
+        $invoice->setPeriodStart($today->modify('-1 day'));
+        $invoice->setPeriodEnd($today->modify('+1 day'));
+        $invoice->setStatus(InvoiceStatus::GENERATED);
+        $invoice->setGeneratedAt($today);
+        $invoice->setLegacySource(true);
+        $invoice->setNumber('FIRM-LEGACY-' . bin2hex(random_bytes(3)));
+        $invoice->setTotalAmount($unitPrice);
         $invoice->setBillingEmailTo('legacy@example.test');
+        $this->em->persist($invoice);
+
+        $line = new FirmInvoiceLine();
+        $line->setMission($mission);
+        $line->setLineType(PricingRuleType::INTERVENTION_FEE);
+        $line->setDescriptionSnapshot('FCS-Legacy');
+        $line->setFirmNameSnapshot($firm->getName());
+        $line->setUnitPrice($unitPrice);
+        $line->setQuantity('1.0000');
+        $line->setTotalAmount($unitPrice);
+        $invoice->addLine($line);
+        $this->em->persist($line);
+        $this->em->flush();
+        $this->created['invoices'][] = $invoice->getId();
+
         $invoice = $this->invoiceService->issue($invoice, $actor);
 
-        // §em->clear() ci-dessus détache toute entité chargée avant cet appel — retourner
-        // l'acteur rechargé évite qu'un appelant réutilise par erreur une référence
-        // désormais détachée (ORMInvalidArgumentException au prochain flush).
         return [$invoice, $invoice->getLines()->first(), $mission, $firm, $actor];
     }
 

@@ -2287,84 +2287,18 @@ construction, gardé en défense).
 
 ---
 
-### 24.3 Preview facture
+### 24.3 Génération de facture — voir §36
 
-#### `POST /api/firm-invoices/preview`
-
-**Body JSON :**
-
-```json
-{
-  "firmId": 1,
-  "periodStart": "2026-03-01T00:00:00+01:00",
-  "periodEnd": "2026-03-31T23:59:59+01:00"
-}
-```
-
-**Réponse — 200 :**
-
-```json
-{
-  "firm": { "id": 1, "name": "Arthrex" },
-  "period": { "start": "2026-03-01", "end": "2026-03-31" },
-  "lines": [
-    {
-      "missionId": 42,
-      "missionDate": "2026-03-14",
-      "interventionId": 19,
-      "materialLineId": null,
-      "lineType": "INTERVENTION_FEE",
-      "descriptionSnapshot": "[LCA] Ligament croisé antérieur",
-      "firmNameSnapshot": "Arthrex",
-      "unitPrice": 100.0,
-      "quantity": 1.0,
-      "totalAmount": 100.0
-    }
-  ],
-  "totalAmount": 100.0
-}
-```
-
-**Notes :**
-- Exclut automatiquement les interventions/materialLines déjà dans une facture `GENERATED/SENT/PAID` pour cette firme
-- Seules les missions `VALIDATED` sont incluses
+**D-121/D-074 — suppression du chemin legacy (2026-09-14) :** `POST /api/firm-invoices/preview`
+et `POST /api/firm-invoices` (qui recalculaient les montants depuis `PricingRule` au moment
+de la génération) ont été supprimés — aucune facture n'avait jamais été produite par ce
+chemin en production. Le seul chemin de génération est désormais celui du §36
+(`GET /api/firm-invoices/eligible-lines` + `POST /api/firm-invoices/from-financial-calculations`),
+qui consomme exclusivement des `FinancialCalculationLine` déjà figées.
 
 ---
 
-### 24.4 Générer une facture
-
-#### `POST /api/firm-invoices`
-
-**Body JSON :**
-
-```json
-{
-  "firmId": 1,
-  "periodStart": "2026-03-01T00:00:00+01:00",
-  "periodEnd": "2026-03-31T23:59:59+01:00",
-  "selectedInterventionIds": [19],
-  "selectedMaterialLineIds": []
-}
-```
-
-**Effets backend :**
-- Crée `FirmInvoice` avec `status = GENERATED`
-- Génère le numéro `FIRM-YYYY-NNN`
-- Crée les `FirmInvoiceLine` avec snapshot complet
-- Snapshote `billingEmailTo` / `billingEmailCc` depuis la `Firm`
-
-**Réponse — 201 :** FirmInvoice détaillée
-
-**Erreurs :**
-
-| Code | Description |
-|---|---|
-| `404` | Firm introuvable |
-| `422` | Champs requis manquants / aucune ligne sélectionnée |
-
----
-
-### 24.5 Détail, PDF, Envoi, Paiement
+### 24.4 Détail, PDF, Envoi, Paiement
 
 #### `GET /api/firm-invoices/{id}`
 
@@ -2421,94 +2355,19 @@ construction, gardé en défense).
 
 **AuthZ :** `MANAGER` / `ADMIN` (via `BillingVoter::MANAGE`)
 
-### 25.1 Preview décompte
+### 25.1 Génération de décompte — voir §36
 
-#### `POST /api/instrumentist-statements/preview`
-
-**Body JSON :**
-
-```json
-{
-  "instrumentistId": 12,
-  "year": 2026,
-  "month": 3
-}
-```
-
-**Réponse — 200 :**
-
-```json
-{
-  "instrumentist": {
-    "id": 12,
-    "displayName": "Ole Salve",
-    "email": "ole@example.com",
-    "hourlyRate": "350",
-    "consultationFee": "120"
-  },
-  "period": { "year": 2026, "month": 3 },
-  "lines": [
-    {
-      "missionId": 42,
-      "missionDate": "2026-03-14",
-      "lineType": "BLOC",
-      "durationMinutesRaw": 240,
-      "durationMinutesRounded": 240,
-      "rateSnapshot": 350.0,
-      "quantity": 4.0,
-      "totalAmount": 1400.0,
-      "surgeonName": "Jean Martin",
-      "siteName": "Delta"
-    }
-  ],
-  "totalAmount": 1400.0,
-  "alreadyBilledMissionIds": []
-}
-```
-
-**Calcul BLOC :**
-- `durationMinutesRaw` = `endAt - startAt` en minutes
-- `durationMinutesRounded` = `ceil(raw / 15) * 15`
-- `quantity` = `durationMinutesRounded / 60`
-- `totalAmount` = `quantity × hourlyRate`
-
-**Calcul CONSULTATION :** `quantity = 1`, `totalAmount = 1 × consultationFee`
+**D-121/D-074 — suppression du chemin legacy (2026-09-14) :** `POST /api/instrumentist-statements/preview`
+et `POST /api/instrumentist-statements` (qui relisaient `User.hourlyRate`/`consultationFee`
+et recalculaient la durée au moment de la génération) ont été supprimés — aucun décompte
+n'avait jamais été produit par ce chemin en production. Le seul chemin de génération est
+désormais celui du §36 (`GET /api/instrumentist-statements/eligible-lines` +
+`POST /api/instrumentist-statements/from-financial-calculations`), qui consomme
+exclusivement des `FinancialCalculationLine` déjà figées.
 
 ---
 
-### 25.2 Générer un décompte
-
-#### `POST /api/instrumentist-statements`
-
-**Body JSON :**
-
-```json
-{
-  "instrumentistId": 12,
-  "year": 2026,
-  "month": 3,
-  "selectedMissionIds": [42, 43]
-}
-```
-
-**Effets backend :**
-- Vérifie l'absence d'un décompte `GENERATED+` pour (instrumentiste, mois, année) → `409` si doublon
-- Crée `InstrumentistStatement` avec snapshot instrumentiste
-- Crée les `InstrumentistStatementLine` avec snapshot complet (tarifs, noms)
-
-**Réponse — 201 :** InstrumentistStatement détaillé
-
-**Erreurs :**
-
-| Code | Description |
-|---|---|
-| `404` | Instrumentiste introuvable |
-| `409` | Décompte GENERATED+ déjà existant pour ce mois |
-| `422` | Champs requis manquants |
-
----
-
-### 25.3 Détail, PDF, Envoi, Paiement
+### 25.2 Détail, PDF, Envoi, Paiement
 
 #### `GET /api/instrumentist-statements/{id}`
 
@@ -5479,6 +5338,38 @@ chemins métier distincts.
 
 ---
 
+### `POST .../remind`
+
+**D-120** — relance manuelle depuis le cockpit "Suivi des encodages" (manager). Ne mute
+aucun statut : simple envoi de notification + trace d'audit.
+
+**AuthZ :** `MissionVoter::ENCODING_REMIND` — Manager/Admin uniquement, mission avec
+instrumentiste assigné, statut parmi `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS`.
+
+**Body :** aucun.
+
+**Effets backend :**
+- Envoie la même notification que la relance automatique D+1 (D-083) — Push avec repli
+  email, `NotificationService::missionEncodingReminderNotifyInstrumentist()`.
+- **Ne touche jamais** `mission.encodingReminderSentAt` (réservé au garde-fou "au plus un
+  rappel automatique" — la relance manuelle est indépendante, répétable, sans effet sur la
+  planification du cron).
+- Audit `MISSION_ENCODING_MANUAL_REMINDER_SENT` (acteur + canal utilisé : `push`/`email`).
+
+**Réponse :** `MissionDetailDto` (`200`), qui expose aussi (additif, non-breaking) :
+- `automaticReminderSentAt` — miroir de `mission.encodingReminderSentAt`
+- `nextAutomaticReminderAt` — calculé en réutilisant l'éligibilité de
+  `EncodingReminderService` (jamais réimplémenté côté frontend), `null` si non éligible
+- `lastManualReminderAt` / `lastManualReminderByName` — dernière relance manuelle journalisée
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non manager, mission sans instrumentiste, ou statut hors fenêtre |
+
+---
+
 ### Historique et cohérence
 
 - **Audit :** chaque transition ci-dessus écrit un `AuditEvent` avant tout `flush()`
@@ -5784,19 +5675,21 @@ porte l'id du calcul précédent.
 
 ---
 
-## 36. Bascule des documents financiers vers FinancialCalculation (EPIC Exécution & Valorisation, Lot 4, D-074)
+## 36. Facturation firme et décompte instrumentiste — FinancialCalculation (EPIC Exécution & Valorisation, Lot 4, D-074 ; unifié D-121)
 
-Voir D-074 (`docs/decisions.md`) et `docs/architecture.md` pour le modèle complet. Les
-endpoints legacy (§30/§34 ci-dessus : `POST /api/firm-invoices/preview`,
-`POST /api/firm-invoices`, `POST /api/instrumentist-statements/preview`,
-`POST /api/instrumentist-statements`, ainsi que `/send`/`/mark-paid`) restent **inchangés,
-seul chemin utilisé par le frontend actuel** — recalculent toujours eux-mêmes depuis
-`PricingRule`/`User.hourlyRate`. Cette section documente les endpoints **additifs** du
-nouveau chemin, qui consomme exclusivement des `FinancialCalculationLine` déjà
-valorisées (Lot 3).
+Voir D-074/D-121 (`docs/decisions.md`) et `docs/architecture.md` pour le modèle complet.
 
-**AuthZ (toutes routes) :** `BillingVoter::MANAGE` — manager/admin uniquement, même
-périmètre que §34/§35.
+**Chemin unique depuis D-121 (2026-09-14) :** `FirmInvoiceService`/
+`InstrumentistStatementService` ne consomment plus que des `FinancialCalculationLine`
+déjà valorisées et figées (Lot 3) — plus jamais de résolution de `PricingRule`/
+`InstrumentistRate` au moment de la génération. Le chemin legacy (`POST .../preview`,
+`POST` racine — recalcul à la génération) a été **supprimé** : aucune facture/décompte
+n'avait jamais été produit par ce chemin en production (vérifié sur une copie assainie
+avant suppression, voir D-121). Les champs `legacySource`/`FirmInvoiceLine::isLegacy()`/
+`InstrumentistStatementLine::isLegacy()` restent en base (nullable, jamais retirés) pour
+tout document historique qui en porterait un, mais aucun document actuel n'en a.
+
+**AuthZ (toutes routes) :** `BillingVoter::MANAGE` — manager/admin uniquement.
 
 ### Factures firmes
 
@@ -5807,7 +5700,7 @@ périmètre que §34/§35.
 `FinancialCalculationLine.effectiveAt`, calculs `APPROVED`/`LOCKED` uniquement, lignes
 `FIRM_INTERVENTION_FEE`/`FIRM_MATERIAL_FEE` non encore rattachées.
 
-**Réponse — 200 :**
+**Réponse — 200 (lignes trouvées) :**
 
 ```json
 {
@@ -5820,6 +5713,45 @@ périmètre que §34/§35.
   "totalAmount": "180.00"
 }
 ```
+
+**Réponse — 200 (aucune ligne — D-121, §6) :** `lines: []` est accompagné d'un objet
+`diagnostic`, jamais un simple tableau vide silencieux :
+
+```json
+{
+  "firm": { "id": 5, "name": "Medacta" },
+  "currency": "EUR",
+  "period": { "start": "2026-06-01", "end": "2026-06-30" },
+  "lines": [],
+  "totalAmount": "0.00",
+  "diagnostic": {
+    "code": "NO_ELIGIBLE_LINES",
+    "validatedMissionCount": 0,
+    "calculationCount": 0,
+    "calculatedCount": 0,
+    "approvedCount": 0,
+    "lockedCount": 0,
+    "missingPricingCount": 0,
+    "currencyMismatchCount": 0,
+    "alreadyInvoicedCount": 0,
+    "reasons": ["NO_VALIDATED_MISSIONS"]
+  }
+}
+```
+
+Codes stables dans `reasons[]` (plusieurs si applicable) : `NO_VALIDATED_MISSIONS` (aucune
+mission validée sur la période pour cette firme — l'encodage doit d'abord être revu),
+`NO_FINANCIAL_CALCULATIONS` (missions validées mais `calculate()` jamais lancé),
+`CALCULATIONS_PENDING_APPROVAL` (`calculatedCount` calculs `CALCULATED` en attente
+d'approbation), `MISSING_PRICING` (`missingPricingCount` missions dont le dernier
+`calculate()` a échoué faute de `PricingRule`/`InstrumentistRate` — lu depuis l'historique
+d'audit `FINANCIAL_CALCULATION_FAILED`, jamais un nouvel appel au moteur), `CURRENCY_MISMATCH`
+(lignes existantes mais dans une autre devise), `ALREADY_INVOICED` (toutes les lignes de la
+période sont déjà rattachées à un document), `NO_LINES_FOR_BENEFICIARY` (calcul
+`APPROVED`/`LOCKED` existant mais sans ligne pour cette firme — décision commerciale
+`feeApplicable = false`, état valide). Calculé uniquement à partir de `COUNT()` sur données
+déjà persistées — jamais un recalcul tarifaire, jamais présent quand `lines` est non vide
+(coût nul sur le chemin heureux).
 
 #### `POST /api/firm-invoices/from-financial-calculations`
 
@@ -5850,44 +5782,42 @@ document) mais **ne déverrouille jamais** le calcul associé. `SENT`/`PAID` : r
 
 ### Décomptes instrumentistes
 
-Même principe, symétrique :
+Même principe, symétrique (même forme de `diagnostic` ci-dessus quand `lines: []`) :
 
 - `GET /api/instrumentist-statements/eligible-lines?instrumentistId=&currency=&year=&month=`
 - `POST /api/instrumentist-statements/from-financial-calculations` — body :
   `{ "instrumentistId": 12, "currency": "EUR", "year": 2026, "month": 6, "selectedFinancialCalculationLineIds": [51] }`
 - `POST /api/instrumentist-statements/{id}/cancel`
 
-Période = mois calendaire (même granularité que le chemin legacy), filtrée sur
-`FinancialCalculationLine.effectiveAt`. Lignes `INSTRUMENTIST_HOURLY`/
-`INSTRUMENTIST_CONSULTATION_FEE` uniquement — aucun accès à `User.hourlyRate`/
-`consultationFee`, aucune relecture de `MissionExecution`.
+Période = mois calendaire, filtrée sur `FinancialCalculationLine.effectiveAt`. Lignes
+`INSTRUMENTIST_HOURLY`/`INSTRUMENTIST_CONSULTATION_FEE` uniquement — aucun accès à
+`User.hourlyRate`/`consultationFee`, aucune relecture de `MissionExecution`.
 
 ### Champs additionnels (factures et décomptes, réponses `list`/`get`/`create`)
 
-Documents : `currency`, `legacySource`. Lignes : `currency`, `unitSnapshot`,
-`financialCalculationLineId` (`null` si legacy), `financialCalculationVersion`,
-`legacy` (bool).
+Documents : `currency`, `legacySource` (`false` pour tout document créé depuis D-121 ;
+`true` réservé à un éventuel document historique antérieur — aucun en pratique). Lignes :
+`currency`, `unitSnapshot`, `financialCalculationLineId` (`null` uniquement pour une ligne
+historique legacy), `financialCalculationVersion`, `legacy` (bool).
 
 ### Audit
 
 `FIRM_INVOICE_CREATED_FROM_CALCULATION`/`_ISSUED`/`_CANCELLED` et
 `INSTRUMENTIST_STATEMENT_CREATED_FROM_CALCULATION`/`_ISSUED`/`_CANCELLED` —
 `AuditService::recordGlobal()` (document multi-mission, pas d'AuditEvent mission-scopé).
-`_ISSUED` est émis sur la transition `SENT` existante (`markSent()`, chemins legacy et
-nouveau confondus) — c'est le vrai point d'engagement vis-à-vis du tiers dans ce
-produit, pas la création (voir D-074). Payload : id document, bénéficiaire, devise,
-période, ids de lignes/calculs financiers consommés ou libérés, total, motif
-d'annulation le cas échéant.
+`_ISSUED` est émis sur la transition `SENT` existante (`markSent()`) — c'est le vrai point
+d'engagement vis-à-vis du tiers dans ce produit, pas la création (voir D-074). Payload : id
+document, bénéficiaire, devise, période, ids de lignes/calculs financiers consommés ou
+libérés, total, motif d'annulation le cas échéant.
 
 ---
 
 ## 37. Émission et paiement des documents financiers (EPIC Exécution & Valorisation, Lot 5, D-075)
 
 Voir D-075 (`docs/decisions.md`) et `docs/architecture.md` pour le modèle complet. Les
-endpoints existants (`/preview`, `POST` racine (generate), `GET /{id}`, `/send`, `/mark-paid`,
-`/eligible-lines`, `/from-financial-calculations`, `/cancel` — §30-36 ci-dessus) restent
-tous inchangés. Cette section documente les endpoints **additifs** du cycle de vie
-financier après génération.
+endpoints existants (`GET /{id}`, `/pdf`, `/send`, `/mark-paid`, `/eligible-lines`,
+`/from-financial-calculations`, `/cancel` — §24/§25/§36 ci-dessus) restent inchangés. Cette
+section documente les endpoints **additifs** du cycle de vie financier après génération.
 
 **AuthZ (toutes routes) :** `BillingVoter::MANAGE` — manager/admin uniquement. Aucun
 accès instrumentiste (ni lecture, ni saisie) : aucun droit de consultation personnelle
@@ -7096,3 +7026,12 @@ les deux écrans ne peuvent pas se contredire.
 
 **Réponse — 200 :** `{ "period": {...}, "summary": {...} }` — `summary` strictement
 identique à celui de l'endpoint ci-dessus.
+
+### `GET /api/billing/encoding-tracking/pending-validation-count` (D-121)
+
+Badge de navigation « Suivi des encodages » — nombre **exact** de missions `SUBMITTED` en
+attente de validation manager, **sans filtre de période** (`summary.submitted` ci-dessus est
+filtré par période ; ce endpoint représente la file d'attente réelle à l'instant présent).
+`BillingVoter::MANAGE`.
+
+**Réponse — 200 :** `{ "count": 21 }`

@@ -31,9 +31,11 @@ use App\Service\FirmInvoiceService;
 use App\Service\InstrumentistRateResolver;
 use App\Service\InstrumentistStatementService;
 use App\Service\MissionExecutionService;
+use App\Service\MissionPopulationClauseBuilder;
 use App\Service\PricingRuleResolver;
 use App\Service\RepresentativePolicyResolver;
 use App\Service\RequiredChoiceGroupResolver;
+use App\Repository\EncodingTrackingRepository;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
@@ -133,12 +135,22 @@ final class FinancialCorrectionConcurrencyTest extends KernelTestCase
 
     private function firmInvoiceServiceFor(EntityManagerInterface $em): FirmInvoiceService
     {
-        return new FirmInvoiceService($em, $this->financialCalculationServiceFor($em), new AuditService($em));
+        return new FirmInvoiceService(
+            $em,
+            $this->financialCalculationServiceFor($em),
+            new AuditService($em),
+            new EncodingTrackingRepository($em->getConnection(), $em, new MissionPopulationClauseBuilder()),
+        );
     }
 
     private function instrumentistStatementServiceFor(EntityManagerInterface $em): InstrumentistStatementService
     {
-        return new InstrumentistStatementService($em, $this->financialCalculationServiceFor($em), new AuditService($em));
+        return new InstrumentistStatementService(
+            $em,
+            $this->financialCalculationServiceFor($em),
+            new AuditService($em),
+            new EncodingTrackingRepository($em->getConnection(), $em, new MissionPopulationClauseBuilder()),
+        );
     }
 
     private function documentPaymentServiceFor(EntityManagerInterface $em): DocumentPaymentService

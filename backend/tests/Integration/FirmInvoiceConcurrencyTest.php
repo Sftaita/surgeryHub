@@ -23,9 +23,11 @@ use App\Service\FinancialCalculationService;
 use App\Service\FirmInvoiceService;
 use App\Service\InstrumentistRateResolver;
 use App\Service\MissionExecutionService;
+use App\Service\MissionPopulationClauseBuilder;
 use App\Service\PricingRuleResolver;
 use App\Service\RepresentativePolicyResolver;
 use App\Service\RequiredChoiceGroupResolver;
+use App\Repository\EncodingTrackingRepository;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
@@ -122,7 +124,12 @@ final class FirmInvoiceConcurrencyTest extends KernelTestCase
 
     private function firmInvoiceServiceFor(EntityManagerInterface $em): FirmInvoiceService
     {
-        return new FirmInvoiceService($em, $this->financialCalculationServiceFor($em), new AuditService($em));
+        return new FirmInvoiceService(
+            $em,
+            $this->financialCalculationServiceFor($em),
+            new AuditService($em),
+            new EncodingTrackingRepository($em->getConnection(), $em, new MissionPopulationClauseBuilder()),
+        );
     }
 
     private function setLockTimeout(EntityManagerInterface $em, int $seconds): void

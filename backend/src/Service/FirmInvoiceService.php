@@ -10,8 +10,9 @@ use App\Entity\FirmInvoiceLine;
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
-use App\Entity\PricingRule;
 use App\Entity\User;
+use App\Dto\EligibleLinesDiagnostic;
+use App\Repository\EncodingTrackingRepository;
 use App\Enum\AuditEventType;
 use App\Enum\FinancialBeneficiaryType;
 use App\Enum\FinancialCalculationStatus;
@@ -28,25 +29,12 @@ use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
- * Lot 1 — adaptation minimale (Stratégie A, contrôle final du 2026-07-16) : ce service
- * appelait encore PricingRuleType::IMPLANT_FEE et PricingRule::getInterventionCode(),
- * tous deux supprimés par l'évolution du modèle. Le rapprochement se fait désormais via
- * InterventionType.code (recherché depuis MissionIntervention.code, inchangé — Lot 5
- * ajoutera une vraie relation) et PricingRuleType::MATERIAL_FEE. isImplant() n'est plus
- * un filtre financier (voir docs/decisions.md D-067) : un matériel non-implant peut
- * désormais être facturé si une règle existe. Le pipeline complet de facturation
- * (génération réelle, statut VALIDATED atteignable) reste un chantier séparé — cette
- * adaptation ne fait que réparer la compilation/l'exécution sur le nouveau modèle.
- *
- * EPIC Exécution & Valorisation, Lot 4 (D-074) — preview()/generate()/markSent()/
- * markPaid() ci-dessus sont le chemin LEGACY, conservés strictement inchangés (ils
- * recalculent eux-mêmes les montants depuis PricingRule — encore le seul chemin utilisé
- * par le frontend actuel, voir FirmInvoiceServiceLot1AdaptationTest). Les nouvelles
- * méthodes ci-dessous (previewEligibleLines()/createFromEligibleLines()/cancel())
- * consomment exclusivement des FinancialCalculationLine déjà valorisées (Lot 3) —
- * jamais de PricingRuleResolver, jamais de recalcul. Les deux chemins coexistent
- * (§18 du lot) et ne sont jamais mélangés au sein d'un même document
- * (FirmInvoiceLine::isLegacy()).
+ * EPIC Exécution & Valorisation, Lot 4 (D-074) puis nettoyage architectural (D-121) —
+ * ce service ne consomme plus que des FinancialCalculationLine déjà valorisées et
+ * figées (Lot 3) : jamais de PricingRuleResolver, jamais de recalcul au moment de la
+ * facturation. Le chemin LEGACY (preview()/generate(), qui relisait PricingRule et
+ * recalculait les montants à la génération) a été supprimé — aucune facture n'avait
+ * jamais été produite par ce chemin en production (voir D-121).
  */
 class FirmInvoiceService
 {
@@ -54,141 +42,8 @@ class FirmInvoiceService
         private readonly EntityManagerInterface $em,
         private readonly FinancialCalculationService $financialCalculationService,
         private readonly AuditService $audit,
+        private readonly EncodingTrackingRepository $encodingTrackingRepository,
     ) {}
-
-    /**
-     * Retourne les lignes facturables pour une firme + période donnée.
-     * Exclut les interventions/matériel déjà dans une facture GENERATED+.
-     */
-    public function preview(Firm $firm, \DateTimeImmutable $periodStart, \DateTimeImmutable $periodEnd): array
-    {
-        $rules = $this->getActiveRules($firm);
-        if (empty($rules)) {
-            return ['firm' => ['id' => $firm->getId(), 'name' => $firm->getName()], 'lines' => [], 'totalAmount' => 0.0];
-        }
-
-        $missions = $this->findValidatedMissions($periodStart, $periodEnd);
-        $alreadyBilledInterventionIds = $this->getAlreadyBilledInterventionIds($firm);
-        $alreadyBilledMaterialLineIds = $this->getAlreadyBilledMaterialLineIds($firm);
-
-        $lines = [];
-
-        foreach ($missions as $mission) {
-            foreach ($mission->getInterventions() as $intervention) {
-                if (in_array($intervention->getId(), $alreadyBilledInterventionIds, true)) {
-                    continue;
-                }
-                $rule = $this->findInterventionRule($rules, $intervention, $mission->getStartAt());
-                if ($rule === null) {
-                    continue;
-                }
-                $lines[] = $this->buildInterventionPreviewLine($mission, $intervention, $rule);
-            }
-
-            foreach ($mission->getMaterialLines() as $materialLine) {
-                // isImplant() n'est plus un filtre financier (D-067) — retiré ici.
-                if ($materialLine->getItem()->getFirm()->getId() !== $firm->getId()) {
-                    continue;
-                }
-                if (in_array($materialLine->getId(), $alreadyBilledMaterialLineIds, true)) {
-                    continue;
-                }
-                $rule = $this->findMaterialRule($rules, $materialLine->getItem()->getId(), $mission->getStartAt());
-                if ($rule === null) {
-                    continue;
-                }
-                $lines[] = $this->buildMaterialPreviewLine($mission, $materialLine, $rule);
-            }
-        }
-
-        $total = array_sum(array_column($lines, 'totalAmount'));
-
-        return [
-            'firm' => ['id' => $firm->getId(), 'name' => $firm->getName()],
-            'period' => ['start' => $periodStart->format('Y-m-d'), 'end' => $periodEnd->format('Y-m-d')],
-            'lines' => $lines,
-            'totalAmount' => round($total, 2),
-        ];
-    }
-
-    /**
-     * Génère une facture définitive (snapshot + numéro + verrouillage).
-     */
-    public function generate(
-        Firm $firm,
-        \DateTimeImmutable $periodStart,
-        \DateTimeImmutable $periodEnd,
-        array $selectedInterventionIds,
-        array $selectedMaterialLineIds
-    ): FirmInvoice {
-        $rules = $this->getActiveRules($firm);
-        $missions = $this->findValidatedMissions($periodStart, $periodEnd);
-        $alreadyBilledInterventionIds = $this->getAlreadyBilledInterventionIds($firm);
-        $alreadyBilledMaterialLineIds = $this->getAlreadyBilledMaterialLineIds($firm);
-
-        $invoice = new FirmInvoice();
-        $invoice->setFirm($firm);
-        $invoice->setPeriodStart($periodStart);
-        $invoice->setPeriodEnd($periodEnd);
-        $invoice->setStatus(InvoiceStatus::GENERATED);
-        $invoice->setGeneratedAt(new \DateTimeImmutable());
-        $invoice->setBillingEmailTo($firm->getBillingEmail());
-        $invoice->setBillingEmailCc($firm->getBillingEmailCc());
-
-        $total = 0.0;
-
-        foreach ($missions as $mission) {
-            foreach ($mission->getInterventions() as $intervention) {
-                if (!in_array($intervention->getId(), $selectedInterventionIds, true)) {
-                    continue;
-                }
-                if (in_array($intervention->getId(), $alreadyBilledInterventionIds, true)) {
-                    continue;
-                }
-                $rule = $this->findInterventionRule($rules, $intervention, $mission->getStartAt());
-                if ($rule === null) {
-                    continue;
-                }
-
-                $lineData = $this->buildInterventionPreviewLine($mission, $intervention, $rule);
-                $line = $this->createLine($mission, $lineData);
-                $line->setMissionIntervention($intervention);
-                $invoice->addLine($line);
-                $total += (float) $lineData['totalAmount'];
-            }
-
-            foreach ($mission->getMaterialLines() as $materialLine) {
-                if (!in_array($materialLine->getId(), $selectedMaterialLineIds, true)) {
-                    continue;
-                }
-                // isImplant() n'est plus un filtre financier (D-067) — retiré ici.
-                if ($materialLine->getItem()->getFirm()->getId() !== $firm->getId()) {
-                    continue;
-                }
-                if (in_array($materialLine->getId(), $alreadyBilledMaterialLineIds, true)) {
-                    continue;
-                }
-                $rule = $this->findMaterialRule($rules, $materialLine->getItem()->getId(), $mission->getStartAt());
-                if ($rule === null) {
-                    continue;
-                }
-
-                $lineData = $this->buildMaterialPreviewLine($mission, $materialLine, $rule);
-                $line = $this->createLine($mission, $lineData);
-                $line->setMaterialLine($materialLine);
-                $invoice->addLine($line);
-                $total += (float) $lineData['totalAmount'];
-            }
-        }
-
-        $invoice->setTotalAmount((string) round($total, 2));
-        $invoice->setNumber($this->generateNumber($periodStart));
-
-        $this->em->persist($invoice);
-        $this->em->flush();
-
-        return $invoice;
-    }
 
     /**
      * Conservé pour compatibilité (POST /{id}/send, existant) — délègue à issue()
@@ -245,173 +100,6 @@ class FirmInvoiceService
 
     // ── Helpers ──────────────────────────────────────────────────────
 
-    /** @return PricingRule[] */
-    private function getActiveRules(Firm $firm): array
-    {
-        return $this->em->createQueryBuilder()
-            ->select('r')
-            ->from(PricingRule::class, 'r')
-            ->leftJoin('r.materialItem', 'mi')
-            ->where('r.firm = :firm')
-            ->andWhere('r.active = true')
-            ->setParameter('firm', $firm)
-            ->getQuery()
-            ->getResult();
-    }
-
-    /** @return Mission[] */
-    private function findValidatedMissions(\DateTimeImmutable $start, \DateTimeImmutable $end): array
-    {
-        return $this->em->createQueryBuilder()
-            ->select('m', 'interventions', 'materialLines', 'item', 'itemFirm')
-            ->from(Mission::class, 'm')
-            ->leftJoin('m.interventions', 'interventions')
-            ->leftJoin('m.materialLines', 'materialLines')
-            ->leftJoin('materialLines.item', 'item')
-            ->leftJoin('item.firm', 'itemFirm')
-            ->where('m.status = :status')
-            ->andWhere('m.startAt >= :start')
-            ->andWhere('m.startAt <= :end')
-            ->setParameter('status', MissionStatus::VALIDATED)
-            ->setParameter('start', $start)
-            ->setParameter('end', $end)
-            ->orderBy('m.startAt', 'ASC')
-            ->getQuery()
-            ->getResult();
-    }
-
-    private function getAlreadyBilledInterventionIds(Firm $firm): array
-    {
-        $rows = $this->em->createQueryBuilder()
-            ->select('IDENTITY(l.missionIntervention) as itvId')
-            ->from(FirmInvoiceLine::class, 'l')
-            ->join('l.invoice', 'inv')
-            ->where('inv.firm = :firm')
-            ->andWhere('inv.status IN (:statuses)')
-            ->andWhere('l.missionIntervention IS NOT NULL')
-            ->setParameter('firm', $firm)
-            ->setParameter('statuses', [InvoiceStatus::GENERATED, InvoiceStatus::SENT, InvoiceStatus::PAID])
-            ->getQuery()
-            ->getArrayResult();
-
-        return array_column($rows, 'itvId');
-    }
-
-    private function getAlreadyBilledMaterialLineIds(Firm $firm): array
-    {
-        $rows = $this->em->createQueryBuilder()
-            ->select('IDENTITY(l.materialLine) as mlId')
-            ->from(FirmInvoiceLine::class, 'l')
-            ->join('l.invoice', 'inv')
-            ->where('inv.firm = :firm')
-            ->andWhere('inv.status IN (:statuses)')
-            ->andWhere('l.materialLine IS NOT NULL')
-            ->setParameter('firm', $firm)
-            ->setParameter('statuses', [InvoiceStatus::GENERATED, InvoiceStatus::SENT, InvoiceStatus::PAID])
-            ->getQuery()
-            ->getArrayResult();
-
-        return array_column($rows, 'mlId');
-    }
-
-    /**
-     * Rapproche par InterventionType.code (via MissionIntervention.code, texte libre
-     * inchangé jusqu'au Lot 5) plutôt que par l'ancien PricingRule.interventionCode
-     * supprimé. Filtre aussi par date de validité (coversDate) — absent avant l'ajout de
-     * validFrom/validTo dans ce lot, corrigé au passage.
-     *
-     * Tarification firme conditionnée à un choix obligatoire — filtre également par
-     * ChoiceOption (nullable-aware, même sémantique que PricingRuleResolver) : sans ce
-     * filtre, deux règles posées pour Signature/Altera sur le même InterventionType
-     * matcheraient toutes les deux ce rapprochement maison au premier trouvé, un vrai
-     * risque de forfait erroné/non déterministe sur ce chemin legacy encore actif.
-     */
-    private function findInterventionRule(array $rules, MissionIntervention $intervention, \DateTimeImmutable $missionDate): ?PricingRule
-    {
-        $code = $intervention->getCode();
-        $selectedChoiceOptionId = $intervention->getSelectedChoiceOption()?->getId();
-
-        foreach ($rules as $rule) {
-            if (
-                $rule->getRuleType() === PricingRuleType::INTERVENTION_FEE
-                && $rule->getInterventionType()?->getCode() === $code
-                && $rule->getChoiceOption()?->getId() === $selectedChoiceOptionId
-                && $rule->coversDate($missionDate)
-            ) {
-                return $rule;
-            }
-        }
-        return null;
-    }
-
-    private function findMaterialRule(array $rules, int $materialItemId, \DateTimeImmutable $missionDate): ?PricingRule
-    {
-        foreach ($rules as $rule) {
-            if (
-                $rule->getRuleType() === PricingRuleType::MATERIAL_FEE
-                && $rule->getMaterialItem()?->getId() === $materialItemId
-                && $rule->coversDate($missionDate)
-            ) {
-                return $rule;
-            }
-        }
-        return null;
-    }
-
-    private function buildInterventionPreviewLine(Mission $mission, MissionIntervention $intervention, PricingRule $rule): array
-    {
-        $qty = 1.0;
-        $unitPrice = (float) $rule->getUnitPrice();
-        return [
-            'missionId' => $mission->getId(),
-            'missionDate' => $mission->getStartAt()->format('Y-m-d'),
-            'interventionId' => $intervention->getId(),
-            'materialLineId' => null,
-            'lineType' => PricingRuleType::INTERVENTION_FEE->value,
-            'descriptionSnapshot' => sprintf('[%s] %s', $intervention->getCode(), $intervention->getLabel()),
-            'firmNameSnapshot' => $rule->getFirm()->getName(),
-            'unitPrice' => $unitPrice,
-            'quantity' => $qty,
-            'totalAmount' => round($qty * $unitPrice, 2),
-        ];
-    }
-
-    private function buildMaterialPreviewLine(Mission $mission, MaterialLine $materialLine, PricingRule $rule): array
-    {
-        $qty = (float) $materialLine->getQuantity();
-        $unitPrice = (float) $rule->getUnitPrice();
-        return [
-            'missionId' => $mission->getId(),
-            'missionDate' => $mission->getStartAt()->format('Y-m-d'),
-            'interventionId' => null,
-            'materialLineId' => $materialLine->getId(),
-            'lineType' => PricingRuleType::MATERIAL_FEE->value,
-            'descriptionSnapshot' => sprintf(
-                '%s — %s (Réf: %s)',
-                $materialLine->getItem()->getLabel(),
-                $materialLine->getItem()->getFirm()->getName(),
-                $materialLine->getItem()->getReferenceCode() ?? '—'
-            ),
-            'firmNameSnapshot' => $rule->getFirm()->getName(),
-            'unitPrice' => $unitPrice,
-            'quantity' => $qty,
-            'totalAmount' => round($qty * $unitPrice, 2),
-        ];
-    }
-
-    private function createLine(Mission $mission, array $data): FirmInvoiceLine
-    {
-        $line = new FirmInvoiceLine();
-        $line->setMission($mission);
-        $line->setLineType(PricingRuleType::from($data['lineType']));
-        $line->setDescriptionSnapshot($data['descriptionSnapshot']);
-        $line->setFirmNameSnapshot($data['firmNameSnapshot']);
-        $line->setUnitPrice((string) $data['unitPrice']);
-        $line->setQuantity((string) $data['quantity']);
-        $line->setTotalAmount((string) $data['totalAmount']);
-        return $line;
-    }
-
     /**
      * EPIC Exécution & Valorisation, Lot 6 (D-076) — §19 du lot : préfixe distinct par
      * type documentaire (traçabilité — un numéro doit permettre de distinguer une
@@ -455,13 +143,200 @@ class FirmInvoiceService
     {
         $lines = $this->findEligibleFirmLines($firm, $currency, $periodStart, $periodEnd);
 
-        return [
+        $result = [
             'firm' => ['id' => $firm->getId(), 'name' => $firm->getName()],
             'currency' => $currency,
             'period' => ['start' => $periodStart->format('Y-m-d'), 'end' => $periodEnd->format('Y-m-d')],
             'lines' => array_map($this->serializeEligibleLine(...), $lines),
             'totalAmount' => $this->sumLineTotals($lines),
         ];
+
+        if (count($lines) === 0) {
+            $result['diagnostic'] = $this->buildDiagnostic($firm, $currency, $periodStart, $periodEnd)->toArray();
+        }
+
+        return $result;
+    }
+
+    /**
+     * Diagnostic explicatif (D-121, §6) — appelé uniquement quand `previewEligibleLines()`
+     * ne trouve aucune ligne. Ne relance jamais le moteur de calcul/résolution tarifaire :
+     * uniquement des COUNT() sur des données déjà persistées, plus une lecture de
+     * l'historique d'audit des échecs de calcul (FINANCIAL_CALCULATION_FAILED) pour
+     * distinguer "tarif manquant" sans deviner. Missions "concernant la firme" = ayant au
+     * moins une intervention dont la firme principale est $firm ou un matériel dont la
+     * firme est $firm — mêmes deux relations que FinancialCalculationService.
+     */
+    private function buildDiagnostic(Firm $firm, string $currency, \DateTimeImmutable $periodStart, \DateTimeImmutable $periodEnd): EligibleLinesDiagnostic
+    {
+        $missionIds = $this->findValidatedMissionIdsForFirm($firm, $periodStart, $periodEnd);
+        $validatedMissionCount = count($missionIds);
+
+        $byStatus = $this->countCalculationsByStatusForMissions($missionIds);
+        $calculatedCount = $byStatus[FinancialCalculationStatus::CALCULATED->value] ?? 0;
+        $approvedCount = $byStatus[FinancialCalculationStatus::APPROVED->value] ?? 0;
+        $lockedCount = $byStatus[FinancialCalculationStatus::LOCKED->value] ?? 0;
+        $calculationCount = $calculatedCount + $approvedCount + $lockedCount;
+
+        $missingPricingCount = $missionIds === [] ? 0 : $this->countMissionsWithCalculationFailure($missionIds);
+        $currencyMismatchCount = $this->countFirmLines($firm, $periodStart, $periodEnd, currency: null, excludeCurrency: strtoupper($currency), onlyUnassigned: false);
+        $alreadyInvoicedCount = $this->countFirmLines($firm, $periodStart, $periodEnd, currency: strtoupper($currency), excludeCurrency: null, onlyUnassigned: false, onlyAssigned: true);
+
+        $reasons = [];
+        if ($validatedMissionCount === 0) {
+            $reasons[] = 'NO_VALIDATED_MISSIONS';
+        } elseif ($calculationCount === 0) {
+            $reasons[] = 'NO_FINANCIAL_CALCULATIONS';
+            if ($missingPricingCount > 0) {
+                $reasons[] = 'MISSING_PRICING';
+            }
+        } else {
+            if ($calculatedCount > 0) {
+                $reasons[] = 'CALCULATIONS_PENDING_APPROVAL';
+            }
+            if ($missingPricingCount > 0) {
+                $reasons[] = 'MISSING_PRICING';
+            }
+            if ($currencyMismatchCount > 0) {
+                $reasons[] = 'CURRENCY_MISMATCH';
+            }
+            if ($alreadyInvoicedCount > 0) {
+                $reasons[] = 'ALREADY_INVOICED';
+            }
+            if (($approvedCount + $lockedCount) > 0 && $reasons === []) {
+                // Un calcul APPROVED/LOCKED existe pour une mission qui concerne $firm, mais
+                // n'a produit aucune FinancialCalculationLine bénéficiaire=FIRM/$firm (ex.
+                // FirmServiceOffering.feeApplicable=false — décision commerciale explicite,
+                // voir FinancialCalculationService::resolveFirmInterventionLine()).
+                $reasons[] = 'NO_LINES_FOR_BENEFICIARY';
+            }
+        }
+
+        return new EligibleLinesDiagnostic(
+            validatedMissionCount: $validatedMissionCount,
+            calculationCount: $calculationCount,
+            calculatedCount: $calculatedCount,
+            approvedCount: $approvedCount,
+            lockedCount: $lockedCount,
+            missingPricingCount: $missingPricingCount,
+            currencyMismatchCount: $currencyMismatchCount,
+            alreadyInvoicedCount: $alreadyInvoicedCount,
+            reasons: $reasons,
+        );
+    }
+
+    /** @return int[] */
+    private function findValidatedMissionIdsForFirm(Firm $firm, \DateTimeImmutable $periodStart, \DateTimeImmutable $periodEnd): array
+    {
+        $rows = $this->em->createQueryBuilder()
+            ->select('DISTINCT m.id')
+            ->from(Mission::class, 'm')
+            ->leftJoin('m.execution', 'exec')
+            ->leftJoin('m.interventions', 'itv')
+            ->leftJoin('m.materialLines', 'ml')
+            ->leftJoin('ml.item', 'item')
+            ->where('m.status = :status')
+            ->andWhere('(itv.primaryFirm = :firm OR item.firm = :firm)')
+            ->andWhere('COALESCE(exec.actualStartAt, m.startAt) >= :start')
+            ->andWhere('COALESCE(exec.actualStartAt, m.startAt) <= :end')
+            ->setParameter('status', MissionStatus::VALIDATED)
+            ->setParameter('firm', $firm)
+            ->setParameter('start', $periodStart)
+            ->setParameter('end', $periodEnd)
+            ->getQuery()
+            ->getArrayResult();
+
+        return array_column($rows, 'id');
+    }
+
+    /** @param int[] $missionIds @return array<string, int> statut => nombre de calculs actifs */
+    private function countCalculationsByStatusForMissions(array $missionIds): array
+    {
+        if ($missionIds === []) {
+            return [];
+        }
+
+        $rows = $this->em->createQueryBuilder()
+            ->select('fc.status as status', 'COUNT(fc.id) as cnt')
+            ->from(FinancialCalculation::class, 'fc')
+            ->where('IDENTITY(fc.mission) IN (:missionIds)')
+            ->andWhere('fc.status IN (:statuses)')
+            ->setParameter('missionIds', $missionIds)
+            ->setParameter('statuses', [
+                FinancialCalculationStatus::CALCULATED,
+                FinancialCalculationStatus::APPROVED,
+                FinancialCalculationStatus::LOCKED,
+            ])
+            ->groupBy('fc.status')
+            ->getQuery()
+            ->getArrayResult();
+
+        $byStatus = [];
+        foreach ($rows as $row) {
+            $status = $row['status'] instanceof FinancialCalculationStatus ? $row['status']->value : $row['status'];
+            $byStatus[$status] = (int) $row['cnt'];
+        }
+        return $byStatus;
+    }
+
+    /**
+     * @param int[] $missionIds
+     * Nombre de missions distinctes ayant un échec de calcul non résolu — réutilise
+     * EncodingTrackingRepository::findMissionsWithFailedCalculation() (déjà utilisé par le
+     * cockpit "Suivi des encodages") plutôt que de dupliquer la règle "résolu si un calcul
+     * plus récent existe" (jamais un nouvel appel à calculate()/PricingRuleResolver ici,
+     * uniquement l'historique déjà écrit par FinancialCalculationService::buildAndPersist()).
+     */
+    private function countMissionsWithCalculationFailure(array $missionIds): int
+    {
+        return count($this->encodingTrackingRepository->findMissionsWithFailedCalculation($missionIds));
+    }
+
+    /**
+     * Compte les FinancialCalculationLine bénéficiaire=FIRM/$firm, calcul APPROVED/LOCKED,
+     * dans la période — filtré soit sur une devise précise, soit sur "toute devise
+     * différente de $excludeCurrency", et éventuellement restreint aux lignes déjà
+     * rattachées à une facture (`onlyAssigned`).
+     */
+    private function countFirmLines(
+        Firm $firm,
+        \DateTimeImmutable $periodStart,
+        \DateTimeImmutable $periodEnd,
+        ?string $currency,
+        ?string $excludeCurrency,
+        bool $onlyUnassigned,
+        bool $onlyAssigned = false,
+    ): int {
+        $qb = $this->em->createQueryBuilder()
+            ->select('COUNT(l.id)')
+            ->from(FinancialCalculationLine::class, 'l')
+            ->join('l.financialCalculation', 'fc')
+            ->leftJoin('l.firmInvoiceLine', 'fil')
+            ->where('l.beneficiaryType = :beneficiaryType')
+            ->andWhere('l.beneficiaryFirm = :firm')
+            ->andWhere('fc.status IN (:statuses)')
+            ->andWhere('l.effectiveAt >= :start')
+            ->andWhere('l.effectiveAt <= :end')
+            ->setParameter('beneficiaryType', FinancialBeneficiaryType::FIRM)
+            ->setParameter('firm', $firm)
+            ->setParameter('statuses', [FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED])
+            ->setParameter('start', $periodStart)
+            ->setParameter('end', $periodEnd);
+
+        if ($currency !== null) {
+            $qb->andWhere('l.currency = :currency')->setParameter('currency', $currency);
+        }
+        if ($excludeCurrency !== null) {
+            $qb->andWhere('l.currency != :excludeCurrency')->setParameter('excludeCurrency', $excludeCurrency);
+        }
+        if ($onlyUnassigned) {
+            $qb->andWhere('fil.id IS NULL');
+        }
+        if ($onlyAssigned) {
+            $qb->andWhere('fil.id IS NOT NULL');
+        }
+
+        return (int) $qb->getQuery()->getSingleScalarResult();
     }
 
     /**

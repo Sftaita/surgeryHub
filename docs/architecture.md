@@ -57,8 +57,8 @@ Api/
 ├── MaterialItemRequestManagerController — gestion demandes manager (list/resolve/ignore)
 ├── MaterialLineController               — CRUD /api/missions/{id}/material-lines
 ├── FirmBillingController               — PATCH billing-contact + CRUD /api/firms/{id}/pricing-rules
-├── FirmInvoiceController               — CRUD /api/firm-invoices + preview/generate/send/mark-paid
-├── InstrumentistStatementController    — CRUD /api/instrumentist-statements + preview/generate/send/mark-paid
+├── FirmInvoiceController               — CRUD /api/firm-invoices + eligible-lines/from-financial-calculations/send/mark-paid (D-121)
+├── InstrumentistStatementController    — CRUD /api/instrumentist-statements + eligible-lines/from-financial-calculations/send/mark-paid (D-121)
 ├── AbsenceController                   — CRUD /api/absences
 ├── PlanningVersionController           — GET /api/planning/versions (list) + apply-modifications/
 │                                           cancel-all/coverage-summary/history (Planning V2 only —
@@ -769,8 +769,10 @@ FirmInvoice
 │   correction — Lot 6, D-076, null tant que non émise), status
 │   (DRAFT|GENERATED|SENT|PAID|CANCELLED — Lot 4)
 ├── periodStart, periodEnd, totalAmount
-├── currency (Lot 4, D-074, défaut EUR), legacySource (Lot 4 — true si créé avant ce
-│   lot ou via le chemin legacy recalculant, false via createFromEligibleLines())
+├── currency (Lot 4, D-074, défaut EUR), legacySource (Lot 4 — true pour un document
+│   historique créé avant ce lot ou via le chemin de génération recalculant, supprimé en
+│   D-121 : plus aucun nouveau document ne peut porter `true` désormais ; toujours false
+│   via createFromEligibleLines())
 ├── documentType: STANDARD | CREDIT_NOTE | DEBIT_NOTE (Lot 6, D-076, défaut STANDARD)
 ├── correctsDocument (Lot 6 — self-FK nullable, toujours vers un document STANDARD
 │   racine, jamais une correction de correction — voir §6 de D-076)
@@ -1381,17 +1383,19 @@ résolvent plus jamais `PricingRule`/`InstrumentistRate`, ne relisent plus
 unitaire/total — montants et snapshots copiés exactement depuis
 `FinancialCalculationLine`.
 
-**Deux chemins coexistent (§18 du lot)** : `preview()`/`generate()` (legacy, recalcule
-encore lui-même depuis `PricingRule` — seul chemin utilisé par le frontend actuel,
-jamais retouché) et `previewEligibleLines()`/`createFromEligibleLines()` (nouveau,
-consomme `FinancialCalculationLine`). `FirmInvoiceLine.financialCalculationLine`/
-`InstrumentistStatementLine.financialCalculationLine` distinguent les deux
-(`isLegacy()`). Un même document ne mélange jamais les deux chemins.
+**Chemin unique depuis D-121 (2026-09-14)** : `preview()`/`generate()` (legacy, recalculait
+depuis `PricingRule` à la génération) ont été supprimés — jamais utilisés en production
+(0 document `legacySource = true` constaté avant suppression). Seul reste
+`previewEligibleLines()`/`createFromEligibleLines()`, qui consomme exclusivement des
+`FinancialCalculationLine` déjà figées. `FirmInvoiceLine.financialCalculationLine`/
+`InstrumentistStatementLine.financialCalculationLine` (`isLegacy()`) restent en place pour
+distinguer un éventuel document historique antérieur à D-074, mais plus aucun document
+créé aujourd'hui ne peut être `legacySource = true`.
 
-**Pas de nouvel état DRAFT observable** : les deux chemins produisent un document
-`GENERATED` en un seul appel atomique — même raisonnement que "pas de DRAFT" pour
-`FinancialCalculation` (D-073). `SENT` (transition `markSent()` existante, inchangée)
-reste le vrai point d'engagement vis-à-vis du tiers.
+**Pas de nouvel état DRAFT observable** : le document est produit `GENERATED` en un seul
+appel atomique — même raisonnement que "pas de DRAFT" pour `FinancialCalculation` (D-073).
+`SENT` (transition `markSent()` existante, inchangée) reste le vrai point d'engagement
+vis-à-vis du tiers.
 
 **Calcul partiellement documenté (§11/§30)** : une mission produit typiquement plusieurs
 lignes (intervention firme, matériel firme, prestation instrumentiste) sur le **même**
@@ -3297,10 +3301,12 @@ par `InterventionService` (validation d'encodage) et
 `FinancialCalculationService::resolveFirmInterventionLine()` (défense en profondeur,
 anomalie `MISSING_REQUIRED_CHOICE_ANSWER`).
 
-Le chemin legacy `FirmInvoiceService::preview()/generate()` (Lot 1/D-067, toujours actif
-en parallèle du chemin `FinancialCalculationLine`) a été corrigé pour filtrer aussi par
-`choiceOption` — sans ce correctif, deux règles scopées à des options différentes
-auraient matché indifféremment au premier trouvé sur ce chemin.
+Le chemin legacy `FirmInvoiceService::preview()/generate()` (Lot 1/D-067) avait été
+corrigé pour filtrer aussi par `choiceOption` — sans ce correctif, deux règles scopées à
+des options différentes auraient matché indifféremment au premier trouvé sur ce chemin.
+Ce chemin a depuis été **supprimé** (D-121) ; seul `FinancialCalculationService` (qui
+applique déjà ce même filtre via `PricingRuleResolver::resolveInterventionFee()`) résout
+désormais des tarifs firme.
 
 ### 21.3 Encodage instrumentiste
 

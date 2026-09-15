@@ -634,22 +634,31 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         $this->invoiceService->cancel($invoice, $actor);
     }
 
-    // ── Legacy inchangé ───────────────────────────────────────────────────
+    // ── Diagnostic explicatif quand 0 ligne éligible (D-121, §6) ────────────
 
-    public function test_legacy_generate_path_is_untouched_and_marked_legacy(): void
+    public function test_diagnostic_no_validated_missions(): void
     {
-        $firm = $this->makeFirm('LegacyPath');
-        $type = $this->makeType('LEGACY');
-        $rule = new PricingRule();
-        $rule->setFirm($firm);
-        $rule->setRuleType(PricingRuleType::INTERVENTION_FEE);
-        $rule->setInterventionType($type);
-        $rule->setUnitPrice('75.00');
-        $this->em->persist($rule); $this->em->flush();
-        $this->created['rules'][] = $rule->getId();
+        $firm = $this->makeFirm('DiagNoMission');
+        $today = new \DateTimeImmutable('2026-06-15');
 
+        $preview = $this->invoiceService->previewEligibleLines($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
+
+        self::assertCount(0, $preview['lines']);
+        self::assertSame(['NO_VALIDATED_MISSIONS'], $preview['diagnostic']['reasons']);
+        self::assertSame(0, $preview['diagnostic']['validatedMissionCount']);
+    }
+
+    public function test_diagnostic_missing_pricing_when_calculate_never_succeeded(): void
+    {
+        $firm = $this->makeFirm('DiagMissingPricing');
+        $type = $this->makeType('DIAGMP');
+        // Aucune PricingRule créée pour ce type/cette firme — calculate() échoue.
+        $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
+        $this->hourlyRate($instrumentist, '45.00');
+        $actor = $this->makeUser('ROLE_MANAGER');
         $site = $this->makeSite();
         $surgeon = $this->makeUser('ROLE_SURGEON');
+
         $today = new \DateTimeImmutable('2026-06-15');
         $mission = new Mission();
         $mission->setType(MissionType::BLOCK);
@@ -657,34 +666,152 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         $mission->setSurgeon($surgeon);
         $mission->setCreatedBy($surgeon);
         $mission->setStartAt($today);
-        $mission->setEndAt($today->modify('+1 hour'));
+        $mission->setEndAt($today->modify('+2 hours'));
         $mission->setStatus(MissionStatus::VALIDATED);
+        $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();
         $intervention->setMission($mission);
         $intervention->setCode($type->getCode());
-        $intervention->setLabel('Legacy');
+        $intervention->setLabel('Diag missing pricing');
+        $intervention->setInterventionType($type);
+        $intervention->setPrimaryFirm($firm);
         $this->em->persist($intervention); $this->em->flush();
         $this->created['interventions'][] = $intervention->getId();
+        $mission->getInterventions()->add($intervention);
 
-        // Le chemin legacy relit Mission.interventions par fetch-join — l'ArrayCollection
-        // déjà initialisée en mémoire sur $mission (construite via `new Mission()`) n'est
-        // jamais re-peuplée par ce fetch-join tant que $mission reste géré par le même
-        // EntityManager (identity map) — voir FirmInvoiceServiceLot1AdaptationTest. On
-        // force le rechargement, comme ce test de référence.
-        $this->em->clear();
-        $firm = $this->em->find(Firm::class, $firm->getId());
+        try {
+            $this->calcService->calculate($mission, $actor);
+            self::fail('calculate() aurait dû échouer (aucune PricingRule active).');
+        } catch (\App\Exception\FinancialCalculationAnomaliesException) {
+            // attendu — aucun FinancialCalculation ne doit avoir été persisté (§14 D-073).
+        }
 
-        $invoice = $this->trackInvoice($this->invoiceService->generate(
-            $firm, $today->modify('-1 day'), $today->modify('+1 day'), [$intervention->getId()], [],
+        $preview = $this->invoiceService->previewEligibleLines($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
+
+        self::assertCount(0, $preview['lines']);
+        self::assertSame(0, $preview['diagnostic']['calculationCount']);
+        self::assertSame(1, $preview['diagnostic']['validatedMissionCount']);
+        self::assertSame(1, $preview['diagnostic']['missingPricingCount']);
+        self::assertContains('NO_FINANCIAL_CALCULATIONS', $preview['diagnostic']['reasons']);
+        self::assertContains('MISSING_PRICING', $preview['diagnostic']['reasons']);
+    }
+
+    public function test_diagnostic_calculations_pending_approval(): void
+    {
+        $firmA = $this->makeFirm('DiagPending');
+        $type = $this->makeType('DIAGPEND');
+        $this->interventionRule($firmA, $type, '180.00');
+        $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
+        $this->hourlyRate($instrumentist, '45.00');
+        $actor = $this->makeUser('ROLE_MANAGER');
+        $site = $this->makeSite();
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+
+        $today = new \DateTimeImmutable('2026-06-15');
+        $mission = new Mission();
+        $mission->setType(MissionType::BLOCK);
+        $mission->setSite($site);
+        $mission->setSurgeon($surgeon);
+        $mission->setCreatedBy($surgeon);
+        $mission->setStartAt($today);
+        $mission->setEndAt($today->modify('+2 hours'));
+        $mission->setStatus(MissionStatus::VALIDATED);
+        $mission->setInstrumentist($instrumentist);
+        $this->em->persist($mission); $this->em->flush();
+        $this->created['missions'][] = $mission->getId();
+
+        $intervention = new MissionIntervention();
+        $intervention->setMission($mission);
+        $intervention->setCode($type->getCode());
+        $intervention->setLabel('Diag pending approval');
+        $intervention->setInterventionType($type);
+        $intervention->setPrimaryFirm($firmA);
+        $this->em->persist($intervention); $this->em->flush();
+        $this->created['interventions'][] = $intervention->getId();
+        $mission->getInterventions()->add($intervention);
+
+        // calculate() seul, jamais approve() — le calcul reste CALCULATED.
+        $calculation = $this->calcService->calculate($mission, $actor);
+        $this->created['calculations'][] = $calculation->getId();
+        foreach ($calculation->getLines() as $l) { $this->created['lines'][] = $l->getId(); }
+
+        $preview = $this->invoiceService->previewEligibleLines($firmA, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
+
+        self::assertCount(0, $preview['lines']);
+        self::assertSame(1, $preview['diagnostic']['calculatedCount']);
+        self::assertSame(['CALCULATIONS_PENDING_APPROVAL'], $preview['diagnostic']['reasons']);
+    }
+
+    public function test_diagnostic_already_invoiced(): void
+    {
+        $firmA = $this->makeFirm('DiagInvoiced');
+        $firmB = $this->makeFirm('DiagInvoicedMat');
+        $type = $this->makeType('DIAGINV');
+        $item = $this->makeItem($firmB);
+        $this->interventionRule($firmA, $type, '180.00');
+        $this->materialRule($firmB, $item, '40.00');
+        $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
+        $this->hourlyRate($instrumentist, '45.00');
+        $actor = $this->makeUser('ROLE_MANAGER');
+
+        $today = new \DateTimeImmutable('2026-06-15');
+        $this->makeApprovedCalculation($firmA, $type, $firmB, $item, $instrumentist, $actor, $today);
+
+        $firstPreview = $this->invoiceService->previewEligibleLines($firmA, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
+        self::assertCount(1, $firstPreview['lines']);
+        $lineId = $firstPreview['lines'][0]['id'];
+
+        $this->trackInvoice($this->invoiceService->createFromEligibleLines(
+            $firmA, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$lineId], $actor,
         ));
 
-        self::assertTrue($invoice->isLegacySource());
-        self::assertSame(75.0, (float) $invoice->getTotalAmount());
-        $line = $invoice->getLines()->first();
-        self::assertTrue($line->isLegacy());
-        self::assertNull($line->getFinancialCalculationLine());
+        $preview = $this->invoiceService->previewEligibleLines($firmA, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
+
+        self::assertCount(0, $preview['lines']);
+        self::assertSame(1, $preview['diagnostic']['alreadyInvoicedCount']);
+        self::assertContains('ALREADY_INVOICED', $preview['diagnostic']['reasons']);
+    }
+
+    public function test_diagnostic_currency_mismatch(): void
+    {
+        $firmA = $this->makeFirm('DiagCurrency');
+        $firmB = $this->makeFirm('DiagCurrencyMat');
+        $type = $this->makeType('DIAGCUR');
+        $item = $this->makeItem($firmB);
+        $this->interventionRule($firmA, $type, '180.00');
+        $this->materialRule($firmB, $item, '40.00');
+        $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
+        $this->hourlyRate($instrumentist, '45.00');
+        $actor = $this->makeUser('ROLE_MANAGER');
+
+        $today = new \DateTimeImmutable('2026-06-15');
+        $this->makeApprovedCalculation($firmA, $type, $firmB, $item, $instrumentist, $actor, $today);
+
+        // Les lignes existent en EUR — interrogées en USD, elles ne doivent jamais
+        // apparaître (D-074, un document = une seule devise), mais le diagnostic doit le
+        // dire explicitement plutôt que de laisser croire qu'aucun calcul n'existe.
+        $preview = $this->invoiceService->previewEligibleLines($firmA, 'USD', $today->modify('-1 day'), $today->modify('+1 day'));
+
+        self::assertCount(0, $preview['lines']);
+        self::assertGreaterThan(0, $preview['diagnostic']['currencyMismatchCount']);
+        self::assertContains('CURRENCY_MISMATCH', $preview['diagnostic']['reasons']);
+    }
+
+    // ── Suppression du chemin legacy (D-121) ────────────────────────────────
+
+    /**
+     * D-121 — preview()/generate() (legacy, recalcul PricingRule à la génération) ont été
+     * supprimés : aucune FirmInvoice legacySource=true n'avait jamais été créée en
+     * production (vérifié sur copie assainie avant suppression). isLegacySource()/
+     * FirmInvoiceLine::isLegacy() restent en lecture sur le modèle pour les documents
+     * historiques d'avant D-074 (aucun en pratique) — seule la génération est retirée.
+     */
+    public function test_legacy_generate_method_no_longer_exists(): void
+    {
+        self::assertFalse(method_exists(FirmInvoiceService::class, 'generate'));
+        self::assertFalse(method_exists(FirmInvoiceService::class, 'preview'));
     }
 }

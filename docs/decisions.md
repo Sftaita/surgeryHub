@@ -10462,3 +10462,200 @@ supplémentaire fusionné avec le scénario nominal). Frontend `GeneratePlanning
 chevauchement chirurgien bloque, même site compris) — décision délibérée de ne pas étendre
 ce correctif à un flux différent (demande chirurgien en libre-service) sans confirmation
 séparée.
+
+## D-120 — Suivi des encodages : relance manuelle depuis le tiroir de détail (2026-09-14)
+
+**Statut : backend fait, frontend en cours (voir plan d'implémentation de la refonte visuelle du cockpit).**
+
+Contexte : la maquette validée du cockpit "Suivi des encodages" (`docs/design/Instruction
+design/Suivi-encodages-admin/`) prévoit un bouton "Relancer" dans le tiroir de détail. D-118
+§22.6 avait explicitement choisi que ce module "observe, il n'agit pas" — décision élargie
+ici pour ce seul bouton, à la demande explicite du produit.
+
+1. **Nouvel endpoint** `POST /api/missions/{missionId}/encoding/remind`
+   (`MissionEncodingWorkflowController::remind()`), gardé par `MissionVoter::ENCODING_REMIND`
+   (manager/admin uniquement, mission avec instrumentiste assigné, statut parmi
+   `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS` — les mêmes que
+   `EncodingReminderService::SUBMITTABLE_STATUSES`, sans la fenêtre "terminée hier" ni le
+   garde-fou "pas déjà relancé aujourd'hui" : un manager peut relancer à tout moment, la
+   décision lui appartient).
+2. **`EncodingReminderService::sendManualReminder()`** réutilise exactement le même canal que
+   la relance automatique D-083 (Push avec repli email, `NotificationService::
+   missionEncodingReminderNotifyInstrumentist()`), **sans jamais toucher**
+   `Mission.encodingReminderSentAt` — ce champ reste le garde-fou exclusif du cron D+1 08h,
+   totalement indépendant des relances manuelles (une relance manuelle ne supprime ni ne
+   déclenche le rappel automatique).
+3. Chaque relance manuelle est journalisée via un nouvel `AuditEventType::
+   MISSION_ENCODING_MANUAL_REMINDER_SENT` (acteur + canal utilisé) — jamais un nouveau champ
+   dédié sur `Mission`, réutilise le mécanisme d'audit déjà en place.
+4. `MissionDetailDto` expose désormais `automaticReminderSentAt`, `nextAutomaticReminderAt`
+   (calculé en réutilisant l'éligibilité de `EncodingReminderService`, jamais réimplémenté
+   côté frontend), `lastManualReminderAt` et `lastManualReminderByName` — additifs,
+   non-breaking.
+5. `MissionActionsService::allowedActions()` expose `'remind'` pour un manager sur les mêmes
+   quatre statuts, uniquement si `Mission.instrumentist !== null` (rien à notifier sinon).
+
+Hors périmètre : pas de nouveau type `notificationType` distinct pour la relance manuelle
+(reste `ENCODING_REMINDER_D1`, seule la trace d'audit distingue manuel/automatique) — jugé
+suffisant, une distinction plus fine pourra être ajoutée si un besoin réel apparaît.
+
+---
+
+## D-121 — Suppression du flux de facturation legacy (firme + instrumentiste) ; diagnostic explicatif quand aucune ligne n'est éligible ; badge "à valider" (2026-09-14)
+
+### Contexte : diagnostic avant tout correctif
+
+Signalement : l'écran `/app/m/billing/firm-invoices` affichait « Aucune ligne éligible —
+aucun calcul verrouillé avec lignes libres pour cette firme sur cette période » pour Arthrex.
+Avant toute modification, diagnostic mené sur une copie assainie de la base de production
+(dump `mysqldump --single-transaction` de `surgicalhub`, restaurée dans une base isolée sur
+le conteneur Docker local, jamais dans l'environnement de dev partagé ; mots de passe,
+emails, `google_id`, `invitation_token`, `refresh_tokens`, `push_subscription` neutralisés
+avant toute lecture) :
+
+- `financial_calculation` : **0 ligne, toutes firmes et périodes confondues**, alors que 62
+  `PricingRule` actives existent déjà en base.
+- `mission.status` : **aucune mission n'a jamais atteint `VALIDATED`** (21 en `SUBMITTED`,
+  en attente). `audit_event` confirme : `MISSION_ENCODING_COMPLETED` × 21,
+  `MISSION_ENCODING_VALIDATED` × **0**, jamais, dans toute l'histoire de la base.
+- Reproduction directe (service, pas HTTP) sur les 5 missions Arthrex réelles de septembre
+  2026 : `MissionEncodingWorkflowService::validate()` fonctionne parfaitement (transition +
+  audit), mais `FinancialCalculationService::calculate()` échoue ensuite pour **5/5**
+  missions (`MISSING_FIRM_INTERVENTION_RATE`/`MISSING_FIRM_MATERIAL_RATE`/
+  `MISSING_INSTRUMENTIST_RATE`) — le catalogue tarifaire ne couvre pas les types
+  d'intervention/matériels réellement encodés, malgré les 62 règles existantes.
+
+**Conclusion A — funnel encodage : aucun bug.** `MissionVoter::ENCODING_VALIDATE`,
+`MissionActionsService::allowedActions()` (`SUBMITTED ⇒ ['view','validate','reject']`),
+l'endpoint et la transition sont corrects, vérifiés par lecture de code et par exécution
+réelle contre les données de production. Jamais utilisé en pratique — écran non assez
+visible, pas de bug technique à corriger. Seul le funnel — sans lien à ce défaut, mais mis
+en évidence par ce même audit — de suivi bénéficie donc uniquement d'un correctif UX minimal
+(§4).
+
+**Conclusion B — facturation : le moteur `FinancialCalculation`/`FirmInvoiceService`
+fonctionne exactement comme conçu (D-073/D-074).** Le message vide est la réponse correcte à
+un pipeline jamais alimenté (encodage jamais validé) puis à un catalogue tarifaire
+incomplet — pas un bug de requête, de devise ou de période. Le vrai défaut trouvé est
+ailleurs : le flux legacy encore actif (recalcul à la génération, en violation de
+l'invariant D-074) et l'absence totale de diagnostic quand `previewEligibleLines()` renvoie
+`lines: []` (§2).
+
+### 1. Suppression du flux legacy
+
+`FirmInvoiceService::preview()`/`generate()` et `InstrumentistStatementService::preview()`/
+`generate()` (chemin LEGACY, D-074 §"deux chemins coexistent — pas de bascule forcée du
+frontend") sont supprimés, avec leurs endpoints (`POST /api/firm-invoices/preview`,
+`POST /api/firm-invoices`, `POST /api/instrumentist-statements/preview`,
+`POST /api/instrumentist-statements`) et leurs helpers privés exclusifs
+(`getActiveRules()`, `findValidatedMissions()`, `findInterventionRule()`/
+`findMaterialRule()`, `buildInterventionPreviewLine()`/`buildMaterialPreviewLine()`/
+`buildPreviewLine()`, `createLine()`, `getAlreadyBilledInterventionIds()`/
+`getAlreadyBilledMaterialLineIds()`/`getAlreadyBilledMissionIds()`,
+`findExistingGeneratedStatement()`). Vérifié en base assainie avant suppression : **0**
+`FirmInvoice`/`InstrumentistStatement` avec `legacySource = true` n'a jamais existé en
+production — suppression sans donnée à préserver en lecture seule (le champ
+`legacySource`/`FirmInvoiceLine::isLegacy()`/`InstrumentistStatementLine::isLegacy()` reste
+en base pour tout document historique futur qui en aurait, mais rien à migrer aujourd'hui).
+
+Frontend : le toggle « Nouveau flux (recommandé) / Flux classique » est retiré de
+`FirmInvoicesPage.tsx`/`InstrumentistStatementsPage.tsx` — l'écran affiche directement
+`EligibleLinesInvoiceWizard`/`EligibleLinesStatementWizard` (seul flux). Les fonctions API
+legacy (`previewFirmInvoice`/`generateFirmInvoice`/`previewStatement`/`generateStatement`)
+et leurs types (`PreviewLine`, `FirmInvoicePreview`, `StatementPreviewLine`,
+`StatementPreview`) sont retirés.
+
+Seul chemin de création restant : `previewEligibleLines()`/`createFromEligibleLines()`,
+consommant exclusivement des `FinancialCalculationLine` déjà figées — l'invariant "aucun
+recalcul tarifaire au stade de la facture" (D-074) est désormais garanti structurellement
+(le code qui pouvait le violer n'existe plus), pas seulement documenté.
+
+### 2. Diagnostic explicatif quand `lines: []`
+
+`previewEligibleLines()` (les deux services) renvoie désormais un objet `diagnostic`
+**uniquement quand `lines` est vide** (rétrocompatible, coût nul sur le chemin heureux) :
+
+```json
+{
+  "lines": [],
+  "diagnostic": {
+    "code": "NO_ELIGIBLE_LINES",
+    "validatedMissionCount": 0,
+    "calculationCount": 0,
+    "calculatedCount": 0,
+    "approvedCount": 0,
+    "lockedCount": 0,
+    "missingPricingCount": 0,
+    "currencyMismatchCount": 0,
+    "alreadyInvoicedCount": 0,
+    "reasons": ["NO_VALIDATED_MISSIONS"]
+  }
+}
+```
+
+Codes stables (`reasons`, plusieurs si applicable) : `NO_VALIDATED_MISSIONS`,
+`NO_FINANCIAL_CALCULATIONS`, `CALCULATIONS_PENDING_APPROVAL`, `MISSING_PRICING`,
+`CURRENCY_MISMATCH`, `ALREADY_INVOICED`, `NO_LINES_FOR_BENEFICIARY` (calcul
+APPROVED/LOCKED existant mais sans ligne pour ce bénéficiaire — décision commerciale
+`feeApplicable = false`, état valide). Jamais un texte métier renvoyé par le backend — le
+frontend (`EligibleLinesEmptyState.tsx`, partagé firme/instrumentiste) traduit les codes en
+phrases.
+
+Calcul du diagnostic (`FirmInvoiceService::buildDiagnostic()`/
+`InstrumentistStatementService::buildDiagnostic()`, miroirs exacts) : uniquement des
+`COUNT()` sur données déjà persistées + lecture de l'historique d'audit
+(`EncodingTrackingRepository::findMissionsWithFailedCalculation()`, réutilisé tel quel
+plutôt que dupliqué — définit déjà "échec résolu si un calcul plus récent existe"). Jamais
+un nouvel appel à `calculate()`/`PricingRuleResolver` : le diagnostic explique, il ne
+recalcule jamais. `missionsPopulation` "concernées par la firme" = au moins une intervention
+dont `primaryFirm` est la firme, ou un matériel dont `item.firm` est la firme — période
+filtrée sur `COALESCE(execution.actualStartAt, mission.startAt)` (approximation
+pré-calcul : `FinancialCalculationLine.effectiveAt` n'existe pas encore tant qu'aucun calcul
+n'a été produit).
+
+### 3. Badge "à valider" — correctif UX minimal du funnel encodage
+
+Conclusion A ci-dessus : funnel techniquement correct mais jamais découvert. Correctif
+volontairement minimal (pas de refonte du cockpit "Suivi des encodages") :
+`GET /api/billing/encoding-tracking/pending-validation-count` (nouveau,
+`EncodingTrackingController::pendingValidationCount()`, `BillingVoter::MANAGE`) —
+`EncodingTrackingRepository::countPendingEncodingValidation()` : `COUNT(*) FROM mission
+WHERE status = 'SUBMITTED'`, **sans filtre de période** (distinct de
+`EncodingTrackingSummary.submitted`, qui est filtré par période — le badge de nav doit
+représenter la file d'attente réelle à l'instant présent). Badge numérique sur l'entrée de
+sidebar « Suivi des encodages » (`DesktopLayout.tsx`, réutilise `useNavBadgeCount`, même
+pattern que les badges « Demandes » existants) ; invalidé immédiatement après
+validate()/reject()/reopen() d'un encodage (`MissionDetailPage::refreshAfterAction()`), pas
+seulement au prochain polling (60s).
+
+### 4. Non-régression — `EncodingTrackingRepository` injecté dans les deux services
+
+`FirmInvoiceService`/`InstrumentistStatementService` gagnent une 4ᵉ dépendance de
+constructeur (`EncodingTrackingRepository`, pour §2 ci-dessus). Trois tests d'intégration
+construisaient ces services manuellement (`new FirmInvoiceService(...)`/
+`new InstrumentistStatementService(...)`, hors container, pour obtenir un `EntityManager`
+dédié à une connexion DBAL séparée en test de concurrence) — mis à jour
+(`FirmInvoiceConcurrencyTest`, `DocumentPaymentConcurrencyTest`,
+`FinancialCorrectionConcurrencyTest`). Régression réelle trouvée et corrigée en cours de
+chantier (`ArgumentCountError` masqué en échec d'assertion, pas en erreur explicite —
+`FirmInvoiceConcurrencyTest::test_two_concurrent_invoice_creations_on_the_same_line_only_one_succeeds`),
+pas seulement une adaptation mécanique.
+
+### Validation
+
+707+ tests backend pertinents verts (`FirmInvoiceFinancialCalculationTest` — 15,
+`FinancialCorrectionServiceTest` — 17, les 3 suites de concurrence — 4,
+`EncodingTrackingControllerTest` — 2 nouveaux, tous les autres déjà verts avant ce chantier),
+suite complète backend + frontend (143 fichiers, 1352 tests) exécutée sans régression
+imputable à ce chantier. Une défaillance préexistante et non liée
+(`EncodingTrackingItem::__construct()` — argument `$instrumentistPhotoPath` manquant, 14
+tests `EncodingTrackingControllerTest`) provient d'un chantier concurrent non commité
+(D-120) — non touchée, hors périmètre.
+
+### Portée non traitée ici
+
+Le funnel encodage lui-même (au-delà du badge) reste piloté par D-118/D-120 — aucune
+refonte du cockpit "Suivi des encodages" dans ce lot. Le catalogue tarifaire incomplet
+(`MISSING_FIRM_INTERVENTION_RATE`/`MISSING_FIRM_MATERIAL_RATE`/`MISSING_INSTRUMENTIST_RATE`
+observés sur données réelles) est un chantier de configuration métier, pas de code — signalé,
+non corrigé ici.
