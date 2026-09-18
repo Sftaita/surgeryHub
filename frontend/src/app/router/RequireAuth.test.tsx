@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
 import { RequireAuth } from "./RequireAuth";
 
-let authStatus: "anonymous" | "loading" | "authenticated" = "anonymous";
+let authStatus: "initializing" | "anonymous" | "loading" | "authenticated" = "anonymous";
 
 vi.mock("../auth/AuthContext", () => ({
   useAuth: () => ({ state: { status: authStatus } }),
@@ -49,6 +49,14 @@ describe("RequireAuth — deep-link preservation (correctif auth/router, 2026-09
     renderAt("/app/m/catalogue/requests?kind=MATERIAL_ITEM&requestId=42");
 
     expect(screen.queryByText(/login page/)).toBeNull();
+  });
+
+  it("shows a loading state instead of redirecting during bootstrap (\"initializing\", correctif PWA 2026-09-18)", () => {
+    authStatus = "initializing";
+    renderAt("/app/m/catalogue/requests?kind=MATERIAL_ITEM&requestId=42");
+
+    expect(screen.queryByText(/login page/)).toBeNull();
+    expect(screen.queryByText("protected content")).toBeNull();
   });
 
   it("renders the protected content once authenticated", () => {

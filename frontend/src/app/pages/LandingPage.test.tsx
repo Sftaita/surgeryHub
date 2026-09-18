@@ -1,10 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import LandingPage from "./LandingPage";
 
+let mockAuthStatus: "initializing" | "anonymous" | "loading" | "authenticated" = "anonymous";
 vi.mock("../auth/AuthContext", () => ({
-  useAuth: () => ({ state: { status: "anonymous" } }),
+  useAuth: () => ({ state: { status: mockAuthStatus } }),
 }));
 
 function renderLandingPage() {
@@ -16,6 +17,10 @@ function renderLandingPage() {
 }
 
 describe("LandingPage — absence de contenu fictif", () => {
+  beforeEach(() => {
+    mockAuthStatus = "anonymous";
+  });
+
   it("n'affiche aucune des statistiques inventées précédemment retirées", () => {
     renderLandingPage();
     const text = document.body.textContent ?? "";
@@ -59,5 +64,28 @@ describe("LandingPage — absence de contenu fictif", () => {
     const logos = screen.getAllByAltText("SurgeryHub");
     expect(logos.length).toBeGreaterThanOrEqual(2); // navbar + footer
     logos.forEach((img) => expect(img).toHaveAttribute("src", "/logo-mark-transparent.png"));
+  });
+});
+
+/**
+ * Correctif PWA / Se souvenir de moi (2026-09-18) — pendant le bootstrap d'une session
+ * stockée ("initializing", même traitement que "loading"), la home publique ne doit rien
+ * afficher : sinon un utilisateur avec une session valide qui atterrit un instant sur "/"
+ * (avant que LoginPage ne redirige directement vers son dashboard) verrait la page
+ * marketing flasher.
+ */
+describe("LandingPage — aucun flash pendant le bootstrap de session", () => {
+  it("n'affiche rien tant que le statut est \"initializing\"", () => {
+    mockAuthStatus = "initializing";
+    renderLandingPage();
+
+    expect(document.body.textContent).toBe("");
+  });
+
+  it("n'affiche rien tant que le statut est \"loading\"", () => {
+    mockAuthStatus = "loading";
+    renderLandingPage();
+
+    expect(document.body.textContent).toBe("");
   });
 });

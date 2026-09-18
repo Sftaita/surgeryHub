@@ -133,7 +133,7 @@ export default function LandingPage() {
     }
   }, [state, navigate]);
 
-  if (state.status === "loading") return null;
+  if (state.status === "loading" || state.status === "initializing") return null;
 
   return (
     <Box sx={{ fontFamily: "'Inter', system-ui, sans-serif", color: C.gray800, background: "#fff", lineHeight: 1.6, WebkitFontSmoothing: "antialiased", overflowX: "hidden" }}>

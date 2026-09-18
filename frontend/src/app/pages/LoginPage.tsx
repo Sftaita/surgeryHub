@@ -7,6 +7,7 @@ import { consumeSessionExpired } from "../auth/authStorage";
 import { useToast } from "../ui/toast/useToast";
 import { dvh } from "../ui/dvh";
 import { isSafeInternalPath } from "../router/safeInternalPath";
+import { homePathForRole } from "../auth/roles";
 
 type LocationState = { from?: string } | null;
 
@@ -319,9 +320,9 @@ export default function LoginPage() {
   const location = useLocation();
   // Correctif auth/router (2026-09-04) — validé avant usage : `location.state` transite
   // par l'historique du navigateur, jamais une valeur de confiance par défaut (protection
-  // open-redirect). Repli sur "/" (comportement historique) si absent ou invalide.
+  // open-redirect).
   const rawFrom = (location.state as LocationState)?.from;
-  const from = isSafeInternalPath(rawFrom) ? rawFrom : "/";
+  const safeFrom = isSafeInternalPath(rawFrom) ? rawFrom : null;
   const toast = useToast();
   const isDesktop = useMediaQuery("(min-width:900px)");
 
@@ -337,9 +338,16 @@ export default function LoginPage() {
     [email, password, submitting],
   );
 
+  // Repli sur le "chez soi" du rôle réel (homePathForRole — même source de vérité que
+  // PostLoginRedirect/les guards, jamais "/" en dur) quand aucun deep-link explicite
+  // n'a amené l'utilisateur ici (ex. lancement PWA à froid sur /login sans historique) —
+  // sinon la restauration automatique de session rebondissait par la page publique "/",
+  // laquelle refaisait sa propre redirection par rôle avec une logique dupliquée et
+  // incohérente (voir LandingPage.tsx), produisant un flash visible.
   useEffect(() => {
-    if (state.status === "authenticated") navigate(from, { replace: true });
-  }, [state.status, navigate, from]);
+    if (state.status !== "authenticated") return;
+    navigate(safeFrom ?? homePathForRole(state.user.role), { replace: true });
+  }, [state, navigate, safeFrom]);
 
   useEffect(() => {
     if (consumeSessionExpired()) setSessionExpired(true);
@@ -363,6 +371,15 @@ export default function LoginPage() {
 
   function notAvailableYet() {
     toast.warning("Fonctionnalité bientôt disponible.");
+  }
+
+  // Une session stockée est en cours de vérification (bootstrap AuthContext) : ne jamais
+  // afficher le formulaire tant qu'on ne sait pas encore si elle va aboutir à une
+  // reconnexion automatique — sinon on flashe "email/mot de passe" une fraction de
+  // seconde avant de rebondir vers le dashboard, exactement ce que Se souvenir de moi
+  // est censé éviter. Même rendu minimal que RequireAuth pendant "loading"/"initializing".
+  if (state.status === "initializing") {
+    return <div style={{ padding: 16 }}>Chargement…</div>;
   }
 
   const fields = (

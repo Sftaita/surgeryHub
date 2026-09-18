@@ -5,7 +5,7 @@ export function RequireAuth() {
   const { state } = useAuth();
   const location = useLocation();
 
-  if (state.status === "loading") {
+  if (state.status === "loading" || state.status === "initializing") {
     return <div style={{ padding: 16 }}>Chargement…</div>;
   }
 

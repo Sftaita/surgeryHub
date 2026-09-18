@@ -50,6 +50,35 @@ describe("AuthContext", () => {
     vi.clearAllMocks();
   });
 
+  /**
+   * Correctif PWA / Se souvenir de moi (2026-09-18) — le tout premier rendu (avant même
+   * que l'effect de bootstrap ne s'exécute) doit refléter s'il y a une session à vérifier,
+   * via un lazy init synchrone, et non retomber sur "anonymous" par défaut le temps que
+   * l'effect se déclenche : sinon /login (et tout écran sous RequireAuth) flashe l'état
+   * déconnecté avant de basculer vers "authenticated". Voir LoginPage.test.tsx.
+   */
+  it("statut \"initializing\" (pas \"anonymous\") dès le tout premier rendu quand une session est stockée", async () => {
+    writeAuth({ accessToken: "a", refreshToken: "r" });
+    let resolveMe: (v: { data: unknown }) => void = () => {};
+    (apiClient.get as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise((resolve) => { resolveMe = resolve; }),
+    );
+
+    renderProbe();
+
+    expect(screen.getByTestId("status").textContent).toBe("initializing");
+
+    resolveMe({ data: { id: 1, role: "ADMIN", sites: [] } });
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("authenticated"));
+  });
+
+  it("statut \"anonymous\" dès le tout premier rendu quand aucune session n'est stockée (rien à vérifier)", () => {
+    renderProbe();
+
+    expect(screen.getByTestId("status").textContent).toBe("anonymous");
+    expect(apiClient.get).not.toHaveBeenCalled();
+  });
+
   it("restaure la session au reload si le refresh token stocké est valide (/api/me OK)", async () => {
     writeAuth({ accessToken: "a", refreshToken: "r" });
     (apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: { id: 1, role: "ADMIN", sites: [] } });

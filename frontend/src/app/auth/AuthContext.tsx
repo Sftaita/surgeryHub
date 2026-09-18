@@ -20,6 +20,7 @@ type User = {
 };
 
 type AuthState =
+  | { status: "initializing" }
   | { status: "anonymous" }
   | { status: "loading" }
   | { status: "authenticated"; user: User };
@@ -42,19 +43,25 @@ const AuthContext = createContext<AuthContextType | null>(null);
 ====================== */
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<AuthState>({ status: "anonymous" });
+  // Lazy init : lu de façon synchrone au tout premier rendu (avant tout effect,
+  // donc avant tout paint) pour ne jamais afficher "anonymous" par défaut quand
+  // une session stockée doit encore être vérifiée — sinon /login (et tout écran
+  // sous RequireAuth) flashe brièvement son état "déconnecté" le temps que le
+  // bootstrap effect ci-dessous se déclenche. "initializing" couvre exactement
+  // cette fenêtre ; "anonymous" ne veut dire que "rien à vérifier, vraiment déconnecté".
+  const [state, setState] = useState<AuthState>(() =>
+    readAuth() ? { status: "initializing" } : { status: "anonymous" }
+  );
 
   /**
    * BOOTSTRAP
    * Au chargement de l’app :
-   * - si tokens présents → /api/me
+   * - si tokens présents → /api/me (state déjà "initializing" depuis le lazy init ci-dessus)
    * - sinon → anonymous
    */
   useEffect(() => {
     const stored = readAuth();
     if (!stored) return;
-
-    setState({ status: "loading" });
 
     apiClient
       .get("/api/me") // ⚠️ plus jamais de header ici
