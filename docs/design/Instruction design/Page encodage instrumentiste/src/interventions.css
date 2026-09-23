@@ -1,0 +1,302 @@
+/* =============================================================================
+   Encodage mission — heures prestées + interventions
+   Surgery Hub Design System. Copie conforme de la maquette validée (option 2b).
+
+   ÉCRITURE MOBILE-FIRST : le bloc de base = smartphone portrait (≤ 599px).
+   Les paliers min-width n'ajoutent que de la respiration et, sur ordinateur,
+   les affordances souris. Ne jamais réécrire ce fichier en desktop-first.
+
+   Tokens attendus : --green-*, --gray-*, --blue-*, --red-*, --amber-*, --shadow-*.
+   Repli fourni dans tokens.fallback.css.
+   ============================================================================= */
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* ---------- Conteneur ---------- */
+.enc {
+  display: flex; flex-direction: column; gap: 18px;
+  width: 100%; max-width: 760px; margin: 0 auto; padding: 0 16px 20px;
+  -webkit-text-size-adjust: 100%;
+}
+.enc, .enc button { -webkit-tap-highlight-color: transparent; }
+
+/* ---------- Zones : temps vs matériel ----------
+   Deux notions, deux bacs. Le vert n'appartient qu'aux interventions. */
+.zone { display: flex; flex-direction: column; gap: 14px; border-radius: 16px; padding: 12px 11px 13px; }
+.zone--time { background: var(--gray-150); }
+.zone--work { background: var(--green-50); border: 1px solid var(--green-200); }
+.zone__head { display: flex; align-items: center; gap: 9px; padding: 0 3px; }
+.zone__step {
+  flex: none; width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center;
+  color: #fff; font-size: 11.5px; font-weight: 800;
+}
+.zone--time .zone__step { background: var(--gray-700); }
+.zone--work .zone__step { background: var(--green-700); }
+.zone__title { margin: 0; flex: 1; font-size: 11.5px; font-weight: 800; letter-spacing: .1em; }
+.zone--time .zone__title { color: var(--gray-700); }
+.zone--work .zone__title { color: var(--green-800); }
+.zone__meta { flex: none; font-size: 11.5px; font-weight: 700; }
+.zone--time .zone__meta { color: var(--gray-500); }
+.zone--work .zone__meta { color: var(--green-700); }
+
+/* ---------- Zone 1 : heures prestées (neutre, sans vert) ---------- */
+.hours {
+  display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px;
+  border: 0; border-radius: 13px; background: #fff; box-shadow: var(--shadow-xs);
+  font-family: inherit; text-align: left; cursor: pointer; transition: background 120ms;
+}
+.hours:hover { background: var(--gray-50); }
+.hours__icon {
+  width: 40px; height: 40px; flex: none; border-radius: 11px;
+  background: var(--gray-100); color: var(--gray-700); display: grid; place-items: center;
+}
+.hours__info { flex: 1; min-width: 0; }
+.hours__label { display: block; font-size: 15px; font-weight: 700; color: var(--gray-950); }
+.hours__detail { display: block; margin-top: 3px; font-size: 12.5px; font-weight: 600; color: var(--gray-500); }
+.hours__totalwrap { flex: none; text-align: right; }
+.hours__total { display: block; font-size: 21px; font-weight: 800; line-height: 1; letter-spacing: -.02em; color: var(--gray-950); }
+.hours__totallabel { display: none; margin-top: 3px; font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--gray-400); }
+.hours__chev {
+  width: 32px; height: 32px; flex: none; border-radius: 999px;
+  background: var(--gray-100); color: var(--gray-600); display: grid; place-items: center;
+}
+
+/* ---------- Zone 2 : progression ---------- */
+.prog {
+  background: #fff; border: 1px solid var(--gray-150); border-radius: 16px; box-shadow: var(--shadow-sm);
+  padding: 14px 15px; display: flex; flex-direction: column; gap: 13px;
+}
+.prog__top { display: flex; align-items: center; gap: 14px; }
+.prog__count { margin: 0; display: flex; align-items: baseline; gap: 7px; flex: 1; }
+.prog__num { font-size: 26px; font-weight: 800; letter-spacing: -.02em; color: var(--green-800); }
+.prog__label { font-size: 13px; font-weight: 700; color: var(--gray-500); }
+.prog__points {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px;
+  border-radius: 999px; background: var(--green-100); color: var(--green-800); font-size: 12.5px; font-weight: 800;
+}
+.prog__bar { display: flex; gap: 6px; }
+.prog__seg { flex: 1; height: 8px; border-radius: 99px; background: var(--gray-200); transition: background 200ms; }
+.prog__seg--done { background: var(--green-500); }
+.prog__nudge { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--gray-600); }
+.prog__nudge svg { flex: none; }
+
+/* ---------- Zone 2 : en-tête de liste ---------- */
+.ivs { display: flex; flex-direction: column; gap: 16px; }
+.ivs__head { display: flex; align-items: center; gap: 12px; }
+.ivs__eyebrow { margin: 0; font-size: 12px; font-weight: 800; letter-spacing: .08em; color: var(--green-700); }
+.ivs__summary { flex: 1; font-size: 12px; color: var(--gray-500); }
+/* Ajout d'une intervention : bouton compact en HAUT de liste, jamais en pied. */
+.ivs__new {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  height: 40px; padding: 0 13px 0 11px; border: 0; border-radius: 12px;
+  background: var(--green-600); color: #fff; box-shadow: var(--shadow-sm);
+  font-family: inherit; font-size: 13.5px; font-weight: 700; cursor: pointer; transition: background 120ms;
+}
+.ivs__new:hover { background: var(--green-700); }
+
+/* ---------- Carte intervention ---------- */
+.ivc { background: #fff; border-radius: 16px; overflow: hidden; box-shadow: var(--shadow-md); }
+.ivc__head {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 13px; flex-wrap: wrap;
+  border: 0; background: var(--green-800); font-family: inherit; cursor: pointer; text-align: left;
+  transition: background 120ms;
+}
+.ivc__head:hover { background: var(--green-900); }
+.ivc__num {
+  width: 34px; height: 34px; flex: none; border-radius: 10px; display: grid; place-items: center;
+  background: #fff; color: var(--green-700); font-size: 15px; font-weight: 800;
+}
+.ivc__num--round { border-radius: 999px; }
+.ivc__num--todo {
+  background: rgba(255, 255, 255, .16); border: 1.5px dashed rgba(255, 255, 255, .55); color: #fff;
+}
+.ivc__titles { flex: 1; min-width: 0; }
+.ivc__name { display: block; font-size: 15.5px; font-weight: 700; line-height: 1.3; color: #fff; text-wrap: pretty; }
+.ivc__count { display: block; margin-top: 4px; font-size: 12.5px; font-weight: 600; color: var(--green-300); }
+.ivc__status {
+  flex: none; display: inline-flex; align-items: center; height: 26px; padding: 0 11px; border-radius: 999px;
+  background: rgba(255, 255, 255, .16); color: var(--green-200);
+  font-size: 11.5px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase;
+  order: 3; margin-left: 44px;            /* portrait : la pilule passe sous le titre */
+}
+.ivc__status--todo { background: var(--amber-500); color: var(--gray-950); }
+.ivc__chevwrap {
+  width: 34px; height: 34px; flex: none; border-radius: 999px;
+  background: rgba(255, 255, 255, .14); color: #fff; display: grid; place-items: center;
+}
+.ivc__chevron { transition: transform 260ms cubic-bezier(.22, 1, .36, 1); }
+.ivc__chevron--open { transform: rotate(180deg); }
+
+/* ---------- Ouverture / fermeture animée ----------
+   max-height mesurée au pixel (ResizeObserver) : seul mécanisme fiable sur iOS Safari
+   ET WebView Android. Ne pas remplacer par grid-template-rows 0fr→1fr, ni animer height:auto. */
+.ivc__reveal {
+  overflow: hidden;
+  transition: max-height 300ms cubic-bezier(.22, 1, .36, 1);
+  will-change: max-height;
+}
+.ivc__body {
+  opacity: 0; transform: translateY(-6px);
+  transition: opacity 200ms ease 40ms, transform 260ms cubic-bezier(.22, 1, .36, 1) 40ms;
+}
+.ivc__body--open { opacity: 1; transform: none; }
+
+.ivc__materials { padding: 6px 13px 0; }
+.ivc__nudge {
+  display: flex; align-items: center; gap: 10px; margin: 12px 0 2px; padding: 12px 14px;
+  border-radius: 12px; background: var(--amber-50); border: 1px solid var(--amber-100);
+  font-size: 13px; font-weight: 600; color: var(--amber-700); text-wrap: pretty;
+}
+.ivc__nudge svg { flex: none; }
+.ivc__actions { display: flex; align-items: center; gap: 10px; padding: 12px 13px 13px; flex-wrap: wrap; }
+.ivc__add {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  flex: 1 1 100%; order: -1;               /* portrait : action principale en pleine largeur */
+  height: 46px; border: 0; border-radius: 12px; background: var(--green-600); color: #fff;
+  font-family: inherit; font-size: 14px; font-weight: 700; cursor: pointer; transition: background 120ms;
+}
+.ivc__add:hover { background: var(--green-700); }
+.ivc__edit {
+  flex: none; height: 46px; padding: 0 14px; border: 1px solid var(--gray-200); border-radius: 12px;
+  background: #fff; color: var(--gray-700); font-family: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer;
+}
+.ivc__edit:hover { background: var(--gray-75); }
+.ivc__trash {
+  flex: none; width: 46px; height: 46px; border: 1px solid var(--gray-200); border-radius: 12px;
+  background: #fff; color: var(--gray-500); display: grid; place-items: center; cursor: pointer;
+}
+.ivc__trash:hover { background: var(--red-50); color: var(--red-700); border-color: var(--red-100); }
+
+/* ---------- Ligne matériel ---------- */
+.mat {
+  display: flex; align-items: center; gap: 12px; padding: 13px 0;
+  border-bottom: 1px solid var(--gray-150); flex-wrap: wrap; row-gap: 8px;
+}
+.mat__chip {
+  width: 38px; height: 38px; flex: none; border-radius: 10px;
+  background: var(--green-50); border: 1px solid var(--green-200); color: var(--green-800);
+  display: grid; place-items: center; font-size: 10.5px; font-weight: 800;
+}
+.mat__info { flex: 1 1 60%; min-width: 0; }
+.mat__nameline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mat__name { font-size: 15px; font-weight: 700; color: var(--gray-950); }
+.mat__meta { margin-top: 3px; font-size: 12px; color: var(--gray-500); }
+.mat__remove {
+  width: 34px; height: 34px; flex: none; border: 1px solid var(--gray-200); border-radius: 9px;
+  background: #fff; color: var(--gray-400); display: grid; place-items: center; cursor: pointer;
+  transition: background 120ms, color 120ms, border-color 120ms;
+}
+.mat__remove:hover { background: var(--red-50); color: var(--red-700); border-color: var(--red-100); }
+
+.tag {
+  display: inline-flex; align-items: center; height: 19px; padding: 0 8px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; flex: none;
+}
+.tag--cat { background: var(--blue-50); border: 1px solid var(--blue-100); color: var(--blue-700); }
+.tag--new { background: var(--green-100); color: var(--green-800); }
+.tag--warn { background: var(--amber-50); color: var(--amber-700); }
+
+/* ---------- Quantité ---------- */
+.qty {
+  display: flex; align-items: center; gap: 2px; flex: none;
+  background: var(--gray-75); border: 1px solid var(--gray-200); border-radius: 11px; padding: 3px;
+}
+.qty__btn {
+  width: 32px; height: 32px; border: 1px solid var(--gray-200); border-radius: 8px;
+  background: #fff; color: var(--gray-700); font-family: inherit; font-size: 16px; font-weight: 700;
+  cursor: pointer; display: grid; place-items: center; transition: border-color 120ms, color 120ms;
+}
+.qty__btn:hover:not(:disabled) { border-color: var(--green-600); color: var(--green-700); }
+.qty__btn:disabled { opacity: .45; cursor: default; }
+.qty__value { min-width: 38px; text-align: center; font-size: 15px; font-weight: 800; color: var(--gray-950); }
+
+/* ---------- Pied de validation ---------- */
+.efoot {
+  display: flex; align-items: center; gap: 14px; padding: 14px 16px; flex-wrap: wrap;
+  border-radius: 16px; background: var(--green-900); box-shadow: var(--shadow-md);
+}
+.efoot__text { flex: 1; min-width: 0; }
+.efoot__title { margin: 0; font-size: 15px; font-weight: 800; color: #fff; }
+.efoot__sub { margin: 3px 0 0; font-size: 12.5px; font-weight: 600; color: var(--green-300); text-wrap: pretty; }
+.efoot__cta {
+  flex: 1 1 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
+  height: 46px; padding: 0 20px; border: 0; border-radius: 12px; background: #fff; color: var(--green-900);
+  font-family: inherit; font-size: 14.5px; font-weight: 800; cursor: pointer;
+}
+.efoot__cta:hover:not(:disabled) { background: var(--green-50); }
+.efoot__cta--off { background: rgba(255, 255, 255, .14); color: rgba(255, 255, 255, .55); cursor: default; }
+
+/* ---------- Focus ---------- */
+.enc button:focus-visible {
+  outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--green-500) 32%, transparent);
+}
+@supports not (color: color-mix(in srgb, red 50%, blue)) {
+  .enc button:focus-visible { box-shadow: 0 0 0 3px rgba(66, 168, 130, .32); }
+}
+
+/* =============================================================================
+   PALIERS — mobile-first
+   base       smartphone portrait  ≤ 599px
+   ≥ 600px    smartphone paysage / petite tablette
+   ≥ 900px    tablette paysage / laptop
+   ≥ 1280px   ordinateur
+   La colonne ne dépasse jamais 760px : au-delà, l'œil saute du nom à la quantité.
+   ============================================================================= */
+
+@media (min-width: 600px) {
+  .enc { max-width: 680px; gap: 20px; padding: 0 20px 24px; }
+  .zone { border-radius: 18px; padding: 13px 13px 14px; }
+  .hours { gap: 16px; padding: 15px 16px; }
+  .hours__total { font-size: 24px; }
+  .hours__totallabel { display: block; }
+  .prog { padding: 16px 18px; }
+  .prog__num { font-size: 30px; }
+  .ivs__summary { font-size: 12.5px; }
+  .ivs__new { height: 40px; padding: 0 15px 0 12px; }
+  .ivc__head { gap: 14px; padding: 14px 16px; flex-wrap: nowrap; }
+  .ivc__status { order: 0; margin-left: 0; }
+  .ivc__name { font-size: 16px; }
+  .ivc__materials { padding: 6px 16px 0; }
+  .ivc__actions { padding: 12px 16px 14px; flex-wrap: nowrap; }
+  .ivc__add { flex: 1; order: 0; }
+  .mat { padding: 12px 0; flex-wrap: nowrap; }
+  .mat__info { flex: 1; }
+  .efoot { flex-wrap: nowrap; }
+  .efoot__cta { flex: none; }
+}
+
+@media (min-width: 900px) {
+  .enc { max-width: 720px; }
+  .ivc__head { padding: 15px 18px; }
+  .ivc__name { font-size: 16.5px; }
+  .ivc__materials { padding: 6px 18px 0; }
+  .ivc__actions { padding: 12px 18px 15px; }
+  .mat { padding: 13px 0; }
+}
+
+/* Ordinateur : la souris existe, on peut réserver les actions secondaires au survol. */
+@media (min-width: 1280px) {
+  .enc { max-width: 760px; gap: 22px; }
+  .ivc__head { padding: 16px 20px; }
+  .ivc__name { font-size: 17px; }
+  .ivc__materials { padding: 8px 20px 0; }
+  .ivc__actions { padding: 14px 20px 16px; }
+  .mat { padding: 14px 0; }
+  .mat__name { font-size: 15.5px; }
+  .ivc__edit, .ivc__trash { opacity: .7; transition: opacity 120ms, background 120ms; }
+  .ivc:hover .ivc__edit, .ivc:hover .ivc__trash { opacity: 1; }
+}
+
+/* Écran court (téléphone en paysage) : on comprime le vertical, jamais les cibles tactiles. */
+@media (max-height: 480px) and (orientation: landscape) {
+  .enc { gap: 14px; }
+  .prog { padding: 12px 15px; gap: 10px; }
+  .prog__num { font-size: 24px; }
+  .ivc__head { padding: 11px 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ivc__chevron, .ivc__head, .ivc__add, .ivs__new, .qty__btn, .mat__remove,
+  .prog__seg, .ivc__reveal, .ivc__body, .hours { transition: none; }
+  .ivc__body { transform: none; }
+}

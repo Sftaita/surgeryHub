@@ -1,0 +1,44 @@
+/* Repli des tokens Surgery Hub.
+   À importer UNIQUEMENT si l'app ne charge pas déjà tokens/colors.css + effects.css
+   du design system. Si elle les charge, supprimer ce fichier : il ferait doublon. */
+:root {
+  --green-900: #144D38;
+  --green-800: #1F6B4F;
+  --green-700: #2C7D5F;
+  --green-600: #338F6E;
+  --green-500: #42A882;
+  --green-300: #8FDABF;
+  --green-200: #BCE9D6;
+  --green-100: #DDF4EA;
+  --green-50:  #EFFAF5;
+
+  --gray-950: #0B1320;
+  --gray-900: #16202B;
+  --gray-700: #3A4754;
+  --gray-600: #5A6675;
+  --gray-500: #727E8C;
+  --gray-400: #98A2AE;
+  --gray-200: #DDE2E8;
+  --gray-150: #E7EBEF;
+  --gray-100: #EDF0F4;
+  --gray-75:  #F1F4F7;
+  --gray-50:  #F5F7FA;
+
+  --amber-700: #B7791F;
+  --amber-600: #D2901A;
+  --amber-500: #F0A91B;
+  --amber-100: #FBEACB;
+  --amber-50:  #FEF6E7;
+
+  --blue-700: #1B5FD0;
+  --blue-100: #D6E6FE;
+  --blue-50:  #EDF4FF;
+
+  --red-700: #C62F36;
+  --red-100: #FAD7D8;
+  --red-50:  #FDEEEE;
+
+  --shadow-xs: 0 1px 2px rgba(22, 32, 43, .05);
+  --shadow-sm: 0 1px 2px rgba(22, 32, 43, .05), 0 2px 6px rgba(22, 32, 43, .06);
+  --shadow-md: 0 2px 6px rgba(22, 32, 43, .06), 0 8px 20px rgba(22, 32, 43, .08);
+}
