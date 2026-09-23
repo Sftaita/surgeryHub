@@ -101,9 +101,9 @@ class EncodingReminderServiceTest extends TestCase
         return $n;
     }
 
-    private function service(): EncodingReminderService
+    private function service(bool $automaticRemindersScheduled = true): EncodingReminderService
     {
-        return new EncodingReminderService($this->em, $this->outboundNotificationService, $this->notificationService, $this->auditService, $this->logger);
+        return new EncodingReminderService($this->em, $this->outboundNotificationService, $this->notificationService, $this->auditService, $this->logger, $automaticRemindersScheduled);
     }
 
     private function now(): \DateTimeImmutable
@@ -347,6 +347,20 @@ class EncodingReminderServiceTest extends TestCase
             '2026-07-26T08:00:00+02:00',
             $this->service()->nextAutomaticReminderAt($mission, new \DateTimeImmutable('2026-07-25 20:00:00', new \DateTimeZone('Europe/Brussels'))),
         );
+    }
+
+    public function test_next_automatic_reminder_at_is_null_while_the_d083_schedule_is_not_enabled(): void
+    {
+        // Prod : la commande D-083 n'est pas planifiée (ENCODING_REMINDER_AUTO_ENABLED=0) —
+        // le tiroir manager ne doit jamais annoncer une relance que rien n'enverra.
+        $mission = $this->makeMission($this->makeInstrumentist());
+        $mission->setStatus(\App\Enum\MissionStatus::ASSIGNED);
+        $mission->setEndAt(new \DateTimeImmutable('2026-07-25 18:00:00', new \DateTimeZone('Europe/Brussels')));
+
+        $this->assertNull($this->service(automaticRemindersScheduled: false)->nextAutomaticReminderAt(
+            $mission,
+            new \DateTimeImmutable('2026-07-25 20:00:00', new \DateTimeZone('Europe/Brussels')),
+        ));
     }
 
     public function test_next_automatic_reminder_at_is_null_once_the_reminder_moment_has_passed(): void

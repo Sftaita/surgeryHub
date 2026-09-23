@@ -36,6 +36,9 @@ class EncodingReminderService
         private readonly AuditService $audit,
         #[Autowire(service: 'monolog.logger.push')]
         private readonly LoggerInterface $logger,
+        /** true seulement là où la commande D-083 est réellement planifiée (cron). */
+        #[Autowire('%env(bool:ENCODING_REMINDER_AUTO_ENABLED)%')]
+        private readonly bool $automaticRemindersScheduled = false,
     ) {
     }
 
@@ -226,10 +229,17 @@ class EncodingReminderService
      * facturée), si elle n'a pas de date de fin, ou si ce moment est déjà passé :
      * findEligibleMissions() ne retient que les missions terminées la veille, une mission
      * non relancée à J+1 08h ne le sera donc plus jamais automatiquement (jamais une date
-     * passée présentée comme "prochaine relance").
+     * passée présentée comme "prochaine relance"). Toujours null tant que la planification
+     * n'est pas activée (ENCODING_REMINDER_AUTO_ENABLED, défaut 0).
      */
     public function nextAutomaticReminderAt(Mission $mission, ?\DateTimeImmutable $now = null): ?string
     {
+        // Jamais annoncer une relance que rien n'enverra : sans planification active de
+        // app:notifications:send-encoding-reminders (ENCODING_REMINDER_AUTO_ENABLED=0),
+        // il n'y a pas de "prochaine relance automatique".
+        if (!$this->automaticRemindersScheduled) {
+            return null;
+        }
         if ($mission->getInstrumentist() === null) {
             return null;
         }

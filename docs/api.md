@@ -5367,7 +5367,8 @@ instrumentiste assigné, statut parmi `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN
 - `nextAutomaticReminderAt` — calculé en réutilisant l'éligibilité de
   `EncodingReminderService` (jamais réimplémenté côté frontend), `null` si non éligible
   ou si le moment J+1 08h est déjà passé (le cron ne retient que les missions terminées la
-  veille : une date passée ne serait jamais honorée)
+  veille : une date passée ne serait jamais honorée), et **toujours `null` tant que la
+  planification D-083 n'est pas activée** (`ENCODING_REMINDER_AUTO_ENABLED`, défaut `0`)
 - `lastManualReminderAt` / `lastManualReminderByName` — dernière relance manuelle journalisée
 
 **Erreurs :**

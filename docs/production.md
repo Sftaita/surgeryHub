@@ -549,6 +549,11 @@ Entrée crontab prévue (à ajouter après les jobs existants, jamais réécrits
    `tee`, pour éviter le doublon déjà rencontré et documenté pour D-064).
 4. Sauvegarder la crontab avant modification
    (`crontab -l > /home/deploy/backups/cron/crontab_before_encoding_reminders_<horodatage>.txt`).
+5. **Dans le même geste que l'ajout du cron**, passer `ENCODING_REMINDER_AUTO_ENABLED=1`
+   dans `/opt/stack/apps/surgicalhub/.env` puis recréer `php` (D-122 suite). Tant que la
+   variable vaut `0` (défaut, `config/services.yaml`), le tiroir « Suivi des encodages »
+   n'annonce aucune « prochaine relance automatique » — jamais une promesse que le cron
+   ne tiendra pas. À remettre à `0` en cas de désactivation.
 
 ### Vérification (une fois activée)
 
