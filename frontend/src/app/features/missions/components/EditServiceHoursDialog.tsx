@@ -69,20 +69,54 @@ function defaultDraft(mission: Mission): HoursDraft {
 }
 
 /**
+ * Valeur initiale à l'ouverture — toujours la valeur ACTUELLEMENT enregistrée quand il y
+ * en a une, l'horaire prévu seulement pour une première saisie :
+ * - horaires réels connus (actualStartAt/actualEndAt, ex. saisis par un manager) → repris
+ *   tels quels ;
+ * - durée seule (cas de cette modale : PATCH .../execution ne reçoit qu'une durée, la
+ *   pause n'est pas stockable avec des horaires — D-071, durée dérivée = fin − début) →
+ *   début = début prévu, fin = début + durée enregistrée, pause 0 : le "Total presté"
+ *   affiché est exactement la durée enregistrée ;
+ * - rien d'enregistré → horaire prévu.
+ */
+function initialDraft(mission: Mission, execution: MissionExecutionInfo | undefined): HoursDraft {
+  if (execution?.hasExecutionRecord && execution.actualStartAt && execution.actualEndAt) {
+    const start = dayjs(execution.actualStartAt);
+    const end = dayjs(execution.actualEndAt);
+    const span = Math.max(0, end.diff(start, "minute"));
+    const recorded = execution.actualDurationMinutes ?? span;
+    return {
+      start: start.hour() * 60 + start.minute(),
+      end: end.hour() * 60 + end.minute(),
+      pause: Math.max(0, span - recorded),
+      nextDay: !end.isSame(start, "day"),
+    };
+  }
+  if (execution?.hasExecutionRecord && execution.actualDurationMinutes != null) {
+    const planned = defaultDraft(mission);
+    const endAbs = planned.start + execution.actualDurationMinutes;
+    return { start: planned.start, end: endAbs % 1440, pause: 0, nextDay: endAbs >= 1440 };
+  }
+  return defaultDraft(mission);
+}
+
+/**
  * docs/design/screens/heures-prestees/README.md — sheet "Heures prestées" : steppers
  * ±15 min Début/Fin/Pause + case "se termine le lendemain", jamais d'input horaire
- * clavier. Le backend ne stocke qu'une durée décimale (InstrumentistService.hours,
- * pas de start/end) : à la réouverture on repart donc toujours de l'horaire prévu de
- * la mission, jamais d'une valeur déjà enregistrée (impossible à reconstruire).
+ * clavier. À la réouverture, la modale repart de la valeur enregistrée (initialDraft()),
+ * l'horaire prévu ne servant qu'à une première saisie.
  */
 export default function EditServiceHoursDialog({ open, onClose, mission, onSaved, helpTopicId }: Props) {
   const queryClient = useQueryClient();
   const toast = useToast();
 
-  const [draft, setDraft] = React.useState<HoursDraft>(() => defaultDraft(mission));
+  // Même cache que les pages qui affichent les heures (voir executionKey plus bas) — lu à
+  // chaque ouverture, donc toujours la dernière valeur sauvegardée (ou optimiste).
+  const readExecution = () => queryClient.getQueryData<MissionExecutionInfo>(["mission-execution", mission.id]);
+  const [draft, setDraft] = React.useState<HoursDraft>(() => initialDraft(mission, readExecution()));
 
   React.useEffect(() => {
-    if (open) setDraft(defaultDraft(mission));
+    if (open) setDraft(initialDraft(mission, readExecution()));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, mission.id]);
 
