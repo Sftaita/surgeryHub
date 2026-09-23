@@ -29,5 +29,12 @@ final readonly class EncodingStateFacts
         public int $activeMaterialLineCount,
         /** MissionExecution existe ET porte au moins une donnée réelle (horaires ou durée). */
         public bool $hasExecutionActuals,
+        /**
+         * "Interventions encodées" — interventions RÉELLES (même population que
+         * $interventionCount, jamais un draft) portant au moins une ligne de matériel
+         * active (quantity > 0). Définition unique partagée par le suivi manager et la
+         * progression de la page d'encodage instrumentiste (GET .../encoding → progress).
+         */
+        public int $encodedInterventionCount,
     ) {}
 }

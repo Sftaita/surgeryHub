@@ -111,6 +111,19 @@ final class EncodingStateResolver
             }
         }
 
+        // Même définition que la sous-requête encodedInterventionCount de
+        // EncodingTrackingRepository::factColumns() : intervention réelle + au moins une
+        // ligne active (quantity > 0) rattachée à CETTE intervention.
+        $encodedInterventions = 0;
+        foreach ($mission->getInterventions() as $intervention) {
+            foreach ($mission->getMaterialLines() as $line) {
+                if ($line->getMissionIntervention() === $intervention && (float) $line->getQuantity() > 0) {
+                    ++$encodedInterventions;
+                    break;
+                }
+            }
+        }
+
         $execution = $mission->getExecution();
         $hasActuals = $execution !== null && (
             $execution->getActualStartAt() !== null
@@ -126,6 +139,7 @@ final class EncodingStateResolver
             interventionCount: $mission->getInterventions()->count(),
             activeMaterialLineCount: $activeMaterialLines,
             hasExecutionActuals: $hasActuals,
+            encodedInterventionCount: $encodedInterventions,
         );
     }
 

@@ -22,6 +22,12 @@ final class MissionEncodingDto
      * @param MissionEncodingCommentDto[] $encodingComments commentaires manager historisés
      *        (reject/reopen, Lot 7) — jamais perdus, jamais écrasés
      *
+     * progress = ['interventionCount' => int, 'encodedInterventionCount' => int,
+     *   'materialLineCount' => int (lignes actives, quantity > 0)] — lu
+     *   depuis EncodingTrackingRepository (la MÊME requête que le suivi manager D-118),
+     *   jamais recompté ici ni côté frontend : interventions RÉELLES uniquement (les
+     *   drafts restent dans $entries mais ne gonflent jamais ce compteur).
+     *
      * mission = [
      *   'id' => int,
      *   'type' => string,
@@ -37,5 +43,6 @@ final class MissionEncodingDto
         public readonly MissionEncodingCatalogDto $catalog,
         public readonly MissionEncodingCoherenceSummaryDto $coherenceSummary,
         public readonly array $encodingComments,
+        public readonly array $progress,
     ) {}
 }

@@ -550,6 +550,12 @@ DECLARED → REJECTED
 - `catalog` (`items`, `firms`, `interventionTypes` — actifs uniquement, Lot 5)
 - `coherenceSummary` (Lot 7, D-070 — voir §32, informationnel uniquement)
 - `encodingComments[]` (Lot 7, D-070 — commentaires manager historisés, voir §32)
+- `progress` (D-122) — `{ interventionCount, encodedInterventionCount, materialLineCount }`,
+  lu depuis la **même requête** que le suivi des encodages (`EncodingTrackingRepository`,
+  D-118) : interventions **réelles** uniquement (jamais un draft `OPEN`/`KEPT_AS_HISTORY`,
+  qui restent listés dans `entries`), "encodée" = au moins une ligne de matériel active
+  (`quantity > 0`) rattachée à l'intervention, `materialLineCount` = lignes actives de la
+  mission. Le frontend affiche ces valeurs telles quelles, jamais recomptées depuis `entries`.
 
 > **Lot 6 — un seul aller-retour, jamais N+1 :** `suggestedMaterials`/`coherence` de
 > **toutes** les interventions de la mission sont calculés à partir d'une seule requête
@@ -6977,6 +6983,7 @@ Le `summary` porte sur **toute la période**, `items` sur la page demandée.
       },
       "encoding": {
         "interventionCount": 2,
+        "encodedInterventionCount": 1,
         "materialLineCount": 6,
         "submittedWithoutMaterial": false,
         "hasNoMaterialJustification": false,
@@ -7008,6 +7015,10 @@ jamais (sinon le badge de navigation et la liste pourraient diverger) :
 servi. Il n'existe volontairement **aucun** champ `encodedMinutes` : la résolution peut
 retomber sur le planifié, et ce nom laisserait croire à une saisie inexistante.
 `hasRealHours` est `false` quand la source est `PLANNED`.
+
+**`encoding.encodedInterventionCount`** (D-122, additif) — interventions réelles portant au
+moins une ligne active ; même définition, même requête que `progress.encodedInterventionCount`
+de `GET /api/missions/{id}/encoding`.
 
 **`photoPath`** (D-120, additif) — sur `instrumentist` et `surgeon` uniquement, jamais sur
 `site` : chemin brut de la photo de profil (déjà publique ailleurs dans l'app), jamais

@@ -207,6 +207,9 @@ final class EncodingTrackingRepository
                 m.invoice_generated_at AS invoiceGeneratedAt,
                 (SELECT COUNT(*) FROM mission_intervention mi WHERE mi.mission_id = m.id) AS interventionCount,
                 (SELECT COUNT(*) FROM material_line ml WHERE ml.mission_id = m.id AND ml.quantity > 0) AS activeMaterialLineCount,
+                (SELECT COUNT(*) FROM mission_intervention mi2 WHERE mi2.mission_id = m.id
+                    AND EXISTS (SELECT 1 FROM material_line ml2 WHERE ml2.mission_intervention_id = mi2.id AND ml2.quantity > 0)
+                ) AS encodedInterventionCount,
                 CASE WHEN me.id IS NOT NULL
                       AND (me.actual_start_at IS NOT NULL OR me.actual_end_at IS NOT NULL OR me.actual_duration_minutes IS NOT NULL)
                      THEN 1 ELSE 0 END AS hasExecutionActuals";
@@ -228,6 +231,7 @@ final class EncodingTrackingRepository
                 interventionCount: (int) $row['interventionCount'],
                 activeMaterialLineCount: (int) $row['activeMaterialLineCount'],
                 hasExecutionActuals: (bool) $row['hasExecutionActuals'],
+                encodedInterventionCount: (int) $row['encodedInterventionCount'],
             );
         }
 

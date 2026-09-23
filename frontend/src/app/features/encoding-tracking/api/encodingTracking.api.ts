@@ -80,6 +80,8 @@ export interface EncodingTrackingHours {
 
 export interface EncodingTrackingEncoding {
   interventionCount: number;
+  /** Même définition que `progress.encodedInterventionCount` de GET .../encoding. */
+  encodedInterventionCount: number;
   materialLineCount: number;
   submittedWithoutMaterial: boolean;
   hasNoMaterialJustification: boolean;

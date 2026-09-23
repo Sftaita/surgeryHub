@@ -13,6 +13,7 @@ import type {
   MissionEncodingResponse,
   MissionEncodingEntry,
   MissionEncodingInterventionEntry,
+  MissionEncodingProgress,
   CreateMaterialItemRequestBody,
   CreateInterventionBody,
   PatchInterventionBody,
@@ -59,6 +60,10 @@ type Props = {
   canSubmit: boolean;
   /** Ouvre le récapitulatif final (SubmitDialog) — jamais de validation directe ici. */
   onValidate: () => void;
+  /** Compteurs calculés par le backend (même requête que le suivi manager, D-118) :
+   *  interventions RÉELLES uniquement — jamais recomptés ici depuis `entries`, qui
+   *  contient aussi les drafts (en attente / historique), affichés "hors décompte". */
+  progress: MissionEncodingProgress;
 };
 
 const GREEN_900 = "#144D38";
@@ -196,7 +201,7 @@ function WarnIcon() {
   );
 }
 
-export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate }: Props) {
+export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, progress }: Props) {
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -574,9 +579,13 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
     return map;
   }, [legacyInterventions]);
 
-  const materialTotal = sorted.reduce((sum, e) => sum + (e.materialLines?.length ?? 0), 0);
-  const doneCount = sorted.filter((e) => (e.materialLines?.length ?? 0) > 0).length;
-  const countsLabel = `${plural(sorted.length, "intervention", "interventions")} · ${plural(materialTotal, "matériel", "matériels")}`;
+  // Même définition que le suivi manager (D-118) : les drafts restent listés mais ne
+  // gonflent jamais "interventions" ni la progression.
+  const totalCount = progress.interventionCount;
+  const doneCount = progress.encodedInterventionCount;
+  const draftCount = sorted.filter((e) => e.kind === "DRAFT").length;
+  const countsLabel = `${plural(totalCount, "intervention", "interventions")} · ${plural(progress.materialLineCount, "matériel", "matériels")}`
+    + (draftCount > 0 ? ` · ${draftCount} hors décompte` : "");
 
   // Stepper inline ±1 sur chaque ligne (prototypes/encodage-react) — ajustement rapide de
   // la quantité, jamais de suppression implicite (borne min 1, la suppression reste un
@@ -590,10 +599,13 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
 
   // Numérotation chronologique AVANT inversion (DOCUMENTATION §1) : la carte du haut
   // peut porter un numéro qui n'est pas 1, les numéros ne bougent jamais.
-  const numbered = sorted.map((entry, i) => ({ entry, index: i + 1 }));
+  // Seules les interventions réelles sont numérotées (1..N = le "N interventions" du
+  // compteur) ; un draft n'a pas de numéro, il est "hors décompte".
+  let realRank = 0;
+  const numbered = sorted.map((entry) => ({ entry, index: entry.kind === "INTERVENTION" ? ++realRank : null }));
   const reversedForDisplay = [...numbered].reverse();
 
-  const allDone = sorted.length - doneCount === 0;
+  const allDone = totalCount > 0 && doneCount >= totalCount;
 
   return (
     <>
@@ -614,13 +626,13 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
             Matériel par intervention
           </Box>
           <Box sx={{ flexShrink: 0, fontSize: 11.5, fontWeight: 700, color: GREEN_700, fontVariantNumeric: "tabular-nums" }}>
-            {doneCount} / {sorted.length}
+            {doneCount} / {totalCount}
           </Box>
         </Box>
 
         {/* Sans intervention, "0 / 0 — Mission complète" serait faux : l'état vide
             ci-dessous suffit. */}
-        {sorted.length > 0 && <EncodingProgress done={doneCount} total={sorted.length} />}
+        {totalCount > 0 && <EncodingProgress done={doneCount} total={totalCount} />}
 
         {/* En-tête de liste */}
         <Box ref={listHeadRef} sx={{ display: "flex", alignItems: "center", gap: "12px" }}>
@@ -704,14 +716,14 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
           >
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Box sx={{ fontSize: 15, fontWeight: 800, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
-                Terminer l'encodage · {doneCount}/{sorted.length}
+                Terminer l'encodage · {doneCount}/{totalCount}
               </Box>
               <Box sx={{ mt: "3px", fontSize: 12.5, fontWeight: 600, color: GREEN_300 }}>
-                {sorted.length === 0
+                {totalCount === 0
                   ? "Aucune intervention encodée."
                   : allDone
                   ? "Tout est encodé. Vous pouvez valider la mission."
-                  : `Encore ${sorted.length - doneCount > 1 ? `${sorted.length - doneCount} interventions` : "1 intervention"} et la mission est complète.`}
+                  : `Encore ${totalCount - doneCount > 1 ? `${totalCount - doneCount} interventions` : "1 intervention"} et la mission est complète.`}
               </Box>
             </Box>
             <Box
@@ -726,7 +738,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
                 "@media (min-width:600px)": { flex: "none" },
               }}
             >
-              {allDone && sorted.length > 0 && <CheckIcon size={17} stroke={2.8} />}
+              {allDone && <CheckIcon size={17} stroke={2.8} />}
               Valider
             </Box>
           </Box>
@@ -871,8 +883,8 @@ function sortEntries(entries: MissionEncodingEntry[]): MissionEncodingEntry[] {
 
 type EntryCardProps = {
   entry: MissionEncodingEntry;
-  /** Rang chronologique 1-based — pastille quand l'entrée est vide. */
-  index: number;
+  /** Rang 1-based parmi les interventions réelles — null pour un draft (hors décompte). */
+  index: number | null;
   open: boolean;
   onToggle: () => void;
   editableHere: boolean;
@@ -895,7 +907,10 @@ function EntryCard({
 }: EntryCardProps) {
   const lines = entry.materialLines ?? [];
   const requests = entry.materialItemRequests ?? [];
-  const done = lines.length > 0;
+  const isDraft = entry.kind === "DRAFT";
+  // Même critère d'"active" que le backend (quantity > 0) — la carte ne peut pas afficher
+  // "Complété" pour une intervention que le compteur ne compte pas comme encodée.
+  const done = lines.some((l) => (parseFloat(l.quantity) || 0) > 0);
   const units = sumUnits(lines);
   const countLabel = done
     ? `${plural(lines.length, "matériel", "matériels")} · ${plural(Math.round(units), "unité", "unités")}`
@@ -953,7 +968,7 @@ function EntryCard({
             border: "1.5px dashed rgba(255,255,255,.55)", color: "#fff", display: "grid", placeItems: "center",
             fontSize: 15, fontWeight: 800, fontVariantNumeric: "tabular-nums",
           }}>
-            {index}
+            {index ?? "–"}
           </Box>
         )}
 
@@ -984,11 +999,13 @@ function EntryCard({
         <Box sx={{
           flexShrink: 0, display: "inline-flex", alignItems: "center", height: 26, padding: "0 11px", borderRadius: "999px",
           fontSize: 11.5, fontWeight: 800, letterSpacing: ".03em", textTransform: "uppercase",
-          background: done ? "rgba(255,255,255,.16)" : AMBER_500, color: done ? GREEN_100 : GRAY_950,
+          background: isDraft || done ? "rgba(255,255,255,.16)" : AMBER_500, color: isDraft || done ? GREEN_100 : GRAY_950,
           order: 3, ml: "44px",
           "@media (min-width:600px)": { order: 0, ml: 0 },
-        }}>
-          {done ? "Complété" : "À compléter"}
+        }}
+          title={isDraft ? "Demande hors catalogue : n'entre pas dans le décompte des interventions tant qu'elle n'est pas validée par un manager." : undefined}
+        >
+          {isDraft ? "Hors décompte" : done ? "Complété" : "À compléter"}
         </Box>
 
         <Box aria-hidden sx={{ width: 34, height: 34, flexShrink: 0, borderRadius: "999px", background: "rgba(255,255,255,.14)", color: "#fff", display: "grid", placeItems: "center" }}>

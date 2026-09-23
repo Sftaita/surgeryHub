@@ -48,6 +48,7 @@ final class EncodingStateResolverTest extends TestCase
             interventionCount: $interventionCount,
             activeMaterialLineCount: $activeMaterialLineCount,
             hasExecutionActuals: $hasExecutionActuals,
+            encodedInterventionCount: 0,
         );
     }
 
@@ -263,8 +264,43 @@ final class EncodingStateResolverTest extends TestCase
             interventionCount: 0,
             activeMaterialLineCount: 0,
             hasExecutionActuals: false,
+            encodedInterventionCount: 0,
         );
 
         self::assertSame(EncodingState::UPCOMING, $this->resolve($facts));
+    }
+
+    /**
+     * Jumeau PHP de la sous-requête encodedInterventionCount (EncodingTrackingRepository) :
+     * interventions réelles uniquement, "encodée" = au moins une ligne quantity > 0 qui lui
+     * est rattachée — une ligne à 0 ou une ligne de draft ne compte jamais.
+     */
+    public function testFactsFromMissionCountsOnlyRealInterventionsWithActiveMaterial(): void
+    {
+        $mission = new \App\Entity\Mission();
+        $mission->setStatus(MissionStatus::ASSIGNED);
+
+        $encoded = (new \App\Entity\MissionIntervention())->setMission($mission);
+        $zeroOnly = (new \App\Entity\MissionIntervention())->setMission($mission);
+        $empty = (new \App\Entity\MissionIntervention())->setMission($mission);
+        foreach ([$encoded, $zeroOnly, $empty] as $i) {
+            $mission->getInterventions()->add($i);
+        }
+
+        $line = static function (?\App\Entity\MissionIntervention $target, string $qty) use ($mission): \App\Entity\MaterialLine {
+            $l = (new \App\Entity\MaterialLine())->setMission($mission)->setQuantity($qty);
+            $l->setMissionIntervention($target);
+            $mission->getMaterialLines()->add($l);
+            return $l;
+        };
+        $line($encoded, '2.00');
+        $line($zeroOnly, '0.00');
+        $line(null, '1.00'); // ligne d'un draft : active, mais jamais une intervention
+
+        $facts = $this->resolver->factsFromMission($mission);
+
+        self::assertSame(3, $facts->interventionCount);
+        self::assertSame(1, $facts->encodedInterventionCount);
+        self::assertSame(2, $facts->activeMaterialLineCount);
     }
 }

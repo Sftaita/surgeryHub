@@ -117,6 +117,18 @@ let serverEntries: MissionEncodingEntry[] = [];
 let legacyExtras: Record<number, Partial<EncodingIntervention>> = {};
 let nextServerId = 900;
 
+/** Simule `progress` tel que le backend le calcule (EncodingTrackingRepository, D-118) :
+ *  interventions RÉELLES uniquement, "encodée" = au moins une ligne à quantité > 0. */
+function serverProgress(entries: MissionEncodingEntry[]) {
+  const active = (e: MissionEncodingEntry) => (e.materialLines ?? []).filter((l) => parseFloat(l.quantity) > 0).length;
+  const real = entries.filter((e) => e.kind === "INTERVENTION");
+  return {
+    interventionCount: real.length,
+    encodedInterventionCount: real.filter((e) => active(e) > 0).length,
+    materialLineCount: entries.reduce((sum, e) => sum + active(e), 0),
+  };
+}
+
 function installFakeServer(initial: MissionEncodingEntry[], extras: Record<number, Partial<EncodingIntervention>> = {}) {
   serverEntries = initial;
   legacyExtras = extras;
@@ -131,6 +143,7 @@ function installFakeServer(initial: MissionEncodingEntry[], extras: Record<numbe
           interventions: deriveLegacy(serverEntries, legacyExtras),
           interventionTypeRequests: [],
           catalog: CATALOG,
+          progress: serverProgress(serverEntries),
         },
       });
     }
@@ -250,6 +263,8 @@ function Harness({ canEdit }: { canEdit: boolean }) {
       return data;
     },
   });
+  // Comme MissionEncodingPage : la section n'est rendue qu'une fois l'encodage chargé.
+  if (!data) return null;
   return (
     <InterventionsSection
       missionId={MISSION_ID}
@@ -259,6 +274,7 @@ function Harness({ canEdit }: { canEdit: boolean }) {
       catalog={CATALOG}
       canSubmit={false}
       onValidate={() => {}}
+      progress={data.progress}
     />
   );
 }
@@ -296,6 +312,40 @@ describe("InterventionsSection — état vide", () => {
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     expect(screen.queryByText(/Mission complète/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Tout est encodé/)).not.toBeInTheDocument();
+  });
+});
+
+describe("InterventionsSection — compteurs alignés sur le suivi manager (D-118)", () => {
+  // Cas réel de la mission #1 : interventions réelles + draft OPEN + draft KEPT_AS_HISTORY
+  // portant du matériel. Le manager voit "N interventions" = interventions réelles ; la
+  // page instrumentiste doit afficher le même N, les drafts restant visibles mais hors décompte.
+  const line = (id: number, quantity: string, target: { missionInterventionId: number | null; interventionDraftId: number | null }) => ({
+    id, ...target, item: { id: 100, label: "FiberWire n°2", referenceCode: "FW-2", unit: "unité", isImplant: false, firm: { id: 10, name: "Arthrex" } }, quantity, comment: "",
+  });
+
+  it("affiche le compteur et la progression du backend, pas le nombre d'entrées de la liste", async () => {
+    renderSection([
+      makeInterventionEntry({ id: 1, orderIndex: 0, label: "Prothèse totale de genou", materialLines: [line(1, "1.00", { missionInterventionId: 1, interventionDraftId: null })] }),
+      makeInterventionEntry({ id: 2, orderIndex: 1, label: "Réparation coiffe", materialLines: [] }),
+      makeDraftEntry({ id: 17, orderIndex: 2, label: "Ablation matériel rachis" }),
+      makeDraftEntry({ id: 18, orderIndex: 3, label: "Ostéosynthèse poignet", status: "KEPT_AS_HISTORY", readOnly: true, materialLines: [line(2, "3.00", { missionInterventionId: null, interventionDraftId: 18 })] }),
+    ]);
+
+    // 4 entrées listées, mais 2 interventions (même définition que le manager), 1 encodée.
+    expect(await screen.findByText("2 interventions · 2 matériels · 2 hors décompte")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuemax", "2");
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "1");
+    expect(screen.getAllByText("Hors décompte")).toHaveLength(2);
+    // Aucun draft n'est présenté comme "à compléter" : ils ne pèsent pas sur la progression.
+    expect(screen.getAllByText("À compléter")).toHaveLength(1);
+  });
+
+  it("une ligne à quantité 0 ne rend pas une intervention « Complété » (même critère « active » que le backend)", async () => {
+    renderSection([makeInterventionEntry({ materialLines: [line(3, "0.00", { missionInterventionId: 1, interventionDraftId: null })] })]);
+
+    expect(await screen.findByText("À compléter")).toBeInTheDocument();
+    expect(screen.queryByText("Complété")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "0");
   });
 });
 
@@ -543,11 +593,14 @@ describe("InterventionsSection — création optimiste d'une intervention réell
     // Optimiste : la ligne apparaît immédiatement, avant toute réponse serveur.
     expect(await screen.findByText("Réparation coiffe des rotateurs")).toBeInTheDocument();
     expect(screen.getByText("Enregistrement…")).toBeInTheDocument();
-    expect(screen.getByText("1 intervention · 0 matériel")).toBeInTheDocument();
+    // Le compteur reflète l'état serveur (progress, D-118) : il ne bouge qu'une fois la
+    // création confirmée, jamais sur une entrée provisoire.
+    expect(screen.getByText("0 intervention · 0 matériel")).toBeInTheDocument();
 
     resolvePost();
 
     await waitFor(() => expect(screen.queryByText("Enregistrement…")).not.toBeInTheDocument());
+    expect(await screen.findByText("1 intervention · 0 matériel")).toBeInTheDocument();
     expect(screen.getByText("Réparation coiffe des rotateurs")).toBeInTheDocument();
     // Aucun doublon après le refetch déclenché par invalidate().
     expect(screen.getAllByText("Réparation coiffe des rotateurs")).toHaveLength(1);
@@ -701,23 +754,22 @@ describe("InterventionsSection — ajout optimiste de matériel sur un draft", (
     expect(screen.getByText("Aucun matériel encodé")).toBeInTheDocument();
   });
 
-  it("les compteurs (interventions · matériel) sont recalculés immédiatement, avant toute réponse serveur", async () => {
+  it("un draft n'est jamais compté comme intervention ; les compteurs suivent `progress` du serveur", async () => {
     const user = userEvent.setup();
     renderSection([makeDraftEntry()]);
     await screen.findByText("Reconstruction LCL");
-    expect(screen.getByText("1 intervention · 0 matériel")).toBeInTheDocument();
-
-    let resolvePost: () => void = () => {};
-    apiPostMock.mockImplementationOnce(() => new Promise((resolve) => { resolvePost = () => resolve({ data: { id: 999, missionInterventionId: null, interventionDraftId: 17, item: CATALOG.items[0], quantity: "1", comment: "" } }); }));
+    // Même définition que le suivi manager (D-118) : 0 intervention réelle, le draft reste
+    // visible mais explicitement "hors décompte".
+    expect(screen.getByText("0 intervention · 0 matériel · 1 hors décompte")).toBeInTheDocument();
+    expect(screen.getByText("Hors décompte")).toBeInTheDocument();
 
     await openWizardOnDraft(user);
     await user.click(screen.getByRole("button", { name: /ajouter fiberwire/i }));
     await screen.findByText("Étape 3/3 – Détails du matériel");
     await user.click(screen.getByRole("button", { name: "Ajouter à l'intervention" }));
 
-    expect(await screen.findByText("1 intervention · 1 matériel")).toBeInTheDocument();
-    resolvePost();
-    await waitFor(() => expect(screen.getByText("1 intervention · 1 matériel")).toBeInTheDocument());
+    // Le matériel du draft est actif (compté comme matériel), jamais comme intervention.
+    expect(await screen.findByText("0 intervention · 1 matériel · 1 hors décompte")).toBeInTheDocument();
   });
 });
 

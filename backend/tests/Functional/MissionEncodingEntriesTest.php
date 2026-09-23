@@ -680,4 +680,71 @@ final class MissionEncodingEntriesTest extends WebTestCase
         self::assertSame(['DRAFT', 'INTERVENTION'], array_column($body['entries'], 'kind'));
         self::assertSame([$draftId, $interventionId], array_column($body['entries'], 'id'));
     }
+
+    /**
+     * Cohérence instrumentiste ↔ manager : `progress` de GET .../encoding et la ligne du
+     * suivi des encodages (D-118) reposent sur la MÊME définition — interventions RÉELLES
+     * uniquement (jamais un draft OPEN ni KEPT_AS_HISTORY), "encodée" = au moins une ligne
+     * active (quantity > 0) rattachée à l'intervention. Scénario calqué sur la mission
+     * réelle qui faisait afficher 5 interventions à l'instrumentiste contre 3 au manager.
+     */
+    public function test_encoding_progress_and_manager_tracking_share_the_same_intervention_count(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $firm = $this->makeFirm();
+        $item = $this->makeItem($firm);
+        $type = $this->makeType();
+
+        // Intervention réelle #1 : une ligne active → encodée.
+        $encodedId = $this->makeRealIntervention($client, $mission, $instrToken, $type, null, 0);
+        $line = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-lines", $instrToken, [
+            'itemId' => $item->getId(), 'missionInterventionId' => $encodedId, 'quantity' => 2,
+        ]);
+        self::assertSame(Response::HTTP_CREATED, $line->getStatusCode(), $line->getContent());
+
+        // Intervention réelle #2 : seulement une ligne à quantité 0 → PAS encodée.
+        $zeroId = $this->makeRealIntervention($client, $mission, $instrToken, $type, null, 1);
+        $zero = new MaterialLine();
+        $zero->setMission($this->em->find(Mission::class, $mission->getId()));
+        $zero->setMissionIntervention($this->em->find(MissionIntervention::class, $zeroId));
+        $zero->setItem($this->em->find(MaterialItem::class, $item->getId()));
+        $zero->setQuantity('0.00');
+        $zero->setCreatedBy($this->em->find(Mission::class, $mission->getId())->getInstrumentist());
+        $this->em->persist($zero);
+        $this->em->flush();
+
+        // Draft OPEN avec matériel + draft KEPT_AS_HISTORY avec matériel : visibles, hors décompte.
+        $openDraftId = $this->draftIdForRequest($this->createPendingRequest($client, $mission, $instrToken, 'Draft ouvert'));
+        $this->addMaterialLineToDraft($client, $mission, $instrToken, $item, $openDraftId);
+        $historyRequestId = $this->createPendingRequest($client, $mission, $instrToken, 'Draft historique');
+        $this->addMaterialLineToDraft($client, $mission, $instrToken, $item, $this->draftIdForRequest($historyRequestId));
+        $managerToken = $this->login($client, $this->createUser('ROLE_MANAGER'));
+        $ignore = $this->request($client, 'POST', "/api/intervention-type-requests/{$historyRequestId}/ignore", $managerToken, [
+            'strategy' => 'KEEP_AS_HISTORY', 'reason' => 'DUPLICATE', 'comment' => 'Doublon.',
+        ]);
+        self::assertSame(Response::HTTP_OK, $ignore->getStatusCode(), $ignore->getContent());
+
+        $encoding = $this->getEncoding($client, $mission, $instrToken);
+        self::assertCount(4, $encoding['entries'], '2 interventions réelles + 2 drafts restent tous visibles');
+        self::assertSame(
+            ['interventionCount' => 2, 'encodedInterventionCount' => 1, 'materialLineCount' => 3],
+            $encoding['progress'],
+            'interventions réelles uniquement ; la ligne à quantité 0 ne compte ni comme matériel actif ni comme encodage',
+        );
+
+        $day = (new \DateTimeImmutable('now', new \DateTimeZone(self::TZ)))->setTime(0, 0);
+        $siteId = $this->em->find(Mission::class, $mission->getId())->getSite()->getId();
+        $tracking = $this->request($client, 'GET', sprintf(
+            '/api/billing/encoding-tracking?from=%s&to=%s&siteId=%d',
+            $day->modify('-1 day')->format('Y-m-d\TH:i:s'),
+            $day->modify('+2 days')->format('Y-m-d\TH:i:s'),
+            $siteId,
+        ), $managerToken);
+        self::assertSame(Response::HTTP_OK, $tracking->getStatusCode(), $tracking->getContent());
+        $row = json_decode($tracking->getContent(), true)['items'][0]['encoding'];
+
+        self::assertSame($encoding['progress']['interventionCount'], $row['interventionCount']);
+        self::assertSame($encoding['progress']['encodedInterventionCount'], $row['encodedInterventionCount']);
+        self::assertSame($encoding['progress']['materialLineCount'], $row['materialLineCount']);
+    }
 }

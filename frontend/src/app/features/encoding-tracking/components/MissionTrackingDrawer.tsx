@@ -250,7 +250,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             <Box sx={{ ml: "auto", fontSize: 12, fontWeight: 700, color: GRAY_500, fontVariantNumeric: "tabular-nums" }}>
               {item.encoding.interventionCount === 0
                 ? "rien d'encodé"
-                : `${item.encoding.interventionCount} intervention${item.encoding.interventionCount > 1 ? "s" : ""} · ${refs} référence${refs > 1 ? "s" : ""}`}
+                : `${item.encoding.encodedInterventionCount}/${item.encoding.interventionCount} intervention${item.encoding.interventionCount > 1 ? "s" : ""} encodée${item.encoding.interventionCount > 1 ? "s" : ""} · ${refs} référence${refs > 1 ? "s" : ""}`}
             </Box>
           </Box>
           <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "12px 16px 16px", display: "flex", flexDirection: "column", gap: "10px" }}>

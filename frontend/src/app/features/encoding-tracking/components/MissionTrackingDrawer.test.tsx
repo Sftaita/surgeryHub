@@ -41,7 +41,7 @@ function makeItem(overrides: Partial<EncodingTrackingItem> = {}): EncodingTracki
     surgeon: { id: 8, name: "Dr Jean Dupont" },
     site: { id: 2, name: "Delta" },
     hours: { plannedMinutes: 240, effectiveMinutes: 312, effectiveSource: "ACTUAL_TIMES", hasRealHours: true },
-    encoding: { interventionCount: 2, materialLineCount: 6, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false },
+    encoding: { interventionCount: 2, encodedInterventionCount: 1, materialLineCount: 6, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false },
     financial: { state: "TO_CALCULATE", label: "À calculer", isBlocking: false },
     ...overrides,
   };
@@ -136,7 +136,7 @@ describe("MissionTrackingDrawer", () => {
   it("affiche l'encart d'absence de matériel quand aucune intervention n'est encodée", async () => {
     fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "IN_PROGRESS", allowedActions: ["view"] });
     fetchMissionEncodingMock.mockResolvedValue({ mission: { id: 42, type: "BLOCK", status: "IN_PROGRESS", allowedActions: [] }, interventions: [], entries: [], interventionTypeRequests: [], coherenceSummary: {}, encodingComments: [] });
-    renderDrawer(makeItem({ encodingState: "IN_PROGRESS", encoding: { interventionCount: 0, materialLineCount: 0, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false } }));
+    renderDrawer(makeItem({ encodingState: "IN_PROGRESS", encoding: { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false } }));
 
     await waitFor(() => expect(screen.getByText(/Aucun matériel encodé/)).toBeInTheDocument());
   });
@@ -148,6 +148,13 @@ describe("MissionTrackingDrawer", () => {
     expect(await screen.findByText(/Encodage verrouillé/)).toBeInTheDocument();
     expect(fetchMissionEncodingMock).not.toHaveBeenCalled();
     expect(screen.queryByText(/n'a pas encore ouvert son encodage/)).not.toBeInTheDocument();
+  });
+
+  it("affiche « encodées / interventions » du backend — même définition que la page instrumentiste", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    renderDrawer(makeItem());
+
+    expect(await screen.findByText("1/2 interventions encodées · 6 références")).toBeInTheDocument();
   });
 
   it("affiche la photo de profil quand le backend en fournit une, sinon les initiales", async () => {

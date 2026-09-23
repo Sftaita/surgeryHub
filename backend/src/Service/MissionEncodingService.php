@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Dto\Request\Response\FirmSlimDto;
+use App\Repository\EncodingTrackingRepository;
 use App\Dto\Request\Response\InterventionTypeSlimDto;
 use App\Dto\Request\Response\MissionEncodingCatalogDto;
 use App\Dto\Request\Response\MissionEncodingCoherenceSummaryDto;
@@ -36,6 +37,7 @@ final class MissionEncodingService
         private readonly MaterialItemMapper $itemMapper,
         private readonly MissionActionsService $actionsService,
         private readonly MissionInterventionCoherenceService $coherenceService,
+        private readonly EncodingTrackingRepository $trackingRepository,
     ) {}
 
     public function buildEncodingDto(Mission $mission, User $viewer): MissionEncodingDto
@@ -130,7 +132,26 @@ final class MissionEncodingService
             catalog: $catalog,
             coherenceSummary: $coherenceSummary,
             encodingComments: $encodingComments,
+            progress: $this->buildProgress((int) $mission->getId()),
         );
+    }
+
+    /**
+     * Progression de la page d'encodage — lue depuis la même requête que le suivi manager
+     * (EncodingTrackingRepository::fetchFactsForIds(), D-118) pour que les deux écrans ne
+     * puissent jamais se contredire sur "combien d'interventions / combien encodées".
+     *
+     * @return array{interventionCount: int, encodedInterventionCount: int, materialLineCount: int}
+     */
+    private function buildProgress(int $missionId): array
+    {
+        $facts = $this->trackingRepository->fetchFactsForIds([$missionId])[$missionId] ?? null;
+
+        return [
+            'interventionCount' => $facts?->interventionCount ?? 0,
+            'encodedInterventionCount' => $facts?->encodedInterventionCount ?? 0,
+            'materialLineCount' => $facts?->activeMaterialLineCount ?? 0,
+        ];
     }
 
     /**

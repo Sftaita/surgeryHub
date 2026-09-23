@@ -85,6 +85,7 @@ function baseEncoding(overrides: Record<string, any> = {}) {
     catalog: CATALOG,
     coherenceSummary: { hasNoInterventions: true, hasInterventionsWithNoMaterial: false, hasUnusedSuggestions: false, hasMaterialFromOtherFirm: false, hasMissingPrimaryFirm: false },
     encodingComments: [],
+    progress: { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0 },
     ...overrides,
   };
 }
@@ -216,11 +217,15 @@ describe("MissionEncodingPage — brouillon et interventions", () => {
           { kind: "INTERVENTION", id: 1, requestId: null, orderIndex: 0, label: "Intervention A", interventionType: null, firm: null, requestedFirmNameSnapshot: null, status: "CATALOGUED", readOnly: false, materialLines: [materialLineA1, materialLineA2], materialItemRequests: [] },
           { kind: "INTERVENTION", id: 2, requestId: null, orderIndex: 1, label: "Intervention B", interventionType: null, firm: null, requestedFirmNameSnapshot: null, status: "CATALOGUED", readOnly: false, materialLines: [], materialItemRequests: [] },
         ],
+        // Compteurs = `progress` du backend (même requête que le suivi manager), jamais
+        // recomptés par la page.
+        progress: { interventionCount: 2, encodedInterventionCount: 1, materialLineCount: 2 },
       }),
     );
     renderPage();
 
     expect(await screen.findByText("2 interventions · 2 matériels")).toBeInTheDocument();
+    expect(screen.getAllByText("1 / 2").length).toBeGreaterThan(0);
     expect(screen.getByText("Intervention A")).toBeInTheDocument();
     expect(screen.getByText("Intervention B")).toBeInTheDocument();
   });

@@ -229,6 +229,19 @@ export type EncodingComment = {
  * Informationnel uniquement, jamais bloquant : aide le manager à décider, ne
  * conditionne aucune règle serveur.
  */
+/**
+ * Compteurs de la page d'encodage — calculés par le backend avec la MÊME requête que le
+ * suivi manager (D-118, EncodingTrackingRepository) : interventions RÉELLES uniquement,
+ * jamais les drafts (en attente / historique), qui restent visibles dans `entries`.
+ */
+export type MissionEncodingProgress = {
+  interventionCount: number;
+  /** Interventions réelles portant au moins une ligne de matériel active (quantité > 0). */
+  encodedInterventionCount: number;
+  /** Lignes de matériel actives (quantité > 0) de toute la mission. */
+  materialLineCount: number;
+};
+
 export type MissionEncodingCoherenceSummary = {
   hasNoInterventions: boolean;
   hasInterventionsWithNoMaterial: boolean;
@@ -262,6 +275,7 @@ export type MissionEncodingResponse = {
   };
   coherenceSummary: MissionEncodingCoherenceSummary;
   encodingComments: EncodingComment[];
+  progress: MissionEncodingProgress;
 };
 
 /**

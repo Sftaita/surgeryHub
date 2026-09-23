@@ -81,7 +81,7 @@ function makeItem(overrides: Partial<EncodingTrackingItem> = {}): EncodingTracki
     surgeon: { id: 8, name: "Dr Jean Dupont" },
     site: { id: 2, name: "Delta" },
     hours: { plannedMinutes: 240, effectiveMinutes: 312, effectiveSource: "ACTUAL_TIMES", hasRealHours: true },
-    encoding: { interventionCount: 2, materialLineCount: 6, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false },
+    encoding: { interventionCount: 2, encodedInterventionCount: 1, materialLineCount: 6, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false },
     financial: { state: "NOT_CALCULABLE", label: "Pas encore calculable", isBlocking: false },
     ...overrides,
   };

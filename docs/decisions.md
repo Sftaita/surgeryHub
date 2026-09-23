@@ -10659,3 +10659,48 @@ refonte du cockpit "Suivi des encodages" dans ce lot. Le catalogue tarifaire inc
 (`MISSING_FIRM_INTERVENTION_RATE`/`MISSING_FIRM_MATERIAL_RATE`/`MISSING_INSTRUMENTIST_RATE`
 observés sur données réelles) est un chantier de configuration métier, pas de code — signalé,
 non corrigé ici.
+
+## D-122 — Un seul décompte d'interventions entre la page d'encodage et le suivi manager (2026-09-23)
+
+**Statut : fait.**
+
+**Constat.** Sur une même mission, l'instrumentiste voyait « 5 interventions » (progression
+3 / 5) et le manager « 3 interventions » dans le suivi des encodages. Pas un bug de D-118 :
+le suivi compte, par définition, les `MissionIntervention` réelles ; la page d'encodage
+recomptait côté client toutes les entrées de `entries`, qui incluent aussi les drafts
+(`OPEN` — intervention hors catalogue en attente de validation manager ; `KEPT_AS_HISTORY` —
+demande ignorée, conservée en lecture seule parce qu'elle porte du matériel). Deux définitions
+concurrentes, dont une dupliquée côté frontend.
+
+**Décision.** D-118 n'est pas modifié : la notion d'« intervention » reste l'intervention
+réelle, et la distinction avec les drafts est voulue. On rend cette distinction unique et
+lisible :
+
+1. `EncodingStateFacts`/`EncodingTrackingRepository::factColumns()` gagnent
+   `encodedInterventionCount` = interventions réelles portant au moins une ligne active
+   (`quantity > 0`, même définition d'« active » que D-070/D-118). Jumeau PHP dans
+   `EncodingStateResolver::factsFromMission()`.
+2. `GET /api/missions/{id}/encoding` expose `progress` en lisant **la même requête**
+   (`fetchFactsForIds()`) — jamais un second comptage ; le suivi expose
+   `encoding.encodedInterventionCount`.
+3. La page d'encodage affiche `progress` tel quel (compteur, jauge, pied de validation). Les
+   drafts restent affichés dans la liste (rien n'est supprimé ni masqué) mais ne sont plus
+   numérotés parmi les interventions et portent la mention « Hors décompte » ; l'en-tête de
+   liste l'indique explicitement (« 2 interventions · 3 matériels · 2 hors décompte »). Le
+   tiroir manager affiche « 1/2 interventions encodées ».
+
+**Conséquence assumée.** Les compteurs ne sont plus optimistes : ils suivent l'état serveur
+après chaque mutation (la ligne provisoire, elle, apparaît toujours immédiatement).
+
+**Tests.** `MissionEncodingEntriesTest::test_encoding_progress_and_manager_tracking_share_the_same_intervention_count`
+(base réelle : 2 interventions dont une avec seulement une ligne à 0, un draft `OPEN` et un draft
+`KEPT_AS_HISTORY` avec matériel → `progress` et la ligne du suivi strictement égaux),
+`EncodingStateResolverTest` (jumeau PHP), tests frontend `InterventionsSection`/`MissionTrackingDrawer`.
+
+**Dette UX connue (hors périmètre, non corrigée).** Le cockpit « Suivi des encodages » est
+desktop-first (D-120, maquette validée) : le tiroir de détail fait 560 px et **rétrécit** la
+liste au lieu de la recouvrir. Vers ~1160 px de largeur de fenêtre, tiroir ouvert, la colonne
+restante (~350 px) devient trop étroite pour la table (colonnes tronquées, cartes « À traiter »
+empilées). Constaté au test navigateur réel du 2026-09-23. Piste future : sous un seuil de
+largeur, faire recouvrir la liste par le tiroir (overlay) ou basculer la table en cartes —
+lot séparé, pas de refonte responsive dans ce chantier.

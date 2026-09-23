@@ -242,6 +242,7 @@ export default function MissionEncodingPage() {
           onSaved={() => setLastSavedAt(new Date())}
           canSubmit={canSubmit}
           onValidate={() => setOpenSubmit(true)}
+          progress={encoding.progress}
         />
       </Box>
 

@@ -55,6 +55,9 @@ final readonly class EncodingTrackingItem
         public EffectiveDurationSource $effectiveSource,
 
         public int $interventionCount,
+        /** Voir EncodingStateFacts::$encodedInterventionCount — même définition que la
+         *  progression de la page d'encodage instrumentiste. */
+        public int $encodedInterventionCount,
         public int $materialLineCount,
         /** Soumission close sans aucune ligne de matériel active (D-080). */
         public bool $submittedWithoutMaterial,

@@ -161,6 +161,7 @@ final class EncodingTrackingController extends AbstractController
             ],
             'encoding' => [
                 'interventionCount' => $item->interventionCount,
+                'encodedInterventionCount' => $item->encodedInterventionCount,
                 'materialLineCount' => $item->materialLineCount,
                 'submittedWithoutMaterial' => $item->submittedWithoutMaterial,
                 'hasNoMaterialJustification' => $item->hasNoMaterialJustification,

@@ -158,6 +158,7 @@ final class EncodingTrackingService
             effectiveMinutes: $effective->minutes,
             effectiveSource: $effective->source,
             interventionCount: $fact->interventionCount,
+            encodedInterventionCount: $fact->encodedInterventionCount,
             materialLineCount: $fact->activeMaterialLineCount,
             submittedWithoutMaterial: $mission->isSubmittedWithoutMaterial() === true,
             hasNoMaterialJustification: $mission->getNoMaterialComment() !== null && trim($mission->getNoMaterialComment()) !== '',
