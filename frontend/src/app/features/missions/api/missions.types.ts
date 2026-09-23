@@ -19,7 +19,9 @@ export type AllowedAction =
   | "validate"
   | "reopen"
   // Lot 6 (D-100) — lecture seule chirurgien, jamais un droit d'édition
-  | "view_encoding";
+  | "view_encoding"
+  // D-120 — cockpit Suivi des encodages, relance manuelle
+  | "remind";
 
 export type SchedulePrecision = "APPROXIMATE" | "EXACT";
 export type MissionType = "BLOCK" | "CONSULTATION";
@@ -189,6 +191,13 @@ export interface Mission {
    *  de matériel active ? Seule condition valide pour afficher noMaterialComment comme
    *  justification "aucun matériel" au manager (voir MissionDetailPage). */
   submittedWithoutMaterial?: boolean | null;
+
+  /** D-120 — infos de relance d'encodage (cockpit Suivi des encodages). Calculées/lues
+   *  côté backend (EncodingReminderService) — jamais recalculées côté frontend. */
+  automaticReminderSentAt?: string | null;
+  nextAutomaticReminderAt?: string | null;
+  lastManualReminderAt?: string | null;
+  lastManualReminderByName?: string | null;
 
   [key: string]: unknown;
 }

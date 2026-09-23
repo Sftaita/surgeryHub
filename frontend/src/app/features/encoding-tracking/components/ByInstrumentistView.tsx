@@ -12,6 +12,8 @@ interface Props {
   isError: boolean;
   isCapped: boolean;
   cappedTotal: number;
+  onOpen?: (missionId: number) => void;
+  selectedMissionId?: number | null;
 }
 
 type DayIndicator = "complete" | "partial" | "missing";
@@ -33,7 +35,7 @@ interface InstrumentistGroup {
  * pas une nouvelle définition métier de "encodage correct" — volontairement pas un
  * calendrier complet.
  */
-export function ByInstrumentistView({ items, isLoading, isError, isCapped, cappedTotal }: Props) {
+export function ByInstrumentistView({ items, isLoading, isError, isCapped, cappedTotal, onOpen, selectedMissionId }: Props) {
   const [expanded, setExpanded] = React.useState<string | null>(null);
 
   if (isLoading) {
@@ -120,6 +122,8 @@ export function ByInstrumentistView({ items, isLoading, isError, isCapped, cappe
                     isLoading={false}
                     isError={false}
                     onPageChange={() => {}}
+                    onOpen={onOpen}
+                    selectedMissionId={selectedMissionId}
                     emptyTitle="Aucune mission ce jour-là"
                   />
                 </Box>

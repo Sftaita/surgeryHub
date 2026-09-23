@@ -195,3 +195,8 @@ export async function reopenMissionEncoding(
 ): Promise<void> {
   await apiClient.post(`/api/missions/${missionId}/encoding/reopen`, { comment });
 }
+
+/** D-120 — relance manuelle (cockpit Suivi des encodages). Ne mute aucun statut. */
+export async function remindMissionEncoding(missionId: number): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/encoding/remind`);
+}

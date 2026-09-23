@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import EncodingTrackingPage from "./EncodingTrackingPage";
+import { ToastProvider } from "../../../ui/toast/ToastProvider";
 import type { EncodingTrackingItem, EncodingTrackingResponse, EncodingTrackingSummary } from "../../../features/encoding-tracking/api/encodingTracking.api";
 
 const navigateMock = vi.fn();
@@ -32,6 +33,29 @@ vi.mock("../../../api/apiClient", () => ({
 
 vi.mock("../../../features/manager-surgeons/api/surgeons.api", () => ({
   getSurgeons: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+}));
+
+// Le tiroir de détail (MissionTrackingDrawer) réutilise ces requêtes existantes — mockées
+// pour que les tests d'ouverture du tiroir n'appellent jamais le réseau.
+const fetchMissionByIdMock = vi.fn();
+const getMissionExecutionMock = vi.fn();
+vi.mock("../../../features/missions/api/missions.api", () => ({
+  fetchMissionById: (...args: unknown[]) => fetchMissionByIdMock(...args),
+  getMissionExecution: (...args: unknown[]) => getMissionExecutionMock(...args),
+}));
+
+const fetchMissionEncodingMock = vi.fn();
+const validateMissionEncodingMock = vi.fn();
+const remindMissionEncodingMock = vi.fn();
+vi.mock("../../../features/encoding/api/encoding.api", () => ({
+  fetchMissionEncoding: (...args: unknown[]) => fetchMissionEncodingMock(...args),
+  validateMissionEncoding: (...args: unknown[]) => validateMissionEncodingMock(...args),
+  remindMissionEncoding: (...args: unknown[]) => remindMissionEncodingMock(...args),
+}));
+
+const fetchMissionAuditMock = vi.fn();
+vi.mock("../../../features/planning-v2/api/planningV2.api", () => ({
+  fetchMissionAudit: (...args: unknown[]) => fetchMissionAuditMock(...args),
 }));
 
 function emptySummary(overrides: Partial<EncodingTrackingSummary> = {}): EncodingTrackingSummary {
@@ -78,9 +102,11 @@ function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <EncodingTrackingPage />
-      </MemoryRouter>
+      <ToastProvider>
+        <MemoryRouter>
+          <EncodingTrackingPage />
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>,
   );
 }
@@ -91,14 +117,26 @@ beforeEach(() => {
   getEncodingTrackingSummaryMock.mockReset();
   apiClientGetMock.mockReset();
   apiClientGetMock.mockResolvedValue({ data: [] });
+
+  fetchMissionByIdMock.mockReset();
+  getMissionExecutionMock.mockReset();
+  fetchMissionEncodingMock.mockReset();
+  fetchMissionAuditMock.mockReset();
+  validateMissionEncodingMock.mockReset();
+  remindMissionEncodingMock.mockReset();
+
+  fetchMissionByIdMock.mockResolvedValue({ id: 1, status: "SUBMITTED", allowedActions: ["view", "validate", "reject"] });
+  getMissionExecutionMock.mockResolvedValue({ hasExecutionRecord: false, actualStartAt: null, actualEndAt: null, actualDurationMinutes: null, hoursSource: null, effectiveDurationMinutes: 0, effectiveDurationSource: "PLANNED", disputes: [] });
+  fetchMissionEncodingMock.mockResolvedValue({ mission: { id: 1, type: "BLOCK", status: "SUBMITTED", allowedActions: [] }, interventions: [], entries: [], interventionTypeRequests: [], coherenceSummary: {}, encodingComments: [] });
+  fetchMissionAuditMock.mockResolvedValue([]);
 });
 
 describe("EncodingTrackingPage — rendu de base", () => {
   it("affiche le titre de la page et les KPI depuis /summary, sans les recalculer", async () => {
     const summary = emptySummary({
-      totalMissions: 10, encodingExpected: 10, upcoming: 3, toEncode: 1, inProgress: 2,
-      submitted: 4, validated: 1, locked: 0, staleInProgress: 0, financialAnomalies: 5,
-      encoded: 5, missingEncoding: 1, toTreat: 10, hasFinanciallyEligibleMissions: true,
+      totalMissions: 21, encodingExpected: 20, upcoming: 15, toEncode: 5, inProgress: 4,
+      submitted: 12, validated: 11, locked: 3, notApplicable: 2, staleInProgress: 8,
+      financialAnomalies: 7, missingEncoding: 6, toTreat: 25, hasFinanciallyEligibleMissions: true,
     });
     getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
     getEncodingTrackingMock.mockResolvedValue(makeResponse([makeItem()], summary));
@@ -106,10 +144,16 @@ describe("EncodingTrackingPage — rendu de base", () => {
     renderPage();
 
     expect(screen.getByText("Suivi des encodages")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText("10")).toBeInTheDocument()); // Missions (encodingExpected)
-    expect(screen.getByText("7")).toBeInTheDocument(); // Terminées (encodingExpected - upcoming)
-    expect(screen.getByText("5")).toBeInTheDocument(); // Anomalies (financialAnomalies)
-    expect(screen.getByText("4")).toBeInTheDocument(); // Soumises (submitted)
+
+    const attention = within(await screen.findByRole("group", { name: "À traiter maintenant" }));
+    await waitFor(() => expect(attention.getByText("25")).toBeInTheDocument()); // toTreat — total à traiter
+    expect(attention.getByText("8")).toBeInTheDocument(); // en retard = staleInProgress
+    expect(attention.getByText("6")).toBeInTheDocument(); // à relancer = missingEncoding
+    expect(attention.getByText("12")).toBeInTheDocument(); // à valider = submitted
+
+    const funnel = within(screen.getByRole("group", { name: "Avancement de la période" }));
+    expect(funnel.getByText(/21 mission.*7 anomalie/)).toBeInTheDocument();
+    expect(funnel.getByText("5")).toBeInTheDocument(); // à encoder = toEncode
 
     // Les valeurs proviennent de getEncodingTrackingSummaryMock — jamais recalculées à
     // partir de `items` (un seul appel au résumé, indépendant du nombre d'items reçus).
@@ -159,9 +203,9 @@ describe("EncodingTrackingPage — empty states distincts", () => {
 });
 
 describe("EncodingTrackingPage — états d'encodage & finance", () => {
-  it("affiche le badge d'état d'encodage et l'état financier synthétique tels que fournis par le backend", async () => {
+  it("affiche le libellé d'état d'encodage et l'état financier synthétique tels que fournis par le backend", async () => {
     const summary = emptySummary({ totalMissions: 1, encodingExpected: 1, submitted: 1 });
-    const item = makeItem({ encodingState: "SUBMITTED", financial: { state: "ANOMALY", label: "Anomalie", isBlocking: true } });
+    const item = makeItem({ encodingState: "SUBMITTED", encodingStateLabel: "Soumis", financial: { state: "ANOMALY", label: "Anomalie", isBlocking: true } });
     getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
     getEncodingTrackingMock.mockResolvedValue(makeResponse([item], summary));
 
@@ -179,7 +223,8 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
 
     renderPage();
 
-    await waitFor(() => expect(screen.getByText(/5 h planifiées · 5 h 12 effectives/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("5 h 12")).toBeInTheDocument());
+    expect(screen.getByText("/ 5 h")).toBeInTheDocument();
     expect(screen.getByText("Heures réelles")).toBeInTheDocument();
   });
 
@@ -208,12 +253,13 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
 
     renderPage();
 
-    await waitFor(() => expect(screen.getByText(/2 h planifiées · 2 h 25 effectives/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("2 h 25")).toBeInTheDocument());
+    expect(screen.getByText("/ 2 h")).toBeInTheDocument();
   });
 });
 
-describe("EncodingTrackingPage — ouverture mission", () => {
-  it("navigue vers la fiche mission existante au clic sur une ligne", async () => {
+describe("EncodingTrackingPage — ouverture du tiroir de détail", () => {
+  it("ouvre le tiroir de détail au clic sur une ligne, sans naviguer", async () => {
     const user = userEvent.setup();
     const summary = emptySummary({ totalMissions: 1, encodingExpected: 1 });
     const item = makeItem({ missionId: 42 });
@@ -222,10 +268,46 @@ describe("EncodingTrackingPage — ouverture mission", () => {
 
     renderPage();
 
-    await waitFor(() => expect(screen.getByText("Ouvrir")).toBeInTheDocument());
-    await user.click(screen.getByText("Ouvrir"));
+    const row = await screen.findByRole("button", { name: /Salve Decorte/ });
+    await user.click(row);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Mission #42" })).toBeInTheDocument());
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("le lien « Voir la fiche complète » du tiroir navigue vers la page mission existante", async () => {
+    const user = userEvent.setup();
+    const summary = emptySummary({ totalMissions: 1, encodingExpected: 1 });
+    const item = makeItem({ missionId: 42 });
+    getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
+    getEncodingTrackingMock.mockResolvedValue(makeResponse([item], summary));
+
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: /Salve Decorte/ }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Mission #42" })).toBeInTheDocument());
+    await user.click(screen.getByText("Voir la fiche complète"));
 
     expect(navigateMock).toHaveBeenCalledWith("/app/m/missions/42");
+  });
+
+  it("le bouton Valider n'est actif que si le backend l'autorise (allowedActions)", async () => {
+    const user = userEvent.setup();
+    const summary = emptySummary({ totalMissions: 1, encodingExpected: 1 });
+    const item = makeItem({ missionId: 42, encodingState: "IN_PROGRESS", encodingStateLabel: "En cours" });
+    getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
+    getEncodingTrackingMock.mockResolvedValue(makeResponse([item], summary));
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "IN_PROGRESS", allowedActions: ["view", "remind"] });
+
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: /Salve Decorte/ }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Mission #42" })).toBeInTheDocument());
+
+    const validateBtn = await screen.findByRole("button", { name: "Valider l'encodage" });
+    expect(validateBtn).toBeDisabled();
+    await user.click(validateBtn);
+    expect(validateMissionEncodingMock).not.toHaveBeenCalled();
   });
 });
 
@@ -324,6 +406,7 @@ describe("EncodingTrackingPage — filtres", () => {
     await waitFor(() => expect(getEncodingTrackingSummaryMock).toHaveBeenCalledTimes(1));
 
     const user = userEvent.setup();
+    await user.click(screen.getByText("Filtres"));
     await user.click(screen.getByText("Tous les instrumentistes"));
     await user.click(await screen.findByText("Perrine Pineux"));
 

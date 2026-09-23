@@ -10,6 +10,8 @@ interface Props {
   /** true quand `total` dépasse le nombre d'items chargés (plafond de la vue large). */
   isCapped: boolean;
   cappedTotal: number;
+  onOpen?: (missionId: number) => void;
+  selectedMissionId?: number | null;
 }
 
 /**
@@ -23,7 +25,7 @@ interface Props {
  * SUBMITTED peut aussi porter une anomalie financière résiduelle d'un calcul antérieur) —
  * chacune représente une action de suivi différente, pas une partition.
  */
-export function ToTreatPanel({ items, isLoading, isError, isCapped, cappedTotal }: Props) {
+export function ToTreatPanel({ items, isLoading, isError, isCapped, cappedTotal, onOpen, selectedMissionId }: Props) {
   if (isLoading) {
     return (
       <Box sx={{ p: 4, textAlign: "center" }}>
@@ -66,15 +68,18 @@ export function ToTreatPanel({ items, isLoading, isError, isCapped, cappedTotal 
         </Alert>
       )}
 
-      <Section title="Encodages manquants" items={missing} emptyTitle="Aucun encodage manquant" />
-      <Section title="En cours anormalement longtemps" items={stale} emptyTitle="Aucun encodage en cours en retard" />
-      <Section title="À valider" items={toValidate} emptyTitle="Aucune soumission en attente" />
-      <Section title="Anomalies financières" items={anomalies} emptyTitle="Aucune anomalie financière" />
+      <Section title="Encodages manquants" items={missing} emptyTitle="Aucun encodage manquant" onOpen={onOpen} selectedMissionId={selectedMissionId} />
+      <Section title="En cours anormalement longtemps" items={stale} emptyTitle="Aucun encodage en cours en retard" onOpen={onOpen} selectedMissionId={selectedMissionId} />
+      <Section title="À valider" items={toValidate} emptyTitle="Aucune soumission en attente" onOpen={onOpen} selectedMissionId={selectedMissionId} />
+      <Section title="Anomalies financières" items={anomalies} emptyTitle="Aucune anomalie financière" onOpen={onOpen} selectedMissionId={selectedMissionId} />
     </Stack>
   );
 }
 
-function Section({ title, items, emptyTitle }: { title: string; items: EncodingTrackingItem[]; emptyTitle: string }) {
+function Section({ title, items, emptyTitle, onOpen, selectedMissionId }: {
+  title: string; items: EncodingTrackingItem[]; emptyTitle: string;
+  onOpen?: (missionId: number) => void; selectedMissionId?: number | null;
+}) {
   if (items.length === 0) return null;
 
   return (
@@ -88,6 +93,8 @@ function Section({ title, items, emptyTitle }: { title: string; items: EncodingT
         isLoading={false}
         isError={false}
         onPageChange={() => {}}
+        onOpen={onOpen}
+        selectedMissionId={selectedMissionId}
         emptyTitle={emptyTitle}
       />
     </Box>

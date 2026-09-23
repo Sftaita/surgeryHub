@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Stack, Tab, Tabs, Typography } from "@mui/material";
+import { Box, Stack, Tab, Tabs, Typography } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import TrackChangesOutlinedIcon from "@mui/icons-material/TrackChangesOutlined";
 import { PageHeader } from "../../../ui/PageHeader";
@@ -8,16 +8,19 @@ import EncodingTrackingFilterBar, {
   defaultTrackingFilterState,
   type TrackingFilterState,
 } from "../../../features/encoding-tracking/components/EncodingTrackingFilterBar";
-import { EncodingKpiRow } from "../../../features/encoding-tracking/components/EncodingKpiRow";
+import { AttentionCard } from "../../../features/encoding-tracking/components/AttentionCard";
+import { WeekFunnel } from "../../../features/encoding-tracking/components/WeekFunnel";
 import { EncodingTrackingTable } from "../../../features/encoding-tracking/components/EncodingTrackingTable";
 import { ToTreatPanel } from "../../../features/encoding-tracking/components/ToTreatPanel";
 import { ByInstrumentistView } from "../../../features/encoding-tracking/components/ByInstrumentistView";
+import { MissionTrackingDrawer } from "../../../features/encoding-tracking/components/MissionTrackingDrawer";
 import { periodForShortcut, type Period } from "../../../features/encoding-tracking/period";
 import {
   getEncodingTracking,
   getEncodingTrackingSummary,
   type EncodingState,
   type EncodingTrackingFilter,
+  type EncodingTrackingItem,
 } from "../../../features/encoding-tracking/api/encodingTracking.api";
 
 const TABS = ["table", "toTreat", "byInstrumentist"] as const;
@@ -55,6 +58,11 @@ function toApiFilter(period: Period, f: TrackingFilterState): EncodingTrackingFi
  * Suivi des encodages (D-118) — cockpit opérationnel manager. Distinct des statistiques
  * financières (D-077) : répond à "qu'est-ce qui a été encodé, par qui, et qu'est-ce qui
  * réclame mon attention ?", jamais à "combien".
+ *
+ * Maquette validée (docs/design/Instruction design/Suivi-encodages-admin) — le tiroir de
+ * détail RÉTRÉCIT cette colonne (margin-right), il ne la recouvre jamais : l'admin garde
+ * la liste sous les yeux en enchaînant les validations. Desktop uniquement pour cette
+ * passe (bascule mobile en cartes : lot séparé).
  */
 export default function EncodingTrackingPage() {
   const [period, setPeriod] = React.useState<Period>(() => periodForShortcut("today"));
@@ -62,6 +70,7 @@ export default function EncodingTrackingPage() {
   const [tableEncodingStates, setTableEncodingStates] = React.useState<EncodingState[]>([]);
   const [page, setPage] = React.useState(1);
   const [tab, setTab] = React.useState<TabKey>("table");
+  const [selectedMissionId, setSelectedMissionId] = React.useState<number | null>(null);
 
   const baseFilter = React.useMemo(() => toApiFilter(period, filter), [period, filter]);
 
@@ -96,97 +105,120 @@ export default function EncodingTrackingPage() {
   const noMissionsAtAll = tableQuery.data !== undefined && tableQuery.data.total === 0 && tableEncodingStates.length === 0;
   const noMatchForFilters = tableQuery.data !== undefined && tableQuery.data.items.length === 0 && tableQuery.data.total > 0;
 
+  // Le tiroir a besoin de l'EncodingTrackingItem déjà chargé (état, heures, compteurs) —
+  // jamais une seconde source : on le retrouve dans la vue actuellement affichée.
+  const selectedItem: EncodingTrackingItem | null = React.useMemo(() => {
+    if (selectedMissionId === null) return null;
+    const pool = tab === "table" ? tableQuery.data?.items : broadQuery.data?.items;
+    return pool?.find((i) => i.missionId === selectedMissionId) ?? null;
+  }, [selectedMissionId, tab, tableQuery.data, broadQuery.data]);
+
   function selectState(state: EncodingState) {
     setTableEncodingStates([state]);
     setTab("table");
   }
 
   return (
-    <Stack spacing={3}>
-      <PageHeader
-        icon={TrackChangesOutlinedIcon}
-        title="Suivi des encodages"
-        subtitle="Qu'est-ce qui a été encodé, par qui, quand — et qu'est-ce qui nécessite votre attention ?"
-      />
-
-      <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={2}>
-        <PeriodNav value={period} onChange={setPeriod} />
-      </Stack>
-
-      <EncodingTrackingFilterBar value={filter} onChange={setFilter} />
-
-      <EncodingKpiRow
-        summary={summary}
-        isLoading={summaryQuery.isLoading}
-        onSelectToEncode={() => selectState("TO_ENCODE")}
-        onSelectInProgress={() => selectState("IN_PROGRESS")}
-        onSelectSubmitted={() => selectState("SUBMITTED")}
-        onSelectAnomalies={() => setTab("toTreat")}
-      />
-
-      <Tabs value={tab} onChange={(_, v) => setTab(v)}>
-        {TABS.map((t) => <Tab key={t} value={t} label={TAB_LABELS[t]} />)}
-      </Tabs>
-
-      {tab === "table" && (
-        <Stack spacing={1}>
-          {tableEncodingStates.length > 0 && (
-            <Typography variant="caption" color="text.secondary">
-              Filtré sur : {tableEncodingStates.join(", ")} —{" "}
-              <Typography
-                component="span" variant="caption" color="primary"
-                sx={{ cursor: "pointer", textDecoration: "underline" }}
-                onClick={() => setTableEncodingStates([])}
-              >
-                réinitialiser
-              </Typography>
-            </Typography>
-          )}
-          <EncodingTrackingTable
-            items={tableQuery.data?.items ?? []}
-            total={tableQuery.data?.total ?? 0}
-            page={page}
-            limit={TABLE_LIMIT}
-            isLoading={tableQuery.isLoading}
-            isError={tableQuery.isError}
-            onPageChange={setPage}
-            emptyTitle={
-              noMissionsAtAll
-                ? "Aucune mission sur cette période"
-                : noMatchForFilters
-                  ? "Aucune mission ne correspond aux filtres actuels"
-                  : "Aucune mission"
-            }
-            emptyDescription={
-              noMissionsAtAll
-                ? "Élargissez la période ou modifiez les filtres site/instrumentiste/chirurgien."
-                : noMatchForFilters
-                  ? `${tableQuery.data?.total ?? 0} mission(s) existent sur cette période — essayez d'élargir le filtre d'état d'encodage.`
-                  : undefined
-            }
+    <Box sx={{ position: "relative" }}>
+      <Box sx={{ transition: "margin-right 220ms cubic-bezier(.22,1,.36,1)", marginRight: selectedItem ? "560px" : 0 }}>
+        <Stack spacing={3}>
+          <PageHeader
+            icon={TrackChangesOutlinedIcon}
+            title="Suivi des encodages"
+            subtitle="Qu'est-ce qui a été encodé, par qui, quand — et qu'est-ce qui nécessite votre attention ?"
           />
+
+          <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={2}>
+            <PeriodNav value={period} onChange={setPeriod} />
+          </Stack>
+
+          <Stack direction="row" spacing={2} alignItems="stretch" flexWrap="wrap" useFlexGap>
+            <AttentionCard
+              summary={summary}
+              onSelectStale={() => selectState("IN_PROGRESS")}
+              onSelectMissing={() => selectState("TO_ENCODE")}
+              onSelectSubmitted={() => selectState("SUBMITTED")}
+            />
+            <WeekFunnel summary={summary} />
+          </Stack>
+
+          <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ minHeight: 0 }}>
+              {TABS.map((t) => <Tab key={t} value={t} label={TAB_LABELS[t]} sx={{ minHeight: 0 }} />)}
+            </Tabs>
+            <Box sx={{ flex: 1 }} />
+            <EncodingTrackingFilterBar value={filter} onChange={setFilter} />
+          </Stack>
+
+          {tab === "table" && (
+            <Stack spacing={1}>
+              {tableEncodingStates.length > 0 && (
+                <Typography variant="caption" color="text.secondary">
+                  Filtré sur : {tableEncodingStates.join(", ")} —{" "}
+                  <Typography
+                    component="span" variant="caption" color="primary"
+                    sx={{ cursor: "pointer", textDecoration: "underline" }}
+                    onClick={() => setTableEncodingStates([])}
+                  >
+                    réinitialiser
+                  </Typography>
+                </Typography>
+              )}
+              <EncodingTrackingTable
+                items={tableQuery.data?.items ?? []}
+                total={tableQuery.data?.total ?? 0}
+                page={page}
+                limit={TABLE_LIMIT}
+                isLoading={tableQuery.isLoading}
+                isError={tableQuery.isError}
+                onPageChange={setPage}
+                onOpen={setSelectedMissionId}
+                selectedMissionId={selectedMissionId}
+                emptyTitle={
+                  noMissionsAtAll
+                    ? "Aucune mission sur cette période"
+                    : noMatchForFilters
+                      ? "Aucune mission ne correspond aux filtres actuels"
+                      : "Aucune mission"
+                }
+                emptyDescription={
+                  noMissionsAtAll
+                    ? "Élargissez la période ou modifiez les filtres site/instrumentiste/chirurgien."
+                    : noMatchForFilters
+                      ? `${tableQuery.data?.total ?? 0} mission(s) existent sur cette période — essayez d'élargir le filtre d'état d'encodage.`
+                      : undefined
+                }
+              />
+            </Stack>
+          )}
+
+          {tab === "toTreat" && (
+            <ToTreatPanel
+              items={broadQuery.data?.items ?? []}
+              isLoading={broadQuery.isLoading}
+              isError={broadQuery.isError}
+              isCapped={(broadQuery.data?.total ?? 0) > BROAD_LIMIT}
+              cappedTotal={broadQuery.data?.total ?? 0}
+              onOpen={setSelectedMissionId}
+              selectedMissionId={selectedMissionId}
+            />
+          )}
+
+          {tab === "byInstrumentist" && (
+            <ByInstrumentistView
+              items={broadQuery.data?.items ?? []}
+              isLoading={broadQuery.isLoading}
+              isError={broadQuery.isError}
+              isCapped={(broadQuery.data?.total ?? 0) > BROAD_LIMIT}
+              cappedTotal={broadQuery.data?.total ?? 0}
+              onOpen={setSelectedMissionId}
+              selectedMissionId={selectedMissionId}
+            />
+          )}
         </Stack>
-      )}
+      </Box>
 
-      {tab === "toTreat" && (
-        <ToTreatPanel
-          items={broadQuery.data?.items ?? []}
-          isLoading={broadQuery.isLoading}
-          isError={broadQuery.isError}
-          isCapped={(broadQuery.data?.total ?? 0) > BROAD_LIMIT}
-          cappedTotal={broadQuery.data?.total ?? 0}
-        />
-      )}
-
-      {tab === "byInstrumentist" && (
-        <ByInstrumentistView
-          items={broadQuery.data?.items ?? []}
-          isLoading={broadQuery.isLoading}
-          isError={broadQuery.isError}
-          isCapped={(broadQuery.data?.total ?? 0) > BROAD_LIMIT}
-          cappedTotal={broadQuery.data?.total ?? 0}
-        />
-      )}
-    </Stack>
+      <MissionTrackingDrawer item={selectedItem} onClose={() => setSelectedMissionId(null)} />
+    </Box>
   );
 }

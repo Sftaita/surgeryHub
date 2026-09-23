@@ -66,6 +66,9 @@ export interface EncodingTrackingSummary {
 export interface EncodingTrackingPerson {
   id: number;
   name: string | null;
+  /** Instrumentiste/chirurgien uniquement (jamais le site) — chemin brut, à résoudre via
+   *  resolveApiAssetUrl(). Absent/null = pas de photo, repli sur les initiales. */
+  photoPath?: string | null;
 }
 
 export interface EncodingTrackingHours {
