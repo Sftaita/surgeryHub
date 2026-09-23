@@ -257,6 +257,8 @@ function Harness({ canEdit }: { canEdit: boolean }) {
       entries={data?.entries ?? []}
       legacyInterventions={data?.interventions ?? []}
       catalog={CATALOG}
+      canSubmit={false}
+      onValidate={() => {}}
     />
   );
 }
@@ -286,6 +288,15 @@ describe("InterventionsSection — état vide", () => {
     expect(await screen.findByText("Aucune intervention encodée")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /nouvelle intervention/i })).toHaveLength(1);
   });
+
+  it("n'affiche jamais une progression « 0 / 0 — Mission complète » sans intervention", async () => {
+    renderSection([]);
+
+    await screen.findByText("Aucune intervention encodée");
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Mission complète/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Tout est encodé/)).not.toBeInTheDocument();
+  });
 });
 
 describe("InterventionsSection — rendu d'une intervention réelle", () => {
@@ -301,7 +312,8 @@ describe("InterventionsSection — rendu d'une intervention réelle", () => {
     await screen.findByText("Réparation coiffe des rotateurs");
 
     expect(screen.getByText("Modifier l'intervention")).toBeInTheDocument();
-    expect(screen.getByText("Supprimer")).toBeInTheDocument();
+    // Nouveau design (option 2b) : corbeille icône seule, plus de lien texte "Supprimer".
+    expect(screen.getByRole("button", { name: "Supprimer l'intervention" })).toBeInTheDocument();
   });
 });
 
@@ -338,7 +350,7 @@ describe("InterventionsSection — rendu d'un draft OPEN", () => {
 });
 
 describe("InterventionsSection — ordre entrelacé intervention/draft", () => {
-  it("trie la liste unifiée par orderIndex, sans regrouper par type", async () => {
+  it("trie la liste unifiée par orderIndex, sans regrouper par type, puis l'affiche inversée (la plus récente en haut — DOCUMENTATION §1)", async () => {
     renderSection([
       makeInterventionEntry({ id: 1, orderIndex: 0, label: "Intervention A" }),
       makeDraftEntry({ id: 17, requestId: 28, orderIndex: 1, label: "Draft B" }),
@@ -347,7 +359,10 @@ describe("InterventionsSection — ordre entrelacé intervention/draft", () => {
 
     await screen.findByText("Intervention A");
     const headings = screen.getAllByText(/^(Intervention A|Draft B|Intervention C)$/);
-    expect(headings.map((h) => h.textContent)).toEqual(["Intervention A", "Draft B", "Intervention C"]);
+    // Liste anti-chronologique (option 2b) : la dernière créée (orderIndex le plus haut)
+    // s'affiche en premier — les numéros de rang restent chronologiques, jamais l'ordre
+    // d'affichage.
+    expect(headings.map((h) => h.textContent)).toEqual(["Intervention C", "Draft B", "Intervention A"]);
   });
 });
 

@@ -241,21 +241,21 @@ describe("MissionEncodingPage — brouillon et interventions", () => {
     expect(screen.getByText("En attente de validation manager")).toBeInTheDocument();
   });
 
-  it("le bouton Terminer l'encodage est présent quand l'action submit est autorisée", async () => {
+  it("le bouton Valider est présent quand l'action submit est autorisée", async () => {
     const mission = baseMission({ allowedActions: ["encoding", "submit"] });
     mockRoutes(mission, baseEncoding());
     renderPage();
 
-    expect(await screen.findByRole("button", { name: "Terminer l'encodage" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Valider" })).toBeInTheDocument();
   });
 
-  it("le bouton Terminer l'encodage est absent quand submit n'est pas autorisé", async () => {
+  it("le bouton Valider est absent quand submit n'est pas autorisé", async () => {
     const mission = baseMission({ allowedActions: ["encoding"] });
     mockRoutes(mission, baseEncoding());
     renderPage();
 
     await screen.findByText("0 intervention · 0 matériel");
-    expect(screen.queryByRole("button", { name: "Terminer l'encodage" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Valider" })).not.toBeInTheDocument();
   });
 
   it("le bouton 'Démarrer l'encodage' n'est jamais affiché (revue UX lot 1), même si le backend l'autorise encore", async () => {
@@ -287,13 +287,16 @@ describe("MissionEncodingPage — résumé intermédiaire supprimé, récapitula
     expect(screen.getAllByText("Aucune intervention encodée")).toHaveLength(1);
   });
 
-  it("le bouton Terminer l'encodage reste accessible et ouvre le véritable récapitulatif final", async () => {
+  it("le bouton Valider reste accessible et ouvre le véritable récapitulatif final", async () => {
     const user = userEvent.setup();
     const mission = baseMission();
     mockRoutes(mission, baseEncoding());
     renderPage();
 
-    const submitButton = await screen.findByRole("button", { name: "Terminer l'encodage" });
+    // Toujours actif dès que "submit" est autorisé côté backend — jamais désactivé par un
+    // calcul de complétude côté client (SubmitDialog reste le vrai gardien : commentaire
+    // obligatoire si aucun matériel, cas déjà géré pour les missions CONSULTATION).
+    const submitButton = await screen.findByRole("button", { name: "Valider" });
     await user.click(submitButton);
 
     // Le récapitulatif final (SubmitDialog) n'a pas été supprimé ni modifié : son titre
@@ -311,31 +314,31 @@ describe("MissionEncodingPage — résumé intermédiaire supprimé, récapitula
  * mutation d'EditServiceHoursDialog écrit.
  */
 describe("MissionEncodingPage — heures prestées (source de vérité MissionExecutionInfo)", () => {
-  it("affiche 'Non renseigné' quand aucune saisie n'existe réellement (hasExecutionRecord=false)", async () => {
+  it("affiche l'invite de saisie quand aucune saisie n'existe réellement (hasExecutionRecord=false)", async () => {
     const mission = baseMission();
     mockRoutes(mission, baseEncoding(), baseExecution({ hasExecutionRecord: false }));
     renderPage();
 
-    expect(await screen.findByText("Non renseigné")).toBeInTheDocument();
+    expect(await screen.findByText("Non renseignées — appuyez pour saisir")).toBeInTheDocument();
   });
 
-  it("affiche la valeur au format 'X h' quand hasExecutionRecord=true", async () => {
+  it("affiche la valeur au format tabulaire 'XhYY' (TOTAL NET) quand hasExecutionRecord=true", async () => {
     const mission = baseMission();
     mockRoutes(mission, baseEncoding(), baseExecution({ hasExecutionRecord: true, actualDurationMinutes: 240 }));
     renderPage();
 
-    expect(await screen.findByText("4 h")).toBeInTheDocument();
+    expect(await screen.findByText("4h00")).toBeInTheDocument();
   });
 
-  it("affiche une valeur décimale correctement formatée (270 min = 4.5 h)", async () => {
+  it("affiche une durée non ronde correctement formatée (270 min = 4h30)", async () => {
     const mission = baseMission();
     mockRoutes(mission, baseEncoding(), baseExecution({ hasExecutionRecord: true, actualDurationMinutes: 270 }));
     renderPage();
 
-    expect(await screen.findByText("4.5 h")).toBeInTheDocument();
+    expect(await screen.findByText("4h30")).toBeInTheDocument();
   });
 
-  it("mise à jour optimiste immédiate après sauvegarde, sans repasser par 'Non renseigné', confirmée par la réponse serveur", async () => {
+  it("mise à jour optimiste immédiate après sauvegarde, sans repasser par l'invite de saisie, confirmée par la réponse serveur", async () => {
     const user = userEvent.setup();
     const mission = baseMission();
     mockRoutes(mission, baseEncoding(), baseExecution({ hasExecutionRecord: false }));
@@ -345,22 +348,22 @@ describe("MissionEncodingPage — heures prestées (source de vérité MissionEx
 
     renderPage();
 
-    expect(await screen.findByText("Non renseigné")).toBeInTheDocument();
-    await user.click(screen.getByText("Non renseigné"));
+    expect(await screen.findByText("Non renseignées — appuyez pour saisir")).toBeInTheDocument();
+    await user.click(screen.getByText("Non renseignées — appuyez pour saisir"));
     await user.click(await screen.findByRole("button", { name: "Enregistrer les heures" }));
 
-    // Optimiste : la modale se ferme, la carte affiche déjà "4 h" (08h00->12h00 planifié,
-    // aucune pause) avant toute réponse serveur — jamais de retour transitoire à "Non renseigné".
+    // Optimiste : la modale se ferme, la carte affiche déjà "4h00" (08h00->12h00 planifié,
+    // aucune pause) avant toute réponse serveur — jamais de retour transitoire à l'invite.
     await waitFor(() => expect(screen.queryByRole("button", { name: "Enregistrer les heures" })).not.toBeInTheDocument());
-    expect(await screen.findByText("4 h")).toBeInTheDocument();
-    expect(screen.queryByText("Non renseigné")).not.toBeInTheDocument();
+    expect(await screen.findByText("4h00")).toBeInTheDocument();
+    expect(screen.queryByText("Non renseignées — appuyez pour saisir")).not.toBeInTheDocument();
 
     resolvePatch({
       data: baseExecution({ hasExecutionRecord: true, actualDurationMinutes: 240, hoursSource: "INSTRUMENTIST", effectiveDurationMinutes: 240, effectiveDurationSource: "ACTUAL_EXPLICIT" }),
     });
 
-    // La réponse serveur confirme (ne rétablit jamais "Non renseigné").
-    await waitFor(() => expect(screen.getByText("4 h")).toBeInTheDocument());
+    // La réponse serveur confirme (ne rétablit jamais l'invite de saisie).
+    await waitFor(() => expect(screen.getByText("4h00")).toBeInTheDocument());
   });
 
   it("rollback vers la valeur précédente si la sauvegarde échoue", async () => {
@@ -371,13 +374,13 @@ describe("MissionEncodingPage — heures prestées (source de vérité MissionEx
 
     renderPage();
 
-    expect(await screen.findByText("3 h")).toBeInTheDocument();
-    await user.click(screen.getByText("3 h"));
+    expect(await screen.findByText("3h00")).toBeInTheDocument();
+    await user.click(screen.getByText("3h00"));
     await user.click(await screen.findByRole("button", { name: "Enregistrer les heures" }));
 
-    // La valeur optimiste (4h, 08h-12h planifié) apparaît d'abord, puis le rollback
-    // restaure la valeur précédente (3h) une fois l'échec confirmé.
-    await waitFor(() => expect(screen.getByText("3 h")).toBeInTheDocument());
+    // La valeur optimiste (4h00, 08h-12h planifié) apparaît d'abord, puis le rollback
+    // restaure la valeur précédente (3h00) une fois l'échec confirmé.
+    await waitFor(() => expect(screen.getByText("3h00")).toBeInTheDocument());
   });
 
   it("un refetch (invalidation) ne rétablit jamais l'ancienne valeur", async () => {
@@ -402,14 +405,14 @@ describe("MissionEncodingPage — heures prestées (source de vérité MissionEx
 
     renderPage();
 
-    await screen.findByText("Non renseigné");
-    await user.click(screen.getByText("Non renseigné"));
+    await screen.findByText("Non renseignées — appuyez pour saisir");
+    await user.click(screen.getByText("Non renseignées — appuyez pour saisir"));
     await user.click(await screen.findByRole("button", { name: "Enregistrer les heures" }));
 
-    await waitFor(() => expect(screen.getByText("4 h")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("4h00")).toBeInTheDocument());
     // Le refetch déclenché par invalidate() interroge le "serveur" simulé, désormais à
     // jour lui aussi (mutation exécutée avant ce point) — jamais de régression visible.
-    expect(screen.queryByText("Non renseigné")).not.toBeInTheDocument();
+    expect(screen.queryByText("Non renseignées — appuyez pour saisir")).not.toBeInTheDocument();
   });
 
   it("persiste après un rechargement complet simulé (nouveau montage de page, même backend)", async () => {
@@ -418,15 +421,15 @@ describe("MissionEncodingPage — heures prestées (source de vérité MissionEx
     mockRoutes(mission, baseEncoding(), savedExecution);
 
     const { unmount } = renderPage();
-    expect(await screen.findByText("4 h")).toBeInTheDocument();
+    expect(await screen.findByText("4h00")).toBeInTheDocument();
 
     // "Rechargement" = démontage complet + nouveau QueryClient + nouveau montage, contre
     // le même mock serveur (qui persiste réellement côté backend, contrairement à un
-    // simple cache client) : si "4 h" survit, la valeur est bien persistée server-side,
+    // simple cache client) : si "4h00" survit, la valeur est bien persistée server-side,
     // pas seulement retenue en mémoire côté client.
     unmount();
     renderPage();
-    expect(await screen.findByText("4 h")).toBeInTheDocument();
+    expect(await screen.findByText("4h00")).toBeInTheDocument();
   });
 });
 
@@ -496,7 +499,7 @@ describe("MissionEncodingPage — bouton retour (origine mémorisée par MobileL
     );
     renderPageWithBackRoute("/app/i/planning");
 
-    await user.click(await screen.findByText("Terminer l'encodage"));
+    await user.click(await screen.findByRole("button", { name: "Valider" }));
     await screen.findByText("Récapitulatif avant validation");
     await user.click(screen.getByRole("button", { name: "Valider et clôturer la mission" }));
 

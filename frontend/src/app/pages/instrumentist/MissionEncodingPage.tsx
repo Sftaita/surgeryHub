@@ -8,27 +8,22 @@ import "dayjs/locale/fr";
 
 import { fetchMissionById, getMissionExecution } from "../../features/missions/api/missions.api";
 import type { UserRef } from "../../features/missions/api/missions.types";
-import { formatExecutionHours } from "../../features/missions/utils/missions.format";
 import { getEncodingBackTarget } from "../../layouts/scrollRestoration";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { fetchMissionEncoding } from "../../features/encoding/api/encoding.api";
 import InterventionsSection from "../../features/encoding/components/InterventionsSection";
 import { EncodeHeader } from "../../features/encoding/components/EncodeHeader";
 import { MissionReadOnlyCard } from "../../features/encoding/components/MissionReadOnlyCard";
-import { StickyValidateFooter } from "../../features/encoding/components/StickyValidateFooter";
+import { WorkedHoursCard } from "../../features/encoding/components/WorkedHoursCard";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
 import { SPECIALTIES } from "../../features/planning-manager/api/planning.api";
 
 dayjs.locale("fr");
 
-const GREEN_50 = "#EFFAF5";
-const GREEN_700 = "#2C7D5F";
-const GRAY_300 = "#C2C9D1";
-const GRAY_400 = "#98A2AE";
 const GRAY_700 = "#3A4754";
-const SHADOW_XS = "0 1px 2px rgba(22,32,43,.05)";
-const SHADOW_SM = "0 1px 2px rgba(22,32,43,.05), 0 2px 6px rgba(22,32,43,.06)";
+const GRAY_500 = "#727E8C";
+const GRAY_150 = "#E7EBEF";
 
 function extractErrorMessage(err: any): string {
   return (
@@ -53,21 +48,6 @@ function surgeonSpecialtyLabel(surgeon: UserRef | null | undefined): string | nu
   const value = surgeon?.specialties?.[0];
   if (!value) return null;
   return SPECIALTIES.find((s) => s.value === value)?.label ?? value;
-}
-
-function ClockIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={GREEN_700} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
-    </svg>
-  );
-}
-function ChevronRightIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={GRAY_300} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-      <path d="m9 18 6-6-6-6" />
-    </svg>
-  );
 }
 
 export default function MissionEncodingPage() {
@@ -176,7 +156,6 @@ export default function MissionEncodingPage() {
     encoding.mission?.allowedActions?.includes("edit_encoding") ||
     false;
 
-  const hoursLabel = formatExecutionHours(execution);
   const surgeon = mission.surgeon;
   const specialtyLabel = surgeonSpecialtyLabel(surgeon);
   const surgeonName = surgeon
@@ -198,7 +177,17 @@ export default function MissionEncodingPage() {
         savedAt={lastSavedAt}
       />
 
-      <Box sx={{ px: "20px", mt: "-28px", position: "relative", display: "flex", flexDirection: "column", gap: "14px" }}>
+      <Box
+        sx={{
+          mt: "-28px", mx: "auto", position: "relative",
+          display: "flex", flexDirection: "column", gap: "18px",
+          width: "100%", maxWidth: 760, padding: "0 16px 20px",
+          "@media (min-width:600px)": { maxWidth: 680, gap: "20px", padding: "0 20px 24px" },
+          "@media (min-width:900px)": { maxWidth: 720 },
+          "@media (min-width:1280px)": { maxWidth: 760, gap: "22px" },
+          "@media (max-height:480px) and (orientation:landscape)": { gap: "14px" },
+        }}
+      >
         <MissionReadOnlyCard
           surgeonName={surgeonName}
           surgeonPhotoUrl={resolveApiAssetUrl(surgeon?.profilePicturePath)}
@@ -216,35 +205,34 @@ export default function MissionEncodingPage() {
             cette page : le composant reste utilisé tel quel par
             pages/manager/MissionDetailPage.tsx (composant partagé, jamais modifié). */}
 
-        {/* Heures prestées */}
+        {/* Zone 1 — "TEMPS DE TRAVAIL" (docs/design/Instruction design/Page encodage
+            instrumentiste, DOCUMENTATION.md §1/§2) : bac neutre gris, une seule carte,
+            aucune touche de vert — le vert n'appartient qu'aux interventions (zone 2). */}
         <Box
-          component="button"
-          type="button"
-          onClick={() => canEditHours && setOpenEditHours(true)}
           sx={{
-            display: "flex", alignItems: "center", gap: "12px", background: "#fff", border: "none", borderRadius: "16px",
-            padding: "14px 16px", boxShadow: SHADOW_XS, cursor: canEditHours ? "pointer" : "default", fontFamily: "inherit",
-            textAlign: "left", width: "100%", transition: "box-shadow 150ms",
-            "&:hover": canEditHours ? { boxShadow: SHADOW_SM } : undefined,
+            display: "flex", flexDirection: "column", gap: "14px",
+            background: GRAY_150, borderRadius: "16px", padding: "12px 11px 13px",
+            "@media (min-width:600px)": { borderRadius: "18px", padding: "13px 13px 14px" },
           }}
         >
-          <Box sx={{ width: 38, height: 38, borderRadius: "999px", background: GREEN_50, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-            <ClockIcon />
-          </Box>
-          <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-            <Box sx={{ fontSize: 13, fontWeight: 700, color: GRAY_700 }}>Heures prestées</Box>
-            <Box sx={{ fontSize: 15, fontWeight: 800, color: hoursLabel === "Non renseigné" ? GRAY_400 : GREEN_700 }}>
-              {hoursLabel}
+          <Box sx={{ display: "flex", alignItems: "center", gap: "9px", padding: "0 3px" }}>
+            <Box sx={{ width: 20, height: 20, flexShrink: 0, borderRadius: "6px", background: GRAY_700, color: "#fff", display: "grid", placeItems: "center", fontSize: 11.5, fontWeight: 800 }}>
+              1
             </Box>
+            <Box sx={{ flex: 1, fontSize: 11.5, fontWeight: 800, letterSpacing: ".1em", textTransform: "uppercase", color: GRAY_700 }}>
+              Temps de travail
+            </Box>
+            <Box sx={{ flexShrink: 0, fontSize: 11.5, fontWeight: 700, color: GRAY_500 }}>1 saisie</Box>
           </Box>
-          {canEditHours && <ChevronRightIcon />}
+          <WorkedHoursCard execution={execution} canEdit={canEditHours} onOpen={() => setOpenEditHours(true)} />
         </Box>
 
         {/* Interventions — entries (EPIC Revue instrumentiste, Lot 3, commit 8) est la
             source de vérité du rendu : liste unifiée interventions réelles + drafts,
             déjà triée par orderIndex. `interventions` (legacy) n'est plus transmis que
             pour l'enrichissement Lot 6 (suggestedMaterials/coherence), jamais pour
-            construire la liste elle-même. */}
+            construire la liste elle-même. Zone 2 (bac vert + progression + pied de
+            validation) est entièrement rendue par InterventionsSection. */}
         <InterventionsSection
           missionId={mission.id}
           canEdit={canEdit}
@@ -252,12 +240,10 @@ export default function MissionEncodingPage() {
           legacyInterventions={encoding.interventions ?? []}
           catalog={encoding.catalog}
           onSaved={() => setLastSavedAt(new Date())}
+          canSubmit={canSubmit}
+          onValidate={() => setOpenSubmit(true)}
         />
       </Box>
-
-      {canSubmit && (
-        <StickyValidateFooter onClick={() => setOpenSubmit(true)} />
-      )}
 
       <SubmitDialog
         open={openSubmit}
