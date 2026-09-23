@@ -121,6 +121,10 @@ export function EncodingTrackingTable({
     return <EmptyState title={emptyTitle} description={emptyDescription} />;
   }
 
+  // Regroupement ET ordre sur la même heure que celle affichée (startAt planifié) : le
+  // backend pagine sur l'heure réelle (COALESCE(actual_start_at, start_at)), donc une
+  // mission commencée en retard arrivait après une mission affichée plus tard dans la
+  // journée — les heures de la colonne paraissaient mélangées.
   const order: string[] = [];
   const byDay = new Map<string, EncodingTrackingItem[]>();
   for (const item of items) {
@@ -129,6 +133,9 @@ export function EncodingTrackingTable({
     if (list) list.push(item); else { byDay.set(key, [item]); order.push(key); }
   }
   order.sort();
+  for (const list of byDay.values()) {
+    list.sort((a, b) => (a.startAt ?? "").localeCompare(b.startAt ?? "") || a.missionId - b.missionId);
+  }
 
   return (
     <Box sx={{ borderRadius: "16px", border: "1px solid", borderColor: GRAY_150, background: "#fff", boxShadow: SHADOW_SM, overflow: "hidden" }}>
