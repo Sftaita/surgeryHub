@@ -235,4 +235,49 @@ final class MissionActionsServiceTest extends TestCase
             self::assertNotContains('cancel', $this->service->allowedActions($this->makeMission($status), $manager));
         }
     }
+
+    // ── D-120 : 'remind' (cockpit Suivi des encodages) ──────────────────────
+
+    public function test_manager_gets_remind_on_statuses_where_encoding_is_still_open(): void
+    {
+        $manager = $this->makeUser(['ROLE_MANAGER']);
+        $instr   = $this->makeUser(['ROLE_INSTRUMENTIST']);
+
+        foreach ([
+            MissionStatus::ASSIGNED,
+            MissionStatus::IN_PROGRESS,
+            MissionStatus::ENCODING_IN_PROGRESS,
+            MissionStatus::DECLARED,
+        ] as $status) {
+            self::assertContains(
+                'remind',
+                $this->service->allowedActions($this->makeMission($status, $instr), $manager),
+                "expected 'remind' for status {$status->value}",
+            );
+        }
+    }
+
+    public function test_manager_never_gets_remind_once_submitted_or_validated(): void
+    {
+        $manager = $this->makeUser(['ROLE_MANAGER']);
+        $instr   = $this->makeUser(['ROLE_INSTRUMENTIST']);
+
+        foreach ([MissionStatus::SUBMITTED, MissionStatus::VALIDATED] as $status) {
+            self::assertNotContains('remind', $this->service->allowedActions($this->makeMission($status, $instr), $manager));
+        }
+    }
+
+    public function test_manager_never_gets_remind_without_an_assigned_instrumentist(): void
+    {
+        $manager = $this->makeUser(['ROLE_MANAGER']);
+
+        self::assertNotContains('remind', $this->service->allowedActions($this->makeMission(MissionStatus::ASSIGNED), $manager));
+    }
+
+    public function test_instrumentist_never_gets_remind(): void
+    {
+        $instr = $this->makeUser(['ROLE_INSTRUMENTIST']);
+
+        self::assertNotContains('remind', $this->service->allowedActions($this->makeMission(MissionStatus::ASSIGNED, $instr), $instr));
+    }
 }

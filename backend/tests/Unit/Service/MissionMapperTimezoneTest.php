@@ -7,6 +7,7 @@ use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Service\EncodingReminderService;
 use App\Service\MissionActionsService;
 use App\Service\MissionEncodingGuard;
 use App\Service\MissionMapper;
@@ -39,6 +40,7 @@ final class MissionMapperTimezoneTest extends TestCase
         $this->mapper = new MissionMapper(
             new MissionActionsService(new MissionEncodingGuard()),
             new PlanningCoverageService($this->createMock(EntityManagerInterface::class)),
+            $this->createMock(EncodingReminderService::class),
         );
     }
 

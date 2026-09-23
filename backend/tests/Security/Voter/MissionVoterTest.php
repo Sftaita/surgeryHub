@@ -464,4 +464,73 @@ final class MissionVoterTest extends TestCase
         );
         self::assertSame(VoterInterface::ACCESS_DENIED, $result);
     }
+
+    // ── ENCODING_REMIND (D-120, cockpit Suivi des encodages) ────────────────────
+
+    public function test_manager_can_remind_on_statuses_where_encoding_is_still_open(): void
+    {
+        $instrumentist = $this->makeInstrumentist(10);
+
+        foreach ([
+            MissionStatus::ASSIGNED,
+            MissionStatus::IN_PROGRESS,
+            MissionStatus::ENCODING_IN_PROGRESS,
+            MissionStatus::DECLARED,
+        ] as $status) {
+            $result = $this->voter->vote(
+                $this->tokenForUser(['ROLE_MANAGER']),
+                $this->makeAssignedMission($status, $instrumentist),
+                [MissionVoter::ENCODING_REMIND],
+            );
+            self::assertSame(VoterInterface::ACCESS_GRANTED, $result, "expected grant for status {$status->value}");
+        }
+    }
+
+    public function test_admin_can_remind(): void
+    {
+        $instrumentist = $this->makeInstrumentist(11);
+
+        $result = $this->voter->vote(
+            $this->tokenForUser(['ROLE_ADMIN']),
+            $this->makeAssignedMission(MissionStatus::ASSIGNED, $instrumentist),
+            [MissionVoter::ENCODING_REMIND],
+        );
+        self::assertSame(VoterInterface::ACCESS_GRANTED, $result);
+    }
+
+    public function test_manager_cannot_remind_once_submitted_or_validated(): void
+    {
+        $instrumentist = $this->makeInstrumentist(12);
+
+        foreach ([MissionStatus::SUBMITTED, MissionStatus::VALIDATED] as $status) {
+            $result = $this->voter->vote(
+                $this->tokenForUser(['ROLE_MANAGER']),
+                $this->makeAssignedMission($status, $instrumentist),
+                [MissionVoter::ENCODING_REMIND],
+            );
+            self::assertSame(VoterInterface::ACCESS_DENIED, $result, "expected denial for status {$status->value}");
+        }
+    }
+
+    public function test_manager_cannot_remind_a_mission_with_no_instrumentist(): void
+    {
+        $result = $this->voter->vote(
+            $this->tokenForUser(['ROLE_MANAGER']),
+            $this->makeMission(MissionStatus::ASSIGNED),
+            [MissionVoter::ENCODING_REMIND],
+        );
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    public function test_instrumentist_cannot_remind(): void
+    {
+        $instrumentist = $this->makeInstrumentist(13);
+
+        $result = $this->voter->vote(
+            new UsernamePasswordToken($instrumentist, 'main', ['ROLE_INSTRUMENTIST']),
+            $this->makeAssignedMission(MissionStatus::ASSIGNED, $instrumentist),
+            [MissionVoter::ENCODING_REMIND],
+        );
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
 }

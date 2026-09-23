@@ -5360,6 +5360,8 @@ instrumentiste assigné, statut parmi `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN
 - `automaticReminderSentAt` — miroir de `mission.encodingReminderSentAt`
 - `nextAutomaticReminderAt` — calculé en réutilisant l'éligibilité de
   `EncodingReminderService` (jamais réimplémenté côté frontend), `null` si non éligible
+  ou si le moment J+1 08h est déjà passé (le cron ne retient que les missions terminées la
+  veille : une date passée ne serait jamais honorée)
 - `lastManualReminderAt` / `lastManualReminderByName` — dernière relance manuelle journalisée
 
 **Erreurs :**

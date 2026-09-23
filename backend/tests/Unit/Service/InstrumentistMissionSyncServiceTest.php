@@ -13,6 +13,7 @@ use App\Enum\MissionType;
 use App\Enum\PublicationChannel;
 use App\Enum\PublicationScope;
 use App\Enum\SchedulePrecision;
+use App\Service\EncodingReminderService;
 use App\Service\InstrumentistMissionSyncService;
 use App\Service\MissionActionsService;
 use App\Service\MissionEncodingGuard;
@@ -48,6 +49,7 @@ class InstrumentistMissionSyncServiceTest extends TestCase
         $this->mapper = new MissionMapper(
             new MissionActionsService(new MissionEncodingGuard()),
             new PlanningCoverageService($this->em),
+            $this->createMock(EncodingReminderService::class),
         );
     }
 

@@ -15,6 +15,7 @@ final class MissionMapper
     public function __construct(
         private readonly MissionActionsService $actions,
         private readonly PlanningCoverageService $coverage,
+        private readonly EncodingReminderService $reminders,
     ) {}
 
     public function toListDto(Mission $m, User $viewer): MissionListDto
@@ -38,6 +39,8 @@ final class MissionMapper
 
     public function toDetailDto(Mission $m, User $viewer): MissionDetailDto
     {
+        $lastManualReminder = $this->reminders->lastManualReminder($m);
+
         return new MissionDetailDto(
             id: (int) $m->getId(),
             site: $this->toHospitalSlim($m->getSite()),
@@ -54,6 +57,10 @@ final class MissionMapper
             noMaterialComment: $m->getNoMaterialComment(),
             submittedWithoutMaterial: $m->isSubmittedWithoutMaterial(),
             covered: $this->coverage->isCovered($m),
+            automaticReminderSentAt: $m->getEncodingReminderSentAt()?->format(\DateTimeInterface::ATOM),
+            nextAutomaticReminderAt: $this->reminders->nextAutomaticReminderAt($m),
+            lastManualReminderAt: $lastManualReminder !== null ? $lastManualReminder['at'] : null,
+            lastManualReminderByName: $lastManualReminder !== null ? $lastManualReminder['byName'] : null,
         );
     }
 

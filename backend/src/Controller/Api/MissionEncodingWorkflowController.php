@@ -8,6 +8,7 @@ use App\Dto\Request\MissionEncodingRejectRequest;
 use App\Entity\Mission;
 use App\Entity\User;
 use App\Security\Voter\MissionVoter;
+use App\Service\EncodingReminderService;
 use App\Service\MissionEncodingWorkflowService;
 use App\Service\MissionMapper;
 use Doctrine\ORM\EntityManagerInterface;
@@ -35,6 +36,7 @@ final class MissionEncodingWorkflowController extends AbstractController
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly MissionEncodingWorkflowService $workflow,
+        private readonly EncodingReminderService $reminders,
         private readonly MissionMapper $mapper,
         private readonly SerializerInterface $serializer,
         private readonly ValidatorInterface $validator,
@@ -100,6 +102,21 @@ final class MissionEncodingWorkflowController extends AbstractController
         $dto = $this->deserializeAndValidate($request->getContent(), MissionEncodingReopenRequest::class);
 
         $mission = $this->workflow->reopen($mission, $user, $dto->comment);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), Response::HTTP_OK);
+    }
+
+    /**
+     * D-120 — relance manuelle (cockpit Suivi des encodages). Ne mute aucun statut, jamais
+     * dispatché sur le bus mission-lifecycle : c'est une notification, pas une transition.
+     */
+    #[Route('/remind', name: 'api_missions_encoding_remind', methods: ['POST'])]
+    public function remind(int $missionId, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->getMissionOr404($missionId);
+        $this->denyAccessUnlessGranted(MissionVoter::ENCODING_REMIND, $mission);
+
+        $this->reminders->sendManualReminder($mission, $user);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), Response::HTTP_OK);
     }

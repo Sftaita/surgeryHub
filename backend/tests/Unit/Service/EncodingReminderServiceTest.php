@@ -9,6 +9,7 @@ use App\Entity\User;
 use App\Enum\OutboundNotificationChannel;
 use App\Enum\OutboundNotificationFallbackReason;
 use App\Enum\OutboundNotificationStatus;
+use App\Service\AuditService;
 use App\Service\EncodingReminderService;
 use App\Service\NotificationService;
 use App\Service\OutboundNotificationService;
@@ -36,6 +37,7 @@ class EncodingReminderServiceTest extends TestCase
     private EntityManagerInterface&MockObject $em;
     private OutboundNotificationService&MockObject $outboundNotificationService;
     private NotificationService&MockObject $notificationService;
+    private AuditService&MockObject $auditService;
     private LoggerInterface&MockObject $logger;
 
     /** Controls what the atomic claim UPDATE reports as affected rows. */
@@ -46,6 +48,7 @@ class EncodingReminderServiceTest extends TestCase
         $this->em = $this->createMock(EntityManagerInterface::class);
         $this->outboundNotificationService = $this->createMock(OutboundNotificationService::class);
         $this->notificationService = $this->createMock(NotificationService::class);
+        $this->auditService = $this->createMock(AuditService::class);
         $this->logger = $this->createMock(LoggerInterface::class);
         $this->claimAffectedRows = 1;
 
@@ -100,7 +103,7 @@ class EncodingReminderServiceTest extends TestCase
 
     private function service(): EncodingReminderService
     {
-        return new EncodingReminderService($this->em, $this->outboundNotificationService, $this->notificationService, $this->logger);
+        return new EncodingReminderService($this->em, $this->outboundNotificationService, $this->notificationService, $this->auditService, $this->logger);
     }
 
     private function now(): \DateTimeImmutable
@@ -268,5 +271,124 @@ class EncodingReminderServiceTest extends TestCase
         $this->assertStringNotContainsStringIgnoringCase('retard', $captured);
         $this->assertStringNotContainsStringIgnoringCase('urgent', $captured);
         $this->assertStringContainsString('lorsque vous êtes disponible', $captured);
+    }
+
+    // ── D-120 : relance manuelle ────────────────────────────────────────────
+
+    public function test_manual_reminder_sends_push_and_records_audit(): void
+    {
+        $mission = $this->makeMission($this->makeInstrumentist());
+        $actor = $this->makeInstrumentist();
+
+        $this->outboundNotificationService->expects($this->once())
+            ->method('recordPushSend')
+            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
+        $this->notificationService->expects($this->never())->method('missionEncodingReminderNotifyInstrumentist');
+        $this->auditService->expects($this->once())
+            ->method('record')
+            ->with($mission, $actor, \App\Enum\AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT, $this->callback(
+                fn (array $payload) => $payload['channel'] === 'push' && $payload['actorId'] === $actor->getId(),
+            ));
+
+        $this->assertSame('push', $this->service()->sendManualReminder($mission, $actor));
+    }
+
+    public function test_manual_reminder_falls_back_to_email_and_still_records_audit(): void
+    {
+        $mission = $this->makeMission($this->makeInstrumentist());
+        $actor = $this->makeInstrumentist();
+
+        $this->outboundNotificationService->method('recordPushSend')
+            ->willReturn($this->makePushNotification(OutboundNotificationStatus::FAILED));
+        $this->notificationService->expects($this->once())->method('missionEncodingReminderNotifyInstrumentist');
+        $this->auditService->expects($this->once())
+            ->method('record')
+            ->with($mission, $actor, \App\Enum\AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT, $this->callback(
+                fn (array $payload) => $payload['channel'] === 'email',
+            ));
+
+        $this->assertSame('email', $this->service()->sendManualReminder($mission, $actor));
+    }
+
+    public function test_manual_reminder_never_touches_the_automatic_reminder_guard(): void
+    {
+        // sendManualReminder() must not run the atomic encodingReminderSentAt claim UPDATE
+        // (processMission()'s guard) — a manual send is independent of the automatic pipeline.
+        $mission = $this->makeMission($this->makeInstrumentist());
+        $actor = $this->makeInstrumentist();
+
+        $this->outboundNotificationService->method('recordPushSend')
+            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
+
+        $this->service()->sendManualReminder($mission, $actor);
+
+        $this->assertNull($mission->getEncodingReminderSentAt());
+    }
+
+    public function test_manual_reminder_throws_when_mission_has_no_instrumentist(): void
+    {
+        $mission = $this->makeMission(null);
+        $actor = $this->makeInstrumentist();
+
+        $this->expectException(\LogicException::class);
+
+        $this->service()->sendManualReminder($mission, $actor);
+    }
+
+    // ── D-120 : prochaine relance automatique (calcul pur, aucune requête) ──
+
+    public function test_next_automatic_reminder_at_is_end_at_plus_one_day_8am_brussels(): void
+    {
+        $mission = $this->makeMission($this->makeInstrumentist());
+        $mission->setStatus(\App\Enum\MissionStatus::ASSIGNED);
+        $mission->setEndAt(new \DateTimeImmutable('2026-07-25 18:00:00', new \DateTimeZone('Europe/Brussels')));
+
+        $this->assertSame(
+            '2026-07-26T08:00:00+02:00',
+            $this->service()->nextAutomaticReminderAt($mission, new \DateTimeImmutable('2026-07-25 20:00:00', new \DateTimeZone('Europe/Brussels'))),
+        );
+    }
+
+    public function test_next_automatic_reminder_at_is_null_once_the_reminder_moment_has_passed(): void
+    {
+        // findEligibleMissions() ne retient que les missions terminées la veille : passé
+        // J+1 08h sans rappel, il n'y en aura plus — jamais une date passée affichée.
+        $mission = $this->makeMission($this->makeInstrumentist());
+        $mission->setStatus(\App\Enum\MissionStatus::ASSIGNED);
+        $mission->setEndAt(new \DateTimeImmutable('2026-07-25 18:00:00', new \DateTimeZone('Europe/Brussels')));
+
+        $this->assertNull($this->service()->nextAutomaticReminderAt(
+            $mission,
+            new \DateTimeImmutable('2026-07-26 08:00:00', new \DateTimeZone('Europe/Brussels')),
+        ));
+    }
+
+    public function test_next_automatic_reminder_at_is_null_once_already_sent(): void
+    {
+        $mission = $this->makeMission($this->makeInstrumentist());
+        $mission->setStatus(\App\Enum\MissionStatus::ASSIGNED);
+        $mission->setEndAt(new \DateTimeImmutable('2026-07-25 18:00:00', new \DateTimeZone('Europe/Brussels')));
+        $mission->setEncodingReminderSentAt(new \DateTimeImmutable('2026-07-26 08:00:00'));
+
+        $this->assertNull($this->service()->nextAutomaticReminderAt($mission));
+    }
+
+    public function test_next_automatic_reminder_at_is_null_once_submitted(): void
+    {
+        $mission = $this->makeMission($this->makeInstrumentist());
+        $mission->setStatus(\App\Enum\MissionStatus::SUBMITTED);
+        $mission->setEndAt(new \DateTimeImmutable('2026-07-25 18:00:00', new \DateTimeZone('Europe/Brussels')));
+        $mission->setSubmittedAt(new \DateTimeImmutable('2026-07-25 19:00:00'));
+
+        $this->assertNull($this->service()->nextAutomaticReminderAt($mission));
+    }
+
+    public function test_next_automatic_reminder_at_is_null_without_instrumentist(): void
+    {
+        $mission = $this->makeMission(null);
+        $mission->setStatus(\App\Enum\MissionStatus::ASSIGNED);
+        $mission->setEndAt(new \DateTimeImmutable('2026-07-25 18:00:00', new \DateTimeZone('Europe/Brussels')));
+
+        $this->assertNull($this->service()->nextAutomaticReminderAt($mission));
     }
 }

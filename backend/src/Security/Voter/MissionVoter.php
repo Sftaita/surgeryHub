@@ -53,6 +53,10 @@ class MissionVoter extends Voter
     public const ENCODING_REJECT   = 'MISSION_ENCODING_REJECT';
     public const ENCODING_REOPEN   = 'MISSION_ENCODING_REOPEN';
 
+    // Relance manuelle (cockpit Suivi des encodages, D-120) — manager/admin uniquement,
+    // ne mute aucun statut : simple envoi de notification + trace d'audit.
+    public const ENCODING_REMIND = 'MISSION_ENCODING_REMIND';
+
     protected function supports(string $attribute, mixed $subject): bool
     {
         if (!in_array($attribute, [
@@ -77,6 +81,7 @@ class MissionVoter extends Voter
             self::ENCODING_VALIDATE,
             self::ENCODING_REJECT,
             self::ENCODING_REOPEN,
+            self::ENCODING_REMIND,
         ], true)) {
             return false;
         }
@@ -131,6 +136,7 @@ class MissionVoter extends Voter
             self::ENCODING_VALIDATE           => $isManager && $mission->getStatus() === MissionStatus::SUBMITTED,
             self::ENCODING_REJECT             => $isManager && $mission->getStatus() === MissionStatus::SUBMITTED,
             self::ENCODING_REOPEN             => $isManager && $mission->getStatus() === MissionStatus::VALIDATED,
+            self::ENCODING_REMIND             => $isManager && $this->canEncodingRemind($mission),
             default                           => false,
         };
     }
@@ -330,6 +336,26 @@ class MissionVoter extends Voter
         }
 
         return false;
+    }
+
+    /**
+     * D-120 — mêmes statuts que EncodingReminderService::SUBMITTABLE_STATUSES (l'automatique
+     * n'ajoute que la fenêtre "mission terminée hier" et le garde-fou "pas déjà relancé
+     * aujourd'hui" ; la relance manuelle reste possible plus tôt/plus tard/plusieurs fois,
+     * c'est le manager qui juge, jamais un calcul de date ici).
+     */
+    private function canEncodingRemind(Mission $mission): bool
+    {
+        if ($mission->getInstrumentist() === null) {
+            return false;
+        }
+
+        return in_array($mission->getStatus(), [
+            MissionStatus::DECLARED,
+            MissionStatus::ASSIGNED,
+            MissionStatus::IN_PROGRESS,
+            MissionStatus::ENCODING_IN_PROGRESS,
+        ], true);
     }
 
     private function canApproveDeclared(Mission $mission, bool $managerContext): bool

@@ -34,18 +34,24 @@ final class MissionActionsService
 
         // Manager/Admin
         if ($isManager) {
+            // D-120 — mêmes statuts que MissionVoter::canEncodingRemind() /
+            // EncodingReminderService::SUBMITTABLE_STATUSES ; pas de relance sans
+            // instrumentiste assigné (rien ni personne à notifier).
+            $remind = $mission->getInstrumentist() !== null ? ['remind'] : [];
+
             return match ($mission->getStatus()) {
                 // 'cancel' couvre aussi DRAFT depuis D-090 (MissionPostDeployService::cancel()
                 // accepte déjà DRAFT|OPEN|ASSIGNED) — un manager doit pouvoir abandonner un
                 // brouillon jamais publié, jamais uniquement 'edit'/'publish' sans issue.
                 MissionStatus::DRAFT => ['view', 'edit', 'publish', 'cancel'],
                 MissionStatus::OPEN => ['view', 'view_publications', 'cancel'],
-                MissionStatus::ASSIGNED => ['view', 'cancel', 'reassign', 'view_claim'],
+                MissionStatus::ASSIGNED => [...['view', 'cancel', 'reassign', 'view_claim'], ...$remind],
+                MissionStatus::IN_PROGRESS, MissionStatus::ENCODING_IN_PROGRESS => [...['view'], ...$remind],
                 // Lot 7 (D-070) : corrigé — 'reopen' n'est valide que depuis VALIDATED
                 // (une mission SUBMITTED n'a jamais été validée, donc rien à "rouvrir").
                 MissionStatus::SUBMITTED => ['view', 'validate', 'reject'],
                 MissionStatus::VALIDATED => ['view', 'reopen'],
-                MissionStatus::DECLARED => ['view', 'approve', 'reject', 'edit'],
+                MissionStatus::DECLARED => [...['view', 'approve', 'reject', 'edit'], ...$remind],
                 default => ['view'],
             };
         }

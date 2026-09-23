@@ -9,6 +9,7 @@ use App\Entity\MaterialItem;
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionEncodingComment;
+use App\Entity\OutboundNotification;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\MissionStatus;
@@ -52,6 +53,13 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
                 }
                 foreach ($this->em->getRepository(MaterialLine::class)->findBy(['mission' => $missionId]) as $line) {
                     $this->em->remove($line);
+                }
+            }
+            // D-120 — la relance manuelle trace une OutboundNotification (push et/ou repli
+            // email) sur l'instrumentiste : FK recipient_user non nullable.
+            foreach ($this->createdUserIds as $userId) {
+                foreach ($this->em->getRepository(OutboundNotification::class)->findBy(['recipientUser' => $userId]) as $n) {
+                    $this->em->remove($n);
                 }
             }
             $this->em->flush();
@@ -651,5 +659,70 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         // Locked: no further transition works until reopen.
         $lockedStart = $this->postJson($client, $instrToken, "/api/missions/{$mission->getId()}/encoding/start");
         self::assertSame(Response::HTTP_FORBIDDEN, $lockedStart->getStatusCode());
+    }
+
+    // ── remind (D-120) ───────────────────────────────────────────────────────
+
+    public function test_manager_can_remind_assigned_mission_without_touching_automatic_guard(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $manager->setFirstname('Marie')->setLastname('Manager');
+        $this->em->flush();
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ASSIGNED, $instr);
+        $token   = $this->login($client, $manager);
+
+        $response = $this->postJson($client, $token, "/api/missions/{$mission->getId()}/encoding/remind");
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $data = json_decode((string) $response->getContent(), true);
+        self::assertSame('ASSIGNED', $data['status'], 'une relance ne mute jamais le statut');
+        self::assertNotNull($data['lastManualReminderAt']);
+        self::assertSame('Marie Manager', $data['lastManualReminderByName']);
+        self::assertNull($data['automaticReminderSentAt']);
+        self::assertContains('remind', $data['allowedActions']);
+        self::assertContains(AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT->value, $this->auditEventTypesFor($mission->getId()));
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $mission->getId());
+        self::assertNull($reloaded->getEncodingReminderSentAt(), 'le garde-fou du rappel automatique (D-083) reste intact');
+        self::assertNotEmpty(
+            $this->em->getRepository(OutboundNotification::class)->findBy(['recipientUser' => $instr->getId(), 'mission' => $mission->getId()]),
+            "l'instrumentiste a bien été notifié",
+        );
+    }
+
+    public function test_instrumentist_cannot_remind(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ASSIGNED, $instr);
+        $token   = $this->login($client, $instr);
+
+        $response = $this->postJson($client, $token, "/api/missions/{$mission->getId()}/encoding/remind");
+
+        self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
+    }
+
+    public function test_remind_is_denied_once_encoding_is_submitted_or_without_instrumentist(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $submitted = $this->makeMission($site, $surgeon, $manager, MissionStatus::SUBMITTED, $instr);
+        $unassigned = $this->makeMission($site, $surgeon, $manager, MissionStatus::OPEN);
+        $token   = $this->login($client, $manager);
+
+        self::assertSame(Response::HTTP_FORBIDDEN, $this->postJson($client, $token, "/api/missions/{$submitted->getId()}/encoding/remind")->getStatusCode());
+        self::assertSame(Response::HTTP_FORBIDDEN, $this->postJson($client, $token, "/api/missions/{$unassigned->getId()}/encoding/remind")->getStatusCode());
+        self::assertNotContains(AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT->value, $this->auditEventTypesFor($submitted->getId()));
     }
 }

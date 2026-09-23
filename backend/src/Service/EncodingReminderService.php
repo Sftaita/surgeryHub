@@ -2,8 +2,10 @@
 
 namespace App\Service;
 
+use App\Entity\AuditEvent;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Enum\MissionStatus;
 use App\Enum\OutboundNotificationStatus;
 use Doctrine\ORM\EntityManagerInterface;
@@ -31,6 +33,7 @@ class EncodingReminderService
         private readonly EntityManagerInterface $em,
         private readonly OutboundNotificationService $outboundNotificationService,
         private readonly NotificationService $notificationService,
+        private readonly AuditService $audit,
         #[Autowire(service: 'monolog.logger.push')]
         private readonly LoggerInterface $logger,
     ) {
@@ -154,5 +157,145 @@ class EncodingReminderService
         ]);
 
         return 'email';
+    }
+
+    /**
+     * D-120 — relance manuelle depuis le cockpit "Suivi des encodages". Contrairement à
+     * processMission(), ne touche jamais Mission.encodingReminderSentAt (réservé au garde-fou
+     * "au plus un rappel automatique" de D-083) : un manager peut relancer manuellement à
+     * tout moment, y compris avant ou après le rappel automatique, sans jamais le supprimer
+     * ni le dupliquer côté planification. Même canal (Push avec repli email) et même contenu
+     * mission que le rappel automatique — seule la trace d'audit distingue les deux.
+     *
+     * @return 'push'|'email'
+     */
+    public function sendManualReminder(Mission $mission, User $actor): string
+    {
+        $instrumentist = $mission->getInstrumentist();
+        if (!$instrumentist instanceof User) {
+            throw new \LogicException('Cannot remind a mission with no assigned instrumentist');
+        }
+
+        $title = 'Encodage à finaliser';
+        $body = "Un manager vous rappelle de finaliser l'encodage de cette mission.";
+        $data = [
+            'missionId' => $mission->getId(),
+            'url'       => sprintf('/app/i/missions/%d', $mission->getId()),
+        ];
+
+        $pushNotification = $this->outboundNotificationService->recordPushSend(
+            $instrumentist,
+            'ENCODING_REMINDER_D1',
+            $title,
+            $body,
+            $data,
+            $mission,
+        );
+
+        $channel = 'push';
+        if ($pushNotification->getStatus() !== OutboundNotificationStatus::SENT) {
+            $this->notificationService->missionEncodingReminderNotifyInstrumentist(
+                $mission,
+                $pushNotification,
+                OutboundNotificationService::fallbackReasonFor($pushNotification),
+            );
+            $channel = 'email';
+        }
+
+        $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT, [
+            'actorId'   => $actor->getId(),
+            'actorName' => trim(($actor->getFirstname() ?? '') . ' ' . ($actor->getLastname() ?? '')),
+            'channel'   => $channel,
+        ]);
+        $this->em->flush();
+
+        $this->logger->info('encoding_reminder.sent_manual', [
+            'missionId' => $mission->getId(),
+            'actorId'   => $actor->getId(),
+            'channel'   => $channel,
+        ]);
+
+        return $channel;
+    }
+
+    /**
+     * D-120 — date/heure de la prochaine relance automatique D+1 08h Europe/Brussels pour
+     * cette mission, réutilisant EXACTEMENT les critères d'éligibilité de
+     * findEligibleMissions() (jamais réimplémentés côté frontend). `null` si le rappel
+     * automatique a déjà été envoyé, si la mission n'est plus éligible (soumise, verrouillée,
+     * facturée), si elle n'a pas de date de fin, ou si ce moment est déjà passé :
+     * findEligibleMissions() ne retient que les missions terminées la veille, une mission
+     * non relancée à J+1 08h ne le sera donc plus jamais automatiquement (jamais une date
+     * passée présentée comme "prochaine relance").
+     */
+    public function nextAutomaticReminderAt(Mission $mission, ?\DateTimeImmutable $now = null): ?string
+    {
+        if ($mission->getInstrumentist() === null) {
+            return null;
+        }
+        if ($mission->getSubmittedAt() !== null) {
+            return null;
+        }
+        if ($mission->getEncodingLockedAt() !== null) {
+            return null;
+        }
+        if ($mission->getInvoiceGeneratedAt() !== null) {
+            return null;
+        }
+        if ($mission->getEncodingReminderSentAt() !== null) {
+            return null;
+        }
+        if (!in_array($mission->getStatus(), self::SUBMITTABLE_STATUSES, true)) {
+            return null;
+        }
+
+        $endAt = $mission->getEndAt();
+        if ($endAt === null) {
+            return null;
+        }
+
+        $reminderDay = $endAt
+            ->setTimezone(new \DateTimeZone(self::TIMEZONE))
+            ->modify('+1 day')
+            ->setTime(8, 0, 0);
+
+        if ($reminderDay <= ($now ?? new \DateTimeImmutable())) {
+            return null;
+        }
+
+        return $reminderDay->format(\DateTimeInterface::ATOM);
+    }
+
+    /**
+     * D-120 — dernière relance manuelle journalisée pour cette mission (toutes, pas
+     * seulement la plus récente d'une éventuelle série), ou null si aucune n'a jamais été
+     * envoyée. Lu depuis AuditEvent — jamais un nouveau champ dupliqué sur Mission.
+     *
+     * @return array{at: ?string, byName: string}|null
+     */
+    public function lastManualReminder(Mission $mission): ?array
+    {
+        /** @var AuditEvent|null $event */
+        $event = $this->em->createQuery(
+            'SELECT a, actor FROM App\Entity\AuditEvent a
+             JOIN a.actor actor
+             WHERE a.mission = :mission AND a.eventType = :type
+             ORDER BY a.createdAt DESC'
+        )
+            ->setParameter('mission', $mission)
+            ->setParameter('type', AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT)
+            ->setMaxResults(1)
+            ->getOneOrNullResult();
+
+        if ($event === null) {
+            return null;
+        }
+
+        $actor = $event->getActor();
+
+        return [
+            'at'     => $event->getCreatedAt()?->format(\DateTimeInterface::ATOM),
+            'byName' => trim(($actor?->getFirstname() ?? '') . ' ' . ($actor?->getLastname() ?? '')),
+        ];
     }
 }

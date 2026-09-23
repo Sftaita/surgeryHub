@@ -149,7 +149,10 @@ final class EncodingReminderNotificationHistoryTest extends KernelTestCase
         /** @var NotificationService $notificationService */
         $notificationService = $container->get(NotificationService::class);
 
-        return new EncodingReminderService($this->em, $outboundNotificationService, $notificationService, new NullLogger());
+        /** @var \App\Service\AuditService $auditService */
+        $auditService = $container->get(\App\Service\AuditService::class);
+
+        return new EncodingReminderService($this->em, $outboundNotificationService, $notificationService, $auditService, new NullLogger());
     }
 
     private function findNotifications(User $recipient): array

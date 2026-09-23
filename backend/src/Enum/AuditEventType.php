@@ -73,6 +73,15 @@ enum AuditEventType: string
     case MISSION_ENCODING_VALIDATED = 'MISSION_ENCODING_VALIDATED';
     case MISSION_ENCODING_REJECTED  = 'MISSION_ENCODING_REJECTED';
 
+    /**
+     * D-120 — Suivi des encodages (cockpit manager). Relance manuelle déclenchée depuis le
+     * tiroir de détail, distincte de la relance automatique D+1 08h (D-083, qui ne journalise
+     * rien ici — elle marque seulement Mission.encodingReminderSentAt). Ne mute aucun statut :
+     * seule trace qu'un manager a explicitement renvoyé la notification "encodage à
+     * finaliser" à l'instrumentiste, et quand.
+     */
+    case MISSION_ENCODING_MANUAL_REMINDER_SENT = 'MISSION_ENCODING_MANUAL_REMINDER_SENT';
+
     // Exécution & Valorisation, Lot 1 — MissionExecutionService. Le réalisé, distinct
     // du planifié (Mission) et de la future valorisation financière (FinancialCalculation).
     case MISSION_EXECUTION_CREATED           = 'MISSION_EXECUTION_CREATED';

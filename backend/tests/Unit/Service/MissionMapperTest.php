@@ -7,6 +7,7 @@ use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Service\EncodingReminderService;
 use App\Service\MissionActionsService;
 use App\Service\MissionEncodingGuard;
 use App\Service\MissionMapper;
@@ -29,9 +30,12 @@ final class MissionMapperTest extends TestCase
         // MissionActionsService is final — real instance instead of a mock double.
         // PlanningCoverageService::isCovered() is a pure function of Mission::getStatus()
         // (no query) — a mock EntityManagerInterface is never actually invoked here.
+        // EncodingReminderService (D-120) is mocked out entirely: these tests exercise
+        // photo/address/specialties mapping, never the reminder fields.
         $this->mapper = new MissionMapper(
             new MissionActionsService(new MissionEncodingGuard()),
             new PlanningCoverageService($this->createMock(EntityManagerInterface::class)),
+            $this->createMock(EncodingReminderService::class),
         );
     }
 
