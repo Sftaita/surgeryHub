@@ -6966,8 +6966,8 @@ Le `summary` porte sur **toute la période**, `items` sur la page demandée.
       "missionStatus": "SUBMITTED",
       "encodingState": "SUBMITTED",
       "encodingStateLabel": "Soumis",
-      "instrumentist": { "id": 5, "name": "Salve Decorte" },
-      "surgeon": { "id": 8, "name": "Dr Jean Dupont" },
+      "instrumentist": { "id": 5, "name": "Salve Decorte", "photoPath": "/uploads/profile-pictures/5.jpg" },
+      "surgeon": { "id": 8, "name": "Dr Jean Dupont", "photoPath": null },
       "site": { "id": 2, "name": "Delta" },
       "hours": {
         "plannedMinutes": 240,
@@ -7008,6 +7008,10 @@ jamais (sinon le badge de navigation et la liste pourraient diverger) :
 servi. Il n'existe volontairement **aucun** champ `encodedMinutes` : la résolution peut
 retomber sur le planifié, et ce nom laisserait croire à une saisie inexistante.
 `hasRealHours` est `false` quand la source est `PLANNED`.
+
+**`photoPath`** (D-120, additif) — sur `instrumentist` et `surgeon` uniquement, jamais sur
+`site` : chemin brut de la photo de profil (déjà publique ailleurs dans l'app), jamais
+résolu en URL côté backend (`resolveApiAssetUrl()` côté frontend), `null` sans photo.
 
 **`encoding.isStale`** — `true` quand `encodingState = IN_PROGRESS` et que la mission est
 déjà terminée chronologiquement (même condition que `summary.staleInProgress`, exposée ici

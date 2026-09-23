@@ -145,10 +145,10 @@ final class EncodingTrackingController extends AbstractController
             'encodingState' => $item->encodingState->value,
             'encodingStateLabel' => $item->encodingState->label(),
             'instrumentist' => $item->instrumentistId !== null
-                ? ['id' => $item->instrumentistId, 'name' => $item->instrumentistName]
+                ? ['id' => $item->instrumentistId, 'name' => $item->instrumentistName, 'photoPath' => $item->instrumentistPhotoPath]
                 : null,
             'surgeon' => $item->surgeonId !== null
-                ? ['id' => $item->surgeonId, 'name' => $item->surgeonName]
+                ? ['id' => $item->surgeonId, 'name' => $item->surgeonName, 'photoPath' => $item->surgeonPhotoPath]
                 : null,
             'site' => $item->siteId !== null
                 ? ['id' => $item->siteId, 'name' => $item->siteName]

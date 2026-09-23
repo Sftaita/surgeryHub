@@ -12,7 +12,9 @@ use App\Enum\MissionType;
  * Suivi des encodages (D-118) — une ligne de la table de suivi.
  *
  * Aucune donnée patient : ni nom, ni identifiant, ni motif d'intervention. Seuls
- * l'horaire, les intervenants professionnels, le site et des compteurs sont exposés.
+ * l'horaire, les intervenants professionnels (nom + photo de profil, déjà publique
+ * ailleurs dans l'app — jamais une donnée sensible), le site et des compteurs sont
+ * exposés.
  *
  * Contrat des heures (tranché avec le métier lors de ce chantier) : `plannedMinutes` et
  * `effectiveMinutes` sont exposés côte à côte, avec `effectiveSource` qui dit lequel des
@@ -37,8 +39,11 @@ final readonly class EncodingTrackingItem
 
         public ?int $instrumentistId,
         public ?string $instrumentistName,
+        /** Chemin brut (jamais résolu en URL côté backend) — voir User::$profilePicturePath. */
+        public ?string $instrumentistPhotoPath,
         public ?int $surgeonId,
         public ?string $surgeonName,
+        public ?string $surgeonPhotoPath,
         public ?int $siteId,
         public ?string $siteName,
 

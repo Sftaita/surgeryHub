@@ -623,6 +623,29 @@ final class EncodingTrackingControllerTest extends WebTestCase
         }
     }
 
+    /**
+     * Photo de profil (déjà publique ailleurs dans l'app) exposée en chemin brut sur
+     * instrumentiste et chirurgien — jamais sur le site, jamais résolue en URL côté backend.
+     */
+    public function test_people_expose_raw_profile_photo_path(): void
+    {
+        $client = $this->boot();
+        $token = $this->login($client, $this->createUser('ROLE_MANAGER'));
+        $site = $this->createSite();
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instrumentist = $this->createUser('ROLE_INSTRUMENTIST');
+        $instrumentist->setProfilePicturePath('/uploads/profile-pictures/enctrack.jpg');
+        $this->em->flush();
+        $this->makeMission(MissionStatus::ASSIGNED, $site, $surgeon, $instrumentist, '2026-03-25 08:00:00');
+
+        $item = $this->json($this->get($client, $token, '&siteId=' . $site->getId()))['items'][0];
+
+        self::assertSame('/uploads/profile-pictures/enctrack.jpg', $item['instrumentist']['photoPath']);
+        self::assertArrayHasKey('photoPath', $item['surgeon']);
+        self::assertNull($item['surgeon']['photoPath']);
+        self::assertArrayNotHasKey('photoPath', $item['site']);
+    }
+
     public function test_summary_endpoint_returns_same_definition_as_list(): void
     {
         $client = $this->boot();
