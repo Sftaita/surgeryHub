@@ -7,9 +7,8 @@ use App\Entity\Mission;
 use App\Entity\PlanningVersion;
 use App\Enum\MissionStatus;
 use App\Service\PlanningCoverageService;
-use Doctrine\ORM\AbstractQuery;
+use App\Service\PlanningVersionOperationalScope;
 use Doctrine\ORM\EntityManagerInterface;
-use Doctrine\ORM\Query;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
@@ -17,12 +16,14 @@ use PHPUnit\Framework\TestCase;
 class PlanningCoverageServiceTest extends TestCase
 {
     private EntityManagerInterface&MockObject $em;
+    private PlanningVersionOperationalScope&MockObject $scope;
     private PlanningCoverageService $service;
 
     protected function setUp(): void
     {
         $this->em      = $this->createMock(EntityManagerInterface::class);
-        $this->service = new PlanningCoverageService($this->em);
+        $this->scope   = $this->createMock(PlanningVersionOperationalScope::class);
+        $this->service = new PlanningCoverageService($this->em, $this->scope);
     }
 
     // ── Version not found ─────────────────────────────────────────────────────
@@ -188,11 +189,9 @@ class PlanningCoverageServiceTest extends TestCase
         $version = $this->createMock(PlanningVersion::class);
         $this->em->method('find')->willReturn($version);
 
-        $this->em->method('createQuery')->willReturnCallback(function () use ($rows): AbstractQuery {
-            $q = $this->createMock(Query::class);
-            $q->method('setParameter')->willReturnSelf();
-            $q->method('getArrayResult')->willReturn($rows);
-            return $q;
-        });
+        // D-125 — the histogram now comes from the version's operational scope (period +
+        // sites), not a provenance-only query; see PlanningVersionOperationalScopeTest for
+        // the predicate itself.
+        $this->scope->method('countByStatus')->with($version)->willReturn($rows);
     }
 }

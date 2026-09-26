@@ -39,6 +39,15 @@ class MissionFilter
     #[Assert\Positive]
     public ?int $planningVersionId = null;
 
+    /**
+     * D-125 — operational scope of a PlanningVersion (its period + sites, every live
+     * Mission whatever its provenance), as opposed to `planningVersionId` (provenance
+     * only: the Missions that version's generate() created/adopted). See
+     * PlanningVersionOperationalScope.
+     */
+    #[Assert\Positive]
+    public ?int $planningScopeOf = null;
+
     #[Assert\Type('string')]
     public ?string $status = null;
 
@@ -83,6 +92,7 @@ class MissionFilter
 
         $dto->siteId = isset($q['siteId']) ? (int) $q['siteId'] : null;
         $dto->planningVersionId = isset($q['planningVersionId']) ? (int) $q['planningVersionId'] : null;
+        $dto->planningScopeOf = isset($q['planningScopeOf']) ? (int) $q['planningScopeOf'] : null;
 
         // Important: on normalise les strings vides en null (robuste Postman / clients)
         $status = isset($q['status']) ? trim((string) $q['status']) : null;

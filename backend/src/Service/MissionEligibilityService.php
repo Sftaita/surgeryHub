@@ -123,6 +123,28 @@ class MissionEligibilityService
         return new EligibilityResult($candidate, $reasons);
     }
 
+    /**
+     * D-125 — "can this instrumentist be sent a nominative request (TARGETED publication)
+     * for this mission's slot?". The offer only makes sense if its target will be able to
+     * accept it: accepting IS the existing claim(), gated by evaluate() — so this checks the
+     * same person-level reasons evaluate() does (INACTIVE, NO_SITE_MEMBERSHIP, ABSENT,
+     * SCHEDULE_CONFLICT), minus evaluate()'s mission-state reasons (INCOMPATIBLE_STATUS/
+     * ALREADY_ASSIGNED — the mission is typically still DRAFT at offer time). Reuses
+     * evaluateForReassignment() for INACTIVE/ABSENT/SCHEDULE_CONFLICT — no second
+     * implementation of any check.
+     */
+    public function evaluateForOffer(Mission $mission, User $candidate): EligibilityResult
+    {
+        $reasons = $this->evaluateForReassignment($mission, $candidate)->reasons;
+
+        $site = $mission->getSite();
+        if ($site !== null && $this->lacksSiteMembership($candidate, $site)) {
+            $reasons[] = EligibilityReason::NO_SITE_MEMBERSHIP;
+        }
+
+        return new EligibilityResult($candidate, $reasons);
+    }
+
     /** Q1 — site membership. FREELANCER bypasses this requirement (D-057). */
     private function lacksSiteMembership(User $candidate, \App\Entity\Hospital $site): bool
     {

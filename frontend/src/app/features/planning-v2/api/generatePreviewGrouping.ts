@@ -209,6 +209,9 @@ export function missionToPreviewLine(mission: Mission): PreviewLineV2 {
     freedFrom: false,
     surgeonPhotoPath: mission.surgeon?.profilePicturePath ?? null,
     instrumentistPhotoPath: mission.instrumentist?.profilePicturePath ?? null,
+    // D-125 — pass-through of the backend-computed request state, never re-derived.
+    pendingOfferName: mission.targetedOffer?.status === "PENDING" ? (mission.targetedOffer.instrumentist?.name ?? "—") : null,
+    offerDeclinedByName: mission.targetedOffer?.status === "DECLINED" ? (mission.targetedOffer.instrumentist?.name ?? "—") : null,
   };
 }
 

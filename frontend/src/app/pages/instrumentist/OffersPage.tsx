@@ -17,6 +17,7 @@ import { useToast } from "../../ui/toast/useToast";
 import { useAuth } from "../../auth/AuthContext";
 import { isMobileRole } from "../../auth/roles";
 import { requestMissionSync } from "../../features/missions/sync/missionSyncBus";
+import { declineMissionOffer } from "../../features/missions/dispatch/missionDispatch.api";
 import { DateTile } from "../../ui/mobile/DateTile";
 import { StatusPill } from "../../ui/mobile/StatusPill";
 import { PersonAvatar } from "../../ui/avatar/PersonAvatar";
@@ -103,6 +104,7 @@ function OfferCard({
   mission,
   claimed,
   onClaim,
+  onDecline,
   onViewPlanning,
   loading,
   disabled,
@@ -110,10 +112,14 @@ function OfferCard({
   mission: Mission;
   claimed: boolean;
   onClaim: () => void;
+  onDecline: () => void;
   onViewPlanning: () => void;
   loading: boolean;
   disabled: boolean;
 }) {
+  // D-125 — a request sent to me personally by the manager (backend allowedActions, never
+  // inferred): accept (= the existing claim) or decline.
+  const isPersonalRequest = !claimed && (mission.allowedActions ?? []).includes("decline_offer");
   const start = mission.startAt ? dayjs(mission.startAt) : null;
   const surgeon = surgeonLabel(mission);
   const dur = durationLabel(mission.startAt, mission.endAt);
@@ -137,7 +143,7 @@ function OfferCard({
             </Typography>
           )}
         </Box>
-        <StatusPill variant={claimed ? "aVenir" : "proposee"} label={claimed ? "Attribuée" : "Proposée"} />
+        <StatusPill variant={claimed ? "aVenir" : "proposee"} label={claimed ? "Attribuée" : isPersonalRequest ? "Pour vous" : "Proposée"} />
       </Stack>
 
       <Box sx={{ borderTop: "1px dashed", borderColor: GRAY_200, my: "14px" }} />
@@ -191,8 +197,28 @@ function OfferCard({
             "&:hover": { background: GREEN_600 }, "&:disabled": { opacity: 0.6, cursor: "default" },
           }}
         >
-          {loading ? "…" : "Prendre la mission"}
+          {loading ? "…" : isPersonalRequest ? "Accepter la mission" : "Prendre la mission"}
         </Box>
+      )}
+      {isPersonalRequest && (
+        <>
+          <Typography sx={{ mt: "10px", fontSize: 12.5, color: GRAY_600, textAlign: "center" }}>
+            Le manager vous propose cette mission personnellement.
+          </Typography>
+          <Box
+            component="button"
+            type="button"
+            disabled={loading || disabled}
+            onClick={onDecline}
+            sx={{
+              mt: "8px", width: "100%", height: 40, borderRadius: "12px", border: `1px solid ${GRAY_200}`,
+              background: "#fff", color: GRAY_800, fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+              "&:disabled": { opacity: 0.6, cursor: "default" },
+            }}
+          >
+            Refuser
+          </Box>
+        </>
       )}
     </Box>
   );
@@ -227,6 +253,9 @@ export default function OffersPage() {
     absenceDateEnd: string;
   } | null>(null);
   const [removingAbsence, setRemovingAbsence] = React.useState(false);
+  // D-125 — refus d'une demande nominative (confirmation explicite, jamais implicite).
+  const [declineTarget, setDeclineTarget] = React.useState<Mission | null>(null);
+  const [declining, setDeclining] = React.useState(false);
 
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ["missions", "offers"],
@@ -285,6 +314,23 @@ export default function OffersPage() {
       requestMissionSync();
     } finally {
       setLoadingClaimId(null);
+    }
+  };
+
+  const handleDecline = async () => {
+    if (!declineTarget) return;
+    setDeclining(true);
+    try {
+      await declineMissionOffer(declineTarget.id);
+      toast.success("Demande refusée. Le manager est prévenu.");
+      setDeclineTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["missions"] });
+      requestMissionSync();
+    } catch (err) {
+      toast.error(extractErrorMessage(err));
+      queryClient.invalidateQueries({ queryKey: ["missions"] });
+    } finally {
+      setDeclining(false);
     }
   };
 
@@ -365,6 +411,7 @@ export default function OffersPage() {
               mission={m}
               claimed={claimedMissions.some((c) => c.id === m.id)}
               onClaim={() => handleClaim(m)}
+              onDecline={() => setDeclineTarget(m)}
               onViewPlanning={() => navigate("/app/i/planning")}
               loading={loadingClaimId === m.id}
               disabled={loadingClaimId !== null && loadingClaimId !== m.id}
@@ -372,6 +419,24 @@ export default function OffersPage() {
           ))}
         </Stack>
       )}
+
+      {/* D-125 — refus d'une demande nominative : toujours une confirmation explicite. */}
+      <Dialog open={declineTarget !== null} onClose={() => (declining ? undefined : setDeclineTarget(null))} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>Refuser cette mission ?</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: 13.5, color: GRAY_600 }}>
+            Le manager sera prévenu et pourra la proposer à quelqu&apos;un d&apos;autre.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button onClick={() => setDeclineTarget(null)} disabled={declining} sx={{ textTransform: "none", fontWeight: 600 }}>
+            Annuler
+          </Button>
+          <Button variant="contained" color="error" onClick={handleDecline} disabled={declining} sx={{ textTransform: "none", fontWeight: 700 }}>
+            {declining ? "…" : "Refuser"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* BUG A (2026-09-09) — claim bloqué par une absence. Jamais de retrait automatique :
           l'action reste une confirmation explicite de l'utilisateur (§9, §16). */}

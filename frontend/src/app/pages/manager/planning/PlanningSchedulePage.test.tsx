@@ -8,6 +8,7 @@ import PlanningSchedulePage from "./PlanningSchedulePage";
 
 vi.mock("../../../features/missions/api/missions.api", () => ({
   fetchMissions: vi.fn(),
+  fetchAllMissions: vi.fn(),
 }));
 vi.mock("../../../features/sites/api/sites.api", () => ({
   fetchSites: vi.fn().mockResolvedValue([{ id: 1, name: "Alpha" }]),
@@ -88,6 +89,7 @@ async function loadMissions(missions: unknown[]) {
     items: missions as any,
     total: missions.length,
   });
+  vi.mocked(missionsApi.fetchAllMissions).mockResolvedValue(missions as any);
   const user = userEvent.setup();
   renderPage();
   const btn = screen.getByRole("button", { name: /charger le planning/i });
@@ -372,5 +374,33 @@ describe("PlanningSchedulePage — ScheduleInstrumentistCell D-102 ghost UX (OPE
 
     const claireOption = await screen.findByTestId("schedule-instrumentist-option-20");
     expect(claireOption).not.toHaveAttribute("aria-disabled", "true");
+  });
+});
+
+// D-125 — "Planning publié" reflects operational mutations made anywhere (creation,
+// dispatch, accepted surgeon request…) through React Query invalidation — no reload, no
+// month change, no regeneration.
+describe("PlanningSchedulePage — rafraîchissement après mutation (D-125)", () => {
+  it("une mission créée ailleurs apparaît dès l'invalidation du planning opérationnel", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(missionsApi.fetchAllMissions).mockResolvedValue([makeAssignedMission()] as any);
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={client}>
+        <PlanningSchedulePage />
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: /charger le planning/i }));
+    await waitFor(() => expect(screen.getByText("Assigné")).toBeInTheDocument());
+    expect(screen.queryByText("À réserver")).not.toBeInTheDocument();
+
+    // e.g. a surgeon request accepted "au pool" from the requests tab
+    vi.mocked(missionsApi.fetchAllMissions).mockResolvedValue([
+      makeAssignedMission(),
+      makeMission({ id: 2, status: "OPEN" }),
+    ] as any);
+    await client.invalidateQueries({ queryKey: ["planning-schedule"] });
+
+    await waitFor(() => expect(screen.getByText("À réserver")).toBeInTheDocument());
   });
 });

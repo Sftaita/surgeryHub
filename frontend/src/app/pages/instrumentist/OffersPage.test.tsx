@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
@@ -33,6 +33,11 @@ vi.mock("../../auth/AuthContext", () => ({
 
 vi.mock("../../features/missions/sync/missionSyncBus", () => ({
   requestMissionSync: vi.fn(),
+}));
+
+const declineMissionOfferMock = vi.fn();
+vi.mock("../../features/missions/dispatch/missionDispatch.api", () => ({
+  declineMissionOffer: (...args: unknown[]) => declineMissionOfferMock(...args),
 }));
 
 function makeMission(overrides: Partial<any> = {}) {
@@ -121,7 +126,7 @@ describe("OffersPage", () => {
     expect(screen.getByText("Site Consult")).toBeInTheDocument();
   });
 
-  it("ne propose pas de bouton Refuser (aucun endpoint de refus n'existe)", async () => {
+  it("ne propose pas de bouton Refuser pour une offre du pool (seule une demande nominative se refuse, D-125)", async () => {
     fetchOffersMock.mockResolvedValue({ items: [makeMission()] });
     renderPage();
 
@@ -172,6 +177,49 @@ describe("OffersPage", () => {
     await screen.findByText("CHU Brugmann");
     expect(screen.queryByAltText("Dr. Anouk Peeters")).not.toBeInTheDocument();
     expect(screen.getByText("DP")).toBeInTheDocument();
+  });
+});
+
+describe("OffersPage — demande nominative du manager (D-125)", () => {
+  const personal = () => makeMission({ id: 77, allowedActions: ["view", "claim", "decline_offer"] });
+
+  it("identifie la demande personnelle : « Pour vous », « Accepter la mission » et « Refuser »", async () => {
+    fetchOffersMock.mockResolvedValue({ items: [personal()] });
+    renderPage();
+
+    await screen.findByText("CHU Brugmann");
+    expect(screen.getByText("Pour vous")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Accepter la mission" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refuser" })).toBeInTheDocument();
+  });
+
+  it("accepter = le claim existant", async () => {
+    const mission = personal();
+    fetchOffersMock.mockResolvedValue({ items: [mission] });
+    claimMissionMock.mockResolvedValue(mission);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Accepter la mission" }));
+    await waitFor(() => expect(claimMissionMock).toHaveBeenCalledWith(77));
+    expect(declineMissionOfferMock).not.toHaveBeenCalled();
+  });
+
+  it("refuser — confirmation explicite, puis appel decline-offer, jamais un claim", async () => {
+    fetchOffersMock.mockResolvedValue({ items: [personal()] });
+    declineMissionOfferMock.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Refuser" }));
+    expect(declineMissionOfferMock).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Refuser cette mission ?");
+    await user.click(within(dialog).getByRole("button", { name: "Refuser" }));
+
+    await waitFor(() => expect(declineMissionOfferMock).toHaveBeenCalledWith(77));
+    expect(claimMissionMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Demande refusée. Le manager est prévenu."));
   });
 });
 

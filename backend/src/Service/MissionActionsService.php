@@ -44,7 +44,12 @@ final class MissionActionsService
                 // accepte déjà DRAFT|OPEN|ASSIGNED) — un manager doit pouvoir abandonner un
                 // brouillon jamais publié, jamais uniquement 'edit'/'publish' sans issue.
                 MissionStatus::DRAFT => ['view', 'edit', 'publish', 'cancel'],
-                MissionStatus::OPEN => ['view', 'view_publications', 'cancel'],
+                // D-125 — 'dispatch' (pool / request / direct assignment) is offered again on
+                // an OPEN mission nobody holds and no request is pending for — typically
+                // after its target declined (MissionDispatchService::lockDispatchable()).
+                MissionStatus::OPEN => $mission->getInstrumentist() === null && MissionDispatchService::pendingOffer($mission) === null
+                    ? ['view', 'view_publications', 'cancel', 'dispatch']
+                    : ['view', 'view_publications', 'cancel'],
                 MissionStatus::ASSIGNED => [...['view', 'cancel', 'reassign', 'view_claim'], ...$remind],
                 MissionStatus::IN_PROGRESS, MissionStatus::ENCODING_IN_PROGRESS => [...['view'], ...$remind],
                 // Lot 7 (D-070) : corrigé — 'reopen' n'est valide que depuis VALIDATED
@@ -59,6 +64,11 @@ final class MissionActionsService
         // Instrumentiste : claim si OPEN + éligible (publication + règles EMPLOYEE/FREELANCER)
         if ($isInstr && $this->canInstrumentistClaim($mission, $viewer)) {
             $actions[] = 'claim';
+        }
+
+        // D-125 — the target of a pending nominative request may refuse it ('claim' = accept).
+        if ($isInstr && MissionDispatchService::pendingOffer($mission)?->getTargetInstrumentist()?->getId() === $viewer->getId()) {
+            $actions[] = 'decline_offer';
         }
 
         // Instrumentiste assigné : encoding / submit selon statut
@@ -169,6 +179,10 @@ final class MissionActionsService
         }
 
         foreach ($mission->getPublications() as $pub) {
+            // D-125 — a declined TARGETED request no longer grants its target anything.
+            if (!$pub->isActive()) {
+                continue;
+            }
             if ($pub->getScope() === PublicationScope::TARGETED) {
                 if ($pub->getTargetInstrumentist()?->getId() === $instrumentist->getId()) {
                     return true;

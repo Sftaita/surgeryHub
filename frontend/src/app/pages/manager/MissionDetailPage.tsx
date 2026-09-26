@@ -2,6 +2,7 @@ import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -242,7 +243,8 @@ export function MissionDetailContent({
 
   const allowed = data.allowedActions ?? [];
   const canEdit = allowed.includes("edit");
-  const canPublish = allowed.includes("publish");
+  // D-125 — 'dispatch' = remettre en jeu une mission OPEN (ex. demande refusée).
+  const canPublish = allowed.includes("publish") || allowed.includes("dispatch");
   const canApprove = allowed.includes("approve");
   /** `reject` est un libellé d'action partagé entre DECLARED (rejectDeclaredMission)
    *  et SUBMITTED (rejectMissionEncoding, Lot 7) — un statut à la fois, jamais ambigu. */
@@ -294,6 +296,19 @@ export function MissionDetailContent({
         />
       </Stack>
 
+      {/* D-125 — demande nominative : jamais présentée comme une mission couverte. */}
+      {data.targetedOffer?.status === "PENDING" && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          En attente de la réponse de <strong>{data.targetedOffer.instrumentist?.name ?? "l'instrumentiste"}</strong> —
+          la mission n'est pas encore attribuée.
+        </Alert>
+      )}
+      {data.targetedOffer?.status === "DECLINED" && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <strong>{data.targetedOffer.instrumentist?.name ?? "L'instrumentiste"}</strong> a refusé la demande — la mission reste à couvrir.
+        </Alert>
+      )}
+
       {/* Actions */}
       {(canEdit || canPublish || canApprove || canReject || canValidateEncoding || canRejectEncoding || canReopenEncoding || canCancel) && (
         <Stack direction="row" spacing={1} mb={3} flexWrap="wrap">
@@ -340,7 +355,7 @@ export function MissionDetailContent({
           )}
           {canPublish && (
             <Button variant="contained" size="small" disableElevation onClick={() => setOpenPublish(true)}>
-              Publier
+              Diffuser / attribuer
             </Button>
           )}
         </Stack>

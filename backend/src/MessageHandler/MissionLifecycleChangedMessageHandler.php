@@ -13,6 +13,10 @@ use App\Service\MissionEligibilityService;
 use App\Service\NotificationChannels;
 use App\Service\NotificationPreferenceResolver;
 use App\Service\NotificationTargetResolver;
+use App\Enum\OutboundNotificationStatus;
+use App\Repository\UserRepository;
+use App\Service\NotificationService;
+use App\Service\OutboundNotificationService;
 use App\Service\WebPushServiceInterface;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -69,6 +73,10 @@ final class MissionLifecycleChangedMessageHandler
         private readonly LoggerInterface                $logger,
         private readonly MissionEligibilityService      $eligibilityService,
         private readonly NotificationTargetResolver     $targetResolver,
+        // D-125 — push with email fallback (D-083) + manager recipients for the dispatch cases.
+        private readonly OutboundNotificationService    $outboundNotificationService,
+        private readonly NotificationService            $notificationService,
+        private readonly UserRepository                 $userRepository,
     ) {}
 
     public function __invoke(MissionLifecycleChangedMessage $message): void
@@ -81,6 +89,10 @@ final class MissionLifecycleChangedMessageHandler
         ]);
 
         match ($message->changeType) {
+            // D-125 — manager dispatch (MissionDispatchService / assignDirectly()).
+            MissionChangeType::OFFERED           => $this->handleOffered($message),
+            MissionChangeType::ASSIGNED_DIRECTLY => $this->handleAssignedDirectly($message),
+            MissionChangeType::OFFER_DECLINED    => $this->handleOfferDeclined($message),
             MissionChangeType::CLAIMED    => $this->handleClaimed($message),
             MissionChangeType::RELEASED   => $this->handleReleased($message),
             MissionChangeType::REASSIGNED => $this->handleReassigned($message),
@@ -569,6 +581,188 @@ final class MissionLifecycleChangedMessageHandler
             $this->logger->error('MissionLifecycleChanged::RELEASED: pool push failed', [
                 'missionId' => $message->missionId,
                 'error'     => $e->getMessage(),
+            ]);
+        }
+    }
+
+    // ── D-125 — manager dispatch: nominative request / direct assignment / refusal ──
+
+    /**
+     * OFFERED → MISSION_OFFERED to the targeted instrumentist ONLY (in-app + push, email
+     * fallback — D-083 orchestration). A request awaiting her answer: never broadcast to the
+     * pool, never presented as an assignment. Skipped if the request is no longer pending
+     * by the time this runs (claimed/assigned/declined meanwhile).
+     */
+    private function handleOffered(MissionLifecycleChangedMessage $message): void
+    {
+        $mission = $this->loadMission($message->missionId, 'OFFERED');
+        if ($mission === null) {
+            return;
+        }
+
+        $pending = \App\Service\MissionDispatchService::pendingOffer($mission);
+        $target  = $pending?->getTargetInstrumentist();
+        if ($target === null || $target->getId() !== ($message->payload['instrumentistId'] ?? null)) {
+            $this->logger->info('MissionLifecycleChanged::OFFERED: request no longer pending — no notification', [
+                'missionId' => $mission->getId(),
+            ]);
+            return;
+        }
+
+        $siteName = $mission->getSite()?->getName() ?? '';
+        $date     = $mission->getStartAt()?->format('d/m') ?? '';
+
+        $this->notifyPersonally(
+            $target, $mission, NotificationType::MISSION_OFFERED,
+            $this->dispatchPayload($mission, $message),
+            'Mission proposée',
+            "Le manager vous propose une mission le {$date} à {$siteName}. Acceptez-la ou refusez-la depuis vos offres.",
+            fn ($fallbackOf, $reason) => $this->notificationService->missionOfferedNotifyInstrumentist($mission, $target, $fallbackOf, $reason),
+            'OFFERED',
+        );
+    }
+
+    /**
+     * ASSIGNED_DIRECTLY → MISSION_ASSIGNED_DIRECTLY to the instrumentist: a CONFIRMATION, the
+     * mission is already hers (no acceptance step) — plus SURGEON_POST_COVERED to the surgeon,
+     * exactly as for any other OPEN→covered transition (handleClaimed(), same payload keys).
+     */
+    private function handleAssignedDirectly(MissionLifecycleChangedMessage $message): void
+    {
+        $mission = $this->loadMission($message->missionId, 'ASSIGNED_DIRECTLY');
+        if ($mission === null) {
+            return;
+        }
+
+        $instrumentist = $mission->getInstrumentist();
+        if ($instrumentist !== null && $instrumentist->getId() === ($message->payload['instrumentistId'] ?? null)) {
+            $siteName = $mission->getSite()?->getName() ?? '';
+            $date     = $mission->getStartAt()?->format('d/m') ?? '';
+
+            $this->notifyPersonally(
+                $instrumentist, $mission, NotificationType::MISSION_ASSIGNED_DIRECTLY,
+                $this->dispatchPayload($mission, $message),
+                'Mission attribuée',
+                "Une nouvelle mission vous a été attribuée le {$date} à {$siteName}. Elle est déjà confirmée, aucune action n'est requise.",
+                fn ($fallbackOf, $reason) => $this->notificationService->missionAssignedDirectlyNotifyInstrumentist($mission, $instrumentist, $fallbackOf, $reason),
+                'ASSIGNED_DIRECTLY',
+            );
+        }
+
+        $this->handleClaimed($message);
+    }
+
+    /**
+     * OFFER_DECLINED → MISSION_OFFER_DECLINED (in-app + email per preferences) to the manager
+     * who sent the request (payload offeredById); every active manager/admin only as a
+     * fallback when that person is unknown or no longer an active manager.
+     */
+    private function handleOfferDeclined(MissionLifecycleChangedMessage $message): void
+    {
+        $mission = $this->loadMission($message->missionId, 'OFFER_DECLINED');
+        if ($mission === null) {
+            return;
+        }
+
+        $name    = (string) ($message->payload['instrumentistName'] ?? '');
+        $reason  = $message->payload['reason'] ?? null;
+        $payload = $this->dispatchPayload($mission, $message) + ['reason' => $reason];
+
+        $offeredBy  = isset($message->payload['offeredById']) ? $this->em->find(User::class, (int) $message->payload['offeredById']) : null;
+        $isManager  = $offeredBy !== null && $offeredBy->isActive()
+            && array_intersect(['ROLE_MANAGER', 'ROLE_ADMIN'], $offeredBy->getRoles()) !== [];
+        $recipients = $isManager ? [$offeredBy] : $this->userRepository->findManagersAndAdmins(true);
+
+        foreach ($recipients as $manager) {
+            $channels = $this->resolveChannelsSafely($manager, NotificationType::MISSION_OFFER_DECLINED);
+            if ($channels->inApp) {
+                try {
+                    $this->createNotificationEvent($manager, $mission, NotificationType::MISSION_OFFER_DECLINED, $payload);
+                    $this->em->flush();
+                } catch (\Throwable $e) {
+                    $this->logger->error('MissionLifecycleChanged::OFFER_DECLINED: inApp failed', [
+                        'missionId' => $mission->getId(), 'userId' => $manager->getId(), 'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+            if ($channels->email) {
+                try {
+                    $this->notificationService->missionOfferDeclinedNotifyManager($mission, $manager, $name, $reason);
+                } catch (\Throwable $e) {
+                    $this->logger->error('MissionLifecycleChanged::OFFER_DECLINED: email failed', [
+                        'missionId' => $mission->getId(), 'userId' => $manager->getId(), 'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
+    }
+
+    /** @return array<string,mixed> operational mission facts only — no patient data */
+    private function dispatchPayload(Mission $mission, MissionLifecycleChangedMessage $message): array
+    {
+        return [
+            'missionId'         => $mission->getId(),
+            'dayLabel'          => $mission->getStartAt()?->format('l'),
+            'missionDate'       => $mission->getStartAt()?->format('d/m/Y'),
+            'startTime'         => $mission->getStartAt()?->format('H:i'),
+            'endTime'           => $mission->getEndAt()?->format('H:i'),
+            'siteName'          => $mission->getSite()?->getName(),
+            'periodLabel'       => $this->periodLabel($mission),
+            'instrumentistId'   => $message->payload['instrumentistId'] ?? null,
+            'instrumentistName' => $message->payload['instrumentistName'] ?? null,
+            'actorName'         => $message->payload['actorName'] ?? null,
+        ];
+    }
+
+    /**
+     * In-app (preference-gated) + push, email as fallback when push is not deliverable or
+     * disabled — the D-083 orchestration MissionPublishedMessageHandler::notifySurgeon()
+     * already uses. Each channel isolated in its own try/catch (failure isolation).
+     *
+     * @param callable(?\App\Entity\OutboundNotification, ?\App\Enum\OutboundNotificationFallbackReason): mixed $sendEmail
+     */
+    private function notifyPersonally(
+        User $recipient,
+        Mission $mission,
+        NotificationType $type,
+        array $payload,
+        string $pushTitle,
+        string $pushBody,
+        callable $sendEmail,
+        string $context,
+    ): void {
+        $channels = $this->resolveChannelsSafely($recipient, $type);
+
+        if ($channels->inApp) {
+            try {
+                $this->createNotificationEvent($recipient, $mission, $type, $payload);
+                $this->em->flush();
+            } catch (\Throwable $e) {
+                $this->logger->error("MissionLifecycleChanged::{$context}: inApp failed", [
+                    'missionId' => $mission->getId(), 'userId' => $recipient->getId(), 'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        try {
+            if ($channels->push) {
+                $push = $this->outboundNotificationService->recordPushSend(
+                    $recipient,
+                    $type->value,
+                    $pushTitle,
+                    $pushBody,
+                    ['type' => $type->value, 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve($type, $mission, $recipient)],
+                    $mission,
+                );
+                if ($push->getStatus() !== OutboundNotificationStatus::SENT && $channels->email) {
+                    $sendEmail($push, OutboundNotificationService::fallbackReasonFor($push));
+                }
+            } elseif ($channels->email) {
+                $sendEmail(null, null);
+            }
+        } catch (\Throwable $e) {
+            $this->logger->error("MissionLifecycleChanged::{$context}: push/email failed", [
+                'missionId' => $mission->getId(), 'userId' => $recipient->getId(), 'error' => $e->getMessage(),
             ]);
         }
     }

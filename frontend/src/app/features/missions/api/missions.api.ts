@@ -33,8 +33,13 @@ export type MissionsFilters = {
   eligibleToMe?: boolean; // OPEN offers (si supporté backend)
   assignedToMe?: boolean; // my missions
 
-  // Planning V2 Modification mode — all missions of an already-deployed PlanningVersion
+  // Planning V2 — PROVENANCE: missions a PlanningVersion's generate() created/adopted.
   planningVersionId?: number;
+
+  // D-125 — OPERATIONAL SCOPE of a PlanningVersion (its period + sites, every live mission
+  // whatever created it: generation, manual creation before/after, accepted surgeon
+  // request). This is what a "calendar of the generated month" must show.
+  planningScopeOf?: number;
 
   // Diagnostic tarifs instrumentistes (2026-08-05) — missions VALIDATED sans aucun
   // FinancialCalculation (tuile dashboard "Missions validées sans calcul", même règle
@@ -59,6 +64,25 @@ export async function fetchMissions(
   );
 
   return data;
+}
+
+/**
+ * D-125 — every page of GET /api/missions for the given filters. The backend caps `limit`
+ * at 100 (MissionFilter::fromQuery) and sorts by startAt DESC, so a single `limit: 500`
+ * call silently dropped the EARLIEST missions of any month with more than 100 of them —
+ * one of the reasons a calendar could look incomplete. Pure transport concern: no
+ * filtering or business rule here.
+ */
+export async function fetchAllMissions(filters: MissionsFilters = {}): Promise<Mission[]> {
+  const pageSize = 100;
+  const all: Mission[] = [];
+  for (let page = 1; ; page++) {
+    const data = await fetchMissions(page, pageSize, filters);
+    const items = data.items ?? [];
+    all.push(...items);
+    if (items.length < pageSize || all.length >= (data.total ?? 0)) break;
+  }
+  return all;
 }
 
 function isEligibleToMeUnsupported(err: any): boolean {
@@ -314,15 +338,6 @@ export async function createMission(body: CreateMissionBody) {
   return data;
 }
 
-export async function createMissionAndPublish(
-  body: CreateMissionBody,
-  publishBody: PublishMissionBody,
-) {
-  const created = await createMission(body);
-  await publishMission(created.id, publishBody);
-  const refreshed = await fetchMissionById(created.id);
-  return refreshed;
-}
 
 export async function patchMission(id: number, body: MissionPatchBody) {
   const { data } = await apiClient.patch<Mission>(`/api/missions/${id}`, body);

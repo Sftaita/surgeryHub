@@ -63,6 +63,10 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
             $this->logger,
             $this->eligibilityService,
             $this->targetResolver,
+            // D-125 dispatch cases only — covered by MissionLifecycleDispatchNotificationsTest.
+            $this->createMock(\App\Service\OutboundNotificationService::class),
+            $this->createMock(\App\Service\NotificationService::class),
+            $this->createMock(\App\Repository\UserRepository::class),
         );
     }
 

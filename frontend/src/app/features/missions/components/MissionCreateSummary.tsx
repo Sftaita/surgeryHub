@@ -1,24 +1,7 @@
-import {
-  Autocomplete,
-  Box,
-  CircularProgress,
-  Divider,
-  FormControl,
-  InputLabel,
-  MenuItem,
-  Select,
-  Stack,
-  TextField,
-  Typography,
-} from "@mui/material";
-import { useQuery } from "@tanstack/react-query";
+import { Box, Divider, Stack, Typography } from "@mui/material";
 
-import type { PublishScope } from "../api/missions.requests";
-import { fetchInstrumentists } from "../api/missions.api";
-import type {
-  InstrumentistListItem,
-  InstrumentistsResponse,
-} from "../api/missions.types";
+import MissionDispatchFields from "../dispatch/MissionDispatchFields";
+import type { DispatchSlot, MissionDispatchChoice } from "../dispatch/missionDispatch.api";
 
 type FormState = {
   siteId?: number;
@@ -27,8 +10,7 @@ type FormState = {
   schedulePrecision: "EXACT" | "APPROXIMATE";
   startLocal: string;
   endLocal: string;
-  publishScope: PublishScope;
-  targetUserId?: number;
+  dispatch: MissionDispatchChoice;
 };
 
 type Props = {
@@ -36,6 +18,8 @@ type Props = {
   sites: Array<{ id: number; name: string }>;
   surgeons: Array<{ id: number; label: string }>;
   onChange: (next: Partial<FormState>) => void;
+  /** D-125 — null until site + valid schedule are known (candidates are site/slot-scoped). */
+  slot: DispatchSlot | null;
 };
 
 function labelSite(sites: Props["sites"], id?: number) {
@@ -70,31 +54,8 @@ function labelPrecision(precision: FormState["schedulePrecision"]) {
   }
 }
 
-function instrumentistLabel(u: InstrumentistListItem): string {
-  const dn = (u.displayName ?? "").trim();
-  if (dn) return dn;
-
-  const fn = (u.firstname ?? "").trim();
-  const ln = (u.lastname ?? "").trim();
-  const full = `${fn} ${ln}`.trim();
-  return full || u.email || `User #${u.id}`;
-}
-
 export default function MissionCreateSummary(props: Props) {
-  const { state, sites, surgeons, onChange } = props;
-
-  const instrumentistsQ = useQuery<InstrumentistsResponse>({
-    queryKey: ["instrumentists", { page: 1, limit: 200 }],
-    queryFn: () => fetchInstrumentists({ page: 1, limit: 200 }),
-    enabled: state.publishScope === "TARGETED",
-  });
-
-  const instrumentists = instrumentistsQ.data?.items ?? [];
-
-  const selectedInstrumentist =
-    state.publishScope === "TARGETED" && state.targetUserId
-      ? instrumentists.find((u) => u.id === state.targetUserId) ?? null
-      : null;
+  const { state, sites, surgeons, onChange, slot } = props;
 
   return (
     <Box>
@@ -131,72 +92,14 @@ export default function MissionCreateSummary(props: Props) {
         <Divider sx={{ my: 1 }} />
 
         <Typography variant="subtitle2">
-          Publication (si tu cliques « Créer et publier »)
+          Diffusion (si tu cliques « Créer et diffuser »)
         </Typography>
 
-        <FormControl fullWidth>
-          <InputLabel id="publish-scope-label">Destination</InputLabel>
-          <Select
-            labelId="publish-scope-label"
-            label="Destination"
-            value={state.publishScope}
-            onChange={(e) =>
-              onChange({
-                publishScope: e.target.value as PublishScope,
-                targetUserId: undefined,
-              })
-            }
-          >
-            <MenuItem value="POOL">Pool d’instrumentistes</MenuItem>
-            <MenuItem value="TARGETED">Instrumentiste ciblé</MenuItem>
-          </Select>
-        </FormControl>
-
-        {state.publishScope === "TARGETED" ? (
-          <Box>
-            <Autocomplete
-              options={instrumentists}
-              value={selectedInstrumentist}
-              loading={instrumentistsQ.isLoading}
-              getOptionLabel={(o) => instrumentistLabel(o)}
-              isOptionEqualToValue={(a, b) => a.id === b.id}
-              // active=false affiché mais non sélectionnable
-              getOptionDisabled={(o) => o.active === false}
-              onChange={(_, value) =>
-                onChange({ targetUserId: value ? value.id : undefined })
-              }
-              renderInput={(params) => (
-                <TextField
-                  {...params}
-                  label="Instrumentiste cible"
-                  placeholder="Rechercher…"
-                  InputProps={{
-                    ...params.InputProps,
-                    endAdornment: (
-                      <>
-                        {instrumentistsQ.isLoading ? (
-                          <CircularProgress size={18} />
-                        ) : null}
-                        {params.InputProps.endAdornment}
-                      </>
-                    ),
-                  }}
-                />
-              )}
-            />
-
-            {instrumentistsQ.isError ? (
-              <Typography variant="body2" color="error" sx={{ mt: 1 }}>
-                Impossible de charger les instrumentistes (/api/instrumentists).
-              </Typography>
-            ) : null}
-
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              Les instrumentistes peuvent être multi-sites. L’éligibilité à une
-              publication TARGETED est décidée par le backend.
-            </Typography>
-          </Box>
-        ) : null}
+        <MissionDispatchFields
+          value={state.dispatch}
+          onChange={(dispatch) => onChange({ dispatch })}
+          slot={slot}
+        />
       </Stack>
     </Box>
   );

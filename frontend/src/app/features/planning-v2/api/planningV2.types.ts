@@ -360,6 +360,14 @@ export interface PreviewLineV2 {
   freedFrom: boolean;
   surgeonPhotoPath?: string | null;
   instrumentistPhotoPath?: string | null;
+  /**
+   * D-125 — Génération: status of the pre-existing Mission this line mirrors (backend
+   * preview). Anything but DRAFT is never modified by generate() — shown as reality, locked.
+   */
+  existingMissionStatus?: string | null;
+  /** D-125 — Modification: nominative request state of the mission (backend `targetedOffer`). */
+  pendingOfferName?: string | null;
+  offerDeclinedByName?: string | null;
 }
 
 export interface PreviewSummaryV2 {

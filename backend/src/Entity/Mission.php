@@ -306,6 +306,16 @@ class Mission
     /** @return Collection<int, MissionPublication> */
     public function getPublications(): Collection { return $this->publications; }
 
+    /** D-125 — keeps the in-memory inverse side in sync when a publication is created in the same request. */
+    public function addPublication(MissionPublication $publication): static
+    {
+        if (!$this->publications->contains($publication)) {
+            $this->publications->add($publication);
+        }
+
+        return $this;
+    }
+
     public function getExecution(): ?MissionExecution { return $this->execution; }
 
     /** @return Collection<int, FinancialCalculation> */

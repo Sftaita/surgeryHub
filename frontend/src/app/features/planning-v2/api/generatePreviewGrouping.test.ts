@@ -320,3 +320,34 @@ describe("missionToPreviewLine()", () => {
     expect(result.status).toBe("SKIPPED");
   });
 });
+
+// D-125 — the calendar shows the backend-computed nominative-request state, never re-derived.
+describe("missionToPreviewLine() — demande nominative (D-125)", () => {
+  const base = {
+    id: 5, type: "BLOCK", schedulePrecision: "EXACT",
+    startAt: "2026-10-06T08:00:00+02:00", endAt: "2026-10-06T13:00:00+02:00",
+    site: { id: 9, name: "Delta" }, status: "OPEN", instrumentist: null,
+    surgeon: { id: 3, email: "dr@test.com", firstname: "Jean", lastname: "Dupont" },
+  } as unknown as Mission;
+
+  it("PENDING → uncovered line flagged with the requested instrumentist", () => {
+    const result = missionToPreviewLine({ ...base, targetedOffer: { status: "PENDING", instrumentist: { id: 41, name: "Salve Decorte" }, offeredAt: null, declinedAt: null } });
+    expect(result.status).toBe("UNCOVERED");
+    expect(result.instrumentistId).toBeNull();
+    expect(result.pendingOfferName).toBe("Salve Decorte");
+    expect(result.offerDeclinedByName).toBeNull();
+  });
+
+  it("DECLINED → flagged as refused, still uncovered", () => {
+    const result = missionToPreviewLine({ ...base, targetedOffer: { status: "DECLINED", instrumentist: { id: 41, name: "Salve Decorte" }, offeredAt: null, declinedAt: null } });
+    expect(result.status).toBe("UNCOVERED");
+    expect(result.pendingOfferName).toBeNull();
+    expect(result.offerDeclinedByName).toBe("Salve Decorte");
+  });
+
+  it("no request → no flag", () => {
+    const result = missionToPreviewLine(base);
+    expect(result.pendingOfferName).toBeNull();
+    expect(result.offerDeclinedByName).toBeNull();
+  });
+});

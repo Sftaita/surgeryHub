@@ -36,6 +36,7 @@ class PlanningModificationService
         private readonly PlanningChangeSummaryService          $changeSummary,
         private readonly PlanningConflictDetectionService      $conflictDetection,
         private readonly AbsenceMissionReactionService         $absenceMissionReaction,
+        private readonly PlanningVersionOperationalScope       $operationalScope,
     ) {}
 
     /**
@@ -69,11 +70,13 @@ class PlanningModificationService
             ));
         }
 
-        // ── Snapshot every mission currently in this version, before any mutation ──────
+        // ── Snapshot every mission currently in this version's operational scope ───────
+        // D-125 — the calendar the manager edits shows every live Mission of the period/
+        // sites (PlanningVersionOperationalScope), not only the ones this version's
+        // generate() produced; the before/after diff must cover exactly the same set, or an
+        // edit on a manually added / accepted-request Mission would never reach its people.
         /** @var Mission[] $allMissionsBefore */
-        $allMissionsBefore = $version->getMissions()->filter(
-            fn (Mission $m) => $m->getStatus() !== MissionStatus::REJECTED,
-        )->toArray();
+        $allMissionsBefore = $this->operationalScope->missions($version);
 
         $beforeById = [];
         foreach ($allMissionsBefore as $m) {
@@ -103,7 +106,11 @@ class PlanningModificationService
             }
 
             $mission = $this->em->find(Mission::class, $existingMissionId);
-            if ($mission === null || $mission->getPlanningVersion()?->getId() !== $version->getId()) {
+            // D-125 — "foreign" now means outside the version's operational scope (another
+            // period/site, a foreign DRAFT…), never merely "not created by this generate()":
+            // a Mission added manually before/after generation is edited like any other,
+            // without being re-parented (planningVersion stays its provenance).
+            if ($mission === null || !$this->operationalScope->contains($version, $mission)) {
                 continue; // stale/foreign reference — silently skip rather than fail the whole batch
             }
 
@@ -336,16 +343,9 @@ class PlanningModificationService
         // Doctrine collection may already be hydrated from earlier in this same request (e.g.
         // apply()'s very first line, before any mutation), so a Mission created moments ago by
         // createFromLine()/createPostDeploy() would be invisible in it without a fresh query.
+        // D-125 — same operational scope as the snapshot taken in apply().
         /** @var Mission[] $allMissions */
-        $allMissions = $this->em->createQueryBuilder()
-            ->select('m')
-            ->from(Mission::class, 'm')
-            ->where('m.planningVersion = :version')
-            ->andWhere('m.status != :rejected')
-            ->setParameter('version', $version)
-            ->setParameter('rejected', MissionStatus::REJECTED)
-            ->getQuery()
-            ->getResult();
+        $allMissions = $this->operationalScope->missions($version);
 
         $byInstrumentist  = [];
         $bySurgeon        = [];

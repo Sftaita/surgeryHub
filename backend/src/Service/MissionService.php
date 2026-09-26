@@ -7,18 +7,16 @@ use App\Dto\Request\DeclareMissionRequest;
 use App\Dto\Request\MissionCreateRequest;
 use App\Dto\Request\MissionFilter;
 use App\Dto\Request\MissionPatchRequest;
-use App\Dto\Request\MissionPublishRequest;
 use App\Dto\Request\MissionSubmitRequest;
 use App\Entity\FinancialCalculation;
 use App\Entity\Hospital;
 use App\Entity\Mission;
-use App\Entity\MissionPublication;
+use App\Entity\PlanningVersion;
 use App\Entity\SiteMembership;
 use App\Entity\User;
 use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
-use App\Enum\PublicationChannel;
 use App\Enum\PublicationScope;
 use App\Enum\SchedulePrecision;
 use App\Exception\InstrumentistIneligibleException;
@@ -42,6 +40,7 @@ class MissionService
         private readonly NotificationService $notificationService,
         private readonly MissionEncodingWorkflowService $encodingWorkflowService,
         private readonly MissionEligibilityService $eligibilityService,
+        private readonly PlanningVersionOperationalScope $operationalScope,
     ) {}
 
     public function create(MissionCreateRequest $dto, User $creator): Mission
@@ -324,38 +323,6 @@ class MissionService
         return $mission;
     }
 
-    public function publish(Mission $mission, MissionPublishRequest $dto, User $publisher): MissionPublication
-    {
-        // ✅ strict B3: pas de publish si statut != DRAFT (donc DECLARED bloqué)
-        if ($mission->getStatus() !== MissionStatus::DRAFT) {
-            throw new ConflictHttpException('Mission not publishable');
-        }
-
-        $mission->setStatus(MissionStatus::OPEN);
-
-        $publication = new MissionPublication();
-        $publication
-            ->setMission($mission)
-            ->setScope($dto->scope)
-            ->setChannel(PublicationChannel::IN_APP)
-            ->setPublishedAt(new \DateTimeImmutable());
-
-        if ($dto->scope === PublicationScope::TARGETED) {
-            if (!$dto->targetUserId) {
-                throw new ConflictHttpException('TARGETED scope requires targetUserId');
-            }
-            $target = $this->em->find(User::class, $dto->targetUserId) ?? throw new NotFoundHttpException('Target instrumentist not found');
-            $publication->setTargetInstrumentist($target);
-        } else {
-            $publication->setTargetInstrumentist(null);
-        }
-
-        $this->em->persist($publication);
-        $this->em->flush();
-
-        return $publication;
-    }
-
     /**
      * Lot 7 (D-070) : delegates to MissionEncodingWorkflowService::complete(), the real
      * implementation shared with POST /api/missions/{id}/encoding/complete — this legacy
@@ -435,6 +402,12 @@ class MissionService
                 ->setParameter('planningVersionId', $filter->planningVersionId);
         }
 
+        if ($filter->planningScopeOf) {
+            $scopeVersion = $this->em->find(PlanningVersion::class, $filter->planningScopeOf)
+                ?? throw new NotFoundHttpException('Planning version not found');
+            $this->operationalScope->restrict($qb, 'm', $scopeVersion);
+        }
+
         if ($filter->eligibleToMe === true) {
             $qb->andWhere('m.status = :openStatus')->setParameter('openStatus', MissionStatus::OPEN);
 
@@ -455,7 +428,8 @@ class MissionService
                     // V1 TARGETED: mission was specifically targeted at this instrumentist
                     $qb->expr()->andX(
                         'p.scope = :scopeTargeted',
-                        'p.targetInstrumentist = :me'
+                        'p.targetInstrumentist = :me',
+                        'p.declinedAt IS NULL' // D-125 — a declined request is no longer an offer
                     ),
                     // V1 POOL: freelancer always eligible; employee needs site membership
                     $qb->expr()->andX(

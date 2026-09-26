@@ -7053,3 +7053,113 @@ filtré par période ; ce endpoint représente la file d'attente réelle à l'in
 `BillingVoter::MANAGE`.
 
 **Réponse — 200 :** `{ "count": 21 }`
+
+## Planning vivant — périmètre opérationnel et diffusion d'une mission (D-125)
+
+### `GET /api/missions?planningScopeOf={versionId}` — nouveau filtre
+
+Calendrier opérationnel d'une `PlanningVersion` : toutes les missions de sa période et de ses
+sites, **quelle que soit leur provenance** (générées, créées manuellement avant ou après la
+génération, demande chirurgien acceptée…). Règle : missions de la version (hors REJECTED)
+**plus** missions de statut opérationnel (hors DRAFT, DECLARED, REJECTED) dont `startAt` est
+dans la période et le site dans les sites de la version (voir `PlanningVersionOperationalScope`).
+404 si la version n'existe pas. `planningVersionId` reste inchangé et signifie **provenance**
+(missions produites par cette génération). `limit` reste plafonné à 100 : paginer.
+
+`GET /api/planning/versions/{id}/coverage-summary` et
+`POST /api/planning/versions/{id}/apply-modifications` utilisent désormais ce même périmètre
+(une mission non générée est comptée, éditable, et incluse dans le diff de notification ;
+elle n'est jamais rattachée à la version). `cancel-all` reste limité à la provenance.
+
+### `targetedOffer` sur `MissionListDto` / `MissionDetailDto` — nouveau champ
+
+```jsonc
+"targetedOffer": {
+  "status": "PENDING" | "DECLINED",
+  "instrumentist": { "id": 41, "name": "Salve Decorte" },
+  "offeredAt": "2026-09-26T09:12:00+00:00",
+  "declinedAt": null
+} | null
+```
+
+`PENDING` = mission OPEN, non couverte (`covered: false`), en attente de la réponse de cet
+instrumentiste. `DECLINED` = dernière demande refusée, aucune demande en attente. Calculé
+serveur ; `null` pour toute mission non OPEN, assignée ou sans demande nominative.
+
+`allowedActions` gagne : `dispatch` (manager, mission OPEN sans instrumentiste ni demande en
+attente — rediffusable) et `decline_offer` (instrumentiste cible d'une demande en attente ;
+`claim` = accepter).
+
+### `POST /api/missions/{id}/publish` — comportement précisé
+
+Corps inchangé (`{scope: "POOL"}` ou `{scope: "TARGETED", targetUserId}`). Accepté sur une
+mission DRAFT, ou OPEN sans instrumentiste et sans demande en attente (rediffusion). Désormais :
+
+- POOL → `AuditEvent MISSION_PUBLISHED_TO_POOL`, notifications pool inchangées
+  (`MissionPublishedMessage`).
+- TARGETED → éligibilité de la cible vérifiée (`evaluateForOffer` : INACTIVE, NO_SITE_MEMBERSHIP,
+  ABSENT, SCHEDULE_CONFLICT) ; `AuditEvent MISSION_OFFERED_TO_INSTRUMENTIST`
+  (`requiresAcceptance: true`) ; notification `MISSION_OFFERED` **à la cible uniquement**
+  (plus aucun push « Nouvelle mission disponible » à tout le site).
+
+Erreurs : 409 `INSTRUMENTIST_INCOMPATIBLE` (violations = raisons), 409 si une demande est déjà
+en attente ou si la mission n'est pas diffusable, 404 cible introuvable / non instrumentiste,
+422 `targetUserId` manquant.
+
+### `POST /api/missions/{id}/assign-directly` — nouveau
+
+Manager (`MissionVoter::PUBLISH`). Corps `{ "instrumentistId": 41 }`. DRAFT, ou OPEN sans
+instrumentiste → **ASSIGNED immédiatement**, sans étape d'acceptation (accord obtenu hors
+SurgicalHub). Éligibilité `STRICT_ASSIGNMENT` (INACTIVE, ABSENT, SCHEDULE_CONFLICT).
+`AuditEvent MISSION_ASSIGNED_DIRECTLY` — payload `{assignmentMode: "DIRECT",
+requiresAcceptance: false, fromStatus, instrumentistId, instrumentistName, actorId, actorName}`.
+Notifications : `MISSION_ASSIGNED_DIRECTLY` à l'instrumentiste (confirmation, jamais une
+demande ; in-app + push, email en repli, email activé par défaut) et `SURGEON_POST_COVERED` au
+chirurgien.
+
+**Réponse — 200 :** `MissionDetailDto` (`status: "ASSIGNED"`, `covered: true`).
+Erreurs : 409 `INSTRUMENTIST_INCOMPATIBLE`, 409 mission non attribuable (ou prise entre-temps),
+404, 422 `instrumentistId` manquant.
+
+### `POST /api/missions/{id}/decline-offer` — nouveau
+
+Instrumentiste cible d'une demande en attente (`MissionVoter::DECLINE_OFFER`, sinon 403).
+Corps optionnel `{ "reason": "..." }` (≤ 500 caractères). La mission reste **OPEN, non
+couverte** ; la publication est marquée refusée (`declinedAt`) et ne donne plus aucun droit à
+la cible. `AuditEvent MISSION_OFFER_DECLINED` ; notification `MISSION_OFFER_DECLINED` au manager
+qui a envoyé la demande (repli : tous les managers/admins actifs).
+**Réponse — 200 :** `MissionDetailDto`. 409 si aucune demande n'est plus en attente.
+
+Accepter une demande = `POST /api/missions/{id}/claim` (inchangé).
+
+### `GET /api/missions/dispatch-candidates?siteId=&startAt=&endAt=[&missionId=]` — nouveau
+
+Manager (`MissionVoter::CREATE`). Instrumentistes **rattachés au site** pour un créneau (mission
+pas encore créée, ou `missionId` exclue de son propre conflit), annotés par le backend — même
+forme que `GET /api/missions/{id}/eligible-instrumentists` :
+
+```jsonc
+{ "policy": "STRICT_ASSIGNMENT",
+  "candidates": [{ "id": 41, "name": "Salve Decorte", "email": "...", "eligible": true,
+                   "selectable": true, "reasons": [], "unavailability": null, "conflict": null }] }
+```
+
+422 si `siteId`/`startAt`/`endAt` manquent ou sont invalides (`endAt` > `startAt`).
+
+### `POST /api/manager/surgeon-mission-requests/{id}/accept` — champ optionnel `dispatch`
+
+```jsonc
+{ "reviewComment": "…", "dispatch": { "mode": "POOL" | "TARGETED" | "DIRECT", "instrumentistId": 41 } }
+```
+
+Même diffusion qu'une mission créée manuellement. Validée **avant** l'acceptation : cible
+inéligible → 409 `INSTRUMENTIST_INCOMPATIBLE`, la demande reste PENDING et aucune mission n'est
+créée. `dispatch.mode` invalide → 422. Sans `dispatch` : comportement D-099 inchangé (mission
+DRAFT). La réponse gagne `createdMissionStatus`.
+
+### Preview V2 — champ additif `existingMissionStatus`
+
+`POST /api/planning/v2/preview` : chaque ligne porte `existingMissionStatus` (statut de la
+mission préexistante reflétée, sinon `null`). Une mission préexistante **publiée** occupant le
+créneau d'un poste est montrée telle qu'elle est (son instrumentiste, ses heures,
+`COVERED`/`UNCOVERED`) — `generate()` ne la modifie jamais (R-01).

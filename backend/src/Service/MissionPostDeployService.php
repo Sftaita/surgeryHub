@@ -694,6 +694,73 @@ class MissionPostDeployService
     }
 
     /**
+     * D-125 — DRAFT|OPEN(unassigned) → ASSIGNED: "Attribuer directement". The manager and
+     * the instrumentist already agreed outside SurgicalHub (phone, WhatsApp, at the OR…), so
+     * no acceptance step exists: the Mission is covered immediately. Distinct from assign()
+     * (post-deploy reassignment of an existing OPEN/ASSIGNED slot, audited as
+     * MISSION_REASSIGNED_POST_DEPLOY) so the audit trail always tells "direct assignment, no
+     * acceptance required" apart from a reassignment or a pool claim — and so the
+     * notification is a confirmation (MISSION_ASSIGNED_DIRECTLY), never a request.
+     *
+     * Same pessimistic-lock + refresh discipline as claim(): an OPEN mission may be claimed
+     * concurrently from the pool (or by the target of a pending TARGETED request); whichever
+     * commits first wins, the other gets a 409 — never a silent overwrite. Eligibility is the
+     * canonical STRICT_ASSIGNMENT gate (guardEligibility(), D-101).
+     */
+    public function assignDirectly(Mission $mission, User $actor, int $instrumentistId): void
+    {
+        $instrumentist = $this->em->find(User::class, $instrumentistId);
+        if ($instrumentist === null) {
+            throw new NotFoundHttpException('Instrumentist not found');
+        }
+
+        $payload = [];
+
+        $this->em->wrapInTransaction(function () use ($mission, $actor, $instrumentist, &$payload): void {
+            if ($mission->getId() !== null) {
+                $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
+                $this->em->refresh($mission);
+            }
+
+            $previousStatus = $mission->getStatus();
+            $assignable = $previousStatus === MissionStatus::DRAFT
+                || ($previousStatus === MissionStatus::OPEN && $mission->getInstrumentist() === null);
+            if (!$assignable) {
+                throw new ConflictHttpException('Mission must be DRAFT, or OPEN without instrumentist, to be assigned directly');
+            }
+
+            $this->guardEligibility($mission, $instrumentist, EligibilityEnforcementPolicy::STRICT_ASSIGNMENT);
+
+            $mission->setInstrumentist($instrumentist);
+            $mission->setStatus(MissionStatus::ASSIGNED);
+            $this->resetEscalationIfLeavingOpen($mission, $previousStatus);
+
+            $payload = [
+                'assignmentMode'     => 'DIRECT',
+                'requiresAcceptance' => false,
+                'fromStatus'         => $previousStatus->value,
+                'instrumentistId'    => $instrumentist->getId(),
+                'instrumentistName'  => $this->displayName($instrumentist),
+                'actorId'            => $actor->getId(),
+                'actorName'          => $this->displayName($actor),
+            ];
+
+            $this->audit->record($mission, $actor, AuditEventType::MISSION_ASSIGNED_DIRECTLY, $payload);
+
+            $this->em->flush(); // R-05: flush before dispatch
+        });
+
+        // Dispatch after transaction commits — R-07
+        $this->bus->dispatch(new MissionLifecycleChangedMessage(
+            missionId:  $mission->getId(),
+            changeType: MissionChangeType::ASSIGNED_DIRECTLY,
+            actorId:    $actor->getId(),
+            payload:    $payload,
+            occurredAt: new \DateTimeImmutable(),
+        ));
+    }
+
+    /**
      * D-110 (J-14) — marks the current OPEN episode's escalation as sent. Never changes
      * Mission status. Same pessimistic-lock convention as claim()/start(): re-validates
      * "still OPEN AND not yet escalated" AFTER acquiring the lock, so two overlapping

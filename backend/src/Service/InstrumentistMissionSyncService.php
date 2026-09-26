@@ -133,7 +133,8 @@ class InstrumentistMissionSyncService
             $qb->expr()->orX(
                 $qb->expr()->andX(
                     'p.scope = :elig_scopeTargeted',
-                    'p.targetInstrumentist = :elig_me'
+                    'p.targetInstrumentist = :elig_me',
+                    'p.declinedAt IS NULL' // D-125 — a declined request is no longer an offer
                 ),
                 $qb->expr()->andX(
                     'p.scope = :elig_scopePool',

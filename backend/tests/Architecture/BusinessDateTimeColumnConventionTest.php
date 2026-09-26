@@ -87,6 +87,7 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\InstrumentistStatementLine::missionDateSnapshot' => 'date-only digits copied from Mission.startAt, never reformatted with an offset',
         'App\Entity\MissionClaim::claimedAt' => 'set from new \DateTimeImmutable() in the constructor',
         'App\Entity\MissionPublication::publishedAt' => 'set from new \DateTimeImmutable()',
+        'App\Entity\MissionPublication::declinedAt' => 'set from new \DateTimeImmutable() at decline time (D-125), never client-submitted',
         'App\Entity\NotificationEvent::sentAt' => 'set from new \DateTimeImmutable()',
         'App\Entity\NotificationEvent::failedAt' => 'set from new \DateTimeImmutable()',
         'App\Entity\NotificationEvent::seenAt' => 'set from new \DateTimeImmutable()',

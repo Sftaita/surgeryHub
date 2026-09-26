@@ -48,7 +48,7 @@ class InstrumentistMissionSyncServiceTest extends TestCase
         // Mission::getStatus()) — réutilise le même mock plutôt que d'en créer un second.
         $this->mapper = new MissionMapper(
             new MissionActionsService(new MissionEncodingGuard()),
-            new PlanningCoverageService($this->em),
+            new PlanningCoverageService($this->em, new \App\Service\PlanningVersionOperationalScope($this->em)),
             $this->createMock(EncodingReminderService::class),
         );
     }

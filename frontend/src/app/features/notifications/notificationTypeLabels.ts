@@ -10,6 +10,10 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   PLANNING_MISSION_CANCELLED: "Mission annulée",
   PLANNING_MISSION_ADDED: "Mission ajoutée",
   PLANNING_MISSION_UPDATED: "Mission modifiée",
+  // D-125 — demande nominative / attribution directe / refus.
+  MISSION_OFFERED: "Mission proposée personnellement",
+  MISSION_ASSIGNED_DIRECTLY: "Mission attribuée directement (confirmation)",
+  MISSION_OFFER_DECLINED: "Demande de mission refusée",
   ABSENCE_INSTRUMENTIST_RELEASED: "Mission libérée suite à une absence",
   ABSENCE_SURGEON_MISSION_OPENED: "Mission réouverte suite à une absence",
   ABSENCE_MISSION_CANCELLED: "Mission annulée suite à une absence",

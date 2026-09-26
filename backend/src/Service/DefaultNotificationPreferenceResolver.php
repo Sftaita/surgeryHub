@@ -94,6 +94,12 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::MISSION_RESTORED_MGR,
         NotificationType::ABSENCE_IMPACT_SUMMARY,
         NotificationType::MISSION_UNCOVERED_ESCALATION,
+        // D-125 — a request awaiting an answer, the confirmation of an assignment made on
+        // the instrumentist's behalf, and a refusal leaving a mission uncovered: none may go
+        // unnoticed for want of opening the app.
+        NotificationType::MISSION_OFFERED,
+        NotificationType::MISSION_ASSIGNED_DIRECTLY,
+        NotificationType::MISSION_OFFER_DECLINED,
     ];
 
     public function __construct(

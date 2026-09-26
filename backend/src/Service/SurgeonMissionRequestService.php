@@ -4,9 +4,11 @@ namespace App\Service;
 
 use App\Dto\Request\MissionCreateRequest;
 use App\Entity\Hospital;
+use App\Entity\Mission;
 use App\Entity\SurgeonMissionRequest;
 use App\Entity\User;
 use App\Enum\AuditEventType;
+use App\Enum\MissionDispatchMode;
 use App\Enum\MissionType;
 use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
 use App\Exception\SurgeonMissionRequestConflictException;
@@ -53,6 +55,7 @@ class SurgeonMissionRequestService
         private readonly AuditService $auditService,
         private readonly UserRepository $userRepository,
         private readonly MessageBusInterface $bus,
+        private readonly MissionDispatchService $dispatchService,
     ) {
     }
 
@@ -138,9 +141,37 @@ class SurgeonMissionRequestService
             ->getResult();
     }
 
-    public function accept(SurgeonMissionRequest $request, User $manager, ?string $reviewComment = null): SurgeonMissionRequest
-    {
+    /**
+     * D-125 — $dispatchMode (optional): the manager decides in the same action how the
+     * created Mission is put into play — POOL, TARGETED (request to $instrumentistId) or
+     * DIRECT (assigned to $instrumentistId, no acceptance). Same MissionDispatchService as a
+     * manually created Mission, never a second implementation. Null keeps the pre-D-125
+     * behaviour (the Mission stays DRAFT, dispatched later from its page).
+     *
+     * The dispatch is validated BEFORE the request is accepted (an ineligible instrumentist
+     * is refused with nothing changed), then applied right after the acceptance commits — the
+     * same "state + audit, then message after commit" (R-05/R-07) sequencing as every
+     * dispatch. Residual window: if eligibility changes in the milliseconds between the two
+     * (concurrent absence/claim), the request is accepted with its Mission left DRAFT and the
+     * dispatch error surfaces — the manager dispatches it again from the mission page.
+     */
+    public function accept(
+        SurgeonMissionRequest $request,
+        User $manager,
+        ?string $reviewComment = null,
+        ?MissionDispatchMode $dispatchMode = null,
+        ?int $instrumentistId = null,
+    ): SurgeonMissionRequest {
         $reviewComment = self::normalizeComment($reviewComment);
+
+        if ($dispatchMode !== null) {
+            $slot = (new Mission())
+                ->setSite($request->getSite())
+                ->setSurgeon($request->getSurgeon())
+                ->setStartAt($request->getStartAt())
+                ->setEndAt($request->getEndAt());
+            $this->dispatchService->assertDispatchable($slot, $dispatchMode, $instrumentistId);
+        }
 
         $this->em->wrapInTransaction(function () use ($request, $manager, $reviewComment): void {
             $this->em->lock($request, LockMode::PESSIMISTIC_WRITE);
@@ -195,6 +226,10 @@ class SurgeonMissionRequestService
         });
 
         $mission = $request->getCreatedMission();
+        if ($dispatchMode !== null && $mission !== null) {
+            $this->dispatchService->dispatch($mission, $manager, $dispatchMode, $instrumentistId);
+        }
+
         $this->bus->dispatch(new SurgeonMissionRequestDecidedMessage(
             requestId: $request->getId(),
             surgeonId: $request->getSurgeon()->getId(),

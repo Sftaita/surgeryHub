@@ -4,6 +4,7 @@ namespace App\Controller\Api;
 
 use App\Entity\SurgeonMissionRequest;
 use App\Entity\User;
+use App\Enum\MissionDispatchMode;
 use App\Security\Voter\SurgeonMissionRequestVoter;
 use App\Service\SurgeonMissionRequestService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -11,6 +12,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 
@@ -66,7 +68,16 @@ final class ManagerSurgeonMissionRequestController extends AbstractController
         $data = json_decode($request->getContent(), true) ?? [];
         $reviewComment = isset($data['reviewComment']) ? (string) $data['reviewComment'] : null;
 
-        $accepted = $this->service->accept($surgeonMissionRequest, $manager, $reviewComment);
+        // D-125 — optional `dispatch: {mode: POOL|TARGETED|DIRECT, instrumentistId?}`.
+        $dispatch = is_array($data['dispatch'] ?? null) ? $data['dispatch'] : null;
+        $mode = null;
+        if ($dispatch !== null) {
+            $mode = MissionDispatchMode::tryFrom((string) ($dispatch['mode'] ?? ''))
+                ?? throw new UnprocessableEntityHttpException('dispatch.mode must be POOL, TARGETED or DIRECT');
+        }
+        $instrumentistId = isset($dispatch['instrumentistId']) ? (int) $dispatch['instrumentistId'] : null;
+
+        $accepted = $this->service->accept($surgeonMissionRequest, $manager, $reviewComment, $mode, $instrumentistId);
 
         return $this->json($this->serialize($accepted));
     }
@@ -118,6 +129,7 @@ final class ManagerSurgeonMissionRequestController extends AbstractController
             'reviewedAt' => $r->getReviewedAt()?->format(\DateTimeInterface::ATOM),
             'reviewComment' => $r->getReviewComment(),
             'createdMissionId' => $r->getCreatedMission()?->getId(),
+            'createdMissionStatus' => $r->getCreatedMission()?->getStatus()?->value,
         ];
     }
 }

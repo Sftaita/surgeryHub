@@ -20,6 +20,7 @@ import type {
 } from "../../features/missions/api/missions.types";
 
 import { useToast } from "../../ui/toast/useToast";
+import { invalidateOperationalPlanning } from "../../features/missions/dispatch/missionDispatch.api";
 
 type SiteOption = { id: number; name: string };
 type UserOption = { id: number; label: string };
@@ -107,18 +108,20 @@ export default function MissionCreatePage() {
           sites={sites}
           surgeons={surgeons}
           onCancel={() => navigate("/app/m/missions")}
-          onDone={({ mode }) => {
-            // Rafraîchir toute la liste (incluant les variations de queryKey)
-            queryClient.invalidateQueries({
-              queryKey: ["missions"],
-              exact: false,
-            });
+          onDone={({ mode, dispatchMode }) => {
+            // D-125 — liste des missions ET planning opérationnel (calendrier, couverture),
+            // sans rechargement ni régénération.
+            invalidateOperationalPlanning(queryClient);
 
             // Toast après succès (le ToastProvider étant global, il survit à la navigation)
             toast.success(
               mode === "DRAFT"
                 ? "Mission enregistrée en brouillon."
-                : "Mission créée et publiée."
+                : dispatchMode === "DIRECT"
+                  ? "Mission créée et attribuée."
+                  : dispatchMode === "TARGETED"
+                    ? "Mission créée — demande envoyée à l'instrumentiste."
+                    : "Mission créée et proposée au pool."
             );
 
             // Lot 2b: retour liste dans tous les cas

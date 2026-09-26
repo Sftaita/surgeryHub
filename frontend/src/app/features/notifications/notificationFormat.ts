@@ -18,6 +18,9 @@ const TITLES: Record<string, string> = {
   PLANNING_MISSION_CANCELLED: "Mission annulée",
   PLANNING_MISSION_ADDED: "Nouvelle mission",
   PLANNING_MISSION_UPDATED: "Mission modifiée",
+  MISSION_OFFERED: "Mission proposée — réponse attendue",
+  MISSION_ASSIGNED_DIRECTLY: "Mission attribuée",
+  MISSION_OFFER_DECLINED: "Demande refusée",
   ABSENCE_INSTRUMENTIST_RELEASED: "Mission retirée (absence)",
   ABSENCE_SURGEON_MISSION_OPENED: "Mission désormais ouverte (absence)",
   ABSENCE_MISSION_CANCELLED: "Mission annulée (absence)",
@@ -40,6 +43,23 @@ export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "ev
   const payload = n.payload ?? {};
   const siteName = typeof payload.siteName === "string" ? payload.siteName : null;
   const missionDate = typeof payload.missionDate === "string" ? payload.missionDate : null;
+
+  // D-125 — built only from the server payload (names snapshotted), never recomputed.
+  // MISSION_ASSIGNED_DIRECTLY is a confirmation: never phrased as a request.
+  if (n.eventType === "MISSION_OFFERED" || n.eventType === "MISSION_ASSIGNED_DIRECTLY" || n.eventType === "MISSION_OFFER_DECLINED") {
+    const startTime = typeof payload.startTime === "string" ? payload.startTime : null;
+    const endTime = typeof payload.endTime === "string" ? payload.endTime : null;
+    const when = [missionDate, startTime && endTime ? `${startTime}–${endTime}` : null].filter(Boolean).join(" ");
+    const where = [when || null, siteName].filter(Boolean).join(" — ");
+    if (n.eventType === "MISSION_OFFERED") {
+      return where ? `${where}. Acceptez-la ou refusez-la depuis vos offres.` : "Acceptez-la ou refusez-la depuis vos offres.";
+    }
+    if (n.eventType === "MISSION_ASSIGNED_DIRECTLY") {
+      return where ? `${where}. Déjà confirmée, aucune action n'est requise.` : "Déjà confirmée, aucune action n'est requise.";
+    }
+    const name = typeof payload.instrumentistName === "string" ? payload.instrumentistName : "L'instrumentiste";
+    return where ? `${name} a refusé la mission du ${where}. Elle reste à couvrir.` : `${name} a refusé la mission. Elle reste à couvrir.`;
+  }
 
   if (n.eventType === "PLANNING_RESENT_MANUAL") {
     const from = typeof payload.periodFrom === "string" ? payload.periodFrom : null;

@@ -24,6 +24,12 @@ final class PreviewLineResponse
         public bool $freedFrom,
         public ?string $surgeonPhotoPath = null,
         public ?string $instrumentistPhotoPath = null,
+        /**
+         * D-125 — status of the Mission this line mirrors (existingMissionId), if any.
+         * Anything but DRAFT is never modified by generate() (R-01): the editor shows such a
+         * line as the existing reality and locks it. Additive field, null otherwise.
+         */
+        public ?string $existingMissionStatus = null,
     ) {
     }
 
@@ -49,6 +55,7 @@ final class PreviewLineResponse
             freedFrom: $line['freedFrom'] ?? false,
             surgeonPhotoPath: $line['surgeonPhotoPath'] ?? null,
             instrumentistPhotoPath: $line['instrumentistPhotoPath'] ?? null,
+            existingMissionStatus: $line['existingMissionStatus'] ?? null,
         );
     }
 }

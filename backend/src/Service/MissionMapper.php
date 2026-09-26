@@ -34,6 +34,7 @@ final class MissionMapper
             instrumentist: $m->getInstrumentist() ? $this->toUserSlim($m->getInstrumentist()) : null,
             allowedActions: $this->actions->allowedActions($m, $viewer),
             covered: $this->coverage->isCovered($m),
+            targetedOffer: $this->targetedOffer($m),
         );
     }
 
@@ -61,7 +62,33 @@ final class MissionMapper
             nextAutomaticReminderAt: $this->reminders->nextAutomaticReminderAt($m),
             lastManualReminderAt: $lastManualReminder !== null ? $lastManualReminder['at'] : null,
             lastManualReminderByName: $lastManualReminder !== null ? $lastManualReminder['byName'] : null,
+            targetedOffer: $this->targetedOffer($m),
         );
+    }
+
+    /**
+     * D-125 — see MissionListDto::$targetedOffer. Touches the publications collection only
+     * for OPEN unassigned missions (pendingOffer()/lastDeclinedOffer() short-circuit first).
+     *
+     * @return array<string,mixed>|null
+     */
+    private function targetedOffer(Mission $m): ?array
+    {
+        $pending     = MissionDispatchService::pendingOffer($m);
+        $publication = $pending ?? MissionDispatchService::lastDeclinedOffer($m);
+        if ($publication === null) {
+            return null;
+        }
+
+        $target = $publication->getTargetInstrumentist();
+        $name   = $target !== null ? trim(($target->getFirstname() ?? '') . ' ' . ($target->getLastname() ?? '')) : '';
+
+        return [
+            'status'        => $pending !== null ? 'PENDING' : 'DECLINED',
+            'instrumentist' => $target !== null ? ['id' => $target->getId(), 'name' => $name !== '' ? $name : $target->getEmail()] : null,
+            'offeredAt'     => $publication->getPublishedAt()?->format(\DateTimeInterface::ATOM),
+            'declinedAt'    => $publication->getDeclinedAt()?->format(\DateTimeInterface::ATOM),
+        ];
     }
 
     private function toHospitalSlim(?Hospital $h): HospitalSlimDto

@@ -36,6 +36,22 @@ interface Props {
 }
 
 /**
+ * D-125 — accent/case-insensitive, word-order-independent matching: every whitespace-
+ * separated fragment typed must appear somewhere in the label (or its secondary line,
+ * e.g. an email). "sal" / "dec" / "decorte salve" / "Décorte" all find "Salve Decorte".
+ * Strictly broader than MUI's default contiguous-substring filter (a single fragment
+ * behaves exactly as before), so no existing picker loses a match.
+ */
+export function normalizeSearchText(value: string): string {
+  return value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+}
+
+export function matchesSearch(option: Pick<SearchableOption, "label" | "sub">, query: string): boolean {
+  const haystack = normalizeSearchText(`${option.label} ${option.sub ?? ""}`);
+  return normalizeSearchText(query).split(/\s+/).filter(Boolean).every((fragment) => haystack.includes(fragment));
+}
+
+/**
  * Searchable combobox for chirurgien/site/instrumentiste/récurrence pickers — built on
  * MUI Autocomplete (full keyboard nav + ARIA combobox/listbox already built in) rather
  * than a custom dropdown, per the handoff spec: "Utiliser le Select du DS si extensible".
@@ -66,6 +82,7 @@ export function SearchableSelect({ label, placeholder, options, value, onChange,
           onChange(v?.id ?? null);
         }}
         getOptionLabel={(o) => o.label}
+        filterOptions={(opts, state) => opts.filter((o) => matchesSearch(o, state.inputValue))}
         isOptionEqualToValue={(o, v) => o.id === v.id}
         getOptionDisabled={(o) => !!o.disabled}
         noOptionsText="Aucun résultat"

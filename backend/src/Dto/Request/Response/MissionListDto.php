@@ -24,5 +24,14 @@ final class MissionListDto
          * "couvert"/"à couvrir" localement.
          */
         public readonly bool $covered,
+        /**
+         * D-125 — nominative request state, computed server-side (MissionDispatchService::
+         * pendingOffer()/lastDeclinedOffer()), never re-derived client-side:
+         * {status: 'PENDING'|'DECLINED', instrumentist: {id, name}, offeredAt, declinedAt}.
+         * PENDING = OPEN, not covered, awaiting that instrumentist's answer. Null otherwise.
+         *
+         * @var array<string,mixed>|null
+         */
+        public readonly ?array $targetedOffer = null,
     ) {}
 }

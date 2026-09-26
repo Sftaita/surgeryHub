@@ -214,6 +214,25 @@ class PlanningGeneratorServiceV2
             $surgeon, $site, $current, $startTime, $slotInstrumentist,
         );
 
+        // D-125 — a pre-existing Mission that is already published/operational (created
+        // manually or from an accepted surgeon request before this month was generated, or
+        // surviving from an earlier deploy) is never modified by generate() (R-01: only DRAFT
+        // missions are adopted/updated). The line must therefore show that reality — its own
+        // instrumentist, times and coverage — instead of pretending the post's default
+        // instrumentist will be applied (the former MODIFIED line generate() then silently
+        // skipped). Its instrumentist is already in $missionsByInstrumentist, so any other
+        // slot wanting the same person is still reported as CONFLICT by hasConflictFast().
+        if ($existingMission !== null && self::isOperational($existingMission)) {
+            $existingInst = $existingMission->getInstrumentist();
+            $lines[] = $this->buildLine(
+                $current, $post, $site, $surgeonName,
+                $existingMission->getStartAt() ?? $startTime, $existingMission->getEndAt() ?? $endTime,
+                $existingInst, $existingInst !== null ? 'COVERED' : 'UNCOVERED', $existingMission->getId(),
+                null, $existingMission->getStatus(),
+            );
+            return;
+        }
+
         $status                       = 'UNCOVERED';
         $existingMissionInstrumentist = null;
 
@@ -262,7 +281,17 @@ class PlanningGeneratorServiceV2
             $current, $post, $site, $surgeonName, $startTime, $endTime,
             $slotInstrumentist, $status, $existingMission?->getId(),
             $status === 'MODIFIED' ? $existingMissionInstrumentist : null,
+            $existingMission?->getStatus(),
         );
+    }
+
+    /**
+     * D-125 — a Mission generate() will never touch: anything past DRAFT except CANCELLED
+     * (a cancelled Mission keeps its pre-D-125 preview treatment, unchanged by this lot).
+     */
+    private static function isOperational(Mission $mission): bool
+    {
+        return !in_array($mission->getStatus(), [MissionStatus::DRAFT, MissionStatus::CANCELLED, MissionStatus::REJECTED], true);
     }
 
     /**
@@ -1027,6 +1056,11 @@ class PlanningGeneratorServiceV2
         $secondPassAssignments = [];
 
         foreach ($lines as &$line) {
+            // D-125 — a line mirroring an already-published Mission is reality, not a slot to
+            // fill: generate() will never touch that Mission, so never suggest an assignment.
+            if (($line['existingMissionStatus'] ?? null) !== null && $line['existingMissionStatus'] !== MissionStatus::DRAFT->value) {
+                continue;
+            }
             $needsInstrumentist = $line['status'] === 'UNCOVERED'
                 || ($line['status'] === 'COVERED' && $line['instrumentistId'] === null);
             if (!$needsInstrumentist) {
@@ -1090,7 +1124,8 @@ class PlanningGeneratorServiceV2
      *   instrumentistId: int|null, instrumentistName: string|null,
      *   status: string, existingMissionId: int|null,
      *   existingInstrumentistId: int|null, existingInstrumentistName: string|null,
-     *   freedFrom: bool, surgeonPhotoPath: string|null, instrumentistPhotoPath: string|null
+     *   freedFrom: bool, surgeonPhotoPath: string|null, instrumentistPhotoPath: string|null,
+     *   existingMissionStatus: string|null
      * }
      */
     private function buildLine(
@@ -1104,6 +1139,7 @@ class PlanningGeneratorServiceV2
         string $status,
         ?int $existingMissionId,
         ?User $existingInstrumentist = null,
+        ?MissionStatus $existingMissionStatus = null,
     ): array {
         return [
             'date'                      => $day->format('Y-m-d'),
@@ -1124,6 +1160,9 @@ class PlanningGeneratorServiceV2
             'freedFrom'                 => false,
             'surgeonPhotoPath'          => $post->getSurgeon()->getProfilePicturePath(),
             'instrumentistPhotoPath'    => $instrumentist?->getProfilePicturePath(),
+            // D-125 — lets the editor show (and lock) a line that mirrors a Mission which
+            // already exists; anything but DRAFT is never modified by generate() (R-01).
+            'existingMissionStatus'     => $existingMissionStatus?->value,
         ];
     }
 }

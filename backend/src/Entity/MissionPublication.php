@@ -42,6 +42,16 @@ class MissionPublication
     #[Groups(['mission:read_manager'])]
     private ?\DateTimeImmutable $publishedAt = null;
 
+    /**
+     * D-125 — set when the TARGETED instrumentist explicitly declines the offer
+     * (MissionDispatchService::declineOffer()). A declined publication no longer grants
+     * that instrumentist the right to see/claim the mission; it is kept (never deleted)
+     * as the trace of the refusal. Always null for POOL publications.
+     */
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    #[Groups(['mission:read_manager'])]
+    private ?\DateTimeImmutable $declinedAt = null;
+
     public function getId(): ?int
     {
         return $this->id;
@@ -105,5 +115,27 @@ class MissionPublication
         $this->publishedAt = $publishedAt;
 
         return $this;
+    }
+
+    public function getDeclinedAt(): ?\DateTimeImmutable
+    {
+        return $this->declinedAt;
+    }
+
+    public function setDeclinedAt(?\DateTimeImmutable $declinedAt): static
+    {
+        $this->declinedAt = $declinedAt;
+
+        return $this;
+    }
+
+    /**
+     * D-125 — single rule shared by every publication consumer (MissionVoter,
+     * MissionActionsService, MissionService::list(eligibleToMe), InstrumentistMissionSyncService):
+     * a publication grants visibility/claim rights only while it has not been declined.
+     */
+    public function isActive(): bool
+    {
+        return $this->declinedAt === null;
     }
 }

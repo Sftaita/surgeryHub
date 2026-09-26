@@ -6,23 +6,19 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControl,
-  FormHelperText,
-  InputLabel,
-  MenuItem,
-  Select,
   Stack,
-  TextField,
-  Typography,
 } from "@mui/material";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import type { Mission } from "../api/missions.types";
-import { publishMission } from "../api/missions.api";
-import type {
-  PublishMissionBody,
-  PublishScope,
-} from "../api/missions.requests";
+import MissionDispatchFields from "../dispatch/MissionDispatchFields";
+import {
+  DEFAULT_DISPATCH_CHOICE,
+  dispatchMission,
+  invalidateOperationalPlanning,
+  isDispatchChoiceComplete,
+  type MissionDispatchChoice,
+} from "../dispatch/missionDispatch.api";
 
 function extractApiError(err: unknown): { status?: number; message: string } {
   const status = (err as any)?.response?.status as number | undefined;
@@ -30,6 +26,7 @@ function extractApiError(err: unknown): { status?: number; message: string } {
 
   const message =
     (typeof data === "string" && data) ||
+    data?.error?.message ||
     data?.message ||
     data?.detail ||
     "Une erreur est survenue";
@@ -43,11 +40,12 @@ type Props = {
   mission: Mission;
 };
 
-function scopeLabel(scope: PublishScope) {
-  if (scope === "POOL") return "Publier dans le pool (visible à tous)";
-  return "Publier ciblé (vers un utilisateur)";
-}
-
+/**
+ * D-125 — "Diffuser la mission": pool, demande nominative ou attribution directe, via the
+ * shared MissionDispatchFields (same component as the creation wizard and the surgeon
+ * request acceptance). The instrumentist is picked by name among the mission site's
+ * instrumentists — never typed as an id.
+ */
 export default function PublishMissionDialog({
   open,
   onClose,
@@ -55,30 +53,19 @@ export default function PublishMissionDialog({
 }: Props) {
   const queryClient = useQueryClient();
 
-  const [scope, setScope] = React.useState<PublishScope>("POOL");
-  const [targetUserId, setTargetUserId] = React.useState<string>("");
+  const [choice, setChoice] = React.useState<MissionDispatchChoice>(DEFAULT_DISPATCH_CHOICE);
   const [formError, setFormError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (!open) return;
-    setScope("POOL");
-    setTargetUserId("");
+    setChoice(DEFAULT_DISPATCH_CHOICE);
     setFormError(null);
   }, [open]);
 
-  // Quand on change de scope, on reset le champ ciblage pour éviter un état incohérent
-  React.useEffect(() => {
-    setFormError(null);
-    if (scope === "POOL") setTargetUserId("");
-  }, [scope]);
-
   const mutation = useMutation({
-    mutationFn: async (body: PublishMissionBody) =>
-      publishMission(mission.id, body),
+    mutationFn: (c: MissionDispatchChoice) => dispatchMission(mission.id, c),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ["mission", mission.id],
-      });
+      await invalidateOperationalPlanning(queryClient, mission.id);
       onClose();
     },
     onError: (err) => {
@@ -87,43 +74,17 @@ export default function PublishMissionDialog({
       if (status === 401)
         return setFormError("Session expirée. Veuillez vous reconnecter.");
       if (status === 403) return setFormError("Accès interdit.");
-      if (status === 404) return setFormError("Mission introuvable.");
-      if (status === 409)
-        return setFormError(
-          "Conflit : la mission a peut-être déjà été publiée, ou a été modifiée entre-temps."
-        );
-      if (status === 422) return setFormError(message || "Données invalides.");
+      if (status === 404) return setFormError("Mission ou instrumentiste introuvable.");
+      // 409: ineligible instrumentist (reason from the backend), or the mission changed meanwhile.
+      if (status === 409 || status === 422) return setFormError(message);
 
       setFormError(message || "Erreur serveur.");
     },
   });
 
-  const trimmedTarget = targetUserId.trim();
-  const parsedTargetUserId = Number(trimmedTarget);
-  const targetedIdValid =
-    scope === "TARGETED" &&
-    trimmedTarget.length > 0 &&
-    Number.isFinite(parsedTargetUserId) &&
-    parsedTargetUserId > 0;
-
-  function handleSubmit() {
-    setFormError(null);
-
-    if (scope === "POOL") {
-      mutation.mutate({ scope: "POOL" });
-      return;
-    }
-
-    if (!targetedIdValid) {
-      setFormError("Veuillez renseigner un Target User ID valide.");
-      return;
-    }
-
-    mutation.mutate({ scope: "TARGETED", targetUserId: parsedTargetUserId });
-  }
-
-  const submitDisabled =
-    mutation.isPending || (scope === "TARGETED" && !targetedIdValid);
+  const slot = mission.site?.id
+    ? { siteId: mission.site.id, startAt: mission.startAt, endAt: mission.endAt, missionId: mission.id }
+    : null;
 
   return (
     <Dialog
@@ -132,46 +93,18 @@ export default function PublishMissionDialog({
       fullWidth
       maxWidth="sm"
     >
-      <DialogTitle>Publier la mission #{mission.id}</DialogTitle>
+      <DialogTitle>Diffuser la mission #{mission.id}</DialogTitle>
 
       <DialogContent>
         <Stack spacing={2} mt={1}>
           {formError ? <Alert severity="error">{formError}</Alert> : null}
 
-          <Typography variant="body2" color="text.secondary">
-            La publication rend la mission disponible selon le scope choisi.
-          </Typography>
-
-          <FormControl fullWidth disabled={mutation.isPending}>
-            <InputLabel id="scope-label">Scope</InputLabel>
-            <Select
-              labelId="scope-label"
-              label="Scope"
-              value={scope}
-              onChange={(e) => setScope(e.target.value as PublishScope)}
-            >
-              <MenuItem value="POOL">{scopeLabel("POOL")}</MenuItem>
-              <MenuItem value="TARGETED">{scopeLabel("TARGETED")}</MenuItem>
-            </Select>
-            <FormHelperText>
-              {scope === "POOL"
-                ? "La mission sera visible dans la liste globale."
-                : "La mission sera publiée pour un utilisateur spécifique."}
-            </FormHelperText>
-          </FormControl>
-
-          {scope === "TARGETED" ? (
-            <TextField
-              label="Target User ID"
-              value={targetUserId}
-              onChange={(e) => setTargetUserId(e.target.value)}
-              fullWidth
-              required
-              inputMode="numeric"
-              disabled={mutation.isPending}
-              helperText="Identifiant utilisateur (numérique) du destinataire."
-            />
-          ) : null}
+          <MissionDispatchFields
+            value={choice}
+            onChange={(c) => { setFormError(null); setChoice(c); }}
+            slot={slot}
+            disabled={mutation.isPending}
+          />
         </Stack>
       </DialogContent>
 
@@ -181,10 +114,10 @@ export default function PublishMissionDialog({
         </Button>
         <Button
           variant="contained"
-          onClick={handleSubmit}
-          disabled={submitDisabled}
+          onClick={() => mutation.mutate(choice)}
+          disabled={mutation.isPending || !isDispatchChoiceComplete(choice)}
         >
-          Publier
+          {choice.mode === "DIRECT" ? "Attribuer" : choice.mode === "TARGETED" ? "Envoyer la demande" : "Proposer au pool"}
         </Button>
       </DialogActions>
     </Dialog>

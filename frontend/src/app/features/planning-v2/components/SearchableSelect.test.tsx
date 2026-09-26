@@ -121,3 +121,38 @@ describe("SearchableSelect — D-102 ghost UX", () => {
     expect(onChange).not.toHaveBeenCalledWith(1);
   });
 });
+
+// D-125 — the instrumentist picker must find a person by any fragment of first/last name,
+// in either order, regardless of case and accents ("sal" / "dec" → Salve Decorte).
+describe("SearchableSelect — D-125 recherche par prénom / nom", () => {
+  const PEOPLE: SearchableOption[] = [
+    { id: 41, label: "Salve Decorte", sub: "salve@x.be" },
+    { id: 42, label: "Élodie Martin", sub: "elodie@x.be" },
+    { id: 43, label: "Paul Salvador", sub: "paul@x.be" },
+  ];
+
+  async function search(query: string) {
+    const user = userEvent.setup();
+    renderSelect(PEOPLE);
+    await user.type(openPicker(), query);
+    return screen.queryAllByRole("option").map((o) => o.textContent ?? "");
+  }
+
+  it.each([
+    ["sal", ["Salve Decorte", "Paul Salvador"]],
+    ["dec", ["Salve Decorte"]],
+    ["salve decorte", ["Salve Decorte"]],
+    ["decorte salve", ["Salve Decorte"]],
+    ["DECORTE", ["Salve Decorte"]],
+    ["elodie", ["Élodie Martin"]],
+    ["élo mar", ["Élodie Martin"]],
+  ])("« %s » → %j", async (query, expected) => {
+    const found = await search(query);
+    expect(found.map((t) => expected.find((e) => t.startsWith(e)) ?? t)).toEqual(expected);
+  });
+
+  it("aucun résultat quand un fragment ne correspond à personne", async () => {
+    await search("salve zzz");
+    expect(await screen.findByText("Aucun résultat")).toBeInTheDocument();
+  });
+});

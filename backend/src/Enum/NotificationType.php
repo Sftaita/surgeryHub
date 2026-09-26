@@ -30,6 +30,18 @@ enum NotificationType: string
     case PLANNING_MISSION_ADDED      = 'PLANNING_MISSION_ADDED';
     case PLANNING_MISSION_UPDATED    = 'PLANNING_MISSION_UPDATED';
 
+    // ── Nominative request / direct assignment by a manager (D-125) ──────────
+    // MISSION_OFFERED           → the targeted instrumentist: a request awaiting her answer
+    //                             (accept = existing claim, or decline).
+    // MISSION_ASSIGNED_DIRECTLY → the instrumentist: CONFIRMATION only, the mission is
+    //                             already hers (agreed outside SurgicalHub) — never phrased as
+    //                             a request, no action expected.
+    // MISSION_OFFER_DECLINED    → managers/admins: the target refused, the mission is still
+    //                             OPEN and uncovered.
+    case MISSION_OFFERED           = 'MISSION_OFFERED';
+    case MISSION_ASSIGNED_DIRECTLY = 'MISSION_ASSIGNED_DIRECTLY';
+    case MISSION_OFFER_DECLINED    = 'MISSION_OFFER_DECLINED';
+
     // ── Absence-driven mission reactions (post-deploy absence auto-mutation) ─
     // None of the cases above carry "this happened because of an absence you/they just
     // declared" framing, and none are wired to email today (in-app/push only) — these three

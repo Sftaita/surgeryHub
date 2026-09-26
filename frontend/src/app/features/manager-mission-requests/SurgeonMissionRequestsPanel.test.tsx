@@ -15,6 +15,12 @@ vi.mock("./api/managerSurgeonMissionRequests.api", () => ({
   rejectSurgeonMissionRequest: (...args: unknown[]) => rejectSurgeonMissionRequestMock(...args),
 }));
 
+// D-125 — the dispatch picker loads the site's instrumentists (backend eligibility).
+const apiGetMock = vi.fn();
+vi.mock("../../api/apiClient", () => ({
+  apiClient: { get: (...args: unknown[]) => apiGetMock(...args), post: vi.fn() },
+}));
+
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
 vi.mock("../../ui/toast/useToast", () => ({
@@ -55,6 +61,15 @@ beforeEach(() => {
   rejectSurgeonMissionRequestMock.mockReset();
   toastSuccess.mockReset();
   toastError.mockReset();
+  apiGetMock.mockReset();
+  apiGetMock.mockResolvedValue({
+    data: {
+      candidates: [
+        { id: 41, name: "Salve Decorte", email: "salve@x.be", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+        { id: 42, name: "Anne Absente", email: "anne@x.be", eligible: false, selectable: false, reasons: ["ABSENT"], unavailability: { type: "ABSENCE", dateStart: "2026-09-10", dateEnd: "2026-09-10" }, conflict: null },
+      ],
+    },
+  });
 });
 
 describe("SurgeonMissionRequestsPanel — liste", () => {
@@ -107,8 +122,34 @@ describe("SurgeonMissionRequestsPanel — détail et acceptation", () => {
     await screen.findByText("Demande du Dr Arnaud Deltour");
     await user.click(screen.getByText("Accepter et créer"));
 
-    await waitFor(() => expect(acceptSurgeonMissionRequestMock).toHaveBeenCalledWith(1, undefined));
-    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Demande acceptée. Mission créée."));
+    // D-125 — default choice: proposer au pool.
+    await waitFor(() => expect(acceptSurgeonMissionRequestMock).toHaveBeenCalledWith(1, undefined, { mode: "POOL", instrumentistId: null }));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Demande acceptée. Mission créée et proposée au pool."));
+  });
+
+  it("D-125 — accepter en attribuant directement : instrumentiste du site choisie par son nom", async () => {
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest()], total: 1 });
+    acceptSurgeonMissionRequestMock.mockResolvedValue(makeRequest({ status: "ACCEPTED", createdMissionId: 999 }));
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByText("Accepter"));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByLabelText(/Attribuer directement/));
+
+    // Not submittable until someone is chosen.
+    expect(within(dialog).getByRole("button", { name: "Accepter et créer" })).toBeDisabled();
+
+    await user.type(within(dialog).getByRole("combobox"), "decorte sal");
+    await user.click(await screen.findByRole("option", { name: /Salve Decorte/ }));
+    await user.click(within(dialog).getByRole("button", { name: "Accepter et créer" }));
+
+    await waitFor(() => expect(acceptSurgeonMissionRequestMock).toHaveBeenCalledWith(1, undefined, { mode: "DIRECT", instrumentistId: 41 }));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Demande acceptée. Mission créée et attribuée."));
+    // Candidates are scoped to the request's site and slot — never the whole catalogue.
+    expect(apiGetMock).toHaveBeenCalledWith("/api/missions/dispatch-candidates", {
+      params: { siteId: 1, startAt: "2026-09-10T08:00:00+02:00", endAt: "2026-09-10T13:00:00+02:00" },
+    });
   });
 
   it("conflit planning à l'acceptation → message d'erreur explicite", async () => {

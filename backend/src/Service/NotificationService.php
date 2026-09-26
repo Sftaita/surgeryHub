@@ -270,6 +270,106 @@ class NotificationService
     }
 
     /**
+     * D-125 — demande nominative : l'instrumentiste doit accepter (prendre la mission) ou
+     * refuser. Même orchestration D-083/D-084 que missionOpenNotifySurgeon ci-dessus (repli
+     * email si le push n'est pas livrable, ou email direct si le push est désactivé).
+     */
+    public function missionOfferedNotifyInstrumentist(
+        Mission $mission,
+        User $instrumentist,
+        ?OutboundNotification $fallbackOf = null,
+        ?OutboundNotificationFallbackReason $fallbackReason = null,
+    ): OutboundNotification {
+        return $this->sendMissionDispatchEmail(
+            $mission, $instrumentist, 'MISSION_OFFERED',
+            'SurgicalHub — Une mission vous est proposée',
+            'emails/mission_offered.html.twig',
+            sprintf('%s/app/i/offers', $this->frontendUrl),
+            [], $fallbackOf, $fallbackReason,
+        );
+    }
+
+    /**
+     * D-125 — attribution directe : CONFIRMATION uniquement, jamais formulée comme une
+     * demande (la mission est déjà attribuée, aucune action attendue).
+     */
+    public function missionAssignedDirectlyNotifyInstrumentist(
+        Mission $mission,
+        User $instrumentist,
+        ?OutboundNotification $fallbackOf = null,
+        ?OutboundNotificationFallbackReason $fallbackReason = null,
+    ): OutboundNotification {
+        return $this->sendMissionDispatchEmail(
+            $mission, $instrumentist, 'MISSION_ASSIGNED_DIRECTLY',
+            'SurgicalHub — Mission attribuée (confirmée)',
+            'emails/mission_assigned_directly.html.twig',
+            sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId()),
+            [], $fallbackOf, $fallbackReason,
+        );
+    }
+
+    /** D-125 — la demande nominative a été refusée : la mission reste à couvrir. */
+    public function missionOfferDeclinedNotifyManager(Mission $mission, User $manager, string $instrumentistName, ?string $reason): OutboundNotification
+    {
+        return $this->sendMissionDispatchEmail(
+            $mission, $manager, 'MISSION_OFFER_DECLINED',
+            'SurgicalHub — Demande de mission refusée',
+            'emails/mission_offer_declined.html.twig',
+            sprintf('%s/app/m/missions/%d', $this->frontendUrl, $mission->getId()),
+            ['instrumentistName' => $instrumentistName, 'reason' => $reason],
+            null, null,
+        );
+    }
+
+    /** @param array<string,mixed> $extraContext */
+    private function sendMissionDispatchEmail(
+        Mission $mission,
+        User $recipient,
+        string $type,
+        string $subject,
+        string $template,
+        string $url,
+        array $extraContext,
+        ?OutboundNotification $fallbackOf,
+        ?OutboundNotificationFallbackReason $fallbackReason,
+    ): OutboundNotification {
+        $notification = $this->outboundNotificationService->recordEmailQueued(
+            $recipient,
+            $type,
+            $subject,
+            rawData: ['missionId' => $mission->getId(), 'url' => $url],
+            mission: $mission,
+            fallbackOf: $fallbackOf,
+            fallbackReason: $fallbackReason,
+        );
+
+        $surgeon = $mission->getSurgeon();
+
+        $this->bus->dispatch(new SendTemplatedEmailMessage(
+            to: (string) $recipient->getEmail(),
+            subject: $subject,
+            fromAddress: $this->fromAddress,
+            fromName: $this->fromName,
+            htmlTemplate: $template,
+            context: [
+                'greeting'    => $this->greetingFor($recipient),
+                'dateLabel'   => $mission->getStartAt()?->format('d/m/Y'),
+                'timeLabel'   => $mission->getStartAt() !== null && $mission->getEndAt() !== null
+                    ? $mission->getStartAt()->format('H:i') . ' – ' . $mission->getEndAt()->format('H:i')
+                    : null,
+                'siteName'    => $mission->getSite()?->getName(),
+                'typeLabel'   => $mission->getType() === \App\Enum\MissionType::CONSULTATION ? 'Consultation' : 'Bloc opératoire',
+                'surgeonName' => $surgeon !== null ? trim(($surgeon->getFirstname() ?? '') . ' ' . ($surgeon->getLastname() ?? '')) : null,
+                'missionUrl'  => $url,
+                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($recipient),
+            ] + $extraContext,
+            outboundNotificationId: $notification->getId(),
+        ));
+
+        return $notification;
+    }
+
+    /**
      * D-093 — repli email quand Push n'est pas livrable à l'instrumentiste dont la
      * proposition catalogue (InterventionType ou MaterialItem) vient d'être acceptée.
      * Même orchestration D-083/D-084 que missionOpenNotifySurgeon ci-dessus.

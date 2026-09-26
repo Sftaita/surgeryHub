@@ -14,11 +14,15 @@ import {
 } from "@mui/material";
 
 import type { MissionType, SchedulePrecision } from "../api/missions.types";
-import type {
-  PublishMissionBody,
-  PublishScope,
-} from "../api/missions.requests";
-import { createMission, createMissionAndPublish } from "../api/missions.api";
+import { createMission } from "../api/missions.api";
+import {
+  DEFAULT_DISPATCH_CHOICE,
+  dispatchMission,
+  isDispatchChoiceComplete,
+  type DispatchMode,
+  type DispatchSlot,
+  type MissionDispatchChoice,
+} from "../dispatch/missionDispatch.api";
 
 import MissionCreateStepContext from "./MissionCreateStepContext";
 import MissionCreateStepSchedule from "./MissionCreateStepSchedule";
@@ -31,7 +35,7 @@ dayjs.tz.setDefault("Europe/Brussels");
 type Props = {
   sites: Array<{ id: number; name: string }>;
   surgeons: Array<{ id: number; label: string }>;
-  onDone: (result: { missionId: number; mode: "DRAFT" | "PUBLISH" }) => void;
+  onDone: (result: { missionId: number; mode: "DRAFT" | "PUBLISH"; dispatchMode?: DispatchMode }) => void;
   onCancel: () => void;
 };
 
@@ -46,8 +50,8 @@ type FormState = {
   startLocal: string; // datetime-local "YYYY-MM-DDTHH:mm"
   endLocal: string;
 
-  publishScope: PublishScope; // POOL | TARGETED
-  targetUserId?: number;
+  // D-125 — pool / demande nominative / attribution directe (MissionDispatchFields).
+  dispatch: MissionDispatchChoice;
 };
 
 function toApiZonedDate(localValue: string) {
@@ -102,8 +106,8 @@ function validateSchedule(s: FormState) {
 function validatePublish(s: FormState, mode: "DRAFT" | "PUBLISH") {
   const errors: string[] = [];
   if (mode === "PUBLISH") {
-    if (s.publishScope === "TARGETED" && !s.targetUserId) {
-      errors.push("Cible requise pour une publication TARGETED.");
+    if (!isDispatchChoiceComplete(s.dispatch)) {
+      errors.push("Choisissez l'instrumentiste.");
     }
   }
   return errors;
@@ -129,8 +133,7 @@ export default function MissionCreateWizard(props: Props) {
     type: "BLOCK",
     schedulePrecision: "EXACT",
     ...defaultScheduleLocal(),
-    publishScope: "POOL",
-    targetUserId: undefined,
+    dispatch: DEFAULT_DISPATCH_CHOICE,
   });
 
   const [errors, setErrors] = React.useState<string[]>([]);
@@ -138,6 +141,12 @@ export default function MissionCreateWizard(props: Props) {
   const [submitting, setSubmitting] = React.useState(false);
 
   const steps = ["Contexte", "Horaire", "Confirmation"];
+
+  // D-125 — the instrumentist picker lists the chosen site's instrumentists for this slot.
+  const slot: DispatchSlot | null = React.useMemo(() => {
+    if (!state.siteId || validateSchedule(state).length > 0) return null;
+    return { siteId: state.siteId, startAt: toApiZonedDate(state.startLocal), endAt: toApiZonedDate(state.endLocal) };
+  }, [state]);
 
   function next() {
     setBackendError(null);
@@ -190,13 +199,11 @@ export default function MissionCreateWizard(props: Props) {
         return;
       }
 
-      const publishBody: PublishMissionBody =
-        state.publishScope === "POOL"
-          ? { scope: "POOL" }
-          : { scope: "TARGETED", targetUserId: Number(state.targetUserId) };
-
-      const published = await createMissionAndPublish(body, publishBody);
-      onDone({ missionId: published.id, mode: "PUBLISH" });
+      // Same two backend operations as any other origin: create (always DRAFT), then the
+      // manager's dispatch choice (MissionDispatchService) — never a client-side status.
+      const created = await createMission(body);
+      await dispatchMission(created.id, state.dispatch);
+      onDone({ missionId: created.id, mode: "PUBLISH", dispatchMode: state.dispatch.mode });
     } catch (e: any) {
       setBackendError(backendErrorToString(e));
     } finally {
@@ -260,6 +267,7 @@ export default function MissionCreateWizard(props: Props) {
             state={state}
             sites={sites}
             surgeons={surgeons}
+            slot={slot}
             onChange={(nextState) => setState((s) => ({ ...s, ...nextState }))}
           />
         ) : null}
@@ -297,7 +305,7 @@ export default function MissionCreateWizard(props: Props) {
                 onClick={() => submit("PUBLISH")}
                 disabled={submitting}
               >
-                Créer et publier
+                Créer et diffuser
               </Button>
             </Stack>
           )}

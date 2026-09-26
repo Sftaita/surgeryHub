@@ -3443,3 +3443,49 @@ anomalies sont lues dans l'historique `AuditEvent FINANCIAL_CALCULATION_FAILED`.
   `total` reflète la population avant filtrage par état.
 - Aucune notification/relance n'est déclenchée depuis ce module — il observe, il n'agit
   pas. Les actions restent dans le détail Mission existant.
+
+## 23. Planning vivant — provenance vs réalité opérationnelle, diffusion d'une mission (D-125)
+
+### 23.1 Deux notions à ne jamais confondre
+
+| Notion | Porteur | Sert à |
+|---|---|---|
+| **Provenance** d'une génération | FK `Mission.planningVersion` | historique, versionning, `cancel-all`, déploiement (DRAFT → OPEN/ASSIGNED) |
+| **Réalité opérationnelle** d'un mois | `PlanningVersionOperationalScope` (période + sites de la version) | calendrier manager (`?planningScopeOf=`), KPI de couverture, `apply-modifications` |
+
+Le constructeur produit le planning initial ; ensuite `Mission` est la réalité. Une mission
+créée avant la génération, par elle, ou après (manuellement, demande chirurgien acceptée, reprise
+de salle, ajout en mode Modification) fait partie du même calendrier sans jamais être rattachée
+à une version qui ne l'a pas générée, et sans jamais relancer `generate()`.
+
+### 23.2 Diffusion d'une mission — `MissionDispatchService`
+
+Point unique, quelle que soit l'origine de la mission :
+
+```
+DRAFT (ou OPEN rediffusable)
+ ├─ Proposer au pool ────────── OPEN + publication POOL ─────────── claim → ASSIGNED
+ ├─ Demander à un instrumentiste OPEN + publication TARGETED (non couverte)
+ │                                 ├─ accepte (claim) → ASSIGNED
+ │                                 └─ refuse (decline-offer) → OPEN, publication declinedAt,
+ │                                                             manager notifié, rediffusable
+ └─ Attribuer directement ────── ASSIGNED immédiatement (MissionPostDeployService::assignDirectly)
+                                  notification de confirmation uniquement
+```
+
+Aucun nouveau statut : « en attente de sa réponse » = OPEN + `MissionPublication` TARGETED
+active (modèle préexistant). Chaque mode a son `AuditEventType` ; les notifications passent par
+`MissionLifecycleChangedMessage` (OFFERED / ASSIGNED_DIRECTLY / OFFER_DECLINED) — sauf le pool,
+qui garde `MissionPublishedMessage`.
+
+### 23.3 Frontend
+
+- `MissionDispatchFields` : seul composant de choix du mode + sélecteur d'instrumentiste par nom
+  (instrumentistes du site, éligibilité backend via `GET /api/missions/dispatch-candidates`),
+  utilisé par l'assistant de création, la fiche mission et l'acceptation d'une demande
+  chirurgien.
+- `invalidateOperationalPlanning()` : caches à invalider après toute mutation opérationnelle
+  (`missions`, `planning-schedule`, `planning-v2/modification-missions`, `coverage-summary`,
+  `dispatch-candidates`, `mission/{id}`).
+- `fetchAllMissions()` : pagination complète (l'API plafonne à 100 par page ; un seul appel
+  `limit: 500` tronquait silencieusement les premières missions d'un mois chargé).

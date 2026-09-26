@@ -55,6 +55,12 @@ final class NotificationTargetResolver
             return '/app/m/catalogue/requests';
         }
 
+        // D-125 — une demande nominative s'accepte/se refuse depuis l'écran Offres (seul
+        // écran exposant ces deux actions), jamais depuis le détail de mission.
+        if ($type === NotificationType::MISSION_OFFERED && $isInstrumentist) {
+            return '/app/i/offers';
+        }
+
         // Lot 5 (D-099) — même raisonnement : une nouvelle SurgeonMissionRequest se
         // traite sur l'onglet dédié de MissionsListPage, jamais un détail de mission
         // (aucune Mission n'existe encore à ce stade). Un rejet n'a pas de Mission non

@@ -15,6 +15,13 @@ import type { ManagerSurgeonMissionRequest } from "./api/managerSurgeonMissionRe
 import { formatBrusselsRange, formatMissionType } from "../missions/utils/missions.format";
 import { useToast } from "../../ui/toast/useToast";
 import { EmptyState } from "../../ui/EmptyState";
+import MissionDispatchFields from "../missions/dispatch/MissionDispatchFields";
+import {
+  DEFAULT_DISPATCH_CHOICE,
+  invalidateOperationalPlanning,
+  isDispatchChoiceComplete,
+  type MissionDispatchChoice,
+} from "../missions/dispatch/missionDispatch.api";
 
 type TabValue = "PENDING" | "ACCEPTED" | "REJECTED";
 
@@ -42,13 +49,17 @@ function AcceptDialog({
   open: boolean;
   request: ManagerSurgeonMissionRequest | null;
   onClose: () => void;
-  onAccept: (reviewComment?: string) => void;
+  onAccept: (reviewComment: string | undefined, dispatch: MissionDispatchChoice) => void;
   accepting: boolean;
 }) {
   const [comment, setComment] = React.useState("");
+  const [dispatch, setDispatch] = React.useState<MissionDispatchChoice>(DEFAULT_DISPATCH_CHOICE);
 
   React.useEffect(() => {
-    if (open) setComment("");
+    if (open) {
+      setComment("");
+      setDispatch(DEFAULT_DISPATCH_CHOICE);
+    }
   }, [open]);
 
   if (!request) return null;
@@ -72,11 +83,23 @@ function AcceptDialog({
             value={comment}
             onChange={(e) => setComment(e.target.value)}
           />
+          {/* D-125 — même choix que pour une mission créée manuellement. */}
+          <Typography variant="subtitle2">Mission créée</Typography>
+          <MissionDispatchFields
+            value={dispatch}
+            onChange={setDispatch}
+            slot={request.site ? { siteId: request.site.id, startAt: request.startAt, endAt: request.endAt } : null}
+            disabled={accepting}
+          />
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={accepting}>Annuler</Button>
-        <Button variant="contained" disabled={accepting} onClick={() => onAccept(comment.trim() || undefined)}>
+        <Button
+          variant="contained"
+          disabled={accepting || !isDispatchChoiceComplete(dispatch)}
+          onClick={() => onAccept(comment.trim() || undefined, dispatch)}
+        >
           {accepting ? <CircularProgress size={18} /> : "Accepter et créer"}
         </Button>
       </DialogActions>
@@ -152,12 +175,20 @@ export default function SurgeonMissionRequestsPanel() {
   });
 
   const acceptMutation = useMutation({
-    mutationFn: ({ id, reviewComment }: { id: number; reviewComment?: string }) => acceptSurgeonMissionRequest(id, reviewComment),
-    onSuccess: () => {
+    mutationFn: ({ id, reviewComment, dispatch }: { id: number; reviewComment?: string; dispatch: MissionDispatchChoice }) =>
+      acceptSurgeonMissionRequest(id, reviewComment, dispatch),
+    onSuccess: (accepted, { dispatch }) => {
       queryClient.invalidateQueries({ queryKey: ["surgeon-mission-requests-manager"] });
-      queryClient.invalidateQueries({ queryKey: ["missions"] });
+      // D-125 — the created mission is immediately part of the operational planning.
+      invalidateOperationalPlanning(queryClient, accepted.createdMissionId);
       setAcceptTarget(null);
-      toast.success("Demande acceptée. Mission créée.");
+      toast.success(
+        dispatch.mode === "DIRECT"
+          ? "Demande acceptée. Mission créée et attribuée."
+          : dispatch.mode === "TARGETED"
+            ? "Demande acceptée. Mission créée — demande envoyée à l'instrumentiste."
+            : "Demande acceptée. Mission créée et proposée au pool.",
+      );
     },
     onError: (err: any) => {
       const code = err?.response?.data?.error?.code;
@@ -165,6 +196,10 @@ export default function SurgeonMissionRequestsPanel() {
         ? "Le chirurgien a déjà une autre mission active sur cette période."
         : err?.response?.data?.error?.message ?? "Erreur lors de l'acceptation.";
       toast.error(msg);
+      // An ineligibility refusal leaves the request PENDING — refresh candidates' state.
+      if (code === "INSTRUMENTIST_INCOMPATIBLE") {
+        queryClient.invalidateQueries({ queryKey: ["dispatch-candidates"] });
+      }
     },
   });
 
@@ -255,8 +290,8 @@ export default function SurgeonMissionRequestsPanel() {
         request={acceptTarget}
         onClose={() => setAcceptTarget(null)}
         accepting={acceptMutation.isPending}
-        onAccept={(reviewComment) => {
-          if (acceptTarget) acceptMutation.mutate({ id: acceptTarget.id, reviewComment });
+        onAccept={(reviewComment, dispatch) => {
+          if (acceptTarget) acceptMutation.mutate({ id: acceptTarget.id, reviewComment, dispatch });
         }}
       />
       <RejectDialog

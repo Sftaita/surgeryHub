@@ -10704,3 +10704,190 @@ restante (~350 px) devient trop étroite pour la table (colonnes tronquées, car
 empilées). Constaté au test navigateur réel du 2026-09-23. Piste future : sous un seuil de
 largeur, faire recouvrir la liste par le tiroir (overlay) ou basculer la table en cartes —
 lot séparé, pas de refonte responsive dans ce chantier.
+## D-125 — Planning vivant : provenance d'une génération ≠ réalité opérationnelle du calendrier ; diffusion d'une mission en trois modes (pool / demande nominative / attribution directe) (2026-09-26)
+
+### Contexte
+
+Le planning semblait « figé » après génération : une mission créée manuellement, une demande
+chirurgien acceptée, ou une mission déjà existante avant la génération du mois n'apparaissait
+pas (ou pas toujours) dans le calendrier manager du mois généré. Par ailleurs, la sélection
+d'un instrumentiste pour une mission ciblée se faisait en saisissant un **identifiant**, et il
+n'existait aucun moyen d'attribuer directement une mission à quelqu'un avec qui le manager
+s'était déjà arrangé.
+
+### Cause racine exacte (auditée dans le code)
+
+1. **Le calendrier d'un mois généré filtrait sur la provenance.** Le mode Modification
+   (`GeneratePlanningTab`) chargeait `GET /api/missions?planningVersionId=V`, c'est-à-dire
+   uniquement les Missions dont la FK `planningVersion` vaut V. Or :
+   - `MissionService::create()` (création manuelle, et acceptation d'une `SurgeonMissionRequest`
+     qui passe par lui — D-099) crée une Mission `planningVersion = NULL` ;
+   - `generate()` n'« adopte » (rattache à V) que les Missions **DRAFT** qu'il retrouve sur le
+     créneau d'un poste ; une Mission déjà publiée (OPEN/ASSIGNED/…) est — à juste titre, R-01 —
+     laissée intacte, donc **jamais rattachée**.
+   Ces Missions étaient réelles, visibles dans « Planning publié » (filtré par dates), mais
+   **invisibles** dans le calendrier du mois généré.
+2. **Le KPI de couverture filtrait de même** (`PlanningCoverageService::computeForVersion()` :
+   `WHERE m.planningVersion = :version`) — ces Missions n'étaient pas comptées.
+3. **`apply-modifications` les ignorait silencieusement** (`PlanningModificationService::apply()`
+   : `planningVersion !== V → continue`, commentaire « stale/foreign reference ») : même rendues
+   visibles, toute édition dessus aurait été perdue sans erreur.
+4. **Troncature silencieuse.** Le frontend demandait `limit: 500` en un seul appel, mais
+   `MissionFilter::fromQuery()` plafonne à 100 et trie par `startAt DESC` : au-delà de 100
+   missions, les **premières** du mois disparaissaient du calendrier (et de « Planning publié »).
+5. **Rafraîchissement.** « Planning publié » copiait le résultat dans un état local, chargé
+   uniquement au clic : aucune invalidation React Query ne pouvait le mettre à jour.
+6. **Diffusion post-génération incomplète.** Une mission créée après génération restait DRAFT
+   jusqu'à un `publish` POOL/TARGETED : aucun chemin « attribution directe » ; la publication
+   TARGETED n'écrivait aucun `AuditEvent`, ne vérifiait pas l'éligibilité de la cible,
+   **poussait « Nouvelle mission disponible » à tous les instrumentistes du site** (le
+   `MissionPublishedMessage` du pool, même pour une demande nominative) et la cible ne recevait
+   aucune notification propre ; aucun refus n'était possible.
+
+La preview/génération, elle, prenait déjà en compte les missions préexistantes
+(`loadExistingMissionsPool()` : claim du créneau + index des instrumentistes occupés →
+`CONFLICT`) et `generate()` ne touche jamais une Mission non-DRAFT — vérifié et désormais prouvé
+par des tests HTTP réels (voir plus bas). Seul l'affichage d'une telle ligne était trompeur.
+
+### Décision 1 — deux notions distinctes : provenance et périmètre opérationnel
+
+`PlanningVersion` **reste** la provenance/historique d'une génération (FK `Mission.planningVersion`
+inchangée, jamais ré-attribuée à une mission qu'elle n'a pas générée). Le **calendrier
+opérationnel** d'une version est désormais son **périmètre** : nouveau service
+`PlanningVersionOperationalScope`, source unique :
+
+- les Missions de V (toute provenance-V, sauf REJECTED, comme avant) ;
+- **plus** toute Mission de statut opérationnel (tout sauf DRAFT, DECLARED, REJECTED) dont
+  `startAt` tombe dans la période de V et dont le site appartient aux sites de V (site unique,
+  ou `scopeSiteIds` figé D-115bis ; version legacy sans snapshot → sites de ses propres
+  missions, en lecture seule).
+
+Un DRAFT étranger (brouillon d'une autre version, brouillon manuel non diffusé) n'est jamais
+« réalité opérationnelle ». Consommateurs : `GET /api/missions?planningScopeOf=V` (nouveau
+filtre, `planningVersionId` conservé tel quel pour la provenance), `PlanningCoverageService`,
+`PlanningModificationService::apply()` (snapshot avant/après, garde « étrangère »,
+notifications ciblées). `cancelAll()` (« supprimer le mois généré ») reste volontairement
+limité à la **provenance** : il annule ce que la génération a produit, jamais les missions
+ajoutées à côté.
+
+### Décision 2 — preview : une mission préexistante publiée est montrée telle qu'elle est
+
+Quand le créneau d'un poste est déjà occupé par une Mission publiée (non DRAFT, non CANCELLED),
+la ligne de preview reflète cette Mission (son instrumentiste, ses heures, `COVERED`/`UNCOVERED`)
+au lieu de l'ancien `MODIFIED` vers l'instrumentiste par défaut du poste — que `generate()`
+ignorait de toute façon (R-01). Nouveau champ additif `existingMissionStatus` sur la ligne ;
+l'éditeur l'affiche « Mission existante — conservée » et la verrouille ; la seconde passe
+« instrumentistes libérés » (D-034) ne lui propose plus d'affectation. Aucun second moteur de
+détection : mêmes `claimMission()` / `hasConflictFast()`. Les missions CANCELLED gardent leur
+traitement antérieur (inchangé par ce lot).
+
+### Décision 3 — trois modes de diffusion, un seul service, aucun nouveau statut
+
+`MissionDispatchService` (nouveau) est l'unique point par lequel un manager met une mission en
+jeu, **quelle que soit son origine** (création manuelle, demande chirurgien acceptée, ajout après
+génération) :
+
+| Mode | Endpoint | Effet | AuditEvent | Notification |
+|---|---|---|---|---|
+| Proposer au pool | `POST /missions/{id}/publish` `{scope: POOL}` | OPEN + publication POOL | `MISSION_PUBLISHED_TO_POOL` | `MissionPublishedMessage` (inchangé) |
+| Demander à un instrumentiste | `POST /missions/{id}/publish` `{scope: TARGETED, targetUserId}` | OPEN + publication TARGETED | `MISSION_OFFERED_TO_INSTRUMENTIST` (`requiresAcceptance: true`) | `MISSION_OFFERED` à la cible **seule** |
+| Attribuer directement | `POST /missions/{id}/assign-directly` `{instrumentistId}` | ASSIGNED immédiatement | `MISSION_ASSIGNED_DIRECTLY` (`requiresAcceptance: false`, `assignmentMode: DIRECT`, auteur, instrumentiste, date) | `MISSION_ASSIGNED_DIRECTLY` (confirmation) + `SURGEON_POST_COVERED` au chirurgien |
+
+**Représentation de « en attente de sa réponse » (audit §6.1)** : le modèle existait déjà —
+`MissionPublication` `scope = TARGETED` + `targetInstrumentist`, respecté par `claim()`, le
+`MissionVoter` et la liste des offres. Une demande en attente = Mission **OPEN** (donc non
+couverte : `covered = false`, comptée `open` dans le KPI) + publication TARGETED active. Aucun
+nouveau statut, jamais `ASSIGNED` avant acceptation. **Accepter** = le `claim` existant
+(inchangé → ASSIGNED, `MISSION_CLAIMED_FROM_POOL`, `SURGEON_POST_COVERED`). **Refuser** =
+`POST /missions/{id}/decline-offer` (nouveau, Voter `DECLINE_OFFER` : la cible d'une demande en
+attente uniquement) : colonne additive `mission_publication.declined_at` (migration
+`Version20260926100000`), la publication refusée ne donne plus aucun droit (visibilité, claim —
+règle unique `MissionPublication::isActive()` dans les 4 consommateurs), la Mission reste OPEN
+non couverte, `MISSION_OFFER_DECLINED` est audité et `MISSION_OFFER_DECLINED` notifie **le
+manager qui a envoyé la demande** (acteur du `MISSION_OFFERED_TO_INSTRUMENTIST` ; tous les
+managers/admins seulement en repli). La mission peut alors être rediffusée (nouvelle action
+`dispatch` dans `allowedActions` pour une mission OPEN sans instrumentiste ni demande en
+attente). Tant qu'une demande est en attente, `publish` renvoie 409 (attendre la réponse ou
+attribuer directement — une attribution directe l'emporte, le `claim` ultérieur de la cible
+est refusé proprement, jamais un écrasement).
+
+**Éligibilité** (jamais recalculée côté client) : attribution directe = garde canonique
+`STRICT_ASSIGNMENT` (D-101 : INACTIVE/ABSENT/SCHEDULE_CONFLICT) ; demande nominative =
+`MissionEligibilityService::evaluateForOffer()` (mêmes raisons + NO_SITE_MEMBERSHIP, toutes
+bloquantes : on n'envoie pas une demande que la cible ne pourrait pas accepter, puisque
+accepter = `claim()` qui les bloque toutes). Refus → 409 `INSTRUMENTIST_INCOMPATIBLE`, rien
+n'est écrit.
+
+**Acceptation d'une demande chirurgien** : `POST /manager/surgeon-mission-requests/{id}/accept`
+accepte un `dispatch: {mode, instrumentistId?}` optionnel. Validé **avant** l'acceptation (une
+cible inéligible → 409, la demande reste PENDING, aucune Mission créée), appliqué juste après
+le commit de l'acceptation (même séquencement R-05/R-07 que toute diffusion). Fenêtre résiduelle
+documentée : si l'éligibilité change dans l'intervalle, la demande est acceptée avec sa Mission
+DRAFT et l'erreur remonte — le manager la rediffuse depuis la fiche mission. Sans `dispatch`,
+comportement D-099 inchangé.
+
+Notifications : cycle existant (`MissionLifecycleChangedMessage`, nouveaux `MissionChangeType`
+`OFFERED`/`ASSIGNED_DIRECTLY`/`OFFER_DECLINED` traités par `MissionLifecycleChangedMessageHandler`),
+in-app + push avec repli email (orchestration D-083), `EMAIL_ON_BY_DEFAULT` pour les trois
+types. L'email d'attribution directe dit explicitement « déjà confirmée, ne nécessite aucune
+action de votre part » ; aucune donnée patient.
+
+### Décision 4 — sélecteur d'instrumentiste humain, une seule UI
+
+`MissionDispatchFields` (frontend) est le composant unique des trois origines (assistant de
+création, fiche mission, acceptation d'une demande chirurgien) : trois modes explicites et, pour
+« Demander » / « Attribuer directement », un sélecteur **par nom** (email en secondaire, l'id
+reste technique) limité aux instrumentistes **du site de la mission** via
+`GET /api/missions/dispatch-candidates` (mêmes `evaluateAllCandidates()`/`serializeCandidate()`
+que `GET /missions/{id}/eligible-instrumentists`) ; un instrumentiste momentanément inéligible
+est affiché désactivé avec la raison backend (UX fantôme D-102). La recherche du
+`SearchableSelect` partagé devient insensible à la casse et aux accents, par fragments dans
+n'importe quel ordre (« sal », « dec », « decorte salve ») — strictement plus large que le
+filtre MUI précédent, aucun sélecteur existant ne perd de résultat.
+
+### Décision 5 — rafraîchissement
+
+`invalidateOperationalPlanning()` (frontend) invalide après toute mutation opérationnelle les
+caches `missions`, `planning-schedule`, `planning-v2/modification-missions`,
+`coverage-summary`, `dispatch-candidates` et `mission/{id}`. « Planning publié » est désormais
+piloté par sa requête (les filtres appliqués au clic restent actifs, toute invalidation le
+recharge) et les deux vues paginent entièrement (`fetchAllMissions`). Aucun
+`window.location.reload()`.
+
+### Invariants préservés
+
+Jamais de régénération ni d'écrasement d'une mission publiée (R-01, prouvé : même ID, même état,
+provenance NULL après generate+deploy) ; mutations post-déploiement via les services applicatifs ;
+`AuditEvent` sur chaque transition (acteur + noms snapshotés) ; message après commit ; Voters
+pour toute autorisation ; aucune logique métier reconstruite côté frontend (couverture, état de
+demande, éligibilité, actions — tous calculés serveur : `covered`, `targetedOffer`,
+`allowedActions`, `selectable`/`reasons`).
+
+### Tests
+
+Backend (HTTP + MySQL réels) : `LivingPlanningOperationalScopeTest` (mission avant génération :
+preview, même ID/état après generate+deploy, jamais dupliquée, visible et couverte ; mission après
+génération visible sans régénération ; demande chirurgien acceptée « au pool » OPEN et visible ;
+collision : instrumentiste déjà occupée → `CONFLICT`, jamais de double affectation ; édition d'une
+mission non générée appliquée sans re-parentage), `MissionDispatchFunctionalTest` (candidats du
+site par nom + raison ; demande nominative non couverte → acceptée → ASSIGNED ; refus → OPEN non
+couverte, manager notifié, rediffusable ; cible hors site refusée ; attribution directe couverte
+immédiatement, auditée `requiresAcceptance: false`, notification + email de **confirmation**
+jamais de demande ; absente refusée sans effet ; acceptation de demande chirurgien en DIRECT, et
+inéligible → demande toujours PENDING), `PlanningVersionOperationalScopeTest` (unitaire).
+Frontend : `PublishMissionDialog.test`, recherche `SearchableSelect`, assistant (DIRECT),
+acceptation de demande (DIRECT par nom), offres (accepter/refuser), mapping calendrier,
+rafraîchissement de « Planning publié », textes de notification.
+
+### Limites connues
+
+- Une nouvelle demande nominative sur une mission ayant déjà une demande en attente est refusée
+  (409) : pas de « retrait » de demande dans ce lot (attendre la réponse, ou attribuer
+  directement).
+- L'ajout de mission depuis le mode Modification (`apply-modifications`, `createPostDeploy`)
+  garde ses deux issues historiques (OPEN au pool ou ASSIGNED) ; la demande nominative se fait
+  depuis la fiche mission ou la création manuelle.
+- Détection de conflits de la preview toujours limitée aux sites de la génération (écart
+  inter-sites connu, §G du freeze, couvert au déploiement par D-091) — inchangé.
+
+Non déployé.

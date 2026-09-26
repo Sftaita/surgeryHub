@@ -11,9 +11,11 @@ use App\Dto\Request\MissionSubmitRequest;
 use App\Entity\AuditEvent;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Entity\Hospital;
 use App\Enum\EligibilityEnforcementPolicy;
-use App\Message\MissionPublishedMessage;
+use App\Enum\MissionDispatchMode;
 use App\Security\Voter\MissionVoter;
+use App\Service\MissionDispatchService;
 use App\Service\MissionEligibilityService;
 use App\Service\MissionEncodingService;
 use App\Service\MissionMapper;
@@ -45,6 +47,7 @@ class MissionController extends AbstractController
         private readonly EntityManagerInterface    $em,
         private readonly MissionPostDeployService  $missionPostDeployService,
         private readonly MissionEligibilityService $eligibilityService,
+        private readonly MissionDispatchService    $dispatchService,
     ) {}
 
     #[Route(name: 'api_missions_create', methods: ['POST'])]
@@ -123,20 +126,96 @@ class MissionController extends AbstractController
         /** @var MissionPublishRequest $dto */
         $dto = $this->deserializeAndValidate($request->getContent(), MissionPublishRequest::class);
 
-        $this->missionService->publish($mission, $dto, $user);
-
-        // Point 8 (audit UX) — resolves the D-081 tech debt this comment used to document
-        // (synchronous push here, unlike every other send which goes through an async
-        // Messenger message): MissionPublishedMessageHandler now sends the same
-        // instrumentist push asynchronously, plus the surgeon notification this endpoint
-        // never triggered before this lot (push priority, email fallback, no patient data).
-        $this->bus->dispatch(new MissionPublishedMessage(
-            missionId: $mission->getId(),
-            actorId: $user->getId(),
-            occurredAt: new \DateTimeImmutable(),
-        ));
+        // D-125 — POOL and TARGETED both go through MissionDispatchService (audit + the right
+        // notification per mode). POOL keeps the pre-existing MissionPublishedMessage pipeline
+        // (Point 8 / D-081: async site-instrumentist push + surgeon notification); TARGETED is a
+        // nominative request, never broadcast to the pool anymore.
+        $this->dispatchService->dispatch(
+            $mission,
+            $user,
+            $dto->scope === \App\Enum\PublicationScope::TARGETED ? MissionDispatchMode::TARGETED : MissionDispatchMode::POOL,
+            $dto->targetUserId,
+        );
 
         return new JsonResponse(null, JsonResponse::HTTP_NO_CONTENT);
+    }
+
+    /**
+     * D-125 — "Attribuer directement": DRAFT|OPEN(unassigned) → ASSIGNED, no acceptance step
+     * (agreement obtained outside SurgicalHub). Same PUBLISH permission as the pool/targeted
+     * dispatch — the three modes are one manager decision.
+     */
+    #[Route(path: '/{id}/assign-directly', name: 'api_missions_assign_directly', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function assignDirectly(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::PUBLISH, $mission);
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $instrumentistId = isset($data['instrumentistId']) ? (int) $data['instrumentistId'] : null;
+
+        $this->dispatchService->dispatch($mission, $user, MissionDispatchMode::DIRECT, $instrumentistId);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user));
+    }
+
+    /**
+     * D-125 — the target of a pending nominative request refuses it (accepting it is the
+     * existing POST /claim). Mission stays OPEN and uncovered; managers are notified.
+     */
+    #[Route(path: '/{id}/decline-offer', name: 'api_missions_decline_offer', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function declineOffer(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::DECLINE_OFFER, $mission);
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $reason = isset($data['reason']) ? (string) $data['reason'] : null;
+
+        $this->dispatchService->declineOffer($mission, $user, $reason);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user));
+    }
+
+    /**
+     * D-125 — instrumentists of a site for a slot that has no persisted Mission yet (manual
+     * creation wizard, surgeon request acceptance), with the same eligibility annotation as
+     * GET /{id}/eligible-instrumentists (same service methods, never recomputed client-side).
+     * `missionId` (optional) excludes that mission from the conflict check when it exists.
+     */
+    #[Route(path: '/dispatch-candidates', name: 'api_missions_dispatch_candidates', methods: ['GET'])]
+    public function dispatchCandidates(Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(MissionVoter::CREATE, Mission::class);
+
+        $site = $this->em->find(Hospital::class, (int) $request->query->get('siteId', 0));
+        try {
+            $startAt = new \DateTimeImmutable((string) $request->query->get('startAt', ''));
+            $endAt   = new \DateTimeImmutable((string) $request->query->get('endAt', ''));
+        } catch (\Throwable) {
+            throw new UnprocessableEntityHttpException('startAt and endAt must be ISO 8601 datetimes');
+        }
+        if ($site === null || !$request->query->has('startAt') || !$request->query->has('endAt') || $endAt <= $startAt) {
+            throw new UnprocessableEntityHttpException('siteId, startAt and endAt (after startAt) are required');
+        }
+
+        $existing = $request->query->has('missionId')
+            ? $this->em->find(Mission::class, (int) $request->query->get('missionId'))
+            : null;
+
+        // Transient slot (never persisted) — evaluateAllCandidates() only reads site/startAt/endAt/id.
+        // D-066: relabel to Europe/Brussels so the conflict query compares the same wall-clock
+        // digits a hydrated Mission would carry (the client sends an offset-bearing instant).
+        $tz   = new \DateTimeZone(\App\Doctrine\Type\BusinessDateTimeImmutableType::BUSINESS_TIMEZONE);
+        $slot = $existing ?? (new Mission())->setSite($site)->setStartAt($startAt->setTimezone($tz))->setEndAt($endAt->setTimezone($tz));
+
+        $policy     = EligibilityEnforcementPolicy::STRICT_ASSIGNMENT;
+        $candidates = array_map(
+            fn ($result) => $this->eligibilityService->serializeCandidate($result, $policy),
+            $this->eligibilityService->evaluateAllCandidates($slot),
+        );
+
+        return $this->json(['policy' => $policy->value, 'candidates' => $candidates]);
     }
 
     // Pre-deploy assignment only (DRAFT). Deployed missions must use /release or /reassign (R-04, D-056).

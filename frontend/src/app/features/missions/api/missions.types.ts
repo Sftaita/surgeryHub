@@ -21,7 +21,11 @@ export type AllowedAction =
   // Lot 6 (D-100) — lecture seule chirurgien, jamais un droit d'édition
   | "view_encoding"
   // D-120 — cockpit Suivi des encodages, relance manuelle
-  | "remind";
+  | "remind"
+  // D-125 — manager : (re)diffuser une mission OPEN sans demande en attente ;
+  // instrumentiste : refuser une demande nominative ('claim' = accepter)
+  | "dispatch"
+  | "decline_offer";
 
 export type SchedulePrecision = "APPROXIMATE" | "EXACT";
 export type MissionType = "BLOCK" | "CONSULTATION";
@@ -199,8 +203,19 @@ export interface Mission {
   lastManualReminderAt?: string | null;
   lastManualReminderByName?: string | null;
 
+  /** D-125 — demande nominative, calculée backend (jamais re-déduite) : PENDING = OPEN, non
+   *  couverte, en attente de la réponse de cet instrumentiste ; DECLINED = refusée. */
+  targetedOffer?: TargetedOffer | null;
+
   [key: string]: unknown;
 }
+
+export type TargetedOffer = {
+  status: "PENDING" | "DECLINED";
+  instrumentist: { id: number; name: string } | null;
+  offeredAt: string | null;
+  declinedAt: string | null;
+};
 
 /**
  * V1 "polling intelligent" — GET /api/instrumentist/missions/sync?since=ISO_DATE

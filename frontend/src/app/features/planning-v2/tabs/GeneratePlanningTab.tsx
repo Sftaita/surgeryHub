@@ -20,7 +20,7 @@ import ShieldOutlinedIcon from "@mui/icons-material/ShieldOutlined";
 
 import { fetchSites } from "../../sites/api/sites.api";
 import { getSurgeons } from "../../manager-surgeons/api/surgeons.api";
-import { fetchMissions } from "../../missions/api/missions.api";
+import { fetchAllMissions } from "../../missions/api/missions.api";
 import {
   getSiteGroups, getSurgeonPosts, previewPlanningV2, generatePlanningV2, deployPlanningV2,
   applyModifications, cancelAllMissions, resendPlanning, verifyConflicts, extractErrorV2, type ApplyModificationsResult,
@@ -203,13 +203,16 @@ export function GeneratePlanningTab() {
   }));
   const siteOptionsForCreate: SearchableOption[] = (sitesQuery.data ?? []).map((s) => ({ id: s.id, label: s.name }));
 
-  // Mode Modification — loads the real Missions of the PlanningVersion being edited, mapped
-  // to the same PreviewLineV2 shape so every render/filter/edit path below stays unchanged.
+  // Mode Modification — loads the real Missions of the month being edited, mapped to the
+  // same PreviewLineV2 shape so every render/filter/edit path below stays unchanged.
+  // D-125 — the version's OPERATIONAL scope (period + sites: generated missions AND those
+  // created manually before/after generation or from an accepted surgeon request), never
+  // only its provenance (`planningVersionId`), and every page (the API caps at 100).
   const modificationMissionsQuery = useQuery({
     queryKey: ["planning-v2", "modification-missions", modificationVersionId],
     queryFn: async () => {
-      const res = await fetchMissions(1, 500, { planningVersionId: modificationVersionId! });
-      return res.items.filter((m) => m.status !== "REJECTED").map(missionToPreviewLine);
+      const items = await fetchAllMissions({ planningScopeOf: modificationVersionId! });
+      return items.filter((m) => m.status !== "REJECTED").map(missionToPreviewLine);
     },
     enabled: modificationVersionId !== null,
   });
@@ -1645,18 +1648,23 @@ export function GeneratePlanningTab() {
                           const key = lineKeyV2(line);
                           const dirty = editedLines.has(key);
                           const isSelectedInInspector = selectedLineKey === key;
+                          // D-125 — a pre-existing, already-published mission is never modified by
+                          // generate() (backend R-01): shown as the existing reality, not editable here.
+                          const lockedExisting = !isModification && !!line.existingMissionStatus && line.existingMissionStatus !== "DRAFT";
                           return (
                             <Stack
                               key={lIdx} direction="row" alignItems="center" spacing={1.5}
-                              onClick={() => { setSelectedLineKey(key); setIsCreatingMission(false); }}
+                              onClick={lockedExisting ? undefined : () => { setSelectedLineKey(key); setIsCreatingMission(false); }}
                               sx={{
                                 px: 2, py: 1.1, borderTop: `1px solid ${planningV2Colors.divider}`, cursor: "pointer",
                                 bgcolor: isSelectedInInspector ? accent.bg : severityOf(line.status) === "crit" ? "#FBF2F1" : "transparent",
                                 borderLeft: isSelectedInInspector ? `3px solid ${accent.main}` : "3px solid transparent",
+                                ...(lockedExisting ? { cursor: "default" } : {}),
                               }}
                             >
                               <Checkbox
                                 size="small"
+                                disabled={lockedExisting}
                                 checked={selectedKeys.has(key)}
                                 onClick={(e) => e.stopPropagation()}
                                 onChange={() => toggleSelected(key)}
@@ -1688,8 +1696,28 @@ export function GeneratePlanningTab() {
                                     </Typography>
                                   </>
                                 )}
-                                {line.status !== "SKIPPED" && (
+                                {line.status !== "SKIPPED" && !lockedExisting && (
                                   <EditOutlinedIcon sx={{ fontSize: 13, color: planningV2Colors.textSecondary, flex: "none" }} />
+                                )}
+                                {lockedExisting && (
+                                  <Chip
+                                    label="Mission existante — conservée" size="small"
+                                    title="Mission déjà publiée avant la génération : la génération ne la modifie jamais."
+                                    sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: "#EEF3FB", color: planningV2Colors.brand, flex: "none" }}
+                                  />
+                                )}
+                                {line.pendingOfferName && (
+                                  <Chip
+                                    label={`Demande envoyée · ${line.pendingOfferName}`} size="small"
+                                    title="En attente de sa réponse — la mission n'est pas encore couverte."
+                                    sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: "#EEF3FB", color: planningV2Colors.brand, flex: "none" }}
+                                  />
+                                )}
+                                {line.offerDeclinedByName && (
+                                  <Chip
+                                    label={`Refusée par ${line.offerDeclinedByName}`} size="small"
+                                    sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: planningV2Colors.warnBg, color: planningV2Colors.warnFg, flex: "none" }}
+                                  />
                                 )}
                                 {dirty && (
                                   <Chip

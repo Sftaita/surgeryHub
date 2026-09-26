@@ -42,6 +42,21 @@ enum AuditEventType: string
     case MISSION_ADDED_POST_DEPLOY         = 'MISSION_ADDED_POST_DEPLOY';
     case MISSION_CLAIMED_FROM_POOL         = 'MISSION_CLAIMED_FROM_POOL';
 
+    // D-125 — the three distinct ways a manager puts a Mission into play (whatever its
+    // origin: manual creation, accepted SurgeonMissionRequest, addition after generation),
+    // plus the target's refusal of a nominative request. Written by MissionDispatchService /
+    // MissionPostDeployService::assignDirectly(); names always snapshotted in the payload.
+    //   MISSION_PUBLISHED_TO_POOL        → OPEN, visible to every eligible instrumentist
+    //   MISSION_OFFERED_TO_INSTRUMENTIST → OPEN + TARGETED publication, awaits the target's
+    //                                      answer (payload requiresAcceptance: true)
+    //   MISSION_ASSIGNED_DIRECTLY        → ASSIGNED immediately, agreement obtained outside
+    //                                      SurgicalHub (payload requiresAcceptance: false)
+    //   MISSION_OFFER_DECLINED           → the target refused; Mission stays OPEN, uncovered
+    case MISSION_PUBLISHED_TO_POOL        = 'MISSION_PUBLISHED_TO_POOL';
+    case MISSION_OFFERED_TO_INSTRUMENTIST = 'MISSION_OFFERED_TO_INSTRUMENTIST';
+    case MISSION_ASSIGNED_DIRECTLY        = 'MISSION_ASSIGNED_DIRECTLY';
+    case MISSION_OFFER_DECLINED           = 'MISSION_OFFER_DECLINED';
+
     // Surgeon absence vs. future Post occurrences, no Mission generated yet (Lot 3, D-103).
     // mission is always null on this event — nothing to link to, that's the whole point.
     case PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE = 'PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE';

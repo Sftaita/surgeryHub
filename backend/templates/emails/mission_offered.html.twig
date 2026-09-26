@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><style>
+body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+.container { max-width: 600px; margin: 0 auto; padding: 24px; }
+.header { border-bottom: 2px solid #1B5FD0; padding-bottom: 12px; margin-bottom: 20px; }
+.title { color: #1B5FD0; font-size: 18px; font-weight: bold; }
+.details { background: #F5F7FA; border-radius: 8px; padding: 14px 18px; margin: 16px 0; }
+.footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+</style></head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">SurgicalHub — Une mission vous est proposée</div>
+  </div>
+
+  <p>{{ greeting }},</p>
+
+  <p>Le manager vous propose personnellement la mission ci-dessous.<br>
+  Elle ne vous est pas encore attribuée : merci de l'<strong>accepter</strong> ou de la <strong>refuser</strong> depuis vos offres.</p>
+
+  <div class="details">
+    {% if dateLabel %}<div>Date : {{ dateLabel }}</div>{% endif %}
+    {% if timeLabel %}<div>Horaire : {{ timeLabel }}</div>{% endif %}
+    {% if siteName %}<div>Site : {{ siteName }}</div>{% endif %}
+    {% if surgeonName %}<div>Chirurgien : Dr {{ surgeonName }}</div>{% endif %}
+    <div>Type : {{ typeLabel }}</div>
+    <div>Statut : en attente de votre réponse</div>
+  </div>
+
+  <p><a href="{{ missionUrl }}">{{ missionUrl }}</a></p>
+
+  <p>Bien à vous,<br>SurgicalHub</p>
+
+  {% include 'emails/_notification_preferences_cta.html.twig' %}
+
+  <div class="footer">SurgicalHub — document confidentiel</div>
+</div>
+</body>
+</html>

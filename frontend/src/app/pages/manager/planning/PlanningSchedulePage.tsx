@@ -10,7 +10,8 @@ import LockOpenIcon   from "@mui/icons-material/LockOpen";
 import BlockIcon      from "@mui/icons-material/Block";
 import SwapHorizIcon  from "@mui/icons-material/SwapHoriz";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchMissions } from "../../../features/missions/api/missions.api";
+import { fetchAllMissions } from "../../../features/missions/api/missions.api";
+import { invalidateOperationalPlanning } from "../../../features/missions/dispatch/missionDispatch.api";
 import type { Mission, MissionStatus } from "../../../features/missions/api/missions.types";
 import { fetchSites } from "../../../features/sites/api/sites.api";
 import { useToast } from "../../../ui/toast/useToast";
@@ -258,6 +259,10 @@ export default function PlanningSchedulePage() {
   const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("ALL");
   const [rows,         setRows]         = React.useState<ScheduleRow[]>([]);
   const [loaded,       setLoaded]       = React.useState(false);
+  // D-125 — filters actually applied by "Charger le planning". The query is keyed on them
+  // and stays enabled afterwards, so any invalidation (a mission created, dispatched,
+  // accepted, claimed, declined… anywhere in the app) refreshes this view by itself.
+  const [applied,      setApplied]      = React.useState<{ from: string; to: string; siteId: number | "" } | null>(null);
 
   // Drawer / dialog state
   const [drawerMissionId, setDrawerMissionId]   = React.useState<number | null>(null);
@@ -278,24 +283,34 @@ export default function PlanningSchedulePage() {
   });
 
   const missionsQuery = useQuery({
-    queryKey: ["planning-schedule", from, to, siteId],
+    queryKey: ["planning-schedule", applied?.from, applied?.to, applied?.siteId],
     queryFn: async () => {
-      const data = await fetchMissions(1, 500, {
-        from, to,
-        ...(siteId ? { siteId: siteId as number } : {}),
+      // Every page — the API caps at 100 per call (D-125).
+      const items = await fetchAllMissions({
+        from: applied!.from, to: applied!.to,
+        ...(applied!.siteId ? { siteId: applied!.siteId as number } : {}),
       });
-      return (data.items ?? []) as Mission[];
+      return items as Mission[];
     },
-    enabled: false,
+    enabled: applied !== null,
     staleTime: 0,
   });
 
-  async function handleLoad() {
-    const result = await missionsQuery.refetch();
-    if (result.data) {
-      const filtered = result.data.filter((m) => m.status !== "DRAFT" && m.status !== "REJECTED");
-      setRows(filtered.map(toRow));
-      setLoaded(true);
+  // Server state → table rows (optimistic mutations below patch `rows` locally, then the
+  // invalidation's refetch lands here and replaces them with the backend's truth).
+  React.useEffect(() => {
+    if (!missionsQuery.data) return;
+    const filtered = missionsQuery.data.filter((m) => m.status !== "DRAFT" && m.status !== "REJECTED");
+    setRows(filtered.map(toRow));
+    setLoaded(true);
+  }, [missionsQuery.data]);
+
+  function handleLoad() {
+    const same = applied !== null && applied.from === from && applied.to === to && applied.siteId === siteId;
+    if (same) {
+      void missionsQuery.refetch();
+    } else {
+      setApplied({ from, to, siteId });
     }
   }
 
@@ -315,9 +330,8 @@ export default function PlanningSchedulePage() {
   }
 
   function invalidateCoverage() {
-    if (versionId !== "") {
-      queryClient.invalidateQueries({ queryKey: ["coverage-summary", versionId as number] });
-    }
+    // D-125 — the whole operational planning (this table, the calendar, coverage…).
+    void invalidateOperationalPlanning(queryClient);
   }
 
   // ── Release mutation ──────────────────────────────────────────────────────

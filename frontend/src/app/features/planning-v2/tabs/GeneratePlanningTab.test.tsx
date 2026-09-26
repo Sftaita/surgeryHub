@@ -70,7 +70,7 @@ vi.mock("../../../api/apiClient", () => ({
       if (url === "/api/surgeons") {
         return Promise.resolve({ data: { items: [{ id: 1, displayName: "Dr Martin" }], total: 1 } });
       }
-      if (url === "/api/missions" && config?.params?.planningVersionId) {
+      if (url === "/api/missions" && config?.params?.planningScopeOf) {
         return Promise.resolve({
           data: {
             items: [
@@ -983,17 +983,17 @@ describe("GeneratePlanningTab — Vérifier les conflits (Lot 6, D-106)", () => 
     expect(await screen.findByText("Diane Lefebvre")).toBeInTheDocument();
 
     const missionsCallsBefore = (apiClient.get as ReturnType<typeof vi.fn>).mock.calls
-      .filter(([url, cfg]) => url === "/api/missions" && cfg?.params?.planningVersionId).length;
+      .filter(([url, cfg]) => url === "/api/missions" && cfg?.params?.planningScopeOf).length;
 
     await user.click(screen.getByRole("button", { name: "Vérifier les conflits" }));
     await screen.findByText("Vérification terminée");
 
     // The mission list refetch was triggered — same query used elsewhere in Modification
-    // mode (fetchMissions scoped to planningVersionId), proving the scan's result is
+    // mode (fetchAllMissions scoped to the version's operational scope, D-125), proving the scan's result is
     // reflected without a full page reload.
     await waitFor(() => {
       const missionsCallsAfter = (apiClient.get as ReturnType<typeof vi.fn>).mock.calls
-        .filter(([url, cfg]) => url === "/api/missions" && cfg?.params?.planningVersionId).length;
+        .filter(([url, cfg]) => url === "/api/missions" && cfg?.params?.planningScopeOf).length;
       expect(missionsCallsAfter).toBeGreaterThan(missionsCallsBefore);
     });
   });

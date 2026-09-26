@@ -38,6 +38,12 @@ final class MissionPublishControllerTest extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            // D-125 — publish is now audited (MISSION_PUBLISHED_TO_POOL): AuditEvent.mission FK first.
+            if ($this->createdIds['missions'] !== []) {
+                $this->em->createQuery('DELETE FROM App\Entity\AuditEvent a WHERE a.mission IN (:ids)')
+                    ->setParameter('ids', $this->createdIds['missions'])
+                    ->execute();
+            }
             foreach ($this->createdIds['missions'] as $id) {
                 $e = $this->em->find(Mission::class, $id);
                 if ($e !== null) { $this->em->remove($e); }

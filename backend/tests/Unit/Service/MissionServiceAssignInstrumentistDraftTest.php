@@ -45,6 +45,7 @@ final class MissionServiceAssignInstrumentistDraftTest extends TestCase
                 $this->createMock(MessageBusInterface::class),
             ),
             new MissionEligibilityService($this->em),
+            new \App\Service\PlanningVersionOperationalScope($this->em), // not exercised by assignInstrumentistDraft()
         );
     }
 

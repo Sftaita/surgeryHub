@@ -39,7 +39,7 @@ final class MissionMapperTimezoneTest extends TestCase
         // MissionActionsService is final — real instance instead of a mock double.
         $this->mapper = new MissionMapper(
             new MissionActionsService(new MissionEncodingGuard()),
-            new PlanningCoverageService($this->createMock(EntityManagerInterface::class)),
+            new PlanningCoverageService($this->createMock(EntityManagerInterface::class), $this->createMock(\App\Service\PlanningVersionOperationalScope::class)),
             $this->createMock(EncodingReminderService::class),
         );
     }

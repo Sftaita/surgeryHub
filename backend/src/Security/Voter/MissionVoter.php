@@ -7,6 +7,7 @@ use App\Entity\User;
 use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\PublicationScope;
+use App\Service\MissionDispatchService;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
 use Symfony\Component\Security\Core\Authorization\Voter\Voter;
 
@@ -41,6 +42,9 @@ class MissionVoter extends Voter
     // Pre-deploy DRAFT instrumentist assignment (RC1-C, Cluster C fix)
     public const ASSIGN_INSTRUMENTIST = 'MISSION_ASSIGN_INSTRUMENTIST';
 
+    // D-125 — the target of a pending nominative request refuses it (accepting = CLAIM).
+    public const DECLINE_OFFER = 'MISSION_DECLINE_OFFER';
+
     // Manager support (Batch 15D)
     public const VIEW_ELIGIBLE_INSTRUMENTISTS = 'MISSION_VIEW_ELIGIBLE_INSTRUMENTISTS';
 
@@ -64,6 +68,7 @@ class MissionVoter extends Voter
             self::CREATE,
             self::PUBLISH,
             self::CLAIM,
+            self::DECLINE_OFFER,
             self::SUBMIT,
             self::EDIT,
             self::EDIT_ENCODING,
@@ -120,6 +125,8 @@ class MissionVoter extends Voter
             self::VIEW             => $this->canView($mission, $user, $isManager),
             self::PUBLISH          => $isManager,
             self::CLAIM            => $this->canClaim($mission, $user),
+            self::DECLINE_OFFER    => in_array('ROLE_INSTRUMENTIST', $user->getRoles(), true)
+                && MissionDispatchService::pendingOffer($mission)?->getTargetInstrumentist()?->getId() === $user->getId(),
             self::SUBMIT           => $this->canSubmit($mission, $user, $isManager),
             self::EDIT             => $this->canEdit($mission, $user, $isManager),
             self::EDIT_ENCODING    => $this->canEditEncoding($mission, $user, $isManager),
@@ -397,6 +404,10 @@ class MissionVoter extends Voter
         }
 
         foreach ($mission->getPublications() as $pub) {
+            // D-125 — a declined TARGETED request no longer grants its target anything.
+            if (!$pub->isActive()) {
+                continue;
+            }
             if ($pub->getScope() === PublicationScope::TARGETED) {
                 if ($pub->getTargetInstrumentist()?->getId() === $instrumentist->getId()) {
                     return true;

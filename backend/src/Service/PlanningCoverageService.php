@@ -9,7 +9,8 @@ use App\Enum\MissionStatus;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
- * Read-only coverage computation for a deployed PlanningVersion.
+ * Read-only coverage computation for a deployed PlanningVersion's operational scope
+ * (D-125 — see PlanningVersionOperationalScope).
  * Never calls EntityManager::flush() or ::persist() — D-036 / Batch 15F.
  *
  * Coverage semantics:
@@ -40,6 +41,7 @@ class PlanningCoverageService
 
     public function __construct(
         private readonly EntityManagerInterface $em,
+        private readonly PlanningVersionOperationalScope $operationalScope,
     ) {}
 
     /**
@@ -65,14 +67,11 @@ class PlanningCoverageService
             return null;
         }
 
-        $rows = $this->em->createQuery(
-            'SELECT m.status AS status, COUNT(m.id) AS cnt
-             FROM App\Entity\Mission m
-             WHERE m.planningVersion = :version
-             GROUP BY m.status'
-        )
-            ->setParameter('version', $version)
-            ->getArrayResult();
+        // D-125 — the version's OPERATIONAL scope (period + sites, whatever created each
+        // Mission), not only the Missions its own generate() produced: a mission added
+        // manually or from an accepted surgeon request is just as much part of the month's
+        // coverage as a generated one. Same predicate as the calendar (planningScopeOf).
+        $rows = $this->operationalScope->countByStatus($version);
 
         $liveValues    = array_map(static fn (MissionStatus $s) => $s->value, self::LIVE_STATUSES);
         $coveredValues = array_map(static fn (MissionStatus $s) => $s->value, self::COVERED_STATUSES);
