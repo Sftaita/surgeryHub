@@ -25,6 +25,7 @@ use App\Dto\DocumentLineSelectionAnomaly;
 use App\Exception\DocumentAlreadyIssuedException;
 use App\Exception\DocumentCannotReleaseLinesException;
 use App\Exception\DocumentLineSelectionException;
+use App\Exception\InvoiceStatusTransitionException;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -87,10 +88,23 @@ class FirmInvoiceService
         return $invoice;
     }
 
+    /**
+     * D-123 — cycle de vie strict GENERATED → SENT → PAID : seule une facture ENVOYÉE peut
+     * être marquée entièrement réglée. GENERATED (jamais envoyée), CANCELLED et PAID (déjà
+     * réglée) sont refusés par un 409 métier explicite. Les paiements partiels (API
+     * payments, D-075) restent un mécanisme distinct, jamais fusionné ici.
+     */
     public function markPaid(FirmInvoice $invoice): FirmInvoice
     {
-        if ($invoice->getStatus() === InvoiceStatus::PAID) {
-            return $invoice;
+        $message = match ($invoice->getStatus()) {
+            InvoiceStatus::SENT => null,
+            InvoiceStatus::PAID => 'Cette facture est déjà marquée payée.',
+            InvoiceStatus::CANCELLED => 'Une facture annulée ne peut pas être marquée payée.',
+            InvoiceStatus::GENERATED => "La facture doit d'abord être envoyée avant d'être marquée payée.",
+            default => sprintf('Une facture au statut %s ne peut pas être marquée payée.', $invoice->getStatus()->value),
+        };
+        if ($message !== null) {
+            throw new InvoiceStatusTransitionException($message);
         }
         $invoice->setStatus(InvoiceStatus::PAID);
         $invoice->setPaidAt(new \DateTimeImmutable());

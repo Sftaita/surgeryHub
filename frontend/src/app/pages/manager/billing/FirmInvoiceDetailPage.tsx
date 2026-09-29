@@ -18,7 +18,7 @@ import {
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import SendIcon from "@mui/icons-material/Send";
-import { useParams, useNavigate } from "react-router-dom";
+import { Link as RouterLink, useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getFirmInvoice,
@@ -28,6 +28,7 @@ import {
   type InvoiceStatus,
 } from "../../../features/billing-firm/api/firmInvoice.api";
 import { useToast } from "../../../ui/toast/useToast";
+import { extractBillingError } from "../../../features/billing-firm/api/firmBillingCockpit.api";
 import DocumentFinancePanel from "../../../features/billing-shared/components/DocumentFinancePanel";
 
 const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {
@@ -38,9 +39,13 @@ function statusLabel(s: InvoiceStatus) {
   return { DRAFT: "Brouillon", GENERATED: "Générée", SENT: "Envoyée", PAID: "Payée", CANCELLED: "Annulée" }[s];
 }
 
-function extractError(err: unknown): string {
-  const e = err as any;
-  return e?.response?.data?.error?.message ?? e?.message ?? String(err);
+// Message métier du backend tel quel (409 de transition, 422 de sélection…).
+const extractError = extractBillingError;
+
+function formatDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const [y, m, d] = iso.slice(0, 10).split("-");
+  return `${d}/${m}/${y}`;
 }
 
 export default function FirmInvoiceDetailPage() {
@@ -75,6 +80,7 @@ export default function FirmInvoiceDetailPage() {
       toast.success("Facture envoyée");
       qc.invalidateQueries({ queryKey: ["firm-invoice", Number(id)] });
       qc.invalidateQueries({ queryKey: ["firm-invoices"] });
+      qc.invalidateQueries({ queryKey: ["firm-billing-cockpit"] });
     },
     onError: (err) => toast.error(extractError(err)),
   });
@@ -85,6 +91,7 @@ export default function FirmInvoiceDetailPage() {
       toast.success("Facture marquée payée");
       qc.invalidateQueries({ queryKey: ["firm-invoice", Number(id)] });
       qc.invalidateQueries({ queryKey: ["firm-invoices"] });
+      qc.invalidateQueries({ queryKey: ["firm-billing-cockpit"] });
     },
     onError: (err) => toast.error(extractError(err)),
   });
@@ -94,6 +101,7 @@ export default function FirmInvoiceDetailPage() {
 
   const inv = invoiceQuery.data;
   const total = Number(inv.totalAmount);
+  const allowed = inv.allowedActions ?? [];
 
   return (
     <Stack spacing={3}>
@@ -116,7 +124,7 @@ export default function FirmInvoiceDetailPage() {
           </Box>
           <Box>
             <Typography variant="caption" color="text.secondary">Période</Typography>
-            <Typography fontWeight={600}>{inv.periodStart} → {inv.periodEnd}</Typography>
+            <Typography fontWeight={600}>{formatDate(inv.periodStart)} → {formatDate(inv.periodEnd)}</Typography>
           </Box>
           <Box>
             <Typography variant="caption" color="text.secondary">Total HTVA</Typography>
@@ -146,24 +154,37 @@ export default function FirmInvoiceDetailPage() {
       {/* Lines */}
       <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
         <Box sx={{ px: 2, py: 1.5, bgcolor: "grey.50" }}>
-          <Typography variant="subtitle2" fontWeight={700}>Lignes ({inv.lines?.length ?? 0})</Typography>
+          <Typography variant="subtitle2" fontWeight={700}>Lignes facturées ({inv.lines?.length ?? 0})</Typography>
+          <Typography variant="caption" color="text.secondary">
+            Snapshot figé à la génération : quantités, prix et montants ne changent plus, même si un tarif est modifié ensuite.
+          </Typography>
         </Box>
         <Table size="small">
           <TableHead>
             <TableRow>
               <TableCell>Date</TableCell>
-              <TableCell>Description</TableCell>
+              <TableCell>Site · chirurgien</TableCell>
+              <TableCell>Prestation</TableCell>
               <TableCell>Type</TableCell>
               <TableCell align="right">Qté</TableCell>
               <TableCell align="right">P.U.</TableCell>
               <TableCell align="right">Total</TableCell>
+              <TableCell>Source</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {(inv.lines ?? []).map((line) => (
               <TableRow key={line.id}>
-                <TableCell>{line.missionDate}</TableCell>
-                <TableCell>{line.descriptionSnapshot}</TableCell>
+                <TableCell>{formatDate(line.missionDate)}</TableCell>
+                <TableCell>{[line.siteName, line.surgeonName].filter(Boolean).join(" · ") || "—"}</TableCell>
+                <TableCell>
+                  {line.materialLabel
+                    ? [line.materialLabel, line.materialReferenceCode].filter(Boolean).join(" · ")
+                    : line.interventionLabel ?? line.descriptionSnapshot}
+                  {(line.materialLabel || line.interventionLabel) && (
+                    <Typography variant="caption" color="text.secondary" display="block">{line.descriptionSnapshot}</Typography>
+                  )}
+                </TableCell>
                 <TableCell>
                   <Chip
                     label={line.lineType === "INTERVENTION_FEE" ? "Intervention" : "Matériel"}
@@ -175,6 +196,14 @@ export default function FirmInvoiceDetailPage() {
                 <TableCell align="right">{line.quantity}</TableCell>
                 <TableCell align="right">{Number(line.unitPrice).toFixed(2)} €</TableCell>
                 <TableCell align="right"><strong>{Number(line.totalAmount).toFixed(2)} €</strong></TableCell>
+                <TableCell>
+                  <Button component={RouterLink} to={`/app/m/missions/${line.missionId}`} size="small">Mission #{line.missionId}</Button>
+                  {line.financialCalculationLineId != null && (
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Ligne financière #{line.financialCalculationLineId}{line.financialCalculationId != null ? ` · calcul #${line.financialCalculationId}` : ""}
+                    </Typography>
+                  )}
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -204,19 +233,19 @@ export default function FirmInvoiceDetailPage() {
             >
               Télécharger PDF
             </Button>
-            {inv.status !== "PAID" && (
+            {allowed.includes("markPaid") && (
               <Button
                 variant="outlined"
                 color="success"
                 onClick={() => markPaidMutation.mutate()}
                 disabled={markPaidMutation.isPending}
               >
-                Marquer payée
+                Marquer comme payée
               </Button>
             )}
           </Stack>
 
-          {inv.status === "GENERATED" && (
+          {allowed.includes("send") && (
             <>
               <Divider />
               <Typography variant="subtitle2">Envoyer par email</Typography>

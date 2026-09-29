@@ -10704,6 +10704,57 @@ restante (~350 px) devient trop étroite pour la table (colonnes tronquées, car
 empilées). Constaté au test navigateur réel du 2026-09-23. Piste future : sous un seuil de
 largeur, faire recouvrir la liste par le tiroir (overlay) ou basculer la table en cartes —
 lot séparé, pas de refonte responsive dans ce chantier.
+
+## D-123 — Cockpit « Facturation firmes » sur la source de vérité financière existante (2026-09-24)
+
+**Statut : fait (non déployé).**
+
+**Constat (audit du 2026-09-24, prod `418db14`).** Le module « Factures firmes » semblait
+« ne pas fonctionner » : en production, 7 missions validées, **0** calcul financier jamais
+lancé, donc 0 `FinancialCalculationLine`, 0 facture. Le calcul financier et son approbation
+sont deux étapes **manuelles**, mission par mission, sur la fiche mission ; l'écran de
+facturation ne le disait nulle part (diagnostic global par firme uniquement, aide décrivant
+encore l'ancien moteur supprimé en D-121). Bugs trouvés : période envoyée en
+`toISOString()` (septembre = « 31/08 → 30/09 », facture de janvier numérotée sur l'année
+précédente et masquée par le filtre d'année) ; `mark-paid` sans aucune garde (GENERATED →
+PAID, et même CANCELLED → PAID).
+
+**Décisions (validées par le produit).**
+
+1. **Pas de nouveau moteur, pas de calcul automatique à la validation** : validation de
+   l'encodage et calcul financier restent deux étapes distinctes. Le cockpit expose les
+   actions **Calculer** / **Approuver** qui appellent les endpoints existants.
+2. **`GET /api/firm-invoices/cockpit`** classe chaque `FinancialCalculationLine` FIRM de la
+   période dans exactement une catégorie (à facturer / facturée / à vérifier) et liste
+   chaque mission concernant une firme sans calcul actif avec une raison explicite
+   (`ENCODING_NOT_VALIDATED`, `CALCULATION_REQUIRED`, `CALCULATION_FAILED` + anomalies
+   auditées, `CALCULATION_PENDING_APPROVAL`) — jamais une disparition silencieuse, jamais
+   une raison fabriquée côté frontend, jamais un montant estimé avant calcul.
+3. **Une firme par génération** : sélection limitée au groupe d'une firme, un CTA
+   « Générer la facture — X lignes — Y € » par firme ; aucune génération multi-factures en
+   une transaction. Génération = endpoint existant, IDs explicites, attente du succès serveur
+   (aucune mise à jour optimiste comptable).
+4. **Verrouillage conservé** (dette documentée dans `architecture.md`) : facturer une ligne
+   verrouille tout le calcul de la mission ; les lignes restantes d'autres firmes restent
+   facturables et sont signalées « Calcul financier verrouillé ». Correction d'une mission
+   partiellement facturée = futur lot séparé.
+5. **Cycle de vie strict `GENERATED → SENT → PAID`** : `mark-paid` n'est accepté que depuis
+   `SENT` (409 `INVOICE_STATUS_TRANSITION_INVALID` sinon) ; les factures exposent
+   `allowedActions`, seul pilote des boutons côté frontend. Paiements partiels (D-075)
+   inchangés. `CANCELLED` (existant, `GENERATED` uniquement) conservé ; aucun nouveau statut.
+6. **Périodes en dates métier** : `AAAA-MM-JJ` (ou ISO ramené à Europe/Brussels) →
+   00:00:00 / 23:59:59 ; numéro de facture sur l'année de la période réelle.
+
+**Anti-double facturation (audit).** Déjà garantie côté serveur avant ce lot : contrainte
+UNIQUE `firm_invoice_line.financial_calculation_line_id`, `PESSIMISTIC_WRITE` sur les calculs
+concernés (ordre d'id croissant), revalidation sous verrou par requête fraîche. Ce lot ajoute
+la preuve fonctionnelle (double génération → 422 `FINANCIAL_LINE_ALREADY_ASSIGNED`, insertion
+directe d'un doublon → violation UNIQUE) et le scénario multi-firmes.
+
+**Limites restantes.** Pas d'avoir/annulation après envoi hors notes de crédit existantes ;
+l'annulation d'une facture `GENERATED` supprime ses lignes snapshot (numéro consommé, détail
+perdu) ; `Mission.invoiceGeneratedAt` n'est plus alimenté ; montants multi-devises affichés
+séparément, jamais convertis.
 ## D-125 — Planning vivant : provenance d'une génération ≠ réalité opérationnelle du calendrier ; diffusion d'une mission en trois modes (pool / demande nominative / attribution directe) (2026-09-26)
 
 ### Contexte

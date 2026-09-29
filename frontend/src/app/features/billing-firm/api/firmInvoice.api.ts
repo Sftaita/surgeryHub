@@ -36,6 +36,11 @@ export interface FirmInvoice {
   paymentStatus: PaymentStatus;
   /** Uniquement présent sur un document STANDARD (jamais sur une correction elle-même). */
   corrections?: CorrectionSummary[];
+  /** D-123 — nombre de lignes snapshotées. */
+  lineCount?: number;
+  /** D-123 — actions permises par le backend (GENERATED → send/cancel, SENT → markPaid) :
+   *  un bouton n'est affiché que s'il figure ici. */
+  allowedActions?: ("send" | "cancel" | "markPaid")[];
 }
 
 export interface FirmInvoiceLine {
@@ -52,6 +57,13 @@ export interface FirmInvoiceLine {
   totalAmount: string;
   currency?: string;
   financialCalculationLineId?: number | null;
+  /** D-123 — contexte (aucune donnée patient) et lien vers la source métier. */
+  financialCalculationId?: number | null;
+  siteName?: string | null;
+  surgeonName?: string | null;
+  interventionLabel?: string | null;
+  materialLabel?: string | null;
+  materialReferenceCode?: string | null;
   legacy?: boolean;
   reasonCode?: string | null;
   originalDocumentLineId?: number | null;
@@ -61,6 +73,10 @@ export async function getFirmInvoices(params?: {
   firmId?: number;
   status?: InvoiceStatus;
   year?: number;
+  /** D-123 — période (dates AAAA-MM-JJ inclusives, sur le début de période de la facture). */
+  from?: string;
+  to?: string;
+  documentType?: "STANDARD";
 }): Promise<FirmInvoice[]> {
   const res = await apiClient.get("/api/firm-invoices", { params });
   return res.data;

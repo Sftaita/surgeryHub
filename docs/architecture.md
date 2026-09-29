@@ -57,7 +57,7 @@ Api/
 ├── MaterialItemRequestManagerController — gestion demandes manager (list/resolve/ignore)
 ├── MaterialLineController               — CRUD /api/missions/{id}/material-lines
 ├── FirmBillingController               — PATCH billing-contact + CRUD /api/firms/{id}/pricing-rules
-├── FirmInvoiceController               — CRUD /api/firm-invoices + eligible-lines/from-financial-calculations/send/mark-paid (D-121)
+├── FirmInvoiceController               — CRUD /api/firm-invoices + cockpit (D-123) + eligible-lines/from-financial-calculations/send/mark-paid (D-121)
 ├── InstrumentistStatementController    — CRUD /api/instrumentist-statements + eligible-lines/from-financial-calculations/send/mark-paid (D-121)
 ├── AbsenceController                   — CRUD /api/absences
 ├── PlanningVersionController           — GET /api/planning/versions (list) + apply-modifications/
@@ -796,6 +796,46 @@ FirmInvoiceLine
 └── originalDocumentLine (Lot 6 — self-FK nullable, SANS contrainte d'unicité
     contrairement à financialCalculationLine : une même ligne d'origine peut être
     référencée par plusieurs corrections successives)
+
+### Flux facturation firmes (D-123) — état réel du code
+
+```
+Mission VALIDATED (encodingLockedAt posé)
+  → POST /api/missions/{id}/financial-calculations      (MANUEL — jamais automatique à la validation)
+      FinancialCalculation CALCULATED + FinancialCalculationLine[] (FIRM + INSTRUMENTIST)
+      tout ou rien : une seule anomalie (tarif firme ou instrumentiste manquant…) =>
+      aucune ligne, audit FINANCIAL_CALCULATION_FAILED avec la liste des anomalies
+  → POST /api/financial-calculations/{id}/approve        (MANUEL) → APPROVED
+  → cockpit GET /api/firm-invoices/cockpit               (classe, ne calcule rien)
+  → POST /api/firm-invoices/from-financial-calculations  (une firme, IDs explicites)
+      transaction : PESSIMISTIC_WRITE sur chaque FinancialCalculation (id croissant),
+      revalidation ligne à ligne (firme, devise, période, calcul APPROVED/LOCKED,
+      non rattachée — requête fraîche), FirmInvoice GENERATED numérotée,
+      FirmInvoiceLine snapshots, calcul → LOCKED
+  → PDF (snapshots) → issue/send (GENERATED → SENT) → mark-paid (SENT → PAID) ou payments
+```
+
+- **Source de vérité** : `FinancialCalculationLine`. La facture est un snapshot comptable ;
+  l'ancienne génération recalculant depuis `PricingRule` (supprimée par `b797481`, D-121)
+  n'est plus un chemin supporté — ne jamais réintroduire un second moteur.
+- **Anti-double facturation** : `firm_invoice_line.financial_calculation_line_id` UNIQUE
+  (garantie base, indépendante du service) + verrou pessimiste + revalidation sous verrou.
+- **Granularité « facturé »** : la ligne financière, jamais la mission. Une mission
+  multi-firmes donne une facture par firme, successivement.
+- **Dette métier connue — verrouillage à la maille du calcul** : dès qu'UNE ligne est
+  facturée, tout le `FinancialCalculation` de la mission passe `LOCKED` ; réouverture de
+  l'encodage (`MissionEncodingWorkflowService::reopen()`) et recalcul
+  (`FinancialCalculationService::recalculate()`) deviennent impossibles pour toute la
+  mission, y compris les lignes d'autres firmes pas encore facturées (qui restent
+  facturables telles quelles, signalées « Calcul financier verrouillé » dans le cockpit).
+  **Futur lot distinct** : workflow de correction d'une mission partiellement facturée
+  (avoir / recalcul contrôlé) — touche au versionnement et à l'intégrité comptable.
+- **`Mission.invoiceGeneratedAt` n'est plus jamais écrit** (seul le chemin legacy le
+  posait) : l'état `LOCKED` du suivi des encodages (D-118) n'est plus atteint par la
+  facturation — le verrou réel est `FinancialCalculation.LOCKED`.
+- **Annulation** (`GENERATED` uniquement) : supprime physiquement les `FirmInvoiceLine`
+  (lignes financières libérées, numéro consommé) — la facture annulée ne conserve pas son
+  détail ; pas de mécanisme d'annulation après envoi hors notes de crédit (D-076).
 
 InstrumentistStatement
 ├── instrumentist, periodYear, periodMonth

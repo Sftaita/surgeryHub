@@ -21,6 +21,7 @@ use App\Exception\FinancialCalculationIneligibleException;
 use App\Exception\FinancialCalculationAnomaliesException;
 use App\Exception\DocumentLineSelectionException;
 use App\Exception\DocumentAlreadyIssuedException;
+use App\Exception\InvoiceStatusTransitionException;
 use App\Exception\DocumentCannotReleaseLinesException;
 use App\Exception\DocumentNotIssuedException;
 use App\Exception\PaymentExceedsRemainingException;
@@ -155,6 +156,10 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $code = 'DOCUMENT_LINE_SELECTION_FAILED';
             $message = $e->getMessage();
             $violations = array_map(static fn ($a) => $a->toArray(), $e->getAnomalies());
+        } elseif ($e instanceof InvoiceStatusTransitionException) {
+            $status = 409;
+            $code = 'INVOICE_STATUS_TRANSITION_INVALID';
+            $message = $e->getMessage();
         } elseif ($e instanceof DocumentAlreadyIssuedException) {
             $status = 409;
             $code = 'DOCUMENT_ALREADY_ISSUED';

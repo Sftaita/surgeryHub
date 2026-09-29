@@ -2300,11 +2300,85 @@ et `POST /api/firm-invoices` (qui recalculaient les montants depuis `PricingRule
 de la génération) ont été supprimés — aucune facture n'avait jamais été produite par ce
 chemin en production. Le seul chemin de génération est désormais celui du §36
 (`GET /api/firm-invoices/eligible-lines` + `POST /api/firm-invoices/from-financial-calculations`),
-qui consomme exclusivement des `FinancialCalculationLine` déjà figées.
+qui consomme exclusivement des `FinancialCalculationLine` déjà figées. **Ces anciennes routes
+ne constituent plus un chemin supporté et ne doivent jamais être réintroduites** (un seul
+moteur : le calcul financier, D-073/D-074 ; la facture n'en est qu'un snapshot, D-123).
+
+### 24.3.1 `GET /api/firm-invoices/cockpit` — cockpit « Facturation firmes » (D-123)
+
+**AuthZ :** `BillingVoter::MANAGE`. Lecture seule, **aucun calcul tarifaire**.
+
+**Query params :** `from`, `to` (requis, dates métier `AAAA-MM-JJ` inclusives,
+Europe/Brussels, `from ≤ to`) ; `firmId` (optionnel).
+
+Classe chaque `FinancialCalculationLine` bénéficiaire `FIRM` d'un calcul actif dont
+`effectiveAt` tombe dans la période dans **exactement une** catégorie :
+
+| Catégorie | Définition |
+|---|---|
+| `toInvoice` | calcul `APPROVED` ou `LOCKED`, **aucune** `FirmInvoiceLine` ne la référence |
+| `invoiced` | une `FirmInvoiceLine` la référence (contrainte UNIQUE) — `invoice.{id, number, status, generatedAt, invoicedAmount}` |
+| `toVerify` (niveau calcul) | calcul encore `CALCULATED` — raison `CALCULATION_PENDING_APPROVAL`, action `approve` |
+
+`toVerify` contient aussi chaque mission de la période (même date effective
+`COALESCE(actual_start_at, start_at)`) **concernant une firme** (intervention à firme
+principale ou matériel d'une firme, quantité > 0) **sans aucun calcul actif** :
+
+| `reason` | Condition | `allowedActions` |
+|---|---|---|
+| `ENCODING_NOT_VALIDATED` | mission `SUBMITTED` | `[]` |
+| `CALCULATION_FAILED` | dernier `calculate()` en échec (audit `FINANCIAL_CALCULATION_FAILED` postérieur à tout calcul actif) — `anomalies[]` = celles du dernier échec audité | `["calculate"]` |
+| `CALCULATION_REQUIRED` | mission `VALIDATED` jamais valorisée | `["calculate"]` |
+
+`reasonLabel` est le libellé métier à afficher tel quel. Avant calcul, **aucun montant
+n'existe** : `totalAmount`/`currency` valent `null` (jamais estimés).
+
+**Réponse — 200 (extrait) :**
+
+```json
+{
+  "period": { "from": "2026-09-01", "to": "2026-09-30" },
+  "kpis": {
+    "toInvoiceLineCount": 3,
+    "toInvoiceAmounts": [{ "currency": "EUR", "amount": "650.00" }],
+    "toVerifyCount": 2,
+    "invoicedLineCount": 1,
+    "invoices": { "generated": 1, "sent": 2, "paid": 3, "cancelled": 0 }
+  },
+  "toInvoice": [{
+    "firm": { "id": 10, "name": "Arthrex" }, "currency": "EUR", "lineCount": 2, "totalAmount": "500.00",
+    "lines": [{
+      "id": 9001, "calculationId": 77, "calculationStatus": "LOCKED",
+      "mission": { "id": 501, "date": "2026-09-02", "status": "VALIDATED", "site": "Delta", "surgeon": "Dr X" },
+      "firm": { "id": 10, "name": "Arthrex" }, "lineType": "FIRM_INTERVENTION_FEE", "lineTypeLabel": "Intervention",
+      "description": "…", "intervention": { "id": 11, "label": "Ligamentoplastie LCA" }, "material": null,
+      "quantity": "1.0000", "unitAmount": "350.00", "totalAmount": "350.00", "currency": "EUR",
+      "calculationLocked": true, "missionPartiallyInvoiced": true,
+      "notice": "Calcul financier verrouillé : une partie de cette mission a déjà été facturée. Le calcul ne peut plus être modifié."
+    }]
+  }],
+  "toVerify": [{ "reason": "CALCULATION_REQUIRED", "reasonLabel": "…", "mission": { "…": "…" }, "firms": [{ "id": 10, "name": "Arthrex" }], "calculationId": null, "anomalies": [], "lines": [], "totalAmount": null, "currency": null, "allowedActions": ["calculate"] }],
+  "invoiced": [{ "id": 9002, "…": "…", "invoice": { "id": 42, "number": "FIRM-2026-042", "status": "SENT", "generatedAt": "…", "invoicedAmount": "80.00" } }]
+}
+```
+
+KPI factures : documents `STANDARD` dont `periodStart` tombe dans la période, par statut.
+Aucune donnée patient (ni nom, ni identifiant, ni motif) n'est exposée. Les actions
+`calculate`/`approve` appellent les endpoints **existants**
+(`POST /api/missions/{id}/financial-calculations`, `POST /api/financial-calculations/{id}/approve`).
+
+**Erreurs :** `422 VALIDATION_FAILED` (dates absentes/invalides ou `from > to`),
+`404` (firme), `403` (non manager).
 
 ---
 
 ### 24.4 Détail, PDF, Envoi, Paiement
+
+#### `GET /api/firm-invoices` (liste)
+
+**Query params :** `firmId`, `status`, `year` (existants) ; **D-123 :** `from`/`to`
+(dates `AAAA-MM-JJ` inclusives sur `periodStart`), `documentType=STANDARD`. Chaque
+facture expose en plus `lineCount` et `allowedActions`.
 
 #### `GET /api/firm-invoices/{id}`
 
@@ -2324,9 +2398,25 @@ qui consomme exclusivement des `FinancialCalculationLine` déjà figées.
   "generatedAt": "2026-03-18T10:00:00+01:00",
   "sentAt": null,
   "paidAt": null,
-  "lines": [ { "...": "..." } ]
+  "lineCount": 1,
+  "allowedActions": ["send", "cancel"],
+  "lines": [ {
+    "id": 1, "missionId": 501, "missionDate": "2026-03-02",
+    "siteName": "Delta", "surgeonName": "Dr X",
+    "interventionLabel": "Ligamentoplastie LCA", "materialLabel": null, "materialReferenceCode": null,
+    "lineType": "INTERVENTION_FEE", "descriptionSnapshot": "…", "unitPrice": "100.00", "quantity": "1.00", "totalAmount": "100.00",
+    "financialCalculationLineId": 9001, "financialCalculationId": 77
+  } ]
 }
 ```
+
+**D-123 :** `allowedActions` suit strictement le cycle de vie `GENERATED → SENT → PAID` —
+`GENERATED` : `["send", "cancel"]`, `SENT` : `["markPaid"]`, `PAID`/`CANCELLED` : `[]`. Le
+frontend n'affiche un bouton que s'il y figure. `missionDate` = date effective de la ligne
+financière (horaires réels sinon planifiés). Les montants des lignes sont le **snapshot**
+figé à la génération : une modification ultérieure de tarif ne les change jamais (le PDF
+lit les mêmes snapshots). Lien bidirectionnel : `financialCalculationLineId` →
+`FinancialCalculationLine` ; côté cockpit, `invoiced[].invoice.id` → la facture.
 
 #### `GET /api/firm-invoices/{id}/pdf`
 
@@ -2351,9 +2441,16 @@ qui consomme exclusivement des `FinancialCalculationLine` déjà figées.
 
 #### `POST /api/firm-invoices/{id}/mark-paid`
 
-**Effets :** `status → PAID`, `paidAt = now()`
+**Précondition (D-123) :** `status = SENT` uniquement.
+
+**Effets :** `status → PAID`, `paidAt = now()` — la facture envoyée est considérée
+entièrement réglée. Les paiements partiels (`POST /{id}/payments`, D-075) restent un
+mécanisme distinct.
 
 **Réponse — 200 :** FirmInvoice mise à jour
+
+**Erreurs :** `409 INVOICE_STATUS_TRANSITION_INVALID` avec un message métier explicite —
+`GENERATED` (« doit d'abord être envoyée »), `CANCELLED`, `PAID` (« déjà marquée payée »).
 
 ---
 
@@ -5705,7 +5802,8 @@ tout document historique qui en porterait un, mais aucun document actuel n'en a.
 #### `GET /api/firm-invoices/eligible-lines`
 
 **Query params :** `firmId` (requis), `currency` (défaut `EUR`), `periodStart`,
-`periodEnd` (requis, `Y-m-d`). Lecture seule, ne réserve rien. Filtre sur
+`periodEnd` (requis, `Y-m-d` ; un instant ISO 8601 est ramené à sa date Europe/Brussels —
+D-123, corrige le décalage d'un jour de l'ancien envoi `toISOString()`). Lecture seule, ne réserve rien. Filtre sur
 `FinancialCalculationLine.effectiveAt`, calculs `APPROVED`/`LOCKED` uniquement, lignes
 `FIRM_INTERVENTION_FEE`/`FIRM_MATERIAL_FEE` non encore rattachées.
 
