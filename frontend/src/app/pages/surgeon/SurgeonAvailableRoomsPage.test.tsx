@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ToastProvider } from "../../ui/toast/ToastProvider";
 import { MemoryRouter } from "react-router-dom";
 import SurgeonAvailableRoomsPage from "./SurgeonAvailableRoomsPage";
 
@@ -28,6 +29,11 @@ function makeSlot(overrides: Partial<any> = {}) {
     endTime: "13:00",
     surgeon: { id: 3, name: "Dr Ftaita" },
     status: "AVAILABLE",
+    claimedBy: null,
+    claimedAt: null,
+    claimedByMe: false,
+    takeoverMission: null,
+    allowedActions: { takeOver: true, release: false },
     createdAt: "2026-08-01T00:00:00+00:00",
     ...overrides,
   };
@@ -37,9 +43,9 @@ function renderPage(initialEntry = "/app/s/planning/salles-disponibles") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
-      <QueryClientProvider client={client}>
+      <QueryClientProvider client={client}><ToastProvider>
         <SurgeonAvailableRoomsPage />
-      </QueryClientProvider>
+      </ToastProvider></QueryClientProvider>
     </MemoryRouter>,
   );
 }

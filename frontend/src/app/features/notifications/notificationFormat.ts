@@ -26,6 +26,7 @@ const TITLES: Record<string, string> = {
   ABSENCE_MISSION_CANCELLED: "Mission annulée (absence)",
   ABSENCE_INSTRUMENTIST_REASSIGNED: "Mission réaffectée (absence)",
   PLANNING_RESENT_MANUAL: "Planning renvoyé",
+  ROOM_TAKEOVER_MISSION_OFFER: "Salle reprise — mission disponible",
 };
 
 /**
@@ -102,6 +103,16 @@ export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "ev
     if (targets.length > 0) {
       const [first, ...rest] = targets;
       return rest.length > 0 ? `Nouvelle mission : ${first} (+${rest.length} autre${rest.length > 1 ? "s" : ""})` : `Nouvelle mission : ${first}`;
+    }
+  }
+
+  // D-124 — offre contextuelle à l'instrumentiste qui était prévue sur la salle libérée.
+  // Texte construit uniquement depuis le payload serveur (noms snapshotés), jamais recalculé.
+  if (n.eventType === "ROOM_TAKEOVER_MISSION_OFFER") {
+    const takenBy = typeof payload.takenByName === "string" ? payload.takenByName : null;
+    const original = typeof payload.originalSurgeonName === "string" ? payload.originalSurgeonName : null;
+    if (takenBy && original && missionDate && siteName) {
+      return `${takenBy} reprend la salle de ${original} le ${missionDate} à ${siteName}. Une mission est disponible pour ce créneau.`;
     }
   }
 

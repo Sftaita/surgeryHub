@@ -139,6 +139,11 @@ class MissionPostDeployService
 
         $this->em->wrapInTransaction(function () use ($mission, $actor, &$payload): void {
             $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
+            // D-124 audit — same stale-read hole as claim(): MissionStartDueCommand loads its
+            // whole batch first, so without this refresh a mission started (or cancelled) by a
+            // concurrent run/request is re-checked as ASSIGNED and started again — or flipped
+            // back from CANCELLED to IN_PROGRESS. Proven by MissionStartDueConcurrencyTest.
+            $this->em->refresh($mission);
 
             if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
                 throw new ConflictHttpException('Mission must be ASSIGNED to start');
@@ -337,6 +342,13 @@ class MissionPostDeployService
         try {
             $this->em->wrapInTransaction(function () use ($mission, $actor): void {
                 $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
+                // D-124 audit — lock() alone does NOT reload an already-managed entity. A
+                // concurrent request that loaded this Mission (OPEN) before the winner
+                // committed would otherwise re-check a stale in-memory OPEN/NULL here and
+                // silently overwrite the winner's assignment (mission_claim has no unique
+                // constraint since Version20260212093000). Proven by
+                // RoomTakeoverConcurrencyTest::test_two_instrumentists_racing_to_claim_the_new_mission_only_one_wins.
+                $this->em->refresh($mission);
 
                 if ($mission->getStatus() !== MissionStatus::OPEN) {
                     throw new ConflictHttpException('Mission not claimable');
@@ -628,9 +640,15 @@ class MissionPostDeployService
      * mission is immediately live in an active/published version).
      *
      * $notify — see release() doc.
+     *
+     * $planningVersion nullable since D-124: a room take-over (ReleasedRoomSlotTakeoverService)
+     * reuses the absent surgeon's cancelled Mission's version when one exists, but a room
+     * released BEFORE its planning was generated (D-103) has no version to attach to — the
+     * Mission is then live without one, exactly like a manually published ad hoc Mission
+     * (MissionService::publish()). Every pre-existing caller still passes a version.
      */
     public function createPostDeploy(
-        PlanningVersion $planningVersion,
+        ?PlanningVersion $planningVersion,
         User $actor,
         Hospital $site,
         User $surgeon,
@@ -778,6 +796,11 @@ class MissionPostDeployService
 
         $this->em->wrapInTransaction(function () use ($mission, $actor, &$marked): void {
             $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
+            // D-124 audit — same stale-read hole as claim(): CheckUncoveredEscalationsCommand
+            // loads its candidates first, so without this refresh a marker set (or a mission
+            // covered) by a concurrent run/request is re-checked as "OPEN, not escalated" and
+            // escalated again. Proven by CheckUncoveredEscalationsConcurrencyTest.
+            $this->em->refresh($mission);
 
             if ($mission->getStatus() !== MissionStatus::OPEN || $mission->getUncoveredEscalationSentAt() !== null) {
                 return;

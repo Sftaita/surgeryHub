@@ -6,6 +6,7 @@ use App\Entity\Mission;
 use App\Entity\NotificationEvent;
 use App\Entity\User;
 use App\Enum\MissionChangeType;
+use App\Enum\MissionStatus;
 use App\Enum\NotificationType;
 use App\Enum\PublicationChannel;
 use App\Message\MissionLifecycleChangedMessage;
@@ -45,6 +46,17 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
  * REASSIGNED branch only — AbsenceMissionsReactedMessageHandler sends that recipient the
  * richer ABSENCE_INSTRUMENTIST_REASSIGNED instead. The SURGEON_POST_COVERED branch is
  * unaffected and fires exactly as it would for any other OPEN→ASSIGNED reassignment.
+ *
+ * D-124 (room take-over, ReleasedRoomSlotTakeoverService):
+ *   ROOM_TAKEN_OVER → ROOM_TAKEOVER_MISSION_OFFER to the instrumentist initially planned on the
+ *                     released room, ONLY if MissionEligibilityService::evaluate() finds her
+ *                     eligible for the new OPEN mission right now; OPEN_MISSION_AVAILABLE to
+ *                     every other eligible pool instrumentist (she is excluded from that fan-out
+ *                     so she never gets both). Never an assignment, never an exclusivity.
+ *   CANCELLED with payload['roomSlotId'] (taker released the room) → the instrumentist who
+ *                     was assigned (payload['fromInstrumentistId'], cancel() already cleared
+ *                     the FK) is told via PLANNING_MISSION_CANCELLED; the surgeon is not
+ *                     notified of their own release.
  *
  * ASSIGNED (MissionChangeType): does not exist in the enum.  Both MissionPostDeployService::assign()
  * and ::reassign() produce REASSIGNED.  The OPEN→ASSIGNED case is distinguished by
@@ -97,6 +109,7 @@ final class MissionLifecycleChangedMessageHandler
             MissionChangeType::RELEASED   => $this->handleReleased($message),
             MissionChangeType::REASSIGNED => $this->handleReassigned($message),
             MissionChangeType::CANCELLED  => $this->handleCancelled($message),
+            MissionChangeType::ROOM_TAKEN_OVER => $this->handleRoomTakenOver($message),
             default => $this->logger->info('MissionLifecycleChanged: unhandled changeType — forward-compatible skip', [
                 'changeType' => $message->changeType->value,
                 'missionId'  => $message->missionId,
@@ -428,9 +441,13 @@ final class MissionLifecycleChangedMessageHandler
             'cancelledAt' => $message->occurredAt->format(\DateTimeInterface::ATOM),
         ];
 
+        // D-124 — a surgeon releasing a room they had taken over cancels their own Mission:
+        // never notify them about their own action.
+        $isRoomRelease = isset($message->payload['roomSlotId']);
+
         // ── Surgeon ────────────────────────────────────────────────────────────
         $surgeon = $this->resolveSurgeon($mission, 'CANCELLED');
-        if ($surgeon !== null) {
+        if ($surgeon !== null && !($isRoomRelease && $surgeon->getId() === $message->actorId)) {
             $ch = $this->resolveChannelsSafely($surgeon, NotificationType::PLANNING_MISSION_CANCELLED);
             if ($ch->inApp) {
                 try {
@@ -472,6 +489,13 @@ final class MissionLifecycleChangedMessageHandler
         //    every current code path; kept as a safety net in case a future caller changes
         //    that) ─────────────────────────────────────────────────────────────────────────
         $instrumentist = $mission->getInstrumentist();
+        // D-124 — room release: cancel() cleared the FK before this handler runs, so the
+        // instrumentist who had claimed the taken-over room's Mission is resolved from the
+        // payload snapshot instead. Scoped to room releases only — the absence-driven cancel
+        // paths notify that person through AbsenceMissionsReactedMessage (never twice).
+        if ($instrumentist === null && $isRoomRelease && ($message->payload['fromInstrumentistId'] ?? null) !== null) {
+            $instrumentist = $this->em->find(User::class, (int) $message->payload['fromInstrumentistId']);
+        }
         if ($instrumentist !== null) {
             $ch = $this->resolveChannelsSafely($instrumentist, NotificationType::PLANNING_MISSION_CANCELLED);
             if ($ch->inApp) {
@@ -510,14 +534,118 @@ final class MissionLifecycleChangedMessageHandler
         }
     }
 
+    // ── ROOM_TAKEN_OVER → contextual offer + pool (D-124) ────────────────────
+
+    /**
+     * A surgeon took over a room released by a colleague's absence; the new Mission is OPEN.
+     * Eligibility is evaluated HERE, at send time, with the single source of truth
+     * (MissionEligibilityService::evaluate() — the same check claim() runs): absence, site
+     * affiliation, inactive account, schedule conflict, and the mission still being OPEN and
+     * unassigned. An ineligible initial instrumentist gets nothing — never a claim invitation.
+     */
+    private function handleRoomTakenOver(MissionLifecycleChangedMessage $message): void
+    {
+        $mission = $this->loadMission($message->missionId, 'ROOM_TAKEN_OVER');
+        if ($mission === null) {
+            return;
+        }
+
+        if ($mission->getStatus() !== MissionStatus::OPEN || $mission->getInstrumentist() !== null) {
+            $this->logger->info('MissionLifecycleChanged::ROOM_TAKEN_OVER: mission no longer OPEN — no offer sent', [
+                'missionId' => $mission->getId(),
+                'status'    => $mission->getStatus()->value,
+            ]);
+            return;
+        }
+
+        $excluded = [];
+        $initialId = $message->payload['initialInstrumentistId'] ?? null;
+        $initial = $initialId !== null ? $this->em->find(User::class, (int) $initialId) : null;
+
+        if ($initial !== null) {
+            $excluded[] = $initial->getId(); // never both the contextual offer and the generic one
+            $eligibility = $this->eligibilityService->evaluate($mission, $initial);
+
+            if ($eligibility->eligible) {
+                $this->sendRoomTakeoverOffer($mission, $initial, $message);
+            } else {
+                $this->logger->info('MissionLifecycleChanged::ROOM_TAKEN_OVER: initial instrumentist ineligible — no offer', [
+                    'missionId'       => $mission->getId(),
+                    'instrumentistId' => $initial->getId(),
+                    'reasons'         => array_map(static fn ($r) => $r->value, $eligibility->reasons),
+                ]);
+            }
+        }
+
+        $this->sendOpenMissionAvailableNotifications($mission, $message, $excluded);
+    }
+
+    private function sendRoomTakeoverOffer(Mission $mission, User $instrumentist, MissionLifecycleChangedMessage $message): void
+    {
+        $channels = $this->resolveChannelsSafely($instrumentist, NotificationType::ROOM_TAKEOVER_MISSION_OFFER);
+        $siteName = $mission->getSite()?->getName() ?? '';
+        $takenBy = $message->payload['takenByName'] ?? null;
+        $original = $message->payload['originalSurgeonName'] ?? null;
+
+        $payload = [
+            'missionId'           => $mission->getId(),
+            'roomSlotId'          => $message->payload['roomSlotId'] ?? null,
+            'dayLabel'            => $mission->getStartAt()?->format('l'),
+            'missionDate'         => $mission->getStartAt()?->format('d/m/Y'),
+            'startTime'           => $mission->getStartAt()?->format('H:i'),
+            'endTime'             => $mission->getEndAt()?->format('H:i'),
+            'siteName'            => $siteName,
+            'periodLabel'         => $this->periodLabel($mission),
+            'takenByName'         => $takenBy,
+            'originalSurgeonName' => $original,
+        ];
+
+        if ($channels->inApp) {
+            try {
+                $this->createNotificationEvent($instrumentist, $mission, NotificationType::ROOM_TAKEOVER_MISSION_OFFER, $payload);
+                $this->em->flush();
+                $this->logger->info('MissionLifecycleChanged::ROOM_TAKEN_OVER: ROOM_TAKEOVER_MISSION_OFFER inApp created', [
+                    'missionId'       => $mission->getId(),
+                    'instrumentistId' => $instrumentist->getId(),
+                ]);
+            } catch (\Throwable $e) {
+                $this->logger->error('MissionLifecycleChanged::ROOM_TAKEN_OVER: offer inApp failed', [
+                    'missionId'       => $message->missionId,
+                    'instrumentistId' => $instrumentist->getId(),
+                    'error'           => $e->getMessage(),
+                ]);
+            }
+        }
+
+        if ($channels->push) {
+            try {
+                $date = $mission->getStartAt()?->format('d/m') ?? '';
+                $this->webPushService->sendToUser(
+                    $instrumentist,
+                    'Salle reprise — mission disponible',
+                    sprintf('%s reprend la salle de %s le %s à %s. Une mission est disponible.', $takenBy ?? 'Un chirurgien', $original ?? 'un confrère', $date, $siteName),
+                    ['type' => 'ROOM_TAKEOVER_MISSION_OFFER', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::ROOM_TAKEOVER_MISSION_OFFER, $mission, $instrumentist)],
+                );
+            } catch (\Throwable $e) {
+                $this->logger->error('MissionLifecycleChanged::ROOM_TAKEN_OVER: offer push failed', [
+                    'missionId'       => $message->missionId,
+                    'instrumentistId' => $instrumentist->getId(),
+                    'error'           => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
     // ── Pool notifications (RELEASED) ────────────────────────────────────────
 
     /**
      * Sends OPEN_MISSION_AVAILABLE to instrumentists eligible for the newly-reopened mission.
      * Reuses MissionEligibilityService::findEligible() — the exact same model as deploy.
      * Push is not gated through preferences (consistent with deploy handler behavior).
+     *
+     * @param list<int> $excludeUserIds D-124 — recipients already sent a more specific notice
      */
-    private function sendOpenMissionAvailableNotifications(Mission $mission, MissionLifecycleChangedMessage $message): void
+    private function sendOpenMissionAvailableNotifications(Mission $mission, MissionLifecycleChangedMessage $message, array $excludeUserIds = []): void
     {
         try {
             $eligibleBySiteId = $this->eligibilityService->findEligible([$mission]);
@@ -530,7 +658,10 @@ final class MissionLifecycleChangedMessageHandler
         }
 
         $siteId        = $mission->getSite()?->getId();
-        $eligibleUsers = $eligibleBySiteId[$siteId] ?? [];
+        $eligibleUsers = array_values(array_filter(
+            $eligibleBySiteId[$siteId] ?? [],
+            static fn (User $u) => !in_array($u->getId(), $excludeUserIds, true),
+        ));
 
         if (empty($eligibleUsers)) {
             $this->logger->info('MissionLifecycleChanged::RELEASED: no eligible instrumentists for pool notification', [

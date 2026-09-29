@@ -24,6 +24,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   CATALOGUE_REQUEST_CREATED: "Nouvelle demande Catalogue à traiter",
   CATALOGUE_REQUEST_RESOLVED: "Votre proposition Catalogue acceptée",
   CATALOGUE_REQUEST_IGNORED: "Votre proposition Catalogue non retenue",
+  ROOM_TAKEOVER_MISSION_OFFER: "Salle reprise — mission disponible pour vous",
 };
 
 export function notificationTypeLabel(type: string): string {

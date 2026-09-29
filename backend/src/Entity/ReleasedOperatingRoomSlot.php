@@ -52,6 +52,17 @@ use Symfony\Component\Serializer\Attribute\Groups;
  * `RESTRICT` sur `SurgeonSchedulePost.site`), donc `SurgeonAbsenceBlockOccurrenceResolver` ne
  * peut plus jamais retrouver d'occurrence pour cet établissement disparu — aucune nouvelle
  * ligne, orpheline ou non, ne peut plus jamais être créée pour lui.
+ *
+ * **D-124 — reprise de salle (2026-09-25).** Le « Lot E » réservé ci-dessus est réalisé sous
+ * une forme minimale : `status` peut désormais passer AVAILABLE ⇄ CLAIMED, uniquement via
+ * `ReleasedRoomSlotTakeoverService` (verrou pessimiste sur CETTE ligne — elle est l'identité
+ * unique du créneau, la contrainte `(site_id, post_id, occurrence_date)` garantissant qu'il
+ * n'en existe qu'une). `claimedBy`/`claimedAt`/`takeoverMission` décrivent la reprise EN COURS
+ * seulement (remis à NULL au désistement) ; `originalMission` (la Mission annulée du
+ * chirurgien absent, si elle existe) est résolue une fois et conservée. L'historique des
+ * reprises successives vit exclusivement dans `AuditEvent`. La ligne n'est toujours jamais
+ * supprimée, et l'identité du créneau (site/post/date/période/horaires/chirurgien libérant)
+ * n'est jamais modifiée.
  */
 #[ORM\Entity(repositoryClass: ReleasedOperatingRoomSlotRepository::class)]
 #[ORM\Table(
@@ -136,6 +147,28 @@ class ReleasedOperatingRoomSlot
     #[Groups(['planning:read'])]
     private \DateTimeImmutable $createdAt;
 
+    /** D-124 — chirurgien ayant repris la salle (reprise en cours seulement). ON DELETE SET NULL. */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(name: 'claimed_by_id', nullable: true, onDelete: 'SET NULL')]
+    private ?User $claimedBy = null;
+
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $claimedAt = null;
+
+    /** D-124 — Mission OPEN créée pour le repreneur, dans la même transaction que la reprise. */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(name: 'takeover_mission_id', nullable: true, onDelete: 'SET NULL')]
+    private ?Mission $takeoverMission = null;
+
+    /**
+     * D-124 — Mission (annulée) du chirurgien absent pour ce créneau, si le planning avait déjà
+     * été généré. Jamais modifiée par la reprise ; sert au contexte (instrumentiste initialement
+     * prévue) et à bloquer sa restauration automatique (D-104) tant que la salle est reprise.
+     */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(name: 'original_mission_id', nullable: true, onDelete: 'SET NULL')]
+    private ?Mission $originalMission = null;
+
     public function __construct()
     {
         $this->createdAt = new \DateTimeImmutable();
@@ -174,4 +207,31 @@ class ReleasedOperatingRoomSlot
     public function setStatus(ReleasedRoomSlotStatus $status): static { $this->status = $status; return $this; }
 
     public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }
+
+    public function getClaimedBy(): ?User { return $this->claimedBy; }
+    public function getClaimedAt(): ?\DateTimeImmutable { return $this->claimedAt; }
+    public function getTakeoverMission(): ?Mission { return $this->takeoverMission; }
+
+    public function getOriginalMission(): ?Mission { return $this->originalMission; }
+    public function setOriginalMission(?Mission $originalMission): static { $this->originalMission = $originalMission; return $this; }
+
+    /** D-124 — AVAILABLE → CLAIMED. Appelé uniquement par ReleasedRoomSlotTakeoverService, sous verrou. */
+    public function markClaimed(User $claimedBy, Mission $takeoverMission, \DateTimeImmutable $at): static
+    {
+        $this->status = ReleasedRoomSlotStatus::CLAIMED;
+        $this->claimedBy = $claimedBy;
+        $this->claimedAt = $at;
+        $this->takeoverMission = $takeoverMission;
+        return $this;
+    }
+
+    /** D-124 — CLAIMED → AVAILABLE. Appelé uniquement par ReleasedRoomSlotTakeoverService, sous verrou. */
+    public function markAvailableAgain(): static
+    {
+        $this->status = ReleasedRoomSlotStatus::AVAILABLE;
+        $this->claimedBy = null;
+        $this->claimedAt = null;
+        $this->takeoverMission = null;
+        return $this;
+    }
 }

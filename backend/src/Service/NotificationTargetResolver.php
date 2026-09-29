@@ -72,6 +72,14 @@ final class NotificationTargetResolver
             return '/app/s/requests';
         }
 
+        // D-124 — le CTA « Prendre la mission » doit mener au mécanisme de claim existant, qui
+        // vit sur l'écran Offres (MissionDetailPage n'expose aucun bouton claim) — jamais une
+        // route de détail où l'instrumentiste ne pourrait rien faire. La Mission reste liée au
+        // NotificationEvent pour le contexte.
+        if ($type === NotificationType::ROOM_TAKEOVER_MISSION_OFFER && $isInstrumentist) {
+            return '/app/i/offers';
+        }
+
         if ($mission !== null) {
             if ($isManager) {
                 return '/app/m/missions/' . $mission->getId();

@@ -106,7 +106,18 @@ export function AvailableRoomsTab() {
                     {slot.startTime && slot.endTime ? `${slot.startTime}–${slot.endTime}` : (PERIOD_LABELS[slot.period] ?? slot.period)}
                   </TableCell>
                   <TableCell>{slot.surgeon?.name ?? "—"}</TableCell>
-                  <TableCell>Disponible</TableCell>
+                  <TableCell>
+                    {slot.status === "CLAIMED" ? (
+                      <>
+                        Reprise par {slot.claimedBy?.name ?? "—"}
+                        {slot.takeoverMission && (
+                          <Typography component="span" sx={{ display: "block", fontSize: 12, color: planningV2Colors.textMuted }}>
+                            Instrumentiste : {slot.takeoverMission.instrumentist?.name ?? "à pourvoir"}
+                          </Typography>
+                        )}
+                      </>
+                    ) : "Disponible"}
+                  </TableCell>
                   <TableCell>{new Date(slot.createdAt).toLocaleString("fr-BE")}</TableCell>
                 </TableRow>
               ))}

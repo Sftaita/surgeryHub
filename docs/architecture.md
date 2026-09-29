@@ -2134,6 +2134,52 @@ l'email « Libération de salle » (Lot A) — vérifié pour survivre au repli 
 Futur « Lot E — Intérêt et attribution » (`assignedToSurgeon`/`assignedAt`/`closedAt`) :
 proposé, discuté, explicitement non codé dans ce lot.
 
+### Reprendre une salle libérée (D-124)
+
+Réalise le « Lot E » ci-dessus sous forme minimale, **sans nouvelle entité** :
+`ReleasedOperatingRoomSlot` reste l'identité unique du créneau et gagne `AVAILABLE ⇄ CLAIMED`
++ `claimedBy`/`claimedAt`/`takeoverMission`/`originalMission` (migration additive
+`Version20260925090000`).
+
+```
+POST /api/available-rooms/{id}/take-over      (ReleasedRoomSlotVoter::TAKE_OVER)
+        ▼
+ReleasedRoomSlotTakeoverService::takeOver()  ── une transaction ──────────────────────────┐
+  lock(slot, PESSIMISTIC_WRITE) + refresh()   ← unicité : le perdant attend, relit CLAIMED → 409
+  gardes : AVAILABLE · non passé · chirurgien absent toujours absent · repreneur ni absent
+           ni en conflit (PlanningConflictDetectionService, double salle D-119)
+  horaires : snapshot du slot → Mission d'origine → ShiftPeriodConfig (jamais inventés)
+  MissionPostDeployService::createPostDeploy(OPEN, sans instrumentiste)  ← audit ADDED
+  slot.markClaimed() + AuditEvent ROOM_SLOT_TAKEN_OVER                                    │
+  commit ─────────────────────────────────────────────────────────────────────────────────┘
+        ▼ (après commit, R-07)
+MissionLifecycleChangedMessage(ROOM_TAKEN_OVER) → MissionLifecycleChangedMessageHandler (async)
+  ├── instrumentiste initialement prévue : MissionEligibilityService::evaluate()
+  │     éligible → ROOM_TAKEOVER_MISSION_OFFER · sinon rien
+  └── pool : findEligible() moins elle → OPEN_MISSION_AVAILABLE
+        ▼
+POST /api/missions/{id}/claim (inchangé)  → OPEN → ASSIGNED, SURGEON_POST_COVERED au repreneur
+```
+
+**Instrumentiste initialement prévue** : `fromInstrumentistId` du dernier
+`MISSION_CANCELLED_POST_DEPLOY` de la Mission d'origine (annulée par
+`AbsenceMissionReactionService`) ; à défaut (salle libérée avant génération, D-103), le binôme
+théorique `SurgeonSchedulePost.instrumentist` (D-107). Jamais une attribution.
+
+**Cycle inverse** : `POST /api/available-rooms/{id}/release` → `MissionPostDeployService::cancel()`
+si `OPEN`/`ASSIGNED` → `CLAIMED → AVAILABLE` (`ROOM_SLOT_REOPENED`). Même effet automatique
+quand le repreneur déclare ensuite une absence : `AbsenceMissionReactionService` annule sa
+Mission, puis `ReleasedOperatingRoomSlotService` (appelé après) rouvre le créneau
+(`reopenSlotsCancelledByTakerAbsence()`).
+
+**Cohérence avec D-104** : `AbsenceImpactReconciliationService` ne restaure jamais la Mission
+(ou l'occurrence pré-génération) du chirurgien absent tant que sa salle est `CLAIMED` —
+`isOriginalMissionTakenOver()` / `isOccurrenceTakenOver()`.
+
+Invariants respectés : `SurgeonSchedulePost` et Mission d'origine jamais modifiés ; aucune
+mutation de Mission hors `MissionPostDeployService` ; notifications uniquement via le pipeline
+`MissionLifecycleChangedMessage` + `NotificationPreferenceResolver`.
+
 ### Éditeur unifié Génération / Modification (Batch 15K)
 
 Planning V2 s'appuie sur **un seul composant éditeur** (`GeneratePlanningTab.tsx`) pour les

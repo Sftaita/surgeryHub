@@ -10755,6 +10755,140 @@ directe d'un doublon → violation UNIQUE) et le scénario multi-firmes.
 l'annulation d'une facture `GENERATED` supprime ses lignes snapshot (numéro consommé, détail
 perdu) ; `Mission.invoiceGeneratedAt` n'est plus alimenté ; montants multi-devises affichés
 séparément, jamais convertis.
+
+## D-124 — Reprendre une salle libérée : reprise transactionnelle d'un `ReleasedOperatingRoomSlot` et nouvelle Mission OPEN (2026-09-25)
+
+### Contexte
+
+Incident terrain : Dr A absent, sa salle apparaît « disponible » (Lot D, D-114) ; Dr B veut la
+reprendre, mais rien ne l'enregistre, et Dr C peut demander la même salle. L'affichage devient
+un workflow transactionnel. Cette décision **s'ajoute** au Lot D (qui réservait un « Lot E » à
+l'attribution) sans modifier rétroactivement ce qui y est décidé.
+
+### Décision 1 — identité du créneau : `ReleasedOperatingRoomSlot`, aucune nouvelle entité
+
+Le créneau libéré a déjà une identité unique et stable : une ligne `released_operating_room_slot`
+par `(site_id, post_id, occurrence_date)` (contrainte unique du Lot D). Aucune seconde notion de
+créneau n'est créée. L'entité gagne (migration additive `Version20260925090000`, colonnes
+nullables, aucune donnée existante touchée) : `claimedBy`, `claimedAt`, `takeoverMission`
+(reprise **en cours** — remis à `NULL` au désistement) et `originalMission` (Mission annulée du
+chirurgien absent, résolue une fois, conservée). `ReleasedRoomSlotStatus` gagne `CLAIMED`
+(VARCHAR, sans migration). La ligne n'est toujours jamais supprimée et l'identité du créneau
+n'est jamais modifiée ; l'historique des reprises successives vit dans `AuditEvent`.
+
+### Décision 2 — unicité de la reprise : verrou pessimiste sur la ligne du créneau + relecture
+
+`ReleasedRoomSlotTakeoverService::takeOver()` : dans UNE transaction, `lock(slot,
+PESSIMISTIC_WRITE)` puis `refresh(slot)`, garde `AVAILABLE`, création de la Mission, passage à
+`CLAIMED`, commit. Le second chirurgien attend le verrou, relit `CLAIMED` et reçoit **409
+`ROOM_SLOT_ALREADY_TAKEN`** avec `takenBy` — aucune Mission n'est jamais créée pour lui. Le
+`refresh()` est indispensable : `lock()` seul ne recharge pas une entité déjà en mémoire, lue
+avant le commit du gagnant. Prouvé sur deux vraies connexions MySQL
+(`RoomTakeoverConcurrencyTest`).
+
+Le Voter `TAKE_OVER` ne contient volontairement **aucune condition de statut** : un créneau déjà
+repris est un conflit métier (409 explicite, « reprise par Dr X »), jamais un refus
+d'autorisation (403) qui laisserait le perdant sans explication. `allowedActions.takeOver`
+combine le Voter et l'état (`ReleasedRoomSlotTakeoverService::allowedActions()`).
+
+Gardes revérifiées sous verrou : créneau non passé ; chirurgien absent **toujours absent**
+(la non-rétractation du Lot D laisse un créneau publié même si l'absence est supprimée — sa
+Mission a alors pu être restaurée, D-104) ; repreneur ni absent, ni en conflit
+(`PlanningConflictDetectionService::findConflict()` avec la dérogation « double salle » D-119) ;
+horaires connus.
+
+### Décision 3 — relation avec la Mission d'origine : jamais modifiée, jamais restaurée par-dessous
+
+La Mission de Dr A reste `CANCELLED` (par `AbsenceMissionReactionService`, D-062) et son
+`SurgeonSchedulePost` n'est jamais touché (invariant Planning V2). Elle est retrouvée par
+(chirurgien, site, jour Bruxelles, période) — `Mission` n'a pas de FK vers le Post. Tant que le
+créneau est `CLAIMED`, `AbsenceImpactReconciliationService` ne restaure ni cette Mission
+(`isOriginalMissionTakenOver()`) ni l'occurrence pré-génération (`isOccurrenceTakenOver()`) :
+supprimer l'absence de Dr A ne met jamais deux chirurgiens dans la même salle.
+
+### Décision 4 — création de la nouvelle Mission
+
+Toujours via `MissionPostDeployService::createPostDeploy()` (R-04, audit
+`MISSION_ADDED_POST_DEPLOY`) : repreneur, même site/date/horaires, `OPEN`, sans instrumentiste,
+`createdBy` = repreneur. Horaires : snapshot du créneau (Lot D) → Mission d'origine →
+`ShiftPeriodConfig` actif ; jamais inventés (sinon 409 `ROOM_SLOT_SCHEDULE_UNKNOWN`), toujours
+construits en heure de Bruxelles (D-066). `planningVersion` = celle de la Mission d'origine ;
+`null` si la salle a été libérée avant génération — `createPostDeploy()` accepte désormais une
+version nullable (additif, tous les appelants existants en passent une), comme une Mission ad hoc
+publiée à la main. Aucune `MissionPublication` : la Mission apparaît dans les Offres comme toute
+Mission V2 OPEN et reste réclamable par le `claim()` existant.
+
+### Décision 5 — instrumentiste initialement prévue : priorité informationnelle, jamais attribution
+
+Source : `fromInstrumentistId` du dernier `MISSION_CANCELLED_POST_DEPLOY` de la Mission d'origine
+(`cancel()` a déjà vidé la FK) ; à défaut, `SurgeonSchedulePost.instrumentist` (binôme théorique,
+D-107). Snapshotée dans l'audit `ROOM_SLOT_TAKEN_OVER`. Au moment de l'envoi (handler async), son
+éligibilité est évaluée par `MissionEligibilityService::evaluate()` — la même règle que
+`claim()` (inactive, non affiliée, absente, conflit, Mission plus OPEN). Éligible →
+`ROOM_TAKEOVER_MISSION_OFFER` (nouveau type, in-app + push selon préférences, email=false par
+défaut, deep link `/app/i/offers`). Non éligible → **rien**, ni offre contextuelle ni offre
+générique. Elle est exclue du fan-out `OPEN_MISSION_AVAILABLE` pour ne jamais recevoir deux
+notifications. La Mission est OPEN pour tout le pool en même temps : aucune exclusivité.
+
+### Décision 6 — réouverture après libération
+
+`POST /api/available-rooms/{id}/release` (repreneur ou manager) : `cancel()` si la Mission est
+`OPEN`/`ASSIGNED` (le Voter refuse une Mission déjà démarrée), puis `CLAIMED → AVAILABLE` et
+`ROOM_SLOT_REOPENED` (`reason: TAKER_RELEASED`). Une instrumentiste déjà assignée est prévenue
+par la branche `CANCELLED` existante du handler, qui la lit dans le payload (`roomSlotId` +
+`fromInstrumentistId`) puisque `cancel()` a déjà détaché la FK ; le repreneur n'est pas notifié
+de sa propre action. Si la Mission avait déjà été annulée par ailleurs, la salle est simplement
+rendue. Même réouverture **automatique** quand le repreneur déclare ensuite une absence
+(`reason: TAKER_ABSENT`) : sans cela, le créneau resterait `CLAIMED` sur une Mission annulée.
+
+### Audit (aucune donnée patient, noms toujours snapshotés)
+
+`ROOM_SLOT_MADE_AVAILABLE` (recordGlobal, à la création du créneau ; acteur = utilisateur
+technique `system@surgicalhub.internal` car le créneau est produit automatiquement, l'auteur de
+l'absence étant snapshoté en `triggeredById/Name` — un acteur humain aurait attaché un
+`AuditEvent` à chaque déclaration d'absence, FK `actor` RESTRICT, effet de bord nouveau révélé
+par 56 échecs de la suite complète au premier essai), `ROOM_SLOT_TAKEN_OVER`
+(sur la nouvelle Mission : créneau, chirurgien absent, repreneur, Mission d'origine,
+instrumentiste initiale), `ROOM_SLOT_REOPENED` (sur la Mission de reprise), en plus des
+`MISSION_ADDED_POST_DEPLOY`/`MISSION_CANCELLED_POST_DEPLOY` de `MissionPostDeployService`.
+
+### Bug préexistant trouvé et corrigé — double claim concurrent
+
+`MissionPostDeployService::claim()` posait le verrou pessimiste **sans recharger** la Mission.
+Deux instrumentistes ayant chargé la même Mission OPEN avant le commit du premier : le second,
+une fois le verrou obtenu, revérifiait un statut `OPEN` périmé en mémoire et **écrasait**
+l'attribution du premier (`mission_claim` n'a plus de contrainte unique depuis
+`Version20260212093000`). Le test HTTP existant ne le voyait pas : séquentiel, le second
+recevait 403 du Voter avant tout verrou. Reproduit sur deux vraies connexions
+(`RoomTakeoverConcurrencyTest::test_two_instrumentists_racing_to_claim_the_new_mission_only_one_wins`,
+rouge avant correctif), corrigé par un `refresh()` après le `lock()`.
+
+Audit complémentaire (2026-09-29) — `start()` et `markUncoveredEscalationSent()` avaient
+**réellement** le même défaut : leurs commandes (`MissionStartDueCommand`,
+`CheckUncoveredEscalationsCommand`) chargent tout leur lot avant de boucler, et `lock()`
+n'émet qu'un `SELECT 1 … FOR UPDATE` sans réhydrater l'entité. Conséquences prouvées (tests
+rouges avant correctif, deux vraies connexions) : un second run démarrait une Mission déjà
+démarrée (double `MISSION_STARTED`), **remettait en `IN_PROGRESS` une Mission annulée entre le
+chargement et le verrou** (instrumentiste à NULL), escaladait deux fois, ou escaladait une
+Mission déjà couverte. Les tests existants ne le voyaient pas : leur retry utilisait un
+EntityManager neuf, qui relit l'état commité. Même correctif (`refresh()` après `lock()`),
+tests `MissionStartDueConcurrencyTest::test_a_run_holding_a_stale_*` et
+`CheckUncoveredEscalationsConcurrencyTest::test_a_run_holding_a_stale_*`. D'autres services
+utilisent aussi `lock()` sans `refresh()` ; ils n'ont pas été audités ici.
+
+### Limites connues
+
+- Après un désistement, si l'absence de Dr A avait été supprimée pendant la reprise, sa Mission
+  reste `CANCELLED` (restauration bloquée pendant la reprise, jamais rejouée ensuite) et le
+  créneau `AVAILABLE` n'est plus reprenable (409 `ROOM_SLOT_NOT_AVAILABLE`). Le scan manuel
+  « Vérifier les conflits » (D-106) peut la restaurer.
+- Une annulation manager de la Mission de reprise par le `POST /api/missions/{id}/cancel`
+  générique laisse le créneau `CLAIMED` (bouton « Libérer la salle » toujours proposé pour le
+  rendre).
+- Pas d'email dédié : in-app + push, comme les autres notifications du handler.
+
+Non déployé.
+
 ## D-125 — Planning vivant : provenance d'une génération ≠ réalité opérationnelle du calendrier ; diffusion d'une mission en trois modes (pool / demande nominative / attribution directe) (2026-09-26)
 
 ### Contexte

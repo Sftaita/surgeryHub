@@ -8,6 +8,7 @@ use App\Entity\ReleasedOperatingRoomSlot;
 use App\Entity\ShiftPeriodConfig;
 use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Enum\ShiftPeriod;
 use App\Repository\ReleasedOperatingRoomSlotRepository;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
@@ -46,16 +47,20 @@ use Doctrine\ORM\EntityManagerInterface;
  */
 class ReleasedOperatingRoomSlotService
 {
+    private const SYSTEM_ACTOR_EMAIL = 'system@surgicalhub.internal';
+
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly SurgeonAbsenceBlockOccurrenceResolver $resolver,
         private readonly ReleasedOperatingRoomSlotRepository $slots,
+        private readonly AuditService $audit,
+        private readonly ReleasedRoomSlotTakeoverService $takeovers,
     ) {
     }
 
     public function onAbsenceCreated(Absence $absence, User $actor): void
     {
-        $this->react($absence);
+        $this->react($absence, $actor);
     }
 
     public function onAbsenceUpdated(Absence $absence, User $actor): void
@@ -63,7 +68,7 @@ class ReleasedOperatingRoomSlotService
         // Une extension de congé révèle de nouvelles occurrences (créées ci-dessous, déjà
         // filtrées par existsFor()) ; un raccourcissement ne révèle jamais rien de nouveau et
         // ne touche jamais les lignes déjà créées (aucune suppression ici, par construction).
-        $this->react($absence);
+        $this->react($absence, $actor);
     }
 
     /**
@@ -120,8 +125,13 @@ class ReleasedOperatingRoomSlotService
         return $result;
     }
 
-    private function react(Absence $absence): void
+    private function react(Absence $absence, User $actor): void
     {
+        // D-124 — l'absent peut aussi être un REPRENEUR : sa Mission de reprise vient d'être
+        // annulée par AbsenceMissionReactionService (appelé avant ce collaborateur) — rendre la
+        // salle plutôt que la laisser CLAIMED sur une Mission annulée.
+        $this->takeovers->reopenSlotsCancelledByTakerAbsence($absence, $actor);
+
         foreach ($this->resolveFutureOccurrences($absence) as $occurrence) {
             if ($occurrence['alreadyExists']) {
                 continue;
@@ -155,7 +165,35 @@ class ReleasedOperatingRoomSlotService
                 // Lot B : la contrainte unique est le dernier garde-fou, pas le mécanisme
                 // principal d'idempotence.
                 $this->em->detach($slot);
+                continue;
             }
+
+            // D-124 — « salle rendue disponible », uniquement pour une ligne réellement créée
+            // par CETTE exécution (jamais pour un doublon concurrent détaché ci-dessus).
+            // Acteur = utilisateur technique système (même convention que MissionStartDueCommand) :
+            // le créneau est produit automatiquement par le moteur d'absences, pas par un geste
+            // humain sur la salle ; l'humain qui a déclaré l'absence est snapshoté
+            // (triggeredById/Name). Sans cela, chaque déclaration d'absence attacherait un
+            // AuditEvent à son auteur (FK actor RESTRICT) — un effet de bord nouveau sur un flux
+            // qui n'auditait rien jusqu'ici. Repli sur l'humain si l'utilisateur système n'existe
+            // pas (base locale reconstruite sans migrations).
+            $surgeon = $occurrence['surgeon'];
+            $this->audit->recordGlobal($this->systemActor() ?? $actor, AuditEventType::ROOM_SLOT_MADE_AVAILABLE, [
+                'roomSlotId'          => $slot->getId(),
+                'postId'              => $slot->getPostId(),
+                'occurrenceDate'      => $slot->getOccurrenceDate()->format('Y-m-d'),
+                'period'              => $slot->getPeriod()->value,
+                'startTime'           => $slot->getStartTime()?->format('H:i'),
+                'endTime'             => $slot->getEndTime()?->format('H:i'),
+                'siteId'              => $occurrence['site']->getId(),
+                'siteName'            => $occurrence['site']->getName(),
+                'originalSurgeonId'   => $surgeon->getId(),
+                'originalSurgeonName' => $surgeon->getDrName(),
+                'absenceId'           => $absence->getId(),
+                'triggeredById'       => $actor->getId(),
+                'triggeredByName'     => trim(($actor->getFirstname() ?? '') . ' ' . ($actor->getLastname() ?? '')) ?: $actor->getEmail(),
+            ]);
+            $this->em->flush();
         }
     }
 
@@ -164,6 +202,11 @@ class ReleasedOperatingRoomSlotService
         $config = $this->em->getRepository(ShiftPeriodConfig::class)->findOneBy(['site' => $site, 'period' => $period]);
 
         return $config !== null && $config->isActive() ? $config : null;
+    }
+
+    private function systemActor(): ?User
+    {
+        return $this->em->getRepository(User::class)->findOneBy(['email' => self::SYSTEM_ACTOR_EMAIL]);
     }
 
     private static function isSurgeon(User $user): bool

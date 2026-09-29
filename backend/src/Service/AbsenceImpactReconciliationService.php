@@ -83,6 +83,7 @@ class AbsenceImpactReconciliationService
         private readonly AuditService $auditService,
         private readonly MessageBusInterface $bus,
         private readonly LoggerInterface $logger,
+        private readonly ReleasedRoomSlotTakeoverService $roomTakeovers,
     ) {
     }
 
@@ -295,6 +296,9 @@ class AbsenceImpactReconciliationService
         if (!$post->isActive()) {
             return true;
         }
+        if ($this->roomTakeovers->isOccurrenceTakenOver($post->getId(), $date)) {
+            return true; // D-124 — room taken over by another surgeon, never restore underneath it
+        }
         if (empty($this->generator->theoreticalOccurrenceDates($post, $date, $date))) {
             return true; // recurrence rule no longer produces this date at all
         }
@@ -369,6 +373,12 @@ class AbsenceImpactReconciliationService
             $payload = $latest->getPayload() ?? [];
             if (($payload['causedByAbsenceId'] ?? null) === null) {
                 continue; // a manager action caused the latest state — never touch it
+            }
+            // D-124 — another surgeon has taken over this released room: restoring the absent
+            // surgeon's Mission would put two surgeons in the same room. Never restore while
+            // the take-over is in progress (the slot must be released first).
+            if ($this->roomTakeovers->isOriginalMissionTakenOver($mission)) {
+                continue;
             }
             // Deliberately NOT an exact match against $absenceId: like occurrences (see
             // reconcileOccurrences() docblock), the payload only ever records the FIRST
@@ -529,6 +539,9 @@ class AbsenceImpactReconciliationService
         if ($causedByAbsenceId === null) {
             return null; // manager-caused — never touch it
         }
+        if ($this->roomTakeovers->isOriginalMissionTakenOver($mission)) {
+            return null; // D-124 — room taken over by another surgeon, see reconcileSurgeonMissions()
+        }
 
         if ($this->surgeonStillAbsentForMission($surgeon, $mission, excludingAbsenceId: 0)) {
             return null; // still justified by a currently-active absence
@@ -603,6 +616,9 @@ class AbsenceImpactReconciliationService
 
         if (!$post->isActive() || empty($this->generator->theoreticalOccurrenceDates($post, $date, $date))) {
             return null; // recurrence no longer produces this date — not this scan's concern
+        }
+        if ($this->roomTakeovers->isOccurrenceTakenOver($post->getId(), $date)) {
+            return null; // D-124 — room taken over by another surgeon
         }
 
         $stillAbsentCount = $this->em->createQuery(

@@ -75,3 +75,16 @@ describe("formatNotificationBody — ABSENCE_INSTRUMENTIST_REASSIGNED", () => {
     expect(body).toBe("01/10/2026 — Delta");
   });
 });
+
+describe("formatNotificationBody — ROOM_TAKEOVER_MISSION_OFFER (D-124)", () => {
+  it("contextualise l'offre avec le repreneur, le chirurgien absent, la date et le site (payload serveur uniquement)", () => {
+    const n = {
+      eventType: "ROOM_TAKEOVER_MISSION_OFFER",
+      payload: { takenByName: "Dr Bruno", originalSurgeonName: "Dr Alain", missionDate: "15/10/2026", siteName: "Delta" },
+    };
+    expect(formatNotificationTitle(n)).toBe("Salle reprise — mission disponible");
+    expect(formatNotificationBody(n)).toBe(
+      "Dr Bruno reprend la salle de Dr Alain le 15/10/2026 à Delta. Une mission est disponible pour ce créneau.",
+    );
+  });
+});

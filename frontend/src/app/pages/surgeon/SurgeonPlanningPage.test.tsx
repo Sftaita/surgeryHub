@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ToastProvider } from "../../ui/toast/ToastProvider";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import SurgeonPlanningPage from "./SurgeonPlanningPage";
 
@@ -55,6 +56,11 @@ function makeRoomSlot(overrides: Partial<any> = {}) {
     endTime: "13:00",
     surgeon: { id: 3, name: "Dr Ftaita" },
     status: "AVAILABLE",
+    claimedBy: null,
+    claimedAt: null,
+    claimedByMe: false,
+    takeoverMission: null,
+    allowedActions: { takeOver: true, release: false },
     createdAt: "2026-08-01T00:00:00+00:00",
     ...overrides,
   };
@@ -64,9 +70,9 @@ function renderPage(initialEntry = "/planning?view=week&date=2026-08-27&filter=a
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
-      <QueryClientProvider client={client}>
+      <QueryClientProvider client={client}><ToastProvider>
         <SurgeonPlanningPage />
-      </QueryClientProvider>
+      </ToastProvider></QueryClientProvider>
     </MemoryRouter>,
   );
 }
@@ -75,12 +81,12 @@ function renderPageWithRoutes(initialEntry = "/app/s/planning?view=week&date=202
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
-      <QueryClientProvider client={client}>
+      <QueryClientProvider client={client}><ToastProvider>
         <Routes>
           <Route path="/app/s/planning" element={<SurgeonPlanningPage />} />
           <Route path="/app/s/mission-requests/new" element={<div>formulaire demande</div>} />
         </Routes>
-      </QueryClientProvider>
+      </ToastProvider></QueryClientProvider>
     </MemoryRouter>,
   );
 }
@@ -89,12 +95,12 @@ function renderPageWithRoutesForRooms(initialEntry = "/app/s/planning?view=week&
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
-      <QueryClientProvider client={client}>
+      <QueryClientProvider client={client}><ToastProvider>
         <Routes>
           <Route path="/app/s/planning" element={<SurgeonPlanningPage />} />
           <Route path="/app/s/planning/salles-disponibles" element={<div>page salles disponibles</div>} />
         </Routes>
-      </QueryClientProvider>
+      </ToastProvider></QueryClientProvider>
     </MemoryRouter>,
   );
 }
@@ -317,7 +323,8 @@ describe("SurgeonPlanningPage — salles disponibles dans l'agenda", () => {
     expect(await screen.findByTestId("month-room-badge-2026-08-26")).toHaveTextContent("1");
     expect(screen.getByText("SALLES DISPONIBLES")).toBeInTheDocument();
     expect(screen.getByText(/Site Salles/)).toBeInTheDocument();
-    expect(screen.getByText("Libérée par Dr Ftaita")).toBeInTheDocument();
+    // D-124 — libellé de la maquette « Salle disponible » : « Dr A absent ».
+    expect(screen.getByText("Dr Ftaita absent")).toBeInTheDocument();
   });
 
   it("plusieurs salles le même jour, plusieurs sites/périodes : badge affiche le compte total, toutes listées dans l'ordre reçu (jamais seulement la première)", async () => {

@@ -263,4 +263,23 @@ enum AuditEventType: string
      * and what the period looked like immediately before. No patient data in the payload.
      */
     case ABSENCE_DAY_REMOVED = 'ABSENCE_DAY_REMOVED';
+
+    /**
+     * D-124 — « Reprendre une salle libérée » (ReleasedOperatingRoomSlot). Aucune donnée
+     * patient ; noms toujours snapshotés dans le payload (R-12).
+     *
+     * - ROOM_SLOT_MADE_AVAILABLE : recordGlobal() à la création d'un créneau libéré
+     *   (ReleasedOperatingRoomSlotService) — aucune Mission à rattacher.
+     * - ROOM_SLOT_TAKEN_OVER : record() sur la nouvelle Mission du repreneur (en plus du
+     *   MISSION_ADDED_POST_DEPLOY que createPostDeploy() écrit déjà) — porte le créneau,
+     *   le chirurgien absent, le repreneur, la Mission d'origine et l'instrumentiste
+     *   initialement prévue.
+     * - ROOM_SLOT_REOPENED : record() sur la Mission du repreneur (après son
+     *   MISSION_CANCELLED_POST_DEPLOY) quand la salle redevient disponible — désistement
+     *   explicite (`reason: TAKER_RELEASED`) ou absence ultérieure du repreneur
+     *   (`reason: TAKER_ABSENT`).
+     */
+    case ROOM_SLOT_MADE_AVAILABLE = 'ROOM_SLOT_MADE_AVAILABLE';
+    case ROOM_SLOT_TAKEN_OVER     = 'ROOM_SLOT_TAKEN_OVER';
+    case ROOM_SLOT_REOPENED       = 'ROOM_SLOT_REOPENED';
 }

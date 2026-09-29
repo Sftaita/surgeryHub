@@ -155,6 +155,72 @@ final class CheckUncoveredEscalationsConcurrencyTest extends KernelTestCase
         return $actor->getId();
     }
 
+    /**
+     * D-124 audit — the REAL race window, which the lock-timeout test below cannot see (its
+     * retry uses a fresh EntityManager that reads committed state): run A loaded its candidate
+     * batch (OPEN, marker NULL) BEFORE run B committed the marker. lock() only issues
+     * `SELECT 1 … FOR UPDATE`, it never reloads an already-managed entity — without a refresh()
+     * A would re-check a stale NULL marker and escalate a second time.
+     */
+    public function test_a_run_holding_a_stale_mission_cannot_escalate_it_again_after_a_concurrent_run_committed(): void
+    {
+        $mission = $this->makeOpenMission($this->makeUser('ROLE_SURGEON'), $this->makeSite());
+        $missionId = $mission->getId();
+        $systemActorId = $this->systemActorId();
+
+        $emA = $this->freshEntityManager();
+        $missionA = $emA->find(Mission::class, $missionId);
+        $actorA = $this->findSystemActor($emA, $systemActorId);
+
+        $emB = $this->freshEntityManager();
+        self::assertTrue($this->postDeployServiceFor($emB)->markUncoveredEscalationSent($emB->find(Mission::class, $missionId), $this->findSystemActor($emB, $systemActorId)));
+
+        self::assertNull($missionA->getUncoveredEscalationSentAt(), 'precondition: A\'s in-memory entity is stale');
+
+        self::assertFalse(
+            $this->postDeployServiceFor($emA)->markUncoveredEscalationSent($missionA, $actorA),
+            'A stale second run must re-read the committed marker and never escalate twice.',
+        );
+        $this->em->clear();
+        $events = $this->em->getRepository(AuditEvent::class)->findBy(['mission' => $missionId, 'eventType' => AuditEventType::MISSION_UNCOVERED_ESCALATION_SENT]);
+        self::assertCount(1, $events, 'Exactly one MISSION_UNCOVERED_ESCALATION_SENT audit event.');
+    }
+
+    /**
+     * D-124 audit — the mission gets covered (OPEN → ASSIGNED, committed by another
+     * connection) between the batch load and the lock: a stale OPEN in memory would escalate
+     * an already-covered mission to the managers.
+     */
+    public function test_a_run_holding_a_stale_open_mission_never_escalates_it_after_it_was_covered_concurrently(): void
+    {
+        $mission = $this->makeOpenMission($this->makeUser('ROLE_SURGEON'), $this->makeSite());
+        $missionId = $mission->getId();
+        $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
+        $systemActorId = $this->systemActorId();
+
+        $emA = $this->freshEntityManager();
+        $missionA = $emA->find(Mission::class, $missionId);
+        $actorA = $this->findSystemActor($emA, $systemActorId);
+
+        // Concurrent coverage committed on another connection (the claim path itself is
+        // covered by RoomTakeoverConcurrencyTest; only the committed state matters here).
+        $emB = $this->freshEntityManager();
+        $emB->getConnection()->executeStatement(
+            'UPDATE mission SET status = ?, instrumentist_id = ? WHERE id = ?',
+            [MissionStatus::ASSIGNED->value, $instrumentist->getId(), $missionId],
+        );
+
+        self::assertFalse(
+            $this->postDeployServiceFor($emA)->markUncoveredEscalationSent($missionA, $actorA),
+            'An already-covered mission must never be escalated.',
+        );
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $missionId);
+        self::assertSame(MissionStatus::ASSIGNED, $reloaded->getStatus());
+        self::assertNull($reloaded->getUncoveredEscalationSentAt());
+        self::assertCount(0, $this->em->getRepository(AuditEvent::class)->findBy(['mission' => $missionId, 'eventType' => AuditEventType::MISSION_UNCOVERED_ESCALATION_SENT]));
+    }
+
     public function test_two_concurrent_escalation_runs_cannot_double_send_for_the_same_mission(): void
     {
         $surgeon = $this->makeUser('ROLE_SURGEON');

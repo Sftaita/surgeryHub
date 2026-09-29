@@ -33,18 +33,23 @@ class ReleasedOperatingRoomSlotRepository extends ServiceEntityRepository
         ?\DateTimeImmutable $dateFrom = null,
         ?\DateTimeImmutable $dateTo = null,
         ?string $period = null,
+        ?int $visibleToSurgeonId = null,
     ): array {
         $itemsQb = $this->createQueryBuilder('s')
             ->leftJoin('s.site', 'site')->addSelect('site')
             ->leftJoin('s.surgeon', 'surgeon')->addSelect('surgeon')
+            // D-124 — reprise en cours : chargée d'emblée (jamais un N+1 par ligne).
+            ->leftJoin('s.claimedBy', 'claimedBy')->addSelect('claimedBy')
+            ->leftJoin('s.takeoverMission', 'takeoverMission')->addSelect('takeoverMission')
+            ->leftJoin('takeoverMission.instrumentist', 'takeoverInstrumentist')->addSelect('takeoverInstrumentist')
             ->orderBy('s.occurrenceDate', 'ASC')
             ->addOrderBy('s.id', 'ASC')
             ->setMaxResults($limit)
             ->setFirstResult(max($page - 1, 0) * $limit);
-        $this->applyFilters($itemsQb, 's', $siteIds, $siteId, $status, $surgeonId, $includePast, $dateFrom, $dateTo, $period);
+        $this->applyFilters($itemsQb, 's', $siteIds, $siteId, $status, $surgeonId, $includePast, $dateFrom, $dateTo, $period, $visibleToSurgeonId);
 
         $countQb = $this->createQueryBuilder('s')->select('COUNT(s.id)');
-        $this->applyFilters($countQb, 's', $siteIds, $siteId, $status, $surgeonId, $includePast, $dateFrom, $dateTo, $period);
+        $this->applyFilters($countQb, 's', $siteIds, $siteId, $status, $surgeonId, $includePast, $dateFrom, $dateTo, $period, $visibleToSurgeonId);
 
         /** @var list<ReleasedOperatingRoomSlot> $items */
         $items = $itemsQb->getQuery()->getResult();
@@ -87,7 +92,16 @@ class ReleasedOperatingRoomSlotRepository extends ServiceEntityRepository
         ?\DateTimeImmutable $dateFrom = null,
         ?\DateTimeImmutable $dateTo = null,
         ?string $period = null,
+        ?int $visibleToSurgeonId = null,
     ): void {
+        // D-124 — côté chirurgien, une salle reprise par un AUTRE chirurgien n'est plus une
+        // « salle disponible » : elle disparaît de sa liste. Il voit toujours les créneaux
+        // AVAILABLE, plus ceux qu'il a lui-même repris (état « Salle reprise » + Mission).
+        if ($visibleToSurgeonId !== null) {
+            $qb->andWhere("($alias.status = :availableStatus OR $alias.claimedBy = :viewerId)")
+                ->setParameter('availableStatus', \App\Enum\ReleasedRoomSlotStatus::AVAILABLE->value)
+                ->setParameter('viewerId', $visibleToSurgeonId);
+        }
         if ($siteIds !== null) {
             if (empty($siteIds)) {
                 // Aucune affiliation — jamais interpréter comme "tous les sites" (§10 : ne

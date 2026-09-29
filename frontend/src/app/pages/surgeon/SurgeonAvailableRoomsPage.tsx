@@ -18,8 +18,8 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 
 import { getMyAvailableRooms } from "../../features/planning-v2/api/planningV2.api";
 import type { ShiftPeriod } from "../../features/planning-v2/api/planningV2.types";
+import { ReleasedRoomCard } from "../../features/mobile-planning/ReleasedRoomCard";
 import {
-  AvailableRoomRow,
   AVAILABLE_ROOM_PERIOD_LABELS,
   EmptyStateRow,
   formatDateToYmd,
@@ -70,6 +70,11 @@ function rangeToDates(range: QuickRange, todayYmd: string): { dateFrom: string; 
  * §6 : "pas besoin d'un moteur complexe"), période. Synchronisés dans l'URL pour un deep-link
  * filtrable. Toujours aucune date passée (§9) : jamais exposé côté chirurgien, ni en filtre
  * ni en défaut.
+ *
+ * D-124 — chaque créneau est une `ReleasedRoomCard` : CTA « Reprendre cette salle » /
+ * « Libérer la salle » uniquement selon `allowedActions` serveur. Le serveur renvoie ici les
+ * salles encore disponibles ET celles que ce chirurgien a lui-même reprises (état « Salle
+ * reprise ») — jamais celles reprises par un confrère.
  */
 export default function SurgeonAvailableRoomsPage() {
   const navigate = useNavigate();
@@ -180,7 +185,7 @@ export default function SurgeonAvailableRoomsPage() {
       ) : (
         <Stack spacing={1.375}>
           {items.map((slot) => (
-            <AvailableRoomRow key={slot.id} slot={slot} />
+            <ReleasedRoomCard key={slot.id} slot={slot} />
           ))}
         </Stack>
       )}

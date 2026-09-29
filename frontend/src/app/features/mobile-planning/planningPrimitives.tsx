@@ -512,11 +512,13 @@ export function AvailableRoomRow({ slot, onClick }: { slot: AvailableRoomSlotLik
 
 /** Section liste "SALLES DISPONIBLES" — même style d'en-tête pointillé que la section
  *  MISSIONS (accent bleu au lieu de vert), jamais mélangée avec la liste des missions. */
-export function AvailableRoomsListSection({
-  slots, onSlotClick,
+export function AvailableRoomsListSection<T extends AvailableRoomSlotLike>({
+  slots, onSlotClick, renderSlot,
 }: {
-  slots: AvailableRoomSlotLike[];
+  slots: T[];
   onSlotClick?: (slotId: number) => void;
+  /** D-124 — rendu actionnable (ReleasedRoomCard : « Reprendre cette salle »), sinon ligne simple. */
+  renderSlot?: (slot: T) => React.ReactNode;
 }) {
   if (slots.length === 0) return null;
 
@@ -529,7 +531,9 @@ export function AvailableRoomsListSection({
         <Box sx={{ flex: 1, borderTop: "1px dashed", borderColor: "grey.200" }} />
       </Stack>
       {slots.map((slot) => (
-        <AvailableRoomRow key={slot.id} slot={slot} onClick={onSlotClick ? () => onSlotClick(slot.id) : undefined} />
+        renderSlot
+          ? <React.Fragment key={slot.id}>{renderSlot(slot)}</React.Fragment>
+          : <AvailableRoomRow key={slot.id} slot={slot} onClick={onSlotClick ? () => onSlotClick(slot.id) : undefined} />
       ))}
     </Stack>
   );

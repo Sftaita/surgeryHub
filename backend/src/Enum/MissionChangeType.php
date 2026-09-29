@@ -22,6 +22,11 @@ enum MissionChangeType: string
     case UPDATED      = 'UPDATED';       // generic update (fallback)
     case STARTED      = 'STARTED';       // ASSIGNED → IN_PROGRESS (D-064, automated on startAt)
 
+    // D-124 — new OPEN Mission created by a surgeon taking over a released operating room
+    // (ReleasedRoomSlotTakeoverService). Handled: contextual offer to the initially planned
+    // instrumentist (if eligible) + OPEN_MISSION_AVAILABLE pool fan-out to everyone else.
+    case ROOM_TAKEN_OVER = 'ROOM_TAKEN_OVER';
+
     // Lot 7 (D-070) — encoding workflow. All currently hit the handler's documented
     // "unhandled changeType — forward-compatible skip" default branch: dispatched to
     // prepare the event, no notification wired yet (deliberate — see D-070).

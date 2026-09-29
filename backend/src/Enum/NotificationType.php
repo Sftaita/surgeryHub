@@ -175,4 +175,13 @@ enum NotificationType: string
     // repli email.
     case ENCODING_ANOMALY_REPORTED = 'ENCODING_ANOMALY_REPORTED';
     case ENCODING_ANOMALY_RESOLVED = 'ENCODING_ANOMALY_RESOLVED';
+
+    // ── Reprise de salle libérée (D-124) ─────────────────────────────────────
+    // À l'instrumentiste initialement prévue sur la salle du chirurgien absent, UNIQUEMENT si
+    // MissionEligibilityService::evaluate() la juge éligible pour la nouvelle Mission OPEN du
+    // repreneur. Priorité informationnelle seulement (jamais une attribution, jamais une
+    // exclusivité) : la Mission est OPEN pour tout le pool en même temps, qui reçoit
+    // OPEN_MISSION_AVAILABLE. In-app + push selon préférences (même pipeline que
+    // MissionLifecycleChangedMessageHandler), email=false par défaut. 27 caractères (< 32).
+    case ROOM_TAKEOVER_MISSION_OFFER = 'ROOM_TAKEOVER_MISSION_OFFER';
 }

@@ -582,8 +582,25 @@ export interface ReleasedRoomSlotV2 {
   startTime: string | null;
   endTime: string | null;
   surgeon: { id: number; name: string } | null;
-  status: "AVAILABLE";
+  status: ReleasedRoomSlotStatus;
   createdAt: string;
+  /** D-124 — reprise en cours (null tant que AVAILABLE). */
+  claimedBy: { id: number; name: string } | null;
+  claimedAt: string | null;
+  claimedByMe: boolean;
+  takeoverMission: ReleasedRoomTakeoverMission | null;
+  /** D-124 — seule source des CTA : jamais déduit côté client. */
+  allowedActions: { takeOver: boolean; release: boolean };
+}
+
+/** D-124 — AVAILABLE ⇄ CLAIMED (« Reprendre une salle libérée »). */
+export type ReleasedRoomSlotStatus = "AVAILABLE" | "CLAIMED";
+
+/** D-124 — Mission OPEN créée pour le chirurgien qui a repris la salle. */
+export interface ReleasedRoomTakeoverMission {
+  id: number;
+  status: string;
+  instrumentist: { id: number; name: string } | null;
 }
 
 export interface ReleasedRoomSlotListResponse {

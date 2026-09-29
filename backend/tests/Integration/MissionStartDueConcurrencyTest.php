@@ -272,4 +272,74 @@ final class MissionStartDueConcurrencyTest extends KernelTestCase
             'Other due missions in the same run must still be processed even if one was already started concurrently.',
         );
     }
+
+    /**
+     * D-124 audit — the REAL race window, which the lock-timeout test above cannot see (its
+     * retry uses a fresh EntityManager that reads committed state): run A loaded its batch
+     * (mission ASSIGNED) BEFORE run B's start() committed. lock() only issues
+     * `SELECT 1 … FOR UPDATE`, it never reloads an already-managed entity — without a
+     * refresh() A would re-check a stale ASSIGNED and start the mission a second time.
+     */
+    public function test_a_run_holding_a_stale_assigned_mission_cannot_start_it_again_after_a_concurrent_start_committed(): void
+    {
+        $site = $this->makeSite();
+        $mission = $this->makeAssignedMission($this->makeUser('ROLE_SURGEON'), $this->makeUser('ROLE_INSTRUMENTIST'), $site);
+        $missionId = $mission->getId();
+        $systemActorId = $this->systemActorId();
+
+        $emA = $this->freshEntityManager();
+        $missionA = $emA->find(Mission::class, $missionId);
+        $actorA = $this->findSystemActor($emA, $systemActorId);
+
+        $emB = $this->freshEntityManager();
+        $this->postDeployServiceFor($emB)->start($emB->find(Mission::class, $missionId), $this->findSystemActor($emB, $systemActorId));
+
+        self::assertSame(MissionStatus::ASSIGNED, $missionA->getStatus(), 'precondition: A\'s in-memory entity is stale');
+
+        $refused = false;
+        try {
+            $this->postDeployServiceFor($emA)->start($missionA, $actorA);
+        } catch (ConflictHttpException) {
+            $refused = true;
+        }
+
+        self::assertTrue($refused, 'A stale second start() must be refused (409), never re-process the mission.');
+        $this->em->clear();
+        $events = $this->em->getRepository(AuditEvent::class)->findBy(['mission' => $missionId, 'eventType' => \App\Enum\AuditEventType::MISSION_STARTED]);
+        self::assertCount(1, $events, 'Exactly one MISSION_STARTED audit event.');
+    }
+
+    /**
+     * D-124 audit — worse than a duplicate audit: the mission is cancelled (absence, manager)
+     * between the batch load and the lock. A stale ASSIGNED in memory would flip the committed
+     * CANCELLED back to IN_PROGRESS (Doctrine writes the changed `status` column only — the
+     * cleared instrumentist stays NULL), resurrecting a cancelled mission with no instrumentist.
+     */
+    public function test_a_run_holding_a_stale_assigned_mission_never_overwrites_a_concurrent_cancellation(): void
+    {
+        $site = $this->makeSite();
+        $mission = $this->makeAssignedMission($this->makeUser('ROLE_SURGEON'), $this->makeUser('ROLE_INSTRUMENTIST'), $site);
+        $missionId = $mission->getId();
+        $systemActorId = $this->systemActorId();
+
+        $emA = $this->freshEntityManager();
+        $missionA = $emA->find(Mission::class, $missionId);
+        $actorA = $this->findSystemActor($emA, $systemActorId);
+
+        $emB = $this->freshEntityManager();
+        $this->postDeployServiceFor($emB)->cancel($emB->find(Mission::class, $missionId), $this->findSystemActor($emB, $systemActorId), notify: false);
+
+        $refused = false;
+        try {
+            $this->postDeployServiceFor($emA)->start($missionA, $actorA);
+        } catch (ConflictHttpException) {
+            $refused = true;
+        }
+
+        self::assertTrue($refused, 'start() must re-read CANCELLED under the lock and refuse.');
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $missionId);
+        self::assertSame(MissionStatus::CANCELLED, $reloaded->getStatus(), 'A committed cancellation must never be overwritten.');
+        self::assertNull($reloaded->getInstrumentist());
+    }
 }

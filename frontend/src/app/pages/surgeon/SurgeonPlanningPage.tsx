@@ -25,6 +25,7 @@ import type { DateTileVariant } from "../../ui/mobile/DateTile";
 import type { StatusPillVariant } from "../../ui/mobile/StatusPill";
 import { getMyAvailableRooms, getMyAvailableRoomsCount } from "../../features/planning-v2/api/planningV2.api";
 import type { ReleasedRoomSlotV2 } from "../../features/planning-v2/api/planningV2.types";
+import { ReleasedRoomCard } from "../../features/mobile-planning/ReleasedRoomCard";
 import {
   type ViewMode,
   type MonthDayMeta,
@@ -208,7 +209,9 @@ export default function SurgeonPlanningPage() {
   const roomsRange = React.useMemo(() => getYmdRange(view, date), [view, date]);
   const roomsQuery = useQuery({
     queryKey: ["available-rooms", "mine", "planning", { from: roomsRange.from, to: roomsRange.to }],
-    queryFn: () => getMyAvailableRooms({ dateFrom: roomsRange.from, dateTo: roomsRange.to, limit: 100 }),
+    // D-124 — le calendrier ne montre que les salles encore reprenables (filtre serveur) : une
+    // salle que ce chirurgien a reprise apparaît déjà comme sa propre Mission.
+    queryFn: () => getMyAvailableRooms({ dateFrom: roomsRange.from, dateTo: roomsRange.to, status: "AVAILABLE", limit: 100 }),
   });
   const roomsInView = roomsQuery.data?.items ?? [];
 
@@ -438,7 +441,7 @@ export default function SurgeonPlanningPage() {
           </Stack>
 
           {/* Section séparée, jamais mélangée à MISSIONS — intégration agenda 2026-09-07. */}
-          <AvailableRoomsListSection slots={sortedRoomsInView} />
+          <AvailableRoomsListSection slots={sortedRoomsInView} renderSlot={(slot) => <ReleasedRoomCard slot={slot} />} />
         </>
       )}
 
@@ -493,7 +496,7 @@ export default function SurgeonPlanningPage() {
             </Stack>
           )}
           {selectedDayKey && (
-            <AvailableRoomsListSection slots={roomsByDay.get(selectedDayKey) ?? []} />
+            <AvailableRoomsListSection slots={roomsByDay.get(selectedDayKey) ?? []} renderSlot={(slot) => <ReleasedRoomCard slot={slot} />} />
           )}
         </DialogContent>
       </Dialog>

@@ -33,6 +33,7 @@ import type {
   AbsenceCommunicationDetailV2,
   ReleasedRoomSlotListResponse,
   ReleasedRoomSlotCountResponse,
+  ReleasedRoomSlotV2,
 } from "./planningV2.types";
 
 /** Same pattern as every other page-local helper in this codebase (no shared util exists). */
@@ -548,6 +549,22 @@ export async function getMyAvailableRooms(params?: {
   period?: ShiftPeriod;
 }): Promise<ReleasedRoomSlotListResponse> {
   const res = await apiClient.get("/api/me/available-rooms", { params });
+  return res.data;
+}
+
+/**
+ * D-124 — « Reprendre cette salle ». UNE seule action métier : le serveur réserve la salle ET
+ * crée la Mission OPEN dans la même transaction — jamais deux appels côté client. 409
+ * `ROOM_SLOT_ALREADY_TAKEN` (+ `error.takenBy`) si un autre chirurgien l'a prise avant.
+ */
+export async function takeOverReleasedRoom(slotId: number): Promise<ReleasedRoomSlotV2> {
+  const res = await apiClient.post(`/api/available-rooms/${slotId}/take-over`);
+  return res.data;
+}
+
+/** D-124 — « Libérer la salle » : annule la Mission de reprise et rend le créneau disponible. */
+export async function releaseReleasedRoom(slotId: number): Promise<ReleasedRoomSlotV2> {
+  const res = await apiClient.post(`/api/available-rooms/${slotId}/release`);
   return res.data;
 }
 

@@ -37,6 +37,7 @@ use App\Exception\MaterialAttachmentTargetNotFoundException;
 use App\Exception\MaterialItemRequestAlreadyProcessedException;
 use App\Exception\MissingIgnoreStrategyException;
 use App\Exception\RefundExceedsOverpaidException;
+use App\Exception\ReleasedRoomSlotConflictException;
 use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
 use App\Exception\SurgeonMissionRequestConflictException;
 use App\Exception\EncodingAnomalyReportAlreadyResolvedException;
@@ -265,6 +266,11 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'ENCODING_ANOMALY_REPORT_ALREADY_RESOLVED';
             $message = $e->getMessage() ?: 'Ce signalement a déjà été traité.';
+        } elseif ($e instanceof ReleasedRoomSlotConflictException) {
+            $status = 409;
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
         } elseif ($e instanceof HttpExceptionInterface) {
             $status = $e->getStatusCode();
             $message = $e->getMessage() ?: $message;

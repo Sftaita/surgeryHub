@@ -3155,6 +3155,79 @@ ce cas.
 L'email « Libération de salle » (Lot A) inclut désormais un lien direct vers
 `/app/s/planning/salles-disponibles` dans son corps (HTML et texte brut).
 
+### 26.3a-E Reprendre une salle libérée (D-124)
+
+Un chirurgien affilié au site reprend une salle libérée par l'absence d'un confrère. **Une seule
+action métier** : réservation du créneau + création d'une nouvelle `Mission` OPEN pour lui,
+atomiquement côté serveur. Voir `docs/decisions.md` D-124.
+
+**Champs ajoutés à chaque élément de liste** (`GET /api/planning/available-rooms`,
+`GET /api/me/available-rooms`) et à la réponse des deux actions ci-dessous :
+
+```json
+{
+  "status": "CLAIMED",
+  "claimedBy": { "id": 12, "name": "Dr Bruno Martin" },
+  "claimedAt": "2026-09-25T10:04:11+02:00",
+  "claimedByMe": true,
+  "takeoverMission": { "id": 981, "status": "OPEN", "instrumentist": null },
+  "allowedActions": { "takeOver": false, "release": true }
+}
+```
+
+- `status` : `AVAILABLE` | `CLAIMED`. `claimedBy`/`claimedAt`/`takeoverMission` sont `null` tant
+  que le créneau est `AVAILABLE`.
+- `takeoverMission.instrumentist` : `null` tant que la Mission est à pourvoir.
+- `allowedActions` : **seule source des CTA côté frontend** (droit du Voter + état courant).
+
+**Visibilité chirurgien (`GET /api/me/available-rooms`)** : créneaux `AVAILABLE` + ceux que
+l'utilisateur courant a lui-même repris. Un créneau repris par un confrère n'est jamais listé.
+`GET /api/me/available-rooms/count` ne compte que les `AVAILABLE` (sauf `status` explicite).
+Le manager voit tous les statuts (« Dr A absent → reprise par Dr B »).
+
+#### `POST /api/available-rooms/{id}/take-over`
+
+**AuthZ :** `ReleasedRoomSlotVoter::TAKE_OVER` — `ROLE_SURGEON` actif, affilié
+(`SiteMembership`) au site du créneau, créneau non passé, jamais le chirurgien absent lui-même.
+Manager/instrumentiste/non-affilié → 403. Pas de corps.
+
+**Effet (une transaction, verrou pessimiste sur la ligne du créneau) :** `AVAILABLE → CLAIMED`
++ nouvelle `Mission` (`surgeon` = repreneur, même site/date/horaires, `OPEN`, sans
+instrumentiste, `planningVersion` = celle de la Mission d'origine si elle existe, sinon `null`).
+Audit `MISSION_ADDED_POST_DEPLOY` + `ROOM_SLOT_TAKEN_OVER`. Après commit :
+`MissionLifecycleChangedMessage(ROOM_TAKEN_OVER)` (async).
+
+**Réponse — 200 :** l'élément de liste ci-dessus (état après reprise).
+
+**Erreurs — 409** (`error.code`) :
+
+| Code | Cas |
+|---|---|
+| `ROOM_SLOT_ALREADY_TAKEN` | Un autre chirurgien l'a reprise (course perdue ou page périmée). `error.takenBy = { id, name }`, message « Cette salle vient d'être reprise par Dr X. » |
+| `ROOM_SLOT_NOT_AVAILABLE` | Créneau passé, ou chirurgien absent redevenu présent (absence supprimée/réduite). |
+| `ROOM_SLOT_SURGEON_CONFLICT` | Le repreneur a déjà une Mission active qui chevauche (hors « double salle » du même site, D-119). `error.conflictMissionId`. |
+| `ROOM_SLOT_SURGEON_ABSENT` | Le repreneur est lui-même absent ce jour-là. |
+| `ROOM_SLOT_SCHEDULE_UNKNOWN` | Aucun horaire connu (ni snapshot, ni Mission d'origine, ni `ShiftPeriodConfig` actif). |
+
+#### `POST /api/available-rooms/{id}/release`
+
+**AuthZ :** `ReleasedRoomSlotVoter::RELEASE` — créneau `CLAIMED`, non passé, Mission de reprise
+`OPEN`/`ASSIGNED`/`CANCELLED` ; le repreneur lui-même ou un manager/admin. Pas de corps.
+
+**Effet :** Mission de reprise annulée via `MissionPostDeployService::cancel()` si
+`OPEN`/`ASSIGNED` (instrumentiste détachée, prévenue via `PLANNING_MISSION_CANCELLED`) ;
+créneau `CLAIMED → AVAILABLE` ; audit `ROOM_SLOT_REOPENED` (`reason: TAKER_RELEASED`).
+
+**Réponse — 200 :** l'élément de liste (état `AVAILABLE`). **409 `ROOM_SLOT_NOT_RELEASABLE`** si
+le créneau n'est plus repris, est passé, ou si sa Mission a déjà démarré.
+
+**Notification `ROOM_TAKEOVER_MISSION_OFFER`** (in-app + push selon préférences, email=false par
+défaut) : envoyée à l'instrumentiste initialement prévue **seulement si**
+`MissionEligibilityService::evaluate()` la juge éligible au moment de l'envoi. Payload :
+`{ missionId, roomSlotId, dayLabel, missionDate, startTime, endTime, siteName, periodLabel,
+takenByName, originalSurgeonName }` — aucune donnée patient. Deep link : `/app/i/offers`
+(claim existant). Les autres instrumentistes éligibles reçoivent `OPEN_MISSION_AVAILABLE`.
+
 ---
 
 ### 26.3b Relances congés manager (D-051)

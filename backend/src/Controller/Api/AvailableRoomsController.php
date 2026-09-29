@@ -2,11 +2,15 @@
 
 namespace App\Controller\Api;
 
+use App\Entity\Mission;
 use App\Entity\ReleasedOperatingRoomSlot;
 use App\Entity\User;
+use App\Enum\ReleasedRoomSlotStatus;
 use App\Enum\ShiftPeriod;
 use App\Repository\ReleasedOperatingRoomSlotRepository;
 use App\Security\Voter\PlanningVoter;
+use App\Security\Voter\ReleasedRoomSlotVoter;
+use App\Service\ReleasedRoomSlotTakeoverService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -31,7 +35,35 @@ class AvailableRoomsController extends AbstractController
 {
     public function __construct(
         private readonly ReleasedOperatingRoomSlotRepository $slots,
+        private readonly ReleasedRoomSlotTakeoverService $takeovers,
     ) {
+    }
+
+    /**
+     * D-124 — « Reprendre cette salle » : UNE seule action métier (reprise + création de la
+     * Mission OPEN, atomiquement, côté serveur). RBAC : ReleasedRoomSlotVoter::TAKE_OVER.
+     * Concurrence : 409 `ROOM_SLOT_ALREADY_TAKEN` (+ `takenBy`) pour le perdant.
+     */
+    #[Route('/api/available-rooms/{id}/take-over', name: 'api_available_rooms_take_over', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function takeOver(int $id, #[CurrentUser] User $currentUser): JsonResponse
+    {
+        $slot = $this->slots->find($id) ?? throw $this->createNotFoundException('Créneau introuvable.');
+        $this->denyAccessUnlessGranted(ReleasedRoomSlotVoter::TAKE_OVER, $slot);
+
+        return $this->json($this->toPayload($this->takeovers->takeOver($slot, $currentUser)));
+    }
+
+    /**
+     * D-124 — « Libérer la salle » (désistement du repreneur, ou manager). Annule la Mission de
+     * reprise selon son statut et rend le créneau AVAILABLE. RBAC : ReleasedRoomSlotVoter::RELEASE.
+     */
+    #[Route('/api/available-rooms/{id}/release', name: 'api_available_rooms_release', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function release(int $id, #[CurrentUser] User $currentUser): JsonResponse
+    {
+        $slot = $this->slots->find($id) ?? throw $this->createNotFoundException('Créneau introuvable.');
+        $this->denyAccessUnlessGranted(ReleasedRoomSlotVoter::RELEASE, $slot);
+
+        return $this->json($this->toPayload($this->takeovers->release($slot, $currentUser)));
     }
 
     #[Route('/api/planning/available-rooms', name: 'api_available_rooms_manager_list', methods: ['GET'])]
@@ -90,6 +122,7 @@ class AvailableRoomsController extends AbstractController
             dateFrom: $f['dateFrom'],
             dateTo: $f['dateTo'],
             period: $f['period'],
+            visibleToSurgeonId: $currentUser->getId(),
         );
 
         return $this->json([
@@ -119,7 +152,8 @@ class AvailableRoomsController extends AbstractController
         $count = $this->slots->countForList(
             siteIds: $this->affiliatedSiteIds($currentUser),
             siteId: $f['siteId'],
-            status: $f['status'],
+            // D-124 — le badge compte les salles encore reprenables, jamais celles déjà reprises.
+            status: $f['status'] ?? ReleasedRoomSlotStatus::AVAILABLE->value,
             surgeonId: null,
             includePast: false,
             dateFrom: $f['dateFrom'],
@@ -202,6 +236,9 @@ class AvailableRoomsController extends AbstractController
     /** @return array<string, mixed> */
     private function toPayload(ReleasedOperatingRoomSlot $s): array
     {
+        $viewer = $this->getUser();
+        $viewer = $viewer instanceof User ? $viewer : null;
+
         return [
             'id' => $s->getId(),
             'site' => $s->getSite() !== null ? [
@@ -218,6 +255,34 @@ class AvailableRoomsController extends AbstractController
             ] : null,
             'status' => $s->getStatus()->value,
             'createdAt' => $s->getCreatedAt()->format(\DateTimeInterface::ATOM),
+            // D-124 — reprise en cours (null tant que AVAILABLE).
+            'claimedBy' => $s->getClaimedBy() !== null ? [
+                'id' => $s->getClaimedBy()->getId(),
+                'name' => $s->getClaimedBy()->getDrName(),
+            ] : null,
+            'claimedAt' => $s->getClaimedAt()?->format(\DateTimeInterface::ATOM),
+            'claimedByMe' => $viewer !== null && $s->getClaimedBy()?->getId() === $viewer->getId(),
+            'takeoverMission' => $this->takeoverMissionPayload($s->getTakeoverMission()),
+            // Le backend tranche : le frontend n'affiche un CTA que si l'action est ici à true.
+            'allowedActions' => $this->takeovers->allowedActions($s),
+        ];
+    }
+
+    /** @return array<string, mixed>|null */
+    private function takeoverMissionPayload(?Mission $mission): ?array
+    {
+        if ($mission === null) {
+            return null;
+        }
+        $instrumentist = $mission->getInstrumentist();
+
+        return [
+            'id' => $mission->getId(),
+            'status' => $mission->getStatus()->value,
+            'instrumentist' => $instrumentist !== null ? [
+                'id' => $instrumentist->getId(),
+                'name' => trim(($instrumentist->getFirstname() ?? '') . ' ' . ($instrumentist->getLastname() ?? '')) ?: $instrumentist->getEmail(),
+            ] : null,
         ];
     }
 }
