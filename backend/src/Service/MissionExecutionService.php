@@ -44,6 +44,16 @@ final class MissionExecutionService
      */
     public function resolveEffectiveDuration(Mission $mission): EffectiveDuration
     {
+        return self::resolveDuration($mission);
+    }
+
+    /**
+     * Forme statique de resolveEffectiveDuration() — pure fonction de Mission/MissionExecution
+     * (aucune dépendance) — pour les appelants sans conteneur (Voter, MissionActionsService via
+     * MissionHoursReminderPolicy) : une seule définition de "heures réelles connues".
+     */
+    public static function resolveDuration(Mission $mission): EffectiveDuration
+    {
         $execution = $mission->getExecution();
 
         if ($execution !== null) {

@@ -8,6 +8,7 @@ use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\PublicationScope;
 use App\Service\MissionDispatchService;
+use App\Service\MissionHoursReminderPolicy;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
 use Symfony\Component\Security\Core\Authorization\Voter\Voter;
 
@@ -61,6 +62,10 @@ class MissionVoter extends Voter
     // ne mute aucun statut : simple envoi de notification + trace d'audit.
     public const ENCODING_REMIND = 'MISSION_ENCODING_REMIND';
 
+    // Rappel des heures réelles manquantes (D-133) — manager/admin uniquement, distinct de
+    // ENCODING_REMIND : condition unique dans MissionHoursReminderPolicy.
+    public const HOURS_REMIND = 'MISSION_HOURS_REMIND';
+
     protected function supports(string $attribute, mixed $subject): bool
     {
         if (!in_array($attribute, [
@@ -87,6 +92,7 @@ class MissionVoter extends Voter
             self::ENCODING_REJECT,
             self::ENCODING_REOPEN,
             self::ENCODING_REMIND,
+            self::HOURS_REMIND,
         ], true)) {
             return false;
         }
@@ -144,6 +150,7 @@ class MissionVoter extends Voter
             self::ENCODING_REJECT             => $isManager && $mission->getStatus() === MissionStatus::SUBMITTED,
             self::ENCODING_REOPEN             => $isManager && $mission->getStatus() === MissionStatus::VALIDATED,
             self::ENCODING_REMIND             => $isManager && $this->canEncodingRemind($mission),
+            self::HOURS_REMIND                => $isManager && MissionHoursReminderPolicy::isReminderRelevant($mission),
             default                           => false,
         };
     }

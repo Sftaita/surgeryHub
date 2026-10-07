@@ -1,5 +1,5 @@
 import type { ChipProps } from "@mui/material";
-import type { EncodingFinancialState, EncodingState, EffectiveDurationSource, MissionType } from "./api/encodingTracking.api";
+import type { EncodingFinancialState, EncodingState, EffectiveDurationSource, HoursComparison, MissionType } from "./api/encodingTracking.api";
 import type { StatusBadgeConfig } from "../../ui/StatusBadge";
 
 /**
@@ -35,6 +35,16 @@ export const EFFECTIVE_SOURCE_LABEL: Record<EffectiveDurationSource, string> = {
   PLANNED: "Planifié",
   ACTUAL_TIMES: "Heures réelles",
   ACTUAL_EXPLICIT: "Heures explicites",
+};
+
+/**
+ * D-133 — code couleur des heures : simple mapping de `hours.comparison`, déjà tranché par le
+ * backend. NO_REAL_HOURS reste neutre : le planifié de repli n'est jamais présenté comme conforme.
+ */
+export const HOURS_COMPARISON_TONE: Record<HoursComparison, { fg: string; bar: string; label: string }> = {
+  NO_REAL_HOURS: { fg: "#727E8C", bar: "#DDE2E8", label: "Heures réelles non renseignées" },
+  WITHIN_PLAN: { fg: "#1F6B4F", bar: "#42A882", label: "Dans le temps planifié" },
+  OVER_PLAN: { fg: "#B7791F", bar: "#F0A91B", label: "Dépasse le temps planifié" },
 };
 
 export const MISSION_TYPE_LABEL: Record<MissionType, string> = {

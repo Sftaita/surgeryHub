@@ -81,4 +81,20 @@ final readonly class EncodingTrackingItem
     {
         return $this->effectiveSource !== EffectiveDurationSource::PLANNED;
     }
+
+    /**
+     * D-133 — comparaison réel / planifié, exposée telle quelle pour le code couleur du
+     * cockpit (le frontend ne compare jamais lui-même) :
+     *  - NO_REAL_HOURS : aucune heure réelle (source PLANNED) — jamais présenté comme conforme ;
+     *  - WITHIN_PLAN   : réel <= planifié ;
+     *  - OVER_PLAN     : réel > planifié.
+     */
+    public function hoursComparison(): string
+    {
+        if (!$this->hasRealHours()) {
+            return 'NO_REAL_HOURS';
+        }
+
+        return $this->effectiveMinutes <= $this->plannedMinutes ? 'WITHIN_PLAN' : 'OVER_PLAN';
+    }
 }

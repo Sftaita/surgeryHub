@@ -97,6 +97,13 @@ enum AuditEventType: string
      */
     case MISSION_ENCODING_MANUAL_REMINDER_SENT = 'MISSION_ENCODING_MANUAL_REMINDER_SENT';
 
+    /**
+     * D-133 — rappel manuel des heures réelles manquantes (cockpit Suivi des encodages),
+     * distinct de la relance d'encodage ci-dessus. Journalisé au moment de la demande du
+     * manager ; l'envoi (Push, repli email) est asynchrone et tracé dans OutboundNotification.
+     */
+    case MISSION_HOURS_MANUAL_REMINDER_SENT = 'MISSION_HOURS_MANUAL_REMINDER_SENT';
+
     // Exécution & Valorisation, Lot 1 — MissionExecutionService. Le réalisé, distinct
     // du planifié (Mission) et de la future valorisation financière (FinancialCalculation).
     case MISSION_EXECUTION_CREATED           = 'MISSION_EXECUTION_CREATED';

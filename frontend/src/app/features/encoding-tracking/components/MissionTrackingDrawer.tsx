@@ -2,14 +2,14 @@ import * as React from "react";
 import { Box, CircularProgress, Tooltip } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { fetchMissionById, getMissionExecution } from "../../missions/api/missions.api";
+import { fetchMissionById, getMissionExecution, remindMissionHours } from "../../missions/api/missions.api";
 import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
 import { fetchMissionEncoding, remindMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
-import { ReadOnlyInterventionCard } from "../../surgeon-encoding/components/ReadOnlyInterventionCard";
+import { EncodingContentPanel } from "./EncodingContentPanel";
 import { useToast } from "../../../ui/toast/useToast";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 import type { EncodingTrackingItem } from "../api/encodingTracking.api";
-import { EFFECTIVE_SOURCE_LABEL, formatMinutes } from "../encodingStateMeta";
+import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, formatMinutes } from "../encodingStateMeta";
 
 const GRAY_950 = "#0B1320";
 const GRAY_800 = "#2A3643";
@@ -110,13 +110,13 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
     queryFn: () => getMissionExecution(missionId!),
     enabled: open,
   });
-  // MissionEncodingGuard refuse la lecture une fois l'encodage verrouillé (même garde que
-  // MissionDetailPage) : pas de requête, un message renvoie vers la fiche complète.
-  const encodingLocked = !!missionQuery.data && ["VALIDATED", "CLOSED", "REJECTED"].includes(String(missionQuery.data.status));
+  // GET .../encoding est une LECTURE (VIEW_ENCODING, toujours accordé au manager depuis le
+  // Lot 6, D-100) : jamais désactivée après validation — le verrou porte sur l'écriture,
+  // pas sur la consultation (D-133).
   const encodingQuery = useQuery({
     queryKey: ["missionEncoding", missionId],
     queryFn: () => fetchMissionEncoding(missionId!),
-    enabled: open && !!missionQuery.data && !encodingLocked,
+    enabled: open,
   });
   const auditQuery = useQuery({
     queryKey: ["mission-audit", missionId],
@@ -148,15 +148,31 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
     onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : extractErrorMessage(err)),
   });
 
+  const remindHoursMutation = useMutation({
+    mutationFn: async () => remindMissionHours(missionId!),
+    onSuccess: async () => { toast.success("Rappel des heures envoyé à l'instrumentiste."); await refreshAfterAction(); },
+    onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : extractErrorMessage(err)),
+  });
+
+  // Le tiroir se superpose à la liste (aucun reflow) : Échap le ferme, comme un tiroir MUI.
+  React.useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
   if (!open || !item) return null;
 
   const tone = STATE_TONE[item.encodingState] ?? STATE_TONE.NOT_APPLICABLE;
   const allowedActions = missionQuery.data?.allowedActions ?? [];
   const canValidate = allowedActions.includes("validate");
   const canRemind = allowedActions.includes("remind");
-  // Une fois verrouillé, le cache d'avant validation ne doit plus être présenté comme
-  // l'encodage courant (la requête est désactivée, mais ses données restent en cache).
-  const entries = encodingLocked ? [] : encodingQuery.data?.entries ?? [];
+  // D-133 — décidé uniquement par le backend (MissionHoursReminderPolicy) : jamais déduit
+  // ici de hasRealHours ou de la date.
+  const canRemindHours = allowedActions.includes("remind_hours");
+  const isValidated = item.encodingState === "VALIDATED" || item.encodingState === "LOCKED";
+  const entries = encodingQuery.data?.entries ?? [];
   const refs = item.encoding.materialLineCount;
   const steps = buildSteps(item, auditQuery.data);
 
@@ -165,7 +181,8 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
     : "—";
   const realRange = executionQuery.data?.actualStartAt && executionQuery.data?.actualEndAt
     ? `${formatDateTime(executionQuery.data.actualStartAt).slice(-5)} → ${formatDateTime(executionQuery.data.actualEndAt).slice(-5)}`
-    : item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : "Heures non renseignées";
+    : item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : HOURS_COMPARISON_TONE.NO_REAL_HOURS.label;
+  const hoursTone = HOURS_COMPARISON_TONE[item.hours.comparison];
   const realPct = item.hours.plannedMinutes > 0
     ? Math.min(100, Math.round((item.hours.effectiveMinutes / item.hours.plannedMinutes) * 100))
     : 0;
@@ -181,11 +198,25 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
       : null,
   ].filter(Boolean).join(" · ") || "Aucune relance envoyée pour l'instant.";
 
+  // Dernier rappel des heures : lu dans l'audit déjà chargé (MISSION_HOURS_MANUAL_REMINDER_SENT).
+  const lastHoursReminder = (auditQuery.data ?? [])
+    .filter((e) => e.eventType === "MISSION_HOURS_MANUAL_REMINDER_SENT")
+    .reduce<{ occurredAt: string; actorName: string | null } | null>((last, e) => (!last || e.occurredAt > last.occurredAt ? e : last), null);
+  const hoursReminderTooltip = lastHoursReminder
+    ? `Dernier rappel des heures le ${formatDateTime(lastHoursReminder.occurredAt)} par ${lastHoursReminder.actorName ?? "—"}`
+    : "Demande à l'instrumentiste de renseigner ses heures réellement prestées (distinct de la relance d'encodage).";
+
   return (
-    <Box sx={{
-      position: "fixed", top: 0, right: 0, bottom: 0, width: 560, background: GRAY_50, boxShadow: SHADOW_LG,
-      display: "flex", flexDirection: "column", zIndex: 20,
-    }}>
+    <Box
+      role="dialog"
+      aria-modal={false}
+      aria-label={`Détail de la mission #${item.missionId}`}
+      data-testid="mission-tracking-drawer"
+      sx={{
+        position: "fixed", top: 0, right: 0, bottom: 0, width: 560, maxWidth: "100vw", background: GRAY_50, boxShadow: SHADOW_LG,
+        display: "flex", flexDirection: "column", zIndex: 20,
+      }}
+    >
       <Box sx={{ flexShrink: 0, background: "#fff", padding: "16px 20px 0", display: "flex", alignItems: "flex-start", gap: "12px" }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Box sx={{ display: "flex", alignItems: "center", gap: "9px", flexWrap: "wrap" }}>
@@ -225,12 +256,33 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           à une bande de quelques pixels) ; sur un écran haut, la carte remplit l'espace. */}
       <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: "14px" }}>
         <Card>
-          <Box sx={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: "10px", minHeight: 28 }}>
             <Eyebrow>HEURES</Eyebrow>
+            <Box data-testid="drawer-hours-status" data-hours-comparison={item.hours.comparison} sx={{ fontSize: 11.5, fontWeight: 800, color: hoursTone.fg }}>
+              {hoursTone.label}
+            </Box>
+            {canRemindHours && (
+              <Tooltip title={hoursReminderTooltip} describeChild>
+                <Box
+                  component="button"
+                  type="button"
+                  onClick={() => remindHoursMutation.mutate()}
+                  disabled={remindHoursMutation.isPending}
+                  sx={{
+                    ml: "auto", display: "flex", alignItems: "center", gap: "6px", height: 28, padding: "0 10px", borderRadius: "8px",
+                    border: "1px solid", borderColor: AMBER_100, background: AMBER_50, color: AMBER_700, font: "inherit",
+                    fontSize: 12, fontWeight: 800, cursor: "pointer", "&:hover": { background: AMBER_100 },
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+                  Rappeler les heures
+                </Box>
+              </Tooltip>
+            )}
           </Box>
           <Box sx={{ display: "flex", flexDirection: "column", gap: "7px" }}>
             <Bar label="Planifié" text={planRange} total={formatMinutes(item.hours.plannedMinutes)} pct={100} color={GRAY_400} plan />
-            <Bar label="Réel" text={realRange} total={item.hours.hasRealHours ? formatMinutes(item.hours.effectiveMinutes) : "—"} pct={realPct} color={item.hours.hasRealHours ? GREEN_500 : GRAY_200} />
+            <Bar label="Réel" text={realRange} total={item.hours.hasRealHours ? formatMinutes(item.hours.effectiveMinutes) : "—"} totalColor={hoursTone.fg} pct={realPct} color={hoursTone.bar} />
           </Box>
         </Card>
 
@@ -247,6 +299,11 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
         <Card sx={{ flex: 1, minHeight: 240, flexShrink: 0, padding: 0, gap: 0, overflow: "hidden" }}>
           <Box sx={{ padding: "13px 16px 11px", borderBottom: "1px solid", borderColor: GRAY_150, display: "flex", alignItems: "baseline", gap: "10px" }}>
             <Eyebrow>INTERVENTIONS &amp; MATÉRIEL</Eyebrow>
+            {isValidated && (
+              <Box sx={{ alignSelf: "center", height: 20, padding: "0 8px", borderRadius: "999px", display: "inline-flex", alignItems: "center", fontSize: 10.5, fontWeight: 800, background: GRAY_100, color: GRAY_600 }}>
+                Lecture seule
+              </Box>
+            )}
             <Box sx={{ ml: "auto", fontSize: 12, fontWeight: 700, color: GRAY_500, fontVariantNumeric: "tabular-nums" }}>
               {item.encoding.interventionCount === 0
                 ? "rien d'encodé"
@@ -257,15 +314,18 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             {encodingQuery.isLoading && (
               <Box sx={{ p: 2, textAlign: "center" }}><CircularProgress size={20} /></Box>
             )}
-            {!encodingQuery.isLoading && entries.map((entry) => (
-              <ReadOnlyInterventionCard key={`${entry.kind}:${entry.id}`} entry={entry} />
-            ))}
-            {encodingLocked && item.encoding.interventionCount > 0 && (
-              <Box sx={{ padding: "14px", borderRadius: "12px", background: GRAY_75, fontSize: 12.5, fontWeight: 600, color: GRAY_600 }}>
-                Encodage verrouillé — le détail du matériel est consultable sur la fiche complète.
+            {encodingQuery.isError && (
+              <Box sx={{ padding: "14px", borderRadius: "12px", background: RED_50, fontSize: 12.5, fontWeight: 600, color: RED_700 }}>
+                Impossible de charger le détail de l'encodage.
               </Box>
             )}
-            {!encodingLocked && !encodingQuery.isLoading && entries.length === 0 && item.encoding.interventionCount === 0 && (
+            {!encodingQuery.isLoading && entries.length > 0 && <EncodingContentPanel entries={entries} />}
+            {isValidated && encodingQuery.isSuccess && entries.length === 0 && (
+              <Box sx={{ padding: "14px", borderRadius: "12px", background: GRAY_75, fontSize: 12.5, fontWeight: 600, color: GRAY_600 }}>
+                Aucune intervention encodée.
+              </Box>
+            )}
+            {!isValidated && encodingQuery.isSuccess && entries.length === 0 && item.encoding.interventionCount === 0 && (
               <Box sx={{ display: "flex", alignItems: "center", gap: "10px", padding: "14px", borderRadius: "12px", background: AMBER_50, border: "1px solid", borderColor: AMBER_100, fontSize: 12.5, fontWeight: 600, color: AMBER_700 }}>
                 Aucun matériel encodé — l'instrumentiste n'a pas encore ouvert son encodage.
               </Box>
@@ -277,7 +337,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
       <Box sx={{ flexShrink: 0, background: "#fff", borderTop: "1px solid", borderColor: GRAY_150, padding: "13px 20px", display: "flex", alignItems: "center", gap: "10px" }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Box sx={{ fontSize: 12.5, fontWeight: 800, color: GRAY_950 }}>
-            {canValidate ? "Prêt à valider" : item.encodingState === "VALIDATED" || item.encodingState === "LOCKED" ? "Validé" : "Encodage en cours"}
+            {canValidate ? "Prêt à valider" : isValidated ? "Validé" : "Encodage en cours"}
           </Box>
           <Box sx={{ mt: "2px", fontSize: 11.5, color: GRAY_500 }}>
             <Box
@@ -367,7 +427,7 @@ function Eyebrow({ children }: { children: React.ReactNode }) {
   return <Box sx={{ fontSize: 11, fontWeight: 800, letterSpacing: ".09em", color: GRAY_500 }}>{children}</Box>;
 }
 
-function Bar({ label, text, total, pct, color, plan }: { label: string; text: string; total: string; pct: number; color: string; plan?: boolean }) {
+function Bar({ label, text, total, totalColor, pct, color, plan }: { label: string; text: string; total: string; totalColor?: string; pct: number; color: string; plan?: boolean }) {
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: "10px" }}>
       <Box sx={{ width: 56, flexShrink: 0, fontSize: 11.5, fontWeight: 700, color: GRAY_500 }}>{label}</Box>
@@ -375,7 +435,7 @@ function Bar({ label, text, total, pct, color, plan }: { label: string; text: st
         {!plan && <Box sx={{ position: "absolute", inset: "0 auto 0 0", width: `${pct}%`, borderRadius: "7px", background: color }} />}
         <Box sx={{ position: "absolute", left: 9, top: 3, fontSize: 11.5, fontWeight: 700, color: GRAY_700, fontVariantNumeric: "tabular-nums" }}>{text}</Box>
       </Box>
-      <Box sx={{ width: 50, flexShrink: 0, textAlign: "right", fontSize: 12.5, fontWeight: 800, color: GRAY_950, fontVariantNumeric: "tabular-nums" }}>{total}</Box>
+      <Box sx={{ width: 50, flexShrink: 0, textAlign: "right", fontSize: 12.5, fontWeight: 800, color: totalColor ?? GRAY_950, fontVariantNumeric: "tabular-nums" }}>{total}</Box>
     </Box>
   );
 }

@@ -158,6 +158,7 @@ final class EncodingTrackingController extends AbstractController
                 'effectiveMinutes' => $item->effectiveMinutes,
                 'effectiveSource' => $item->effectiveSource->value,
                 'hasRealHours' => $item->hasRealHours(),
+                'comparison' => $item->hoursComparison(),
             ],
             'encoding' => [
                 'interventionCount' => $item->interventionCount,

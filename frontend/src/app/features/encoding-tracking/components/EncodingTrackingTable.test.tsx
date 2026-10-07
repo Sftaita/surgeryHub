@@ -16,7 +16,7 @@ function item(missionId: number, startAt: string, instrumentist: string): Encodi
     instrumentist: { id: missionId, name: instrumentist },
     surgeon: { id: 8, name: "Dr Jean Dupont" },
     site: { id: 2, name: "Delta" },
-    hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false },
+    hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" },
     encoding: { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false },
     financial: { state: "NOT_CALCULABLE", label: "Pas encore calculable", isBlocking: false },
   };
@@ -63,5 +63,27 @@ describe("EncodingTrackingTable — regroupement par jour", () => {
       "Julie Simon",    // 12/09 14:00
       "Claire Dupont",  // 13/09 09:00
     ]);
+  });
+});
+
+describe("EncodingTrackingTable — colonne Heures (D-133)", () => {
+  function withHours(missionId: number, hours: EncodingTrackingItem["hours"]): EncodingTrackingItem {
+    return { ...item(missionId, "2026-09-12T08:00:00+02:00", `Instr ${missionId}`), hours };
+  }
+
+  it("colore selon hours.comparison du backend : vert / orange / neutre explicite", () => {
+    renderTable([
+      withHours(1, { plannedMinutes: 240, effectiveMinutes: 230, effectiveSource: "ACTUAL_TIMES", hasRealHours: true, comparison: "WITHIN_PLAN" }),
+      withHours(2, { plannedMinutes: 240, effectiveMinutes: 300, effectiveSource: "ACTUAL_EXPLICIT", hasRealHours: true, comparison: "OVER_PLAN" }),
+      withHours(3, { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" }),
+    ]);
+
+    const cells = screen.getAllByTestId("hours-cell");
+    expect(cells.map((c) => c.getAttribute("data-hours-comparison"))).toEqual(["WITHIN_PLAN", "OVER_PLAN", "NO_REAL_HOURS"]);
+    expect(screen.getByText("3 h 50")).toHaveStyle({ color: "rgb(31, 107, 79)" }); // vert
+    expect(screen.getByText("5 h")).toHaveStyle({ color: "rgb(183, 121, 31)" }); // orange
+    // Sans heure réelle : libellé explicite, le planifié n'est jamais présenté comme effectif.
+    expect(cells[2]).toHaveTextContent("4 h planifiées");
+    expect(cells[2]).toHaveTextContent("Heures réelles non renseignées");
   });
 });

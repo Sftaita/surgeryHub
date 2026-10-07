@@ -1,7 +1,7 @@
 import { Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import type { EncodingState, EncodingTrackingItem } from "../api/encodingTracking.api";
-import { EFFECTIVE_SOURCE_LABEL, MISSION_TYPE_LABEL, formatMinutes } from "../encodingStateMeta";
+import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, MISSION_TYPE_LABEL, formatMinutes } from "../encodingStateMeta";
 import { EmptyState } from "../../../ui/EmptyState";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 
@@ -17,7 +17,6 @@ const GRAY_75 = "#F1F4F7";
 const GRAY_50 = "#F5F7FA";
 const GREEN_800 = "#1F6B4F";
 const GREEN_600 = "#338F6E";
-const GREEN_500 = "#42A882";
 const GREEN_100 = "#DDF4EA";
 const AMBER_700 = "#B7791F";
 const AMBER_500 = "#F0A91B";
@@ -179,6 +178,7 @@ export function EncodingTrackingTable({
               {list.map((item) => {
                 const tone = STATE_TONE[item.encodingState];
                 const selected = selectedMissionId === item.missionId;
+                const hoursTone = HOURS_COMPARISON_TONE[item.hours.comparison];
                 const pct = item.hours.plannedMinutes > 0
                   ? Math.min(100, Math.round((item.hours.effectiveMinutes / item.hours.plannedMinutes) * 100))
                   : 0;
@@ -238,11 +238,13 @@ export function EncodingTrackingTable({
                         </Box>
                       )}
                     </Box>
-                    <Box sx={{ width: 170, flexShrink: 0 }}>
+                    {/* D-133 — couleur = hours.comparison (backend) : vert dans le planifié,
+                        orange au-delà, neutre sans heure réelle (jamais le repli planifié en vert). */}
+                    <Box sx={{ width: 170, flexShrink: 0 }} data-testid="hours-cell" data-hours-comparison={item.hours.comparison} title={hoursTone.label}>
                       <Box sx={{ display: "flex", alignItems: "baseline", gap: "6px", fontVariantNumeric: "tabular-nums" }}>
                         {item.hours.hasRealHours ? (
                           <>
-                            <Box sx={{ fontSize: 13.5, fontWeight: 800, color: GRAY_950 }}>{formatMinutes(item.hours.effectiveMinutes)}</Box>
+                            <Box sx={{ fontSize: 13.5, fontWeight: 800, color: hoursTone.fg }}>{formatMinutes(item.hours.effectiveMinutes)}</Box>
                             <Box sx={{ fontSize: 12, color: GRAY_400 }}>/ {formatMinutes(item.hours.plannedMinutes)}</Box>
                           </>
                         ) : (
@@ -250,9 +252,11 @@ export function EncodingTrackingTable({
                         )}
                       </Box>
                       <Box sx={{ mt: "5px", height: 5, borderRadius: "99px", background: GRAY_150, overflow: "hidden" }}>
-                        <Box sx={{ height: "100%", borderRadius: "99px", width: `${pct}%`, background: item.hours.hasRealHours ? GREEN_500 : "transparent" }} />
+                        <Box sx={{ height: "100%", borderRadius: "99px", width: `${pct}%`, background: item.hours.hasRealHours ? hoursTone.bar : "transparent" }} />
                       </Box>
-                      <Box sx={{ mt: "2px", fontSize: 10.5, color: GRAY_400 }}>{EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource]}</Box>
+                      <Box sx={{ mt: "2px", fontSize: 10.5, color: GRAY_400, fontStyle: item.hours.hasRealHours ? undefined : "italic" }}>
+                        {item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : hoursTone.label}
+                      </Box>
                     </Box>
                     <Box sx={{ width: 110, flexShrink: 0, textAlign: "right", fontSize: 13.5, fontWeight: 800, color: financeStyle(item) }}>
                       {item.financial.label}

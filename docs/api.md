@@ -868,6 +868,13 @@ ajoutent `start_encoding` (instrumentiste, optionnel) + `edit_encoding` + `submi
 fait) ; `SUBMITTED` ajoute `validate` + `reject` (manager) ; `VALIDATED` ajoute
 `reopen` (manager) uniquement — plus aucune action d'édition, l'encodage est verrouillé.
 
+**Relances (manager/admin) :** `remind` (D-120, relance d'encodage) et `remind_hours`
+(D-133, rappel des heures réelles manquantes) sont deux actions distinctes qui peuvent
+coexister. `remind_hours` n'est présent que si `MissionHoursReminderPolicy` le juge
+pertinent : instrumentiste affecté, mission terminée (`endAt <= now`), aucune heure réelle
+(source `PLANNED`), statut `ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS|DECLARED`, encodage ni
+verrouillé ni facturé — même condition que `MissionVoter::HOURS_REMIND`.
+
 ---
 
 ## 13. Erreurs standard
@@ -5629,6 +5636,37 @@ La permission est vérifiée **avant** toute création paresseuse de `MissionExe
 | `403` | Non autorisé |
 | `422` | Horaires incomplets, `actualEndAt ≤ actualStartAt`, ou durée contradictoire |
 
+### `POST /api/missions/{id}/execution/remind`
+
+**D-133** — « Rappeler les heures » depuis le cockpit Suivi des encodages : demande à
+l'instrumentiste de renseigner ses heures **réellement prestées**. Distinct de
+`POST /api/missions/{id}/encoding/remind` (D-120, finalisation de l'encodage). Ne mute aucun
+statut.
+
+**AuthZ :** `MissionVoter::HOURS_REMIND` — Manager/Admin, et
+`MissionHoursReminderPolicy::isReminderRelevant()` (voir §12, action `remind_hours`).
+
+**Body :** aucun.
+
+**Effets backend :**
+- Audit `MISSION_HOURS_MANUAL_REMINDER_SENT` (acteur, instrumentiste visé) et mise en file de
+  `MissionHoursReminderMessage` (transport `async`) **dans la même transaction**.
+- Asynchrone (`MissionHoursReminderMessageHandler`) : Push d'abord, repli email
+  (`emails/mission_hours_reminder.html.twig`) si le Push n'est pas livrable ; chaque canal
+  tracé dans `OutboundNotification` (type `MISSION_HOURS_REMINDER`). Un échec d'envoi est
+  journalisé, jamais remonté. Rien n'est envoyé si l'instrumentiste a changé entre-temps.
+- Pas de filtrage par préférences (action explicite d'un manager, comme D-120).
+- Aucune donnée patient : date de la mission et lien uniquement.
+
+**Réponse :** `MissionDetailDto` (`200`).
+
+**Erreurs :**
+
+| Code | Description |
+|---|---|
+| `403` | Non manager, ou rappel non pertinent (heures réelles déjà présentes, mission non terminée, sans instrumentiste, statut hors fenêtre, encodage verrouillé/facturé) |
+| `404` | Mission inexistante |
+
 ### Endpoints legacy conservés (mêmes URLs, délégués au nouveau modèle)
 
 | Endpoint | Notes |
@@ -7151,7 +7189,8 @@ Le `summary` porte sur **toute la période**, `items` sur la page demandée.
         "plannedMinutes": 240,
         "effectiveMinutes": 312,
         "effectiveSource": "ACTUAL_TIMES",
-        "hasRealHours": true
+        "hasRealHours": true,
+        "comparison": "OVER_PLAN"
       },
       "encoding": {
         "interventionCount": 2,
@@ -7187,6 +7226,11 @@ jamais (sinon le badge de navigation et la liste pourraient diverger) :
 servi. Il n'existe volontairement **aucun** champ `encodedMinutes` : la résolution peut
 retomber sur le planifié, et ce nom laisserait croire à une saisie inexistante.
 `hasRealHours` est `false` quand la source est `PLANNED`.
+
+**`hours.comparison`** (D-133, additif) — comparaison réel / planifié pour le code couleur du
+cockpit, calculée côté backend (le frontend ne compare jamais) : `NO_REAL_HOURS` quand
+`hasRealHours = false` (le planifié de repli n'est jamais présenté comme conforme),
+`WITHIN_PLAN` quand `effectiveMinutes <= plannedMinutes`, `OVER_PLAN` sinon.
 
 **`encoding.encodedInterventionCount`** (D-122, additif) — interventions réelles portant au
 moins une ligne active ; même définition, même requête que `progress.encodedInterventionCount`

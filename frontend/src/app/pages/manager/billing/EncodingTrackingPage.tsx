@@ -59,9 +59,11 @@ function toApiFilter(period: Period, f: TrackingFilterState): EncodingTrackingFi
  * financières (D-077) : répond à "qu'est-ce qui a été encodé, par qui, et qu'est-ce qui
  * réclame mon attention ?", jamais à "combien".
  *
- * Maquette validée (docs/design/Instruction design/Suivi-encodages-admin) — le tiroir de
- * détail RÉTRÉCIT cette colonne (margin-right), il ne la recouvre jamais : l'admin garde
- * la liste sous les yeux en enchaînant les validations. Desktop uniquement pour cette
+ * Maquette validée (docs/design/Instruction design/Suivi-encodages-admin). D-133 : le tiroir
+ * de détail se SUPERPOSE à la colonne (position fixed), il ne la rétrécit plus — aucune
+ * largeur, colonne, carte ni position du cockpit ne bouge à l'ouverture/fermeture (le
+ * margin-right de la maquette provoquait un reflow complet). La liste reste visible et
+ * cliquable à gauche du tiroir pour enchaîner les validations. Desktop uniquement pour cette
  * passe (bascule mobile en cartes : lot séparé).
  */
 export default function EncodingTrackingPage() {
@@ -120,7 +122,7 @@ export default function EncodingTrackingPage() {
 
   return (
     <Box sx={{ position: "relative" }}>
-      <Box sx={{ transition: "margin-right 220ms cubic-bezier(.22,1,.36,1)", marginRight: selectedItem ? "560px" : 0 }}>
+      <Box data-testid="encoding-tracking-main">
         <Stack spacing={3}>
           <PageHeader
             icon={TrackChangesOutlinedIcon}

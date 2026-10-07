@@ -138,7 +138,7 @@ describe("SurgeonEncodingPage — interventions et matériel (lecture seule)", (
     expect(screen.getByText("Zimmer")).toBeInTheDocument();
     expect(screen.getByText("Plateau tibial")).toBeInTheDocument();
     expect(screen.getByText(/Réf\. REF-001/)).toBeInTheDocument();
-    expect(screen.getByText("2 pièce")).toBeInTheDocument();
+    expect(screen.getByText("Qté 2 · pièce")).toBeInTheDocument();
     expect(screen.getByText("Taille M")).toBeInTheDocument();
     expect(screen.getByText("Délégué présent")).toBeInTheDocument();
   });

@@ -6,10 +6,18 @@ const GRAY_700 = "#3A4754";
 const GRAY_900 = "#16202B";
 const GREEN_150 = "#E7EBEF";
 
-function formatQuantity(quantity: string, unit: string): string {
+/**
+ * Quantité toujours explicite ("Qté 4"), jamais un couple brut "4 1". `item.unit` est un
+ * libellé libre du catalogue (ex. "pièce", "kit") : affiché seulement s'il contient au moins
+ * une lettre — une valeur purement numérique (ex. "1", saisie comme "unité = 1") n'est pas une
+ * unité lisible et se confondait avec une seconde quantité. Le contrat quantity/unit est
+ * inchangé : seule la présentation filtre ce libellé.
+ */
+export function formatMaterialQuantity(quantity: string, unit: string | null | undefined): string {
   const num = Number(quantity);
-  const display = Number.isFinite(num) ? (Number.isInteger(num) ? String(num) : num.toString()) : quantity;
-  return unit ? `${display} ${unit}` : display;
+  const display = Number.isFinite(num) ? String(num) : quantity;
+  const label = (unit ?? "").trim();
+  return /\p{L}/u.test(label) ? `Qté ${display} · ${label}` : `Qté ${display}`;
 }
 
 /**
@@ -39,7 +47,7 @@ export function ReadOnlyMaterialList({ lines }: { lines: EncodingEntryMaterialLi
               {line.item.label}
             </Typography>
             <Typography sx={{ fontSize: 13, color: GRAY_700, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
-              {formatQuantity(line.quantity, line.item.unit)}
+              {formatMaterialQuantity(line.quantity, line.item.unit)}
             </Typography>
           </Stack>
           <Typography sx={{ fontSize: 12, color: GRAY_500 }}>

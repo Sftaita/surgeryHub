@@ -80,7 +80,7 @@ function makeItem(overrides: Partial<EncodingTrackingItem> = {}): EncodingTracki
     instrumentist: { id: 5, name: "Salve Decorte" },
     surgeon: { id: 8, name: "Dr Jean Dupont" },
     site: { id: 2, name: "Delta" },
-    hours: { plannedMinutes: 240, effectiveMinutes: 312, effectiveSource: "ACTUAL_TIMES", hasRealHours: true },
+    hours: { plannedMinutes: 240, effectiveMinutes: 312, effectiveSource: "ACTUAL_TIMES", hasRealHours: true, comparison: "OVER_PLAN" },
     encoding: { interventionCount: 2, encodedInterventionCount: 1, materialLineCount: 6, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false },
     financial: { state: "NOT_CALCULABLE", label: "Pas encore calculable", isBlocking: false },
     ...overrides,
@@ -217,7 +217,7 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
 
   it("affiche planifié + effectif + source quand des heures réelles existent", async () => {
     const summary = emptySummary({ totalMissions: 1, encodingExpected: 1 });
-    const item = makeItem({ hours: { plannedMinutes: 300, effectiveMinutes: 312, effectiveSource: "ACTUAL_TIMES", hasRealHours: true } });
+    const item = makeItem({ hours: { plannedMinutes: 300, effectiveMinutes: 312, effectiveSource: "ACTUAL_TIMES", hasRealHours: true, comparison: "OVER_PLAN" } });
     getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
     getEncodingTrackingMock.mockResolvedValue(makeResponse([item], summary));
 
@@ -230,7 +230,7 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
 
   it("n'affiche jamais d'heures « effectives » quand la source est PLANNED (pas de champ encodedMinutes fantôme)", async () => {
     const summary = emptySummary({ totalMissions: 1, encodingExpected: 1 });
-    const item = makeItem({ hours: { plannedMinutes: 180, effectiveMinutes: 180, effectiveSource: "PLANNED", hasRealHours: false } });
+    const item = makeItem({ hours: { plannedMinutes: 180, effectiveMinutes: 180, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" } });
     getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
     getEncodingTrackingMock.mockResolvedValue(makeResponse([item], summary));
 
@@ -238,7 +238,7 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
 
     await waitFor(() => expect(screen.getByText(/3 h planifiées/)).toBeInTheDocument());
     expect(screen.queryByText(/effectives/)).toBeNull();
-    expect(screen.getByText("Planifié")).toBeInTheDocument();
+    expect(screen.getByText("Heures réelles non renseignées")).toBeInTheDocument();
   });
 
   it("ne masque jamais une heure réelle au motif que la mission n'est pas SUBMITTED", async () => {
@@ -246,7 +246,7 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
     const item = makeItem({
       missionStatus: "ENCODING_IN_PROGRESS",
       encodingState: "IN_PROGRESS",
-      hours: { plannedMinutes: 120, effectiveMinutes: 145, effectiveSource: "ACTUAL_EXPLICIT", hasRealHours: true },
+      hours: { plannedMinutes: 120, effectiveMinutes: 145, effectiveSource: "ACTUAL_EXPLICIT", hasRealHours: true, comparison: "OVER_PLAN" },
     });
     getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
     getEncodingTrackingMock.mockResolvedValue(makeResponse([item], summary));
@@ -273,6 +273,53 @@ describe("EncodingTrackingPage — ouverture du tiroir de détail", () => {
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Mission #42" })).toBeInTheDocument());
     expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("le tiroir se superpose au cockpit : aucune marge/largeur du contenu principal ne change à l'ouverture ni à la fermeture", async () => {
+    const user = userEvent.setup();
+    const summary = emptySummary({ totalMissions: 1, encodingExpected: 1 });
+    const item = makeItem({ missionId: 42 });
+    getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
+    getEncodingTrackingMock.mockResolvedValue(makeResponse([item], summary));
+
+    renderPage();
+
+    const main = screen.getByTestId("encoding-tracking-main");
+    const layoutOf = () => {
+      const cs = window.getComputedStyle(main);
+      return { marginRight: cs.marginRight, paddingRight: cs.paddingRight, width: cs.width, maxWidth: cs.maxWidth, transition: cs.transition };
+    };
+    const before = layoutOf();
+    expect(before.marginRight).toMatch(/^(0|0px)?$/);
+
+    await user.click(await screen.findByRole("button", { name: /Salve Decorte/ }));
+    const drawer = await screen.findByTestId("mission-tracking-drawer");
+
+    // Contenu principal strictement inchangé, tiroir en position fixe hors du flux.
+    expect(layoutOf()).toEqual(before);
+    expect(drawer).toHaveStyle({ position: "fixed", right: "0px" });
+    expect(main.contains(drawer)).toBe(false);
+    // La liste reste présente et interactive derrière le tiroir.
+    expect(screen.getByRole("button", { name: /Salve Decorte/ })).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Fermer"));
+    await waitFor(() => expect(screen.queryByTestId("mission-tracking-drawer")).toBeNull());
+    expect(layoutOf()).toEqual(before);
+  });
+
+  it("Échap ferme le tiroir", async () => {
+    const user = userEvent.setup();
+    const summary = emptySummary({ totalMissions: 1, encodingExpected: 1 });
+    getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
+    getEncodingTrackingMock.mockResolvedValue(makeResponse([makeItem({ missionId: 42 })], summary));
+
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: /Salve Decorte/ }));
+    await screen.findByTestId("mission-tracking-drawer");
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByTestId("mission-tracking-drawer")).toBeNull());
   });
 
   it("le lien « Voir la fiche complète » du tiroir navigue vers la page mission existante", async () => {
@@ -376,8 +423,8 @@ describe("EncodingTrackingPage — vue « Par instrumentiste »", () => {
     const user = userEvent.setup();
     const summary = emptySummary({ totalMissions: 2, encodingExpected: 2, submitted: 2 });
     const items = [
-      makeItem({ missionId: 1, instrumentist: { id: 5, name: "Salve Decorte" }, hours: { plannedMinutes: 60, effectiveMinutes: 60, effectiveSource: "ACTUAL_TIMES", hasRealHours: true } }),
-      makeItem({ missionId: 2, instrumentist: { id: 5, name: "Salve Decorte" }, hours: { plannedMinutes: 60, effectiveMinutes: 90, effectiveSource: "ACTUAL_TIMES", hasRealHours: true } }),
+      makeItem({ missionId: 1, instrumentist: { id: 5, name: "Salve Decorte" }, hours: { plannedMinutes: 60, effectiveMinutes: 60, effectiveSource: "ACTUAL_TIMES", hasRealHours: true, comparison: "WITHIN_PLAN" } }),
+      makeItem({ missionId: 2, instrumentist: { id: 5, name: "Salve Decorte" }, hours: { plannedMinutes: 60, effectiveMinutes: 90, effectiveSource: "ACTUAL_TIMES", hasRealHours: true, comparison: "OVER_PLAN" } }),
     ];
     getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
     getEncodingTrackingMock.mockResolvedValue(makeResponse(items, summary));

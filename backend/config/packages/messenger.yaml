@@ -34,6 +34,7 @@ framework:
             App\Message\MissionUncoveredEscalationMessage: async
             App\Message\PlanningRestoredAfterAbsenceMessage: async
             App\Message\AbsenceImpactSummaryMessage:         async
+            App\Message\MissionHoursReminderMessage:         async
 
 when@test:
     framework:

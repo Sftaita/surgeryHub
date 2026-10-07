@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><style>
+body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+.container { max-width: 600px; margin: 0 auto; padding: 24px; }
+.header { border-bottom: 2px solid #1B5FD0; padding-bottom: 12px; margin-bottom: 20px; }
+.title { color: #1B5FD0; font-size: 18px; font-weight: bold; }
+.footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+</style></head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">SurgicalHub — Heures réelles à renseigner</div>
+  </div>
+
+  <p>Bonjour {{ firstname }},</p>
+
+  <p>
+    {% if missionDay %}Pour votre mission du {{ missionDay }}, les{% else %}Pour cette mission, les{% endif %}
+    heures réellement prestées n'ont pas encore été renseignées dans SurgicalHub.
+  </p>
+
+  <p>Merci d'indiquer vos heures réelles de début et de fin :</p>
+
+  <p><a href="{{ missionUrl }}">{{ missionUrl }}</a></p>
+
+  <p>Bien à vous,<br>SurgicalHub</p>
+
+  <div class="footer">SurgicalHub — document confidentiel</div>
+</div>
+</body>
+</html>

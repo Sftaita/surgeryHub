@@ -396,6 +396,15 @@ export async function getMissionExecution(id: number): Promise<MissionExecutionI
 }
 
 /**
+ * D-133 — "Rappeler les heures" : demande à l'instrumentiste ses heures réellement prestées.
+ * Distinct de remindMissionEncoding() (D-120). Proposé uniquement si allowedActions contient
+ * 'remind_hours' — le backend seul décide.
+ */
+export async function remindMissionHours(id: number): Promise<void> {
+  await apiClient.post(`/api/missions/${id}/execution/remind`);
+}
+
+/**
  * Anomalie écran d'encodage (commit dédié) — EditServiceHoursDialog appelait jusqu'ici
  * l'endpoint legacy `patchMissionService` (PATCH /api/missions/{id}/service), dont la
  * réponse est désormais l'entité MissionExecution brute (groupes execution:read),

@@ -11076,3 +11076,67 @@ rafraîchissement de « Planning publié », textes de notification.
   inter-sites connu, §G du freeze, couvert au déploiement par D-091) — inchangé.
 
 Non déployé.
+
+---
+
+## D-133 — Suivi des encodages : tiroir superposé, encodage lisible après validation, code couleur des heures, rappel des heures réelles (2026-10-07)
+
+**Statut :** accepté — branche `fix/suivi-encodages-ux`, non déployé.
+
+### Contexte
+
+Retours d'usage du cockpit « Suivi des encodages » (D-118/D-120) :
+
+1. Le tiroir de détail **rétrécissait** la colonne principale (`margin-right: 560px`, choix
+   de la maquette) : tout le cockpit (cartes, colonnes, table) se recomposait à chaque
+   ouverture/fermeture.
+2. Après validation, le tiroir n'affichait plus que « Encodage verrouillé — le détail du
+   matériel est consultable sur la fiche complète ». Cause : un contournement frontend
+   **périmé** désactivait `GET /api/missions/{id}/encoding` pour VALIDATED/CLOSED/REJECTED,
+   alors que depuis le Lot 6 (D-100) cet endpoint n'appelle plus `MissionEncodingGuard`
+   (lecture ≠ écriture) et que `VIEW_ENCODING` est toujours accordé au manager.
+3. Plusieurs interventions (souvent homonymes) se confondaient visuellement.
+4. Le matériel affichait « Fast-Fix 4 1 » : `quantity` suivi de `item.unit`, libellé libre du
+   catalogue, ici saisi `"1"`.
+5. Aucun repère visuel réel vs planifié ; aucune relance ciblée sur les heures réelles
+   (seule existait la relance d'encodage D-120).
+
+### Décisions
+
+1. **Tiroir superposé** : la page ne réserve plus de marge ; le tiroir (déjà `position:
+   fixed`) recouvre le côté droit, la liste reste visible et cliquable à gauche. Échap ferme.
+   Remplace explicitement le comportement « rétrécit la colonne » de la maquette D-118.
+2. **La validation verrouille l'écriture, jamais la consultation** : le tiroir lit toujours
+   `GET .../encoding` (aucun nouvel endpoint), contenu en lecture seule (badge « Lecture
+   seule »), badge Validé / bouton « Encodage validé » non cliquable / lien fiche conservés.
+3. **Trois modes de lecture** (Par intervention — défaut —, Matériel, Interventions) : trois
+   projections pures du même tableau `entries`, sans requête ni règle supplémentaire. En vue
+   « Par intervention », chaque intervention est un bloc encadré et numéroté
+   (« INTERVENTION n/N »), son matériel en retrait dessous.
+4. **Quantité explicite** : « Qté 4 », et l'unité seulement si c'est un libellé (contient une
+   lettre) : « Qté 2 · pièce ». Contrat `quantity`/`unit` inchangé (présentation seule, dans
+   `ReadOnlyMaterialList`, donc aussi page chirurgien et fiche mission).
+5. **Code couleur des heures calculé côté backend** : `hours.comparison` (`NO_REAL_HOURS` |
+   `WITHIN_PLAN` | `OVER_PLAN`) ajouté à `GET /api/billing/encoding-tracking` (additif), même
+   principe que `encoding.isStale` : le frontend ne compare jamais. `NO_REAL_HOURS` reste
+   neutre — le planifié de repli n'est jamais présenté comme conforme.
+6. **« Rappeler les heures »** : `POST /api/missions/{id}/execution/remind`, action
+   `remind_hours`, attribut `MissionVoter::HOURS_REMIND`. Condition unique dans
+   `MissionHoursReminderPolicy` (lue par le Voter et `MissionActionsService`), « heures
+   réelles » = même définition que `MissionExecutionService::resolveDuration()`. Audit +
+   mise en file Messenger dans une même transaction (transport Doctrine), envoi Push → email
+   asynchrone, tracé en `OutboundNotification`. Pas de préférences (action explicite, comme
+   D-120 / `PLANNING_RESENT_MANUAL`). Aucune migration.
+
+### Limites connues
+
+- Le rappel n'est proposé que tant que l'instrumentiste peut saisir ses heures depuis son
+  écran (`edit_hours`) : après soumission (SUBMITTED), il faut rejeter/rouvrir l'encodage.
+- Le chantier « Historique & notifications » (D-126 à D-132, non commité au moment de cette
+  branche) migre les relances vers `NotificationDispatcher` : le rappel des heures, construit
+  sur l'infrastructure de `main` dans des fichiers dédiés, devra y être rebranché lors de la
+  réunion des deux branches (`EmailThroughDispatcherTest` le signalera).
+- `HoursCell` (non utilisé par la table, qui rend sa propre colonne) a été aligné mais reste
+  un composant orphelin.
+
+Non déployé.

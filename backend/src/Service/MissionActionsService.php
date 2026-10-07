@@ -39,7 +39,7 @@ final class MissionActionsService
             // instrumentiste assigné (rien ni personne à notifier).
             $remind = $mission->getInstrumentist() !== null ? ['remind'] : [];
 
-            return match ($mission->getStatus()) {
+            $actions = match ($mission->getStatus()) {
                 // 'cancel' couvre aussi DRAFT depuis D-090 (MissionPostDeployService::cancel()
                 // accepte déjà DRAFT|OPEN|ASSIGNED) — un manager doit pouvoir abandonner un
                 // brouillon jamais publié, jamais uniquement 'edit'/'publish' sans issue.
@@ -59,6 +59,14 @@ final class MissionActionsService
                 MissionStatus::DECLARED => [...['view', 'approve', 'reject', 'edit'], ...$remind],
                 default => ['view'],
             };
+
+            // D-133 — rappel des heures réelles manquantes, transverse aux statuts ci-dessus :
+            // même condition exactement que MissionVoter::HOURS_REMIND.
+            if (MissionHoursReminderPolicy::isReminderRelevant($mission)) {
+                $actions[] = 'remind_hours';
+            }
+
+            return $actions;
         }
 
         // Instrumentiste : claim si OPEN + éligible (publication + règles EMPLOYEE/FREELANCER)

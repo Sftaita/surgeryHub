@@ -30,6 +30,9 @@ export type EncodingFinancialState =
 
 export type EffectiveDurationSource = "PLANNED" | "ACTUAL_TIMES" | "ACTUAL_EXPLICIT";
 
+/** D-133 — comparaison réel / planifié calculée par le backend (jamais recalculée ici). */
+export type HoursComparison = "NO_REAL_HOURS" | "WITHIN_PLAN" | "OVER_PLAN";
+
 export type MissionType = "BLOCK" | "CONSULTATION";
 
 export interface EncodingTrackingFilter {
@@ -76,6 +79,7 @@ export interface EncodingTrackingHours {
   effectiveMinutes: number;
   effectiveSource: EffectiveDurationSource;
   hasRealHours: boolean;
+  comparison: HoursComparison;
 }
 
 export interface EncodingTrackingEncoding {

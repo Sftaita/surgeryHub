@@ -421,12 +421,14 @@ final class EncodingTrackingControllerTest extends WebTestCase
         self::assertSame(180, $plannedItem['hours']['effectiveMinutes']);
         self::assertSame('PLANNED', $plannedItem['hours']['effectiveSource']);
         self::assertFalse($plannedItem['hours']['hasRealHours'], 'un repli sur le planifié n\'est pas une saisie réelle');
+        self::assertSame('NO_REAL_HOURS', $plannedItem['hours']['comparison'], 'D-133 — jamais présenté comme conforme au planifié');
 
         $actualItem = $this->findItem($payload, $actual->getId());
         self::assertSame(180, $actualItem['hours']['plannedMinutes']);
         self::assertSame(312, $actualItem['hours']['effectiveMinutes']);
         self::assertSame('ACTUAL_EXPLICIT', $actualItem['hours']['effectiveSource']);
         self::assertTrue($actualItem['hours']['hasRealHours']);
+        self::assertSame('OVER_PLAN', $actualItem['hours']['comparison']);
     }
 
     /**

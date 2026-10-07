@@ -533,4 +533,66 @@ final class MissionVoterTest extends TestCase
         );
         self::assertSame(VoterInterface::ACCESS_DENIED, $result);
     }
+
+    // ── HOURS_REMIND (D-133, rappel des heures réelles manquantes) ──────────────
+    // Les branches fines (statuts, heures réelles, verrou) sont couvertes par
+    // MissionHoursReminderPolicyTest ; ici : le rôle et le branchement sur la policy.
+
+    private function makeEndedAssignedMission(User $instrumentist): Mission
+    {
+        $mission = $this->makeAssignedMission(MissionStatus::ASSIGNED, $instrumentist, new \DateTimeImmutable('-10 hours'));
+        $mission->setEndAt(new \DateTimeImmutable('-2 hours'));
+        return $mission;
+    }
+
+    public function test_manager_and_admin_can_remind_hours_on_ended_mission_without_real_hours(): void
+    {
+        $instrumentist = $this->makeInstrumentist(20);
+
+        foreach (['ROLE_MANAGER', 'ROLE_ADMIN'] as $role) {
+            $result = $this->voter->vote(
+                $this->tokenForUser([$role]),
+                $this->makeEndedAssignedMission($instrumentist),
+                [MissionVoter::HOURS_REMIND],
+            );
+            self::assertSame(VoterInterface::ACCESS_GRANTED, $result, "expected grant for {$role}");
+        }
+    }
+
+    public function test_manager_cannot_remind_hours_once_real_hours_exist(): void
+    {
+        $mission = $this->makeEndedAssignedMission($this->makeInstrumentist(21));
+        $mission->setExecution((new \App\Entity\MissionExecution())->setActualDurationMinutes(300));
+
+        $result = $this->voter->vote($this->tokenForUser(['ROLE_MANAGER']), $mission, [MissionVoter::HOURS_REMIND]);
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    public function test_manager_cannot_remind_hours_before_mission_end(): void
+    {
+        $mission = $this->makeAssignedMission(MissionStatus::ASSIGNED, $this->makeInstrumentist(22));
+        $mission->setEndAt(new \DateTimeImmutable('+2 hours'));
+
+        $result = $this->voter->vote($this->tokenForUser(['ROLE_MANAGER']), $mission, [MissionVoter::HOURS_REMIND]);
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    public function test_instrumentist_and_surgeon_cannot_remind_hours(): void
+    {
+        $instrumentist = $this->makeInstrumentist(23);
+
+        $asInstrumentist = $this->voter->vote(
+            new UsernamePasswordToken($instrumentist, 'main', ['ROLE_INSTRUMENTIST']),
+            $this->makeEndedAssignedMission($instrumentist),
+            [MissionVoter::HOURS_REMIND],
+        );
+        self::assertSame(VoterInterface::ACCESS_DENIED, $asInstrumentist);
+
+        $asSurgeon = $this->voter->vote(
+            $this->tokenForUser(['ROLE_SURGEON']),
+            $this->makeEndedAssignedMission($instrumentist),
+            [MissionVoter::HOURS_REMIND],
+        );
+        self::assertSame(VoterInterface::ACCESS_DENIED, $asSurgeon);
+    }
 }

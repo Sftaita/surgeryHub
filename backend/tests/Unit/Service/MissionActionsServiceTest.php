@@ -280,4 +280,63 @@ final class MissionActionsServiceTest extends TestCase
 
         self::assertNotContains('remind', $this->service->allowedActions($this->makeMission(MissionStatus::ASSIGNED, $instr), $instr));
     }
+
+    // ── remind_hours (D-133) — même condition que MissionVoter::HOURS_REMIND ───────
+
+    private function makeEndedMission(MissionStatus $status, ?User $instrumentist): Mission
+    {
+        $mission = $this->makeMission($status, $instrumentist, new \DateTimeImmutable('-10 hours'));
+        $mission->setEndAt(new \DateTimeImmutable('-2 hours'));
+        return $mission;
+    }
+
+    public function test_manager_gets_remind_hours_on_ended_mission_without_real_hours(): void
+    {
+        $manager = $this->makeUser(['ROLE_MANAGER']);
+        $instr   = $this->makeUser(['ROLE_INSTRUMENTIST']);
+
+        $actions = $this->service->allowedActions($this->makeEndedMission(MissionStatus::ASSIGNED, $instr), $manager);
+
+        self::assertContains('remind_hours', $actions);
+        // Distinct de la relance d'encodage : les deux coexistent, aucune ne remplace l'autre.
+        self::assertContains('remind', $actions);
+    }
+
+    public function test_manager_does_not_get_remind_hours_once_real_hours_are_recorded(): void
+    {
+        $manager = $this->makeUser(['ROLE_MANAGER']);
+        $mission = $this->makeEndedMission(MissionStatus::ASSIGNED, $this->makeUser(['ROLE_INSTRUMENTIST']));
+        $mission->setExecution((new \App\Entity\MissionExecution())
+            ->setActualStartAt(new \DateTimeImmutable('-10 hours'))
+            ->setActualEndAt(new \DateTimeImmutable('-3 hours')));
+
+        self::assertNotContains('remind_hours', $this->service->allowedActions($mission, $manager));
+    }
+
+    public function test_manager_does_not_get_remind_hours_before_end_or_without_instrumentist(): void
+    {
+        $manager = $this->makeUser(['ROLE_MANAGER']);
+
+        $notEnded = $this->makeMission(MissionStatus::ASSIGNED, $this->makeUser(['ROLE_INSTRUMENTIST']));
+        $notEnded->setEndAt(new \DateTimeImmutable('+3 hours'));
+        self::assertNotContains('remind_hours', $this->service->allowedActions($notEnded, $manager));
+
+        $unassigned = $this->makeEndedMission(MissionStatus::OPEN, null);
+        self::assertNotContains('remind_hours', $this->service->allowedActions($unassigned, $manager));
+    }
+
+    public function test_manager_does_not_get_remind_hours_on_validated_mission(): void
+    {
+        $manager = $this->makeUser(['ROLE_MANAGER']);
+        $mission = $this->makeEndedMission(MissionStatus::VALIDATED, $this->makeUser(['ROLE_INSTRUMENTIST']));
+
+        self::assertSame(['view', 'reopen'], $this->service->allowedActions($mission, $manager));
+    }
+
+    public function test_instrumentist_never_gets_remind_hours(): void
+    {
+        $instr = $this->makeUser(['ROLE_INSTRUMENTIST']);
+
+        self::assertNotContains('remind_hours', $this->service->allowedActions($this->makeEndedMission(MissionStatus::ASSIGNED, $instr), $instr));
+    }
 }
