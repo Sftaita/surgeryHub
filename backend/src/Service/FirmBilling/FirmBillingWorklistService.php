@@ -143,6 +143,24 @@ final class FirmBillingWorklistService
     }
 
     /**
+     * D-137 — prestations ajoutables à un brouillon : la projection worklist elle-même,
+     * restreinte à la firme et à la période du brouillon, aux lignes `canInvoice` (libres,
+     * facturables, calcul approuvé, ni obsolètes, ni dans un autre document) et à sa devise.
+     * Aucune règle propre : le filtre est celui que la worklist expose déjà.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function candidatesForDraft(FirmInvoice $draft): array
+    {
+        $rows = $this->build($draft->getPeriodStart(), $draft->getPeriodEnd(), [(int) $draft->getFirm()->getId()])['rows'];
+
+        return array_values(array_filter(
+            $rows,
+            static fn (array $r) => $r['canInvoice'] === true && $r['currency'] === $draft->getCurrency(),
+        ));
+    }
+
+    /**
      * Lignes exactement sélectionnées (clés), dans l'ordre de la projection, sans doublon.
      *
      * @param string[] $keys
@@ -761,6 +779,8 @@ final class FirmBillingWorklistService
             'sent' => $byStatus[InvoiceStatus::SENT->value] ?? 0,
             'paid' => $byStatus[InvoiceStatus::PAID->value] ?? 0,
             'cancelled' => $byStatus[InvoiceStatus::CANCELLED->value] ?? 0,
+            // D-137 — compté à part, jamais comme une facture annulée.
+            'abandoned' => $byStatus[InvoiceStatus::ABANDONED->value] ?? 0,
         ];
     }
 
@@ -1048,7 +1068,7 @@ final class FirmBillingWorklistService
     private function invoiceState(?FirmInvoice $invoice): string
     {
         return match ($invoice?->getStatus()) {
-            null, InvoiceStatus::CANCELLED => 'FREE',
+            null, InvoiceStatus::CANCELLED, InvoiceStatus::ABANDONED => 'FREE',
             InvoiceStatus::DRAFT => 'IN_DRAFT',
             InvoiceStatus::GENERATED => 'GENERATED',
             InvoiceStatus::SENT => 'SENT',
@@ -1106,7 +1126,8 @@ final class FirmBillingWorklistService
             InvoiceStatus::GENERATED => 'générée',
             InvoiceStatus::SENT => 'envoyée',
             InvoiceStatus::PAID => 'payée',
-            InvoiceStatus::CANCELLED => 'annulée',
+            InvoiceStatus::CANCELLED => 'facture annulée',
+            InvoiceStatus::ABANDONED => 'brouillon abandonné',
         };
     }
 

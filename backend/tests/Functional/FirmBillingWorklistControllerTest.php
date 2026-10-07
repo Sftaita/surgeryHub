@@ -361,12 +361,21 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         return $ids;
     }
 
+    /**
+     * Facture via le SEUL chemin (D-137) : brouillon puis génération. Renvoie l'erreur du
+     * brouillon si sa création est refusée, sinon la réponse de génération (200).
+     */
     private function generate(KernelBrowser $client, string $token, Firm $firm, array $lineIds): Response
     {
-        return $this->post($client, $token, '/api/firm-invoices/from-financial-calculations', [
+        $draft = $this->post($client, $token, '/api/firm-invoices/drafts', [
             'firmId' => $firm->getId(), 'currency' => 'EUR', 'periodStart' => self::FROM, 'periodEnd' => self::TO,
-            'selectedFinancialCalculationLineIds' => $lineIds,
+            'financialLineIds' => $lineIds,
         ]);
+        if ($draft->getStatusCode() !== 201) {
+            return $draft;
+        }
+
+        return $this->post($client, $token, '/api/firm-invoices/' . $this->json($draft)['id'] . '/generate');
     }
 
     private function export(KernelBrowser $client, string $token, array $firms, array $keys, string $format): Response
@@ -652,7 +661,7 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         self::assertCount(2, $ids);
 
         $r = $this->generate($client, $token, $firm, [$ids[0]]);
-        self::assertSame(201, $r->getStatusCode(), (string) $r->getContent());
+        self::assertSame(200, $r->getStatusCode(), (string) $r->getContent());
         $invoice = $this->json($r);
         self::assertCount(1, $invoice['lines']);
         self::assertSame($ids[0], $invoice['lines'][0]['financialCalculationLineId']);
@@ -817,8 +826,10 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         self::assertTrue($freeAgain['canInvoice']);
         $h = $this->history($client, $token, $key);
         self::assertNull($h['currentInvoice']);
-        self::assertSame(['INVOICE_GENERATED', 'INVOICE_CANCELLED'], array_column($h['history'], 'eventType'));
-        self::assertSame($invoiceA['number'], $h['history'][0]['invoice']['number']);
+        // D-137 : toute facture naît d'un brouillon (ADDED_TO_DRAFT précède INVOICE_GENERATED).
+        self::assertSame(['ADDED_TO_DRAFT', 'INVOICE_GENERATED', 'INVOICE_CANCELLED'], array_column($h['history'], 'eventType'));
+        self::assertSame($invoiceA['number'], $h['history'][1]['invoice']['number']);
+        self::assertNull($h['history'][0]['invoice']['number'], 'pas de numéro tant que brouillon');
         self::assertSame('Test Worklist', $h['history'][0]['actorName']);
 
         // Facture B : envoi, paiement intégral, puis marquée payée.
@@ -835,12 +846,12 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         self::assertSame($invoiceB['number'], $paid['currentInvoice']['number']);
         $h = $this->history($client, $token, $key);
         self::assertSame(
-            ['INVOICE_GENERATED', 'INVOICE_CANCELLED', 'INVOICE_GENERATED', 'INVOICE_SENT', 'PAYMENT_RECORDED', 'INVOICE_PAID'],
+            ['ADDED_TO_DRAFT', 'INVOICE_GENERATED', 'INVOICE_CANCELLED', 'ADDED_TO_DRAFT', 'INVOICE_GENERATED', 'INVOICE_SENT', 'PAYMENT_RECORDED', 'INVOICE_PAID'],
             array_column($h['history'], 'eventType'),
             'A → annulée → B → envoyée → paiement → payée, dans l\'ordre',
         );
-        self::assertSame([$invoiceA['id'], $invoiceA['id'], $invoiceB['id'], $invoiceB['id'], $invoiceB['id'], $invoiceB['id']], array_column(array_column($h['history'], 'invoice'), 'id'));
-        self::assertStringContainsString('facture soldée', $h['history'][4]['description']);
+        self::assertSame([$invoiceA['id'], $invoiceA['id'], $invoiceA['id'], $invoiceB['id'], $invoiceB['id'], $invoiceB['id'], $invoiceB['id'], $invoiceB['id']], array_column(array_column($h['history'], 'invoice'), 'id'));
+        self::assertStringContainsString('facture soldée', $h['history'][6]['description']);
         self::assertSame($invoiceB['id'], $h['currentInvoice']['id']);
 
         // L'autre ligne (intervention) n'a jamais été facturée : historique vide.
@@ -1036,13 +1047,13 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         // Abandon de A : ses lignes redeviennent libres, le document reste annulé sans numéro.
         $abandon = $this->post($client, $token, "/api/firm-invoices/{$draftA['id']}/abandon", ['reason' => 'regroupement']);
         self::assertSame(200, $abandon->getStatusCode(), (string) $abandon->getContent());
-        self::assertSame('CANCELLED', $this->json($abandon)['status']);
+        self::assertSame('ABANDONED', $this->json($abandon)['status'], 'un brouillon abandonné n\'est pas une facture annulée');
         self::assertNull($this->json($abandon)['number']);
         $itv = $this->rowsByType(['rows' => array_values(array_filter($this->worklist($client, $token, [$firm])['rows'], static fn (array $r) => $r['mission']['id'] !== $m2->getId()))])['INTERVENTION'];
         self::assertSame('FREE', $itv['invoiceState']);
         $hi = $this->history($client, $token, $itv['sourceKey'])['history'];
         self::assertSame(['ADDED_TO_DRAFT', 'REMOVED_FROM_DRAFT'], array_column($hi, 'eventType'));
-        self::assertSame(sprintf('Brouillon %s #%d abandonné — ligne de nouveau libre', $firm->getName(), $draftA['id']), $hi[1]['description']);
+        self::assertSame(sprintf('Retirée lors de l\'abandon du brouillon %s #%d', $firm->getName(), $draftA['id']), $hi[1]['description']);
         self::assertSame(409, $this->post($client, $token, "/api/firm-invoices/{$draftA['id']}/lines", ['financialLineIds' => [$itv['financialLineId']]])->getStatusCode(), 'un brouillon abandonné ne se modifie plus');
     }
 
@@ -1086,6 +1097,125 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         self::assertSame(200, $this->post($client, $token, "/api/firm-invoices/{$draft['id']}/generate")->getStatusCode());
     }
 
+    // ── D-137 : ajout depuis le brouillon, brouillon abandonné ───────────
+
+    public function test_draft_candidates_are_only_compatible_lines_and_can_be_added_in_bulk(): void
+    {
+        $client = $this->boot();
+        $token = $this->login($client, $this->user('ROLE_MANAGER'));
+        $firm = $this->firm('Arthrex');
+        $other = $this->firm('Stryker');
+        $type = $this->type();
+        $item = $this->item($firm);
+        $itemOther = $this->item($other);
+        $this->interventionRule($firm, $type, '350.00');
+        $this->materialRule($firm, $item, '25.00');
+        $this->materialRule($other, $itemOther, '40.00');
+        $m1 = $this->mission(MissionStatus::VALIDATED, $firm, $type, $item, '2.00');                          // Arthrex : intervention + matériel
+        $m2 = $this->mission(MissionStatus::VALIDATED, $firm, $type, $itemOther, '1.00', '2026-09-12 08:00:00'); // Arthrex intervention + matériel Stryker
+        $m3 = $this->mission(MissionStatus::VALIDATED, $firm, $type, date: '2026-09-14 08:00:00');            // Arthrex : sera facturée
+        $m4 = $this->mission(MissionStatus::VALIDATED, $firm, $type, date: '2026-09-16 08:00:00');            // Arthrex : sera dans un autre brouillon
+        $c1 = $this->calculateAndApprove($client, $token, $m1);
+        $this->calculateAndApprove($client, $token, $m2);
+        $this->calculateAndApprove($client, $token, $m3);
+        $this->calculateAndApprove($client, $token, $m4);
+
+        $rows = $this->worklist($client, $token, [$firm, $other])['rows'];
+        $line = static function (array $rows, Mission $m, string $type) {
+            foreach ($rows as $r) {
+                if ($r['mission']['id'] === $m->getId() && $r['sourceType'] === $type) {
+                    return $r;
+                }
+            }
+            self::fail('ligne introuvable');
+        };
+        // m3 facturée, m4 dans un autre brouillon, m1 intervention dans le brouillon éditable.
+        self::assertSame(200, $this->generate($client, $token, $firm, [$line($rows, $m3, 'INTERVENTION')['financialLineId']])->getStatusCode());
+        $draftM4 = $this->json($this->createDraft($client, $token, $firm, [$line($rows, $m4, 'INTERVENTION')['financialLineId']]));
+        self::assertSame('DRAFT', $draftM4['status']);
+        $draft = $this->json($this->createDraft($client, $token, $firm, [$line($rows, $m1, 'INTERVENTION')['financialLineId']]));
+        self::assertSame('350.00', $draft['totalAmount']);
+
+        $candidates = $this->json($this->get($client, $token, "/api/firm-invoices/{$draft['id']}/candidate-lines"))['rows'];
+        $keys = array_column($candidates, 'key');
+        sort($keys);
+        $expected = [$line($rows, $m1, 'MATERIAL')['key'], $line($rows, $m2, 'INTERVENTION')['key']];
+        sort($expected);
+        self::assertSame($expected, $keys, 'même firme, libre, facturable — ni facturée, ni dans un autre brouillon, ni d\'une autre firme, ni déjà dans ce brouillon');
+        foreach ($candidates as $c) {
+            self::assertSame($firm->getId(), $c['firm']['id']);
+            self::assertTrue($c['canInvoice']);
+            self::assertNotNull($c['amount']);
+        }
+
+        // Sélection multiple → ajout, total, événements.
+        $added = $this->post($client, $token, "/api/firm-invoices/{$draft['id']}/lines", ['financialLineIds' => array_column($candidates, 'financialLineId')]);
+        self::assertSame(200, $added->getStatusCode(), (string) $added->getContent());
+        self::assertCount(3, $this->json($added)['lines']);
+        self::assertSame('750.00', $this->json($added)['totalAmount']);
+        foreach ($candidates as $c) {
+            self::assertSame(['ADDED_TO_DRAFT'], array_column($this->history($client, $token, $c['sourceKey'])['history'], 'eventType'));
+        }
+        self::assertSame([], $this->json($this->get($client, $token, "/api/firm-invoices/{$draft['id']}/candidate-lines"))['rows'], 'état vide : plus aucune prestation disponible');
+
+        // Lignes rendues obsolètes par un recalcul : signalées dans leur brouillon et jamais
+        // proposées à un autre brouillon de la firme.
+        $recalc = $this->post($client, $token, "/api/financial-calculations/{$c1}/recalculate");
+        self::assertSame(201, $recalc->getStatusCode(), (string) $recalc->getContent());
+        $this->post($client, $token, "/api/financial-calculations/{$this->json($recalc)['id']}/approve");
+        $staleDetail = $this->json($this->get($client, $token, "/api/firm-invoices/{$draft['id']}"));
+        self::assertCount(2, array_filter($staleDetail['lines'], static fn (array $l) => $l['stale']), 'intervention + matériel de m1 obsolètes');
+        $otherDraftCandidates = $this->json($this->get($client, $token, "/api/firm-invoices/{$draftM4['id']}/candidate-lines"))['rows'];
+        self::assertSame([], array_values(array_filter($otherDraftCandidates, static fn (array $r) => $r['mission']['id'] === $m1->getId())), 'jamais une seconde place pour une ligne restée (même obsolète) dans un brouillon');
+
+    }
+
+    public function test_abandoned_draft_is_distinct_from_a_cancelled_invoice_hidden_by_default_and_never_numbered(): void
+    {
+        $client = $this->boot();
+        $token = $this->login($client, $this->user('ROLE_MANAGER'));
+        $firm = $this->firm('Arthrex');
+        $type = $this->type();
+        $item = $this->item($firm);
+        $this->interventionRule($firm, $type, '350.00');
+        $this->materialRule($firm, $item, '25.00');
+        $this->calculateAndApprove($client, $token, $this->mission(MissionStatus::VALIDATED, $firm, $type, $item, '2.00'));
+        $rows = $this->rowsByType($this->worklist($client, $token, [$firm]));
+
+        $draft = $this->json($this->createDraft($client, $token, $firm, [$rows['MATERIAL']['financialLineId'], $rows['INTERVENTION']['financialLineId']]));
+        $abandon = $this->post($client, $token, "/api/firm-invoices/{$draft['id']}/abandon", ['reason' => 'test']);
+        self::assertSame(200, $abandon->getStatusCode(), (string) $abandon->getContent());
+        self::assertSame('ABANDONED', $this->json($abandon)['status']);
+        self::assertNull($this->json($abandon)['number'], 'aucun numéro attribué');
+        self::assertSame([], $this->json($abandon)['allowedActions']);
+        self::assertSame(409, $this->get($client, $token, "/api/firm-invoices/{$draft['id']}/candidate-lines")->getStatusCode());
+
+        // Lignes libérées, historique conservé.
+        $freed = $this->rowsByType($this->worklist($client, $token, [$firm]));
+        self::assertSame('FREE', $freed['MATERIAL']['invoiceState']);
+        self::assertTrue($freed['MATERIAL']['canInvoice']);
+        self::assertSame(['ADDED_TO_DRAFT', 'REMOVED_FROM_DRAFT'], array_column($this->history($client, $token, $freed['MATERIAL']['sourceKey'])['history'], 'eventType'));
+
+        // Une vraie facture annulée, pour comparer.
+        $cancelled = $this->json($this->generate($client, $token, $firm, [$freed['INTERVENTION']['financialLineId']]));
+        self::assertSame(200, $this->post($client, $token, "/api/firm-invoices/{$cancelled['id']}/cancel", ['reason' => 'test'])->getStatusCode());
+
+        $base = sprintf('/api/firm-invoices?from=%s&to=%s&firmIds[]=%d&documentType=STANDARD', self::FROM, self::TO, $firm->getId());
+        $byDefault = $this->json($this->get($client, $token, $base));
+        self::assertSame([$cancelled['id']], array_column($byDefault, 'id'), 'brouillon abandonné masqué par défaut, facture annulée visible');
+        self::assertSame('CANCELLED', $byDefault[0]['status']);
+        self::assertEqualsCanonicalizing([$draft['id'], $cancelled['id']], array_column($this->json($this->get($client, $token, $base . '&includeAbandoned=1')), 'id'));
+        $onlyAbandoned = $this->json($this->get($client, $token, $base . '&status=ABANDONED'));
+        self::assertSame([$draft['id']], array_column($onlyAbandoned, 'id'));
+        self::assertNull($onlyAbandoned[0]['number']);
+        self::assertSame(422, $this->get($client, $token, $base . '&status=NOPE')->getStatusCode());
+
+        $counts = $this->worklist($client, $token, [$firm])['summary']['invoices'];
+        self::assertSame(1, $counts['cancelled'], 'seule la vraie facture annulée');
+        self::assertSame(1, $counts['abandoned']);
+        self::assertSame(0, $counts['generated']);
+    }
+
     // ── Génération / cycle de vie (contrat D-123 conservé) ───────────────
 
     public function test_line_of_another_firm_is_rejected(): void
@@ -1116,7 +1246,7 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         $this->calculateAndApprove($client, $token, $this->mission(MissionStatus::VALIDATED, $firm, $type));
         $lineId = $this->billableLineIds($this->worklist($client, $token, [$firm]))[0];
 
-        self::assertSame(201, $this->generate($client, $token, $firm, [$lineId])->getStatusCode());
+        self::assertSame(200, $this->generate($client, $token, $firm, [$lineId])->getStatusCode());
         $second = $this->generate($client, $token, $firm, [$lineId]);
 
         self::assertSame(422, $second->getStatusCode());
@@ -1195,7 +1325,7 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         self::assertSame(0, $worklistB['summary']['invoiced']['lineCount']);
 
         $invoiceB = $this->generate($client, $token, $firmB, $linesB);
-        self::assertSame(201, $invoiceB->getStatusCode(), (string) $invoiceB->getContent());
+        self::assertSame(200, $invoiceB->getStatusCode(), (string) $invoiceB->getContent());
         self::assertSame('120.00', $this->json($invoiceB)['totalAmount']);
         self::assertNotSame($invoiceA['id'], $this->json($invoiceB)['id']);
         self::assertSame([], $this->billableLineIds($this->worklist($client, $token, [$firmB])));
@@ -1260,13 +1390,15 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         $lineId = $this->billableLineIds($w)[0];
 
         // Ancien envoi du frontend : minuit Bruxelles exprimé en UTC (veille, 23:00Z).
-        $r = $this->post($client, $token, '/api/firm-invoices/from-financial-calculations', [
+        $d = $this->post($client, $token, '/api/firm-invoices/drafts', [
             'firmId' => $firm->getId(), 'currency' => 'EUR',
             'periodStart' => '2026-12-31T23:00:00.000Z', 'periodEnd' => '2027-01-31T22:59:59.000Z',
-            'selectedFinancialCalculationLineIds' => [$lineId],
+            'financialLineIds' => [$lineId],
         ]);
+        self::assertSame(201, $d->getStatusCode(), (string) $d->getContent());
+        $r = $this->post($client, $token, '/api/firm-invoices/' . $this->json($d)['id'] . '/generate');
 
-        self::assertSame(201, $r->getStatusCode(), (string) $r->getContent());
+        self::assertSame(200, $r->getStatusCode(), (string) $r->getContent());
         self::assertSame('2027-01-01', $this->json($r)['periodStart']);
         self::assertSame('2027-01-31', $this->json($r)['periodEnd']);
         self::assertStringStartsWith('FIRM-2027-', $this->json($r)['number']);

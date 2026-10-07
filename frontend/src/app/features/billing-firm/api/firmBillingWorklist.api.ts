@@ -95,7 +95,7 @@ export interface WorklistSummary {
   invoiced: { lineCount: number; amounts: Amount[] };
   anomalyCount: number;
   pendingValidationMissionCount: number;
-  invoices: { draft: number; generated: number; sent: number; paid: number; cancelled: number };
+  invoices: { draft: number; generated: number; sent: number; paid: number; cancelled: number; abandoned: number };
 }
 
 export interface FirmBillingWorklist {

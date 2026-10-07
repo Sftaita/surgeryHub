@@ -142,7 +142,8 @@ enum AuditEventType: string
 
     // Exécution & Valorisation, Lot 4 (D-074) — bascule des documents financiers vers
     // les lignes figées de FinancialCalculation. CREATED_FROM_CALCULATION est émis
-    // uniquement par le nouveau chemin (createFromEligibleLines()) — le chemin legacy
+    // uniquement par la génération d'un brouillon (generateDraft(), D-137 — l'ancien
+    // createFromEligibleLines() firme a été supprimé) — le chemin legacy
     // (generate()) n'émettait déjà aucun audit avant ce lot, comportement inchangé.
     // ISSUED est émis sur la transition GENERATED → SENT existante (markSent()), pour
     // les documents legacy ET nouveaux : c'est le vrai point de bascule "engagé vis-à-vis

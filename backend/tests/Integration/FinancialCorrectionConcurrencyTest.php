@@ -265,9 +265,9 @@ final class FinancialCorrectionConcurrencyTest extends KernelTestCase
         }
 
         $invoiceService = $this->firmInvoiceServiceFor($this->em);
-        $invoice = $invoiceService->createFromEligibleLines(
+        $invoice = $invoiceService->generateDraft($invoiceService->createDraft(
             $firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$firmLine->getId()], $actor,
-        );
+        ), $actor);
         $this->created['invoices'][] = $invoice->getId();
         $invoice = $invoiceService->issue($invoice, $actor);
 

@@ -9,11 +9,15 @@ const getFirmInvoiceMock = vi.fn();
 const removeLineMock = vi.fn();
 const generateMock = vi.fn();
 const abandonMock = vi.fn();
+const candidatesMock = vi.fn();
+const addLinesMock = vi.fn();
 vi.mock("../../../features/billing-firm/api/firmInvoice.api", () => ({
   getFirmInvoice: (...a: unknown[]) => getFirmInvoiceMock(...a),
   removeFirmInvoiceDraftLine: (...a: unknown[]) => removeLineMock(...a),
   generateFirmInvoiceDraft: (...a: unknown[]) => generateMock(...a),
   abandonFirmInvoiceDraft: (...a: unknown[]) => abandonMock(...a),
+  getFirmInvoiceDraftCandidates: (...a: unknown[]) => candidatesMock(...a),
+  addLinesToFirmInvoiceDraft: (...a: unknown[]) => addLinesMock(...a),
   sendFirmInvoice: vi.fn(),
   markFirmInvoicePaid: vi.fn(),
   getFirmInvoicePdfUrl: (id: number) => `/api/firm-invoices/${id}/pdf`,
@@ -61,6 +65,8 @@ beforeEach(() => {
   removeLineMock.mockReset();
   generateMock.mockReset();
   abandonMock.mockReset();
+  candidatesMock.mockReset();
+  addLinesMock.mockReset();
   scrollSpy.mockReset();
   (Element.prototype as any).scrollIntoView = scrollSpy;
 });
@@ -98,7 +104,7 @@ describe("FirmInvoiceDetailPage — preuve de ce qui a été facturé (D-123)", 
     getFirmInvoiceMock.mockResolvedValue(invoice({ status: "CANCELLED", allowedActions: [] }));
     renderPage();
 
-    expect(await screen.findByText("Annulée")).toBeInTheDocument();
+    expect(await screen.findByText("Facture annulée")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Marquer comme payée" })).not.toBeInTheDocument();
     expect(screen.queryByText("Envoyer par email")).not.toBeInTheDocument();
   });
@@ -191,5 +197,69 @@ describe("FirmInvoiceDetailPage — générateur de brouillon (D-135)", () => {
     expect(abandonMock).not.toHaveBeenCalled();
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Abandonner" }));
     await waitFor(() => expect(abandonMock).toHaveBeenCalledWith(42));
+  });
+});
+
+describe("FirmInvoiceDetailPage — ajouter des prestations depuis le brouillon (D-137)", () => {
+  function draft(overrides: Record<string, unknown> = {}) {
+    const base = invoice({ status: "DRAFT", number: null, generatedAt: null, sentAt: null, allowedActions: ["editLines", "generate", "abandon"] }) as any;
+    base.lines = base.lines.map((l: any) => ({ ...l, stale: false }));
+    return { ...base, ...overrides };
+  }
+  function candidate(key: string, id: number, extra: Record<string, unknown> = {}) {
+    return {
+      key, sourceType: "MATERIAL", sourceId: id, sourceKey: `MATERIAL:${id}`,
+      mission: { id: 600 + id, date: "2026-09-20", status: "VALIDATED", site: "Delta", surgeon: "Dr Y" },
+      firm: { id: 10, name: "Arthrex" }, label: `Vis ${id}`, reference: `REF-${id}`, quantity: "3",
+      billingStatus: "BILLABLE", billingStatusLabel: "Facturable", reasonCode: "BILLABLE", reasonLabel: "Facturable", reasonDetail: "",
+      amount: "60.00", currency: "EUR", currentInvoice: null, invoiceState: "FREE", invoiceStateLabel: "Libre", hasHistory: false,
+      financialLineId: 9100 + id, calculationId: 80, canInvoice: true, canMoveToDraft: false, ...extra,
+    };
+  }
+
+  it("liste les prestations fournies par le backend, sélection multiple, ajout puis rafraîchissement du brouillon", async () => {
+    const user = userEvent.setup();
+    getFirmInvoiceMock.mockResolvedValue(draft());
+    candidatesMock.mockResolvedValue([candidate("MATERIAL_LINE:1", 1), candidate("MATERIAL_LINE:2", 2, { sourceType: "INTERVENTION", label: "LCA bis", reference: null, quantity: "1", amount: "300.00" })]);
+    addLinesMock.mockResolvedValue(draft());
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "+ Ajouter des prestations" }));
+    const dialog = await screen.findByRole("dialog", { name: /Ajouter des prestations — Arthrex/ });
+    expect(candidatesMock).toHaveBeenCalledWith(42);
+    const row1 = await within(dialog).findByTestId("candidate-MATERIAL_LINE:1");
+    expect(within(row1).getByText("Vis 1")).toBeInTheDocument();
+    expect(within(row1).getByText("REF-1")).toBeInTheDocument();
+    expect(within(row1).getByText("Matériel")).toBeInTheDocument();
+    expect(within(row1).getByText(/60,00/)).toBeInTheDocument();
+    expect(within(within(dialog).getByTestId("candidate-MATERIAL_LINE:2")).getByText("Intervention")).toBeInTheDocument();
+
+    expect(within(dialog).getByRole("button", { name: "Ajouter au brouillon" })).toBeDisabled();
+    await user.click(within(dialog).getByRole("checkbox", { name: "Sélectionner Vis 1" }));
+    await user.click(within(dialog).getByRole("checkbox", { name: "Sélectionner LCA bis" }));
+    await user.click(within(dialog).getByRole("button", { name: "Ajouter au brouillon (2)" }));
+
+    await waitFor(() => expect(addLinesMock).toHaveBeenCalledWith(42, [9101, 9102]));
+    await waitFor(() => expect(getFirmInvoiceMock).toHaveBeenCalledTimes(2)); // brouillon (lignes + total) rechargé
+  });
+
+  it("affiche un état vide clair quand aucune prestation n'est disponible", async () => {
+    const user = userEvent.setup();
+    getFirmInvoiceMock.mockResolvedValue(draft());
+    candidatesMock.mockResolvedValue([]);
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "+ Ajouter des prestations" }));
+    expect(await screen.findByText("Aucune autre prestation disponible pour cette firme.")).toBeInTheDocument();
+  });
+
+  it("un brouillon abandonné s'affiche comme tel, en lecture seule, sans générateur ni ajout", async () => {
+    getFirmInvoiceMock.mockResolvedValue(invoice({ status: "ABANDONED", number: null, generatedAt: null, sentAt: null, allowedActions: [], lines: [] }));
+    renderPage();
+
+    expect(await screen.findByText("Brouillon abandonné Arthrex #42")).toBeInTheDocument();
+    expect(screen.getByText("Brouillon abandonné", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "+ Ajouter des prestations" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Générer la facture" })).not.toBeInTheDocument();
   });
 });

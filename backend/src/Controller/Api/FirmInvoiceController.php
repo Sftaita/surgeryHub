@@ -15,6 +15,7 @@ use App\Security\Voter\BillingVoter;
 use App\Service\DocumentPaymentService;
 use App\Service\FinancialCorrectionService;
 use App\Service\FirmInvoiceService;
+use App\Service\FirmBilling\FirmBillingWorklistService;
 use App\Service\NotificationService;
 use App\Service\PdfService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -35,6 +36,7 @@ class FirmInvoiceController extends AbstractController
         private readonly PdfService $pdfService,
         private readonly EntityManagerInterface $em,
         private readonly NotificationService $notificationService,
+        private readonly FirmBillingWorklistService $worklist,
     ) {}
 
     #[Route('', name: 'api_firm_invoices_list', methods: ['GET'])]
@@ -57,7 +59,15 @@ class FirmInvoiceController extends AbstractController
             $qb->andWhere('IDENTITY(i.firm) IN (:fids)')->setParameter('fids', $firmIds);
         }
         if ($status = $request->query->get('status')) {
-            $qb->andWhere('i.status = :status')->setParameter('status', InvoiceStatus::from($status));
+            $statusEnum = InvoiceStatus::tryFrom((string) $status);
+            if ($statusEnum === null) {
+                return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Statut de facture inconnu.']], 422);
+            }
+            $qb->andWhere('i.status = :status')->setParameter('status', $statusEnum);
+        } elseif (!$request->query->getBoolean('includeAbandoned')) {
+            // D-137 — un brouillon abandonné n'a jamais été une facture : masqué par défaut,
+            // visible avec status=ABANDONED ou includeAbandoned=1.
+            $qb->andWhere('i.status != :abandoned')->setParameter('abandoned', InvoiceStatus::ABANDONED);
         }
         if ($year = $request->query->getInt('year')) {
             $qb->andWhere('YEAR(i.periodStart) = :year')->setParameter('year', $year);
@@ -120,37 +130,6 @@ class FirmInvoiceController extends AbstractController
         return $this->json($this->invoiceService->previewEligibleLines($firm, $currency, $startDay->setTime(0, 0, 0), $endDay->setTime(23, 59, 59)));
     }
 
-    #[Route('/from-financial-calculations', name: 'api_firm_invoices_create_from_calculations', methods: ['POST'])]
-    public function createFromFinancialCalculations(Request $request, #[CurrentUser] User $actor): JsonResponse
-    {
-        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
-
-        $data = json_decode($request->getContent(), true) ?? [];
-        $firmId = $data['firmId'] ?? null;
-        $currency = $data['currency'] ?? 'EUR';
-        $periodStart = $data['periodStart'] ?? null;
-        $periodEnd = $data['periodEnd'] ?? null;
-        $selectedLineIds = $data['selectedFinancialCalculationLineIds'] ?? [];
-
-        if (!$firmId || !$periodStart || !$periodEnd || empty($selectedLineIds)) {
-            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'firmId, periodStart, periodEnd et selectedFinancialCalculationLineIds sont requis.']], 422);
-        }
-
-        $firm = $this->em->find(Firm::class, $firmId);
-        if (!$firm) {
-            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Firme introuvable.']], 404);
-        }
-
-        $startDay = $this->parseBusinessDay($periodStart);
-        $endDay = $this->parseBusinessDay($periodEnd);
-        if ($startDay === null || $endDay === null) {
-            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Format de date invalide.']], 422);
-        }
-
-        $invoice = $this->invoiceService->createFromEligibleLines($firm, $currency, $startDay->setTime(0, 0, 0), $endDay->setTime(23, 59, 59), array_map('intval', (array) $selectedLineIds), $actor);
-        return $this->json($this->serializeInvoiceDetail($invoice), 201);
-    }
-
     // ── D-135 — brouillon de facture (transitions par endpoints dédiés) ──────
 
     /** POST /api/firm-invoices/drafts { firmId, currency, periodStart, periodEnd, financialLineIds[] } */
@@ -173,6 +152,26 @@ class FirmInvoiceController extends AbstractController
 
         $draft = $this->invoiceService->createDraft($firm, (string) ($data['currency'] ?? 'EUR'), $startDay->setTime(0, 0, 0), $endDay->setTime(23, 59, 59), $lineIds, $actor);
         return $this->json($this->serializeInvoiceDetail($draft), 201);
+    }
+
+    /**
+     * GET /api/firm-invoices/{id}/candidate-lines — D-137 : prestations ajoutables à CE
+     * brouillon (même firme, devise et période ; libres, facturables, non obsolètes), au
+     * format des lignes de la worklist. 409 si le document n'est pas un brouillon.
+     */
+    #[Route('/{id}/candidate-lines', name: 'api_firm_invoices_draft_candidate_lines', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function draftCandidateLines(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $draft = $this->em->find(FirmInvoice::class, $id);
+        if (!$draft) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+        if ($draft->getStatus() !== InvoiceStatus::DRAFT) {
+            return $this->json(['error' => ['status' => 409, 'code' => 'INVOICE_STATUS_TRANSITION_INVALID', 'message' => 'Seul un brouillon accepte de nouvelles prestations.']], 409);
+        }
+
+        return $this->json(['rows' => $this->worklist->candidatesForDraft($draft)]);
     }
 
     /** POST /api/firm-invoices/{id}/lines { financialLineIds[] } — ajout à un brouillon (jamais une ligne d'un autre brouillon). */

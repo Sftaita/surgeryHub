@@ -239,14 +239,14 @@ final class FirmInvoiceConcurrencyTest extends KernelTestCase
 
         // Worker B : tient le verrou pessimiste sur le FinancialCalculation, transaction
         // non committée — reproduit fidèlement la fenêtre de contention réelle de
-        // createFromEligibleLines() (verrouille chaque calcul distinct avant de vérifier
+        // createDraft() (verrouille chaque calcul distinct avant de vérifier
         // l'éligibilité des lignes).
         $emB = $this->freshEntityManager();
         $emB->getConnection()->beginTransaction();
         $calcB = $emB->find(FinancialCalculation::class, $calculationId);
         $emB->lock($calcB, LockMode::PESSIMISTIC_WRITE);
 
-        // Worker A : tentative réelle de createFromEligibleLines() sur la MÊME ligne,
+        // Worker A : tentative réelle de createDraft() sur la MÊME ligne,
         // EntityManager frais avec timeout court — doit être bloqué réellement.
         $emA = $this->freshEntityManager();
         $this->setLockTimeout($emA, self::LOCK_TIMEOUT_SECONDS);
@@ -255,13 +255,13 @@ final class FirmInvoiceConcurrencyTest extends KernelTestCase
 
         $blocked = false;
         try {
-            $this->firmInvoiceServiceFor($emA)->createFromEligibleLines(
+            $this->firmInvoiceServiceFor($emA)->generateDraft($this->firmInvoiceServiceFor($emA)->createDraft(
                 $firmA, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$lineId], $actorA,
-            );
+            ), $actorA);
         } catch (\Throwable $e) {
             $blocked = $this->isLockTimeoutError($e);
         }
-        self::assertTrue($blocked, 'createFromEligibleLines() doit être réellement bloqué par le verrou pessimiste tenu sur le même FinancialCalculation.');
+        self::assertTrue($blocked, 'createDraft() doit être réellement bloqué par le verrou pessimiste tenu sur le même FinancialCalculation.');
 
         // B libère le verrou (il ne représentait qu'un concurrent en cours).
         $emB->getConnection()->rollBack();
@@ -270,9 +270,9 @@ final class FirmInvoiceConcurrencyTest extends KernelTestCase
         $emA2 = $this->freshEntityManager();
         $firmA2 = $emA2->find(Firm::class, $firm->getId());
         $actorA2 = $emA2->find(User::class, $actor->getId());
-        $invoice = $this->firmInvoiceServiceFor($emA2)->createFromEligibleLines(
+        $invoice = $this->firmInvoiceServiceFor($emA2)->generateDraft($this->firmInvoiceServiceFor($emA2)->createDraft(
             $firmA2, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$lineId], $actorA2,
-        );
+        ), $actorA2);
         $this->created['invoices'][] = $invoice->getId();
 
         self::assertCount(1, $invoice->getLines());

@@ -2305,9 +2305,10 @@ construction, gardé en défense).
 **D-121/D-074 — suppression du chemin legacy (2026-09-14) :** `POST /api/firm-invoices/preview`
 et `POST /api/firm-invoices` (qui recalculaient les montants depuis `PricingRule` au moment
 de la génération) ont été supprimés — aucune facture n'avait jamais été produite par ce
-chemin en production. Le seul chemin de génération est désormais celui du §36
-(`GET /api/firm-invoices/eligible-lines` + `POST /api/firm-invoices/from-financial-calculations`),
-qui consomme exclusivement des `FinancialCalculationLine` déjà figées. **Ces anciennes routes
+chemin en production. **Depuis D-137, le seul chemin de génération est le brouillon**
+(§24.3.2 : `POST /api/firm-invoices/drafts` → lignes → `POST /api/firm-invoices/{id}/generate`),
+qui consomme exclusivement des `FinancialCalculationLine` déjà figées. La génération directe
+`POST /api/firm-invoices/from-financial-calculations` (§36) a été **supprimée** (D-137). **Ces anciennes routes
 ne constituent plus un chemin supporté et ne doivent jamais être réintroduites** (un seul
 moteur : le calcul financier, D-073/D-074 ; la facture n'en est qu'un snapshot, D-123).
 
@@ -2431,7 +2432,8 @@ génération.
 | `POST /api/firm-invoices/{id}/lines/move` | `{financialLineIds[]}` | « Déplacer vers… » ce brouillon : retrait de l'origine + ajout, une transaction, `MOVED_TO_DRAFT` (`details.fromInvoiceId`) |
 | `DELETE /api/firm-invoices/{id}/lines/{lineId}` | — | retire une ligne (id de `FirmInvoiceLine`) ; `REMOVED_FROM_DRAFT` |
 | `POST /api/firm-invoices/{id}/generate` | — | `DRAFT → GENERATED` : revalidation sous verrou, numéro, calculs `LOCKED`, `INVOICE_GENERATED` |
-| `POST /api/firm-invoices/{id}/abandon` | `{reason?}` | `DRAFT → CANCELLED`, lignes libérées (`REMOVED_FROM_DRAFT`, `draftAbandoned`) |
+| `GET /api/firm-invoices/{id}/candidate-lines` | — | D-137 — prestations ajoutables à CE brouillon : `{rows: WorklistRow[]}` = la projection worklist de la firme et de la période du brouillon, restreinte aux lignes `canInvoice` (libres, facturables, calcul approuvé, ni obsolètes, ni dans un autre document) de sa devise. 409 si le document n'est pas un brouillon. |
+| `POST /api/firm-invoices/{id}/abandon` | `{reason?}` | `DRAFT → ABANDONED` (D-137 : « Brouillon abandonné », jamais `CANCELLED`), lignes libérées (`REMOVED_FROM_DRAFT`, `draftAbandoned`, « Retirée lors de l'abandon du brouillon X ») |
 
 **Erreurs :** `422 DOCUMENT_LINE_SELECTION_FAILED` avec `violations[].code` ∈
 `FINANCIAL_LINE_IN_DRAFT` (déjà dans un autre brouillon — `draftId` ; retirer ou déplacer),
@@ -2445,7 +2447,13 @@ Worklist : une ligne en brouillon a `billingStatus = BILLABLE`, `reasonCode = IN
 `invoiceState = IN_DRAFT`, `canInvoice = false`, `canMoveToDraft = true` ; une version
 périmée restée dans un brouillon donne `reasonCode = DRAFT_LINE_STALE` (`TO_REVIEW`) et
 une anomalie `OPEN_DRAFT` (`invoiceId`, `focusLine`). `summary.invoices.draft` compte les
-brouillons de la période.
+brouillons de la période ; `summary.invoices.abandoned` (D-137) compte les brouillons
+abandonnés, **jamais** inclus dans `cancelled` (seules les vraies factures annulées).
+
+**Statuts d'un document firme (D-137)** : `DRAFT` (brouillon) → `GENERATED` (générée) →
+`SENT` (envoyée) → `PAID` (payée) ; `GENERATED → CANCELLED` (facture annulée) ;
+`DRAFT → ABANDONED` (brouillon abandonné : aucun numéro, conservé pour l'audit, lecture
+seule, `allowedActions = []`).
 
 #### `POST /api/firm-billing/calculations`
 
@@ -2462,7 +2470,10 @@ mission par mission, chacune dans sa transaction. **Réponse 200 :**
 #### `GET /api/firm-invoices` (liste)
 
 **Query params :** `firmId`, `status`, `year` (existants) ; **D-123 :** `from`/`to`
-(dates `AAAA-MM-JJ` inclusives sur `periodStart`), `documentType=STANDARD` ; **D-133 :** `firmIds[]` (plusieurs firmes, OU). Chaque
+(dates `AAAA-MM-JJ` inclusives sur `periodStart`), `documentType=STANDARD` ; **D-133 :** `firmIds[]` (plusieurs firmes, OU) ;
+**D-137 :** les brouillons abandonnés (`ABANDONED`) sont **exclus par défaut** —
+`includeAbandoned=1` les ajoute, `status=ABANDONED` ne liste qu'eux ; un `status` inconnu
+renvoie `422 VALIDATION_FAILED`. Chaque
 facture expose en plus `lineCount` et `allowedActions`.
 
 #### `GET /api/firm-invoices/{id}`
@@ -6049,27 +6060,22 @@ période sont déjà rattachées à un document), `NO_LINES_FOR_BENEFICIARY` (ca
 déjà persistées — jamais un recalcul tarifaire, jamais présent quand `lines` est non vide
 (coût nul sur le chemin heureux).
 
-#### `POST /api/firm-invoices/from-financial-calculations`
+#### ~~`POST /api/firm-invoices/from-financial-calculations`~~ — supprimé (D-137)
 
-**Body JSON :** `{ "firmId": 5, "currency": "EUR", "periodStart": "2026-06-01", "periodEnd": "2026-06-30", "selectedFinancialCalculationLineIds": [49, 52] }`
-
-Ne fait jamais confiance à `eligible-lines` : reverrouille et revérifie chaque ligne sous
-verrou (§14/§22 du lot). Verrouille automatiquement chaque `FinancialCalculation`
-concerné (`APPROVED → LOCKED`, idempotent si déjà `LOCKED`).
-
-**Réponse — 201 :** la facture créée (`status: "GENERATED"`, `legacySource: false`).
-
-**Erreurs :** `422 DOCUMENT_LINE_SELECTION_FAILED` — une ou plusieurs lignes ne sont
-plus éligibles (aucune facture créée, aucune ligne rattachée, aucun calcul verrouillé) ;
-`violations` structuré, codes : `FINANCIAL_LINE_ALREADY_ASSIGNED`,
-`FINANCIAL_LINE_NOT_ELIGIBLE`, `FINANCIAL_LINE_BENEFICIARY_MISMATCH`,
-`FINANCIAL_LINE_CURRENCY_MISMATCH`, `FINANCIAL_CALCULATION_NOT_APPROVED`.
+La génération directe d'une facture `GENERATED` sans brouillon n'existe plus (route,
+méthode `FirmInvoiceService::createFromEligibleLines()` et fonction frontend supprimées) :
+toute facture firme naît d'un brouillon — `POST /api/firm-invoices/drafts` puis
+`POST /api/firm-invoices/{id}/generate` (§24.3.2), qui appliquent la même revalidation sous
+verrou et les mêmes codes d'erreur, puis verrouillent les calculs à la génération. Un appel
+à l'ancienne route renvoie 404/405 et ne crée rien. (Le flux instrumentiste
+`POST /api/instrumentist-statements/from-financial-calculations` est distinct et inchangé.)
 
 #### `POST /api/firm-invoices/{id}/cancel`
 
 **Body JSON (optionnel) :** `{ "reason": "..." }`
 
-`GENERATED → CANCELLED` uniquement — libère physiquement les lignes documentaires
+`GENERATED → CANCELLED` uniquement (« Facture annulée » ; un brouillon s'abandonne via
+`/abandon` → `ABANDONED`, D-137) — libère physiquement les lignes documentaires
 rattachées (la `FinancialCalculationLine` redevient sélectionnable dans un nouveau
 document) mais **ne déverrouille jamais** le calcul associé. `SENT`/`PAID` : refusé.
 
@@ -6112,7 +6118,8 @@ libérés, total, motif d'annulation le cas échéant.
 
 Voir D-075 (`docs/decisions.md`) et `docs/architecture.md` pour le modèle complet. Les
 endpoints existants (`GET /{id}`, `/pdf`, `/send`, `/mark-paid`, `/eligible-lines`,
-`/from-financial-calculations`, `/cancel` — §24/§25/§36 ci-dessus) restent inchangés. Cette
+`/from-financial-calculations` — supprimé côté firme par D-137, remplacé par le brouillon —,
+`/cancel` — §24/§25/§36 ci-dessus) restent inchangés. Cette
 section documente les endpoints **additifs** du cycle de vie financier après génération.
 
 **AuthZ (toutes routes) :** `BillingVoter::MANAGE` — manager/admin uniquement. Aucun

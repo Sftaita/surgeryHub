@@ -1,7 +1,8 @@
 import { apiClient } from "../../../api/apiClient";
 import type { CorrectionSummary, DocumentType, PaymentStatus } from "../../billing-shared/api/documentFinance.api";
 
-export type InvoiceStatus = "DRAFT" | "GENERATED" | "SENT" | "PAID" | "CANCELLED";
+/** D-137 — ABANDONED = brouillon abandonné (jamais une facture), distinct de CANCELLED (facture annulée). */
+export type InvoiceStatus = "DRAFT" | "GENERATED" | "SENT" | "PAID" | "CANCELLED" | "ABANDONED";
 
 export interface FirmInvoice {
   id: number;
@@ -77,6 +78,8 @@ export async function getFirmInvoices(params?: {
   firmId?: number;
   /** D-133 — plusieurs firmes (OU). */
   firmIds?: number[];
+  /** D-137 — les brouillons abandonnés sont masqués par défaut. */
+  includeAbandoned?: boolean;
   status?: InvoiceStatus;
   year?: number;
   /** D-123 — période (dates AAAA-MM-JJ inclusives, sur le début de période de la facture). */
@@ -150,17 +153,6 @@ export async function getFirmEligibleLines(params: {
   return res.data;
 }
 
-export async function createFirmInvoiceFromCalculations(body: {
-  firmId: number;
-  currency: string;
-  periodStart: string;
-  periodEnd: string;
-  selectedFinancialCalculationLineIds: number[];
-}): Promise<FirmInvoice> {
-  const res = await apiClient.post("/api/firm-invoices/from-financial-calculations", body);
-  return res.data;
-}
-
 export async function getFirmInvoice(id: number): Promise<FirmInvoice> {
   const res = await apiClient.get(`/api/firm-invoices/${id}`);
   return res.data;
@@ -219,4 +211,10 @@ export async function generateFirmInvoiceDraft(draftId: number): Promise<FirmInv
 export async function abandonFirmInvoiceDraft(draftId: number, reason?: string): Promise<FirmInvoice> {
   const res = await apiClient.post(`/api/firm-invoices/${draftId}/abandon`, { reason });
   return res.data;
+}
+
+/** D-137 — prestations ajoutables à ce brouillon (règles et filtre : backend uniquement). */
+export async function getFirmInvoiceDraftCandidates(draftId: number): Promise<import("./firmBillingWorklist.api").WorklistRow[]> {
+  const res = await apiClient.get(`/api/firm-invoices/${draftId}/candidate-lines`);
+  return res.data.rows;
 }

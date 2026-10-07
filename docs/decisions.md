@@ -11149,7 +11149,8 @@ Ni exclusion métier (aucune `FirmServiceOffering.feeApplicable = false`, aucun 
    rejouées côté serveur (clé inconnue = 422, jamais un export partiel), sans doublon ;
    PDF via `PdfService` (paysage) ; `.xlsx` OOXML natif (`XlsxWriter`, ext-zip — aucune
    dépendance ajoutée) ; total = lignes `BILLABLE` uniquement ; aucune donnée patient.
-9. **Génération de facture inchangée** (`from-financial-calculations`, une firme, IDs
+9. *(Remplacé par D-135/D-137 : toute facture naît désormais d'un brouillon ;
+   `from-financial-calculations` a été supprimé.)* **Génération de facture inchangée** (`from-financial-calculations`, une firme, IDs
    explicites) depuis la sélection de lignes `canInvoice`. Les lignes neutralisées à 0 €
    (délégué présent) ne sont plus proposées à la facturation — elles restaient « à
    facturer » dans le cockpit D-123.
@@ -11196,7 +11197,7 @@ pseudo-brouillon frontend n'est créé.
    exception).
 2. **Seul point d'écriture** : `FirmBillingLineEventRecorder`, appelé dans la transaction
    du fait métier. Événements émis aujourd'hui : `INVOICE_GENERATED`
-   (`createFromEligibleLines`), `INVOICE_SENT` (`issue`/`markSent`), `PAYMENT_RECORDED`
+   (`createFromEligibleLines` — depuis D-137 : `generateDraft`), `INVOICE_SENT` (`issue`/`markSent`), `PAYMENT_RECORDED`
    (`DocumentPaymentService::recordPayment`, avec la mention « soldée »), `INVOICE_PAID`
    (`markPaid`, qui reçoit désormais l'acteur), `INVOICE_CANCELLED` (`cancel`, journalisé
    AVANT la suppression des lignes snapshot : la ligne redevient libre, son passage reste).
@@ -11271,7 +11272,8 @@ produit le 2026-10-07 :
    refuse (`FINANCIAL_LINE_STALE`) tant qu'elle n'est pas retirée et remplacée.
 2. **Plusieurs brouillons en parallèle**, y compris pour une même firme et une même période.
 3. **Un brouillon peut être abandonné** : ses lignes sont libérées (événement
-   `REMOVED_FROM_DRAFT`, `details.draftAbandoned`) ; le document reste `CANCELLED`, sans
+   `REMOVED_FROM_DRAFT`, `details.draftAbandoned`) ; le document reste `CANCELLED` (devenu
+   `ABANDONED` par D-137), sans
    numéro (traçabilité de l'identifiant référencé par le journal).
 
 ### Modèle
@@ -11308,7 +11310,7 @@ produit le 2026-10-07 :
 `POST /api/firm-invoices/{id}/lines/move`, `DELETE /api/firm-invoices/{id}/lines/{lineId}`,
 `POST /api/firm-invoices/{id}/generate`, `POST /api/firm-invoices/{id}/abandon`. Détail
 dans `api.md` §24.3.2. `allowedActions` d'un brouillon : `["editLines", "generate",
-"abandon"]`. `POST /from-financial-calculations` (génération directe) est conservé pour
+"abandon"]`. *(D-137 : la génération directe a depuis été supprimée.)* `POST /from-financial-calculations` (génération directe) est conservé pour
 compatibilité API mais n'est plus proposé par l'interface : tout passe par un brouillon.
 
 ### Interface
@@ -11328,7 +11330,8 @@ une boîte navigateur). Une facture émise s'ouvre en lecture seule avec le mêm
   (D-134) trace chaque mouvement ; la génération et l'abandon réutilisent
   `FIRM_INVOICE_CREATED_FROM_CALCULATION` (`fromDraft`) et `FIRM_INVOICE_CANCELLED`
   (`draftAbandoned`).
-- Un brouillon abandonné reste listé (statut « Annulée », sans numéro).
+- Un brouillon abandonné reste listé (statut « Annulée », sans numéro). *(Corrigé par D-137 :
+  statut `ABANDONED` « Brouillon abandonné », masqué par défaut.)*
 
 ---
 
@@ -11395,3 +11398,65 @@ Retours d'usage du cockpit « Suivi des encodages » (D-118/D-120) :
   un composant orphelin.
 
 Déployé : `v2026.10.07-prod`.
+
+## D-137 — Facturation firmes : brouillon abandonné ≠ facture annulée, ajout depuis le brouillon, brouillon seul chemin de génération (2026-10-07)
+
+**Statut : fait sur `feat/firm-billing-worklist-redesign` (non fusionné, non déployé).**
+Numéro D-137 : D-136 est pris sur `origin/main` (suivi des encodages).
+
+### Constat (audit)
+
+- Un brouillon abandonné prenait le statut `CANCELLED`, identique à une facture `GENERATED`
+  annulée : la liste affichait « Annulée » et le compteur des factures annulées l'incluait,
+  alors qu'un brouillon n'a jamais été une facture (ni numéro, ni émission, ni verrou).
+- `POST /api/firm-invoices/from-financial-calculations` permettait encore de créer une
+  facture `GENERATED` sans brouillon. Audit des appels : aucun appelant en production (la
+  fonction frontend n'était plus importée depuis D-135 ; seul le contrôleur appelait
+  `FirmInvoiceService::createFromEligibleLines()`) ; 36 appels dans 11 fichiers de tests
+  (fixtures) ; documentation (api.md §24.3/§36, architecture.md).
+- Ajouter des lignes à un brouillon obligeait à revenir dans la worklist.
+
+### Décisions
+
+1. **Nouveau statut `InvoiceStatus::ABANDONED`** pour `DRAFT → ABANDONED` (abandon) ;
+   `CANCELLED` reste réservé à `GENERATED → CANCELLED` (facture annulée). Une valeur d'enum
+   explicite plutôt qu'une inférence (numéro nul + statut annulé) que le frontend devrait
+   deviner. **Aucune migration** : colonne `VARCHAR(20)` ; aucune donnée à reprendre (les
+   brouillons n'ont jamais existé hors de cette branche ; 0 facture en production).
+   Un brouillon abandonné reste consultable (lecture seule, aucune action), sans numéro,
+   **masqué par défaut** de `GET /api/firm-invoices` (`includeAbandoned=1` ou
+   `status=ABANDONED` pour l'afficher), compté à part (`summary.invoices.abandoned`), jamais
+   dans `cancelled` ni dans les statistiques (qui ne lisent que SENT/PAID/GENERATED). Il ne
+   compte jamais comme document actif (`currentDocumentFor()`, historique : statuts
+   `CANCELLED`/`ABANDONED` exclus). Libellés : « Facture annulée » / « Brouillon
+   abandonné » ; historique : « Retirée lors de l'abandon du brouillon X ».
+2. **Génération directe supprimée** : route `from-financial-calculations` (firme), méthode
+   `createFromEligibleLines()` de `FirmInvoiceService` et fonction frontend
+   `createFirmInvoiceFromCalculations` retirées ; les tests passent par
+   `createDraft()` + `generateDraft()`. Workflow unique :
+   `DRAFT → GENERATED → SENT → PAID`, `DRAFT → ABANDONED`, `GENERATED → CANCELLED`. Le flux
+   **instrumentiste** (`instrumentist-statements/from-financial-calculations`) est distinct
+   et inchangé. `GET /eligible-lines` (prévisualisation en lecture seule, ne crée rien) est
+   conservé.
+3. **Ajout depuis le générateur** : `GET /api/firm-invoices/{id}/candidate-lines` renvoie la
+   projection worklist (D-133) de la firme et de la période du brouillon, restreinte aux
+   lignes `canInvoice` de sa devise : aucune règle nouvelle, le backend reste la source de
+   vérité. L'ajout réutilise `POST /{id}/lines` (revalidation sous verrou, événements
+   `ADDED_TO_DRAFT`). Le frontend n'applique aucun filtre propre.
+4. Robustesse : `cancel()` resynchronise aussi le côté inverse en mémoire
+   (`FinancialCalculationLine::releaseFirmInvoiceLine()`), comme le retrait de brouillon
+   (sinon un `flush()` ultérieur dans le même EntityManager échoue — révélé par les tests
+   passant désormais par le brouillon).
+
+### Invariants conservés
+
+Pas de numéro sur un brouillon ; numéro à la génération ; aucun trou par abandon ; calcul
+verrouillé à la génération seulement ; ligne obsolète bloquante ; un seul document actif
+par ligne ; déplacement atomique ; journal append-only ; facture émise en lecture seule ;
+aucune donnée patient.
+
+### Limites
+
+- Le générateur ne propose que les prestations de la **période** du brouillon (règle de
+  période existante de la génération).
+- Un brouillon abandonné ne peut pas être « rouvert » : on en crée un nouveau.

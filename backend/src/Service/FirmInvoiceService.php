@@ -335,7 +335,7 @@ class FirmInvoiceService
         return $draft;
     }
 
-    /** Abandon d'un brouillon : lignes libérées (REMOVED_FROM_DRAFT), document conservé CANCELLED, sans numéro. */
+    /** Abandon d'un brouillon : lignes libérées (REMOVED_FROM_DRAFT), document conservé ABANDONED (D-137), sans numéro. */
     public function abandonDraft(FirmInvoice $draft, User $actor, ?string $reason = null): FirmInvoice
     {
         $this->em->wrapInTransaction(function () use ($draft, $actor, $reason): void {
@@ -349,7 +349,7 @@ class FirmInvoiceService
                 $this->detachDraftLine($draft, $line);
             }
             $draft->setTotalAmount('0.00');
-            $draft->setStatus(InvoiceStatus::CANCELLED);
+            $draft->setStatus(InvoiceStatus::ABANDONED);
 
             $this->audit->recordGlobal($actor, AuditEventType::FIRM_INVOICE_CANCELLED, [
                 'firmInvoiceId' => $draft->getId(),
@@ -398,9 +398,9 @@ class FirmInvoiceService
             ->from(FirmInvoice::class, 'i')
             ->join('i.lines', 'fil')
             ->where('i.documentType = :standard')
-            ->andWhere('i.status != :cancelled')
+            ->andWhere('i.status NOT IN (:inactive)')
             ->setParameter('standard', FinancialDocumentType::STANDARD)
-            ->setParameter('cancelled', InvoiceStatus::CANCELLED)
+            ->setParameter('inactive', [InvoiceStatus::CANCELLED, InvoiceStatus::ABANDONED])
             ->setMaxResults(1);
 
         $or = ['fil.financialCalculationLine = :line'];
@@ -734,92 +734,6 @@ class FirmInvoiceService
     }
 
     /**
-     * §16 du lot — seul point d'entrée pour la création d'une facture à partir de
-     * FinancialCalculationLine. Ne fait jamais confiance à previewEligibleLines() :
-     * reverrouille chaque FinancialCalculation référencé (ordre croissant d'id — évite
-     * les deadlocks entre générations concurrentes portant sur des ensembles de lignes
-     * qui se recoupent, §14/§22) et revérifie individuellement chaque ligne sélectionnée
-     * sous ce verrou. Une seule ligne devenue inéligible annule toute la création
-     * (§28) — aucune persistance partielle. Verrouille chaque calcul concerné
-     * (APPROVED → LOCKED, idempotent si déjà LOCKED — §10/§30) dans la même transaction.
-     */
-    public function createFromEligibleLines(
-        Firm $firm,
-        string $currency,
-        \DateTimeImmutable $periodStart,
-        \DateTimeImmutable $periodEnd,
-        array $selectedFinancialCalculationLineIds,
-        User $actor,
-    ): FirmInvoice {
-        $result = null;
-
-        $this->em->wrapInTransaction(function () use (&$result, $firm, $currency, $periodStart, $periodEnd, $selectedFinancialCalculationLineIds, $actor): void {
-            ['lines' => $lines, 'missingIds' => $missingIds] = $this->lockAndReloadSelectedLines($selectedFinancialCalculationLineIds);
-
-            $anomalies = $this->validateFirmLineSelection($lines, $firm, $currency, $periodStart, $periodEnd);
-            foreach ($missingIds as $missingId) {
-                $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_LINE_NOT_ELIGIBLE', sprintf('La ligne #%d est introuvable.', $missingId), ['financialCalculationLineId' => $missingId]);
-            }
-            if (count($anomalies) > 0) {
-                throw new DocumentLineSelectionException($anomalies);
-            }
-
-            $invoice = new FirmInvoice();
-            $invoice->setFirm($firm);
-            $invoice->setCurrency($currency);
-            $invoice->setPeriodStart($periodStart);
-            $invoice->setPeriodEnd($periodEnd);
-            $invoice->setStatus(InvoiceStatus::GENERATED);
-            $invoice->setGeneratedAt(new \DateTimeImmutable());
-            $invoice->setLegacySource(false);
-            $invoice->setBillingEmailTo($firm->getBillingEmail());
-            $invoice->setBillingEmailCc($firm->getBillingEmailCc());
-            $invoice->setNumber($this->generateNumber($periodStart));
-            // Persisté AVANT la boucle : FinancialCalculationService::lock() flush()
-            // en interne à chaque itération (verrouillage d'un calcul déjà APPROVED) —
-            // $invoice doit déjà être connue de l'UnitOfWork, sinon Doctrine refuse de
-            // cascader la persistance des FirmInvoiceLine qui la référencent.
-            $this->em->persist($invoice);
-
-            $total = '0.00';
-            $lockedCalculationIds = [];
-
-            foreach ($lines as $line) {
-                $invoiceLine = $this->hydrateFromFinancialLine($line);
-                $invoice->addLine($invoiceLine);
-                $this->em->persist($invoiceLine);
-                $total = number_format((float) $total + (float) $line->getTotalAmount(), 2, '.', '');
-
-                $calculation = $line->getFinancialCalculation();
-                if ($calculation->getStatus() !== FinancialCalculationStatus::LOCKED) {
-                    $this->financialCalculationService->lock($calculation, $actor);
-                }
-                $lockedCalculationIds[$calculation->getId()] = true;
-            }
-
-            $invoice->setTotalAmount($total);
-            $this->em->flush();
-
-            $this->audit->recordGlobal($actor, AuditEventType::FIRM_INVOICE_CREATED_FROM_CALCULATION, [
-                'firmInvoiceId' => $invoice->getId(),
-                'firmId' => $firm->getId(),
-                'currency' => $currency,
-                'periodStart' => $periodStart->format('Y-m-d'),
-                'periodEnd' => $periodEnd->format('Y-m-d'),
-                'financialCalculationLineIds' => array_map(static fn (FinancialCalculationLine $l) => $l->getId(), $lines),
-                'financialCalculationIds' => array_keys($lockedCalculationIds),
-                'totalAmount' => $total,
-            ]);
-            $this->lineEvents->recordForInvoice($invoice, FirmBillingLineEventType::INVOICE_GENERATED, $actor);
-            $this->em->flush();
-
-            $result = $invoice;
-        });
-
-        return $result;
-    }
-
-    /**
      * §12/§13 du lot — GENERATED → CANCELLED uniquement (le seul état atteint avant
      * envoi dans ce produit, voir docblock de classe : GENERATED n'est jamais un simple
      * brouillon transitoire, c'est déjà le document définitif tant qu'il n'a pas été
@@ -847,6 +761,9 @@ class FirmInvoiceService
             $financialLine = $line->getFinancialCalculationLine();
             if ($financialLine !== null) {
                 $releasedLineIds[] = $financialLine->getId();
+                // Côté inverse en mémoire resynchronisé (sinon un flush ultérieur dans le même
+                // EntityManager voit une ligne supprimée encore référencée).
+                $financialLine->releaseFirmInvoiceLine($line);
             }
             $this->em->remove($line);
         }

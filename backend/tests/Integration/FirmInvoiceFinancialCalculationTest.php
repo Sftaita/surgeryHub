@@ -410,9 +410,9 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         $previewA = $this->invoiceService->previewEligibleLines($firmA, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
         $lineIdA = $previewA['lines'][0]['id'];
 
-        $invoice = $this->trackInvoice($this->invoiceService->createFromEligibleLines(
+        $invoice = $this->trackInvoice($this->invoiceService->generateDraft($this->invoiceService->createDraft(
             $firmA, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$lineIdA], $actor,
-        ));
+        ), $actor));
 
         self::assertSame(InvoiceStatus::GENERATED, $invoice->getStatus());
         self::assertFalse($invoice->isLegacySource());
@@ -456,9 +456,9 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         // 1) Facture la ligne d'intervention seule (2 lignes firmes existent : intervention + matériel).
         $previewFirm = $this->invoiceService->previewEligibleLines($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
         $interventionLine = current(array_filter($previewFirm['lines'], static fn ($l) => $l['lineType'] === 'FIRM_INTERVENTION_FEE'));
-        $this->trackInvoice($this->invoiceService->createFromEligibleLines(
+        $this->trackInvoice($this->invoiceService->generateDraft($this->invoiceService->createDraft(
             $firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$interventionLine['id']], $actor,
-        ));
+        ), $actor));
 
         $this->em->refresh($calc);
         self::assertSame(FinancialCalculationStatus::LOCKED, $calc->getStatus());
@@ -482,9 +482,9 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         // 4) Facture le matériel — le calcul doit être ENTIÈREMENT documenté.
         $previewMaterial = $this->invoiceService->previewEligibleLines($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
         self::assertCount(1, $previewMaterial['lines']);
-        $this->trackInvoice($this->invoiceService->createFromEligibleLines(
+        $this->trackInvoice($this->invoiceService->generateDraft($this->invoiceService->createDraft(
             $firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$previewMaterial['lines'][0]['id']], $actor,
-        ));
+        ), $actor));
 
         $this->em->refresh($calc);
         self::assertFalse($calc->hasUnassignedFirmLines());
@@ -509,14 +509,14 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         $preview = $this->invoiceService->previewEligibleLines($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
         $interventionLine = current(array_filter($preview['lines'], static fn ($l) => $l['lineType'] === 'FIRM_INTERVENTION_FEE'));
 
-        $this->trackInvoice($this->invoiceService->createFromEligibleLines(
+        $this->trackInvoice($this->invoiceService->generateDraft($this->invoiceService->createDraft(
             $firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$interventionLine['id']], $actor,
-        ));
+        ), $actor));
 
         try {
-            $this->invoiceService->createFromEligibleLines(
+            $this->invoiceService->generateDraft($this->invoiceService->createDraft(
                 $firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$interventionLine['id']], $actor,
-            );
+            ), $actor);
             self::fail('Devait lever DocumentLineSelectionException (double facturation).');
         } catch (DocumentLineSelectionException $e) {
             $codes = array_map(static fn ($a) => $a->code, $e->getAnomalies());
@@ -545,9 +545,9 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         $invalidLineId = 999999999; // n'existe pas
 
         try {
-            $this->invoiceService->createFromEligibleLines(
+            $this->invoiceService->generateDraft($this->invoiceService->createDraft(
                 $firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$validLineId, $invalidLineId], $actor,
-            );
+            ), $actor);
             self::fail('Devait lever DocumentLineSelectionException.');
         } catch (DocumentLineSelectionException) {
         }
@@ -581,9 +581,9 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         $preview = $this->invoiceService->previewEligibleLines($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
         $interventionLine = current(array_filter($preview['lines'], static fn ($l) => $l['lineType'] === 'FIRM_INTERVENTION_FEE'));
 
-        $invoice = $this->trackInvoice($this->invoiceService->createFromEligibleLines(
+        $invoice = $this->trackInvoice($this->invoiceService->generateDraft($this->invoiceService->createDraft(
             $firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$interventionLine['id']], $actor,
-        ));
+        ), $actor));
         $this->em->refresh($calc);
         self::assertSame(FinancialCalculationStatus::LOCKED, $calc->getStatus());
 
@@ -599,9 +599,9 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         $previewAfter = $this->invoiceService->previewEligibleLines($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
         self::assertCount(1, array_filter($previewAfter['lines'], static fn ($l) => $l['lineType'] === 'FIRM_INTERVENTION_FEE'), 'la ligne annulée redevient sélectionnable');
 
-        $invoice2 = $this->trackInvoice($this->invoiceService->createFromEligibleLines(
+        $invoice2 = $this->trackInvoice($this->invoiceService->generateDraft($this->invoiceService->createDraft(
             $firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$interventionLine['id']], $actor,
-        ));
+        ), $actor));
         self::assertCount(1, $invoice2->getLines());
     }
 
@@ -622,9 +622,9 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         $preview = $this->invoiceService->previewEligibleLines($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
         $interventionLine = current(array_filter($preview['lines'], static fn ($l) => $l['lineType'] === 'FIRM_INTERVENTION_FEE'));
 
-        $invoice = $this->trackInvoice($this->invoiceService->createFromEligibleLines(
+        $invoice = $this->trackInvoice($this->invoiceService->generateDraft($this->invoiceService->createDraft(
             $firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$interventionLine['id']], $actor,
-        ));
+        ), $actor));
 
         $invoice->setBillingEmailTo('firm@example.test');
         $invoice = $this->invoiceService->markSent($invoice, $actor);
@@ -764,9 +764,9 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         self::assertCount(1, $firstPreview['lines']);
         $lineId = $firstPreview['lines'][0]['id'];
 
-        $this->trackInvoice($this->invoiceService->createFromEligibleLines(
+        $this->trackInvoice($this->invoiceService->generateDraft($this->invoiceService->createDraft(
             $firmA, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$lineId], $actor,
-        ));
+        ), $actor));
 
         $preview = $this->invoiceService->previewEligibleLines($firmA, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'));
 

@@ -2,6 +2,7 @@ import * as React from "react";
 import {
   Alert,
   Box,
+  Checkbox,
   Button,
   Chip,
   CircularProgress,
@@ -32,6 +33,8 @@ import {
   markFirmInvoicePaid,
   getFirmInvoicePdfUrl,
   abandonFirmInvoiceDraft,
+  addLinesToFirmInvoiceDraft,
+  getFirmInvoiceDraftCandidates,
   generateFirmInvoiceDraft,
   removeFirmInvoiceDraftLine,
   type InvoiceStatus,
@@ -41,11 +44,11 @@ import { extractBillingError } from "../../../features/billing-firm/api/firmBill
 import DocumentFinancePanel from "../../../features/billing-shared/components/DocumentFinancePanel";
 
 const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {
-  DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success", CANCELLED: "error",
+  DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success", CANCELLED: "error", ABANDONED: "default",
 };
 
 function statusLabel(s: InvoiceStatus) {
-  return { DRAFT: "Brouillon", GENERATED: "Générée", SENT: "Envoyée", PAID: "Payée", CANCELLED: "Annulée" }[s];
+  return { DRAFT: "Brouillon", GENERATED: "Générée", SENT: "Envoyée", PAID: "Payée", CANCELLED: "Facture annulée", ABANDONED: "Brouillon abandonné" }[s];
 }
 
 // Message métier du backend tel quel (409 de transition, 422 de sélection…).
@@ -121,11 +124,14 @@ export default function FirmInvoiceDetailPage() {
 
   // ── D-135 — brouillon : retrait de ligne, génération, abandon (endpoints dédiés) ──
   const [confirmAbandon, setConfirmAbandon] = React.useState(false);
+  const [addOpen, setAddOpen] = React.useState(false);
   async function afterDraftChange() {
     await Promise.all([
       qc.invalidateQueries({ queryKey: ["firm-invoice", Number(id)] }),
       qc.invalidateQueries({ queryKey: ["firm-invoices"] }),
       qc.invalidateQueries({ queryKey: ["firm-billing-worklist"] }),
+      qc.invalidateQueries({ queryKey: ["firm-invoice-candidates"] }),
+      qc.invalidateQueries({ queryKey: ["firm-billing-line-history"] }),
     ]);
   }
   const removeLine = useMutation({
@@ -161,7 +167,7 @@ export default function FirmInvoiceDetailPage() {
           Retour
         </Button>
         <Typography variant="h6" fontWeight={700} sx={{ flex: 1 }}>
-          {isDraft ? `Brouillon ${inv.firm.name} #${inv.id}` : `Facture ${inv.number ?? `F-${inv.id}`}`}
+          {isDraft ? `Brouillon ${inv.firm.name} #${inv.id}` : inv.status === "ABANDONED" ? `Brouillon abandonné ${inv.firm.name} #${inv.id}` : `Facture ${inv.number ?? `F-${inv.id}`}`}
         </Typography>
         <Chip label={statusLabel(inv.status)} color={STATUS_COLORS[inv.status]} />
       </Stack>
@@ -208,10 +214,12 @@ export default function FirmInvoiceDetailPage() {
             <Box sx={{ flex: 1, minWidth: 260 }}>
               <Typography fontWeight={700}>Brouillon — rien n'est encore émis ni numéroté.</Typography>
               <Typography variant="body2" color="text.secondary">
-                Ajoutez des lignes depuis Facturation firmes (sélection → « Ajouter au brouillon »), retirez-en ici, puis générez : le numéro est attribué et les calculs sont verrouillés à ce moment-là.
+                Ajoutez ou retirez des prestations ici, puis générez : le numéro est attribué et les calculs sont verrouillés à ce moment-là.
               </Typography>
             </Box>
-            <Button component={RouterLink} to="/app/m/billing/firm-invoices" variant="outlined">Ajouter des lignes</Button>
+            {allowed.includes("editLines") && (
+              <Button variant="outlined" disabled={draftBusy} onClick={() => setAddOpen(true)}>+ Ajouter des prestations</Button>
+            )}
             {allowed.includes("generate") && (
               <Button variant="contained" disableElevation disabled={draftBusy || staleCount > 0 || (inv.lines ?? []).length === 0} onClick={() => generateDraft.mutate()}>
                 {generateDraft.isPending ? <CircularProgress size={16} /> : "Générer la facture"}
@@ -227,6 +235,17 @@ export default function FirmInvoiceDetailPage() {
             </Alert>
           )}
         </Paper>
+      )}
+
+      {isDraft && (
+        <AddPrestationsDialog
+          open={addOpen}
+          draftId={inv.id}
+          firmName={inv.firm.name}
+          onClose={() => setAddOpen(false)}
+          onAdded={async (count) => { setAddOpen(false); toast.success(`${count} prestation(s) ajoutée(s) au brouillon.`); await afterDraftChange(); }}
+          onError={(msg) => toast.error(msg)}
+        />
       )}
 
       <Dialog open={confirmAbandon} onClose={() => setConfirmAbandon(false)}>
@@ -400,5 +419,103 @@ export default function FirmInvoiceDetailPage() {
         </Stack>
       </Paper>}
     </Stack>
+  );
+}
+
+/**
+ * D-137 — « + Ajouter des prestations » : la liste vient de GET /candidate-lines (règles de
+ * compatibilité appliquées par le backend : même firme, libre, facturable, non obsolète,
+ * ni facturée ni dans un autre brouillon). Le frontend ne filtre rien.
+ */
+function AddPrestationsDialog({ open, draftId, firmName, onClose, onAdded, onError }: {
+  open: boolean;
+  draftId: number;
+  firmName: string;
+  onClose: () => void;
+  onAdded: (count: number) => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [selected, setSelected] = React.useState<Set<number>>(new Set());
+  const query = useQuery({
+    queryKey: ["firm-invoice-candidates", draftId],
+    queryFn: () => getFirmInvoiceDraftCandidates(draftId),
+    enabled: open,
+  });
+  React.useEffect(() => { if (!open) setSelected(new Set()); }, [open]);
+  const rows = query.data ?? [];
+  const add = useMutation({
+    mutationFn: () => addLinesToFirmInvoiceDraft(draftId, [...selected]),
+    onSuccess: () => onAdded(selected.size),
+    onError: (err) => onError(extractError(err)),
+  });
+  const toggle = (id: number) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const money = (a: string | null, c: string | null) => (a === null ? "—" : `${Number(a).toLocaleString("fr-BE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${c === "EUR" || !c ? "€" : c}`);
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth aria-labelledby="add-prestations-title">
+      <DialogTitle id="add-prestations-title">Ajouter des prestations — {firmName}</DialogTitle>
+      <DialogContent dividers>
+        {query.isLoading && <CircularProgress size={22} />}
+        {query.isError && <Alert severity="error">{extractError(query.error)}</Alert>}
+        {query.data && rows.length === 0 && (
+          <Alert severity="info" variant="outlined">Aucune autre prestation disponible pour cette firme.</Alert>
+        )}
+        {rows.length > 0 && (
+          <Box sx={{ overflowX: "auto" }}>
+            <Table size="small" aria-label="Prestations disponibles">
+              <TableHead>
+                <TableRow>
+                  <TableCell padding="checkbox">
+                    <Checkbox
+                      checked={selected.size === rows.length}
+                      indeterminate={selected.size > 0 && selected.size < rows.length}
+                      onChange={() => setSelected(selected.size === rows.length ? new Set() : new Set(rows.map((r) => r.financialLineId!)))}
+                      inputProps={{ "aria-label": "Tout sélectionner" }}
+                    />
+                  </TableCell>
+                  <TableCell>Date</TableCell>
+                  <TableCell>Site</TableCell>
+                  <TableCell>Chirurgien</TableCell>
+                  <TableCell>Type</TableCell>
+                  <TableCell>Prestation</TableCell>
+                  <TableCell>Référence</TableCell>
+                  <TableCell align="right">Qté</TableCell>
+                  <TableCell align="right">Montant</TableCell>
+                  <TableCell>Motif</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {rows.map((r) => (
+                  <TableRow key={r.key} hover selected={selected.has(r.financialLineId!)} data-testid={`candidate-${r.key}`}>
+                    <TableCell padding="checkbox">
+                      <Checkbox checked={selected.has(r.financialLineId!)} onChange={() => toggle(r.financialLineId!)} inputProps={{ "aria-label": `Sélectionner ${r.label ?? "la prestation"}` }} />
+                    </TableCell>
+                    <TableCell>{formatDate(r.mission.date)}</TableCell>
+                    <TableCell>{r.mission.site ?? "—"}</TableCell>
+                    <TableCell>{r.mission.surgeon ?? "—"}</TableCell>
+                    <TableCell>{r.sourceType === "MATERIAL" ? "Matériel" : "Intervention"}</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>{r.label ?? "—"}</TableCell>
+                    <TableCell>{r.reference ?? ""}</TableCell>
+                    <TableCell align="right">{r.quantity ?? "—"}</TableCell>
+                    <TableCell align="right">{money(r.amount, r.currency)}</TableCell>
+                    <TableCell sx={{ color: "text.secondary" }}>{r.reasonLabel}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Fermer</Button>
+        <Button variant="contained" disableElevation disabled={selected.size === 0 || add.isPending} onClick={() => add.mutate()}>
+          {add.isPending ? <CircularProgress size={16} /> : `Ajouter au brouillon${selected.size ? ` (${selected.size})` : ""}`}
+        </Button>
+      </DialogActions>
+    </Dialog>
   );
 }

@@ -66,7 +66,7 @@ final class FirmBillingLineHistoryService
             FirmBillingLineEventType::INVOICE_CANCELLED => sprintf('Facture %s annulée — ligne de nouveau libre', $number),
             FirmBillingLineEventType::ADDED_TO_DRAFT => sprintf('Ajoutée au brouillon %s', $draft),
             FirmBillingLineEventType::REMOVED_FROM_DRAFT => !empty($e->getDetails()['draftAbandoned'])
-                ? sprintf('Brouillon %s abandonné — ligne de nouveau libre', $draft)
+                ? sprintf('Retirée lors de l\'abandon du brouillon %s', $draft)
                 : sprintf('Retirée du brouillon %s', $draft),
             FirmBillingLineEventType::MOVED_TO_DRAFT => $from !== null
                 ? sprintf('Déplacée du brouillon %s #%d vers le brouillon %s', $e->getDetails()['fromFirmName'] ?? '', $from, $draft)
@@ -100,9 +100,9 @@ final class FirmBillingLineHistoryService
             ->join('l.invoice', 'i')
             ->join('i.firm', 'f')
             ->where('i.documentType = :standard')
-            ->andWhere('i.status != :cancelled')
+            ->andWhere('i.status NOT IN (:inactive)')
             ->setParameter('standard', FinancialDocumentType::STANDARD)
-            ->setParameter('cancelled', InvoiceStatus::CANCELLED)
+            ->setParameter('inactive', [InvoiceStatus::CANCELLED, InvoiceStatus::ABANDONED])
             ->setMaxResults(1);
         $qb->andWhere($sourceType === FirmBillingLineEvent::SOURCE_MATERIAL ? 'IDENTITY(l.materialLine) = :id' : 'IDENTITY(l.missionIntervention) = :id')
             ->setParameter('id', $sourceId);

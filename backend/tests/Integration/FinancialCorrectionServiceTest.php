@@ -214,9 +214,9 @@ final class FinancialCorrectionServiceTest extends KernelTestCase
             if ($l->getLineType()->value === 'FIRM_INTERVENTION_FEE') { $firmLine = $l; }
         }
 
-        $invoice = $this->invoiceService->createFromEligibleLines(
+        $invoice = $this->invoiceService->generateDraft($this->invoiceService->createDraft(
             $firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$firmLine->getId()], $actor,
-        );
+        ), $actor);
         $this->created['invoices'][] = $invoice->getId();
 
         return [$invoice, $invoice->getLines()->first(), $mission, $firm];

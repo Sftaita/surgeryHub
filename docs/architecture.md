@@ -57,7 +57,7 @@ Api/
 ├── MaterialItemRequestManagerController — gestion demandes manager (list/resolve/ignore)
 ├── MaterialLineController               — CRUD /api/missions/{id}/material-lines
 ├── FirmBillingController               — PATCH billing-contact + CRUD /api/firms/{id}/pricing-rules
-├── FirmInvoiceController               — CRUD /api/firm-invoices + eligible-lines/from-financial-calculations/send/mark-paid (D-121)
+├── FirmInvoiceController               — CRUD /api/firm-invoices + eligible-lines + brouillon (drafts, lines, candidate-lines, generate, abandon — D-135/D-137) + send/mark-paid/cancel
 ├── FirmBillingWorklistController       — worklist /api/firm-billing/worklist + export PDF/xlsx d'une sélection + calcul groupé (D-133)
 ├── InstrumentistStatementController    — CRUD /api/instrumentist-statements + eligible-lines/from-financial-calculations/send/mark-paid (D-121)
 ├── AbsenceController                   — CRUD /api/absences
@@ -768,12 +768,12 @@ FinancialCalculationLine
 FirmInvoice
 ├── firm, number (FIRM-YYYY-NNN standard ; FIRM-CN-YYYY-NNN / FIRM-DN-YYYY-NNN pour une
 │   correction — Lot 6, D-076, null tant que non émise), status
-│   (DRAFT|GENERATED|SENT|PAID|CANCELLED — Lot 4)
+│   (DRAFT|GENERATED|SENT|PAID|CANCELLED — Lot 4 ; ABANDONED = brouillon abandonné, D-137)
 ├── periodStart, periodEnd, totalAmount
 ├── currency (Lot 4, D-074, défaut EUR), legacySource (Lot 4 — true pour un document
 │   historique créé avant ce lot ou via le chemin de génération recalculant, supprimé en
 │   D-121 : plus aucun nouveau document ne peut porter `true` désormais ; toujours false
-│   via createFromEligibleLines())
+│   via createDraft()/generateDraft(), D-135/D-137)
 ├── documentType: STANDARD | CREDIT_NOTE | DEBIT_NOTE (Lot 6, D-076, défaut STANDARD)
 ├── correctsDocument (Lot 6 — self-FK nullable, toujours vers un document STANDARD
 │   racine, jamais une correction de correction — voir §6 de D-076)
@@ -809,11 +809,15 @@ Mission VALIDATED (encodingLockedAt posé)
   → POST /api/financial-calculations/{id}/approve        (MANUEL) → APPROVED
   → worklist GET /api/firm-billing/worklist             (D-133 : part de l'activité validée,
       classe chaque intervention / matériel, ne calcule rien)
-  → POST /api/firm-invoices/from-financial-calculations  (une firme, IDs explicites)
-      transaction : PESSIMISTIC_WRITE sur chaque FinancialCalculation (id croissant),
-      revalidation ligne à ligne (firme, devise, période, calcul APPROVED/LOCKED,
-      non rattachée — requête fraîche), FirmInvoice GENERATED numérotée,
-      FirmInvoiceLine snapshots, calcul → LOCKED
+  → POST /api/firm-invoices/drafts                       (D-135 : brouillon DRAFT, sans numéro,
+      une firme, IDs explicites ; aucun calcul verrouillé)
+      ± POST /{id}/lines (ajout, aussi depuis le générateur via GET /{id}/candidate-lines, D-137)
+      ± POST /{id}/lines/move · DELETE /{id}/lines/{lineId} · POST /{id}/abandon (→ ABANDONED)
+  → POST /api/firm-invoices/{id}/generate                (SEUL chemin de génération, D-137)
+      transaction : PESSIMISTIC_WRITE sur le brouillon puis sur chaque FinancialCalculation
+      (id croissant), revalidation ligne à ligne (firme, devise, période, calcul
+      APPROVED/LOCKED, non obsolète, document unique — requête fraîche), numéro attribué,
+      GENERATED, calcul → LOCKED ; journal FirmBillingLineEvent (D-134)
   → PDF (snapshots) → issue/send (GENERATED → SENT) → mark-paid (SENT → PAID) ou payments
 ```
 
@@ -1399,7 +1403,8 @@ FinancialCalculation (APPROVED ou LOCKED) + FinancialCalculationLine[] (FIRM_*/I
                               ▼  previewEligibleLines(cible, devise, période) — lecture seule
                     lignes non assignées, devise/bénéficiaire/période/statut filtrés
                               │
-                              ▼  createFromEligibleLines(cible, devise, période, lineIds, actor)
+                              ▼  firme : createDraft() … generateDraft() (D-135/D-137)
+                              ▼  instrumentiste : createFromEligibleLines(cible, devise, période, lineIds, actor)
                     verrou pessimiste sur chaque FinancialCalculation distinct (id croissant)
                     revérifie CHAQUE ligne sous verrou (jamais confiance dans le preview)
                               │
@@ -1428,7 +1433,9 @@ unitaire/total — montants et snapshots copiés exactement depuis
 **Chemin unique depuis D-121 (2026-09-14)** : `preview()`/`generate()` (legacy, recalculait
 depuis `PricingRule` à la génération) ont été supprimés — jamais utilisés en production
 (0 document `legacySource = true` constaté avant suppression). Seul reste
-`previewEligibleLines()`/`createFromEligibleLines()`, qui consomme exclusivement des
+`previewEligibleLines()` et, côté firme, le brouillon `createDraft()`/`generateDraft()`
+(D-137 — la génération directe firme a été supprimée ; le décompte instrumentiste garde
+`createFromEligibleLines()`), qui consomment exclusivement des
 `FinancialCalculationLine` déjà figées. `FirmInvoiceLine.financialCalculationLine`/
 `InstrumentistStatementLine.financialCalculationLine` (`isLegacy()`) restent en place pour
 distinguer un éventuel document historique antérieur à D-074, mais plus aucun document

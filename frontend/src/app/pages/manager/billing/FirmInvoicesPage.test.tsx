@@ -100,7 +100,7 @@ function worklist(overrides: Partial<FirmBillingWorklist> = {}): FirmBillingWork
     summary: {
       lineCount: 46, billable: { lineCount: 31, amounts: [{ currency: "EUR", amount: "842.00" }] }, notBillable: { lineCount: 9 },
       toReview: { lineCount: 4 }, invoiced: { lineCount: 2, amounts: [{ currency: "EUR", amount: "80.00" }] }, anomalyCount: 6,
-      pendingValidationMissionCount: 0, invoices: { draft: 2, generated: 1, sent: 2, paid: 3, cancelled: 0 },
+      pendingValidationMissionCount: 0, invoices: { draft: 2, generated: 1, sent: 2, paid: 3, cancelled: 0, abandoned: 1 },
     },
     rows: ROWS,
     anomalies: [
@@ -411,5 +411,26 @@ describe("FirmInvoicesPage — état courant de facture et historique (D-134)", 
     renderPage();
     await user.click(within(await screen.findByTestId("row-MISSION_INTERVENTION:1")).getByRole("button", { name: /Historique de/ }));
     expect(await screen.findByText("Cette ligne n'a encore jamais figuré sur une facture.")).toBeInTheDocument();
+  });
+});
+
+describe("FirmInvoicesPage — Factures : brouillon abandonné ≠ facture annulée (D-137)", () => {
+  it("masque les brouillons abandonnés par défaut, les inclut sur demande, et distingue les libellés", async () => {
+    const user = userEvent.setup();
+    getFirmInvoicesMock.mockImplementation((params: { includeAbandoned?: boolean }) => Promise.resolve([
+      { id: 7, number: "FIRM-2026-007", status: "CANCELLED", firm: ARTHREX, currency: "EUR", totalAmount: "100.00", lineCount: 0, periodStart: "2026-09-01", periodEnd: "2026-09-30", allowedActions: [] },
+      ...(params?.includeAbandoned ? [{ id: 8, number: null, status: "ABANDONED", firm: ARTHREX, currency: "EUR", totalAmount: "0.00", lineCount: 0, periodStart: "2026-09-01", periodEnd: "2026-09-30", allowedActions: [] }] : []),
+    ]));
+    renderPage();
+    await user.click(await screen.findByRole("tab", { name: "Factures" }));
+
+    expect(await screen.findByText("Facture annulée", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(getFirmInvoicesMock).toHaveBeenLastCalledWith(expect.objectContaining({ includeAbandoned: undefined }));
+    expect(screen.queryByText("Brouillon abandonné", { selector: ".MuiChip-label" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: /Inclure les brouillons abandonnés \(1\)/ }));
+    await waitFor(() => expect(getFirmInvoicesMock).toHaveBeenLastCalledWith(expect.objectContaining({ includeAbandoned: true })));
+    expect(await screen.findByText("Brouillon abandonné", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Brouillon #8" })).toBeInTheDocument();
   });
 });

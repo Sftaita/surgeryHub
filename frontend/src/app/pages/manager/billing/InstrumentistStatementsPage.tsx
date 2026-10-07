@@ -37,11 +37,11 @@ import type { InvoiceStatus } from "../../../features/billing-firm/api/firmInvoi
 import { useToast } from "../../../ui/toast/useToast";
 
 const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {
-  DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success", CANCELLED: "error",
+  DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success", CANCELLED: "error", ABANDONED: "default",
 };
 
 function statusLabel(s: InvoiceStatus) {
-  return { DRAFT: "Brouillon", GENERATED: "Généré", SENT: "Envoyé", PAID: "Payé", CANCELLED: "Annulé" }[s];
+  return { DRAFT: "Brouillon", GENERATED: "Généré", SENT: "Envoyé", PAID: "Payé", CANCELLED: "Annulé", ABANDONED: "Abandonné" }[s];
 }
 
 function extractError(err: unknown): string {

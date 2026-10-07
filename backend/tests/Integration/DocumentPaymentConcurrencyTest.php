@@ -223,7 +223,7 @@ final class DocumentPaymentConcurrencyTest extends KernelTestCase
         $firmLine = $calc->getLines()->filter(static fn ($l) => $l->getLineType()->value === 'FIRM_INTERVENTION_FEE')->first();
 
         $invoiceService = $this->firmInvoiceServiceFor($this->em);
-        $invoice = $invoiceService->createFromEligibleLines($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$firmLine->getId()], $actor);
+        $invoice = $invoiceService->generateDraft($invoiceService->createDraft($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$firmLine->getId()], $actor), $actor);
         $invoice = $invoiceService->issue($invoice, $actor);
         $this->created['invoices'][] = $invoice->getId();
 

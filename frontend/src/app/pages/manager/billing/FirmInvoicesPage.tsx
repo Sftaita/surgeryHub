@@ -69,10 +69,10 @@ import {
 import { approveFinancialCalculation } from "../../../features/financial-calculation/api/financialCalculation.api";
 
 const INVOICE_STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {
-  DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success", CANCELLED: "error",
+  DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success", CANCELLED: "error", ABANDONED: "default",
 };
 const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
-  DRAFT: "Brouillon", GENERATED: "Générée", SENT: "Envoyée", PAID: "Payée", CANCELLED: "Annulée",
+  DRAFT: "Brouillon", GENERATED: "Générée", SENT: "Envoyée", PAID: "Payée", CANCELLED: "Facture annulée", ABANDONED: "Brouillon abandonné",
 };
 
 /** Présentation seulement : le statut et son libellé viennent du backend. */
@@ -781,15 +781,19 @@ function InvoicesView({ from, to, firmIds, counts, onMarkPaid, onError }: {
   from: string;
   to: string;
   firmIds: number[];
-  counts?: { draft: number; generated: number; sent: number; paid: number; cancelled: number };
+  counts?: { draft: number; generated: number; sent: number; paid: number; cancelled: number; abandoned: number };
   onMarkPaid: () => Promise<void>;
   onError: (message: string) => void;
 }) {
   const navigate = useNavigate();
   const [statusFilter, setStatusFilter] = React.useState<InvoiceStatus | "">("");
+  const [includeAbandoned, setIncludeAbandoned] = React.useState(false);
   const query: UseQueryResult<FirmInvoice[]> = useQuery({
-    queryKey: ["firm-invoices", "period", from, to, firmIds, statusFilter],
-    queryFn: () => getFirmInvoices({ from, to, firmIds: firmIds.length ? firmIds : undefined, status: statusFilter || undefined, documentType: "STANDARD" }),
+    queryKey: ["firm-invoices", "period", from, to, firmIds, statusFilter, includeAbandoned],
+    queryFn: () => getFirmInvoices({
+      from, to, firmIds: firmIds.length ? firmIds : undefined, status: statusFilter || undefined, documentType: "STANDARD",
+      includeAbandoned: includeAbandoned || undefined,
+    }),
   });
   const markPaid = useMutation({
     mutationFn: markFirmInvoicePaid,
@@ -806,10 +810,14 @@ function InvoicesView({ from, to, firmIds, counts, onMarkPaid, onError }: {
             <Chip label={`${plural(counts.generated, "facture")} générée${counts.generated > 1 ? "s" : ""}`} color="info" variant="outlined" />
             <Chip label={`${counts.sent} envoyée${counts.sent > 1 ? "s" : ""}`} color="warning" variant="outlined" />
             <Chip label={`${counts.paid} payée${counts.paid > 1 ? "s" : ""}`} color="success" variant="outlined" />
-            {counts.cancelled > 0 && <Chip label={`${counts.cancelled} annulée${counts.cancelled > 1 ? "s" : ""}`} variant="outlined" />}
+            {counts.cancelled > 0 && <Chip label={`${plural(counts.cancelled, "facture")} annulée${counts.cancelled > 1 ? "s" : ""}`} variant="outlined" />}
           </>
         )}
         <Box sx={{ flex: 1 }} />
+        <Stack direction="row" alignItems="center" component="label" sx={{ cursor: "pointer" }}>
+          <Checkbox size="small" checked={includeAbandoned} onChange={(e) => setIncludeAbandoned(e.target.checked)} />
+          <Typography variant="body2">Inclure les brouillons abandonnés{counts?.abandoned ? ` (${counts.abandoned})` : ""}</Typography>
+        </Stack>
         <Select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as InvoiceStatus | "")}
@@ -819,7 +827,7 @@ function InvoicesView({ from, to, firmIds, counts, onMarkPaid, onError }: {
           inputProps={{ "aria-label": "Filtrer par statut" }}
         >
           <MenuItem value="">Tous les statuts</MenuItem>
-          {(["DRAFT", "GENERATED", "SENT", "PAID", "CANCELLED"] as InvoiceStatus[]).map((s) => <MenuItem key={s} value={s}>{INVOICE_STATUS_LABELS[s]}</MenuItem>)}
+          {(["DRAFT", "GENERATED", "SENT", "PAID", "CANCELLED", "ABANDONED"] as InvoiceStatus[]).map((s) => <MenuItem key={s} value={s}>{INVOICE_STATUS_LABELS[s]}</MenuItem>)}
         </Select>
       </Stack>
 
@@ -848,7 +856,7 @@ function InvoicesView({ from, to, firmIds, counts, onMarkPaid, onError }: {
                 <TableRow key={inv.id} hover>
                   <TableCell>
                     <Typography component={RouterLink} to={`/app/m/billing/firm-invoices/${inv.id}`} variant="body2" fontWeight={700} color="primary" sx={{ textDecoration: "none" }}>
-                      {inv.number ?? (inv.status === "DRAFT" ? `Brouillon #${inv.id}` : `#${inv.id}`)}
+                      {inv.number ?? (inv.status === "DRAFT" || inv.status === "ABANDONED" ? `Brouillon #${inv.id}` : `#${inv.id}`)}
                     </Typography>
                   </TableCell>
                   <TableCell>{inv.firm.name}</TableCell>
