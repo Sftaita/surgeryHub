@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import FirmInvoiceDetailPage from "./FirmInvoiceDetailPage";
@@ -25,24 +25,35 @@ function invoice(overrides: Record<string, unknown> = {}) {
       lineType: "INTERVENTION_FEE", descriptionSnapshot: "Forfait LCA — Arthrex", firmNameSnapshot: "Arthrex",
       unitPrice: "350.00", quantity: "1.00", totalAmount: "350.00", currency: "EUR",
       financialCalculationLineId: 9001, financialCalculationId: 77, siteName: "Delta", surgeonName: "Dr X",
-      interventionLabel: "Ligamentoplastie LCA", materialLabel: null, materialReferenceCode: null,
+      interventionLabel: "Ligamentoplastie LCA", materialLabel: null, materialReferenceCode: null, sourceKey: "INTERVENTION:11",
+    }, {
+      id: 2, missionId: 501, missionDate: "2026-09-02", interventionId: null, materialLineId: 456,
+      lineType: "MATERIAL_FEE", descriptionSnapshot: "Ancre — Arthrex", firmNameSnapshot: "Arthrex",
+      unitPrice: "25.00", quantity: "2.00", totalAmount: "50.00", currency: "EUR",
+      financialCalculationLineId: 9002, financialCalculationId: 77, siteName: "Delta", surgeonName: "Dr X",
+      interventionLabel: null, materialLabel: "Ancre 5mm", materialReferenceCode: "REF-55", sourceKey: "MATERIAL:456",
     }],
     ...overrides,
   };
 }
 
-function renderPage() {
+function renderPage(url = "/app/m/billing/firm-invoices/42") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/app/m/billing/firm-invoices/42"]}>
+      <MemoryRouter initialEntries={[url]}>
         <Routes><Route path="/app/m/billing/firm-invoices/:id" element={<FirmInvoiceDetailPage />} /></Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-beforeEach(() => getFirmInvoiceMock.mockReset());
+const scrollSpy = vi.fn();
+beforeEach(() => {
+  getFirmInvoiceMock.mockReset();
+  scrollSpy.mockReset();
+  (Element.prototype as any).scrollIntoView = scrollSpy;
+});
 
 describe("FirmInvoiceDetailPage — preuve de ce qui a été facturé (D-123)", () => {
   it("affiche chaque ligne snapshotée avec son contexte et un lien vers sa source", async () => {
@@ -50,10 +61,10 @@ describe("FirmInvoiceDetailPage — preuve de ce qui a été facturé (D-123)", 
     renderPage();
 
     expect(await screen.findByText("Ligamentoplastie LCA")).toBeInTheDocument();
-    expect(screen.getByText("Delta · Dr X")).toBeInTheDocument();
-    expect(screen.getByText("02/09/2026")).toBeInTheDocument();
+    expect(screen.getAllByText("Delta · Dr X")).toHaveLength(2);
+    expect(screen.getAllByText("02/09/2026")).toHaveLength(2);
     expect(screen.getByText("01/09/2026 → 30/09/2026")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Mission #501" })).toHaveAttribute("href", "/app/m/missions/501");
+    expect(screen.getAllByRole("link", { name: "Mission #501" })[0]).toHaveAttribute("href", "/app/m/missions/501");
     expect(screen.getByText("Ligne financière #9001 · calcul #77")).toBeInTheDocument();
   });
 
@@ -80,5 +91,40 @@ describe("FirmInvoiceDetailPage — preuve de ce qui a été facturé (D-123)", 
     expect(await screen.findByText("Annulée")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Marquer comme payée" })).not.toBeInTheDocument();
     expect(screen.queryByText("Envoyer par email")).not.toBeInTheDocument();
+  });
+});
+
+describe("FirmInvoiceDetailPage — deep-link depuis la worklist (D-134)", () => {
+  it("?focusLine= fait défiler jusqu'à la ligne, la met en évidence et la marque « Ligne recherchée »", async () => {
+    getFirmInvoiceMock.mockResolvedValue(invoice());
+    renderPage("/app/m/billing/firm-invoices/42?focusLine=MATERIAL:456");
+
+    const target = await screen.findByTestId("invoice-line-MATERIAL:456");
+    expect(within(target).getByText("Ligne recherchée")).toBeInTheDocument();
+    expect(target).toHaveAttribute("aria-current", "true");
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy.mock.contexts[0]).toBe(target);
+    expect(within(screen.getByTestId("invoice-line-INTERVENTION:11")).queryByText("Ligne recherchée")).not.toBeInTheDocument();
+  });
+
+  it("le focus survit à un rechargement : même URL, même ligne ciblée", async () => {
+    getFirmInvoiceMock.mockResolvedValue(invoice());
+    const first = renderPage("/app/m/billing/firm-invoices/42?focusLine=MATERIAL:456");
+    await screen.findByTestId("invoice-line-MATERIAL:456");
+    first.unmount();
+
+    renderPage("/app/m/billing/firm-invoices/42?focusLine=MATERIAL:456");
+    const target = await screen.findByTestId("invoice-line-MATERIAL:456");
+    expect(within(target).getByText("Ligne recherchée")).toBeInTheDocument();
+    expect(scrollSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("une ligne qui n'est plus sur la facture est signalée, sans mise en évidence trompeuse", async () => {
+    getFirmInvoiceMock.mockResolvedValue(invoice());
+    renderPage("/app/m/billing/firm-invoices/42?focusLine=MATERIAL:999");
+
+    expect(await screen.findByText(/La ligne recherchée ne figure plus sur cette facture/)).toBeInTheDocument();
+    expect(screen.queryByText("Ligne recherchée")).not.toBeInTheDocument();
+    expect(scrollSpy).not.toHaveBeenCalled();
   });
 });

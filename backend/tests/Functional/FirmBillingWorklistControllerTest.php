@@ -59,6 +59,19 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
             $this->em->clear();
             $missionIds = $this->created['missions'];
             if ($missionIds !== []) {
+                // Journal append-only (D-134) : l'ORM refuse toute suppression, nettoyage SQL brut.
+                $this->em->getConnection()->executeStatement(
+                    'DELETE FROM firm_billing_line_event WHERE mission_id IN (?)',
+                    [$missionIds],
+                    [\Doctrine\DBAL\ArrayParameterType::INTEGER],
+                );
+                if ($this->created['users'] !== []) {
+                    $this->em->getConnection()->executeStatement(
+                        'DELETE FROM payment WHERE recorded_by_id IN (?)',
+                        [$this->created['users']],
+                        [\Doctrine\DBAL\ArrayParameterType::INTEGER],
+                    );
+                }
                 foreach ($this->em->getRepository(FirmInvoiceLine::class)->findBy(['mission' => $missionIds]) as $fil) {
                     $this->em->remove($fil->getInvoice());
                 }
@@ -653,8 +666,8 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         self::assertCount(1, $invoiced);
         self::assertSame($ids[0], $invoiced[0]['financialLineId']);
         self::assertSame('INVOICED', $invoiced[0]['reasonCode']);
-        self::assertSame($invoice['number'], $invoiced[0]['invoice']['number']);
-        self::assertSame('GENERATED', $invoiced[0]['invoice']['status']);
+        self::assertSame($invoice['number'], $invoiced[0]['currentInvoice']['number']);
+        self::assertSame('GENERATED', $invoiced[0]['currentInvoice']['status']);
         self::assertStringContainsString('Calcul verrouillé', $this->rowsByType($after)['MATERIAL']['reasonDetail']);
         self::assertSame(1, $after['summary']['invoiced']['lineCount']);
         self::assertSame(1, $after['summary']['invoices']['generated']);
@@ -747,6 +760,124 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         $unknown = $this->export($client, $token, [$firm], ['MATERIAL_LINE:999999999'], 'xlsx');
         self::assertSame(422, $unknown->getStatusCode());
         self::assertSame('EXPORT_SELECTION_INVALID', $this->json($unknown)['error']['code']);
+    }
+
+    // ── D-134 : état courant ≠ historique, journal append-only ──────────
+
+    /** @return array<string, mixed> */
+    private function history(KernelBrowser $client, string $token, string $sourceKey): array
+    {
+        [$type, $id] = explode(':', $sourceKey);
+        $r = $this->get($client, $token, "/api/firm-billing/lines/{$type}/{$id}/history");
+        self::assertSame(200, $r->getStatusCode(), (string) $r->getContent());
+        return $this->json($r);
+    }
+
+    public function test_line_history_survives_cancellation_reinvoicing_sending_and_payment(): void
+    {
+        $client = $this->boot();
+        $manager = $this->user('ROLE_MANAGER');
+        $token = $this->login($client, $manager);
+        $firm = $this->firm('Arthrex');
+        $type = $this->type();
+        $item = $this->item($firm);
+        $this->interventionRule($firm, $type, '350.00');
+        $this->materialRule($firm, $item, '25.00');
+        $this->calculateAndApprove($client, $token, $this->mission(MissionStatus::VALIDATED, $firm, $type, $item, '2.00'));
+
+        $free = $this->rowsByType($this->worklist($client, $token, [$firm]))['MATERIAL'];
+        self::assertNull($free['currentInvoice']);
+        self::assertSame('FREE', $free['invoiceState']);
+        self::assertSame('Libre', $free['invoiceStateLabel']);
+        self::assertFalse($free['hasHistory'], 'jamais utilisée');
+        $key = $free['sourceKey'];
+        self::assertStringStartsWith('MATERIAL:', $key);
+        self::assertSame([], $this->history($client, $token, $key)['history']);
+
+        // Facture A générée.
+        $invoiceA = $this->json($this->generate($client, $token, $firm, [$free['financialLineId']]));
+        $rowA = $this->rowsByType($this->worklist($client, $token, [$firm]))['MATERIAL'];
+        self::assertSame('GENERATED', $rowA['invoiceState']);
+        self::assertSame('Facture générée', $rowA['invoiceStateLabel']);
+        self::assertSame(['id' => $invoiceA['id'], 'number' => $invoiceA['number'], 'status' => 'GENERATED', 'statusLabel' => 'générée', 'firmName' => $firm->getName(), 'editable' => false], $rowA['currentInvoice']);
+        self::assertFalse($rowA['canInvoice'], 'déjà dans un document : jamais proposée pour un autre');
+        $detail = $this->json($this->get($client, $token, "/api/firm-invoices/{$invoiceA['id']}"));
+        self::assertSame($key, $detail['lines'][0]['sourceKey'], 'clé de deep-link identique côté détail facture');
+
+        // Impossible de la placer sur une autre facture.
+        $again = $this->generate($client, $token, $firm, [$free['financialLineId']]);
+        self::assertSame(422, $again->getStatusCode());
+        self::assertSame('FINANCIAL_LINE_ALREADY_ASSIGNED', $this->json($again)['error']['violations'][0]['code']);
+
+        // Annulation de A : la ligne redevient libre, son passé reste.
+        self::assertSame(200, $this->post($client, $token, "/api/firm-invoices/{$invoiceA['id']}/cancel", ['reason' => 'erreur de période'])->getStatusCode());
+        $freeAgain = $this->rowsByType($this->worklist($client, $token, [$firm]))['MATERIAL'];
+        self::assertSame('FREE', $freeAgain['invoiceState']);
+        self::assertTrue($freeAgain['hasHistory'], 'libre ne signifie pas « jamais utilisée »');
+        self::assertTrue($freeAgain['canInvoice']);
+        $h = $this->history($client, $token, $key);
+        self::assertNull($h['currentInvoice']);
+        self::assertSame(['INVOICE_GENERATED', 'INVOICE_CANCELLED'], array_column($h['history'], 'eventType'));
+        self::assertSame($invoiceA['number'], $h['history'][0]['invoice']['number']);
+        self::assertSame('Test Worklist', $h['history'][0]['actorName']);
+
+        // Facture B : envoi, paiement intégral, puis marquée payée.
+        $invoiceB = $this->json($this->generate($client, $token, $firm, [$free['financialLineId']]));
+        self::assertNotSame($invoiceA['id'], $invoiceB['id']);
+        self::assertSame(200, $this->post($client, $token, "/api/firm-invoices/{$invoiceB['id']}/issue")->getStatusCode());
+        self::assertSame('SENT', $this->rowsByType($this->worklist($client, $token, [$firm]))['MATERIAL']['invoiceState']);
+        $pay = $this->post($client, $token, "/api/firm-invoices/{$invoiceB['id']}/payments", ['amount' => '50.00', 'currency' => 'EUR', 'paidAt' => '2026-10-20', 'method' => 'BANK_TRANSFER']);
+        self::assertSame(201, $pay->getStatusCode(), (string) $pay->getContent());
+        self::assertSame(200, $this->post($client, $token, "/api/firm-invoices/{$invoiceB['id']}/mark-paid")->getStatusCode());
+
+        $paid = $this->rowsByType($this->worklist($client, $token, [$firm]))['MATERIAL'];
+        self::assertSame('PAID', $paid['invoiceState']);
+        self::assertSame($invoiceB['number'], $paid['currentInvoice']['number']);
+        $h = $this->history($client, $token, $key);
+        self::assertSame(
+            ['INVOICE_GENERATED', 'INVOICE_CANCELLED', 'INVOICE_GENERATED', 'INVOICE_SENT', 'PAYMENT_RECORDED', 'INVOICE_PAID'],
+            array_column($h['history'], 'eventType'),
+            'A → annulée → B → envoyée → paiement → payée, dans l\'ordre',
+        );
+        self::assertSame([$invoiceA['id'], $invoiceA['id'], $invoiceB['id'], $invoiceB['id'], $invoiceB['id'], $invoiceB['id']], array_column(array_column($h['history'], 'invoice'), 'id'));
+        self::assertStringContainsString('facture soldée', $h['history'][4]['description']);
+        self::assertSame($invoiceB['id'], $h['currentInvoice']['id']);
+
+        // L'autre ligne (intervention) n'a jamais été facturée : historique vide.
+        $intervention = $this->rowsByType($this->worklist($client, $token, [$firm]))['INTERVENTION'];
+        self::assertSame([], $this->history($client, $token, $intervention['sourceKey'])['history']);
+    }
+
+    public function test_line_events_are_append_only(): void
+    {
+        $this->boot();
+        $em = static::getContainer()->get(EntityManagerInterface::class);
+        $event = new \App\Entity\FirmBillingLineEvent('MATERIAL', 999999991, 999999991, \App\Enum\FirmBillingLineEventType::INVOICE_GENERATED);
+        $em->persist($event);
+        $em->flush();
+        $id = $event->getId();
+
+        try {
+            $em->remove($event);
+            $em->flush();
+            self::fail('suppression acceptée');
+        } catch (\LogicException $e) {
+            self::assertStringContainsString('append-only', $e->getMessage());
+        } finally {
+            $em->getConnection()->executeStatement('DELETE FROM firm_billing_line_event WHERE id = ?', [$id]);
+        }
+
+        $this->expectException(\InvalidArgumentException::class);
+        new \App\Entity\FirmBillingLineEvent('OTHER', 1, 1, \App\Enum\FirmBillingLineEventType::INVOICE_SENT);
+    }
+
+    public function test_history_requires_manager_and_a_known_source_type(): void
+    {
+        $client = $this->boot();
+        $manager = $this->login($client, $this->user('ROLE_MANAGER'));
+        self::assertSame(404, $this->get($client, $manager, '/api/firm-billing/lines/OTHER/1/history')->getStatusCode());
+        $instr = $this->login($client, $this->user('ROLE_INSTRUMENTIST'));
+        self::assertSame(403, $this->get($client, $instr, '/api/firm-billing/lines/MATERIAL/1/history')->getStatusCode());
     }
 
     // ── Génération / cycle de vie (contrat D-123 conservé) ───────────────

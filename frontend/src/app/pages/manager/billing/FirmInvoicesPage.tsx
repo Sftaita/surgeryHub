@@ -5,6 +5,7 @@ import {
   Box,
   Button,
   Checkbox,
+  Drawer,
   Chip,
   CircularProgress,
   IconButton,
@@ -28,6 +29,8 @@ import {
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import HistoryIcon from "@mui/icons-material/History";
+import CloseIcon from "@mui/icons-material/Close";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import GridOnIcon from "@mui/icons-material/GridOn";
 import ReceiptLongOutlinedIcon from "@mui/icons-material/ReceiptLongOutlined";
@@ -48,10 +51,13 @@ import {
   exportFirmBillingSelection,
   extractBillingError,
   extractBillingErrorAsync,
+  getFirmBillingLineHistory,
   getFirmBillingWorklist,
+  invoiceFocusUrl,
   runFirmBillingCalculations,
   type AnomalyActionCode,
   type BillingStatus,
+  type InvoiceState,
   type FirmBillingWorklist,
   type SourceType,
   type WorklistAnomaly,
@@ -69,6 +75,11 @@ const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
 /** Présentation seulement : le statut et son libellé viennent du backend. */
 const BILLING_STATUS_COLORS: Record<BillingStatus, "success" | "default" | "warning" | "info"> = {
   BILLABLE: "success", NOT_BILLABLE: "default", TO_REVIEW: "warning", INVOICED: "info",
+};
+
+/** Présentation de l'état documentaire courant (valeur et libellé fournis par le backend). */
+const INVOICE_STATE_COLORS: Record<InvoiceState, "default" | "info" | "warning" | "success" | "secondary"> = {
+  FREE: "default", IN_DRAFT: "secondary", GENERATED: "info", SENT: "warning", PAID: "success",
 };
 
 /** Où mène chaque action d'anomalie (navigation uniquement). */
@@ -369,6 +380,7 @@ function PrestationsView({ worklist, status, onStatus, period, firmIds, onInvoic
   const rows = worklist.rows;
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [exporting, setExporting] = React.useState<"pdf" | "xlsx" | null>(null);
+  const [historyOf, setHistoryOf] = React.useState<WorklistRow | null>(null);
 
   // La sélection ne porte que sur des lignes affichées : toute clé disparue des données
   // serveur (filtre, période, rechargement) est retirée — jamais exportée ni facturée.
@@ -510,17 +522,15 @@ function PrestationsView({ worklist, status, onStatus, period, firmIds, onInvoic
                   <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", fontWeight: row.billingStatus === "BILLABLE" ? 700 : 400 }}>
                     {row.amount !== null ? formatMoney(row.amount, row.currency ?? "EUR") : "—"}
                   </TableCell>
-                  <TableCell>
-                    {row.invoice ? (
-                      <>
-                        <Typography component={RouterLink} to={`/app/m/billing/firm-invoices/${row.invoice.id}`} variant="body2" fontWeight={700} color="primary" sx={{ textDecoration: "none" }}>
-                          {row.invoice.number ?? `#${row.invoice.id}`}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary" display="block">{row.invoice.statusLabel}</Typography>
-                      </>
-                    ) : ""}
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>
+                    <InvoiceStateCell row={row} />
                   </TableCell>
-                  <TableCell padding="checkbox">
+                  <TableCell padding="checkbox" sx={{ whiteSpace: "nowrap" }}>
+                    {row.sourceKey && (
+                      <Tooltip title="Historique de facturation">
+                        <IconButton size="small" onClick={() => setHistoryOf(row)} aria-label={`Historique de ${row.label ?? "la ligne"}`}><HistoryIcon fontSize="small" /></IconButton>
+                      </Tooltip>
+                    )}
                     <Tooltip title="Ouvrir la mission">
                       <IconButton size="small" component={RouterLink} to={`/app/m/missions/${row.mission.id}`} aria-label="Ouvrir la mission"><OpenInNewIcon fontSize="small" /></IconButton>
                     </Tooltip>
@@ -531,7 +541,99 @@ function PrestationsView({ worklist, status, onStatus, period, firmIds, onInvoic
           </Table>
         </Paper>
       )}
+      <LineHistoryDrawer row={historyOf} onClose={() => setHistoryOf(null)} />
     </Stack>
+  );
+}
+
+/** État documentaire COURANT de la ligne ; lien direct vers le document, ligne ciblée. */
+function InvoiceStateCell({ row }: { row: WorklistRow }) {
+  const inv = row.currentInvoice;
+  if (!inv) {
+    return (
+      <Stack spacing={0.25} alignItems="flex-start">
+        <Chip size="small" variant="outlined" label={row.invoiceStateLabel} />
+        {row.hasHistory && <Typography variant="caption" color="text.secondary">déjà passée par une facture</Typography>}
+      </Stack>
+    );
+  }
+  const text = inv.editable
+    ? `Brouillon · ${inv.firmName ?? ""} · #${inv.id}`
+    : `${inv.number ?? `#${inv.id}`} · ${row.invoiceStateLabel}`;
+  return (
+    <Tooltip title="Ouvrir le document sur cette ligne" describeChild>
+      <Chip
+        size="small"
+        clickable
+        component={RouterLink}
+        to={invoiceFocusUrl(inv.id, row.sourceKey)}
+        color={INVOICE_STATE_COLORS[row.invoiceState]}
+        label={text}
+      />
+    </Tooltip>
+  );
+}
+
+/** Historique append-only d'une ligne (D-134) — jamais reconstitué côté client. */
+function LineHistoryDrawer({ row, onClose }: { row: WorklistRow | null; onClose: () => void }) {
+  const query = useQuery({
+    queryKey: ["firm-billing-line-history", row?.sourceKey],
+    queryFn: () => getFirmBillingLineHistory(row!.sourceKey!),
+    enabled: !!row?.sourceKey,
+  });
+  const data = query.data;
+
+  return (
+    <Drawer anchor="right" open={row !== null} onClose={onClose} PaperProps={{ sx: { width: { xs: "100%", sm: 440 } } }}>
+      {row && (
+        <Stack spacing={2} sx={{ p: 2.5 }} role="region" aria-label="Historique de facturation">
+          <Stack direction="row" alignItems="flex-start" spacing={1}>
+            <Box sx={{ flex: 1 }}>
+              <Typography variant="overline" color="text.secondary">Historique de facturation</Typography>
+              <Typography variant="h6" fontWeight={800}>{row.label ?? "—"}</Typography>
+              <Typography variant="body2" color="text.secondary">
+                {formatDate(row.mission.date)} · {row.mission.site ?? "—"} · {row.firm?.name ?? "—"}
+              </Typography>
+            </Box>
+            <IconButton onClick={onClose} aria-label="Fermer l'historique"><CloseIcon /></IconButton>
+          </Stack>
+
+          <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+            <Typography variant="caption" color="text.secondary" fontWeight={700}>Aujourd'hui</Typography>
+            <Box sx={{ mt: 0.5 }}><InvoiceStateCell row={row} /></Box>
+          </Paper>
+
+          {query.isLoading && <CircularProgress size={22} />}
+          {query.isError && <Alert severity="error">{extractBillingError(query.error)}</Alert>}
+          {data && data.history.length === 0 && (
+            <Alert severity="info" variant="outlined">Cette ligne n'a encore jamais figuré sur une facture.</Alert>
+          )}
+          {data && data.history.length > 0 && (
+            <Box component="ol" sx={{ listStyle: "none", m: 0, p: 0, borderLeft: 2, borderColor: "divider", ml: 1 }} aria-label="Chronologie">
+              {data.history.map((e) => (
+                <Box component="li" key={e.id} sx={{ position: "relative", pl: 2, pb: 2 }}>
+                  <Box sx={{ position: "absolute", left: -7, top: 4, width: 12, height: 12, borderRadius: "50%", bgcolor: e.eventType === "INVOICE_CANCELLED" ? "grey.500" : "primary.main" }} />
+                  <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                    {new Date(e.occurredAt).toLocaleString("fr-BE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  </Typography>
+                  <Typography variant="body2" fontWeight={700}>{e.description}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {[e.firmName, e.actorName].filter(Boolean).join(" · ")}
+                  </Typography>
+                  {e.invoice && (
+                    <Box>
+                      <Button size="small" component={RouterLink} to={invoiceFocusUrl(e.invoice.id, row.sourceKey)} sx={{ px: 0 }}>
+                        Ouvrir {e.invoice.number ?? `#${e.invoice.id}`}
+                      </Button>
+                    </Box>
+                  )}
+                </Box>
+              ))}
+            </Box>
+          )}
+        </Stack>
+      )}
+    </Drawer>
   );
 }
 

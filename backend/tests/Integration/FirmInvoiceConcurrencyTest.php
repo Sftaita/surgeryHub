@@ -129,6 +129,7 @@ final class FirmInvoiceConcurrencyTest extends KernelTestCase
             $this->financialCalculationServiceFor($em),
             new AuditService($em),
             new EncodingTrackingRepository($em->getConnection(), $em, new MissionPopulationClauseBuilder()),
+            new \App\Service\FirmBilling\FirmBillingLineEventRecorder($em),
         );
     }
 

@@ -14,6 +14,8 @@ use App\Entity\User;
 use App\Dto\EligibleLinesDiagnostic;
 use App\Repository\EncodingTrackingRepository;
 use App\Enum\AuditEventType;
+use App\Enum\FirmBillingLineEventType;
+use App\Service\FirmBilling\FirmBillingLineEventRecorder;
 use App\Enum\FinancialBeneficiaryType;
 use App\Enum\FinancialCalculationStatus;
 use App\Enum\FinancialDocumentType;
@@ -44,6 +46,7 @@ class FirmInvoiceService
         private readonly FinancialCalculationService $financialCalculationService,
         private readonly AuditService $audit,
         private readonly EncodingTrackingRepository $encodingTrackingRepository,
+        private readonly FirmBillingLineEventRecorder $lineEvents,
     ) {}
 
     /**
@@ -83,6 +86,7 @@ class FirmInvoiceService
             'previousStatus' => InvoiceStatus::GENERATED->value,
             'newStatus' => InvoiceStatus::SENT->value,
         ]);
+        $this->lineEvents->recordForInvoice($invoice, FirmBillingLineEventType::INVOICE_SENT, $actor);
 
         $this->em->flush();
         return $invoice;
@@ -94,7 +98,7 @@ class FirmInvoiceService
      * réglée) sont refusés par un 409 métier explicite. Les paiements partiels (API
      * payments, D-075) restent un mécanisme distinct, jamais fusionné ici.
      */
-    public function markPaid(FirmInvoice $invoice): FirmInvoice
+    public function markPaid(FirmInvoice $invoice, ?User $actor = null): FirmInvoice
     {
         $message = match ($invoice->getStatus()) {
             InvoiceStatus::SENT => null,
@@ -108,6 +112,7 @@ class FirmInvoiceService
         }
         $invoice->setStatus(InvoiceStatus::PAID);
         $invoice->setPaidAt(new \DateTimeImmutable());
+        $this->lineEvents->recordForInvoice($invoice, FirmBillingLineEventType::INVOICE_PAID, $actor);
         $this->em->flush();
         return $invoice;
     }
@@ -430,6 +435,7 @@ class FirmInvoiceService
                 'financialCalculationIds' => array_keys($lockedCalculationIds),
                 'totalAmount' => $total,
             ]);
+            $this->lineEvents->recordForInvoice($invoice, FirmBillingLineEventType::INVOICE_GENERATED, $actor);
             $this->em->flush();
 
             $result = $invoice;
@@ -456,6 +462,10 @@ class FirmInvoiceService
                 $invoice->getStatus()->value,
             ));
         }
+
+        // D-134 — journalisé AVANT la suppression des lignes snapshot : la ligne redevient
+        // libre, son passage par cette facture reste visible dans son historique.
+        $this->lineEvents->recordForInvoice($invoice, FirmBillingLineEventType::INVOICE_CANCELLED, $actor, ['reason' => $reason]);
 
         $releasedLineIds = [];
         foreach ($invoice->getLines() as $line) {

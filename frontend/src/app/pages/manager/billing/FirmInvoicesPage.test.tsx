@@ -19,11 +19,14 @@ vi.mock("../../../features/billing-firm/api/firmInvoice.api", () => ({
 const getWorklistMock = vi.fn();
 const exportMock = vi.fn();
 const runCalculationsMock = vi.fn();
+
+const historyMock = vi.fn();
 vi.mock("../../../features/billing-firm/api/firmBillingWorklist.api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../features/billing-firm/api/firmBillingWorklist.api")>()),
   getFirmBillingWorklist: (...a: unknown[]) => getWorklistMock(...a),
   exportFirmBillingSelection: (...a: unknown[]) => exportMock(...a),
   runFirmBillingCalculations: (...a: unknown[]) => runCalculationsMock(...a),
+  getFirmBillingLineHistory: (...a: unknown[]) => historyMock(...a),
 }));
 
 const approveMock = vi.fn();
@@ -51,14 +54,16 @@ function row(key: string, extra: Partial<WorklistRow> = {}): WorklistRow {
     label: `Prestation ${key}`, reference: null, quantity: "1",
     billingStatus: "BILLABLE", billingStatusLabel: "Facturable", reasonCode: "BILLABLE", reasonLabel: "Facturable",
     reasonDetail: "Ligne valorisée par le calcul financier approuvé, pas encore facturée.",
-    amount: "350.00", currency: "EUR", invoice: null, financialLineId: 900, calculationId: 7, canInvoice: true,
+    amount: "350.00", currency: "EUR", currentInvoice: null, invoiceState: "FREE", invoiceStateLabel: "Libre",
+    sourceKey: key.startsWith("MATERIAL") ? `MATERIAL:${key.split(":")[1]}` : `INTERVENTION:${key.split(":")[1]}`, hasHistory: false,
+    financialLineId: 900, calculationId: 7, canInvoice: true,
     ...extra,
   };
 }
 
 const ROWS: WorklistRow[] = [
   row("MISSION_INTERVENTION:1", { label: "Arthrodèse 2 niveaux", financialLineId: 901 }),
-  row("MATERIAL_LINE:2", { sourceType: "MATERIAL", label: "Ancre 5mm", reference: "REF-55", quantity: "2", amount: "50.00", financialLineId: 902 }),
+  row("MATERIAL_LINE:2", { sourceType: "MATERIAL", label: "Ancre 5mm", reference: "REF-55", quantity: "2", amount: "50.00", financialLineId: 902, hasHistory: true }),
   row("MISSION_INTERVENTION:3", {
     firm: STRYKER, label: "Ligamentoplastie", billingStatus: "NOT_BILLABLE", billingStatusLabel: "Non facturable",
     reasonCode: "REPRESENTATIVE_PRESENT", reasonLabel: "Délégué présent",
@@ -70,7 +75,8 @@ const ROWS: WorklistRow[] = [
   }),
   row("MISSION_INTERVENTION:5", {
     billingStatus: "INVOICED", billingStatusLabel: "Facturé", reasonCode: "INVOICED", reasonLabel: "Déjà facturé", reasonDetail: "Facturé sur la facture FIRM-2026-042 (envoyée).",
-    amount: "80.00", canInvoice: false, invoice: { id: 42, number: "FIRM-2026-042", status: "SENT", statusLabel: "envoyée" },
+    amount: "80.00", canInvoice: false, hasHistory: true, invoiceState: "SENT", invoiceStateLabel: "Envoyée",
+    currentInvoice: { id: 42, number: "FIRM-2026-042", status: "SENT", statusLabel: "envoyée", firmName: "Arthrex", editable: false },
   }),
 ];
 
@@ -128,6 +134,7 @@ beforeEach(() => {
   exportMock.mockReset().mockResolvedValue({ blob: new Blob(["x"]), filename: "facturation-firmes-2026-09.xlsx" });
   runCalculationsMock.mockReset();
   approveMock.mockReset();
+  historyMock.mockReset();
   toastSuccess.mockReset();
   toastError.mockReset();
   (URL as any).createObjectURL = vi.fn(() => "blob:mock");
@@ -162,7 +169,7 @@ describe("FirmInvoicesPage — worklist (D-133)", () => {
     expect(await screen.findByText("Le forfait de cette prestation est neutralisé en présence du délégué Stryker.")).toBeInTheDocument();
 
     const invoiced = tableRow("MISSION_INTERVENTION:5");
-    expect(within(invoiced).getByText("FIRM-2026-042")).toBeInTheDocument();
+    expect(within(invoiced).getByText("FIRM-2026-042 · Envoyée")).toBeInTheDocument();
     expect(within(tableRow("MATERIAL_LINE:4")).getByText("—")).toBeInTheDocument(); // aucun montant inventé
     expect(within(tableRow("MATERIAL_LINE:2")).getByText("REF-55")).toBeInTheDocument();
   });
@@ -288,5 +295,65 @@ describe("FirmInvoicesPage — worklist (D-133)", () => {
     getWorklistMock.mockResolvedValue(worklist({ summary: { ...worklist().summary, pendingValidationMissionCount: 3 } }));
     renderPage();
     expect(await screen.findByText(/3 missions encodées sur la période attendent encore leur validation/)).toBeInTheDocument();
+  });
+});
+
+describe("FirmInvoicesPage — état courant de facture et historique (D-134)", () => {
+  it("colonne Facture : état courant fourni par le backend, lien direct vers le document avec la ligne ciblée", async () => {
+    renderPage();
+    await screen.findByText("Arthrodèse 2 niveaux");
+
+    const link = within(tableRow("MISSION_INTERVENTION:5")).getByRole("link", { name: "FIRM-2026-042 · Envoyée" });
+    expect(link).toHaveAttribute("href", "/app/m/billing/firm-invoices/42?focusLine=INTERVENTION%3A5");
+
+    const free = tableRow("MISSION_INTERVENTION:1");
+    expect(within(free).getByText("Libre")).toBeInTheDocument();
+    expect(within(free).queryByText("déjà passée par une facture")).not.toBeInTheDocument();
+
+    // Libre ne signifie pas « jamais utilisée ».
+    expect(within(tableRow("MATERIAL_LINE:2")).getByText("déjà passée par une facture")).toBeInTheDocument();
+  });
+
+  it("un brouillon éventuel s'affiche « Brouillon · firme · #id » (valeur editable fournie par le backend)", async () => {
+    getWorklistMock.mockResolvedValue(worklist({ rows: [row("MATERIAL_LINE:9", {
+      sourceType: "MATERIAL", invoiceState: "IN_DRAFT", invoiceStateLabel: "Dans un brouillon", canInvoice: false,
+      currentInvoice: { id: 124, number: null, status: "DRAFT", statusLabel: "brouillon", firmName: "Arthrex", editable: true },
+    })] }));
+    renderPage();
+    const link = await screen.findByRole("link", { name: "Brouillon · Arthrex · #124" });
+    expect(link).toHaveAttribute("href", "/app/m/billing/firm-invoices/124?focusLine=MATERIAL%3A9");
+  });
+
+  it("ouvre l'historique d'une ligne dans un drawer, chronologie servie par le backend", async () => {
+    const user = userEvent.setup();
+    historyMock.mockResolvedValue({
+      sourceKey: "MATERIAL:2", sourceType: "MATERIAL", sourceId: 2, label: "Ancre 5mm", currentInvoice: null,
+      history: [
+        { id: 1, eventType: "INVOICE_GENERATED", label: "Facture générée", description: "Facture FIRM-2026-040 générée", occurredAt: "2026-10-07T08:14:00+02:00", actorName: "Samy Ftaita", firmName: "Arthrex", invoice: { id: 40, number: "FIRM-2026-040", statusAtEvent: "GENERATED" }, amount: "50.00", currency: "EUR" },
+        { id: 2, eventType: "INVOICE_CANCELLED", label: "Facture annulée — ligne de nouveau libre", description: "Facture FIRM-2026-040 annulée — ligne de nouveau libre", occurredAt: "2026-10-07T08:31:00+02:00", actorName: "Samy Ftaita", firmName: "Arthrex", invoice: { id: 40, number: "FIRM-2026-040", statusAtEvent: "GENERATED" }, amount: "50.00", currency: "EUR" },
+      ],
+    });
+    renderPage();
+    await screen.findByText("Arthrodèse 2 niveaux");
+
+    await user.click(within(tableRow("MATERIAL_LINE:2")).getByRole("button", { name: "Historique de Ancre 5mm" }));
+    expect(historyMock).toHaveBeenCalledWith("MATERIAL:2");
+
+    const drawer = await screen.findByRole("region", { name: "Historique de facturation" });
+    const steps = within(within(drawer).getByRole("list", { name: "Chronologie" })).getAllByRole("listitem");
+    expect(steps).toHaveLength(2);
+    expect(within(steps[0]).getByText("Facture FIRM-2026-040 générée")).toBeInTheDocument();
+    expect(within(steps[1]).getByText("Facture FIRM-2026-040 annulée — ligne de nouveau libre")).toBeInTheDocument();
+    expect(within(steps[0]).getByText("Arthrex · Samy Ftaita")).toBeInTheDocument();
+    expect(within(steps[0]).getByRole("link", { name: "Ouvrir FIRM-2026-040" })).toHaveAttribute("href", "/app/m/billing/firm-invoices/40?focusLine=MATERIAL%3A2");
+    expect(within(drawer).getByText("Libre")).toBeInTheDocument();
+  });
+
+  it("annonce une ligne qui n'a jamais été facturée", async () => {
+    const user = userEvent.setup();
+    historyMock.mockResolvedValue({ sourceKey: "INTERVENTION:1", sourceType: "INTERVENTION", sourceId: 1, label: "Arthrodèse 2 niveaux", currentInvoice: null, history: [] });
+    renderPage();
+    await user.click(within(await screen.findByTestId("row-MISSION_INTERVENTION:1")).getByRole("button", { name: /Historique de/ }));
+    expect(await screen.findByText("Cette ligne n'a encore jamais figuré sur une facture.")).toBeInTheDocument();
   });
 });

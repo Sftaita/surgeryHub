@@ -119,9 +119,9 @@ final class FirmBillingWorklistExporter
 
     private function invoiceLabel(array $row): string
     {
-        $invoice = $row['invoice'] ?? null;
+        $invoice = $row['currentInvoice'] ?? null;
         if ($invoice === null) {
-            return '';
+            return $row['invoiceStateLabel'] ?? '';
         }
 
         return sprintf('%s (%s)', $invoice['number'] ?? '#' . $invoice['id'], $invoice['statusLabel']);

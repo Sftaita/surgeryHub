@@ -41,6 +41,7 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
      * just to silence a failing test.
      */
     private const SAFE_ALLOWLIST = [
+        'App\Entity\FirmBillingLineEvent::occurredAt' => 'server-generated (new \DateTimeImmutable() at the moment of the fact, D-134), never client-submitted',
         'App\Entity\ReleasedOperatingRoomSlot::claimedAt' => 'server-generated (new \DateTimeImmutable() at take-over, D-124), never client-submitted',
         // Always date-only (Y-m-d), no time-of-day component is ever read or written —
         // an offset has nothing to attach to.

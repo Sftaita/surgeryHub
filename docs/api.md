@@ -2340,8 +2340,12 @@ version) ; `SUPERSEDED`/`CANCELLED` jamais lus.
 **Ligne (`rows[]`) :** `key`, `sourceType`, `sourceId`, `mission {id, date, status, site,
 surgeon}`, `firm {id, name} | null`, `label`, `reference`, `quantity`, `billingStatus`,
 `billingStatusLabel`, `reasonCode`, `reasonLabel`, `reasonDetail`, `amount | null`,
-`currency | null`, `invoice {id, number, status, statusLabel} | null`, `financialLineId`,
-`calculationId`, `canInvoice`. Aucune donnée patient.
+`currency | null`, `financialLineId`, `calculationId`, `canInvoice`. Aucune donnée
+patient. **D-134 :** `currentInvoice {id, number, status, statusLabel, firmName, editable} |
+null` (appartenance ACTUELLE à un document), `invoiceState` (`FREE` | `IN_DRAFT` |
+`GENERATED` | `SENT` | `PAID`) + `invoiceStateLabel`, `sourceKey`
+(`INTERVENTION:{id}` / `MATERIAL:{id}`), `hasHistory` (la ligne figure au journal, même si
+elle est libre).
 
 **Catalogue `billingStatus` / `reasonCode`** (`App\Enum\FirmBillingReason`, codes stables) :
 
@@ -2396,6 +2400,21 @@ quantité, statut, motif, montant, devise, facture ; **total = somme des seules 
 
 **Erreurs :** `422 EXPORT_SELECTION_INVALID` (une clé n'appartient plus à la
 période/aux firmes — jamais un export partiel silencieux), `422 VALIDATION_FAILED`, `403`.
+
+#### `GET /api/firm-billing/lines/{sourceType}/{sourceId}/history` (D-134)
+
+`sourceType` = `INTERVENTION` | `MATERIAL`. AuthZ `BillingVoter::MANAGE`. Lu
+**exclusivement** dans le journal append-only `firm_billing_line_event`, jamais reconstitué
+depuis les `FirmInvoiceLine`. **Réponse 200 :**
+`{ sourceKey, sourceType, sourceId, label, currentInvoice | null, history: [{ id, eventType,
+label, description, occurredAt, actorName, firmName, invoice {id, number, statusAtEvent} |
+null, amount, currency }] }` — ordre chronologique. `eventType` : `INVOICE_GENERATED`,
+`INVOICE_SENT`, `PAYMENT_RECORDED`, `INVOICE_PAID`, `INVOICE_CANCELLED` (facture GENERATED
+annulée : la ligne redevient libre) ; `ADDED_TO_DRAFT`, `REMOVED_FROM_DRAFT`,
+`MOVED_TO_DRAFT` sont réservés au futur brouillon et jamais émis aujourd'hui.
+
+**Lien direct (frontend) :** `/app/m/billing/firm-invoices/{id}?focusLine={sourceKey}` —
+`GET /api/firm-invoices/{id}` expose `lines[].sourceKey`.
 
 #### `POST /api/firm-billing/calculations`
 

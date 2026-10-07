@@ -122,12 +122,13 @@ final class DocumentPaymentConcurrencyTest extends KernelTestCase
             $this->financialCalculationServiceFor($em),
             new AuditService($em),
             new EncodingTrackingRepository($em->getConnection(), $em, new MissionPopulationClauseBuilder()),
+            new \App\Service\FirmBilling\FirmBillingLineEventRecorder($em),
         );
     }
 
     private function paymentServiceFor(EntityManagerInterface $em): DocumentPaymentService
     {
-        return new DocumentPaymentService($em, new AuditService($em));
+        return new DocumentPaymentService($em, new AuditService($em), new \App\Service\FirmBilling\FirmBillingLineEventRecorder($em));
     }
 
     private function setLockTimeout(EntityManagerInterface $em, int $seconds): void

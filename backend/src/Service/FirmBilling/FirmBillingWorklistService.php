@@ -5,6 +5,7 @@ namespace App\Service\FirmBilling;
 use App\Entity\AuditEvent;
 use App\Entity\FinancialCalculation;
 use App\Entity\FinancialCalculationLine;
+use App\Entity\FirmBillingLineEvent;
 use App\Entity\Firm;
 use App\Entity\FirmInvoice;
 use App\Entity\InterventionType;
@@ -60,6 +61,15 @@ final class FirmBillingWorklistService
         FinancialCalculationStatus::CALCULATED,
         FinancialCalculationStatus::APPROVED,
         FinancialCalculationStatus::LOCKED,
+    ];
+
+    /** D-134 — état documentaire courant d'une ligne. */
+    public const INVOICE_STATE_LABELS = [
+        'FREE' => 'Libre',
+        'IN_DRAFT' => 'Dans un brouillon',
+        'GENERATED' => 'Facture générée',
+        'SENT' => 'Envoyée',
+        'PAID' => 'Payée',
     ];
 
     /** @var array<string, \App\Dto\RepresentativePolicy> */
@@ -119,6 +129,7 @@ final class FirmBillingWorklistService
         if ($status !== null) {
             $rows = array_values(array_filter($rows, static fn (array $r) => $r['billingStatus'] === $status->value));
         }
+        $rows = $this->withHistoryFlags($rows);
 
         return [
             'period' => ['from' => $from->format('Y-m-d'), 'to' => $to->format('Y-m-d')],
@@ -478,12 +489,17 @@ final class FirmBillingWorklistService
             'reasonDetail' => $detail ?? $reason->defaultDetail(),
             'amount' => $amount,
             'currency' => $line?->getCurrency(),
-            'invoice' => $invoice !== null ? [
+            // D-134 — appartenance ACTUELLE à un document (l'historique est servi à part).
+            'currentInvoice' => $invoice !== null ? [
                 'id' => $invoice->getId(),
                 'number' => $invoice->getNumber(),
                 'status' => $invoice->getStatus()->value,
                 'statusLabel' => $this->invoiceStatusLabel($invoice->getStatus()),
+                'firmName' => $invoice->getFirm()?->getName(),
+                'editable' => $invoice->getStatus() === InvoiceStatus::DRAFT,
             ] : null,
+            'invoiceState' => $this->invoiceState($invoice),
+            'invoiceStateLabel' => self::INVOICE_STATE_LABELS[$this->invoiceState($invoice)],
             'financialLineId' => $line?->getId(),
             'calculationId' => $line?->getFinancialCalculation()?->getId(),
             'canInvoice' => $canInvoice,
@@ -950,6 +966,60 @@ final class FirmBillingWorklistService
             'site' => $mission->getSite()?->getName(),
             'surgeon' => $mission->getSurgeon()?->getDrName(),
         ];
+    }
+
+    private function invoiceState(?FirmInvoice $invoice): string
+    {
+        return match ($invoice?->getStatus()) {
+            null, InvoiceStatus::CANCELLED => 'FREE',
+            InvoiceStatus::DRAFT => 'IN_DRAFT',
+            InvoiceStatus::GENERATED => 'GENERATED',
+            InvoiceStatus::SENT => 'SENT',
+            InvoiceStatus::PAID => 'PAID',
+        };
+    }
+
+    /**
+     * D-134 — `sourceKey` (INTERVENTION:12 / MATERIAL:34, clé du journal et des deep-links)
+     * et `hasHistory` : la ligne a déjà un passé documentaire, même si elle est libre.
+     *
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function withHistoryFlags(array $rows): array
+    {
+        $ids = [FirmBillingLineEvent::SOURCE_INTERVENTION => [], FirmBillingLineEvent::SOURCE_MATERIAL => []];
+        foreach ($rows as $row) {
+            if ($row['sourceId'] !== null) {
+                $ids[$row['sourceType']][] = (int) $row['sourceId'];
+            }
+        }
+        $withHistory = [];
+        foreach ($ids as $sourceType => $sourceIds) {
+            if ($sourceIds === []) {
+                continue;
+            }
+            $found = $this->em->createQueryBuilder()
+                ->select('DISTINCT e.sourceId')
+                ->from(FirmBillingLineEvent::class, 'e')
+                ->where('e.sourceType = :type')
+                ->andWhere('e.sourceId IN (:ids)')
+                ->setParameter('type', $sourceType)
+                ->setParameter('ids', array_values(array_unique($sourceIds)))
+                ->getQuery()
+                ->getSingleColumnResult();
+            foreach ($found as $id) {
+                $withHistory[$sourceType . ':' . (int) $id] = true;
+            }
+        }
+
+        foreach ($rows as &$row) {
+            $row['sourceKey'] = $row['sourceId'] !== null ? $row['sourceType'] . ':' . $row['sourceId'] : null;
+            $row['hasHistory'] = $row['sourceKey'] !== null && isset($withHistory[$row['sourceKey']]);
+        }
+        unset($row);
+
+        return $rows;
     }
 
     private function invoiceStatusLabel(InvoiceStatus $status): string

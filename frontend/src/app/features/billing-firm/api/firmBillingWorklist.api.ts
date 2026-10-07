@@ -9,6 +9,7 @@ import { apiClient } from "../../../api/apiClient";
 
 export type BillingStatus = "BILLABLE" | "NOT_BILLABLE" | "TO_REVIEW" | "INVOICED";
 export type SourceType = "INTERVENTION" | "MATERIAL";
+export type InvoiceState = "FREE" | "IN_DRAFT" | "GENERATED" | "SENT" | "PAID";
 
 export interface WorklistMission {
   id: number;
@@ -36,7 +37,14 @@ export interface WorklistRow {
   reasonDetail: string;
   amount: string | null;
   currency: string | null;
-  invoice: { id: number; number: string | null; status: string; statusLabel: string } | null;
+  /** D-134 — appartenance ACTUELLE à un document (l'historique se charge à part). */
+  currentInvoice: { id: number; number: string | null; status: string; statusLabel: string; firmName: string | null; editable: boolean } | null;
+  invoiceState: InvoiceState;
+  invoiceStateLabel: string;
+  /** « INTERVENTION:12 » / « MATERIAL:34 » — clé du journal et du deep-link ?focusLine=. */
+  sourceKey: string | null;
+  /** La ligne a déjà un passé documentaire (une ligne « Libre » peut en avoir un). */
+  hasHistory: boolean;
   financialLineId: number | null;
   calculationId: number | null;
   /** Fourni par le backend : la ligne peut être placée sur une facture. */
@@ -163,4 +171,39 @@ export function extractBillingError(err: unknown): string {
     return data?.message ? `${data.message} ${details}` : details;
   }
   return data?.message ?? e?.message ?? String(err);
+}
+
+// ── D-134 — historique append-only d'une ligne ─────────────────────────────
+
+export interface LineHistoryEvent {
+  id: number;
+  eventType: string;
+  label: string;
+  description: string;
+  occurredAt: string;
+  actorName: string | null;
+  firmName: string | null;
+  invoice: { id: number; number: string | null; statusAtEvent: string | null } | null;
+  amount: string | null;
+  currency: string | null;
+}
+
+export interface LineHistory {
+  sourceKey: string;
+  sourceType: SourceType;
+  sourceId: number;
+  label: string | null;
+  currentInvoice: { id: number; number: string | null; status: string; firmName: string | null; editable: boolean } | null;
+  history: LineHistoryEvent[];
+}
+
+export async function getFirmBillingLineHistory(sourceKey: string): Promise<LineHistory> {
+  const [type, id] = sourceKey.split(":");
+  const res = await apiClient.get(`/api/firm-billing/lines/${type}/${id}/history`);
+  return res.data;
+}
+
+/** Lien direct vers le document qui contient la ligne, avec la ligne ciblée (survit au refresh). */
+export function invoiceFocusUrl(invoiceId: number, sourceKey: string | null): string {
+  return `/app/m/billing/firm-invoices/${invoiceId}${sourceKey ? `?focusLine=${encodeURIComponent(sourceKey)}` : ""}`;
 }

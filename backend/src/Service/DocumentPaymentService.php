@@ -3,11 +3,14 @@
 namespace App\Service;
 
 use App\Dto\DocumentBalance;
+use App\Entity\FirmInvoice;
 use App\Entity\PayableDocument;
 use App\Entity\Payment;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\FinancialDocumentType;
+use App\Enum\FirmBillingLineEventType;
+use App\Service\FirmBilling\FirmBillingLineEventRecorder;
 use App\Enum\InvoiceStatus;
 use App\Enum\PaymentDirection;
 use App\Enum\PaymentMethod;
@@ -41,6 +44,7 @@ final class DocumentPaymentService
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly AuditService $audit,
+        private readonly FirmBillingLineEventRecorder $lineEvents,
     ) {}
 
     /** @return Payment[] */
@@ -145,6 +149,15 @@ final class DocumentPaymentService
                 'newPaymentStatus' => $after->status->value,
             ];
             $this->audit->recordGlobal($actor, AuditEventType::DOCUMENT_PAYMENT_RECORDED, $payload);
+
+            // D-134 — historique des lignes d'une facture firme.
+            if ($root instanceof FirmInvoice) {
+                $this->lineEvents->recordForInvoice($root, FirmBillingLineEventType::PAYMENT_RECORDED, $actor, [
+                    'paymentAmount' => $payment->getAmount(),
+                    'paymentCurrency' => $payment->getCurrency(),
+                    'fullyPaid' => $after->status === PaymentStatus::PAID,
+                ]);
+            }
 
             if ($after->status === PaymentStatus::PAID) {
                 $this->audit->recordGlobal($actor, AuditEventType::DOCUMENT_FULLY_PAID, $payload);

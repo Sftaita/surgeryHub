@@ -1,5 +1,6 @@
 import * as React from "react";
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -18,7 +19,7 @@ import {
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import SendIcon from "@mui/icons-material/Send";
-import { Link as RouterLink, useParams, useNavigate } from "react-router-dom";
+import { Link as RouterLink, useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getFirmInvoice,
@@ -51,6 +52,11 @@ function formatDate(iso: string | null | undefined): string {
 export default function FirmInvoiceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  // D-134 — deep-link depuis la worklist : ?focusLine=MATERIAL:456 (survit au refresh).
+  const [searchParams] = useSearchParams();
+  const focusLine = searchParams.get("focusLine");
+  const [highlighted, setHighlighted] = React.useState<string | null>(null);
+  const lineRefs = React.useRef<Record<string, HTMLTableRowElement | null>>({});
   const toast = useToast();
   const qc = useQueryClient();
 
@@ -62,6 +68,15 @@ export default function FirmInvoiceDetailPage() {
     queryFn: () => getFirmInvoice(Number(id)),
     enabled: !!id,
   });
+
+  const focusedLineFound = !!focusLine && (invoiceQuery.data?.lines ?? []).some((l) => l.sourceKey === focusLine);
+  React.useEffect(() => {
+    if (!focusLine || !focusedLineFound) return;
+    lineRefs.current[focusLine]?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    setHighlighted(focusLine);
+    const t = window.setTimeout(() => setHighlighted(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [focusLine, focusedLineFound]);
 
   React.useEffect(() => {
     if (invoiceQuery.data) {
@@ -152,6 +167,10 @@ export default function FirmInvoiceDetailPage() {
       </Paper>
 
       {/* Lines */}
+      {focusLine && invoiceQuery.data && !focusedLineFound && (
+        <Alert severity="info">La ligne recherchée ne figure plus sur cette facture — consultez son historique depuis la facturation firmes.</Alert>
+      )}
+
       <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
         <Box sx={{ px: 2, py: 1.5, bgcolor: "grey.50" }}>
           <Typography variant="subtitle2" fontWeight={700}>Lignes facturées ({inv.lines?.length ?? 0})</Typography>
@@ -174,8 +193,22 @@ export default function FirmInvoiceDetailPage() {
           </TableHead>
           <TableBody>
             {(inv.lines ?? []).map((line) => (
-              <TableRow key={line.id}>
-                <TableCell>{formatDate(line.missionDate)}</TableCell>
+              <TableRow
+                key={line.id}
+                ref={(el) => { if (line.sourceKey) lineRefs.current[line.sourceKey] = el; }}
+                data-testid={line.sourceKey ? `invoice-line-${line.sourceKey}` : undefined}
+                aria-current={line.sourceKey === focusLine ? "true" : undefined}
+                sx={{
+                  transition: "background-color 600ms ease",
+                  bgcolor: highlighted !== null && line.sourceKey === highlighted ? "warning.light" : undefined,
+                  outline: line.sourceKey === focusLine ? "2px solid" : undefined,
+                  outlineColor: "warning.main",
+                }}
+              >
+                <TableCell>
+                  {formatDate(line.missionDate)}
+                  {line.sourceKey === focusLine && <Chip size="small" color="warning" label="Ligne recherchée" sx={{ ml: 1 }} />}
+                </TableCell>
                 <TableCell>{[line.siteName, line.surgeonName].filter(Boolean).join(" · ") || "—"}</TableCell>
                 <TableCell>
                   {line.materialLabel

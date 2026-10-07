@@ -229,7 +229,7 @@ class FirmInvoiceController extends AbstractController
     }
 
     #[Route('/{id}/mark-paid', name: 'api_firm_invoices_mark_paid', methods: ['POST'], requirements: ['id' => '\d+'])]
-    public function markPaid(int $id): JsonResponse
+    public function markPaid(int $id, #[CurrentUser] User $actor): JsonResponse
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
 
@@ -238,7 +238,7 @@ class FirmInvoiceController extends AbstractController
             return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
         }
 
-        $invoice = $this->invoiceService->markPaid($invoice);
+        $invoice = $this->invoiceService->markPaid($invoice, $actor);
         return $this->json($this->serializeInvoiceDetail($invoice));
     }
 
@@ -536,6 +536,9 @@ class FirmInvoiceController extends AbstractController
             'financialCalculationId' => $l->getFinancialCalculationLine()?->getFinancialCalculation()->getId(),
             'interventionId' => $l->getMissionIntervention()?->getId(),
             'materialLineId' => $l->getMaterialLine()?->getId(),
+            // D-134 — même clé que la worklist et le journal (deep-link ?focusLine=).
+            'sourceKey' => $l->getMaterialLine() !== null ? 'MATERIAL:' . $l->getMaterialLine()->getId()
+                : ($l->getMissionIntervention() !== null ? 'INTERVENTION:' . $l->getMissionIntervention()->getId() : null),
             'lineType' => $l->getLineType()->value,
             'descriptionSnapshot' => $l->getDescriptionSnapshot(),
             'firmNameSnapshot' => $l->getFirmNameSnapshot(),

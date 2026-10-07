@@ -140,6 +140,7 @@ final class FinancialCorrectionConcurrencyTest extends KernelTestCase
             $this->financialCalculationServiceFor($em),
             new AuditService($em),
             new EncodingTrackingRepository($em->getConnection(), $em, new MissionPopulationClauseBuilder()),
+            new \App\Service\FirmBilling\FirmBillingLineEventRecorder($em),
         );
     }
 
@@ -155,7 +156,7 @@ final class FinancialCorrectionConcurrencyTest extends KernelTestCase
 
     private function documentPaymentServiceFor(EntityManagerInterface $em): DocumentPaymentService
     {
-        return new DocumentPaymentService($em, new AuditService($em));
+        return new DocumentPaymentService($em, new AuditService($em), new \App\Service\FirmBilling\FirmBillingLineEventRecorder($em));
     }
 
     private function correctionServiceFor(EntityManagerInterface $em): FinancialCorrectionService

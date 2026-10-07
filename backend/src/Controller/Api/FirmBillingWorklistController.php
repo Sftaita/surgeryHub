@@ -6,6 +6,7 @@ use App\Entity\Firm;
 use App\Entity\User;
 use App\Enum\FirmBillingStatus;
 use App\Security\Voter\BillingVoter;
+use App\Service\FirmBilling\FirmBillingLineHistoryService;
 use App\Service\FirmBilling\FirmBillingRecalculationService;
 use App\Service\FirmBilling\FirmBillingWorklistExporter;
 use App\Service\FirmBilling\FirmBillingWorklistService;
@@ -30,6 +31,7 @@ class FirmBillingWorklistController extends AbstractController
         private readonly FirmBillingWorklistService $worklist,
         private readonly FirmBillingWorklistExporter $exporter,
         private readonly FirmBillingRecalculationService $recalculation,
+        private readonly FirmBillingLineHistoryService $history,
         private readonly EntityManagerInterface $em,
     ) {}
 
@@ -143,6 +145,18 @@ class FirmBillingWorklistController extends AbstractController
             'failed' => $counts['FAILED'] ?? 0,
             'skipped' => ($counts['SKIPPED'] ?? 0) + ($counts['NOT_PROCESSED'] ?? 0),
         ]);
+    }
+
+    /**
+     * D-134 — GET /api/firm-billing/lines/{sourceType}/{sourceId}/history : journal
+     * append-only de la ligne (intervention ou matériel) + son état documentaire courant.
+     */
+    #[Route('/lines/{sourceType}/{sourceId}/history', name: 'api_firm_billing_line_history', methods: ['GET'], requirements: ['sourceType' => 'INTERVENTION|MATERIAL', 'sourceId' => '\d+'])]
+    public function lineHistory(string $sourceType, int $sourceId): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        return $this->json($this->history->history($sourceType, $sourceId));
     }
 
     // ── Paramètres ──────────────────────────────────────────────────────────

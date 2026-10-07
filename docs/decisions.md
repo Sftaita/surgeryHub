@@ -11168,6 +11168,96 @@ Ni exclusion métier (aucune `FirmServiceOffering.feeApplicable = false`, aucun 
   pré-sélection de la firme ou de l'article.
 - Le verrouillage à la maille du calcul (D-123) est inchangé.
 
+## D-134 — Facturation firmes : état documentaire courant, lien direct vers la ligne, historique append-only par ligne (2026-10-07)
+
+**Statut : fait sur `feat/firm-billing-worklist-redesign` (non fusionné, non déployé), SAUF le
+brouillon, en attente de décision (voir « Brouillon : constat et proposition »).**
+
+### Constat d'audit — il n'existe aucun brouillon de facture firme
+
+`InvoiceStatus::DRAFT` existe (et c'est la valeur par défaut de l'entité `FirmInvoice`),
+mais **aucun chemin ne produit ni n'exploite un brouillon** :
+`FirmInvoiceService::createFromEligibleLines()` crée la facture directement `GENERATED`,
+lui attribue son numéro et verrouille (`LOCKED`) les calculs, dans une seule transaction ;
+aucun endpoint n'ajoute, ne retire ni ne déplace une ligne d'une facture existante ; la
+seule façon de « libérer » une ligne est d'annuler une facture `GENERATED` (ses lignes
+snapshot sont supprimées). Production : 0 facture. Conformément à la consigne, aucun
+pseudo-brouillon frontend n'est créé.
+
+### Décisions (implémentées)
+
+1. **Journal append-only `firm_billing_line_event`** (`FirmBillingLineEvent`, migration
+   additive `Version20261007180000`) : `sourceType` (INTERVENTION / MATERIAL), `sourceId`,
+   `missionId`, `firmId`, `invoiceId`, `eventType`, `actorId`, `occurredAt`, et les
+   snapshots utiles (numéro, statut et montant de la ligne au moment du fait, nom de la
+   firme, nom de l'acteur, devise, `details` JSON). **Aucune clé étrangère** : supprimer
+   une facture, un calcul ou un utilisateur ne peut ni effacer ni altérer un événement.
+   Immuabilité imposée par l'entité (aucun setter, `PreUpdate`/`PreRemove` lèvent une
+   exception).
+2. **Seul point d'écriture** : `FirmBillingLineEventRecorder`, appelé dans la transaction
+   du fait métier. Événements émis aujourd'hui : `INVOICE_GENERATED`
+   (`createFromEligibleLines`), `INVOICE_SENT` (`issue`/`markSent`), `PAYMENT_RECORDED`
+   (`DocumentPaymentService::recordPayment`, avec la mention « soldée »), `INVOICE_PAID`
+   (`markPaid`, qui reçoit désormais l'acteur), `INVOICE_CANCELLED` (`cancel`, journalisé
+   AVANT la suppression des lignes snapshot : la ligne redevient libre, son passage reste).
+   `ADDED_TO_DRAFT` / `REMOVED_FROM_DRAFT` / `MOVED_TO_DRAFT` sont réservés et ne sont
+   jamais émis tant que le brouillon n'existe pas. Seuls les documents `STANDARD` sont
+   journalisés.
+3. **L'état courant et l'historique sont deux lectures distinctes.** La worklist expose
+   `currentInvoice: null | {id, number, status, statusLabel, firmName, editable}` et
+   `invoiceState` = `FREE | IN_DRAFT | GENERATED | SENT | PAID` (libellés « Libre »,
+   « Dans un brouillon », « Facture générée », « Envoyée », « Payée »), calculés depuis
+   l'appartenance ACTUELLE (`FirmInvoiceLine`), plus `hasHistory` (au moins un événement
+   au journal : une ligne « Libre » peut avoir un passé). L'historique est servi par
+   `GET /api/firm-billing/lines/{INTERVENTION|MATERIAL}/{id}/history`, lu exclusivement
+   dans le journal, jamais reconstitué depuis les `FirmInvoiceLine`.
+4. **Clé de ligne partagée** `sourceKey` = `INTERVENTION:{id}` / `MATERIAL:{id}` (worklist,
+   journal, détail facture). Lien direct :
+   `/app/m/billing/firm-invoices/{id}?focusLine={sourceKey}` — paramètre d'URL, donc
+   conservé après un rechargement ; la page détail fait défiler jusqu'à la ligne, la met en
+   évidence quelques secondes et la marque « Ligne recherchée » ; une ligne qui ne figure
+   plus sur la facture est signalée (aucune mise en évidence trompeuse). Une facture
+   émise s'ouvre en lecture seule, comme aujourd'hui.
+5. **Unicité « un seul document actif »** : déjà garantie en base par la contrainte UNIQUE
+   `firm_invoice_line.financial_calculation_line_id`, plus `canInvoice = false` dès que la
+   ligne appartient à un document ; une seconde génération reste refusée
+   (`FINANCIAL_LINE_ALREADY_ASSIGNED`). Une facture émise ne se modifie pas : correction
+   uniquement par notes de crédit/débit (D-076), inchangé.
+
+Aucune reprise de l'historique antérieur : le journal commence au déploiement (0 facture
+en production, donc rien n'est perdu).
+
+### Brouillon : constat et proposition (NON implémenté, décision produit requise)
+
+Pour « Dans un brouillon », « Déplacer vers… » et un générateur de facture éditable, le
+modèle doit évoluer ainsi (proposition) :
+
+- **Cycle** `DRAFT → GENERATED → SENT → PAID` (+ abandon d'un brouillon). Un brouillon
+  n'a **pas de numéro** : le numéro est attribué au passage `GENERATED` (pas de trou dans
+  la numérotation). `generatedAt` reste `NULL` en brouillon.
+- **Verrouillage du calcul** à la génération, pas à l'ajout au brouillon (sinon un
+  brouillon abandonné figerait un calcul). Conséquence : une ligne de brouillon peut
+  devenir obsolète (calcul recalculé → ancienne `FinancialCalculationLine`
+  `SUPERSEDED`) ; la génération revalide déjà tout sous verrou et la refuserait — le
+  brouillon devra afficher ces lignes obsolètes.
+- **Unicité** : la contrainte UNIQUE existante couvre aussi les brouillons (une ligne
+  dans un seul document à la fois). « Déplacer vers… » = retrait de A + ajout à B dans une
+  transaction, un seul événement `MOVED_TO_DRAFT` portant `details.fromInvoiceId`.
+- **Endpoints** (proposés) : `POST /api/firm-invoices/drafts`,
+  `POST /api/firm-invoices/{id}/lines`, `DELETE /api/firm-invoices/{id}/lines/{lineId}`,
+  `POST /api/firm-invoices/{id}/lines/move`, `POST /api/firm-invoices/{id}/generate`,
+  `DELETE /api/firm-invoices/{id}` (abandon du brouillon, lignes libérées, événements
+  `REMOVED_FROM_DRAFT`). Lignes snapshot et total recalculés tant que `DRAFT`, figés à
+  `generate`. Autorisation : `BillingVoter`, transitions par endpoints dédiés.
+- **Migration** : probablement aucune colonne (`number` et `generatedAt` sont déjà
+  nullables) ; à confirmer avec la numérotation.
+- **Frontend** : la page détail affichée en mode éditable pour un `DRAFT`, avec le même
+  mécanisme `?focusLine=`.
+
+Questions ouvertes : verrouiller le calcul à l'ajout ou à la génération ; un brouillon
+par firme et par période, ou plusieurs en parallèle ; possibilité d'abandonner un
+brouillon.
+
 ---
 
 ## D-136 — Suivi des encodages : tiroir superposé, encodage lisible après validation, code couleur des heures, rappel des heures réelles (2026-10-07)

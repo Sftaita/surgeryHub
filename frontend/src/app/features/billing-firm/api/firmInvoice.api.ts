@@ -49,6 +49,8 @@ export interface FirmInvoiceLine {
   missionDate: string;
   interventionId: number | null;
   materialLineId: number | null;
+  /** D-134 — « INTERVENTION:12 » / « MATERIAL:34 », clé partagée avec la worklist (deep-link ?focusLine=). */
+  sourceKey?: string | null;
   lineType: "INTERVENTION_FEE" | "MATERIAL_FEE";
   descriptionSnapshot: string;
   firmNameSnapshot: string;
