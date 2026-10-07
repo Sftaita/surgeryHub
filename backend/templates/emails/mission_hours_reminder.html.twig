@@ -15,10 +15,7 @@ body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height
 
   <p>Bonjour {{ firstname }},</p>
 
-  <p>
-    {% if missionDay %}Pour votre mission du {{ missionDay }}, les{% else %}Pour cette mission, les{% endif %}
-    heures réellement prestées n'ont pas encore été renseignées dans SurgicalHub.
-  </p>
+  <p>{% if missionDay %}Pour votre mission du {{ missionDay }}{% else %}Pour cette mission{% endif %}, les heures réellement prestées n'ont pas encore été renseignées dans SurgicalHub.</p>
 
   <p>Merci d'indiquer vos heures réelles de début et de fin :</p>
 

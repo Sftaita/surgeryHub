@@ -252,8 +252,9 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
         <Person name={item.surgeon?.name ?? "—"} photoPath={item.surgeon?.photoPath} role="Chirurgien" />
       </Box>
 
-      {/* Défile en bloc sur un écran bas (sinon la carte Interventions, en flex:1, se réduit
-          à une bande de quelques pixels) ; sur un écran haut, la carte remplit l'espace. */}
+      {/* Un seul défilement, celui du tiroir : la carte Interventions prend la hauteur de son
+          contenu (jamais d'ascenseur imbriqué sur un écran bas) ; sur un écran haut, elle
+          remplit l'espace restant. */}
       <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: "14px" }}>
         <Card>
           <Box sx={{ display: "flex", alignItems: "center", gap: "10px", minHeight: 28 }}>
@@ -296,21 +297,21 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           ))}
         </Card>
 
-        <Card sx={{ flex: 1, minHeight: 240, flexShrink: 0, padding: 0, gap: 0, overflow: "hidden" }}>
-          <Box sx={{ padding: "13px 16px 11px", borderBottom: "1px solid", borderColor: GRAY_150, display: "flex", alignItems: "baseline", gap: "10px" }}>
+        <Card sx={{ flex: "1 0 auto", padding: 0, gap: 0 }}>
+          <Box sx={{ padding: "13px 16px 11px", borderBottom: "1px solid", borderColor: GRAY_150, display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: "10px", rowGap: "4px" }}>
             <Eyebrow>INTERVENTIONS &amp; MATÉRIEL</Eyebrow>
             {isValidated && (
-              <Box sx={{ alignSelf: "center", height: 20, padding: "0 8px", borderRadius: "999px", display: "inline-flex", alignItems: "center", fontSize: 10.5, fontWeight: 800, background: GRAY_100, color: GRAY_600 }}>
+              <Box sx={{ flexShrink: 0, whiteSpace: "nowrap", height: 20, padding: "0 8px", borderRadius: "999px", display: "inline-flex", alignItems: "center", fontSize: 10.5, fontWeight: 800, background: GRAY_100, color: GRAY_600 }}>
                 Lecture seule
               </Box>
             )}
-            <Box sx={{ ml: "auto", fontSize: 12, fontWeight: 700, color: GRAY_500, fontVariantNumeric: "tabular-nums" }}>
+            <Box sx={{ ml: "auto", fontSize: 12, fontWeight: 700, color: GRAY_500, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
               {item.encoding.interventionCount === 0
                 ? "rien d'encodé"
                 : `${item.encoding.encodedInterventionCount}/${item.encoding.interventionCount} intervention${item.encoding.interventionCount > 1 ? "s" : ""} encodée${item.encoding.interventionCount > 1 ? "s" : ""} · ${refs} référence${refs > 1 ? "s" : ""}`}
             </Box>
           </Box>
-          <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "12px 16px 16px", display: "flex", flexDirection: "column", gap: "10px" }}>
+          <Box sx={{ padding: "12px 16px 16px", display: "flex", flexDirection: "column", gap: "10px" }}>
             {encodingQuery.isLoading && (
               <Box sx={{ p: 2, textAlign: "center" }}><CircularProgress size={20} /></Box>
             )}
@@ -424,7 +425,7 @@ function Card({ children, sx }: { children: React.ReactNode; sx?: object }) {
 }
 
 function Eyebrow({ children }: { children: React.ReactNode }) {
-  return <Box sx={{ fontSize: 11, fontWeight: 800, letterSpacing: ".09em", color: GRAY_500 }}>{children}</Box>;
+  return <Box sx={{ fontSize: 11, fontWeight: 800, letterSpacing: ".09em", color: GRAY_500, whiteSpace: "nowrap" }}>{children}</Box>;
 }
 
 function Bar({ label, text, total, totalColor, pct, color, plan }: { label: string; text: string; total: string; totalColor?: string; pct: number; color: string; plan?: boolean }) {
