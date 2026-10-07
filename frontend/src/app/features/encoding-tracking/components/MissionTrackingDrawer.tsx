@@ -112,7 +112,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   });
   // GET .../encoding est une LECTURE (VIEW_ENCODING, toujours accordé au manager depuis le
   // Lot 6, D-100) : jamais désactivée après validation — le verrou porte sur l'écriture,
-  // pas sur la consultation (D-133).
+  // pas sur la consultation (D-136).
   const encodingQuery = useQuery({
     queryKey: ["missionEncoding", missionId],
     queryFn: () => fetchMissionEncoding(missionId!),
@@ -168,7 +168,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   const allowedActions = missionQuery.data?.allowedActions ?? [];
   const canValidate = allowedActions.includes("validate");
   const canRemind = allowedActions.includes("remind");
-  // D-133 — décidé uniquement par le backend (MissionHoursReminderPolicy) : jamais déduit
+  // D-136 — décidé uniquement par le backend (MissionHoursReminderPolicy) : jamais déduit
   // ici de hasRealHours ou de la date.
   const canRemindHours = allowedActions.includes("remind_hours");
   const isValidated = item.encodingState === "VALIDATED" || item.encodingState === "LOCKED";

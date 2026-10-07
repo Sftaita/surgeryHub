@@ -869,7 +869,7 @@ fait) ; `SUBMITTED` ajoute `validate` + `reject` (manager) ; `VALIDATED` ajoute
 `reopen` (manager) uniquement — plus aucune action d'édition, l'encodage est verrouillé.
 
 **Relances (manager/admin) :** `remind` (D-120, relance d'encodage) et `remind_hours`
-(D-133, rappel des heures réelles manquantes) sont deux actions distinctes qui peuvent
+(D-136, rappel des heures réelles manquantes) sont deux actions distinctes qui peuvent
 coexister. `remind_hours` n'est présent que si `MissionHoursReminderPolicy` le juge
 pertinent : instrumentiste affecté, mission terminée (`endAt <= now`), aucune heure réelle
 (source `PLANNED`), statut `ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS|DECLARED`, encodage ni
@@ -5638,7 +5638,7 @@ La permission est vérifiée **avant** toute création paresseuse de `MissionExe
 
 ### `POST /api/missions/{id}/execution/remind`
 
-**D-133** — « Rappeler les heures » depuis le cockpit Suivi des encodages : demande à
+**D-136** — « Rappeler les heures » depuis le cockpit Suivi des encodages : demande à
 l'instrumentiste de renseigner ses heures **réellement prestées**. Distinct de
 `POST /api/missions/{id}/encoding/remind` (D-120, finalisation de l'encodage). Ne mute aucun
 statut.
@@ -7227,7 +7227,7 @@ servi. Il n'existe volontairement **aucun** champ `encodedMinutes` : la résolut
 retomber sur le planifié, et ce nom laisserait croire à une saisie inexistante.
 `hasRealHours` est `false` quand la source est `PLANNED`.
 
-**`hours.comparison`** (D-133, additif) — comparaison réel / planifié pour le code couleur du
+**`hours.comparison`** (D-136, additif) — comparaison réel / planifié pour le code couleur du
 cockpit, calculée côté backend (le frontend ne compare jamais) : `NO_REAL_HOURS` quand
 `hasRealHours = false` (le planifié de repli n'est jamais présenté comme conforme),
 `WITHIN_PLAN` quand `effectiveMinutes <= plannedMinutes`, `OVER_PLAN` sinon.

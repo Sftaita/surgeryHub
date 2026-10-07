@@ -10,7 +10,7 @@ use App\Service\MissionHoursReminderPolicy;
 use PHPUnit\Framework\TestCase;
 
 /**
- * D-133 — le rappel des heures n'est pertinent que si la mission est passée, qu'un
+ * D-136 — le rappel des heures n'est pertinent que si la mission est passée, qu'un
  * instrumentiste est affecté, qu'aucune heure réelle n'existe et qu'il peut encore la saisir.
  */
 final class MissionHoursReminderPolicyTest extends TestCase

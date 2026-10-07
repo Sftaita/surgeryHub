@@ -62,7 +62,7 @@ class MissionVoter extends Voter
     // ne mute aucun statut : simple envoi de notification + trace d'audit.
     public const ENCODING_REMIND = 'MISSION_ENCODING_REMIND';
 
-    // Rappel des heures réelles manquantes (D-133) — manager/admin uniquement, distinct de
+    // Rappel des heures réelles manquantes (D-136) — manager/admin uniquement, distinct de
     // ENCODING_REMIND : condition unique dans MissionHoursReminderPolicy.
     public const HOURS_REMIND = 'MISSION_HOURS_REMIND';
 

@@ -38,7 +38,7 @@ export const EFFECTIVE_SOURCE_LABEL: Record<EffectiveDurationSource, string> = {
 };
 
 /**
- * D-133 — code couleur des heures : simple mapping de `hours.comparison`, déjà tranché par le
+ * D-136 — code couleur des heures : simple mapping de `hours.comparison`, déjà tranché par le
  * backend. NO_REAL_HOURS reste neutre : le planifié de repli n'est jamais présenté comme conforme.
  */
 export const HOURS_COMPARISON_TONE: Record<HoursComparison, { fg: string; bar: string; label: string }> = {

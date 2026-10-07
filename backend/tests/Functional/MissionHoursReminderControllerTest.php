@@ -19,7 +19,7 @@ use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
 /**
- * D-133 — POST /api/missions/{id}/execution/remind ("Rappeler les heures") : autorisation par
+ * D-136 — POST /api/missions/{id}/execution/remind ("Rappeler les heures") : autorisation par
  * MissionVoter::HOURS_REMIND, cohérence avec allowedActions[] ('remind_hours'), audit
  * synchrone, envoi asynchrone (message en file, jamais exécuté dans la requête), aucune
  * mutation de statut, relance d'encodage D-120 inchangée.

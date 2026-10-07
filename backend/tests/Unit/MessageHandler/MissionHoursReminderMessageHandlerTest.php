@@ -20,7 +20,7 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * D-133 — routage Push → repli email du rappel des heures, garde de réassignation et
+ * D-136 — routage Push → repli email du rappel des heures, garde de réassignation et
  * isolation des échecs (le rappel est déjà audité côté requête manager).
  */
 final class MissionHoursReminderMessageHandlerTest extends TestCase

@@ -7,7 +7,7 @@ use App\Enum\EffectiveDurationSource;
 use App\Enum\MissionStatus;
 
 /**
- * D-133 — "Rappeler les heures" : définition UNIQUE du moment où un rappel des heures réelles
+ * D-136 — "Rappeler les heures" : définition UNIQUE du moment où un rappel des heures réelles
  * a un sens, lue à la fois par MissionVoter::HOURS_REMIND (autorisation de l'endpoint) et par
  * MissionActionsService ('remind_hours' dans allowedActions[]). Jamais réimplémentée côté
  * frontend, qui se contente de lire allowedActions.

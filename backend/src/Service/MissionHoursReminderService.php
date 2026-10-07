@@ -10,7 +10,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * D-133 — rappel manuel des heures réelles manquantes. Ne mute aucun statut (ce n'est pas
+ * D-136 — rappel manuel des heures réelles manquantes. Ne mute aucun statut (ce n'est pas
  * une transition) : trace d'audit synchrone, puis envoi asynchrone via Messenger
  * (MissionHoursReminderMessageHandler — Push d'abord, repli email). L'autorisation reste
  * dans MissionVoter::HOURS_REMIND, appelé par le contrôleur avant ce service.

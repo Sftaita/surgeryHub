@@ -534,7 +534,7 @@ final class MissionVoterTest extends TestCase
         self::assertSame(VoterInterface::ACCESS_DENIED, $result);
     }
 
-    // ── HOURS_REMIND (D-133, rappel des heures réelles manquantes) ──────────────
+    // ── HOURS_REMIND (D-136, rappel des heures réelles manquantes) ──────────────
     // Les branches fines (statuts, heures réelles, verrou) sont couvertes par
     // MissionHoursReminderPolicyTest ; ici : le rôle et le branchement sur la policy.
 

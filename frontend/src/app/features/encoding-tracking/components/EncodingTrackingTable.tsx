@@ -238,7 +238,7 @@ export function EncodingTrackingTable({
                         </Box>
                       )}
                     </Box>
-                    {/* D-133 — couleur = hours.comparison (backend) : vert dans le planifié,
+                    {/* D-136 — couleur = hours.comparison (backend) : vert dans le planifié,
                         orange au-delà, neutre sans heure réelle (jamais le repli planifié en vert). */}
                     <Box sx={{ width: 170, flexShrink: 0 }} data-testid="hours-cell" data-hours-comparison={item.hours.comparison} title={hoursTone.label}>
                       <Box sx={{ display: "flex", alignItems: "baseline", gap: "6px", fontVariantNumeric: "tabular-nums" }}>

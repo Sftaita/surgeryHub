@@ -14,7 +14,7 @@ use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 
 /**
- * D-133 — "Rappeler les heures" (cockpit Suivi des encodages). Distinct de
+ * D-136 — "Rappeler les heures" (cockpit Suivi des encodages). Distinct de
  * POST /api/missions/{id}/encoding/remind (D-120) : demande à l'instrumentiste ses heures
  * réellement prestées, pas la finalisation de son encodage. Ne mute aucun statut — une
  * notification, pas une transition. Rattaché au domaine "exécution" (le réalisé), d'où le

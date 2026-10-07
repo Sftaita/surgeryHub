@@ -36,7 +36,7 @@ function firmNameOf(entry: MissionEncodingEntry): string | null {
 
 /**
  * Suivi des encodages — lecture de l'encodage Mission → Intervention → lignes de matériel
- * (D-133). Trois PROJECTIONS du même tableau `entries` de GET /api/missions/{id}/encoding,
+ * (D-136). Trois PROJECTIONS du même tableau `entries` de GET /api/missions/{id}/encoding,
  * dans l'ordre du backend : aucune requête, aucune donnée ni règle supplémentaire.
  * Strictement lecture seule (aucun handler de mutation), quel que soit le statut — la
  * validation verrouille l'écriture, jamais la consultation.

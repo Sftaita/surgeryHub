@@ -60,7 +60,7 @@ final class MissionActionsService
                 default => ['view'],
             };
 
-            // D-133 — rappel des heures réelles manquantes, transverse aux statuts ci-dessus :
+            // D-136 — rappel des heures réelles manquantes, transverse aux statuts ci-dessus :
             // même condition exactement que MissionVoter::HOURS_REMIND.
             if (MissionHoursReminderPolicy::isReminderRelevant($mission)) {
                 $actions[] = 'remind_hours';

@@ -83,7 +83,7 @@ final readonly class EncodingTrackingItem
     }
 
     /**
-     * D-133 — comparaison réel / planifié, exposée telle quelle pour le code couleur du
+     * D-136 — comparaison réel / planifié, exposée telle quelle pour le code couleur du
      * cockpit (le frontend ne compare jamais lui-même) :
      *  - NO_REAL_HOURS : aucune heure réelle (source PLANNED) — jamais présenté comme conforme ;
      *  - WITHIN_PLAN   : réel <= planifié ;

@@ -30,7 +30,7 @@ export type EncodingFinancialState =
 
 export type EffectiveDurationSource = "PLANNED" | "ACTUAL_TIMES" | "ACTUAL_EXPLICIT";
 
-/** D-133 — comparaison réel / planifié calculée par le backend (jamais recalculée ici). */
+/** D-136 — comparaison réel / planifié calculée par le backend (jamais recalculée ici). */
 export type HoursComparison = "NO_REAL_HOURS" | "WITHIN_PLAN" | "OVER_PLAN";
 
 export type MissionType = "BLOCK" | "CONSULTATION";

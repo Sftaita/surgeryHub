@@ -10,7 +10,7 @@ import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, formatMinutes } from "..
  * Aucun champ "encodé" n'existe dans le contrat backend : `hours.effectiveMinutes` peut
  * être un simple repli sur le planifié (source PLANNED), ce que `hasRealHours` indique.
  *
- * D-133 — code couleur piloté par `hours.comparison` (backend) : vert dans le planifié,
+ * D-136 — code couleur piloté par `hours.comparison` (backend) : vert dans le planifié,
  * orange au-delà, neutre sans heure réelle.
  */
 export function HoursCell({ hours }: { hours: EncodingTrackingHours }) {

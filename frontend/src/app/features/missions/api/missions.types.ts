@@ -22,7 +22,7 @@ export type AllowedAction =
   | "view_encoding"
   // D-120 — cockpit Suivi des encodages, relance manuelle
   | "remind"
-  // D-133 — rappel des heures réelles manquantes (distinct de "remind")
+  // D-136 — rappel des heures réelles manquantes (distinct de "remind")
   | "remind_hours"
   // D-125 — manager : (re)diffuser une mission OPEN sans demande en attente ;
   // instrumentiste : refuser une demande nominative ('claim' = accepter)

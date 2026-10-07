@@ -16,7 +16,7 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * D-133 — envoie le rappel des heures réelles à l'instrumentiste : Push d'abord, repli email
+ * D-136 — envoie le rappel des heures réelles à l'instrumentiste : Push d'abord, repli email
  * uniquement si le Push n'est pas livrable (même orchestration D-083/D-084 que la relance
  * d'encodage), chaque canal tracé dans OutboundNotification (historique des notifications).
  *

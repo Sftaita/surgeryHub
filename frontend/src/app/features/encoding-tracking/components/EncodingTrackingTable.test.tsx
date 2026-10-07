@@ -66,7 +66,7 @@ describe("EncodingTrackingTable — regroupement par jour", () => {
   });
 });
 
-describe("EncodingTrackingTable — colonne Heures (D-133)", () => {
+describe("EncodingTrackingTable — colonne Heures (D-136)", () => {
   function withHours(missionId: number, hours: EncodingTrackingItem["hours"]): EncodingTrackingItem {
     return { ...item(missionId, "2026-09-12T08:00:00+02:00", `Instr ${missionId}`), hours };
   }

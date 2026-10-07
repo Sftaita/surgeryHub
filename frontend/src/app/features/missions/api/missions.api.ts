@@ -396,7 +396,7 @@ export async function getMissionExecution(id: number): Promise<MissionExecutionI
 }
 
 /**
- * D-133 — "Rappeler les heures" : demande à l'instrumentiste ses heures réellement prestées.
+ * D-136 — "Rappeler les heures" : demande à l'instrumentiste ses heures réellement prestées.
  * Distinct de remindMissionEncoding() (D-120). Proposé uniquement si allowedActions contient
  * 'remind_hours' — le backend seul décide.
  */

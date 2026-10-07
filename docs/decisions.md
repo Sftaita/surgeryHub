@@ -11079,9 +11079,11 @@ Non déployé.
 
 ---
 
-## D-133 — Suivi des encodages : tiroir superposé, encodage lisible après validation, code couleur des heures, rappel des heures réelles (2026-10-07)
+## D-136 — Suivi des encodages : tiroir superposé, encodage lisible après validation, code couleur des heures, rappel des heures réelles (2026-10-07)
 
-**Statut :** accepté — branche `fix/suivi-encodages-ux`, non déployé.
+**Statut :** accepté — déployé en `v2026.10.07-prod` (commit `8c911fc`, branche `fix/suivi-encodages-ux`, réintégrée dans `main`).
+
+> **Numérotation :** décision publiée d'abord sous le numéro provisoire **D-133** (messages des commits `f1aefa3`/`8c911fc` et annotation du tag `v2026.10.07-prod`, immuables). Renumérotée **D-136** lors de la réintégration dans `main` : D-133 à D-135 désignent le chantier « worklist facturation firmes », et D-126 à D-132 le chantier « Historique & notifications ».
 
 ### Contexte
 
@@ -11139,4 +11141,4 @@ Retours d'usage du cockpit « Suivi des encodages » (D-118/D-120) :
 - `HoursCell` (non utilisé par la table, qui rend sa propre colonne) a été aligné mais reste
   un composant orphelin.
 
-Non déployé.
+Déployé : `v2026.10.07-prod`.

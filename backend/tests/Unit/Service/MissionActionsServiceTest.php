@@ -281,7 +281,7 @@ final class MissionActionsServiceTest extends TestCase
         self::assertNotContains('remind', $this->service->allowedActions($this->makeMission(MissionStatus::ASSIGNED, $instr), $instr));
     }
 
-    // ── remind_hours (D-133) — même condition que MissionVoter::HOURS_REMIND ───────
+    // ── remind_hours (D-136) — même condition que MissionVoter::HOURS_REMIND ───────
 
     private function makeEndedMission(MissionStatus $status, ?User $instrumentist): Mission
     {
