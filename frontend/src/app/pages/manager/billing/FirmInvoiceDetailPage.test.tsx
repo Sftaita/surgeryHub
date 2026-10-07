@@ -1,12 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import FirmInvoiceDetailPage from "./FirmInvoiceDetailPage";
 
 const getFirmInvoiceMock = vi.fn();
+const removeLineMock = vi.fn();
+const generateMock = vi.fn();
+const abandonMock = vi.fn();
 vi.mock("../../../features/billing-firm/api/firmInvoice.api", () => ({
   getFirmInvoice: (...a: unknown[]) => getFirmInvoiceMock(...a),
+  removeFirmInvoiceDraftLine: (...a: unknown[]) => removeLineMock(...a),
+  generateFirmInvoiceDraft: (...a: unknown[]) => generateMock(...a),
+  abandonFirmInvoiceDraft: (...a: unknown[]) => abandonMock(...a),
   sendFirmInvoice: vi.fn(),
   markFirmInvoicePaid: vi.fn(),
   getFirmInvoicePdfUrl: (id: number) => `/api/firm-invoices/${id}/pdf`,
@@ -51,6 +58,9 @@ function renderPage(url = "/app/m/billing/firm-invoices/42") {
 const scrollSpy = vi.fn();
 beforeEach(() => {
   getFirmInvoiceMock.mockReset();
+  removeLineMock.mockReset();
+  generateMock.mockReset();
+  abandonMock.mockReset();
   scrollSpy.mockReset();
   (Element.prototype as any).scrollIntoView = scrollSpy;
 });
@@ -126,5 +136,60 @@ describe("FirmInvoiceDetailPage — deep-link depuis la worklist (D-134)", () =>
     expect(await screen.findByText(/La ligne recherchée ne figure plus sur cette facture/)).toBeInTheDocument();
     expect(screen.queryByText("Ligne recherchée")).not.toBeInTheDocument();
     expect(scrollSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("FirmInvoiceDetailPage — générateur de brouillon (D-135)", () => {
+  function draft(overrides: Record<string, unknown> = {}) {
+    const base = invoice({ status: "DRAFT", number: null, generatedAt: null, sentAt: null, allowedActions: ["editLines", "generate", "abandon"] }) as any;
+    base.lines = base.lines.map((l: any) => ({ ...l, stale: false }));
+    return { ...base, ...overrides };
+  }
+
+  it("ouvre le brouillon (pas la liste) sur la ligne recherchée, sans numéro ni PDF ni envoi", async () => {
+    getFirmInvoiceMock.mockResolvedValue(draft());
+    renderPage("/app/m/billing/firm-invoices/42?focusLine=MATERIAL:456");
+
+    expect(await screen.findByText("Brouillon Arthrex #42")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Générateur de facture" })).toBeInTheDocument();
+    expect(within(screen.getByTestId("invoice-line-MATERIAL:456")).getByText("Ligne recherchée")).toBeInTheDocument();
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Télécharger PDF")).not.toBeInTheDocument();
+    expect(screen.queryByText("Envoyer par email")).not.toBeInTheDocument();
+  });
+
+  it("retire une ligne du brouillon par son endpoint dédié", async () => {
+    const user = userEvent.setup();
+    getFirmInvoiceMock.mockResolvedValue(draft());
+    removeLineMock.mockResolvedValue(draft({ lines: [] }));
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Retirer Ancre 5mm du brouillon" }));
+    await waitFor(() => expect(removeLineMock).toHaveBeenCalledWith(42, 2));
+  });
+
+  it("une ligne obsolète bloque la génération et est signalée", async () => {
+    getFirmInvoiceMock.mockResolvedValue(draft({ lines: (draft().lines as any[]).map((l, i) => ({ ...l, stale: i === 1 })) }));
+    renderPage();
+
+    expect(await screen.findByText(/1 ligne obsolète/)).toBeInTheDocument();
+    expect(within(screen.getByTestId("invoice-line-MATERIAL:456")).getByText("Obsolète")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Générer la facture" })).toBeDisabled();
+  });
+
+  it("génère la facture puis abandonne un autre brouillon après confirmation explicite", async () => {
+    const user = userEvent.setup();
+    getFirmInvoiceMock.mockResolvedValue(draft());
+    generateMock.mockResolvedValue(invoice({ status: "GENERATED", number: "FIRM-2026-050" }));
+    abandonMock.mockResolvedValue(draft({ status: "CANCELLED", allowedActions: [] }));
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Générer la facture" }));
+    await waitFor(() => expect(generateMock).toHaveBeenCalledWith(42));
+
+    await user.click(screen.getByRole("button", { name: "Abandonner le brouillon" }));
+    expect(abandonMock).not.toHaveBeenCalled();
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Abandonner" }));
+    await waitFor(() => expect(abandonMock).toHaveBeenCalledWith(42));
   });
 });

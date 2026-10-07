@@ -2411,10 +2411,41 @@ label, description, occurredAt, actorName, firmName, invoice {id, number, status
 null, amount, currency }] }` — ordre chronologique. `eventType` : `INVOICE_GENERATED`,
 `INVOICE_SENT`, `PAYMENT_RECORDED`, `INVOICE_PAID`, `INVOICE_CANCELLED` (facture GENERATED
 annulée : la ligne redevient libre) ; `ADDED_TO_DRAFT`, `REMOVED_FROM_DRAFT`,
-`MOVED_TO_DRAFT` sont réservés au futur brouillon et jamais émis aujourd'hui.
+`MOVED_TO_DRAFT` sont émis par le brouillon (D-135, §24.3.2).
 
 **Lien direct (frontend) :** `/app/m/billing/firm-invoices/{id}?focusLine={sourceKey}` —
 `GET /api/firm-invoices/{id}` expose `lines[].sourceKey`.
+
+### 24.3.2 Brouillon de facture firme (D-135)
+
+AuthZ `BillingVoter::MANAGE`. Chaque transition a son endpoint ; toutes renvoient le
+détail de la facture (`GET /api/firm-invoices/{id}`, avec `lines[].stale` et
+`lines[].sourceKey`). Un brouillon : `status = DRAFT`, `number = null`,
+`allowedActions = ["editLines", "generate", "abandon"]`. Le calcul n'est verrouillé qu'à la
+génération.
+
+| Méthode & route | Corps | Effet |
+|---|---|---|
+| `POST /api/firm-invoices/drafts` | `{firmId, currency, periodStart, periodEnd, financialLineIds[]}` | crée un brouillon (201) ; `ADDED_TO_DRAFT` par ligne |
+| `POST /api/firm-invoices/{id}/lines` | `{financialLineIds[]}` | ajoute des lignes LIBRES ; idempotent pour une ligne déjà dans ce brouillon |
+| `POST /api/firm-invoices/{id}/lines/move` | `{financialLineIds[]}` | « Déplacer vers… » ce brouillon : retrait de l'origine + ajout, une transaction, `MOVED_TO_DRAFT` (`details.fromInvoiceId`) |
+| `DELETE /api/firm-invoices/{id}/lines/{lineId}` | — | retire une ligne (id de `FirmInvoiceLine`) ; `REMOVED_FROM_DRAFT` |
+| `POST /api/firm-invoices/{id}/generate` | — | `DRAFT → GENERATED` : revalidation sous verrou, numéro, calculs `LOCKED`, `INVOICE_GENERATED` |
+| `POST /api/firm-invoices/{id}/abandon` | `{reason?}` | `DRAFT → CANCELLED`, lignes libérées (`REMOVED_FROM_DRAFT`, `draftAbandoned`) |
+
+**Erreurs :** `422 DOCUMENT_LINE_SELECTION_FAILED` avec `violations[].code` ∈
+`FINANCIAL_LINE_IN_DRAFT` (déjà dans un autre brouillon — `draftId` ; retirer ou déplacer),
+`FINANCIAL_LINE_ALREADY_ASSIGNED` (document émis), `FINANCIAL_LINE_STALE` (calcul changé
+depuis l'ajout), `FINANCIAL_LINE_BENEFICIARY_MISMATCH`, `FINANCIAL_LINE_CURRENCY_MISMATCH`,
+`FINANCIAL_LINE_NOT_ELIGIBLE`, `FINANCIAL_CALCULATION_NOT_APPROVED`, `DRAFT_EMPTY`,
+`DRAFT_LINE_NOT_FOUND` ; `409 INVOICE_STATUS_TRANSITION_INVALID` (le document n'est pas/plus
+un brouillon) ; `422 VALIDATION_FAILED` ; `404` ; `403`.
+
+Worklist : une ligne en brouillon a `billingStatus = BILLABLE`, `reasonCode = IN_DRAFT`,
+`invoiceState = IN_DRAFT`, `canInvoice = false`, `canMoveToDraft = true` ; une version
+périmée restée dans un brouillon donne `reasonCode = DRAFT_LINE_STALE` (`TO_REVIEW`) et
+une anomalie `OPEN_DRAFT` (`invoiceId`, `focusLine`). `summary.invoices.draft` compte les
+brouillons de la période.
 
 #### `POST /api/firm-billing/calculations`
 

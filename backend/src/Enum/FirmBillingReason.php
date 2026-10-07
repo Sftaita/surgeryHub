@@ -17,6 +17,8 @@ enum FirmBillingReason: string
 {
     // ── Facturable / facturé ────────────────────────────────────────────────
     case BILLABLE = 'BILLABLE';
+    /** D-135 — valorisée, placée dans un brouillon pas encore généré : toujours « facturable ». */
+    case IN_DRAFT = 'IN_DRAFT';
     case INVOICED = 'INVOICED';
 
     // ── Non facturable : exclusions métier normales ─────────────────────────
@@ -38,6 +40,8 @@ enum FirmBillingReason: string
     case ENCODING_REOPENED = 'ENCODING_REOPENED';
     /** L'élément est correct mais une autre anomalie de la mission bloque tout le calcul. */
     case CALCULATION_BLOCKED = 'CALCULATION_BLOCKED';
+    /** D-135 — le brouillon contient une version périmée de la ligne (calcul modifié depuis l'ajout). */
+    case DRAFT_LINE_STALE = 'DRAFT_LINE_STALE';
 
     // ── À vérifier : anomalies du moteur (codes identiques au moteur) ───────
     case MISSING_FIRM_INTERVENTION_RATE = 'MISSING_FIRM_INTERVENTION_RATE';
@@ -61,7 +65,7 @@ enum FirmBillingReason: string
     public function status(): FirmBillingStatus
     {
         return match ($this) {
-            self::BILLABLE => FirmBillingStatus::BILLABLE,
+            self::BILLABLE, self::IN_DRAFT => FirmBillingStatus::BILLABLE,
             self::INVOICED => FirmBillingStatus::INVOICED,
             self::REPRESENTATIVE_PRESENT, self::FEE_NOT_APPLICABLE, self::MATERIAL_NOT_BILLABLE, self::ZERO_AMOUNT => FirmBillingStatus::NOT_BILLABLE,
             default => FirmBillingStatus::TO_REVIEW,
@@ -81,6 +85,8 @@ enum FirmBillingReason: string
     {
         return match ($this) {
             self::BILLABLE => 'Facturable',
+            self::IN_DRAFT => 'Dans un brouillon',
+            self::DRAFT_LINE_STALE => 'Ligne obsolète dans un brouillon',
             self::INVOICED => 'Déjà facturé',
             self::REPRESENTATIVE_PRESENT => 'Délégué présent',
             self::FEE_NOT_APPLICABLE => 'Aucun forfait prévu',
@@ -107,6 +113,8 @@ enum FirmBillingReason: string
     {
         return match ($this) {
             self::BILLABLE => 'Ligne valorisée par le calcul financier approuvé, pas encore facturée.',
+            self::IN_DRAFT => 'Ligne placée dans un brouillon de facture, pas encore générée.',
+            self::DRAFT_LINE_STALE => "Le calcul de cette ligne a changé depuis son ajout au brouillon : retirez-la du brouillon, puis ajoutez la ligne à jour.",
             self::INVOICED => 'Cette ligne figure déjà sur une facture.',
             self::REPRESENTATIVE_PRESENT => "Cette prestation n'est pas facturée par SurgicalHub : le délégué de la firme était présent.",
             self::FEE_NOT_APPLICABLE => "La firme ne prévoit aucun forfait pour cette prestation (décision commerciale) : rien n'est facturé.",

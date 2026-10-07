@@ -40,6 +40,15 @@ final class FirmBillingLineEventRecorder
         }
     }
 
+    /** Un événement pour une seule ligne (mouvements de brouillon). */
+    public function recordForLine(FirmInvoiceLine $line, FirmInvoice $invoice, FirmBillingLineEventType $type, ?User $actor, ?array $details = null): void
+    {
+        $event = $this->eventFor($line, $invoice, $type, $actor, $details);
+        if ($event !== null) {
+            $this->em->persist($event);
+        }
+    }
+
     private function eventFor(FirmInvoiceLine $line, FirmInvoice $invoice, FirmBillingLineEventType $type, ?User $actor, ?array $details): ?FirmBillingLineEvent
     {
         $financialLine = $line->getFinancialCalculationLine();

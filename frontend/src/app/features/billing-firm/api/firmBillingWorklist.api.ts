@@ -49,6 +49,8 @@ export interface WorklistRow {
   calculationId: number | null;
   /** Fourni par le backend : la ligne peut être placée sur une facture. */
   canInvoice: boolean;
+  /** D-135 — la ligne est dans un brouillon : elle ne s'ajoute nulle part ailleurs, elle se déplace. */
+  canMoveToDraft: boolean;
 }
 
 export type AnomalyActionCode =
@@ -58,7 +60,8 @@ export type AnomalyActionCode =
   | "OPEN_MISSION"
   | "CALCULATE"
   | "APPROVE"
-  | "RECALCULATE";
+  | "RECALCULATE"
+  | "OPEN_DRAFT";
 
 export interface WorklistAnomaly {
   key: string;
@@ -74,6 +77,9 @@ export interface WorklistAnomaly {
   calculationId: number | null;
   rowKey: string | null;
   calculationLocked: boolean;
+  /** OPEN_DRAFT : brouillon à ouvrir et ligne à y cibler. */
+  invoiceId?: number;
+  focusLine?: string;
 }
 
 export interface Amount {
@@ -89,7 +95,7 @@ export interface WorklistSummary {
   invoiced: { lineCount: number; amounts: Amount[] };
   anomalyCount: number;
   pendingValidationMissionCount: number;
-  invoices: { generated: number; sent: number; paid: number; cancelled: number };
+  invoices: { draft: number; generated: number; sent: number; paid: number; cancelled: number };
 }
 
 export interface FirmBillingWorklist {

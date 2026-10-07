@@ -8,6 +8,7 @@ use App\Entity\FinancialCalculationLine;
 use App\Entity\FirmBillingLineEvent;
 use App\Entity\Firm;
 use App\Entity\FirmInvoice;
+use App\Entity\FirmInvoiceLine;
 use App\Entity\InterventionType;
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
@@ -98,6 +99,7 @@ final class FirmBillingWorklistService
         $firmFilter = array_fill_keys(array_map('intval', $firmIds), true);
 
         [$rows, $anomalies, $missionFirms] = $this->project($from, $to);
+        [$rows, $anomalies] = $this->withStaleDraftMembership($rows, $anomalies);
 
         // Filtre firme (OU) puis type : appliqué aux tuiles ET aux lignes.
         $rows = array_values(array_filter($rows, static function (array $row) use ($firmFilter, $type): bool {
@@ -396,6 +398,13 @@ final class FirmBillingWorklistService
     private function classifyLine(FinancialCalculationLine $line, ?FinancialCalculation $calculation, bool $missionValidated, bool $partiallyInvoiced): array
     {
         $invoiceLine = $line->getFirmInvoiceLine();
+        if ($invoiceLine !== null && $invoiceLine->getInvoice()->getStatus() === InvoiceStatus::DRAFT) {
+            $draft = $invoiceLine->getInvoice();
+            return $this->state(FirmBillingReason::IN_DRAFT, sprintf(
+                'Dans le brouillon %s #%d, pas encore généré. Pour la placer dans un autre brouillon, utilisez « Déplacer vers… ».',
+                $draft->getFirm()?->getName() ?? '', $draft->getId(),
+            ), $line, $line->getTotalAmount(), $draft);
+        }
         if ($invoiceLine !== null) {
             $invoice = $invoiceLine->getInvoice();
             return $this->state(FirmBillingReason::INVOICED, sprintf('Facturé sur la facture %s (%s).', $invoice->getNumber() ?? '#' . $invoice->getId(), $this->invoiceStatusLabel($invoice->getStatus())), $line, $invoiceLine->getTotalAmount(), $invoice);
@@ -503,6 +512,8 @@ final class FirmBillingWorklistService
             'financialLineId' => $line?->getId(),
             'calculationId' => $line?->getFinancialCalculation()?->getId(),
             'canInvoice' => $canInvoice,
+            // D-135 — ligne dans un brouillon : jamais ajoutée ailleurs, seulement déplacée.
+            'canMoveToDraft' => $reason === FirmBillingReason::IN_DRAFT,
         ];
     }
 
@@ -745,6 +756,7 @@ final class FirmBillingWorklistService
         }
 
         return [
+            'draft' => $byStatus[InvoiceStatus::DRAFT->value] ?? 0,
             'generated' => $byStatus[InvoiceStatus::GENERATED->value] ?? 0,
             'sent' => $byStatus[InvoiceStatus::SENT->value] ?? 0,
             'paid' => $byStatus[InvoiceStatus::PAID->value] ?? 0,
@@ -966,6 +978,71 @@ final class FirmBillingWorklistService
             'site' => $mission->getSite()?->getName(),
             'surgeon' => $mission->getSurgeon()?->getDrName(),
         ];
+    }
+
+    /**
+     * D-135 — une ligne sans document via sa ligne financière ACTIVE peut encore figurer dans
+     * un brouillon par une version périmée (calcul recalculé depuis l'ajout). Elle n'est
+     * alors ni libre ni facturable : elle est signalée et une anomalie mène au brouillon.
+     *
+     * @return array{0: array<int, array>, 1: array<int, array>}
+     */
+    private function withStaleDraftMembership(array $rows, array $anomalies): array
+    {
+        $candidates = ['material' => [], 'intervention' => []];
+        foreach ($rows as $row) {
+            if ($row['currentInvoice'] === null && $row['sourceId'] !== null) {
+                $candidates[$row['sourceType'] === self::TYPE_MATERIAL ? 'material' : 'intervention'][] = (int) $row['sourceId'];
+            }
+        }
+        if ($candidates['material'] === [] && $candidates['intervention'] === []) {
+            return [$rows, $anomalies];
+        }
+
+        $qb = $this->em->createQueryBuilder()
+            ->select('fil', 'i', 'f')
+            ->from(FirmInvoiceLine::class, 'fil')
+            ->join('fil.invoice', 'i')
+            ->join('i.firm', 'f')
+            ->where('i.status = :draft')
+            ->setParameter('draft', InvoiceStatus::DRAFT);
+        $or = [];
+        if ($candidates['material'] !== []) {
+            $or[] = 'IDENTITY(fil.materialLine) IN (:materials)';
+            $qb->setParameter('materials', $candidates['material']);
+        }
+        if ($candidates['intervention'] !== []) {
+            $or[] = '(fil.materialLine IS NULL AND IDENTITY(fil.missionIntervention) IN (:interventions))';
+            $qb->setParameter('interventions', $candidates['intervention']);
+        }
+        $qb->andWhere(implode(' OR ', $or));
+
+        $bySource = [];
+        foreach ($qb->getQuery()->getResult() as $fil) {
+            $key = $fil->getMaterialLine() !== null ? self::TYPE_MATERIAL . ':' . $fil->getMaterialLine()->getId() : self::TYPE_INTERVENTION . ':' . $fil->getMissionIntervention()?->getId();
+            $bySource[$key] = $fil->getInvoice();
+        }
+        if ($bySource === []) {
+            return [$rows, $anomalies];
+        }
+
+        foreach ($rows as &$row) {
+            $draft = $row['currentInvoice'] === null && $row['sourceId'] !== null ? ($bySource[$row['sourceType'] . ':' . $row['sourceId']] ?? null) : null;
+            if ($draft === null) {
+                continue;
+            }
+            // montant et ligne financière ACTIVE conservés ; seuls l'état et le motif changent.
+            $row = array_merge($row, array_diff_key($this->state(FirmBillingReason::DRAFT_LINE_STALE, null, null, null, $draft), array_flip(['amount', 'currency', 'financialLineId', 'calculationId'])));
+            $anomalies[] = $this->workflowAnomaly(
+                FirmBillingReason::DRAFT_LINE_STALE, $row['mission'], null, $row['firm'], ['type' => $row['sourceType'], 'label' => $row['label']],
+                'OPEN_DRAFT', 'Ouvrir le brouillon',
+                sprintf('« %s » figure dans le brouillon %s #%d avec un ancien calcul : retirez-la du brouillon puis ajoutez la ligne à jour.', $row['label'], $draft->getFirm()?->getName() ?? '', $draft->getId()),
+                $row['key'],
+            ) + ['invoiceId' => $draft->getId(), 'focusLine' => $row['sourceType'] . ':' . $row['sourceId']];
+        }
+        unset($row);
+
+        return [$rows, $anomalies];
     }
 
     private function invoiceState(?FirmInvoice $invoice): string

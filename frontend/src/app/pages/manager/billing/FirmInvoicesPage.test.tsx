@@ -8,11 +8,15 @@ import type { FirmBillingWorklist, WorklistAnomaly, WorklistRow } from "../../..
 
 const getFirmInvoicesMock = vi.fn();
 const markFirmInvoicePaidMock = vi.fn();
-const createInvoiceMock = vi.fn();
+const createDraftMock = vi.fn();
+const addToDraftMock = vi.fn();
+const moveToDraftMock = vi.fn();
 vi.mock("../../../features/billing-firm/api/firmInvoice.api", () => ({
   getFirmInvoices: (...a: unknown[]) => getFirmInvoicesMock(...a),
   markFirmInvoicePaid: (...a: unknown[]) => markFirmInvoicePaidMock(...a),
-  createFirmInvoiceFromCalculations: (...a: unknown[]) => createInvoiceMock(...a),
+  createFirmInvoiceDraft: (...a: unknown[]) => createDraftMock(...a),
+  addLinesToFirmInvoiceDraft: (...a: unknown[]) => addToDraftMock(...a),
+  moveLinesToFirmInvoiceDraft: (...a: unknown[]) => moveToDraftMock(...a),
   getFirmInvoicePdfUrl: (id: number) => `/api/firm-invoices/${id}/pdf`,
 }));
 
@@ -56,7 +60,7 @@ function row(key: string, extra: Partial<WorklistRow> = {}): WorklistRow {
     reasonDetail: "Ligne valorisée par le calcul financier approuvé, pas encore facturée.",
     amount: "350.00", currency: "EUR", currentInvoice: null, invoiceState: "FREE", invoiceStateLabel: "Libre",
     sourceKey: key.startsWith("MATERIAL") ? `MATERIAL:${key.split(":")[1]}` : `INTERVENTION:${key.split(":")[1]}`, hasHistory: false,
-    financialLineId: 900, calculationId: 7, canInvoice: true,
+    financialLineId: 900, calculationId: 7, canInvoice: true, canMoveToDraft: false,
     ...extra,
   };
 }
@@ -96,7 +100,7 @@ function worklist(overrides: Partial<FirmBillingWorklist> = {}): FirmBillingWork
     summary: {
       lineCount: 46, billable: { lineCount: 31, amounts: [{ currency: "EUR", amount: "842.00" }] }, notBillable: { lineCount: 9 },
       toReview: { lineCount: 4 }, invoiced: { lineCount: 2, amounts: [{ currency: "EUR", amount: "80.00" }] }, anomalyCount: 6,
-      pendingValidationMissionCount: 0, invoices: { generated: 1, sent: 2, paid: 3, cancelled: 0 },
+      pendingValidationMissionCount: 0, invoices: { draft: 2, generated: 1, sent: 2, paid: 3, cancelled: 0 },
     },
     rows: ROWS,
     anomalies: [
@@ -129,7 +133,9 @@ beforeEach(() => {
   vi.setSystemTime(new Date(2026, 8, 15, 10, 0, 0));
   getWorklistMock.mockReset().mockResolvedValue(worklist());
   getFirmInvoicesMock.mockReset().mockResolvedValue([]);
-  createInvoiceMock.mockReset();
+  createDraftMock.mockReset();
+  addToDraftMock.mockReset();
+  moveToDraftMock.mockReset();
   markFirmInvoicePaidMock.mockReset();
   exportMock.mockReset().mockResolvedValue({ blob: new Blob(["x"]), filename: "facturation-firmes-2026-09.xlsx" });
   runCalculationsMock.mockReset();
@@ -238,24 +244,74 @@ describe("FirmInvoicesPage — worklist (D-133)", () => {
     rerender(<></>);
   });
 
-  it("génère une facture seulement pour des lignes facturables d'une seule firme, avec leurs identifiants financiers", async () => {
+  it("crée un brouillon avec exactement les lignes libres sélectionnées d'une firme (aucune génération directe)", async () => {
     const user = userEvent.setup();
-    createInvoiceMock.mockResolvedValue({ id: 77, number: "FIRM-2026-077", firm: ARTHREX, totalAmount: "400.00", currency: "EUR", lineCount: 2 });
+    createDraftMock.mockResolvedValue({ id: 124, number: null, status: "DRAFT", firm: ARTHREX, totalAmount: "400.00", currency: "EUR", lines: [{}, {}] });
     renderPage();
     await screen.findByText("Arthrodèse 2 niveaux");
 
     await user.click(within(tableRow("MISSION_INTERVENTION:3")).getByRole("checkbox"));
-    expect(screen.getByRole("button", { name: "Générer la facture" })).toBeDisabled(); // non facturable
+    expect(screen.getByRole("button", { name: "Créer un brouillon" })).toBeDisabled(); // non facturable
     await user.click(within(tableRow("MISSION_INTERVENTION:3")).getByRole("checkbox"));
 
     await user.click(within(tableRow("MISSION_INTERVENTION:1")).getByRole("checkbox"));
     await user.click(within(tableRow("MATERIAL_LINE:2")).getByRole("checkbox"));
-    await user.click(screen.getByRole("button", { name: "Générer la facture Arthrex" }));
+    expect(screen.queryByRole("button", { name: /Générer la facture/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Créer un brouillon Arthrex" }));
 
-    await waitFor(() => expect(createInvoiceMock).toHaveBeenCalledWith({
-      firmId: 10, currency: "EUR", periodStart: "2026-09-01", periodEnd: "2026-09-30", selectedFinancialCalculationLineIds: [901, 902],
+    await waitFor(() => expect(createDraftMock).toHaveBeenCalledWith({
+      firmId: 10, currency: "EUR", periodStart: "2026-09-01", periodEnd: "2026-09-30", financialLineIds: [901, 902],
     }));
-    expect(await screen.findByText(/Facture FIRM-2026-077 générée pour Arthrex/)).toBeInTheDocument();
+    expect(await screen.findByText(/Brouillon Arthrex #124 — 400,00 €/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ouvrir le brouillon" })).toBeInTheDocument();
+  });
+
+  it("ajoute des lignes libres à un brouillon existant de la même firme", async () => {
+    const user = userEvent.setup();
+    getFirmInvoicesMock.mockImplementation((params: { status?: string }) => Promise.resolve(params?.status === "DRAFT"
+      ? [{ id: 124, number: null, status: "DRAFT", firm: ARTHREX, currency: "EUR", totalAmount: "80.00", lineCount: 1 }]
+      : []));
+    addToDraftMock.mockResolvedValue({ id: 124, number: null, status: "DRAFT", firm: ARTHREX, totalAmount: "430.00", currency: "EUR", lines: [{}, {}] });
+    renderPage();
+    await screen.findByText("Arthrodèse 2 niveaux");
+
+    await user.click(within(tableRow("MISSION_INTERVENTION:1")).getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: "Ajouter au brouillon…" }));
+    expect(getFirmInvoicesMock).toHaveBeenCalledWith({ firmId: 10, status: "DRAFT", documentType: "STANDARD" });
+    await user.click(await screen.findByRole("menuitem", { name: /Brouillon Arthrex #124/ }));
+
+    await waitFor(() => expect(addToDraftMock).toHaveBeenCalledWith(124, [901]));
+  });
+
+  it("une ligne déjà dans un brouillon ne s'ajoute pas ailleurs : seul « Déplacer vers… » est proposé, hors brouillon courant", async () => {
+    const user = userEvent.setup();
+    const inDraft = row("MATERIAL_LINE:7", {
+      sourceType: "MATERIAL", label: "Vis", financialLineId: 907, canInvoice: false, canMoveToDraft: true,
+      reasonCode: "IN_DRAFT", reasonLabel: "Dans un brouillon", invoiceState: "IN_DRAFT", invoiceStateLabel: "Dans un brouillon",
+      currentInvoice: { id: 124, number: null, status: "DRAFT", statusLabel: "brouillon", firmName: "Arthrex", editable: true },
+    });
+    getWorklistMock.mockResolvedValue(worklist({ rows: [inDraft, ROWS[0]] }));
+    getFirmInvoicesMock.mockImplementation((params: { status?: string }) => Promise.resolve(params?.status === "DRAFT" ? [
+      { id: 124, number: null, status: "DRAFT", firm: ARTHREX, currency: "EUR", totalAmount: "30.00", lineCount: 1 },
+      { id: 128, number: null, status: "DRAFT", firm: ARTHREX, currency: "EUR", totalAmount: "0.00", lineCount: 0 },
+    ] : []));
+    moveToDraftMock.mockResolvedValue({ id: 128, number: null, status: "DRAFT", firm: ARTHREX, totalAmount: "30.00", currency: "EUR", lines: [{}] });
+    renderPage();
+
+    await user.click(within(await screen.findByTestId("row-MATERIAL_LINE:7")).getByRole("checkbox"));
+    expect(screen.queryByRole("button", { name: /Créer un brouillon/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Ajouter au brouillon…" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Déplacer vers…" }));
+
+    expect(screen.queryByRole("menuitem", { name: /#124/ })).not.toBeInTheDocument(); // brouillon courant exclu
+    await user.click(await screen.findByRole("menuitem", { name: /Brouillon Arthrex #128/ }));
+    await waitFor(() => expect(moveToDraftMock).toHaveBeenCalledWith(128, [907]));
+
+    // Mélange libre + brouillon : aucune action ambiguë.
+    await user.click(within(screen.getByTestId("row-MATERIAL_LINE:7")).getByRole("checkbox"));
+    await user.click(within(screen.getByTestId("row-MISSION_INTERVENTION:1")).getByRole("checkbox"));
+    expect(screen.getByRole("button", { name: "Créer un brouillon" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Déplacer vers…" })).not.toBeInTheDocument();
   });
 
   it("À corriger : anomalies traduites, regroupées par mission, action « Configurer le tarif » et relance groupée des éléments corrigés", async () => {

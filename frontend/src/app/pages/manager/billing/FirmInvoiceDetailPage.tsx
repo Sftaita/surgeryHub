@@ -5,6 +5,10 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   Paper,
   Stack,
@@ -19,6 +23,7 @@ import {
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import SendIcon from "@mui/icons-material/Send";
+import RemoveCircleOutlineIcon from "@mui/icons-material/RemoveCircleOutline";
 import { Link as RouterLink, useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -26,6 +31,9 @@ import {
   sendFirmInvoice,
   markFirmInvoicePaid,
   getFirmInvoicePdfUrl,
+  abandonFirmInvoiceDraft,
+  generateFirmInvoiceDraft,
+  removeFirmInvoiceDraftLine,
   type InvoiceStatus,
 } from "../../../features/billing-firm/api/firmInvoice.api";
 import { useToast } from "../../../ui/toast/useToast";
@@ -111,12 +119,40 @@ export default function FirmInvoiceDetailPage() {
     onError: (err) => toast.error(extractError(err)),
   });
 
+  // ── D-135 — brouillon : retrait de ligne, génération, abandon (endpoints dédiés) ──
+  const [confirmAbandon, setConfirmAbandon] = React.useState(false);
+  async function afterDraftChange() {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["firm-invoice", Number(id)] }),
+      qc.invalidateQueries({ queryKey: ["firm-invoices"] }),
+      qc.invalidateQueries({ queryKey: ["firm-billing-worklist"] }),
+    ]);
+  }
+  const removeLine = useMutation({
+    mutationFn: (invoiceLineId: number) => removeFirmInvoiceDraftLine(Number(id), invoiceLineId),
+    onSuccess: async () => { toast.success("Ligne retirée du brouillon — elle est de nouveau libre."); await afterDraftChange(); },
+    onError: (err) => toast.error(extractError(err)),
+  });
+  const generateDraft = useMutation({
+    mutationFn: () => generateFirmInvoiceDraft(Number(id)),
+    onSuccess: async (inv) => { toast.success(`Facture ${inv.number} générée.`); await afterDraftChange(); },
+    onError: (err) => toast.error(extractError(err)),
+  });
+  const abandonDraft = useMutation({
+    mutationFn: () => abandonFirmInvoiceDraft(Number(id)),
+    onSuccess: async () => { setConfirmAbandon(false); toast.success("Brouillon abandonné — ses lignes sont de nouveau libres."); await afterDraftChange(); },
+    onError: (err) => toast.error(extractError(err)),
+  });
+
   if (invoiceQuery.isLoading) return <CircularProgress />;
   if (!invoiceQuery.data) return <Typography>Facture introuvable</Typography>;
 
   const inv = invoiceQuery.data;
   const total = Number(inv.totalAmount);
   const allowed = inv.allowedActions ?? [];
+  const isDraft = inv.status === "DRAFT";
+  const staleCount = (inv.lines ?? []).filter((l) => l.stale).length;
+  const draftBusy = removeLine.isPending || generateDraft.isPending || abandonDraft.isPending;
 
   return (
     <Stack spacing={3}>
@@ -125,7 +161,7 @@ export default function FirmInvoiceDetailPage() {
           Retour
         </Button>
         <Typography variant="h6" fontWeight={700} sx={{ flex: 1 }}>
-          Facture {inv.number ?? `F-${inv.id}`}
+          {isDraft ? `Brouillon ${inv.firm.name} #${inv.id}` : `Facture ${inv.number ?? `F-${inv.id}`}`}
         </Typography>
         <Chip label={statusLabel(inv.status)} color={STATUS_COLORS[inv.status]} />
       </Stack>
@@ -166,6 +202,44 @@ export default function FirmInvoiceDetailPage() {
         </Stack>
       </Paper>
 
+      {isDraft && (
+        <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, borderColor: "secondary.main" }} role="region" aria-label="Générateur de facture">
+          <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Box sx={{ flex: 1, minWidth: 260 }}>
+              <Typography fontWeight={700}>Brouillon — rien n'est encore émis ni numéroté.</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Ajoutez des lignes depuis Facturation firmes (sélection → « Ajouter au brouillon »), retirez-en ici, puis générez : le numéro est attribué et les calculs sont verrouillés à ce moment-là.
+              </Typography>
+            </Box>
+            <Button component={RouterLink} to="/app/m/billing/firm-invoices" variant="outlined">Ajouter des lignes</Button>
+            {allowed.includes("generate") && (
+              <Button variant="contained" disableElevation disabled={draftBusy || staleCount > 0 || (inv.lines ?? []).length === 0} onClick={() => generateDraft.mutate()}>
+                {generateDraft.isPending ? <CircularProgress size={16} /> : "Générer la facture"}
+              </Button>
+            )}
+            {allowed.includes("abandon") && (
+              <Button color="error" disabled={draftBusy} onClick={() => setConfirmAbandon(true)}>Abandonner le brouillon</Button>
+            )}
+          </Stack>
+          {staleCount > 0 && (
+            <Alert severity="warning" sx={{ mt: 1.5 }}>
+              {staleCount} ligne{staleCount > 1 ? "s" : ""} obsolète{staleCount > 1 ? "s" : ""} : le calcul a changé depuis l'ajout. Retirez-la{staleCount > 1 ? "s" : ""}, puis ajoutez la version à jour depuis Facturation firmes.
+            </Alert>
+          )}
+        </Paper>
+      )}
+
+      <Dialog open={confirmAbandon} onClose={() => setConfirmAbandon(false)}>
+        <DialogTitle>Abandonner ce brouillon ?</DialogTitle>
+        <DialogContent>
+          <Typography>Ses {(inv.lines ?? []).length} ligne(s) redeviennent libres. Leur passage par ce brouillon reste visible dans leur historique.</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmAbandon(false)}>Garder le brouillon</Button>
+          <Button color="error" variant="contained" disableElevation disabled={abandonDraft.isPending} onClick={() => abandonDraft.mutate()}>Abandonner</Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Lines */}
       {focusLine && invoiceQuery.data && !focusedLineFound && (
         <Alert severity="info">La ligne recherchée ne figure plus sur cette facture — consultez son historique depuis la facturation firmes.</Alert>
@@ -173,9 +247,11 @@ export default function FirmInvoiceDetailPage() {
 
       <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
         <Box sx={{ px: 2, py: 1.5, bgcolor: "grey.50" }}>
-          <Typography variant="subtitle2" fontWeight={700}>Lignes facturées ({inv.lines?.length ?? 0})</Typography>
+          <Typography variant="subtitle2" fontWeight={700}>{isDraft ? "Lignes du brouillon" : "Lignes facturées"} ({inv.lines?.length ?? 0})</Typography>
           <Typography variant="caption" color="text.secondary">
-            Snapshot figé à la génération : quantités, prix et montants ne changent plus, même si un tarif est modifié ensuite.
+            {isDraft
+              ? "Montants issus des calculs approuvés ; ils seront figés à la génération."
+              : "Snapshot figé à la génération : quantités, prix et montants ne changent plus, même si un tarif est modifié ensuite."}
           </Typography>
         </Box>
         <Table size="small">
@@ -189,6 +265,7 @@ export default function FirmInvoiceDetailPage() {
               <TableCell align="right">P.U.</TableCell>
               <TableCell align="right">Total</TableCell>
               <TableCell>Source</TableCell>
+              {isDraft && <TableCell padding="checkbox" />}
             </TableRow>
           </TableHead>
           <TableBody>
@@ -208,6 +285,7 @@ export default function FirmInvoiceDetailPage() {
                 <TableCell>
                   {formatDate(line.missionDate)}
                   {line.sourceKey === focusLine && <Chip size="small" color="warning" label="Ligne recherchée" sx={{ ml: 1 }} />}
+                  {line.stale && <Chip size="small" color="error" variant="outlined" label="Obsolète" sx={{ ml: 1 }} />}
                 </TableCell>
                 <TableCell>{[line.siteName, line.surgeonName].filter(Boolean).join(" · ") || "—"}</TableCell>
                 <TableCell>
@@ -237,6 +315,14 @@ export default function FirmInvoiceDetailPage() {
                     </Typography>
                   )}
                 </TableCell>
+                {isDraft && (
+                  <TableCell padding="checkbox">
+                    <Button size="small" color="error" startIcon={<RemoveCircleOutlineIcon />} disabled={draftBusy} onClick={() => removeLine.mutate(line.id)}
+                      aria-label={`Retirer ${line.materialLabel ?? line.interventionLabel ?? "la ligne"} du brouillon`}>
+                      Retirer
+                    </Button>
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </TableBody>
@@ -244,16 +330,16 @@ export default function FirmInvoiceDetailPage() {
       </Paper>
 
       {/* Solde, paiements, remboursements, notes de crédit/débit (EPIC Exécution & Valorisation, Lots 4-6) */}
-      <DocumentFinancePanel
+      {!isDraft && <DocumentFinancePanel
         resource="firm-invoices"
         document={inv}
         lines={(inv.lines ?? []).map((l) => ({ id: l.id, descriptionSnapshot: l.descriptionSnapshot, totalAmount: l.totalAmount }))}
         correctionsBasePath="/app/m/billing/firm-invoice-corrections"
         onChanged={() => qc.invalidateQueries({ queryKey: ["firm-invoice", Number(id)] })}
-      />
+      />}
 
       {/* Actions */}
-      <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+      {!isDraft && <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
         <Stack spacing={2}>
           <Typography variant="subtitle2" fontWeight={700}>Actions</Typography>
 
@@ -312,7 +398,7 @@ export default function FirmInvoiceDetailPage() {
             </>
           )}
         </Stack>
-      </Paper>
+      </Paper>}
     </Stack>
   );
 }

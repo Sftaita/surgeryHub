@@ -11170,8 +11170,8 @@ Ni exclusion métier (aucune `FirmServiceOffering.feeApplicable = false`, aucun 
 
 ## D-134 — Facturation firmes : état documentaire courant, lien direct vers la ligne, historique append-only par ligne (2026-10-07)
 
-**Statut : fait sur `feat/firm-billing-worklist-redesign` (non fusionné, non déployé), SAUF le
-brouillon, en attente de décision (voir « Brouillon : constat et proposition »).**
+**Statut : fait sur `feat/firm-billing-worklist-redesign` (non fusionné, non déployé). Le
+brouillon, d'abord laissé en attente de décision, est implémenté par D-135.**
 
 ### Constat d'audit — il n'existe aucun brouillon de facture firme
 
@@ -11257,6 +11257,78 @@ modèle doit évoluer ainsi (proposition) :
 Questions ouvertes : verrouiller le calcul à l'ajout ou à la génération ; un brouillon
 par firme et par période, ou plusieurs en parallèle ; possibilité d'abandonner un
 brouillon.
+
+## D-135 — Vrai brouillon de facture firme (2026-10-07)
+
+**Statut : fait sur `feat/firm-billing-worklist-redesign` (non fusionné, non déployé).**
+Fait suite à D-134 (« Brouillon : constat et proposition »). Décisions validées par le
+produit le 2026-10-07 :
+
+1. **Verrouillage du calcul à la GÉNÉRATION**, jamais à l'ajout au brouillon : un brouillon
+   abandonné ne fige aucun calcul. Conséquence assumée : une ligne de brouillon devient
+   **obsolète** si son calcul est recalculé/annulé entre-temps (`lines[].stale`, motif
+   worklist `DRAFT_LINE_STALE` + anomalie « Ouvrir le brouillon ») ; la génération la
+   refuse (`FINANCIAL_LINE_STALE`) tant qu'elle n'est pas retirée et remplacée.
+2. **Plusieurs brouillons en parallèle**, y compris pour une même firme et une même période.
+3. **Un brouillon peut être abandonné** : ses lignes sont libérées (événement
+   `REMOVED_FROM_DRAFT`, `details.draftAbandoned`) ; le document reste `CANCELLED`, sans
+   numéro (traçabilité de l'identifiant référencé par le journal).
+
+### Modèle
+
+- Cycle `DRAFT → GENERATED → SENT → PAID` (+ `DRAFT → CANCELLED` par abandon). Aucune
+  migration : `number` et `generatedAt` étaient déjà nullables. Le numéro est attribué à la
+  génération (`generateNumber`, aucun trou dû aux brouillons abandonnés).
+- Les lignes d'un brouillon sont des `FirmInvoiceLine` ordinaires (mêmes snapshots que la
+  génération) : la contrainte UNIQUE `firm_invoice_line.financial_calculation_line_id`
+  garantit en base qu'une ligne n'est **active que dans un seul document**, brouillon
+  compris. `FirmInvoiceService::currentDocumentFor()` vérifie aussi la **source métier**
+  (une version périmée de la même intervention/du même matériel restée dans un brouillon).
+- Ajouter une ligne déjà présente dans un AUTRE brouillon est refusé
+  (`FINANCIAL_LINE_IN_DRAFT`, avec `draftId`) — jamais d'ajout silencieux : il faut la
+  retirer ou la **déplacer** (`moveLinesToDraft` : retrait + ajout dans une transaction, UN
+  événement `MOVED_TO_DRAFT` avec `details.fromInvoiceId`). Une ligne d'un document émis
+  n'est ni ajoutable, ni retirable, ni déplaçable (`FINANCIAL_LINE_ALREADY_ASSIGNED` /
+  409 `INVOICE_STATUS_TRANSITION_INVALID`) ; la correction reste celle des notes de
+  crédit/débit (D-076).
+- Concurrence : verrou pessimiste sur chaque brouillon touché (id croissant) relu sous
+  verrou (garde `DRAFT`), puis verrous des calculs (inchangé), contrainte UNIQUE en filet.
+- Worklist : une ligne en brouillon reste `BILLABLE` (motif `IN_DRAFT`, « Dans un
+  brouillon ») — un brouillon n'est pas « facturé » ; `canInvoice = false`,
+  `canMoveToDraft = true`. Les compteurs statistiques « calcul approuvé sans document » /
+  « partiellement documenté » ignorent désormais les lignes de brouillon ; les autres
+  agrégats ne lisaient déjà que les documents SENT/PAID.
+- `FinancialCalculationLine::releaseFirmInvoiceLine()` resynchronise uniquement le côté
+  inverse en mémoire au retrait d'une ligne de brouillon (aucune donnée financière
+  modifiée).
+
+### Endpoints (BillingVoter::MANAGE, une transition = un endpoint)
+
+`POST /api/firm-invoices/drafts`, `POST /api/firm-invoices/{id}/lines`,
+`POST /api/firm-invoices/{id}/lines/move`, `DELETE /api/firm-invoices/{id}/lines/{lineId}`,
+`POST /api/firm-invoices/{id}/generate`, `POST /api/firm-invoices/{id}/abandon`. Détail
+dans `api.md` §24.3.2. `allowedActions` d'un brouillon : `["editLines", "generate",
+"abandon"]`. `POST /from-financial-calculations` (génération directe) est conservé pour
+compatibilité API mais n'est plus proposé par l'interface : tout passe par un brouillon.
+
+### Interface
+
+Worklist : sélection → « Créer un brouillon », « Ajouter au brouillon… » (brouillons de la
+même firme et devise) ou, pour des lignes déjà en brouillon, « Déplacer vers… » (brouillon
+courant exclu). Le clic sur « Brouillon · Arthrex · #124 » ouvre le **générateur**
+(`/app/m/billing/firm-invoices/124?focusLine=…`) : retrait de lignes, lignes obsolètes,
+« Générer la facture », « Abandonner le brouillon » (confirmation dans une fenêtre, jamais
+une boîte navigateur). Une facture émise s'ouvre en lecture seule avec le même ciblage.
+
+### Limites
+
+- L'ajout de lignes se fait depuis la worklist (pas de recherche de lignes dans le
+  générateur lui-même).
+- Pas d'événement `AuditEvent` dédié à la création d'un brouillon : le journal par ligne
+  (D-134) trace chaque mouvement ; la génération et l'abandon réutilisent
+  `FIRM_INVOICE_CREATED_FROM_CALCULATION` (`fromDraft`) et `FIRM_INVOICE_CANCELLED`
+  (`draftAbandoned`).
+- Un brouillon abandonné reste listé (statut « Annulée », sans numéro).
 
 ---
 

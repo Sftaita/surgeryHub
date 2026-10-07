@@ -40,7 +40,7 @@ export interface FirmInvoice {
   lineCount?: number;
   /** D-123 — actions permises par le backend (GENERATED → send/cancel, SENT → markPaid) :
    *  un bouton n'est affiché que s'il figure ici. */
-  allowedActions?: ("send" | "cancel" | "markPaid")[];
+  allowedActions?: ("send" | "cancel" | "markPaid" | "editLines" | "generate" | "abandon")[];
 }
 
 export interface FirmInvoiceLine {
@@ -51,6 +51,8 @@ export interface FirmInvoiceLine {
   materialLineId: number | null;
   /** D-134 — « INTERVENTION:12 » / « MATERIAL:34 », clé partagée avec la worklist (deep-link ?focusLine=). */
   sourceKey?: string | null;
+  /** D-135 — ligne de brouillon dont le calcul a changé depuis l'ajout (génération refusée). */
+  stale?: boolean;
   lineType: "INTERVENTION_FEE" | "MATERIAL_FEE";
   descriptionSnapshot: string;
   firmNameSnapshot: string;
@@ -179,4 +181,42 @@ export async function markFirmInvoicePaid(id: number): Promise<FirmInvoice> {
 
 export function getFirmInvoicePdfUrl(id: number): string {
   return `${import.meta.env.VITE_API_BASE_URL}/api/firm-invoices/${id}/pdf`;
+}
+
+// ── D-135 — brouillon de facture (endpoints de transition dédiés) ──────────
+
+export async function createFirmInvoiceDraft(body: {
+  firmId: number;
+  currency: string;
+  periodStart: string;
+  periodEnd: string;
+  financialLineIds: number[];
+}): Promise<FirmInvoice> {
+  const res = await apiClient.post("/api/firm-invoices/drafts", body);
+  return res.data;
+}
+
+export async function addLinesToFirmInvoiceDraft(draftId: number, financialLineIds: number[]): Promise<FirmInvoice> {
+  const res = await apiClient.post(`/api/firm-invoices/${draftId}/lines`, { financialLineIds });
+  return res.data;
+}
+
+export async function moveLinesToFirmInvoiceDraft(draftId: number, financialLineIds: number[]): Promise<FirmInvoice> {
+  const res = await apiClient.post(`/api/firm-invoices/${draftId}/lines/move`, { financialLineIds });
+  return res.data;
+}
+
+export async function removeFirmInvoiceDraftLine(draftId: number, invoiceLineId: number): Promise<FirmInvoice> {
+  const res = await apiClient.delete(`/api/firm-invoices/${draftId}/lines/${invoiceLineId}`);
+  return res.data;
+}
+
+export async function generateFirmInvoiceDraft(draftId: number): Promise<FirmInvoice> {
+  const res = await apiClient.post(`/api/firm-invoices/${draftId}/generate`);
+  return res.data;
+}
+
+export async function abandonFirmInvoiceDraft(draftId: number, reason?: string): Promise<FirmInvoice> {
+  const res = await apiClient.post(`/api/firm-invoices/${draftId}/abandon`, { reason });
+  return res.data;
 }

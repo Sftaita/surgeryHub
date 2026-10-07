@@ -9,6 +9,7 @@ import {
   Chip,
   CircularProgress,
   IconButton,
+  Menu,
   MenuItem,
   Paper,
   Select,
@@ -40,10 +41,12 @@ import { apiClient } from "../../../api/apiClient";
 import { PageHeader } from "../../../ui/PageHeader";
 import { useToast } from "../../../ui/toast/useToast";
 import {
-  createFirmInvoiceFromCalculations,
+  addLinesToFirmInvoiceDraft,
+  createFirmInvoiceDraft,
   getFirmInvoicePdfUrl,
   getFirmInvoices,
   markFirmInvoicePaid,
+  moveLinesToFirmInvoiceDraft,
   type FirmInvoice,
   type InvoiceStatus,
 } from "../../../features/billing-firm/api/firmInvoice.api";
@@ -146,7 +149,7 @@ export default function FirmInvoicesPage() {
   const [type, setType] = React.useState<SourceType | "">("");
   const [status, setStatus] = React.useState<BillingStatus | "">("");
   const [tab, setTab] = React.useState<TabKey>("prestations");
-  const [lastCreated, setLastCreated] = React.useState<FirmInvoice | null>(null);
+  const [lastDraft, setLastDraft] = React.useState<FirmInvoice | null>(null);
 
   const { from, to } = monthBounds(year, month);
   const periodLabel = new Date(year, month - 1, 1).toLocaleDateString("fr-BE", { month: "long", year: "numeric" });
@@ -257,13 +260,13 @@ export default function FirmInvoicesPage() {
         </Alert>
       )}
 
-      {lastCreated && (
+      {lastDraft && (
         <Alert
           severity="success"
-          onClose={() => setLastCreated(null)}
-          action={<Button color="inherit" size="small" onClick={() => navigate(`/app/m/billing/firm-invoices/${lastCreated.id}`)}>Ouvrir la facture</Button>}
+          onClose={() => setLastDraft(null)}
+          action={<Button color="inherit" size="small" onClick={() => navigate(`/app/m/billing/firm-invoices/${lastDraft.id}`)}>Ouvrir le brouillon</Button>}
         >
-          Facture {lastCreated.number} générée pour {lastCreated.firm.name} — {formatMoney(lastCreated.totalAmount, lastCreated.currency)}.
+          Brouillon {lastDraft.firm.name} #{lastDraft.id} — {formatMoney(lastDraft.totalAmount, lastDraft.currency)}. Générez la facture depuis le brouillon.
         </Alert>
       )}
 
@@ -283,9 +286,9 @@ export default function FirmInvoicesPage() {
           onStatus={setStatus}
           period={{ from, to }}
           firmIds={firmIds}
-          onInvoiceCreated={async (invoice) => {
-            toast.success(`Facture ${invoice.number} générée — ${invoice.lineCount ?? invoice.lines?.length ?? 0} ligne(s), ${formatMoney(invoice.totalAmount, invoice.currency)}.`);
-            setLastCreated(invoice);
+          onDraftChanged={async (draft) => {
+            toast.success(`Brouillon ${draft.firm.name} #${draft.id} — ${draft.lines?.length ?? draft.lineCount ?? 0} ligne(s), ${formatMoney(draft.totalAmount, draft.currency)}.`);
+            setLastDraft(draft);
             await refreshAll();
           }}
           onError={(msg) => toast.error(msg)}
@@ -368,13 +371,13 @@ function BillingBadge({ row }: { row: WorklistRow }) {
   );
 }
 
-function PrestationsView({ worklist, status, onStatus, period, firmIds, onInvoiceCreated, onError }: {
+function PrestationsView({ worklist, status, onStatus, period, firmIds, onDraftChanged, onError }: {
   worklist: FirmBillingWorklist;
   status: BillingStatus | "";
   onStatus: (s: BillingStatus | "") => void;
   period: { from: string; to: string };
   firmIds: number[];
-  onInvoiceCreated: (invoice: FirmInvoice) => Promise<void>;
+  onDraftChanged: (draft: FirmInvoice) => Promise<void>;
   onError: (message: string) => void;
 }) {
   const rows = worklist.rows;
@@ -415,26 +418,37 @@ function PrestationsView({ worklist, status, onStatus, period, firmIds, onInvoic
     }
   }
 
-  // Génération : uniquement des lignes que le backend déclare facturables (canInvoice),
-  // d'une seule firme et d'une seule devise — une facture = une firme (D-123). Le serveur
-  // revalide tout sous verrou.
-  const invoiceFirm = selectedRows[0]?.firm ?? null;
-  const invoiceCurrency = selectedRows[0]?.currency ?? null;
-  const invoiceable = selectedRows.length > 0
-    && selectedRows.every((r) => r.canInvoice && r.financialLineId !== null && r.firm?.id === invoiceFirm?.id && r.currency === invoiceCurrency);
-  const invoiceHint = selectedRows.length === 0 ? "" : !selectedRows.every((r) => r.canInvoice)
-    ? "Seules des lignes « Facturable » peuvent être placées sur une facture."
-    : "Une facture ne concerne qu'une seule firme (et une seule devise).";
+  // D-135 — tout passe par un brouillon. Ajout : uniquement des lignes que le backend
+  // déclare libres (canInvoice) ; déplacement : uniquement des lignes déjà dans un
+  // brouillon (canMoveToDraft). Une seule firme et une seule devise par brouillon. Le
+  // serveur revalide tout sous verrou.
+  const firm = selectedRows[0]?.firm ?? null;
+  const currency = selectedRows[0]?.currency ?? null;
+  const sameDoc = selectedRows.length > 0 && selectedRows.every((r) => r.firm?.id === firm?.id && r.currency === currency && r.financialLineId !== null);
+  const allFree = sameDoc && selectedRows.every((r) => r.canInvoice);
+  const allInDraft = sameDoc && selectedRows.every((r) => r.canMoveToDraft);
+  const draftHint = selectedRows.length === 0 ? "" : !sameDoc
+    ? "Un brouillon ne concerne qu'une seule firme (et une seule devise)."
+    : "Sélectionnez des lignes « Libre » et facturables (ou uniquement des lignes déjà en brouillon pour les déplacer).";
+  const lineIds = selectedRows.map((r) => r.financialLineId!);
+  const currentDraftIds = new Set(selectedRows.map((r) => r.currentInvoice?.id).filter(Boolean));
 
-  const generate = useMutation({
-    mutationFn: () => createFirmInvoiceFromCalculations({
-      firmId: invoiceFirm!.id,
-      currency: invoiceCurrency!,
-      periodStart: period.from,
-      periodEnd: period.to,
-      selectedFinancialCalculationLineIds: selectedRows.map((r) => r.financialLineId!),
-    }),
-    onSuccess: async (invoice) => { setSelected(new Set()); await onInvoiceCreated(invoice); },
+  const draftsQuery = useQuery({
+    queryKey: ["firm-invoices", "drafts", firm?.id],
+    queryFn: () => getFirmInvoices({ firmId: firm!.id, status: "DRAFT", documentType: "STANDARD" }),
+    enabled: (allFree || allInDraft) && !!firm,
+  });
+  const drafts = (draftsQuery.data ?? []).filter((d) => d.currency === currency && !currentDraftIds.has(d.id));
+  const [menuAnchor, setMenuAnchor] = React.useState<{ el: HTMLElement; mode: "add" | "move" } | null>(null);
+
+  const draftMutation = useMutation({
+    mutationFn: async (target: { mode: "create" } | { mode: "add" | "move"; draftId: number }) => {
+      if (target.mode === "create") {
+        return createFirmInvoiceDraft({ firmId: firm!.id, currency: currency!, periodStart: period.from, periodEnd: period.to, financialLineIds: lineIds });
+      }
+      return target.mode === "add" ? addLinesToFirmInvoiceDraft(target.draftId, lineIds) : moveLinesToFirmInvoiceDraft(target.draftId, lineIds);
+    },
+    onSuccess: async (draft) => { setMenuAnchor(null); setSelected(new Set()); await onDraftChanged(draft); },
     onError: (err) => onError(extractBillingError(err)),
   });
 
@@ -450,13 +464,35 @@ function PrestationsView({ worklist, status, onStatus, period, firmIds, onInvoic
             <Typography fontWeight={700} sx={{ mr: 1 }}>{plural(selectedRows.length, "ligne")} sélectionnée{selectedRows.length > 1 ? "s" : ""}</Typography>
             <Button size="small" variant="outlined" startIcon={exporting === "pdf" ? <CircularProgress size={14} /> : <PictureAsPdfIcon />} disabled={exporting !== null} onClick={() => doExport("pdf")}>Exporter PDF</Button>
             <Button size="small" variant="outlined" startIcon={exporting === "xlsx" ? <CircularProgress size={14} /> : <GridOnIcon />} disabled={exporting !== null} onClick={() => doExport("xlsx")}>Exporter Excel</Button>
-            <Tooltip title={invoiceable ? "" : invoiceHint}>
-              <span>
-                <Button size="small" variant="contained" disableElevation disabled={!invoiceable || generate.isPending} onClick={() => generate.mutate()}>
-                  {generate.isPending ? <CircularProgress size={16} /> : invoiceable ? `Générer la facture ${invoiceFirm?.name ?? ""}` : "Générer la facture"}
-                </Button>
-              </span>
-            </Tooltip>
+            {allInDraft ? (
+              <Button size="small" variant="contained" disableElevation disabled={draftMutation.isPending} onClick={(e) => setMenuAnchor({ el: e.currentTarget, mode: "move" })}>
+                Déplacer vers…
+              </Button>
+            ) : (
+              <Tooltip title={allFree ? "" : draftHint}>
+                <span>
+                  <Button size="small" variant="contained" disableElevation disabled={!allFree || draftMutation.isPending} onClick={() => draftMutation.mutate({ mode: "create" })}>
+                    {draftMutation.isPending ? <CircularProgress size={16} /> : allFree ? `Créer un brouillon ${firm?.name ?? ""}` : "Créer un brouillon"}
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
+            {allFree && (
+              <Button size="small" variant="outlined" disabled={draftMutation.isPending} onClick={(e) => setMenuAnchor({ el: e.currentTarget, mode: "add" })}>
+                Ajouter au brouillon…
+              </Button>
+            )}
+            <Menu anchorEl={menuAnchor?.el} open={menuAnchor !== null} onClose={() => setMenuAnchor(null)}>
+              {draftsQuery.isLoading && <MenuItem disabled>Chargement…</MenuItem>}
+              {!draftsQuery.isLoading && drafts.length === 0 && (
+                <MenuItem disabled>Aucun autre brouillon {firm?.name} en {currency}</MenuItem>
+              )}
+              {drafts.map((d) => (
+                <MenuItem key={d.id} onClick={() => draftMutation.mutate({ mode: menuAnchor!.mode, draftId: d.id })}>
+                  Brouillon {d.firm.name} #{d.id} — {d.lineCount ?? 0} ligne(s) · {formatMoney(d.totalAmount, d.currency)}
+                </MenuItem>
+              ))}
+            </Menu>
             <Box sx={{ flex: 1 }} />
             <Button size="small" onClick={() => setSelected(new Set())}>Désélectionner</Button>
           </Stack>
@@ -665,6 +701,7 @@ function ToFixView({ worklist, onDone, onError }: { worklist: FirmBillingWorklis
     const route = ACTION_ROUTES[a.action.code];
     if (route) return navigate(route);
     if (a.action.code === "OPEN_MISSION") return navigate(`/app/m/missions/${a.mission.id}`);
+    if (a.action.code === "OPEN_DRAFT" && a.invoiceId) return navigate(invoiceFocusUrl(a.invoiceId, a.focusLine ?? null));
     if (a.action.code === "APPROVE" && a.calculationId !== null) return approve.mutate(a.calculationId);
     if (a.action.code === "CALCULATE" || a.action.code === "RECALCULATE") return calculate.mutate([a.mission.id]);
   }
@@ -744,7 +781,7 @@ function InvoicesView({ from, to, firmIds, counts, onMarkPaid, onError }: {
   from: string;
   to: string;
   firmIds: number[];
-  counts?: { generated: number; sent: number; paid: number; cancelled: number };
+  counts?: { draft: number; generated: number; sent: number; paid: number; cancelled: number };
   onMarkPaid: () => Promise<void>;
   onError: (message: string) => void;
 }) {
@@ -765,6 +802,7 @@ function InvoicesView({ from, to, firmIds, counts, onMarkPaid, onError }: {
       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
         {counts && (
           <>
+            <Chip label={plural(counts.draft, "brouillon")} color="secondary" variant="outlined" />
             <Chip label={`${plural(counts.generated, "facture")} générée${counts.generated > 1 ? "s" : ""}`} color="info" variant="outlined" />
             <Chip label={`${counts.sent} envoyée${counts.sent > 1 ? "s" : ""}`} color="warning" variant="outlined" />
             <Chip label={`${counts.paid} payée${counts.paid > 1 ? "s" : ""}`} color="success" variant="outlined" />
@@ -781,7 +819,7 @@ function InvoicesView({ from, to, firmIds, counts, onMarkPaid, onError }: {
           inputProps={{ "aria-label": "Filtrer par statut" }}
         >
           <MenuItem value="">Tous les statuts</MenuItem>
-          {(["GENERATED", "SENT", "PAID", "CANCELLED"] as InvoiceStatus[]).map((s) => <MenuItem key={s} value={s}>{INVOICE_STATUS_LABELS[s]}</MenuItem>)}
+          {(["DRAFT", "GENERATED", "SENT", "PAID", "CANCELLED"] as InvoiceStatus[]).map((s) => <MenuItem key={s} value={s}>{INVOICE_STATUS_LABELS[s]}</MenuItem>)}
         </Select>
       </Stack>
 
@@ -810,7 +848,7 @@ function InvoicesView({ from, to, firmIds, counts, onMarkPaid, onError }: {
                 <TableRow key={inv.id} hover>
                   <TableCell>
                     <Typography component={RouterLink} to={`/app/m/billing/firm-invoices/${inv.id}`} variant="body2" fontWeight={700} color="primary" sx={{ textDecoration: "none" }}>
-                      {inv.number ?? `#${inv.id}`}
+                      {inv.number ?? (inv.status === "DRAFT" ? `Brouillon #${inv.id}` : `#${inv.id}`)}
                     </Typography>
                   </TableCell>
                   <TableCell>{inv.firm.name}</TableCell>
@@ -823,7 +861,7 @@ function InvoicesView({ from, to, firmIds, counts, onMarkPaid, onError }: {
                   <TableCell>{formatDate(inv.paidAt)}</TableCell>
                   <TableCell align="right">
                     <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                      <Button size="small" variant="outlined" startIcon={<PictureAsPdfIcon />} href={getFirmInvoicePdfUrl(inv.id)} target="_blank">PDF</Button>
+                      {inv.status !== "DRAFT" && <Button size="small" variant="outlined" startIcon={<PictureAsPdfIcon />} href={getFirmInvoicePdfUrl(inv.id)} target="_blank">PDF</Button>}
                       <Button size="small" onClick={() => navigate(`/app/m/billing/firm-invoices/${inv.id}`)}>Détail</Button>
                       {inv.allowedActions?.includes("markPaid") && (
                         <Button size="small" color="success" disabled={markPaid.isPending} onClick={() => markPaid.mutate(inv.id)}>Marquer comme payée</Button>

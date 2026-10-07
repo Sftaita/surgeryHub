@@ -50,6 +50,8 @@ final class FirmBillingLineHistoryService
     private function serialize(FirmBillingLineEvent $e): array
     {
         $number = $e->getInvoiceNumberSnapshot() ?? ($e->getInvoiceId() !== null ? '#' . $e->getInvoiceId() : null);
+        $draft = trim(($e->getFirmNameSnapshot() ?? '') . ' #' . $e->getInvoiceId());
+        $from = $e->getDetails()['fromInvoiceId'] ?? null;
         $description = match ($e->getEventType()) {
             FirmBillingLineEventType::INVOICE_GENERATED => sprintf('Facture %s générée', $number),
             FirmBillingLineEventType::INVOICE_SENT => sprintf('Facture %s envoyée', $number),
@@ -62,9 +64,13 @@ final class FirmBillingLineHistoryService
             ),
             FirmBillingLineEventType::INVOICE_PAID => sprintf('Facture %s payée', $number),
             FirmBillingLineEventType::INVOICE_CANCELLED => sprintf('Facture %s annulée — ligne de nouveau libre', $number),
-            FirmBillingLineEventType::ADDED_TO_DRAFT => sprintf('Ajoutée au brouillon %s', $number),
-            FirmBillingLineEventType::REMOVED_FROM_DRAFT => sprintf('Retirée du brouillon %s', $number),
-            FirmBillingLineEventType::MOVED_TO_DRAFT => sprintf('Déplacée vers le brouillon %s', $number),
+            FirmBillingLineEventType::ADDED_TO_DRAFT => sprintf('Ajoutée au brouillon %s', $draft),
+            FirmBillingLineEventType::REMOVED_FROM_DRAFT => !empty($e->getDetails()['draftAbandoned'])
+                ? sprintf('Brouillon %s abandonné — ligne de nouveau libre', $draft)
+                : sprintf('Retirée du brouillon %s', $draft),
+            FirmBillingLineEventType::MOVED_TO_DRAFT => $from !== null
+                ? sprintf('Déplacée du brouillon %s #%d vers le brouillon %s', $e->getDetails()['fromFirmName'] ?? '', $from, $draft)
+                : sprintf('Déplacée vers le brouillon %s', $draft),
         };
 
         return [

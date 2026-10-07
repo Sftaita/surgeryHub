@@ -4,14 +4,13 @@ namespace App\Enum;
 
 /**
  * D-134 — événements du journal append-only d'une ligne de facturation firme
- * (FirmBillingLineEvent). Seuls des faits réellement produits par le flux actuel sont
- * émis ; les événements de brouillon sont réservés au futur lot « vrai brouillon »
- * (aucun brouillon n'existe aujourd'hui — voir D-134) et ne sont jamais émis tant que
- * ce lot n'existe pas.
+ * (FirmBillingLineEvent). Seuls des faits réellement produits sont émis ; les événements
+ * de brouillon le sont depuis D-135 (FirmInvoiceService : createDraft, addLinesToDraft,
+ * removeLineFromDraft, moveLinesToDraft, abandonDraft).
  */
 enum FirmBillingLineEventType: string
 {
-    // Réservés au futur brouillon (non émis aujourd'hui).
+    // D-135 — brouillon.
     case ADDED_TO_DRAFT = 'ADDED_TO_DRAFT';
     case REMOVED_FROM_DRAFT = 'REMOVED_FROM_DRAFT';
     case MOVED_TO_DRAFT = 'MOVED_TO_DRAFT';
