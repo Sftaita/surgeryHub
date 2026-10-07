@@ -927,6 +927,7 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         $draftA = $this->json($a);
         self::assertSame('DRAFT', $draftA['status']);
         self::assertNull($draftA['number'], 'un brouillon n\'a pas de numéro');
+        self::assertSame(409, $this->get($client, $token, "/api/firm-invoices/{$draftA['id']}/pdf")->getStatusCode(), 'pas de PDF de facture pour un brouillon');
         self::assertSame(['editLines', 'generate', 'abandon'], $draftA['allowedActions']);
         self::assertSame('50.00', $draftA['totalAmount']);
         self::assertSame($key, $draftA['lines'][0]['sourceKey'], 'deep-link vers la ligne du brouillon');
@@ -1189,6 +1190,7 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         self::assertNull($this->json($abandon)['number'], 'aucun numéro attribué');
         self::assertSame([], $this->json($abandon)['allowedActions']);
         self::assertSame(409, $this->get($client, $token, "/api/firm-invoices/{$draft['id']}/candidate-lines")->getStatusCode());
+        self::assertSame(409, $this->get($client, $token, "/api/firm-invoices/{$draft['id']}/pdf")->getStatusCode(), 'pas de PDF de facture pour un brouillon abandonné');
 
         // Lignes libérées, historique conservé.
         $freed = $this->rowsByType($this->worklist($client, $token, [$firm]));

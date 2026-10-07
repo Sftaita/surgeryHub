@@ -432,5 +432,6 @@ describe("FirmInvoicesPage — Factures : brouillon abandonné ≠ facture annul
     await waitFor(() => expect(getFirmInvoicesMock).toHaveBeenLastCalledWith(expect.objectContaining({ includeAbandoned: true })));
     expect(await screen.findByText("Brouillon abandonné", { selector: ".MuiChip-label" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Brouillon #8" })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "PDF" })).toHaveLength(1); // facture annulée seulement, jamais le brouillon abandonné
   });
 });

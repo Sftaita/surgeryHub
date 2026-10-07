@@ -157,6 +157,9 @@ export default function FirmInvoiceDetailPage() {
   const total = Number(inv.totalAmount);
   const allowed = inv.allowedActions ?? [];
   const isDraft = inv.status === "DRAFT";
+  // D-137 — un brouillon abandonné n'a jamais été une facture : ni solde, ni PDF, ni action.
+  const isAbandoned = inv.status === "ABANDONED";
+  const neverIssued = isDraft || isAbandoned;
   const staleCount = (inv.lines ?? []).filter((l) => l.stale).length;
   const draftBusy = removeLine.isPending || generateDraft.isPending || abandonDraft.isPending;
 
@@ -207,6 +210,12 @@ export default function FirmInvoiceDetailPage() {
           )}
         </Stack>
       </Paper>
+
+      {isAbandoned && (
+        <Alert severity="info" variant="outlined">
+          Brouillon abandonné : il n'a jamais été une facture (aucun numéro, aucun calcul verrouillé). Ses lignes ont été libérées ; leur passage par ce brouillon reste visible dans leur historique.
+        </Alert>
+      )}
 
       {isDraft && (
         <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, borderColor: "secondary.main" }} role="region" aria-label="Générateur de facture">
@@ -266,9 +275,11 @@ export default function FirmInvoiceDetailPage() {
 
       <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
         <Box sx={{ px: 2, py: 1.5, bgcolor: "grey.50" }}>
-          <Typography variant="subtitle2" fontWeight={700}>{isDraft ? "Lignes du brouillon" : "Lignes facturées"} ({inv.lines?.length ?? 0})</Typography>
+          <Typography variant="subtitle2" fontWeight={700}>{neverIssued ? "Lignes du brouillon" : "Lignes facturées"} ({inv.lines?.length ?? 0})</Typography>
           <Typography variant="caption" color="text.secondary">
-            {isDraft
+            {isAbandoned
+              ? "Aucune ligne : l'abandon les a toutes libérées."
+              : isDraft
               ? "Montants issus des calculs approuvés ; ils seront figés à la génération."
               : "Snapshot figé à la génération : quantités, prix et montants ne changent plus, même si un tarif est modifié ensuite."}
           </Typography>
@@ -349,7 +360,7 @@ export default function FirmInvoiceDetailPage() {
       </Paper>
 
       {/* Solde, paiements, remboursements, notes de crédit/débit (EPIC Exécution & Valorisation, Lots 4-6) */}
-      {!isDraft && <DocumentFinancePanel
+      {!neverIssued && <DocumentFinancePanel
         resource="firm-invoices"
         document={inv}
         lines={(inv.lines ?? []).map((l) => ({ id: l.id, descriptionSnapshot: l.descriptionSnapshot, totalAmount: l.totalAmount }))}
@@ -358,7 +369,7 @@ export default function FirmInvoiceDetailPage() {
       />}
 
       {/* Actions */}
-      {!isDraft && <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+      {!neverIssued && <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
         <Stack spacing={2}>
           <Typography variant="subtitle2" fontWeight={700}>Actions</Typography>
 

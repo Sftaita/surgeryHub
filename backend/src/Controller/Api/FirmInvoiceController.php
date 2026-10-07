@@ -283,6 +283,10 @@ class FirmInvoiceController extends AbstractController
         if (!$invoice) {
             return new JsonResponse(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
         }
+        // D-137 — un brouillon (en cours ou abandonné) n'est pas une facture : ni numéro, ni PDF.
+        if (in_array($invoice->getStatus(), [InvoiceStatus::DRAFT, InvoiceStatus::ABANDONED], true)) {
+            return new JsonResponse(['error' => ['status' => 409, 'code' => 'INVOICE_STATUS_TRANSITION_INVALID', 'message' => "Un brouillon n'a pas de PDF de facture : générez d'abord la facture."]], 409);
+        }
 
         $pdf = $this->pdfService->generateFromTemplate('pdf/firm_invoice.html.twig', [
             'invoice' => $invoice,

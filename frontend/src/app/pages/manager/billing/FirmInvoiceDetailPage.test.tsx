@@ -261,5 +261,8 @@ describe("FirmInvoiceDetailPage — ajouter des prestations depuis le brouillon 
     expect(screen.getByText("Brouillon abandonné", { selector: ".MuiChip-label" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "+ Ajouter des prestations" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Générer la facture" })).not.toBeInTheDocument();
+    expect(screen.getByText(/il n'a jamais été une facture/)).toBeInTheDocument();
+    expect(screen.queryByText("Télécharger PDF")).not.toBeInTheDocument();
+    expect(screen.queryByText("Lignes facturées (0)")).not.toBeInTheDocument();
   });
 });

@@ -2453,7 +2453,9 @@ abandonnés, **jamais** inclus dans `cancelled` (seules les vraies factures annu
 **Statuts d'un document firme (D-137)** : `DRAFT` (brouillon) → `GENERATED` (générée) →
 `SENT` (envoyée) → `PAID` (payée) ; `GENERATED → CANCELLED` (facture annulée) ;
 `DRAFT → ABANDONED` (brouillon abandonné : aucun numéro, conservé pour l'audit, lecture
-seule, `allowedActions = []`).
+seule, `allowedActions = []`). `GET /api/firm-invoices/{id}/pdf` renvoie
+`409 INVOICE_STATUS_TRANSITION_INVALID` pour un `DRAFT` ou un `ABANDONED` (pas de PDF de
+facture sans numéro).
 
 #### `POST /api/firm-billing/calculations`
 

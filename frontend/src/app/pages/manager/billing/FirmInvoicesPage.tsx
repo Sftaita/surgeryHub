@@ -869,7 +869,7 @@ function InvoicesView({ from, to, firmIds, counts, onMarkPaid, onError }: {
                   <TableCell>{formatDate(inv.paidAt)}</TableCell>
                   <TableCell align="right">
                     <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                      {inv.status !== "DRAFT" && <Button size="small" variant="outlined" startIcon={<PictureAsPdfIcon />} href={getFirmInvoicePdfUrl(inv.id)} target="_blank">PDF</Button>}
+                      {inv.status !== "DRAFT" && inv.status !== "ABANDONED" && <Button size="small" variant="outlined" startIcon={<PictureAsPdfIcon />} href={getFirmInvoicePdfUrl(inv.id)} target="_blank">PDF</Button>}
                       <Button size="small" onClick={() => navigate(`/app/m/billing/firm-invoices/${inv.id}`)}>Détail</Button>
                       {inv.allowedActions?.includes("markPaid") && (
                         <Button size="small" color="success" disabled={markPaid.isPending} onClick={() => markPaid.mutate(inv.id)}>Marquer comme payée</Button>

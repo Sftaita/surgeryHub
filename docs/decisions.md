@@ -11443,7 +11443,11 @@ Numéro D-137 : D-136 est pris sur `origin/main` (suivi des encodages).
    lignes `canInvoice` de sa devise : aucune règle nouvelle, le backend reste la source de
    vérité. L'ajout réutilise `POST /{id}/lines` (revalidation sous verrou, événements
    `ADDED_TO_DRAFT`). Le frontend n'applique aucun filtre propre.
-4. Robustesse : `cancel()` resynchronise aussi le côté inverse en mémoire
+4. **Pas de PDF de facture pour un brouillon** (`DRAFT` ou `ABANDONED`) :
+   `GET /api/firm-invoices/{id}/pdf` renvoie `409` — un document sans numéro ne doit pas
+   pouvoir circuler comme une facture. La page d'un brouillon abandonné n'affiche ni solde,
+   ni actions, ni PDF (constaté au test navigateur : elle montrait « Solde : Payé »).
+5. Robustesse : `cancel()` resynchronise aussi le côté inverse en mémoire
    (`FinancialCalculationLine::releaseFirmInvoiceLine()`), comme le retrait de brouillon
    (sinon un `flush()` ultérieur dans le même EntityManager échoue — révélé par les tests
    passant désormais par le brouillon).
