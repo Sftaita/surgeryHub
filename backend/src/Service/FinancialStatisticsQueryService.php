@@ -203,6 +203,7 @@ final class FinancialStatisticsQueryService
                   $missionWhere";
         $calculationsAwaitingApproval = (int) $this->connection->fetchOne($sql, $missionParams + ['fDate' => $this->dateParam($filter->from), 'tDate' => $this->dateParam($filter->to)], $missionTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING]);
 
+        // D-135 — un brouillon (DRAFT) n'est pas un document : ses lignes restent « libres » ici.
         // §17 — APPROVED (ou LOCKED, jamais documenté = anomalie identique) sans AUCUNE
         // ligne assignée (ni firm_invoice_line ni instrumentist_statement_line) —
         // disjoint de "partiellement documenté" (au moins une ligne assignée, au moins
@@ -214,7 +215,7 @@ final class FinancialStatisticsQueryService
                   AND NOT EXISTS (
                     SELECT 1 FROM financial_calculation_line fcl
                     WHERE fcl.financial_calculation_id = fc.id
-                      AND (fcl.id IN (SELECT financial_calculation_line_id FROM firm_invoice_line WHERE financial_calculation_line_id IS NOT NULL)
+                      AND (fcl.id IN (SELECT fil.financial_calculation_line_id FROM firm_invoice_line fil INNER JOIN firm_invoice fi ON fi.id = fil.invoice_id WHERE fil.financial_calculation_line_id IS NOT NULL AND fi.status <> 'DRAFT')
                            OR fcl.id IN (SELECT financial_calculation_line_id FROM instrumentist_statement_line WHERE financial_calculation_line_id IS NOT NULL))
                   )
                   $missionWhere";
@@ -227,13 +228,13 @@ final class FinancialStatisticsQueryService
                   AND EXISTS (
                     SELECT 1 FROM financial_calculation_line fcl
                     WHERE fcl.financial_calculation_id = fc.id
-                      AND (fcl.id IN (SELECT financial_calculation_line_id FROM firm_invoice_line WHERE financial_calculation_line_id IS NOT NULL)
+                      AND (fcl.id IN (SELECT fil.financial_calculation_line_id FROM firm_invoice_line fil INNER JOIN firm_invoice fi ON fi.id = fil.invoice_id WHERE fil.financial_calculation_line_id IS NOT NULL AND fi.status <> 'DRAFT')
                            OR fcl.id IN (SELECT financial_calculation_line_id FROM instrumentist_statement_line WHERE financial_calculation_line_id IS NOT NULL))
                   )
                   AND EXISTS (
                     SELECT 1 FROM financial_calculation_line fcl2
                     WHERE fcl2.financial_calculation_id = fc.id
-                      AND fcl2.id NOT IN (SELECT financial_calculation_line_id FROM firm_invoice_line WHERE financial_calculation_line_id IS NOT NULL)
+                      AND fcl2.id NOT IN (SELECT fil.financial_calculation_line_id FROM firm_invoice_line fil INNER JOIN firm_invoice fi ON fi.id = fil.invoice_id WHERE fil.financial_calculation_line_id IS NOT NULL AND fi.status <> 'DRAFT')
                       AND fcl2.id NOT IN (SELECT financial_calculation_line_id FROM instrumentist_statement_line WHERE financial_calculation_line_id IS NOT NULL)
                   )
                   $missionWhere";

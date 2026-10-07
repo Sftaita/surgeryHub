@@ -216,7 +216,7 @@ final class FinancialCorrectionControllerTest extends WebTestCase
         $firmLine = $calc->getLines()->filter(static fn ($l) => $l->getLineType()->value === 'FIRM_INTERVENTION_FEE')->first();
 
         $invoiceService = static::getContainer()->get(FirmInvoiceService::class);
-        $invoice = $invoiceService->createFromEligibleLines($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$firmLine->getId()], $manager);
+        $invoice = $invoiceService->generateDraft($invoiceService->createDraft($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$firmLine->getId()], $manager), $manager);
         $this->created['invoices'][] = $invoice->getId();
 
         $issueResponse = $this->postJson($client, $token, "/api/firm-invoices/{$invoice->getId()}/issue");
@@ -391,7 +391,7 @@ final class FinancialCorrectionControllerTest extends WebTestCase
         $firmLine = $calc->getLines()->filter(static fn ($l) => $l->getLineType()->value === 'FIRM_INTERVENTION_FEE')->first();
 
         $invoiceService = static::getContainer()->get(FirmInvoiceService::class);
-        $invoice = $invoiceService->createFromEligibleLines($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$firmLine->getId()], $manager);
+        $invoice = $invoiceService->generateDraft($invoiceService->createDraft($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$firmLine->getId()], $manager), $manager);
         $this->created['invoices'][] = $invoice->getId();
         $lineId = $invoice->getLines()->first()->getId();
 

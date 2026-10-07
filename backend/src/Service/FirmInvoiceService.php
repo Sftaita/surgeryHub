@@ -14,6 +14,9 @@ use App\Entity\User;
 use App\Dto\EligibleLinesDiagnostic;
 use App\Repository\EncodingTrackingRepository;
 use App\Enum\AuditEventType;
+use App\Enum\FirmBillingLineEventType;
+use App\Enum\FirmBillingReason;
+use App\Service\FirmBilling\FirmBillingLineEventRecorder;
 use App\Enum\FinancialBeneficiaryType;
 use App\Enum\FinancialCalculationStatus;
 use App\Enum\FinancialDocumentType;
@@ -28,6 +31,7 @@ use App\Exception\DocumentLineSelectionException;
 use App\Exception\InvoiceStatusTransitionException;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\Query;
 
 /**
  * EPIC Exécution & Valorisation, Lot 4 (D-074) puis nettoyage architectural (D-121) —
@@ -44,6 +48,7 @@ class FirmInvoiceService
         private readonly FinancialCalculationService $financialCalculationService,
         private readonly AuditService $audit,
         private readonly EncodingTrackingRepository $encodingTrackingRepository,
+        private readonly FirmBillingLineEventRecorder $lineEvents,
     ) {}
 
     /**
@@ -83,6 +88,7 @@ class FirmInvoiceService
             'previousStatus' => InvoiceStatus::GENERATED->value,
             'newStatus' => InvoiceStatus::SENT->value,
         ]);
+        $this->lineEvents->recordForInvoice($invoice, FirmBillingLineEventType::INVOICE_SENT, $actor);
 
         $this->em->flush();
         return $invoice;
@@ -94,7 +100,7 @@ class FirmInvoiceService
      * réglée) sont refusés par un 409 métier explicite. Les paiements partiels (API
      * payments, D-075) restent un mécanisme distinct, jamais fusionné ici.
      */
-    public function markPaid(FirmInvoice $invoice): FirmInvoice
+    public function markPaid(FirmInvoice $invoice, ?User $actor = null): FirmInvoice
     {
         $message = match ($invoice->getStatus()) {
             InvoiceStatus::SENT => null,
@@ -108,8 +114,435 @@ class FirmInvoiceService
         }
         $invoice->setStatus(InvoiceStatus::PAID);
         $invoice->setPaidAt(new \DateTimeImmutable());
+        $this->lineEvents->recordForInvoice($invoice, FirmBillingLineEventType::INVOICE_PAID, $actor);
         $this->em->flush();
         return $invoice;
+    }
+
+    // ── D-135 — vrai brouillon de facture firme ──────────────────────────────
+    //
+    // DRAFT → (generateDraft) → GENERATED → SENT → PAID, ou DRAFT → (abandonDraft).
+    // Un brouillon n'a PAS de numéro (attribué à la génération, aucun trou) et ne
+    // verrouille AUCUN calcul (verrou posé à la génération) : une ligne peut donc devenir
+    // obsolète si son calcul est recalculé/annulé entre-temps — signalée
+    // (staleDraftLineIds()) et refusée à la génération. Une ligne n'appartient qu'à un
+    // seul document à la fois (contrainte UNIQUE firm_invoice_line.financial_calculation_
+    // line_id + contrôle par source métier). Chaque mouvement est journalisé dans
+    // FirmBillingLineEvent (ADDED_TO_DRAFT / REMOVED_FROM_DRAFT / MOVED_TO_DRAFT).
+
+    /** @param int[] $financialLineIds */
+    public function createDraft(Firm $firm, string $currency, \DateTimeImmutable $periodStart, \DateTimeImmutable $periodEnd, array $financialLineIds, User $actor): FirmInvoice
+    {
+        $result = null;
+
+        $this->em->wrapInTransaction(function () use (&$result, $firm, $currency, $periodStart, $periodEnd, $financialLineIds, $actor): void {
+            $lines = $this->lockAndValidate($financialLineIds, $firm, $currency, $periodStart, $periodEnd, null);
+
+            $draft = new FirmInvoice();
+            $draft->setFirm($firm);
+            $draft->setCurrency(strtoupper($currency));
+            $draft->setPeriodStart($periodStart);
+            $draft->setPeriodEnd($periodEnd);
+            $draft->setStatus(InvoiceStatus::DRAFT);
+            $draft->setLegacySource(false);
+            $draft->setBillingEmailTo($firm->getBillingEmail());
+            $draft->setBillingEmailCc($firm->getBillingEmailCc());
+            $draft->setTotalAmount('0.00');
+            $this->em->persist($draft);
+            $this->em->flush(); // identifiant du brouillon connu avant journalisation
+
+            $this->attachToDraft($draft, $lines, $actor, FirmBillingLineEventType::ADDED_TO_DRAFT);
+            $this->em->flush();
+
+            $result = $draft;
+        });
+
+        return $result;
+    }
+
+    /** @param int[] $financialLineIds */
+    public function addLinesToDraft(FirmInvoice $draft, array $financialLineIds, User $actor): FirmInvoice
+    {
+        $this->em->wrapInTransaction(function () use ($draft, $financialLineIds, $actor): void {
+            $this->lockDrafts([$draft]);
+            $lines = $this->lockAndValidate($financialLineIds, $draft->getFirm(), $draft->getCurrency(), $draft->getPeriodStart(), $this->endOfDay($draft->getPeriodEnd()), $draft);
+            $lines = array_values(array_filter($lines, fn (FinancialCalculationLine $l) => $this->currentDocumentFor($l)?->getId() !== $draft->getId()));
+
+            $this->attachToDraft($draft, $lines, $actor, FirmBillingLineEventType::ADDED_TO_DRAFT);
+            $this->em->flush();
+        });
+
+        return $draft;
+    }
+
+    public function removeLineFromDraft(FirmInvoice $draft, int $invoiceLineId, User $actor): FirmInvoice
+    {
+        $this->em->wrapInTransaction(function () use ($draft, $invoiceLineId, $actor): void {
+            $this->lockDrafts([$draft]);
+            $line = null;
+            foreach ($draft->getLines() as $candidate) {
+                if ($candidate->getId() === $invoiceLineId) {
+                    $line = $candidate;
+                }
+            }
+            if ($line === null) {
+                throw new DocumentLineSelectionException([new DocumentLineSelectionAnomaly('DRAFT_LINE_NOT_FOUND', sprintf('La ligne #%d ne figure pas dans ce brouillon.', $invoiceLineId), ['invoiceLineId' => $invoiceLineId])]);
+            }
+
+            $this->lineEvents->recordForLine($line, $draft, FirmBillingLineEventType::REMOVED_FROM_DRAFT, $actor);
+            $this->detachDraftLine($draft, $line);
+            $this->em->flush();
+            $this->refreshDraftTotal($draft);
+            $this->em->flush();
+        });
+
+        return $draft;
+    }
+
+    /**
+     * « Déplacer vers… » : chaque ligne quitte son brouillon d'origine et rejoint $target
+     * dans la MÊME transaction (un seul événement MOVED_TO_DRAFT, origine en détails).
+     * Une ligne libre est simplement ajoutée ; une ligne d'un document émis est refusée.
+     *
+     * @param int[] $financialLineIds
+     */
+    public function moveLinesToDraft(FirmInvoice $target, array $financialLineIds, User $actor): FirmInvoice
+    {
+        // Découverte des brouillons d'origine AVANT la transaction (aucun instantané figé),
+        // puis revérification sous verrou : un brouillon généré/abandonné entre-temps est refusé.
+        $sources = $this->draftSourcesFor($target, $financialLineIds);
+
+        $this->em->wrapInTransaction(function () use ($target, $financialLineIds, $actor, $sources): void {
+            $this->lockDrafts([$target, ...array_values($sources)]);
+            $moves = $this->draftSourcesFor($target, $financialLineIds, withLines: true);
+            foreach ($moves as ['from' => $from]) {
+                if (!isset($sources[$from->getId()])) {
+                    throw new InvoiceStatusTransitionException('Les brouillons ont changé pendant le déplacement : rechargez et recommencez.');
+                }
+            }
+
+            // Retrait des brouillons d'origine (sans événement REMOVED : le déplacement est UN fait).
+            $movedFrom = [];
+            foreach ($moves as $fclId => ['line' => $fcl, 'from' => $from]) {
+                foreach ($from->getLines()->toArray() as $invoiceLine) {
+                    if ($invoiceLine->getFinancialCalculationLine()?->getId() === $fcl->getId()
+                        || $this->sameSource($invoiceLine, $fcl)) {
+                        $this->detachDraftLine($from, $invoiceLine);
+                        $movedFrom[$fclId] = $from;
+                    }
+                }
+            }
+            $this->em->flush();
+            foreach ($sources as $from) {
+                $this->refreshDraftTotal($from);
+            }
+
+            $lines = $this->lockAndValidate($financialLineIds, $target->getFirm(), $target->getCurrency(), $target->getPeriodStart(), $this->endOfDay($target->getPeriodEnd()), $target);
+            $lines = array_values(array_filter($lines, fn (FinancialCalculationLine $l) => $this->currentDocumentFor($l)?->getId() !== $target->getId()));
+
+            foreach ($lines as $fcl) {
+                $from = $movedFrom[$fcl->getId()] ?? null;
+                $invoiceLine = $this->attachOne($target, $fcl);
+                $this->em->flush();
+                $this->lineEvents->recordForLine(
+                    $invoiceLine,
+                    $target,
+                    $from !== null ? FirmBillingLineEventType::MOVED_TO_DRAFT : FirmBillingLineEventType::ADDED_TO_DRAFT,
+                    $actor,
+                    $from !== null ? ['fromInvoiceId' => $from->getId(), 'fromFirmName' => $from->getFirm()?->getName()] : null,
+                );
+            }
+            $this->refreshDraftTotal($target);
+            $this->em->flush();
+        });
+
+        return $target;
+    }
+
+    /**
+     * Brouillon d'origine de chaque ligne à déplacer vers $target (lignes libres ignorées).
+     * Une ligne d'un document émis est refusée.
+     *
+     * @param int[] $financialLineIds
+     * @return array<int, mixed> par id de brouillon (FirmInvoice), ou par id de ligne ({line, from}) si $withLines
+     */
+    private function draftSourcesFor(FirmInvoice $target, array $financialLineIds, bool $withLines = false): array
+    {
+        $result = [];
+        foreach (array_unique(array_map('intval', $financialLineIds)) as $id) {
+            $fcl = $this->em->find(FinancialCalculationLine::class, $id);
+            $from = $fcl !== null ? $this->currentDocumentFor($fcl) : null;
+            if ($from === null || $from->getId() === $target->getId()) {
+                continue;
+            }
+            if ($from->getStatus() !== InvoiceStatus::DRAFT) {
+                throw new DocumentLineSelectionException([new DocumentLineSelectionAnomaly('FINANCIAL_LINE_ALREADY_ASSIGNED', sprintf('La ligne #%d appartient à une facture émise : elle ne peut plus être déplacée.', $id), ['financialCalculationLineId' => $id, 'invoiceId' => $from->getId()])]);
+            }
+            if ($withLines) {
+                $result[$id] = ['line' => $fcl, 'from' => $from];
+            } else {
+                $result[$from->getId()] = $from;
+            }
+        }
+        return $result;
+    }
+
+    /** DRAFT → GENERATED : numéro, verrouillage des calculs, revalidation complète sous verrou. */
+    public function generateDraft(FirmInvoice $draft, User $actor): FirmInvoice
+    {
+        $this->em->wrapInTransaction(function () use ($draft, $actor): void {
+            $this->lockDrafts([$draft]);
+            if ($draft->getLines()->count() === 0) {
+                throw new DocumentLineSelectionException([new DocumentLineSelectionAnomaly('DRAFT_EMPTY', 'Le brouillon ne contient aucune ligne.', ['invoiceId' => $draft->getId()])]);
+            }
+
+            $financialLineIds = [];
+            $anomalies = [];
+            foreach ($draft->getLines() as $invoiceLine) {
+                $fcl = $invoiceLine->getFinancialCalculationLine();
+                if ($fcl === null) {
+                    $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_LINE_STALE', sprintf('La ligne #%d n\'a plus de ligne financière : retirez-la du brouillon.', $invoiceLine->getId()), ['invoiceLineId' => $invoiceLine->getId()]);
+                    continue;
+                }
+                $financialLineIds[] = $fcl->getId();
+            }
+            ['lines' => $lines] = $this->lockAndReloadSelectedLines($financialLineIds);
+            foreach ($lines as $fcl) {
+                if (!in_array($fcl->getFinancialCalculation()->getStatus(), [FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED], true)) {
+                    $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_LINE_STALE', sprintf(
+                        'Le calcul de la ligne #%d a été recalculé ou annulé depuis son ajout au brouillon : retirez-la puis ajoutez la ligne à jour.', $fcl->getId(),
+                    ), ['financialCalculationLineId' => $fcl->getId()]);
+                }
+            }
+            $anomalies = [...$anomalies, ...$this->validateFirmLineSelection($lines, $draft->getFirm(), $draft->getCurrency(), $draft->getPeriodStart(), $this->endOfDay($draft->getPeriodEnd()), $draft)];
+            if ($anomalies !== []) {
+                throw new DocumentLineSelectionException($anomalies);
+            }
+
+            $draft->setNumber($this->generateNumber($draft->getPeriodStart()));
+            $draft->setStatus(InvoiceStatus::GENERATED);
+            $draft->setGeneratedAt(new \DateTimeImmutable());
+            $this->refreshDraftTotal($draft);
+
+            $lockedCalculationIds = [];
+            foreach ($lines as $fcl) {
+                $calculation = $fcl->getFinancialCalculation();
+                if ($calculation->getStatus() !== FinancialCalculationStatus::LOCKED) {
+                    $this->financialCalculationService->lock($calculation, $actor);
+                }
+                $lockedCalculationIds[$calculation->getId()] = true;
+            }
+            $this->em->flush();
+
+            $this->audit->recordGlobal($actor, AuditEventType::FIRM_INVOICE_CREATED_FROM_CALCULATION, [
+                'firmInvoiceId' => $draft->getId(),
+                'firmId' => $draft->getFirm()?->getId(),
+                'currency' => $draft->getCurrency(),
+                'periodStart' => $draft->getPeriodStart()?->format('Y-m-d'),
+                'periodEnd' => $draft->getPeriodEnd()?->format('Y-m-d'),
+                'financialCalculationLineIds' => $financialLineIds,
+                'financialCalculationIds' => array_keys($lockedCalculationIds),
+                'totalAmount' => $draft->getTotalAmount(),
+                'fromDraft' => true,
+            ]);
+            $this->lineEvents->recordForInvoice($draft, FirmBillingLineEventType::INVOICE_GENERATED, $actor);
+            $this->em->flush();
+        });
+
+        return $draft;
+    }
+
+    /** Abandon d'un brouillon : lignes libérées (REMOVED_FROM_DRAFT), document conservé ABANDONED (D-137), sans numéro. */
+    public function abandonDraft(FirmInvoice $draft, User $actor, ?string $reason = null): FirmInvoice
+    {
+        $this->em->wrapInTransaction(function () use ($draft, $actor, $reason): void {
+            $this->lockDrafts([$draft]);
+            $releasedLineIds = [];
+            foreach ($draft->getLines() as $line) {
+                $this->lineEvents->recordForLine($line, $draft, FirmBillingLineEventType::REMOVED_FROM_DRAFT, $actor, ['draftAbandoned' => true, 'reason' => $reason]);
+                $releasedLineIds[] = $line->getFinancialCalculationLine()?->getId();
+            }
+            foreach ($draft->getLines()->toArray() as $line) {
+                $this->detachDraftLine($draft, $line);
+            }
+            $draft->setTotalAmount('0.00');
+            $draft->setStatus(InvoiceStatus::ABANDONED);
+
+            $this->audit->recordGlobal($actor, AuditEventType::FIRM_INVOICE_CANCELLED, [
+                'firmInvoiceId' => $draft->getId(),
+                'firmId' => $draft->getFirm()?->getId(),
+                'reason' => $reason,
+                'draftAbandoned' => true,
+                'releasedFinancialCalculationLineIds' => array_values(array_filter($releasedLineIds)),
+            ]);
+            $this->em->flush();
+        });
+
+        return $draft;
+    }
+
+    /**
+     * Lignes d'un brouillon devenues obsolètes : leur calcul n'est plus APPROVED/LOCKED
+     * (recalculé → SUPERSEDED, annulé, ou repassé CALCULATED par un recalcul).
+     *
+     * @return array<int, true> ids de FirmInvoiceLine
+     */
+    public function staleDraftLineIds(FirmInvoice $draft): array
+    {
+        if ($draft->getStatus() !== InvoiceStatus::DRAFT) {
+            return [];
+        }
+        $stale = [];
+        foreach ($draft->getLines() as $line) {
+            $status = $line->getFinancialCalculationLine()?->getFinancialCalculation()?->getStatus();
+            if (!in_array($status, [FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED], true)) {
+                $stale[(int) $line->getId()] = true;
+            }
+        }
+        return $stale;
+    }
+
+    /**
+     * Requête fraîche (jamais l'association inverse, potentiellement périmée en mémoire).
+     * Document STANDARD non annulé qui contient actuellement la ligne — par la ligne
+     * financière elle-même, ou par sa source métier (une version antérieure de la même
+     * intervention/du même matériel restée dans un brouillon).
+     */
+    public function currentDocumentFor(FinancialCalculationLine $line): ?FirmInvoice
+    {
+        $qb = $this->em->createQueryBuilder()
+            ->select('i')
+            ->from(FirmInvoice::class, 'i')
+            ->join('i.lines', 'fil')
+            ->where('i.documentType = :standard')
+            ->andWhere('i.status NOT IN (:inactive)')
+            ->setParameter('standard', FinancialDocumentType::STANDARD)
+            ->setParameter('inactive', [InvoiceStatus::CANCELLED, InvoiceStatus::ABANDONED])
+            ->setMaxResults(1);
+
+        $or = ['fil.financialCalculationLine = :line'];
+        $qb->setParameter('line', $line);
+        if ($line->getMaterialLine() !== null) {
+            $or[] = 'fil.materialLine = :material';
+            $qb->setParameter('material', $line->getMaterialLine());
+        } elseif ($line->getMissionIntervention() !== null) {
+            $or[] = 'fil.missionIntervention = :intervention';
+            $qb->setParameter('intervention', $line->getMissionIntervention());
+        }
+        $qb->andWhere(implode(' OR ', $or));
+
+        return $qb->getQuery()->getResult()[0] ?? null;
+    }
+
+    /** @param int[] $financialLineIds @return FinancialCalculationLine[] */
+    private function lockAndValidate(array $financialLineIds, Firm $firm, string $currency, \DateTimeImmutable $periodStart, \DateTimeImmutable $periodEnd, ?FirmInvoice $ownDraft): array
+    {
+        if ($financialLineIds === []) {
+            throw new DocumentLineSelectionException([new DocumentLineSelectionAnomaly('FINANCIAL_LINE_NOT_ELIGIBLE', 'Aucune ligne sélectionnée.', [])]);
+        }
+        ['lines' => $lines, 'missingIds' => $missingIds] = $this->lockAndReloadSelectedLines(array_map('intval', $financialLineIds));
+        $anomalies = $this->validateFirmLineSelection($lines, $firm, $currency, $periodStart, $periodEnd, $ownDraft);
+        foreach ($missingIds as $missingId) {
+            $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_LINE_NOT_ELIGIBLE', sprintf('La ligne #%d est introuvable.', $missingId), ['financialCalculationLineId' => $missingId]);
+        }
+        if ($anomalies !== []) {
+            throw new DocumentLineSelectionException($anomalies);
+        }
+        return $lines;
+    }
+
+    /** @param FinancialCalculationLine[] $lines */
+    private function attachToDraft(FirmInvoice $draft, array $lines, User $actor, FirmBillingLineEventType $type): void
+    {
+        foreach ($lines as $fcl) {
+            $invoiceLine = $this->attachOne($draft, $fcl);
+            $this->em->flush();
+            $this->lineEvents->recordForLine($invoiceLine, $draft, $type, $actor);
+        }
+        $this->refreshDraftTotal($draft);
+    }
+
+    private function attachOne(FirmInvoice $draft, FinancialCalculationLine $fcl): FirmInvoiceLine
+    {
+        $invoiceLine = $this->hydrateFromFinancialLine($fcl);
+        $draft->addLine($invoiceLine);
+        $this->em->persist($invoiceLine);
+        return $invoiceLine;
+    }
+
+    /** Verrou pessimiste des brouillons (ordre d'id croissant) puis garde DRAFT relue sous verrou. @param FirmInvoice[] $drafts */
+    private function lockDrafts(array $drafts): void
+    {
+        $ids = array_map(static fn (FirmInvoice $d) => (int) $d->getId(), $drafts);
+        foreach ($this->lockFresh(FirmInvoice::class, $ids) as $d) {
+            if ($d->getStatus() !== InvoiceStatus::DRAFT || $d->getDocumentType() !== FinancialDocumentType::STANDARD) {
+                throw new InvoiceStatusTransitionException(sprintf(
+                    'Le document #%d n\'est plus un brouillon (statut %s) : il ne se modifie plus comme un brouillon.', $d->getId(), $d->getStatus()->value,
+                ));
+            }
+        }
+    }
+
+    /**
+     * Revue PR #1 — verrou ET lecture de l'état COURANT en une requête :
+     * `SELECT … FOR UPDATE` (lecture courante InnoDB) avec HINT_REFRESH pour écraser
+     * l'entité déjà gérée. Jamais `lock()` puis `refresh()` : en REPEATABLE READ, le
+     * `refresh()` relit l'instantané de la transaction, donc un recalcul ou une
+     * génération validés pendant l'attente du verrou resteraient invisibles.
+     * Ordre d'id croissant (pas d'interblocage entre deux appelants).
+     *
+     * @template T of object
+     * @param class-string<T> $class
+     * @param int[] $ids
+     * @return T[]
+     */
+    private function lockFresh(string $class, array $ids, int $lockMode = LockMode::PESSIMISTIC_WRITE): array
+    {
+        $ids = array_values(array_unique(array_filter($ids)));
+        if ($ids === []) {
+            return [];
+        }
+        sort($ids);
+
+        return $this->em->createQueryBuilder()
+            ->select('e')
+            ->from($class, 'e')
+            ->where('e.id IN (:ids)')
+            ->setParameter('ids', $ids)
+            ->orderBy('e.id', 'ASC')
+            ->getQuery()
+            ->setLockMode($lockMode)
+            ->setHint(Query::HINT_REFRESH, true)
+            ->getResult();
+    }
+
+    private function detachDraftLine(FirmInvoice $draft, FirmInvoiceLine $line): void
+    {
+        $line->getFinancialCalculationLine()?->releaseFirmInvoiceLine($line);
+        $draft->getLines()->removeElement($line);
+        $this->em->remove($line);
+    }
+
+    private function refreshDraftTotal(FirmInvoice $draft): void
+    {
+        $total = 0.0;
+        foreach ($draft->getLines() as $line) {
+            $total += (float) $line->getTotalAmount();
+        }
+        $draft->setTotalAmount(number_format(round($total, 2), 2, '.', ''));
+    }
+
+    private function sameSource(FirmInvoiceLine $invoiceLine, FinancialCalculationLine $fcl): bool
+    {
+        if ($fcl->getMaterialLine() !== null) {
+            return $invoiceLine->getMaterialLine()?->getId() === $fcl->getMaterialLine()->getId();
+        }
+        return $fcl->getMissionIntervention() !== null && $invoiceLine->getMissionIntervention()?->getId() === $fcl->getMissionIntervention()->getId();
+    }
+
+    private function endOfDay(?\DateTimeImmutable $day): \DateTimeImmutable
+    {
+        return ($day ?? new \DateTimeImmutable())->setTime(23, 59, 59);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────
@@ -354,91 +787,6 @@ class FirmInvoiceService
     }
 
     /**
-     * §16 du lot — seul point d'entrée pour la création d'une facture à partir de
-     * FinancialCalculationLine. Ne fait jamais confiance à previewEligibleLines() :
-     * reverrouille chaque FinancialCalculation référencé (ordre croissant d'id — évite
-     * les deadlocks entre générations concurrentes portant sur des ensembles de lignes
-     * qui se recoupent, §14/§22) et revérifie individuellement chaque ligne sélectionnée
-     * sous ce verrou. Une seule ligne devenue inéligible annule toute la création
-     * (§28) — aucune persistance partielle. Verrouille chaque calcul concerné
-     * (APPROVED → LOCKED, idempotent si déjà LOCKED — §10/§30) dans la même transaction.
-     */
-    public function createFromEligibleLines(
-        Firm $firm,
-        string $currency,
-        \DateTimeImmutable $periodStart,
-        \DateTimeImmutable $periodEnd,
-        array $selectedFinancialCalculationLineIds,
-        User $actor,
-    ): FirmInvoice {
-        $result = null;
-
-        $this->em->wrapInTransaction(function () use (&$result, $firm, $currency, $periodStart, $periodEnd, $selectedFinancialCalculationLineIds, $actor): void {
-            ['lines' => $lines, 'missingIds' => $missingIds] = $this->lockAndReloadSelectedLines($selectedFinancialCalculationLineIds);
-
-            $anomalies = $this->validateFirmLineSelection($lines, $firm, $currency, $periodStart, $periodEnd);
-            foreach ($missingIds as $missingId) {
-                $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_LINE_NOT_ELIGIBLE', sprintf('La ligne #%d est introuvable.', $missingId), ['financialCalculationLineId' => $missingId]);
-            }
-            if (count($anomalies) > 0) {
-                throw new DocumentLineSelectionException($anomalies);
-            }
-
-            $invoice = new FirmInvoice();
-            $invoice->setFirm($firm);
-            $invoice->setCurrency($currency);
-            $invoice->setPeriodStart($periodStart);
-            $invoice->setPeriodEnd($periodEnd);
-            $invoice->setStatus(InvoiceStatus::GENERATED);
-            $invoice->setGeneratedAt(new \DateTimeImmutable());
-            $invoice->setLegacySource(false);
-            $invoice->setBillingEmailTo($firm->getBillingEmail());
-            $invoice->setBillingEmailCc($firm->getBillingEmailCc());
-            $invoice->setNumber($this->generateNumber($periodStart));
-            // Persisté AVANT la boucle : FinancialCalculationService::lock() flush()
-            // en interne à chaque itération (verrouillage d'un calcul déjà APPROVED) —
-            // $invoice doit déjà être connue de l'UnitOfWork, sinon Doctrine refuse de
-            // cascader la persistance des FirmInvoiceLine qui la référencent.
-            $this->em->persist($invoice);
-
-            $total = '0.00';
-            $lockedCalculationIds = [];
-
-            foreach ($lines as $line) {
-                $invoiceLine = $this->hydrateFromFinancialLine($line);
-                $invoice->addLine($invoiceLine);
-                $this->em->persist($invoiceLine);
-                $total = number_format((float) $total + (float) $line->getTotalAmount(), 2, '.', '');
-
-                $calculation = $line->getFinancialCalculation();
-                if ($calculation->getStatus() !== FinancialCalculationStatus::LOCKED) {
-                    $this->financialCalculationService->lock($calculation, $actor);
-                }
-                $lockedCalculationIds[$calculation->getId()] = true;
-            }
-
-            $invoice->setTotalAmount($total);
-            $this->em->flush();
-
-            $this->audit->recordGlobal($actor, AuditEventType::FIRM_INVOICE_CREATED_FROM_CALCULATION, [
-                'firmInvoiceId' => $invoice->getId(),
-                'firmId' => $firm->getId(),
-                'currency' => $currency,
-                'periodStart' => $periodStart->format('Y-m-d'),
-                'periodEnd' => $periodEnd->format('Y-m-d'),
-                'financialCalculationLineIds' => array_map(static fn (FinancialCalculationLine $l) => $l->getId(), $lines),
-                'financialCalculationIds' => array_keys($lockedCalculationIds),
-                'totalAmount' => $total,
-            ]);
-            $this->em->flush();
-
-            $result = $invoice;
-        });
-
-        return $result;
-    }
-
-    /**
      * §12/§13 du lot — GENERATED → CANCELLED uniquement (le seul état atteint avant
      * envoi dans ce produit, voir docblock de classe : GENERATED n'est jamais un simple
      * brouillon transitoire, c'est déjà le document définitif tant qu'il n'a pas été
@@ -450,6 +798,12 @@ class FirmInvoiceService
      */
     public function cancel(FirmInvoice $invoice, User $actor, ?string $reason = null): FirmInvoice
     {
+        if (in_array($invoice->getStatus(), [InvoiceStatus::DRAFT, InvoiceStatus::ABANDONED, InvoiceStatus::CANCELLED], true)) {
+            throw new InvoiceStatusTransitionException(sprintf(
+                'Le document #%d est %s : seule une facture générée s\'annule (un brouillon s\'abandonne via /abandon).',
+                $invoice->getId(), $invoice->getStatus()->value,
+            ));
+        }
         if ($invoice->getStatus() !== InvoiceStatus::GENERATED) {
             throw new DocumentAlreadyIssuedException(sprintf(
                 'Seule une facture GENERATED peut être annulée (statut actuel : %s).',
@@ -457,11 +811,18 @@ class FirmInvoiceService
             ));
         }
 
+        // D-134 — journalisé AVANT la suppression des lignes snapshot : la ligne redevient
+        // libre, son passage par cette facture reste visible dans son historique.
+        $this->lineEvents->recordForInvoice($invoice, FirmBillingLineEventType::INVOICE_CANCELLED, $actor, ['reason' => $reason]);
+
         $releasedLineIds = [];
         foreach ($invoice->getLines() as $line) {
             $financialLine = $line->getFinancialCalculationLine();
             if ($financialLine !== null) {
                 $releasedLineIds[] = $financialLine->getId();
+                // Côté inverse en mémoire resynchronisé (sinon un flush ultérieur dans le même
+                // EntityManager voit une ligne supprimée encore référencée).
+                $financialLine->releaseFirmInvoiceLine($line);
             }
             $this->em->remove($line);
         }
@@ -486,7 +847,7 @@ class FirmInvoiceService
      * réellement. `refresh()` (pas `em->clear()`) recharge l'état de chaque calcul
      * verrouillé sans détacher $firm/$actor de l'appelant, qui restent des références
      * valides après cet appel — l'éligibilité elle-même est revérifiée par une requête
-     * SQL fraîche dans validateFirmLineSelection()/isLineAlreadyAssigned(), jamais en
+     * SQL fraîche dans validateFirmLineSelection()/currentDocumentFor(), jamais en
      * relisant une collection en mémoire potentiellement périmée.
      *
      * @param int[] $lineIds
@@ -506,17 +867,16 @@ class FirmInvoiceService
         }
 
         $calculationIds = [];
+        $missionIds = [];
         foreach ($lines as $line) {
-            $calculationIds[$line->getFinancialCalculation()->getId()] = true;
+            $calculationIds[] = (int) $line->getFinancialCalculation()->getId();
+            $missionIds[] = (int) $line->getFinancialCalculation()->getMission()?->getId();
         }
-        $sortedCalculationIds = array_keys($calculationIds);
-        sort($sortedCalculationIds);
-
-        foreach ($sortedCalculationIds as $calculationId) {
-            $calculation = $this->em->find(FinancialCalculation::class, $calculationId);
-            $this->em->lock($calculation, LockMode::PESSIMISTIC_WRITE);
-            $this->em->refresh($calculation);
-        }
+        // Même ordre que FinancialCalculationService::recalculate() (mission puis calcul) :
+        // statut de mission courant (encodage rouvert) et statut de calcul courant
+        // (SUPERSEDED / LOCKED validés par une autre transaction pendant l'attente).
+        $this->lockFresh(Mission::class, $missionIds, LockMode::PESSIMISTIC_READ);
+        $this->lockFresh(FinancialCalculation::class, $calculationIds);
 
         return ['lines' => $lines, 'missingIds' => $missingIds];
     }
@@ -525,7 +885,7 @@ class FirmInvoiceService
      * @param FinancialCalculationLine[] $lines
      * @return DocumentLineSelectionAnomaly[]
      */
-    private function validateFirmLineSelection(array $lines, Firm $firm, string $currency, \DateTimeImmutable $periodStart, \DateTimeImmutable $periodEnd): array
+    private function validateFirmLineSelection(array $lines, Firm $firm, string $currency, \DateTimeImmutable $periodStart, \DateTimeImmutable $periodEnd, ?FirmInvoice $ownDraft = null): array
     {
         $anomalies = [];
 
@@ -548,30 +908,37 @@ class FirmInvoiceService
                 $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_CALCULATION_NOT_APPROVED', sprintf('Le calcul de la ligne #%d n\'est ni APPROVED ni LOCKED.', $line->getId()), $context);
                 continue;
             }
-            if ($this->isLineAlreadyAssigned($line)) {
-                $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_LINE_ALREADY_ASSIGNED', sprintf('La ligne #%d est déjà rattachée à un document.', $line->getId()), $context);
+            // Revue PR #1 — mêmes règles que la worklist (D-133) : le backend refuse ce que
+            // l'écran présente comme non facturable, même via un appel API direct.
+            if ($line->getFinancialCalculation()->getMission()?->getStatus() !== MissionStatus::VALIDATED) {
+                $anomalies[] = new DocumentLineSelectionAnomaly('MISSION_NOT_VALIDATED', sprintf(
+                    'La ligne #%d appartient à une mission dont l\'encodage a été rouvert : elle doit être revalidée avant facturation.', $line->getId(),
+                ), $context);
+                continue;
+            }
+            $zero = FirmBillingReason::forZeroAmountLine($line);
+            if ($zero !== null) {
+                $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_LINE_NOT_BILLABLE', sprintf(
+                    'La ligne #%d n\'est pas facturable : %s.', $line->getId(), mb_strtolower($zero[0]->label()),
+                ), $context + ['reasonCode' => $zero[0]->value]);
+                continue;
+            }
+            $document = $this->currentDocumentFor($line);
+            if ($document !== null && $document->getId() !== $ownDraft?->getId()) {
+                if ($document->getStatus() === InvoiceStatus::DRAFT) {
+                    // D-135 — jamais d'ajout silencieux à un second brouillon : l'appelant doit
+                    // la retirer du premier ou la déplacer explicitement (moveLinesToDraft()).
+                    $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_LINE_IN_DRAFT', sprintf(
+                        'La ligne #%d est déjà dans le brouillon %s #%d : retirez-la ou déplacez-la.',
+                        $line->getId(), $document->getFirm()?->getName() ?? '', $document->getId(),
+                    ), $context + ['draftId' => $document->getId()]);
+                } else {
+                    $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_LINE_ALREADY_ASSIGNED', sprintf('La ligne #%d est déjà rattachée à un document.', $line->getId()), $context + ['invoiceId' => $document->getId()]);
+                }
             }
         }
 
         return $anomalies;
-    }
-
-    /**
-     * Requête SQL fraîche (jamais l'association inverse potentiellement périmée en
-     * mémoire) — la seule vérification fiable sous verrou pour une ligne déjà rattachée
-     * par une transaction concurrente entre-temps committée (§14/§22).
-     */
-    private function isLineAlreadyAssigned(FinancialCalculationLine $line): bool
-    {
-        $count = (int) $this->em->createQueryBuilder()
-            ->select('COUNT(fil.id)')
-            ->from(FirmInvoiceLine::class, 'fil')
-            ->where('fil.financialCalculationLine = :line')
-            ->setParameter('line', $line)
-            ->getQuery()
-            ->getSingleScalarResult();
-
-        return $count > 0;
     }
 
     /** @return FinancialCalculationLine[] */

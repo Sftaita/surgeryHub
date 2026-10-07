@@ -114,6 +114,20 @@ final class FinancialCalculationService
             if ($current === null) {
                 throw new FinancialCalculationIneligibleException('No existing calculation to recalculate — use calculate() instead.');
             }
+            // Revue PR #1 — relecture verrouillante de l'état COURANT (SELECT … FOR UPDATE) :
+            // une génération de facture validée pendant l'attente du verrou a pu passer ce
+            // calcul LOCKED ; l'instantané REPEATABLE READ le montrerait encore APPROVED et
+            // le recalcul l'écraserait en SUPERSEDED (facture émise sur un calcul remplacé).
+            $current = $this->em->createQueryBuilder()
+                ->select('c')->from(FinancialCalculation::class, 'c')
+                ->where('c.id = :id')->setParameter('id', $current->getId())
+                ->getQuery()
+                ->setLockMode(LockMode::PESSIMISTIC_WRITE)
+                ->setHint(\Doctrine\ORM\Query::HINT_REFRESH, true)
+                ->getOneOrNullResult();
+            if (!in_array($current?->getStatus(), [FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED], true)) {
+                throw new FinancialCalculationIneligibleException('This mission\'s calculation changed concurrently — reload and retry.');
+            }
             if ($current->getStatus() === FinancialCalculationStatus::LOCKED) {
                 throw new FinancialCalculationIneligibleException('This mission\'s calculation is LOCKED and can no longer be recalculated.');
             }

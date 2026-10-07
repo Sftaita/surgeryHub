@@ -10,7 +10,8 @@ class PdfService
 {
     public function __construct(private readonly Environment $twig) {}
 
-    public function generateFromTemplate(string $template, array $data): string
+    /** @param 'portrait'|'landscape' $orientation */
+    public function generateFromTemplate(string $template, array $data, string $orientation = 'portrait'): string
     {
         $html = $this->twig->render($template, $data);
 
@@ -21,7 +22,7 @@ class PdfService
 
         $dompdf = new Dompdf($options);
         $dompdf->loadHtml($html, 'UTF-8');
-        $dompdf->setPaper('A4', 'portrait');
+        $dompdf->setPaper('A4', $orientation);
         $dompdf->render();
 
         return $dompdf->output();

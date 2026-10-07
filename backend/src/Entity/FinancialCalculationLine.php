@@ -228,6 +228,18 @@ class FinancialCalculationLine
 
     public function getFirmInvoiceLine(): ?FirmInvoiceLine { return $this->firmInvoiceLine; }
 
+    /**
+     * D-135 — synchronise UNIQUEMENT le côté inverse en mémoire quand une ligne de brouillon
+     * est retirée (sinon Doctrine voit une entité supprimée encore référencée). Ne touche
+     * aucune donnée financière : la ligne reste append-only.
+     */
+    public function releaseFirmInvoiceLine(FirmInvoiceLine $line): void
+    {
+        if ($this->firmInvoiceLine === $line) {
+            $this->firmInvoiceLine = null;
+        }
+    }
+
     public function getInstrumentistStatementLine(): ?InstrumentistStatementLine { return $this->instrumentistStatementLine; }
 
     /** §29 du lot — état dérivé depuis la relation, jamais un statut stocké en doublon. */

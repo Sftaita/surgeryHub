@@ -309,7 +309,8 @@ class InstrumentistStatementService
     }
 
     /**
-     * §16 du lot — miroir exact de FirmInvoiceService::createFromEligibleLines() : ne
+     * §16 du lot — même principe que la génération d'un brouillon firme
+     * (FirmInvoiceService::generateDraft(), D-137 ; le chemin direct firme a été supprimé) : ne
      * fait jamais confiance à previewEligibleLines(), reverrouille chaque
      * FinancialCalculation référencé (ordre croissant d'id) et revérifie individuellement
      * chaque ligne sélectionnée. Aucune lecture de User.hourlyRate/consultationFee, aucun
@@ -340,8 +341,8 @@ class InstrumentistStatementService
             $statement->setLegacySource(false);
             $statement->setInstrumentistNameSnapshot($this->buildDisplayName($instrumentist));
             $statement->setInstrumentistEmailSnapshot($instrumentist->getEmail());
-            // Persisté AVANT la boucle — voir FirmInvoiceService::createFromEligibleLines()
-            // pour la raison exacte (lock() flush() en interne à chaque itération).
+            // Persisté AVANT la boucle : FinancialCalculationService::lock() flush() en
+            // interne à chaque itération ; le document doit déjà être connu de l'UnitOfWork.
             $this->em->persist($statement);
 
             $total = '0.00';

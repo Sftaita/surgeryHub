@@ -11,7 +11,7 @@ use Doctrine\ORM\Mapping as ORM;
  * (§18 du lot) : `financialCalculationLine === null` = ligne LEGACY (FirmInvoiceService::
  * generate(), calcule elle-même le montant depuis PricingRule — chemin conservé
  * inchangé) ; `financialCalculationLine !== null` = ligne NOUVELLE
- * (FirmInvoiceService::createFromEligibleLines(), montants copiés exactement depuis
+ * (FirmInvoiceService::createDraft()/generateDraft(), montants copiés exactement depuis
  * FinancialCalculationLine, jamais recalculés). Un même document ne mélange jamais les
  * deux (voir FirmInvoice::isLegacySource()).
  */

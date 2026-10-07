@@ -11077,6 +11077,262 @@ rafraîchissement de « Planning publié », textes de notification.
 
 Non déployé.
 
+## D-133 — Facturation firmes : worklist partant de l'activité validée (remplace le cockpit D-123) (2026-10-07)
+
+**Statut : fait sur `feat/firm-billing-worklist-redesign` (non fusionné, non déployé).**
+
+### Constat (audit du 2026-10-07, lecture seule sur la prod)
+
+« À facturer = 0 » alors que des interventions et du matériel sont encodés et validés.
+En production : 32 missions `VALIDATED` (72 interventions, 116 lignes de matériel), **0**
+`FinancialCalculation` réussi à ce jour, 2 tentatives en échec le 2026-10-07
+(`MISSING_FIRM_INTERVENTION_RATE`, `MISSING_FIRM_MATERIAL_RATE` ×2, `MISSING_INSTRUMENTIST_RATE`).
+Couverture tarifaire : 100 des 116 lignes de matériel portent un article sans aucune
+`PricingRule MATERIAL_FEE` (articles `UNSPECIFIED`), 17 interventions sans
+`INTERVENTION_FEE`, 6 interventions sans firme principale ; seules 4 missions sur 32
+seraient valorisables aujourd'hui.
+
+Cause exacte, en trois couches :
+
+1. **Défaut de conception de la requête D-123** — le cockpit partait des
+   `FinancialCalculationLine`. Sans calcul réussi, aucune ligne : « À facturer = 0 » par
+   construction, l'activité n'apparaissait que comme un item par mission « à vérifier »,
+   sans détail des interventions/matériels, sans montant, sans distinction entre une
+   étape (calcul à lancer/approuver) et un problème de configuration.
+2. **Absence de calcul** — le calcul est manuel (D-073, conservé) et n'avait jamais été
+   lancé pour 30 missions.
+3. **Échec tout-ou-rien** — `FinancialCalculationService::buildAndPersist()` ne persiste
+   rien dès qu'UNE anomalie existe, y compris un tarif **instrumentiste** manquant : un seul
+   tarif absent (firme ou instrumentiste) fait disparaître toutes les lignes firmes de la
+   mission. Ces anomalies étaient affichées avec le message technique du moteur.
+
+Ni exclusion métier (aucune `FirmServiceOffering.feeApplicable = false`, aucun article
+`NOT_BILLABLE` en prod), ni facture existante n'expliquaient le zéro.
+
+### Décisions
+
+1. **Projection de lecture dédiée** `FirmBillingWorklistService` (`GET
+   /api/firm-billing/worklist`) : part des missions `VALIDATED` de la période (date effective
+   `COALESCE(actual_start_at, start_at)`), une ligne par `MissionIntervention` et par
+   `MaterialLine` (quantité > 0), enrichie de l'état financier. Toute ligne FIRM d'un calcul
+   actif sans source encodée reste visible (`FINANCIAL_LINE:{id}`). Pas de second moteur :
+   les montants viennent uniquement des `FinancialCalculationLine` du calcul actif
+   (`CALCULATED`/`APPROVED`/`LOCKED`) ou des `FirmInvoiceLine` ; jamais de
+   `SUPERSEDED`/`CANCELLED`, jamais d'estimation. Aucune migration.
+2. **Granularité** : le moteur produit au plus une ligne FIRM par source (firme principale
+   de l'intervention, firme de l'article) — la ligne de worklist est la source elle-même ;
+   pas de ventilation multi-firmes inventée côté frontend.
+3. **Statut + motif établis par le backend** (`FirmBillingStatus` × `FirmBillingReason`,
+   catalogue stable documenté dans `api.md` §24.3.1). `NOT_BILLABLE` n'est jamais une
+   anomalie. Les codes d'anomalie moteur sont repris à l'identique et traduits en français
+   contextualisé ; un code inconnu devient `CALCULATION_FAILED`. Le message technique ne
+   sort jamais de l'API (il reste dans `audit_event`).
+4. **Exclusions lues aux mêmes sources que le moteur** : `MaterialItem.billingStatus` et
+   `RepresentativePolicyResolver` (dans le même ordre de garde que
+   `resolveFirmInterventionLine()`). **Extension en lecture seule de l'exception D-092** :
+   la worklist est le second consommateur autorisé de `RepresentativePolicyResolver`, pour
+   expliquer l'absence de ligne — jamais pour produire un montant. Avant calcul, une
+   exclusion catalogue est donc déjà « Non facturable » ; un test vérifie que le moteur
+   confirme la même classification après calcul.
+5. **« À corriger »** : une anomalie par problème (dernier échec audité + étapes de workflow
+   « calcul à effectuer / à approuver / à mettre à jour / encodage rouvert »), regroupée par
+   mission à l'affichage. `resolved` = la cause n'existe plus dans la configuration actuelle
+   (mêmes résolveurs que le moteur). La relance n'est proposée en groupe que pour les
+   missions dont toutes les anomalies sont résolues (`POST /api/firm-billing/calculations`,
+   boucle sur `calculate()`/`recalculate()` existants) : on corrige la cause, puis on relance.
+6. **Tuiles backend** (`summary`) toujours avec leur unité (lignes, anomalies) ; compteurs de
+   factures déplacés dans l'onglet Factures. Onglets : Prestations | À corriger (N) |
+   Factures ; « Lignes facturées » devient le filtre « Facturés ».
+7. **Filtres** : période mensuelle, `firmIds[]` (OU), type, statut — tous serveur. Les tuiles
+   suivent firme/type mais pas le statut.
+8. **Exports** (`POST /api/firm-billing/worklist/export`) : exactement les clés cochées,
+   rejouées côté serveur (clé inconnue = 422, jamais un export partiel), sans doublon ;
+   PDF via `PdfService` (paysage) ; `.xlsx` OOXML natif (`XlsxWriter`, ext-zip — aucune
+   dépendance ajoutée) ; total = lignes `BILLABLE` uniquement ; aucune donnée patient.
+9. *(Remplacé par D-135/D-137 : toute facture naît désormais d'un brouillon ;
+   `from-financial-calculations` a été supprimé.)* **Génération de facture inchangée** (`from-financial-calculations`, une firme, IDs
+   explicites) depuis la sélection de lignes `canInvoice`. Les lignes neutralisées à 0 €
+   (délégué présent) ne sont plus proposées à la facturation — elles restaient « à
+   facturer » dans le cockpit D-123.
+
+### Limites restantes
+
+- Les missions `SUBMITTED` ne sont pas des prestations validées : seulement comptées
+  (`pendingValidationMissionCount`) avec un lien vers le Suivi des encodages.
+- Une exclusion constatée APRÈS calcul est relue dans la configuration actuelle (le calcul
+  ne persiste pas ses exclusions) ; une offre modifiée depuis le calcul peut donc changer le
+  motif affiché, jamais le montant.
+- `resolveFirmMaterialLine()` ne consulte pas `MaterialLineBillingState` (matériel rattaché
+  à un brouillon d'intervention) : point du moteur relevé pendant l'audit, non vérifié de
+  bout en bout ni modifié ici (0 ligne concernée en prod).
+- Actions « Configurer le tarif » : lien vers la page Prestations / Instrumentistes, sans
+  pré-sélection de la firme ou de l'article.
+- Le verrouillage à la maille du calcul (D-123) est inchangé.
+
+## D-134 — Facturation firmes : état documentaire courant, lien direct vers la ligne, historique append-only par ligne (2026-10-07)
+
+**Statut : fait sur `feat/firm-billing-worklist-redesign` (non fusionné, non déployé). Le
+brouillon, d'abord laissé en attente de décision, est implémenté par D-135.**
+
+### Constat d'audit — il n'existe aucun brouillon de facture firme
+
+`InvoiceStatus::DRAFT` existe (et c'est la valeur par défaut de l'entité `FirmInvoice`),
+mais **aucun chemin ne produit ni n'exploite un brouillon** :
+`FirmInvoiceService::createFromEligibleLines()` crée la facture directement `GENERATED`,
+lui attribue son numéro et verrouille (`LOCKED`) les calculs, dans une seule transaction ;
+aucun endpoint n'ajoute, ne retire ni ne déplace une ligne d'une facture existante ; la
+seule façon de « libérer » une ligne est d'annuler une facture `GENERATED` (ses lignes
+snapshot sont supprimées). Production : 0 facture. Conformément à la consigne, aucun
+pseudo-brouillon frontend n'est créé.
+
+### Décisions (implémentées)
+
+1. **Journal append-only `firm_billing_line_event`** (`FirmBillingLineEvent`, migration
+   additive `Version20261007180000`) : `sourceType` (INTERVENTION / MATERIAL), `sourceId`,
+   `missionId`, `firmId`, `invoiceId`, `eventType`, `actorId`, `occurredAt`, et les
+   snapshots utiles (numéro, statut et montant de la ligne au moment du fait, nom de la
+   firme, nom de l'acteur, devise, `details` JSON). **Aucune clé étrangère** : supprimer
+   une facture, un calcul ou un utilisateur ne peut ni effacer ni altérer un événement.
+   Immuabilité imposée par l'entité (aucun setter, `PreUpdate`/`PreRemove` lèvent une
+   exception).
+2. **Seul point d'écriture** : `FirmBillingLineEventRecorder`, appelé dans la transaction
+   du fait métier. Événements émis aujourd'hui : `INVOICE_GENERATED`
+   (`createFromEligibleLines` — depuis D-137 : `generateDraft`), `INVOICE_SENT` (`issue`/`markSent`), `PAYMENT_RECORDED`
+   (`DocumentPaymentService::recordPayment`, avec la mention « soldée »), `INVOICE_PAID`
+   (`markPaid`, qui reçoit désormais l'acteur), `INVOICE_CANCELLED` (`cancel`, journalisé
+   AVANT la suppression des lignes snapshot : la ligne redevient libre, son passage reste).
+   `ADDED_TO_DRAFT` / `REMOVED_FROM_DRAFT` / `MOVED_TO_DRAFT` sont réservés et ne sont
+   jamais émis tant que le brouillon n'existe pas. Seuls les documents `STANDARD` sont
+   journalisés.
+3. **L'état courant et l'historique sont deux lectures distinctes.** La worklist expose
+   `currentInvoice: null | {id, number, status, statusLabel, firmName, editable}` et
+   `invoiceState` = `FREE | IN_DRAFT | GENERATED | SENT | PAID` (libellés « Libre »,
+   « Dans un brouillon », « Facture générée », « Envoyée », « Payée »), calculés depuis
+   l'appartenance ACTUELLE (`FirmInvoiceLine`), plus `hasHistory` (au moins un événement
+   au journal : une ligne « Libre » peut avoir un passé). L'historique est servi par
+   `GET /api/firm-billing/lines/{INTERVENTION|MATERIAL}/{id}/history`, lu exclusivement
+   dans le journal, jamais reconstitué depuis les `FirmInvoiceLine`.
+4. **Clé de ligne partagée** `sourceKey` = `INTERVENTION:{id}` / `MATERIAL:{id}` (worklist,
+   journal, détail facture). Lien direct :
+   `/app/m/billing/firm-invoices/{id}?focusLine={sourceKey}` — paramètre d'URL, donc
+   conservé après un rechargement ; la page détail fait défiler jusqu'à la ligne, la met en
+   évidence quelques secondes et la marque « Ligne recherchée » ; une ligne qui ne figure
+   plus sur la facture est signalée (aucune mise en évidence trompeuse). Une facture
+   émise s'ouvre en lecture seule, comme aujourd'hui.
+5. **Unicité « un seul document actif »** : déjà garantie en base par la contrainte UNIQUE
+   `firm_invoice_line.financial_calculation_line_id`, plus `canInvoice = false` dès que la
+   ligne appartient à un document ; une seconde génération reste refusée
+   (`FINANCIAL_LINE_ALREADY_ASSIGNED`). Une facture émise ne se modifie pas : correction
+   uniquement par notes de crédit/débit (D-076), inchangé.
+
+Aucune reprise de l'historique antérieur : le journal commence au déploiement (0 facture
+en production, donc rien n'est perdu).
+
+### Brouillon : constat et proposition (NON implémenté, décision produit requise)
+
+Pour « Dans un brouillon », « Déplacer vers… » et un générateur de facture éditable, le
+modèle doit évoluer ainsi (proposition) :
+
+- **Cycle** `DRAFT → GENERATED → SENT → PAID` (+ abandon d'un brouillon). Un brouillon
+  n'a **pas de numéro** : le numéro est attribué au passage `GENERATED` (pas de trou dans
+  la numérotation). `generatedAt` reste `NULL` en brouillon.
+- **Verrouillage du calcul** à la génération, pas à l'ajout au brouillon (sinon un
+  brouillon abandonné figerait un calcul). Conséquence : une ligne de brouillon peut
+  devenir obsolète (calcul recalculé → ancienne `FinancialCalculationLine`
+  `SUPERSEDED`) ; la génération revalide déjà tout sous verrou et la refuserait — le
+  brouillon devra afficher ces lignes obsolètes.
+- **Unicité** : la contrainte UNIQUE existante couvre aussi les brouillons (une ligne
+  dans un seul document à la fois). « Déplacer vers… » = retrait de A + ajout à B dans une
+  transaction, un seul événement `MOVED_TO_DRAFT` portant `details.fromInvoiceId`.
+- **Endpoints** (proposés) : `POST /api/firm-invoices/drafts`,
+  `POST /api/firm-invoices/{id}/lines`, `DELETE /api/firm-invoices/{id}/lines/{lineId}`,
+  `POST /api/firm-invoices/{id}/lines/move`, `POST /api/firm-invoices/{id}/generate`,
+  `DELETE /api/firm-invoices/{id}` (abandon du brouillon, lignes libérées, événements
+  `REMOVED_FROM_DRAFT`). Lignes snapshot et total recalculés tant que `DRAFT`, figés à
+  `generate`. Autorisation : `BillingVoter`, transitions par endpoints dédiés.
+- **Migration** : probablement aucune colonne (`number` et `generatedAt` sont déjà
+  nullables) ; à confirmer avec la numérotation.
+- **Frontend** : la page détail affichée en mode éditable pour un `DRAFT`, avec le même
+  mécanisme `?focusLine=`.
+
+Questions ouvertes : verrouiller le calcul à l'ajout ou à la génération ; un brouillon
+par firme et par période, ou plusieurs en parallèle ; possibilité d'abandonner un
+brouillon.
+
+## D-135 — Vrai brouillon de facture firme (2026-10-07)
+
+**Statut : fait sur `feat/firm-billing-worklist-redesign` (non fusionné, non déployé).**
+Fait suite à D-134 (« Brouillon : constat et proposition »). Décisions validées par le
+produit le 2026-10-07 :
+
+1. **Verrouillage du calcul à la GÉNÉRATION**, jamais à l'ajout au brouillon : un brouillon
+   abandonné ne fige aucun calcul. Conséquence assumée : une ligne de brouillon devient
+   **obsolète** si son calcul est recalculé/annulé entre-temps (`lines[].stale`, motif
+   worklist `DRAFT_LINE_STALE` + anomalie « Ouvrir le brouillon ») ; la génération la
+   refuse (`FINANCIAL_LINE_STALE`) tant qu'elle n'est pas retirée et remplacée.
+2. **Plusieurs brouillons en parallèle**, y compris pour une même firme et une même période.
+3. **Un brouillon peut être abandonné** : ses lignes sont libérées (événement
+   `REMOVED_FROM_DRAFT`, `details.draftAbandoned`) ; le document reste `CANCELLED` (devenu
+   `ABANDONED` par D-137), sans
+   numéro (traçabilité de l'identifiant référencé par le journal).
+
+### Modèle
+
+- Cycle `DRAFT → GENERATED → SENT → PAID` (+ `DRAFT → CANCELLED` par abandon). Aucune
+  migration : `number` et `generatedAt` étaient déjà nullables. Le numéro est attribué à la
+  génération (`generateNumber`, aucun trou dû aux brouillons abandonnés).
+- Les lignes d'un brouillon sont des `FirmInvoiceLine` ordinaires (mêmes snapshots que la
+  génération) : la contrainte UNIQUE `firm_invoice_line.financial_calculation_line_id`
+  garantit en base qu'une ligne n'est **active que dans un seul document**, brouillon
+  compris. `FirmInvoiceService::currentDocumentFor()` vérifie aussi la **source métier**
+  (une version périmée de la même intervention/du même matériel restée dans un brouillon).
+- Ajouter une ligne déjà présente dans un AUTRE brouillon est refusé
+  (`FINANCIAL_LINE_IN_DRAFT`, avec `draftId`) — jamais d'ajout silencieux : il faut la
+  retirer ou la **déplacer** (`moveLinesToDraft` : retrait + ajout dans une transaction, UN
+  événement `MOVED_TO_DRAFT` avec `details.fromInvoiceId`). Une ligne d'un document émis
+  n'est ni ajoutable, ni retirable, ni déplaçable (`FINANCIAL_LINE_ALREADY_ASSIGNED` /
+  409 `INVOICE_STATUS_TRANSITION_INVALID`) ; la correction reste celle des notes de
+  crédit/débit (D-076).
+- Concurrence : verrou pessimiste sur chaque brouillon touché (id croissant) relu sous
+  verrou (garde `DRAFT`), puis verrous des calculs (inchangé), contrainte UNIQUE en filet.
+- Worklist : une ligne en brouillon reste `BILLABLE` (motif `IN_DRAFT`, « Dans un
+  brouillon ») — un brouillon n'est pas « facturé » ; `canInvoice = false`,
+  `canMoveToDraft = true`. Les compteurs statistiques « calcul approuvé sans document » /
+  « partiellement documenté » ignorent désormais les lignes de brouillon ; les autres
+  agrégats ne lisaient déjà que les documents SENT/PAID.
+- `FinancialCalculationLine::releaseFirmInvoiceLine()` resynchronise uniquement le côté
+  inverse en mémoire au retrait d'une ligne de brouillon (aucune donnée financière
+  modifiée).
+
+### Endpoints (BillingVoter::MANAGE, une transition = un endpoint)
+
+`POST /api/firm-invoices/drafts`, `POST /api/firm-invoices/{id}/lines`,
+`POST /api/firm-invoices/{id}/lines/move`, `DELETE /api/firm-invoices/{id}/lines/{lineId}`,
+`POST /api/firm-invoices/{id}/generate`, `POST /api/firm-invoices/{id}/abandon`. Détail
+dans `api.md` §24.3.2. `allowedActions` d'un brouillon : `["editLines", "generate",
+"abandon"]`. *(D-137 : la génération directe a depuis été supprimée.)* `POST /from-financial-calculations` (génération directe) est conservé pour
+compatibilité API mais n'est plus proposé par l'interface : tout passe par un brouillon.
+
+### Interface
+
+Worklist : sélection → « Créer un brouillon », « Ajouter au brouillon… » (brouillons de la
+même firme et devise) ou, pour des lignes déjà en brouillon, « Déplacer vers… » (brouillon
+courant exclu). Le clic sur « Brouillon · Arthrex · #124 » ouvre le **générateur**
+(`/app/m/billing/firm-invoices/124?focusLine=…`) : retrait de lignes, lignes obsolètes,
+« Générer la facture », « Abandonner le brouillon » (confirmation dans une fenêtre, jamais
+une boîte navigateur). Une facture émise s'ouvre en lecture seule avec le même ciblage.
+
+### Limites
+
+- L'ajout de lignes se fait depuis la worklist (pas de recherche de lignes dans le
+  générateur lui-même).
+- Pas d'événement `AuditEvent` dédié à la création d'un brouillon : le journal par ligne
+  (D-134) trace chaque mouvement ; la génération et l'abandon réutilisent
+  `FIRM_INVOICE_CREATED_FROM_CALCULATION` (`fromDraft`) et `FIRM_INVOICE_CANCELLED`
+  (`draftAbandoned`).
+- Un brouillon abandonné reste listé (statut « Annulée », sans numéro). *(Corrigé par D-137 :
+  statut `ABANDONED` « Brouillon abandonné », masqué par défaut.)*
+
 ---
 
 ## D-136 — Suivi des encodages : tiroir superposé, encodage lisible après validation, code couleur des heures, rappel des heures réelles (2026-10-07)
@@ -11142,3 +11398,93 @@ Retours d'usage du cockpit « Suivi des encodages » (D-118/D-120) :
   un composant orphelin.
 
 Déployé : `v2026.10.07-prod`.
+
+## D-137 — Facturation firmes : brouillon abandonné ≠ facture annulée, ajout depuis le brouillon, brouillon seul chemin de génération (2026-10-07)
+
+**Statut : fait sur `feat/firm-billing-worklist-redesign` (non fusionné, non déployé).**
+Numéro D-137 : D-136 est pris sur `origin/main` (suivi des encodages).
+
+### Constat (audit)
+
+- Un brouillon abandonné prenait le statut `CANCELLED`, identique à une facture `GENERATED`
+  annulée : la liste affichait « Annulée » et le compteur des factures annulées l'incluait,
+  alors qu'un brouillon n'a jamais été une facture (ni numéro, ni émission, ni verrou).
+- `POST /api/firm-invoices/from-financial-calculations` permettait encore de créer une
+  facture `GENERATED` sans brouillon. Audit des appels : aucun appelant en production (la
+  fonction frontend n'était plus importée depuis D-135 ; seul le contrôleur appelait
+  `FirmInvoiceService::createFromEligibleLines()`) ; 36 appels dans 11 fichiers de tests
+  (fixtures) ; documentation (api.md §24.3/§36, architecture.md).
+- Ajouter des lignes à un brouillon obligeait à revenir dans la worklist.
+
+### Décisions
+
+1. **Nouveau statut `InvoiceStatus::ABANDONED`** pour `DRAFT → ABANDONED` (abandon) ;
+   `CANCELLED` reste réservé à `GENERATED → CANCELLED` (facture annulée). Une valeur d'enum
+   explicite plutôt qu'une inférence (numéro nul + statut annulé) que le frontend devrait
+   deviner. **Aucune migration** : colonne `VARCHAR(20)` ; aucune donnée à reprendre (les
+   brouillons n'ont jamais existé hors de cette branche ; 0 facture en production).
+   Un brouillon abandonné reste consultable (lecture seule, aucune action), sans numéro,
+   **masqué par défaut** de `GET /api/firm-invoices` (`includeAbandoned=1` ou
+   `status=ABANDONED` pour l'afficher), compté à part (`summary.invoices.abandoned`), jamais
+   dans `cancelled` ni dans les statistiques (qui ne lisent que SENT/PAID/GENERATED). Il ne
+   compte jamais comme document actif (`currentDocumentFor()`, historique : statuts
+   `CANCELLED`/`ABANDONED` exclus). Libellés : « Facture annulée » / « Brouillon
+   abandonné » ; historique : « Retirée lors de l'abandon du brouillon X ».
+2. **Génération directe supprimée** : route `from-financial-calculations` (firme), méthode
+   `createFromEligibleLines()` de `FirmInvoiceService` et fonction frontend
+   `createFirmInvoiceFromCalculations` retirées ; les tests passent par
+   `createDraft()` + `generateDraft()`. Workflow unique :
+   `DRAFT → GENERATED → SENT → PAID`, `DRAFT → ABANDONED`, `GENERATED → CANCELLED`. Le flux
+   **instrumentiste** (`instrumentist-statements/from-financial-calculations`) est distinct
+   et inchangé. `GET /eligible-lines` (prévisualisation en lecture seule, ne crée rien) est
+   conservé.
+3. **Ajout depuis le générateur** : `GET /api/firm-invoices/{id}/candidate-lines` renvoie la
+   projection worklist (D-133) de la firme et de la période du brouillon, restreinte aux
+   lignes `canInvoice` de sa devise : aucune règle nouvelle, le backend reste la source de
+   vérité. L'ajout réutilise `POST /{id}/lines` (revalidation sous verrou, événements
+   `ADDED_TO_DRAFT`). Le frontend n'applique aucun filtre propre.
+4. **Pas de PDF de facture pour un brouillon** (`DRAFT` ou `ABANDONED`) :
+   `GET /api/firm-invoices/{id}/pdf` renvoie `409` — un document sans numéro ne doit pas
+   pouvoir circuler comme une facture. La page d'un brouillon abandonné n'affiche ni solde,
+   ni actions, ni PDF (constaté au test navigateur : elle montrait « Solde : Payé »).
+5. Robustesse : `cancel()` resynchronise aussi le côté inverse en mémoire
+   (`FinancialCalculationLine::releaseFirmInvoiceLine()`), comme le retrait de brouillon
+   (sinon un `flush()` ultérieur dans le même EntityManager échoue — révélé par les tests
+   passant désormais par le brouillon).
+6. **Revue PR #1 — la règle « non facturable » est appliquée par le backend**, plus seulement
+   par l'écran : `FirmInvoiceService::validateFirmLineSelection()` (création, ajout, déplacement
+   et génération d'un brouillon) refuse une ligne à 0 € (`FINANCIAL_LINE_NOT_BILLABLE`, motif
+   `REPRESENTATIVE_PRESENT` ou `ZERO_AMOUNT`) et une ligne d'une mission dont l'encodage a été
+   rouvert (`MISSION_NOT_VALIDATED`). Le classement « ligne à 0 € » est une seule fonction,
+   `FirmBillingReason::forZeroAmountLine()`, utilisée par la worklist et par la validation ; elle
+   lit uniquement ce que le moteur a persisté (`adjustmentReasonSnapshot`, posé par
+   `FinancialCalculationService::applyAdjustment()` quand le délégué neutralise le forfait) —
+   jamais une réinterprétation de la politique délégué. Une ligne de brouillon d'une mission
+   rouverte ou à 0 € n'est plus présentée « Dans un brouillon » (facturable) dans la worklist.
+7. **Revue PR #1 — verrous : relire l'état courant, pas l'instantané.** MySQL/InnoDB tourne en
+   `REPEATABLE READ` : `lock()` puis `refresh()` relit l'instantané de la transaction, si bien
+   qu'un recalcul (`SUPERSEDED`) ou une génération (`LOCKED`, brouillon `GENERATED`) validés
+   pendant l'attente du verrou restaient invisibles — la génération du brouillon pouvait
+   re-verrouiller un calcul remplacé, le recalcul écraser un calcul `LOCKED` (déjà facturé), et
+   le déplacement retirer une ligne d'une facture générée. Les verrous passent désormais par
+   une **lecture verrouillante** (`SELECT … FOR UPDATE` + `Query::HINT_REFRESH`), ordre d'id
+   croissant : brouillons (avec garde `DRAFT` **et** `STANDARD`), puis missions (partagé), puis
+   calculs (exclusif) — même ordre mission → calcul que `FinancialCalculationService::recalculate()`,
+   qui relit lui aussi son calcul courant sous verrou avant la garde `LOCKED`. Le déplacement
+   découvre les brouillons d'origine hors transaction et les revérifie sous verrou ; une ligne
+   n'est notée « déplacée » que si elle a réellement quitté son brouillon. Trois tests
+   d'intégration à deux connexions (`FirmInvoiceConcurrencyTest`) reproduisaient ces courses
+   avant correction.
+
+### Invariants conservés
+
+Pas de numéro sur un brouillon ; numéro à la génération ; aucun trou par abandon ; calcul
+verrouillé à la génération seulement ; ligne obsolète bloquante ; un seul document actif
+par ligne ; déplacement atomique ; journal append-only ; facture émise en lecture seule ;
+aucune donnée patient.
+
+### Limites
+
+- Le générateur ne propose que les prestations de la **période** du brouillon (règle de
+  période existante de la génération).
+- Un brouillon abandonné ne peut pas être « rouvert » : on en crée un nouveau.

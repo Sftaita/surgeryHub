@@ -13,9 +13,9 @@ use App\Enum\InvoiceStatus;
 use App\Enum\PaymentMethod;
 use App\Security\Voter\BillingVoter;
 use App\Service\DocumentPaymentService;
-use App\Service\FirmBillingCockpitService;
 use App\Service\FinancialCorrectionService;
 use App\Service\FirmInvoiceService;
+use App\Service\FirmBilling\FirmBillingWorklistService;
 use App\Service\NotificationService;
 use App\Service\PdfService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -36,35 +36,8 @@ class FirmInvoiceController extends AbstractController
         private readonly PdfService $pdfService,
         private readonly EntityManagerInterface $em,
         private readonly NotificationService $notificationService,
-        private readonly FirmBillingCockpitService $cockpitService,
+        private readonly FirmBillingWorklistService $worklist,
     ) {}
-
-    /**
-     * D-123 — cockpit « Facturation firmes » : KPI + « à facturer » (groupé par firme et
-     * devise) + « à vérifier » (raison explicite) + « facturées », pour une période de dates
-     * métier inclusives. Lecture seule ; aucun calcul tarifaire.
-     */
-    #[Route('/cockpit', name: 'api_firm_invoices_cockpit', methods: ['GET'])]
-    public function cockpit(Request $request): JsonResponse
-    {
-        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
-
-        $from = $this->parseBusinessDay($request->query->get('from'));
-        $to = $this->parseBusinessDay($request->query->get('to'));
-        if ($from === null || $to === null || $from > $to) {
-            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'from et to (AAAA-MM-JJ, from ≤ to) sont requis.']], 422);
-        }
-
-        $firm = null;
-        if ($firmId = $request->query->getInt('firmId')) {
-            $firm = $this->em->find(Firm::class, $firmId);
-            if (!$firm) {
-                return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Firme introuvable.']], 404);
-            }
-        }
-
-        return $this->json($this->cockpitService->build($from, $to, $firm));
-    }
 
     #[Route('', name: 'api_firm_invoices_list', methods: ['GET'])]
     public function list(Request $request): JsonResponse
@@ -80,13 +53,26 @@ class FirmInvoiceController extends AbstractController
         if ($firmId = $request->query->getInt('firmId')) {
             $qb->andWhere('i.firm = :fid')->setParameter('fid', $firmId);
         }
+        // D-133 — multi-sélection de firmes (OU) : firmIds[]=1&firmIds[]=2.
+        $firmIds = array_values(array_filter(array_map('intval', (array) ($request->query->all()['firmIds'] ?? [])), static fn (int $id) => $id > 0));
+        if ($firmIds !== []) {
+            $qb->andWhere('IDENTITY(i.firm) IN (:fids)')->setParameter('fids', $firmIds);
+        }
         if ($status = $request->query->get('status')) {
-            $qb->andWhere('i.status = :status')->setParameter('status', InvoiceStatus::from($status));
+            $statusEnum = InvoiceStatus::tryFrom((string) $status);
+            if ($statusEnum === null) {
+                return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Statut de facture inconnu.']], 422);
+            }
+            $qb->andWhere('i.status = :status')->setParameter('status', $statusEnum);
+        } elseif (!$request->query->getBoolean('includeAbandoned')) {
+            // D-137 — un brouillon abandonné n'a jamais été une facture : masqué par défaut,
+            // visible avec status=ABANDONED ou includeAbandoned=1.
+            $qb->andWhere('i.status != :abandoned')->setParameter('abandoned', InvoiceStatus::ABANDONED);
         }
         if ($year = $request->query->getInt('year')) {
             $qb->andWhere('YEAR(i.periodStart) = :year')->setParameter('year', $year);
         }
-        // D-123 — filtre de période du cockpit (dates métier inclusives sur periodStart).
+        // D-123 — filtre de période de la facturation firmes (dates métier inclusives sur periodStart).
         if ($from = $this->parseBusinessDay($request->query->get('from'))) {
             $qb->andWhere('i.periodStart >= :from')->setParameter('from', $from->setTime(0, 0, 0));
         }
@@ -144,35 +130,132 @@ class FirmInvoiceController extends AbstractController
         return $this->json($this->invoiceService->previewEligibleLines($firm, $currency, $startDay->setTime(0, 0, 0), $endDay->setTime(23, 59, 59)));
     }
 
-    #[Route('/from-financial-calculations', name: 'api_firm_invoices_create_from_calculations', methods: ['POST'])]
-    public function createFromFinancialCalculations(Request $request, #[CurrentUser] User $actor): JsonResponse
+    // ── D-135 — brouillon de facture (transitions par endpoints dédiés) ──────
+
+    /** POST /api/firm-invoices/drafts { firmId, currency, periodStart, periodEnd, financialLineIds[] } */
+    #[Route('/drafts', name: 'api_firm_invoices_drafts_create', methods: ['POST'])]
+    public function createDraft(Request $request, #[CurrentUser] User $actor): JsonResponse
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
 
         $data = json_decode($request->getContent(), true) ?? [];
-        $firmId = $data['firmId'] ?? null;
-        $currency = $data['currency'] ?? 'EUR';
-        $periodStart = $data['periodStart'] ?? null;
-        $periodEnd = $data['periodEnd'] ?? null;
-        $selectedLineIds = $data['selectedFinancialCalculationLineIds'] ?? [];
-
-        if (!$firmId || !$periodStart || !$periodEnd || empty($selectedLineIds)) {
-            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'firmId, periodStart, periodEnd et selectedFinancialCalculationLineIds sont requis.']], 422);
+        $lineIds = $this->lineIdsFrom($data);
+        $startDay = $this->parseBusinessDay($data['periodStart'] ?? null);
+        $endDay = $this->parseBusinessDay($data['periodEnd'] ?? null);
+        if (empty($data['firmId']) || $startDay === null || $endDay === null || $lineIds === null) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'firmId, periodStart, periodEnd et financialLineIds sont requis.']], 422);
         }
-
-        $firm = $this->em->find(Firm::class, $firmId);
+        $firm = $this->em->find(Firm::class, (int) $data['firmId']);
         if (!$firm) {
             return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Firme introuvable.']], 404);
         }
 
-        $startDay = $this->parseBusinessDay($periodStart);
-        $endDay = $this->parseBusinessDay($periodEnd);
-        if ($startDay === null || $endDay === null) {
-            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'Format de date invalide.']], 422);
+        $draft = $this->invoiceService->createDraft($firm, (string) ($data['currency'] ?? 'EUR'), $startDay->setTime(0, 0, 0), $endDay->setTime(23, 59, 59), $lineIds, $actor);
+        return $this->json($this->serializeInvoiceDetail($draft), 201);
+    }
+
+    /**
+     * GET /api/firm-invoices/{id}/candidate-lines — D-137 : prestations ajoutables à CE
+     * brouillon (même firme, devise et période ; libres, facturables, non obsolètes), au
+     * format des lignes de la worklist. 409 si le document n'est pas un brouillon.
+     */
+    #[Route('/{id}/candidate-lines', name: 'api_firm_invoices_draft_candidate_lines', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function draftCandidateLines(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $draft = $this->em->find(FirmInvoice::class, $id);
+        if (!$draft) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+        if ($draft->getStatus() !== InvoiceStatus::DRAFT) {
+            return $this->json(['error' => ['status' => 409, 'code' => 'INVOICE_STATUS_TRANSITION_INVALID', 'message' => 'Seul un brouillon accepte de nouvelles prestations.']], 409);
         }
 
-        $invoice = $this->invoiceService->createFromEligibleLines($firm, $currency, $startDay->setTime(0, 0, 0), $endDay->setTime(23, 59, 59), array_map('intval', (array) $selectedLineIds), $actor);
-        return $this->json($this->serializeInvoiceDetail($invoice), 201);
+        return $this->json(['rows' => $this->worklist->candidatesForDraft($draft)]);
+    }
+
+    /** POST /api/firm-invoices/{id}/lines { financialLineIds[] } — ajout à un brouillon (jamais une ligne d'un autre brouillon). */
+    #[Route('/{id}/lines', name: 'api_firm_invoices_draft_lines_add', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function addDraftLines(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $draft = $this->em->find(FirmInvoice::class, $id);
+        if (!$draft) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+        $lineIds = $this->lineIdsFrom(json_decode($request->getContent(), true) ?? []);
+        if ($lineIds === null) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'financialLineIds est requis.']], 422);
+        }
+
+        return $this->json($this->serializeInvoiceDetail($this->invoiceService->addLinesToDraft($draft, $lineIds, $actor)));
+    }
+
+    /** POST /api/firm-invoices/{id}/lines/move { financialLineIds[] } — « Déplacer vers… » ce brouillon. */
+    #[Route('/{id}/lines/move', name: 'api_firm_invoices_draft_lines_move', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function moveDraftLines(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $draft = $this->em->find(FirmInvoice::class, $id);
+        if (!$draft) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+        $lineIds = $this->lineIdsFrom(json_decode($request->getContent(), true) ?? []);
+        if ($lineIds === null) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'financialLineIds est requis.']], 422);
+        }
+
+        return $this->json($this->serializeInvoiceDetail($this->invoiceService->moveLinesToDraft($draft, $lineIds, $actor)));
+    }
+
+    /** DELETE /api/firm-invoices/{id}/lines/{lineId} — retrait d'une ligne d'un brouillon (jamais d'une facture émise). */
+    #[Route('/{id}/lines/{lineId}', name: 'api_firm_invoices_draft_lines_remove', methods: ['DELETE'], requirements: ['id' => '\d+', 'lineId' => '\d+'])]
+    public function removeDraftLine(int $id, int $lineId, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $draft = $this->em->find(FirmInvoice::class, $id);
+        if (!$draft) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+
+        return $this->json($this->serializeInvoiceDetail($this->invoiceService->removeLineFromDraft($draft, $lineId, $actor)));
+    }
+
+    /** POST /api/firm-invoices/{id}/generate — DRAFT → GENERATED (numéro, verrouillage des calculs). */
+    #[Route('/{id}/generate', name: 'api_firm_invoices_draft_generate', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function generateDraft(int $id, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $draft = $this->em->find(FirmInvoice::class, $id);
+        if (!$draft) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+
+        return $this->json($this->serializeInvoiceDetail($this->invoiceService->generateDraft($draft, $actor)));
+    }
+
+    /** POST /api/firm-invoices/{id}/abandon { reason? } — abandon d'un brouillon : lignes libérées. */
+    #[Route('/{id}/abandon', name: 'api_firm_invoices_draft_abandon', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function abandonDraft(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $draft = $this->em->find(FirmInvoice::class, $id);
+        if (!$draft) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+        $data = json_decode($request->getContent(), true) ?? [];
+
+        return $this->json($this->serializeInvoiceDetail($this->invoiceService->abandonDraft($draft, $actor, isset($data['reason']) ? (string) $data['reason'] : null)));
+    }
+
+    /** @return int[]|null */
+    private function lineIdsFrom(array $data): ?array
+    {
+        $ids = $data['financialLineIds'] ?? null;
+        if (!is_array($ids) || $ids === [] || count($ids) > 500 || array_filter($ids, static fn ($v) => !is_int($v) || $v <= 0) !== []) {
+            return null;
+        }
+        return array_values(array_unique($ids));
     }
 
     #[Route('/{id}/cancel', name: 'api_firm_invoices_cancel', methods: ['POST'])]
@@ -199,6 +282,10 @@ class FirmInvoiceController extends AbstractController
         $invoice = $this->em->find(FirmInvoice::class, $id);
         if (!$invoice) {
             return new JsonResponse(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+        // D-137 — un brouillon (en cours ou abandonné) n'est pas une facture : ni numéro, ni PDF.
+        if (in_array($invoice->getStatus(), [InvoiceStatus::DRAFT, InvoiceStatus::ABANDONED], true)) {
+            return new JsonResponse(['error' => ['status' => 409, 'code' => 'INVOICE_STATUS_TRANSITION_INVALID', 'message' => "Un brouillon n'a pas de PDF de facture : générez d'abord la facture."]], 409);
         }
 
         $pdf = $this->pdfService->generateFromTemplate('pdf/firm_invoice.html.twig', [
@@ -253,7 +340,7 @@ class FirmInvoiceController extends AbstractController
     }
 
     #[Route('/{id}/mark-paid', name: 'api_firm_invoices_mark_paid', methods: ['POST'], requirements: ['id' => '\d+'])]
-    public function markPaid(int $id): JsonResponse
+    public function markPaid(int $id, #[CurrentUser] User $actor): JsonResponse
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
 
@@ -262,7 +349,7 @@ class FirmInvoiceController extends AbstractController
             return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
         }
 
-        $invoice = $this->invoiceService->markPaid($invoice);
+        $invoice = $this->invoiceService->markPaid($invoice, $actor);
         return $this->json($this->serializeInvoiceDetail($invoice));
     }
 
@@ -509,6 +596,7 @@ class FirmInvoiceController extends AbstractController
     private function allowedActions(FirmInvoice $i): array
     {
         return match ($i->getStatus()) {
+            InvoiceStatus::DRAFT => ['editLines', 'generate', 'abandon'],
             InvoiceStatus::GENERATED => ['send', 'cancel'],
             InvoiceStatus::SENT => ['markPaid'],
             default => [],
@@ -547,7 +635,10 @@ class FirmInvoiceController extends AbstractController
         $base = $this->serializeInvoice($i);
         $base['billingEmailTo'] = $i->getBillingEmailTo();
         $base['billingEmailCc'] = $i->getBillingEmailCc() ?? [];
+        $stale = $this->invoiceService->staleDraftLineIds($i);
         $base['lines'] = array_map(fn($l) => [
+            // D-135 — ligne d'un brouillon dont le calcul a changé depuis l'ajout.
+            'stale' => isset($stale[(int) $l->getId()]),
             'id' => $l->getId(),
             'missionId' => $l->getMission()->getId(),
             'missionDate' => ($l->getFinancialCalculationLine()?->getEffectiveAt() ?? $l->getMission()->getStartAt())->format('Y-m-d'),
@@ -560,6 +651,9 @@ class FirmInvoiceController extends AbstractController
             'financialCalculationId' => $l->getFinancialCalculationLine()?->getFinancialCalculation()->getId(),
             'interventionId' => $l->getMissionIntervention()?->getId(),
             'materialLineId' => $l->getMaterialLine()?->getId(),
+            // D-134 — même clé que la worklist et le journal (deep-link ?focusLine=).
+            'sourceKey' => $l->getMaterialLine() !== null ? 'MATERIAL:' . $l->getMaterialLine()->getId()
+                : ($l->getMissionIntervention() !== null ? 'INTERVENTION:' . $l->getMissionIntervention()->getId() : null),
             'lineType' => $l->getLineType()->value,
             'descriptionSnapshot' => $l->getDescriptionSnapshot(),
             'firmNameSnapshot' => $l->getFirmNameSnapshot(),

@@ -62,7 +62,7 @@ class FirmInvoice implements PayableDocument
     /**
      * §18 du lot — true pour tout document créé avant ce lot ou via le chemin
      * FirmInvoiceService::generate() legacy (calcule lui-même les montants) ; false pour
-     * un document créé via createFromEligibleLines() (lignes issues de
+     * un document créé via createDraft()/generateDraft() (D-135/D-137 — lignes issues de
      * FinancialCalculationLine). Jamais mélangé au sein d'un même document.
      */
     #[ORM\Column(options: ['default' => true])]

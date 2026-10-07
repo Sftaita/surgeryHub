@@ -279,7 +279,7 @@ final class FinancialStatisticsQueryServiceTest extends KernelTestCase
 
     /**
      * Pour les assertions dont la date de rattachement est horodatée serveur
-     * ("maintenant" — FirmInvoice.sentAt/createdAt via issue()/createFromEligibleLines(),
+     * ("maintenant" — FirmInvoice.sentAt/createdAt via issue()/generateDraft(),
      * jamais la date de la mission simulée) : fenêtre large couvrant "aujourd'hui" sans
      * dépendre de la date système exacte du run. `firmId` obligatoire en pratique — voir
      * docblock de `filter()`.
@@ -597,7 +597,7 @@ final class FinancialStatisticsQueryServiceTest extends KernelTestCase
         foreach ($calc->getLines() as $l) {
             if ($l->getLineType()->value === 'FIRM_INTERVENTION_FEE') { $firmLine = $l; }
         }
-        $invoice = $this->invoiceService->createFromEligibleLines($firm, 'EUR', new \DateTimeImmutable('2026-05-01'), new \DateTimeImmutable('2026-06-01'), [$firmLine->getId()], $actor);
+        $invoice = $this->invoiceService->generateDraft($this->invoiceService->createDraft($firm, 'EUR', new \DateTimeImmutable('2026-05-01'), new \DateTimeImmutable('2026-06-01'), [$firmLine->getId()], $actor), $actor);
         $this->created['invoices'][] = $invoice->getId();
 
         $pipeline = $this->stats->pipeline($this->filter(new \DateTimeImmutable('2026-05-01'), new \DateTimeImmutable('2026-06-01'), firmId: $firm->getId()));
@@ -609,7 +609,7 @@ final class FinancialStatisticsQueryServiceTest extends KernelTestCase
     {
         [$mission, $calc, , , $firm, $actor] = $this->makeApprovedMissionForPipeline();
         $firmLine = $this->firstFirmLine($calc);
-        $invoice = $this->invoiceService->createFromEligibleLines($firm, 'EUR', new \DateTimeImmutable('2026-05-01'), new \DateTimeImmutable('2026-06-01'), [$firmLine->getId()], $actor);
+        $invoice = $this->invoiceService->generateDraft($this->invoiceService->createDraft($firm, 'EUR', new \DateTimeImmutable('2026-05-01'), new \DateTimeImmutable('2026-06-01'), [$firmLine->getId()], $actor), $actor);
         $this->created['invoices'][] = $invoice->getId();
 
         // §17 : une facture GENERATED n'a pas de sentAt — sa date de rattachement est
@@ -692,7 +692,7 @@ final class FinancialStatisticsQueryServiceTest extends KernelTestCase
         [, $calc, , , , $actor] = $this->makeApprovedMission($firm, $unitPrice, '0.00', '0.00', new \DateTimeImmutable($dateStr . ' 09:00:00'), 30);
         $firmLine = $this->firstFirmLine($calc);
 
-        $invoice = $this->invoiceService->createFromEligibleLines($firm, 'EUR', new \DateTimeImmutable('2020-01-01'), new \DateTimeImmutable('2030-01-01'), [$firmLine->getId()], $actor);
+        $invoice = $this->invoiceService->generateDraft($this->invoiceService->createDraft($firm, 'EUR', new \DateTimeImmutable('2020-01-01'), new \DateTimeImmutable('2030-01-01'), [$firmLine->getId()], $actor), $actor);
         $this->created['invoices'][] = $invoice->getId();
         $invoice = $this->invoiceService->issue($invoice, $actor);
 

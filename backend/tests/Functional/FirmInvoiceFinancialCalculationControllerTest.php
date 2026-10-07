@@ -26,8 +26,9 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
 /**
- * EPIC Exécution & Valorisation, Lot 4 (D-074) — endpoints
- * eligible-lines/from-financial-calculations/cancel, permissions BillingVoter::MANAGE.
+ * EPIC Exécution & Valorisation, Lot 4 (D-074) — endpoints eligible-lines / brouillon
+ * (drafts → generate, D-135/D-137) / cancel, permissions BillingVoter::MANAGE. La génération
+ * directe sans brouillon (POST /from-financial-calculations) n'existe plus (D-137).
  */
 final class FirmInvoiceFinancialCalculationControllerTest extends WebTestCase
 {
@@ -217,18 +218,26 @@ final class FirmInvoiceFinancialCalculationControllerTest extends WebTestCase
         self::assertCount(1, $eligible['lines']);
         $lineId = $eligible['lines'][0]['id'];
 
-        $createResponse = $this->postJson($client, $token, '/api/firm-invoices/from-financial-calculations', [
+        $draftResponse = $this->postJson($client, $token, '/api/firm-invoices/drafts', [
             'firmId' => $firm->getId(),
             'currency' => 'EUR',
             'periodStart' => $today->modify('-1 day')->format('Y-m-d'),
             'periodEnd' => $today->modify('+1 day')->format('Y-m-d'),
-            'selectedFinancialCalculationLineIds' => [$lineId],
+            'financialLineIds' => [$lineId],
         ]);
-        self::assertSame(Response::HTTP_CREATED, $createResponse->getStatusCode(), (string) $createResponse->getContent());
-        $invoice = json_decode((string) $createResponse->getContent(), true);
-        $this->created['invoices'][] = $invoice['id'];
+        self::assertSame(Response::HTTP_CREATED, $draftResponse->getStatusCode(), (string) $draftResponse->getContent());
+        $draft = json_decode((string) $draftResponse->getContent(), true);
+        $this->created['invoices'][] = $draft['id'];
+        self::assertSame('DRAFT', $draft['status']);
+        self::assertNull($draft['number']);
 
+        $createResponse = $this->postJson($client, $token, "/api/firm-invoices/{$draft['id']}/generate");
+        self::assertSame(Response::HTTP_OK, $createResponse->getStatusCode(), (string) $createResponse->getContent());
+        $invoice = json_decode((string) $createResponse->getContent(), true);
+
+        self::assertSame($draft['id'], $invoice['id']);
         self::assertSame('GENERATED', $invoice['status']);
+        self::assertNotNull($invoice['number']);
         self::assertFalse($invoice['legacySource']);
         self::assertSame($lineId, $invoice['lines'][0]['financialCalculationLineId']);
         self::assertFalse($invoice['lines'][0]['legacy']);
@@ -259,18 +268,44 @@ final class FirmInvoiceFinancialCalculationControllerTest extends WebTestCase
             'currency' => 'EUR',
             'periodStart' => $today->modify('-1 day')->format('Y-m-d'),
             'periodEnd' => $today->modify('+1 day')->format('Y-m-d'),
-            'selectedFinancialCalculationLineIds' => [$lineId],
+            'financialLineIds' => [$lineId],
         ];
 
-        $first = $this->postJson($client, $token, '/api/firm-invoices/from-financial-calculations', $body);
+        $first = $this->postJson($client, $token, '/api/firm-invoices/drafts', $body);
         self::assertSame(Response::HTTP_CREATED, $first->getStatusCode());
-        $this->created['invoices'][] = json_decode((string) $first->getContent(), true)['id'];
+        $draftId = json_decode((string) $first->getContent(), true)['id'];
+        $this->created['invoices'][] = $draftId;
 
-        $second = $this->postJson($client, $token, '/api/firm-invoices/from-financial-calculations', $body);
+        // Second brouillon sur la même ligne : refusé, jamais un ajout silencieux.
+        $second = $this->postJson($client, $token, '/api/firm-invoices/drafts', $body);
         self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $second->getStatusCode());
         $errorBody = json_decode((string) $second->getContent(), true);
         self::assertSame('DOCUMENT_LINE_SELECTION_FAILED', $errorBody['error']['code']);
-        self::assertSame('FINANCIAL_LINE_ALREADY_ASSIGNED', $errorBody['error']['violations'][0]['code'] ?? null, json_encode($errorBody));
+        self::assertSame('FINANCIAL_LINE_IN_DRAFT', $errorBody['error']['violations'][0]['code'] ?? null, json_encode($errorBody));
+
+        // Une fois générée, la ligne est définitivement prise.
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $token, "/api/firm-invoices/{$draftId}/generate")->getStatusCode());
+        $third = $this->postJson($client, $token, '/api/firm-invoices/drafts', $body);
+        self::assertSame('FINANCIAL_LINE_ALREADY_ASSIGNED', json_decode((string) $third->getContent(), true)['error']['violations'][0]['code'] ?? null);
+    }
+
+    public function test_direct_generation_without_draft_no_longer_exists(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        [$firm, $today] = $this->makeApprovedCalculationLine($manager);
+        $token = $this->login($client, $manager);
+
+        $response = $this->postJson($client, $token, '/api/firm-invoices/from-financial-calculations', [
+            'firmId' => $firm->getId(), 'currency' => 'EUR',
+            'periodStart' => $today->modify('-1 day')->format('Y-m-d'), 'periodEnd' => $today->modify('+1 day')->format('Y-m-d'),
+            'selectedFinancialCalculationLineIds' => [1],
+        ]);
+        self::assertContains($response->getStatusCode(), [Response::HTTP_NOT_FOUND, Response::HTTP_METHOD_NOT_ALLOWED], 'aucune route de génération directe');
+
+        $this->em->clear();
+        self::assertSame([], $this->em->getRepository(\App\Entity\FirmInvoice::class)->findBy(['firm' => $firm->getId()]), 'aucune facture créée');
+        self::assertFalse(method_exists(\App\Service\FirmInvoiceService::class, 'createFromEligibleLines'), 'aucun chemin de service direct');
     }
 
     public function test_instrumentist_cannot_manage_invoices(): void

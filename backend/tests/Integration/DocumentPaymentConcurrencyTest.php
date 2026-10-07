@@ -122,12 +122,13 @@ final class DocumentPaymentConcurrencyTest extends KernelTestCase
             $this->financialCalculationServiceFor($em),
             new AuditService($em),
             new EncodingTrackingRepository($em->getConnection(), $em, new MissionPopulationClauseBuilder()),
+            new \App\Service\FirmBilling\FirmBillingLineEventRecorder($em),
         );
     }
 
     private function paymentServiceFor(EntityManagerInterface $em): DocumentPaymentService
     {
-        return new DocumentPaymentService($em, new AuditService($em));
+        return new DocumentPaymentService($em, new AuditService($em), new \App\Service\FirmBilling\FirmBillingLineEventRecorder($em));
     }
 
     private function setLockTimeout(EntityManagerInterface $em, int $seconds): void
@@ -222,7 +223,7 @@ final class DocumentPaymentConcurrencyTest extends KernelTestCase
         $firmLine = $calc->getLines()->filter(static fn ($l) => $l->getLineType()->value === 'FIRM_INTERVENTION_FEE')->first();
 
         $invoiceService = $this->firmInvoiceServiceFor($this->em);
-        $invoice = $invoiceService->createFromEligibleLines($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$firmLine->getId()], $actor);
+        $invoice = $invoiceService->generateDraft($invoiceService->createDraft($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$firmLine->getId()], $actor), $actor);
         $invoice = $invoiceService->issue($invoice, $actor);
         $this->created['invoices'][] = $invoice->getId();
 
