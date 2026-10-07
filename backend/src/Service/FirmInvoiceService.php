@@ -31,6 +31,7 @@ use App\Exception\DocumentLineSelectionException;
 use App\Exception\InvoiceStatusTransitionException;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\Query;
 
 /**
  * EPIC Exécution & Valorisation, Lot 4 (D-074) puis nettoyage architectural (D-121) —
@@ -216,33 +217,29 @@ class FirmInvoiceService
      */
     public function moveLinesToDraft(FirmInvoice $target, array $financialLineIds, User $actor): FirmInvoice
     {
-        $this->em->wrapInTransaction(function () use ($target, $financialLineIds, $actor): void {
-            /** @var array<int, array{line: FinancialCalculationLine, from: FirmInvoice}> $moves */
-            $moves = [];
-            $sources = [];
-            foreach (array_unique(array_map('intval', $financialLineIds)) as $id) {
-                $fcl = $this->em->find(FinancialCalculationLine::class, $id);
-                $from = $fcl !== null ? $this->currentDocumentFor($fcl) : null;
-                if ($from !== null && $from->getId() !== $target->getId()) {
-                    if ($from->getStatus() !== InvoiceStatus::DRAFT) {
-                        throw new DocumentLineSelectionException([new DocumentLineSelectionAnomaly('FINANCIAL_LINE_ALREADY_ASSIGNED', sprintf('La ligne #%d appartient à une facture émise : elle ne peut plus être déplacée.', $id), ['financialCalculationLineId' => $id, 'invoiceId' => $from->getId()])]);
-                    }
-                    $moves[] = ['line' => $fcl, 'from' => $from];
-                    $sources[$from->getId()] = $from;
+        // Découverte des brouillons d'origine AVANT la transaction (aucun instantané figé),
+        // puis revérification sous verrou : un brouillon généré/abandonné entre-temps est refusé.
+        $sources = $this->draftSourcesFor($target, $financialLineIds);
+
+        $this->em->wrapInTransaction(function () use ($target, $financialLineIds, $actor, $sources): void {
+            $this->lockDrafts([$target, ...array_values($sources)]);
+            $moves = $this->draftSourcesFor($target, $financialLineIds, withLines: true);
+            foreach ($moves as ['from' => $from]) {
+                if (!isset($sources[$from->getId()])) {
+                    throw new InvoiceStatusTransitionException('Les brouillons ont changé pendant le déplacement : rechargez et recommencez.');
                 }
             }
-            $this->lockDrafts([$target, ...array_values($sources)]);
 
             // Retrait des brouillons d'origine (sans événement REMOVED : le déplacement est UN fait).
             $movedFrom = [];
-            foreach ($moves as ['line' => $fcl, 'from' => $from]) {
-                foreach ($from->getLines() as $invoiceLine) {
+            foreach ($moves as $fclId => ['line' => $fcl, 'from' => $from]) {
+                foreach ($from->getLines()->toArray() as $invoiceLine) {
                     if ($invoiceLine->getFinancialCalculationLine()?->getId() === $fcl->getId()
                         || $this->sameSource($invoiceLine, $fcl)) {
                         $this->detachDraftLine($from, $invoiceLine);
+                        $movedFrom[$fclId] = $from;
                     }
                 }
-                $movedFrom[$fcl->getId()] = $from;
             }
             $this->em->flush();
             foreach ($sources as $from) {
@@ -269,6 +266,34 @@ class FirmInvoiceService
         });
 
         return $target;
+    }
+
+    /**
+     * Brouillon d'origine de chaque ligne à déplacer vers $target (lignes libres ignorées).
+     * Une ligne d'un document émis est refusée.
+     *
+     * @param int[] $financialLineIds
+     * @return array<int, mixed> par id de brouillon (FirmInvoice), ou par id de ligne ({line, from}) si $withLines
+     */
+    private function draftSourcesFor(FirmInvoice $target, array $financialLineIds, bool $withLines = false): array
+    {
+        $result = [];
+        foreach (array_unique(array_map('intval', $financialLineIds)) as $id) {
+            $fcl = $this->em->find(FinancialCalculationLine::class, $id);
+            $from = $fcl !== null ? $this->currentDocumentFor($fcl) : null;
+            if ($from === null || $from->getId() === $target->getId()) {
+                continue;
+            }
+            if ($from->getStatus() !== InvoiceStatus::DRAFT) {
+                throw new DocumentLineSelectionException([new DocumentLineSelectionAnomaly('FINANCIAL_LINE_ALREADY_ASSIGNED', sprintf('La ligne #%d appartient à une facture émise : elle ne peut plus être déplacée.', $id), ['financialCalculationLineId' => $id, 'invoiceId' => $from->getId()])]);
+            }
+            if ($withLines) {
+                $result[$id] = ['line' => $fcl, 'from' => $from];
+            } else {
+                $result[$from->getId()] = $from;
+            }
+        }
+        return $result;
     }
 
     /** DRAFT → GENERATED : numéro, verrouillage des calculs, revalidation complète sous verrou. */
@@ -457,20 +482,47 @@ class FirmInvoiceService
     /** Verrou pessimiste des brouillons (ordre d'id croissant) puis garde DRAFT relue sous verrou. @param FirmInvoice[] $drafts */
     private function lockDrafts(array $drafts): void
     {
-        $byId = [];
-        foreach ($drafts as $d) {
-            $byId[$d->getId()] = $d;
-        }
-        ksort($byId);
-        foreach ($byId as $d) {
-            $this->em->lock($d, LockMode::PESSIMISTIC_WRITE);
-            $this->em->refresh($d);
-            if ($d->getStatus() !== InvoiceStatus::DRAFT) {
+        $ids = array_map(static fn (FirmInvoice $d) => (int) $d->getId(), $drafts);
+        foreach ($this->lockFresh(FirmInvoice::class, $ids) as $d) {
+            if ($d->getStatus() !== InvoiceStatus::DRAFT || $d->getDocumentType() !== FinancialDocumentType::STANDARD) {
                 throw new InvoiceStatusTransitionException(sprintf(
                     'Le document #%d n\'est plus un brouillon (statut %s) : il ne se modifie plus comme un brouillon.', $d->getId(), $d->getStatus()->value,
                 ));
             }
         }
+    }
+
+    /**
+     * Revue PR #1 — verrou ET lecture de l'état COURANT en une requête :
+     * `SELECT … FOR UPDATE` (lecture courante InnoDB) avec HINT_REFRESH pour écraser
+     * l'entité déjà gérée. Jamais `lock()` puis `refresh()` : en REPEATABLE READ, le
+     * `refresh()` relit l'instantané de la transaction, donc un recalcul ou une
+     * génération validés pendant l'attente du verrou resteraient invisibles.
+     * Ordre d'id croissant (pas d'interblocage entre deux appelants).
+     *
+     * @template T of object
+     * @param class-string<T> $class
+     * @param int[] $ids
+     * @return T[]
+     */
+    private function lockFresh(string $class, array $ids, int $lockMode = LockMode::PESSIMISTIC_WRITE): array
+    {
+        $ids = array_values(array_unique(array_filter($ids)));
+        if ($ids === []) {
+            return [];
+        }
+        sort($ids);
+
+        return $this->em->createQueryBuilder()
+            ->select('e')
+            ->from($class, 'e')
+            ->where('e.id IN (:ids)')
+            ->setParameter('ids', $ids)
+            ->orderBy('e.id', 'ASC')
+            ->getQuery()
+            ->setLockMode($lockMode)
+            ->setHint(Query::HINT_REFRESH, true)
+            ->getResult();
     }
 
     private function detachDraftLine(FirmInvoice $draft, FirmInvoiceLine $line): void
@@ -809,17 +861,16 @@ class FirmInvoiceService
         }
 
         $calculationIds = [];
+        $missionIds = [];
         foreach ($lines as $line) {
-            $calculationIds[$line->getFinancialCalculation()->getId()] = true;
+            $calculationIds[] = (int) $line->getFinancialCalculation()->getId();
+            $missionIds[] = (int) $line->getFinancialCalculation()->getMission()?->getId();
         }
-        $sortedCalculationIds = array_keys($calculationIds);
-        sort($sortedCalculationIds);
-
-        foreach ($sortedCalculationIds as $calculationId) {
-            $calculation = $this->em->find(FinancialCalculation::class, $calculationId);
-            $this->em->lock($calculation, LockMode::PESSIMISTIC_WRITE);
-            $this->em->refresh($calculation);
-        }
+        // Même ordre que FinancialCalculationService::recalculate() (mission puis calcul) :
+        // statut de mission courant (encodage rouvert) et statut de calcul courant
+        // (SUPERSEDED / LOCKED validés par une autre transaction pendant l'attente).
+        $this->lockFresh(Mission::class, $missionIds, LockMode::PESSIMISTIC_READ);
+        $this->lockFresh(FinancialCalculation::class, $calculationIds);
 
         return ['lines' => $lines, 'missingIds' => $missingIds];
     }

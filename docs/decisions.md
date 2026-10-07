@@ -11461,6 +11461,20 @@ Numéro D-137 : D-136 est pris sur `origin/main` (suivi des encodages).
    `FinancialCalculationService::applyAdjustment()` quand le délégué neutralise le forfait) —
    jamais une réinterprétation de la politique délégué. Une ligne de brouillon d'une mission
    rouverte ou à 0 € n'est plus présentée « Dans un brouillon » (facturable) dans la worklist.
+7. **Revue PR #1 — verrous : relire l'état courant, pas l'instantané.** MySQL/InnoDB tourne en
+   `REPEATABLE READ` : `lock()` puis `refresh()` relit l'instantané de la transaction, si bien
+   qu'un recalcul (`SUPERSEDED`) ou une génération (`LOCKED`, brouillon `GENERATED`) validés
+   pendant l'attente du verrou restaient invisibles — la génération du brouillon pouvait
+   re-verrouiller un calcul remplacé, le recalcul écraser un calcul `LOCKED` (déjà facturé), et
+   le déplacement retirer une ligne d'une facture générée. Les verrous passent désormais par
+   une **lecture verrouillante** (`SELECT … FOR UPDATE` + `Query::HINT_REFRESH`), ordre d'id
+   croissant : brouillons (avec garde `DRAFT` **et** `STANDARD`), puis missions (partagé), puis
+   calculs (exclusif) — même ordre mission → calcul que `FinancialCalculationService::recalculate()`,
+   qui relit lui aussi son calcul courant sous verrou avant la garde `LOCKED`. Le déplacement
+   découvre les brouillons d'origine hors transaction et les revérifie sous verrou ; une ligne
+   n'est notée « déplacée » que si elle a réellement quitté son brouillon. Trois tests
+   d'intégration à deux connexions (`FirmInvoiceConcurrencyTest`) reproduisaient ces courses
+   avant correction.
 
 ### Invariants conservés
 

@@ -290,4 +290,119 @@ final class FirmInvoiceConcurrencyTest extends KernelTestCase
         self::assertNotNull($lineFinal->getFirmInvoiceLine(), 'la ligne est bien rattachée à exactement une facture.');
         $this->em->clear();
     }
+
+    // ── Revue PR #1 — courses brouillon / génération / recalcul (REPEATABLE READ) ──
+    //
+    // Le worker A ouvre sa transaction et lit (instantané InnoDB figé), le worker B valide
+    // un changement concurrent, puis A reprend : A doit agir sur l'état COURANT, jamais sur
+    // son instantané (un « lock() puis refresh() » relit l'instantané, pas la ligne à jour).
+
+    /** @return array{0: Firm, 1: FinancialCalculationLine, 2: User, 3: \DateTimeImmutable, 4: FirmInvoice} */
+    private function approvedLineInADraft(): array
+    {
+        [$firm, $line, $actor, $today] = $this->makeApprovedCalculationWithOneFirmLine();
+        $draft = $this->firmInvoiceServiceFor($this->em)->createDraft($firm, 'EUR', $today->modify('-1 day'), $today->modify('+1 day'), [$line->getId()], $actor);
+        $this->created['invoices'][] = $draft->getId();
+        return [$firm, $line, $actor, $today, $draft];
+    }
+
+    private function openSnapshot(EntityManagerInterface $em, int $calculationId): void
+    {
+        $em->getConnection()->beginTransaction();
+        self::assertNotFalse($em->getConnection()->fetchOne('SELECT status FROM financial_calculation WHERE id = ?', [$calculationId]));
+    }
+
+    private function closeSnapshot(EntityManagerInterface $em): void
+    {
+        while ($em->getConnection()->isTransactionActive()) {
+            $em->getConnection()->rollBack();
+        }
+    }
+
+    public function test_generation_never_relocks_a_calculation_superseded_while_it_waited(): void
+    {
+        [, $line, $actor, , $draft] = $this->approvedLineInADraft();
+        $calcId = $line->getFinancialCalculation()->getId();
+
+        $emA = $this->freshEntityManager();
+        $this->openSnapshot($emA, $calcId); // A voit APPROVED
+        $this->freshEntityManager()->getConnection()->executeStatement(
+            "UPDATE financial_calculation SET status = 'SUPERSEDED' WHERE id = ?", [$calcId], // recalcul concurrent validé
+        );
+
+        $generated = false;
+        $codes = [];
+        try {
+            $this->firmInvoiceServiceFor($emA)->generateDraft($emA->find(FirmInvoice::class, $draft->getId()), $emA->find(User::class, $actor->getId()));
+            $generated = true;
+        } catch (\App\Exception\DocumentLineSelectionException $e) {
+            $codes = array_map(static fn ($a) => $a->code, $e->getAnomalies());
+        } finally {
+            $this->closeSnapshot($emA);
+        }
+
+        self::assertFalse($generated, 'la génération a utilisé son instantané périmé (calcul encore « APPROVED »)');
+        self::assertContains('FINANCIAL_LINE_STALE', $codes);
+        self::assertSame('SUPERSEDED', $this->freshEntityManager()->getConnection()->fetchOne('SELECT status FROM financial_calculation WHERE id = ?', [$calcId]), 'jamais re-verrouillé par-dessus SUPERSEDED');
+    }
+
+    public function test_recalculation_never_supersedes_a_calculation_locked_by_a_concurrent_generation(): void
+    {
+        [, $line, $actor, , $draft] = $this->approvedLineInADraft();
+        $calcId = $line->getFinancialCalculation()->getId();
+        $missionId = $line->getFinancialCalculation()->getMission()->getId();
+
+        $emA = $this->freshEntityManager();
+        $this->openSnapshot($emA, $calcId); // A voit APPROVED
+        $emB = $this->freshEntityManager();
+        $this->firmInvoiceServiceFor($emB)->generateDraft($emB->find(FirmInvoice::class, $draft->getId()), $emB->find(User::class, $actor->getId())); // B génère : LOCKED, validé
+
+        $recalculated = false;
+        try {
+            $new = $this->financialCalculationServiceFor($emA)->recalculate($emA->find(Mission::class, $missionId), $emA->find(User::class, $actor->getId()));
+            $recalculated = true;
+            $this->created['calculations'][] = $new->getId();
+        } catch (\App\Exception\FinancialCalculationIneligibleException) {
+        } finally {
+            $this->closeSnapshot($emA);
+        }
+
+        self::assertFalse($recalculated, 'le recalcul a remplacé un calcul déjà facturé (LOCKED)');
+        self::assertSame('LOCKED', $this->freshEntityManager()->getConnection()->fetchOne('SELECT status FROM financial_calculation WHERE id = ?', [$calcId]));
+    }
+
+    public function test_move_never_detaches_a_line_from_a_draft_generated_concurrently(): void
+    {
+        [$firm, $line, $actor, $today, $source] = $this->approvedLineInADraft();
+        $target = new FirmInvoice();
+        $target->setFirm($firm);
+        $target->setCurrency('EUR');
+        $target->setPeriodStart($today->modify('-1 day'));
+        $target->setPeriodEnd($today->modify('+1 day'));
+        $target->setStatus(\App\Enum\InvoiceStatus::DRAFT);
+        $target->setLegacySource(false);
+        $target->setTotalAmount('0.00');
+        $this->em->persist($target); $this->em->flush();
+        $this->created['invoices'][] = $target->getId();
+
+        $emA = $this->freshEntityManager();
+        $this->openSnapshot($emA, $line->getFinancialCalculation()->getId()); // A voit la source DRAFT
+        $emB = $this->freshEntityManager();
+        $this->firmInvoiceServiceFor($emB)->generateDraft($emB->find(FirmInvoice::class, $source->getId()), $emB->find(User::class, $actor->getId())); // source GENERATED, validé
+
+        $moved = false;
+        try {
+            $this->firmInvoiceServiceFor($emA)->moveLinesToDraft($emA->find(FirmInvoice::class, $target->getId()), [$line->getId()], $emA->find(User::class, $actor->getId()));
+            $moved = true;
+        } catch (\Throwable) {
+        } finally {
+            $this->closeSnapshot($emA);
+        }
+
+        $conn = $this->freshEntityManager()->getConnection();
+        self::assertFalse($moved, 'une ligne d\'une facture générée a été déplacée');
+        self::assertSame(1, (int) $conn->fetchOne('SELECT COUNT(*) FROM firm_invoice_line WHERE invoice_id = ?', [$source->getId()]), 'la facture générée garde sa ligne');
+        self::assertSame(0, (int) $conn->fetchOne('SELECT COUNT(*) FROM firm_invoice_line WHERE invoice_id = ?', [$target->getId()]));
+    }
+
 }
