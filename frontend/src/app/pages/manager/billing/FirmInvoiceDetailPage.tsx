@@ -242,7 +242,7 @@ export default function FirmInvoiceDetailPage() {
 
       {/* Lines */}
       {focusLine && invoiceQuery.data && !focusedLineFound && (
-        <Alert severity="info">La ligne recherchée ne figure plus sur cette facture — consultez son historique depuis la facturation firmes.</Alert>
+        <Alert severity="info">La ligne recherchée ne figure plus sur ce document — consultez son historique depuis la facturation firmes.</Alert>
       )}
 
       <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>

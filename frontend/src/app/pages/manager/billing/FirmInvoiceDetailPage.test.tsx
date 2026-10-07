@@ -133,7 +133,7 @@ describe("FirmInvoiceDetailPage — deep-link depuis la worklist (D-134)", () =>
     getFirmInvoiceMock.mockResolvedValue(invoice());
     renderPage("/app/m/billing/firm-invoices/42?focusLine=MATERIAL:999");
 
-    expect(await screen.findByText(/La ligne recherchée ne figure plus sur cette facture/)).toBeInTheDocument();
+    expect(await screen.findByText(/La ligne recherchée ne figure plus sur ce document/)).toBeInTheDocument();
     expect(screen.queryByText("Ligne recherchée")).not.toBeInTheDocument();
     expect(scrollSpy).not.toHaveBeenCalled();
   });
