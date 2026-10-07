@@ -1263,6 +1263,9 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         self::assertSame([], $this->json($abandon)['allowedActions']);
         self::assertSame(409, $this->get($client, $token, "/api/firm-invoices/{$draft['id']}/candidate-lines")->getStatusCode());
         self::assertSame(409, $this->get($client, $token, "/api/firm-invoices/{$draft['id']}/pdf")->getStatusCode(), 'pas de PDF de facture pour un brouillon abandonné');
+        $cancelAbandoned = $this->post($client, $token, "/api/firm-invoices/{$draft['id']}/cancel", ['reason' => 'test']);
+        self::assertSame(409, $cancelAbandoned->getStatusCode(), 'un brouillon (abandonné) ne s’annule pas');
+        self::assertSame('INVOICE_STATUS_TRANSITION_INVALID', $this->json($cancelAbandoned)['error']['code'], 'transition invalide, pas « document déjà émis »');
 
         // Lignes libérées, historique conservé.
         $freed = $this->rowsByType($this->worklist($client, $token, [$firm]));

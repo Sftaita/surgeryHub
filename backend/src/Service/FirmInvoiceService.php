@@ -119,15 +119,6 @@ class FirmInvoiceService
         return $invoice;
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────
-
-    /**
-     * EPIC Exécution & Valorisation, Lot 6 (D-076) — §19 du lot : préfixe distinct par
-     * type documentaire (traçabilité — un numéro doit permettre de distinguer une
-     * facture d'une note de crédit/débit d'un coup d'œil), même stratégie de comptage
-     * COUNT(...)+1 filtrée par préfixe (le filet de sécurité reste la contrainte
-     * UNIQUE en base, inchangée — voir D-074/D-075).
-     */
     // ── D-135 — vrai brouillon de facture firme ──────────────────────────────
     //
     // DRAFT → (generateDraft) → GENERATED → SENT → PAID, ou DRAFT → (abandonDraft).
@@ -554,6 +545,15 @@ class FirmInvoiceService
         return ($day ?? new \DateTimeImmutable())->setTime(23, 59, 59);
     }
 
+    // ── Helpers ──────────────────────────────────────────────────────
+
+    /**
+     * EPIC Exécution & Valorisation, Lot 6 (D-076) — §19 du lot : préfixe distinct par
+     * type documentaire (traçabilité — un numéro doit permettre de distinguer une
+     * facture d'une note de crédit/débit d'un coup d'œil), même stratégie de comptage
+     * COUNT(...)+1 filtrée par préfixe (le filet de sécurité reste la contrainte
+     * UNIQUE en base, inchangée — voir D-074/D-075).
+     */
     private function generateNumber(\DateTimeImmutable $periodStart, FinancialDocumentType $type = FinancialDocumentType::STANDARD): string
     {
         $year = (int) $periodStart->format('Y');
@@ -798,6 +798,12 @@ class FirmInvoiceService
      */
     public function cancel(FirmInvoice $invoice, User $actor, ?string $reason = null): FirmInvoice
     {
+        if (in_array($invoice->getStatus(), [InvoiceStatus::DRAFT, InvoiceStatus::ABANDONED, InvoiceStatus::CANCELLED], true)) {
+            throw new InvoiceStatusTransitionException(sprintf(
+                'Le document #%d est %s : seule une facture générée s\'annule (un brouillon s\'abandonne via /abandon).',
+                $invoice->getId(), $invoice->getStatus()->value,
+            ));
+        }
         if ($invoice->getStatus() !== InvoiceStatus::GENERATED) {
             throw new DocumentAlreadyIssuedException(sprintf(
                 'Seule une facture GENERATED peut être annulée (statut actuel : %s).',

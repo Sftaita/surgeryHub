@@ -106,7 +106,8 @@ export default function FirmInvoiceDetailPage() {
       toast.success("Facture envoyée");
       qc.invalidateQueries({ queryKey: ["firm-invoice", Number(id)] });
       qc.invalidateQueries({ queryKey: ["firm-invoices"] });
-      qc.invalidateQueries({ queryKey: ["firm-billing-cockpit"] });
+      qc.invalidateQueries({ queryKey: ["firm-billing-worklist"] });
+      qc.invalidateQueries({ queryKey: ["firm-billing-line-history"] });
     },
     onError: (err) => toast.error(extractError(err)),
   });
@@ -117,7 +118,8 @@ export default function FirmInvoiceDetailPage() {
       toast.success("Facture marquée payée");
       qc.invalidateQueries({ queryKey: ["firm-invoice", Number(id)] });
       qc.invalidateQueries({ queryKey: ["firm-invoices"] });
-      qc.invalidateQueries({ queryKey: ["firm-billing-cockpit"] });
+      qc.invalidateQueries({ queryKey: ["firm-billing-worklist"] });
+      qc.invalidateQueries({ queryKey: ["firm-billing-line-history"] });
     },
     onError: (err) => toast.error(extractError(err)),
   });
@@ -365,7 +367,13 @@ export default function FirmInvoiceDetailPage() {
         document={inv}
         lines={(inv.lines ?? []).map((l) => ({ id: l.id, descriptionSnapshot: l.descriptionSnapshot, totalAmount: l.totalAmount }))}
         correctionsBasePath="/app/m/billing/firm-invoice-corrections"
-        onChanged={() => qc.invalidateQueries({ queryKey: ["firm-invoice", Number(id)] })}
+        onChanged={() => {
+          // Un paiement complet passe la facture PAID : l'état courant des lignes change aussi.
+          qc.invalidateQueries({ queryKey: ["firm-invoice", Number(id)] });
+          qc.invalidateQueries({ queryKey: ["firm-invoices"] });
+          qc.invalidateQueries({ queryKey: ["firm-billing-worklist"] });
+          qc.invalidateQueries({ queryKey: ["firm-billing-line-history"] });
+        }}
       />}
 
       {/* Actions */}

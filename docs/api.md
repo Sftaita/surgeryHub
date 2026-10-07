@@ -6085,7 +6085,8 @@ rattachées (la `FinancialCalculationLine` redevient sélectionnable dans un nou
 document) mais **ne déverrouille jamais** le calcul associé. `SENT`/`PAID` : refusé.
 
 **Réponse — 200 :** la facture annulée (`lines: []`). **Erreurs :**
-`409 DOCUMENT_ALREADY_ISSUED` si `SENT`/`PAID`.
+`409 DOCUMENT_ALREADY_ISSUED` si `SENT`/`PAID` ; `409 INVOICE_STATUS_TRANSITION_INVALID` si
+`DRAFT`/`ABANDONED`/`CANCELLED` (un brouillon s'abandonne via `/abandon`).
 
 ### Décomptes instrumentistes
 

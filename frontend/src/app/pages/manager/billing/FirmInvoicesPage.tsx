@@ -175,6 +175,7 @@ export default function FirmInvoicesPage() {
     await Promise.all([
       qc.invalidateQueries({ queryKey: ["firm-billing-worklist"] }),
       qc.invalidateQueries({ queryKey: ["firm-invoices"] }),
+      qc.invalidateQueries({ queryKey: ["firm-billing-line-history"] }),
     ]);
   }
 
