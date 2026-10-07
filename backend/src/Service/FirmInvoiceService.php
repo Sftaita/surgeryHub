@@ -15,6 +15,7 @@ use App\Dto\EligibleLinesDiagnostic;
 use App\Repository\EncodingTrackingRepository;
 use App\Enum\AuditEventType;
 use App\Enum\FirmBillingLineEventType;
+use App\Enum\FirmBillingReason;
 use App\Service\FirmBilling\FirmBillingLineEventRecorder;
 use App\Enum\FinancialBeneficiaryType;
 use App\Enum\FinancialCalculationStatus;
@@ -848,6 +849,21 @@ class FirmInvoiceService
             }
             if (!in_array($line->getFinancialCalculation()->getStatus(), [FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED], true)) {
                 $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_CALCULATION_NOT_APPROVED', sprintf('Le calcul de la ligne #%d n\'est ni APPROVED ni LOCKED.', $line->getId()), $context);
+                continue;
+            }
+            // Revue PR #1 — mêmes règles que la worklist (D-133) : le backend refuse ce que
+            // l'écran présente comme non facturable, même via un appel API direct.
+            if ($line->getFinancialCalculation()->getMission()?->getStatus() !== MissionStatus::VALIDATED) {
+                $anomalies[] = new DocumentLineSelectionAnomaly('MISSION_NOT_VALIDATED', sprintf(
+                    'La ligne #%d appartient à une mission dont l\'encodage a été rouvert : elle doit être revalidée avant facturation.', $line->getId(),
+                ), $context);
+                continue;
+            }
+            $zero = FirmBillingReason::forZeroAmountLine($line);
+            if ($zero !== null) {
+                $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_LINE_NOT_BILLABLE', sprintf(
+                    'La ligne #%d n\'est pas facturable : %s.', $line->getId(), mb_strtolower($zero[0]->label()),
+                ), $context + ['reasonCode' => $zero[0]->value]);
                 continue;
             }
             $document = $this->currentDocumentFor($line);

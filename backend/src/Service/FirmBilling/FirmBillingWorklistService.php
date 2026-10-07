@@ -416,32 +416,32 @@ final class FirmBillingWorklistService
     private function classifyLine(FinancialCalculationLine $line, ?FinancialCalculation $calculation, bool $missionValidated, bool $partiallyInvoiced): array
     {
         $invoiceLine = $line->getFirmInvoiceLine();
-        if ($invoiceLine !== null && $invoiceLine->getInvoice()->getStatus() === InvoiceStatus::DRAFT) {
-            $draft = $invoiceLine->getInvoice();
+        if ($invoiceLine !== null && $invoiceLine->getInvoice()->getStatus() !== InvoiceStatus::DRAFT) {
+            $invoice = $invoiceLine->getInvoice();
+            return $this->state(FirmBillingReason::INVOICED, sprintf('Facturé sur la facture %s (%s).', $invoice->getNumber() ?? '#' . $invoice->getId(), $this->invoiceStatusLabel($invoice->getStatus())), $line, $invoiceLine->getTotalAmount(), $invoice);
+        }
+        // Brouillon éventuel : état documentaire courant, mais jamais un motif « facturable »
+        // si la génération le refuserait (mêmes règles que FirmInvoiceService).
+        $draft = $invoiceLine?->getInvoice();
+
+        if (!$missionValidated) {
+            return $this->state(FirmBillingReason::ENCODING_REOPENED, null, $line, $line->getTotalAmount(), $draft);
+        }
+
+        if ($calculation?->getStatus() === FinancialCalculationStatus::CALCULATED) {
+            return $this->state(FirmBillingReason::CALCULATION_PENDING_APPROVAL, null, $line, $line->getTotalAmount(), $draft);
+        }
+
+        $zero = FirmBillingReason::forZeroAmountLine($line);
+        if ($zero !== null) {
+            return $this->state($zero[0], $zero[1], $line, $line->getTotalAmount(), $draft);
+        }
+
+        if ($draft !== null) {
             return $this->state(FirmBillingReason::IN_DRAFT, sprintf(
                 'Dans le brouillon %s #%d, pas encore généré. Pour la placer dans un autre brouillon, utilisez « Déplacer vers… ».',
                 $draft->getFirm()?->getName() ?? '', $draft->getId(),
             ), $line, $line->getTotalAmount(), $draft);
-        }
-        if ($invoiceLine !== null) {
-            $invoice = $invoiceLine->getInvoice();
-            return $this->state(FirmBillingReason::INVOICED, sprintf('Facturé sur la facture %s (%s).', $invoice->getNumber() ?? '#' . $invoice->getId(), $this->invoiceStatusLabel($invoice->getStatus())), $line, $invoiceLine->getTotalAmount(), $invoice);
-        }
-
-        if (!$missionValidated) {
-            return $this->state(FirmBillingReason::ENCODING_REOPENED, null, $line, $line->getTotalAmount());
-        }
-
-        if ($calculation?->getStatus() === FinancialCalculationStatus::CALCULATED) {
-            return $this->state(FirmBillingReason::CALCULATION_PENDING_APPROVAL, null, $line, $line->getTotalAmount());
-        }
-
-        if ((float) $line->getTotalAmount() == 0.0) {
-            $adjustment = $line->getSnapshot()['adjustmentReasonSnapshot'] ?? null;
-            if (is_string($adjustment) && $adjustment !== '') {
-                return $this->state(FirmBillingReason::REPRESENTATIVE_PRESENT, $adjustment, $line, $line->getTotalAmount());
-            }
-            return $this->state(FirmBillingReason::ZERO_AMOUNT, null, $line, $line->getTotalAmount());
         }
 
         $detail = $partiallyInvoiced

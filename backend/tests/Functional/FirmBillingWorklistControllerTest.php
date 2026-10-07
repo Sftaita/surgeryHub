@@ -1098,6 +1098,78 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         self::assertSame(200, $this->post($client, $token, "/api/firm-invoices/{$draft['id']}/generate")->getStatusCode());
     }
 
+    // ── Revue PR #1 : la règle « non facturable » est appliquée par le backend ──
+
+    public function test_not_billable_lines_are_refused_by_the_backend_not_only_hidden_by_the_ui(): void
+    {
+        $client = $this->boot();
+        $token = $this->login($client, $this->user('ROLE_MANAGER'));
+        $firm = $this->firm('Smith');
+        $delegatedType = $this->type('LCA déléguée');
+        $zeroType = $this->type('Prestation offerte');
+        $paidType = $this->type('Arthroscopie');
+        $this->offering($firm, $delegatedType, presenceRelevant: true, suppressesFee: true);
+        $this->interventionRule($firm, $delegatedType, '350.00');
+        $this->interventionRule($firm, $zeroType, '0.00');
+        $this->interventionRule($firm, $paidType, '200.00');
+        $mDelegated = $this->mission(MissionStatus::VALIDATED, $firm, $delegatedType, representativePresent: true);
+        $mZero = $this->mission(MissionStatus::VALIDATED, $firm, $zeroType, date: '2026-09-11 08:00:00');
+        $mReopened = $this->mission(MissionStatus::VALIDATED, $firm, $paidType, date: '2026-09-12 08:00:00');
+        $mPaid = $this->mission(MissionStatus::VALIDATED, $firm, $paidType, date: '2026-09-13 08:00:00');
+        foreach ([$mDelegated, $mZero, $mReopened, $mPaid] as $m) {
+            $this->calculateAndApprove($client, $token, $m);
+        }
+        // Encodage rouvert après approbation du calcul (le calcul reste APPROVED, cf. D-133).
+        $this->em->clear();
+        $this->em->find(Mission::class, $mReopened->getId())->setStatus(MissionStatus::SUBMITTED);
+        $this->em->flush();
+
+        $byMission = [];
+        foreach ($this->worklist($client, $token, [$firm])['rows'] as $r) {
+            $byMission[$r['mission']['id']] = $r;
+        }
+        $delegated = $byMission[$mDelegated->getId()];
+        $zero = $byMission[$mZero->getId()];
+        $reopened = $byMission[$mReopened->getId()];
+        $paid = $byMission[$mPaid->getId()];
+
+        // Quatre situations distinctes, jamais confondues.
+        self::assertSame(['NOT_BILLABLE', 'REPRESENTATIVE_PRESENT'], [$delegated['billingStatus'], $delegated['reasonCode']]);
+        self::assertStringContainsString('délégué', $delegated['reasonDetail']);
+        self::assertSame(['NOT_BILLABLE', 'ZERO_AMOUNT'], [$zero['billingStatus'], $zero['reasonCode']]);
+        self::assertSame(['TO_REVIEW', 'ENCODING_REOPENED'], [$reopened['billingStatus'], $reopened['reasonCode']]);
+        self::assertSame(['BILLABLE', 'BILLABLE'], [$paid['billingStatus'], $paid['reasonCode']]);
+        foreach ([$delegated, $zero, $reopened] as $r) {
+            self::assertFalse($r['canInvoice']);
+        }
+
+        // Le backend refuse chacune, même par appel API direct (création, ajout, déplacement).
+        $refusal = function (array $row) use ($client, $token, $firm): array {
+            $r = $this->createDraft($client, $token, $firm, [$row['financialLineId']]);
+            self::assertSame(422, $r->getStatusCode(), (string) $r->getContent());
+            return $this->json($r)['error']['violations'][0];
+        };
+        self::assertSame(['FINANCIAL_LINE_NOT_BILLABLE', 'REPRESENTATIVE_PRESENT'], [$refusal($delegated)['code'], $refusal($delegated)['context']['reasonCode'] ?? null]);
+        self::assertSame('ZERO_AMOUNT', $refusal($zero)['context']['reasonCode'] ?? null);
+        self::assertSame('MISSION_NOT_VALIDATED', $refusal($reopened)['code']);
+
+        $draft = $this->json($this->createDraft($client, $token, $firm, [$paid['financialLineId']]));
+        self::assertSame('DRAFT', $draft['status']);
+        $add = $this->post($client, $token, "/api/firm-invoices/{$draft['id']}/lines", ['financialLineIds' => [$delegated['financialLineId']]]);
+        self::assertSame('FINANCIAL_LINE_NOT_BILLABLE', $this->json($add)['error']['violations'][0]['code']);
+        $move = $this->post($client, $token, "/api/firm-invoices/{$draft['id']}/lines/move", ['financialLineIds' => [$zero['financialLineId']]]);
+        self::assertSame('FINANCIAL_LINE_NOT_BILLABLE', $this->json($move)['error']['violations'][0]['code']);
+
+        // Candidats du brouillon : aucune des trois ; export : seul le facturable est totalisé.
+        self::assertSame([], $this->json($this->get($client, $token, "/api/firm-invoices/{$draft['id']}/candidate-lines"))['rows']);
+        $summary = $this->worklist($client, $token, [$firm])['summary'];
+        self::assertSame(2, $summary['notBillable']['lineCount']);
+        self::assertSame([['currency' => 'EUR', 'amount' => '200.00']], $summary['billable']['amounts'], 'seule la ligne réellement facturable est comptée (elle est en brouillon)');
+        $xlsx = $this->export($client, $token, [$firm], [$delegated['key'], $zero['key'], $paid['key']], 'xlsx');
+        $total = array_values(array_filter($this->readXlsx((string) $xlsx->getContent()), static fn (array $r) => ($r[0] ?? null) === 'Total facturable'));
+        self::assertSame('200', $total[0][10]);
+    }
+
     // ── D-137 : ajout depuis le brouillon, brouillon abandonné ───────────
 
     public function test_draft_candidates_are_only_compatible_lines_and_can_be_added_in_bulk(): void

@@ -11451,6 +11451,16 @@ Numéro D-137 : D-136 est pris sur `origin/main` (suivi des encodages).
    (`FinancialCalculationLine::releaseFirmInvoiceLine()`), comme le retrait de brouillon
    (sinon un `flush()` ultérieur dans le même EntityManager échoue — révélé par les tests
    passant désormais par le brouillon).
+6. **Revue PR #1 — la règle « non facturable » est appliquée par le backend**, plus seulement
+   par l'écran : `FirmInvoiceService::validateFirmLineSelection()` (création, ajout, déplacement
+   et génération d'un brouillon) refuse une ligne à 0 € (`FINANCIAL_LINE_NOT_BILLABLE`, motif
+   `REPRESENTATIVE_PRESENT` ou `ZERO_AMOUNT`) et une ligne d'une mission dont l'encodage a été
+   rouvert (`MISSION_NOT_VALIDATED`). Le classement « ligne à 0 € » est une seule fonction,
+   `FirmBillingReason::forZeroAmountLine()`, utilisée par la worklist et par la validation ; elle
+   lit uniquement ce que le moteur a persisté (`adjustmentReasonSnapshot`, posé par
+   `FinancialCalculationService::applyAdjustment()` quand le délégué neutralise le forfait) —
+   jamais une réinterprétation de la politique délégué. Une ligne de brouillon d'une mission
+   rouverte ou à 0 € n'est plus présentée « Dans un brouillon » (facturable) dans la worklist.
 
 ### Invariants conservés
 

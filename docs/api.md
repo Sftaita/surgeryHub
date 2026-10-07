@@ -2437,6 +2437,9 @@ génération.
 
 **Erreurs :** `422 DOCUMENT_LINE_SELECTION_FAILED` avec `violations[].code` ∈
 `FINANCIAL_LINE_IN_DRAFT` (déjà dans un autre brouillon — `draftId` ; retirer ou déplacer),
+`FINANCIAL_LINE_NOT_BILLABLE` (ligne à 0 € — `context.reasonCode` = `REPRESENTATIVE_PRESENT`
+délégué présent ou `ZERO_AMOUNT` tarif nul ; mêmes règles que la worklist, revue PR #1),
+`MISSION_NOT_VALIDATED` (encodage rouvert après le calcul — « Encodage rouvert » dans la worklist),
 `FINANCIAL_LINE_ALREADY_ASSIGNED` (document émis), `FINANCIAL_LINE_STALE` (calcul changé
 depuis l'ajout), `FINANCIAL_LINE_BENEFICIARY_MISMATCH`, `FINANCIAL_LINE_CURRENCY_MISMATCH`,
 `FINANCIAL_LINE_NOT_ELIGIBLE`, `FINANCIAL_CALCULATION_NOT_APPROVED`, `DRAFT_EMPTY`,

@@ -55,6 +55,29 @@ enum FirmBillingReason: string
     /** Repli pour tout code moteur inconnu de ce catalogue. */
     case CALCULATION_FAILED = 'CALCULATION_FAILED';
 
+    /**
+     * Une ligne FIRM du calcul dont le montant est nul n'est jamais facturable. Source de
+     * vérité : ce que le MOTEUR a persisté (FinancialCalculationService::applyAdjustment()
+     * renseigne `adjustmentReasonSnapshot` uniquement quand la présence du délégué
+     * neutralise le forfait) — jamais une nouvelle lecture de la politique délégué.
+     * Partagé par la worklist (affichage) et FirmInvoiceService (refus à l'ajout et à la
+     * génération) : les deux ne peuvent pas diverger.
+     *
+     * @return array{0: self, 1: ?string}|null [motif, détail moteur éventuel]
+     */
+    public static function forZeroAmountLine(\App\Entity\FinancialCalculationLine $line): ?array
+    {
+        if ((float) $line->getTotalAmount() != 0.0) {
+            return null;
+        }
+        $adjustment = $line->getSnapshot()['adjustmentReasonSnapshot'] ?? null;
+        if (is_string($adjustment) && $adjustment !== '') {
+            return [self::REPRESENTATIVE_PRESENT, $adjustment];
+        }
+
+        return [self::ZERO_AMOUNT, null];
+    }
+
     public static function fromEngineCode(string $code): self
     {
         $reason = self::tryFrom($code);
