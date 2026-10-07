@@ -2311,71 +2311,99 @@ qui consomme exclusivement des `FinancialCalculationLine` déjà figées. **Ces 
 ne constituent plus un chemin supporté et ne doivent jamais être réintroduites** (un seul
 moteur : le calcul financier, D-073/D-074 ; la facture n'en est qu'un snapshot, D-123).
 
-### 24.3.1 `GET /api/firm-invoices/cockpit` — cockpit « Facturation firmes » (D-123)
+### 24.3.1 Worklist « Facturation firmes » (D-133, remplace le cockpit D-123)
 
-**AuthZ :** `BillingVoter::MANAGE`. Lecture seule, **aucun calcul tarifaire**.
+`GET /api/firm-invoices/cockpit` (D-123) est **supprimé** : il partait des
+`FinancialCalculationLine` et rendait invisible toute activité validée sans calcul réussi.
+La worklist part de l'**activité validée** et l'enrichit de son état financier. Lecture
+seule, **aucun calcul tarifaire, aucun montant estimé**. AuthZ : `BillingVoter::MANAGE`
+sur les trois routes.
 
-**Query params :** `from`, `to` (requis, dates métier `AAAA-MM-JJ` inclusives,
-Europe/Brussels, `from ≤ to`) ; `firmId` (optionnel).
+#### `GET /api/firm-billing/worklist`
 
-Classe chaque `FinancialCalculationLine` bénéficiaire `FIRM` d'un calcul actif dont
-`effectiveAt` tombe dans la période dans **exactement une** catégorie :
+**Query params :** `from`, `to` (requis, `AAAA-MM-JJ` inclusifs, `from ≤ to`, ≤ 1 an) ;
+`firmIds[]` (optionnel, plusieurs = **OU**) ; `type` = `INTERVENTION` | `MATERIAL` ;
+`status` = `BILLABLE` | `NOT_BILLABLE` | `TO_REVIEW` | `INVOICED` (filtre les **lignes**,
+jamais les tuiles).
 
-| Catégorie | Définition |
-|---|---|
-| `toInvoice` | calcul `APPROVED` ou `LOCKED`, **aucune** `FirmInvoiceLine` ne la référence |
-| `invoiced` | une `FirmInvoiceLine` la référence (contrainte UNIQUE) — `invoice.{id, number, status, generatedAt, invoicedAmount}` |
-| `toVerify` (niveau calcul) | calcul encore `CALCULATED` — raison `CALCULATION_PENDING_APPROVAL`, action `approve` |
+**Périmètre.** Missions `VALIDATED` dont `COALESCE(actual_start_at, start_at)` tombe dans
+la période (même règle que `FinancialCalculationService::resolveEffectiveAt()`), plus toute
+mission ayant une ligne FIRM d'un calcul actif datée de la période (mission rouverte
+depuis). **Une ligne par élément source** : chaque `MissionIntervention`
+(`key = MISSION_INTERVENTION:{id}`), chaque `MaterialLine` de quantité > 0
+(`MATERIAL_LINE:{id}`), et toute ligne FIRM du calcul actif sans source encodée
+(`FINANCIAL_LINE:{id}`) — rien ne disparaît. Le moteur produit au plus une ligne FIRM par
+source (firme principale de l'intervention / firme de l'article) : la paire source × firme
+est la source elle-même. Calcul actif = `CALCULATED`/`APPROVED`/`LOCKED` (plus haute
+version) ; `SUPERSEDED`/`CANCELLED` jamais lus.
 
-`toVerify` contient aussi chaque mission de la période (même date effective
-`COALESCE(actual_start_at, start_at)`) **concernant une firme** (intervention à firme
-principale ou matériel d'une firme, quantité > 0) **sans aucun calcul actif** :
+**Ligne (`rows[]`) :** `key`, `sourceType`, `sourceId`, `mission {id, date, status, site,
+surgeon}`, `firm {id, name} | null`, `label`, `reference`, `quantity`, `billingStatus`,
+`billingStatusLabel`, `reasonCode`, `reasonLabel`, `reasonDetail`, `amount | null`,
+`currency | null`, `invoice {id, number, status, statusLabel} | null`, `financialLineId`,
+`calculationId`, `canInvoice`. Aucune donnée patient.
 
-| `reason` | Condition | `allowedActions` |
-|---|---|---|
-| `ENCODING_NOT_VALIDATED` | mission `SUBMITTED` | `[]` |
-| `CALCULATION_FAILED` | dernier `calculate()` en échec (audit `FINANCIAL_CALCULATION_FAILED` postérieur à tout calcul actif) — `anomalies[]` = celles du dernier échec audité | `["calculate"]` |
-| `CALCULATION_REQUIRED` | mission `VALIDATED` jamais valorisée | `["calculate"]` |
+**Catalogue `billingStatus` / `reasonCode`** (`App\Enum\FirmBillingReason`, codes stables) :
 
-`reasonLabel` est le libellé métier à afficher tel quel. Avant calcul, **aucun montant
-n'existe** : `totalAmount`/`currency` valent `null` (jamais estimés).
+| `billingStatus` | `reasonCode` | Condition | `amount` |
+|---|---|---|---|
+| `BILLABLE` | `BILLABLE` | ligne FIRM d'un calcul `APPROVED`/`LOCKED`, total > 0, non facturée (`canInvoice = true`) | total de la ligne |
+| `INVOICED` | `INVOICED` | une `FirmInvoiceLine` référence la ligne | montant facturé (snapshot) |
+| `NOT_BILLABLE` | `REPRESENTATIVE_PRESENT` | ligne à 0 neutralisée par la présence du délégué (`adjustmentReasonSnapshot` en `reasonDetail`) | `0.00` |
+| `NOT_BILLABLE` | `FEE_NOT_APPLICABLE` | `FirmServiceOffering.feeApplicable = false` (même ordre de garde que le moteur) | `null` |
+| `NOT_BILLABLE` | `MATERIAL_NOT_BILLABLE` | `MaterialItem.billingStatus = NOT_BILLABLE` | `null` |
+| `NOT_BILLABLE` | `ZERO_AMOUNT` | ligne active à 0 sans neutralisation (tarif 0) | `0.00` |
+| `TO_REVIEW` | `CALCULATION_REQUIRED` | mission validée sans calcul ni échec | `null` |
+| `TO_REVIEW` | `CALCULATION_PENDING_APPROVAL` | calcul actif `CALCULATED` | total (non facturable) |
+| `TO_REVIEW` | `RECALCULATION_REQUIRED` | élément encodé absent du calcul actif, sans exclusion | `null` |
+| `TO_REVIEW` | `ENCODING_REOPENED` | ligne active non facturée d'une mission qui n'est plus `VALIDATED` | total |
+| `TO_REVIEW` | `CALCULATION_BLOCKED` | élément correct, calcul de la mission en échec sur une autre anomalie | `null` |
+| `TO_REVIEW` | `MISSING_FIRM_INTERVENTION_RATE`, `MISSING_FIRM_MATERIAL_RATE`, `MISSING_PRIMARY_FIRM`, `MISSING_INTERVENTION_TYPE`, `MISSING_REPRESENTATIVE_PRESENCE_ANSWER`, `MISSING_REQUIRED_CHOICE_ANSWER` | anomalie du dernier échec audité rattachée à l'élément (codes identiques au moteur ; `MISSING_PRIMARY_FIRM` aussi avant calcul) | `null` |
+| — (anomalie de mission) | `MISSING_INSTRUMENTIST_RATE`, `INVALID_EFFECTIVE_DURATION`, `CALCULATION_FAILED` (code moteur inconnu) | uniquement dans `anomalies[]` | — |
 
-**Réponse — 200 (extrait) :**
+**`anomalies[]` (onglet « À corriger ») :** `key`, `code`, `title` (libellé français),
+`explanation` (contextualisée : élément, firme, date), `mission`, `firm | null`
+(`null` = anomalie de mission, suit les firmes de la mission pour le filtre),
+`element {type, label, reference?} | null`, `action {code, label} | null`
+(`CONFIGURE_INTERVENTION_RATE`, `CONFIGURE_MATERIAL_RATE`, `CONFIGURE_INSTRUMENTIST_RATE`,
+`OPEN_MISSION`, `CALCULATE`, `APPROVE`, `RECALCULATE`), `resolved` (la cause n'existe plus
+dans la configuration actuelle — mêmes résolveurs que le moteur, à la date effective
+actuelle), `calculationId`, `rowKey`, `calculationLocked`. **Le message technique du moteur
+(`No active … PricingRule …`) n'est jamais renvoyé** ; il reste dans `audit_event`.
 
-```json
-{
-  "period": { "from": "2026-09-01", "to": "2026-09-30" },
-  "kpis": {
-    "toInvoiceLineCount": 3,
-    "toInvoiceAmounts": [{ "currency": "EUR", "amount": "650.00" }],
-    "toVerifyCount": 2,
-    "invoicedLineCount": 1,
-    "invoices": { "generated": 1, "sent": 2, "paid": 3, "cancelled": 0 }
-  },
-  "toInvoice": [{
-    "firm": { "id": 10, "name": "Arthrex" }, "currency": "EUR", "lineCount": 2, "totalAmount": "500.00",
-    "lines": [{
-      "id": 9001, "calculationId": 77, "calculationStatus": "LOCKED",
-      "mission": { "id": 501, "date": "2026-09-02", "status": "VALIDATED", "site": "Delta", "surgeon": "Dr X" },
-      "firm": { "id": 10, "name": "Arthrex" }, "lineType": "FIRM_INTERVENTION_FEE", "lineTypeLabel": "Intervention",
-      "description": "…", "intervention": { "id": 11, "label": "Ligamentoplastie LCA" }, "material": null,
-      "quantity": "1.0000", "unitAmount": "350.00", "totalAmount": "350.00", "currency": "EUR",
-      "calculationLocked": true, "missionPartiallyInvoiced": true,
-      "notice": "Calcul financier verrouillé : une partie de cette mission a déjà été facturée. Le calcul ne peut plus être modifié."
-    }]
-  }],
-  "toVerify": [{ "reason": "CALCULATION_REQUIRED", "reasonLabel": "…", "mission": { "…": "…" }, "firms": [{ "id": 10, "name": "Arthrex" }], "calculationId": null, "anomalies": [], "lines": [], "totalAmount": null, "currency": null, "allowedActions": ["calculate"] }],
-  "invoiced": [{ "id": 9002, "…": "…", "invoice": { "id": 42, "number": "FIRM-2026-042", "status": "SENT", "generatedAt": "…", "invoicedAmount": "80.00" } }]
-}
-```
+**`summary` (tuiles, après filtres firme/type, avant filtre statut) :** `lineCount`,
+`billable {lineCount, amounts[]}`, `notBillable {lineCount}`, `toReview {lineCount}`,
+`invoiced {lineCount, amounts[]}`, `anomalyCount`, `pendingValidationMissionCount`
+(missions `SUBMITTED` de la période, hors worklist), `invoices {generated, sent, paid,
+cancelled}` (documents `STANDARD` dont `periodStart` tombe dans la période, firmes filtrées).
 
-KPI factures : documents `STANDARD` dont `periodStart` tombe dans la période, par statut.
-Aucune donnée patient (ni nom, ni identifiant, ni motif) n'est exposée. Les actions
-`calculate`/`approve` appellent les endpoints **existants**
-(`POST /api/missions/{id}/financial-calculations`, `POST /api/financial-calculations/{id}/approve`).
+**`bulkActions` :** `recalculateFixed` (missions dont toutes les anomalies du dernier échec
+sont `resolved` et dont le calcul n'est pas `LOCKED`), `calculatePending` (missions
+`CALCULATION_REQUIRED`).
 
-**Erreurs :** `422 VALIDATION_FAILED` (dates absentes/invalides ou `from > to`),
-`404` (firme), `403` (non manager).
+**Erreurs :** `422 VALIDATION_FAILED` (dates, `type`, `status`, `firmIds`), `404` (firme
+inconnue), `403`.
+
+#### `POST /api/firm-billing/worklist/export`
+
+**Body :** `{ "from", "to", "firmIds": int[], "keys": string[], "format": "pdf" | "xlsx" }`.
+Rejoue la projection (période + firmes) puis ne garde **que** les `keys` demandées, dans
+l'ordre de la worklist, sans doublon. `.xlsx` = vrai classeur OOXML
+(`App\Service\Export\XlsxWriter`, ext-zip) ; PDF = dompdf (`PdfService`, paysage). Contenu :
+période, firmes sélectionnées, date, site, chirurgien, type, prestation, référence, firme,
+quantité, statut, motif, montant, devise, facture ; **total = somme des seules lignes
+`BILLABLE`**, par devise. Aucune donnée patient.
+
+**Erreurs :** `422 EXPORT_SELECTION_INVALID` (une clé n'appartient plus à la
+période/aux firmes — jamais un export partiel silencieux), `422 VALIDATION_FAILED`, `403`.
+
+#### `POST /api/firm-billing/calculations`
+
+**Body :** `{ "missionIds": int[] }` (1 à 100). Pour chaque mission : `calculate()` si
+aucun calcul actif, sinon `recalculate()` (refusé si `LOCKED`) — **le moteur existant**,
+mission par mission, chacune dans sa transaction. **Réponse 200 :**
+`{ results: [{missionId, outcome: CALCULATED|FAILED|SKIPPED|NOT_PROCESSED, message, issues[], calculationId}], calculated, failed, skipped }`
+(`issues` = libellés français des anomalies, jamais les messages moteur).
 
 ---
 
@@ -2384,7 +2412,7 @@ Aucune donnée patient (ni nom, ni identifiant, ni motif) n'est exposée. Les ac
 #### `GET /api/firm-invoices` (liste)
 
 **Query params :** `firmId`, `status`, `year` (existants) ; **D-123 :** `from`/`to`
-(dates `AAAA-MM-JJ` inclusives sur `periodStart`), `documentType=STANDARD`. Chaque
+(dates `AAAA-MM-JJ` inclusives sur `periodStart`), `documentType=STANDARD` ; **D-133 :** `firmIds[]` (plusieurs firmes, OU). Chaque
 facture expose en plus `lineCount` et `allowedActions`.
 
 #### `GET /api/firm-invoices/{id}`
@@ -2423,7 +2451,7 @@ frontend n'affiche un bouton que s'il y figure. `missionDate` = date effective d
 financière (horaires réels sinon planifiés). Les montants des lignes sont le **snapshot**
 figé à la génération : une modification ultérieure de tarif ne les change jamais (le PDF
 lit les mêmes snapshots). Lien bidirectionnel : `financialCalculationLineId` →
-`FinancialCalculationLine` ; côté cockpit, `invoiced[].invoice.id` → la facture.
+`FinancialCalculationLine` ; côté worklist (D-133), `rows[].invoice.id` → la facture.
 
 #### `GET /api/firm-invoices/{id}/pdf`
 

@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import FirmInvoicesPage from "./FirmInvoicesPage";
-import type { FirmBillingCockpit, ToInvoiceLine } from "../../../features/billing-firm/api/firmBillingCockpit.api";
+import type { FirmBillingWorklist, WorklistAnomaly, WorklistRow } from "../../../features/billing-firm/api/firmBillingWorklist.api";
 
 const getFirmInvoicesMock = vi.fn();
 const markFirmInvoicePaidMock = vi.fn();
@@ -16,21 +16,23 @@ vi.mock("../../../features/billing-firm/api/firmInvoice.api", () => ({
   getFirmInvoicePdfUrl: (id: number) => `/api/firm-invoices/${id}/pdf`,
 }));
 
-const getCockpitMock = vi.fn();
-vi.mock("../../../features/billing-firm/api/firmBillingCockpit.api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../features/billing-firm/api/firmBillingCockpit.api")>()),
-  getFirmBillingCockpit: (...a: unknown[]) => getCockpitMock(...a),
+const getWorklistMock = vi.fn();
+const exportMock = vi.fn();
+const runCalculationsMock = vi.fn();
+vi.mock("../../../features/billing-firm/api/firmBillingWorklist.api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../features/billing-firm/api/firmBillingWorklist.api")>()),
+  getFirmBillingWorklist: (...a: unknown[]) => getWorklistMock(...a),
+  exportFirmBillingSelection: (...a: unknown[]) => exportMock(...a),
+  runFirmBillingCalculations: (...a: unknown[]) => runCalculationsMock(...a),
 }));
 
-const calculateMock = vi.fn();
 const approveMock = vi.fn();
 vi.mock("../../../features/financial-calculation/api/financialCalculation.api", () => ({
-  calculateMission: (...a: unknown[]) => calculateMock(...a),
   approveFinancialCalculation: (...a: unknown[]) => approveMock(...a),
 }));
 
 vi.mock("../../../api/apiClient", () => ({
-  apiClient: { get: vi.fn().mockResolvedValue({ data: [{ id: 10, name: "Arthrex" }, { id: 20, name: "Stryker" }] }) },
+  apiClient: { get: vi.fn().mockResolvedValue({ data: [{ id: 10, name: "Arthrex" }, { id: 20, name: "Stryker" }, { id: 30, name: "Smith & Nephew" }] }) },
 }));
 
 const toastSuccess = vi.fn();
@@ -39,47 +41,64 @@ vi.mock("../../../ui/toast/useToast", () => ({
   useToast: () => ({ success: toastSuccess, error: toastError, warning: vi.fn() }),
 }));
 
-function line(id: number, firm: { id: number; name: string }, amount: string, extra: Partial<ToInvoiceLine> = {}): ToInvoiceLine {
+const ARTHREX = { id: 10, name: "Arthrex" };
+const STRYKER = { id: 20, name: "Stryker" };
+const MISSION = { id: 101, date: "2026-09-02", status: "VALIDATED", site: "Delta", surgeon: "Dr X" };
+
+function row(key: string, extra: Partial<WorklistRow> = {}): WorklistRow {
   return {
-    id, calculationId: 7, calculationStatus: "APPROVED",
-    mission: { id: 100 + id, date: "2026-09-02", status: "VALIDATED", site: "Delta", surgeon: "Dr X" },
-    firm, lineType: "FIRM_INTERVENTION_FEE", lineTypeLabel: "Intervention", description: `Prestation ${id}`,
-    intervention: { id: id * 10, label: `LCA ${id}` }, material: null,
-    quantity: "1.0000", unitAmount: amount, totalAmount: amount, currency: "EUR",
-    calculationLocked: false, missionPartiallyInvoiced: false, notice: null, ...extra,
+    key, sourceType: "INTERVENTION", sourceId: 1, mission: MISSION, firm: ARTHREX,
+    label: `Prestation ${key}`, reference: null, quantity: "1",
+    billingStatus: "BILLABLE", billingStatusLabel: "Facturable", reasonCode: "BILLABLE", reasonLabel: "Facturable",
+    reasonDetail: "Ligne valorisée par le calcul financier approuvé, pas encore facturée.",
+    amount: "350.00", currency: "EUR", invoice: null, financialLineId: 900, calculationId: 7, canInvoice: true,
+    ...extra,
   };
 }
 
-const ARTHREX = { id: 10, name: "Arthrex" };
-const STRYKER = { id: 20, name: "Stryker" };
+const ROWS: WorklistRow[] = [
+  row("MISSION_INTERVENTION:1", { label: "Arthrodèse 2 niveaux", financialLineId: 901 }),
+  row("MATERIAL_LINE:2", { sourceType: "MATERIAL", label: "Ancre 5mm", reference: "REF-55", quantity: "2", amount: "50.00", financialLineId: 902 }),
+  row("MISSION_INTERVENTION:3", {
+    firm: STRYKER, label: "Ligamentoplastie", billingStatus: "NOT_BILLABLE", billingStatusLabel: "Non facturable",
+    reasonCode: "REPRESENTATIVE_PRESENT", reasonLabel: "Délégué présent",
+    reasonDetail: "Le forfait de cette prestation est neutralisé en présence du délégué Stryker.", amount: "0.00", canInvoice: false, financialLineId: 903,
+  }),
+  row("MATERIAL_LINE:4", {
+    sourceType: "MATERIAL", label: "Vis", billingStatus: "TO_REVIEW", billingStatusLabel: "À vérifier",
+    reasonCode: "MISSING_FIRM_MATERIAL_RATE", reasonLabel: "Tarif matériel manquant", reasonDetail: "Aucun tarif…", amount: null, canInvoice: false, financialLineId: null,
+  }),
+  row("MISSION_INTERVENTION:5", {
+    billingStatus: "INVOICED", billingStatusLabel: "Facturé", reasonCode: "INVOICED", reasonLabel: "Déjà facturé", reasonDetail: "Facturé sur la facture FIRM-2026-042 (envoyée).",
+    amount: "80.00", canInvoice: false, invoice: { id: 42, number: "FIRM-2026-042", status: "SENT", statusLabel: "envoyée" },
+  }),
+];
 
-function cockpit(overrides: Partial<FirmBillingCockpit> = {}): FirmBillingCockpit {
+function anomaly(extra: Partial<WorklistAnomaly> = {}): WorklistAnomaly {
+  return {
+    key: "MISSING_FIRM_INTERVENTION_RATE:501:0", code: "MISSING_FIRM_INTERVENTION_RATE", title: "Tarif d'intervention manquant",
+    explanation: "Aucun tarif applicable n'est configuré pour cette prestation chez Arthrex au 02/09/2026.",
+    mission: { ...MISSION, id: 501 }, firm: ARTHREX, element: { type: "INTERVENTION", label: "Arthrodèse 2 niveaux" },
+    action: { code: "CONFIGURE_INTERVENTION_RATE", label: "Configurer le tarif" }, resolved: false, calculationId: null, rowKey: null, calculationLocked: false,
+    ...extra,
+  };
+}
+
+function worklist(overrides: Partial<FirmBillingWorklist> = {}): FirmBillingWorklist {
   return {
     period: { from: "2026-09-01", to: "2026-09-30" },
-    kpis: {
-      toInvoiceLineCount: 3, toInvoiceAmounts: [{ currency: "EUR", amount: "650.00" }],
-      toVerifyCount: 2, invoicedLineCount: 1, invoices: { generated: 1, sent: 2, paid: 3, cancelled: 0 },
+    summary: {
+      lineCount: 46, billable: { lineCount: 31, amounts: [{ currency: "EUR", amount: "842.00" }] }, notBillable: { lineCount: 9 },
+      toReview: { lineCount: 4 }, invoiced: { lineCount: 2, amounts: [{ currency: "EUR", amount: "80.00" }] }, anomalyCount: 6,
+      pendingValidationMissionCount: 0, invoices: { generated: 1, sent: 2, paid: 3, cancelled: 0 },
     },
-    toInvoice: [
-      { firm: ARTHREX, currency: "EUR", lineCount: 2, totalAmount: "500.00", lines: [line(1, ARTHREX, "350.00"), line(2, ARTHREX, "150.00")] },
-      { firm: STRYKER, currency: "EUR", lineCount: 1, totalAmount: "150.00", lines: [line(3, STRYKER, "150.00", { calculationLocked: true, missionPartiallyInvoiced: true, notice: "Calcul financier verrouillé : une partie de cette mission a déjà été facturée. Le calcul ne peut plus être modifié." })] },
+    rows: ROWS,
+    anomalies: [
+      anomaly(),
+      anomaly({ key: "MISSING_INSTRUMENTIST_RATE:501:1", code: "MISSING_INSTRUMENTIST_RATE", title: "Tarif instrumentiste manquant", firm: null, element: { type: "INSTRUMENTIST", label: "Jane Doe" }, action: { code: "CONFIGURE_INSTRUMENTIST_RATE", label: "Configurer le tarif" }, resolved: true, explanation: "Aucun tarif horaire actif pour Jane Doe." }),
+      anomaly({ key: "CALCULATION_REQUIRED:600:mission", code: "CALCULATION_REQUIRED", title: "Calcul financier à effectuer", mission: { ...MISSION, id: 600 }, firm: null, element: null, action: { code: "CALCULATE", label: "Calculer" }, explanation: "La mission est validée mais n'a pas encore été valorisée." }),
     ],
-    toVerify: [
-      {
-        reason: "CALCULATION_REQUIRED", reasonLabel: "Calcul financier requis : la mission est validée mais n'a pas encore été valorisée.",
-        mission: { id: 501, date: "2026-09-03", status: "VALIDATED", site: "Delta", surgeon: "Dr Y" },
-        firms: [ARTHREX], calculationId: null, anomalies: [], lines: [], totalAmount: null, currency: null, allowedActions: ["calculate"],
-      },
-      {
-        reason: "CALCULATION_PENDING_APPROVAL", reasonLabel: "Calcul à approuver : les montants sont calculés mais pas encore approuvés.",
-        mission: { id: 502, date: "2026-09-04", status: "VALIDATED", site: "Delta", surgeon: "Dr Z" },
-        firms: [STRYKER], calculationId: 88, anomalies: [], lines: [], totalAmount: "200.00", currency: "EUR", allowedActions: ["approve"],
-      },
-    ],
-    invoiced: [{
-      ...line(9, ARTHREX, "80.00"),
-      invoice: { id: 42, number: "FIRM-2026-042", status: "SENT", generatedAt: "2026-09-12T10:00:00+02:00", invoicedAmount: "80.00" },
-    }],
+    bulkActions: { recalculateFixed: [501], calculatePending: [600] },
     ...overrides,
   };
 }
@@ -95,173 +114,179 @@ function renderPage() {
   );
 }
 
+function tableRow(key: string) {
+  return screen.getByTestId(`row-${key}`);
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(2026, 8, 15, 10, 0, 0));
-  getCockpitMock.mockReset().mockResolvedValue(cockpit());
+  getWorklistMock.mockReset().mockResolvedValue(worklist());
   getFirmInvoicesMock.mockReset().mockResolvedValue([]);
   createInvoiceMock.mockReset();
   markFirmInvoicePaidMock.mockReset();
-  calculateMock.mockReset();
+  exportMock.mockReset().mockResolvedValue({ blob: new Blob(["x"]), filename: "facturation-firmes-2026-09.xlsx" });
+  runCalculationsMock.mockReset();
   approveMock.mockReset();
   toastSuccess.mockReset();
   toastError.mockReset();
+  (URL as any).createObjectURL = vi.fn(() => "blob:mock");
+  (URL as any).revokeObjectURL = vi.fn();
 });
 
-describe("FirmInvoicesPage — cockpit (D-123)", () => {
-  it("affiche les KPI du backend tels quels, pour le mois courant (dates métier AAAA-MM-JJ)", async () => {
+describe("FirmInvoicesPage — worklist (D-133)", () => {
+  it("demande la worklist du mois courant en dates métier, toutes firmes, et affiche les tuiles avec leur unité", async () => {
     renderPage();
 
-    expect(await screen.findByText("3 lignes")).toBeInTheDocument();
-    expect(screen.getByText("650,00 €")).toBeInTheDocument();
-    expect(getCockpitMock).toHaveBeenCalledWith({ from: "2026-09-01", to: "2026-09-30", firmId: undefined });
-    expect(screen.queryByText(/Flux classique/)).not.toBeInTheDocument();
+    expect(await screen.findByText("46 lignes")).toBeInTheDocument();
+    expect(getWorklistMock).toHaveBeenCalledWith({ from: "2026-09-01", to: "2026-09-30", firmIds: [], type: undefined, status: undefined });
+    expect(screen.getByText("31 lignes")).toBeInTheDocument();
+    expect(screen.getByText("842,00 €")).toBeInTheDocument();
+    expect(screen.getByText("9 lignes")).toBeInTheDocument();
+    expect(screen.getByText("6 anomalies")).toBeInTheDocument();
+    expect(screen.getByText("2 lignes")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "À corriger (6)" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Lignes facturées/ })).not.toBeInTheDocument();
   });
 
-  it("navigue au mois précédent / suivant et filtre par firme", async () => {
+  it("affiche chaque ligne avec le badge et le motif fournis par le backend, détail au survol", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText("3 lignes");
+    await screen.findByText("Arthrodèse 2 niveaux");
 
-    await user.click(screen.getByRole("button", { name: "Mois précédent" }));
-    await waitFor(() => expect(getCockpitMock).toHaveBeenLastCalledWith({ from: "2026-08-01", to: "2026-08-31", firmId: undefined }));
-    await user.click(screen.getByRole("button", { name: "Mois suivant" }));
-    await user.click(screen.getByRole("button", { name: "Mois suivant" }));
-    await waitFor(() => expect(getCockpitMock).toHaveBeenLastCalledWith({ from: "2026-10-01", to: "2026-10-31", firmId: undefined }));
+    const delegated = tableRow("MISSION_INTERVENTION:3");
+    expect(within(delegated).getByText("Non facturable")).toBeInTheDocument();
+    expect(within(delegated).getByText("Délégué présent")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("combobox", { name: "Filtrer par firme" }));
-    await user.click(await screen.findByRole("option", { name: "Stryker" }));
-    await waitFor(() => expect(getCockpitMock).toHaveBeenLastCalledWith({ from: "2026-10-01", to: "2026-10-31", firmId: 20 }));
+    await user.hover(within(delegated).getByText("Non facturable"));
+    expect(await screen.findByText("Le forfait de cette prestation est neutralisé en présence du délégué Stryker.")).toBeInTheDocument();
+
+    const invoiced = tableRow("MISSION_INTERVENTION:5");
+    expect(within(invoiced).getByText("FIRM-2026-042")).toBeInTheDocument();
+    expect(within(tableRow("MATERIAL_LINE:4")).getByText("—")).toBeInTheDocument(); // aucun montant inventé
+    expect(within(tableRow("MATERIAL_LINE:2")).getByText("REF-55")).toBeInTheDocument();
   });
 
-  it("regroupe les lignes à facturer par firme avec nombre de lignes et total", async () => {
-    renderPage();
-
-    expect(await screen.findByText("Arthrex")).toBeInTheDocument();
-    expect(screen.getByText("2 lignes · 500,00 € à facturer")).toBeInTheDocument();
-    expect(screen.getByText("1 ligne · 150,00 € à facturer")).toBeInTheDocument();
-    // Contrainte de verrouillage rendue visible, jamais une ligne masquée.
-    expect(screen.getByText("Calcul verrouillé")).toBeInTheDocument();
-  });
-
-  it("sélection limitée à une firme, montant sélectionné dans le CTA", async () => {
+  it("transmet au backend les filtres firmes (multi), type et statut — sans filtrer côté client", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText("Arthrex");
+    await screen.findByText("Arthrodèse 2 niveaux");
 
-    await user.click(screen.getByRole("checkbox", { name: "Sélectionner la ligne 1" }));
-    expect(screen.getByRole("button", { name: "Générer la facture — 1 ligne — 350,00 €" })).toBeEnabled();
+    await user.click(screen.getByLabelText("Filtrer par firmes"));
+    await user.click(await screen.findByRole("option", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Smith & Nephew" }));
+    await waitFor(() => expect(getWorklistMock).toHaveBeenLastCalledWith(expect.objectContaining({ firmIds: [10, 30] })));
 
-    // Les lignes d'une autre firme ne sont plus sélectionnables tant que la sélection existe.
-    expect(screen.getByRole("checkbox", { name: "Sélectionner la ligne 3" })).toBeDisabled();
-    expect(screen.getByRole("checkbox", { name: "Tout sélectionner pour Stryker" })).toBeDisabled();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Matériel" }));
+    await waitFor(() => expect(getWorklistMock).toHaveBeenLastCalledWith(expect.objectContaining({ firmIds: [10, 30], type: "MATERIAL" })));
 
-    await user.click(screen.getByRole("checkbox", { name: "Tout sélectionner pour Arthrex" }));
-    expect(screen.getByRole("button", { name: "Générer la facture — 2 lignes — 500,00 €" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Non facturables" }));
+    await waitFor(() => expect(getWorklistMock).toHaveBeenLastCalledWith(expect.objectContaining({ status: "NOT_BILLABLE" })));
+
+    // Les lignes affichées sont exactement celles renvoyées : aucune n'est masquée localement.
+    expect(screen.getAllByTestId(/^row-/)).toHaveLength(ROWS.length);
   });
 
-  it("génère avec exactement les identifiants sélectionnés, puis recharge le cockpit et les factures", async () => {
+  it("une tuile filtre la liste par statut", async () => {
     const user = userEvent.setup();
-    createInvoiceMock.mockResolvedValue({ id: 55, number: "FIRM-2026-055", firm: ARTHREX, totalAmount: "350.00", currency: "EUR", lineCount: 1 });
     renderPage();
-    await screen.findByText("Arthrex");
-    const cockpitCallsBefore = getCockpitMock.mock.calls.length;
-    const invoiceCallsBefore = getFirmInvoicesMock.mock.calls.length;
+    await user.click(await screen.findByRole("button", { name: /Déjà facturées/ }));
+    await waitFor(() => expect(getWorklistMock).toHaveBeenLastCalledWith(expect.objectContaining({ status: "INVOICED" })));
+  });
 
-    await user.click(screen.getByRole("checkbox", { name: "Sélectionner la ligne 1" }));
-    await user.click(screen.getByRole("button", { name: /Générer la facture — 1 ligne/ }));
+  it("exporte exactement les lignes cochées, en Excel puis en PDF", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("Arthrodèse 2 niveaux");
+    expect(screen.queryByRole("button", { name: "Exporter Excel" })).not.toBeInTheDocument();
+
+    await user.click(within(tableRow("MATERIAL_LINE:2")).getByRole("checkbox"));
+    await user.click(within(tableRow("MISSION_INTERVENTION:3")).getByRole("checkbox"));
+    expect(screen.getByText("2 lignes sélectionnées")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Exporter Excel" }));
+    await waitFor(() => expect(exportMock).toHaveBeenCalledTimes(1));
+    expect(exportMock).toHaveBeenCalledWith({
+      from: "2026-09-01", to: "2026-09-30", firmIds: [], keys: ["MATERIAL_LINE:2", "MISSION_INTERVENTION:3"], format: "xlsx",
+    });
+
+    await user.click(screen.getByRole("button", { name: "Exporter PDF" }));
+    await waitFor(() => expect(exportMock).toHaveBeenLastCalledWith(expect.objectContaining({ keys: ["MATERIAL_LINE:2", "MISSION_INTERVENTION:3"], format: "pdf" })));
+  });
+
+  it("« tout sélectionner » puis une ligne disparue des données serveur n'est jamais exportée", async () => {
+    const user = userEvent.setup();
+    const { rerender } = renderPage();
+    await screen.findByText("Arthrodèse 2 niveaux");
+    await user.click(screen.getByRole("checkbox", { name: "Tout sélectionner" }));
+    expect(screen.getByText("5 lignes sélectionnées")).toBeInTheDocument();
+
+    getWorklistMock.mockResolvedValue(worklist({ rows: ROWS.slice(0, 2) }));
+    await user.click(screen.getByRole("button", { name: "Facturables" }));
+    await waitFor(() => expect(screen.getByText("2 lignes sélectionnées")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Exporter PDF" }));
+    await waitFor(() => expect(exportMock).toHaveBeenCalledWith(expect.objectContaining({ keys: ["MISSION_INTERVENTION:1", "MATERIAL_LINE:2"] })));
+    rerender(<></>);
+  });
+
+  it("génère une facture seulement pour des lignes facturables d'une seule firme, avec leurs identifiants financiers", async () => {
+    const user = userEvent.setup();
+    createInvoiceMock.mockResolvedValue({ id: 77, number: "FIRM-2026-077", firm: ARTHREX, totalAmount: "400.00", currency: "EUR", lineCount: 2 });
+    renderPage();
+    await screen.findByText("Arthrodèse 2 niveaux");
+
+    await user.click(within(tableRow("MISSION_INTERVENTION:3")).getByRole("checkbox"));
+    expect(screen.getByRole("button", { name: "Générer la facture" })).toBeDisabled(); // non facturable
+    await user.click(within(tableRow("MISSION_INTERVENTION:3")).getByRole("checkbox"));
+
+    await user.click(within(tableRow("MISSION_INTERVENTION:1")).getByRole("checkbox"));
+    await user.click(within(tableRow("MATERIAL_LINE:2")).getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: "Générer la facture Arthrex" }));
 
     await waitFor(() => expect(createInvoiceMock).toHaveBeenCalledWith({
-      firmId: 10, currency: "EUR", periodStart: "2026-09-01", periodEnd: "2026-09-30", selectedFinancialCalculationLineIds: [1],
+      firmId: 10, currency: "EUR", periodStart: "2026-09-01", periodEnd: "2026-09-30", selectedFinancialCalculationLineIds: [901, 902],
     }));
-    expect(await screen.findByText(/Facture FIRM-2026-055 générée pour Arthrex/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Ouvrir la facture" })).toBeInTheDocument();
-    expect(toastSuccess).toHaveBeenCalled();
-    await waitFor(() => expect(getCockpitMock.mock.calls.length).toBeGreaterThan(cockpitCallsBefore));
-    await waitFor(() => expect(getFirmInvoicesMock.mock.calls.length).toBeGreaterThan(invoiceCallsBefore));
+    expect(await screen.findByText(/Facture FIRM-2026-077 générée pour Arthrex/)).toBeInTheDocument();
   });
 
-  it("affiche le message métier du backend quand la génération échoue (ligne déjà facturée entre-temps)", async () => {
+  it("À corriger : anomalies traduites, regroupées par mission, action « Configurer le tarif » et relance groupée des éléments corrigés", async () => {
     const user = userEvent.setup();
-    createInvoiceMock.mockRejectedValue({ response: { data: { error: { message: "Sélection invalide.", violations: [{ message: "La ligne #1 est déjà rattachée à un document." }] } } } });
+    runCalculationsMock.mockResolvedValue({ results: [], calculated: 1, failed: 0, skipped: 0 });
     renderPage();
-    await screen.findByText("Arthrex");
+    await user.click(await screen.findByRole("tab", { name: "À corriger (6)" }));
 
-    await user.click(screen.getByRole("checkbox", { name: "Sélectionner la ligne 1" }));
-    await user.click(screen.getByRole("button", { name: /Générer la facture — 1 ligne/ }));
+    const mission = screen.getByTestId("mission-501");
+    expect(within(mission).getByText("Tarif d'intervention manquant")).toBeInTheDocument();
+    expect(within(mission).getByText("Arthrodèse 2 niveaux · Arthrex")).toBeInTheDocument();
+    expect(within(mission).getByText(/au 02\/09\/2026/)).toBeInTheDocument();
+    expect(within(mission).getByRole("button", { name: "Configurer le tarif" })).toBeInTheDocument();
+    expect(within(mission).getByText("Corrigé — à recalculer")).toBeInTheDocument();
+    expect(screen.queryByText(/No active/)).not.toBeInTheDocument();
 
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Sélection invalide. La ligne #1 est déjà rattachée à un document."));
+    await user.click(screen.getByRole("button", { name: /Recalculer les éléments corrigés/ }));
+    await waitFor(() => expect(runCalculationsMock).toHaveBeenCalledWith([501]));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("1 mission calculée."));
+
+    await user.click(within(screen.getByTestId("mission-600")).getByRole("button", { name: "Calculer" }));
+    await waitFor(() => expect(runCalculationsMock).toHaveBeenLastCalledWith([600]));
   });
 
-  it("« À vérifier » : raison backend + Calculer / Approuver appellent les endpoints existants puis rechargent", async () => {
-    const user = userEvent.setup();
-    calculateMock.mockResolvedValue({ id: 1 });
-    approveMock.mockResolvedValue({ id: 88 });
-    renderPage();
-    await screen.findByText("3 lignes");
-
-    await user.click(screen.getByRole("tab", { name: /À vérifier/ }));
-    expect(screen.getByText(/Calcul financier requis/)).toBeInTheDocument();
-    expect(screen.getByText(/Calcul à approuver/)).toBeInTheDocument();
-
-    const callsBefore = getCockpitMock.mock.calls.length;
-    await user.click(screen.getByRole("button", { name: "Calculer" }));
-    await waitFor(() => expect(calculateMock).toHaveBeenCalledWith(501));
-    await waitFor(() => expect(getCockpitMock.mock.calls.length).toBeGreaterThan(callsBefore));
-
-    await user.click(screen.getByRole("button", { name: "Approuver" }));
-    await waitFor(() => expect(approveMock).toHaveBeenCalledWith(88));
-  });
-
-  it("« À vérifier » : un échec de calcul affiche le message métier renvoyé", async () => {
-    const user = userEvent.setup();
-    calculateMock.mockRejectedValue({ response: { data: { error: { message: "Tarifs manquants.", violations: [{ message: "Aucun tarif actif pour Arthrex / LCA." }] } } } });
-    renderPage();
-    await screen.findByText("3 lignes");
-    await user.click(screen.getByRole("tab", { name: /À vérifier/ }));
-
-    await user.click(screen.getByRole("button", { name: "Calculer" }));
-
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Tarifs manquants. Aucun tarif actif pour Arthrex / LCA."));
-  });
-
-  it("historique : « Marquer comme payée » n'apparaît que si le backend l'autorise", async () => {
-    const user = userEvent.setup();
-    getFirmInvoicesMock.mockResolvedValue([
-      { id: 1, number: "FIRM-2026-001", firm: ARTHREX, status: "GENERATED", periodStart: "2026-09-01", periodEnd: "2026-09-30", totalAmount: "100.00", currency: "EUR", lineCount: 2, generatedAt: "2026-09-10T10:00:00+02:00", sentAt: null, paidAt: null, allowedActions: ["send", "cancel"] },
-      { id: 2, number: "FIRM-2026-002", firm: STRYKER, status: "SENT", periodStart: "2026-09-01", periodEnd: "2026-09-30", totalAmount: "200.00", currency: "EUR", lineCount: 1, generatedAt: "2026-09-10T10:00:00+02:00", sentAt: "2026-09-11T10:00:00+02:00", paidAt: null, allowedActions: ["markPaid"] },
-    ]);
-    markFirmInvoicePaidMock.mockResolvedValue({});
-    renderPage();
-    await screen.findByText("3 lignes");
-
-    await user.click(screen.getByRole("tab", { name: "Factures" }));
-    const generatedRow = (await screen.findByText("FIRM-2026-001")).closest("tr")!;
-    const sentRow = screen.getByText("FIRM-2026-002").closest("tr")!;
-    expect(within(generatedRow).queryByRole("button", { name: "Marquer comme payée" })).not.toBeInTheDocument();
-    expect(within(generatedRow).getByText("01/09/2026 → 30/09/2026")).toBeInTheDocument();
-
-    await user.click(within(sentRow).getByRole("button", { name: "Marquer comme payée" }));
-    await waitFor(() => expect(markFirmInvoicePaidMock).toHaveBeenCalled());
-    expect(markFirmInvoicePaidMock.mock.calls[0][0]).toBe(2);
-  });
-
-  it("« Lignes facturées » : chaque ligne référence sa facture", async () => {
+  it("Factures : compteurs par statut et filtre multi-firmes transmis", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText("3 lignes");
+    await user.click(await screen.findByRole("tab", { name: "Factures" }));
 
-    await user.click(screen.getByRole("tab", { name: /Lignes facturées/ }));
-
-    expect(screen.getByRole("link", { name: "FIRM-2026-042" })).toHaveAttribute("href", "/app/m/billing/firm-invoices/42");
-    expect(screen.getByText(/Envoyée · générée le 12\/09\/2026/)).toBeInTheDocument();
+    expect(await screen.findByText("1 facture générée")).toBeInTheDocument();
+    expect(screen.getByText("2 envoyées")).toBeInTheDocument();
+    expect(screen.getByText("3 payées")).toBeInTheDocument();
+    expect(getFirmInvoicesMock).toHaveBeenCalledWith({ from: "2026-09-01", to: "2026-09-30", firmIds: undefined, status: undefined, documentType: "STANDARD" });
   });
 
-  it("aucune ligne à facturer : renvoie explicitement vers « À vérifier »", async () => {
-    getCockpitMock.mockResolvedValue(cockpit({ toInvoice: [], kpis: { ...cockpit().kpis, toInvoiceLineCount: 0, toInvoiceAmounts: [] } }));
+  it("signale les missions encodées en attente de validation au lieu de les faire disparaître", async () => {
+    getWorklistMock.mockResolvedValue(worklist({ summary: { ...worklist().summary, pendingValidationMissionCount: 3 } }));
     renderPage();
-
-    expect(await screen.findByText(/Aucune ligne à facturer sur cette période/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Voir les 2 élément(s) à vérifier" })).toBeInTheDocument();
+    expect(await screen.findByText(/3 missions encodées sur la période attendent encore leur validation/)).toBeInTheDocument();
   });
 });

@@ -11077,6 +11077,97 @@ rafraîchissement de « Planning publié », textes de notification.
 
 Non déployé.
 
+## D-133 — Facturation firmes : worklist partant de l'activité validée (remplace le cockpit D-123) (2026-10-07)
+
+**Statut : fait sur `feat/firm-billing-worklist-redesign` (non fusionné, non déployé).**
+
+### Constat (audit du 2026-10-07, lecture seule sur la prod)
+
+« À facturer = 0 » alors que des interventions et du matériel sont encodés et validés.
+En production : 32 missions `VALIDATED` (72 interventions, 116 lignes de matériel), **0**
+`FinancialCalculation` réussi à ce jour, 2 tentatives en échec le 2026-10-07
+(`MISSING_FIRM_INTERVENTION_RATE`, `MISSING_FIRM_MATERIAL_RATE` ×2, `MISSING_INSTRUMENTIST_RATE`).
+Couverture tarifaire : 100 des 116 lignes de matériel portent un article sans aucune
+`PricingRule MATERIAL_FEE` (articles `UNSPECIFIED`), 17 interventions sans
+`INTERVENTION_FEE`, 6 interventions sans firme principale ; seules 4 missions sur 32
+seraient valorisables aujourd'hui.
+
+Cause exacte, en trois couches :
+
+1. **Défaut de conception de la requête D-123** — le cockpit partait des
+   `FinancialCalculationLine`. Sans calcul réussi, aucune ligne : « À facturer = 0 » par
+   construction, l'activité n'apparaissait que comme un item par mission « à vérifier »,
+   sans détail des interventions/matériels, sans montant, sans distinction entre une
+   étape (calcul à lancer/approuver) et un problème de configuration.
+2. **Absence de calcul** — le calcul est manuel (D-073, conservé) et n'avait jamais été
+   lancé pour 30 missions.
+3. **Échec tout-ou-rien** — `FinancialCalculationService::buildAndPersist()` ne persiste
+   rien dès qu'UNE anomalie existe, y compris un tarif **instrumentiste** manquant : un seul
+   tarif absent (firme ou instrumentiste) fait disparaître toutes les lignes firmes de la
+   mission. Ces anomalies étaient affichées avec le message technique du moteur.
+
+Ni exclusion métier (aucune `FirmServiceOffering.feeApplicable = false`, aucun article
+`NOT_BILLABLE` en prod), ni facture existante n'expliquaient le zéro.
+
+### Décisions
+
+1. **Projection de lecture dédiée** `FirmBillingWorklistService` (`GET
+   /api/firm-billing/worklist`) : part des missions `VALIDATED` de la période (date effective
+   `COALESCE(actual_start_at, start_at)`), une ligne par `MissionIntervention` et par
+   `MaterialLine` (quantité > 0), enrichie de l'état financier. Toute ligne FIRM d'un calcul
+   actif sans source encodée reste visible (`FINANCIAL_LINE:{id}`). Pas de second moteur :
+   les montants viennent uniquement des `FinancialCalculationLine` du calcul actif
+   (`CALCULATED`/`APPROVED`/`LOCKED`) ou des `FirmInvoiceLine` ; jamais de
+   `SUPERSEDED`/`CANCELLED`, jamais d'estimation. Aucune migration.
+2. **Granularité** : le moteur produit au plus une ligne FIRM par source (firme principale
+   de l'intervention, firme de l'article) — la ligne de worklist est la source elle-même ;
+   pas de ventilation multi-firmes inventée côté frontend.
+3. **Statut + motif établis par le backend** (`FirmBillingStatus` × `FirmBillingReason`,
+   catalogue stable documenté dans `api.md` §24.3.1). `NOT_BILLABLE` n'est jamais une
+   anomalie. Les codes d'anomalie moteur sont repris à l'identique et traduits en français
+   contextualisé ; un code inconnu devient `CALCULATION_FAILED`. Le message technique ne
+   sort jamais de l'API (il reste dans `audit_event`).
+4. **Exclusions lues aux mêmes sources que le moteur** : `MaterialItem.billingStatus` et
+   `RepresentativePolicyResolver` (dans le même ordre de garde que
+   `resolveFirmInterventionLine()`). **Extension en lecture seule de l'exception D-092** :
+   la worklist est le second consommateur autorisé de `RepresentativePolicyResolver`, pour
+   expliquer l'absence de ligne — jamais pour produire un montant. Avant calcul, une
+   exclusion catalogue est donc déjà « Non facturable » ; un test vérifie que le moteur
+   confirme la même classification après calcul.
+5. **« À corriger »** : une anomalie par problème (dernier échec audité + étapes de workflow
+   « calcul à effectuer / à approuver / à mettre à jour / encodage rouvert »), regroupée par
+   mission à l'affichage. `resolved` = la cause n'existe plus dans la configuration actuelle
+   (mêmes résolveurs que le moteur). La relance n'est proposée en groupe que pour les
+   missions dont toutes les anomalies sont résolues (`POST /api/firm-billing/calculations`,
+   boucle sur `calculate()`/`recalculate()` existants) : on corrige la cause, puis on relance.
+6. **Tuiles backend** (`summary`) toujours avec leur unité (lignes, anomalies) ; compteurs de
+   factures déplacés dans l'onglet Factures. Onglets : Prestations | À corriger (N) |
+   Factures ; « Lignes facturées » devient le filtre « Facturés ».
+7. **Filtres** : période mensuelle, `firmIds[]` (OU), type, statut — tous serveur. Les tuiles
+   suivent firme/type mais pas le statut.
+8. **Exports** (`POST /api/firm-billing/worklist/export`) : exactement les clés cochées,
+   rejouées côté serveur (clé inconnue = 422, jamais un export partiel), sans doublon ;
+   PDF via `PdfService` (paysage) ; `.xlsx` OOXML natif (`XlsxWriter`, ext-zip — aucune
+   dépendance ajoutée) ; total = lignes `BILLABLE` uniquement ; aucune donnée patient.
+9. **Génération de facture inchangée** (`from-financial-calculations`, une firme, IDs
+   explicites) depuis la sélection de lignes `canInvoice`. Les lignes neutralisées à 0 €
+   (délégué présent) ne sont plus proposées à la facturation — elles restaient « à
+   facturer » dans le cockpit D-123.
+
+### Limites restantes
+
+- Les missions `SUBMITTED` ne sont pas des prestations validées : seulement comptées
+  (`pendingValidationMissionCount`) avec un lien vers le Suivi des encodages.
+- Une exclusion constatée APRÈS calcul est relue dans la configuration actuelle (le calcul
+  ne persiste pas ses exclusions) ; une offre modifiée depuis le calcul peut donc changer le
+  motif affiché, jamais le montant.
+- `resolveFirmMaterialLine()` ne consulte pas `MaterialLineBillingState` (matériel rattaché
+  à un brouillon d'intervention) : point du moteur relevé pendant l'audit, non vérifié de
+  bout en bout ni modifié ici (0 ligne concernée en prod).
+- Actions « Configurer le tarif » : lien vers la page Prestations / Instrumentistes, sans
+  pré-sélection de la firme ou de l'article.
+- Le verrouillage à la maille du calcul (D-123) est inchangé.
+
 ---
 
 ## D-136 — Suivi des encodages : tiroir superposé, encodage lisible après validation, code couleur des heures, rappel des heures réelles (2026-10-07)

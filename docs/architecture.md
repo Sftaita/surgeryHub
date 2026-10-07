@@ -57,7 +57,8 @@ Api/
 ├── MaterialItemRequestManagerController — gestion demandes manager (list/resolve/ignore)
 ├── MaterialLineController               — CRUD /api/missions/{id}/material-lines
 ├── FirmBillingController               — PATCH billing-contact + CRUD /api/firms/{id}/pricing-rules
-├── FirmInvoiceController               — CRUD /api/firm-invoices + cockpit (D-123) + eligible-lines/from-financial-calculations/send/mark-paid (D-121)
+├── FirmInvoiceController               — CRUD /api/firm-invoices + eligible-lines/from-financial-calculations/send/mark-paid (D-121)
+├── FirmBillingWorklistController       — worklist /api/firm-billing/worklist + export PDF/xlsx d'une sélection + calcul groupé (D-133)
 ├── InstrumentistStatementController    — CRUD /api/instrumentist-statements + eligible-lines/from-financial-calculations/send/mark-paid (D-121)
 ├── AbsenceController                   — CRUD /api/absences
 ├── PlanningVersionController           — GET /api/planning/versions (list) + apply-modifications/
@@ -806,7 +807,8 @@ Mission VALIDATED (encodingLockedAt posé)
       tout ou rien : une seule anomalie (tarif firme ou instrumentiste manquant…) =>
       aucune ligne, audit FINANCIAL_CALCULATION_FAILED avec la liste des anomalies
   → POST /api/financial-calculations/{id}/approve        (MANUEL) → APPROVED
-  → cockpit GET /api/firm-invoices/cockpit               (classe, ne calcule rien)
+  → worklist GET /api/firm-billing/worklist             (D-133 : part de l'activité validée,
+      classe chaque intervention / matériel, ne calcule rien)
   → POST /api/firm-invoices/from-financial-calculations  (une firme, IDs explicites)
       transaction : PESSIMISTIC_WRITE sur chaque FinancialCalculation (id croissant),
       revalidation ligne à ligne (firme, devise, période, calcul APPROVED/LOCKED,
@@ -827,7 +829,7 @@ Mission VALIDATED (encodingLockedAt posé)
   l'encodage (`MissionEncodingWorkflowService::reopen()`) et recalcul
   (`FinancialCalculationService::recalculate()`) deviennent impossibles pour toute la
   mission, y compris les lignes d'autres firmes pas encore facturées (qui restent
-  facturables telles quelles, signalées « Calcul financier verrouillé » dans le cockpit).
+  facturables telles quelles, signalées « Calcul verrouillé » dans la worklist).
   **Futur lot distinct** : workflow de correction d'une mission partiellement facturée
   (avoir / recalcul contrôlé) — touche au versionnement et à l'intégrité comptable.
 - **`Mission.invoiceGeneratedAt` n'est plus jamais écrit** (seul le chemin legacy le

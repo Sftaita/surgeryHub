@@ -13,7 +13,6 @@ use App\Enum\InvoiceStatus;
 use App\Enum\PaymentMethod;
 use App\Security\Voter\BillingVoter;
 use App\Service\DocumentPaymentService;
-use App\Service\FirmBillingCockpitService;
 use App\Service\FinancialCorrectionService;
 use App\Service\FirmInvoiceService;
 use App\Service\NotificationService;
@@ -36,35 +35,7 @@ class FirmInvoiceController extends AbstractController
         private readonly PdfService $pdfService,
         private readonly EntityManagerInterface $em,
         private readonly NotificationService $notificationService,
-        private readonly FirmBillingCockpitService $cockpitService,
     ) {}
-
-    /**
-     * D-123 — cockpit « Facturation firmes » : KPI + « à facturer » (groupé par firme et
-     * devise) + « à vérifier » (raison explicite) + « facturées », pour une période de dates
-     * métier inclusives. Lecture seule ; aucun calcul tarifaire.
-     */
-    #[Route('/cockpit', name: 'api_firm_invoices_cockpit', methods: ['GET'])]
-    public function cockpit(Request $request): JsonResponse
-    {
-        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
-
-        $from = $this->parseBusinessDay($request->query->get('from'));
-        $to = $this->parseBusinessDay($request->query->get('to'));
-        if ($from === null || $to === null || $from > $to) {
-            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'from et to (AAAA-MM-JJ, from ≤ to) sont requis.']], 422);
-        }
-
-        $firm = null;
-        if ($firmId = $request->query->getInt('firmId')) {
-            $firm = $this->em->find(Firm::class, $firmId);
-            if (!$firm) {
-                return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Firme introuvable.']], 404);
-            }
-        }
-
-        return $this->json($this->cockpitService->build($from, $to, $firm));
-    }
 
     #[Route('', name: 'api_firm_invoices_list', methods: ['GET'])]
     public function list(Request $request): JsonResponse
@@ -80,13 +51,18 @@ class FirmInvoiceController extends AbstractController
         if ($firmId = $request->query->getInt('firmId')) {
             $qb->andWhere('i.firm = :fid')->setParameter('fid', $firmId);
         }
+        // D-133 — multi-sélection de firmes (OU) : firmIds[]=1&firmIds[]=2.
+        $firmIds = array_values(array_filter(array_map('intval', (array) ($request->query->all()['firmIds'] ?? [])), static fn (int $id) => $id > 0));
+        if ($firmIds !== []) {
+            $qb->andWhere('IDENTITY(i.firm) IN (:fids)')->setParameter('fids', $firmIds);
+        }
         if ($status = $request->query->get('status')) {
             $qb->andWhere('i.status = :status')->setParameter('status', InvoiceStatus::from($status));
         }
         if ($year = $request->query->getInt('year')) {
             $qb->andWhere('YEAR(i.periodStart) = :year')->setParameter('year', $year);
         }
-        // D-123 — filtre de période du cockpit (dates métier inclusives sur periodStart).
+        // D-123 — filtre de période de la facturation firmes (dates métier inclusives sur periodStart).
         if ($from = $this->parseBusinessDay($request->query->get('from'))) {
             $qb->andWhere('i.periodStart >= :from')->setParameter('from', $from->setTime(0, 0, 0));
         }

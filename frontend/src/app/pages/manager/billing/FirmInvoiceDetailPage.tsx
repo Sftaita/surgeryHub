@@ -28,7 +28,7 @@ import {
   type InvoiceStatus,
 } from "../../../features/billing-firm/api/firmInvoice.api";
 import { useToast } from "../../../ui/toast/useToast";
-import { extractBillingError } from "../../../features/billing-firm/api/firmBillingCockpit.api";
+import { extractBillingError } from "../../../features/billing-firm/api/firmBillingWorklist.api";
 import DocumentFinancePanel from "../../../features/billing-shared/components/DocumentFinancePanel";
 
 const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {

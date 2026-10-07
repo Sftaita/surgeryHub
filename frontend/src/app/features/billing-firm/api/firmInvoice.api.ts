@@ -71,6 +71,8 @@ export interface FirmInvoiceLine {
 
 export async function getFirmInvoices(params?: {
   firmId?: number;
+  /** D-133 — plusieurs firmes (OU). */
+  firmIds?: number[];
   status?: InvoiceStatus;
   year?: number;
   /** D-123 — période (dates AAAA-MM-JJ inclusives, sur le début de période de la facture). */

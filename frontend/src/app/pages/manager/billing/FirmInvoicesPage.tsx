@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Checkbox,
@@ -18,13 +19,17 @@ import {
   TableHead,
   TableRow,
   Tabs,
+  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Tooltip,
   Typography,
 } from "@mui/material";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
-import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
+import GridOnIcon from "@mui/icons-material/GridOn";
 import ReceiptLongOutlinedIcon from "@mui/icons-material/ReceiptLongOutlined";
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
@@ -40,25 +45,42 @@ import {
   type InvoiceStatus,
 } from "../../../features/billing-firm/api/firmInvoice.api";
 import {
+  exportFirmBillingSelection,
   extractBillingError,
-  getFirmBillingCockpit,
-  type CockpitLine,
-  type InvoicedLine,
-  type ToInvoiceGroup,
-  type ToVerifyItem,
-} from "../../../features/billing-firm/api/firmBillingCockpit.api";
-import { approveFinancialCalculation, calculateMission } from "../../../features/financial-calculation/api/financialCalculation.api";
+  extractBillingErrorAsync,
+  getFirmBillingWorklist,
+  runFirmBillingCalculations,
+  type AnomalyActionCode,
+  type BillingStatus,
+  type FirmBillingWorklist,
+  type SourceType,
+  type WorklistAnomaly,
+  type WorklistRow,
+} from "../../../features/billing-firm/api/firmBillingWorklist.api";
+import { approveFinancialCalculation } from "../../../features/financial-calculation/api/financialCalculation.api";
 
-const STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {
+const INVOICE_STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {
   DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success", CANCELLED: "error",
 };
-const STATUS_LABELS: Record<InvoiceStatus, string> = {
+const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
   DRAFT: "Brouillon", GENERATED: "Générée", SENT: "Envoyée", PAID: "Payée", CANCELLED: "Annulée",
 };
 
-type TabKey = "toInvoice" | "toVerify" | "invoices" | "invoiced";
+/** Présentation seulement : le statut et son libellé viennent du backend. */
+const BILLING_STATUS_COLORS: Record<BillingStatus, "success" | "default" | "warning" | "info"> = {
+  BILLABLE: "success", NOT_BILLABLE: "default", TO_REVIEW: "warning", INVOICED: "info",
+};
 
-/** Mois civil courant → bornes AAAA-MM-JJ (dates métier, jamais toISOString : voir D-123). */
+/** Où mène chaque action d'anomalie (navigation uniquement). */
+const ACTION_ROUTES: Partial<Record<AnomalyActionCode, string>> = {
+  CONFIGURE_INTERVENTION_RATE: "/app/m/catalogue/prestations",
+  CONFIGURE_MATERIAL_RATE: "/app/m/catalogue/prestations",
+  CONFIGURE_INSTRUMENTIST_RATE: "/app/m/instrumentists",
+};
+
+type TabKey = "prestations" | "toFix" | "invoices";
+
+/** Mois civil → bornes AAAA-MM-JJ (dates métier, jamais toISOString : voir D-123). */
 function monthBounds(year: number, month: number): { from: string; to: string } {
   const pad = (n: number) => String(n).padStart(2, "0");
   const lastDay = new Date(year, month, 0).getDate();
@@ -70,26 +92,36 @@ function formatMoney(amount: string | number | null | undefined, currency = "EUR
   return `${n.toLocaleString("fr-BE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency === "EUR" ? "€" : currency}`;
 }
 
+function formatAmounts(amounts: { currency: string; amount: string }[]): string {
+  return amounts.length ? amounts.map((a) => formatMoney(a.amount, a.currency)).join(" + ") : formatMoney(0);
+}
+
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   const [y, m, d] = iso.slice(0, 10).split("-");
   return `${d}/${m}/${y}`;
 }
 
-function missionLabel(m: { date: string | null; site: string | null; surgeon: string | null }): string {
-  return [formatDate(m.date), m.site ?? "—", m.surgeon ?? "—"].join(" · ");
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n > 1 ? "s" : ""}`;
 }
 
-function prestationLabel(line: CockpitLine): string {
-  if (line.material) return [line.material.label, line.material.referenceCode].filter(Boolean).join(" · ");
-  return line.intervention?.label ?? line.description;
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /**
- * D-123 — cockpit « Facturation firmes ». Toutes les données (catégories, raisons,
- * montants, actions permises) viennent de GET /api/firm-invoices/cockpit et
- * GET /api/firm-invoices : aucun calcul métier ici. La génération envoie exactement les
- * identifiants de FinancialCalculationLine affichés, et n'attend pas d'update optimiste.
+ * D-133 — « Facturation firmes » : worklist partant de l'activité validée.
+ * Classification (Facturable / Non facturable / À vérifier / Facturé), motifs, montants,
+ * tuiles et anomalies viennent tous de GET /api/firm-billing/worklist : aucune décision
+ * métier ici. Les exports envoient exactement les clés des lignes cochées.
  */
 export default function FirmInvoicesPage() {
   const toast = useToast();
@@ -99,9 +131,10 @@ export default function FirmInvoicesPage() {
   const now = new Date();
   const [year, setYear] = React.useState(now.getFullYear());
   const [month, setMonth] = React.useState(now.getMonth() + 1);
-  const [firmId, setFirmId] = React.useState<number | "">("");
-  const [statusFilter, setStatusFilter] = React.useState<InvoiceStatus | "">("");
-  const [tab, setTab] = React.useState<TabKey>("toInvoice");
+  const [firmIds, setFirmIds] = React.useState<number[]>([]);
+  const [type, setType] = React.useState<SourceType | "">("");
+  const [status, setStatus] = React.useState<BillingStatus | "">("");
+  const [tab, setTab] = React.useState<TabKey>("prestations");
   const [lastCreated, setLastCreated] = React.useState<FirmInvoice | null>(null);
 
   const { from, to } = monthBounds(year, month);
@@ -118,66 +151,100 @@ export default function FirmInvoicesPage() {
     queryFn: async () => (await apiClient.get("/api/firms")).data as { id: number; name: string }[],
   });
 
-  const cockpitQuery = useQuery({
-    queryKey: ["firm-billing-cockpit", from, to, firmId],
-    queryFn: () => getFirmBillingCockpit({ from, to, firmId: firmId || undefined }),
-  });
-
-  const invoicesQuery = useQuery({
-    queryKey: ["firm-invoices", "period", from, to, firmId, statusFilter],
-    queryFn: () => getFirmInvoices({ from, to, firmId: firmId || undefined, status: statusFilter || undefined, documentType: "STANDARD" }),
+  const worklistQuery = useQuery({
+    queryKey: ["firm-billing-worklist", from, to, firmIds, type, status],
+    queryFn: () => getFirmBillingWorklist({ from, to, firmIds, type: type || undefined, status: status || undefined }),
+    placeholderData: (prev) => prev,
   });
 
   async function refreshAll() {
     await Promise.all([
-      qc.invalidateQueries({ queryKey: ["firm-billing-cockpit"] }),
+      qc.invalidateQueries({ queryKey: ["firm-billing-worklist"] }),
       qc.invalidateQueries({ queryKey: ["firm-invoices"] }),
     ]);
   }
 
-  const cockpit = cockpitQuery.data;
-  const kpis = cockpit?.kpis;
+  const worklist = worklistQuery.data;
+  const summary = worklist?.summary;
+  const firms = firmsQuery.data ?? [];
+  const selectedFirms = firms.filter((f) => firmIds.includes(f.id));
+
+  function showStatus(next: BillingStatus | "") {
+    setStatus(next);
+    setTab("prestations");
+  }
 
   return (
-    <Stack spacing={3}>
+    <Stack spacing={2.5}>
       <PageHeader
         icon={ReceiptLongOutlinedIcon}
         title="Facturation firmes"
-        subtitle="Ce qui est à facturer, ce qui l'est déjà, et ce qui bloque — ligne par ligne, depuis les calculs financiers."
+        subtitle="Tout ce qui a été réalisé et validé sur la période : ce qui est facturable, ce qui ne l'est pas et pourquoi, ce qui bloque et ce qui est déjà facturé."
       />
 
+      {/* Filtres */}
       <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
         <Stack direction="row" alignItems="center" spacing={0.5}>
           <IconButton aria-label="Mois précédent" onClick={() => shiftMonth(-1)} size="small"><ChevronLeftIcon /></IconButton>
           <Typography fontWeight={700} sx={{ minWidth: 150, textAlign: "center", textTransform: "capitalize" }}>{periodLabel}</Typography>
           <IconButton aria-label="Mois suivant" onClick={() => shiftMonth(1)} size="small"><ChevronRightIcon /></IconButton>
         </Stack>
-        <Select
-          value={firmId}
-          onChange={(e) => { const v = e.target.value as number | ""; setFirmId(v === "" ? "" : Number(v)); }}
-          displayEmpty
+        <Autocomplete
+          multiple
           size="small"
-          sx={{ minWidth: 200 }}
-          inputProps={{ "aria-label": "Filtrer par firme" }}
-        >
-          <MenuItem value="">Toutes les firmes</MenuItem>
-          {(firmsQuery.data ?? []).map((f) => <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>)}
-        </Select>
+          options={firms}
+          value={selectedFirms}
+          getOptionLabel={(f) => f.name}
+          isOptionEqualToValue={(a, b) => a.id === b.id}
+          onChange={(_, value) => setFirmIds(value.map((f) => f.id))}
+          disableCloseOnSelect
+          sx={{ minWidth: 260, maxWidth: 520, flex: 1 }}
+          renderInput={(params) => (
+            <TextField {...params} label="Firmes" placeholder={firmIds.length ? "" : "Toutes les firmes"} inputProps={{ ...params.inputProps, "aria-label": "Filtrer par firmes" }} />
+          )}
+        />
+        <ToggleButtonGroup size="small" exclusive value={type} onChange={(_, v) => v !== null && setType(v)} aria-label="Type de prestation">
+          <ToggleButton value="">Tous les types</ToggleButton>
+          <ToggleButton value="INTERVENTION">Interventions</ToggleButton>
+          <ToggleButton value="MATERIAL">Matériel</ToggleButton>
+        </ToggleButtonGroup>
       </Stack>
 
-      {/* KPI — valeurs backend telles quelles */}
-      <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "repeat(2, 1fr)", md: "repeat(6, 1fr)" } }}>
-        <Kpi label="À facturer" value={kpis ? `${kpis.toInvoiceLineCount} ligne${kpis.toInvoiceLineCount > 1 ? "s" : ""}` : "—"} onClick={() => setTab("toInvoice")} />
+      {/* Tuiles — chiffres backend, toujours avec leur unité */}
+      <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "repeat(2, 1fr)", md: "repeat(5, 1fr)" } }}>
+        <Kpi label="Prestations validées" value={summary ? plural(summary.lineCount, "ligne") : "—"} active={tab === "prestations" && status === ""} onClick={() => showStatus("")} />
         <Kpi
-          label="Montant à facturer"
-          value={kpis ? (kpis.toInvoiceAmounts.length ? kpis.toInvoiceAmounts.map((a) => formatMoney(a.amount, a.currency)).join(" + ") : formatMoney(0)) : "—"}
-          onClick={() => setTab("toInvoice")}
+          label="Facturables"
+          value={summary ? plural(summary.billable.lineCount, "ligne") : "—"}
+          hint={summary ? formatAmounts(summary.billable.amounts) : undefined}
+          tone="success"
+          active={tab === "prestations" && status === "BILLABLE"}
+          onClick={() => showStatus("BILLABLE")}
         />
-        <Kpi label="Factures générées" value={kpis?.invoices.generated ?? "—"} hint="Générées, pas encore envoyées" onClick={() => setTab("invoices")} />
-        <Kpi label="Envoyées" value={kpis?.invoices.sent ?? "—"} onClick={() => setTab("invoices")} />
-        <Kpi label="Payées" value={kpis?.invoices.paid ?? "—"} onClick={() => setTab("invoices")} />
-        <Kpi label="À vérifier" value={kpis?.toVerifyCount ?? "—"} warn={(kpis?.toVerifyCount ?? 0) > 0} onClick={() => setTab("toVerify")} />
+        <Kpi label="Non facturables" value={summary ? plural(summary.notBillable.lineCount, "ligne") : "—"} active={tab === "prestations" && status === "NOT_BILLABLE"} onClick={() => showStatus("NOT_BILLABLE")} />
+        <Kpi
+          label="À corriger"
+          value={summary ? plural(summary.anomalyCount, "anomalie") : "—"}
+          hint={summary && summary.toReview.lineCount > 0 ? `${plural(summary.toReview.lineCount, "ligne")} à vérifier` : undefined}
+          tone={summary && summary.anomalyCount > 0 ? "warning" : undefined}
+          active={tab === "toFix"}
+          onClick={() => setTab("toFix")}
+        />
+        <Kpi
+          label="Déjà facturées"
+          value={summary ? plural(summary.invoiced.lineCount, "ligne") : "—"}
+          hint={summary && summary.invoiced.lineCount > 0 ? formatAmounts(summary.invoiced.amounts) : undefined}
+          active={tab === "prestations" && status === "INVOICED"}
+          onClick={() => showStatus("INVOICED")}
+        />
       </Box>
+
+      {summary && summary.pendingValidationMissionCount > 0 && (
+        <Alert severity="info" variant="outlined">
+          {plural(summary.pendingValidationMissionCount, "mission")} encodée{summary.pendingValidationMissionCount > 1 ? "s" : ""} sur la période {summary.pendingValidationMissionCount > 1 ? "attendent" : "attend"} encore leur validation : {summary.pendingValidationMissionCount > 1 ? "elles apparaîtront" : "elle apparaîtra"} ici une fois validée{summary.pendingValidationMissionCount > 1 ? "s" : ""}.
+          <Button component={RouterLink} to="/app/m/billing/encodings" size="small" sx={{ ml: 1 }}>Suivi des encodages</Button>
+        </Alert>
+      )}
 
       {lastCreated && (
         <Alert
@@ -190,33 +257,33 @@ export default function FirmInvoicesPage() {
       )}
 
       <Tabs value={tab} onChange={(_, v) => setTab(v)}>
-        <Tab value="toInvoice" label={`À facturer${kpis ? ` (${kpis.toInvoiceLineCount})` : ""}`} />
-        <Tab value="toVerify" label={`À vérifier${kpis ? ` (${kpis.toVerifyCount})` : ""}`} />
+        <Tab value="prestations" label="Prestations" />
+        <Tab value="toFix" label={`À corriger${summary ? ` (${summary.anomalyCount})` : ""}`} />
         <Tab value="invoices" label="Factures" />
-        <Tab value="invoiced" label={`Lignes facturées${kpis ? ` (${kpis.invoicedLineCount})` : ""}`} />
       </Tabs>
 
-      {cockpitQuery.isError && <Alert severity="error">{extractBillingError(cockpitQuery.error)}</Alert>}
-      {cockpitQuery.isLoading && <CircularProgress size={24} />}
+      {worklistQuery.isError && <Alert severity="error">{extractBillingError(worklistQuery.error)}</Alert>}
+      {worklistQuery.isLoading && <CircularProgress size={24} />}
 
-      {cockpit && tab === "toInvoice" && (
-        <ToInvoiceView
-          groups={cockpit.toInvoice}
+      {worklist && tab === "prestations" && (
+        <PrestationsView
+          worklist={worklist}
+          status={status}
+          onStatus={setStatus}
           period={{ from, to }}
-          onCreated={async (invoice) => {
+          firmIds={firmIds}
+          onInvoiceCreated={async (invoice) => {
             toast.success(`Facture ${invoice.number} générée — ${invoice.lineCount ?? invoice.lines?.length ?? 0} ligne(s), ${formatMoney(invoice.totalAmount, invoice.currency)}.`);
             setLastCreated(invoice);
             await refreshAll();
           }}
           onError={(msg) => toast.error(msg)}
-          toVerifyCount={cockpit.kpis.toVerifyCount}
-          onShowToVerify={() => setTab("toVerify")}
         />
       )}
 
-      {cockpit && tab === "toVerify" && (
-        <ToVerifyView
-          items={cockpit.toVerify}
+      {worklist && tab === "toFix" && (
+        <ToFixView
+          worklist={worklist}
           onDone={async (msg) => { toast.success(msg); await refreshAll(); }}
           onError={(msg) => toast.error(msg)}
         />
@@ -224,164 +291,344 @@ export default function FirmInvoicesPage() {
 
       {tab === "invoices" && (
         <InvoicesView
-          query={invoicesQuery}
-          statusFilter={statusFilter}
-          onStatusFilter={setStatusFilter}
+          from={from}
+          to={to}
+          firmIds={firmIds}
+          counts={summary?.invoices}
           onMarkPaid={async () => { toast.success("Facture marquée payée."); await refreshAll(); }}
           onError={(msg) => toast.error(msg)}
         />
       )}
-
-      {cockpit && tab === "invoiced" && <InvoicedView lines={cockpit.invoiced} />}
     </Stack>
   );
 }
 
-function Kpi({ label, value, hint, warn, onClick }: { label: string; value: React.ReactNode; hint?: string; warn?: boolean; onClick?: () => void }) {
+function Kpi({ label, value, hint, tone, active, onClick }: {
+  label: string;
+  value: React.ReactNode;
+  hint?: string;
+  tone?: "success" | "warning";
+  active?: boolean;
+  onClick?: () => void;
+}) {
   return (
     <Paper
       variant="outlined"
       component="button"
       type="button"
       onClick={onClick}
-      title={hint}
+      aria-pressed={active}
       sx={{
-        p: 1.5, borderRadius: 2, textAlign: "left", cursor: onClick ? "pointer" : "default", font: "inherit", background: "#fff",
-        borderColor: warn ? "warning.main" : undefined, "&:hover": onClick ? { bgcolor: "grey.50" } : undefined,
+        p: 1.5, borderRadius: 2, textAlign: "left", cursor: "pointer", font: "inherit", bgcolor: active ? "action.selected" : "background.paper",
+        borderColor: active ? "primary.main" : tone === "warning" ? "warning.main" : undefined, "&:hover": { bgcolor: "action.hover" },
       }}
     >
       <Typography variant="caption" color="text.secondary" fontWeight={700}>{label}</Typography>
-      <Typography variant="h6" fontWeight={800} sx={{ fontVariantNumeric: "tabular-nums", color: warn ? "warning.dark" : undefined }}>{value}</Typography>
+      <Typography variant="h6" fontWeight={800} sx={{ fontVariantNumeric: "tabular-nums", color: tone === "warning" ? "warning.dark" : tone === "success" ? "success.dark" : undefined }}>
+        {value}
+      </Typography>
+      {hint && <Typography variant="body2" color="text.secondary" sx={{ fontVariantNumeric: "tabular-nums" }}>{hint}</Typography>}
     </Paper>
   );
 }
 
-// ── À facturer ─────────────────────────────────────────────────────────────
+// ── Prestations ────────────────────────────────────────────────────────────
 
-function ToInvoiceView({ groups, period, onCreated, onError, toVerifyCount, onShowToVerify }: {
-  groups: ToInvoiceGroup[];
+const STATUS_FILTERS: { value: BillingStatus | ""; label: string }[] = [
+  { value: "", label: "Tous" },
+  { value: "BILLABLE", label: "Facturables" },
+  { value: "NOT_BILLABLE", label: "Non facturables" },
+  { value: "TO_REVIEW", label: "À vérifier" },
+  { value: "INVOICED", label: "Facturés" },
+];
+
+function BillingBadge({ row }: { row: WorklistRow }) {
+  return (
+    <Tooltip title={<><strong>{row.billingStatusLabel} — {row.reasonLabel}</strong><br />{row.reasonDetail}</>} arrow>
+      <Chip
+        size="small"
+        tabIndex={0}
+        color={BILLING_STATUS_COLORS[row.billingStatus]}
+        variant={row.billingStatus === "NOT_BILLABLE" ? "outlined" : "filled"}
+        label={row.billingStatusLabel}
+        aria-label={`${row.billingStatusLabel} — ${row.reasonLabel}. ${row.reasonDetail}`}
+      />
+    </Tooltip>
+  );
+}
+
+function PrestationsView({ worklist, status, onStatus, period, firmIds, onInvoiceCreated, onError }: {
+  worklist: FirmBillingWorklist;
+  status: BillingStatus | "";
+  onStatus: (s: BillingStatus | "") => void;
   period: { from: string; to: string };
-  onCreated: (invoice: FirmInvoice) => Promise<void>;
+  firmIds: number[];
+  onInvoiceCreated: (invoice: FirmInvoice) => Promise<void>;
   onError: (message: string) => void;
-  toVerifyCount: number;
-  onShowToVerify: () => void;
 }) {
-  // Sélection limitée à UN groupe firme+devise : une facture = une firme (D-123).
-  const [selection, setSelection] = React.useState<{ key: string; ids: number[] } | null>(null);
-  const groupKey = (g: ToInvoiceGroup) => `${g.firm.id}|${g.currency}`;
+  const rows = worklist.rows;
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [exporting, setExporting] = React.useState<"pdf" | "xlsx" | null>(null);
 
-  // Toute ligne sélectionnée qui n'est plus dans les données serveur est retirée — jamais
-  // envoyée à la génération (la sélection ne peut porter que sur ce qui est affiché).
+  // La sélection ne porte que sur des lignes affichées : toute clé disparue des données
+  // serveur (filtre, période, rechargement) est retirée — jamais exportée ni facturée.
   React.useEffect(() => {
-    if (!selection) return;
-    const group = groups.find((g) => groupKey(g) === selection.key);
-    const visible = new Set(group?.lines.map((l) => l.id) ?? []);
-    const kept = selection.ids.filter((id) => visible.has(id));
-    if (kept.length !== selection.ids.length) setSelection(kept.length ? { key: selection.key, ids: kept } : null);
-  }, [groups]); // eslint-disable-line react-hooks/exhaustive-deps
+    const visible = new Set(rows.map((r) => r.key));
+    setSelected((prev) => {
+      const kept = [...prev].filter((k) => visible.has(k));
+      return kept.length === prev.size ? prev : new Set(kept);
+    });
+  }, [rows]);
 
-  const mutation = useMutation({
-    mutationFn: (group: ToInvoiceGroup) =>
-      createFirmInvoiceFromCalculations({
-        firmId: group.firm.id,
-        currency: group.currency,
-        periodStart: period.from,
-        periodEnd: period.to,
-        selectedFinancialCalculationLineIds: selection?.ids ?? [],
-      }),
-    onSuccess: async (invoice) => { setSelection(null); await onCreated(invoice); },
+  const selectedRows = rows.filter((r) => selected.has(r.key));
+  const allSelected = rows.length > 0 && selectedRows.length === rows.length;
+
+  function toggle(key: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  async function doExport(format: "pdf" | "xlsx") {
+    setExporting(format);
+    try {
+      const { blob, filename } = await exportFirmBillingSelection({ ...period, firmIds, keys: selectedRows.map((r) => r.key), format });
+      downloadBlob(blob, filename);
+    } catch (err) {
+      onError(await extractBillingErrorAsync(err));
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  // Génération : uniquement des lignes que le backend déclare facturables (canInvoice),
+  // d'une seule firme et d'une seule devise — une facture = une firme (D-123). Le serveur
+  // revalide tout sous verrou.
+  const invoiceFirm = selectedRows[0]?.firm ?? null;
+  const invoiceCurrency = selectedRows[0]?.currency ?? null;
+  const invoiceable = selectedRows.length > 0
+    && selectedRows.every((r) => r.canInvoice && r.financialLineId !== null && r.firm?.id === invoiceFirm?.id && r.currency === invoiceCurrency);
+  const invoiceHint = selectedRows.length === 0 ? "" : !selectedRows.every((r) => r.canInvoice)
+    ? "Seules des lignes « Facturable » peuvent être placées sur une facture."
+    : "Une facture ne concerne qu'une seule firme (et une seule devise).";
+
+  const generate = useMutation({
+    mutationFn: () => createFirmInvoiceFromCalculations({
+      firmId: invoiceFirm!.id,
+      currency: invoiceCurrency!,
+      periodStart: period.from,
+      periodEnd: period.to,
+      selectedFinancialCalculationLineIds: selectedRows.map((r) => r.financialLineId!),
+    }),
+    onSuccess: async (invoice) => { setSelected(new Set()); await onInvoiceCreated(invoice); },
     onError: (err) => onError(extractBillingError(err)),
   });
 
-  if (groups.length === 0) {
-    return (
-      <Alert severity="info" action={toVerifyCount > 0 ? <Button color="inherit" size="small" onClick={onShowToVerify}>Voir les {toVerifyCount} élément(s) à vérifier</Button> : undefined}>
-        Aucune ligne à facturer sur cette période.
-        {toVerifyCount > 0 ? " Des prestations existent mais ne sont pas encore facturables." : ""}
-      </Alert>
-    );
+  return (
+    <Stack spacing={1.5}>
+      <ToggleButtonGroup size="small" exclusive value={status} onChange={(_, v) => v !== null && onStatus(v)} aria-label="Statut de facturation">
+        {STATUS_FILTERS.map((f) => <ToggleButton key={f.value || "ALL"} value={f.value}>{f.label}</ToggleButton>)}
+      </ToggleButtonGroup>
+
+      {selectedRows.length > 0 && (
+        <Paper variant="outlined" sx={{ px: 2, py: 1, borderRadius: 2, bgcolor: "action.selected" }} role="region" aria-label="Actions sur la sélection">
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography fontWeight={700} sx={{ mr: 1 }}>{plural(selectedRows.length, "ligne")} sélectionnée{selectedRows.length > 1 ? "s" : ""}</Typography>
+            <Button size="small" variant="outlined" startIcon={exporting === "pdf" ? <CircularProgress size={14} /> : <PictureAsPdfIcon />} disabled={exporting !== null} onClick={() => doExport("pdf")}>Exporter PDF</Button>
+            <Button size="small" variant="outlined" startIcon={exporting === "xlsx" ? <CircularProgress size={14} /> : <GridOnIcon />} disabled={exporting !== null} onClick={() => doExport("xlsx")}>Exporter Excel</Button>
+            <Tooltip title={invoiceable ? "" : invoiceHint}>
+              <span>
+                <Button size="small" variant="contained" disableElevation disabled={!invoiceable || generate.isPending} onClick={() => generate.mutate()}>
+                  {generate.isPending ? <CircularProgress size={16} /> : invoiceable ? `Générer la facture ${invoiceFirm?.name ?? ""}` : "Générer la facture"}
+                </Button>
+              </span>
+            </Tooltip>
+            <Box sx={{ flex: 1 }} />
+            <Button size="small" onClick={() => setSelected(new Set())}>Désélectionner</Button>
+          </Stack>
+        </Paper>
+      )}
+
+      {rows.length === 0 ? (
+        <Alert severity="info">
+          {status === "" ? "Aucune intervention ni aucun matériel validé sur cette période pour ces filtres." : "Aucune prestation dans cette catégorie pour ces filtres."}
+        </Alert>
+      ) : (
+        <Paper variant="outlined" sx={{ borderRadius: 2, overflowX: "auto" }}>
+          <Table size="small" sx={{ minWidth: 1100 }}>
+            <TableHead>
+              <TableRow sx={{ bgcolor: "grey.50" }}>
+                <TableCell padding="checkbox">
+                  <Checkbox
+                    checked={allSelected}
+                    indeterminate={selectedRows.length > 0 && !allSelected}
+                    onChange={() => setSelected(allSelected ? new Set() : new Set(rows.map((r) => r.key)))}
+                    inputProps={{ "aria-label": "Tout sélectionner" }}
+                  />
+                </TableCell>
+                <TableCell>Date</TableCell>
+                <TableCell>Site</TableCell>
+                <TableCell>Chirurgien</TableCell>
+                <TableCell>Type</TableCell>
+                <TableCell>Prestation</TableCell>
+                <TableCell>Référence</TableCell>
+                <TableCell>Firme</TableCell>
+                <TableCell align="right">Qté</TableCell>
+                <TableCell>Facturation</TableCell>
+                <TableCell>Motif</TableCell>
+                <TableCell align="right">Montant</TableCell>
+                <TableCell>Facture</TableCell>
+                <TableCell padding="checkbox" />
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {rows.map((row) => (
+                <TableRow key={row.key} hover selected={selected.has(row.key)} data-testid={`row-${row.key}`}>
+                  <TableCell padding="checkbox">
+                    <Checkbox
+                      checked={selected.has(row.key)}
+                      onChange={() => toggle(row.key)}
+                      inputProps={{ "aria-label": `Sélectionner ${row.label ?? "la ligne"} du ${formatDate(row.mission.date)}` }}
+                    />
+                  </TableCell>
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>{formatDate(row.mission.date)}</TableCell>
+                  <TableCell>{row.mission.site ?? "—"}</TableCell>
+                  <TableCell>{row.mission.surgeon ?? "—"}</TableCell>
+                  <TableCell>{row.sourceType === "MATERIAL" ? "Matériel" : "Intervention"}</TableCell>
+                  <TableCell sx={{ fontWeight: 600 }}>{row.label ?? "—"}</TableCell>
+                  <TableCell sx={{ color: "text.secondary" }}>{row.reference ?? ""}</TableCell>
+                  <TableCell>{row.firm?.name ?? <Typography component="span" variant="body2" color="warning.dark">Non renseignée</Typography>}</TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>{row.quantity ?? "—"}</TableCell>
+                  <TableCell><BillingBadge row={row} /></TableCell>
+                  <TableCell>
+                    <Tooltip title={row.reasonDetail}>
+                      <Typography variant="body2" component="span" color={row.billingStatus === "TO_REVIEW" ? "warning.dark" : "text.secondary"}>{row.reasonLabel}</Typography>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", fontWeight: row.billingStatus === "BILLABLE" ? 700 : 400 }}>
+                    {row.amount !== null ? formatMoney(row.amount, row.currency ?? "EUR") : "—"}
+                  </TableCell>
+                  <TableCell>
+                    {row.invoice ? (
+                      <>
+                        <Typography component={RouterLink} to={`/app/m/billing/firm-invoices/${row.invoice.id}`} variant="body2" fontWeight={700} color="primary" sx={{ textDecoration: "none" }}>
+                          {row.invoice.number ?? `#${row.invoice.id}`}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" display="block">{row.invoice.statusLabel}</Typography>
+                      </>
+                    ) : ""}
+                  </TableCell>
+                  <TableCell padding="checkbox">
+                    <Tooltip title="Ouvrir la mission">
+                      <IconButton size="small" component={RouterLink} to={`/app/m/missions/${row.mission.id}`} aria-label="Ouvrir la mission"><OpenInNewIcon fontSize="small" /></IconButton>
+                    </Tooltip>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Paper>
+      )}
+    </Stack>
+  );
+}
+
+// ── À corriger ─────────────────────────────────────────────────────────────
+
+function ToFixView({ worklist, onDone, onError }: { worklist: FirmBillingWorklist; onDone: (message: string) => Promise<void>; onError: (message: string) => void }) {
+  const navigate = useNavigate();
+  const { anomalies, bulkActions } = worklist;
+
+  const calculate = useMutation({
+    mutationFn: (missionIds: number[]) => runFirmBillingCalculations(missionIds),
+    onSuccess: (r) => {
+      const parts = [`${plural(r.calculated, "mission")} calculée${r.calculated > 1 ? "s" : ""}`];
+      if (r.failed) parts.push(`${r.failed} encore en échec`);
+      if (r.skipped) parts.push(`${r.skipped} ignorée${r.skipped > 1 ? "s" : ""}`);
+      return onDone(`${parts.join(", ")}.`);
+    },
+    onError: (err) => onError(extractBillingError(err)),
+  });
+  const approve = useMutation({
+    mutationFn: (calculationId: number) => approveFinancialCalculation(calculationId),
+    onSuccess: () => onDone("Calcul approuvé — les lignes sont maintenant facturables."),
+    onError: (err) => onError(extractBillingError(err)),
+  });
+  const busy = calculate.isPending || approve.isPending;
+
+  function runAction(a: WorklistAnomaly) {
+    if (!a.action) return;
+    const route = ACTION_ROUTES[a.action.code];
+    if (route) return navigate(route);
+    if (a.action.code === "OPEN_MISSION") return navigate(`/app/m/missions/${a.mission.id}`);
+    if (a.action.code === "APPROVE" && a.calculationId !== null) return approve.mutate(a.calculationId);
+    if (a.action.code === "CALCULATE" || a.action.code === "RECALCULATE") return calculate.mutate([a.mission.id]);
+  }
+
+  const groups = React.useMemo(() => {
+    const map = new Map<number, WorklistAnomaly[]>();
+    for (const a of anomalies) map.set(a.mission.id, [...(map.get(a.mission.id) ?? []), a]);
+    return [...map.values()];
+  }, [anomalies]);
+
+  if (anomalies.length === 0) {
+    return <Alert severity="success">Rien à corriger sur cette période : chaque prestation validée est facturable, non facturable pour un motif connu, ou déjà facturée.</Alert>;
   }
 
   return (
-    <Stack spacing={2}>
-      {groups.map((group) => {
-        const key = groupKey(group);
-        const selectedHere = selection?.key === key ? selection.ids : [];
-        const otherGroupSelected = selection !== null && selection.key !== key;
-        const allSelected = selectedHere.length === group.lines.length;
-        const selectedTotal = group.lines.filter((l) => selectedHere.includes(l.id)).reduce((s, l) => s + Number(l.totalAmount), 0);
+    <Stack spacing={1.5}>
+      <Alert severity="info" variant="outlined">
+        Corrigez d'abord la cause (tarif, encodage), puis relancez le calcul : relancer sans corriger reproduit la même anomalie.
+      </Alert>
+      {(bulkActions.recalculateFixed.length > 0 || bulkActions.calculatePending.length > 0) && (
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          {bulkActions.recalculateFixed.length > 0 && (
+            <Button variant="contained" disableElevation disabled={busy} onClick={() => calculate.mutate(bulkActions.recalculateFixed)}>
+              Recalculer les éléments corrigés ({plural(bulkActions.recalculateFixed.length, "mission")})
+            </Button>
+          )}
+          {bulkActions.calculatePending.length > 0 && (
+            <Button variant="outlined" disabled={busy} onClick={() => calculate.mutate(bulkActions.calculatePending)}>
+              Calculer les missions en attente ({bulkActions.calculatePending.length})
+            </Button>
+          )}
+        </Stack>
+      )}
 
-        function toggle(id: number) {
-          if (otherGroupSelected) return;
-          const next = selectedHere.includes(id) ? selectedHere.filter((x) => x !== id) : [...selectedHere, id];
-          setSelection(next.length ? { key, ids: next } : null);
-        }
-
+      {groups.map((items) => {
+        const m = items[0].mission;
         return (
-          <Paper key={key} variant="outlined" sx={{ borderRadius: 2, overflow: "hidden", opacity: otherGroupSelected ? 0.6 : 1 }}>
-            <Stack direction="row" alignItems="center" spacing={1.5} sx={{ px: 2, py: 1.5, bgcolor: "grey.50", flexWrap: "wrap" }} useFlexGap>
-              <Checkbox
-                checked={allSelected && selectedHere.length > 0}
-                indeterminate={selectedHere.length > 0 && !allSelected}
-                disabled={otherGroupSelected}
-                onChange={() => setSelection(allSelected ? null : { key, ids: group.lines.map((l) => l.id) })}
-                inputProps={{ "aria-label": `Tout sélectionner pour ${group.firm.name}` }}
-              />
-              <Box sx={{ flex: 1, minWidth: 180 }}>
-                <Typography fontWeight={800}>{group.firm.name}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {group.lineCount} ligne{group.lineCount > 1 ? "s" : ""} · {formatMoney(group.totalAmount, group.currency)} à facturer
-                </Typography>
-              </Box>
-              {otherGroupSelected && <Typography variant="caption" color="text.secondary">Une facture ne concerne qu'une firme : terminez d'abord la sélection en cours.</Typography>}
-              <Button
-                variant="contained"
-                disableElevation
-                disabled={selectedHere.length === 0 || mutation.isPending}
-                onClick={() => mutation.mutate(group)}
-              >
-                {mutation.isPending && selection?.key === key
-                  ? <CircularProgress size={16} />
-                  : `Générer la facture — ${selectedHere.length} ligne${selectedHere.length > 1 ? "s" : ""} — ${formatMoney(selectedTotal, group.currency)}`}
-              </Button>
+          <Paper key={m.id} variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }} data-testid={`mission-${m.id}`}>
+            <Stack direction="row" alignItems="center" spacing={1} sx={{ px: 2, py: 1, bgcolor: "grey.50" }}>
+              <Typography fontWeight={800} sx={{ flex: 1 }}>{formatDate(m.date)} · {m.site ?? "—"} · {m.surgeon ?? "—"}</Typography>
+              <Typography variant="caption" color="text.secondary">{plural(items.length, "anomalie")}</Typography>
+              <Button size="small" component={RouterLink} to={`/app/m/missions/${m.id}`}>Ouvrir la mission</Button>
             </Stack>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell padding="checkbox" />
-                  <TableCell>Date · site · chirurgien</TableCell>
-                  <TableCell>Prestation</TableCell>
-                  <TableCell>Type</TableCell>
-                  <TableCell align="right">Qté</TableCell>
-                  <TableCell align="right">P.U.</TableCell>
-                  <TableCell align="right">Montant</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {group.lines.map((line) => (
-                  <TableRow key={line.id} hover selected={selectedHere.includes(line.id)} onClick={() => toggle(line.id)} sx={{ cursor: otherGroupSelected ? "default" : "pointer" }}>
-                    <TableCell padding="checkbox">
-                      <Checkbox checked={selectedHere.includes(line.id)} disabled={otherGroupSelected} inputProps={{ "aria-label": `Sélectionner la ligne ${line.id}` }} />
-                    </TableCell>
-                    <TableCell>
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <span>{missionLabel(line.mission)}</span>
-                        {line.notice && (
-                          <Tooltip title={line.notice}>
-                            <Chip size="small" icon={<LockOutlinedIcon />} label="Calcul verrouillé" />
-                          </Tooltip>
-                        )}
-                      </Stack>
-                    </TableCell>
-                    <TableCell>{prestationLabel(line)}</TableCell>
-                    <TableCell>{line.lineTypeLabel}</TableCell>
-                    <TableCell align="right">{Number(line.quantity)}</TableCell>
-                    <TableCell align="right">{formatMoney(line.unitAmount, line.currency)}</TableCell>
-                    <TableCell align="right"><strong>{formatMoney(line.totalAmount, line.currency)}</strong></TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            <Stack divider={<Box sx={{ borderTop: 1, borderColor: "divider" }} />}>
+              {items.map((a) => (
+                <Stack key={a.key} direction="row" spacing={2} alignItems="flex-start" sx={{ px: 2, py: 1.5 }} flexWrap="wrap" useFlexGap>
+                  <Box sx={{ flex: 1, minWidth: 260 }}>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <Typography fontWeight={700} color="warning.dark">{a.title}</Typography>
+                      {a.resolved && <Chip size="small" color="success" variant="outlined" label="Corrigé — à recalculer" />}
+                    </Stack>
+                    {(a.element?.label || a.firm) && (
+                      <Typography variant="body2" fontWeight={600}>
+                        {[a.element?.label, a.element?.reference ? `Réf. ${a.element.reference}` : null, a.firm?.name].filter(Boolean).join(" · ")}
+                      </Typography>
+                    )}
+                    <Typography variant="body2" color="text.secondary">{a.explanation}</Typography>
+                  </Box>
+                  {a.action && !(a.resolved && a.action.code.startsWith("CONFIGURE")) && (
+                    <Button size="small" variant={["CALCULATE", "APPROVE", "RECALCULATE"].includes(a.action.code) ? "contained" : "outlined"} disableElevation disabled={busy} onClick={() => runAction(a)}>
+                      {a.action.label}
+                    </Button>
+                  )}
+                </Stack>
+              ))}
+            </Stack>
           </Paper>
         );
       })}
@@ -389,80 +636,22 @@ function ToInvoiceView({ groups, period, onCreated, onError, toVerifyCount, onSh
   );
 }
 
-// ── À vérifier ─────────────────────────────────────────────────────────────
-
-function ToVerifyView({ items, onDone, onError }: { items: ToVerifyItem[]; onDone: (message: string) => Promise<void>; onError: (message: string) => void }) {
-  const calculate = useMutation({
-    mutationFn: (missionId: number) => calculateMission(missionId),
-    onSuccess: () => onDone("Calcul financier effectué — à approuver."),
-    onError: (err) => onError(extractBillingError(err)),
-  });
-  const approve = useMutation({
-    mutationFn: (calculationId: number) => approveFinancialCalculation(calculationId),
-    onSuccess: () => onDone("Calcul approuvé — les lignes sont maintenant à facturer."),
-    onError: (err) => onError(extractBillingError(err)),
-  });
-
-  if (items.length === 0) {
-    return <Alert severity="success">Rien à vérifier sur cette période : toutes les prestations sont facturables ou déjà facturées.</Alert>;
-  }
-
-  const busy = calculate.isPending || approve.isPending;
-
-  return (
-    <Stack spacing={1.5}>
-      {items.map((item) => (
-        <Paper key={`${item.reason}-${item.mission.id}-${item.calculationId ?? "none"}`} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
-          <Stack direction="row" spacing={2} alignItems="flex-start" flexWrap="wrap" useFlexGap>
-            <Box sx={{ flex: 1, minWidth: 240 }}>
-              <Typography fontWeight={700}>
-                {missionLabel(item.mission)} · {item.firms.map((f) => f.name).join(", ") || "—"}
-                {item.totalAmount !== null && ` · ${formatMoney(item.totalAmount, item.currency ?? "EUR")}`}
-              </Typography>
-              <Typography variant="body2" color="warning.dark" fontWeight={700} sx={{ mt: 0.5 }}>{item.reasonLabel}</Typography>
-              {item.anomalies.length > 0 && (
-                <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
-                  {item.anomalies.map((a, i) => (
-                    <Typography component="li" variant="body2" key={`${a.code}-${i}`}>{a.message}</Typography>
-                  ))}
-                </Box>
-              )}
-              {item.lines.length > 0 && (
-                <Typography variant="caption" color="text.secondary">
-                  {item.lines.map((l) => `${prestationLabel(l)} (${formatMoney(l.totalAmount, l.currency)})`).join(" · ")}
-                </Typography>
-              )}
-            </Box>
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Button component={RouterLink} to={`/app/m/missions/${item.mission.id}`} size="small">Voir la mission</Button>
-              {item.allowedActions.includes("calculate") && (
-                <Button variant="contained" disableElevation size="small" disabled={busy} onClick={() => calculate.mutate(item.mission.id)}>
-                  {item.reason === "CALCULATION_FAILED" ? "Relancer le calcul" : "Calculer"}
-                </Button>
-              )}
-              {item.allowedActions.includes("approve") && item.calculationId !== null && (
-                <Button variant="contained" disableElevation size="small" color="success" disabled={busy} onClick={() => approve.mutate(item.calculationId!)}>
-                  Approuver
-                </Button>
-              )}
-            </Stack>
-          </Stack>
-        </Paper>
-      ))}
-    </Stack>
-  );
-}
-
 // ── Factures ───────────────────────────────────────────────────────────────
 
-function InvoicesView({ query, statusFilter, onStatusFilter, onMarkPaid, onError }: {
-  query: UseQueryResult<FirmInvoice[]>;
-  statusFilter: InvoiceStatus | "";
-  onStatusFilter: (s: InvoiceStatus | "") => void;
+function InvoicesView({ from, to, firmIds, counts, onMarkPaid, onError }: {
+  from: string;
+  to: string;
+  firmIds: number[];
+  counts?: { generated: number; sent: number; paid: number; cancelled: number };
   onMarkPaid: () => Promise<void>;
   onError: (message: string) => void;
 }) {
   const navigate = useNavigate();
+  const [statusFilter, setStatusFilter] = React.useState<InvoiceStatus | "">("");
+  const query: UseQueryResult<FirmInvoice[]> = useQuery({
+    queryKey: ["firm-invoices", "period", from, to, firmIds, statusFilter],
+    queryFn: () => getFirmInvoices({ from, to, firmIds: firmIds.length ? firmIds : undefined, status: statusFilter || undefined, documentType: "STANDARD" }),
+  });
   const markPaid = useMutation({
     mutationFn: markFirmInvoicePaid,
     onSuccess: () => onMarkPaid(),
@@ -471,20 +660,31 @@ function InvoicesView({ query, statusFilter, onStatusFilter, onMarkPaid, onError
 
   return (
     <Stack spacing={1.5}>
-      <Select
-        value={statusFilter}
-        onChange={(e) => onStatusFilter(e.target.value as InvoiceStatus | "")}
-        displayEmpty
-        size="small"
-        sx={{ width: 200 }}
-        inputProps={{ "aria-label": "Filtrer par statut" }}
-      >
-        <MenuItem value="">Tous les statuts</MenuItem>
-        {(["GENERATED", "SENT", "PAID", "CANCELLED"] as InvoiceStatus[]).map((s) => <MenuItem key={s} value={s}>{STATUS_LABELS[s]}</MenuItem>)}
-      </Select>
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+        {counts && (
+          <>
+            <Chip label={`${plural(counts.generated, "facture")} générée${counts.generated > 1 ? "s" : ""}`} color="info" variant="outlined" />
+            <Chip label={`${counts.sent} envoyée${counts.sent > 1 ? "s" : ""}`} color="warning" variant="outlined" />
+            <Chip label={`${counts.paid} payée${counts.paid > 1 ? "s" : ""}`} color="success" variant="outlined" />
+            {counts.cancelled > 0 && <Chip label={`${counts.cancelled} annulée${counts.cancelled > 1 ? "s" : ""}`} variant="outlined" />}
+          </>
+        )}
+        <Box sx={{ flex: 1 }} />
+        <Select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as InvoiceStatus | "")}
+          displayEmpty
+          size="small"
+          sx={{ width: 200 }}
+          inputProps={{ "aria-label": "Filtrer par statut" }}
+        >
+          <MenuItem value="">Tous les statuts</MenuItem>
+          {(["GENERATED", "SENT", "PAID", "CANCELLED"] as InvoiceStatus[]).map((s) => <MenuItem key={s} value={s}>{INVOICE_STATUS_LABELS[s]}</MenuItem>)}
+        </Select>
+      </Stack>
 
       {query.isLoading ? <CircularProgress size={24} /> : query.isError ? <Alert severity="error">{extractBillingError(query.error)}</Alert> : (
-        <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+        <Paper variant="outlined" sx={{ borderRadius: 2, overflowX: "auto" }}>
           <Table size="small">
             <TableHead>
               <TableRow sx={{ bgcolor: "grey.50" }}>
@@ -515,7 +715,7 @@ function InvoicesView({ query, statusFilter, onStatusFilter, onMarkPaid, onError
                   <TableCell>{formatDate(inv.periodStart)} → {formatDate(inv.periodEnd)}</TableCell>
                   <TableCell align="right">{inv.lineCount ?? "—"}</TableCell>
                   <TableCell align="right"><strong>{formatMoney(inv.totalAmount, inv.currency)}</strong></TableCell>
-                  <TableCell><Chip size="small" label={STATUS_LABELS[inv.status]} color={STATUS_COLORS[inv.status]} /></TableCell>
+                  <TableCell><Chip size="small" label={INVOICE_STATUS_LABELS[inv.status]} color={INVOICE_STATUS_COLORS[inv.status]} /></TableCell>
                   <TableCell>{formatDate(inv.generatedAt)}</TableCell>
                   <TableCell>{formatDate(inv.sentAt)}</TableCell>
                   <TableCell>{formatDate(inv.paidAt)}</TableCell>
@@ -535,46 +735,5 @@ function InvoicesView({ query, statusFilter, onStatusFilter, onMarkPaid, onError
         </Paper>
       )}
     </Stack>
-  );
-}
-
-// ── Lignes facturées ───────────────────────────────────────────────────────
-
-function InvoicedView({ lines }: { lines: InvoicedLine[] }) {
-  if (lines.length === 0) {
-    return <Alert severity="info">Aucune ligne facturée sur cette période.</Alert>;
-  }
-  return (
-    <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
-      <Table size="small">
-        <TableHead>
-          <TableRow sx={{ bgcolor: "grey.50" }}>
-            <TableCell>Date · site · chirurgien</TableCell>
-            <TableCell>Firme</TableCell>
-            <TableCell>Prestation</TableCell>
-            <TableCell align="right">Montant facturé</TableCell>
-            <TableCell>Facture</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {lines.map((line) => (
-            <TableRow key={line.id}>
-              <TableCell>{missionLabel(line.mission)}</TableCell>
-              <TableCell>{line.firm.name}</TableCell>
-              <TableCell>{prestationLabel(line)}</TableCell>
-              <TableCell align="right">{formatMoney(line.invoice.invoicedAmount, line.currency)}</TableCell>
-              <TableCell>
-                <Typography component={RouterLink} to={`/app/m/billing/firm-invoices/${line.invoice.id}`} variant="body2" fontWeight={700} color="primary" sx={{ textDecoration: "none" }}>
-                  {line.invoice.number ?? `#${line.invoice.id}`}
-                </Typography>
-                <Typography variant="caption" color="text.secondary" display="block">
-                  {STATUS_LABELS[line.invoice.status as InvoiceStatus] ?? line.invoice.status} · générée le {formatDate(line.invoice.generatedAt)}
-                </Typography>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </Paper>
   );
 }
