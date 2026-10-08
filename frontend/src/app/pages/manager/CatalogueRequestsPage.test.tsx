@@ -351,3 +351,151 @@ describe("CatalogueRequestsPage — deep-link (kind, requestId)", () => {
     expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
   });
 });
+
+describe("CatalogueRequestsPage — commentaire de l'instrumentiste", () => {
+  const LONG_COMMENT =
+    "Le chirurgien a demandé en cours d'intervention une plaque absente du catalogue du site ; " +
+    "le représentant a fourni un modèle de démonstration qui a finalement été implanté. " +
+    "Vérifier avec la firme le prix, le code article exact, la taille, le côté et le stock.\n\n" +
+    "Lot fournisseur : https://fournisseur.example/lots/PLQ-TIB-12G-LOT-20261004-AAAAAAAAAAAAAAAA";
+  const longRequest = { ...materialRequest, id: 12, label: "Plaque tibia 12 trous", comment: LONG_COMMENT };
+  const noCommentRequest = { ...materialRequest, id: 13, label: "Ancre 5.5", comment: null };
+  // getByText normalise les espaces par défaut : le commentaire multi-lignes est comparé
+  // brut, sur l'élément qui le porte.
+  const exactText = (text: string) => (_: string, el: Element | null) => el?.tagName === "SPAN" && el.textContent === text;
+
+  it("affiche un commentaire court en entier sous le matériel, identifié comme commentaire, sans bouton de dépliage", async () => {
+    getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
+    renderPage();
+
+    const row = (await screen.findByText("Vis titane 4mm")).closest("tr")!;
+    expect(within(row).getByText("Commentaire :")).toBeInTheDocument();
+    expect(within(row).getByText("Utilisée hors catalogue")).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: "Voir tout le commentaire" })).toBeNull();
+  });
+
+  it("un commentaire long est replié en aperçu mais reste entièrement consultable", async () => {
+    const user = userEvent.setup();
+    getMaterialRequestsMock.mockResolvedValue({ items: [longRequest], total: 1 });
+    renderPage();
+
+    const row = (await screen.findByText("Plaque tibia 12 trous")).closest("tr")!;
+    // Le texte complet est présent (repli purement visuel), jamais tronqué.
+    expect(within(row).getByText(exactText(LONG_COMMENT))).toBeInTheDocument();
+    const toggle = within(row).getByRole("button", { name: "Voir tout le commentaire" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(toggle);
+    expect(within(row).getByRole("button", { name: "Réduire" })).toHaveAttribute("aria-expanded", "true");
+    expect(within(row).getByText(exactText(LONG_COMMENT))).toBeInTheDocument();
+  });
+
+  it("une demande sans commentaire s'affiche normalement, sans faux contenu dans la ligne", async () => {
+    getMaterialRequestsMock.mockResolvedValue({ items: [noCommentRequest], total: 1 });
+    renderPage();
+
+    const row = (await screen.findByText("Ancre 5.5")).closest("tr")!;
+    expect(within(row).queryByText("Commentaire :")).toBeNull();
+    expect(within(row).queryByText("Aucun commentaire")).toBeNull();
+    expect(within(row).getByRole("button", { name: "Ignorer" })).toBeInTheDocument();
+  });
+
+  it("la modal de création de produit affiche le contexte complet de la demande, commentaire long intégral", async () => {
+    const user = userEvent.setup();
+    getMaterialRequestsMock.mockResolvedValue({ items: [longRequest], total: 1 });
+    renderPage();
+
+    await screen.findByText("Plaque tibia 12 trous");
+    await user.click(screen.getByRole("button", { name: "Créer produit" }));
+    const dialog = await screen.findByRole("dialog");
+
+    expect(within(dialog).getByText("Matériel demandé")).toBeInTheDocument();
+    expect(within(dialog).getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(within(dialog).getByText("#501 · Clinique Saint-Jean")).toBeInTheDocument();
+    expect(within(dialog).getByText("Commentaire de l'instrumentiste")).toBeInTheDocument();
+    expect(within(dialog).getByText(exactText(LONG_COMMENT))).toBeInTheDocument();
+  });
+
+  it("résout en associant un produit existant depuis la modal, qui garde le commentaire visible", async () => {
+    const user = userEvent.setup();
+    getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
+    getMaterialItemsMock.mockResolvedValue({
+      items: [{ id: 42, firm: { id: 1, name: "Arthrex" }, label: "Vis titane 4mm Arthrex", referenceCode: "AR-4", unit: "u", isImplant: false }],
+      total: 1, page: 1, limit: 200,
+    });
+    resolveMaterialRequestMock.mockResolvedValue({ request: { ...materialRequest, status: "RESOLVED" }, materialLine: { id: 7 } });
+    renderPage();
+
+    await screen.findByText("Vis titane 4mm");
+    await user.click(screen.getByRole("button", { name: "Créer produit" }));
+    await user.click(within(await screen.findByRole("dialog")).getByText("Plutôt associer un produit existant →"));
+
+    const pickDialog = await screen.findByRole("dialog", { name: "Associer un produit existant" });
+    expect(within(pickDialog).getByText("Utilisée hors catalogue")).toBeInTheDocument();
+    await user.click(await within(pickDialog).findByText("Vis titane 4mm Arthrex"));
+    await user.click(within(pickDialog).getByRole("button", { name: "Associer et résoudre" }));
+
+    await waitFor(() => expect(resolveMaterialRequestMock).toHaveBeenCalledWith(10, 42));
+    expect(toastSuccess).toHaveBeenCalledWith("Demande résolue. Ligne matériel créée.");
+  });
+
+  it("la modal Ignorer affiche le commentaire de l'instrumentiste, ou « Aucun commentaire »", async () => {
+    const user = userEvent.setup();
+    getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest, noCommentRequest], total: 2 });
+    renderPage();
+
+    const row = (await screen.findByText("Vis titane 4mm")).closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Ignorer" }));
+    let dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Utilisée hors catalogue")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Annuler" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    const otherRow = screen.getByText("Ancre 5.5").closest("tr")!;
+    await user.click(within(otherRow).getByRole("button", { name: "Ignorer" }));
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Aucun commentaire")).toBeInTheDocument();
+  });
+
+  it("la modal de résolution d'un type d'intervention affiche le même contexte", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [interventionRequest], total: 1 });
+    renderPage();
+
+    await screen.findByText("Prothèse épaule inversée");
+    await user.click(screen.getByRole("button", { name: "Résoudre" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Intervention demandée")).toBeInTheDocument();
+    expect(within(dialog).getByText("Aucun commentaire")).toBeInTheDocument();
+  });
+
+  it("le commentaire reste consultable dans l'historique Résolues et Ignorées", async () => {
+    const user = userEvent.setup();
+    getMaterialRequestsMock.mockImplementation(async ({ status }: { status: string }) => {
+      if (status === "RESOLVED") {
+        return { items: [{ ...materialRequest, status: "RESOLVED", comment: "Commentaire résolu" }], total: 1 };
+      }
+      if (status === "IGNORED") {
+        return {
+          items: [{
+            ...materialRequest, status: "IGNORED", comment: "Commentaire ignoré",
+            ignoreReason: "DUPLICATE", ignoreComment: "Doublon de #9.",
+            decidedBy: { id: 1, displayName: "Manager" }, decidedAt: "2026-07-21T10:00:00Z",
+          }],
+          total: 1,
+        };
+      }
+      return { items: [], total: 0 };
+    });
+    renderPage();
+
+    await screen.findByText("Aucune demande.");
+    await user.click(screen.getByRole("tab", { name: "Résolues" }));
+    expect(await screen.findByText("Commentaire résolu")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Ignorées" }));
+    expect(await screen.findByText("Commentaire ignoré")).toBeInTheDocument();
+    // Commentaire de l'instrumentiste et explication du manager restent distincts.
+    expect(screen.getByText("« Doublon de #9. »")).toBeInTheDocument();
+  });
+});

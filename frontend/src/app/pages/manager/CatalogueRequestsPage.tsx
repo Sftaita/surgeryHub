@@ -56,6 +56,10 @@ import {
   MaterialItemFormDialog,
   type MaterialItemFormValues,
 } from "../../features/manager-catalogue/components/MaterialItemFormDialog";
+import {
+  CatalogueRequestContext,
+  RequesterCommentPreview,
+} from "../../features/manager-catalogue/components/CatalogueRequestComment";
 import { useToast } from "../../ui/toast/useToast";
 import { PageHeader } from "../../ui/PageHeader";
 import { EmptyState } from "../../ui/EmptyState";
@@ -66,6 +70,21 @@ type TabValue = "PENDING" | "RESOLVED" | "IGNORED";
 type UnifiedRequest =
   | { kind: "material"; request: MaterialRequestDTO }
   | { kind: "intervention"; request: InterventionTypeRequestDTO };
+
+/** Récapitulatif affiché en tête de chaque modal de traitement (résolution / ignore). */
+function RequestContext({ row }: { row: UnifiedRequest }) {
+  const { request } = row;
+  return (
+    <CatalogueRequestContext
+      kind={row.kind}
+      label={request.label}
+      reference={row.kind === "material" ? row.request.referenceCode : row.request.suggestedCode}
+      requestedBy={request.requestedBy}
+      mission={request.mission}
+      comment={request.comment}
+    />
+  );
+}
 
 // ── Dialog résolution matériel (inchangé, extrait tel quel de l'ancienne page) ──
 function ResolveMaterialDialog({
@@ -134,14 +153,17 @@ function ResolveMaterialDialog({
         loading={createMutation.isPending}
         error={createError}
         headerExtra={
-          <Button
-            size="small"
-            variant="text"
-            onClick={() => setMode("pick")}
-            sx={{ alignSelf: "flex-start" }}
-          >
-            Plutôt associer un produit existant →
-          </Button>
+          <>
+            <RequestContext row={{ kind: "material", request }} />
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => setMode("pick")}
+              sx={{ alignSelf: "flex-start" }}
+            >
+              Plutôt associer un produit existant →
+            </Button>
+          </>
         }
         onClose={onClose}
         onSubmit={(values) => {
@@ -160,6 +182,7 @@ function ResolveMaterialDialog({
         <DialogTitle>Associer un produit existant</DialogTitle>
         <DialogContent>
           <Stack spacing={1.5} sx={{ pt: 0.5 }}>
+            <RequestContext row={{ kind: "material", request }} />
             <Button
               size="small"
               variant="text"
@@ -281,9 +304,7 @@ function ResolveInterventionDialog({
       <DialogTitle>Résoudre la demande de type d'intervention</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
-          <Typography variant="body2" color="text.secondary">
-            « {request.label} »{request.comment ? ` — ${request.comment}` : ""}
-          </Typography>
+          <RequestContext row={{ kind: "intervention", request }} />
 
           {mode === "create" ? (
             <>
@@ -404,16 +425,14 @@ function ignoreReasonsFor(kind: "material" | "intervention"): CatalogueRequestIg
  */
 function IgnoreCatalogueRequestDialog({
   open,
-  kind,
-  label,
+  target,
   onClose,
   onConfirm,
   submitting,
   error,
 }: {
   open: boolean;
-  kind: "material" | "intervention" | null;
-  label: string;
+  target: UnifiedRequest | null;
   onClose: () => void;
   onConfirm: (reason: CatalogueRequestIgnoreReason, comment: string) => void;
   submitting: boolean;
@@ -429,8 +448,8 @@ function IgnoreCatalogueRequestDialog({
     }
   }, [open]);
 
-  if (!kind) return null;
-  const reasons = ignoreReasonsFor(kind);
+  if (!target) return null;
+  const reasons = ignoreReasonsFor(target.kind);
   const canSubmit = reason !== "" && comment.trim() !== "";
 
   return (
@@ -439,7 +458,7 @@ function IgnoreCatalogueRequestDialog({
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
           {error ? <Alert severity="error">{error}</Alert> : null}
-          <Typography variant="body2" color="text.secondary">« {label} »</Typography>
+          <RequestContext row={target} />
 
           <Select
             fullWidth
@@ -522,7 +541,7 @@ export default function CatalogueRequestsPage() {
   const [tab, setTab] = React.useState<TabValue>("PENDING");
   const [resolveMaterialTarget, setResolveMaterialTarget] = React.useState<MaterialRequestDTO | null>(null);
   const [resolveInterventionTarget, setResolveInterventionTarget] = React.useState<InterventionTypeRequestDTO | null>(null);
-  const [ignoreTarget, setIgnoreTarget] = React.useState<{ kind: "material" | "intervention"; id: number; label: string } | null>(null);
+  const [ignoreTarget, setIgnoreTarget] = React.useState<UnifiedRequest | null>(null);
   const [ignoreError, setIgnoreError] = React.useState<string | null>(null);
 
   const materialQuery = useQuery({
@@ -694,15 +713,9 @@ export default function CatalogueRequestsPage() {
                         sx={{ fontSize: ".68rem" }}
                       />
                     </TableCell>
-                    <TableCell>
-                      <Stack spacing={0.25}>
-                        <Typography variant="body2">{request.label}</Typography>
-                        {request.comment ? (
-                          <Typography variant="caption" color="text.secondary">
-                            {request.comment}
-                          </Typography>
-                        ) : null}
-                      </Stack>
+                    <TableCell sx={{ maxWidth: 420 }}>
+                      <Typography variant="body2">{request.label}</Typography>
+                      {request.comment ? <RequesterCommentPreview comment={request.comment} /> : null}
                     </TableCell>
                     <TableCell>
                       {isMaterial
@@ -779,7 +792,7 @@ export default function CatalogueRequestsPage() {
                             variant="outlined"
                             onClick={() => {
                               setIgnoreError(null);
-                              setIgnoreTarget({ kind: row.kind, id: request.id, label: request.label });
+                              setIgnoreTarget(row);
                             }}
                             disabled={ignoreMaterialMutation.isPending || ignoreInterventionMutation.isPending}
                           >
@@ -820,8 +833,7 @@ export default function CatalogueRequestsPage() {
 
       <IgnoreCatalogueRequestDialog
         open={ignoreTarget !== null}
-        kind={ignoreTarget?.kind ?? null}
-        label={ignoreTarget?.label ?? ""}
+        target={ignoreTarget}
         onClose={() => {
           setIgnoreTarget(null);
           setIgnoreError(null);
@@ -831,9 +843,9 @@ export default function CatalogueRequestsPage() {
         onConfirm={(reason, comment) => {
           if (!ignoreTarget) return;
           if (ignoreTarget.kind === "material") {
-            ignoreMaterialMutation.mutate({ id: ignoreTarget.id, reason, comment });
+            ignoreMaterialMutation.mutate({ id: ignoreTarget.request.id, reason, comment });
           } else {
-            ignoreInterventionMutation.mutate({ id: ignoreTarget.id, reason, comment });
+            ignoreInterventionMutation.mutate({ id: ignoreTarget.request.id, reason, comment });
           }
         }}
       />
