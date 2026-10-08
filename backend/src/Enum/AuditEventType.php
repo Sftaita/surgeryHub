@@ -262,6 +262,15 @@ enum AuditEventType: string
     case MATERIAL_ITEM_REQUEST_IGNORED = 'MATERIAL_ITEM_REQUEST_IGNORED';
 
     /**
+     * D-138 — MaterialItemRequestService::resolve(), pendant de
+     * MATERIAL_ITEM_REQUEST_IGNORED : la résolution d'une demande matériel n'était jusqu'ici
+     * tracée nulle part (contrairement à MISSION_INTERVENTION_DRAFT_RESOLVED côté types
+     * d'intervention). Le payload porte l'élément du catalogue associé et la MaterialLine
+     * créée.
+     */
+    case MATERIAL_ITEM_REQUEST_RESOLVED = 'MATERIAL_ITEM_REQUEST_RESOLVED';
+
+    /**
      * BUG A (2026-09-09) — SelfAbsenceController::removeDay(). Mission-independent (uses
      * AuditService::recordGlobal(), not record()) since removing a single day from an
      * absence period has no one Mission to attach to — it may shrink/split/delete the
