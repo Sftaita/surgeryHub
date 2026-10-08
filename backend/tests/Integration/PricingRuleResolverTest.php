@@ -9,7 +9,10 @@ use App\Entity\MaterialItem;
 use App\Entity\PricingRule;
 use App\Entity\SuggestedMaterial;
 use App\Enum\PricingRuleType;
+use App\Exception\PricingRuleConflictException;
+use App\Exception\PricingRulePeriodOverlapException;
 use App\Service\PricingRuleResolver;
+use App\Service\PricingRuleWriteService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
 
@@ -228,5 +231,132 @@ final class PricingRuleResolverTest extends KernelTestCase
 
         self::assertNotNull($rule, 'un matériel non-implant doit pouvoir être facturé si une règle existe');
         self::assertSame('5.50', $rule->getUnitPrice());
+    }
+
+    // ── D-138 — résolution face à plusieurs règles ─────────────────────────
+    // Les règles sont persistées DIRECTEMENT (sans PricingRuleWriteService) pour simuler
+    // des données écrites hors application : c'est la seule façon d'obtenir un conflit.
+
+    private function period(PricingRule $r, ?string $from, ?string $to): PricingRule
+    {
+        $r->setValidFrom($from !== null ? new \DateTimeImmutable($from) : null);
+        $r->setValidTo($to !== null ? new \DateTimeImmutable($to) : null);
+        $this->em->flush();
+        return $r;
+    }
+
+    public function testSingleApplicableRuleIsReturned(): void
+    {
+        $firm = $this->makeFirm('Arthrex');
+        $type = $this->makeType('LCA');
+        $rule = $this->makeInterventionRule($firm, $type, '350.00');
+
+        self::assertSame($rule->getId(), $this->resolver->resolveInterventionFee($firm, $type, new \DateTimeImmutable('2026-10-01'))?->getId());
+    }
+
+    public function testDistinctPeriodsResolveByDateAndTheBoundaryDayBelongsToTheNewRuleOnly(): void
+    {
+        $firm = $this->makeFirm('Arthrex');
+        $type = $this->makeType('LCA');
+        $old = $this->period($this->makeInterventionRule($firm, $type, '300.00'), '2026-01-01', '2026-10-01'); // validTo exclusif (D-072)
+        $new = $this->period($this->makeInterventionRule($firm, $type, '350.00'), '2026-10-01', null);
+
+        self::assertSame($old->getId(), $this->resolver->resolveInterventionFee($firm, $type, new \DateTimeImmutable('2026-09-30'))?->getId());
+        self::assertSame($new->getId(), $this->resolver->resolveInterventionFee($firm, $type, new \DateTimeImmutable('2026-10-01'))?->getId());
+        self::assertNull($this->resolver->resolveInterventionFee($firm, $type, new \DateTimeImmutable('2025-12-31')));
+    }
+
+    public function testOverlappingInterventionRulesRaiseABusinessConflictListingEveryRuleNeverAnArbitraryChoice(): void
+    {
+        $firm = $this->makeFirm('Smith & Nephew');
+        $type = $this->makeType('SUT-MEN');
+        $a = $this->period($this->makeInterventionRule($firm, $type, '300.00'), '2026-01-01', null);
+        $b = $this->period($this->makeInterventionRule($firm, $type, '350.00'), '2026-09-01', '2027-01-01');
+
+        // Hors de la zone commune : chaque règle reste résolue normalement.
+        self::assertSame($a->getId(), $this->resolver->resolveInterventionFee($firm, $type, new \DateTimeImmutable('2026-08-31'))?->getId());
+
+        try {
+            $this->resolver->resolveInterventionFee($firm, $type, new \DateTimeImmutable('2026-10-01'));
+            self::fail('Un tarif a été choisi arbitrairement.');
+        } catch (PricingRuleConflictException $e) {
+            self::assertSame([$a->getId(), $b->getId()], array_column($e->rulesSnapshot(), 'id'));
+            self::assertSame(['300.00', '350.00'], array_column($e->rulesSnapshot(), 'unitPrice'));
+            self::assertSame(409, $e->getStatusCode(), 'conflit métier, jamais un 500');
+        }
+    }
+
+    public function testOverlappingMaterialRulesRaiseABusinessConflict(): void
+    {
+        $firm = $this->makeFirm('Arthrex');
+        $item = $this->makeItem($firm, 'SwiveLock');
+        $a = $this->makeMaterialRule($item, '90.00');
+        $b = $this->makeMaterialRule($item, '95.00');
+
+        $this->expectException(PricingRuleConflictException::class);
+        $this->expectExceptionMessageMatches(sprintf('/#%d, #%d/', $a->getId(), $b->getId()));
+        $this->resolver->resolveMaterialFee($item, new \DateTimeImmutable('2026-10-01'));
+    }
+
+    public function testInactiveRuleIsNeverPartOfAConflict(): void
+    {
+        $firm = $this->makeFirm('Arthrex');
+        $item = $this->makeItem($firm, 'FiberTak');
+        $kept = $this->makeMaterialRule($item, '90.00');
+        $closed = $this->makeMaterialRule($item, '95.00');
+        $closed->setActive(false);
+        $this->em->flush();
+
+        self::assertSame($kept->getId(), $this->resolver->resolveMaterialFee($item, new \DateTimeImmutable('2026-10-01'))?->getId());
+    }
+
+    // ── D-138 — prévention à l'écriture (PricingRuleWriteService, inchangé) ─
+
+    public function testWriteServiceRefusesOverlapsButAcceptsAdjacentPeriodsAndOtherTargets(): void
+    {
+        /** @var PricingRuleWriteService $writer */
+        $writer = self::getContainer()->get(PricingRuleWriteService::class);
+        $firm = $this->makeFirm('Arthrex');
+        $type = $this->makeType('LCA');
+        $item = $this->makeItem($firm, 'Agrafe');
+        $this->period($this->makeInterventionRule($firm, $type, '300.00'), '2026-01-01', '2026-10-01');
+        $this->makeMaterialRule($item, '50.00');
+
+        $rule = function (PricingRuleType $kind, ?string $from, ?string $to) use (&$firm, &$type, &$item): PricingRule {
+            $r = new PricingRule();
+            $r->setFirm($firm);
+            $r->setRuleType($kind);
+            $kind === PricingRuleType::INTERVENTION_FEE ? $r->setInterventionType($type) : $r->setMaterialItem($item);
+            $r->setUnitPrice('1.00');
+            $r->setValidFrom($from !== null ? new \DateTimeImmutable($from) : null);
+            $r->setValidTo($to !== null ? new \DateTimeImmutable($to) : null);
+            return $r;
+        };
+
+        foreach ([
+            [PricingRuleType::INTERVENTION_FEE, '2026-09-01', null],
+            [PricingRuleType::MATERIAL_FEE, '2027-01-01', null],
+        ] as [$kind, $from, $to]) {
+            try {
+                $writer->create($rule($kind, $from, $to));
+                self::fail('Chevauchement accepté pour ' . $kind->value);
+            } catch (PricingRulePeriodOverlapException) {
+                // Le refus traverse wrapInTransaction, qui ferme l'EntityManager : on repart
+                // d'un kernel neuf, comme le ferait la requête HTTP suivante.
+                self::ensureKernelShutdown();
+                self::bootKernel();
+                $this->em = self::getContainer()->get(EntityManagerInterface::class);
+                $this->resolver = self::getContainer()->get(PricingRuleResolver::class);
+                $writer = self::getContainer()->get(PricingRuleWriteService::class);
+                $firm = $this->em->find(Firm::class, $firm->getId());
+                $type = $this->em->find(InterventionType::class, $type->getId());
+                $item = $this->em->find(MaterialItem::class, $item->getId());
+            }
+        }
+
+        // Période contiguë (validTo exclusif) : configuration légitime, acceptée.
+        $next = $writer->create($rule(PricingRuleType::INTERVENTION_FEE, '2026-10-01', null));
+        $this->createdIds['rules'][] = $next->getId();
+        self::assertSame($next->getId(), $this->resolver->resolveInterventionFee($firm, $type, new \DateTimeImmutable('2026-10-01'))?->getId());
     }
 }

@@ -7345,6 +7345,10 @@ le plus fréquent d'abord). Codes = `FirmBillingReason` (identiques aux codes du
 `ANOMALY` a toujours au moins un motif. `anomalyCount` = somme des `count`, égal au nombre
 d'anomalies du détail ci-dessous.
 
+**Résolution d'un échec (D-138)** — une mission est `ANOMALY` tant que son dernier
+`FINANCIAL_CALCULATION_FAILED` n'est suivi (par **identifiant d'audit**, jamais par horodatage)
+d'aucun `FINANCIAL_CALCULATION_CREATED`/`RECALCULATED` désignant un calcul encore actif.
+
 **Limite** — `encodingState` filtre après dérivation, donc après pagination : sur une page
 filtrée par état, `total` reflète la population avant filtrage (voir D-118).
 
@@ -7382,7 +7386,8 @@ worklist « Facturation firmes ». Le message technique du moteur n'est jamais r
       "action": { "code": "CONFIGURE_MATERIAL_RATE", "label": "Configurer le tarif" },
       "resolved": false,
       "missionInterventionId": 105,
-      "materialLineId": 153
+      "materialLineId": 153,
+      "conflictingRules": []
     }
   ],
   "retry": { "kind": "CALCULATE", "calculationId": null }
@@ -7401,6 +7406,11 @@ worklist « Facturation firmes ». Le message technique du moteur n'est jamais r
   l'échec garde son id audité mais n'est plus localisable.
 - `action.code` : `CONFIGURE_INTERVENTION_RATE` | `CONFIGURE_MATERIAL_RATE` |
   `CONFIGURE_INSTRUMENTIST_RATE` | `OPEN_MISSION`.
+- `conflictingRules` : vide sauf pour `CONFLICTING_FIRM_INTERVENTION_RATE`,
+  `CONFLICTING_FIRM_MATERIAL_RATE`, `CONFLICTING_INSTRUMENTIST_RATE` (plusieurs règles actives
+  couvrent la même cible à la date de la mission ; le moteur n'en choisit aucune). Instantané
+  audité : `[{ "id": 12, "unitPrice": "300.00", "currency": "EUR", "validFrom": "2026-01-01",
+  "validTo": null }]` — `validTo` exclusif (D-072).
 - `resolved` : la cause n'existe plus dans la configuration actuelle (mêmes résolveurs que le
   moteur). L'anomalie reste affichée tant qu'un calcul n'a pas abouti — l'historique d'audit
   n'est jamais modifié.
@@ -7409,6 +7419,22 @@ worklist « Facturation firmes ». Le message technique du moteur n'est jamais r
   `POST /api/financial-calculations/{calculationId}/recalculate` (un recalcul a échoué, le
   calcul précédent reste actif). `null` si la mission n'est plus `VALIDATED` ou si le calcul
   actif est `LOCKED` (jamais recalculé, D-073 §19).
+
+#### Règles tarifaires contradictoires (D-138)
+
+`PricingRuleWriteService` / `InstrumentistRateWriteService` refusent déjà tout chevauchement
+(`409 PRICING_RULE_PERIOD_OVERLAP` / `INSTRUMENTIST_RATE_PERIOD_OVERLAP`). Si des données écrites
+hors application en contiennent malgré tout :
+
+- le calcul financier échoue en **422 `FINANCIAL_CALCULATION_ANOMALIES`** avec les anomalies
+  `CONFLICTING_FIRM_INTERVENTION_RATE` / `CONFLICTING_FIRM_MATERIAL_RATE` /
+  `CONFLICTING_INSTRUMENTIST_RATE` (contexte : cible + `conflictingRules`) — plus jamais un 500 ;
+- tout autre endpoint qui résout un tarif répond **409 `PRICING_RULE_CONFLICT`** /
+  **`INSTRUMENTIST_RATE_CONFLICT`**, `violations` = règles en cause (`id`, `unitPrice`,
+  `currency`, `validFrom`, `validTo`) ;
+- `GET /api/material-items` (manager) et `GET /api/intervention-types/{id}/offerings` ne
+  tombent pas : champ additif `pricingConflictRuleIds` (`null` hors conflit, sinon ids des
+  règles) ; le prix courant / forfait vaut alors `null` — jamais un tarif choisi.
 
 ### `GET /api/billing/encoding-tracking/summary`
 

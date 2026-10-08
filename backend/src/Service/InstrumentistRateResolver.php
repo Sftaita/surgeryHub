@@ -21,10 +21,9 @@ final class InstrumentistRateResolver
         $matching = $this->matchingRates($instrumentist, $rateType, $effectiveAt);
 
         if (count($matching) > 1) {
-            throw new \LogicException(sprintf(
-                'Plusieurs InstrumentistRate %s actifs se chevauchent pour instrumentist=%d à la date %s.',
-                $rateType->value, $instrumentist->getId(), $effectiveAt->format('Y-m-d'),
-            ));
+            // D-138 — exception métier, jamais un choix arbitraire ni un 500.
+            usort($matching, static fn ($a, $b) => $a->getId() <=> $b->getId());
+            throw new \App\Exception\InstrumentistRateConflictException($matching, $effectiveAt);
         }
 
         return $matching[0] ?? null;

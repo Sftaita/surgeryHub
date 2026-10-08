@@ -197,7 +197,7 @@ final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
         return $i;
     }
 
-    private function interventionRule(Firm $firm, InterventionType $type): void
+    private function interventionRule(Firm $firm, InterventionType $type, string $price = '350.00'): PricingRule
     {
         $firm = $this->managed($firm);
         $type = $this->managed($type);
@@ -205,12 +205,13 @@ final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
         $r->setFirm($firm);
         $r->setRuleType(PricingRuleType::INTERVENTION_FEE);
         $r->setInterventionType($type);
-        $r->setUnitPrice('350.00');
+        $r->setUnitPrice($price);
         $this->em->persist($r); $this->em->flush();
         $this->created['rules'][] = $r->getId();
+        return $r;
     }
 
-    private function materialRule(Firm $firm, MaterialItem $item): void
+    private function materialRule(Firm $firm, MaterialItem $item, string $price = '20.00'): PricingRule
     {
         $firm = $this->managed($firm);
         $item = $this->managed($item);
@@ -218,9 +219,10 @@ final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
         $r->setFirm($firm);
         $r->setRuleType(PricingRuleType::MATERIAL_FEE);
         $r->setMaterialItem($item);
-        $r->setUnitPrice('20.00');
+        $r->setUnitPrice($price);
         $this->em->persist($r); $this->em->flush();
         $this->created['rules'][] = $r->getId();
+        return $r;
     }
 
     private function site(): Hospital
@@ -569,12 +571,6 @@ final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
         self::assertSame(201, $first->getStatusCode());
         $calcId = $this->json($first, 201)['id'];
 
-        // Le recalcul a lieu plus tard : la règle D-118 compare à la seconde
-        // (calculated_at >= échec), un échec dans la même seconde passerait pour résolu.
-        $this->em->getConnection()->executeStatement(
-            'UPDATE financial_calculation SET calculated_at = calculated_at - INTERVAL 1 HOUR WHERE id = ?', [$calcId],
-        );
-
         // Matériel ajouté après coup, sans tarif : le recalcul échoue, l'ancien calcul reste actif.
         $mission = $this->em->find(Mission::class, $m->getId());
         $this->addMaterial($mission, $mission->getInterventions()->first(), $this->item($firm, 'Agrafe'), $mission->getSurgeon());
@@ -603,4 +599,175 @@ final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
         self::assertSame(200, $this->request($client, $manager, 'GET', $uri)->getStatusCode());
         self::assertSame(404, $this->request($client, $manager, 'GET', '/api/billing/encoding-tracking/missions/999999999/financial-anomalies')->getStatusCode());
     }
+
+    // ── D-138 — règles tarifaires contradictoires ───────────────────────
+    // Les fixtures persistent les règles sans PricingRuleWriteService : c'est exactement
+    // le cas de données écrites hors application (seule origine possible d'un conflit).
+
+    private function closeRule(PricingRule $rule): void
+    {
+        $this->em->getConnection()->executeStatement('UPDATE pricing_rule SET active = 0 WHERE id = ?', [$rule->getId()]);
+    }
+
+    public function test_contradictory_intervention_rules_become_an_explicit_anomaly_never_a_500(): void
+    {
+        $client = $this->boot();
+        $token = $this->login($client, $this->user('ROLE_MANAGER'));
+        $firm = $this->firm('Smith & Nephew');
+        $type = $this->type("Suture d'un ménisque de genou");
+        $a = $this->interventionRule($firm, $type, '300.00');
+        $b = $this->interventionRule($firm, $type, '350.00');
+        $m = $this->mission($firm, $type);
+        $itvId = $m->getInterventions()->first()->getId();
+
+        $calc = $this->calculate($client, $token, $m);
+        self::assertSame(422, $calc->getStatusCode(), 'anomalie métier, pas une erreur 500 : ' . $calc->getContent());
+
+        $item = $this->listItem($client, $token, $m);
+        self::assertSame('ANOMALY', $item['financial']['state']);
+        self::assertSame([['code' => 'CONFLICTING_FIRM_INTERVENTION_RATE', 'label' => "Tarifs d'intervention contradictoires", 'count' => 1]], $item['financial']['anomalyReasons']);
+
+        $detail = $this->detail($client, $token, $m);
+        $this->assertListAndDetailAgree($item, $detail);
+        $anomaly = $detail['anomalies'][0];
+        self::assertSame('CONFIGURATION', $anomaly['category']);
+        self::assertSame($itvId, $anomaly['missionInterventionId']);
+        self::assertSame(['id' => $firm->getId(), 'name' => $firm->getName()], $anomaly['firm']);
+        self::assertSame("Suture d'un ménisque de genou", $anomaly['element']['label']);
+        self::assertSame([$a->getId(), $b->getId()], array_column($anomaly['conflictingRules'], 'id'));
+        self::assertSame(['300.00', '350.00'], array_column($anomaly['conflictingRules'], 'unitPrice'));
+        self::assertStringContainsString(sprintf('règle #%d : 300,00 EUR', $a->getId()), $anomaly['explanation']);
+        self::assertStringContainsString(sprintf('règle #%d : 350,00 EUR', $b->getId()), $anomaly['explanation']);
+        self::assertStringContainsString('ne choisit jamais', $anomaly['explanation']);
+        self::assertSame('CONFIGURE_INTERVENTION_RATE', $anomaly['action']['code']);
+        self::assertFalse($anomaly['resolved']);
+
+        // Correction : une règle est clôturée → la cause disparaît, le calcul aboutit au
+        // tarif restant, l'anomalie s'efface partout.
+        $this->closeRule($a);
+        self::assertTrue($this->detail($client, $token, $m)['anomalies'][0]['resolved']);
+        $ok = $this->calculate($client, $token, $m);
+        self::assertSame(201, $ok->getStatusCode(), (string) $ok->getContent());
+        self::assertSame('CALCULATED', $this->listItem($client, $token, $m)['financial']['state']);
+        $line = array_values(array_filter($this->json($ok, 201)['lines'], static fn (array $l) => $l['lineType'] === 'FIRM_INTERVENTION_FEE'))[0];
+        self::assertSame('350.00', $line['unitAmount']);
+    }
+
+    public function test_contradictory_material_rules_are_located_on_their_material_line(): void
+    {
+        $client = $this->boot();
+        $token = $this->login($client, $this->user('ROLE_MANAGER'));
+        $firm = $this->firm('Arthrex');
+        $type = $this->type('Plastie LCA');
+        $this->interventionRule($firm, $type);
+        $anchor = $this->item($firm, 'SwiveLock C Anchor');
+        $a = $this->materialRule($firm, $anchor, '90.00');
+        $b = $this->materialRule($firm, $anchor, '95.00');
+        $m = $this->mission($firm, $type, [$anchor]);
+        $lineId = $m->getMaterialLines()->first()->getId();
+
+        self::assertSame(422, $this->calculate($client, $token, $m)->getStatusCode());
+        $detail = $this->detail($client, $token, $m);
+        self::assertCount(1, $detail['anomalies']);
+        $anomaly = $detail['anomalies'][0];
+        self::assertSame('CONFLICTING_FIRM_MATERIAL_RATE', $anomaly['code']);
+        self::assertSame('Tarifs matériel contradictoires', $anomaly['title']);
+        self::assertSame($lineId, $anomaly['materialLineId']);
+        self::assertSame($m->getInterventions()->first()->getId(), $anomaly['missionInterventionId']);
+        self::assertSame('SwiveLock C Anchor', $anomaly['element']['label']);
+        self::assertSame([$a->getId(), $b->getId()], array_column($anomaly['conflictingRules'], 'id'));
+
+        // Les écrans catalogue ne tombent plus en 500 : le conflit y est signalé, jamais
+        // présenté comme « aucun tarif ».
+        $list = $this->json($this->request($client, $token, 'GET', '/api/material-items?firmId=' . $firm->getId()));
+        $row = array_values(array_filter($list['items'], static fn (array $i) => $i['id'] === $anchor->getId()))[0];
+        self::assertNull($row['currentPrice']);
+        self::assertSame([$a->getId(), $b->getId()], $row['pricingConflictRuleIds']);
+    }
+
+    public function test_contradictory_instrumentist_rates_block_the_mission_with_an_explicit_anomaly(): void
+    {
+        $client = $this->boot();
+        $token = $this->login($client, $this->user('ROLE_MANAGER'));
+        $firm = $this->firm('Arthrex');
+        $type = $this->type('Plastie LCA');
+        $this->interventionRule($firm, $type);
+        $m = $this->mission($firm, $type); // un tarif horaire posé par la fixture
+        $second = new InstrumentistRate();
+        $second->setInstrumentist($this->managed($m)->getInstrumentist());
+        $second->setRateType(InstrumentistRateType::HOURLY_RATE);
+        $second->setAmount('45.00');
+        $second->setCurrency('EUR');
+        $second->setValidFrom(new \DateTimeImmutable('2026-01-01'));
+        $this->em->persist($second); $this->em->flush();
+        $this->created['rates'][] = $second->getId();
+
+        $calc = $this->calculate($client, $token, $m);
+        self::assertSame(422, $calc->getStatusCode(), (string) $calc->getContent());
+        $anomaly = $this->detail($client, $token, $m)['anomalies'][0];
+        self::assertSame('CONFLICTING_INSTRUMENTIST_RATE', $anomaly['code']);
+        self::assertSame('INSTRUMENTIST', $anomaly['element']['type']);
+        self::assertNull($anomaly['firm']);
+        self::assertCount(2, $anomaly['conflictingRules']);
+        self::assertStringContainsString('aucune ligne de cette mission', $anomaly['explanation']);
+    }
+
+    // ── D-138 — ordre des événements, jamais les horodatages ────────────
+
+    /** Force un même horodatage (et même un horodatage inversé) sur tout l'historique financier. */
+    private function forceTimestamps(Mission $m, string $failedAt, string $succeededAt): void
+    {
+        $c = $this->em->getConnection();
+        $c->executeStatement("UPDATE audit_event SET created_at = ? WHERE mission_id = ? AND event_type = 'FINANCIAL_CALCULATION_FAILED'", [$failedAt, $m->getId()]);
+        $c->executeStatement("UPDATE audit_event SET created_at = ? WHERE mission_id = ? AND event_type IN ('FINANCIAL_CALCULATION_CREATED','FINANCIAL_CALCULATION_RECALCULATED')", [$succeededAt, $m->getId()]);
+        $c->executeStatement('UPDATE financial_calculation SET calculated_at = ? WHERE mission_id = ?', [$succeededAt, $m->getId()]);
+    }
+
+    public function test_failure_then_success_is_resolved_whatever_the_timestamps(): void
+    {
+        $client = $this->boot();
+        $token = $this->login($client, $this->user('ROLE_MANAGER'));
+        $firm = $this->firm('Arthrex');
+        $type = $this->type('Plastie LCA');
+        $m = $this->mission($firm, $type);
+        self::assertSame(422, $this->calculate($client, $token, $m)->getStatusCode());
+        $this->interventionRule($firm, $type);
+        self::assertSame(201, $this->calculate($client, $token, $m)->getStatusCode());
+
+        foreach ([['2026-10-08 06:29:04', '2026-10-08 06:29:04'], ['2026-10-08 06:29:05', '2026-10-08 06:29:04']] as [$failed, $succeeded]) {
+            $this->forceTimestamps($m, $failed, $succeeded);
+            $item = $this->listItem($client, $token, $m);
+            self::assertSame('CALCULATED', $item['financial']['state'], "échec puis succès (échec $failed, succès $succeeded)");
+            $this->assertListAndDetailAgree($item, $this->detail($client, $token, $m));
+        }
+    }
+
+    public function test_success_then_failure_stays_an_anomaly_even_in_the_same_second(): void
+    {
+        $client = $this->boot();
+        $token = $this->login($client, $this->user('ROLE_MANAGER'));
+        $firm = $this->firm('Arthrex');
+        $type = $this->type('Plastie LCA');
+        $this->interventionRule($firm, $type);
+        $m = $this->mission($firm, $type);
+        $first = $this->calculate($client, $token, $m);
+        self::assertSame(201, $first->getStatusCode());
+        $calcId = $this->json($first, 201)['id'];
+        $mission = $this->managed($m);
+        $this->addMaterial($mission, $mission->getInterventions()->first(), $this->item($firm, 'Agrafe'), $mission->getSurgeon());
+        self::assertSame(422, $this->request($client, $token, 'POST', "/api/financial-calculations/{$calcId}/recalculate")->getStatusCode());
+
+        // Même seconde, puis échec horodaté AVANT le succès (horloges décalées) : l'ordre
+        // réel des événements reste « succès puis échec » → toujours ANOMALY.
+        foreach ([['2026-10-08 06:29:04', '2026-10-08 06:29:04'], ['2026-10-08 06:29:03', '2026-10-08 06:29:04']] as [$failed, $succeeded]) {
+            $this->forceTimestamps($m, $failed, $succeeded);
+            $item = $this->listItem($client, $token, $m);
+            self::assertSame('ANOMALY', $item['financial']['state'], "succès puis échec (échec $failed, succès $succeeded)");
+            $detail = $this->detail($client, $token, $m);
+            $this->assertListAndDetailAgree($item, $detail);
+            self::assertSame(['MISSING_FIRM_MATERIAL_RATE'], array_column($detail['anomalies'], 'code'));
+            self::assertSame(['kind' => 'RECALCULATE', 'calculationId' => $calcId], $detail['retry']);
+        }
+    }
 }
+

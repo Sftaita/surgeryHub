@@ -15,6 +15,8 @@ use App\Exception\PrimaryFirmInactiveException;
 use App\Exception\PrimaryFirmNotFoundException;
 use App\Exception\PricingRuleImmutableException;
 use App\Exception\PricingRulePeriodOverlapException;
+use App\Exception\PricingRuleConflictException;
+use App\Exception\InstrumentistRateConflictException;
 use App\Exception\InstrumentistRateImmutableException;
 use App\Exception\InstrumentistRatePeriodOverlapException;
 use App\Exception\FinancialCalculationIneligibleException;
@@ -127,6 +129,18 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
                 $extra['absenceDateStart'] = $absence->getDateStart()->format('Y-m-d');
                 $extra['absenceDateEnd'] = $absence->getDateEnd()->format('Y-m-d');
             }
+        } elseif ($e instanceof PricingRuleConflictException) {
+            // D-138 — données tarifaires contradictoires écrites hors application : 409
+            // explicite (règles en cause listées), jamais un 500.
+            $status = 409;
+            $code = 'PRICING_RULE_CONFLICT';
+            $message = $e->getMessage();
+            $violations = array_map(static fn (array $r) => ['field' => 'pricingRule', 'message' => sprintf('Règle #%d', $r['id'])] + $r, $e->rulesSnapshot());
+        } elseif ($e instanceof InstrumentistRateConflictException) {
+            $status = 409;
+            $code = 'INSTRUMENTIST_RATE_CONFLICT';
+            $message = $e->getMessage();
+            $violations = array_map(static fn (array $r) => ['field' => 'instrumentistRate', 'message' => sprintf('Tarif #%d', $r['id'])] + $r, $e->ratesSnapshot());
         } elseif ($e instanceof PricingRulePeriodOverlapException) {
             $status = 409;
             $code = 'PRICING_RULE_PERIOD_OVERLAP';

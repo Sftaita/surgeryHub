@@ -165,6 +165,16 @@ final class EncodingTrackingRepository
      * Une tentative échouée est considérée résolue dès qu'un calcul actif plus récent
      * existe : sinon une mission recalculée avec succès resterait signalée en anomalie.
      *
+     * D-138 — « plus récent » = ORDRE DES ÉVÉNEMENTS, jamais une comparaison d'horodatages
+     * (à la seconde, un échec et un succès simultanés étaient indiscernables) : l'échec est
+     * résolu ssi un événement FINANCIAL_CALCULATION_CREATED/RECALCULATED d'identifiant
+     * SUPÉRIEUR désigne (payload.financialCalculationId) un calcul de la mission encore
+     * actif. Les identifiants d'audit sont attribués dans l'ordre réel : calculate() et
+     * recalculate() s'exécutent sous verrou pessimiste sur la mission, deux tentatives
+     * d'une même mission ne s'entrelacent donc jamais. Un calcul actif ensuite annulé ou
+     * remplacé ne résout plus rien ; un calcul LOCKED/APPROVED garde son événement de
+     * création et continue de résoudre les échecs antérieurs.
+     *
      * @param int[] $missionIds
      * @return array<int, true> indexé par mission id en anomalie
      */
@@ -180,10 +190,15 @@ final class EncodingTrackingRepository
              WHERE ae.mission_id IN (:ids)
                AND ae.event_type = 'FINANCIAL_CALCULATION_FAILED'
                AND NOT EXISTS (
-                   SELECT 1 FROM financial_calculation fc
-                   WHERE fc.mission_id = ae.mission_id
+                   SELECT 1
+                   FROM audit_event ok
+                   INNER JOIN financial_calculation fc
+                           ON fc.id = CAST(JSON_UNQUOTE(JSON_EXTRACT(ok.payload, '$.financialCalculationId')) AS UNSIGNED)
+                   WHERE ok.mission_id = ae.mission_id
+                     AND ok.event_type IN ('FINANCIAL_CALCULATION_CREATED','FINANCIAL_CALCULATION_RECALCULATED')
+                     AND ok.id > ae.id
+                     AND fc.mission_id = ae.mission_id
                      AND fc.status IN ('CALCULATED','APPROVED','LOCKED')
-                     AND fc.calculated_at >= ae.created_at
                )",
             ['ids' => $missionIds],
             ['ids' => ArrayParameterType::INTEGER],

@@ -210,6 +210,18 @@ export interface FinancialAnomaly {
   /** Intervention concernée — ou celle qui porte la ligne de matériel concernée. */
   missionInterventionId: number | null;
   materialLineId: number | null;
+  /** D-138 — règles actives contradictoires (vide hors CONFLICTING_*), telles qu'auditées. */
+  conflictingRules: FinancialConflictingRule[];
+}
+
+export interface FinancialConflictingRule {
+  id: number | null;
+  unitPrice: string | null;
+  currency: string | null;
+  /** AAAA-MM-JJ, null = sans début. */
+  validFrom: string | null;
+  /** AAAA-MM-JJ EXCLUSIF (D-072), null = sans fin. */
+  validTo: string | null;
 }
 
 /** Relance proposée par le backend (null = aucune relance possible ici). */

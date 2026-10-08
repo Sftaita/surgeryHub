@@ -11493,7 +11493,7 @@ aucune donnée patient.
 
 **Statut :** accepté — branche `fix/suivi-encodages-anomalie-finance`, non fusionnée, non déployée.
 
-> **Numérotation :** D-138 est le premier numéro libre sur `origin/main` (D-137) au 2026-10-08. Un autre chantier en cours (`feat/catalogue-request-detail`) pourrait réclamer le même numéro : à renuméroter lors de la fusion si besoin.
+> **Numérotation :** D-138 confirmé le 2026-10-08 avec le chantier parallèle `feat/catalogue-request-resolution-traceability` (PR #4), qui avait aussi rédigé un D-138 et l'a renuméroté **D-139** (commit `1d890a8`). Le contenu des autres ADR n'est pas modifié.
 
 ### Contexte
 
@@ -11569,11 +11569,41 @@ jour (**#1226**, 7 h 45 pour 5 h) affichait « À calculer ».
 
 ### Limites connues
 
-- **Comparaison à la seconde** (règle D-118 préexistante, non modifiée) : un échec horodaté
-  dans la même seconde qu'un calcul actif (`calculated_at >= created_at`) est considéré comme
-  résolu. Sans effet en usage manuel ; à revoir si des recalculs automatiques en rafale
-  apparaissent (comparer l'ordre des événements plutôt que leurs horodatages).
-- **Code couleur des heures** : la demande décrit « orange = durée différente du planning » ;
-  D-136 a retenu « vert ≤ planifié, orange > planifié ». Non modifié ici, à trancher.
+- **Code couleur des heures** : D-136 confirmé par le métier le 2026-10-08 (vert ≤ planifié,
+  orange > planifié, gris sans heure réelle) — une mission terminée plus tôt n'est jamais
+  anormale, et aucun écart d'heures ne crée d'anomalie financière.
+- Écrans catalogue (`GET /api/material-items`, offres d'une prestation) : le conflit est exposé
+  par le backend (`pricingConflictRuleIds`) mais pas encore mis en avant par leur interface,
+  qui affiche « pas de tarif ». Le suivi des encodages, lui, l'explique entièrement.
+
+### Compléments (2026-10-08, finalisation)
+
+9. **Règles tarifaires contradictoires.** Analyse : `PricingRuleResolver` sélectionne les
+   règles actives de la cible (firme + type d'intervention [+ option de choix] ou matériel)
+   couvrant la date effective (`validFrom <= date < validTo`, bornes nulles = infinies,
+   `validTo` exclusif D-072) ; aucune priorité n'existe, par construction : à l'écriture,
+   `PricingRuleWriteService` (seul point d'écriture, y compris pour `PricingRuleVersioningService`)
+   refuse tout chevauchement sous verrou pessimiste de la cible (D-067) — même règle pour
+   `InstrumentistRateWriteService`. Des périodes contiguës et des options de choix distinctes
+   restent légitimes. Un conflit ne peut donc venir que de données écrites hors application
+   (SQL, migration — cf. la fusion IMPLANT_FEE → MATERIAL_FEE —, import) ; la prod n'en contient
+   aucun au 2026-10-08. Jusqu'ici, le résolveur levait alors une `LogicException` → **HTTP 500**.
+   Désormais : `PricingRuleConflictException` / `InstrumentistRateConflictException` (409,
+   règles triées par id), converties par le moteur en anomalies `CONFLICTING_*` (catégorie
+   CONFIGURATION, contexte audité = instantané des règles) et expliquées par
+   `FinancialCalculationAnomalyExplainer` (montants, périodes, ids). Le moteur ne choisit
+   jamais ; aucune priorité ni convention tarifaire n'est modifiée ; la prévention à l'écriture,
+   déjà complète, est seulement couverte par des tests supplémentaires.
+10. **Ordre des événements, jamais les horodatages.** La règle « échec résolu si un calcul
+    actif a `calculated_at >= created_at` de l'échec » confondait deux événements de la même
+    seconde (un recalcul échoué juste après un calcul réussi passait pour résolu) et dépendait
+    des horloges. `findMissionsWithFailedCalculation()` compare maintenant les **identifiants
+    d'audit** : l'échec est résolu ssi un `FINANCIAL_CALCULATION_CREATED`/`RECALCULATED`
+    d'identifiant supérieur désigne (`payload.financialCalculationId`) un calcul encore actif.
+    Déterministe : `calculate()`/`recalculate()` tiennent un verrou pessimiste sur la mission,
+    les identifiants suivent l'ordre réel. `latestFailures()` trie aussi par identifiant.
+    Aucun historique ni calcul n'est modifié ; la prod ne contient encore aucun calcul
+    financier (vérifié au 2026-10-08), aucune reprise n'est nécessaire. Un calcul actif créé
+    sans événement d'audit (hors application) ne résout plus un échec — assumé.
 - `effectiveAt` / dates des explications = date de l'échec audité ; `resolved` est évalué à
   la date effective **actuelle** de la mission (mêmes résolveurs que le moteur).

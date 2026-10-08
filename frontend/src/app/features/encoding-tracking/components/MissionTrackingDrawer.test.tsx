@@ -360,6 +360,31 @@ describe("MissionTrackingDrawer", () => {
       expect(Array.from(document.querySelectorAll("[data-anomaly]")).map((el) => el.getAttribute("data-anchor"))).toEqual(["itv-1", "ml-12"]);
     });
 
+    it("règles contradictoires : chaque règle en conflit est identifiée (montant, période), jamais un tarif choisi", async () => {
+      getMissionFinancialAnomaliesMock.mockResolvedValue(detail([{
+        ...interventionAnomaly,
+        code: "CONFLICTING_FIRM_INTERVENTION_RATE",
+        title: "Tarifs d'intervention contradictoires",
+        explanation: "2 tarifs actifs s'appliquent en même temps à cette prestation chez Arthrex au 01/10/2026. Le calcul ne choisit jamais entre eux : clôturez ou corrigez l'un d'eux.",
+        action: { code: "CONFIGURE_INTERVENTION_RATE", label: "Corriger les tarifs" },
+        conflictingRules: [
+          { id: 12, unitPrice: "300.00", currency: "EUR", validFrom: "2026-01-01", validTo: null },
+          { id: 15, unitPrice: "350.00", currency: "EUR", validFrom: "2026-09-01", validTo: "2027-01-01" },
+        ],
+      }]));
+      renderDrawer(anomalyItem());
+
+      const rules = await screen.findByTestId("conflicting-rules");
+      expect(within(rules).getByText("Règles en conflit")).toBeInTheDocument();
+      const items = within(rules).getAllByRole("listitem");
+      expect(items).toHaveLength(2);
+      expect(items[0]).toHaveTextContent("Règle #12 — 300,00 EUR · du 01/01/2026, sans date de fin");
+      // validTo est exclusif (D-072) : le dernier jour couvert est la veille.
+      expect(items[1]).toHaveTextContent("Règle #15 — 350,00 EUR · du 01/09/2026 au 31/12/2026");
+      expect(screen.getByText("1. Tarifs d'intervention contradictoires")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Corriger les tarifs" })).toBeInTheDocument();
+    });
+
     it("dépassement horaire sans anomalie : aucune section, aucune requête d'anomalies", async () => {
       renderDrawer(makeItem({ financial: { state: "TO_CALCULATE", label: "À calculer", isBlocking: false, anomalyCount: 0, anomalyReasons: [] } }));
       await screen.findByText("Dépasse le temps planifié", { selector: "[data-testid=drawer-hours-status]" });

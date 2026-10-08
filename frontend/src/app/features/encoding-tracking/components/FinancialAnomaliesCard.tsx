@@ -3,7 +3,7 @@ import { Box, CircularProgress } from "@mui/material";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import type { MissionEncodingEntry } from "../../encoding/api/encoding.types";
-import type { FinancialAnomaly, MissionFinancialAnomalies } from "../api/encodingTracking.api";
+import type { FinancialAnomaly, FinancialConflictingRule, MissionFinancialAnomalies } from "../api/encodingTracking.api";
 import { calculateMission, recalculateFinancialCalculation } from "../../financial-calculation/api/financialCalculation.api";
 import { ANOMALY_ACTION_ROUTES } from "../../financial-calculation/anomalyActionRoutes";
 import { useToast } from "../../../ui/toast/useToast";
@@ -192,6 +192,7 @@ export function FinancialAnomaliesCard({ missionId, data, isLoading, isError, on
                 {a.element?.type === "INSTRUMENTIST" && <Detail term="Instrumentiste">{a.element.label ?? "—"}</Detail>}
               </Box>
               <Box sx={{ mt: "4px", fontSize: 12.5, color: GRAY_700 }}>{a.explanation}</Box>
+              {(a.conflictingRules ?? []).length > 0 && <ConflictingRules rules={a.conflictingRules} />}
               <Box sx={{ mt: "6px", display: "flex", gap: "14px", flexWrap: "wrap" }}>
                 {locatable && (
                   <LinkButton onClick={() => onLocate({ missionInterventionId: a.missionInterventionId, materialLineId: a.materialLineId })}>
@@ -207,6 +208,34 @@ export function FinancialAnomaliesCard({ missionId, data, isLoading, isError, on
         })}
       </Box>
     </Card>
+  );
+}
+
+/** Présentation seule des règles en conflit fournies par le backend (validTo exclusif). */
+function formatRuleDay(day: string | null, exclusiveEnd = false): string | null {
+  if (!day) return null;
+  const d = new Date(`${day}T00:00:00`);
+  if (exclusiveEnd) d.setDate(d.getDate() - 1);
+  return d.toLocaleDateString("fr-BE", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+function ConflictingRules({ rules }: { rules: FinancialConflictingRule[] }) {
+  return (
+    <Box data-testid="conflicting-rules" sx={{ mt: "6px", borderLeft: `3px solid ${RED_100}`, paddingLeft: "8px", fontSize: 12, color: GRAY_700 }}>
+      <Box sx={{ fontWeight: 800, color: GRAY_950 }}>Règles en conflit</Box>
+      <Box component="ul" sx={{ m: 0, p: 0, listStyle: "none" }}>
+        {rules.map((r, i) => {
+          const from = formatRuleDay(r.validFrom);
+          const to = formatRuleDay(r.validTo, true);
+          return (
+            <Box component="li" key={r.id ?? i} sx={{ fontVariantNumeric: "tabular-nums" }}>
+              Règle #{r.id ?? "?"} — {r.unitPrice !== null ? `${Number(r.unitPrice).toLocaleString("fr-BE", { minimumFractionDigits: 2 })} ${r.currency ?? ""}` : "—"}
+              {" · "}{from ? `du ${from}` : "sans date de début"}{to ? ` au ${to}` : ", sans date de fin"}
+            </Box>
+          );
+        })}
+      </Box>
+    </Box>
   );
 }
 

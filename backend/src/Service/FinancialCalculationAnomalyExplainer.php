@@ -13,6 +13,8 @@ use App\Enum\AuditEventType;
 use App\Enum\FirmBillingReason;
 use App\Enum\InstrumentistRateType;
 use App\Enum\MaterialBillingStatus;
+use App\Exception\InstrumentistRateConflictException;
+use App\Exception\PricingRuleConflictException;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
@@ -59,8 +61,8 @@ final class FinancialCalculationAnomalyExplainer
             ->andWhere('a.eventType = :type')
             ->setParameter('ids', $missionIds)
             ->setParameter('type', AuditEventType::FINANCIAL_CALCULATION_FAILED)
-            ->orderBy('a.createdAt', 'DESC')
-            ->addOrderBy('a.id', 'DESC')
+            // D-138 — ordre des événements = identifiant (déterministe), jamais l'horodatage.
+            ->orderBy('a.id', 'DESC')
             ->getQuery()
             ->getResult();
 
@@ -136,7 +138,7 @@ final class FinancialCalculationAnomalyExplainer
      * @param MaterialLine[]        $materials
      * @return array{code: string, category: string, severity: string, title: string, explanation: string,
      *               firm: ?array{id: int, name: string}, element: ?array, action: ?array{code: string, label: string},
-     *               resolved: bool, missionInterventionId: ?int, materialLineId: ?int, rowKey: ?string}
+     *               resolved: bool, missionInterventionId: ?int, materialLineId: ?int, conflictingRules: list<array>, rowKey: ?string}
      */
     public function explain(array $raw, Mission $mission, array $interventions, array $materials, \DateTimeImmutable $effectiveAt): array
     {
@@ -168,6 +170,8 @@ final class FinancialCalculationAnomalyExplainer
         }
         $element = null;
         $explanation = $reason->defaultDetail();
+        /** @var list<array<string, mixed>> $conflictingRules instantané audité des règles en conflit */
+        $conflictingRules = array_values(array_filter((array) ($ctx['conflictingRules'] ?? []), 'is_array'));
         $action = null;
         $resolved = false;
 
@@ -177,8 +181,15 @@ final class FinancialCalculationAnomalyExplainer
                 $element = ['type' => 'INTERVENTION', 'label' => $type?->getLabel() ?? $itv?->getLabel()];
                 $explanation = sprintf("Aucun tarif applicable n'est configuré pour cette prestation%s au %s.", $firm !== null ? ' chez ' . $firm->getName() : '', $date);
                 $action = ['code' => 'CONFIGURE_INTERVENTION_RATE', 'label' => 'Configurer le tarif'];
-                $resolved = $itv === null || ($itv->getPrimaryFirm() !== null && $itv->getInterventionType() !== null
-                    && $this->pricingRuleResolver->resolveInterventionFee($itv->getPrimaryFirm(), $itv->getInterventionType(), $nextEffectiveAt, $itv->getSelectedChoiceOption()) !== null);
+                $resolved = $this->interventionRateResolvable($itv, $nextEffectiveAt);
+                break;
+
+            case FirmBillingReason::CONFLICTING_FIRM_INTERVENTION_RATE:
+                $type = $itv?->getInterventionType() ?? (isset($ctx['interventionTypeId']) ? $this->em->find(InterventionType::class, (int) $ctx['interventionTypeId']) : null);
+                $element = ['type' => 'INTERVENTION', 'label' => $type?->getLabel() ?? $itv?->getLabel()];
+                $explanation = $this->conflictExplanation('cette prestation' . ($firm !== null ? ' chez ' . $firm->getName() : ''), $conflictingRules, $date);
+                $action = ['code' => 'CONFIGURE_INTERVENTION_RATE', 'label' => 'Corriger les tarifs'];
+                $resolved = $this->interventionRateResolvable($itv, $nextEffectiveAt);
                 break;
 
             case FirmBillingReason::MISSING_FIRM_MATERIAL_RATE:
@@ -188,8 +199,30 @@ final class FinancialCalculationAnomalyExplainer
                 $element = ['type' => 'MATERIAL', 'label' => $item?->getLabel(), 'reference' => $item?->getReferenceCode()];
                 $explanation = sprintf("Aucun tarif applicable n'est configuré pour ce matériel%s au %s. S'il n'est jamais facturé, marquez-le « non facturable » dans le catalogue.", $firm !== null ? ' (' . $firm->getName() . ')' : '', $date);
                 $action = ['code' => 'CONFIGURE_MATERIAL_RATE', 'label' => 'Configurer le tarif'];
-                $resolved = $ml === null || $ml->getItem()->getBillingStatus() === MaterialBillingStatus::NOT_BILLABLE
-                    || $this->pricingRuleResolver->resolveMaterialFee($ml->getItem(), $nextEffectiveAt) !== null;
+                $resolved = $this->materialRateResolvable($ml, $nextEffectiveAt);
+                break;
+
+            case FirmBillingReason::CONFLICTING_FIRM_MATERIAL_RATE:
+                $item = $ml?->getItem() ?? (isset($ctx['materialItemId']) ? $this->em->find(MaterialItem::class, (int) $ctx['materialItemId']) : null);
+                $element = ['type' => 'MATERIAL', 'label' => $item?->getLabel(), 'reference' => $item?->getReferenceCode()];
+                $explanation = $this->conflictExplanation('ce matériel' . ($firm !== null ? ' (' . $firm->getName() . ')' : ''), $conflictingRules, $date);
+                $action = ['code' => 'CONFIGURE_MATERIAL_RATE', 'label' => 'Corriger les tarifs'];
+                $resolved = $this->materialRateResolvable($ml, $nextEffectiveAt);
+                break;
+
+            case FirmBillingReason::CONFLICTING_INSTRUMENTIST_RATE:
+                $instrumentist = $mission->getInstrumentist();
+                $rateType = InstrumentistRateType::tryFrom((string) ($ctx['rateType'] ?? '')) ?? InstrumentistRateType::HOURLY_RATE;
+                $name = $instrumentist !== null ? trim(($instrumentist->getFirstname() ?? '') . ' ' . ($instrumentist->getLastname() ?? '')) : '';
+                $element = ['type' => 'INSTRUMENTIST', 'label' => $name !== '' ? $name : 'Instrumentiste'];
+                $explanation = $this->conflictExplanation(
+                    sprintf('le tarif %s de %s', $rateType === InstrumentistRateType::CONSULTATION_FEE ? 'de consultation' : 'horaire', $name !== '' ? $name : "l'instrumentiste"),
+                    $conflictingRules,
+                    $date,
+                ) . ' Tant que le conflit existe, aucune ligne de cette mission — firmes comprises — ne peut être calculée.';
+                $firm = null;
+                $action = ['code' => 'CONFIGURE_INSTRUMENTIST_RATE', 'label' => 'Corriger les tarifs'];
+                $resolved = $this->instrumentistRateResolvable($mission, $rateType, $nextEffectiveAt);
                 break;
 
             case FirmBillingReason::MISSING_INSTRUMENTIST_RATE:
@@ -205,7 +238,7 @@ final class FinancialCalculationAnomalyExplainer
                 );
                 $firm = null; // anomalie de mission : elle bloque toutes les firmes
                 $action = ['code' => 'CONFIGURE_INSTRUMENTIST_RATE', 'label' => 'Configurer le tarif'];
-                $resolved = $instrumentist !== null && $this->instrumentistRateResolver->resolve($instrumentist, $rateType, $nextEffectiveAt) !== null;
+                $resolved = $this->instrumentistRateResolvable($mission, $rateType, $nextEffectiveAt);
                 break;
 
             case FirmBillingReason::MISSING_PRIMARY_FIRM:
@@ -261,7 +294,75 @@ final class FinancialCalculationAnomalyExplainer
             'missionInterventionId' => $itv?->getId() ?? $ml?->getMissionIntervention()?->getId()
                 ?? (isset($ctx['missionInterventionId']) ? (int) $ctx['missionInterventionId'] : null),
             'materialLineId' => $ml?->getId() ?? (isset($ctx['materialLineId']) ? (int) $ctx['materialLineId'] : null),
+            // D-138 — règles contradictoires (vide hors CONFLICTING_*), telles qu'auditées.
+            'conflictingRules' => $conflictingRules,
             'rowKey' => $itv !== null ? 'MISSION_INTERVENTION:' . $itv->getId() : ($ml !== null ? 'MATERIAL_LINE:' . $ml->getId() : null),
         ];
+    }
+
+    // ── « resolved » : mêmes résolveurs que le moteur ; un conflit n'est jamais résolu ──
+
+    private function interventionRateResolvable(?MissionIntervention $itv, \DateTimeImmutable $at): bool
+    {
+        if ($itv === null) {
+            return true; // intervention supprimée depuis l'échec : plus rien à valoriser
+        }
+        if ($itv->getPrimaryFirm() === null || $itv->getInterventionType() === null) {
+            return false;
+        }
+        try {
+            return $this->pricingRuleResolver->resolveInterventionFee($itv->getPrimaryFirm(), $itv->getInterventionType(), $at, $itv->getSelectedChoiceOption()) !== null;
+        } catch (PricingRuleConflictException) {
+            return false;
+        }
+    }
+
+    private function materialRateResolvable(?MaterialLine $ml, \DateTimeImmutable $at): bool
+    {
+        if ($ml === null || $ml->getItem()->getBillingStatus() === MaterialBillingStatus::NOT_BILLABLE) {
+            return true;
+        }
+        try {
+            return $this->pricingRuleResolver->resolveMaterialFee($ml->getItem(), $at) !== null;
+        } catch (PricingRuleConflictException) {
+            return false;
+        }
+    }
+
+    private function instrumentistRateResolvable(Mission $mission, InstrumentistRateType $rateType, \DateTimeImmutable $at): bool
+    {
+        $instrumentist = $mission->getInstrumentist();
+        if ($instrumentist === null) {
+            return false;
+        }
+        try {
+            return $this->instrumentistRateResolver->resolve($instrumentist, $rateType, $at) !== null;
+        } catch (InstrumentistRateConflictException) {
+            return false;
+        }
+    }
+
+    /** @param list<array<string, mixed>> $rules */
+    private function conflictExplanation(string $target, array $rules, string $date): string
+    {
+        $described = array_map(static function (array $r): string {
+            $from = isset($r['validFrom']) ? \DateTimeImmutable::createFromFormat('!Y-m-d', (string) $r['validFrom']) : false;
+            $to = isset($r['validTo']) ? \DateTimeImmutable::createFromFormat('!Y-m-d', (string) $r['validTo']) : false;
+            return sprintf(
+                'règle #%s : %s %s, %s',
+                $r['id'] ?? '?',
+                isset($r['unitPrice']) ? number_format((float) $r['unitPrice'], 2, ',', ' ') : '—',
+                $r['currency'] ?? '',
+                ($from ? 'du ' . $from->format('d/m/Y') : 'sans date de début') . ($to ? ' au ' . $to->modify('-1 day')->format('d/m/Y') : ', sans date de fin'),
+            );
+        }, $rules);
+
+        return sprintf(
+            "%d tarifs actifs s'appliquent en même temps à %s au %s%s. Le calcul ne choisit jamais entre eux : clôturez ou corrigez l'un d'eux.",
+            max(2, count($rules)),
+            $target,
+            $date,
+            $described !== [] ? ' (' . implode(' ; ', $described) . ')' : '',
+        );
     }
 }

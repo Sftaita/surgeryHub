@@ -176,9 +176,16 @@ final class InterventionTypeController extends AbstractController
 
         return $this->json(array_map(function (FirmServiceOffering $o) use ($today) {
             $firm = $o->getFirm();
-            $forfait = $o->isFeeApplicable()
-                ? $this->pricingRuleResolver->resolveInterventionFee($firm, $o->getInterventionType(), $today)
-                : null;
+            // D-138 — conflit de règles signalé explicitement, jamais « pas de forfait ».
+            $conflict = null;
+            try {
+                $forfait = $o->isFeeApplicable()
+                    ? $this->pricingRuleResolver->resolveInterventionFee($firm, $o->getInterventionType(), $today)
+                    : null;
+            } catch (\App\Exception\PricingRuleConflictException $e) {
+                $forfait = null;
+                $conflict = array_column($e->rulesSnapshot(), 'id');
+            }
 
             return [
                 'offeringId' => $o->getId(),
@@ -193,6 +200,7 @@ final class InterventionTypeController extends AbstractController
                     'amount' => $forfait->getUnitPrice(),
                     'currency' => $forfait->getCurrency(),
                 ] : null,
+                'pricingConflictRuleIds' => $conflict,
             ];
         }, $offerings));
     }

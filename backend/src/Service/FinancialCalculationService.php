@@ -21,6 +21,8 @@ use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Exception\FinancialCalculationAnomaliesException;
 use App\Exception\FinancialCalculationIneligibleException;
+use App\Exception\InstrumentistRateConflictException;
+use App\Exception\PricingRuleConflictException;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -395,7 +397,18 @@ final class FinancialCalculationService
             return null;
         }
 
-        $rule = $this->pricingRuleResolver->resolveInterventionFee($firm, $interventionType, $effectiveAt, $selectedChoiceOption);
+        try {
+            $rule = $this->pricingRuleResolver->resolveInterventionFee($firm, $interventionType, $effectiveAt, $selectedChoiceOption);
+        } catch (PricingRuleConflictException $conflict) {
+            // D-138 — tarifs contradictoires : jamais un choix arbitraire, une anomalie.
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'CONFLICTING_FIRM_INTERVENTION_RATE',
+                $conflict->getMessage(),
+                ['missionInterventionId' => $intervention->getId(), 'firmId' => $firm->getId(), 'interventionTypeId' => $interventionType->getId(),
+                    'choiceOptionId' => $selectedChoiceOption?->getId(), 'conflictingRules' => $conflict->rulesSnapshot()],
+            );
+            return null;
+        }
         if ($rule === null) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_FIRM_INTERVENTION_RATE',
@@ -476,7 +489,17 @@ final class FinancialCalculationService
             return null;
         }
 
-        $rule = $this->pricingRuleResolver->resolveMaterialFee($item, $effectiveAt);
+        try {
+            $rule = $this->pricingRuleResolver->resolveMaterialFee($item, $effectiveAt);
+        } catch (PricingRuleConflictException $conflict) {
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'CONFLICTING_FIRM_MATERIAL_RATE',
+                $conflict->getMessage(),
+                ['materialLineId' => $materialLine->getId(), 'materialItemId' => $item->getId(), 'firmId' => $firm->getId(),
+                    'conflictingRules' => $conflict->rulesSnapshot()],
+            );
+            return null;
+        }
         if ($rule === null) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_FIRM_MATERIAL_RATE',
@@ -616,7 +639,12 @@ final class FinancialCalculationService
             return null;
         }
 
-        $rate = $this->instrumentistRateResolver->resolve($instrumentist, InstrumentistRateType::HOURLY_RATE, $effectiveAt);
+        try {
+            $rate = $this->instrumentistRateResolver->resolve($instrumentist, InstrumentistRateType::HOURLY_RATE, $effectiveAt);
+        } catch (InstrumentistRateConflictException $conflict) {
+            $anomalies[] = $this->instrumentistRateConflictAnomaly($instrumentist, InstrumentistRateType::HOURLY_RATE, $conflict);
+            return null;
+        }
         if ($rate === null) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_INSTRUMENTIST_RATE',
@@ -663,7 +691,12 @@ final class FinancialCalculationService
     /** @param FinancialCalculationAnomaly[] &$anomalies */
     private function resolveInstrumentistConsultationLine(User $instrumentist, \DateTimeImmutable $effectiveAt, array &$anomalies): ?array
     {
-        $rate = $this->instrumentistRateResolver->resolve($instrumentist, InstrumentistRateType::CONSULTATION_FEE, $effectiveAt);
+        try {
+            $rate = $this->instrumentistRateResolver->resolve($instrumentist, InstrumentistRateType::CONSULTATION_FEE, $effectiveAt);
+        } catch (InstrumentistRateConflictException $conflict) {
+            $anomalies[] = $this->instrumentistRateConflictAnomaly($instrumentist, InstrumentistRateType::CONSULTATION_FEE, $conflict);
+            return null;
+        }
         if ($rate === null) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_INSTRUMENTIST_RATE',
@@ -744,6 +777,15 @@ final class FinancialCalculationService
     }
 
     /** §25 du lot — contenu minimal de chaque événement FINANCIAL_CALCULATION_*. */
+    private function instrumentistRateConflictAnomaly(User $instrumentist, InstrumentistRateType $rateType, InstrumentistRateConflictException $conflict): FinancialCalculationAnomaly
+    {
+        return new FinancialCalculationAnomaly(
+            'CONFLICTING_INSTRUMENTIST_RATE',
+            $conflict->getMessage(),
+            ['instrumentistId' => $instrumentist->getId(), 'rateType' => $rateType->value, 'conflictingRules' => $conflict->ratesSnapshot()],
+        );
+    }
+
     private function summaryPayload(FinancialCalculation $calculation): array
     {
         return [
