@@ -109,6 +109,25 @@ final class EncodingTrackingController extends AbstractController
         return $this->json(['count' => $this->service->countPendingValidation()]);
     }
 
+    /**
+     * D-138 — détail du statut FINANCE d'une mission pour le tiroir du suivi : même état que
+     * la liste, et en ANOMALY chaque anomalie du dernier calcul échoué, expliquée et
+     * localisée (intervention / ligne de matériel / firme), avec l'action de résolution.
+     * Lecture seule : ne relance jamais le moteur.
+     */
+    #[Route('/missions/{missionId}/financial-anomalies', name: 'api_encoding_tracking_financial_anomalies', methods: ['GET'], requirements: ['missionId' => '\d+'])]
+    public function financialAnomalies(int $missionId): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $detail = $this->service->explainFinancialState($missionId);
+        if ($detail === null) {
+            throw $this->createNotFoundException('Mission not found.');
+        }
+
+        return $this->json($detail);
+    }
+
     /** @return array<string, mixed> */
     private function serializeSummary(EncodingTrackingSummary $summary): array
     {
@@ -175,6 +194,10 @@ final class EncodingTrackingController extends AbstractController
                 'state' => $item->financialState->value,
                 'label' => $item->financialState->label(),
                 'isBlocking' => $item->financialState->isBlocking(),
+                // D-138 — motifs de l'anomalie (vide hors ANOMALY) : la liste explique
+                // « Anomalie » sans que le frontend ne déduise rien.
+                'anomalyCount' => array_sum(array_column($item->financialAnomalyReasons, 'count')),
+                'anomalyReasons' => $item->financialAnomalyReasons,
             ],
         ];
     }

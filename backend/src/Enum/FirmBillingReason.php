@@ -104,6 +104,23 @@ enum FirmBillingReason: string
         ], true);
     }
 
+    /**
+     * D-138 — catégorie d'une anomalie du moteur (null hors anomalies moteur) :
+     * CONFIGURATION = un tarif manque (action : catalogue / fiche instrumentiste) ;
+     * ENCODING      = une donnée d'encodage manque ou est invalide (action : la mission) ;
+     * TECHNICAL     = code moteur non reconnu — jamais présenté comme un problème métier.
+     */
+    public function anomalyCategory(): ?string
+    {
+        return match ($this) {
+            self::MISSING_FIRM_INTERVENTION_RATE, self::MISSING_FIRM_MATERIAL_RATE, self::MISSING_INSTRUMENTIST_RATE => 'CONFIGURATION',
+            self::MISSING_PRIMARY_FIRM, self::MISSING_INTERVENTION_TYPE, self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER,
+            self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION => 'ENCODING',
+            self::CALCULATION_FAILED => 'TECHNICAL',
+            default => null,
+        };
+    }
+
     public function label(): string
     {
         return match ($this) {

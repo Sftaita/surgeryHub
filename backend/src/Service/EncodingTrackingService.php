@@ -9,7 +9,10 @@ use App\Dto\FinancialStatisticsFilter;
 use App\Dto\MissionFinancialFacts;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\EncodingFinancialState;
 use App\Enum\EncodingState;
+use App\Enum\FinancialCalculationStatus;
+use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Repository\EncodingTrackingRepository;
 
@@ -23,7 +26,8 @@ use App\Repository\EncodingTrackingRepository;
  *
  * Budget de requêtes, indépendant du nombre de missions :
  *  - résumé : 1 requête de faits + 1 requête d'anomalies ;
- *  - liste  : 1 comptage + 1 requête d'ids + 1 hydratation + 1 faits + 1 financier.
+ *  - liste  : 1 comptage + 1 requête d'ids + 1 hydratation + 1 faits + 1 financier
+ *             + 1 derniers échecs de calcul (D-138, seulement si la page en contient).
  * Aucun N+1 : les compteurs viennent d'agrégats, jamais d'un parcours de collections.
  */
 final class EncodingTrackingService
@@ -33,6 +37,8 @@ final class EncodingTrackingService
         private readonly EncodingStateResolver $stateResolver,
         private readonly EncodingFinancialStateResolver $financialStateResolver,
         private readonly MissionExecutionService $executionService,
+        private readonly FinancialCalculationAnomalyExplainer $anomalyExplainer,
+        private readonly FinancialCalculationService $financialCalculationService,
     ) {}
 
     /**
@@ -97,6 +103,12 @@ final class EncodingTrackingService
         $facts = $this->repository->fetchFactsForIds($ids);
         $missions = $this->repository->hydrateMissionsForDisplay($ids);
         $financialFacts = $this->repository->fetchFinancialFacts($ids);
+        // D-138 — un seul chargement des derniers échecs, limité aux missions qui en ont un
+        // non résolu : la liste explique chaque « Anomalie » sans requête par mission.
+        $failures = $this->anomalyExplainer->latestFailures(array_keys(array_filter(
+            $financialFacts,
+            static fn (MissionFinancialFacts $f) => $f->hasUnresolvedCalculationFailure,
+        )));
 
         $items = [];
         foreach ($ids as $id) {
@@ -113,7 +125,7 @@ final class EncodingTrackingService
 
             $isStale = $state === EncodingState::IN_PROGRESS && $fact->endAt !== null && $fact->endAt <= $now;
 
-            $items[] = $this->buildItem($mission, $fact, $state, $isStale, $financialFacts[$id] ?? MissionFinancialFacts::none());
+            $items[] = $this->buildItem($mission, $fact, $state, $isStale, $financialFacts[$id] ?? MissionFinancialFacts::none(), $failures[$id]['anomalies'] ?? []);
         }
 
         return ['items' => $items, 'total' => $total, 'page' => $page, 'limit' => $limit];
@@ -125,6 +137,7 @@ final class EncodingTrackingService
         EncodingState $state,
         bool $isStale,
         MissionFinancialFacts $financialFacts,
+        array $rawFailureAnomalies = [],
     ): EncodingTrackingItem {
         // Source canonique unique des heures — jamais recalculée ici (D-071).
         $effective = $this->executionService->resolveEffectiveDuration($mission);
@@ -134,6 +147,8 @@ final class EncodingTrackingService
         $plannedMinutes = ($start !== null && $end !== null)
             ? max(0, (int) round(($end->getTimestamp() - $start->getTimestamp()) / 60))
             : 0;
+
+        $financialState = $this->financialStateResolver->resolve($state, $financialFacts);
 
         $surgeon = $mission->getSurgeon();
         $instrumentist = $mission->getInstrumentist();
@@ -163,8 +178,83 @@ final class EncodingTrackingService
             submittedWithoutMaterial: $mission->isSubmittedWithoutMaterial() === true,
             hasNoMaterialJustification: $mission->getNoMaterialComment() !== null && trim($mission->getNoMaterialComment()) !== '',
             isStale: $isStale,
-            financialState: $this->financialStateResolver->resolve($state, $financialFacts),
+            financialState: $financialState,
+            financialAnomalyReasons: $financialState === EncodingFinancialState::ANOMALY
+                ? $this->anomalyExplainer->summarize($rawFailureAnomalies)
+                : [],
         );
+    }
+
+    /**
+     * D-138 — détail du statut financier d'UNE mission pour le tiroir du suivi : même
+     * état que la liste (mêmes faits, même résolveur), et, en ANOMALY, chaque anomalie du
+     * dernier échec audité expliquée et localisée (FinancialCalculationAnomalyExplainer).
+     * Une anomalie affichée a donc toujours son explication, et rien n'est inventé hors
+     * ANOMALY. null = mission inconnue.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function explainFinancialState(int $missionId, ?\DateTimeImmutable $now = null): ?array
+    {
+        $now ??= new \DateTimeImmutable();
+
+        $fact = $this->repository->fetchFactsForIds([$missionId])[$missionId] ?? null;
+        $mission = $this->repository->hydrateMissionsForDisplay([$missionId])[$missionId] ?? null;
+        if ($fact === null || $mission === null) {
+            return null;
+        }
+
+        $encodingState = $this->stateResolver->resolve($fact, $now);
+        $financialFacts = $this->repository->fetchFinancialFacts([$missionId])[$missionId] ?? MissionFinancialFacts::none();
+        $financialState = $this->financialStateResolver->resolve($encodingState, $financialFacts);
+
+        $anomalies = [];
+        $failedAt = null;
+        $effectiveAt = null;
+        $retry = null;
+        if ($financialState === EncodingFinancialState::ANOMALY) {
+            $failure = $this->anomalyExplainer->latestFailures([$missionId])[$missionId] ?? null;
+            $effectiveAt = $failure['effectiveAt'] ?? $this->financialCalculationService->resolveEffectiveAt($mission);
+            $failedAt = $failure['failedAt'] ?? null;
+            $anomalies = $this->anomalyExplainer->explainAll($failure['anomalies'] ?? [], $mission, $effectiveAt);
+            $retry = $this->retryAction($mission);
+        }
+
+        return [
+            'missionId' => $missionId,
+            'state' => $financialState->value,
+            'label' => $financialState->label(),
+            'isBlocking' => $financialState->isBlocking(),
+            'failedAt' => $failedAt?->format(\DateTimeInterface::ATOM),
+            'effectiveAt' => $effectiveAt?->format('Y-m-d'),
+            'anomalies' => $anomalies,
+            'retry' => $retry,
+        ];
+    }
+
+    /**
+     * Relance possible d'un calcul après correction — mêmes préconditions que
+     * FinancialCalculationService (mission VALIDATED, jamais un calcul LOCKED) : le moteur
+     * reste seul juge, ceci évite seulement d'offrir un bouton voué au refus. Premier calcul
+     * → POST /api/missions/{id}/financial-calculations ; recalcul d'un calcul actif →
+     * POST /api/financial-calculations/{id}/recalculate.
+     *
+     * @return array{kind: string, calculationId: ?int}|null
+     */
+    private function retryAction(Mission $mission): ?array
+    {
+        if ($mission->getStatus() !== MissionStatus::VALIDATED || $mission->getInstrumentist() === null) {
+            return null;
+        }
+        $active = $this->financialCalculationService->findActiveCalculation($mission);
+        if ($active === null) {
+            return ['kind' => 'CALCULATE', 'calculationId' => null];
+        }
+        if ($active->getStatus() === FinancialCalculationStatus::LOCKED) {
+            return null;
+        }
+
+        return ['kind' => 'RECALCULATE', 'calculationId' => $active->getId()];
     }
 
     /** D-121 — voir EncodingTrackingRepository::countPendingEncodingValidation(). */

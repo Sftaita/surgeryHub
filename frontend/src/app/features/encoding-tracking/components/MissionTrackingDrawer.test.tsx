@@ -30,6 +30,18 @@ vi.mock("../../planning-v2/api/planningV2.api", () => ({
   fetchMissionAudit: (...args: unknown[]) => fetchMissionAuditMock(...args),
 }));
 
+const getMissionFinancialAnomaliesMock = vi.fn();
+vi.mock("../api/encodingTracking.api", () => ({
+  getMissionFinancialAnomalies: (...args: unknown[]) => getMissionFinancialAnomaliesMock(...args),
+}));
+
+const calculateMissionMock = vi.fn();
+const recalculateFinancialCalculationMock = vi.fn();
+vi.mock("../../financial-calculation/api/financialCalculation.api", () => ({
+  calculateMission: (...args: unknown[]) => calculateMissionMock(...args),
+  recalculateFinancialCalculation: (...args: unknown[]) => recalculateFinancialCalculationMock(...args),
+}));
+
 function makeItem(overrides: Partial<EncodingTrackingItem> = {}): EncodingTrackingItem {
   return {
     missionId: 42,
@@ -44,13 +56,12 @@ function makeItem(overrides: Partial<EncodingTrackingItem> = {}): EncodingTracki
     site: { id: 2, name: "Delta" },
     hours: { plannedMinutes: 240, effectiveMinutes: 312, effectiveSource: "ACTUAL_TIMES", hasRealHours: true, comparison: "OVER_PLAN" },
     encoding: { interventionCount: 2, encodedInterventionCount: 1, materialLineCount: 6, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false },
-    financial: { state: "TO_CALCULATE", label: "À calculer", isBlocking: false },
+    financial: { state: "TO_CALCULATE", label: "À calculer", isBlocking: false, anomalyCount: 0, anomalyReasons: [] },
     ...overrides,
   };
 }
 
-function renderDrawer(item: EncodingTrackingItem | null, onClose = () => {}) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderDrawer(item: EncodingTrackingItem | null, onClose = () => {}, client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
     <QueryClientProvider client={client}>
       <ToastProvider>
@@ -70,6 +81,9 @@ beforeEach(() => {
   validateMissionEncodingMock.mockReset();
   remindMissionEncodingMock.mockReset();
   remindMissionHoursMock.mockReset();
+  getMissionFinancialAnomaliesMock.mockReset();
+  calculateMissionMock.mockReset();
+  recalculateFinancialCalculationMock.mockReset();
 
   getMissionExecutionMock.mockResolvedValue({ hasExecutionRecord: false, actualStartAt: null, actualEndAt: null, actualDurationMinutes: null, hoursSource: null, effectiveDurationMinutes: 0, effectiveDurationSource: "PLANNED", disputes: [] });
   fetchMissionEncodingMock.mockResolvedValue({ mission: { id: 42, type: "BLOCK", status: "SUBMITTED", allowedActions: [] }, interventions: [], entries: [], interventionTypeRequests: [], coherenceSummary: {}, encodingComments: [] });
@@ -279,5 +293,150 @@ describe("MissionTrackingDrawer", () => {
     const img = container.querySelector("img");
     expect(img?.getAttribute("src")).toMatch(/\/uploads\/profile-pictures\/salve\.jpg$/);
     expect(screen.getByText("DJ")).toBeInTheDocument();
+  });
+
+  // ── D-138 — anomalies financières ──────────────────────────────────────
+
+  describe("anomalies financières (D-138)", () => {
+    const anomalyItem = () => makeItem({
+      missionStatus: "VALIDATED", encodingState: "VALIDATED", encodingStateLabel: "Validé",
+      financial: { state: "ANOMALY", label: "Anomalie", isBlocking: true, anomalyCount: 2,
+        anomalyReasons: [
+          { code: "MISSING_FIRM_INTERVENTION_RATE", label: "Tarif d'intervention manquant", count: 1 },
+          { code: "MISSING_FIRM_MATERIAL_RATE", label: "Tarif matériel manquant", count: 1 },
+        ] },
+    });
+
+    const interventionAnomaly = {
+      code: "MISSING_FIRM_INTERVENTION_RATE", category: "CONFIGURATION", severity: "BLOCKING",
+      title: "Tarif d'intervention manquant",
+      explanation: "Aucun tarif applicable n'est configuré pour cette prestation chez Arthrex au 01/10/2026.",
+      firm: { id: 5, name: "Arthrex" }, element: { type: "INTERVENTION", label: "Plastie ligamentaire" },
+      action: { code: "CONFIGURE_INTERVENTION_RATE", label: "Configurer le tarif" }, resolved: false,
+      missionInterventionId: 1, materialLineId: null,
+    };
+    const materialAnomaly = {
+      code: "MISSING_FIRM_MATERIAL_RATE", category: "CONFIGURATION", severity: "BLOCKING",
+      title: "Tarif matériel manquant",
+      explanation: "Aucun tarif applicable n'est configuré pour ce matériel (Smith & Nephew) au 01/10/2026.",
+      firm: { id: 4, name: "Smith & Nephew" }, element: { type: "MATERIAL", label: "Fast-Fix", reference: "FF-360" },
+      action: { code: "CONFIGURE_MATERIAL_RATE", label: "Configurer le tarif" }, resolved: false,
+      missionInterventionId: 2, materialLineId: 12,
+    };
+    const detail = (anomalies: unknown[], extra: Record<string, unknown> = {}) => ({
+      missionId: 42, state: "ANOMALY", label: "Anomalie", isBlocking: true,
+      failedAt: "2026-10-08T06:29:04+02:00", effectiveAt: "2026-10-01",
+      anomalies, retry: { kind: "CALCULATE", calculationId: null }, ...extra,
+    });
+
+    beforeEach(() => {
+      fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "VALIDATED", allowedActions: ["view"] });
+      fetchMissionEncodingMock.mockResolvedValue({ mission: { id: 42, type: "BLOCK", status: "VALIDATED", allowedActions: [] }, interventions: [], entries: VALIDATED_ENTRIES, interventionTypeRequests: [], coherenceSummary: {}, encodingComments: [] });
+    });
+
+    it("une mission en anomalie affiche CHAQUE anomalie expliquée et localisée, avant les interventions", async () => {
+      getMissionFinancialAnomaliesMock.mockResolvedValue(detail([interventionAnomaly, materialAnomaly]));
+      renderDrawer(anomalyItem());
+
+      const section = await screen.findByTestId("financial-anomalies");
+      expect(getMissionFinancialAnomaliesMock).toHaveBeenCalledWith(42);
+      expect(within(section).getByText("Anomalies financières — 2 problèmes détectés")).toBeInTheDocument();
+      const items = within(section).getAllByTestId("financial-anomaly");
+      expect(items).toHaveLength(2);
+      expect(within(items[0]).getByText("1. Tarif d'intervention manquant")).toBeInTheDocument();
+      expect(within(items[0]).getByText("Arthrex")).toBeInTheDocument();
+      expect(within(items[0]).getByText("Plastie ligamentaire (intervention 1/2)")).toBeInTheDocument();
+      expect(within(items[0]).getByText(/Aucun tarif applicable n'est configuré pour cette prestation chez Arthrex/)).toBeInTheDocument();
+      expect(within(items[1]).getByText("2. Tarif matériel manquant")).toBeInTheDocument();
+      expect(within(items[1]).getByText("Fast-Fix · Réf. FF-360")).toBeInTheDocument();
+      expect(within(items[1]).getByText("intervention 2/2")).toBeInTheDocument();
+      expect(screen.getByTestId("drawer-finance-status")).toHaveTextContent("Finance : anomalie");
+
+      // Placée avant la liste des interventions.
+      const interventionsTitle = screen.getByText(/INTERVENTIONS/);
+      expect(section.compareDocumentPosition(interventionsTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      // Les éléments concernés sont marqués dans l'encodage.
+      await waitFor(() => expect(document.querySelectorAll("[data-anomaly]").length).toBeGreaterThan(0));
+      expect(Array.from(document.querySelectorAll("[data-anomaly]")).map((el) => el.getAttribute("data-anchor"))).toEqual(["itv-1", "ml-12"]);
+    });
+
+    it("dépassement horaire sans anomalie : aucune section, aucune requête d'anomalies", async () => {
+      renderDrawer(makeItem({ financial: { state: "TO_CALCULATE", label: "À calculer", isBlocking: false, anomalyCount: 0, anomalyReasons: [] } }));
+      await screen.findByText("Dépasse le temps planifié", { selector: "[data-testid=drawer-hours-status]" });
+      expect(screen.queryByTestId("financial-anomalies")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("drawer-finance-status")).not.toBeInTheDocument();
+      expect(getMissionFinancialAnomaliesMock).not.toHaveBeenCalled();
+    });
+
+    it("échec de chargement : signalé comme tel, jamais transformé en anomalie ni en absence d'anomalie", async () => {
+      getMissionFinancialAnomaliesMock.mockRejectedValue(new Error("Network Error"));
+      renderDrawer(anomalyItem());
+
+      const error = await screen.findByTestId("financial-anomalies-error");
+      expect(error).toHaveTextContent("Impossible de charger le détail des anomalies financières");
+      expect(screen.queryByTestId("financial-anomaly")).not.toBeInTheDocument();
+    });
+
+    it("« Voir dans l'encodage » mène à la ligne de matériel concernée", async () => {
+      const user = userEvent.setup();
+      const scrolled: string[] = [];
+      const original = HTMLElement.prototype.scrollIntoView;
+      HTMLElement.prototype.scrollIntoView = vi.fn(function (this: HTMLElement) { scrolled.push(this.getAttribute("data-anchor") ?? ""); });
+      getMissionFinancialAnomaliesMock.mockResolvedValue(detail([interventionAnomaly, materialAnomaly]));
+      renderDrawer(anomalyItem());
+
+      const items = await screen.findAllByTestId("financial-anomaly");
+      await screen.findAllByTestId("material-row");
+      await user.click(within(items[1]).getByRole("button", { name: "Voir dans l'encodage" }));
+      expect(scrolled.at(-1)).toBe("ml-12");
+      await user.click(within(items[0]).getByRole("button", { name: "Voir dans l'encodage" }));
+      expect(scrolled.at(-1)).toBe("itv-1");
+      HTMLElement.prototype.scrollIntoView = original;
+    });
+
+    it("relance du calcul : un nouvel échec recharge le détail, qui ne garde que les anomalies restantes", async () => {
+      const user = userEvent.setup();
+      getMissionFinancialAnomaliesMock
+        .mockResolvedValueOnce(detail([{ ...interventionAnomaly, resolved: true }, materialAnomaly]))
+        .mockResolvedValue(detail([materialAnomaly]));
+      calculateMissionMock.mockRejectedValue({ response: { status: 422, data: { error: { code: "FINANCIAL_CALCULATION_ANOMALIES", message: "1 anomalie", violations: [{}] } } } });
+      renderDrawer(anomalyItem());
+
+      const section = await screen.findByTestId("financial-anomalies");
+      expect(within(section).getByText("Corrigé — à recalculer")).toBeInTheDocument();
+      await user.click(within(section).getByRole("button", { name: "Relancer le calcul" }));
+
+      expect(calculateMissionMock).toHaveBeenCalledWith(42);
+      expect(await screen.findByText("Le calcul échoue encore : 1 anomalie restante.")).toBeInTheDocument();
+      await waitFor(() => expect(screen.getAllByTestId("financial-anomaly")).toHaveLength(1));
+      expect(screen.getByText("Anomalies financières — 1 problème détecté")).toBeInTheDocument();
+      expect(recalculateFinancialCalculationMock).not.toHaveBeenCalled();
+    });
+
+    it("recalcul d'un calcul actif : appelle l'endpoint de recalcul désigné par le backend, puis rafraîchit liste et détail", async () => {
+      const user = userEvent.setup();
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const invalidate = vi.spyOn(client, "invalidateQueries");
+      getMissionFinancialAnomaliesMock.mockResolvedValue(detail([materialAnomaly], { retry: { kind: "RECALCULATE", calculationId: 77 } }));
+      recalculateFinancialCalculationMock.mockResolvedValue({ id: 78 });
+      renderDrawer(anomalyItem(), () => {}, client);
+
+      await user.click(await screen.findByRole("button", { name: "Relancer le calcul" }));
+      expect(recalculateFinancialCalculationMock).toHaveBeenCalledWith(77);
+      expect(calculateMissionMock).not.toHaveBeenCalled();
+      await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["encoding-tracking"], exact: false }));
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["encoding-tracking-financial-anomalies", 42] });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["firm-billing-worklist"], exact: false });
+    });
+
+    it("tiroir et liste ne se contredisent pas : un détail plus récent recharge la liste", async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const invalidate = vi.spyOn(client, "invalidateQueries");
+      getMissionFinancialAnomaliesMock.mockResolvedValue({ ...detail([]), state: "CALCULATED", label: "Calculé", isBlocking: false, retry: null });
+      renderDrawer(anomalyItem(), () => {}, client);
+
+      await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["encoding-tracking"], exact: false }));
+      expect(screen.queryByTestId("financial-anomaly")).not.toBeInTheDocument();
+    });
   });
 });

@@ -82,7 +82,7 @@ function makeItem(overrides: Partial<EncodingTrackingItem> = {}): EncodingTracki
     site: { id: 2, name: "Delta" },
     hours: { plannedMinutes: 240, effectiveMinutes: 312, effectiveSource: "ACTUAL_TIMES", hasRealHours: true, comparison: "OVER_PLAN" },
     encoding: { interventionCount: 2, encodedInterventionCount: 1, materialLineCount: 6, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false },
-    financial: { state: "NOT_CALCULABLE", label: "Pas encore calculable", isBlocking: false },
+    financial: { state: "NOT_CALCULABLE", label: "Pas encore calculable", isBlocking: false, anomalyCount: 0, anomalyReasons: [] },
     ...overrides,
   };
 }
@@ -205,7 +205,7 @@ describe("EncodingTrackingPage — empty states distincts", () => {
 describe("EncodingTrackingPage — états d'encodage & finance", () => {
   it("affiche le libellé d'état d'encodage et l'état financier synthétique tels que fournis par le backend", async () => {
     const summary = emptySummary({ totalMissions: 1, encodingExpected: 1, submitted: 1 });
-    const item = makeItem({ encodingState: "SUBMITTED", encodingStateLabel: "Soumis", financial: { state: "ANOMALY", label: "Anomalie", isBlocking: true } });
+    const item = makeItem({ encodingState: "SUBMITTED", encodingStateLabel: "Soumis", financial: { state: "ANOMALY", label: "Anomalie", isBlocking: true, anomalyCount: 1, anomalyReasons: [{ code: "MISSING_FIRM_MATERIAL_RATE", label: "Tarif matériel manquant", count: 1 }] } });
     getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
     getEncodingTrackingMock.mockResolvedValue(makeResponse([item], summary));
 
@@ -213,6 +213,8 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
 
     await waitFor(() => expect(screen.getByText("Soumis")).toBeInTheDocument());
     expect(screen.getByText("Anomalie")).toBeInTheDocument();
+    // D-138 — la cause, fournie par le backend, accompagne toujours « Anomalie ».
+    expect(screen.getByText("Tarif matériel manquant")).toBeInTheDocument();
   });
 
   it("affiche planifié + effectif + source quand des heures réelles existent", async () => {
@@ -389,7 +391,7 @@ describe("EncodingTrackingPage — vue « À traiter »", () => {
     const toEncode = makeItem({ missionId: 1, encodingState: "TO_ENCODE" });
     const stale = makeItem({ missionId: 2, encodingState: "IN_PROGRESS", encoding: { ...makeItem().encoding, isStale: true } });
     const toValidate = makeItem({ missionId: 3, encodingState: "SUBMITTED" });
-    const anomaly = makeItem({ missionId: 4, encodingState: "VALIDATED", financial: { state: "ANOMALY", label: "Anomalie", isBlocking: true } });
+    const anomaly = makeItem({ missionId: 4, encodingState: "VALIDATED", financial: { state: "ANOMALY", label: "Anomalie", isBlocking: true, anomalyCount: 1, anomalyReasons: [{ code: "MISSING_FIRM_MATERIAL_RATE", label: "Tarif matériel manquant", count: 1 }] } });
 
     getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
     getEncodingTrackingMock.mockResolvedValue(makeResponse([toEncode, stale, toValidate, anomaly], summary));

@@ -3473,6 +3473,7 @@ consomme seulement la ventilation du suivi pour expliquer ses zéros.
 | `Enum\EncodingFinancialState` | statut financier synthétique (sans montant) |
 | `Dto\MissionFinancialFacts` | faits financiers bruts |
 | `Service\EncodingFinancialStateResolver` | dérivation du statut financier |
+| `Service\FinancialCalculationAnomalyExplainer` | traduction des anomalies du dernier calcul échoué — partagée avec la worklist « Facturation firmes » (D-138) |
 | `Dto\EncodingTrackingSummary` | ventilation partagée par les deux écrans |
 | `Dto\EncodingTrackingItem` | une ligne de suivi |
 | `Repository\EncodingTrackingRepository` | agrégats SQL + hydratation bornée |
@@ -3508,7 +3509,10 @@ le tableau.
 Constant, indépendant du nombre de missions :
 
 - **résumé** : 1 requête de faits (période entière) + 1 requête d'anomalies ;
-- **liste** : 1 comptage + 1 requête d'ids + 1 hydratation + 1 faits + 1 financier.
+- **liste** : 1 comptage + 1 requête d'ids + 1 hydratation + 1 faits + 1 financier
+  + 1 derniers échecs de calcul, seulement si la page contient une anomalie (D-138) ;
+- **détail FINANCE d'une mission** (tiroir, D-138) : mêmes faits que la liste pour UNE
+  mission + le dernier échec, expliqué par `FinancialCalculationAnomalyExplainer`.
 
 Les compteurs d'interventions et de lignes de matériel viennent de sous-requêtes corrélées
 appuyées sur `idx_intervention_mission` et `idx_material_line_mission` — jamais d'un

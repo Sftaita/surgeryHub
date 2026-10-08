@@ -67,6 +67,7 @@ import {
   type WorklistRow,
 } from "../../../features/billing-firm/api/firmBillingWorklist.api";
 import { approveFinancialCalculation } from "../../../features/financial-calculation/api/financialCalculation.api";
+import { ANOMALY_ACTION_ROUTES } from "../../../features/financial-calculation/anomalyActionRoutes";
 
 const INVOICE_STATUS_COLORS: Record<InvoiceStatus, "default" | "info" | "warning" | "success" | "error"> = {
   DRAFT: "default", GENERATED: "info", SENT: "warning", PAID: "success", CANCELLED: "error", ABANDONED: "default",
@@ -85,12 +86,8 @@ const INVOICE_STATE_COLORS: Record<InvoiceState, "default" | "info" | "warning" 
   FREE: "default", IN_DRAFT: "secondary", GENERATED: "info", SENT: "warning", PAID: "success",
 };
 
-/** Où mène chaque action d'anomalie (navigation uniquement). */
-const ACTION_ROUTES: Partial<Record<AnomalyActionCode, string>> = {
-  CONFIGURE_INTERVENTION_RATE: "/app/m/catalogue/prestations",
-  CONFIGURE_MATERIAL_RATE: "/app/m/catalogue/prestations",
-  CONFIGURE_INSTRUMENTIST_RATE: "/app/m/instrumentists",
-};
+/** Où mène chaque action d'anomalie (navigation uniquement) — partagé avec le Suivi des encodages. */
+const ACTION_ROUTES: Partial<Record<AnomalyActionCode, string>> = ANOMALY_ACTION_ROUTES;
 
 type TabKey = "prestations" | "toFix" | "invoices";
 

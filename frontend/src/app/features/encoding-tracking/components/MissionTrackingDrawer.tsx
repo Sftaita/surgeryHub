@@ -6,8 +6,11 @@ import { fetchMissionById, getMissionExecution, remindMissionHours } from "../..
 import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
 import { fetchMissionEncoding, remindMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
 import { EncodingContentPanel } from "./EncodingContentPanel";
+import type { EncodingAnomalyMarks, EncodingFocusTarget } from "./EncodingContentPanel";
+import { FinancialAnomaliesCard } from "./FinancialAnomaliesCard";
 import { useToast } from "../../../ui/toast/useToast";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
+import { getMissionFinancialAnomalies } from "../api/encodingTracking.api";
 import type { EncodingTrackingItem } from "../api/encodingTracking.api";
 import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, formatMinutes } from "../encodingStateMeta";
 
@@ -123,6 +126,25 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
     queryFn: () => fetchMissionAudit(missionId!),
     enabled: open,
   });
+  // D-138 — explication de l'anomalie FINANCE, servie par le backend (même état que la liste).
+  const isFinancialAnomaly = item?.financial.state === "ANOMALY";
+  const financialQuery = useQuery({
+    queryKey: ["encoding-tracking-financial-anomalies", missionId],
+    queryFn: () => getMissionFinancialAnomalies(missionId!),
+    enabled: open && isFinancialAnomaly,
+  });
+
+  // Le détail est plus récent que la liste (ex. calcul relancé ailleurs) : la liste est
+  // rechargée plutôt que de laisser le tiroir et la ligne se contredire.
+  const detailState = financialQuery.data?.state;
+  React.useEffect(() => {
+    if (detailState && item && detailState !== item.financial.state) {
+      void queryClient.invalidateQueries({ queryKey: ["encoding-tracking"], exact: false });
+    }
+  }, [detailState, item?.financial.state]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const [focus, setFocus] = React.useState<EncodingFocusTarget | null>(null);
+  React.useEffect(() => { setFocus(null); }, [missionId]);
 
   // En parallèle, jamais en série : chaque refetch attendu l'un après l'autre retardait
   // d'autant la mise à jour du tiroir (et de la liste qui fournit `item`).
@@ -133,6 +155,19 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
       queryClient.invalidateQueries({ queryKey: ["mission-audit", missionId] }),
       queryClient.invalidateQueries({ queryKey: ["missions"], exact: false }),
       queryClient.invalidateQueries({ queryKey: ["encoding-tracking"], exact: false }),
+      queryClient.invalidateQueries({ queryKey: ["encoding-tracking-financial-anomalies", missionId] }),
+    ]);
+  }
+
+  // Après une relance de calcul : FINANCE change dans la liste, le tiroir, la fiche mission
+  // et la worklist « Facturation firmes » — tout est relu depuis le backend.
+  function refreshAfterCalculation() {
+    return Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["encoding-tracking"], exact: false }),
+      queryClient.invalidateQueries({ queryKey: ["encoding-tracking-financial-anomalies", missionId] }),
+      queryClient.invalidateQueries({ queryKey: ["mission-financial-calculations", missionId] }),
+      queryClient.invalidateQueries({ queryKey: ["mission-audit", missionId] }),
+      queryClient.invalidateQueries({ queryKey: ["firm-billing-worklist"], exact: false }),
     ]);
   }
 
@@ -165,6 +200,11 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   if (!open || !item) return null;
 
   const tone = STATE_TONE[item.encodingState] ?? STATE_TONE.NOT_APPLICABLE;
+  const financialAnomalies = isFinancialAnomaly && financialQuery.data?.state === "ANOMALY" ? financialQuery.data.anomalies : [];
+  const anomalyMarks: EncodingAnomalyMarks = {
+    interventionIds: new Set(financialAnomalies.filter((a) => a.materialLineId === null && a.missionInterventionId !== null).map((a) => a.missionInterventionId!)),
+    materialLineIds: new Set(financialAnomalies.filter((a) => a.materialLineId !== null).map((a) => a.materialLineId!)),
+  };
   const allowedActions = missionQuery.data?.allowedActions ?? [];
   const canValidate = allowedActions.includes("validate");
   const canRemind = allowedActions.includes("remind");
@@ -226,6 +266,11 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             <Box sx={{ display: "inline-flex", alignItems: "center", height: 24, padding: "0 10px", borderRadius: "999px", fontSize: 11.5, fontWeight: 800, background: tone.bg, color: tone.fg }}>
               {item.encodingStateLabel}
             </Box>
+            {item.financial.isBlocking && (
+              <Box data-testid="drawer-finance-status" sx={{ display: "inline-flex", alignItems: "center", height: 24, padding: "0 8px", borderRadius: "999px", fontSize: 11.5, fontWeight: 800, background: RED_50, color: RED_700 }}>
+                Finance : {item.financial.label.toLowerCase()}
+              </Box>
+            )}
             {item.encoding.isStale && (
               <Box sx={{ display: "inline-flex", alignItems: "center", height: 24, padding: "0 8px", borderRadius: "999px", fontSize: 11.5, fontWeight: 800, background: RED_50, color: RED_700 }}>
                 en retard
@@ -256,6 +301,19 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           contenu (jamais d'ascenseur imbriqué sur un écran bas) ; sur un écran haut, elle
           remplit l'espace restant. */}
       <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: "14px" }}>
+        {isFinancialAnomaly && (
+          <FinancialAnomaliesCard
+            missionId={item.missionId}
+            data={financialQuery.data}
+            isLoading={financialQuery.isLoading}
+            isError={financialQuery.isError}
+            onRetryLoad={() => void financialQuery.refetch()}
+            entries={entries}
+            onLocate={(target) => setFocus((prev) => ({ ...target, nonce: (prev?.nonce ?? 0) + 1 }))}
+            onRecalculated={refreshAfterCalculation}
+          />
+        )}
+
         <Card>
           <Box sx={{ display: "flex", alignItems: "center", gap: "10px", minHeight: 28 }}>
             <Eyebrow>HEURES</Eyebrow>
@@ -320,7 +378,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
                 Impossible de charger le détail de l'encodage.
               </Box>
             )}
-            {!encodingQuery.isLoading && entries.length > 0 && <EncodingContentPanel entries={entries} />}
+            {!encodingQuery.isLoading && entries.length > 0 && <EncodingContentPanel entries={entries} anomalyMarks={anomalyMarks} focus={focus} />}
             {isValidated && encodingQuery.isSuccess && entries.length === 0 && (
               <Box sx={{ padding: "14px", borderRadius: "12px", background: GRAY_75, fontSize: 12.5, fontWeight: 600, color: GRAY_600 }}>
                 Aucune intervention encodée.

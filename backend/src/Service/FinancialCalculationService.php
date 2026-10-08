@@ -239,7 +239,7 @@ final class FinancialCalculationService
         }
     }
 
-    private function findActiveCalculation(Mission $mission): ?FinancialCalculation
+    public function findActiveCalculation(Mission $mission): ?FinancialCalculation
     {
         return $this->em->getRepository(FinancialCalculation::class)->findOneBy(
             ['mission' => $mission, 'status' => [
