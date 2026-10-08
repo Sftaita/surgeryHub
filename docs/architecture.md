@@ -343,7 +343,9 @@ src/app/
 │   │   │                                    (SideList) + Tabs Prestations/Matériel facturable
 │   │   ├── InterventionTypesPage         — wrapper fin autour de InterventionTypesManager
 │   │   ├── CataloguePage                 — catalogue matériel (hors menu, route conservée)
-│   │   ├── CatalogueRequestsPage         — Demandes fusionnées (matériel + types d'intervention)
+│   │   ├── CatalogueRequestsPage         — Demandes fusionnées (matériel + types d'intervention) ;
+│   │   │                                    `comment` instrumentiste : aperçu dépliable dans la ligne,
+│   │   │                                    intégral dans les modals Résoudre/Ignorer (CatalogueRequestComment)
 │   │   ├── FinancialStatisticsPage
 │   │   ├── billing/
 │   │   │   ├── FirmInvoicesPage, FirmInvoiceDetailPage

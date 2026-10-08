@@ -268,12 +268,16 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         return [$client, $mission, $token, $instr];
     }
 
-    private function createMaterialRequestOnIntervention(KernelBrowser $client, Mission $mission, string $instrToken, MissionIntervention $intervention, string $label = 'Demande MatReqWF'): int
+    private function createMaterialRequestOnIntervention(KernelBrowser $client, Mission $mission, string $instrToken, MissionIntervention $intervention, string $label = 'Demande MatReqWF', ?string $comment = null): int
     {
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $instrToken, [
+        $body = [
             'label' => $label,
             'missionInterventionId' => $intervention->getId(),
-        ]);
+        ];
+        if ($comment !== null) {
+            $body['comment'] = $comment;
+        }
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $instrToken, $body);
         self::assertSame(Response::HTTP_CREATED, $created->getStatusCode(), $created->getContent());
         $id = json_decode($created->getContent(), true)['id'];
         $this->createdIds['materialRequests'][] = $id;
@@ -711,5 +715,97 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         self::assertSame($requestId, $message->requestId);
         self::assertSame('Plaque de fixation', $message->label);
         self::assertSame($mission->getId(), $message->missionId);
+    }
+
+    // ── Commentaire de l'instrumentiste (MaterialItemRequest.comment) ────────
+
+    /** Commentaire long, multi-lignes, avec une URL insécable — jamais tronqué. */
+    private const LONG_COMMENT = "Le chirurgien a demandé en cours d'intervention une plaque absente du catalogue du site ; "
+        . "le représentant a fourni un modèle de démonstration qui a finalement été implanté. "
+        . "Vérifier avec la firme le prix, le code article exact, la taille, le côté et le stock.\n\n"
+        . "Lot fournisseur : https://fournisseur.example/lots/PLQ-TIB-12G-LOT-20261004-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    /** @return array<string, mixed> la demande telle que GET /api/material-item-requests la renvoie */
+    private function findListedRequest(KernelBrowser $client, string $managerToken, int $requestId, string $status): array
+    {
+        $response = $this->request($client, 'GET', '/api/material-item-requests?status=' . $status, $managerToken);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $items = json_decode($response->getContent(), true)['items'];
+        $matches = array_values(array_filter($items, static fn (array $i) => $i['id'] === $requestId));
+        self::assertCount(1, $matches, "Demande #{$requestId} absente de la liste {$status}");
+        return $matches[0];
+    }
+
+    public function test_comment_submitted_by_the_instrumentist_is_persisted_and_listed_in_full(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $intervention = $this->makeRealIntervention($mission, $type);
+        $requestId = $this->createMaterialRequestOnIntervention($client, $mission, $instrToken, $intervention, 'Plaque tibia', self::LONG_COMMENT);
+
+        $this->em->clear();
+        self::assertSame(self::LONG_COMMENT, $this->em->find(MaterialItemRequest::class, $requestId)->getComment());
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $listed = $this->findListedRequest($client, $this->login($client, $manager), $requestId, 'PENDING');
+        self::assertSame(self::LONG_COMMENT, $listed['comment']);
+    }
+
+    public function test_request_without_comment_is_listed_with_a_null_comment(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $intervention = $this->makeRealIntervention($mission, $type);
+        $requestId = $this->createMaterialRequestOnIntervention($client, $mission, $instrToken, $intervention, 'Vis sans commentaire');
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $listed = $this->findListedRequest($client, $this->login($client, $manager), $requestId, 'PENDING');
+        self::assertNull($listed['comment']);
+        self::assertSame('Vis sans commentaire', $listed['label']);
+    }
+
+    public function test_comment_remains_listed_after_resolution_and_material_line_is_still_created(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $firm = $this->makeFirm();
+        $type = $this->makeType();
+        $intervention = $this->makeRealIntervention($mission, $type);
+        $requestId = $this->createMaterialRequestOnIntervention($client, $mission, $instrToken, $intervention, 'Ancre', self::LONG_COMMENT);
+        $mi = $this->makeMaterialItem($firm);
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $response = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/resolve", $managerToken, [
+            'materialItemId' => $mi->getId(),
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame(self::LONG_COMMENT, $body['request']['comment']);
+
+        $this->em->clear();
+        self::assertNotNull($this->em->find(MaterialLine::class, $body['materialLine']['id']));
+
+        $listed = $this->findListedRequest($client, $managerToken, $requestId, 'RESOLVED');
+        self::assertSame(self::LONG_COMMENT, $listed['comment']);
+    }
+
+    public function test_comment_remains_listed_after_ignore_distinct_from_the_ignore_explanation(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $type = $this->makeType();
+        $intervention = $this->makeRealIntervention($mission, $type);
+        $requestId = $this->createMaterialRequestOnIntervention($client, $mission, $instrToken, $intervention, 'Ancre', 'Boîte ouverte par le représentant.');
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $response = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/ignore", $managerToken, [
+            'reason' => 'DUPLICATE',
+            'comment' => 'Déjà demandé sur cette mission.',
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $listed = $this->findListedRequest($client, $managerToken, $requestId, 'IGNORED');
+        self::assertSame('Boîte ouverte par le représentant.', $listed['comment']);
+        self::assertSame('Déjà demandé sur cette mission.', $listed['ignoreComment']);
     }
 }
