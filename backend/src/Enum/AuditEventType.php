@@ -262,7 +262,7 @@ enum AuditEventType: string
     case MATERIAL_ITEM_REQUEST_IGNORED = 'MATERIAL_ITEM_REQUEST_IGNORED';
 
     /**
-     * D-138 — MaterialItemRequestService::resolve(), pendant de
+     * D-139 — MaterialItemRequestService::resolve(), pendant de
      * MATERIAL_ITEM_REQUEST_IGNORED : la résolution d'une demande matériel n'était jusqu'ici
      * tracée nulle part (contrairement à MISSION_INTERVENTION_DRAFT_RESOLVED côté types
      * d'intervention). Le payload porte l'élément du catalogue associé et la MaterialLine

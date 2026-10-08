@@ -188,7 +188,7 @@ final class MissionInterventionDraftService
 
             $request->setResolvedInterventionType($interventionType);
             $request->setStatus(InterventionTypeRequest::STATUS_RESOLVED);
-            // D-138 — décideur/date posés aussi à la résolution (jusqu'ici seulement à
+            // D-139 — décideur/date posés aussi à la résolution (jusqu'ici seulement à
             // l'ignore) ; l'AuditEvent MISSION_INTERVENTION_DRAFT_RESOLVED ci-dessous reste
             // inchangé.
             $request->setDecidedBy($actor);

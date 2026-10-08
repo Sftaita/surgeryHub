@@ -534,7 +534,7 @@ Ancre fémorale 4.5 fournie par le représentant — à facturer à la firme.";
         self::assertNotNull($listed['decidedAt']);
     }
 
-    // ── Traçabilité de la résolution (D-138) ─────────────────────────────────
+    // ── Traçabilité de la résolution (D-139) ─────────────────────────────────
 
     public function test_resolution_records_the_deciding_manager_the_exact_time_and_the_catalogue_item(): void
     {

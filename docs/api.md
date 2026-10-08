@@ -1740,8 +1740,8 @@ PENDING → IGNORED   (via ignore)
 
 `ignoreReason`/`ignoreComment` (correctif Demandes Catalogue, D-113) ne sont renseignés
 que pour une demande `IGNORED`. `decidedBy`/`decidedAt` (manager et date exacte du
-traitement) sont renseignés pour `IGNORED` (D-113) **et pour `RESOLVED` depuis D-138** ;
-toujours `null` pour `PENDING`, et `null` pour une demande résolue avant D-138 (aucune
+traitement) sont renseignés pour `IGNORED` (D-113) **et pour `RESOLVED` depuis D-139** ;
+toujours `null` pour `PENDING`, et `null` pour une demande résolue avant D-139 (aucune
 reprise de l'historique).
 
 ---
@@ -1760,10 +1760,10 @@ reprise de l'historique).
 
 **Effets backend :**
 1. Lie la demande au `MaterialItem` (`materialItem_id`)
-2. Passe `status → RESOLVED`, pose `decidedBy` (manager) et `decidedAt` (D-138)
+2. Passe `status → RESOLVED`, pose `decidedBy` (manager) et `decidedAt` (D-139)
 3. Crée une `MaterialLine` sur la mission (quantity=1, même intervention)
 4. Écrit un `AuditEvent` `MATERIAL_ITEM_REQUEST_RESOLVED` (payload :
-   `materialItemRequestId`, `materialItemId`, `materialLineId`, `label` — D-138)
+   `materialItemRequestId`, `materialItemId`, `materialLineId`, `label` — D-139)
 
 **Réponse — 200 :**
 
@@ -5411,8 +5411,8 @@ Voir `docs/decisions.md` D-094/D-113.
 **Réponse — 200 :** `{ "items": [...], "total": N }` — chaque item :
 `{ id, status, label, suggestedCode, comment, createdAt, mission: {id, site}, requestedBy: {id, displayName}, resolvedInterventionType, ignoreReason, ignoreComment, decidedBy: {id, displayName} | null, decidedAt }`.
 `ignoreReason`/`ignoreComment` (D-113) ne sont renseignés que pour une demande `IGNORED` ;
-`decidedBy`/`decidedAt` le sont pour `IGNORED` et, depuis D-138, pour `RESOLVED` (`null`
-pour une demande résolue avant D-138).
+`decidedBy`/`decidedAt` le sont pour `IGNORED` et, depuis D-139, pour `RESOLVED` (`null`
+pour une demande résolue avant D-139).
 
 #### `POST /api/intervention-type-requests/{id}/resolve`
 
@@ -5426,7 +5426,7 @@ vient de créer via `POST /api/intervention-types` pour cette demande.
 1. Crée la `MissionIntervention` réelle sur la mission d'origine (`InterventionService::create()` —
    mêmes validations et le même instantané `code`/`label` qu'une création directe).
 2. Lie la demande au type choisi (`resolvedInterventionType`), passe `status → RESOLVED`,
-   pose `decidedBy` (manager) et `decidedAt` (D-138). L'`AuditEvent`
+   pose `decidedBy` (manager) et `decidedAt` (D-139). L'`AuditEvent`
    `MISSION_INTERVENTION_DRAFT_RESOLVED` existant est inchangé.
 
 **Réponse — 200 :** `{ "request": {...}, "intervention": { "id": 55 } }`

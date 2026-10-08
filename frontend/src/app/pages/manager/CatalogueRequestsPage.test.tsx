@@ -700,7 +700,7 @@ describe("CatalogueRequestsPage — détail d'une demande (consultation sans tra
     expect(within(dialog).getByText("Reconstruction MPFL (MPFL)")).toBeInTheDocument();
   });
 
-  it("D-138 — une résolution tracée affiche le manager et la date, dans la ligne et dans le détail (matériel et intervention)", async () => {
+  it("D-139 — une résolution tracée affiche le manager et la date, dans la ligne et dans le détail (matériel et intervention)", async () => {
     const user = userEvent.setup();
     const decided = { decidedBy: { id: 7, displayName: "Marie Manager" }, decidedAt: "2026-10-08T16:16:52Z" };
     getMaterialRequestsMock.mockImplementation(async ({ status }: { status: string }) =>
@@ -729,7 +729,7 @@ describe("CatalogueRequestsPage — détail d'une demande (consultation sans tra
     expectNoMutation();
   });
 
-  it("une résolution antérieure à D-138 (décideur absent) reste affichée sans inventer de décideur", async () => {
+  it("une résolution antérieure à D-139 (décideur absent) reste affichée sans inventer de décideur", async () => {
     const user = userEvent.setup();
     getInterventionTypeRequestsMock.mockImplementation(async ({ status }: { status: string }) =>
       status === "RESOLVED"

@@ -85,8 +85,8 @@ export type MaterialRequestDTO = {
   ignoreReason: CatalogueRequestIgnoreReason | null;
   ignoreComment: string | null;
   /**
-   * Décideur et date exacte du traitement : IGNORED depuis D-113, RESOLVED depuis D-138.
-   * Peut rester null sur une demande résolue avant D-138 (aucune reprise de l'historique).
+   * Décideur et date exacte du traitement : IGNORED depuis D-113, RESOLVED depuis D-139.
+   * Peut rester null sur une demande résolue avant D-139 (aucune reprise de l'historique).
    */
   decidedBy: { id: number; displayName: string } | null;
   decidedAt: string | null;

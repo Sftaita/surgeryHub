@@ -480,7 +480,7 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         // Motif/explication : propres à l'ignore, toujours null après une résolution.
         self::assertNull($body['request']['ignoreReason']);
         self::assertNull($body['request']['ignoreComment']);
-        // D-138 — décideur/date désormais posés aussi à la résolution (mêmes clés).
+        // D-139 — décideur/date désormais posés aussi à la résolution (mêmes clés).
         self::assertSame($manager->getId(), $body['request']['decidedBy']['id']);
         self::assertNotNull($body['request']['decidedAt']);
     }
@@ -810,7 +810,7 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         self::assertSame('Déjà demandé sur cette mission.', $listed['ignoreComment']);
     }
 
-    // ── Traçabilité de la résolution (D-138) ─────────────────────────────────
+    // ── Traçabilité de la résolution (D-139) ─────────────────────────────────
 
     public function test_resolution_records_the_deciding_manager_the_exact_time_and_the_catalogue_item(): void
     {

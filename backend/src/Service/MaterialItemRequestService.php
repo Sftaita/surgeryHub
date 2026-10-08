@@ -86,7 +86,7 @@ class MaterialItemRequestService
 
             $req->setMaterialItem($materialItem);
             $req->setStatus(MaterialItemRequest::STATUS_RESOLVED);
-            // D-138 — décideur/date posés aussi à la résolution (jusqu'ici seulement à
+            // D-139 — décideur/date posés aussi à la résolution (jusqu'ici seulement à
             // l'ignore), mêmes champs que ignore() : jamais de doublon de traçabilité.
             $req->setDecidedBy($actor);
             $req->setDecidedAt(new \DateTimeImmutable());
