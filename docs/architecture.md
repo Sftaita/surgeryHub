@@ -346,6 +346,8 @@ src/app/
 │   │   ├── CatalogueRequestsPage         — Demandes fusionnées (matériel + types d'intervention) ;
 │   │   │                                    `comment` instrumentiste : aperçu dépliable dans la ligne,
 │   │   │                                    intégral dans les modals Résoudre/Ignorer (CatalogueRequestComment)
+│   │   │                                    ; clic ligne/nom ou « Voir le détail » → CatalogueRequestDetailDialog
+│   │   │                                    (lecture seule, tous statuts, aucun appel réseau, Résoudre/Ignorer optionnels)
 │   │   ├── FinancialStatisticsPage
 │   │   ├── billing/
 │   │   │   ├── FirmInvoicesPage, FirmInvoiceDetailPage

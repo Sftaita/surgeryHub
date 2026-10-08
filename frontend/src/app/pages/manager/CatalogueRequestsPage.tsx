@@ -11,6 +11,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Link,
   MenuItem,
   Paper,
   Select,
@@ -39,7 +40,6 @@ import type {
   CatalogueRequestIgnoreReason,
   MaterialItemDTO,
   MaterialRequestDTO,
-  MaterialRequestStatus,
 } from "../../features/manager-catalogue/api/catalogue.types";
 import {
   getInterventionTypeRequests,
@@ -60,6 +60,13 @@ import {
   CatalogueRequestContext,
   RequesterCommentPreview,
 } from "../../features/manager-catalogue/components/CatalogueRequestComment";
+import { CatalogueRequestDetailDialog } from "../../features/manager-catalogue/components/CatalogueRequestDetailDialog";
+import {
+  IGNORE_REASON_LABELS,
+  statusColor,
+  statusLabel,
+  type CatalogueRequestRow,
+} from "../../features/manager-catalogue/catalogueRequestDisplay";
 import { useToast } from "../../ui/toast/useToast";
 import { PageHeader } from "../../ui/PageHeader";
 import { EmptyState } from "../../ui/EmptyState";
@@ -67,9 +74,7 @@ import { EmptyState } from "../../ui/EmptyState";
 type TabValue = "PENDING" | "RESOLVED" | "IGNORED";
 
 /** Ligne unifiée du tableau — matériel ou intervention, distinguées par `kind`. */
-type UnifiedRequest =
-  | { kind: "material"; request: MaterialRequestDTO }
-  | { kind: "intervention"; request: InterventionTypeRequestDTO };
+type UnifiedRequest = CatalogueRequestRow;
 
 /** Récapitulatif affiché en tête de chaque modal de traitement (résolution / ignore). */
 function RequestContext({ row }: { row: UnifiedRequest }) {
@@ -380,37 +385,6 @@ function ResolveInterventionDialog({
   );
 }
 
-function statusLabel(status: MaterialRequestStatus): string {
-  switch (status) {
-    case "PENDING": return "En attente";
-    case "RESOLVED": return "Résolu";
-    case "IGNORED": return "Ignoré";
-  }
-}
-
-function statusColor(status: MaterialRequestStatus): "warning" | "success" | "default" {
-  switch (status) {
-    case "PENDING": return "warning";
-    case "RESOLVED": return "success";
-    case "IGNORED": return "default";
-  }
-}
-
-/**
- * Correctif workflow Demandes Catalogue (D-113) — wording FR local à l'affichage
- * (historique Résolues/Ignorées, Select de la modal), miroir de
- * CatalogueRequestIgnoreReason::label() côté backend. Le backend, lui, ne transporte
- * jamais ce libellé (CatalogueRequestProcessedMessage porte le code brut) — voir
- * docs/decisions.md D-113.
- */
-const IGNORE_REASON_LABELS: Record<CatalogueRequestIgnoreReason, string> = {
-  ALREADY_EXISTS: "Intervention déjà existante",
-  MATERIAL_ALREADY_EXISTS: "Matériel déjà existant",
-  DUPLICATE: "Demande en doublon",
-  INVALID_REQUEST: "Demande incorrecte",
-  OTHER: "Autre",
-};
-
 function ignoreReasonsFor(kind: "material" | "intervention"): CatalogueRequestIgnoreReason[] {
   const alreadyExists: CatalogueRequestIgnoreReason = kind === "material" ? "MATERIAL_ALREADY_EXISTS" : "ALREADY_EXISTS";
   return [alreadyExists, "DUPLICATE", "INVALID_REQUEST", "OTHER"];
@@ -542,6 +516,18 @@ export default function CatalogueRequestsPage() {
   const [resolveMaterialTarget, setResolveMaterialTarget] = React.useState<MaterialRequestDTO | null>(null);
   const [resolveInterventionTarget, setResolveInterventionTarget] = React.useState<InterventionTypeRequestDTO | null>(null);
   const [ignoreTarget, setIgnoreTarget] = React.useState<UnifiedRequest | null>(null);
+  const [detailTarget, setDetailTarget] = React.useState<UnifiedRequest | null>(null);
+
+  // Ouvrir le détail est une pure consultation (aucun appel réseau) ; les deux handlers
+  // ci-dessous ne font qu'ouvrir les modals de traitement existantes.
+  const openResolve = (row: UnifiedRequest) => {
+    if (row.kind === "material") setResolveMaterialTarget(row.request);
+    else setResolveInterventionTarget(row.request);
+  };
+  const openIgnore = (row: UnifiedRequest) => {
+    setIgnoreError(null);
+    setIgnoreTarget(row);
+  };
   const [ignoreError, setIgnoreError] = React.useState<string | null>(null);
 
   const materialQuery = useQuery({
@@ -682,7 +668,7 @@ export default function CatalogueRequestsPage() {
                 <TableCell>Mission</TableCell>
                 <TableCell>Demandé par</TableCell>
                 <TableCell>Statut</TableCell>
-                {tab === "PENDING" ? <TableCell align="right">Actions</TableCell> : null}
+                <TableCell align="right">Actions</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -699,10 +685,11 @@ export default function CatalogueRequestsPage() {
                       if (el) rowRefs.current.set(rowKey, el);
                       else rowRefs.current.delete(rowKey);
                     }}
-                    sx={isHighlighted ? {
-                      bgcolor: "warning.light",
-                      transition: "background-color 2s ease",
-                    } : undefined}
+                    onClick={() => setDetailTarget(row)}
+                    sx={{
+                      cursor: "pointer",
+                      ...(isHighlighted ? { bgcolor: "warning.light", transition: "background-color 2s ease" } : null),
+                    }}
                   >
                     <TableCell>
                       <Chip
@@ -714,8 +701,25 @@ export default function CatalogueRequestsPage() {
                       />
                     </TableCell>
                     <TableCell sx={{ maxWidth: 420 }}>
-                      <Typography variant="body2">{request.label}</Typography>
-                      {request.comment ? <RequesterCommentPreview comment={request.comment} /> : null}
+                      <Link
+                        component="button"
+                        type="button"
+                        variant="body2"
+                        underline="hover"
+                        onClick={(e: React.MouseEvent) => {
+                          e.stopPropagation();
+                          setDetailTarget(row);
+                        }}
+                        sx={{ textAlign: "left", color: "text.primary", fontWeight: 500 }}
+                      >
+                        {request.label}
+                      </Link>
+                      {request.comment ? (
+                        // Déplier l'aperçu ne doit pas ouvrir le détail.
+                        <Box onClick={(e) => e.stopPropagation()}>
+                          <RequesterCommentPreview comment={request.comment} />
+                        </Box>
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       {isMaterial
@@ -771,36 +775,34 @@ export default function CatalogueRequestsPage() {
                         </Stack>
                       ) : null}
                     </TableCell>
-                    {tab === "PENDING" ? (
-                      <TableCell align="right">
-                        <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                          <Button
-                            size="small"
-                            variant="contained"
-                            onClick={() =>
-                              isMaterial
-                                ? setResolveMaterialTarget(request as MaterialRequestDTO)
-                                : setResolveInterventionTarget(request as InterventionTypeRequestDTO)
-                            }
-                            disabled={ignoreMaterialMutation.isPending || ignoreInterventionMutation.isPending}
-                          >
-                            {isMaterial ? "Créer produit" : "Résoudre"}
-                          </Button>
-                          <Button
-                            size="small"
-                            color="inherit"
-                            variant="outlined"
-                            onClick={() => {
-                              setIgnoreError(null);
-                              setIgnoreTarget(row);
-                            }}
-                            disabled={ignoreMaterialMutation.isPending || ignoreInterventionMutation.isPending}
-                          >
-                            Ignorer
-                          </Button>
-                        </Stack>
-                      </TableCell>
-                    ) : null}
+                    <TableCell align="right" onClick={(e) => e.stopPropagation()}>
+                      <Stack direction="row" spacing={0.5} justifyContent="flex-end" sx={{ "& .MuiButton-root": { whiteSpace: "nowrap" } }}>
+                        <Button size="small" variant="text" onClick={() => setDetailTarget(row)}>
+                          Voir le détail
+                        </Button>
+                        {request.status === "PENDING" ? (
+                          <>
+                            <Button
+                              size="small"
+                              variant="contained"
+                              onClick={() => openResolve(row)}
+                              disabled={ignoreMaterialMutation.isPending || ignoreInterventionMutation.isPending}
+                            >
+                              {isMaterial ? "Créer produit" : "Résoudre"}
+                            </Button>
+                            <Button
+                              size="small"
+                              color="inherit"
+                              variant="outlined"
+                              onClick={() => openIgnore(row)}
+                              disabled={ignoreMaterialMutation.isPending || ignoreInterventionMutation.isPending}
+                            >
+                              Ignorer
+                            </Button>
+                          </>
+                        ) : null}
+                      </Stack>
+                    </TableCell>
                   </TableRow>
                 );
               })}
@@ -808,6 +810,19 @@ export default function CatalogueRequestsPage() {
           </Table>
         </TableContainer>
       )}
+
+      <CatalogueRequestDetailDialog
+        row={detailTarget}
+        onClose={() => setDetailTarget(null)}
+        onResolve={(row) => {
+          setDetailTarget(null);
+          openResolve(row);
+        }}
+        onIgnore={(row) => {
+          setDetailTarget(null);
+          openIgnore(row);
+        }}
+      />
 
       <ResolveMaterialDialog
         open={resolveMaterialTarget !== null}

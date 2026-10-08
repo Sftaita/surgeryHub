@@ -209,11 +209,13 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         return [$client, $mission, $token, $instr];
     }
 
-    private function createPendingRequest(KernelBrowser $client, Mission $mission, string $instrToken, string $label = 'Demande ResolveWF'): int
+    private function createPendingRequest(KernelBrowser $client, Mission $mission, string $instrToken, string $label = 'Demande ResolveWF', ?string $comment = null): int
     {
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $instrToken, [
-            'label' => $label,
-        ]);
+        $body = ['label' => $label];
+        if ($comment !== null) {
+            $body['comment'] = $comment;
+        }
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $instrToken, $body);
         self::assertSame(Response::HTTP_CREATED, $created->getStatusCode(), $created->getContent());
         $requestId = json_decode($created->getContent(), true)['id'];
         $this->createdIds['requests'][] = $requestId;
@@ -448,5 +450,87 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         self::assertSame('PTG proposée', $message->label);
         self::assertSame($instr->getId(), $message->recipientUserId);
         self::assertSame($mission->getId(), $message->missionId);
+    }
+
+    // ── Commentaire de l'instrumentiste (InterventionTypeRequest.comment) ────
+
+    /** Commentaire multi-lignes, jamais tronqué ni normalisé. */
+    private const INSTRUMENTIST_COMMENT = "Reconstruction MPFL avec greffe gracilis.
+Ancre fémorale 4.5 fournie par le représentant — à facturer à la firme.";
+
+    /** @return array<string, mixed> la demande telle que GET /api/intervention-type-requests la renvoie */
+    private function findListedRequest(KernelBrowser $client, string $managerToken, int $requestId, string $status): array
+    {
+        $response = $this->request($client, 'GET', '/api/intervention-type-requests?status=' . $status, $managerToken);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $items = json_decode($response->getContent(), true)['items'];
+        $matches = array_values(array_filter($items, static fn (array $i) => $i['id'] === $requestId));
+        self::assertCount(1, $matches, "Demande #{$requestId} absente de la liste {$status}");
+        return $matches[0];
+    }
+
+    public function test_comment_submitted_by_the_instrumentist_is_persisted_and_listed_in_full(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $requestId = $this->createPendingRequest($client, $mission, $instrToken, 'MPFL', self::INSTRUMENTIST_COMMENT);
+
+        $this->em->clear();
+        self::assertSame(self::INSTRUMENTIST_COMMENT, $this->em->find(InterventionTypeRequest::class, $requestId)->getComment());
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $listed = $this->findListedRequest($client, $this->login($client, $manager), $requestId, 'PENDING');
+        self::assertSame(self::INSTRUMENTIST_COMMENT, $listed['comment']);
+        self::assertSame('MPFL', $listed['label']);
+        self::assertSame($mission->getId(), $listed['mission']['id']);
+    }
+
+    public function test_request_without_comment_is_listed_with_a_null_comment(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $requestId = $this->createPendingRequest($client, $mission, $instrToken, 'Ostéosynthèse plaque-vis MI');
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $listed = $this->findListedRequest($client, $this->login($client, $manager), $requestId, 'PENDING');
+        self::assertNull($listed['comment']);
+    }
+
+    public function test_comment_remains_listed_after_resolution(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $requestId = $this->createPendingRequest($client, $mission, $instrToken, 'MPFL', self::INSTRUMENTIST_COMMENT);
+        $type = $this->makeType();
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+            'interventionTypeId' => $type->getId(),
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $listed = $this->findListedRequest($client, $managerToken, $requestId, 'RESOLVED');
+        self::assertSame(self::INSTRUMENTIST_COMMENT, $listed['comment']);
+        self::assertSame($type->getId(), $listed['resolvedInterventionType']['id']);
+    }
+
+    public function test_comment_remains_listed_after_ignore_distinct_from_the_manager_explanation(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $requestId = $this->createPendingRequest($client, $mission, $instrToken, 'MPFL', self::INSTRUMENTIST_COMMENT);
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/ignore", $managerToken, [
+            'strategy' => 'KEEP_AS_HISTORY',
+            'reason' => 'ALREADY_EXISTS',
+            'comment' => 'Existe déjà sous « Reconstruction MPFL ».',
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $listed = $this->findListedRequest($client, $managerToken, $requestId, 'IGNORED');
+        self::assertSame(self::INSTRUMENTIST_COMMENT, $listed['comment']);
+        self::assertSame('Existe déjà sous « Reconstruction MPFL ».', $listed['ignoreComment']);
+        self::assertSame('ALREADY_EXISTS', $listed['ignoreReason']);
+        self::assertSame($manager->getId(), $listed['decidedBy']['id']);
+        self::assertNotNull($listed['decidedAt']);
     }
 }

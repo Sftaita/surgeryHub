@@ -499,3 +499,215 @@ describe("CatalogueRequestsPage — commentaire de l'instrumentiste", () => {
     expect(screen.getByText("« Doublon de #9. »")).toBeInTheDocument();
   });
 });
+
+describe("CatalogueRequestsPage — détail d'une demande (consultation sans traitement)", () => {
+  const MPFL_COMMENT = "Reconstruction MPFL avec greffe gracilis.\nAncre fémorale 4.5 fournie par le représentant.";
+  const mpflRequest = {
+    ...interventionRequest,
+    id: 16,
+    label: "MPFL",
+    suggestedCode: null,
+    comment: MPFL_COMMENT,
+    createdAt: "2026-10-02T10:18:12Z",
+    mission: { id: 1040, site: "CHU Saint-Pierre" },
+    requestedBy: { id: 30, displayName: "Sophie Collette" },
+  };
+  const noCommentIntervention = { ...interventionRequest, id: 12, label: "Ostéosynthèse plaque-vis MI", comment: null };
+  // Le commentaire multi-lignes est comparé brut, sur l'élément qui le porte (getByText
+  // normalise les espaces par défaut).
+  const exactComment = (text: string) => (_: string, el: Element | null) =>
+    el?.getAttribute("data-testid") === "catalogue-request-detail-comment" && el.textContent === text;
+
+  function expectNoMutation() {
+    expect(resolveMaterialRequestMock).not.toHaveBeenCalled();
+    expect(ignoreMaterialRequestMock).not.toHaveBeenCalled();
+    expect(resolveInterventionTypeRequestMock).not.toHaveBeenCalled();
+    expect(ignoreInterventionTypeRequestMock).not.toHaveBeenCalled();
+    expect(createMaterialItemMock).not.toHaveBeenCalled();
+    expect(createInterventionTypeMock).not.toHaveBeenCalled();
+  }
+
+  it("cliquer sur « MPFL » ouvre son détail avec le commentaire exact de l'instrumentiste, sans aucune action métier", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [mpflRequest], total: 1 });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "MPFL" }));
+    const dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+
+    expect(within(dialog).getByText(exactComment(MPFL_COMMENT))).toBeInTheDocument();
+    expect(within(dialog).getByText("Sophie Collette")).toBeInTheDocument();
+    expect(within(dialog).getByText("Nouveau type d'intervention")).toBeInTheDocument();
+    expect(within(dialog).getByText("CHU Saint-Pierre")).toBeInTheDocument();
+    expect(within(dialog).getByText(/12:18/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("link", { name: "Mission #1040" })).toHaveAttribute("href", "/app/m/missions/1040");
+    expect(within(dialog).getByText("En attente de traitement par un manager.")).toBeInTheDocument();
+    expectNoMutation();
+  });
+
+  it("ouvrir puis fermer le détail ne déclenche aucun appel au-delà du chargement de la liste", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [mpflRequest], total: 1 });
+    getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
+    renderPage();
+
+    await screen.findByRole("button", { name: "MPFL" });
+    await waitFor(() => expect(getInterventionTypeRequestsMock).toHaveBeenCalled());
+    const listCalls = [getMaterialRequestsMock.mock.calls.length, getInterventionTypeRequestsMock.mock.calls.length];
+
+    await user.click(screen.getByRole("button", { name: "MPFL" }));
+    const dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+    await user.click(within(dialog).getByRole("button", { name: "Fermer" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    expect([getMaterialRequestsMock.mock.calls.length, getInterventionTypeRequestsMock.mock.calls.length]).toEqual(listCalls);
+    expectNoMutation();
+    // La demande est toujours en attente, actions intactes dans la ligne.
+    const row = screen.getByRole("button", { name: "MPFL" }).closest("tr")!;
+    expect(within(row).getByRole("button", { name: "Résoudre" })).toBeInTheDocument();
+  });
+
+  it("un clic n'importe où sur la ligne ouvre aussi le détail ; « Voir le détail » est disponible explicitement", async () => {
+    const user = userEvent.setup();
+    getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
+    renderPage();
+
+    const row = (await screen.findByRole("button", { name: "Vis titane 4mm" })).closest("tr")!;
+    await user.click(within(row).getByText("Ada Lovelace"));
+    let dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+    await user.click(within(dialog).getByRole("button", { name: "Fermer" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    await user.click(within(row).getByRole("button", { name: "Voir le détail" }));
+    dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+    expect(within(dialog).getByText("REF-10")).toBeInTheDocument();
+    expect(within(dialog).getByText(exactComment("Utilisée hors catalogue"))).toBeInTheDocument();
+    expectNoMutation();
+  });
+
+  it("une demande sans commentaire affiche explicitement « Aucun commentaire »", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [noCommentIntervention], total: 1 });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Ostéosynthèse plaque-vis MI" }));
+    const dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+    expect(within(dialog).getByText("Aucun commentaire")).toBeInTheDocument();
+  });
+
+  it("les boutons de traitement de la ligne n'ouvrent pas le détail", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [mpflRequest], total: 1 });
+    renderPage();
+
+    const row = (await screen.findByRole("button", { name: "MPFL" })).closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Ignorer" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Ignorer cette demande ?")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: /Détail de la demande/ })).toBeNull();
+  });
+
+  it("depuis le détail d'une demande en attente, Ignorer et Résoudre ouvrent les modals existantes, commentaire visible", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [mpflRequest], total: 1 });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "MPFL" }));
+    let dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+    await user.click(within(dialog).getByRole("button", { name: "Ignorer" }));
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Ignorer cette demande ?")).toBeInTheDocument();
+    expect(within(dialog).getByText(/Ancre fémorale 4.5/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Annuler" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    await user.click(screen.getByRole("button", { name: "MPFL" }));
+    dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+    await user.click(within(dialog).getByRole("button", { name: "Résoudre" }));
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Résoudre la demande de type d'intervention")).toBeInTheDocument();
+    expect(within(dialog).getByText(/Ancre fémorale 4.5/)).toBeInTheDocument();
+    expectNoMutation();
+  });
+
+  it("une demande matériel résolue : détail consultable, commentaire conservé, produit associé, aucune action de traitement", async () => {
+    const user = userEvent.setup();
+    getMaterialRequestsMock.mockImplementation(async ({ status }: { status: string }) =>
+      status === "RESOLVED"
+        ? {
+          items: [{
+            ...materialRequest, status: "RESOLVED", comment: "Boîte ouverte.\nUne seule vis implantée.",
+            materialItem: { id: 42, firm: { id: 1, name: "Arthrex" }, label: "Vis titane 4mm Arthrex", referenceCode: "AR-4", unit: "u", isImplant: false },
+          }],
+          total: 1,
+        }
+        : { items: [], total: 0 });
+    renderPage();
+
+    await screen.findByText("Aucune demande.");
+    await user.click(screen.getByRole("tab", { name: "Résolues" }));
+    await user.click(await screen.findByRole("button", { name: "Vis titane 4mm" }));
+    const dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+
+    expect(within(dialog).getByText(exactComment("Boîte ouverte.\nUne seule vis implantée."))).toBeInTheDocument();
+    expect(within(dialog).getByText("Vis titane 4mm Arthrex · AR-4")).toBeInTheDocument();
+    expect(within(dialog).getByText("Résolue")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /Créer produit|Résoudre|Ignorer/ })).toBeNull();
+  });
+
+  it("une demande d'intervention ignorée : motif, explication du manager complète, décideur, commentaire conservé", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockImplementation(async ({ status }: { status: string }) =>
+      status === "IGNORED"
+        ? {
+          items: [{
+            ...mpflRequest, status: "IGNORED",
+            ignoreReason: "ALREADY_EXISTS", ignoreComment: "Existe déjà sous « MPFL reconstruction ».\nMerci de l'utiliser.",
+            decidedBy: { id: 1, displayName: "Marie Manager" }, decidedAt: "2026-10-03T08:00:00Z",
+          }],
+          total: 1,
+        }
+        : { items: [], total: 0 });
+    renderPage();
+
+    await screen.findByText("Aucune demande.");
+    await user.click(screen.getByRole("tab", { name: "Ignorées" }));
+    await user.click(await screen.findByRole("button", { name: "MPFL" }));
+    const dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+
+    expect(within(dialog).getByText(exactComment(MPFL_COMMENT))).toBeInTheDocument();
+    expect(within(dialog).getByText("Intervention déjà existante")).toBeInTheDocument();
+    expect(within(dialog).getByText((_, el) => el?.tagName === "SPAN" && el.textContent === "Existe déjà sous « MPFL reconstruction ».\nMerci de l'utiliser.")).toBeInTheDocument();
+    expect(within(dialog).getByText(/Ignorée par Marie Manager le/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /Résoudre|Ignorer/ })).toBeNull();
+  });
+
+  it("le commentaire reste consultable dans le détail après une résolution (même demande rechargée RESOLVED)", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockImplementation(async ({ status }: { status: string }) =>
+      status === "PENDING"
+        ? { items: [mpflRequest], total: 1 }
+        : status === "RESOLVED"
+          ? { items: [{ ...mpflRequest, status: "RESOLVED", resolvedInterventionType: { id: 5, code: "MPFL", label: "Reconstruction MPFL" } }], total: 1 }
+          : { items: [], total: 0 });
+    renderPage();
+
+    await screen.findByRole("button", { name: "MPFL" });
+    await user.click(screen.getByRole("tab", { name: "Résolues" }));
+    await user.click(await screen.findByRole("button", { name: "MPFL" }));
+    const dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+    expect(within(dialog).getByText(exactComment(MPFL_COMMENT))).toBeInTheDocument();
+    expect(within(dialog).getByText("Reconstruction MPFL (MPFL)")).toBeInTheDocument();
+  });
+
+  it("déplier l'aperçu du commentaire dans la ligne n'ouvre pas le détail", async () => {
+    const user = userEvent.setup();
+    const long = "x".repeat(200);
+    getMaterialRequestsMock.mockResolvedValue({ items: [{ ...materialRequest, comment: long }], total: 1 });
+    renderPage();
+
+    const row = (await screen.findByRole("button", { name: "Vis titane 4mm" })).closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Voir tout le commentaire" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
