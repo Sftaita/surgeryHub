@@ -700,6 +700,53 @@ describe("CatalogueRequestsPage — détail d'une demande (consultation sans tra
     expect(within(dialog).getByText("Reconstruction MPFL (MPFL)")).toBeInTheDocument();
   });
 
+  it("D-139 — une résolution tracée affiche le manager et la date, dans la ligne et dans le détail (matériel et intervention)", async () => {
+    const user = userEvent.setup();
+    const decided = { decidedBy: { id: 7, displayName: "Marie Manager" }, decidedAt: "2026-10-08T16:16:52Z" };
+    getMaterialRequestsMock.mockImplementation(async ({ status }: { status: string }) =>
+      status === "RESOLVED"
+        ? { items: [{ ...materialRequest, status: "RESOLVED", ...decided,
+          materialItem: { id: 42, firm: { id: 1, name: "Arthrex" }, label: "Vis titane 4mm Arthrex", referenceCode: "AR-4", unit: "u", isImplant: false } }], total: 1 }
+        : { items: [], total: 0 });
+    getInterventionTypeRequestsMock.mockImplementation(async ({ status }: { status: string }) =>
+      status === "RESOLVED"
+        ? { items: [{ ...mpflRequest, status: "RESOLVED", ...decided, resolvedInterventionType: { id: 20, code: "MPFL", label: "Plastie MPFL" } }], total: 1 }
+        : { items: [], total: 0 });
+    renderPage();
+
+    await screen.findByText("Aucune demande.");
+    await user.click(screen.getByRole("tab", { name: "Résolues" }));
+
+    for (const name of ["Vis titane 4mm", "MPFL"]) {
+      const row = (await screen.findByRole("button", { name })).closest("tr")!;
+      expect(within(row).getByText(/Par Marie Manager le/)).toBeInTheDocument();
+      await user.click(within(row).getByRole("button", { name: "Voir le détail" }));
+      const dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+      expect(within(dialog).getByText(/Résolue par Marie Manager le .*18:16/)).toBeInTheDocument();
+      await user.click(within(dialog).getByRole("button", { name: "Fermer" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    }
+    expectNoMutation();
+  });
+
+  it("une résolution antérieure à D-139 (décideur absent) reste affichée sans inventer de décideur", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockImplementation(async ({ status }: { status: string }) =>
+      status === "RESOLVED"
+        ? { items: [{ ...mpflRequest, status: "RESOLVED", resolvedInterventionType: { id: 20, code: "MPFL", label: "Plastie MPFL" } }], total: 1 }
+        : { items: [], total: 0 });
+    renderPage();
+
+    await screen.findByText("Aucune demande.");
+    await user.click(screen.getByRole("tab", { name: "Résolues" }));
+    const row = (await screen.findByRole("button", { name: "MPFL" })).closest("tr")!;
+    expect(within(row).queryByText(/^Par /)).toBeNull();
+    await user.click(within(row).getByRole("button", { name: "MPFL" }));
+    const dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+    expect(within(dialog).getByText("Résolue")).toBeInTheDocument();
+    expect(within(dialog).getByText("Plastie MPFL (MPFL)")).toBeInTheDocument();
+  });
+
   it("déplier l'aperçu du commentaire dans la ligne n'ouvre pas le détail", async () => {
     const user = userEvent.setup();
     const long = "x".repeat(200);

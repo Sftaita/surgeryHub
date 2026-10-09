@@ -14,6 +14,7 @@ use App\Entity\Mission;
 use App\Entity\MissionIntervention;
 use App\Entity\MissionInterventionDraft;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\SchedulePrecision;
@@ -476,12 +477,12 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         self::assertSame($requestId, $body['request']['id']);
         self::assertSame('Vis titane', $body['request']['label']);
         self::assertSame($mi->getId(), $body['request']['materialItem']['id']);
-        // Champs additifs du correctif — présents mais null tant qu'aucun ignore n'a eu
-        // lieu, jamais une régression du contrat existant.
+        // Motif/explication : propres à l'ignore, toujours null après une résolution.
         self::assertNull($body['request']['ignoreReason']);
         self::assertNull($body['request']['ignoreComment']);
-        self::assertNull($body['request']['decidedBy']);
-        self::assertNull($body['request']['decidedAt']);
+        // D-139 — décideur/date désormais posés aussi à la résolution (mêmes clés).
+        self::assertSame($manager->getId(), $body['request']['decidedBy']['id']);
+        self::assertNotNull($body['request']['decidedAt']);
     }
 
     // ── Erreurs métier ────────────────────────────────────────────────────────
@@ -807,5 +808,74 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         $listed = $this->findListedRequest($client, $managerToken, $requestId, 'IGNORED');
         self::assertSame('Boîte ouverte par le représentant.', $listed['comment']);
         self::assertSame('Déjà demandé sur cette mission.', $listed['ignoreComment']);
+    }
+
+    // ── Traçabilité de la résolution (D-139) ─────────────────────────────────
+
+    public function test_resolution_records_the_deciding_manager_the_exact_time_and_the_catalogue_item(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $firm = $this->makeFirm();
+        $type = $this->makeType();
+        $intervention = $this->makeRealIntervention($mission, $type);
+        $requestId = $this->createMaterialRequestOnIntervention($client, $mission, $instrToken, $intervention, 'Vis titane', 'Commentaire instrumentiste.');
+        $mi = $this->makeMaterialItem($firm);
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $before = new \DateTimeImmutable('-1 second');
+        $response = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/resolve", $managerToken, [
+            'materialItemId' => $mi->getId(),
+        ]);
+        $after = new \DateTimeImmutable('+1 second');
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $lineId = json_decode($response->getContent(), true)['materialLine']['id'];
+
+        $this->em->clear();
+        $req = $this->em->find(MaterialItemRequest::class, $requestId);
+        self::assertSame($manager->getId(), $req->getDecidedBy()?->getId());
+        self::assertNotNull($req->getDecidedAt());
+        self::assertGreaterThanOrEqual($before->getTimestamp(), $req->getDecidedAt()->getTimestamp());
+        self::assertLessThanOrEqual($after->getTimestamp(), $req->getDecidedAt()->getTimestamp());
+        self::assertSame($mi->getId(), $req->getMaterialItem()?->getId());
+        self::assertNull($req->getIgnoreReason());
+        self::assertSame('Commentaire instrumentiste.', $req->getComment());
+
+        $listed = $this->findListedRequest($client, $managerToken, $requestId, 'RESOLVED');
+        self::assertSame($manager->getId(), $listed['decidedBy']['id']);
+        self::assertSame('MatReqWF Test', $listed['decidedBy']['displayName']);
+        self::assertNotNull($listed['decidedAt']);
+        self::assertSame($mi->getId(), $listed['materialItem']['id']);
+
+        $events = $this->em->getRepository(AuditEvent::class)->findBy(['mission' => $mission->getId()]);
+        $resolved = array_values(array_filter($events, static fn (AuditEvent $e) => $e->getEventType() === AuditEventType::MATERIAL_ITEM_REQUEST_RESOLVED));
+        self::assertCount(1, $resolved);
+        self::assertSame($manager->getId(), $resolved[0]->getActor()->getId());
+        self::assertSame($requestId, $resolved[0]->getPayload()['materialItemRequestId']);
+        self::assertSame($mi->getId(), $resolved[0]->getPayload()['materialItemId']);
+        self::assertSame($lineId, $resolved[0]->getPayload()['materialLineId']);
+    }
+
+    public function test_refused_second_resolution_keeps_the_first_decider(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $firm = $this->makeFirm();
+        $type = $this->makeType();
+        $intervention = $this->makeRealIntervention($mission, $type);
+        $requestId = $this->createMaterialRequestOnIntervention($client, $mission, $instrToken, $intervention);
+        $mi = $this->makeMaterialItem($firm);
+
+        $first = $this->createUser('ROLE_MANAGER');
+        $firstToken = $this->login($client, $first);
+        $ok = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/resolve", $firstToken, ['materialItemId' => $mi->getId()]);
+        self::assertSame(Response::HTTP_OK, $ok->getStatusCode(), $ok->getContent());
+
+        $second = $this->createUser('ROLE_MANAGER');
+        $secondToken = $this->login($client, $second);
+        $refused = $this->request($client, 'POST', "/api/material-item-requests/{$requestId}/resolve", $secondToken, ['materialItemId' => $mi->getId()]);
+        self::assertSame(Response::HTTP_CONFLICT, $refused->getStatusCode(), $refused->getContent());
+
+        $this->em->clear();
+        self::assertSame($first->getId(), $this->em->find(MaterialItemRequest::class, $requestId)->getDecidedBy()?->getId());
     }
 }

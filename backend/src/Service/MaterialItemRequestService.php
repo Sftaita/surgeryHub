@@ -86,6 +86,10 @@ class MaterialItemRequestService
 
             $req->setMaterialItem($materialItem);
             $req->setStatus(MaterialItemRequest::STATUS_RESOLVED);
+            // D-139 — décideur/date posés aussi à la résolution (jusqu'ici seulement à
+            // l'ignore), mêmes champs que ignore() : jamais de doublon de traçabilité.
+            $req->setDecidedBy($actor);
+            $req->setDecidedAt(new \DateTimeImmutable());
 
             // Attachée à la MÊME cible que la demande (attachmentTarget(), jamais
             // getMissionIntervention() seul) : si la demande est encore rattachée à un
@@ -106,6 +110,15 @@ class MaterialItemRequestService
             $line->setCreatedBy($actor);
 
             $this->em->persist($line);
+            $this->em->flush();
+
+            $this->audit->record($req->getMission(), $actor, AuditEventType::MATERIAL_ITEM_REQUEST_RESOLVED, [
+                'materialItemRequestId' => $req->getId(),
+                'materialItemId' => $materialItem->getId(),
+                'materialLineId' => $line->getId(),
+                'label' => $req->getLabel(),
+            ]);
+
             $this->em->flush();
         });
 

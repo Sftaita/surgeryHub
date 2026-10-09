@@ -533,4 +533,38 @@ Ancre fémorale 4.5 fournie par le représentant — à facturer à la firme.";
         self::assertSame($manager->getId(), $listed['decidedBy']['id']);
         self::assertNotNull($listed['decidedAt']);
     }
+
+    // ── Traçabilité de la résolution (D-139) ─────────────────────────────────
+
+    public function test_resolution_records_the_deciding_manager_the_exact_time_and_the_catalogue_item(): void
+    {
+        [$client, $mission, $instrToken] = $this->bootMissionScenario();
+        $requestId = $this->createPendingRequest($client, $mission, $instrToken, 'MPFL', self::INSTRUMENTIST_COMMENT);
+        $type = $this->makeType();
+
+        $manager = $this->createUser('ROLE_MANAGER');
+        $managerToken = $this->login($client, $manager);
+        $before = new \DateTimeImmutable('-1 second');
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+            'interventionTypeId' => $type->getId(),
+        ]);
+        $after = new \DateTimeImmutable('+1 second');
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $this->em->clear();
+        $req = $this->em->find(InterventionTypeRequest::class, $requestId);
+        self::assertSame($manager->getId(), $req->getDecidedBy()?->getId());
+        self::assertNotNull($req->getDecidedAt());
+        self::assertGreaterThanOrEqual($before->getTimestamp(), $req->getDecidedAt()->getTimestamp());
+        self::assertLessThanOrEqual($after->getTimestamp(), $req->getDecidedAt()->getTimestamp());
+        self::assertSame($type->getId(), $req->getResolvedInterventionType()?->getId());
+        self::assertNull($req->getIgnoreReason());
+        self::assertSame(self::INSTRUMENTIST_COMMENT, $req->getComment());
+
+        $listed = $this->findListedRequest($client, $managerToken, $requestId, 'RESOLVED');
+        self::assertSame($manager->getId(), $listed['decidedBy']['id']);
+        self::assertNotNull($listed['decidedAt']);
+        self::assertSame($type->getId(), $listed['resolvedInterventionType']['id']);
+        self::assertNull($listed['ignoreReason']);
+    }
 }

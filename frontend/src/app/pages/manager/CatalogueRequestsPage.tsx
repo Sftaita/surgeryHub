@@ -766,13 +766,13 @@ export default function CatalogueRequestsPage() {
                               « {request.ignoreComment} »
                             </Typography>
                           ) : null}
-                          {request.decidedBy ? (
-                            <Typography variant="caption" display="block" color="text.secondary">
-                              Par {request.decidedBy.displayName}
-                              {request.decidedAt ? ` le ${new Date(request.decidedAt).toLocaleDateString("fr-BE")}` : ""}
-                            </Typography>
-                          ) : null}
                         </Stack>
+                      ) : null}
+                      {request.status !== "PENDING" && request.decidedBy ? (
+                        <Typography variant="caption" display="block" color="text.secondary">
+                          Par {request.decidedBy.displayName}
+                          {request.decidedAt ? ` le ${new Date(request.decidedAt).toLocaleDateString("fr-BE")}` : ""}
+                        </Typography>
                       ) : null}
                     </TableCell>
                     <TableCell align="right" onClick={(e) => e.stopPropagation()}>

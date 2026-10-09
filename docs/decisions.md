@@ -11488,3 +11488,46 @@ aucune donnée patient.
 - Le générateur ne propose que les prestations de la **période** du brouillon (règle de
   période existante de la génération).
 - Un brouillon abandonné ne peut pas être « rouvert » : on en crée un nouveau.
+
+## D-139 — Demandes catalogue : traçabilité de la résolution (manager, date exacte, élément du catalogue) (2026-10-08)
+
+**Statut : fait sur `feat/catalogue-request-resolution-traceability` (non fusionné, non déployé).** Numéro D-139 : D-138 est réservé par le chantier « Suivi des encodages — anomalie FINANCE » (branche locale non fusionnée).
+
+### Constat (audit des champs existants)
+
+| | `MaterialItemRequest` | `InterventionTypeRequest` |
+|---|---|---|
+| Manager | `decidedBy` — posé uniquement à l'ignore (D-113) | `decidedBy` — idem |
+| Date exacte | `decidedAt` — idem | `decidedAt` — idem |
+| Élément du catalogue | `materialItem` — déjà posé à la résolution | `resolvedInterventionType` — déjà posé à la résolution |
+| Journal | `MATERIAL_ITEM_REQUEST_IGNORED` seulement : **aucune trace de la résolution** | `MISSION_INTERVENTION_DRAFT_RESOLVED` (acteur + date) |
+
+Conséquence : une demande résolue ne disait ni qui l'avait résolue ni quand (constaté en
+production le 2026-10-08 sur « MPFL », #16 : `decided_by`/`decided_at` NULL, seul
+l'`AuditEvent` du draft en gardait la trace).
+
+### Décision
+
+- **Aucune nouvelle colonne, aucune migration** : les champs `decidedBy`/`decidedAt` créés
+  par D-113 portent désormais le traitement quel qu'il soit (résolution **ou** ignore) ;
+  l'élément du catalogue reste `materialItem` / `resolvedInterventionType`.
+- `MaterialItemRequestService::resolve()` et `MissionInterventionDraftService::resolve()`
+  posent `decidedBy` (l'acteur) et `decidedAt` dans la même transaction, sous le verrou
+  pessimiste existant — une seconde résolution refusée (409) ne remplace jamais le premier
+  décideur.
+- Nouvel `AuditEventType::MATERIAL_ITEM_REQUEST_RESOLVED`, pendant de
+  `MATERIAL_ITEM_REQUEST_IGNORED` (payload : `materialItemRequestId`, `materialItemId`,
+  `materialLineId`, `label`) ; `event_type` est un `VARCHAR(255)`, pas de migration. Côté
+  types d'intervention, `MISSION_INTERVENTION_DRAFT_RESOLVED` suffit déjà.
+- Contrat API : `decidedBy`/`decidedAt` ne sont plus « IGNORED uniquement » — voir
+  `docs/api.md` (§20.1, §20.2, demandes de type d'intervention). Formes de réponse
+  inchangées (mêmes clés).
+- Frontend : la ligne d'une demande résolue affiche « Par X le … », le détail
+  « Résolue par X le … » ; une demande résolue avant D-139 reste affichée sans décideur
+  (jamais de valeur inventée côté client).
+
+### Hors périmètre
+
+- **Reprise de l'historique** : non faite. Côté types d'intervention elle serait possible
+  depuis `MISSION_INTERVENTION_DRAFT_RESOLVED` (acteur + `created_at`) ; côté matériel
+  aucune trace n'existe avant D-139. À décider séparément (migration de données).
