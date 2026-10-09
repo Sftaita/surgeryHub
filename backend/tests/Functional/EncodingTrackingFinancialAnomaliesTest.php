@@ -5,6 +5,7 @@ namespace App\Tests\Functional;
 use App\Entity\AuditEvent;
 use App\Entity\FinancialCalculation;
 use App\Entity\Firm;
+use App\Entity\FirmServiceOffering;
 use App\Entity\Hospital;
 use App\Entity\InstrumentistRate;
 use App\Entity\InterventionType;
@@ -46,7 +47,7 @@ final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
     private EntityManagerInterface $em;
     private ?Hospital $site = null;
     private array $created = [
-        'missions' => [], 'rules' => [], 'rates' => [], 'items' => [], 'types' => [], 'firms' => [], 'sites' => [], 'users' => [], 'executions' => [],
+        'missions' => [], 'offerings' => [], 'rules' => [], 'rates' => [], 'items' => [], 'types' => [], 'firms' => [], 'sites' => [], 'users' => [], 'executions' => [],
     ];
 
     protected function setUp(): void
@@ -87,6 +88,8 @@ final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
             $this->em->flush();
             foreach ($this->created['rules'] as $id) { $e = $this->em->find(PricingRule::class, $id); if ($e) $this->em->remove($e); }
             foreach ($this->created['rates'] as $id) { $e = $this->em->find(InstrumentistRate::class, $id); if ($e) $this->em->remove($e); }
+            $this->em->flush();
+            foreach ($this->created['offerings'] as $id) { $e = $this->em->find(FirmServiceOffering::class, $id); if ($e) $this->em->remove($e); }
             $this->em->flush();
             foreach ($this->created['items'] as $id) { $e = $this->em->find(MaterialItem::class, $id); if ($e) $this->em->remove($e); }
             foreach ($this->created['types'] as $id) { $e = $this->em->find(InterventionType::class, $id); if ($e) $this->em->remove($e); }
@@ -642,6 +645,18 @@ final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
         self::assertSame('CONFIGURE_INTERVENTION_RATE', $anomaly['action']['code']);
         self::assertFalse($anomaly['resolved']);
 
+        // Écrans catalogue : le forfait en conflit est signalé, jamais « tarif non configuré ».
+        $offering = new FirmServiceOffering();
+        $offering->setFirm($this->managed($firm));
+        $offering->setInterventionType($this->managed($type));
+        $this->em->persist($offering); $this->em->flush();
+        $this->created['offerings'][] = $offering->getId();
+        $firmOfferings = $this->json($this->request($client, $token, 'GET', '/api/firms/' . $firm->getId() . '/service-offerings'));
+        self::assertSame([$a->getId(), $b->getId()], $firmOfferings[0]['pricingConflictRuleIds']);
+        $typeOfferings = $this->json($this->request($client, $token, 'GET', '/api/intervention-types/' . $type->getId() . '/offerings'));
+        self::assertNull($typeOfferings[0]['forfait']);
+        self::assertSame([$a->getId(), $b->getId()], $typeOfferings[0]['pricingConflictRuleIds']);
+
         // Correction : une règle est clôturée → la cause disparaît, le calcul aboutit au
         // tarif restant, l'anomalie s'efface partout.
         $this->closeRule($a);
@@ -651,6 +666,8 @@ final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
         self::assertSame('CALCULATED', $this->listItem($client, $token, $m)['financial']['state']);
         $line = array_values(array_filter($this->json($ok, 201)['lines'], static fn (array $l) => $l['lineType'] === 'FIRM_INTERVENTION_FEE'))[0];
         self::assertSame('350.00', $line['unitAmount']);
+        $resolved = $this->json($this->request($client, $token, 'GET', '/api/firms/' . $firm->getId() . '/service-offerings'));
+        self::assertNull($resolved[0]['pricingConflictRuleIds']);
     }
 
     public function test_contradictory_material_rules_are_located_on_their_material_line(): void

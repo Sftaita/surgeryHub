@@ -5244,6 +5244,10 @@ manquant). Lus exclusivement par `FinancialCalculationService` (via
 `RepresentativePolicyResolver`), jamais par `PricingRuleResolver` — voir amendement D-101
 dans D-067 (`docs/decisions.md`).
 
+**D-138** — manager uniquement : `pricingConflictRuleIds` (`null` hors conflit ou si
+`feeApplicable=false`, sinon ids des règles de forfait unique actives aujourd'hui en
+contradiction, résolues par `PricingRuleResolver`).
+
 ### `PATCH /api/firms/{firmId}/service-offerings/{offeringId}`
 
 `{ label?, active?, representativePresenceRelevant?, representativeSuppressesInterventionFee?, representativeSuppressesOwnMaterialFees?, feeApplicable? }` (D-101).
@@ -7432,9 +7436,12 @@ hors application en contiennent malgré tout :
 - tout autre endpoint qui résout un tarif répond **409 `PRICING_RULE_CONFLICT`** /
   **`INSTRUMENTIST_RATE_CONFLICT`**, `violations` = règles en cause (`id`, `unitPrice`,
   `currency`, `validFrom`, `validTo`) ;
-- `GET /api/material-items` (manager) et `GET /api/intervention-types/{id}/offerings` ne
-  tombent pas : champ additif `pricingConflictRuleIds` (`null` hors conflit, sinon ids des
-  règles) ; le prix courant / forfait vaut alors `null` — jamais un tarif choisi.
+- `GET /api/material-items` (manager), `GET /api/intervention-types/{id}/offerings` et
+  `GET /api/firms/{firmId}/service-offerings` (manager, forfait unique hors option de choix)
+  ne tombent pas : champ additif `pricingConflictRuleIds` (`null` hors conflit, sinon ids des
+  règles) ; le prix courant / forfait vaut alors `null` — jamais un tarif choisi. Les écrans
+  du catalogue affichent « Conflit tarifaire » (ids des règles en infobulle), toujours
+  distinct de « Tarif non configuré » (aucune règle active).
 
 ### `GET /api/billing/encoding-tracking/summary`
 

@@ -132,6 +132,8 @@
 .materialRowRef { font-size: 12.5px; color: var(--pr-gray-400); }
 .materialRowPrice { text-align: right; font-size: 13.5px; font-weight: 700; color: var(--pr-gray-800); font-variant-numeric: tabular-nums; }
 .materialRowPriceMuted { color: var(--pr-gray-400); font-weight: 600; }
+/* D-138 — conflit de règles tarifaires : jamais confondu avec un tarif non configuré. */
+.pricingConflict { color: var(--pr-red-700) !important; font-weight: 700; }
 
 /* Référentiel table */
 .refToolbar { display: flex; align-items: center; gap: 12px; }

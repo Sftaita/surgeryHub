@@ -29,7 +29,7 @@ const FIRMS = [{ id: 10, name: "Smith & Nephew" }, { id: 11, name: "ConMed" }];
 function makeOffering(overrides: Partial<{
   id: number; firmId: number; interventionType: { id: number; code: string; label: string };
   active: boolean; representativePresenceRelevant: boolean; representativeSuppressesInterventionFee: boolean;
-  representativeSuppressesOwnMaterialFees: boolean; feeApplicable: boolean; suggestedMaterials: unknown[];
+  representativeSuppressesOwnMaterialFees: boolean; feeApplicable: boolean; suggestedMaterials: unknown[]; pricingConflictRuleIds: number[] | null;
 }> = {}) {
   return {
     id: 100, firmId: 10,
@@ -333,8 +333,41 @@ describe("PrestationsPage", () => {
     renderPage();
     await selectFirm(user);
 
-    expect(await screen.findByText(/Tarif à définir/)).toBeInTheDocument();
+    expect(await screen.findByText(/Tarif non configuré/)).toBeInTheDocument();
     expect(screen.getByText(/Pas de forfait/)).toBeInTheDocument();
+  });
+
+  it("D-138 — forfait en conflit (signalé par le backend) affiché « Conflit tarifaire », distinct de « Tarif non configuré »", async () => {
+    const user = userEvent.setup();
+    const offerings = [
+      makeOffering({ id: 100, interventionType: { id: 1, code: "LCA", label: "LCA primaire" }, pricingConflictRuleIds: [91, 92] }),
+      makeOffering({ id: 101, interventionType: { id: 2, code: "PTG", label: "PTG" }, pricingConflictRuleIds: null }),
+    ];
+    apiGetMock.mockImplementation((url: string) => mockGet(url, offerings, [], []));
+    renderPage();
+    await selectFirm(user);
+
+    expect(await screen.findByText("Conflit tarifaire")).toBeInTheDocument();
+    expect(screen.getAllByText("Tarif non configuré")).toHaveLength(1);
+  });
+
+  it("D-138 — matériel en conflit : « Conflit tarifaire », jamais un des tarifs choisi côté écran", async () => {
+    const user = userEvent.setup();
+    const materials = [
+      { id: 5, label: "SWIVELOCK", referenceCode: "SW-01", isImplant: true, billingStatus: "BILLABLE", pricingConflictRuleIds: [300, 301] },
+      { id: 6, label: "FIBERWIRE", referenceCode: "FW-01", isImplant: false, billingStatus: "BILLABLE", pricingConflictRuleIds: null },
+    ];
+    const rule = (id: number, price: string) => ({ id, ruleType: "MATERIAL_FEE", interventionType: null, materialItem: { id: 5, label: "SWIVELOCK", referenceCode: "SW-01", firm: { id: 10, name: "Smith & Nephew" } }, unitPrice: price, currency: "EUR", validFrom: null, validTo: null, active: true });
+    apiGetMock.mockImplementation((url: string) => mockGet(url, [], [rule(300, "90.00"), rule(301, "95.00")], materials));
+    renderPage();
+    await selectFirm(user);
+    await user.click(screen.getByRole("tab", { name: /^Matériel/ }));
+
+    await screen.findByText("SWIVELOCK");
+    expect(screen.getByText("Conflit tarifaire")).toBeInTheDocument();
+    expect(screen.queryByText("90.00 EUR HTVA")).not.toBeInTheDocument();
+    expect(screen.queryByText("95.00 EUR HTVA")).not.toBeInTheDocument();
+    expect(screen.getByText("Tarif non configuré")).toBeInTheDocument();
   });
 
   it("ouvre le détail d'une prestation au clic et affiche forfait/matériels/délégué", async () => {
@@ -401,7 +434,7 @@ describe("PrestationsPage", () => {
     await user.click(screen.getByRole("tab", { name: /^Matériel/ }));
 
     await screen.findByText("FAST-FIX");
-    expect(screen.getByText("Tarif à définir")).toBeInTheDocument();
+    expect(screen.getByText("Tarif non configuré")).toBeInTheDocument();
     expect(screen.queryByText("Non facturable")).not.toBeInTheDocument();
     expect(screen.getByText("45.00 EUR HTVA")).toBeInTheDocument();
 

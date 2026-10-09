@@ -15,6 +15,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
@@ -32,6 +33,12 @@ import {
   type MaterialItemFormValues,
 } from "../../features/manager-catalogue/components/MaterialItemFormDialog";
 import { useToast } from "../../ui/toast/useToast";
+import {
+  PRICING_CONFLICT_LABEL,
+  PRICING_NOT_CONFIGURED_LABEL,
+  hasPricingConflict,
+  pricingConflictTooltip,
+} from "../../features/billing-shared/pricingStatus";
 import { HelpButton } from "../../features/help/HelpButton";
 
 export default function CataloguePage() {
@@ -180,13 +187,17 @@ export default function CataloguePage() {
                     <TableCell>{item.referenceCode || "—"}</TableCell>
                     <TableCell>{item.unit}</TableCell>
                     <TableCell>
-                      {item.currentPrice != null ? (
+                      {hasPricingConflict(item.pricingConflictRuleIds) ? (
+                        <Tooltip title={pricingConflictTooltip(item.pricingConflictRuleIds)}>
+                          <Chip label={PRICING_CONFLICT_LABEL} size="small" color="error" />
+                        </Tooltip>
+                      ) : item.currentPrice != null ? (
                         <Typography variant="body2" fontWeight={700} color="success.main">
                           {Number(item.currentPrice).toFixed(2)} {item.currentCurrency} HTVA
                         </Typography>
                       ) : (
                         <Typography variant="caption" color="text.secondary">
-                          Tarif à définir
+                          {PRICING_NOT_CONFIGURED_LABEL}
                         </Typography>
                       )}
                     </TableCell>

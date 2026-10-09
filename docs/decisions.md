@@ -11572,9 +11572,12 @@ jour (**#1226**, 7 h 45 pour 5 h) affichait « À calculer ».
 - **Code couleur des heures** : D-136 confirmé par le métier le 2026-10-08 (vert ≤ planifié,
   orange > planifié, gris sans heure réelle) — une mission terminée plus tôt n'est jamais
   anormale, et aucun écart d'heures ne crée d'anomalie financière.
-- Écrans catalogue (`GET /api/material-items`, offres d'une prestation) : le conflit est exposé
-  par le backend (`pricingConflictRuleIds`) mais pas encore mis en avant par leur interface,
-  qui affiche « pas de tarif ». Le suivi des encodages, lui, l'explique entièrement.
+- Écrans catalogue (Catalogue matériel, Prestations par firme — forfaits et matériels —,
+  détail d'une intervention du référentiel) : deux états jamais confondus, « Tarif non
+  configuré » (aucune règle active) et « Conflit tarifaire » (`pricingConflictRuleIds` du
+  backend, règles en infobulle) — le frontend ne détecte rien lui-même. Limite restante : le
+  forfait par option de choix obligatoire n'expose pas encore de conflit à l'écran (le moteur
+  et le suivi des encodages le signalent).
 
 ### Compléments (2026-10-08, finalisation)
 

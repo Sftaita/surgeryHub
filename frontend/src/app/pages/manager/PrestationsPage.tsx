@@ -67,6 +67,13 @@ import { useToast } from "../../ui/toast/useToast";
 import { PageHeader } from "../../ui/PageHeader";
 import { useDebouncedValue } from "../../ui/hooks/useDebouncedValue";
 import styles from "./prestationsDesign.module.css";
+import {
+  PRICING_CONFLICT_LABEL,
+  PRICING_NOT_CONFIGURED_LABEL,
+  formatOfferingForfait,
+  hasPricingConflict,
+  pricingConflictTooltip,
+} from "../../features/billing-shared/pricingStatus";
 import { Modal, Btn, Switch, StatusPill, Tag } from "./prestationsUi";
 import { PlusIcon, SearchIcon, EditIcon as PrEditIcon, WarningIcon, BuildingIcon, BookIcon, ArrowLeftIcon, ChevronRightIcon } from "./prestationsIcons";
 
@@ -359,7 +366,7 @@ function NewMaterialModal({
         </div>
         <Switch label="Implant" checked={isImplant} onChange={setIsImplant} />
         <p className={styles.fieldHint} style={{ margin: 0, fontSize: 12.5 }}>
-          Le tarif se configure ensuite, depuis « Modifier » sur la ligne du matériel — « Tarif à définir » tant qu'aucun tarif n'est encore posé.
+          Le tarif se configure ensuite, depuis « Modifier » sur la ligne du matériel — « Tarif non configuré » tant qu'aucun tarif n'est encore posé.
         </p>
         {error && <div className={styles.warningLine}><WarningIcon size={14} /> {error}</div>}
       </div>
@@ -463,7 +470,7 @@ function ChoiceOptionCard({
             ))}
           </TextField>
           <Typography variant="caption" color={activeVersion ? "text.secondary" : "warning.main"} fontWeight={activeVersion ? 400 : 600}>
-            {activeVersion ? `${Number(activeVersion.amount).toFixed(2)} ${activeVersion.currency} HTVA` : "Tarif à définir"}
+            {activeVersion ? `${Number(activeVersion.amount).toFixed(2)} ${activeVersion.currency} HTVA` : PRICING_NOT_CONFIGURED_LABEL}
           </Typography>
         </Stack>
         <Stack direction="row" spacing={0.5} alignItems="center">
@@ -954,14 +961,16 @@ function SuggestedMaterialsDialog({
   );
 }
 
-// Refonte UX (§5) — trois états jamais confondus : montant défini, "Tarif à définir"
-// (feeApplicable=true sans PricingRule active), "Pas de forfait" (feeApplicable=false,
+// Refonte UX (§5) — états jamais confondus : montant défini, "Tarif non configuré"
+// (feeApplicable=true sans PricingRule active), "Conflit tarifaire" (plusieurs règles
+// actives, signalé par le backend — D-138), "Pas de forfait" (feeApplicable=false,
 // décision volontaire). Tous les montants sont HTVA.
 function forfaitSummary(offering: FirmServiceOffering, forfait: PricingRule | null): string {
   if (!offering.feeApplicable) return "Pas de forfait";
   if (offering.choiceGroupConfig?.active) return "Selon un choix obligatoire";
+  if (hasPricingConflict(offering.pricingConflictRuleIds)) return PRICING_CONFLICT_LABEL;
   if (forfait) return `${Number(forfait.unitPrice).toFixed(2)} € HTVA`;
-  return "Tarif à définir";
+  return PRICING_NOT_CONFIGURED_LABEL;
 }
 
 function representativeSummary(offering: FirmServiceOffering): string {
@@ -1184,8 +1193,11 @@ function ReferentielDetailView({
               <FirmAvatar name={row.firm.name} logoPath={row.firm.logoPath} size="sm" />
               <div className={styles.refUsageBody}>
                 <div className={styles.refUsageName}>{row.firm.name}</div>
-                <div className={styles.refUsageMeta}>
-                  {row.feeApplicable ? (row.forfait ? `${Number(row.forfait.amount).toFixed(2)} ${row.forfait.currency} HTVA` : "Tarif à définir") : "Pas de forfait"}
+                <div
+                  className={[styles.refUsageMeta, row.feeApplicable && hasPricingConflict(row.pricingConflictRuleIds) ? styles.pricingConflict : ""].filter(Boolean).join(" ")}
+                  title={row.feeApplicable && hasPricingConflict(row.pricingConflictRuleIds) ? pricingConflictTooltip(row.pricingConflictRuleIds) : undefined}
+                >
+                  {formatOfferingForfait(row)}
                   {!row.active && " · inactive"}
                 </div>
               </div>
@@ -1441,7 +1453,12 @@ export default function PrestationsPage() {
                                 </div>
                               </div>
                               <div className={styles.prestaCardForfait}>
-                                <div className={styles.prestaCardForfaitValue}>{forfaitSummary(o, forfait)}</div>
+                                <div
+                                  className={[styles.prestaCardForfaitValue, forfaitSummary(o, forfait) === PRICING_CONFLICT_LABEL ? styles.pricingConflict : ""].filter(Boolean).join(" ")}
+                                  title={forfaitSummary(o, forfait) === PRICING_CONFLICT_LABEL && o.pricingConflictRuleIds ? pricingConflictTooltip(o.pricingConflictRuleIds) : undefined}
+                                >
+                                  {forfaitSummary(o, forfait)}
+                                </div>
                                 <div className={styles.prestaCardForfaitLabel}>forfait</div>
                               </div>
                               <ChevronRightIcon size={16} className={styles.prestaCardChevron} />
@@ -1471,12 +1488,18 @@ export default function PrestationsPage() {
                         {materials.map((m) => {
                           const itemRules = materialRulesFor(m.id);
                           const activeVersion = getActiveVersion(itemRules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo })));
+                          const conflictIds = hasPricingConflict(m.pricingConflictRuleIds) ? m.pricingConflictRuleIds : null;
                           return (
                             <div key={m.id} className={styles.materialRow}>
                               <span className={styles.materialRowName}>{m.label}</span>
                               <span className={styles.materialRowRef}>{m.referenceCode || "—"}</span>
-                              <span className={[styles.materialRowPrice, activeVersion ? "" : styles.materialRowPriceMuted].filter(Boolean).join(" ")}>
-                                {activeVersion ? `${Number(activeVersion.amount).toFixed(2)} ${activeVersion.currency} HTVA` : "Tarif à définir"}
+                              <span
+                                className={[styles.materialRowPrice, conflictIds ? styles.pricingConflict : activeVersion ? "" : styles.materialRowPriceMuted].filter(Boolean).join(" ")}
+                                title={conflictIds ? pricingConflictTooltip(conflictIds) : undefined}
+                              >
+                                {conflictIds
+                                  ? PRICING_CONFLICT_LABEL
+                                  : activeVersion ? `${Number(activeVersion.amount).toFixed(2)} ${activeVersion.currency} HTVA` : PRICING_NOT_CONFIGURED_LABEL}
                               </span>
                               <Tooltip title="Modifier le matériel">
                                 <button type="button" aria-label={`Modifier ${m.label}`} className={[styles.btn, styles.btnOutline, styles.btnSm].join(" ")} onClick={() => setMaterialEditTargetId(m.id)}>

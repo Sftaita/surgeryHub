@@ -1,18 +1,13 @@
 import {
   Box, Button, CircularProgress, Dialog, DialogActions,
-  DialogContent, DialogTitle, Divider, Stack, Typography,
+  DialogContent, DialogTitle, Divider, Stack, Tooltip, Typography,
 } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import { getInterventionTypeOfferings, type InterventionType } from "../api/interventionTypes.api";
 import { FirmAvatar } from "../../manager-catalogue/components/FirmAvatar";
 import { ActiveBadge } from "../../../ui/StatusBadge";
 import { EmptyState } from "../../../ui/EmptyState";
-
-function formatForfaitRow(row: { feeApplicable: boolean; forfait: { amount: string; currency: string } | null }): string {
-  if (!row.feeApplicable) return "Pas de forfait";
-  if (row.forfait) return `${Number(row.forfait.amount).toFixed(2)} ${row.forfait.currency} HTVA`;
-  return "Tarif à définir";
-}
+import { formatOfferingForfait, hasPricingConflict, pricingConflictTooltip } from "../../billing-shared/pricingStatus";
 
 /**
  * Catalogue > Prestations, refonte UX — détail d'une intervention globale (écran 14,
@@ -80,9 +75,15 @@ export function InterventionTypeDetailDialog({
                   <FirmAvatar name={row.firm.name} logoPath={row.firm.logoPath} size="sm" />
                   <Stack sx={{ flex: 1, minWidth: 0 }}>
                     <Typography variant="body2" fontWeight={600} noWrap>{row.firm.name}</Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {formatForfaitRow(row)} {!row.active && "· inactive"}
-                    </Typography>
+                    <Tooltip title={hasPricingConflict(row.pricingConflictRuleIds) ? pricingConflictTooltip(row.pricingConflictRuleIds) : ""}>
+                      <Typography
+                        variant="caption"
+                        color={hasPricingConflict(row.pricingConflictRuleIds) ? "error.main" : "text.secondary"}
+                        fontWeight={hasPricingConflict(row.pricingConflictRuleIds) ? 700 : 400}
+                      >
+                        {formatOfferingForfait(row)} {!row.active && "· inactive"}
+                      </Typography>
+                    </Tooltip>
                   </Stack>
                   <Button size="small" onClick={() => onOpenFirm(row.firm.id, row.offeringId)}>Ouvrir chez cette firme →</Button>
                 </Stack>

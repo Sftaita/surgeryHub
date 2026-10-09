@@ -39,6 +39,8 @@ export interface InterventionTypeOfferingRow {
   active: boolean;
   feeApplicable: boolean;
   forfait: { amount: string; currency: string } | null;
+  /** D-138 — ids des règles de forfait contradictoires ; null = aucun conflit. */
+  pricingConflictRuleIds: number[] | null;
 }
 
 export interface InterventionTypeMergeResult {
