@@ -2,7 +2,6 @@
 
 namespace App\Service\FirmBilling;
 
-use App\Entity\AuditEvent;
 use App\Entity\FinancialCalculation;
 use App\Entity\FinancialCalculationLine;
 use App\Entity\FirmBillingLineEvent;
@@ -13,21 +12,17 @@ use App\Entity\InterventionType;
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
-use App\Enum\AuditEventType;
 use App\Enum\FinancialBeneficiaryType;
 use App\Enum\FinancialCalculationStatus;
 use App\Enum\FinancialDocumentType;
 use App\Enum\FirmBillingReason;
 use App\Enum\FirmBillingStatus;
-use App\Enum\InstrumentistRateType;
 use App\Enum\InvoiceStatus;
 use App\Enum\MaterialBillingStatus;
 use App\Enum\MissionStatus;
 use App\Repository\EncodingTrackingRepository;
+use App\Service\FinancialCalculationAnomalyExplainer;
 use App\Service\FinancialCalculationService;
-use App\Service\InstrumentistRateResolver;
-use App\Service\MissionExecutionService;
-use App\Service\PricingRuleResolver;
 use App\Service\RepresentativePolicyResolver;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -80,10 +75,8 @@ final class FirmBillingWorklistService
         private readonly EntityManagerInterface $em,
         private readonly EncodingTrackingRepository $encodingTrackingRepository,
         private readonly RepresentativePolicyResolver $representativePolicyResolver,
-        private readonly PricingRuleResolver $pricingRuleResolver,
-        private readonly InstrumentistRateResolver $instrumentistRateResolver,
-        private readonly MissionExecutionService $missionExecutionService,
         private readonly FinancialCalculationService $financialCalculationService,
+        private readonly FinancialCalculationAnomalyExplainer $anomalyExplainer,
     ) {}
 
     /**
@@ -198,7 +191,7 @@ final class FirmBillingWorklistService
         $calculationsByMission = $this->loadActiveCalculations($missionIds);
         $firmLinesByCalculation = $this->loadFirmLines(array_map(static fn (FinancialCalculation $c) => $c->getId(), $calculationsByMission));
         $failedMissions = $this->encodingTrackingRepository->findMissionsWithFailedCalculation($missionIds);
-        $failures = $this->latestFailures(array_keys($failedMissions));
+        $failures = $this->anomalyExplainer->latestFailures(array_keys($failedMissions));
 
         $rows = [];
         $anomalies = [];
@@ -538,127 +531,30 @@ final class FirmBillingWorklistService
     // ── Anomalies (« À corriger ») ──────────────────────────────────────────
 
     /**
+     * Traduction déléguée à FinancialCalculationAnomalyExplainer (D-138) — la même que le
+     * Suivi des encodages ; seul l'habillage propre à la worklist (clé, contexte mission,
+     * calcul actif) est ajouté ici.
+     *
      * @param array{code?: string, message?: string, context?: array<string, mixed>} $raw
      * @param MissionIntervention[] $interventions
      * @param MaterialLine[]        $materials
      */
     private function translateAnomaly(array $raw, Mission $mission, array $context, array $interventions, array $materials, \DateTimeImmutable $failedAt, ?FinancialCalculation $calculation, int $index): array
     {
-        $reason = FirmBillingReason::fromEngineCode((string) ($raw['code'] ?? ''));
-        $ctx = (array) ($raw['context'] ?? []);
-        $date = $failedAt->format('d/m/Y');
-        $nextEffectiveAt = $this->financialCalculationService->resolveEffectiveAt($mission);
-
-        $itv = null;
-        if (isset($ctx['missionInterventionId'])) {
-            foreach ($interventions as $candidate) {
-                if ($candidate->getId() === (int) $ctx['missionInterventionId']) {
-                    $itv = $candidate;
-                }
-            }
-        }
-        $ml = null;
-        if (isset($ctx['materialLineId'])) {
-            foreach ($materials as $candidate) {
-                if ((int) $candidate->getId() === (int) $ctx['materialLineId']) {
-                    $ml = $candidate;
-                }
-            }
-        }
-
-        $firm = $itv?->getPrimaryFirm() ?? $ml?->getItem()?->getFirm();
-        if ($firm === null && isset($ctx['firmId'])) {
-            $firm = $this->em->find(Firm::class, (int) $ctx['firmId']);
-        }
-        $element = null;
-        $explanation = $reason->defaultDetail();
-        $action = null;
-        $resolved = false;
-
-        switch ($reason) {
-            case FirmBillingReason::MISSING_FIRM_INTERVENTION_RATE:
-                $type = $itv?->getInterventionType() ?? (isset($ctx['interventionTypeId']) ? $this->em->find(InterventionType::class, (int) $ctx['interventionTypeId']) : null);
-                $element = ['type' => self::TYPE_INTERVENTION, 'label' => $type?->getLabel() ?? $itv?->getLabel()];
-                $explanation = sprintf("Aucun tarif applicable n'est configuré pour cette prestation%s au %s.", $firm !== null ? ' chez ' . $firm->getName() : '', $date);
-                $action = ['code' => 'CONFIGURE_INTERVENTION_RATE', 'label' => 'Configurer le tarif'];
-                $resolved = $itv === null || ($itv->getPrimaryFirm() !== null && $itv->getInterventionType() !== null
-                    && $this->pricingRuleResolver->resolveInterventionFee($itv->getPrimaryFirm(), $itv->getInterventionType(), $nextEffectiveAt, $itv->getSelectedChoiceOption()) !== null);
-                break;
-
-            case FirmBillingReason::MISSING_FIRM_MATERIAL_RATE:
-                $item = $ml?->getItem();
-                $element = ['type' => self::TYPE_MATERIAL, 'label' => $item?->getLabel(), 'reference' => $item?->getReferenceCode()];
-                $explanation = sprintf("Aucun tarif applicable n'est configuré pour ce matériel%s au %s. S'il n'est jamais facturé, marquez-le « non facturable » dans le catalogue.", $firm !== null ? ' (' . $firm->getName() . ')' : '', $date);
-                $action = ['code' => 'CONFIGURE_MATERIAL_RATE', 'label' => 'Configurer le tarif'];
-                $resolved = $item === null || $item->getBillingStatus() === MaterialBillingStatus::NOT_BILLABLE
-                    || $this->pricingRuleResolver->resolveMaterialFee($item, $nextEffectiveAt) !== null;
-                break;
-
-            case FirmBillingReason::MISSING_INSTRUMENTIST_RATE:
-                $instrumentist = $mission->getInstrumentist();
-                $rateType = InstrumentistRateType::tryFrom((string) ($ctx['rateType'] ?? '')) ?? InstrumentistRateType::HOURLY_RATE;
-                $name = $instrumentist !== null ? trim(($instrumentist->getFirstname() ?? '') . ' ' . ($instrumentist->getLastname() ?? '')) : '';
-                $element = ['type' => 'INSTRUMENTIST', 'label' => $name !== '' ? $name : 'Instrumentiste'];
-                $explanation = sprintf(
-                    "Aucun tarif %s actif n'est configuré pour %s au %s. Tant qu'il manque, aucune ligne de cette mission — firmes comprises — ne peut être calculée.",
-                    $rateType === InstrumentistRateType::CONSULTATION_FEE ? 'de consultation' : 'horaire',
-                    $name !== '' ? $name : "l'instrumentiste",
-                    $date,
-                );
-                $firm = null; // anomalie de mission : elle bloque toutes les firmes
-                $action = ['code' => 'CONFIGURE_INSTRUMENTIST_RATE', 'label' => 'Configurer le tarif'];
-                $resolved = $instrumentist !== null && $this->instrumentistRateResolver->resolve($instrumentist, $rateType, $nextEffectiveAt) !== null;
-                break;
-
-            case FirmBillingReason::MISSING_PRIMARY_FIRM:
-                $element = ['type' => self::TYPE_INTERVENTION, 'label' => $itv?->getInterventionType()?->getLabel() ?? $itv?->getLabel()];
-                $explanation = sprintf("L'intervention « %s » n'a pas de firme : impossible de savoir à qui la facturer.", $element['label'] ?? '—');
-                $action = ['code' => 'OPEN_MISSION', 'label' => "Compléter l'encodage"];
-                $resolved = $itv === null || $itv->getPrimaryFirm() !== null;
-                break;
-
-            case FirmBillingReason::MISSING_INTERVENTION_TYPE:
-                $element = ['type' => self::TYPE_INTERVENTION, 'label' => $itv?->getLabel()];
-                $action = ['code' => 'OPEN_MISSION', 'label' => "Compléter l'encodage"];
-                $resolved = $itv === null || $itv->getInterventionType() !== null;
-                break;
-
-            case FirmBillingReason::MISSING_REPRESENTATIVE_PRESENCE_ANSWER:
-                $element = ['type' => self::TYPE_INTERVENTION, 'label' => $itv?->getInterventionType()?->getLabel() ?? $itv?->getLabel()];
-                $explanation = sprintf("L'encodage doit indiquer si le délégué %s était présent : cela détermine le forfait.", $firm?->getName() ?? 'de la firme');
-                $action = ['code' => 'OPEN_MISSION', 'label' => "Compléter l'encodage"];
-                $resolved = $itv === null || $itv->getRepresentativePresent() !== null;
-                break;
-
-            case FirmBillingReason::MISSING_REQUIRED_CHOICE_ANSWER:
-                $element = ['type' => self::TYPE_INTERVENTION, 'label' => $itv?->getInterventionType()?->getLabel() ?? $itv?->getLabel()];
-                $action = ['code' => 'OPEN_MISSION', 'label' => "Compléter l'encodage"];
-                $resolved = $itv === null || $itv->getSelectedChoiceOption() !== null;
-                break;
-
-            case FirmBillingReason::INVALID_EFFECTIVE_DURATION:
-                $firm = null;
-                $action = ['code' => 'OPEN_MISSION', 'label' => 'Corriger les horaires'];
-                $resolved = $this->missionExecutionService->resolveEffectiveDuration($mission)->minutes > 0;
-                break;
-
-            default: // CALCULATION_FAILED — code moteur inconnu, jamais le message brut
-                $firm = null;
-                $action = ['code' => 'OPEN_MISSION', 'label' => 'Ouvrir la mission'];
-        }
+        $explained = $this->anomalyExplainer->explain($raw, $mission, $interventions, $materials, $failedAt);
 
         return [
-            'key' => sprintf('%s:%d:%d', $reason->value, $mission->getId(), $index),
-            'code' => $reason->value,
-            'title' => $reason->label(),
-            'explanation' => $explanation,
+            'key' => sprintf('%s:%d:%d', $explained['code'], $mission->getId(), $index),
+            'code' => $explained['code'],
+            'title' => $explained['title'],
+            'explanation' => $explained['explanation'],
             'mission' => $context,
-            'firm' => $firm !== null ? ['id' => $firm->getId(), 'name' => $firm->getName()] : null,
-            'element' => $element,
-            'action' => $action,
-            'resolved' => $resolved,
+            'firm' => $explained['firm'],
+            'element' => $explained['element'],
+            'action' => $explained['action'],
+            'resolved' => $explained['resolved'],
             'calculationId' => $calculation?->getId(),
-            'rowKey' => $itv !== null ? 'MISSION_INTERVENTION:' . $itv->getId() : ($ml !== null ? 'MATERIAL_LINE:' . $ml->getId() : null),
+            'rowKey' => $explained['rowKey'],
             'calculationLocked' => $calculation?->getStatus() === FinancialCalculationStatus::LOCKED,
         ];
     }
@@ -937,46 +833,6 @@ final class FirmBillingWorklistService
         $out = [];
         foreach ($lines as $line) {
             $out[(int) $line->getFinancialCalculation()->getId()][] = $line;
-        }
-        return $out;
-    }
-
-    /**
-     * Dernier échec audité par mission (payload écrit par FinancialCalculationService).
-     *
-     * @param int[] $missionIds
-     * @return array<int, array{anomalies: array<int, array>, effectiveAt: ?\DateTimeImmutable}>
-     */
-    private function latestFailures(array $missionIds): array
-    {
-        if ($missionIds === []) {
-            return [];
-        }
-        /** @var AuditEvent[] $events */
-        $events = $this->em->createQueryBuilder()
-            ->select('a')
-            ->from(AuditEvent::class, 'a')
-            ->where('IDENTITY(a.mission) IN (:ids)')
-            ->andWhere('a.eventType = :type')
-            ->setParameter('ids', $missionIds)
-            ->setParameter('type', AuditEventType::FINANCIAL_CALCULATION_FAILED)
-            ->orderBy('a.createdAt', 'DESC')
-            ->addOrderBy('a.id', 'DESC')
-            ->getQuery()
-            ->getResult();
-
-        $out = [];
-        foreach ($events as $event) {
-            $missionId = (int) $event->getMission()?->getId();
-            if (isset($out[$missionId])) {
-                continue;
-            }
-            $payload = $event->getPayload() ?? [];
-            $effective = isset($payload['effectiveAt']) ? \DateTimeImmutable::createFromFormat('!Y-m-d', (string) $payload['effectiveAt']) : false;
-            $out[$missionId] = [
-                'anomalies' => array_values(array_filter((array) ($payload['anomalies'] ?? []), 'is_array')),
-                'effectiveAt' => $effective !== false ? $effective : null,
-            ];
         }
         return $out;
     }

@@ -92,10 +92,21 @@ export interface EncodingTrackingEncoding {
   isStale: boolean;
 }
 
+/** D-138 — un motif d'anomalie et son nombre d'occurrences (ventilation backend). */
+export interface FinancialAnomalyReason {
+  code: string;
+  label: string;
+  count: number;
+}
+
 export interface EncodingTrackingFinancial {
   state: EncodingFinancialState;
   label: string;
   isBlocking: boolean;
+  /** D-138 — 0 hors ANOMALY. */
+  anomalyCount: number;
+  /** D-138 — vide hors ANOMALY ; le plus fréquent d'abord. */
+  anomalyReasons: FinancialAnomalyReason[];
 }
 
 export interface EncodingTrackingItem {
@@ -171,4 +182,66 @@ export async function getEncodingTrackingSummary(filter: EncodingTrackingFilter)
 export async function getPendingEncodingValidationCount(): Promise<number> {
   const res = await apiClient.get("/api/billing/encoding-tracking/pending-validation-count");
   return res.data.count;
+}
+
+/**
+ * D-138 — une anomalie du dernier calcul financier échoué, expliquée et localisée par le
+ * backend (FinancialCalculationAnomalyExplainer). Le frontend l'affiche telle quelle.
+ */
+export type FinancialAnomalyCategory = "CONFIGURATION" | "ENCODING" | "TECHNICAL";
+
+export type FinancialAnomalyActionCode =
+  | "CONFIGURE_INTERVENTION_RATE"
+  | "CONFIGURE_MATERIAL_RATE"
+  | "CONFIGURE_INSTRUMENTIST_RATE"
+  | "OPEN_MISSION";
+
+export interface FinancialAnomaly {
+  code: string;
+  category: FinancialAnomalyCategory;
+  severity: "BLOCKING";
+  title: string;
+  explanation: string;
+  firm: { id: number; name: string } | null;
+  element: { type: "INTERVENTION" | "MATERIAL" | "INSTRUMENTIST"; label: string | null; reference?: string | null } | null;
+  action: { code: FinancialAnomalyActionCode; label: string } | null;
+  /** La cause n'existe plus dans la configuration actuelle : un nouveau calcul peut aboutir. */
+  resolved: boolean;
+  /** Intervention concernée — ou celle qui porte la ligne de matériel concernée. */
+  missionInterventionId: number | null;
+  materialLineId: number | null;
+  /** D-138 — règles actives contradictoires (vide hors CONFLICTING_*), telles qu'auditées. */
+  conflictingRules: FinancialConflictingRule[];
+}
+
+export interface FinancialConflictingRule {
+  id: number | null;
+  unitPrice: string | null;
+  currency: string | null;
+  /** AAAA-MM-JJ, null = sans début. */
+  validFrom: string | null;
+  /** AAAA-MM-JJ EXCLUSIF (D-072), null = sans fin. */
+  validTo: string | null;
+}
+
+/** Relance proposée par le backend (null = aucune relance possible ici). */
+export type FinancialRetryAction =
+  | { kind: "CALCULATE"; calculationId: null }
+  | { kind: "RECALCULATE"; calculationId: number };
+
+export interface MissionFinancialAnomalies {
+  missionId: number;
+  state: EncodingFinancialState;
+  label: string;
+  isBlocking: boolean;
+  failedAt: string | null;
+  effectiveAt: string | null;
+  anomalies: FinancialAnomaly[];
+  retry: FinancialRetryAction | null;
+}
+
+/** D-138 — détail FINANCE d'une mission pour le tiroir du suivi (même état que la liste). */
+export async function getMissionFinancialAnomalies(missionId: number): Promise<MissionFinancialAnomalies> {
+  const res = await apiClient.get(`/api/billing/encoding-tracking/missions/${missionId}/financial-anomalies`);
+  return res.data;
 }

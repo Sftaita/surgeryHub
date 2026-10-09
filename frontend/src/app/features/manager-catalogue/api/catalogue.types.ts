@@ -23,6 +23,8 @@ export type MaterialItemDTO = {
    */
   currentPrice?: string | null;
   currentCurrency?: string | null;
+  /** D-138 — ids des règles actives contradictoires ; null/absent = aucun conflit. */
+  pricingConflictRuleIds?: number[] | null;
 };
 
 export type MaterialItemsListResponseDTO = {

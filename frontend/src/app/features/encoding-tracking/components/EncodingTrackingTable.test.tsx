@@ -18,7 +18,7 @@ function item(missionId: number, startAt: string, instrumentist: string): Encodi
     site: { id: 2, name: "Delta" },
     hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" },
     encoding: { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false },
-    financial: { state: "NOT_CALCULABLE", label: "Pas encore calculable", isBlocking: false },
+    financial: { state: "NOT_CALCULABLE", label: "Pas encore calculable", isBlocking: false, anomalyCount: 0, anomalyReasons: [] },
   };
 }
 
@@ -85,5 +85,37 @@ describe("EncodingTrackingTable — colonne Heures (D-136)", () => {
     // Sans heure réelle : libellé explicite, le planifié n'est jamais présenté comme effectif.
     expect(cells[2]).toHaveTextContent("4 h planifiées");
     expect(cells[2]).toHaveTextContent("Heures réelles non renseignées");
+  });
+});
+
+describe("EncodingTrackingTable — colonne Finance (D-138)", () => {
+  it("« Anomalie » est toujours accompagnée de sa cause, telle que ventilée par le backend", () => {
+    const one = {
+      ...item(1, "2026-10-01T13:00:00+02:00", "Sophie Collette"),
+      financial: { state: "ANOMALY" as const, label: "Anomalie", isBlocking: true, anomalyCount: 1,
+        anomalyReasons: [{ code: "MISSING_INSTRUMENTIST_RATE", label: "Tarif instrumentiste manquant", count: 1 }] },
+    };
+    const many = {
+      ...item(2, "2026-10-01T08:00:00+02:00", "Salve Decorte"),
+      financial: { state: "ANOMALY" as const, label: "Anomalie", isBlocking: true, anomalyCount: 11,
+        anomalyReasons: [
+          { code: "MISSING_FIRM_MATERIAL_RATE", label: "Tarif matériel manquant", count: 9 },
+          { code: "MISSING_FIRM_INTERVENTION_RATE", label: "Tarif d'intervention manquant", count: 2 },
+        ] },
+    };
+    // Dépassement horaire sans anomalie (cas #1226) : rien sous « À calculer ».
+    const overrun = {
+      ...item(3, "2026-10-01T10:00:00+02:00", "Julie Simon"),
+      hours: { plannedMinutes: 300, effectiveMinutes: 465, effectiveSource: "ACTUAL_EXPLICIT" as const, hasRealHours: true, comparison: "OVER_PLAN" as const },
+      financial: { state: "TO_CALCULATE" as const, label: "À calculer", isBlocking: false, anomalyCount: 0, anomalyReasons: [] },
+    };
+    renderTable([one, many, overrun]);
+
+    const reasons = screen.getAllByTestId("finance-anomaly-reasons");
+    expect(reasons).toHaveLength(2);
+    expect(screen.getByText("Tarif instrumentiste manquant")).toBeInTheDocument();
+    const grouped = screen.getByText("11 problèmes");
+    expect(grouped).toHaveAttribute("aria-label", "11 problèmes : Tarif matériel manquant ×9 · Tarif d'intervention manquant ×2");
+    expect(screen.getByText("À calculer")).toBeInTheDocument();
   });
 });

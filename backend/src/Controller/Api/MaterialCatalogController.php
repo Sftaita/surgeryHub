@@ -66,9 +66,18 @@ final class MaterialCatalogController extends AbstractController
             ];
 
             if ($canSeePricing) {
-                $rule = $this->pricingRuleResolver->resolveMaterialFee($mi, $today);
+                // D-138 — un conflit de règles n'est jamais présenté comme « aucun tarif »
+                // ni ne fait échouer toute la liste : il est signalé explicitement.
+                try {
+                    $rule = $this->pricingRuleResolver->resolveMaterialFee($mi, $today);
+                    $conflict = null;
+                } catch (\App\Exception\PricingRuleConflictException $e) {
+                    $rule = null;
+                    $conflict = array_column($e->rulesSnapshot(), 'id');
+                }
                 $item['currentPrice'] = $rule?->getUnitPrice();
                 $item['currentCurrency'] = $rule?->getCurrency();
+                $item['pricingConflictRuleIds'] = $conflict;
             }
 
             return $item;

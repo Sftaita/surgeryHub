@@ -5244,6 +5244,10 @@ manquant). Lus exclusivement par `FinancialCalculationService` (via
 `RepresentativePolicyResolver`), jamais par `PricingRuleResolver` — voir amendement D-101
 dans D-067 (`docs/decisions.md`).
 
+**D-138** — manager uniquement : `pricingConflictRuleIds` (`null` hors conflit ou si
+`feeApplicable=false`, sinon ids des règles de forfait unique actives aujourd'hui en
+contradiction, résolues par `PricingRuleResolver`).
+
 ### `PATCH /api/firms/{firmId}/service-offerings/{offeringId}`
 
 `{ label?, active?, representativePresenceRelevant?, representativeSuppressesInterventionFee?, representativeSuppressesOwnMaterialFees?, feeApplicable? }` (D-101).
@@ -7291,7 +7295,7 @@ Le `summary` porte sur **toute la période**, `items` sur la page demandée.
         "hasNoMaterialJustification": false,
         "isStale": false
       },
-      "financial": { "state": "NOT_CALCULABLE", "label": "Pas encore calculable", "isBlocking": false }
+      "financial": { "state": "NOT_CALCULABLE", "label": "Pas encore calculable", "isBlocking": false, "anomalyCount": 0, "anomalyReasons": [] }
     }
   ],
   "total": 28,
@@ -7337,8 +7341,107 @@ par mission). Ajouté lors de l'intégration frontend : la vue "À traiter" en a
 lister les encodages en cours anormalement longtemps sans comparer `endAt` à "maintenant"
 elle-même, ce qui dupliquerait une règle métier.
 
+**`financial.anomalyCount` / `financial.anomalyReasons`** (D-138, additif) — vides hors
+`ANOMALY`. En `ANOMALY` : ventilation, par motif, des anomalies du **dernier calcul échoué**
+(`[{ "code": "MISSING_FIRM_MATERIAL_RATE", "label": "Tarif matériel manquant", "count": 9 }, …]`,
+le plus fréquent d'abord). Codes = `FirmBillingReason` (identiques aux codes du moteur) ; un
+échec sans anomalie exploitable compte pour un `CALCULATION_FAILED`, si bien qu'une mission
+`ANOMALY` a toujours au moins un motif. `anomalyCount` = somme des `count`, égal au nombre
+d'anomalies du détail ci-dessous.
+
+**Résolution d'un échec (D-138)** — une mission est `ANOMALY` tant que son dernier
+`FINANCIAL_CALCULATION_FAILED` n'est suivi (par **identifiant d'audit**, jamais par horodatage)
+d'aucun `FINANCIAL_CALCULATION_CREATED`/`RECALCULATED` désignant un calcul encore actif.
+
 **Limite** — `encodingState` filtre après dérivation, donc après pagination : sur une page
 filtrée par état, `total` reflète la population avant filtrage (voir D-118).
+
+### `GET /api/billing/encoding-tracking/missions/{missionId}/financial-anomalies` (D-138)
+
+Détail du statut FINANCE d'une mission pour le tiroir du suivi. `BillingVoter::MANAGE`
+(manager / admin) ; 404 si la mission n'existe pas. Lecture seule : ne relance jamais le
+moteur. `state` est calculé exactement comme dans la liste (mêmes faits, même résolveur).
+Hors `ANOMALY`, `anomalies` est vide et `retry` vaut `null`.
+
+En `ANOMALY`, `anomalies` liste **toutes** les anomalies du dernier `AuditEvent
+FINANCIAL_CALCULATION_FAILED` (le seul qui puisse justifier l'état, voir D-138), dans l'ordre du
+moteur, traduites par `FinancialCalculationAnomalyExplainer` — la même traduction que la
+worklist « Facturation firmes ». Le message technique du moteur n'est jamais renvoyé.
+
+**Réponse — 200 :**
+
+```json
+{
+  "missionId": 1040,
+  "state": "ANOMALY",
+  "label": "Anomalie",
+  "isBlocking": true,
+  "failedAt": "2026-10-08T06:29:04+02:00",
+  "effectiveAt": "2026-10-01",
+  "anomalies": [
+    {
+      "code": "MISSING_FIRM_MATERIAL_RATE",
+      "category": "CONFIGURATION",
+      "severity": "BLOCKING",
+      "title": "Tarif matériel manquant",
+      "explanation": "Aucun tarif applicable n'est configuré pour ce matériel (Arthrex) au 01/10/2026. S'il n'est jamais facturé, marquez-le « non facturable » dans le catalogue.",
+      "firm": { "id": 5, "name": "Arthrex" },
+      "element": { "type": "MATERIAL", "label": "SwiveLock C Anchor", "reference": "SwiveLock" },
+      "action": { "code": "CONFIGURE_MATERIAL_RATE", "label": "Configurer le tarif" },
+      "resolved": false,
+      "missionInterventionId": 105,
+      "materialLineId": 153,
+      "conflictingRules": []
+    }
+  ],
+  "retry": { "kind": "CALCULATE", "calculationId": null }
+}
+```
+
+- `category` : `CONFIGURATION` (tarif manquant), `ENCODING` (donnée d'encodage manquante ou
+  invalide), `TECHNICAL` (code moteur non reconnu ou payload vide → `CALCULATION_FAILED`,
+  jamais présenté comme un problème métier). `severity` est toujours `BLOCKING` : toute anomalie
+  du moteur empêche le calcul entier (D-073 §14).
+- `element.type` : `INTERVENTION` | `MATERIAL` (avec `reference`) | `INSTRUMENTIST` ; `null`
+  pour une anomalie de mission (ex. durée invalide).
+- `missionInterventionId` : intervention concernée, ou celle qui porte la ligne de matériel ;
+  `materialLineId` : ligne concernée. Ids = ceux de `entries` de
+  `GET /api/missions/{id}/encoding` (localisation dans le tiroir). Un élément supprimé depuis
+  l'échec garde son id audité mais n'est plus localisable.
+- `action.code` : `CONFIGURE_INTERVENTION_RATE` | `CONFIGURE_MATERIAL_RATE` |
+  `CONFIGURE_INSTRUMENTIST_RATE` | `OPEN_MISSION`.
+- `conflictingRules` : vide sauf pour `CONFLICTING_FIRM_INTERVENTION_RATE`,
+  `CONFLICTING_FIRM_MATERIAL_RATE`, `CONFLICTING_INSTRUMENTIST_RATE` (plusieurs règles actives
+  couvrent la même cible à la date de la mission ; le moteur n'en choisit aucune). Instantané
+  audité : `[{ "id": 12, "unitPrice": "300.00", "currency": "EUR", "validFrom": "2026-01-01",
+  "validTo": null }]` — `validTo` exclusif (D-072).
+- `resolved` : la cause n'existe plus dans la configuration actuelle (mêmes résolveurs que le
+  moteur). L'anomalie reste affichée tant qu'un calcul n'a pas abouti — l'historique d'audit
+  n'est jamais modifié.
+- `retry` : relance possible, décidée par le backend — `CALCULATE` →
+  `POST /api/missions/{id}/financial-calculations` ; `RECALCULATE` →
+  `POST /api/financial-calculations/{calculationId}/recalculate` (un recalcul a échoué, le
+  calcul précédent reste actif). `null` si la mission n'est plus `VALIDATED` ou si le calcul
+  actif est `LOCKED` (jamais recalculé, D-073 §19).
+
+#### Règles tarifaires contradictoires (D-138)
+
+`PricingRuleWriteService` / `InstrumentistRateWriteService` refusent déjà tout chevauchement
+(`409 PRICING_RULE_PERIOD_OVERLAP` / `INSTRUMENTIST_RATE_PERIOD_OVERLAP`). Si des données écrites
+hors application en contiennent malgré tout :
+
+- le calcul financier échoue en **422 `FINANCIAL_CALCULATION_ANOMALIES`** avec les anomalies
+  `CONFLICTING_FIRM_INTERVENTION_RATE` / `CONFLICTING_FIRM_MATERIAL_RATE` /
+  `CONFLICTING_INSTRUMENTIST_RATE` (contexte : cible + `conflictingRules`) — plus jamais un 500 ;
+- tout autre endpoint qui résout un tarif répond **409 `PRICING_RULE_CONFLICT`** /
+  **`INSTRUMENTIST_RATE_CONFLICT`**, `violations` = règles en cause (`id`, `unitPrice`,
+  `currency`, `validFrom`, `validTo`) ;
+- `GET /api/material-items` (manager), `GET /api/intervention-types/{id}/offerings` et
+  `GET /api/firms/{firmId}/service-offerings` (manager, forfait unique hors option de choix)
+  ne tombent pas : champ additif `pricingConflictRuleIds` (`null` hors conflit, sinon ids des
+  règles) ; le prix courant / forfait vaut alors `null` — jamais un tarif choisi. Les écrans
+  du catalogue affichent « Conflit tarifaire » (ids des règles en infobulle), toujours
+  distinct de « Tarif non configuré » (aucune règle active).
 
 ### `GET /api/billing/encoding-tracking/summary`
 

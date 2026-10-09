@@ -32,7 +32,8 @@ export const billingConfig: HelpTopic = {
       heading: "Forfait — trois états, jamais confondus",
       bullets: [
         "Un montant chiffré (« 191,00 € HTVA ») : un tarif est actif pour cette prestation.",
-        "« Tarif à définir » : un forfait est prévu, mais aucun montant n'a encore été configuré.",
+        "« Tarif non configuré » : un forfait est prévu, mais aucun montant n'a encore été configuré.",
+        "« Conflit tarifaire » : plusieurs tarifs actifs couvrent la même prestation à la même date — le calcul financier est bloqué tant qu'un seul n'est pas conservé.",
         "« Pas de forfait » : décision volontaire — cette prestation n'a jamais de forfait, distinct d'un tarif simplement pas encore défini.",
       ],
     },
@@ -48,7 +49,7 @@ export const billingConfig: HelpTopic = {
       paragraphs: [
         "Le tarif matériel fixe un prix unitaire pour un article précis de cette firme, ligne par ligne selon les quantités réellement encodées — contrairement au forfait, qui couvre toute l'intervention en un montant fixe.",
         "« Nouveau matériel » ne demande que l'identification (nom, unité, référence, implant ou non) : le tarif se configure ensuite depuis « Modifier », avec le même historique de versions que le forfait.",
-        "Un matériel sans tarif actif affiche « Tarif à définir », jamais masqué ni confondu avec « non facturable ».",
+        "Un matériel sans tarif actif affiche « Tarif non configuré » (ou « Conflit tarifaire » si plusieurs tarifs actifs se contredisent), jamais masqué ni confondu avec « non facturable ».",
       ],
     },
     {

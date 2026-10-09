@@ -11488,3 +11488,125 @@ aucune donnée patient.
 - Le générateur ne propose que les prestations de la **période** du brouillon (règle de
   période existante de la génération).
 - Un brouillon abandonné ne peut pas être « rouvert » : on en crée un nouveau.
+
+## D-138 — Suivi des encodages : toute « Anomalie » FINANCE est expliquée et localisée (2026-10-08)
+
+**Statut :** accepté — branche `fix/suivi-encodages-anomalie-finance`, non fusionnée, non déployée.
+
+> **Numérotation :** D-138 confirmé le 2026-10-08 avec le chantier parallèle `feat/catalogue-request-resolution-traceability` (PR #4), qui avait aussi rédigé un D-138 et l'a renuméroté **D-139** (commit `1d890a8`). Le contenu des autres ADR n'est pas modifié.
+
+### Contexte
+
+Dans le Suivi des encodages, des missions affichaient « Anomalie » (rouge) dans la colonne
+FINANCE sans qu'aucune explication ne soit accessible : le tiroir montrait les interventions
+et le matériel, rien sur la finance. Cas réel en prod : mission **#1040** (01/10/2026,
+VALIDÉE, 7/7 interventions, 10 h réelles pour 5 h planifiées). Une autre mission du même
+jour (**#1226**, 7 h 45 pour 5 h) affichait « À calculer ».
+
+### Diagnostic (lecture seule, prod)
+
+- `EncodingFinancialStateResolver` dérive `ANOMALY` d'un seul fait :
+  `MissionFinancialFacts::hasUnresolvedCalculationFailure`, soit un `AuditEvent
+  FINANCIAL_CALCULATION_FAILED` qu'aucun calcul actif (`CALCULATED/APPROVED/LOCKED`) n'a suivi
+  (`EncodingTrackingRepository::findMissionsWithFailedCalculation()`). **Aucune règle ne porte
+  sur les heures**, ni dans le résolveur ni dans le moteur (`FinancialCalculationService`
+  valorise la durée effective quelle qu'elle soit ; seule une durée ≤ 0 est une anomalie).
+- #1040 : un calcul lancé manuellement le 08/10/2026 à 06:29 a échoué sur **11 anomalies** au
+  01/10/2026 : 2 × `MISSING_FIRM_INTERVENTION_RATE` (Smith & Nephew, « Suture d'un ménisque de
+  genou ») et 9 × `MISSING_FIRM_MATERIAL_RATE` (JOURNEY II, Ultrabutton ×2, Q-FIX chez Smith &
+  Nephew ; SwiveLock, Agrafe, FiberTak, Vis Bio-Compression chez Arthrex). Les 10 h ne jouent
+  aucun rôle.
+- #1226 : aucun calcul n'a jamais été lancé → `TO_CALCULATE`. La différence entre les deux
+  missions est donc « un calcul a été tenté et a échoué », pas l'écart d'heures.
+- Les anomalies détaillées existaient (payload de l'audit, codes stables + ids d'éléments) et
+  étaient déjà traduites en français par la worklist « Facturation firmes » (D-133), mais l'API
+  du suivi n'exposait que `state/label/isBlocking` et le tiroir n'avait aucune section
+  financière. Le statut était correct ; il était **inexplicable**.
+- Deux autres missions de prod sont dans le même cas (#428, dont un tarif instrumentiste
+  manquant, et #436).
+
+### Décisions
+
+1. **Règle métier inchangée.** `ANOMALY` = dernier calcul échoué non suivi d'un calcul actif.
+   Un écart d'heures reste une information opérationnelle (colonne HEURES, D-136) et ne crée
+   jamais d'anomalie financière. Aucune donnée de prod n'est modifiée.
+2. **Une seule traduction des anomalies du moteur** : `FinancialCalculationAnomalyExplainer`
+   (extrait tel quel de `FirmBillingWorklistService::translateAnomaly()`/`latestFailures()`).
+   La worklist et le suivi l'utilisent tous deux ; la worklist garde son habillage (clé,
+   contexte mission, calcul actif) et sa sortie est inchangée. Seul ajout de fond : une ligne de
+   matériel supprimée depuis l'échec garde le libellé de son article (lu dans le contexte
+   audité) au lieu d'un libellé vide.
+3. **Le dernier échec explique l'état** : « il existe un échec non suivi d'un calcul actif » ⇔
+   « le dernier échec n'est suivi d'aucun calcul actif ». Le tiroir lit donc ce dernier échec,
+   jamais une reconstitution.
+4. **Liste** : `financial.anomalyCount` + `financial.anomalyReasons` (ventilation par code, le
+   plus fréquent d'abord), calculés par le backend en une requête par page. Un échec sans
+   anomalie exploitable compte pour un `CALCULATION_FAILED` : une mission `ANOMALY` a toujours
+   un motif. Sous « Anomalie », le cockpit affiche le motif (ou « N problèmes » + infobulle).
+5. **Tiroir** : `GET /api/billing/encoding-tracking/missions/{id}/financial-anomalies`
+   (`BillingVoter::MANAGE`) — même état que la liste, chaque anomalie avec `code`, `category`
+   (`CONFIGURATION` / `ENCODING` / `TECHNICAL`), `severity` (`BLOCKING`), titre, explication,
+   firme, élément, action de résolution, `resolved`, `missionInterventionId`, `materialLineId`.
+   Section « Anomalies financières » en tête du tiroir ; les éléments concernés sont marqués
+   dans les trois modes de l'encodage et « Voir dans l'encodage » y mène (en vue Matériel, une
+   anomalie d'intervention bascule sur « Par intervention »).
+6. **Échec technique ≠ anomalie métier.** Un code moteur inconnu ou un payload vide devient
+   `CALCULATION_FAILED`, catégorie `TECHNICAL`, jamais un problème métier inventé ; le message
+   technique du moteur n'est jamais renvoyé. Une exception non métier pendant le calcul n'est
+   pas auditée et ne produit donc jamais `ANOMALY`. Côté frontend, un échec de chargement du
+   détail s'affiche comme tel — ni anomalie, ni absence d'anomalie.
+7. **Relance depuis le tiroir** : `retry` (`CALCULATE` | `RECALCULATE` + `calculationId` |
+   `null`) est décidé par le backend selon les préconditions du moteur (mission `VALIDATED`,
+   jamais un calcul `LOCKED`) ; le bouton appelle les endpoints dédiés existants. Un nouvel échec
+   (422) recharge le détail, qui ne montre alors que les anomalies restantes ; un succès fait
+   disparaître la section. Invalidation : liste, détail, calculs de la mission, audit, worklist
+   « Facturation firmes ». Si le détail est plus récent que la liste (états différents), la
+   liste est rechargée. `FinancialCalculationService::findActiveCalculation()` devient public
+   pour ce seul usage en lecture.
+8. **Historique intact** : `resolved = true` signale qu'une cause n'existe plus, mais l'anomalie
+   reste affichée tant qu'un calcul n'a pas abouti ; aucun `AuditEvent` n'est modifié ni
+   supprimé, aucun calcul verrouillé n'est touché.
+
+### Limites connues
+
+- **Code couleur des heures** : D-136 confirmé par le métier le 2026-10-08 (vert ≤ planifié,
+  orange > planifié, gris sans heure réelle) — une mission terminée plus tôt n'est jamais
+  anormale, et aucun écart d'heures ne crée d'anomalie financière.
+- Écrans catalogue (Catalogue matériel, Prestations par firme — forfaits et matériels —,
+  détail d'une intervention du référentiel) : deux états jamais confondus, « Tarif non
+  configuré » (aucune règle active) et « Conflit tarifaire » (`pricingConflictRuleIds` du
+  backend, règles en infobulle) — le frontend ne détecte rien lui-même. Limite restante : le
+  forfait par option de choix obligatoire n'expose pas encore de conflit à l'écran (le moteur
+  et le suivi des encodages le signalent).
+
+### Compléments (2026-10-08, finalisation)
+
+9. **Règles tarifaires contradictoires.** Analyse : `PricingRuleResolver` sélectionne les
+   règles actives de la cible (firme + type d'intervention [+ option de choix] ou matériel)
+   couvrant la date effective (`validFrom <= date < validTo`, bornes nulles = infinies,
+   `validTo` exclusif D-072) ; aucune priorité n'existe, par construction : à l'écriture,
+   `PricingRuleWriteService` (seul point d'écriture, y compris pour `PricingRuleVersioningService`)
+   refuse tout chevauchement sous verrou pessimiste de la cible (D-067) — même règle pour
+   `InstrumentistRateWriteService`. Des périodes contiguës et des options de choix distinctes
+   restent légitimes. Un conflit ne peut donc venir que de données écrites hors application
+   (SQL, migration — cf. la fusion IMPLANT_FEE → MATERIAL_FEE —, import) ; la prod n'en contient
+   aucun au 2026-10-08. Jusqu'ici, le résolveur levait alors une `LogicException` → **HTTP 500**.
+   Désormais : `PricingRuleConflictException` / `InstrumentistRateConflictException` (409,
+   règles triées par id), converties par le moteur en anomalies `CONFLICTING_*` (catégorie
+   CONFIGURATION, contexte audité = instantané des règles) et expliquées par
+   `FinancialCalculationAnomalyExplainer` (montants, périodes, ids). Le moteur ne choisit
+   jamais ; aucune priorité ni convention tarifaire n'est modifiée ; la prévention à l'écriture,
+   déjà complète, est seulement couverte par des tests supplémentaires.
+10. **Ordre des événements, jamais les horodatages.** La règle « échec résolu si un calcul
+    actif a `calculated_at >= created_at` de l'échec » confondait deux événements de la même
+    seconde (un recalcul échoué juste après un calcul réussi passait pour résolu) et dépendait
+    des horloges. `findMissionsWithFailedCalculation()` compare maintenant les **identifiants
+    d'audit** : l'échec est résolu ssi un `FINANCIAL_CALCULATION_CREATED`/`RECALCULATED`
+    d'identifiant supérieur désigne (`payload.financialCalculationId`) un calcul encore actif.
+    Déterministe : `calculate()`/`recalculate()` tiennent un verrou pessimiste sur la mission,
+    les identifiants suivent l'ordre réel. `latestFailures()` trie aussi par identifiant.
+    Aucun historique ni calcul n'est modifié ; la prod ne contient encore aucun calcul
+    financier (vérifié au 2026-10-08), aucune reprise n'est nécessaire. Un calcul actif créé
+    sans événement d'audit (hors application) ne résout plus un échec — assumé.
+- `effectiveAt` / dates des explications = date de l'échec audité ; `resolved` est évalué à
+  la date effective **actuelle** de la mission (mêmes résolveurs que le moteur).

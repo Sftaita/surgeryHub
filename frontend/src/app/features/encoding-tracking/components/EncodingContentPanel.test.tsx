@@ -1,7 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { EncodingContentPanel } from "./EncodingContentPanel";
+import type { EncodingAnomalyMarks } from "./EncodingContentPanel";
 import type { EncodingEntryMaterialLine, MissionEncodingEntry } from "../../encoding/api/encoding.types";
 
 function line(id: number, label: string, quantity: string, unit: string, ref = `REF-${id}`): EncodingEntryMaterialLine {
@@ -96,5 +97,55 @@ describe("EncodingContentPanel", () => {
 
     expect(screen.getByRole("button", { name: "Par intervention" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getAllByTestId("intervention-block")).toHaveLength(2);
+  });
+});
+
+describe("EncodingContentPanel — anomalies financières (D-138)", () => {
+  // Intervention 1 en anomalie (tarif d'intervention), ligne 3 (« Ancre », intervention 2) en anomalie matériel.
+  const MARKS: EncodingAnomalyMarks = { interventionIds: new Set([1]), materialLineIds: new Set([3]) };
+
+  it("les éléments signalés par le backend sont marqués dans les trois modes, et seulement eux", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<EncodingContentPanel entries={ENTRIES} anomalyMarks={MARKS} />);
+
+    // Par intervention : le bloc 1 et la ligne « Ancre » ; ni le bloc 2 ni les Fast-Fix.
+    const marked = () => Array.from(container.querySelectorAll("[data-anomaly]")).map((el) => el.getAttribute("data-anchor"));
+    expect(marked()).toEqual(["itv-1", "ml-3"]);
+
+    await user.click(screen.getByRole("button", { name: "Matériel" }));
+    expect(marked()).toEqual(["ml-3"]);
+
+    // Vue sans matériel : l'anomalie de la ligne 3 se signale sur l'intervention qui la porte.
+    await user.click(screen.getByRole("button", { name: "Interventions" }));
+    expect(marked()).toEqual(["itv-1", "itv-2"]);
+  });
+
+  it("sans anomalie, aucun marqueur", () => {
+    const { container } = render(<EncodingContentPanel entries={ENTRIES} />);
+    expect(container.querySelectorAll("[data-anomaly]")).toHaveLength(0);
+    expect(screen.queryByText("Anomalie")).not.toBeInTheDocument();
+  });
+
+  it("« Voir » mène à l'élément dans chaque mode ; une anomalie d'intervention en vue Matériel bascule sur Par intervention", async () => {
+    const user = userEvent.setup();
+    const scrolled: string[] = [];
+    // jsdom n'implémente pas scrollIntoView : on le fournit le temps du test pour l'observer.
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = vi.fn(function (this: HTMLElement) {
+      scrolled.push(this.getAttribute("data-anchor") ?? "");
+    });
+
+    const { rerender } = render(<EncodingContentPanel entries={ENTRIES} anomalyMarks={MARKS} focus={{ missionInterventionId: 2, materialLineId: 3, nonce: 1 }} />);
+    expect(scrolled.at(-1)).toBe("ml-3");
+
+    await user.click(screen.getByRole("button", { name: "Interventions" }));
+    rerender(<EncodingContentPanel entries={ENTRIES} anomalyMarks={MARKS} focus={{ missionInterventionId: 2, materialLineId: 3, nonce: 2 }} />);
+    expect(scrolled.at(-1)).toBe("itv-2");
+
+    await user.click(screen.getByRole("button", { name: "Matériel" }));
+    rerender(<EncodingContentPanel entries={ENTRIES} anomalyMarks={MARKS} focus={{ missionInterventionId: 1, materialLineId: null, nonce: 3 }} />);
+    expect(screen.getByRole("button", { name: "Par intervention" })).toHaveAttribute("aria-pressed", "true");
+    expect(scrolled.at(-1)).toBe("itv-1");
+    HTMLElement.prototype.scrollIntoView = original;
   });
 });

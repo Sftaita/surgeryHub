@@ -8,6 +8,7 @@ use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
 use App\Entity\PricingRule;
 use App\Enum\PricingRuleType;
+use App\Exception\PricingRuleConflictException;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
@@ -16,9 +17,11 @@ use Doctrine\ORM\EntityManagerInterface;
  * (voir docs/decisions.md — l'invariant central de tout ce module).
  *
  * Résolution déterministe : jamais de choix silencieux entre plusieurs règles actives
- * qui se chevauperaient — si l'anti-chevauchement (hasOverlap, appelé à l'écriture) a
+ * qui se chevaucheraient — si l'anti-chevauchement (hasOverlap, appelé à l'écriture) a
  * été respecté, au plus une règle peut jamais matcher une date donnée. Si ce n'est pas
- * le cas (données corrompues, contrainte contournée), on lève plutôt qu'on ne devine.
+ * le cas (données écrites hors application), on lève PricingRuleConflictException
+ * (exception MÉTIER, D-138) plutôt qu'on ne devine : anomalie explicite dans le moteur,
+ * 409 ailleurs — jamais un 500.
  */
 final class PricingRuleResolver
 {
@@ -35,10 +38,7 @@ final class PricingRuleResolver
         $matching = $this->matchingRules($firm, PricingRuleType::INTERVENTION_FEE, $date, interventionType: $interventionType, choiceOption: $choiceOption);
 
         if (count($matching) > 1) {
-            throw new \LogicException(sprintf(
-                'Plusieurs PricingRule INTERVENTION_FEE actives se chevauchent pour firm=%d, interventionType=%d, choiceOption=%s à la date %s.',
-                $firm->getId(), $interventionType->getId(), $choiceOption?->getId() ?? 'null', $date->format('Y-m-d'),
-            ));
+            throw new PricingRuleConflictException($matching, $date);
         }
 
         return $matching[0] ?? null;
@@ -50,10 +50,7 @@ final class PricingRuleResolver
         $matching = $this->matchingRules($firm, PricingRuleType::MATERIAL_FEE, $date, materialItem: $materialItem);
 
         if (count($matching) > 1) {
-            throw new \LogicException(sprintf(
-                'Plusieurs PricingRule MATERIAL_FEE actives se chevauchent pour materialItem=%d à la date %s.',
-                $materialItem->getId(), $date->format('Y-m-d'),
-            ));
+            throw new PricingRuleConflictException($matching, $date);
         }
 
         return $matching[0] ?? null;
@@ -135,6 +132,9 @@ final class PricingRuleResolver
         /** @var PricingRule[] $candidates */
         $candidates = $qb->getQuery()->getResult();
 
-        return array_values(array_filter($candidates, static fn (PricingRule $r) => $r->coversDate($date)));
+        $matching = array_values(array_filter($candidates, static fn (PricingRule $r) => $r->coversDate($date)));
+        usort($matching, static fn (PricingRule $a, PricingRule $b) => $a->getId() <=> $b->getId());
+
+        return $matching;
     }
 }

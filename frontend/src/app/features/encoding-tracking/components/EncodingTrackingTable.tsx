@@ -1,4 +1,4 @@
-import { Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
+import { Box, Button, CircularProgress, Stack, Tooltip, Typography } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import type { EncodingState, EncodingTrackingItem } from "../api/encodingTracking.api";
 import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, MISSION_TYPE_LABEL, formatMinutes } from "../encodingStateMeta";
@@ -63,6 +63,16 @@ function dayLabel(key: string): string {
   const d = new Date(`${key}T00:00:00`);
   const label = d.toLocaleDateString("fr-BE", { weekday: "long", day: "numeric", month: "long" });
   return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+/**
+ * D-138 — « pourquoi Anomalie ? » lu dans la ventilation backend (anomalyReasons), jamais
+ * déduit ici : « Tarif matériel manquant ×9 · Tarif d'intervention manquant ×2 ».
+ */
+function anomalyReasonsText(item: EncodingTrackingItem): string {
+  return item.financial.anomalyReasons
+    .map((r) => (r.count > 1 ? `${r.label} ×${r.count}` : r.label))
+    .join(" · ");
 }
 
 function financeStyle(item: EncodingTrackingItem): string {
@@ -258,8 +268,21 @@ export function EncodingTrackingTable({
                         {item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : hoursTone.label}
                       </Box>
                     </Box>
-                    <Box sx={{ width: 110, flexShrink: 0, textAlign: "right", fontSize: 13.5, fontWeight: 800, color: financeStyle(item) }}>
-                      {item.financial.label}
+                    <Box sx={{ width: 110, flexShrink: 0, textAlign: "right" }}>
+                      <Box sx={{ fontSize: 13.5, fontWeight: 800, color: financeStyle(item) }}>{item.financial.label}</Box>
+                      {item.financial.state === "ANOMALY" && item.financial.anomalyCount > 0 && (
+                        <Tooltip title={anomalyReasonsText(item)} describeChild>
+                          <Box
+                            data-testid="finance-anomaly-reasons"
+                            aria-label={`${item.financial.anomalyCount} problème${item.financial.anomalyCount > 1 ? "s" : ""} : ${anomalyReasonsText(item)}`}
+                            sx={{ mt: "2px", fontSize: 10.5, fontWeight: 700, color: RED_700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                          >
+                            {item.financial.anomalyReasons.length === 1
+                              ? item.financial.anomalyReasons[0].label
+                              : `${item.financial.anomalyCount} problèmes`}
+                          </Box>
+                        </Tooltip>
+                      )}
                     </Box>
                     <Box sx={{ width: 26, flexShrink: 0, color: GRAY_300, display: "grid", placeItems: "center" }}>
                       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">

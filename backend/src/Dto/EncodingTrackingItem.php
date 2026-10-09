@@ -74,6 +74,16 @@ final readonly class EncodingTrackingItem
         public bool $isStale,
 
         public EncodingFinancialState $financialState,
+
+        /**
+         * D-138 — motifs de l'anomalie financière (vide hors ANOMALY), ventilés par code
+         * moteur à partir du dernier échec audité : la liste dit « pourquoi » sans que le
+         * frontend ne devine. Le détail localisé est servi par
+         * EncodingTrackingService::explainFinancialState().
+         *
+         * @var list<array{code: string, label: string, count: int}>
+         */
+        public array $financialAnomalyReasons = [],
     ) {}
 
     /** L'écart entre planifié et réel n'a de sens que si le réel existe. */

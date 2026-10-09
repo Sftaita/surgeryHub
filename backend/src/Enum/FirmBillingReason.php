@@ -52,6 +52,10 @@ enum FirmBillingReason: string
     case MISSING_REPRESENTATIVE_PRESENCE_ANSWER = 'MISSING_REPRESENTATIVE_PRESENCE_ANSWER';
     case MISSING_REQUIRED_CHOICE_ANSWER = 'MISSING_REQUIRED_CHOICE_ANSWER';
     case INVALID_EFFECTIVE_DURATION = 'INVALID_EFFECTIVE_DURATION';
+    /** D-138 — plusieurs règles actives couvrent la même cible à la même date. */
+    case CONFLICTING_FIRM_INTERVENTION_RATE = 'CONFLICTING_FIRM_INTERVENTION_RATE';
+    case CONFLICTING_FIRM_MATERIAL_RATE = 'CONFLICTING_FIRM_MATERIAL_RATE';
+    case CONFLICTING_INSTRUMENTIST_RATE = 'CONFLICTING_INSTRUMENTIST_RATE';
     /** Repli pour tout code moteur inconnu de ce catalogue. */
     case CALCULATION_FAILED = 'CALCULATION_FAILED';
 
@@ -101,7 +105,26 @@ enum FirmBillingReason: string
             self::MISSING_FIRM_INTERVENTION_RATE, self::MISSING_FIRM_MATERIAL_RATE, self::MISSING_INSTRUMENTIST_RATE,
             self::MISSING_PRIMARY_FIRM, self::MISSING_INTERVENTION_TYPE, self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER,
             self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION, self::CALCULATION_FAILED,
+            self::CONFLICTING_FIRM_INTERVENTION_RATE, self::CONFLICTING_FIRM_MATERIAL_RATE, self::CONFLICTING_INSTRUMENTIST_RATE,
         ], true);
+    }
+
+    /**
+     * D-138 — catégorie d'une anomalie du moteur (null hors anomalies moteur) :
+     * CONFIGURATION = un tarif manque (action : catalogue / fiche instrumentiste) ;
+     * ENCODING      = une donnée d'encodage manque ou est invalide (action : la mission) ;
+     * TECHNICAL     = code moteur non reconnu — jamais présenté comme un problème métier.
+     */
+    public function anomalyCategory(): ?string
+    {
+        return match ($this) {
+            self::MISSING_FIRM_INTERVENTION_RATE, self::MISSING_FIRM_MATERIAL_RATE, self::MISSING_INSTRUMENTIST_RATE,
+            self::CONFLICTING_FIRM_INTERVENTION_RATE, self::CONFLICTING_FIRM_MATERIAL_RATE, self::CONFLICTING_INSTRUMENTIST_RATE => 'CONFIGURATION',
+            self::MISSING_PRIMARY_FIRM, self::MISSING_INTERVENTION_TYPE, self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER,
+            self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION => 'ENCODING',
+            self::CALCULATION_FAILED => 'TECHNICAL',
+            default => null,
+        };
     }
 
     public function label(): string
@@ -129,6 +152,9 @@ enum FirmBillingReason: string
             self::MISSING_REQUIRED_CHOICE_ANSWER => 'Choix obligatoire non renseigné',
             self::INVALID_EFFECTIVE_DURATION => 'Durée de mission invalide',
             self::CALCULATION_FAILED => 'Calcul financier en erreur',
+            self::CONFLICTING_FIRM_INTERVENTION_RATE => "Tarifs d'intervention contradictoires",
+            self::CONFLICTING_FIRM_MATERIAL_RATE => 'Tarifs matériel contradictoires',
+            self::CONFLICTING_INSTRUMENTIST_RATE => 'Tarifs instrumentiste contradictoires',
         };
     }
 
@@ -157,6 +183,8 @@ enum FirmBillingReason: string
             self::MISSING_REQUIRED_CHOICE_ANSWER => "Une réponse obligatoire manque dans l'encodage de cette intervention : elle détermine le forfait.",
             self::INVALID_EFFECTIVE_DURATION => 'La durée réelle de la mission est nulle ou négative : corrigez les horaires.',
             self::CALCULATION_FAILED => 'Le calcul financier a échoué pour une raison non reconnue. Le détail technique est disponible dans les journaux.',
+            self::CONFLICTING_FIRM_INTERVENTION_RATE, self::CONFLICTING_FIRM_MATERIAL_RATE, self::CONFLICTING_INSTRUMENTIST_RATE
+                => "Plusieurs tarifs actifs s'appliquent à la même date : le calcul ne choisit jamais entre eux. Clôturez ou corrigez l'un d'eux.",
         };
     }
 }
