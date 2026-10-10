@@ -11610,3 +11610,86 @@ jour (**#1226**, 7 h 45 pour 5 h) affichait « À calculer ».
     sans événement d'audit (hors application) ne résout plus un échec — assumé.
 - `effectiveAt` / dates des explications = date de l'échec audité ; `resolved` est évalué à
   la date effective **actuelle** de la mission (mêmes résolveurs que le moteur).
+
+## D-140 — Intégration MedVue : liaison des comptes et API machine de lecture des congés (2026-10-10)
+
+### Contexte
+
+MedVue (application de gardes, même VPS, base PostgreSQL privée) doit intégrer automatiquement
+les congés encodés dans SurgicalHub comme indisponibilités du calendrier personnel des médecins.
+Règle non négociable : **les données métier circulent uniquement SurgicalHub → MedVue.** Le côté
+MedVue (import, réconciliation, calendrier, préflight de génération) est développé dans le dépôt
+MedVue ; ses décisions de synchronisation sont dans son `docs/surgicalhub-integration.md` §0.
+Contrat commun v1 : `docs/api.md` « Intégration MedVue ».
+
+Constats d'audit qui ont orienté le contrat :
+
+- `Absence` n'a **aucun statut** (ni demande, ni validation, ni refus), pas d'`updatedAt`, et une
+  annulation est une **suppression physique**. « Retirer un jour » au milieu d'une période crée
+  une nouvelle absence (nouvel `id`). Les absences d'une personne peuvent se chevaucher.
+- `reason` est un texte libre pouvant contenir un motif médical.
+- Rôles réels : `ROLE_ADMIN`, `ROLE_MANAGER`, `ROLE_SURGEON`, `ROLE_INSTRUMENTIST` (pas de
+  « USER » métier). Un seul firewall JWT `^/api`, aucune authentification machine, pas de
+  `symfony/rate-limiter`.
+
+### Décisions
+
+1. **Toute absence = `CONFIRMED`.** Pas de workflow d'approbation ajouté (ce serait un
+   changement métier : une absence libère aujourd'hui des missions dès sa création). Le champ
+   `status` du contrat est prêt pour l'avenir ; MedVue ignore toute autre valeur.
+2. **Instantané complet plutôt que flux incrémental.** Sans `updatedAt` ni trace de
+   suppression, seul un instantané complet d'une fenêtre (une requête, sans pagination,
+   `complete: true`, plafond 1 000 → `422`, jamais tronqué) permet à MedVue de retirer de façon
+   fiable un congé supprimé. Fenêtre ≤ 850 jours (MedVue demande J−90 → J+24 mois).
+3. **Minimisation par construction.** La requête d'export ne sélectionne que `id`,
+   `dateStart`, `dateEnd` ; l'entité n'est jamais hydratée, `reason` ne peut pas fuiter par
+   erreur de sérialisation.
+4. **Authentification machine dédiée.** Firewall `medvue_integration` avant `^/api`, secret
+   Bearer par sens, empreinte SHA-256 seule stockée côté SurgicalHub (rotation par liste),
+   principal technique sans `User`. Autorisation par `MedVueIntegrationVoter` (règle
+   `CLAUDE.md` : jamais de contrôle ad hoc) : `MACHINE_READ` pour le client MedVue,
+   `MANAGE_LINK` pour les utilisateurs.
+5. **Liaison prouvée par MedVue.** Le code est généré, haché, expiré et consommé par MedVue ;
+   SurgicalHub ne fait que le normaliser et le transmettre une fois. Un ADMIN peut lier autrui
+   uniquement avec un code du compte MedVue cible (aucune liaison sur simple email). Garde-fou
+   (côté MedVue) : email au titulaire à chaque association.
+6. **Unicité « au plus une liaison active »** par compte et par `linkId`, sans index partiel
+   MySQL : colonnes `active_user_id`/`active_link_id` remises à NULL à la révocation. Une même
+   paire reconfirmée par MedVue garde son `linkId` : l'historique peut donc contenir plusieurs
+   lignes du même `linkId`, une seule active.
+7. **404 ≠ 410.** `link_not_found` (jamais connu) et `link_revoked` (révoquée), corps JSON
+   versionné. Seul `410` exact révoque et retire des imports côté MedVue ; un `404` exact ne fait
+   que suspendre la liaison (aucune suppression — protège notamment un retour arrière de
+   SurgicalHub sur une sauvegarde antérieure à des liaisons) ; un 404 HTML de proxy ou une panne
+   ne change rien. Détail côté MedVue (suspension, garde-fou du cron).
+8. **Révocation des deux côtés, sans appel sortant à la révocation SurgicalHub** : MedVue
+   l'apprend à sa lecture suivante (≤ 30 min). Révocation depuis MedVue : `DELETE` machine,
+   idempotent, audité avec le titulaire comme acteur (`via: MEDVUE`, `user_audit_event.actor`
+   étant obligatoire).
+9. **Anti-force brute** (`symfony/rate-limiter`, première utilisation) : 5 essais / 15 min par
+   acteur, 20 / 15 min par compte visé, consommés avant tout appel ; plus l'entropie du code
+   (60 bits, 10 min) et la limite propre à MedVue. Pool de cache dédié
+   `cache.medvue_rate_limiter` (filesystem en test, où `cache.app` est remis à zéro entre deux
+   requêtes du client de test).
+10. **Aucun secret dans les traces.** Code jamais stocké ni audité ; `before_send` Sentry
+    (`SentryIntegrationSecretScrubber`) retire corps, query string et en-têtes des requêtes
+    d'intégration ; les logs du client HTTP ne portent que le statut et une raison stable.
+11. **Tests sans réseau.** En test, `framework.http_client.mock_response_factory` =
+    `MockHttpClientCallback` (file d'attente statique) : toute requête sortante imprévue échoue.
+
+### Invariants conservés
+
+- `Absence`, ses contrôleurs, ses services d'impact et leurs notifications : **inchangés**.
+- Aucune route d'intégration n'écrit sur une absence ; la seule écriture machine est la
+  révocation de la liaison.
+- Le secret machine n'ouvre aucune route du firewall JWT ; un JWT n'ouvre pas l'API machine.
+
+### Limites connues
+
+- Compteurs de limitation par instance (filesystem) : à revoir si plusieurs conteneurs PHP.
+- Une révocation SurgicalHub n'est vue par MedVue qu'à sa lecture suivante.
+- Si l'enregistrement SurgicalHub échoue après un `redeem` réussi, MedVue a une liaison que
+  SurgicalHub ignore : la lecture renvoie `404`, MedVue l'affiche ; un nouveau code pour la même
+  paire la reconfirme.
+- `doctrine:migrations:diff` reste inutilisable (type `SlotPeriod` non enregistré, préexistant) :
+  migration `Version20261010090000` écrite à la main, testée up/down/up.

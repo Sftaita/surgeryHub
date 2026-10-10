@@ -123,6 +123,48 @@ class UserAuditService
         );
     }
 
+    /**
+     * D-140 — association MedVue. Le payload ne contient jamais le code d'association : seulement
+     * l'identifiant opaque de liaison et le mode (soi-même / administrateur).
+     */
+    public function medvueLinked(User $actor, User $target, string $linkId): void
+    {
+        $this->persist(
+            actor: $actor,
+            target: $target,
+            type: UserAuditEventType::MEDVUE_LINKED,
+            description: sprintf('Compte MedVue associé pour %s', $target->getEmail()),
+            payload: ['linkId' => $linkId, 'byAdministrator' => $actor->getId() !== $target->getId()],
+        );
+    }
+
+    /**
+     * Révocation. Depuis MedVue il n'y a pas d'acteur SurgicalHub : l'acteur enregistré est alors
+     * le titulaire lui-même (c'est lui qui dissocie depuis son compte MedVue), `via` le précise.
+     */
+    public function medvueUnlinked(User $actor, User $target, string $linkId, string $via): void
+    {
+        $this->persist(
+            actor: $actor,
+            target: $target,
+            type: UserAuditEventType::MEDVUE_UNLINKED,
+            description: sprintf('Association MedVue révoquée pour %s (%s)', $target->getEmail(), $via),
+            payload: ['linkId' => $linkId, 'via' => $via],
+        );
+    }
+
+    /** Échec d'association : uniquement un code de raison stable, jamais le code saisi ni une réponse brute. */
+    public function medvueLinkFailed(User $actor, User $target, string $reason): void
+    {
+        $this->persist(
+            actor: $actor,
+            target: $target,
+            type: UserAuditEventType::MEDVUE_LINK_FAILED,
+            description: sprintf('Échec d\'association MedVue pour %s (%s)', $target->getEmail(), $reason),
+            payload: ['reason' => $reason, 'byAdministrator' => $actor->getId() !== $target->getId()],
+        );
+    }
+
     /** No single target — concerns N people at once, listed in the payload. */
     public function absencesRequestSent(User $actor, int $recipientCount): void
     {

@@ -28,6 +28,7 @@ import { fetchSites, type Site } from "../../sites/api/sites.api";
 import { InvitationStatusChip } from "./InvitationStatusChip";
 import { AdminChangeRoleModal } from "./AdminChangeRoleModal";
 import { AdminSuspendModal } from "./AdminSuspendModal";
+import { MedVueIntegrationCard } from "../../medvue-integration/MedVueIntegrationCard";
 
 const DRAWER_WIDTH = 420;
 
@@ -179,6 +180,11 @@ export function AdminUserDrawer({ userId, onClose }: Props) {
                     )}
                   </Stack>
                 </Box>
+
+                <Divider />
+
+                {/* D-140 — Intégration MedVue (ADMIN : association avec le code du titulaire) */}
+                <MedVueIntegrationCard userId={user.id} forOtherUser bare />
 
                 <Divider />
 

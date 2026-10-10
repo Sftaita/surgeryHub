@@ -6,6 +6,7 @@ import { fetchMe, uploadProfilePicture } from "../../features/me/api/me.api";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../../ui/toast/useToast";
 import { PushPermissionCard } from "../../features/push/PushPermissionCard";
+import { MedVueIntegrationCard } from "../../features/medvue-integration/MedVueIntegrationCard";
 import { NotificationPreferencesSection } from "../../features/notifications/NotificationPreferencesSection";
 import { PwaInstallMenuItem } from "../../features/pwa-install/PwaInstallMenuItem";
 import { AvatarUploader } from "../../ui/avatar/AvatarUploader";
@@ -115,6 +116,8 @@ export default function ProfilePage() {
             La modification de ces informations doit être réalisée par un administrateur.
           </Typography>
         </Paper>
+
+        <MedVueIntegrationCard userId={user.id} />
 
         <PushPermissionCard />
         <NotificationPreferencesSection />

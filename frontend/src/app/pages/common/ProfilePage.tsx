@@ -11,6 +11,7 @@ import { AvatarUploader } from "../../ui/avatar/AvatarUploader";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { PwaInstallMenuItem } from "../../features/pwa-install/PwaInstallMenuItem";
 import { PushPermissionCard } from "../../features/push/PushPermissionCard";
+import { MedVueIntegrationCard } from "../../features/medvue-integration/MedVueIntegrationCard";
 import { NotificationPreferencesSection } from "../../features/notifications/NotificationPreferencesSection";
 import { EmptyState } from "../../ui/EmptyState";
 import { useInstrumentistOnboardingReplay } from "../../features/instrumentist-onboarding/InstrumentistOnboardingReplayContext";
@@ -155,6 +156,8 @@ export default function ProfilePage() {
           )}
         </Stack>
       </Paper>
+
+      <MedVueIntegrationCard userId={user.id} />
 
       <Divider />
 
