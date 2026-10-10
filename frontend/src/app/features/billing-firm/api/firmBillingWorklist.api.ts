@@ -74,6 +74,11 @@ export interface WorklistAnomaly {
   action: { code: AnomalyActionCode; label: string } | null;
   /** La cause n'existe plus dans la configuration actuelle : la mission peut être recalculée. */
   resolved: boolean;
+  /** D-141 — issue actuelle de l'élément selon le moteur (null pour une anomalie de workflow). */
+  currentResolution: { kind: string | null; label: string | null } | null;
+  referenceDate: string;
+  /** D-141 — anomalie qu'un recalcul produirait, absente de l'échec audité. */
+  detectedAfterFailure: boolean;
   calculationId: number | null;
   rowKey: string | null;
   calculationLocked: boolean;

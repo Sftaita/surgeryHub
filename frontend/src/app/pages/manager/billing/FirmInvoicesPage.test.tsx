@@ -90,6 +90,7 @@ function anomaly(extra: Partial<WorklistAnomaly> = {}): WorklistAnomaly {
     explanation: "Aucun tarif applicable n'est configuré pour cette prestation chez Arthrex au 02/09/2026.",
     mission: { ...MISSION, id: 501 }, firm: ARTHREX, element: { type: "INTERVENTION", label: "Arthrodèse 2 niveaux" },
     action: { code: "CONFIGURE_INTERVENTION_RATE", label: "Configurer le tarif" }, resolved: false, calculationId: null, rowKey: null, calculationLocked: false,
+    currentResolution: null, referenceDate: "2026-09-02", detectedAfterFailure: false,
     ...extra,
   };
 }

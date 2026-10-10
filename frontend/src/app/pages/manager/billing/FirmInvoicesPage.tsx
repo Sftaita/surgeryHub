@@ -750,6 +750,7 @@ function ToFixView({ worklist, onDone, onError }: { worklist: FirmBillingWorklis
                     <Stack direction="row" spacing={1} alignItems="center">
                       <Typography fontWeight={700} color="warning.dark">{a.title}</Typography>
                       {a.resolved && <Chip size="small" color="success" variant="outlined" label="Corrigé — à recalculer" />}
+                      {a.detectedAfterFailure && <Chip size="small" color="warning" variant="outlined" label="Apparue depuis le dernier calcul" />}
                     </Stack>
                     {(a.element?.label || a.firm) && (
                       <Typography variant="body2" fontWeight={600}>
@@ -757,6 +758,9 @@ function ToFixView({ worklist, onDone, onError }: { worklist: FirmBillingWorklis
                       </Typography>
                     )}
                     <Typography variant="body2" color="text.secondary">{a.explanation}</Typography>
+                    {a.resolved && a.currentResolution?.label && (
+                      <Typography variant="body2" color="success.dark" sx={{ mt: 0.25 }}>Désormais : {a.currentResolution.label}</Typography>
+                    )}
                   </Box>
                   {a.action && !(a.resolved && a.action.code.startsWith("CONFIGURE")) && (
                     <Button size="small" variant={["CALCULATE", "APPROVE", "RECALCULATE"].includes(a.action.code) ? "contained" : "outlined"} disableElevation disabled={busy} onClick={() => runAction(a)}>
