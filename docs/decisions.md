@@ -11693,3 +11693,147 @@ Constats d'audit qui ont orienté le contrat :
   paire la reconfirme.
 - `doctrine:migrations:diff` reste inutilisable (type `SlotPeriod` non enregistré, préexistant) :
   migration `Version20261010090000` écrite à la main, testée up/down/up.
+
+## D-141 — Cohérence tarifaire Catalogue ↔ moteur ↔ Suivi des encodages ↔ Facturation firmes : les explications d'anomalies rejouent le moteur lui-même (2026-10-10)
+
+**Statut :** accepté — branche `fix/tarification-coherence`, non fusionnée, non déployée.
+
+### Contexte
+
+Le manager voyait des messages contradictoires pour une même prestation : « Pas de forfait »
+dans le catalogue, « Tarif d'intervention manquant » dans « Factures firmes » et dans le tiroir
+du « Suivi des encodages » ; « Calcul bloqué » pour une plastie du LCA dont le tarif (135 €) est
+bien configuré. Cas réel : mission **#1040** (01/10/2026, VALIDÉE, 7 interventions, 12 lignes
+de matériel), dernier calcul échoué le 08/10/2026 à 06:29 sur 11 anomalies.
+
+### Diagnostic (prod, lecture seule, 2026-10-10)
+
+Modèle — quatre états, déjà distincts en base :
+
+| État | Intervention | Matériel |
+|---|---|---|
+| Tarif positif configuré | `PricingRule INTERVENTION_FEE` active couvrant la date | `PricingRule MATERIAL_FEE` active couvrant la date |
+| Absence volontaire de forfait | `FirmServiceOffering.feeApplicable = false` (« Pas de forfait ») | `MaterialItem.billingStatus = NOT_BILLABLE` |
+| Tarif manquant | forfait attendu (`feeApplicable = true` ou prestation non configurée) et aucune règle couvrant la date | `UNSPECIFIED` (aucune décision) ou `BILLABLE` sans règle |
+| Exclusion par règle métier | délégué présent + neutralisation (`FirmServiceOffering`, D-092) : ligne à 0 avec motif | idem, matériel de la firme principale uniquement |
+
+« Pas de forfait » n'est donc jamais une valeur nulle : c'est `feeApplicable = false`, et le
+moteur (`FinancialCalculationService::resolveFirmInterventionLine()`) ne produit alors ni ligne
+ni anomalie. Un tarif manquant n'est jamais un 0 €.
+
+Mission #1040 (firmes 4 = Smith & Nephew, 5 = Arthrex) :
+
+| Élément | Cible | Règle actuelle | Constat |
+|---|---|---|---|
+| 1/7, 2/7 « Suture d'un ménisque de genou » (mi 105, 106) | firme 4, type 24 `SUT-MEN` | aucune | offre #69 : `feeApplicable` mis à 0 le **10/10/2026 04:18 UTC**, *après* l'échec. Le moteur ne pouvant produire `MISSING_FIRM_INTERVENTION_RATE` qu'avec `feeApplicable = true`, la prestation attendait un forfait au moment de l'échec. |
+| 3/7 « Plastie du LCA » (mi 107) | firme 4, type 19 `LCA` | **#26**, 135,00 EUR, sans limite (créée 04/08) | résolue au 01/10/2026 ; « Calcul bloqué » uniquement parce que les autres anomalies bloquent tout le calcul (D-073 §14). |
+| 4/7 « LCA multiligamentaire » (mi 108) | **firme 5**, type 50 `MULTI-LIG-GEN` | **#69** (Arthrex), 135,00 EUR, sans limite | délégué non présent (répondu) ; la règle Arthrex est utilisée, jamais la #68 de Smith & Nephew. Même cause que la ligne 3/7. |
+| 5/7, 6/7 PTG (mi 109, 110) | firme 4, type 17 | #11, 191,00 EUR | résolues. |
+| 7/7 MPFL (mi 121) | firme 5, type 20 | #77, 128,00 EUR (créée 08/10 18:12) | offre #83 créée le 08/10 18:10 avec « délégué pertinent » **après** la validation : la présence du délégué n'a jamais été demandée → un recalcul produirait `MISSING_REPRESENTATIVE_PRESENCE_ANSWER`, absente de l'échec audité. |
+| 9 lignes de matériel (JOURNEY II ×2, Ultrabutton Adjustable, Ultrabutton Tib, Q-FIX chez S&N ; SwiveLock, Agrafe, FiberTak, Vis Bio-Compression chez Arthrex) | `billingStatus = UNSPECIFIED` | **aucune règle, jamais** (ni désactivée, ni hors période) | vraie absence de décision de facturation ; ni mauvaise firme (SwiveLock est un article Arthrex posé dans une intervention S&N et reste facturé à Arthrex), ni neutralisation (offre #32 du LCA S&N sans délégué). |
+
+Causes racines :
+
+1. **Explication et état de ligne figés sur un échec devenu faux.**
+   `FinancialCalculationAnomalyExplainer` recalculait `resolved` par une ré-implémentation
+   partielle du moteur (`interventionRateResolvable()` = « une règle existe ? ») qui ignorait
+   `feeApplicable`. Une suture méniscale passée à « Pas de forfait » restait « non résolue »,
+   avec l'action « Configurer le tarif ». `FirmBillingWorklistService::classifyWithoutLine()`
+   faisait passer l'anomalie auditée **avant** l'exclusion actuelle : la ligne affichait
+   « Tarif d'intervention manquant » alors que le catalogue disait « Pas de forfait ».
+2. **« Calcul bloqué » sans contexte.** La ligne disait « bloqué par : tarif d'intervention
+   manquant, tarif matériel manquant », sans le tarif résolu (règle, montant, période) ni ce qui
+   bloque *encore*.
+3. **Causes postérieures à l'échec invisibles.** Rien ne montrait qu'un recalcul échouerait
+   encore pour une raison nouvelle (délégué MPFL) : le bouton « Relancer » passait au vert dès
+   que les anomalies auditées étaient toutes corrigées.
+4. **Explication d'un tarif manquant non discriminante.** « Aucun tarif applicable » couvrait
+   indistinctement : tarif hors période, prestation configurée « avec forfait » sans tarif,
+   prestation jamais configurée, matériel sans décision.
+5. **Aide trompeuse à la saisie d'un tarif** : « Valide à partir de — Vide = dès aujourd'hui »,
+   alors qu'un champ vide donne une règle *sans date de début* (passé compris). Un manager qui
+   saisit la date du jour pour corriger une mission passée crée une règle qui ne la couvre pas
+   (règle #72 Newclip, valable depuis le 07/10/2026, jour de sa création ; aucune mission
+   concernée à ce jour).
+
+Le moteur lui-même, la priorité des règles (aucune priorité : anti-chevauchement à l'écriture,
+D-067/D-138), les périodes (`validTo` exclusif, D-072), la neutralisation (D-092) et le choix
+obligatoire (D-111) étaient corrects : aucune règle de calcul n'est modifiée.
+
+### Décisions
+
+1. **Un seul chemin de résolution.** `FinancialCalculationService::evaluate(Mission)` —
+   lecture seule, sans verrou, sans persistance ni audit — renvoie `MissionFinancialEvaluation`
+   (date effective, anomalies, issue de chaque élément : `LINE` + règle, `FEE_NOT_APPLICABLE`,
+   `MATERIAL_NOT_BILLABLE`, `ANOMALY`). `buildAndPersist()` persiste exactement cette évaluation.
+   Aucun moteur parallèle : l'explicateur et la worklist n'implémentent plus aucune règle.
+2. **`resolved` = le moteur ne produit plus l'anomalie** (même code, même élément —
+   `FinancialCalculationAnomalyExplainer::anomalyIdentity()`). Les résolveurs dupliqués sont
+   supprimés. Chaque anomalie expliquée porte `currentResolution` (issue actuelle de l'élément,
+   libellé français), `referenceDate` et `targetRules`.
+3. **Contexte audité enrichi** (anomalies `MISSING_FIRM_*_RATE` à venir) : `feeApplicable`,
+   `offeringConfigured`, `choiceOptionId` ou `billingStatus`, et `targetRules` = instantané de
+   toutes les règles de la cible (`PricingRuleResolver::interventionFeeRulesFor()` /
+   `materialFeeRulesFor()`, lecture seule, jamais utilisées pour un montant). Pour les échecs
+   anciens sans ce contexte, une anomalie toujours présente est expliquée par le contexte actuel
+   du moteur. `RepresentativePolicy` gagne `offeringConfigured` (purement explicatif).
+4. **Suivi des encodages** : le détail ajoute `newAnomalies` (anomalies qu'un recalcul
+   produirait, absentes de l'échec audité, `detectedAfterFailure: true`) et `recalculation`
+   (`wouldSucceed`, `remainingAnomalyCount`, `referenceDate`). `anomalies` reste l'échec audité :
+   liste et tiroir gardent le même décompte (D-138). Le bouton « Relancer » ne passe au vert que
+   si le **backend** annonce `wouldSucceed`.
+5. **Factures firmes** : pour une mission en échec sans calcul actif, chaque ligne est classée
+   d'après l'évaluation actuelle — anomalie actuelle, exclusion (« Aucun forfait prévu », avec
+   mention que le dernier calcul l'avait signalée autrement), « Calcul bloqué » avec le tarif
+   résolu et les blocages restants, ou nouveau motif **`FIXED_PENDING_RECALCULATION`**
+   (« Corrigé — à recalculer ») quand plus rien ne bloque. Les anomalies apparues depuis l'échec
+   rejoignent « À corriger » ; « Recalculer les éléments corrigés » ne propose une mission que si
+   toutes ses anomalies, nouvelles comprises, sont résolues. `amount` reste `null` hors calcul
+   actif : un tarif résolu est une information, jamais un montant enregistré.
+6. **Aide à la saisie** : « Vide = sans date de début : s'applique aussi aux prestations
+   passées ».
+
+### Actualisation après modification d'un tarif (procédure contrôlée)
+
+- Un calcul existant n'est jamais réécrit (D-073). Un tarif ne change qu'à partir d'une date
+  d'effet ≥ aujourd'hui (`replaceCurrentRuleFrom`, D-072) : une mission antérieure garde son
+  tarif, même après recalcul. Un tarif *manquant* pour une date passée se corrige par une
+  première règle sans date de début (ou datée avant la mission) — jamais par un forçage.
+- Missions en échec : après correction, « Suivi des encodages » et « Factures firmes » montrent
+  `resolved`/« Corrigé — à recalculer » ; la relance passe par les endpoints existants
+  (`POST /api/missions/{id}/financial-calculations`, `/recalculate`,
+  `POST /api/firm-billing/calculations`) — un nouvel échec est audité, un succès crée la
+  version suivante.
+- Calcul `CALCULATED`/`APPROVED` : recalcul explicite seulement (l'ancien passe `SUPERSEDED`,
+  conservé). Calcul `LOCKED` (facture générée) : jamais recalculé ; toute correction est
+  additive (note de crédit/débit, D-076).
+- Aucune détection automatique « tarif modifié depuis le calcul » n'est ajoutée ici (limite).
+
+### Invariants vérifiés par les tests
+
+`PricingCoherenceTest` (HTTP + vraie base, données fictives) : 1 forfait positif ; 2 « Pas de
+forfait » → aucune ligne, aucune anomalie, `FEE_NOT_APPLICABLE` ; 3 tarif absent → 422, aucun
+calcul, explication « configurée avec forfait » ; 4 tarif borné (dernier jour couvert inclus,
+hors période expliqué avec la règle) ; 5 même prestation chez deux firmes, jamais de tarif
+emprunté ; 6 délégué présent → forfait et matériel de la firme à 0 avec motif, matériel d'une
+autre firme facturé ; 7 matériel facturable quantité × tarif ; 8 remplacement de tarif : calculs
+existants inchangés, recalcul selon la date de prestation, version remplacée conservée ;
+9 calcul bloqué → correction catalogue → « Corrigé — à recalculer » → relance groupée → calcul
+complet, échec conservé dans l'audit ; 10 calcul verrouillé inchangé après remplacement de
+tarif, recalcul refusé ; scénario #1040 de bout en bout (11 anomalies, « Pas de forfait »,
+cause apparue après validation, correction, recalcul, trois écrans cohérents).
+
+### Données de production (lecture seule, 2026-10-10) — à régulariser, hors de ce lot
+
+- 0 `financial_calculation`, 0 `firm_invoice` : aucun document financier émis, rien à protéger
+  ni à corriger rétroactivement. 40 missions VALIDÉES jamais valorisées.
+- 3 missions en ANOMALY (échecs audités) : **#1040** (voir ci-dessus), **#428** (suture
+  méniscale S&N — corrigée depuis par « Pas de forfait » —, 2 matériels sans décision, tarif
+  horaire instrumentiste manquant), **#436** (LCP Arthrex — corrigé depuis par la règle #76 —,
+  SwiveLock ×2 sans décision).
+- 40 articles `UNSPECIFIED` sans aucun tarif ; 7 prestations « avec forfait » sans tarif (Globus
+  ×5, Smith & Nephew `EPINE-TIB`, DePuy `OSTEOSYNTH-PLAT-TIB`) ; 3 couples firme × prestation
+  utilisés sans aucune configuration.
+- 6 interventions VALIDÉES dont la présence du délégué n'a jamais été demandée alors que l'offre
+  la rend désormais pertinente (missions #425, #436, #440, #443, #1040, #1225) : leur calcul
+  échouera tant que l'encodage n'est pas rouvert et complété — décision métier à prendre.
