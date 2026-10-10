@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Dto\FinancialCalculationAnomaly;
+use App\Dto\MissionFinancialEvaluation;
 use App\Dto\RepresentativePolicy;
 use App\Entity\FinancialCalculation;
 use App\Entity\FinancialCalculationLine;
@@ -254,9 +255,87 @@ final class FinancialCalculationService
     }
 
     /**
-     * Résout tous les tarifs, collecte TOUTES les anomalies (jamais un échec au premier
-     * élément), et soit persiste un calcul complet, soit ne persiste rien du tout (§14
-     * du lot). Ne lève jamais d'exception elle-même : EntityManager::wrapInTransaction()
+     * Évaluation en LECTURE SEULE de la mission avec la configuration et l'encodage
+     * actuels : résout tous les tarifs et collecte TOUTES les anomalies (jamais un échec au
+     * premier élément), sans rien persister ni auditer, sans verrou. C'est exactement ce
+     * que buildAndPersist() persiste : il n'existe qu'un seul chemin de résolution.
+     * Consommée en lecture par les explications d'anomalies (D-141) pour dire si une cause
+     * existe encore et ce qu'un recalcul produirait — jamais pour afficher un montant validé.
+     */
+    public function evaluate(Mission $mission): MissionFinancialEvaluation
+    {
+        $effectiveAt = $this->resolveEffectiveAt($mission);
+
+        /** @var FinancialCalculationAnomaly[] $anomalies */
+        $anomalies = [];
+        $lineSpecs = [];
+        $outcomes = [];
+
+        foreach ($mission->getInterventions() as $intervention) {
+            $before = count($anomalies);
+            $spec = $this->resolveFirmInterventionLine($intervention, $effectiveAt, $anomalies);
+            if ($spec !== null) {
+                $lineSpecs[] = $spec;
+            }
+            $outcomes['MISSION_INTERVENTION:' . $intervention->getId()] = $this->outcome($spec, array_slice($anomalies, $before), MissionFinancialEvaluation::FEE_NOT_APPLICABLE);
+        }
+
+        foreach ($mission->getMaterialLines() as $materialLine) {
+            $before = count($anomalies);
+            $spec = $this->resolveFirmMaterialLine($materialLine, $effectiveAt, $anomalies);
+            if ($spec !== null) {
+                $lineSpecs[] = $spec;
+            }
+            $outcomes['MATERIAL_LINE:' . $materialLine->getId()] = $this->outcome($spec, array_slice($anomalies, $before), MissionFinancialEvaluation::MATERIAL_NOT_BILLABLE);
+        }
+
+        $instrumentist = $mission->getInstrumentist();
+        if ($instrumentist !== null) {
+            if ($mission->getType() === MissionType::CONSULTATION) {
+                $spec = $this->resolveInstrumentistConsultationLine($instrumentist, $effectiveAt, $anomalies);
+            } else {
+                $spec = $this->resolveInstrumentistHourlyLine($mission, $instrumentist, $effectiveAt, $anomalies);
+            }
+            if ($spec !== null) {
+                $lineSpecs[] = $spec;
+            }
+        }
+
+        return new MissionFinancialEvaluation($effectiveAt, $lineSpecs, $anomalies, $outcomes);
+    }
+
+    /**
+     * Issue d'un élément : une ligne, une anomalie, ou — sans ligne ni anomalie — la seule
+     * exclusion métier possible de ce type d'élément (feeApplicable=false pour une
+     * intervention, NOT_BILLABLE pour un matériel).
+     *
+     * @param FinancialCalculationAnomaly[] $own
+     */
+    private function outcome(?array $spec, array $own, string $exclusionKind): array
+    {
+        if ($own !== []) {
+            return ['kind' => MissionFinancialEvaluation::ANOMALY, 'rule' => null, 'unitAmount' => null, 'totalAmount' => null, 'currency' => null, 'adjustmentReason' => null,
+                'anomalyCodes' => array_values(array_map(static fn (FinancialCalculationAnomaly $a) => $a->code, $own))];
+        }
+        if ($spec === null) {
+            return ['kind' => $exclusionKind, 'rule' => null, 'unitAmount' => null, 'totalAmount' => null, 'currency' => null, 'adjustmentReason' => null, 'anomalyCodes' => []];
+        }
+
+        return [
+            'kind' => MissionFinancialEvaluation::LINE,
+            'rule' => PricingRuleResolver::snapshotRules([$spec['pricingRule']])[0],
+            'unitAmount' => $spec['unitAmount'],
+            'totalAmount' => $spec['totalAmount'],
+            'currency' => $spec['currency'],
+            'adjustmentReason' => $spec['snapshot']['adjustmentReasonSnapshot'] ?? null,
+            'anomalyCodes' => [],
+        ];
+    }
+
+    /**
+     * Persiste l'évaluation : soit un calcul complet, soit rien du tout (§14 du lot — une
+     * seule anomalie bloque tout le calcul, aucun montant partiel n'est jamais enregistré).
+     * Ne lève jamais d'exception elle-même : EntityManager::wrapInTransaction()
      * ferme l'EntityManager dans son bloc finally dès qu'une exception le traverse (voir
      * EntityManager::wrapInTransaction()), ce qui rendrait tout audit ultérieur
      * impossible sur ce même EntityManager. calculate()/recalculate() restent donc dans
@@ -268,35 +347,10 @@ final class FinancialCalculationService
      */
     private function buildAndPersist(Mission $mission, User $actor, int $version, ?array &$anomaliesOut): ?FinancialCalculation
     {
-        $effectiveAt = $this->resolveEffectiveAt($mission);
-
-        /** @var FinancialCalculationAnomaly[] $anomalies */
-        $anomalies = [];
-        $lineSpecs = [];
-
-        foreach ($mission->getInterventions() as $intervention) {
-            $spec = $this->resolveFirmInterventionLine($intervention, $effectiveAt, $anomalies);
-            if ($spec !== null) {
-                $lineSpecs[] = $spec;
-            }
-        }
-
-        foreach ($mission->getMaterialLines() as $materialLine) {
-            $spec = $this->resolveFirmMaterialLine($materialLine, $effectiveAt, $anomalies);
-            if ($spec !== null) {
-                $lineSpecs[] = $spec;
-            }
-        }
-
-        $instrumentist = $mission->getInstrumentist();
-        if ($mission->getType() === MissionType::CONSULTATION) {
-            $spec = $this->resolveInstrumentistConsultationLine($instrumentist, $effectiveAt, $anomalies);
-        } else {
-            $spec = $this->resolveInstrumentistHourlyLine($mission, $instrumentist, $effectiveAt, $anomalies);
-        }
-        if ($spec !== null) {
-            $lineSpecs[] = $spec;
-        }
+        $evaluation = $this->evaluate($mission);
+        $effectiveAt = $evaluation->effectiveAt;
+        $anomalies = $evaluation->anomalies;
+        $lineSpecs = $evaluation->lineSpecs;
 
         if (count($anomalies) > 0) {
             $anomaliesOut = $anomalies;
@@ -413,7 +467,12 @@ final class FinancialCalculationService
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_FIRM_INTERVENTION_RATE',
                 sprintf('No active INTERVENTION_FEE PricingRule for firm=%d, interventionType=%d at %s.', $firm->getId(), $interventionType->getId(), $effectiveAt->format('Y-m-d')),
-                ['missionInterventionId' => $intervention->getId(), 'firmId' => $firm->getId(), 'interventionTypeId' => $interventionType->getId()],
+                // D-141 — contexte explicatif audité : un forfait était attendu (feeApplicable),
+                // la prestation était-elle configurée, et quelles règles existaient pour cette
+                // cible hors de la date (période de validité, règle désactivée).
+                ['missionInterventionId' => $intervention->getId(), 'firmId' => $firm->getId(), 'interventionTypeId' => $interventionType->getId(),
+                    'choiceOptionId' => $selectedChoiceOption?->getId(), 'feeApplicable' => true, 'offeringConfigured' => $policy->offeringConfigured,
+                    'targetRules' => PricingRuleResolver::snapshotRules($this->pricingRuleResolver->interventionFeeRulesFor($firm, $interventionType, $selectedChoiceOption))],
             );
             return null;
         }
@@ -504,7 +563,10 @@ final class FinancialCalculationService
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_FIRM_MATERIAL_RATE',
                 sprintf('No active MATERIAL_FEE PricingRule for materialItem=%d at %s.', $item->getId(), $effectiveAt->format('Y-m-d')),
-                ['materialLineId' => $materialLine->getId(), 'materialItemId' => $item->getId(), 'firmId' => $firm->getId()],
+                ['materialLineId' => $materialLine->getId(), 'materialItemId' => $item->getId(), 'firmId' => $firm->getId(),
+                    'missionInterventionId' => $materialLine->getMissionIntervention()?->getId(),
+                    'billingStatus' => $item->getBillingStatus()->value,
+                    'targetRules' => PricingRuleResolver::snapshotRules($this->pricingRuleResolver->materialFeeRulesFor($item))],
             );
             return null;
         }

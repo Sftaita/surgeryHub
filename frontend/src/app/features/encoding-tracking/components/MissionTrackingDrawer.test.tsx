@@ -385,6 +385,44 @@ describe("MissionTrackingDrawer", () => {
       expect(screen.getByRole("button", { name: "Corriger les tarifs" })).toBeInTheDocument();
     });
 
+    it("D-141 — « Pas de forfait » posé depuis l'échec : corrigé, nouvelle cause listée à part, pronostic du backend", async () => {
+      const corrected = {
+        ...interventionAnomaly, resolved: true, referenceDate: "2026-10-01", targetRules: [],
+        currentResolution: { kind: "FEE_NOT_APPLICABLE", label: "Aucun forfait prévu pour cette prestation (« Pas de forfait ») : rien ne sera facturé.", rule: null },
+      };
+      const stillMissing = {
+        ...materialAnomaly, referenceDate: "2026-10-01",
+        targetRules: [{ id: 12, unitPrice: "20.00", currency: "EUR", validFrom: "2026-01-01", validTo: "2026-09-01", active: true }],
+        currentResolution: { kind: "ANOMALY", label: "Toujours bloquant : tarif matériel manquant.", rule: null },
+      };
+      const appeared = {
+        code: "MISSING_REPRESENTATIVE_PRESENCE_ANSWER", category: "ENCODING", severity: "BLOCKING",
+        title: "Présence du délégué non renseignée", explanation: "L'encodage doit indiquer si le délégué Arthrex était présent : cela détermine le forfait.",
+        firm: { id: 5, name: "Arthrex" }, element: { type: "INTERVENTION", label: "MPFL" }, action: { code: "OPEN_MISSION", label: "Compléter l'encodage" },
+        resolved: false, missionInterventionId: 2, materialLineId: null, conflictingRules: [], targetRules: [], referenceDate: "2026-10-01",
+        currentResolution: { kind: "ANOMALY", label: "Toujours bloquant : présence du délégué non renseignée.", rule: null }, detectedAfterFailure: true,
+      };
+      getMissionFinancialAnomaliesMock.mockResolvedValue(detail([corrected, stillMissing], {
+        newAnomalies: [appeared], recalculation: { wouldSucceed: false, remainingAnomalyCount: 2, referenceDate: "2026-10-01" },
+      }));
+      renderDrawer(anomalyItem());
+
+      const section = await screen.findByTestId("financial-anomalies");
+      expect(within(section).getByText(/Un recalcul maintenant échouerait encore \(2 anomalies\)/)).toBeInTheDocument();
+      const items = within(section).getAllByTestId("financial-anomaly");
+      expect(items).toHaveLength(3);
+      expect(within(items[0]).getByText("Corrigé — à recalculer")).toBeInTheDocument();
+      expect(within(items[0]).getByTestId("financial-anomaly-current")).toHaveTextContent("Pas de forfait");
+      expect(within(items[1]).getByTestId("target-rules")).toHaveTextContent("Règle #12");
+      expect(within(items[1]).getByTestId("target-rules")).toHaveTextContent("au 31/08/2026");
+      expect(within(section).getByTestId("financial-new-anomalies")).toHaveTextContent("1 anomalie qu'un recalcul produirait aussi");
+      expect(within(items[2]).getByText(/3\. Présence du délégué non renseignée/)).toBeInTheDocument();
+      // Repères « Anomalie » de l'encodage = ce qui bloque ENCORE : l'intervention corrigée (itv-1)
+      // n'est plus marquée, celle de la cause apparue depuis l'échec (itv-2) l'est.
+      await waitFor(() => expect(document.querySelectorAll("[data-anomaly]").length).toBeGreaterThan(0));
+      expect(Array.from(document.querySelectorAll("[data-anomaly]")).map((el) => el.getAttribute("data-anchor"))).toEqual(["itv-2", "ml-12"]);
+    });
+
     it("dépassement horaire sans anomalie : aucune section, aucune requête d'anomalies", async () => {
       renderDrawer(makeItem({ financial: { state: "TO_CALCULATE", label: "À calculer", isBlocking: false, anomalyCount: 0, anomalyReasons: [] } }));
       await screen.findByText("Dépasse le temps planifié", { selector: "[data-testid=drawer-hours-status]" });

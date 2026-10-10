@@ -40,6 +40,11 @@ enum FirmBillingReason: string
     case ENCODING_REOPENED = 'ENCODING_REOPENED';
     /** L'élément est correct mais une autre anomalie de la mission bloque tout le calcul. */
     case CALCULATION_BLOCKED = 'CALCULATION_BLOCKED';
+    /**
+     * D-141 — le calcul de la mission a échoué, mais le moteur, rejoué sur la configuration
+     * actuelle, n'y trouve plus aucune anomalie : il reste à relancer le calcul.
+     */
+    case FIXED_PENDING_RECALCULATION = 'FIXED_PENDING_RECALCULATION';
     /** D-135 — le brouillon contient une version périmée de la ligne (calcul modifié depuis l'ajout). */
     case DRAFT_LINE_STALE = 'DRAFT_LINE_STALE';
 
@@ -143,6 +148,7 @@ enum FirmBillingReason: string
             self::RECALCULATION_REQUIRED => 'Calcul à mettre à jour',
             self::ENCODING_REOPENED => 'Encodage rouvert',
             self::CALCULATION_BLOCKED => 'Calcul bloqué',
+            self::FIXED_PENDING_RECALCULATION => 'Corrigé — à recalculer',
             self::MISSING_FIRM_INTERVENTION_RATE => "Tarif d'intervention manquant",
             self::MISSING_FIRM_MATERIAL_RATE => 'Tarif matériel manquant',
             self::MISSING_INSTRUMENTIST_RATE => 'Tarif instrumentiste manquant',
@@ -174,6 +180,7 @@ enum FirmBillingReason: string
             self::RECALCULATION_REQUIRED => "Cet élément a été encodé après le dernier calcul financier : il n'y figure pas encore.",
             self::ENCODING_REOPENED => "L'encodage de la mission a été rouvert après le calcul : il doit être revalidé avant facturation.",
             self::CALCULATION_BLOCKED => 'Cet élément est correct, mais une autre anomalie de la mission empêche tout le calcul.',
+            self::FIXED_PENDING_RECALCULATION => "Les causes de l'échec du dernier calcul sont corrigées : relancez le calcul pour enregistrer les montants.",
             self::MISSING_FIRM_INTERVENTION_RATE => "Aucun tarif applicable n'est configuré pour cette prestation à la date de la mission.",
             self::MISSING_FIRM_MATERIAL_RATE => "Aucun tarif applicable n'est configuré pour ce matériel à la date de la mission.",
             self::MISSING_INSTRUMENTIST_RATE => "Aucun tarif instrumentiste actif à la date de la mission : tant qu'il manque, aucune ligne de la mission (firmes comprises) ne peut être calculée.",

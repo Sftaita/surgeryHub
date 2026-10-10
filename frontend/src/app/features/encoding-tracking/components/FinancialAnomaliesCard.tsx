@@ -3,7 +3,7 @@ import { Box, CircularProgress } from "@mui/material";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import type { MissionEncodingEntry } from "../../encoding/api/encoding.types";
-import type { FinancialAnomaly, FinancialConflictingRule, MissionFinancialAnomalies } from "../api/encodingTracking.api";
+import type { FinancialAnomaly, FinancialConflictingRule, FinancialTargetRule, MissionFinancialAnomalies } from "../api/encodingTracking.api";
 import { calculateMission, recalculateFinancialCalculation } from "../../financial-calculation/api/financialCalculation.api";
 import { ANOMALY_ACTION_ROUTES } from "../../financial-calculation/anomalyActionRoutes";
 import { useToast } from "../../../ui/toast/useToast";
@@ -122,7 +122,10 @@ export function FinancialAnomaliesCard({ missionId, data, isLoading, isError, on
 
   const count = data.anomalies.length;
   const failedAt = formatDateTime(data.failedAt);
-  const allResolved = data.anomalies.every((a) => a.resolved);
+  const newAnomalies = data.newAnomalies ?? [];
+  // D-141 — le pronostic vient du moteur (évaluation en lecture seule), jamais d'une déduction ici.
+  const wouldSucceed = data.recalculation?.wouldSucceed === true;
+  const remaining = data.recalculation?.remainingAnomalyCount ?? null;
 
   return (
     <Card data-testid="financial-anomalies" sx={{ borderColor: RED_100 }}>
@@ -138,7 +141,7 @@ export function FinancialAnomaliesCard({ missionId, data, isLoading, isError, on
             disabled={retryMutation.isPending}
             sx={{
               ml: "auto", height: 28, padding: "0 10px", borderRadius: "8px", border: "1px solid", font: "inherit", fontSize: 12, fontWeight: 800, cursor: "pointer",
-              borderColor: allResolved ? GREEN_700 : GRAY_150, background: allResolved ? GREEN_100 : "#fff", color: allResolved ? GREEN_800 : GRAY_700,
+              borderColor: wouldSucceed ? GREEN_700 : GRAY_150, background: wouldSucceed ? GREEN_100 : "#fff", color: wouldSucceed ? GREEN_800 : GRAY_700,
             }}
           >
             {retryMutation.isPending ? "Calcul…" : "Relancer le calcul"}
@@ -147,67 +150,100 @@ export function FinancialAnomaliesCard({ missionId, data, isLoading, isError, on
       </Box>
       <Box sx={{ fontSize: 12, color: GRAY_500 }}>
         Le dernier calcul financier{failedAt ? ` (${failedAt})` : ""} a échoué : aucun montant n'a été enregistré.
-        {allResolved
+        {wouldSucceed
           ? " Toutes les causes sont corrigées dans la configuration actuelle — relancez le calcul."
-          : " Corrigez les causes ci-dessous, puis relancez le calcul."}
+          : remaining !== null
+            ? ` Un recalcul maintenant échouerait encore (${remaining} anomalie${remaining > 1 ? "s" : ""}) : corrigez les causes ci-dessous, puis relancez le calcul.`
+            : " Corrigez les causes ci-dessous, puis relancez le calcul."}
       </Box>
 
-      <Box component="ol" sx={{ m: 0, p: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "8px" }}>
-        {data.anomalies.map((a, idx) => {
-          const itvPos = a.missionInterventionId !== null ? positions.byIntervention.get(a.missionInterventionId) : undefined;
-          const locatable = (a.materialLineId !== null && positions.lineIds.has(a.materialLineId)) || itvPos !== undefined;
-          const route = a.action ? ANOMALY_ACTION_ROUTES[a.action.code] : undefined;
-          return (
-            <Box
-              component="li"
-              key={`${a.code}:${idx}`}
-              data-testid="financial-anomaly"
-              data-anomaly-code={a.code}
-              sx={{ padding: "10px 12px", borderRadius: "10px", background: a.resolved ? GRAY_150 : RED_50 }}
-            >
-              <Box sx={{ display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap" }}>
-                <Box sx={{ fontSize: 13, fontWeight: 800, color: a.resolved ? GRAY_700 : RED_700 }}>{idx + 1}. {a.title}</Box>
-                <Box sx={{ fontSize: 10.5, fontWeight: 700, color: GRAY_500 }}>{CATEGORY_LABEL[a.category]}</Box>
-                {a.resolved && (
-                  <Box sx={{ fontSize: 10.5, fontWeight: 800, color: GREEN_800, background: GREEN_100, borderRadius: "999px", padding: "1px 7px" }}>
-                    Corrigé — à recalculer
-                  </Box>
-                )}
-              </Box>
-              <Box component="dl" sx={{ m: "4px 0 0", display: "grid", gridTemplateColumns: "auto 1fr", columnGap: "8px", rowGap: "1px", fontSize: 12 }}>
-                {a.firm && <Detail term="Firme">{a.firm.name}</Detail>}
-                {a.element?.type === "INTERVENTION" && (
-                  <Detail term="Intervention">
-                    {a.element.label ?? "—"}{itvPos !== undefined ? ` (intervention ${itvPos}/${positions.total})` : ""}
-                  </Detail>
-                )}
-                {a.element?.type === "MATERIAL" && (
-                  <>
-                    <Detail term="Matériel">
-                      {a.element.label ?? "—"}{a.element.reference ? ` · Réf. ${a.element.reference}` : ""}
-                    </Detail>
-                    {itvPos !== undefined && <Detail term="Dans">{`intervention ${itvPos}/${positions.total}`}</Detail>}
-                  </>
-                )}
-                {a.element?.type === "INSTRUMENTIST" && <Detail term="Instrumentiste">{a.element.label ?? "—"}</Detail>}
-              </Box>
-              <Box sx={{ mt: "4px", fontSize: 12.5, color: GRAY_700 }}>{a.explanation}</Box>
-              {(a.conflictingRules ?? []).length > 0 && <ConflictingRules rules={a.conflictingRules} />}
-              <Box sx={{ mt: "6px", display: "flex", gap: "14px", flexWrap: "wrap" }}>
-                {locatable && (
-                  <LinkButton onClick={() => onLocate({ missionInterventionId: a.missionInterventionId, materialLineId: a.materialLineId })}>
-                    Voir dans l'encodage
-                  </LinkButton>
-                )}
-                {a.action && !a.resolved && (route || a.action.code === "OPEN_MISSION") && (
-                  <LinkButton onClick={() => navigate(route ?? `/app/m/missions/${missionId}`)}>{a.action.label}</LinkButton>
-                )}
-              </Box>
-            </Box>
-          );
-        })}
-      </Box>
+      <AnomalyList anomalies={data.anomalies} positions={positions} onLocate={onLocate} onNavigate={(path) => navigate(path)} missionId={missionId} />
+
+      {newAnomalies.length > 0 && (
+        <>
+          <Box data-testid="financial-new-anomalies" sx={{ fontSize: 12.5, fontWeight: 800, color: RED_700 }}>
+            Apparue{newAnomalies.length > 1 ? "s" : ""} depuis le dernier calcul — {newAnomalies.length} anomalie{newAnomalies.length > 1 ? "s" : ""} qu'un recalcul produirait aussi
+          </Box>
+          <AnomalyList anomalies={newAnomalies} positions={positions} onLocate={onLocate} onNavigate={(path) => navigate(path)} missionId={missionId} numberOffset={count} />
+        </>
+      )}
     </Card>
+  );
+}
+
+interface Positions { byIntervention: Map<number, number>; lineIds: Set<number>; total: number }
+
+function AnomalyList({ anomalies, positions, onLocate, onNavigate, missionId, numberOffset = 0 }: {
+  anomalies: FinancialAnomaly[];
+  positions: Positions;
+  onLocate: Props["onLocate"];
+  onNavigate: (path: string) => void;
+  missionId: number;
+  numberOffset?: number;
+}) {
+  return (
+    <Box component="ol" sx={{ m: 0, p: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "8px" }}>
+      {anomalies.map((a, i) => {
+        const idx = i + numberOffset;
+        const itvPos = a.missionInterventionId !== null ? positions.byIntervention.get(a.missionInterventionId) : undefined;
+        const locatable = (a.materialLineId !== null && positions.lineIds.has(a.materialLineId)) || itvPos !== undefined;
+        const route = a.action ? ANOMALY_ACTION_ROUTES[a.action.code] : undefined;
+        return (
+          <Box
+            component="li"
+            key={`${a.code}:${idx}`}
+            data-testid="financial-anomaly"
+            data-anomaly-code={a.code}
+            sx={{ padding: "10px 12px", borderRadius: "10px", background: a.resolved ? GRAY_150 : RED_50 }}
+          >
+            <Box sx={{ display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap" }}>
+              <Box sx={{ fontSize: 13, fontWeight: 800, color: a.resolved ? GRAY_700 : RED_700 }}>{idx + 1}. {a.title}</Box>
+              <Box sx={{ fontSize: 10.5, fontWeight: 700, color: GRAY_500 }}>{CATEGORY_LABEL[a.category]}</Box>
+              {a.resolved && (
+                <Box sx={{ fontSize: 10.5, fontWeight: 800, color: GREEN_800, background: GREEN_100, borderRadius: "999px", padding: "1px 7px" }}>
+                  Corrigé — à recalculer
+                </Box>
+              )}
+            </Box>
+            <Box component="dl" sx={{ m: "4px 0 0", display: "grid", gridTemplateColumns: "auto 1fr", columnGap: "8px", rowGap: "1px", fontSize: 12 }}>
+              {a.firm && <Detail term="Firme">{a.firm.name}</Detail>}
+              {a.element?.type === "INTERVENTION" && (
+                <Detail term="Intervention">
+                  {a.element.label ?? "—"}{itvPos !== undefined ? ` (intervention ${itvPos}/${positions.total})` : ""}
+                </Detail>
+              )}
+              {a.element?.type === "MATERIAL" && (
+                <>
+                  <Detail term="Matériel">
+                    {a.element.label ?? "—"}{a.element.reference ? ` · Réf. ${a.element.reference}` : ""}
+                  </Detail>
+                  {itvPos !== undefined && <Detail term="Dans">{`intervention ${itvPos}/${positions.total}`}</Detail>}
+                </>
+              )}
+              {a.element?.type === "INSTRUMENTIST" && <Detail term="Instrumentiste">{a.element.label ?? "—"}</Detail>}
+            </Box>
+            <Box sx={{ mt: "4px", fontSize: 12.5, color: GRAY_700 }}>{a.explanation}</Box>
+            {(a.conflictingRules ?? []).length > 0 && <ConflictingRules rules={a.conflictingRules} />}
+            {(a.targetRules ?? []).length > 0 && <ConflictingRules rules={a.targetRules} title="Tarifs existants (aucun ne couvre la date)" />}
+            {a.currentResolution?.label && (
+              <Box data-testid="financial-anomaly-current" sx={{ mt: "4px", fontSize: 12, fontWeight: 700, color: a.resolved ? GREEN_800 : GRAY_700 }}>
+                Maintenant : {a.currentResolution.label}
+              </Box>
+            )}
+            <Box sx={{ mt: "6px", display: "flex", gap: "14px", flexWrap: "wrap" }}>
+              {locatable && (
+                <LinkButton onClick={() => onLocate({ missionInterventionId: a.missionInterventionId, materialLineId: a.materialLineId })}>
+                  Voir dans l'encodage
+                </LinkButton>
+              )}
+              {a.action && !a.resolved && (route || a.action.code === "OPEN_MISSION") && (
+                <LinkButton onClick={() => onNavigate(route ?? `/app/m/missions/${missionId}`)}>{a.action.label}</LinkButton>
+              )}
+            </Box>
+          </Box>
+        );
+      })}
+    </Box>
   );
 }
 
@@ -219,10 +255,10 @@ function formatRuleDay(day: string | null, exclusiveEnd = false): string | null 
   return d.toLocaleDateString("fr-BE", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
-function ConflictingRules({ rules }: { rules: FinancialConflictingRule[] }) {
+function ConflictingRules({ rules, title = "Règles en conflit" }: { rules: (FinancialConflictingRule & Partial<Pick<FinancialTargetRule, "active">>)[]; title?: string }) {
   return (
-    <Box data-testid="conflicting-rules" sx={{ mt: "6px", borderLeft: `3px solid ${RED_100}`, paddingLeft: "8px", fontSize: 12, color: GRAY_700 }}>
-      <Box sx={{ fontWeight: 800, color: GRAY_950 }}>Règles en conflit</Box>
+    <Box data-testid={title === "Règles en conflit" ? "conflicting-rules" : "target-rules"} sx={{ mt: "6px", borderLeft: `3px solid ${RED_100}`, paddingLeft: "8px", fontSize: 12, color: GRAY_700 }}>
+      <Box sx={{ fontWeight: 800, color: GRAY_950 }}>{title}</Box>
       <Box component="ul" sx={{ m: 0, p: 0, listStyle: "none" }}>
         {rules.map((r, i) => {
           const from = formatRuleDay(r.validFrom);
@@ -230,7 +266,7 @@ function ConflictingRules({ rules }: { rules: FinancialConflictingRule[] }) {
           return (
             <Box component="li" key={r.id ?? i} sx={{ fontVariantNumeric: "tabular-nums" }}>
               Règle #{r.id ?? "?"} — {r.unitPrice !== null ? `${Number(r.unitPrice).toLocaleString("fr-BE", { minimumFractionDigits: 2 })} ${r.currency ?? ""}` : "—"}
-              {" · "}{from ? `du ${from}` : "sans date de début"}{to ? ` au ${to}` : ", sans date de fin"}
+              {" · "}{from ? `du ${from}` : "sans date de début"}{to ? ` au ${to}` : ", sans date de fin"}{r.active === false ? " · désactivée" : ""}
             </Box>
           );
         })}

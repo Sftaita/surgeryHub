@@ -207,11 +207,30 @@ export interface FinancialAnomaly {
   action: { code: FinancialAnomalyActionCode; label: string } | null;
   /** La cause n'existe plus dans la configuration actuelle : un nouveau calcul peut aboutir. */
   resolved: boolean;
+  /** D-141 — ce que le moteur, rejoué maintenant, donne pour l'élément concerné. */
+  currentResolution: FinancialCurrentResolution;
+  /** AAAA-MM-JJ — date de référence de la résolution tarifaire. */
+  referenceDate: string;
+  /** D-141 — tarifs existants de la cible, aucun ne couvrant la date (vide = jamais saisi). */
+  targetRules: FinancialTargetRule[];
+  /** D-141 — anomalie qu'un recalcul produirait, absente de l'échec audité. */
+  detectedAfterFailure?: boolean;
   /** Intervention concernée — ou celle qui porte la ligne de matériel concernée. */
   missionInterventionId: number | null;
   materialLineId: number | null;
   /** D-138 — règles actives contradictoires (vide hors CONFLICTING_*), telles qu'auditées. */
   conflictingRules: FinancialConflictingRule[];
+}
+
+export interface FinancialCurrentResolution {
+  kind: "LINE" | "FEE_NOT_APPLICABLE" | "MATERIAL_NOT_BILLABLE" | "ANOMALY" | "ELEMENT_REMOVED" | "RESOLVED" | null;
+  /** Libellé français fourni par le backend. */
+  label: string | null;
+  rule: FinancialTargetRule | null;
+}
+
+export interface FinancialTargetRule extends FinancialConflictingRule {
+  active?: boolean;
 }
 
 export interface FinancialConflictingRule {
@@ -237,6 +256,10 @@ export interface MissionFinancialAnomalies {
   failedAt: string | null;
   effectiveAt: string | null;
   anomalies: FinancialAnomaly[];
+  /** D-141 — anomalies qu'un recalcul produirait et que l'échec audité ne contenait pas. */
+  newAnomalies: FinancialAnomaly[];
+  /** D-141 — pronostic du moteur sur un recalcul maintenant (null hors ANOMALY). */
+  recalculation: { wouldSucceed: boolean; remainingAnomalyCount: number; referenceDate: string } | null;
   retry: FinancialRetryAction | null;
 }
 

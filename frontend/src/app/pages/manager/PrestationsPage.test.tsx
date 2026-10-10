@@ -337,6 +337,29 @@ describe("PrestationsPage", () => {
     expect(screen.getByText(/Pas de forfait/)).toBeInTheDocument();
   });
 
+  it("D-141 — tarif manquant, « Pas de forfait » et tarif en vigueur ne se ressemblent jamais ; la période du tarif est affichée", async () => {
+    const user = userEvent.setup();
+    const offerings = [
+      makeOffering({ id: 100, interventionType: { id: 1, code: "LCP", label: "LCP" } }),
+      makeOffering({ id: 101, interventionType: { id: 2, code: "SUT-MEN", label: "Suture méniscale" }, feeApplicable: false }),
+      makeOffering({ id: 102, interventionType: { id: 3, code: "EPINE-TIB", label: "Épine tibiale" } }),
+    ];
+    const rules = [{
+      id: 50, ruleType: "INTERVENTION_FEE", interventionType: { id: 1, code: "LCP", label: "LCP" }, materialItem: null, choiceOption: null,
+      unitPrice: "150.00", currency: "EUR", validFrom: "2020-01-15", validTo: null, active: true,
+    }];
+    apiGetMock.mockImplementation((url: string) => mockGet(url, offerings, rules, []));
+    renderPage();
+    await selectFirm(user);
+
+    expect(await screen.findByText("150.00 € HTVA")).toBeInTheDocument();
+    // Un tarif qui ne commence qu'à une date ne couvre pas les prestations antérieures : la date est visible.
+    expect(screen.getByText("forfait dès le 15/01/2020")).toBeInTheDocument();
+    expect(screen.getByText("Tarif non configuré").className).toMatch(/pricingMissing/);
+    expect(screen.getByText("Pas de forfait").className).toMatch(/pricingNoFee/);
+    expect(screen.getByText("150.00 € HTVA").className).not.toMatch(/pricingMissing|pricingNoFee/);
+  });
+
   it("D-138 — forfait en conflit (signalé par le backend) affiché « Conflit tarifaire », distinct de « Tarif non configuré »", async () => {
     const user = userEvent.setup();
     const offerings = [
@@ -419,6 +442,9 @@ describe("PrestationsPage", () => {
 
     expect(await screen.findByText("FAST-FIX")).toBeInTheDocument();
     expect(screen.getByText("ULTRABUTTON")).toBeInTheDocument();
+    // D-141 — « non facturable » (décision explicite du backend) n'est jamais affiché comme un tarif manquant.
+    expect(screen.getByText("Non facturable")).toBeInTheDocument();
+    expect(screen.getAllByText("Tarif non configuré")).toHaveLength(1);
   });
 
   it("le tarif actif ressort en clair, sans badge « Non facturable » déduit de l'absence de tarif", async () => {

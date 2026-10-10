@@ -2362,8 +2362,9 @@ elle est libre).
 | `TO_REVIEW` | `CALCULATION_PENDING_APPROVAL` | calcul actif `CALCULATED` | total (non facturable) |
 | `TO_REVIEW` | `RECALCULATION_REQUIRED` | élément encodé absent du calcul actif, sans exclusion | `null` |
 | `TO_REVIEW` | `ENCODING_REOPENED` | ligne active non facturée d'une mission qui n'est plus `VALIDATED` | total |
-| `TO_REVIEW` | `CALCULATION_BLOCKED` | élément correct, calcul de la mission en échec sur une autre anomalie | `null` |
-| `TO_REVIEW` | `MISSING_FIRM_INTERVENTION_RATE`, `MISSING_FIRM_MATERIAL_RATE`, `MISSING_PRIMARY_FIRM`, `MISSING_INTERVENTION_TYPE`, `MISSING_REPRESENTATIVE_PRESENCE_ANSWER`, `MISSING_REQUIRED_CHOICE_ANSWER` | anomalie du dernier échec audité rattachée à l'élément (codes identiques au moteur ; `MISSING_PRIMARY_FIRM` aussi avant calcul) | `null` |
+| `TO_REVIEW` | `CALCULATION_BLOCKED` | élément correct, calcul de la mission en échec sur une autre anomalie. **D-141 :** `reasonDetail` donne le tarif résolu (montant, règle, période) et les anomalies qui bloquent ENCORE la mission (évaluation actuelle du moteur) | `null` |
+| `TO_REVIEW` | `FIXED_PENDING_RECALCULATION` | **D-141** — mission en échec dont l'évaluation actuelle du moteur ne trouve plus aucune anomalie : il reste à relancer le calcul (`reasonDetail` = tarif résolu) | `null` |
+| `TO_REVIEW` | `MISSING_FIRM_INTERVENTION_RATE`, `MISSING_FIRM_MATERIAL_RATE`, `MISSING_PRIMARY_FIRM`, `MISSING_INTERVENTION_TYPE`, `MISSING_REPRESENTATIVE_PRESENCE_ANSWER`, `MISSING_REQUIRED_CHOICE_ANSWER` | anomalie rattachée à l'élément (codes identiques au moteur ; `MISSING_PRIMARY_FIRM` aussi avant calcul). **D-141 :** pour une mission en échec sans calcul actif, c'est l'anomalie que le moteur produit MAINTENANT pour l'élément — une anomalie auditée dont la cause a disparu ne qualifie plus la ligne (ex. « Pas de forfait » posé depuis → `FEE_NOT_APPLICABLE`, `reasonDetail` le signale) | `null` |
 | — (anomalie de mission) | `MISSING_INSTRUMENTIST_RATE`, `INVALID_EFFECTIVE_DURATION`, `CALCULATION_FAILED` (code moteur inconnu) | uniquement dans `anomalies[]` | — |
 
 **`anomalies[]` (onglet « À corriger ») :** `key`, `code`, `title` (libellé français),
@@ -2372,18 +2373,29 @@ elle est libre).
 `element {type, label, reference?} | null`, `action {code, label} | null`
 (`CONFIGURE_INTERVENTION_RATE`, `CONFIGURE_MATERIAL_RATE`, `CONFIGURE_INSTRUMENTIST_RATE`,
 `OPEN_MISSION`, `CALCULATE`, `APPROVE`, `RECALCULATE`), `resolved` (la cause n'existe plus
-dans la configuration actuelle — mêmes résolveurs que le moteur, à la date effective
-actuelle), `calculationId`, `rowKey`, `calculationLocked`. **Le message technique du moteur
+dans la configuration actuelle — **D-141 : le moteur lui-même, rejoué en lecture seule**
+(`FinancialCalculationService::evaluate()`), à la date effective actuelle),
+`currentResolution {kind, label, rule} | null` (D-141 — issue actuelle de l'élément : `LINE`
+(tarif résolu, `rule` = règle), `FEE_NOT_APPLICABLE`, `MATERIAL_NOT_BILLABLE`, `ANOMALY`,
+`ELEMENT_REMOVED`, `RESOLVED` ; `null` pour une anomalie de workflow), `referenceDate`
+(AAAA-MM-JJ), `targetRules` (D-141 — tarifs existants de la cible dont aucun ne couvre la date ;
+`[]` = jamais saisi), `detectedAfterFailure` (D-141 — anomalie qu'un recalcul produirait et que
+l'échec audité ne contenait pas ; elle est ajoutée à la liste), `calculationId`, `rowKey`,
+`calculationLocked`. **Le message technique du moteur
 (`No active … PricingRule …`) n'est jamais renvoyé** ; il reste dans `audit_event`.
 
 **`summary` (tuiles, après filtres firme/type, avant filtre statut) :** `lineCount`,
 `billable {lineCount, amounts[]}`, `notBillable {lineCount}`, `toReview {lineCount}`,
-`invoiced {lineCount, amounts[]}`, `anomalyCount`, `pendingValidationMissionCount`
+`invoiced {lineCount, amounts[]}`, `anomalyCount` (**D-141** : anomalies qui bloquent ENCORE —
+hors `resolved`, y compris celles apparues depuis l'échec ; même nombre que
+`recalculation.remainingAnomalyCount` du Suivi des encodages pour une mission), `resolvedAnomalyCount`
+(**D-141**, additif : anomalies du dernier échec déjà corrigées, en attente de recalcul),
+`pendingValidationMissionCount`
 (missions `SUBMITTED` de la période, hors worklist), `invoices {generated, sent, paid,
 cancelled}` (documents `STANDARD` dont `periodStart` tombe dans la période, firmes filtrées).
 
-**`bulkActions` :** `recalculateFixed` (missions dont toutes les anomalies du dernier échec
-sont `resolved` et dont le calcul n'est pas `LOCKED`), `calculatePending` (missions
+**`bulkActions` :** `recalculateFixed` (missions dont toutes les anomalies — celles du dernier
+échec et celles apparues depuis (D-141) — sont `resolved` et dont le calcul n'est pas `LOCKED`), `calculatePending` (missions
 `CALCULATION_REQUIRED`).
 
 **Erreurs :** `422 VALIDATION_FAILED` (dates, `type`, `status`, `firmIds`), `404` (firme
@@ -7359,8 +7371,8 @@ filtrée par état, `total` reflète la population avant filtrage (voir D-118).
 ### `GET /api/billing/encoding-tracking/missions/{missionId}/financial-anomalies` (D-138)
 
 Détail du statut FINANCE d'une mission pour le tiroir du suivi. `BillingVoter::MANAGE`
-(manager / admin) ; 404 si la mission n'existe pas. Lecture seule : ne relance jamais le
-moteur. `state` est calculé exactement comme dans la liste (mêmes faits, même résolveur).
+(manager / admin) ; 404 si la mission n'existe pas. Lecture seule : ne persiste jamais de
+calcul (D-141 : le moteur est seulement **évalué**, sans écriture ni audit). `state` est calculé exactement comme dans la liste (mêmes faits, même résolveur).
 Hors `ANOMALY`, `anomalies` est vide et `retry` vaut `null`.
 
 En `ANOMALY`, `anomalies` liste **toutes** les anomalies du dernier `AuditEvent
@@ -7389,11 +7401,17 @@ worklist « Facturation firmes ». Le message technique du moteur n'est jamais r
       "element": { "type": "MATERIAL", "label": "SwiveLock C Anchor", "reference": "SwiveLock" },
       "action": { "code": "CONFIGURE_MATERIAL_RATE", "label": "Configurer le tarif" },
       "resolved": false,
-      "missionInterventionId": 105,
+      "currentResolution": { "kind": "ANOMALY", "label": "Toujours bloquant : tarif matériel manquant.", "rule": null },
+      "referenceDate": "2026-10-01",
+      "targetRules": [],
+      "missionInterventionId": 107,
       "materialLineId": 153,
-      "conflictingRules": []
+      "conflictingRules": [],
+      "rowKey": "MATERIAL_LINE:153"
     }
   ],
+  "newAnomalies": [],
+  "recalculation": { "wouldSucceed": false, "remainingAnomalyCount": 10, "referenceDate": "2026-10-01" },
   "retry": { "kind": "CALCULATE", "calculationId": null }
 }
 ```
@@ -7415,9 +7433,25 @@ worklist « Facturation firmes ». Le message technique du moteur n'est jamais r
   couvrent la même cible à la date de la mission ; le moteur n'en choisit aucune). Instantané
   audité : `[{ "id": 12, "unitPrice": "300.00", "currency": "EUR", "validFrom": "2026-01-01",
   "validTo": null }]` — `validTo` exclusif (D-072).
-- `resolved` : la cause n'existe plus dans la configuration actuelle (mêmes résolveurs que le
-  moteur). L'anomalie reste affichée tant qu'un calcul n'a pas abouti — l'historique d'audit
+- `resolved` : la cause n'existe plus dans la configuration actuelle (D-141 : le moteur lui-même,
+  rejoué en lecture seule — `FinancialCalculationService::evaluate()`). L'anomalie reste affichée tant qu'un calcul n'a pas abouti — l'historique d'audit
   n'est jamais modifié.
+- **D-141** — `currentResolution` : ce que le moteur, rejoué maintenant en lecture seule, donne
+  pour l'élément : `LINE` (tarif résolu ; `rule` = `{id, unitPrice, currency, validFrom, validTo,
+  active}` ; jamais un montant validé), `FEE_NOT_APPLICABLE` (« Pas de forfait »),
+  `MATERIAL_NOT_BILLABLE`, `ANOMALY` (toujours bloquant), `ELEMENT_REMOVED`, `RESOLVED` (anomalie de
+  mission corrigée) ; `label` = phrase française à afficher telle quelle.
+- **D-141** — `targetRules` : pour `MISSING_FIRM_*_RATE`, les tarifs existants de la cible (actifs
+  ou non) dont aucun ne couvre `referenceDate` ; `[]` = aucun tarif n'a jamais été saisi.
+  L'`explanation` distingue : tarifs hors période, prestation « avec forfait » sans tarif,
+  prestation jamais configurée pour la firme, matériel sans décision de facturation
+  (`UNSPECIFIED`) ou « facturable » sans tarif. « Pas de forfait » (`feeApplicable = false`) et
+  « non facturable » ne produisent jamais d'anomalie.
+- **D-141** — `newAnomalies` : anomalies qu'un recalcul produirait maintenant et que l'échec
+  audité ne contenait pas (même forme, `detectedAfterFailure: true`) — ex. présence du délégué
+  devenue pertinente après la validation de l'encodage. Hors `anomalies`, pour que la liste et le
+  tiroir gardent le même décompte (D-138). `recalculation` : pronostic du moteur
+  (`wouldSucceed`, `remainingAnomalyCount`, `referenceDate`) ; `null` hors `ANOMALY`.
 - `retry` : relance possible, décidée par le backend — `CALCULATE` →
   `POST /api/missions/{id}/financial-calculations` ; `RECALCULATE` →
   `POST /api/financial-calculations/{calculationId}/recalculate` (un recalcul a échoué, le

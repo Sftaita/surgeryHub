@@ -200,7 +200,11 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   if (!open || !item) return null;
 
   const tone = STATE_TONE[item.encodingState] ?? STATE_TONE.NOT_APPLICABLE;
-  const financialAnomalies = isFinancialAnomaly && financialQuery.data?.state === "ANOMALY" ? financialQuery.data.anomalies : [];
+  // D-141 — le repère « Anomalie » suit ce qui bloque ENCORE selon le backend : une anomalie
+  // auditée `resolved` n'est plus signalée, une anomalie apparue depuis l'échec l'est.
+  const financialAnomalies = isFinancialAnomaly && financialQuery.data?.state === "ANOMALY"
+    ? [...financialQuery.data.anomalies.filter((a) => !a.resolved), ...(financialQuery.data.newAnomalies ?? [])]
+    : [];
   const anomalyMarks: EncodingAnomalyMarks = {
     interventionIds: new Set(financialAnomalies.filter((a) => a.materialLineId === null && a.missionInterventionId !== null).map((a) => a.missionInterventionId!)),
     materialLineIds: new Set(financialAnomalies.filter((a) => a.materialLineId !== null).map((a) => a.materialLineId!)),
