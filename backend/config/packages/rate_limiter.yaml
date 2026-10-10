@@ -1,0 +1,39 @@
+# D-140 — anti-force brute de l'association MedVue (premier usage de symfony/rate-limiter).
+#
+# Stockage : pool dédié `cache.medvue_rate_limiter`, adossé à `cache.app` (filesystem en prod,
+# Redis en dev). En test, `cache.app` est un ArrayAdapter remis à zéro entre deux requêtes du
+# même client : le pool est alors un filesystem pour que les compteurs survivent d'une requête à
+# l'autre (clés par identifiant d'utilisateur, jamais réutilisées). Compteurs par instance : un
+# seul conteneur backend en production aujourd'hui.
+framework:
+    cache:
+        pools:
+            cache.medvue_rate_limiter:
+                adapter: cache.app
+    rate_limiter:
+        # Essais de saisie d'un code par l'utilisateur qui agit (soi-même ou administrateur).
+        medvue_link_actor:
+            cache_pool: cache.medvue_rate_limiter
+            policy: 'sliding_window'
+            limit: 5
+            interval: '15 minutes'
+        # Essais visant un même compte SurgicalHub, tous acteurs confondus.
+        medvue_link_target:
+            cache_pool: cache.medvue_rate_limiter
+            policy: 'sliding_window'
+            limit: 20
+            interval: '15 minutes'
+        # API machine MedVue (lecture des congés, dissociation) — garde-fou global, très au-delà
+        # d'une synchronisation normale (quelques dizaines de comptes toutes les 30 minutes).
+        medvue_integration_api:
+            cache_pool: cache.medvue_rate_limiter
+            policy: 'sliding_window'
+            limit: 600
+            interval: '1 minute'
+
+when@test:
+    framework:
+        cache:
+            pools:
+                cache.medvue_rate_limiter:
+                    adapter: cache.adapter.filesystem

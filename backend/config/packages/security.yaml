@@ -31,6 +31,16 @@ security:
                 success_handler: lexik_jwt_authentication.handler.authentication_success
                 failure_handler: lexik_jwt_authentication.handler.authentication_failure
 
+        # D-140 — API machine-à-machine dédiée à MedVue (lecture des congés, dissociation).
+        # AVANT le firewall `api` : un JWT utilisateur n'y est jamais accepté, et le secret
+        # MedVue n'ouvre aucune autre route /api.
+        medvue_integration:
+            pattern: ^/api/integrations/medvue/
+            stateless: true
+            custom_authenticators:
+                - App\Security\MedVueIntegration\MedVueIntegrationAuthenticator
+            entry_point: App\Security\MedVueIntegration\MedVueIntegrationAuthenticator
+
         # API protégée par JWT
         api:
             pattern: ^/api
@@ -59,6 +69,9 @@ security:
         - { path: ^/api/auth/logout, roles: PUBLIC_ACCESS }
         - { path: ^/api/auth/google, roles: PUBLIC_ACCESS }
         - { path: ^/api/invitations, roles: PUBLIC_ACCESS }
+
+        # D-140 — client machine MedVue uniquement
+        - { path: ^/api/integrations/medvue/, roles: ROLE_MEDVUE_INTEGRATION }
 
         # Tout le reste de /api nécessite un JWT valide
         - { path: ^/api, roles: IS_AUTHENTICATED_FULLY }

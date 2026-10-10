@@ -18,6 +18,11 @@ parameters:
     # environnement. Défaut OFF ici (jamais d'erreur si la variable manque sur un serveur) :
     # tant qu'elle vaut 0, aucune "prochaine relance automatique" n'est annoncée au manager.
     env(ENCODING_REMINDER_AUTO_ENABLED): "0"
+    # D-140 — intégration MedVue. Vides par défaut : toute lecture machine est refusée (401)
+    # et l'association est indisponible (« Intégration MedVue non configurée »), jamais d'erreur.
+    env(MEDVUE_INBOUND_TOKEN_SHA256): ""
+    env(MEDVUE_API_BASE_URL): ""
+    env(MEDVUE_REDEEM_TOKEN): ""
 
 services:
     # default configuration for services in *this* file

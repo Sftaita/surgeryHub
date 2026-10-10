@@ -328,6 +328,35 @@ les notifications sur leurs appareils.
 
 ---
 
+### Intégration MedVue (D-140)
+
+Trois variables dans le `.env` du stack (`/opt/stack/apps/surgicalhub/.env`, lu via
+`env_file` — pas `backend/.env.prod.local`). Vides = intégration désactivée sans erreur
+(lecture machine `401`, association `503 medvue_not_configured`, formulaire masqué).
+
+| Variable | Contenu |
+|---|---|
+| `MEDVUE_INBOUND_TOKEN_SHA256` | empreinte SHA-256 (hex) du secret MedVue → SurgicalHub ; deux empreintes séparées par une virgule pendant une rotation |
+| `MEDVUE_API_BASE_URL` | `https://api.medvue.be` |
+| `MEDVUE_REDEEM_TOKEN` | secret SurgicalHub → MedVue, en clair (MedVue n'en garde que l'empreinte, `SURGICALHUB_INBOUND_TOKEN_SHA256`) |
+
+Génération (une fois par sens, jamais commitée, jamais collée dans un rapport) :
+
+```bash
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'      # le secret
+printf '%s' '<secret>' | sha256sum | cut -d' ' -f1                # son empreinte
+```
+
+Le secret MedVue → SurgicalHub va en clair dans le `.env` de MedVue
+(`SURGICALHUB_API_TOKEN`) et seulement en empreinte ici ; le secret SurgicalHub → MedVue va
+en clair ici et en empreinte chez MedVue. Après modification : recréer les containers
+(`docker compose up -d`) pour recharger le `.env`. Rotation : ajouter la nouvelle empreinte
+(`ancienne,nouvelle`), déployer le nouveau secret côté appelant, puis retirer l'ancienne.
+
+Vérification sans données réelles : `curl -s -o /dev/null -w '%{http_code}'
+https://api.surgicalhub.be/api/integrations/medvue/v1/links/x/absences` → `401` ;
+avec le secret et un `linkId` inconnu → `404 link_not_found`.
+
 ## Créer un compte utilisateur
 
 ```bash

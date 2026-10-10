@@ -7572,3 +7572,175 @@ DRAFT). La réponse gagne `createdMissionStatus`.
 mission préexistante reflétée, sinon `null`). Une mission préexistante **publiée** occupant le
 créneau d'un poste est montrée telle qu'elle est (son instrumentiste, ses heures,
 `COVERED`/`UNCOVERED`) — `generate()` ne la modifie jamais (R-01).
+
+## Intégration MedVue — liaison des comptes et lecture des congés (D-140)
+
+Contrat d'intégration **v1**, partagé avec MedVue (référence miroir côté MedVue :
+`docs/surgicalhub-integration.md` §0 et §5). Règle fondatrice : **les données métier circulent
+uniquement de SurgicalHub vers MedVue.** MedVue ne crée, ne modifie ni ne supprime jamais de
+congé dans SurgicalHub ; les seuls appels MedVue → SurgicalHub sont la lecture des congés et la
+dissociation technique d'une liaison. Aucun accès SQL, réseau Docker, volume ou secret
+utilisateur partagé : HTTPS par les domaines publics (`api.surgicalhub.be`, `api.medvue.be`),
+un secret machine distinct par sens.
+
+### Décisions harmonisées (2026-10-10)
+
+| # | Décision |
+|---|---|
+| D1 | `Absence` n'a pas de statut : toute absence SurgicalHub = `CONFIRMED` (indisponibilité ferme côté MedVue). Une absence supprimée dans SurgicalHub disparaît de l'instantané et est retirée par MedVue à la synchronisation complète suivante. Tout autre `status` futur est ignoré par MedVue. Aucun workflow d'approbation ajouté. |
+| D2 | Les 4 rôles réels (`ROLE_ADMIN`, `ROLE_MANAGER`, `ROLE_SURGEON`, `ROLE_INSTRUMENTIST`) lient leur propre compte ; seul `ROLE_ADMIN` lie le compte d'autrui, avec un code généré par le compte MedVue cible. Un compte sans rôle métier ne peut rien lier. |
+| D3 | Garde-fou administrateur : MedVue envoie un email au titulaire à chaque association ; l'association est visible et dissociable dans MedVue ; les emails des deux comptes ne sont pas comparés. |
+| D4 | Dissociation depuis MedVue : `DELETE …/links/{linkId}` (ci-dessous). Une révocation côté SurgicalHub n'appelle pas MedVue : MedVue l'apprend par `410 link_revoked` à sa lecture suivante. |
+| D5 | Fenêtre de synchronisation MedVue `[aujourd'hui − 90 j, aujourd'hui + 24 mois]` ; SurgicalHub accepte `to − from ≤ 850 jours`. |
+| D6–D10 | Purement MedVue ; `docs/surgicalhub-integration.md` §0 de MedVue fait foi. Résumé (tranché par l'utilisateur le 2026-10-10) : D6 — un congé importé sorti de la fenêtre est conservé, sans purge ; D7 — cron 30 min, synchronisation initiale et manuelle, jamais dans le worker OR-Tools ; D8 — synchronisation tentée avant chaque génération, blocage au-delà de 24 h sans réussite (dérogation tracée réservée au créateur du planning) ; D9 — à la révocation (`410` ou « Dissocier »), les congés futurs importés sont retirés, le passé et le congé en cours sont conservés et retirables par le titulaire ; D10 — snapshots immuables. |
+| D11 | MedVue ne modifie jamais SurgicalHub : seuls `GET …/absences` et le `DELETE` technique de D4. |
+| D12 | `symfony/rate-limiter` ajouté à SurgicalHub (`symfony/http-client` côté MedVue). |
+
+### Parcours d'association
+
+1. Dans MedVue, le titulaire génère un code (12 caractères base32 de Crockford, affiché
+   `XXXX-XXXX-XXXX`, 10 minutes, usage unique ; MedVue ne stocke que son empreinte).
+2. Dans SurgicalHub, Profil → « Intégration MedVue » (ou, pour un ADMIN, Administration →
+   Utilisateurs → fiche → « Intégration MedVue »), il saisit le code.
+3. SurgicalHub vérifie le droit (`MedVueIntegrationVoter::MANAGE_LINK`), l'absence de liaison
+   active, les limites d'essais, normalise le code puis appelle MedVue (`redeem`).
+4. MedVue consomme le code et renvoie un `linkId` ; SurgicalHub enregistre la liaison
+   (`medvue_account_link`) et l'audit `MEDVUE_LINKED`.
+
+Le code n'est jamais stocké ni journalisé par SurgicalHub (ni logs, ni audit, ni Sentry —
+`SentryIntegrationSecretScrubber` retire corps, query string et en-têtes des requêtes
+`/api/medvue-integration/*` et `/api/integrations/medvue/*`).
+
+### Endpoints utilisateur (JWT)
+
+Adressés par l'identifiant du compte SurgicalHub visé (`{userId}` = l'utilisateur courant, ou
+la fiche ouverte par un ADMIN). Droit : `MedVueIntegrationVoter::MANAGE_LINK` — soi-même pour
+les 4 rôles métier, autrui pour `ROLE_ADMIN` seul ; sinon `403` (MedVue n'est jamais appelé).
+
+#### `GET /api/medvue-integration/users/{userId}/link`
+
+```json
+{ "configured": true, "linked": true, "linkedAt": "2026-10-10T08:00:00+02:00",
+  "linkedBy": { "id": 17, "displayName": "Alice Admin" } }
+```
+
+`configured: false` quand le serveur n'a pas les variables MedVue (le formulaire est masqué).
+
+#### `POST /api/medvue-integration/users/{userId}/link`
+
+Corps `{ "code": "K7QM-2XPA-9DRT" }` (majuscules/minuscules, espaces, tirets, O→0, I/L→1
+acceptés). `201` + même forme que `GET`. Erreurs `{ "error": { "code", "message" } }` :
+
+| HTTP | `code` | Cas |
+|---|---|---|
+| 422 | `invalid_code_format` | pas un code possible (MedVue non appelé) |
+| 422 | `invalid_code` | MedVue : inconnu, expiré, remplacé ou consommé (indistinguables) |
+| 409 | `already_linked` | ce compte SurgicalHub a déjà une liaison active (dissocier d'abord ; MedVue non appelé) |
+| 409 | `surgicalhub_account_linked_elsewhere` | MedVue : ce compte SurgicalHub est encore lié à un autre compte MedVue |
+| 409 | `medvue_account_already_linked` | MedVue : ce compte MedVue est lié à un autre compte SurgicalHub (à dissocier dans MedVue) |
+| 409 | `link_conflict` | le `linkId` renvoyé est déjà actif pour un autre compte SurgicalHub |
+| 429 | `rate_limited` | 5 essais / 15 min par acteur, 20 / 15 min par compte visé (`Retry-After`) |
+| 502 | `medvue_unavailable` | réseau, délai de 10 s, redirection, 401/422 `validation_failed`/429/5xx de MedVue, réponse hors contrat |
+| 503 | `medvue_not_configured` | variables MedVue absentes sur ce serveur |
+
+Tout essai, réussi ou non, bien formé ou non, consomme les deux limiteurs ; chaque échec est
+audité (`MEDVUE_LINK_FAILED`, payload `{reason, byAdministrator}`, jamais le code).
+
+#### `DELETE /api/medvue-integration/users/{userId}/link`
+
+`204`. Révoque la liaison active (titulaire ou ADMIN), audit `MEDVUE_UNLINKED`
+(`via: SURGICALHUB`). Aucune absence touchée, aucun appel à MedVue. `404 not_linked` s'il n'y
+a pas de liaison active.
+
+### Appel SurgicalHub → MedVue : échange du code
+
+```
+POST {MEDVUE_API_BASE_URL}/api/integrations/surgicalhub/v1/link-codes/redeem
+Authorization: Bearer {MEDVUE_REDEEM_TOKEN}
+{ "code": "K7QM2XPA9DRT", "surgicalHubUserId": "4812",
+  "surgicalHubDisplayName": "Dr Jeanne Martin", "actorDisplayName": "Alice Admin",
+  "actorIsAdministrator": true }
+```
+
+Corps plat, champs inconnus refusés par MedVue. Réponses : `200 {"linkId","linkedAt"}` (une
+même paire reconfirmée renvoie le même `linkId`) ; `422 invalid_code` ; `422 validation_failed` ;
+`409 already_linked` ; `409 medvue_account_already_linked` ; `401` ; `429`. Toute autre
+réponse = échec technique, rien n'est enregistré. Aucune donnée MedVue dans la réponse.
+Délai 10 s, aucune redirection suivie.
+
+### API machine MedVue → SurgicalHub (`/api/integrations/medvue/v1`)
+
+Firewall dédié `medvue_integration`, déclaré avant `^/api` : `Authorization: Bearer <secret
+MedVue → SurgicalHub>`, comparé en temps constant à l'empreinte SHA-256
+`MEDVUE_INBOUND_TOKEN_SHA256` (plusieurs empreintes séparées par des virgules pendant une
+rotation). Principal technique `ROLE_MEDVUE_INTEGRATION` sans `User`, reconnu uniquement par
+`MedVueIntegrationVoter::MACHINE_READ`. Un JWT utilisateur n'y est jamais accepté (`401`) et le
+secret machine n'ouvre aucune autre route `/api` (`401`). Garde-fou global 600 requêtes/min
+(`429 rate_limited` + `Retry-After`). Toutes les erreurs portent `{"apiVersion": 1, "error"}`.
+
+#### `GET /api/integrations/medvue/v1/links/{linkId}/absences?from=YYYY-MM-DD&to=YYYY-MM-DD`
+
+Instantané **complet** des absences du titulaire qui intersectent `[from, to]` (bornes
+incluses), en une seule requête, triées par `id`, sans pagination. `Cache-Control: no-store`.
+
+```json
+{
+  "apiVersion": 1,
+  "linkId": "0199c5…",
+  "window": { "from": "2026-07-12", "to": "2028-10-10" },
+  "generatedAt": "2026-10-10T08:00:00+02:00",
+  "complete": true,
+  "absences": [
+    { "id": "8120", "startDate": "2026-12-12", "endDate": "2026-12-20",
+      "status": "CONFIRMED", "updatedAt": null }
+  ]
+}
+```
+
+- `endDate` inclusive (convention `Absence`) ; `id` est l'identifiant stable de l'absence
+  (chaîne). « Retirer un jour » au milieu d'une absence la raccourcit et crée une nouvelle
+  absence (nouvel `id`) pour la suite.
+- `updatedAt` toujours `null` (`Absence` n'a pas cette donnée).
+- **Jamais exposés** : `reason` (texte libre, potentiellement médical), `createdBy`, sites,
+  missions. La requête ne sélectionne que `id`, `dateStart`, `dateEnd`.
+
+| HTTP | `error` | Sens pour MedVue |
+|---|---|---|
+| 200 | — | instantané complet (`complete: true`) → réconciliation |
+| 400 | `invalid_window` | `from`/`to` absents, mal formés, inversés, ou `to − from > 850` jours |
+| 401 | `unauthorized` | secret absent ou invalide |
+| 404 | `link_not_found` | `linkId` jamais connu de SurgicalHub |
+| 410 | `link_revoked` | `linkId` connu, plus aucune liaison active |
+| 422 | `window_too_large` | plus de 1 000 absences dans la fenêtre (jamais de réponse tronquée) |
+| 429 | `rate_limited` | garde-fou global |
+
+Traitement côté MedVue (référence : `docs/surgicalhub-integration.md` de MedVue) :
+
+- `410 {"apiVersion": 1, "error": "link_revoked"}` exact : seule réponse qui révoque la
+  liaison côté MedVue et retire des congés importés.
+- `404 {"apiVersion": 1, "error": "link_not_found"}` exact : la liaison est seulement
+  **suspendue** (plus aucune lecture, rien n'est supprimé, titulaire prévenu). Cas typique : une
+  restauration de SurgicalHub antérieure à la liaison. Elle reprend quand le titulaire saisit un
+  nouveau code pour la même paire (même `linkId`, congés intacts) ; « Dissocier » dans MedVue
+  envoie le `DELETE` ci-dessous, qui répondra alors probablement `404` sans conséquence.
+  Garde-fou : au 2ᵉ `404` d'une même passe du cron, MedVue s'arrête et alerte ; tant que
+  plusieurs liaisons sont suspendues, le cron n'appelle plus SurgicalHub.
+- Toute autre réponse (page 404 HTML d'un proxy, 5xx, délai…) laisse ses données intactes.
+
+**Retour arrière de SurgicalHub** : restaurer une sauvegarde antérieure à des liaisons ne
+supprime donc aucun congé dans MedVue ; les titulaires concernés doivent seulement générer un
+nouveau code et le saisir à nouveau.
+
+#### `DELETE /api/integrations/medvue/v1/links/{linkId}`
+
+Dissociation demandée depuis MedVue. `204` si la liaison était active (audit
+`MEDVUE_UNLINKED`, `via: MEDVUE`, acteur = titulaire) **ou déjà révoquée** (idempotent) ;
+`404 link_not_found` si jamais connue. Ne touche aucune absence.
+
+### Liaison : modèle
+
+`medvue_account_link` : `user_id`, `medvue_link_id`, `linked_by_id`, `linked_at`,
+`revoked_at`, `revoked_by_id`, `revoked_via` (`SURGICALHUB` | `MEDVUE`). Au plus une ligne
+active par compte et par `linkId` (`active_user_id` / `active_link_id` uniques, NULL une fois
+révoquée). Plusieurs lignes historiques peuvent porter le même `linkId` (révocation SurgicalHub
+puis reconfirmation de la même paire par MedVue).

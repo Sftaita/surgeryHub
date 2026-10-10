@@ -3592,3 +3592,31 @@ qui garde `MissionPublishedMessage`.
   `dispatch-candidates`, `mission/{id}`).
 - `fetchAllMissions()` : pagination complète (l'API plafonne à 100 par page ; un seul appel
   `limit: 500` tronquait silencieusement les premières missions d'un mois chargé).
+
+## 24. Intégration MedVue — liaison des comptes et API machine de lecture des congés (D-140)
+
+```
+MedVue (code d'association) ──► utilisateur ──► SurgicalHub, Profil / fiche admin
+SurgicalHub ──POST …/link-codes/redeem (secret SH→MV)──► api.medvue.be   (code + id SH)
+MedVue ──GET …/links/{linkId}/absences (secret MV→SH)──► api.surgicalhub.be (congés)
+MedVue ──DELETE …/links/{linkId} (secret MV→SH)──► api.surgicalhub.be (dissociation)
+```
+
+Composants SurgicalHub :
+
+| Composant | Rôle |
+|---|---|
+| `MedVueAccountLink` / `medvue_account_link` | liaison compte SH ↔ `linkId` MedVue, historique des révocations, au plus une active par compte et par `linkId` |
+| `MedVueIntegrationVoter` | `MANAGE_LINK` (soi-même : 4 rôles métier ; autrui : ADMIN) et `MACHINE_READ` (client machine seul) |
+| `MedVueIntegrationAuthenticator` + `MedVueIntegrationClient` | firewall `medvue_integration` (`^/api/integrations/medvue/`), secret Bearer comparé à son empreinte SHA-256 |
+| `MedVueAccountLinkService` | liaison (limites, normalisation, appel MedVue, audit) et révocations SH / MedVue |
+| `MedVueLinkCodeRedeemer` | unique appel sortant vers MedVue (`redeem`), réponses hors contrat = échec technique |
+| `MedVueAbsenceExportService` | instantané complet et minimal (`id`, dates) des absences d'une fenêtre |
+| `MedVueAccountLinkController` | `GET/POST/DELETE /api/medvue-integration/users/{userId}/link` (JWT) |
+| `MedVueIntegrationApiController` | `GET …/absences`, `DELETE …/links/{linkId}` (machine) |
+| `SentryIntegrationSecretScrubber` | retire code et secret des rapports Sentry |
+
+Flux de données : seules des données SurgicalHub sortent (identifiant et nom du compte, nom de
+l'acteur, dates d'absence). Rien de MedVue n'est stocké hormis le `linkId` opaque. Aucune
+écriture sur `Absence` n'est possible par l'intégration. Contrat : `docs/api.md`
+« Intégration MedVue » ; décisions : `docs/decisions.md` D-140.
