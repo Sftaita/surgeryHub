@@ -98,7 +98,10 @@ export interface WorklistSummary {
   notBillable: { lineCount: number };
   toReview: { lineCount: number };
   invoiced: { lineCount: number; amounts: Amount[] };
+  /** D-141 — anomalies qui bloquent encore (hors `resolved`). */
   anomalyCount: number;
+  /** D-141 — anomalies du dernier échec déjà corrigées, en attente de recalcul. */
+  resolvedAnomalyCount: number;
   pendingValidationMissionCount: number;
   invoices: { draft: number; generated: number; sent: number; paid: number; cancelled: number; abandoned: number };
 }

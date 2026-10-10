@@ -724,7 +724,10 @@ final class FirmBillingWorklistService
             'notBillable' => ['lineCount' => $counts[FirmBillingStatus::NOT_BILLABLE->value]],
             'toReview' => ['lineCount' => $counts[FirmBillingStatus::TO_REVIEW->value]],
             'invoiced' => ['lineCount' => $counts[FirmBillingStatus::INVOICED->value], 'amounts' => $this->amountList($invoicedAmounts)],
-            'anomalyCount' => count($anomalies),
+            // D-141 — « À corriger » = ce qui bloque ENCORE (évaluation actuelle du moteur) ; une
+            // anomalie auditée dont la cause a disparu est comptée à part, en attente de recalcul.
+            'anomalyCount' => count(array_filter($anomalies, static fn (array $a) => !($a['resolved'] ?? false))),
+            'resolvedAnomalyCount' => count(array_filter($anomalies, static fn (array $a) => $a['resolved'] ?? false)),
             'pendingValidationMissionCount' => $this->pendingValidationCount($from, $to),
             'invoices' => $this->invoiceCounts($from, $to, array_keys($firmFilter)),
         ];

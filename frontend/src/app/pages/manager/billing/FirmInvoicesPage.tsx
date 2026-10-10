@@ -237,7 +237,10 @@ export default function FirmInvoicesPage() {
         <Kpi
           label="À corriger"
           value={summary ? plural(summary.anomalyCount, "anomalie") : "—"}
-          hint={summary && summary.toReview.lineCount > 0 ? `${plural(summary.toReview.lineCount, "ligne")} à vérifier` : undefined}
+          hint={summary ? [
+            summary.toReview.lineCount > 0 ? `${plural(summary.toReview.lineCount, "ligne")} à vérifier` : null,
+            summary.resolvedAnomalyCount > 0 ? `${plural(summary.resolvedAnomalyCount, "corrigée")} — à recalculer` : null,
+          ].filter(Boolean).join(" · ") || undefined : undefined}
           tone={summary && summary.anomalyCount > 0 ? "warning" : undefined}
           active={tab === "toFix"}
           onClick={() => setTab("toFix")}
@@ -270,7 +273,10 @@ export default function FirmInvoicesPage() {
 
       <Tabs value={tab} onChange={(_, v) => setTab(v)}>
         <Tab value="prestations" label="Prestations" />
-        <Tab value="toFix" label={`À corriger${summary ? ` (${summary.anomalyCount})` : ""}`} />
+        <Tab
+          value="toFix"
+          label={`À corriger${summary ? ` (${summary.anomalyCount}${summary.resolvedAnomalyCount > 0 ? ` · ${summary.resolvedAnomalyCount} à recalculer` : ""})` : ""}`}
+        />
         <Tab value="invoices" label="Factures" />
       </Tabs>
 
@@ -740,7 +746,10 @@ function ToFixView({ worklist, onDone, onError }: { worklist: FirmBillingWorklis
           <Paper key={m.id} variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }} data-testid={`mission-${m.id}`}>
             <Stack direction="row" alignItems="center" spacing={1} sx={{ px: 2, py: 1, bgcolor: "grey.50" }}>
               <Typography fontWeight={800} sx={{ flex: 1 }}>{formatDate(m.date)} · {m.site ?? "—"} · {m.surgeon ?? "—"}</Typography>
-              <Typography variant="caption" color="text.secondary">{plural(items.length, "anomalie")}</Typography>
+              <Typography variant="caption" color="text.secondary">
+                {plural(items.filter((a) => !a.resolved).length, "anomalie")}
+                {items.some((a) => a.resolved) ? ` · ${plural(items.filter((a) => a.resolved).length, "corrigée")} — à recalculer` : ""}
+              </Typography>
               <Button size="small" component={RouterLink} to={`/app/m/missions/${m.id}`}>Ouvrir la mission</Button>
             </Stack>
             <Stack divider={<Box sx={{ borderTop: 1, borderColor: "divider" }} />}>
@@ -762,7 +771,9 @@ function ToFixView({ worklist, onDone, onError }: { worklist: FirmBillingWorklis
                       <Typography variant="body2" color="success.dark" sx={{ mt: 0.25 }}>Désormais : {a.currentResolution.label}</Typography>
                     )}
                   </Box>
-                  {a.action && !(a.resolved && a.action.code.startsWith("CONFIGURE")) && (
+                  {/* D-141 — comme le Suivi des encodages : une cause corrigée n'appelle plus d'action de
+                      correction (tarif ou encodage) ; seules les relances de calcul restent proposées. */}
+                  {a.action && !(a.resolved && !["CALCULATE", "APPROVE", "RECALCULATE"].includes(a.action.code)) && (
                     <Button size="small" variant={["CALCULATE", "APPROVE", "RECALCULATE"].includes(a.action.code) ? "contained" : "outlined"} disableElevation disabled={busy} onClick={() => runAction(a)}>
                       {a.action.label}
                     </Button>

@@ -836,6 +836,11 @@ function MaterialEditDialog({
                 onCancelFuture={(id) => cancelMutation.mutate(id)}
                 isSaving={isSaving}
               />
+              {!hasActiveRate && material.billingStatus === "NOT_BILLABLE" && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }} data-testid="material-not-billable">
+                  {MATERIAL_NOT_BILLABLE_LABEL} — ce matériel n'est jamais facturé (décision explicite, distincte d'un tarif manquant).
+                </Typography>
+              )}
               {!hasActiveRate && material.billingStatus !== "NOT_BILLABLE" && (
                 <MuiButton
                   size="small" color="inherit" sx={{ mt: 1 }}
@@ -961,6 +966,9 @@ function SuggestedMaterialsDialog({
   );
 }
 
+// D-141 — matériel `billingStatus = NOT_BILLABLE` : décision explicite, jamais un tarif manquant.
+const MATERIAL_NOT_BILLABLE_LABEL = "Non facturable";
+
 // Refonte UX (§5) — états jamais confondus : montant défini, "Tarif non configuré"
 // (feeApplicable=true sans PricingRule active), "Conflit tarifaire" (plusieurs règles
 // actives, signalé par le backend — D-138), "Pas de forfait" (feeApplicable=false,
@@ -971,6 +979,23 @@ function forfaitSummary(offering: FirmServiceOffering, forfait: PricingRule | nu
   if (hasPricingConflict(offering.pricingConflictRuleIds)) return PRICING_CONFLICT_LABEL;
   if (forfait) return `${Number(forfait.unitPrice).toFixed(2)} € HTVA`;
   return PRICING_NOT_CONFIGURED_LABEL;
+}
+
+// D-141 — un tarif manquant ne ressemble jamais à un tarif configuré ; « Pas de forfait » est
+// une décision neutre. Le libellé vient de forfaitSummary (états fournis par le backend).
+function forfaitToneClass(summary: string): string {
+  if (summary === PRICING_CONFLICT_LABEL) return styles.pricingConflict;
+  if (summary === PRICING_NOT_CONFIGURED_LABEL) return styles.pricingMissing;
+  if (summary === "Pas de forfait") return styles.pricingNoFee;
+  return "";
+}
+
+// D-141 — la période de la règle en vigueur est affichée : un tarif qui ne commence qu'à une
+// date donnée ne couvre pas les prestations antérieures (le moteur les bloque).
+function forfaitPeriodLabel(offering: FirmServiceOffering, forfait: PricingRule | null): string {
+  if (!offering.feeApplicable || !forfait || (!forfait.validFrom && !forfait.validTo)) return "forfait";
+  const fmt = (d: string) => d.slice(0, 10).split("-").reverse().join("/");
+  return `forfait${forfait.validFrom ? ` dès le ${fmt(forfait.validFrom)}` : ""}${forfait.validTo ? ` jusqu'au ${fmt(forfait.validTo)} (exclu)` : ""}`;
 }
 
 function representativeSummary(offering: FirmServiceOffering): string {
@@ -1454,12 +1479,12 @@ export default function PrestationsPage() {
                               </div>
                               <div className={styles.prestaCardForfait}>
                                 <div
-                                  className={[styles.prestaCardForfaitValue, forfaitSummary(o, forfait) === PRICING_CONFLICT_LABEL ? styles.pricingConflict : ""].filter(Boolean).join(" ")}
+                                  className={[styles.prestaCardForfaitValue, forfaitToneClass(forfaitSummary(o, forfait))].filter(Boolean).join(" ")}
                                   title={forfaitSummary(o, forfait) === PRICING_CONFLICT_LABEL && o.pricingConflictRuleIds ? pricingConflictTooltip(o.pricingConflictRuleIds) : undefined}
                                 >
                                   {forfaitSummary(o, forfait)}
                                 </div>
-                                <div className={styles.prestaCardForfaitLabel}>forfait</div>
+                                <div className={styles.prestaCardForfaitLabel}>{forfaitPeriodLabel(o, forfait)}</div>
                               </div>
                               <ChevronRightIcon size={16} className={styles.prestaCardChevron} />
                             </div>
@@ -1494,12 +1519,15 @@ export default function PrestationsPage() {
                               <span className={styles.materialRowName}>{m.label}</span>
                               <span className={styles.materialRowRef}>{m.referenceCode || "—"}</span>
                               <span
-                                className={[styles.materialRowPrice, conflictIds ? styles.pricingConflict : activeVersion ? "" : styles.materialRowPriceMuted].filter(Boolean).join(" ")}
+                                className={[styles.materialRowPrice, conflictIds ? styles.pricingConflict : activeVersion ? "" : m.billingStatus === "NOT_BILLABLE" ? styles.materialRowPriceMuted : styles.pricingMissing].filter(Boolean).join(" ")}
                                 title={conflictIds ? pricingConflictTooltip(conflictIds) : undefined}
                               >
+                                {/* D-141 — « Non facturable » est une décision explicite (jamais facturé),
+                                    distincte d'un tarif manquant qui bloque le calcul. */}
                                 {conflictIds
                                   ? PRICING_CONFLICT_LABEL
-                                  : activeVersion ? `${Number(activeVersion.amount).toFixed(2)} ${activeVersion.currency} HTVA` : PRICING_NOT_CONFIGURED_LABEL}
+                                  : activeVersion ? `${Number(activeVersion.amount).toFixed(2)} ${activeVersion.currency} HTVA`
+                                    : m.billingStatus === "NOT_BILLABLE" ? MATERIAL_NOT_BILLABLE_LABEL : PRICING_NOT_CONFIGURED_LABEL}
                               </span>
                               <Tooltip title="Modifier le matériel">
                                 <button type="button" aria-label={`Modifier ${m.label}`} className={[styles.btn, styles.btnOutline, styles.btnSm].join(" ")} onClick={() => setMaterialEditTargetId(m.id)}>

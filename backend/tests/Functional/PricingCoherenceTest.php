@@ -325,6 +325,14 @@ final class PricingCoherenceTest extends WebTestCase
         ];
     }
 
+    /** Tuiles de la worklist pour le jour de la mission, restreintes aux firmes du test. */
+    private function worklistSummary(KernelBrowser $client, string $token, Mission $m, Firm ...$firms): array
+    {
+        $day = $this->managed($m)->getStartAt()->format('Y-m-d');
+        $query = implode('', array_map(static fn (Firm $f) => '&firmIds[]=' . $f->getId(), $firms));
+        return $this->json($this->request($client, $token, 'GET', "/api/firm-billing/worklist?from={$day}&to={$day}{$query}"))['summary'];
+    }
+
     /** @return FinancialCalculationLine[] lignes FIRM du calcul actif */
     private function firmLines(Mission $m): array
     {
@@ -584,6 +592,9 @@ final class PricingCoherenceTest extends WebTestCase
         self::assertSame('FIXED_PENDING_RECALCULATION', $wl['rows']['MISSION_INTERVENTION:' . $itv->getId()]['reasonCode']);
         self::assertSame('MATERIAL_NOT_BILLABLE', $wl['rows']['MATERIAL_LINE:' . $ml->getId()]['reasonCode']);
         self::assertContains($m->getId(), $wl['bulkActions']['recalculateFixed']);
+        $summary = $this->worklistSummary($client, $token, $m, $sn);
+        self::assertSame(0, $summary['anomalyCount'], '« À corriger » ne compte plus une cause corrigée');
+        self::assertSame(1, $summary['resolvedAnomalyCount'], 'elle est annoncée à recalculer');
 
         // Relance contrôlée (action groupée existante) : calcul complet, échec conservé.
         $run = $this->json($this->request($client, $token, 'POST', '/api/firm-billing/calculations', ['missionIds' => [$m->getId()]]));
@@ -745,6 +756,10 @@ final class PricingCoherenceTest extends WebTestCase
         self::assertStringContainsString('la configuration a changé depuis', $menRow['reasonDetail']);
         self::assertSame('MISSING_REPRESENTATIVE_PRESENCE_ANSWER', $wl['rows']['MISSION_INTERVENTION:' . $mpflItv->getId()]['reasonCode'], 'la cause réelle, pas « Calcul bloqué »');
         self::assertContains('MISSING_REPRESENTATIVE_PRESENCE_ANSWER', array_column($wl['anomalies'], 'code'));
+        // « À corriger » = ce qui bloque ENCORE, comme le pronostic du Suivi (10) ; les 2 corrigées à part.
+        $summary = $this->worklistSummary($client, $token, $m, $sn, $arthrex);
+        self::assertSame(10, $summary['anomalyCount']);
+        self::assertSame(2, $summary['resolvedAnomalyCount']);
 
         // ── Correction des causes restantes.
         foreach ([$journey, $ubAdj, $ubTib, $qfix] as $included) {
@@ -763,6 +778,9 @@ final class PricingCoherenceTest extends WebTestCase
         $wl = $this->worklist($client, $token, $m);
         self::assertSame('FIXED_PENDING_RECALCULATION', $wl['rows']['MISSION_INTERVENTION:' . $lcaItv->getId()]['reasonCode']);
         self::assertContains($m->getId(), $wl['bulkActions']['recalculateFixed']);
+        $summary = $this->worklistSummary($client, $token, $m, $sn, $arthrex);
+        self::assertSame(0, $summary['anomalyCount'], 'plus rien ne bloque');
+        self::assertSame(11, $summary['resolvedAnomalyCount'], 'les 11 causes auditées sont corrigées, à recalculer');
 
         // ── Recalcul : état cohérent et traçable, mêmes informations sur les trois écrans.
         self::assertSame(201, $this->calculate($client, $token, $m)->getStatusCode());

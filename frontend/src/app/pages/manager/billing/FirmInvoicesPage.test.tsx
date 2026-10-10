@@ -100,7 +100,7 @@ function worklist(overrides: Partial<FirmBillingWorklist> = {}): FirmBillingWork
     period: { from: "2026-09-01", to: "2026-09-30" },
     summary: {
       lineCount: 46, billable: { lineCount: 31, amounts: [{ currency: "EUR", amount: "842.00" }] }, notBillable: { lineCount: 9 },
-      toReview: { lineCount: 4 }, invoiced: { lineCount: 2, amounts: [{ currency: "EUR", amount: "80.00" }] }, anomalyCount: 6,
+      toReview: { lineCount: 4 }, invoiced: { lineCount: 2, amounts: [{ currency: "EUR", amount: "80.00" }] }, anomalyCount: 6, resolvedAnomalyCount: 0,
       pendingValidationMissionCount: 0, invoices: { draft: 2, generated: 1, sent: 2, paid: 3, cancelled: 0, abandoned: 1 },
     },
     rows: ROWS,
@@ -335,6 +335,33 @@ describe("FirmInvoicesPage — worklist (D-133)", () => {
 
     await user.click(within(screen.getByTestId("mission-600")).getByRole("button", { name: "Calculer" }));
     await waitFor(() => expect(runCalculationsMock).toHaveBeenLastCalledWith([600]));
+  });
+
+  it("D-141 — « À corriger » compte ce qui bloque encore ; les causes corrigées sont annoncées à recalculer, sans action de correction", async () => {
+    const user = userEvent.setup();
+    const base = worklist();
+    getWorklistMock.mockResolvedValue(worklist({
+      summary: { ...base.summary, anomalyCount: 1, resolvedAnomalyCount: 1, toReview: { lineCount: 0 } },
+      anomalies: [
+        anomaly({ key: "MISSING_FIRM_MATERIAL_RATE:501:12", code: "MISSING_FIRM_MATERIAL_RATE", title: "Tarif matériel manquant", element: { type: "MATERIAL", label: "SwiveLock" }, action: { code: "CONFIGURE_MATERIAL_RATE", label: "Configurer le tarif" } }),
+        anomaly({
+          key: "MISSING_REPRESENTATIVE_PRESENCE_ANSWER:501:7", code: "MISSING_REPRESENTATIVE_PRESENCE_ANSWER", title: "Présence du délégué non renseignée",
+          element: { type: "INTERVENTION", label: "MPFL" }, action: { code: "OPEN_MISSION", label: "Compléter l'encodage" }, resolved: true,
+          currentResolution: { kind: "LINE", label: "Tarif résolu : 128,00 EUR (règle #5, sans limite de validité)." },
+        }),
+      ],
+      bulkActions: { recalculateFixed: [], calculatePending: [] },
+    }));
+    renderPage();
+
+    expect(await screen.findByText("1 anomalie")).toBeInTheDocument();
+    expect(screen.getByText("1 corrigée — à recalculer")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "À corriger (1 · 1 à recalculer)" }));
+    const mission = screen.getByTestId("mission-501");
+    expect(within(mission).getByText("1 anomalie · 1 corrigée — à recalculer")).toBeInTheDocument();
+    expect(within(mission).getByText(/Désormais : Tarif résolu : 128,00 EUR/)).toBeInTheDocument();
+    expect(within(mission).getByRole("button", { name: "Configurer le tarif" })).toBeInTheDocument();
+    expect(within(mission).queryByRole("button", { name: "Compléter l'encodage" })).not.toBeInTheDocument();
   });
 
   it("Factures : compteurs par statut et filtre multi-firmes transmis", async () => {

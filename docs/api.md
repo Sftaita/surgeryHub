@@ -2386,7 +2386,11 @@ l'échec audité ne contenait pas ; elle est ajoutée à la liste), `calculation
 
 **`summary` (tuiles, après filtres firme/type, avant filtre statut) :** `lineCount`,
 `billable {lineCount, amounts[]}`, `notBillable {lineCount}`, `toReview {lineCount}`,
-`invoiced {lineCount, amounts[]}`, `anomalyCount`, `pendingValidationMissionCount`
+`invoiced {lineCount, amounts[]}`, `anomalyCount` (**D-141** : anomalies qui bloquent ENCORE —
+hors `resolved`, y compris celles apparues depuis l'échec ; même nombre que
+`recalculation.remainingAnomalyCount` du Suivi des encodages pour une mission), `resolvedAnomalyCount`
+(**D-141**, additif : anomalies du dernier échec déjà corrigées, en attente de recalcul),
+`pendingValidationMissionCount`
 (missions `SUBMITTED` de la période, hors worklist), `invoices {generated, sent, paid,
 cancelled}` (documents `STANDARD` dont `periodStart` tombe dans la période, firmes filtrées).
 

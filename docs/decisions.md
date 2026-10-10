@@ -11823,6 +11823,35 @@ complet, échec conservé dans l'audit ; 10 calcul verrouillé inchangé après 
 tarif, recalcul refusé ; scénario #1040 de bout en bout (11 anomalies, « Pas de forfait »,
 cause apparue après validation, correction, recalcul, trois écrans cohérents).
 
+### Vérification navigateur (2026-10-10) — défauts corrigés
+
+Scénario #1040 rejoué dans le navigateur (worktree, données fictives, base jetable) sur les trois
+écrans. Défauts constatés puis corrigés, tous d'affichage d'informations fournies par le backend
+(aucune règle métier côté client) :
+
+1. **Suivi des encodages — repères « Anomalie » de l'encodage** : ils suivaient toutes les
+   anomalies auditées, y compris celles `resolved` (la suture passée à « Pas de forfait » restait
+   marquée) et ignoraient `newAnomalies`. Ils suivent désormais ce qui bloque encore.
+2. **Facturation firmes — tuile et onglet « À corriger »** : comptaient les anomalies déjà
+   corrigées (12 affichées quand le pronostic du Suivi en annonçait 10). `summary.anomalyCount`
+   = anomalies non `resolved` ; `summary.resolvedAnomalyCount` annonce « N corrigées — à
+   recalculer » (tuile, onglet, en-tête de mission).
+3. **Facturation firmes — action sur une anomalie corrigée** : « Compléter l'encodage » restait
+   proposé ; comme le Suivi, une cause corrigée n'appelle plus que les relances de calcul.
+4. **Catalogue — matériel « non facturable »** : affiché « Tarif non configuré », exactement comme
+   un article sans décision qui bloque le calcul. Affiché désormais « Non facturable » (tableau et
+   dialogue), d'après `billingStatus`.
+5. **Catalogue — prestations** : « Tarif non configuré » avait la couleur d'un tarif en vigueur ;
+   il est en ambre, « Pas de forfait » en gris neutre, et la période de la règle en vigueur est
+   affichée (« forfait dès le 07/10/2026 ») : un tarif qui commence à une date ne couvre pas les
+   prestations antérieures.
+
+Constat d'environnement : `MissionBusinessTimezoneIntegrationTest::test_naive_construction_…`
+échoue uniquement quand le PHP local a `date.timezone = Europe/Brussels` (ici un `conf.d/medclick.ini`
+d'un autre projet). Le test documente le comportement avec le fuseau par défaut du conteneur, `UTC`
+— vérifié en production (`date_default_timezone_get()` = `UTC`). Avec `-d date.timezone=UTC`, 15/15.
+Ce n'est pas une anomalie du code.
+
 ### Données de production (lecture seule, 2026-10-10) — à régulariser, hors de ce lot
 
 - 0 `financial_calculation`, 0 `firm_invoice` : aucun document financier émis, rien à protéger
@@ -11833,7 +11862,12 @@ cause apparue après validation, correction, recalcul, trois écrans cohérents)
   SwiveLock ×2 sans décision).
 - 40 articles `UNSPECIFIED` sans aucun tarif ; 7 prestations « avec forfait » sans tarif (Globus
   ×5, Smith & Nephew `EPINE-TIB`, DePuy `OSTEOSYNTH-PLAT-TIB`) ; 3 couples firme × prestation
-  utilisés sans aucune configuration.
+  utilisés sans aucune configuration (S&N `MPFL` #458, Arthrex `TEN-BICEPS` #447, Globus `OLIF`
+  #1054) ; en plus, 6 interventions VALIDÉES sans firme principale (#627, #1221, #1222, #462, #478,
+  #1228 — `MISSING_PRIMARY_FIRM` au calcul).
 - 6 interventions VALIDÉES dont la présence du délégué n'a jamais été demandée alors que l'offre
   la rend désormais pertinente (missions #425, #436, #440, #443, #1040, #1225) : leur calcul
   échouera tant que l'encodage n'est pas rouvert et complété — décision métier à prendre.
+- Tarif horaire de l'instrumentiste #19 valable seulement à partir du 10/09/2026 : 5 missions
+  VALIDÉES antérieures (#425, #428, #437, #440, #624) ne sont pas couvertes — décision métier
+  (le tarif s'appliquait-il avant ?).

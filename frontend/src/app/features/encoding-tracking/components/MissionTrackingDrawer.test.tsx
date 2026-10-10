@@ -399,7 +399,7 @@ describe("MissionTrackingDrawer", () => {
         code: "MISSING_REPRESENTATIVE_PRESENCE_ANSWER", category: "ENCODING", severity: "BLOCKING",
         title: "Présence du délégué non renseignée", explanation: "L'encodage doit indiquer si le délégué Arthrex était présent : cela détermine le forfait.",
         firm: { id: 5, name: "Arthrex" }, element: { type: "INTERVENTION", label: "MPFL" }, action: { code: "OPEN_MISSION", label: "Compléter l'encodage" },
-        resolved: false, missionInterventionId: 1, materialLineId: null, conflictingRules: [], targetRules: [], referenceDate: "2026-10-01",
+        resolved: false, missionInterventionId: 2, materialLineId: null, conflictingRules: [], targetRules: [], referenceDate: "2026-10-01",
         currentResolution: { kind: "ANOMALY", label: "Toujours bloquant : présence du délégué non renseignée.", rule: null }, detectedAfterFailure: true,
       };
       getMissionFinancialAnomaliesMock.mockResolvedValue(detail([corrected, stillMissing], {
@@ -417,6 +417,10 @@ describe("MissionTrackingDrawer", () => {
       expect(within(items[1]).getByTestId("target-rules")).toHaveTextContent("au 31/08/2026");
       expect(within(section).getByTestId("financial-new-anomalies")).toHaveTextContent("1 anomalie qu'un recalcul produirait aussi");
       expect(within(items[2]).getByText(/3\. Présence du délégué non renseignée/)).toBeInTheDocument();
+      // Repères « Anomalie » de l'encodage = ce qui bloque ENCORE : l'intervention corrigée (itv-1)
+      // n'est plus marquée, celle de la cause apparue depuis l'échec (itv-2) l'est.
+      await waitFor(() => expect(document.querySelectorAll("[data-anomaly]").length).toBeGreaterThan(0));
+      expect(Array.from(document.querySelectorAll("[data-anomaly]")).map((el) => el.getAttribute("data-anchor"))).toEqual(["itv-2", "ml-12"]);
     });
 
     it("dépassement horaire sans anomalie : aucune section, aucune requête d'anomalies", async () => {
