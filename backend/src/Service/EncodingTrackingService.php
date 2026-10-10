@@ -209,6 +209,8 @@ final class EncodingTrackingService
         $financialState = $this->financialStateResolver->resolve($encodingState, $financialFacts);
 
         $anomalies = [];
+        $newAnomalies = [];
+        $recalculation = null;
         $failedAt = null;
         $effectiveAt = null;
         $retry = null;
@@ -216,7 +218,12 @@ final class EncodingTrackingService
             $failure = $this->anomalyExplainer->latestFailures([$missionId])[$missionId] ?? null;
             $effectiveAt = $failure['effectiveAt'] ?? $this->financialCalculationService->resolveEffectiveAt($mission);
             $failedAt = $failure['failedAt'] ?? null;
-            $anomalies = $this->anomalyExplainer->explainAll($failure['anomalies'] ?? [], $mission, $effectiveAt);
+            // D-141 — l'échec audité explique l'état ; l'évaluation actuelle du moteur dit ce
+            // qui est corrigé, ce qui est apparu depuis, et si un recalcul aboutirait.
+            $outlook = $this->anomalyExplainer->explainWithOutlook($failure['anomalies'] ?? [], $mission, $effectiveAt);
+            $anomalies = $outlook['anomalies'];
+            $newAnomalies = $outlook['newAnomalies'];
+            $recalculation = $outlook['recalculation'];
             $retry = $this->retryAction($mission);
         }
 
@@ -228,6 +235,8 @@ final class EncodingTrackingService
             'failedAt' => $failedAt?->format(\DateTimeInterface::ATOM),
             'effectiveAt' => $effectiveAt?->format('Y-m-d'),
             'anomalies' => $anomalies,
+            'newAnomalies' => $newAnomalies,
+            'recalculation' => $recalculation,
             'retry' => $retry,
         ];
     }

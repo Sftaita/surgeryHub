@@ -430,7 +430,11 @@ final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
         self::assertSame('CONFIGURATION', $a['category']);
         self::assertSame('BLOCKING', $a['severity']);
         self::assertSame("Tarif d'intervention manquant", $a['title']);
-        self::assertStringContainsString('chez ' . $firm->getName() . ' au 10/09/2026', $a['explanation']);
+        // D-141 — cause précise : prestation jamais configurée chez cette firme, aucun tarif.
+        self::assertStringContainsString("Cette prestation n'est pas configurée chez " . $firm->getName(), $a['explanation']);
+        self::assertStringContainsString('au 10/09/2026', $a['explanation']);
+        self::assertSame([], $a['targetRules'], "aucun tarif n'a jamais été saisi");
+        self::assertSame('2026-09-10', $a['referenceDate']);
         self::assertSame(['id' => $firm->getId(), 'name' => $firm->getName()], $a['firm']);
         self::assertSame("Suture d'un ménisque de genou", $a['element']['label']);
         self::assertSame($itvId, $a['missionInterventionId']);

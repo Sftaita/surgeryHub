@@ -57,6 +57,44 @@ final class PricingRuleResolver
     }
 
     /**
+     * Toutes les règles de la cible (actives ou non, quelle que soit leur période), triées
+     * par début de validité — jamais utilisées pour résoudre un montant : seulement pour
+     * expliquer une absence de tarif (« un tarif existe, mais pas à cette date » ≠ « aucun
+     * tarif n'a jamais été configuré »).
+     *
+     * @return PricingRule[]
+     */
+    public function interventionFeeRulesFor(Firm $firm, InterventionType $interventionType, ?ChoiceOption $choiceOption = null): array
+    {
+        return $this->targetRules($firm, PricingRuleType::INTERVENTION_FEE, activeOnly: false, interventionType: $interventionType, choiceOption: $choiceOption);
+    }
+
+    /** @return PricingRule[] voir interventionFeeRulesFor() */
+    public function materialFeeRulesFor(MaterialItem $materialItem): array
+    {
+        return $this->targetRules($materialItem->getFirm(), PricingRuleType::MATERIAL_FEE, activeOnly: false, materialItem: $materialItem);
+    }
+
+    /**
+     * Instantané stable de règles (même forme que PricingRuleConflictException::rulesSnapshot(),
+     * plus `active`) — repris tel quel dans un contexte audité.
+     *
+     * @param PricingRule[] $rules
+     * @return list<array{id: ?int, unitPrice: ?string, currency: ?string, validFrom: ?string, validTo: ?string, active: bool}>
+     */
+    public static function snapshotRules(array $rules): array
+    {
+        return array_map(static fn (PricingRule $r) => [
+            'id' => $r->getId(),
+            'unitPrice' => $r->getUnitPrice(),
+            'currency' => $r->getCurrency(),
+            'validFrom' => $r->getValidFrom()?->format('Y-m-d'),
+            'validTo' => $r->getValidTo()?->format('Y-m-d'),
+            'active' => $r->isActive(),
+        ], array_values($rules));
+    }
+
+    /**
      * Vrai si $candidate chevauche, en date, une autre règle active déjà posée sur la
      * même cible (même firme + même type d'intervention, ou même matériel). Appelé par
      * le contrôleur avant toute création/mise à jour — un chevauchement doit être un
@@ -107,6 +145,23 @@ final class PricingRuleResolver
         ?MaterialItem $materialItem = null,
         ?ChoiceOption $choiceOption = null,
     ): array {
+        $candidates = $this->targetRules($firm, $type, activeOnly: true, interventionType: $interventionType, materialItem: $materialItem, choiceOption: $choiceOption);
+
+        $matching = array_values(array_filter($candidates, static fn (PricingRule $r) => $r->coversDate($date)));
+        usort($matching, static fn (PricingRule $a, PricingRule $b) => $a->getId() <=> $b->getId());
+
+        return $matching;
+    }
+
+    /** @return PricingRule[] */
+    private function targetRules(
+        ?Firm $firm,
+        PricingRuleType $type,
+        bool $activeOnly,
+        ?InterventionType $interventionType = null,
+        ?MaterialItem $materialItem = null,
+        ?ChoiceOption $choiceOption = null,
+    ): array {
         if ($firm === null) {
             return [];
         }
@@ -114,9 +169,13 @@ final class PricingRuleResolver
         $qb = $this->em->getRepository(PricingRule::class)->createQueryBuilder('r')
             ->andWhere('r.firm = :firm')
             ->andWhere('r.ruleType = :type')
-            ->andWhere('r.active = true')
             ->setParameter('firm', $firm)
-            ->setParameter('type', $type);
+            ->setParameter('type', $type)
+            ->orderBy('r.validFrom', 'ASC')
+            ->addOrderBy('r.id', 'ASC');
+        if ($activeOnly) {
+            $qb->andWhere('r.active = true');
+        }
 
         if ($type === PricingRuleType::INTERVENTION_FEE) {
             $qb->andWhere('r.interventionType = :it')->setParameter('it', $interventionType);
@@ -129,12 +188,9 @@ final class PricingRuleResolver
             $qb->andWhere('r.materialItem = :mi')->setParameter('mi', $materialItem);
         }
 
-        /** @var PricingRule[] $candidates */
-        $candidates = $qb->getQuery()->getResult();
+        /** @var PricingRule[] $rules */
+        $rules = $qb->getQuery()->getResult();
 
-        $matching = array_values(array_filter($candidates, static fn (PricingRule $r) => $r->coversDate($date)));
-        usort($matching, static fn (PricingRule $a, PricingRule $b) => $a->getId() <=> $b->getId());
-
-        return $matching;
+        return $rules;
     }
 }
