@@ -94,3 +94,74 @@ export type MaterialRequestsListResponseDTO = {
   items: MaterialRequestDTO[];
   total: number;
 };
+
+/**
+ * D-142 — régularisation du catalogue matériel (GET /api/material-items/billing-regularisation,
+ * manager/admin). Statut, compteurs et missions bloquées sont décidés par le backend
+ * (FinancialCalculationService::evaluate(), lecture seule) : l'écran ne fait que les afficher.
+ */
+export type MaterialRegularisationStatus = "UNDECIDED" | "BILLABLE_RATE_MISSING" | "BILLABLE" | "NOT_BILLABLE";
+
+export type MaterialRegularisationRule = {
+  id: number;
+  unitPrice: string;
+  currency: string;
+  validFrom: string | null;
+  validTo: string | null;
+  active: boolean;
+};
+
+export type MaterialRegularisationMission = {
+  id: number;
+  date: string;
+  site: string | null;
+  surgeon: string | null;
+  lineCount: number;
+  /** Toujours PENDING : seules les missions validées sans calcul actif sont listées (D-142). */
+  calculationState: "PENDING";
+  blockedByThisItem: boolean;
+  /** Anomalies du moteur ne venant pas de cet article : > 0 = la mission reste bloquée même corrigé. */
+  otherBlockingAnomalyCount: number;
+};
+
+export type MaterialRegularisationItem = {
+  id: number;
+  label: string;
+  referenceCode: string;
+  unit: string;
+  isImplant: boolean;
+  active: boolean;
+  firm: { id: number; name: string };
+  billingStatus: MaterialBillingStatus;
+  status: MaterialRegularisationStatus;
+  statusLabel: string;
+  toConfigure: boolean;
+  currentRate: { id: number; unitPrice: string; currency: string } | null;
+  pricingConflict: boolean;
+  rules: MaterialRegularisationRule[];
+  usage: {
+    lineCount: number;
+    missionCount: number;
+    /** Missions validées dont le calcul est actif : comptées ici, jamais réévaluées ni listées. */
+    calculatedMissionCount: number;
+    firstDate: string | null;
+    lastDate: string | null;
+    blockedMissionCount: number;
+    onlyBlockerMissionCount: number;
+  };
+  missions: MaterialRegularisationMission[];
+};
+
+export type MaterialRegularisationResponse = {
+  summary: {
+    itemCount: number;
+    toConfigureCount: number;
+    undecidedCount: number;
+    rateMissingCount: number;
+    billableCount: number;
+    notBillableCount: number;
+    blockedMissionCount: number;
+    pendingMissionCount: number;
+  };
+  items: MaterialRegularisationItem[];
+};

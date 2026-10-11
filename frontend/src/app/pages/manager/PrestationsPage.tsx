@@ -59,7 +59,7 @@ import {
   type InterventionType,
   type SimilarInterventionTypeCandidate,
 } from "../../features/intervention-types/api/interventionTypes.api";
-import { getFirms, getMaterialItems, createMaterialItem, updateMaterialItem } from "../../features/manager-catalogue/api/catalogue.api";
+import { getFirms, getMaterialItems, createMaterialItem, updateMaterialItem, getMaterialBillingRegularisation } from "../../features/manager-catalogue/api/catalogue.api";
 import type { FirmDTO, MaterialItemDTO } from "../../features/manager-catalogue/api/catalogue.types";
 import { FirmAvatar } from "../../features/manager-catalogue/components/FirmAvatar";
 import { FirmLogoDialog } from "../../features/manager-catalogue/components/FirmLogoDialog";
@@ -67,6 +67,7 @@ import { useToast } from "../../ui/toast/useToast";
 import { PageHeader } from "../../ui/PageHeader";
 import { useDebouncedValue } from "../../ui/hooks/useDebouncedValue";
 import styles from "./prestationsDesign.module.css";
+import { MaterialRegularisationView } from "./MaterialRegularisationView";
 import {
   PRICING_CONFLICT_LABEL,
   PRICING_NOT_CONFIGURED_LABEL,
@@ -751,6 +752,7 @@ function MaterialEditDialog({
     qc.invalidateQueries({ queryKey: ["pricing-rules", firmId] });
     qc.invalidateQueries({ queryKey: ["material-items-firm", firmId] });
     qc.invalidateQueries({ queryKey: ["material-items"] });
+    qc.invalidateQueries({ queryKey: ["material-billing-regularisation"] });
   };
 
   const identificationMutation = useMutation({
@@ -791,6 +793,13 @@ function MaterialEditDialog({
     onSuccess: () => { toast.success("Matériel marqué non facturable"); invalidate(); },
     onError: (e) => toast.error(extractError(e)),
   });
+  // D-142 — une décision « non facturable » prise par erreur se défait explicitement : le
+  // matériel redevient « non décidé » (UNSPECIFIED), jamais facturable par déduction.
+  const undecidedMutation = useMutation({
+    mutationFn: () => updateMaterialItem(material!.id, { billingStatus: "UNSPECIFIED" }),
+    onSuccess: () => { toast.success("Matériel remis à « non décidé »"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
 
   if (!material) return null;
 
@@ -827,6 +836,13 @@ function MaterialEditDialog({
 
           <Box>
             <Typography variant="overline" color="text.secondary">Tarification</Typography>
+            {rules.length === 0 && material.billingStatus === "UNSPECIFIED" && (
+              <Alert severity="warning" sx={{ mt: 1 }} data-testid="material-undecided">
+                Aucune décision de facturation : ce matériel bloque le calcul des missions qui l'utilisent.
+                Définissez un tarif s'il est facturé, ou marquez-le non facturable s'il ne l'est jamais
+                (par exemple compris dans le forfait).
+              </Alert>
+            )}
             <Box sx={{ mt: 1 }}>
               <RateVersionManager
                 versions={rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo }))}
@@ -839,6 +855,9 @@ function MaterialEditDialog({
               {!hasActiveRate && material.billingStatus === "NOT_BILLABLE" && (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }} data-testid="material-not-billable">
                   {MATERIAL_NOT_BILLABLE_LABEL} — ce matériel n'est jamais facturé (décision explicite, distincte d'un tarif manquant).
+                  <MuiButton size="small" color="inherit" sx={{ ml: 1 }} onClick={() => undecidedMutation.mutate()} disabled={undecidedMutation.isPending}>
+                    Revenir à « non décidé »
+                  </MuiButton>
                 </Typography>
               )}
               {!hasActiveRate && material.billingStatus !== "NOT_BILLABLE" && (
@@ -965,6 +984,9 @@ function SuggestedMaterialsDialog({
     </Dialog>
   );
 }
+
+// D-142 — paramètre d'URL de la vue « Matériel à régulariser ».
+const REGULARISATION_VIEW_PARAM = "a-regulariser";
 
 // D-141 — matériel `billingStatus = NOT_BILLABLE` : décision explicite, jamais un tarif manquant.
 const MATERIAL_NOT_BILLABLE_LABEL = "Non facturable";
@@ -1241,7 +1263,19 @@ export default function PrestationsPage() {
   const toast = useToast();
   const qc = useQueryClient();
 
-  const [view, setView] = React.useState<"firms" | "referentiel">("firms");
+  // D-142 — « ?vue=a-regulariser » ouvre (et garde après actualisation) la vue de régularisation.
+  const [view, setViewState] = React.useState<"firms" | "referentiel" | "regularisation">(() =>
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("vue") === REGULARISATION_VIEW_PARAM ? "regularisation" : "firms");
+  const setView = React.useCallback((next: "firms" | "referentiel" | "regularisation") => {
+    setViewState(next);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      if (next === "regularisation") url.searchParams.set("vue", REGULARISATION_VIEW_PARAM);
+      else url.searchParams.delete("vue");
+      window.history.replaceState(window.history.state, "", url.toString());
+    }
+  }, []);
+  const [regularisationTargetId, setRegularisationTargetId] = React.useState<number | null>(null);
   const [referentielDetailId, setReferentielDetailId] = React.useState<number | null>(null);
   const [refQuery, setRefQuery] = React.useState("");
   const [newInterventionOpen, setNewInterventionOpen] = React.useState(false);
@@ -1278,6 +1312,19 @@ export default function PrestationsPage() {
     queryFn: () => getFirmPricingRules(selectedFirmId as number),
     enabled: !!selectedFirmId,
   });
+
+  // D-142 — décisions de facturation et missions bloquées, décidées par le backend (moteur).
+  const regularisationQuery = useQuery({
+    queryKey: ["material-billing-regularisation"],
+    queryFn: getMaterialBillingRegularisation,
+  });
+  const regularisationTarget = regularisationQuery.data?.items.find((i) => i.id === regularisationTargetId) ?? null;
+  const regularisationRulesQuery = useQuery({
+    queryKey: ["pricing-rules", regularisationTarget?.firm.id ?? null],
+    queryFn: () => getFirmPricingRules(regularisationTarget!.firm.id),
+    enabled: !!regularisationTarget,
+  });
+  const regularisationRules = (regularisationRulesQuery.data ?? []).filter((r) => r.ruleType === "MATERIAL_FEE" && r.materialItem?.id === regularisationTargetId);
 
   const offeringsQuery = useQuery({
     queryKey: ["service-offerings", selectedFirmId],
@@ -1353,6 +1400,20 @@ export default function PrestationsPage() {
           <span className={styles.topNavDestTitle}><BookIcon size={17} /> Référentiel</span>
           <span className={styles.topNavDestSub}>Bibliothèque clinique globale, commune à toutes les firmes</span>
         </button>
+        <button
+          type="button"
+          className={[styles.topNavDest, view === "regularisation" ? styles.topNavDestActive : ""].filter(Boolean).join(" ")}
+          onClick={() => setView("regularisation")}
+          data-testid="nav-regularisation"
+        >
+          <span className={styles.topNavDestTitle}>
+            <WarningIcon size={16} /> Matériel à régulariser
+            {regularisationQuery.data && (
+              <span className={[styles.tabCount, regularisationQuery.data.summary.toConfigureCount > 0 ? styles.regularisationCount : ""].filter(Boolean).join(" ")} data-testid="regularisation-count">{regularisationQuery.data.summary.toConfigureCount}</span>
+            )}
+          </span>
+          <span className={styles.topNavDestSub}>Décisions de facturation manquantes, toutes firmes</span>
+        </button>
       </div>
 
       {/* Bandeau de contexte permanent — le logo/nom de firme disparaît entièrement
@@ -1372,7 +1433,27 @@ export default function PrestationsPage() {
         </div>
       ) : null}
 
-      {view === "referentiel" ? (
+      {view === "regularisation" ? (
+        <div className={styles.referentielContent}>
+          <MaterialRegularisationView
+            data={regularisationQuery.data}
+            isLoading={regularisationQuery.isLoading}
+            isError={regularisationQuery.isError}
+            onConfigure={(item) => setRegularisationTargetId(item.id)}
+          />
+          <MaterialEditDialog
+            open={regularisationTarget !== null}
+            onClose={() => setRegularisationTargetId(null)}
+            firmId={regularisationTarget?.firm.id ?? 0}
+            material={regularisationTarget ? {
+              id: regularisationTarget.id, firm: regularisationTarget.firm, label: regularisationTarget.label,
+              referenceCode: regularisationTarget.referenceCode, unit: regularisationTarget.unit,
+              isImplant: regularisationTarget.isImplant, billingStatus: regularisationTarget.billingStatus,
+            } : null}
+            rules={regularisationRules}
+          />
+        </div>
+      ) : view === "referentiel" ? (
         <div className={styles.referentielContent}>
           {referentielDetailType ? (
             <ReferentielDetailView

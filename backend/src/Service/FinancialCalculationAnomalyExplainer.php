@@ -204,8 +204,10 @@ final class FinancialCalculationAnomalyExplainer
         $date = $effectiveAt->format('d/m/Y');
 
         // L'anomalie existe-t-elle encore (même code, même élément) ? Son contexte ACTUEL,
-        // produit par le moteur, complète alors le contexte audité (anciens échecs sans
-        // règles ni statut de facturation dans leur payload).
+        // produit par le moteur, prime alors sur le contexte audité : l'explication décrit la
+        // cause d'aujourd'hui (ex. D-142 : un tarif posé depuis l'échec mais qui commence après
+        // la prestation n'est plus « aucune décision de facturation »). Le contexte audité ne
+        // sert qu'aux clés absentes (anciens échecs) et aux anomalies disparues.
         $identity = self::anomalyIdentity($reason->value, $ctx);
         $current = null;
         foreach ($evaluation->anomalies as $candidate) {
@@ -214,7 +216,7 @@ final class FinancialCalculationAnomalyExplainer
                 break;
             }
         }
-        $explainCtx = $current !== null ? $ctx + $current->context : $ctx;
+        $explainCtx = $current !== null ? $current->context + $ctx : $ctx;
 
         $itv = null;
         if (isset($ctx['missionInterventionId'])) {

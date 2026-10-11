@@ -12578,6 +12578,120 @@ Ce n'est pas une anomalie du code.
   VALIDÉES antérieures (#425, #428, #437, #440, #624) ne sont pas couvertes — décision métier
   (le tarif s'appliquait-il avant ?).
 
+## D-142 — Régularisation du catalogue matériel : décisions de facturation explicites, missions bloquées selon le moteur (2026-10-11)
+
+### Contexte
+
+Après D-141 (`v2026.10.10-prod-2`), 40 des 45 articles du catalogue matériel de production n'ont
+aucune décision de facturation (`UNSPECIFIED`, aucun tarif) et bloquent le calcul de 31 des 40
+missions validées non calculées (audit en lecture seule du 2026-10-11). Le catalogue ne permettait
+de les traiter que firme par firme (Prestations → firme → Matériel), sans savoir lesquels bloquent
+des missions.
+
+### Décisions
+
+1. **Pas de nouveau moteur, pas de nouvelle page.** Catalogue > Prestations gagne une troisième
+   destination « Matériel à régulariser » (toutes firmes, compteur, filtres « À configurer » /
+   facturables / non facturables / tous, recherche, tri par missions bloquées, utilisations, firme,
+   nom ; `?vue=a-regulariser` survit à l'actualisation). La correction s'ouvre dans le dialogue
+   « Modifier le matériel » existant (tarif versionné `RateVersionManager`, « Marquer non facturable »).
+2. **Lecture : `GET /api/material-items/billing-regularisation`** (manager), décrit dans `docs/api.md`
+   §19.1b. « Bloque » = anomalie `MISSING_FIRM_MATERIAL_RATE` / `CONFLICTING_FIRM_MATERIAL_RATE`
+   produite par `FinancialCalculationService::evaluate()` (lecture seule) sur une ligne de l'article.
+   Les autres anomalies de la mission sont comptées à part : corriger un article ne présente jamais
+   une mission comme débloquée tant qu'une autre cause demeure. Les missions à calcul actif ne sont
+   jamais réévaluées.
+3. **Trois états, jamais confondus** : non décidé (`UNSPECIFIED`, reste à régulariser), facturable
+   (tarif posé → `BILLABLE`, comportement D-092 existant), non facturable (`NOT_BILLABLE`, sans règle à
+   0 €). Une décision « non facturable » se défait explicitement (« Revenir à « non décidé » »,
+   `PATCH billingStatus: UNSPECIFIED`) ; rien n'est déduit.
+4. **Dates** : la date de début d'un nouveau tarif reste vide par défaut (« Vide = sans date de début :
+   s'applique aussi aux prestations passées ») ; la date de fin est exclusive (D-072) et le dit.
+   C'est la date de la prestation qui détermine la règle (D-067).
+5. **Correctif de l'explicateur (D-141)** : tant qu'une anomalie auditée existe encore, son
+   explication décrit la cause **actuelle** (contexte du moteur prioritaire sur le contexte audité).
+   Ex. : un tarif posé depuis l'échec mais commençant après la prestation affichait encore « Aucune
+   décision de facturation » ; il affiche désormais « Aucun des tarifs … ne s'applique au … (règle
+   #… du …) ».
+6. **Jamais de tarif matériel à 0 €** : `POST`/`PATCH`/`replace` d'une règle `MATERIAL_FEE` à
+   0 € sont refusés (`422 MATERIAL_FEE_ZERO_REFUSED`, garde-fou aussi dans
+   `PricingRuleVersioningService`). Auparavant l'API acceptait `unitPrice >= 0` : un 0 € saisi dans
+   le dialogue rendait l'article « facturable » (D-092) pour un montant nul — trouvé à la
+   vérification navigateur. Les forfaits d'intervention gardent `>= 0` (hors périmètre). Aucune
+   règle à 0 € n'existe en production (lecture seule, 2026-10-11 : 0/68).
+7. **Aucun recalcul automatique, aucun historique réécrit** : la vue est en lecture ; les décisions
+   passent par les endpoints existants ; le recalcul reste un geste explicite (Suivi des encodages,
+   Facturation firmes). Un calcul verrouillé n'est jamais modifié.
+
+### Tests
+
+`MaterialBillingRegularisationTest` (HTTP + vraie base, données fictives) : 1 non décidé →
+facturable ; 2 non décidé → non facturable (sans règle à 0 €) puis retour à « non décidé » ;
+3 facturable dont le tarif a expiré ; 4 tarif couvrant une mission passée ; 5 tarif commençant après
+la mission (reste bloquée, explication actuelle) ; 6 matériel d'une autre firme que l'intervention ;
+7 plusieurs matériels bloquant la même mission (lignes ≠ missions, « seule cause ») ; 8 aucune
+correction ne crée de calcul ni d'audit ; 9 calcul verrouillé jamais réévalué ni modifié ;
+10 cohérence vue de régularisation / Suivi des encodages / Facturation firmes ; accès manager
+uniquement. Frontend : `PrestationsPage.test` (vue, compteur, filtres, missions, dialogue, retour
+à « non décidé »). Vérification navigateur sur données fictives.
+
+Performance (tests `test_query_count_does_not_grow_with_catalogue_size_nor_calculated_history`,
+`ReadScopeCacheTest`) :
+- le nombre de requêtes propres à la vue ne dépend ni du nombre d'articles ni des missions déjà
+  calculées — tarifs préchargés en une requête et résolus par
+  `PricingRuleResolver::resolveMaterialFeeAmong()`, que `resolveMaterialFee()` utilise lui-même (une
+  seule règle de sélection), exécution / site / chirurgien chargés avec les lignes, collections lues
+  par `evaluate()` initialisées en deux requêtes ;
+- l'historique déjà calculé (qui croît sans fin) n'est plus hydraté : une requête d'agrégats par
+  article (lignes, missions, dates selon la même date de référence que le moteur) ; ces missions sont
+  comptées (`calculatedMissionCount`) mais plus listées une à une ;
+- `ReadScopeCache` : les lectures de configuration de `evaluate()` (tarifs, `FirmServiceOffering`,
+  tarifs instrumentiste) sont mémorisées par clé **uniquement** dans `within()`, ouvert par la vue
+  de régularisation (GET, lecture seule) et refermé à la sortie, même en cas d'exception. Hors de
+  cette portée, aucun appel n'est mémorisé : `calculate()`, `recalculate()`, les écritures et le
+  worker Messenger lisent toujours la base. Ce n'est pas un second moteur : les mêmes résolveurs
+  exécutent les mêmes requêtes, une fois par clé. Réponses identiques avant / après (5 jeux
+  fictifs, comparaison champ à champ).
+
+Mesures (MySQL 8.3 jetable, `php -S` Windows, `APP_DEBUG=0`, opcache, 10 requêtes après 2 de
+chauffe ; `/api/me` ≈ 57 ms dans les mêmes conditions) — moyenne :
+
+| Jeu fictif | V0 avant optimisation | V1 requêtes constantes | V3 final |
+|---|---|---|---|
+| A proche prod (45 articles, 32 en attente, 0 calculée) | 955 req., ~0,7 s | 770 req., ~0,6 s | 222 req., ~0,3 s, 11 Mo |
+| B 500 articles, 80 en attente, 800 calculées | 3 503 req., ~2,3 s | 1 464 req., ~1,7 s | 554 req., ~0,6 s, 16 Mo |
+| C catalogue ×4 (2 000 articles) | 6 503 req., ~4,2–5,0 s | 1 464 req., ~1,7–1,9 s | 646 req., ~0,8 s, 23 Mo |
+| D historique ×4 (3 200 calculées) | 5 903 req., ~5,4 s, 115 Mo | 1 464 req., ~3,5–3,8 s, 115 Mo | 554 req., ~0,7 s, 16 Mo |
+| E en attente ×2 (160) | 5 139 req., ~3,8–4,5 s | 2 860 req., ~2,5–2,7 s | 793 req., ~0,9 s, 20 Mo |
+
+Saisie d'un tarif : `unitPrice` non numérique (« abc », « 12abc », vide, booléen) → `422
+VALIDATION_FAILED` (« 12abc » provoquait un 500 à l'écriture en base, toutes règles confondues) ;
+négatif → `422 VALIDATION_FAILED` (inchangé) ; `MATERIAL_FEE` à 0 → `422 MATERIAL_FEE_ZERO_REFUSED`.
+
+### Compatibilité avec D-143 / D-144 (intégration de `main` 247fa34)
+
+Le moteur ajoute `MISSING_ACTUAL_HOURS` (aucune heure réelle déclarée → calcul bloqué, jamais de
+rémunération sur le planifié). D-142 n'a rien à adapter dans sa logique : la vue rejoue
+`evaluate()`, qui produit cette anomalie ; ne portant sur aucune ligne de matériel, elle est
+comptée dans `otherBlockingAnomalyCount` — jamais transformée en anomalie tarifaire, jamais
+masquée par la correction d'un matériel (test
+`test_mission_without_actual_hours_is_never_shown_as_unblocked_by_fixing_the_material`).
+L'exécution de la mission est chargée avec les lignes, donc la règle lit bien les heures réelles.
+`ReadScopeCache` ne mémorise ni les heures ni l'exécution (lues sur l'entité), et n'est ouvert
+que par cette consultation. Production (lecture seule, 2026-10-11 après D-144) : les 14 missions
+bloquées uniquement par du matériel ont toutes des heures réelles déclarées ; deux missions
+validées en attente n'en ont pas (#1225, qui utilise du matériel non décidé et a d'autres
+anomalies, et #434, sans matériel).
+
+### Production (lecture seule, 2026-10-11) — décisions métier à prendre, rien n'est modifié
+
+40 articles `UNSPECIFIED` sans tarif (25 utilisés dans des missions validées, 15 jamais utilisés) ;
+31 missions validées non calculées en utilisent au moins un ; 14 de ces missions ne sont bloquées que
+par du matériel (#442, #444, #460, #468, #471, #473, #474, #489, #1048, #1051, #1055, #1056,
+#1216, #1218). Les autres causes (prestations sans tarif, couples firme × prestation sans
+configuration, firme principale manquante, présence du délégué, tarif instrumentiste #19) restent
+inventoriées dans D-141 et relèvent de décisions distinctes.
+
 ---
 
 ## D-143 — Encodage progressif, horaires réels obligatoires à la soumission, relance J+1/J+2/J+4, retour chirurgien (2026-10-11)

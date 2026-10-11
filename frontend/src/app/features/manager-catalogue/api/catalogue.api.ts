@@ -5,6 +5,7 @@ import type {
   FirmDTO,
   MaterialItemDTO,
   MaterialItemsListResponseDTO,
+  MaterialRegularisationResponse,
   MaterialRequestDTO,
   MaterialRequestsListResponseDTO,
   MaterialRequestStatus,
@@ -38,6 +39,12 @@ export const getMaterialItems = async (params?: {
   limit?: number;
 }): Promise<MaterialItemsListResponseDTO> => {
   const res = await apiClient.get("/api/material-items", { params });
+  return res.data;
+};
+
+/** D-142 — vue de régularisation du catalogue matériel (lecture seule, manager/admin). */
+export const getMaterialBillingRegularisation = async (): Promise<MaterialRegularisationResponse> => {
+  const res = await apiClient.get("/api/material-items/billing-regularisation");
   return res.data;
 };
 

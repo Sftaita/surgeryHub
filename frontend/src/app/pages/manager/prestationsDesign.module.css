@@ -95,6 +95,7 @@
 .tab { height: 36px; padding: 0 16px; border-radius: 10px; border: none; font-size: 13.5px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 7px; background: transparent; color: var(--pr-gray-500); transition: all .15s; font-family: inherit; }
 .tabActive { background: var(--pr-green-800); color: #fff; }
 .tabCount { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 800; background: #fff; color: var(--pr-gray-500); }
+.regularisationCount { background: var(--pr-amber-700); color: #fff; }
 .tabActive .tabCount { background: rgba(255, 255, 255, .22); color: #fff; }
 
 /* Panel intro */

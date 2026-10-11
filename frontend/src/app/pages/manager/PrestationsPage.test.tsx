@@ -44,7 +44,14 @@ function makeOffering(overrides: Partial<{
   };
 }
 
+const EMPTY_REGULARISATION = {
+  summary: { itemCount: 0, toConfigureCount: 0, undecidedCount: 0, rateMissingCount: 0, billableCount: 0, notBillableCount: 0, blockedMissionCount: 0, pendingMissionCount: 0 },
+  items: [],
+};
+let regularisationPayload: unknown = EMPTY_REGULARISATION;
+
 function mockGet(url: string, offerings: unknown[], rules: unknown[], materials: unknown[]) {
+  if (url === "/api/material-items/billing-regularisation") return Promise.resolve({ data: regularisationPayload });
   if (url === "/api/firms") return Promise.resolve({ data: FIRMS });
   if (url === "/api/firms/10/service-offerings") return Promise.resolve({ data: offerings });
   if (url === "/api/firms/10/pricing-rules") return Promise.resolve({ data: rules });
@@ -70,6 +77,8 @@ async function selectFirm(user: ReturnType<typeof userEvent.setup>) {
 }
 
 beforeEach(() => {
+  regularisationPayload = EMPTY_REGULARISATION;
+  window.history.replaceState(null, "", "/app/m/catalogue/prestations");
   apiGetMock.mockReset();
   apiPostMock.mockReset();
   apiPatchMock.mockReset();
@@ -676,5 +685,97 @@ describe("PrestationsPage", () => {
     expect(await screen.findByText("CONFIGURATION FIRME")).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByText("ConMed").length).toBeGreaterThan(0));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+  // ── D-142 — Matériel à régulariser ─────────────────────────────────────
+
+  function regItem(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 34, label: "SwiveLock C Anchor", referenceCode: "SwiveLock", unit: "pièce", isImplant: true, active: true,
+      firm: { id: 11, name: "ConMed" }, billingStatus: "UNSPECIFIED", status: "UNDECIDED", statusLabel: "Non décidé", toConfigure: true,
+      currentRate: null, pricingConflict: false, rules: [],
+      usage: { lineCount: 26, missionCount: 13, calculatedMissionCount: 1, firstDate: "2026-09-08", lastDate: "2026-10-09", blockedMissionCount: 13, onlyBlockerMissionCount: 4 },
+      missions: [
+        { id: 471, date: "2026-09-23", site: "Delta", surgeon: "Dr X", lineCount: 2, calculationState: "PENDING", blockedByThisItem: true, otherBlockingAnomalyCount: 0 },
+        { id: 1040, date: "2026-10-01", site: "Delta", surgeon: "Dr X", lineCount: 1, calculationState: "PENDING", blockedByThisItem: true, otherBlockingAnomalyCount: 9 },
+      ],
+      ...overrides,
+    };
+  }
+
+  it("D-142 — la vue « Matériel à régulariser » affiche le compteur, les décisions du backend et les missions bloquées", async () => {
+    const user = userEvent.setup();
+    regularisationPayload = {
+      summary: { itemCount: 3, toConfigureCount: 1, undecidedCount: 1, rateMissingCount: 0, billableCount: 1, notBillableCount: 1, blockedMissionCount: 31, pendingMissionCount: 40 },
+      items: [
+        regItem(),
+        regItem({ id: 12, label: "Fast-Fix", referenceCode: "FF", billingStatus: "BILLABLE", status: "BILLABLE", statusLabel: "Facturable", toConfigure: false, currentRate: { id: 28, unitPrice: "17.00", currency: "EUR" },
+          usage: { lineCount: 20, missionCount: 9, calculatedMissionCount: 9, firstDate: "2026-09-02", lastDate: "2026-10-08", blockedMissionCount: 0, onlyBlockerMissionCount: 0 }, missions: [] }),
+        regItem({ id: 41, label: "JOURNEY II", referenceCode: "J2", billingStatus: "NOT_BILLABLE", status: "NOT_BILLABLE", statusLabel: "Non facturable", toConfigure: false,
+          usage: { lineCount: 8, missionCount: 5, calculatedMissionCount: 0, firstDate: null, lastDate: null, blockedMissionCount: 0, onlyBlockerMissionCount: 0 }, missions: [] }),
+      ],
+    };
+    apiGetMock.mockImplementation((url: string) => mockGet(url, [], [], []));
+    renderPage();
+
+    expect(await screen.findByTestId("regularisation-count")).toHaveTextContent("1");
+    await user.click(screen.getByTestId("nav-regularisation"));
+    expect(window.location.search).toBe("?vue=a-regulariser");
+
+    expect(await screen.findByTestId("regularisation-remaining")).toHaveTextContent("1 matériel à régulariser");
+    expect(screen.getByText(/31 missions validées bloquées par du matériel, sur 40 en attente de calcul/)).toBeInTheDocument();
+    // Filtre par défaut « À configurer » : les articles décidés n'apparaissent pas.
+    expect(screen.getByText("SwiveLock C Anchor")).toBeInTheDocument();
+    expect(screen.queryByText("Fast-Fix")).not.toBeInTheDocument();
+    expect(screen.getByText("Non décidé")).toBeInTheDocument();
+    expect(screen.getByTestId("regularisation-blocked-34")).toHaveTextContent("13 (seule cause : 4)");
+
+    await user.click(screen.getByRole("button", { name: "Voir les missions de SwiveLock C Anchor" }));
+    const missions = screen.getByTestId("regularisation-missions-34");
+    expect(within(missions).getByText("Bloquée par ce matériel seul")).toBeInTheDocument();
+    expect(within(missions).getByText("Bloquée par ce matériel et 9 autres anomalies")).toBeInTheDocument();
+    expect(within(missions).getByText("1 mission déjà calculée — calculs existants inchangés, jamais réévalués.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^Non facturables/ }));
+    expect(screen.getByText("JOURNEY II")).toBeInTheDocument();
+    expect(screen.queryByText("SwiveLock C Anchor")).not.toBeInTheDocument();
+  });
+
+  it("D-142 — « Configurer » ouvre le dialogue matériel existant ; « non facturable » se décide explicitement, sans tarif à 0 €", async () => {
+    const user = userEvent.setup();
+    regularisationPayload = {
+      summary: { itemCount: 1, toConfigureCount: 1, undecidedCount: 1, rateMissingCount: 0, billableCount: 0, notBillableCount: 0, blockedMissionCount: 2, pendingMissionCount: 2 },
+      items: [regItem()],
+    };
+    apiGetMock.mockImplementation((url: string) => mockGet(url, [], [], []));
+    // La vue survit à une actualisation (paramètre d'URL).
+    window.history.replaceState(null, "", "/app/m/catalogue/prestations?vue=a-regulariser");
+    apiPatchMock.mockResolvedValue({ data: {} });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Configurer SwiveLock C Anchor" }));
+    expect(await screen.findByText("Modifier le matériel")).toBeInTheDocument();
+    expect(screen.getByTestId("material-undecided")).toHaveTextContent("Aucune décision de facturation");
+    await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith("/api/firms/11/pricing-rules"));
+    await user.click(screen.getByRole("button", { name: "Marquer non facturable" }));
+    await waitFor(() => expect(apiPatchMock).toHaveBeenCalledWith("/api/material-items/34", { billingStatus: "NOT_BILLABLE" }));
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("D-142 — un matériel non facturable peut revenir à « non décidé », jamais à facturable par déduction", async () => {
+    const user = userEvent.setup();
+    regularisationPayload = {
+      summary: { itemCount: 1, toConfigureCount: 0, undecidedCount: 0, rateMissingCount: 0, billableCount: 0, notBillableCount: 1, blockedMissionCount: 0, pendingMissionCount: 0 },
+      items: [regItem({ billingStatus: "NOT_BILLABLE", status: "NOT_BILLABLE", statusLabel: "Non facturable", toConfigure: false })],
+    };
+    apiGetMock.mockImplementation((url: string) => mockGet(url, [], [], []));
+    window.history.replaceState(null, "", "/app/m/catalogue/prestations?vue=a-regulariser");
+    apiPatchMock.mockResolvedValue({ data: {} });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: /^Tous/ }));
+    await user.click(screen.getByRole("button", { name: "Modifier SwiveLock C Anchor" }));
+    expect(await screen.findByTestId("material-not-billable")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Revenir à « non décidé »" }));
+    await waitFor(() => expect(apiPatchMock).toHaveBeenCalledWith("/api/material-items/34", { billingStatus: "UNSPECIFIED" }));
   });
 });
