@@ -177,7 +177,19 @@ describe("MissionTrackingDrawer", () => {
 
     await user.click(await screen.findByText("Relancer"));
 
-    expect(await screen.findByText(/par e-mail \(push indisponible/)).toBeInTheDocument();
+    expect(await screen.findByText("Relance envoyée à l'instrumentiste par e-mail.")).toBeInTheDocument();
+  });
+
+  it("H5a × D-143 — relance manuelle : e-mail obligatoire + push annoncés ensemble, lot unique par clic", async () => {
+    const user = userEvent.setup();
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "IN_PROGRESS", allowedActions: ["view", "remind"] });
+    remindMissionEncodingMock.mockResolvedValue({ lastManualReminderChannel: "push+email" });
+    renderDrawer(makeItem({ encodingState: "IN_PROGRESS", encodingStateLabel: "En cours" }));
+
+    await user.click(await screen.findByText("Relancer"));
+
+    expect(await screen.findByText("Relance envoyée à l'instrumentiste par notification push et par e-mail.")).toBeInTheDocument();
+    expect(remindMissionEncodingMock).toHaveBeenCalledWith(42, expect.stringMatching(/^[A-Za-z0-9-]{8,64}$/));
   });
 
   it("D-143 — l'alerte J+4 et l'historique des relances automatiques restent visibles", async () => {
@@ -291,7 +303,7 @@ describe("MissionTrackingDrawer", () => {
     expect(remindMissionEncodingMock).not.toHaveBeenCalled();
     // La relance d'encodage classique reste disponible et indépendante.
     await user.click(screen.getByText("Relancer"));
-    await waitFor(() => expect(remindMissionEncodingMock).toHaveBeenCalledWith(42));
+    await waitFor(() => expect(remindMissionEncodingMock).toHaveBeenCalledWith(42, expect.any(String)));
     expect(remindMissionHoursMock).toHaveBeenCalledTimes(1);
   });
 
