@@ -2539,40 +2539,64 @@ les critères d'installabilité Chrome, `sw.js` est déjà enregistré globaleme
 `PwaInstallProvider` n'importe rien de `features/push/` ; aucune demande de permission
 de notification depuis la bannière ou le guide d'installation. `PushProvider` inchangé.
 
-## 11. Rappel d'encodage D+1 (D-083)
+## 11. Relance progressive d'encodage J+1 / J+2 / J+4 (D-143, remplace D-083)
 
-Remplace le rappel 19 h jamais implémenté (D-081) — un seul rappel, le lendemain matin,
-jamais de relance quotidienne.
+Remplace le rappel unique D+1 08 h (D-083, jamais planifié en production) et le rappel
+19 h (jamais implémenté). Les règles complètes sont dans D-143.
+
+| Échéance (09 h Europe/Brussels) | Instrumentiste | Managers |
+|---|---|---|
+| J+1 | push si livré, sinon e-mail | — |
+| J+2 | push si livré, sinon e-mail | — |
+| J+4 | push si livré + e-mail systématique | centre de notifications + e-mail |
+
+J+N = N-ième jour civil suivant la date LOCALE de fin de mission. Chaque relance figure
+aussi dans le centre de notifications de l'instrumentiste.
 
 ### 11.1 Composants
 
 - `SendEncodingRemindersCommand` (`app:notifications:send-encoding-reminders`) — commande
-  planifiée, orchestration uniquement (garde 08 h Europe/Brussels, boucle isolée par
-  mission, résumé). Pas de logique métier.
-- `EncodingReminderService` — décide (éligibilité) et envoie (Push prioritaire, repli
-  email). `findEligibleMissions()` : requête DQL réelle (statuts soumissibles, `endAt`
-  dans le jour civil précédent en Europe/Brussels, non verrouillée, jamais déjà
-  rappelée). `processMission()` : réservation atomique puis envoi.
-- `Mission.encodingReminderSentAt` — champ nullable, marque le rappel envoyé ; garantit
-  l'idempotence stricte (au plus un rappel par mission) par construction, indépendamment
-  des logs ou d'un verrou applicatif.
-- `WebPushService::sendToUserAndReportSuccess()` — nouvelle méthode (pas dans
-  `WebPushServiceInterface`, même précédent que `sendToSiteInstrumentists()`) qui
-  rapporte si le Push a réellement été livré, condition du repli email.
-- `NotificationService::missionEncodingReminderNotifyInstrumentist()` +
-  `templates/emails/mission_encoding_reminder.html.twig` — repli email, même mécanisme
-  asynchrone Messenger que le reste du projet.
+  planifiée (cron), orchestration uniquement : garde 09 h Europe/Brussels, boucle isolée par
+  mission, résumé `due/sent/skipped/failed`.
+- `EncodingReminderService` — calendrier (`dueAt()`, `dueStage()` : fenêtre de 24 h par
+  échéance, jamais avant, jamais de rafale de relances anciennes), sélection
+  (`findDueReminders()`), envoi (`processReminder()` : relecture de la mission juste avant
+  l'envoi, réservation, canaux, alerte managers), relance manuelle (D-120, anti-répétition
+  10 min), lecture pour le cockpit (`reminderHistory()`, `nextAutomaticReminderAt()`).
+- `EncodingCompletenessService` — définition unique de « ce qui manque » : heures réelles
+  début + fin (soumission), heures déclarées (validation), situation
+  `NOT_STARTED|HOURS_MISSING|NOT_SUBMITTED` pour qualifier une relance sans jamais affirmer
+  qu'il manque du matériel ou une intervention.
+- `MissionEncodingReminder` (table `mission_encoding_reminder`) — une ligne par (mission,
+  échéance), contrainte UNIQUE = idempotence ; canaux réellement utilisés, raison de
+  l'e-mail, nombre de managers alertés, échec technique éventuel.
+- Modèles e-mail `encoding_reminder_d1/d2/d4.html.twig`, `encoding_escalation_manager.html.twig`.
+- `Mission.encodingReminderSentAt` (D-083) — conservé en lecture seule (repli d'affichage),
+  plus jamais écrit.
 
-### 11.2 Canal
+### 11.2 Canaux et traçabilité
 
-Push tenté en premier ; email seulement si Push n'est pas livrable (aucune subscription,
-toutes expirées, tous les envois échouent). Jamais les deux à la fois.
+Push réellement tenté vers les abonnements de l'appareil (`OutboundNotificationService::
+recordPushSend()`) : il n'est compté comme livré que si le transport l'a accepté ; les
+abonnements expirés (404/410) sont supprimés par `WebPushService`. J+1/J+2 : e-mail
+uniquement en secours (`fallbackOf` + raison). J+4 : e-mail toujours. Chaque canal est tracé
+dans `OutboundNotification` (D-084) ; l'envoi est journalisé dans `AuditEvent`
+(`MISSION_ENCODING_AUTO_REMINDER_SENT`, acteur système).
 
 ### 11.3 Planification
 
-Cron serveur (pas de Symfony Scheduler dans ce projet), garde horaire interne dans la
-commande elle-même — absorbe tout décalage été/hiver même si le cron serveur est
-planifié en UTC fixe. Voir docs/production.md pour le déploiement.
+Cron serveur toutes les 15 minutes (pas de Symfony Scheduler dans ce projet), garde
+horaire interne dans la commande : aucune dérive été/hiver même si le cron est en UTC.
+Une exécution répétée, un worker redémarré ou un redéploiement n'envoient jamais deux fois
+la même échéance (contrainte UNIQUE). Voir docs/production.md.
+
+### 11.4 Retour chirurgien et signalement
+
+Soumission → `ENCODING_SUBMITTED` au chirurgien (`payload.resubmitted` pour une correction) ;
+synthèse lecture seule `/app/s/missions/{id}/encoding` (horaires planifiés/réels, pause,
+durée, écart ; interventions et matériel groupés) avec bandeau d'état (provisoire, soumis,
+en correction, validé). Signalement (D-100, `EncodingAnomalyReport`, inchangé) → managers
+et désormais l'instrumentiste (`ENCODING_ANOMALY_INSTRUMENTIST`, sans le commentaire).
 
 ## 12. Historique des notifications sortantes (D-084)
 

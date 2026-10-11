@@ -37,7 +37,8 @@ réécrire une ligne existante — c'est un historique._
 
 | Tag | Commit | Date | Notes |
 |---|---|---|---|
-| `v2026.10.10-prod-2` | `12695c2` | 2026-10-10 | **D-141 — cohérence tarifaire Catalogue / moteur / Suivi des encodages / Facturation firmes (PR #7).** Merge `12695c2` de `decd061` (tree identique à `decd061`, testé et vérifié au navigateur). 6 commits depuis `v2026.10.10-prod` (`222e17e`, identifié par hash de 11 fichiers serveur — fichiers serveur en CRLF, comparés après retrait des ``), HEAD complet via `git archive`, aucun cherry-pick : `b90eb3d` (docs), `95487dd`, `4ae6380`, `a68daf9` (docs), `decd061`, `12695c2` (merge). Aucune migration (dry-run « Already at the latest version », 76/76). Images php et nginx reconstruites (`--no-cache`, `BUILD_EXIT=0`) ; images précédentes conservées sous `surgicalhub-php:rollback-222e17e` / `surgicalhub-nginx:rollback-222e17e` (rollback sans rebuild). Sauvegardes : `all_20261010_193624.sql.gz` (« Dump completed »), `src_pre_deploy_20261010_193626.tar.gz`. Tests santé verts (frontend 200, login vide 400, `.env` 404, JWT + `/api/me` MANAGER, 3/3 Up, 0 CRITICAL, worker actif, migrations à jour) ; bundle prod contrôlé (« à recalculer », « Apparue », « Non facturable », « dès le », `resolvedAnomalyCount`). Tests ciblés **lecture seule** via l'API publique avec un manager jetable : #1040 = 11 anomalies auditées dont 2 corrigées (« Pas de forfait »), 1 apparue depuis l'échec (délégué MPFL), pronostic 10 restantes ; #428 = 4 dont 1 corrigée, pronostic 3 ; #436 = 3, 1 apparue (délégué LCP), pronostic 3 ; worklist sept.–oct. : `anomalyCount` 56 + `resolvedAnomalyCount` 4, aucune ligne « À vérifier » avec montant, LCA S&N règle #26 et multiligamentaire Arthrex règle #69 affichées « Calcul bloqué » avec tarif résolu, sutures « Aucun forfait prévu ». **Aucun recalcul déclenché, aucun tarif, encodage ni calcul modifié** (0 `financial_calculation`, 0 `firm_invoice`, 0 audit pendant le déploiement). Compte jetable + refresh tokens supprimés (0 résidu). **Limites assumées** : rendu visuel prod non vérifié au navigateur (vérifié en local sur données fictives) ; régularisation des données (#1040, #428, #436, catalogue, délégués, tarif instrumentiste #19) hors de ce déploiement, à approuver séparément. |
+| `v2026.10.10-prod-2` | `12695c2` | 2026-10-10 | **D-141 — cohérence tarifaire Catalogue / moteur / Suivi des encodages / Facturation firmes (PR #7).** Merge `12695c2` de `decd061` (tree identique à `decd061`, testé et vérifié au navigateur). 6 commits depuis `v2026.10.10-prod` (`222e17e`, identifié par hash de 11 fichiers serveur — fichiers serveur en CRLF, comparés après retrait des `
+`), HEAD complet via `git archive`, aucun cherry-pick : `b90eb3d` (docs), `95487dd`, `4ae6380`, `a68daf9` (docs), `decd061`, `12695c2` (merge). Aucune migration (dry-run « Already at the latest version », 76/76). Images php et nginx reconstruites (`--no-cache`, `BUILD_EXIT=0`) ; images précédentes conservées sous `surgicalhub-php:rollback-222e17e` / `surgicalhub-nginx:rollback-222e17e` (rollback sans rebuild). Sauvegardes : `all_20261010_193624.sql.gz` (« Dump completed »), `src_pre_deploy_20261010_193626.tar.gz`. Tests santé verts (frontend 200, login vide 400, `.env` 404, JWT + `/api/me` MANAGER, 3/3 Up, 0 CRITICAL, worker actif, migrations à jour) ; bundle prod contrôlé (« à recalculer », « Apparue », « Non facturable », « dès le », `resolvedAnomalyCount`). Tests ciblés **lecture seule** via l'API publique avec un manager jetable : #1040 = 11 anomalies auditées dont 2 corrigées (« Pas de forfait »), 1 apparue depuis l'échec (délégué MPFL), pronostic 10 restantes ; #428 = 4 dont 1 corrigée, pronostic 3 ; #436 = 3, 1 apparue (délégué LCP), pronostic 3 ; worklist sept.–oct. : `anomalyCount` 56 + `resolvedAnomalyCount` 4, aucune ligne « À vérifier » avec montant, LCA S&N règle #26 et multiligamentaire Arthrex règle #69 affichées « Calcul bloqué » avec tarif résolu, sutures « Aucun forfait prévu ». **Aucun recalcul déclenché, aucun tarif, encodage ni calcul modifié** (0 `financial_calculation`, 0 `firm_invoice`, 0 audit pendant le déploiement). Compte jetable + refresh tokens supprimés (0 résidu). **Limites assumées** : rendu visuel prod non vérifié au navigateur (vérifié en local sur données fictives) ; régularisation des données (#1040, #428, #436, catalogue, délégués, tarif instrumentiste #19) hors de ce déploiement, à approuver séparément. |
 | `v2026.10.10-prod` | `222e17e` | 2026-10-10 | **D-140 — intégration MedVue : liaison des comptes et API machine de lecture des congés (PR #6).** Merge `222e17e` de `bc2da29`. 3 commits depuis `v2026.10.09-prod` (`8dbe92c`, identifié par hash de 6 fichiers serveur), HEAD complet via `git archive`, aucun cherry-pick : `8921383` (docs), `bc2da29`, `222e17e` (merge). Migration `Version20261010090000` (`CREATE TABLE medvue_account_link` + 3 FK, SQL du dry-run identique à celui répété sur le dump `all_20261010_030003`) → 76/76. Images php et nginx reconstruites (`--no-cache`, `BUILD_EXIT=0`). Sauvegardes : `all_20261010_141714.sql.gz`, `src_pre_deploy_20261010_141716.tar.gz`, copie du `.env` `surgicalhub_env_pre_d140_20261010_141716` (600). Déployé d'abord **désactivé** (`MEDVUE_*` absents : machine 401, liaison 503 `medvue_not_configured`), puis MedVue `v2026.10.10-prod` (`24a090c`) désactivé, puis secrets M2M générés sur le serveur (jamais affichés, empreintes échangées par fichiers 600 supprimés ensuite) et `MEDVUE_INBOUND_TOKEN_SHA256` / `MEDVUE_API_BASE_URL` / `MEDVUE_REDEEM_TOKEN` ajoutés au `.env` du stack. Tests santé verts (frontend 200, login vide 400, `.env` 404, JWT + `/api/me`, 3/3 Up, 0 CRITICAL, worker actif, migrations à jour). **Recette réelle conjointe** avec `MAIL_SAFE_MODE=on` (retiré ensuite), manager + instrumentiste jetables `@surgicalhub.internal`, compte MedVue jetable `@example.test` : HTTPS dans les deux sens (redeem faux code → 422 `invalid_code` ; linkId inconnu → 404 `link_not_found`), liaison, import de 3 congés sans `reason`, modification, création puis suppression, révocation SH → 410 `link_revoked` (futur retiré, passé/en cours conservés côté MedVue), dissociation depuis MedVue (`revoked_via MEDVUE`), préférences manuelles MedVue inchangées ; 0 notification SH émise. Nettoyage : congés supprimés via l'API, comptes jetables + liaisons + audit + refresh tokens supprimés par SQL (transaction gardée par e-mail), 0 résidu. Cron MedVue `app:surgicalhub:sync` (*/30) installé après la recette. **Limites assumées** : suspension MedVue sur 404 d'une liaison réelle non rejouée en prod (aucun mécanisme de simulation sûr, couverte par `SurgicalHubSyncTest`) ; côté MedVue, lignes d'association/journal append-only et compte jetable conservés (désactivation par un administrateur MedVue). |
 | `v2026.10.09-prod` | `8dbe92c` | 2026-10-09 | **D-138 — anomalies FINANCE expliquées, règles tarifaires contradictoires, catalogue « Tarif non configuré » / « Conflit tarifaire » (PR #5).** Merge `8dbe92c` de `c324959`. 5 commits depuis `v2026.10.08-prod-3` (`f0f77aa`, identifié par hash de 3 fichiers serveur), HEAD complet via `git archive`, aucun cherry-pick : `11e9252` (docs), `b5eb30e` (`FinancialCalculationAnomalyExplainer`, `GET /api/billing/encoding-tracking/missions/{id}/financial-anomalies`, section « Anomalies financières » du tiroir), `206af27` (règles contradictoires → 409 / anomalies `CONFLICTING_*`, plus jamais de 500 ; ordre des événements par id d'audit), `c324959` (`pricingConflictRuleIds` sur `GET /api/firms/{id}/service-offerings` ; libellés distincts dans Catalogue matériel, Prestations et détail d'intervention), `8dbe92c` (merge). Aucune migration (75/75). Images php et nginx reconstruites (`--no-cache`, `BUILD_EXIT=0`). Sauvegardes : `all_20261009_100611.sql.gz`, `src_pre_deploy_20261009_100613.tar.gz`. Tests santé verts (frontend 200, login vide 400, `.env` 404, 3/3 Up, 0 CRITICAL, worker actif, migrations à jour) ; bundle prod contrôlé (`pricingStatus-*.js` : « Conflit tarifaire » / « Tarif non configuré »). Tests ciblés **lecture seule** via l'API publique avec un manager jetable : 68/68 prestations (10 firmes) et 44/44 matériels exposent `pricingConflictRuleIds` (0 conflit réel, 39 matériels sans tarif), 47/47 `intervention-types/{id}/offerings` en 200, mission #1040 : 11 anomalies expliquées (tarifs firme manquants), suivi des encodages sept.–oct. : 2 missions ANOMALY, toutes expliquées. Aucun tarif, aucune mission ni aucun calcul modifié. Compte jetable + refresh tokens supprimés (0 résidu de ce déploiement). **Limites assumées** : chemin « conflit » non rejouable en prod (aucun conflit réel, n'en créer aucun) — couvert par les tests fonctionnels ; rendu visuel prod non vérifié au navigateur ; résidus antérieurs signalés non supprimés (user #81 `deploytest-d111-…`, refresh tokens `deploytest-scope` ×4 / `deploytest-conflict` ×2). |
 | `v2026.10.08-prod-3` | `f0f77aa` | 2026-10-08 | **Détail consultable de chaque demande dans Manager > Demandes (PR #3).** Merge `f0f77aa` de `7d2311e`. 3 commits depuis `v2026.10.08-prod-2` (`00aac0f`, identifié par hash de fichiers serveur), HEAD complet via `git archive`, aucun cherry-pick : `26696cd` (docs), `7d2311e` (`CatalogueRequestDetailDialog` : clic ligne / nom ou « Voir le détail », lecture seule, tous statuts ; tests), `f0f77aa` (merge). Aucune migration (75/75). Images php et nginx toutes deux reconstruites. Sauvegardes : `all_20261008_190928.sql.gz`, `src_pre_deploy_20261008_190929.tar.gz`. Tests santé verts ; contrôles sans écriture via l'API publique (#12 `comment` null ; #16 MPFL résolue par un manager à 18:16 UTC avant le déploiement, `comment` null, `decidedBy`/`decidedAt` null — voir l'évolution traçabilité) ; Resolve/Ignore 404/422/401, lignes réelles inchangées ; bundle prod contrôlé ; compte jetable nettoyé (0 résidu). **Limites assumées** : chemins de succès Resolve/Ignore non exécutés en prod ; rendu visuel prod non vérifié au navigateur (vérifié en local sur le même code). |
@@ -530,77 +531,66 @@ utile même en exécution manuelle).
 
 ---
 
-## Tâche planifiée — rappel d'encodage D+1 (D-083) — PAS ENCORE ACTIVÉE
+## Tâche planifiée — relance progressive d'encodage J+1/J+2/J+4 (D-143) — PAS ENCORE ACTIVÉE
 
-`app:notifications:send-encoding-reminders` (`SendEncodingRemindersCommand`)
-envoie le rappel d'encodage D+1 (Push prioritaire, repli email) aux missions
-éligibles. Développée et testée en local (voir D-083), **non déployée et non
-planifiée en production** au moment de la rédaction — instructions ci-dessous
-prêtes pour l'activation, à exécuter seulement avec une autorisation explicite
-de déploiement/configuration prod.
+`app:notifications:send-encoding-reminders` (`SendEncodingRemindersCommand`) envoie les
+relances d'encodage J+1 et J+2 (push, e-mail de secours) et J+4 (push + e-mail obligatoire,
+alerte managers in-app + e-mail), à 09 h Europe/Brussels. Remplace le rappel D+1 08 h de
+D-083 — **jamais planifié en production** (constaté le 2026-10-11 : aucune entrée crontab,
+aucun script, `ENCODING_REMINDER_AUTO_ENABLED` absent, 0 mission avec
+`encoding_reminder_sent_at`). C'est la cause directe de « les rappels ne fonctionnent pas ».
 
-### Mécanisme prévu (même schéma que D-064)
+**À exécuter uniquement avec une autorisation explicite de déploiement/configuration prod.**
+
+### Mécanisme (même schéma que D-064/D-110)
 
 | | |
 |---|---|
 | Planificateur | cron utilisateur `deploy` |
-| Fréquence recommandée | toutes les 15-30 minutes (`*/15 * * * *`) — **pas** un tick unique à 08h00 pile |
-| Script | `/home/deploy/scripts/send_encoding_reminders.sh` (à créer, même style que `missions_start_due.sh` : `set -uo pipefail`, `flock -n`, vérification `docker inspect`) |
+| Fréquence | `*/15 * * * *` — **pas** un tick unique à 09h00 |
+| Script | `/home/deploy/scripts/send_encoding_reminders.sh` (à créer, même style que `missions_start_due.sh` : `set -uo pipefail`, `flock -n`, vérification `docker inspect`, `log()` direct dans le fichier, jamais `tee`) |
 | Commande exécutée | `docker compose exec -T php php bin/console app:notifications:send-encoding-reminders --env=prod` |
 | Répertoire d'exécution | `/opt/stack/apps/surgicalhub` |
-| Journal | `/home/deploy/logs/encoding-reminders.log` |
+| Journal | `/home/deploy/logs/encoding-reminders.log` (une ligne `due=… sent=… skipped=… failed=…` par tick) |
 | Verrou anti-chevauchement (shell) | `flock -n` sur `/home/deploy/locks/encoding-reminders.lock` |
-| Garde métier (applicatif) | `SendEncodingRemindersCommand` refuse d'agir avant 08h00 Europe/Brussels — voir ci-dessous |
+| Garde métier (applicatif) | rien avant 09h00 Europe/Brussels ; chaque échéance n'est traitée que dans sa fenêtre de 24 h |
+| Idempotence | contrainte UNIQUE `mission_encoding_reminder (mission_id, stage)` — un tick en trop, un double cron ou un redéploiement ne renvoient rien |
 
-**Pourquoi une fréquence de 15-30 min plutôt qu'un tick unique à 08h00** : le
-serveur de production n'a pas de garantie documentée d'être en `Europe/Brussels`
-(le cron `deploy` existant pour D-064 tourne en UTC — voir le tick "18:00 UTC"
-loggué plus haut). Un cron fixé à `0 8 * * *` dériverait d'une heure entre
-heure d'été et heure d'hiver si le serveur est en UTC. Plutôt que de dépendre
-de `CRON_TZ=Europe/Brussels` (à vérifier/configurer explicitement si retenu),
-la commande elle-même refuse d'envoyer quoi que ce soit avant 08h00 heure de
-Bruxelles (`SendEncodingRemindersCommand::now()`, `EARLIEST_HOUR = 8`) — une
-exécution plus fréquente que nécessaire est donc sans risque : la majorité des
-ticks avant 08h00 locale ne font rien (sortie "Trop tôt", aucun appel au
-service), et le premier tick après 08h00 locale traite le lot du jour.
-L'idempotence stricte (`Mission.encodingReminderSentAt`) garantit par
-ailleurs qu'un tick supplémentaire ne renvoie jamais un rappel déjà envoyé.
+**Pourquoi toutes les 15 minutes** : le cron `deploy` tourne en UTC ; la commande calcule
+elle-même l'heure de Bruxelles, une exécution plus fréquente est donc sans risque (« Trop
+tôt » avant 09h00, puis traitement du lot du jour au premier tick après 09h00).
+
+**Premier passage après activation** : seules les missions dont une échéance tombe dans
+sa fenêtre de 24 h sont relancées. Les missions plus anciennes jamais encodées (94 missions
+passées encore `ASSIGNED`/`IN_PROGRESS` le 2026-10-11) ne reçoivent **aucune rafale** — elles
+restent visibles dans « Suivi des encodages » et peuvent être relancées manuellement.
 
 Entrée crontab prévue (à ajouter après les jobs existants, jamais réécrits) :
 
 ```
-# D-083 — Rappel d'encodage D+1 (garde 08h00 Europe/Brussels interne à la commande)
+# D-143 — Relance d'encodage J+1/J+2/J+4 (garde 09h00 Europe/Brussels interne à la commande)
 */15 * * * * /home/deploy/scripts/send_encoding_reminders.sh >> /home/deploy/logs/encoding-reminders.log 2>&1
 ```
 
 ### Avant activation
 
-1. Confirmer la timezone réelle du serveur (`docker exec surgicalhub-php-1 date -u`
-   et `date` côté hôte) — documenter l'écart avec Europe/Brussels s'il existe,
-   la garde interne fonctionne quel que soit cet écart tant que la commande
-   calcule elle-même l'heure Bruxelles (elle le fait, indépendamment de
-   l'horloge système du conteneur).
-2. Appliquer la migration `Version20260726090000` en prod
-   (`doctrine:migrations:migrate --env=prod`) avant tout déploiement du code
-   applicatif qui la suppose.
-3. Créer `/home/deploy/scripts/send_encoding_reminders.sh` sur le modèle exact
-   de `missions_start_due.sh` (même garde `flock`, même vérification
-   `docker inspect`, `log()` écrivant directement dans le fichier — pas de
-   `tee`, pour éviter le doublon déjà rencontré et documenté pour D-064).
-4. Sauvegarder la crontab avant modification
+1. Déployer le code D-143 et appliquer la migration `Version20261011090000`
+   (`doctrine:migrations:migrate --env=prod`, additive : colonne `mission_execution.break_minutes`
+   + table `mission_encoding_reminder`).
+2. Vérifier que le worker Messenger `async` tourne (les e-mails partent par la file).
+3. Créer le script, sauvegarder la crontab
    (`crontab -l > /home/deploy/backups/cron/crontab_before_encoding_reminders_<horodatage>.txt`).
-5. **Dans le même geste que l'ajout du cron**, passer `ENCODING_REMINDER_AUTO_ENABLED=1`
-   dans `/opt/stack/apps/surgicalhub/.env` puis recréer `php` (D-122 suite). Tant que la
-   variable vaut `0` (défaut, `config/services.yaml`), le tiroir « Suivi des encodages »
-   n'annonce aucune « prochaine relance automatique » — jamais une promesse que le cron
-   ne tiendra pas. À remettre à `0` en cas de désactivation.
+4. **Dans le même geste que l'ajout du cron**, passer `ENCODING_REMINDER_AUTO_ENABLED=1`
+   dans `/opt/stack/apps/surgicalhub/.env` puis recréer `php` : le tiroir « Suivi des
+   encodages » annonce alors la prochaine relance. À remettre à `0` en cas de désactivation.
 
 ### Vérification (une fois activée)
 
 ```bash
 tail -50 /home/deploy/logs/encoding-reminders.log
-ps aux | grep send-encoding-reminders
 crontab -l | grep send_encoding_reminders
+# historique des relances (lecture seule)
+docker exec -i mysql mysql -uroot -p"$ROOTPW" surgicalhub -e "SELECT stage, COUNT(*), MAX(sent_at) FROM mission_encoding_reminder GROUP BY stage"
 ```
 
 ### Désactivation

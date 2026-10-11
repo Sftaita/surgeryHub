@@ -5542,7 +5542,29 @@ chemins métier distincts.
 - Si `comment` est fourni et non-blanc : `mission.noMaterialComment = trim(comment)`
   (jamais effacé, y compris si une soumission ultérieure a du matériel)
 - Audit `MISSION_ENCODING_COMPLETED`
-- `MissionLifecycleChangedMessage(ENCODING_COMPLETED)` dispatché
+- `MissionLifecycleChangedMessage(ENCODING_COMPLETED)` dispatché — **D-143** : le chirurgien
+  de la mission reçoit `ENCODING_SUBMITTED` (centre de notifications, push selon ses
+  préférences), `payload.resubmitted = true` pour une re-soumission après correction
+
+**D-143 — heures réelles obligatoires :** la soumission exige `actualStartAt` ET
+`actualEndAt` (fin strictement postérieure au début) sur la `MissionExecution`. Une durée
+seule ou les horaires planifiés ne suffisent jamais. Contrôle fait **avant** la règle
+matériel D-080 ; seule la transition est refusée, aucune donnée encodée n'est touchée.
+
+```json
+{
+  "error": {
+    "status": 422,
+    "code": "ENCODING_INCOMPLETE",
+    "message": "Il reste une petite étape avant de terminer : pensez à renseigner vos heures réelles de début et de fin.",
+    "violations": [],
+    "missing": [
+      { "code": "ACTUAL_START_TIME", "label": "Heure réelle de début", "section": "hours" },
+      { "code": "ACTUAL_END_TIME", "label": "Heure réelle de fin", "section": "hours" }
+    ]
+  }
+}
+```
 
 **Erreurs :**
 
@@ -5550,7 +5572,7 @@ chemins métier distincts.
 |---|---|
 | `403` | Non autorisé |
 | `409` | Mission dans un statut non soumissible |
-| `422` | Aucune ligne de matériel active trouvée et `comment` absent/vide (D-080) — voir la règle complète en tête de §32 |
+| `422` | `ENCODING_INCOMPLETE` (D-143, heures réelles manquantes ou incohérentes) · aucune ligne de matériel active trouvée et `comment` absent/vide (D-080) — voir la règle complète en tête de §32 |
 
 ---
 
@@ -5566,7 +5588,13 @@ chemins métier distincts.
 - `MissionLifecycleChangedMessage(ENCODING_VALIDATED)` dispatché
 - Rend la mission éligible à `MissionEncodingWorkflowService::isBillable()` (Lot 8+)
 
-**Erreurs :** `403` non manager · `409` mission ≠ `SUBMITTED`.
+**D-143 :** refus `422 ENCODING_INCOMPLETE` si la mission n'a **aucune** heure réelle déclarée
+(ni début + fin, ni durée) — jamais une validation, donc une valorisation, sur le seul
+planifié. Une durée seule déclarée avant D-143 reste validable. Régularisation : `reject`
+vers l'instrumentiste, ou saisie des heures par le manager (`PATCH .../execution`,
+`hoursSource: MANAGER`).
+
+**Erreurs :** `403` non manager · `409` mission ≠ `SUBMITTED` · `422` `ENCODING_INCOMPLETE`.
 
 ---
 
@@ -5642,27 +5670,33 @@ instrumentiste assigné, statut parmi `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN
 **Body :** aucun.
 
 **Effets backend :**
-- Envoie la même notification que la relance automatique D+1 (D-083) — Push avec repli
-  email, `NotificationService::missionEncodingReminderNotifyInstrumentist()`.
-- **Ne touche jamais** `mission.encodingReminderSentAt` (réservé au garde-fou "au plus un
-  rappel automatique" — la relance manuelle est indépendante, répétable, sans effet sur la
-  planification du cron).
+- Centre de notifications de l'instrumentiste (`ENCODING_REMINDER`, `payload.stage = MANUAL`)
+  + Push avec repli email, `NotificationService::missionEncodingReminderNotifyInstrumentist()`.
+- **Ne touche jamais** l'historique des relances automatiques (`mission_encoding_reminder`,
+  D-143), ni le statut, ni le brouillon.
 - Audit `MISSION_ENCODING_MANUAL_REMINDER_SENT` (acteur + canal utilisé : `push`/`email`).
+- **D-143 — anti-répétition :** une seconde relance manuelle de la même mission moins de
+  10 minutes après la précédente est refusée (`409`, message explicite).
 
 **Réponse :** `MissionDetailDto` (`200`), qui expose aussi (additif, non-breaking) :
-- `automaticReminderSentAt` — miroir de `mission.encodingReminderSentAt`
-- `nextAutomaticReminderAt` — calculé en réutilisant l'éligibilité de
-  `EncodingReminderService` (jamais réimplémenté côté frontend), `null` si non éligible
-  ou si le moment J+1 08h est déjà passé (le cron ne retient que les missions terminées la
-  veille : une date passée ne serait jamais honorée), et **toujours `null` tant que la
-  planification D-083 n'est pas activée** (`ENCODING_REMINDER_AUTO_ENABLED`, défaut `0`)
-- `lastManualReminderAt` / `lastManualReminderByName` — dernière relance manuelle journalisée
+- `automaticReminderSentAt` — dernière relance automatique (D-143 : historique
+  `mission_encoding_reminder`, repli sur l'ancien `mission.encodingReminderSentAt`)
+- `automaticReminders` — **D-143**, manager uniquement (`[]` sinon) :
+  `[{ stage: "D1"|"D2"|"D4", sentAt, channels: ["IN_APP","PUSH"|"EMAIL"…], managersNotified }]`
+- `nextAutomaticReminderAt` — prochaine échéance J+1/J+2/J+4 encore à venir (09 h
+  Europe/Brussels), calculée par `EncodingReminderService` (jamais côté frontend), `null`
+  si l'encodage n'est plus attendu, si toutes les échéances sont passées, et **toujours
+  `null` tant que la planification n'est pas activée** (`ENCODING_REMINDER_AUTO_ENABLED`, défaut `0`)
+- `lastManualReminderAt` / `lastManualReminderByName` / `lastManualReminderChannel`
+  (`push`|`email`, D-143) — dernière relance manuelle journalisée
+- `submittedAt` — **D-143**, dernière soumission de l'encodage (affichée au chirurgien)
 
 **Erreurs :**
 
 | Code | Description |
 |---|---|
 | `403` | Non manager, mission sans instrumentiste, ou statut hors fenêtre |
+| `409` | D-143 — relance manuelle déjà envoyée il y a moins de 10 minutes |
 
 ---
 
@@ -5701,6 +5735,7 @@ chirurgien de la mission.
   "actualStartAt": null,
   "actualEndAt": null,
   "actualDurationMinutes": null,
+  "breakMinutes": null,
   "hoursSource": null,
   "effectiveDurationMinutes": 120,
   "effectiveDurationSource": "PLANNED",
@@ -5714,9 +5749,13 @@ chirurgien de la mission.
 
 ### `PATCH /api/missions/{id}/execution`
 
-**AuthZ :** `MissionExecutionVoter::UPDATE` — manager/admin ou instrumentiste assigné.
-La permission est vérifiée **avant** toute création paresseuse de `MissionExecution`
-(voir §"Correction de sécurité" dans architecture.md).
+**AuthZ :** `MissionExecutionVoter::UPDATE` — vérifiée **avant** toute création paresseuse
+de `MissionExecution` (voir §"Correction de sécurité" dans architecture.md). **D-143 :**
+- instrumentiste assignée : uniquement tant que l'encodage lui est ouvert (statuts
+  `ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS|DECLARED`, jamais avant le début de la mission,
+  jamais après soumission) ;
+- manager/admin : toujours, **sauf** encodage verrouillé (`VALIDATED`) ou facturé — une
+  correction après validation passe par `reopen`.
 
 **Body JSON (tous champs optionnels, sémantique PATCH) :**
 
@@ -5724,16 +5763,19 @@ La permission est vérifiée **avant** toute création paresseuse de `MissionExe
 {
   "actualStartAt": "2026-09-01T08:05:00+02:00",
   "actualEndAt": "2026-09-01T10:20:00+02:00",
+  "breakMinutes": 30,
   "actualDurationMinutes": null,
   "hoursSource": "INSTRUMENTIST"
 }
 ```
 
 **Règle de cohérence (backend seul garant, jamais côté frontend) :**
-- `actualStartAt`/`actualEndAt` doivent être fournis **ensemble** (dans l'état résultant
-  après application du PATCH) — un seul des deux sans l'autre est un `422`.
+- **D-143 — encodage progressif :** un horaire seul (typiquement le début, le matin) est
+  accepté comme brouillon ; il ne décrit aucune durée et ne permet pas de soumettre
+  (`POST .../encoding/complete` → `422 ENCODING_INCOMPLETE`).
 - Si les deux sont connus, `actualDurationMinutes` est **toujours dérivée**
-  (`round((end - start) / 60)`) — jamais deux sources de vérité.
+  (`round((end - start) / 60) - breakMinutes`) — jamais deux sources de vérité.
+- `breakMinutes` (D-143) : `≥ 0` et strictement inférieure à la plage début → fin.
 - Fournir en plus une `actualDurationMinutes` explicite qui contredit cette dérivation
   est un `422`, jamais une acceptation silencieuse.
 
@@ -5744,7 +5786,7 @@ La permission est vérifiée **avant** toute création paresseuse de `MissionExe
 | Code | Description |
 |---|---|
 | `403` | Non autorisé |
-| `422` | Horaires incomplets, `actualEndAt ≤ actualStartAt`, ou durée contradictoire |
+| `422` | `actualEndAt ≤ actualStartAt`, pause ≥ plage, ou durée contradictoire |
 
 ### `POST /api/missions/{id}/execution/remind`
 
@@ -6648,8 +6690,13 @@ seul le nudge instantané en dépend (sans lui, le badge se met à jour au proch
 GET /api/me/notification-preferences
 ```
 
-Retourne chaque `NotificationType` avec ses canaux résolus (ligne stockée, ou défaut
-produit via `DefaultNotificationPreferenceResolver` si aucune ligne n'existe encore).
+Retourne chaque `NotificationType` **configurable** avec ses canaux résolus (ligne
+stockée, ou défaut produit via `DefaultNotificationPreferenceResolver` si aucune ligne
+n'existe encore). **D-143 :** `ENCODING_REMINDER` et `ENCODING_ESCALATION` (relances
+d'encodage, obligations de service) sont exclus (`NotificationType::isConfigurable()`), et le
+`PATCH` de ces types répond `400`. Nouveaux types configurables : `ENCODING_SUBMITTED`
+(chirurgien, encodage soumis/corrigé) et `ENCODING_ANOMALY_INSTRUMENTIST` (instrumentiste,
+point signalé par le chirurgien — jamais le commentaire libre).
 
 ```
 PATCH /api/me/notification-preferences/{type}
@@ -6661,7 +6708,7 @@ Seuls les canaux fournis sont modifiés. Le premier écrit pour une paire (utili
 type) matérialise une ligne `NotificationPreference` amorcée avec les valeurs
 actuellement résolues (défauts inclus), pour que les canaux non touchés gardent
 exactement leur comportement précédent. `400` si `{type}` n'est pas une valeur
-`NotificationType` valide.
+`NotificationType` valide et configurable.
 
 **Frontend :** `frontend/src/app/features/notifications/NotificationPreferencesSection.tsx`,
 monté sur les deux pages Profil (manager et instrumentiste). Le canal push n'y est pas
@@ -7305,7 +7352,8 @@ Le `summary` porte sur **toute la période**, `items` sur la page demandée.
         "materialLineCount": 6,
         "submittedWithoutMaterial": false,
         "hasNoMaterialJustification": false,
-        "isStale": false
+        "isStale": false,
+        "escalatedAt": null
       },
       "financial": { "state": "NOT_CALCULABLE", "label": "Pas encore calculable", "isBlocking": false, "anomalyCount": 0, "anomalyReasons": [] }
     }
@@ -7325,6 +7373,9 @@ jamais (sinon le badge de navigation et la liste pourraient diverger) :
 - `encodingExpected` = `totalMissions - notApplicable` — seul dénominateur honnête d'un
   taux d'encodage (une mission annulée n'est pas un encodage manquant)
 - `staleInProgress` : sous-ensemble de `inProgress` dont la mission est déjà terminée
+- `encoding.escalatedAt` (D-143, par mission) : date de l'alerte managers J+4, exposée tant
+  que l'encodage est toujours attendu — l'alerte reste visible jusqu'à la soumission, même
+  si la notification a été lue
 - `hasFinanciallyEligibleMissions` : `false` quand il y a de l'activité mais que rien n'a
   atteint `VALIDATED` — déclenche le message explicatif de la page Statistiques
 

@@ -5466,6 +5466,8 @@ versioning applicatif, mise à jour forcée du service worker, refonte de
 
 Date : 26-07-2026
 
+> **Remplacée par D-143 (2026-10-11)** — relance J+1/J+2/J+4 à 09 h ; ce rappel n'a jamais été planifié en production.
+
 ### Contexte
 
 Remplace le TODO "rappel d'encodage à 19 h" (jamais implémenté, voir plus haut) par une
@@ -11871,3 +11873,164 @@ Ce n'est pas une anomalie du code.
 - Tarif horaire de l'instrumentiste #19 valable seulement à partir du 10/09/2026 : 5 missions
   VALIDÉES antérieures (#425, #428, #437, #440, #624) ne sont pas couvertes — décision métier
   (le tarif s'appliquait-il avant ?).
+
+---
+
+## D-143 — Encodage progressif, horaires réels obligatoires à la soumission, relance J+1/J+2/J+4, retour chirurgien (2026-10-11)
+
+Remplace D-083 (rappel unique D+1 08 h) ; complète D-070 (workflow d'encodage), D-071
+(MissionExecution), D-100 (consultation chirurgien + signalement) et D-120 (relance manuelle).
+
+### Constats de l'audit (code + production en lecture seule, 2026-10-11)
+
+1. **Soumission sans horaires possible.** `MissionEncodingWorkflowService::complete()` ne
+   contrôlait aucune heure : seule la justification « sans matériel » (D-080) était exigée.
+   Cas Diane de Moor (instrumentiste #35) : missions 434, 435 et 451 soumises en 2 minutes le
+   18/09/2026, sans intervention, sans matériel, sans aucune heure — uniquement le commentaire
+   libre (« … 6h de prestation »). La 434 a ensuite été **validée** (29/09). Deux autres
+   missions (1224, 1225 — déclarations instrumentistes) sont dans le même cas.
+2. **L'interface n'enregistrait qu'une durée.** Le dialogue « Heures prestées » affichait
+   début/fin/pause mais n'envoyait que `actualDurationMinutes` (les horaires et la pause
+   n'étaient pas stockables ensemble, D-071). En production, **aucune** mission
+   soumise/validée n'a d'heure réelle de début ou de fin (48 avec une durée seule).
+3. **Le rappel D-083 n'a jamais tourné.** Ni cron, ni script, ni
+   `ENCODING_REMINDER_AUTO_ENABLED` en production ; 0 mission avec `encoding_reminder_sent_at`.
+   Le « rappel de 19 h » n'a jamais existé dans le code (TODO documentaire seulement).
+4. **Heures modifiables après soumission.** `MissionExecutionVoter::UPDATE` n'était borné par
+   aucun statut : l'instrumentiste assignée pouvait réécrire ses heures sur une mission
+   soumise, validée, voire facturée.
+5. **Retour chirurgien et signalement existaient déjà (D-100)** — consultation lecture seule,
+   `EncodingAnomalyReport` (types heures / matériel / interventions / autre, commentaire
+   obligatoire, OPEN/RESOLVED, managers notifiés). Manquaient : notification au chirurgien à
+   la soumission, horaires planifiés/réels/écart, état « provisoire / en correction »,
+   information de l'instrumentiste lors d'un signalement, historique visible.
+6. **Push** : invitation réservée aux instrumentistes, sans report ni explication en cas de
+   refus ; préférences push à `false` par défaut (aucun push pref-gated n'atteint personne
+   sans action explicite).
+
+### Décision — brouillon : rien de nouveau à persister
+
+L'encodage est déjà enregistré côté serveur à chaque action (interventions, matériel,
+heures), il n'existe aucun état local seul. Aucun nouveau mécanisme ni nouvel état de
+mission : le brouillon = mission `ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS|DECLARED`
+non soumise. Seule évolution : un **horaire seul** (le début, saisi le matin) est désormais
+un brouillon valide (`PATCH .../execution`), ce que D-071 refusait (`422`). Il ne décrit
+aucune durée et ne permet jamais de soumettre.
+
+### Décision — heures réelles : début, fin, pause
+
+- `mission_execution.break_minutes` (nullable, migration additive `Version20261011090000`).
+  Durée réelle = fin − début − pause, dérivée par `MissionExecutionService` (une seule
+  source de vérité, y compris `resolveDuration()` utilisé par la valorisation).
+- Le dialogue envoie `actualStartAt`/`actualEndAt`/`breakMinutes` (plus jamais une durée
+  seule) ; « Fin pas encore connue » n'envoie que le début. Les horaires planifiés ne
+  servent que de point de départ des sélecteurs à la première saisie (message explicite),
+  jamais d'enregistrement implicite.
+- `MissionExecutionVoter::UPDATE` : instrumentiste uniquement tant que l'encodage lui est
+  ouvert (mêmes statuts que `edit_hours`, `MissionEncodingGuard`) ; manager toujours, sauf
+  encodage verrouillé/facturé (correction après validation = `reopen`).
+
+### Décision — complétude : un seul service, jamais côté client
+
+`EncodingCompletenessService` définit ce qui manque :
+- **soumission** (`complete()`) : début ET fin réels, fin > début. Refus
+  `422 ENCODING_INCOMPLETE` avec `missing[{code,label,section}]` (rendu par
+  `ApiExceptionSubscriber`, exclu du découpage automatique des messages `:`) ; seule la
+  transition est refusée, rien n'est perdu. Le frontend affiche le message serveur et ouvre
+  la saisie des heures (« Renseigner mes heures ») ;
+- **validation manager** (`validate()`) : au moins des heures déclarées (début + fin, ou une
+  durée saisie avant D-143). Une mission sans aucune heure n'est plus validable — donc plus
+  valorisable sur le seul planifié. Les 48 durées historiques restent validables (l'ancienne
+  interface ne permettait rien d'autre) ;
+- **relance** : situation `NOT_STARTED` / `HOURS_MISSING` / `NOT_SUBMITTED`. Seules les heures
+  sont affirmées manquantes ; jamais une intervention ou un matériel (aucune règle ne permet
+  de le savoir).
+
+`MissionExecutionService::resolveDuration()` garde son repli sur le planifié (source
+`PLANNED`, explicitement étiquetée) : c'est une règle de valorisation existante, hors
+périmètre ; elle ne peut plus s'appliquer à une mission validée après D-143.
+
+### Décision — relance progressive J+1 / J+2 / J+4
+
+| Échéance (09 h Europe/Brussels) | Instrumentiste | Managers |
+|---|---|---|
+| J+1 | push si livré, sinon e-mail | — |
+| J+2 | push si livré, sinon e-mail | — |
+| J+4 | push si livré + e-mail systématique | centre de notifications + e-mail |
+
+- J+N = N-ième jour civil après la date **locale** de fin ; échéance construite en heure de
+  Bruxelles (09:00 garanti à travers les changements d'heure). Fenêtre de 24 h par
+  échéance : jamais avant, rattrapage d'un cron manqué, **jamais de rafale** de relances
+  anciennes (premier passage, panne de plusieurs jours).
+- Encore attendu = instrumentiste assignée, statut `ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS|DECLARED`,
+  ni verrouillé ni facturé. Une mission soumise (y compris en attente de validation) n'est
+  jamais relancée ; état relu juste avant l'envoi.
+- Idempotence : table `mission_encoding_reminder`, UNIQUE (mission, échéance), réservée par
+  `INSERT` hors UnitOfWork avant tout envoi (même compromis que D-083 : perte plutôt que
+  doublon si l'envoi échoue après réservation, échec historisé sur la ligne).
+- Push « opérationnel » = accepté par le transport (`recordPushSend()` → `SENT`), jamais la
+  simple existence d'un abonnement ; abonnements expirés nettoyés (D-081). E-mail de secours
+  lié au push (`fallbackOf`, raison `PUSH_NO_SUBSCRIPTION|PUSH_EXPIRED|PUSH_ALL_FAILED`) ;
+  J+4 : raison `MANDATORY`.
+- Centre de notifications : `ENCODING_REMINDER` (instrumentiste, lien direct vers
+  l'encodage) et `ENCODING_ESCALATION` (managers : instrumentiste, date, chirurgien,
+  informations manquantes, relances précédentes, lien vers le tiroir du suivi). L'alerte J+4
+  reste visible dans « Suivi des encodages » (`encoding.escalatedAt`) tant que l'encodage
+  n'est pas soumis, même notification lue.
+- Préférences : ces deux types sont des obligations de service (validation, rémunération),
+  non configurables (`NotificationType::isConfigurable()`), absents de l'écran des
+  préférences. Le push ne part que vers des appareils dont l'utilisateur a explicitement
+  autorisé les notifications.
+- Destinataires managers : `findManagersAndAdmins(true)` (convention existante, aucun
+  rattachement manager ↔ site n'existe).
+- Textes : ceux validés (lot 4), sans donnée patient (date, prénom, lien).
+- Traçabilité : `OutboundNotification` par canal (D-084), `AuditEvent`
+  `MISSION_ENCODING_AUTO_REMINDER_SENT` (acteur système), ligne `mission_encoding_reminder`.
+- `Mission.encodingReminderSentAt` (D-083) n'est plus écrit (repli d'affichage seulement).
+
+### Décision — relance manuelle (D-120, conservée)
+
+Même endpoint. Ajouts : entrée dans le centre de notifications, anti-répétition (409 si une
+relance manuelle de la même mission date de moins de 10 minutes), canal réellement utilisé
+renvoyé (`lastManualReminderChannel`) et annoncé au manager, historique des relances
+automatiques affiché dans le tiroir. Ni statut, ni brouillon touchés.
+
+### Décision — retour chirurgien
+
+- `MissionLifecycleChangedMessageHandler` traite enfin `ENCODING_COMPLETED` : notification
+  `ENCODING_SUBMITTED` au chirurgien (in-app + push selon préférences, pas d'e-mail), lien
+  direct vers la synthèse ; `resubmitted = true` après une correction — une synthèse déjà
+  consultée n'est jamais remplacée en silence.
+- Synthèse (`SurgeonEncodingPage`, endpoints D-100 inchangés) : horaires planifiés, réels
+  (début → fin · pause), durée réelle, écart ; interventions avec leur matériel
+  (quantités) ; résumé « n interventions · m lignes de matériel » ; bandeau d'état
+  (provisoire / soumis le … / en cours de correction / validé). Aucune validation exigée.
+  Contrat « aucune donnée financière » étendu au détail mission et aux heures.
+
+### Décision — signaler un problème : D-100 réutilisé tel quel
+
+Aucun workflow parallèle (`MissionExecutionDispute`, mécanisme « contestation d'heures »
+antérieur sans interface, reste inchangé et non exposé). Ajouts : l'instrumentiste concernée
+est notifiée (`ENCODING_ANOMALY_INSTRUMENTIST`, catégorie + date, **jamais** le commentaire
+libre) ; l'historique des signalements précédents reste visible au chirurgien. Le droit du
+chirurgien reste limité à ses missions, sans aucune écriture sur l'encodage.
+
+### Décision — invitation push
+
+`PushInvitationBanner` (layout mobile, instrumentiste et chirurgien) : demande native
+uniquement au clic « Activer les notifications », rien si déjà actif / non supporté / refusé,
+« Plus tard » = report 7 j puis 14 j puis plus jamais (même politique que l'installation PWA,
+stockage local à l'appareil), explication de réactivation juste après un refus. Le centre de
+notifications et les e-mails de secours fonctionnent sans push.
+
+### Données historiques — aucune modification automatique
+
+Rapport : `docs/incidents/2026-10-11-missions-soumises-sans-horaires.md`. Aucune heure
+inventée, aucune donnée corrigée. Procédure de régularisation proposée, à valider.
+
+### Hors périmètre / points ouverts
+
+- Réconciliation avec le chantier H1–H8 non commité (`NotificationDispatcher`, D-128/D-131) :
+  les envois de ce lot passent par `OutboundNotificationService` (socle actuel de `main`) et
+  devront être migrés vers le dispatcher lors de l'intégration (`EmailThroughDispatcherTest`).
+- Planification du cron en production : procédure dans `docs/production.md`, non exécutée.
