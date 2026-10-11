@@ -80,6 +80,24 @@ final class NotificationTargetResolver
             return '/app/i/offers';
         }
 
+        // D-143 — une relance ou un signalement mène directement à l'écran qui permet d'agir :
+        // l'encodage pour l'instrumentiste et le chirurgien, le suivi des encodages (tiroir de
+        // la mission ouvert) pour le manager.
+        if ($mission !== null) {
+            if ($type === NotificationType::ENCODING_REMINDER && $isInstrumentist) {
+                return sprintf('/app/i/missions/%d/encoding', $mission->getId());
+            }
+            if ($type === NotificationType::ENCODING_ESCALATION && $isManager) {
+                return sprintf('/app/m/billing/encodings?missionId=%d', $mission->getId());
+            }
+            if (in_array($type, [NotificationType::ENCODING_SUBMITTED, NotificationType::ENCODING_ANOMALY_RESOLVED], true) && $isSurgeon) {
+                return sprintf('/app/s/missions/%d/encoding', $mission->getId());
+            }
+            if ($type === NotificationType::ENCODING_ANOMALY_INSTRUMENTIST && $isInstrumentist) {
+                return sprintf('/app/i/missions/%d/encoding', $mission->getId());
+            }
+        }
+
         if ($mission !== null) {
             if ($isManager) {
                 return '/app/m/missions/' . $mission->getId();

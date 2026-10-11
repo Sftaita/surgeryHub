@@ -63,6 +63,7 @@ final class MissionExecutionController extends AbstractController
             $this->parseDate($dto->actualEndAt),
             $dto->actualDurationMinutes,
             $dto->hoursSource,
+            $dto->breakMinutes,
         );
 
         return $this->json($this->toDto($mission), Response::HTTP_OK);
@@ -79,6 +80,7 @@ final class MissionExecutionController extends AbstractController
             actualStartAt: $execution?->getActualStartAt()?->format(\DateTimeInterface::ATOM),
             actualEndAt: $execution?->getActualEndAt()?->format(\DateTimeInterface::ATOM),
             actualDurationMinutes: $execution?->getActualDurationMinutes(),
+            breakMinutes: $execution?->getBreakMinutes(),
             hoursSource: $execution?->getHoursSource()?->value,
             effectiveDurationMinutes: $effective->minutes,
             effectiveDurationSource: $effective->source->value,

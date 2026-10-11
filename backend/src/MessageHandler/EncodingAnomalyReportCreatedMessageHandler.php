@@ -18,7 +18,7 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
 /**
  * Lot 6 (D-100) — prévient les managers/admins actifs qu'un chirurgien vient de
- * signaler une anomalie d'encodage. Même famille que
+ * signaler une anomalie d'encodage (D-143 : l'instrumentiste concernée aussi). Même famille que
  * SurgeonMissionRequestCreatedMessageHandler (D-099) : in-app + push uniquement,
  * jamais d'email, failure isolation par destinataire.
  */
@@ -50,6 +50,59 @@ final class EncodingAnomalyReportCreatedMessageHandler
                 continue;
             }
             $this->notifyManager($manager, $mission, $message);
+        }
+
+        $this->notifyInstrumentist($mission, $message);
+    }
+
+    /**
+     * D-143 — l'instrumentiste concernée est prévenue qu'un point est à vérifier sur son
+     * encodage. Jamais le commentaire libre du chirurgien (il peut contenir des éléments
+     * cliniques) : seulement la catégorie et la date ; le suivi reste chez les managers.
+     */
+    private function notifyInstrumentist(Mission $mission, EncodingAnomalyReportCreatedMessage $message): void
+    {
+        $instrumentist = $mission->getInstrumentist();
+        if (!$instrumentist instanceof User) {
+            return;
+        }
+
+        try {
+            $channels = $this->resolveChannelsSafely($instrumentist, NotificationType::ENCODING_ANOMALY_INSTRUMENTIST);
+            $missionDate = $mission->getStartAt()?->format('d/m/Y');
+
+            if ($channels->inApp) {
+                $this->em->persist((new NotificationEvent())
+                    ->setUser($instrumentist)
+                    ->setMission($mission)
+                    ->setEventType(NotificationType::ENCODING_ANOMALY_INSTRUMENTIST->value)
+                    ->setChannel(PublicationChannel::IN_APP)
+                    ->setSentAt(new \DateTimeImmutable())
+                    ->setPayload([
+                        'reportId'    => $message->reportId,
+                        'missionId'   => $mission->getId(),
+                        'missionDate' => $missionDate,
+                        'type'        => $message->type,
+                    ]));
+                $this->em->flush();
+            }
+
+            if ($channels->push) {
+                $this->outboundNotificationService->recordPushSend(
+                    $instrumentist,
+                    NotificationType::ENCODING_ANOMALY_INSTRUMENTIST->value,
+                    'Point à vérifier sur votre encodage',
+                    sprintf('Le chirurgien a signalé un point à vérifier sur votre mission du %s. La coordination reviendra vers vous si nécessaire.', $missionDate ?? '—'),
+                    ['missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::ENCODING_ANOMALY_INSTRUMENTIST, $mission, $instrumentist)],
+                    $mission,
+                );
+            }
+        } catch (\Throwable $e) {
+            $this->logger->error('EncodingAnomalyReportCreated: instrumentist notification failed', [
+                'reportId'        => $message->reportId,
+                'instrumentistId' => $instrumentist->getId(),
+                'error'           => $e->getMessage(),
+            ]);
         }
     }
 

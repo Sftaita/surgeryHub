@@ -131,7 +131,8 @@ final class MeController extends AbstractController
                     'pushEnabled' => $channels->push,
                 ];
             },
-            NotificationType::cases(),
+            // D-143 — les notifications de service (relances d'encodage) ne se coupent pas.
+            array_values(array_filter(NotificationType::cases(), static fn (NotificationType $t) => $t->isConfigurable())),
         );
 
         return $this->json(['items' => $items]);
@@ -150,7 +151,7 @@ final class MeController extends AbstractController
         $this->denyAccessUnlessGranted('IS_AUTHENTICATED_FULLY');
 
         $notificationType = NotificationType::tryFrom($type);
-        if ($notificationType === null) {
+        if ($notificationType === null || !$notificationType->isConfigurable()) {
             throw new BadRequestHttpException('Unknown notification type: ' . $type);
         }
 

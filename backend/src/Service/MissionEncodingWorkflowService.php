@@ -49,6 +49,7 @@ final class MissionEncodingWorkflowService
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly AuditService $audit,
         private readonly MessageBusInterface $bus,
+        private readonly EncodingCompletenessService $completeness,
     ) {}
 
     /** ASSIGNED|IN_PROGRESS → ENCODING_IN_PROGRESS. */
@@ -110,6 +111,13 @@ final class MissionEncodingWorkflowService
             throw new ConflictHttpException('Mission cannot be submitted from its current status');
         }
 
+        // D-143 — heures réelles (début ET fin cohérents) obligatoires : jamais les horaires
+        // planifiés, jamais une durée seule. Seule la transition est refusée, rien n'est perdu.
+        $this->completeness->assertSubmittable(
+            $mission,
+            'Il reste une petite étape avant de terminer : pensez à renseigner vos heures réelles de début et de fin.',
+        );
+
         $trimmedComment = $comment !== null ? trim($comment) : null;
         $hasNoActiveMaterial = $this->countActiveMaterialLines($mission) === 0;
         $requiresJustification = $mission->getType() === MissionType::BLOCK && $hasNoActiveMaterial;
@@ -169,6 +177,15 @@ final class MissionEncodingWorkflowService
         if ($mission->getStatus() !== MissionStatus::SUBMITTED) {
             throw new ConflictHttpException('Mission must be SUBMITTED to validate its encoding');
         }
+
+        // D-143 — une mission soumise SANS aucune heure réelle (cas historiques, D-143 §audit)
+        // ne peut pas être validée — donc valorisée — sur le planifié par défaut : renvoyer
+        // l'encodage à l'instrumentiste (reject) ou saisir les heures (source MANAGER) d'abord.
+        // Une durée seule déclarée avant D-143 reste validable.
+        $this->completeness->assertHasDeclaredHours(
+            $mission,
+            "Heures réelles manquantes : renseignez-les ou renvoyez l'encodage à l'instrumentiste avant de valider.",
+        );
 
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setEncodingLockedAt(new \DateTimeImmutable());

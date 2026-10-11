@@ -184,4 +184,28 @@ enum NotificationType: string
     // OPEN_MISSION_AVAILABLE. In-app + push selon préférences (même pipeline que
     // MissionLifecycleChangedMessageHandler), email=false par défaut. 27 caractères (< 32).
     case ROOM_TAKEOVER_MISSION_OFFER = 'ROOM_TAKEOVER_MISSION_OFFER';
+
+    // ── Encodage progressif, relances et retour chirurgien (D-143) ────────────
+    // ENCODING_REMINDER   → instrumentiste : relance automatique J+1/J+2/J+4 (centre de
+    //                       notifications ; push/e-mail décidés par EncodingReminderService).
+    // ENCODING_ESCALATION → managers/admins : encodage toujours en attente à J+4.
+    // Ces deux-là sont des obligations de service (rémunération, validation) : jamais
+    // configurables (isConfigurable() = false), absentes de l'écran des préférences.
+    // ENCODING_SUBMITTED  → chirurgien : l'encodage de sa mission vient d'être soumis
+    //                       (ou re-soumis après correction) — lecture, aucune validation exigée.
+    // ENCODING_ANOMALY_INSTRUMENTIST → instrumentiste : le chirurgien a signalé un point à
+    //                       vérifier sur son encodage (D-100), la coordination le suit.
+    case ENCODING_REMINDER   = 'ENCODING_REMINDER';
+    case ENCODING_ESCALATION = 'ENCODING_ESCALATION';
+    case ENCODING_SUBMITTED  = 'ENCODING_SUBMITTED';
+    case ENCODING_ANOMALY_INSTRUMENTIST = 'ENCODING_ANOMALY_INSTRUMENTIST'; // 30 chars
+
+    /**
+     * D-143 — false pour une notification de service que l'utilisateur ne peut pas couper :
+     * masquée de GET /api/me/notification-preferences, refusée par le PATCH.
+     */
+    public function isConfigurable(): bool
+    {
+        return !in_array($this, [self::ENCODING_REMINDER, self::ENCODING_ESCALATION], true);
+    }
 }

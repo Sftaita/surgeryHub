@@ -2,9 +2,11 @@
 
 namespace App\MessageHandler;
 
+use App\Entity\AuditEvent;
 use App\Entity\Mission;
 use App\Entity\NotificationEvent;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Enum\NotificationType;
@@ -110,11 +112,86 @@ final class MissionLifecycleChangedMessageHandler
             MissionChangeType::REASSIGNED => $this->handleReassigned($message),
             MissionChangeType::CANCELLED  => $this->handleCancelled($message),
             MissionChangeType::ROOM_TAKEN_OVER => $this->handleRoomTakenOver($message),
+            MissionChangeType::ENCODING_COMPLETED => $this->handleEncodingCompleted($message),
             default => $this->logger->info('MissionLifecycleChanged: unhandled changeType — forward-compatible skip', [
                 'changeType' => $message->changeType->value,
                 'missionId'  => $message->missionId,
             ]),
         };
+    }
+
+    // ── ENCODING_COMPLETED → ENCODING_SUBMITTED (D-143) ───────────────────────
+
+    /**
+     * D-143 — prévient le chirurgien que l'encodage de SA mission est soumis (ou re-soumis
+     * après correction : une synthèse déjà consultée n'est jamais remplacée en silence).
+     * Lecture seule, aucune validation attendue de sa part. In-app + push selon ses
+     * préférences ; pas d'e-mail (une notification par mission serait du bruit).
+     * Aucune donnée d'encodage dans le message : date, site, lien vers la synthèse.
+     */
+    private function handleEncodingCompleted(MissionLifecycleChangedMessage $message): void
+    {
+        $mission = $this->em->find(Mission::class, $message->missionId);
+        $surgeon = $mission?->getSurgeon();
+        if (!$mission instanceof Mission || !$surgeon instanceof User) {
+            return;
+        }
+
+        $resubmitted = (int) $this->em->createQueryBuilder()
+            ->select('COUNT(a.id)')
+            ->from(AuditEvent::class, 'a')
+            ->where('a.mission = :mission')
+            ->andWhere('a.eventType = :type')
+            ->setParameter('mission', $mission)
+            ->setParameter('type', AuditEventType::MISSION_ENCODING_COMPLETED)
+            ->getQuery()
+            ->getSingleScalarResult() > 1;
+
+        $instrumentist = $mission->getInstrumentist();
+        $instrumentistName = $instrumentist !== null
+            ? trim(($instrumentist->getFirstname() ?? '') . ' ' . ($instrumentist->getLastname() ?? ''))
+            : null;
+        $payload = [
+            'missionId'         => $mission->getId(),
+            'missionDate'       => $mission->getStartAt()?->format('d/m/Y'),
+            'siteName'          => $mission->getSite()?->getName(),
+            'instrumentistName' => $instrumentistName,
+            'resubmitted'       => $resubmitted,
+        ];
+
+        $channels = $this->resolveChannelsSafely($surgeon, NotificationType::ENCODING_SUBMITTED);
+
+        if ($channels->inApp) {
+            try {
+                $this->createNotificationEvent($surgeon, $mission, NotificationType::ENCODING_SUBMITTED, $payload);
+                $this->em->flush();
+            } catch (\Throwable $e) {
+                $this->logger->error('MissionLifecycleChanged::ENCODING_COMPLETED: inApp failed', [
+                    'missionId' => $mission->getId(), 'surgeonId' => $surgeon->getId(), 'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        if ($channels->push) {
+            try {
+                $this->outboundNotificationService->recordPushSend(
+                    $surgeon,
+                    NotificationType::ENCODING_SUBMITTED->value,
+                    $resubmitted ? 'Encodage mis à jour' : 'Encodage disponible',
+                    sprintf(
+                        '%s de votre mission du %s est disponible.',
+                        $resubmitted ? "L'encodage corrigé" : "L'encodage",
+                        $payload['missionDate'] ?? '—',
+                    ),
+                    ['missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::ENCODING_SUBMITTED, $mission, $surgeon)],
+                    $mission,
+                );
+            } catch (\Throwable $e) {
+                $this->logger->error('MissionLifecycleChanged::ENCODING_COMPLETED: push failed', [
+                    'missionId' => $mission->getId(), 'surgeonId' => $surgeon->getId(), 'error' => $e->getMessage(),
+                ]);
+            }
+        }
     }
 
     // ── CLAIMED → SURGEON_POST_COVERED ────────────────────────────────────────

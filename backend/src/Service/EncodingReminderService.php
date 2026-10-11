@@ -4,171 +4,488 @@ namespace App\Service;
 
 use App\Entity\AuditEvent;
 use App\Entity\Mission;
+use App\Entity\MissionEncodingReminder;
+use App\Entity\NotificationEvent;
 use App\Entity\User;
 use App\Enum\AuditEventType;
+use App\Enum\EncodingReminderStage;
+use App\Enum\EncodingSituation;
 use App\Enum\MissionStatus;
+use App\Enum\NotificationType;
 use App\Enum\OutboundNotificationStatus;
+use App\Enum\PublicationChannel;
+use App\Message\SendTemplatedEmailMessage;
+use App\Repository\UserRepository;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
+use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * D-083 — rappel unique d'encodage D+1 à 08 h Europe/Brussels (remplace le TODO "rappel
- * de 19 h" jamais implémenté, docs/decisions.md). Décide et envoie ; la commande
- * (SendEncodingRemindersCommand) ne fait qu'orchestrer.
+ * D-143 — relance progressive d'encodage (remplace le rappel unique D+1 08 h de D-083 et
+ * le « rappel de 19 h » jamais implémenté) :
+ *
+ *   | Échéance (09 h Europe/Brussels) | Instrumentiste                         | Managers            |
+ *   | J+1                             | push si livré, sinon e-mail            | —                   |
+ *   | J+2                             | push si livré, sinon e-mail            | —                   |
+ *   | J+4                             | push si livré + e-mail systématique    | in-app + e-mail     |
+ *
+ * J+N = N-ième jour civil suivant la date LOCALE de fin de mission. Le centre de
+ * notifications de l'instrumentiste reçoit chaque relance (NotificationEvent IN_APP).
+ *
+ * Une échéance n'est traitée que pendant sa fenêtre [échéance, échéance + 24 h[ : jamais
+ * avant (règle produit), et jamais une rafale de relances anciennes au premier passage du
+ * cron ou après une panne de plusieurs jours (un rattrapage de 24 h absorbe un cron
+ * manqué). Les fenêtres ne se chevauchent pas (J+1, J+2, J+4).
+ *
+ * Idempotence : réservation par INSERT dans mission_encoding_reminder (UNIQUE mission +
+ * échéance) AVANT tout envoi — une seconde exécution (double cron, worker redémarré,
+ * redéploiement) échoue sur la contrainte et n'envoie rien. Même compromis assumé que
+ * D-083 : si l'envoi échoue après la réservation, la relance de CETTE échéance est perdue
+ * plutôt que dupliquée (l'échec est historisé sur la ligne, l'échéance suivante reste due).
+ *
+ * L'état est recontrôlé juste avant l'envoi (relecture de la mission) : une mission
+ * soumise — y compris en attente de validation manager — n'est jamais relancée.
+ *
+ * Aucune donnée patient : date de la mission, prénom, lien. Préférences : ces relances
+ * sont une obligation de service (validation, rémunération) — non configurables
+ * (NotificationType::isConfigurable()). Le push n'est tenté que vers les appareils
+ * réellement abonnés et n'est compté comme livré que si le transport l'a accepté
+ * (OutboundNotificationService::recordPushSend()) ; les abonnements expirés sont
+ * nettoyés par WebPushService (D-081).
  */
 class EncodingReminderService
 {
     private const TIMEZONE = 'Europe/Brussels';
+    public const SEND_HOUR = 9;
 
-    /** Statuts où l'encodage est encore ouvert/soumissible (miroir de MissionActionsService::allowedActions()'submit'). */
-    private const SUBMITTABLE_STATUSES = [
+    /** Statuts où l'encodage est encore attendu de l'instrumentiste (soumission possible). */
+    private const PENDING_STATUSES = [
         MissionStatus::ASSIGNED,
         MissionStatus::IN_PROGRESS,
         MissionStatus::ENCODING_IN_PROGRESS,
         MissionStatus::DECLARED,
     ];
 
+    /** Plus ancienne fin de mission encore concernée : J+4 + 24 h de rattrapage. */
+    private const LOOKBACK_DAYS = 5;
+
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly OutboundNotificationService $outboundNotificationService,
         private readonly NotificationService $notificationService,
         private readonly AuditService $audit,
+        private readonly EncodingCompletenessService $completeness,
+        private readonly UserRepository $userRepository,
+        private readonly NotificationTargetResolver $targetResolver,
+        private readonly MessageBusInterface $bus,
         #[Autowire(service: 'monolog.logger.push')]
         private readonly LoggerInterface $logger,
-        /** true seulement là où la commande D-083 est réellement planifiée (cron). */
+        #[Autowire('%env(string:FRONTEND_URL)%')]
+        private readonly string $frontendUrl,
+        #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
+        private readonly string $fromAddress,
+        #[Autowire('%env(string:MAILER_FROM_NAME)%')]
+        private readonly string $fromName,
+        /** true seulement là où la commande est réellement planifiée (cron). */
         #[Autowire('%env(bool:ENCODING_REMINDER_AUTO_ENABLED)%')]
         private readonly bool $automaticRemindersScheduled = false,
     ) {
     }
 
-    /**
-     * Missions dont la fin planifiée tombe "hier" (jour métier Europe/Brussels par
-     * rapport à $now), toujours non soumises, pas encore rappelées.
-     *
-     * @return Mission[]
-     */
-    public function findEligibleMissions(\DateTimeImmutable $now): array
-    {
-        $today = $now->setTime(0, 0, 0);
-        $yesterday = $today->modify('-1 day');
+    // ── Calendrier ──────────────────────────────────────────────────────────────
 
-        return $this->em->createQueryBuilder()
+    /** Échéance théorique d'une relance pour cette mission (09:00 Europe/Brussels). */
+    public static function dueAt(Mission $mission, EncodingReminderStage $stage): ?\DateTimeImmutable
+    {
+        $endAt = $mission->getEndAt();
+        if ($endAt === null) {
+            return null;
+        }
+
+        // Construit depuis la DATE locale de fin : setDate/setTime sur une heure locale
+        // garde 09:00 heure de Bruxelles quel que soit le changement d'heure intermédiaire.
+        $localEnd = $endAt->setTimezone(new \DateTimeZone(self::TIMEZONE));
+
+        return $localEnd
+            ->setTime(0, 0)
+            ->modify(sprintf('+%d days', $stage->dayOffset()))
+            ->setTime(self::SEND_HOUR, 0);
+    }
+
+    /**
+     * Échéance à traiter maintenant pour cette mission, ou null : celle dont la fenêtre
+     * [échéance, échéance + 1 jour[ contient $now.
+     */
+    public static function dueStage(Mission $mission, \DateTimeImmutable $now): ?EncodingReminderStage
+    {
+        foreach ([EncodingReminderStage::D4, EncodingReminderStage::D2, EncodingReminderStage::D1] as $stage) {
+            $due = self::dueAt($mission, $stage);
+            if ($due !== null && $now >= $due && $now < $due->modify('+1 day')) {
+                return $stage;
+            }
+        }
+
+        return null;
+    }
+
+    /** L'encodage de cette mission est-il encore attendu de l'instrumentiste ? */
+    public static function isEncodingPending(Mission $mission): bool
+    {
+        return $mission->getInstrumentist() !== null
+            && in_array($mission->getStatus(), self::PENDING_STATUSES, true)
+            && $mission->getEncodingLockedAt() === null
+            && $mission->getInvoiceGeneratedAt() === null;
+    }
+
+    /**
+     * Missions dont une échéance est due maintenant, encore en attente d'encodage.
+     * La sélection SQL est volontairement large (fin de mission dans les 5 derniers
+     * jours civils) ; la décision fine (fenêtre, échéance) est faite par dueStage().
+     *
+     * @return list<array{mission: Mission, stage: EncodingReminderStage}>
+     */
+    public function findDueReminders(\DateTimeImmutable $now): array
+    {
+        $localNow = $now->setTimezone(new \DateTimeZone(self::TIMEZONE));
+        $today = $localNow->setTime(0, 0);
+
+        /** @var Mission[] $missions */
+        $missions = $this->em->createQueryBuilder()
             ->select('m')
             ->from(Mission::class, 'm')
             ->where('m.instrumentist IS NOT NULL')
-            ->andWhere('m.submittedAt IS NULL')
             ->andWhere('m.encodingLockedAt IS NULL')
             ->andWhere('m.invoiceGeneratedAt IS NULL')
-            ->andWhere('m.encodingReminderSentAt IS NULL')
             ->andWhere('m.status IN (:statuses)')
-            ->andWhere('m.endAt >= :yesterday')
-            ->andWhere('m.endAt < :today')
-            ->setParameter('statuses', self::SUBMITTABLE_STATUSES)
-            ->setParameter('yesterday', $yesterday)
-            ->setParameter('today', $today)
+            ->andWhere('m.endAt >= :from')
+            ->andWhere('m.endAt < :to')
+            ->setParameter('statuses', self::PENDING_STATUSES)
+            ->setParameter('from', $today->modify(sprintf('-%d days', self::LOOKBACK_DAYS)))
+            ->setParameter('to', $today)
+            ->orderBy('m.endAt', 'ASC')
             ->getQuery()
             ->getResult();
+
+        $due = [];
+        foreach ($missions as $mission) {
+            $stage = self::dueStage($mission, $now);
+            if ($stage !== null) {
+                $due[] = ['mission' => $mission, 'stage' => $stage];
+            }
+        }
+
+        return $due;
     }
 
+    // ── Envoi ───────────────────────────────────────────────────────────────────
+
     /**
-     * Réserve la mission (marque encodingReminderSentAt via une UPDATE conditionnelle
-     * atomique — "au plus un rappel par mission" tient même sous double exécution/deux
-     * workers, sans dépendre d'un verrou applicatif), puis tente Push, avec repli email
-     * si Push n'est pas réellement livrable.
+     * Traite UNE échéance d'UNE mission. Retourne 'sent' ou 'skipped' (déjà envoyée,
+     * plus en attente, plus due). Une exception inattendue après réservation est
+     * historisée sur la ligne de relance puis relancée vers la commande (isolation par
+     * mission, comptée « failed »).
      *
-     * Compromis assumé : la réservation a lieu AVANT l'envoi, pas après. Si l'envoi
-     * échoue après la réservation (exception inattendue), le rappel de cette mission est
-     * perdu plutôt que retenté le lendemain — préféré à l'alternative (envoyer puis
-     * marquer), qui risquerait un double envoi si le process meurt entre les deux. Le
-     * repli email étant un simple dépôt en file Messenger (échoue seulement en cas de
-     * panne d'infrastructure), ce risque de perte est en pratique très faible.
-     *
-     * @return 'push'|'email'|'skipped'
+     * @return 'sent'|'skipped'
      */
-    public function processMission(Mission $mission, \DateTimeImmutable $sentAt): string
+    public function processReminder(Mission $mission, EncodingReminderStage $stage, \DateTimeImmutable $now): string
     {
-        $affected = $this->em->createQueryBuilder()
-            ->update(Mission::class, 'm')
-            ->set('m.encodingReminderSentAt', ':sentAt')
-            ->where('m.id = :id')
-            ->andWhere('m.encodingReminderSentAt IS NULL')
-            ->setParameter('sentAt', $sentAt)
-            ->setParameter('id', $mission->getId())
-            ->getQuery()
-            ->execute();
-
-        if ($affected === 0) {
-            // Déjà réclamée par une exécution concurrente entre la sélection et ce traitement.
-            $this->logger->info('encoding_reminder.skipped', [
-                'missionId' => $mission->getId(),
-                'reason'    => 'already_claimed_concurrently',
-            ]);
-
+        // Recontrôle juste avant l'envoi : l'état peut avoir changé depuis la sélection.
+        $this->em->refresh($mission);
+        if (!self::isEncodingPending($mission)) {
+            $this->logSkip($mission, $stage, 'no_longer_pending');
+            return 'skipped';
+        }
+        if (self::dueStage($mission, $now) !== $stage) {
+            $this->logSkip($mission, $stage, 'not_due');
             return 'skipped';
         }
 
-        $mission->setEncodingReminderSentAt($sentAt);
-
+        /** @var User $instrumentist */
         $instrumentist = $mission->getInstrumentist();
-        if (!$instrumentist instanceof User) {
-            // Ne devrait jamais arriver (filtré par la requête d'éligibilité) — garde défensive.
-            $this->logger->info('encoding_reminder.skipped', [
-                'missionId' => $mission->getId(),
-                'reason'    => 'no_instrumentist',
-            ]);
+        $situation = $this->completeness->situation($mission);
+        $missing = $this->completeness->missingForSubmission($mission);
 
+        $reminderId = $this->reserve($mission, $stage, $instrumentist, $situation, $missing, $now);
+        if ($reminderId === null) {
+            $this->logSkip($mission, $stage, 'already_sent');
             return 'skipped';
         }
 
-        $title = 'Encodage à finaliser';
-        $body = "La mission d'hier n'a pas encore été soumise. Pensez à finaliser votre encodage lorsque vous êtes disponible.";
-        $data = [
-            'missionId' => $mission->getId(),
-            'url'       => sprintf('/app/i/missions/%d', $mission->getId()),
-        ];
+        try {
+            [$channels, $emailReason] = $this->notifyInstrumentist($mission, $instrumentist, $stage, $situation);
 
-        // D-084 — recordPushSend() attempts the real Push send AND creates the traced
-        // OutboundNotification (+ one Attempt per subscription) in the same call.
-        $pushNotification = $this->outboundNotificationService->recordPushSend(
-            $instrumentist,
-            'ENCODING_REMINDER_D1',
-            $title,
-            $body,
-            $data,
-            $mission,
-        );
+            $managersNotified = null;
+            if ($stage->isEscalation()) {
+                $managersNotified = $this->notifyManagers($mission, $instrumentist, $situation, $missing);
+            }
 
-        if ($pushNotification->getStatus() === OutboundNotificationStatus::SENT) {
-            $this->logger->info('encoding_reminder.sent_push', [
-                'missionId' => $mission->getId(),
-                'userId'    => $instrumentist->getId(),
+            $reminder = $this->em->find(MissionEncodingReminder::class, $reminderId);
+            $reminder?->setInstrumentistChannels($channels)
+                ->setEmailReason($emailReason)
+                ->setManagersNotified($managersNotified);
+
+            $this->audit->record($mission, $this->systemActor() ?? $instrumentist, AuditEventType::MISSION_ENCODING_AUTO_REMINDER_SENT, [
+                'stage'            => $stage->value,
+                'situation'        => $situation->value,
+                'channels'         => $channels,
+                'emailReason'      => $emailReason,
+                'managersNotified' => $managersNotified,
             ]);
-
-            return 'push';
+            $this->em->flush();
+        } catch (\Throwable $e) {
+            $this->recordFailure($reminderId, $e);
+            throw $e;
         }
 
-        $this->notificationService->missionEncodingReminderNotifyInstrumentist(
-            $mission,
-            $pushNotification,
-            OutboundNotificationService::fallbackReasonFor($pushNotification),
-        );
-
-        $this->logger->info('encoding_reminder.sent_email', [
+        $this->logger->info('encoding_reminder.sent', [
             'missionId' => $mission->getId(),
             'userId'    => $instrumentist->getId(),
+            'stage'     => $stage->value,
+            'channels'  => $channels,
         ]);
 
-        return 'email';
+        return 'sent';
     }
 
     /**
-     * D-120 — relance manuelle depuis le cockpit "Suivi des encodages". Contrairement à
-     * processMission(), ne touche jamais Mission.encodingReminderSentAt (réservé au garde-fou
-     * "au plus un rappel automatique" de D-083) : un manager peut relancer manuellement à
-     * tout moment, y compris avant ou après le rappel automatique, sans jamais le supprimer
-     * ni le dupliquer côté planification. Même canal (Push avec repli email) et même contenu
-     * mission que le rappel automatique — seule la trace d'audit distingue les deux.
+     * INSERT de réservation hors UnitOfWork (une violation d'unicité ne doit jamais
+     * fermer l'EntityManager au milieu du lot). Retourne l'id réservé, ou null si cette
+     * échéance a déjà été réservée par une autre exécution.
+     *
+     * @param list<string> $missing
+     */
+    private function reserve(
+        Mission $mission,
+        EncodingReminderStage $stage,
+        User $instrumentist,
+        EncodingSituation $situation,
+        array $missing,
+        \DateTimeImmutable $now,
+    ): ?int {
+        $connection = $this->em->getConnection();
+        try {
+            $connection->insert('mission_encoding_reminder', [
+                'mission_id'             => $mission->getId(),
+                'instrumentist_id'       => $instrumentist->getId(),
+                'stage'                  => $stage->value,
+                'due_at'                 => self::dueAt($mission, $stage),
+                'sent_at'                => $now,
+                'situation'              => $situation->value,
+                'missing_items'          => json_encode($missing, JSON_THROW_ON_ERROR),
+                'instrumentist_channels' => '[]',
+            ], [
+                'due_at'  => 'business_datetime_immutable',
+                'sent_at' => 'business_datetime_immutable',
+            ]);
+        } catch (UniqueConstraintViolationException) {
+            return null;
+        }
+
+        return (int) $connection->lastInsertId();
+    }
+
+    /**
+     * @return array{0: list<string>, 1: ?string} canaux utilisés, raison de l'e-mail
+     */
+    private function notifyInstrumentist(Mission $mission, User $instrumentist, EncodingReminderStage $stage, EncodingSituation $situation): array
+    {
+        $missionDate = $this->missionDate($mission);
+        $content = self::instrumentistContent($stage, $missionDate);
+        $path = $this->targetResolver->resolve(NotificationType::ENCODING_REMINDER, $mission, $instrumentist)
+            ?? sprintf('/app/i/missions/%d/encoding', $mission->getId());
+
+        $channels = [];
+
+        // Centre de notifications — toujours (architecture existante, D-086).
+        $this->em->persist((new NotificationEvent())
+            ->setUser($instrumentist)
+            ->setMission($mission)
+            ->setEventType(NotificationType::ENCODING_REMINDER->value)
+            ->setChannel(PublicationChannel::IN_APP)
+            ->setSentAt(new \DateTimeImmutable())
+            ->setPayload([
+                'missionId'   => $mission->getId(),
+                'missionDate' => $missionDate,
+                'stage'       => $stage->value,
+                'situation'   => $situation->value,
+                'title'       => $content['title'],
+                'body'        => $content['push'],
+            ]));
+        $this->em->flush();
+        $channels[] = MissionEncodingReminder::CHANNEL_IN_APP;
+
+        $push = $this->outboundNotificationService->recordPushSend(
+            $instrumentist,
+            self::outboundType($stage),
+            $content['title'],
+            $content['push'],
+            ['missionId' => $mission->getId(), 'url' => $path, 'notificationType' => NotificationType::ENCODING_REMINDER->value],
+            $mission,
+        );
+        $pushDelivered = $push->getStatus() === OutboundNotificationStatus::SENT;
+        if ($pushDelivered) {
+            $channels[] = MissionEncodingReminder::CHANNEL_PUSH;
+        }
+
+        // J+1/J+2 : e-mail uniquement en secours d'un push non livré. J+4 : toujours.
+        $emailReason = null;
+        if ($stage->isEscalation()) {
+            $emailReason = 'MANDATORY';
+        } elseif (!$pushDelivered) {
+            $emailReason = 'PUSH_' . OutboundNotificationService::fallbackReasonFor($push)->value;
+        }
+
+        if ($emailReason !== null) {
+            $missionUrl = $this->frontendUrl . $path;
+            $email = $this->outboundNotificationService->recordEmailQueued(
+                $instrumentist,
+                self::outboundType($stage),
+                $content['subject'],
+                rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
+                mission: $mission,
+                fallbackOf: $pushDelivered || $stage->isEscalation() ? null : $push,
+                fallbackReason: $pushDelivered || $stage->isEscalation() ? null : OutboundNotificationService::fallbackReasonFor($push),
+            );
+            $this->bus->dispatch(new SendTemplatedEmailMessage(
+                to: (string) $instrumentist->getEmail(),
+                subject: $content['subject'],
+                fromAddress: $this->fromAddress,
+                fromName: $this->fromName,
+                htmlTemplate: sprintf('emails/encoding_reminder_%s.html.twig', strtolower($stage->value)),
+                context: [
+                    'firstname'   => $instrumentist->getFirstname(),
+                    'missionDate' => $missionDate,
+                    'missionUrl'  => $missionUrl,
+                    'hoursMissing' => $situation !== EncodingSituation::NOT_SUBMITTED,
+                ],
+                outboundNotificationId: $email->getId(),
+            ));
+            $channels[] = MissionEncodingReminder::CHANNEL_EMAIL;
+        }
+
+        return [$channels, $emailReason];
+    }
+
+    /**
+     * J+4 — chaque manager/admin actif : centre de notifications + e-mail. Isolation par
+     * destinataire (un échec n'empêche jamais les autres). Retourne le nombre de managers
+     * effectivement alertés.
+     *
+     * @param list<string> $missing
+     */
+    private function notifyManagers(Mission $mission, User $instrumentist, EncodingSituation $situation, array $missing): int
+    {
+        $missionDate = $this->missionDate($mission);
+        $instrumentistName = self::displayName($instrumentist);
+        $surgeonName = $mission->getSurgeon() !== null ? self::displayName($mission->getSurgeon()) : null;
+        $missingLabels = array_map(EncodingCompletenessService::label(...), $missing);
+        $previous = $this->previousReminderDates($mission);
+
+        $notified = 0;
+        foreach ($this->userRepository->findManagersAndAdmins(true) as $manager) {
+            try {
+                $this->em->persist((new NotificationEvent())
+                    ->setUser($manager)
+                    ->setMission($mission)
+                    ->setEventType(NotificationType::ENCODING_ESCALATION->value)
+                    ->setChannel(PublicationChannel::IN_APP)
+                    ->setSentAt(new \DateTimeImmutable())
+                    ->setPayload([
+                        'missionId'         => $mission->getId(),
+                        'missionDate'       => $missionDate,
+                        'instrumentistName' => $instrumentistName,
+                        'surgeonName'       => $surgeonName,
+                        'situation'         => $situation->value,
+                        'situationLabel'    => $situation->label(),
+                        'missing'           => $missingLabels,
+                        'previousReminders' => $previous,
+                    ]));
+                $this->em->flush();
+
+                $path = $this->targetResolver->resolve(NotificationType::ENCODING_ESCALATION, $mission, $manager)
+                    ?? sprintf('/app/m/billing/encodings?missionId=%d', $mission->getId());
+                $trackingUrl = $this->frontendUrl . $path;
+                $subject = 'Encodage en attente depuis 4 jours';
+                $email = $this->outboundNotificationService->recordEmailQueued(
+                    $manager,
+                    NotificationType::ENCODING_ESCALATION->value,
+                    $subject,
+                    rawData: ['missionId' => $mission->getId(), 'url' => $trackingUrl],
+                    mission: $mission,
+                );
+                $this->bus->dispatch(new SendTemplatedEmailMessage(
+                    to: (string) $manager->getEmail(),
+                    subject: $subject,
+                    fromAddress: $this->fromAddress,
+                    fromName: $this->fromName,
+                    htmlTemplate: 'emails/encoding_escalation_manager.html.twig',
+                    context: [
+                        'firstname'         => $manager->getFirstname(),
+                        'instrumentistName' => $instrumentistName,
+                        'missionDate'       => $missionDate,
+                        'surgeonName'       => $surgeonName,
+                        'situationLabel'    => $situation->label(),
+                        'missing'           => $missingLabels,
+                        'previousReminders' => $previous,
+                        'trackingUrl'       => $trackingUrl,
+                    ],
+                    outboundNotificationId: $email->getId(),
+                ));
+                ++$notified;
+            } catch (\Throwable $e) {
+                $this->logger->error('encoding_reminder.manager_failed', [
+                    'missionId' => $mission->getId(),
+                    'managerId' => $manager->getId(),
+                    'error'     => $e::class,
+                ]);
+            }
+        }
+
+        return $notified;
+    }
+
+    /**
+     * Textes validés (D-143 §LOT 4). Ton chaleureux J+1, explicatif J+2, dernier rappel
+     * J+4 — jamais culpabilisant, jamais une donnée patient.
+     *
+     * @return array{title: string, push: string, subject: string}
+     */
+    public static function instrumentistContent(EncodingReminderStage $stage, ?string $missionDate): array
+    {
+        $date = $missionDate ?? 'récente';
+
+        return match ($stage) {
+            EncodingReminderStage::D1 => [
+                'title'   => 'Gardez votre journée en mémoire !',
+                'push'    => 'Les journées au bloc sont bien remplies ! Pensez à compléter votre encodage pendant que les détails sont encore frais dans votre mémoire. Vous pouvez reprendre votre brouillon à tout moment.',
+                'subject' => 'Gardez votre journée en mémoire !',
+            ],
+            EncodingReminderStage::D2 => [
+                'title'   => 'Votre encodage attend sa dernière touche',
+                'push'    => sprintf('Un petit rappel pour finaliser votre mission du %s. Vos horaires réels et les informations nécessaires à votre prestation permettent sa validation et sa rémunération. Merci de prendre quelques instants pour terminer votre encodage !', $date),
+                'subject' => 'Un petit rappel pour votre mission SurgicalHub',
+            ],
+            EncodingReminderStage::D4 => [
+                'title'   => 'Votre mission est toujours à finaliser',
+                'push'    => sprintf('Il reste quelques informations à compléter pour permettre la validation et la rémunération de votre prestation du %s. Notre équipe de coordination a également été informée et peut vous aider en cas de difficulté.', $date),
+                'subject' => 'Votre mission est toujours à finaliser',
+            ],
+        };
+    }
+
+    // ── Relance manuelle (D-120, conservée) ─────────────────────────────────────
+
+    /** Délai minimal entre deux relances manuelles d'une même mission (anti double clic / répétition). */
+    public const MANUAL_COOLDOWN_MINUTES = 10;
+
+    /**
+     * D-120 — relance manuelle depuis le cockpit "Suivi des encodages". Ne touche jamais
+     * l'historique des relances automatiques, ni le statut, ni le brouillon. D-143 : la
+     * relance apparaît aussi dans le centre de notifications de l'instrumentiste, et une
+     * nouvelle relance de la même mission est refusée pendant MANUAL_COOLDOWN_MINUTES
+     * (le contrôleur traduit en 409 explicite).
      *
      * @return 'push'|'email'
      */
@@ -181,17 +498,29 @@ class EncodingReminderService
 
         $title = 'Encodage à finaliser';
         $body = "Un manager vous rappelle de finaliser l'encodage de cette mission.";
-        $data = [
-            'missionId' => $mission->getId(),
-            'url'       => sprintf('/app/i/missions/%d', $mission->getId()),
-        ];
+        $path = sprintf('/app/i/missions/%d/encoding', $mission->getId());
+
+        $this->em->persist((new NotificationEvent())
+            ->setUser($instrumentist)
+            ->setMission($mission)
+            ->setEventType(NotificationType::ENCODING_REMINDER->value)
+            ->setChannel(PublicationChannel::IN_APP)
+            ->setSentAt(new \DateTimeImmutable())
+            ->setPayload([
+                'missionId'   => $mission->getId(),
+                'missionDate' => $this->missionDate($mission),
+                'stage'       => 'MANUAL',
+                'title'       => $title,
+                'body'        => $body,
+            ]));
+        $this->em->flush();
 
         $pushNotification = $this->outboundNotificationService->recordPushSend(
             $instrumentist,
-            'ENCODING_REMINDER_D1',
+            'ENCODING_REMINDER_MANUAL',
             $title,
             $body,
-            $data,
+            ['missionId' => $mission->getId(), 'url' => $path],
             $mission,
         );
 
@@ -207,7 +536,7 @@ class EncodingReminderService
 
         $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT, [
             'actorId'   => $actor->getId(),
-            'actorName' => trim(($actor->getFirstname() ?? '') . ' ' . ($actor->getLastname() ?? '')),
+            'actorName' => self::displayName($actor),
             'channel'   => $channel,
         ]);
         $this->em->flush();
@@ -221,67 +550,71 @@ class EncodingReminderService
         return $channel;
     }
 
+    /** Une relance manuelle a-t-elle déjà été envoyée pour cette mission il y a moins de MANUAL_COOLDOWN_MINUTES ? */
+    public function isManualReminderOnCooldown(Mission $mission, ?\DateTimeImmutable $now = null): bool
+    {
+        $last = $this->lastManualReminder($mission);
+        if ($last === null || $last['at'] === null) {
+            return false;
+        }
+
+        $at = new \DateTimeImmutable($last['at']);
+
+        return $at > ($now ?? new \DateTimeImmutable())->modify(sprintf('-%d minutes', self::MANUAL_COOLDOWN_MINUTES));
+    }
+
+    // ── Lecture (suivi des encodages) ───────────────────────────────────────────
+
     /**
-     * D-120 — date/heure de la prochaine relance automatique D+1 08h Europe/Brussels pour
-     * cette mission, réutilisant EXACTEMENT les critères d'éligibilité de
-     * findEligibleMissions() (jamais réimplémentés côté frontend). `null` si le rappel
-     * automatique a déjà été envoyé, si la mission n'est plus éligible (soumise, verrouillée,
-     * facturée), si elle n'a pas de date de fin, ou si ce moment est déjà passé :
-     * findEligibleMissions() ne retient que les missions terminées la veille, une mission
-     * non relancée à J+1 08h ne le sera donc plus jamais automatiquement (jamais une date
-     * passée présentée comme "prochaine relance"). Toujours null tant que la planification
-     * n'est pas activée (ENCODING_REMINDER_AUTO_ENABLED, défaut 0).
+     * D-120/D-143 — prochaine relance automatique de cette mission (ATOM), ou null : jamais
+     * annoncée si la planification n'est pas active (ENCODING_REMINDER_AUTO_ENABLED=0), si
+     * l'encodage n'est plus attendu, ou si toutes les échéances sont passées/envoyées.
      */
     public function nextAutomaticReminderAt(Mission $mission, ?\DateTimeImmutable $now = null): ?string
     {
-        // Jamais annoncer une relance que rien n'enverra : sans planification active de
-        // app:notifications:send-encoding-reminders (ENCODING_REMINDER_AUTO_ENABLED=0),
-        // il n'y a pas de "prochaine relance automatique".
-        if (!$this->automaticRemindersScheduled) {
-            return null;
-        }
-        if ($mission->getInstrumentist() === null) {
-            return null;
-        }
-        if ($mission->getSubmittedAt() !== null) {
-            return null;
-        }
-        if ($mission->getEncodingLockedAt() !== null) {
-            return null;
-        }
-        if ($mission->getInvoiceGeneratedAt() !== null) {
-            return null;
-        }
-        if ($mission->getEncodingReminderSentAt() !== null) {
-            return null;
-        }
-        if (!in_array($mission->getStatus(), self::SUBMITTABLE_STATUSES, true)) {
+        if (!$this->automaticRemindersScheduled || !self::isEncodingPending($mission)) {
             return null;
         }
 
-        $endAt = $mission->getEndAt();
-        if ($endAt === null) {
-            return null;
+        $now ??= new \DateTimeImmutable();
+        $sent = array_map(static fn (MissionEncodingReminder $r) => $r->getStage(), $this->remindersFor($mission));
+
+        foreach ([EncodingReminderStage::D1, EncodingReminderStage::D2, EncodingReminderStage::D4] as $stage) {
+            if (in_array($stage, $sent, true)) {
+                continue;
+            }
+            $due = self::dueAt($mission, $stage);
+            if ($due !== null && $due->modify('+1 day') > $now) {
+                return $due->format(\DateTimeInterface::ATOM);
+            }
         }
 
-        $reminderDay = $endAt
-            ->setTimezone(new \DateTimeZone(self::TIMEZONE))
-            ->modify('+1 day')
-            ->setTime(8, 0, 0);
+        return null;
+    }
 
-        if ($reminderDay <= ($now ?? new \DateTimeImmutable())) {
-            return null;
-        }
+    /** @return list<MissionEncodingReminder> relances automatiques déjà envoyées, par échéance */
+    public function remindersFor(Mission $mission): array
+    {
+        return $this->em->getRepository(MissionEncodingReminder::class)
+            ->findBy(['mission' => $mission], ['dueAt' => 'ASC']);
+    }
 
-        return $reminderDay->format(\DateTimeInterface::ATOM);
+    /** @return list<array{stage: string, sentAt: ?string, channels: list<string>}> */
+    public function reminderHistory(Mission $mission): array
+    {
+        return array_map(static fn (MissionEncodingReminder $r) => [
+            'stage'    => $r->getStage()?->value,
+            'sentAt'   => $r->getSentAt()?->format(\DateTimeInterface::ATOM),
+            'channels' => $r->getInstrumentistChannels(),
+            'managersNotified' => $r->getManagersNotified(),
+        ], $this->remindersFor($mission));
     }
 
     /**
-     * D-120 — dernière relance manuelle journalisée pour cette mission (toutes, pas
-     * seulement la plus récente d'une éventuelle série), ou null si aucune n'a jamais été
-     * envoyée. Lu depuis AuditEvent — jamais un nouveau champ dupliqué sur Mission.
+     * D-120 — dernière relance manuelle journalisée pour cette mission, ou null. Lu depuis
+     * AuditEvent — jamais un nouveau champ dupliqué sur Mission.
      *
-     * @return array{at: ?string, byName: string}|null
+     * @return array{at: ?string, byName: string, channel: ?string}|null
      */
     public function lastManualReminder(Mission $mission): ?array
     {
@@ -290,7 +623,7 @@ class EncodingReminderService
             'SELECT a, actor FROM App\Entity\AuditEvent a
              JOIN a.actor actor
              WHERE a.mission = :mission AND a.eventType = :type
-             ORDER BY a.createdAt DESC'
+             ORDER BY a.createdAt DESC, a.id DESC'
         )
             ->setParameter('mission', $mission)
             ->setParameter('type', AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT)
@@ -306,6 +639,68 @@ class EncodingReminderService
         return [
             'at'     => $event->getCreatedAt()?->format(\DateTimeInterface::ATOM),
             'byName' => trim(($actor?->getFirstname() ?? '') . ' ' . ($actor?->getLastname() ?? '')),
+            'channel' => isset($event->getPayload()['channel']) ? (string) $event->getPayload()['channel'] : null,
         ];
+    }
+
+    // ── Utilitaires ─────────────────────────────────────────────────────────────
+
+    public static function outboundType(EncodingReminderStage $stage): string
+    {
+        return 'ENCODING_REMINDER_' . $stage->value;
+    }
+
+    /** @return list<string> dates (d/m/Y) des relances automatiques déjà envoyées + manuelles */
+    private function previousReminderDates(Mission $mission): array
+    {
+        $dates = [];
+        foreach ($this->remindersFor($mission) as $reminder) {
+            if ($reminder->getStage() !== EncodingReminderStage::D4 && $reminder->getSentAt() !== null) {
+                $dates[] = sprintf('J+%d le %s', $reminder->getStage()->dayOffset(), $reminder->getSentAt()->setTimezone(new \DateTimeZone(self::TIMEZONE))->format('d/m/Y'));
+            }
+        }
+        $manual = $this->lastManualReminder($mission);
+        if ($manual !== null && $manual['at'] !== null) {
+            $dates[] = sprintf('relance manuelle le %s', (new \DateTimeImmutable($manual['at']))->setTimezone(new \DateTimeZone(self::TIMEZONE))->format('d/m/Y'));
+        }
+
+        return $dates;
+    }
+
+    private function missionDate(Mission $mission): ?string
+    {
+        return $mission->getStartAt()?->setTimezone(new \DateTimeZone(self::TIMEZONE))->format('d/m/Y');
+    }
+
+    private function systemActor(): ?User
+    {
+        return $this->em->getRepository(User::class)->findOneBy(['email' => 'system@surgicalhub.internal']);
+    }
+
+    private function recordFailure(int $reminderId, \Throwable $e): void
+    {
+        try {
+            $this->em->getConnection()->update(
+                'mission_encoding_reminder',
+                ['failure' => substr((new \ReflectionClass($e))->getShortName(), 0, 64)],
+                ['id' => $reminderId],
+            );
+        } catch (\Throwable) {
+            // best-effort : la trace principale reste le log de la commande.
+        }
+    }
+
+    private function logSkip(Mission $mission, EncodingReminderStage $stage, string $reason): void
+    {
+        $this->logger->info('encoding_reminder.skipped', [
+            'missionId' => $mission->getId(),
+            'stage'     => $stage->value,
+            'reason'    => $reason,
+        ]);
+    }
+
+    private static function displayName(User $user): string
+    {
+        return trim(($user->getFirstname() ?? '') . ' ' . ($user->getLastname() ?? '')) ?: (string) $user->getEmail();
     }
 }

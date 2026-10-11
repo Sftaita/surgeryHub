@@ -90,8 +90,8 @@ enum AuditEventType: string
 
     /**
      * D-120 — Suivi des encodages (cockpit manager). Relance manuelle déclenchée depuis le
-     * tiroir de détail, distincte de la relance automatique D+1 08h (D-083, qui ne journalise
-     * rien ici — elle marque seulement Mission.encodingReminderSentAt). Ne mute aucun statut :
+     * tiroir de détail, distincte des relances automatiques J+1/J+2/J+4 (D-143,
+     * MISSION_ENCODING_AUTO_REMINDER_SENT ci-dessous). Ne mute aucun statut :
      * seule trace qu'un manager a explicitement renvoyé la notification "encodage à
      * finaliser" à l'instrumentiste, et quand.
      */
@@ -103,6 +103,14 @@ enum AuditEventType: string
      * manager ; l'envoi (Push, repli email) est asynchrone et tracé dans OutboundNotification.
      */
     case MISSION_HOURS_MANUAL_REMINDER_SENT = 'MISSION_HOURS_MANUAL_REMINDER_SENT';
+
+    /**
+     * D-143 — relance automatique J+1/J+2/J+4 effectivement envoyée (acteur : compte
+     * système). Payload : échéance, situation de l'encodage, canaux utilisés, raison de
+     * l'e-mail, nombre de managers alertés (J+4). Le détail par canal reste dans
+     * OutboundNotification, l'idempotence dans mission_encoding_reminder.
+     */
+    case MISSION_ENCODING_AUTO_REMINDER_SENT = 'MISSION_ENCODING_AUTO_REMINDER_SENT';
 
     // Exécution & Valorisation, Lot 1 — MissionExecutionService. Le réalisé, distinct
     // du planifié (Mission) et de la future valorisation financière (FinancialCalculation).

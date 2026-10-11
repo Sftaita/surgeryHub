@@ -108,7 +108,11 @@ final class MeNotificationPreferencesControllerTest extends WebTestCase
 
         self::assertSame(200, $client->getResponse()->getStatusCode());
         $body = $this->json($client->getResponse());
-        self::assertCount(count(NotificationType::cases()), $body['items']);
+        // D-143 — les relances d'encodage (obligations de service) ne sont pas configurables.
+        $configurable = array_filter(NotificationType::cases(), static fn (NotificationType $t) => $t->isConfigurable());
+        self::assertCount(count($configurable), $body['items']);
+        self::assertNotContains('ENCODING_REMINDER', array_column($body['items'], 'type'));
+        self::assertNotContains('ENCODING_ESCALATION', array_column($body['items'], 'type'));
 
         $planningAlert = current(array_filter($body['items'], fn ($i) => $i['type'] === 'PLANNING_ALERT'));
         self::assertNotFalse($planningAlert);

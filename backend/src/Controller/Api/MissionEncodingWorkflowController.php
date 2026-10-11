@@ -16,6 +16,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
@@ -115,6 +116,15 @@ final class MissionEncodingWorkflowController extends AbstractController
     {
         $mission = $this->getMissionOr404($missionId);
         $this->denyAccessUnlessGranted(MissionVoter::ENCODING_REMIND, $mission);
+
+        // D-143 — évite une relance répétée par accident (double clic, deux managers) :
+        // la même mission ne peut être relancée manuellement qu'une fois par fenêtre.
+        if ($this->reminders->isManualReminderOnCooldown($mission)) {
+            throw new ConflictHttpException(sprintf(
+                "Une relance vient déjà d'être envoyée pour cette mission. Réessayez dans %d minutes si nécessaire.",
+                EncodingReminderService::MANUAL_COOLDOWN_MINUTES,
+            ));
+        }
 
         $this->reminders->sendManualReminder($mission, $user);
 

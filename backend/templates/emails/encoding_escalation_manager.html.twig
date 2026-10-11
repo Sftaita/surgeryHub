@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><style>
+body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+.container { max-width: 600px; margin: 0 auto; padding: 24px; }
+.header { border-bottom: 2px solid #1B5FD0; padding-bottom: 12px; margin-bottom: 20px; }
+.title { color: #1B5FD0; font-size: 18px; font-weight: bold; }
+table.facts td { padding: 3px 12px 3px 0; vertical-align: top; }
+table.facts td.k { color: #727E8C; white-space: nowrap; }
+.cta { display: inline-block; background: #1B5FD0; color: #fff !important; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-weight: bold; }
+.footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+</style></head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">Encodage en attente depuis 4 jours</div>
+  </div>
+
+  <p>Bonjour {{ firstname }},</p>
+
+  <p>L'encodage de la mission ci-dessous n'est toujours pas soumis, malgré les rappels envoyés à l'instrumentiste.</p>
+
+  <table class="facts">
+    <tr><td class="k">Instrumentiste</td><td>{{ instrumentistName }}</td></tr>
+    <tr><td class="k">Date de la mission</td><td>{{ missionDate ?? '—' }}</td></tr>
+    <tr><td class="k">Chirurgien</td><td>{{ surgeonName ?? '—' }}</td></tr>
+    <tr><td class="k">Situation</td><td>{{ situationLabel }}</td></tr>
+    <tr><td class="k">Informations manquantes</td><td>{% if missing is empty %}Aucune donnée obligatoire manquante — encodage simplement non soumis{% else %}{{ missing|join(', ') }}{% endif %}</td></tr>
+    <tr><td class="k">Relances précédentes</td><td>{% if previousReminders is empty %}—{% else %}{{ previousReminders|join(' · ') }}{% endif %}</td></tr>
+  </table>
+
+  <p>L'instrumentiste a reçu ce matin un dernier rappel, par e-mail.</p>
+
+  <p><a class="cta" href="{{ trackingUrl }}">Ouvrir le suivi de l'encodage</a></p>
+
+  <p>SurgicalHub</p>
+
+  <div class="footer">L'alerte reste visible dans « Suivi des encodages » tant que l'encodage n'est pas soumis.</div>
+</div>
+</body>
+</html>

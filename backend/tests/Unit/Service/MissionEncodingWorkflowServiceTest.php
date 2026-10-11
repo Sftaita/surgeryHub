@@ -4,13 +4,16 @@ namespace App\Tests\Unit\Service;
 
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
+use App\Entity\MissionExecution;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Message\MissionLifecycleChangedMessage;
+use App\Exception\EncodingIncompleteException;
 use App\Service\AuditService;
+use App\Service\EncodingCompletenessService;
 use App\Service\MissionEncodingGuard;
 use App\Service\MissionEncodingWorkflowService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -54,6 +57,7 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
             new MissionEncodingGuard(),
             $this->audit,
             $this->bus,
+            new EncodingCompletenessService(),
         );
     }
 
@@ -90,14 +94,75 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
      * mission that requires material encoding; MissionType::CONSULTATION is passed
      * explicitly where that exemption is the point of the test.
      */
-    private function makeMission(MissionStatus $status, ?\DateTimeImmutable $startAt = null, MissionType $type = MissionType::BLOCK): Mission
+    /** D-143 — heures réelles complètes par défaut ($withActualHours = false pour tester leur absence). */
+    private function makeMission(MissionStatus $status, ?\DateTimeImmutable $startAt = null, MissionType $type = MissionType::BLOCK, bool $withActualHours = true): Mission
     {
         $m = new Mission();
         $m->setStatus($status);
         $m->setType($type);
         $m->setStartAt($startAt ?? new \DateTimeImmutable('-1 hour'));
         $this->setId($m, self::$nextId++);
+        if ($withActualHours) {
+            $execution = (new MissionExecution())
+                ->setActualStartAt(new \DateTimeImmutable('-1 hour'))
+                ->setActualEndAt(new \DateTimeImmutable('now'));
+            $execution->setMission($m);
+            $m->setExecution($execution);
+        }
         return $m;
+    }
+
+    // ── D-143 — heures réelles obligatoires ─────────────────────────────────
+
+    public function test_complete_refuses_without_actual_hours_and_mutates_nothing(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS, withActualHours: false);
+        $actor   = $this->makeActor();
+        $this->audit->expects(self::never())->method('record');
+
+        try {
+            $this->service->complete($mission, $actor, 'Commentaire');
+            self::fail('complete() aurait dû refuser une soumission sans heures réelles');
+        } catch (EncodingIncompleteException $e) {
+            self::assertSame(['ACTUAL_START_TIME', 'ACTUAL_END_TIME'], array_column($e->getMissing(), 'code'));
+        }
+
+        self::assertSame(MissionStatus::ENCODING_IN_PROGRESS, $mission->getStatus());
+        self::assertNull($mission->getSubmittedAt());
+        self::assertNull($mission->getExecution(), 'jamais de copie du planifié dans le réel');
+        self::assertSame([], $this->dispatchedMessages);
+    }
+
+    public function test_complete_refuses_when_only_the_start_time_is_known(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS, withActualHours: false);
+        $execution = (new MissionExecution())->setActualStartAt(new \DateTimeImmutable('-2 hours'));
+        $execution->setMission($mission);
+        $mission->setExecution($execution);
+
+        $this->expectException(EncodingIncompleteException::class);
+        $this->service->complete($mission, $this->makeActor(), 'Commentaire');
+    }
+
+    public function test_validate_refuses_a_submitted_mission_without_actual_hours(): void
+    {
+        $mission = $this->makeMission(MissionStatus::SUBMITTED, withActualHours: false);
+
+        $this->expectException(EncodingIncompleteException::class);
+        $this->service->validate($mission, $this->makeManager());
+    }
+
+    /** Une durée seule déclarée avant D-143 (ancienne interface) reste validable. */
+    public function test_validate_accepts_a_legacy_duration_only_declaration(): void
+    {
+        $mission = $this->makeMission(MissionStatus::SUBMITTED, withActualHours: false);
+        $execution = (new MissionExecution())->setActualDurationMinutes(360);
+        $execution->setMission($mission);
+        $mission->setExecution($execution);
+
+        $this->service->validate($mission, $this->makeManager());
+
+        self::assertSame(MissionStatus::VALIDATED, $mission->getStatus());
     }
 
     // ── start() ──────────────────────────────────────────────────────────────

@@ -421,6 +421,18 @@ final class MissionViewEncodingTest extends WebTestCase
             }
         }
 
+        // D-143 (scénario 19) — les deux autres API lues par la synthèse chirurgien
+        // (détail mission : statut/soumission ; heures réelles) sont soumises au même contrat.
+        foreach (["/api/missions/{$mission->getId()}", "/api/missions/{$mission->getId()}/execution"] as $uri) {
+            $other = $this->request($client, 'GET', $uri, $token);
+            self::assertSame(Response::HTTP_OK, $other->getStatusCode(), $uri . ' ' . $other->getContent());
+            foreach (self::collectKeys(json_decode($other->getContent(), true)) as $key) {
+                foreach (['amount', 'price', 'fee', 'pricingRule', 'invoice', 'billing', 'patient', 'salary', 'hourlyRate', 'consultationFee'] as $forbidden) {
+                    self::assertStringNotContainsStringIgnoringCase($forbidden, $key, "{$uri} — champ interdit détecté: {$forbidden} (clé JSON: {$key})");
+                }
+            }
+        }
+
         // Contrat positif : les données réellement autorisées sont bien présentes.
         self::assertNotEmpty($body['interventions']);
         self::assertSame($type->getLabel(), $body['interventions'][0]['label']);

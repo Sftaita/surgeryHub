@@ -100,6 +100,10 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::MISSION_OFFERED,
         NotificationType::MISSION_ASSIGNED_DIRECTLY,
         NotificationType::MISSION_OFFER_DECLINED,
+        // D-143 — relances d'encodage : le canal e-mail est piloté par
+        // EncodingReminderService (repli J+1/J+2, systématique J+4), jamais par une préférence.
+        NotificationType::ENCODING_REMINDER,
+        NotificationType::ENCODING_ESCALATION,
     ];
 
     public function __construct(
