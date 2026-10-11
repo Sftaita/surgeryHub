@@ -24,6 +24,7 @@ use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Pilotage financier, Lot 7 (D-077) — §27/§30/§31 du lot : permissions
@@ -32,6 +33,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class FinancialStatisticsControllerTest extends WebTestCase
 {
+    use DeclaresActualHours;
+
     private const PASSWORD = 'FinStats77!';
 
     private EntityManagerInterface $em;
@@ -174,6 +177,7 @@ final class FinancialStatisticsControllerTest extends WebTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();

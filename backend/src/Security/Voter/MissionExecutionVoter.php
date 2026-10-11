@@ -6,6 +6,8 @@ use App\Entity\Mission;
 use App\Entity\MissionExecution;
 use App\Entity\MissionExecutionDispute;
 use App\Entity\User;
+use App\Enum\MissionStatus;
+use App\Service\MissionEncodingGuard;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
 use Symfony\Component\Security\Core\Authorization\Voter\Voter;
 
@@ -17,9 +19,30 @@ use Symfony\Component\Security\Core\Authorization\Voter\Voter;
  * MissionExecution — l'ancien flux (ServiceController::findOrCreateService() appelé
  * avant denyAccessUnlessGranted()) persistait une ligne vide avant de refuser l'accès
  * en cas d'appel non autorisé ; corrigé ici en gardant Mission comme sujet du vote.
+ *
+ * D-143 — UPDATE n'était borné par AUCUN statut : l'instrumentiste assignée pouvait
+ * réécrire ses heures sur une mission SUBMITTED/VALIDATED, voire facturée, à l'insu du
+ * manager qui avait validé. Désormais :
+ *  - instrumentiste assignée : uniquement tant que l'encodage est modifiable par elle
+ *    (mêmes statuts que 'edit_hours' de MissionActionsService, même garde
+ *    MissionEncodingGuard : jamais avant le début, jamais verrouillé/facturé) ;
+ *  - manager/admin : toujours, sauf encodage verrouillé (VALIDATED) ou facturé — une
+ *    correction après validation passe par reopen(), jamais par une écriture silencieuse.
  */
 class MissionExecutionVoter extends Voter
 {
+    /** Mêmes statuts que 'edit_hours' (MissionActionsService) et MissionHoursReminderPolicy. */
+    private const INSTRUMENTIST_EDITABLE_STATUSES = [
+        MissionStatus::ASSIGNED,
+        MissionStatus::IN_PROGRESS,
+        MissionStatus::ENCODING_IN_PROGRESS,
+        MissionStatus::DECLARED,
+    ];
+
+    public function __construct(
+        private readonly MissionEncodingGuard $encodingGuard,
+    ) {}
+
     public const VIEW            = 'MISSION_EXECUTION_VIEW';
     public const UPDATE          = 'MISSION_EXECUTION_UPDATE';
     public const DISPUTE_CREATE  = 'MISSION_EXECUTION_DISPUTE_CREATE';
@@ -46,11 +69,34 @@ class MissionExecutionVoter extends Voter
 
         return match ($attribute) {
             self::VIEW => $this->canView($subject, $user, $isManager),
-            self::UPDATE => $isManager || $subject->getInstrumentist()?->getId() === $user->getId(),
+            self::UPDATE => $this->canUpdate($subject, $user, $isManager),
             self::DISPUTE_CREATE => $subject->getMission()?->getSurgeon()?->getId() === $user->getId(),
             self::DISPUTE_MANAGE => $isManager,
             default => false,
         };
+    }
+
+    private function canUpdate(Mission $mission, User $user, bool $isManager): bool
+    {
+        if ($mission->getEncodingLockedAt() !== null || $mission->getInvoiceGeneratedAt() !== null) {
+            return false;
+        }
+        if ($isManager) {
+            return true;
+        }
+        if ($mission->getInstrumentist()?->getId() !== $user->getId()) {
+            return false;
+        }
+        if (!in_array($mission->getStatus(), self::INSTRUMENTIST_EDITABLE_STATUSES, true)) {
+            return false;
+        }
+
+        try {
+            $this->encodingGuard->assertEncodingAllowed($mission, $user);
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /** @param Mission $mission */

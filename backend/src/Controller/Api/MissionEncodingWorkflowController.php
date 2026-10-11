@@ -16,6 +16,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
@@ -111,12 +112,26 @@ final class MissionEncodingWorkflowController extends AbstractController
      * dispatché sur le bus mission-lifecycle : c'est une notification, pas une transition.
      */
     #[Route('/remind', name: 'api_missions_encoding_remind', methods: ['POST'])]
-    public function remind(int $missionId, #[CurrentUser] User $user): JsonResponse
+    public function remind(int $missionId, Request $request, #[CurrentUser] User $user): JsonResponse
     {
         $mission = $this->getMissionOr404($missionId);
         $this->denyAccessUnlessGranted(MissionVoter::ENCODING_REMIND, $mission);
 
-        $this->reminders->sendManualReminder($mission, $user);
+        // D-143 — évite une relance répétée par accident (double clic, deux managers) :
+        // la même mission ne peut être relancée manuellement qu'une fois par fenêtre.
+        if ($this->reminders->isManualReminderOnCooldown($mission)) {
+            throw new ConflictHttpException(sprintf(
+                "Une relance vient déjà d'être envoyée pour cette mission. Réessayez dans %d minutes si nécessaire.",
+                EncodingReminderService::MANUAL_COOLDOWN_MINUTES,
+            ));
+        }
+
+        // H5a — optional batch id (one per manager action): a retried request never sends twice.
+        $body    = json_decode($request->getContent() ?: '{}', true);
+        $batchId = is_array($body) && is_string($body['batchId'] ?? null) && preg_match('/^[A-Za-z0-9-]{8,64}$/', $body['batchId']) === 1
+            ? $body['batchId'] : null;
+
+        $this->reminders->sendManualReminder($mission, $user, $batchId);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), Response::HTTP_OK);
     }

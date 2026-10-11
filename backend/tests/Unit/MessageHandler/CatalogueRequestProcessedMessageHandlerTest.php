@@ -4,296 +4,121 @@ namespace App\Tests\Unit\MessageHandler;
 
 use App\Entity\Hospital;
 use App\Entity\Mission;
-use App\Entity\NotificationEvent;
-use App\Entity\OutboundNotification;
-use App\Entity\OutboundNotificationAttempt;
 use App\Entity\User;
+use App\Enum\CatalogueRequestIgnoreReason;
 use App\Enum\CatalogueRequestKind;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Enum\NotificationEmailPolicy;
 use App\Enum\NotificationType;
-use App\Enum\OutboundNotificationChannel;
-use App\Enum\OutboundNotificationFallbackReason;
-use App\Enum\OutboundNotificationStatus;
 use App\Message\CatalogueRequestProcessedMessage;
 use App\MessageHandler\CatalogueRequestProcessedMessageHandler;
-use App\Service\NotificationChannels;
-use App\Service\NotificationPreferenceResolver;
-use App\Service\NotificationService;
 use App\Service\NotificationTargetResolver;
-use App\Service\OutboundNotificationService;
+use App\Tests\Support\NotificationServiceFactory;
+use App\Tests\Support\RecordsNotificationIntents;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
 
 /**
- * D-093 — CatalogueRequestProcessedMessageHandler mirrors MissionPublishedMessageHandler's
- * surgeon-notification test style: push-priority with email fallback, in-app row shape,
- * both outcomes (accepted/ignored) and both proposal kinds (intervention type / material).
+ * D-093 — the instrumentist learns the outcome of her catalogue proposal. H5a: ONE intent
+ * to the dispatcher — in-app payload, push, email content, D-083 policy (push first, email as
+ * fallback) and an episode per processed request. Channel decisions and their records are
+ * the dispatcher's (H5aEmailDispatchIntegrationTest).
  */
 final class CatalogueRequestProcessedMessageHandlerTest extends TestCase
 {
-    private EntityManagerInterface&MockObject $em;
-    private OutboundNotificationService&MockObject $outboundNotificationService;
-    private NotificationService&MockObject $notificationService;
-    private NotificationPreferenceResolver&MockObject $preferenceResolver;
-    private NotificationTargetResolver $targetResolver;
-    private LoggerInterface&MockObject $logger;
+    use RecordsNotificationIntents;
 
+    private EntityManagerInterface&MockObject $em;
+    private array $entities = [];
     private static int $nextId = 1;
 
     protected function setUp(): void
     {
         $this->em = $this->createMock(EntityManagerInterface::class);
-        $this->outboundNotificationService = $this->createMock(OutboundNotificationService::class);
-        $this->notificationService = $this->createMock(NotificationService::class);
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->targetResolver = new NotificationTargetResolver();
-        $this->logger = $this->createMock(LoggerInterface::class);
-    }
-
-    private function setId(object $entity, int $id): void
-    {
-        $ref = new \ReflectionProperty($entity, 'id');
-        $ref->setAccessible(true);
-        $ref->setValue($entity, $id);
-    }
-
-    private function makeInstrumentist(): User
-    {
-        $u = new User();
-        $u->setEmail('instr-' . self::$nextId . '@test.com');
-        $u->setRoles(['ROLE_INSTRUMENTIST']);
-        $this->setId($u, self::$nextId++);
-        return $u;
-    }
-
-    private function makeMission(): Mission
-    {
-        $site = new Hospital();
-        $site->setName('Site Test');
-        $this->setId($site, self::$nextId++);
-
-        $m = new Mission();
-        $m->setStatus(MissionStatus::ASSIGNED);
-        $m->setType(MissionType::BLOCK);
-        $m->setSite($site);
-        $m->setStartAt(new \DateTimeImmutable('2026-08-10 08:00:00'));
-        $m->setEndAt(new \DateTimeImmutable('2026-08-10 10:00:00'));
-        $this->setId($m, self::$nextId++);
-        return $m;
-    }
-
-    private function makePushNotification(OutboundNotificationStatus $status, bool $withExpiredAttempt = false): OutboundNotification
-    {
-        $n = (new OutboundNotification())->setChannel(OutboundNotificationChannel::PUSH)->setStatus($status);
-        if ($withExpiredAttempt) {
-            $n->addAttempt((new OutboundNotificationAttempt())->setSuccess(false)->setReason('expired'));
-        }
-        $this->setId($n, self::$nextId++);
-        return $n;
+        $this->entities = [];
+        $this->em->method('find')->willReturnCallback(fn ($class, $id) => $this->entities[$class][$id] ?? null);
     }
 
     private function handler(): CatalogueRequestProcessedMessageHandler
     {
         return new CatalogueRequestProcessedMessageHandler(
-            $this->em,
-            $this->outboundNotificationService,
-            $this->notificationService,
-            $this->preferenceResolver,
-            $this->targetResolver,
-            $this->logger,
+            $this->em, $this->recordingDispatcher(), NotificationServiceFactory::create($this),
+            new NotificationTargetResolver(), $this->createMock(LoggerInterface::class),
         );
     }
 
-    private function message(User $recipient, Mission $mission, bool $accepted, CatalogueRequestKind $kind = CatalogueRequestKind::INTERVENTION_TYPE, string $label = 'PTG'): CatalogueRequestProcessedMessage
+    private function register(object $entity): object
     {
-        return new CatalogueRequestProcessedMessage(
-            kind: $kind,
-            requestId: 42,
-            accepted: $accepted,
-            recipientUserId: $recipient->getId(),
-            missionId: $mission->getId(),
-            label: $label,
-            occurredAt: new \DateTimeImmutable(),
-        );
+        (new \ReflectionProperty($entity, 'id'))->setValue($entity, self::$nextId++);
+        $this->entities[$entity::class][$entity->getId()] = $entity;
+
+        return $entity;
     }
 
-    private function mockEmFind(User $instrumentist, Mission $mission): void
+    private function instrumentist(): User
     {
-        $this->em->method('find')->willReturnCallback(
-            fn (string $class, $id) => match ($class) {
-                User::class => $instrumentist,
-                Mission::class => $mission,
-                default => null,
-            },
-        );
+        return $this->register((new User())->setEmail('instr@test.com')->setFirstname('Jane')->setRoles(['ROLE_INSTRUMENTIST']));
     }
 
-    // ── Canal : push d'abord, repli email ────────────────────────────────────
-
-    public function test_accepted_gets_push_only_when_deliverable_no_email(): void
+    private function mission(): Mission
     {
-        $instr = $this->makeInstrumentist();
-        $mission = $this->makeMission();
-        $this->mockEmFind($instr, $mission);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: true, push: true));
+        $site = $this->register((new Hospital())->setName('Site Test'));
 
-        $this->outboundNotificationService->expects($this->once())
-            ->method('recordPushSend')
-            ->with($instr, NotificationType::CATALOGUE_REQUEST_RESOLVED->value, $this->anything(), $this->anything())
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
-        $this->notificationService->expects($this->never())->method('catalogueRequestResolvedNotifyInstrumentist');
-
-        $this->handler()->__invoke($this->message($instr, $mission, accepted: true));
+        return $this->register((new Mission())->setStatus(MissionStatus::ASSIGNED)->setType(MissionType::BLOCK)->setSite($site)
+            ->setStartAt(new \DateTimeImmutable('2026-08-10 08:00:00'))->setEndAt(new \DateTimeImmutable('2026-08-10 10:00:00')));
     }
 
-    public function test_accepted_falls_back_to_email_when_push_not_deliverable(): void
+    private function message(User $u, Mission $m, bool $accepted, CatalogueRequestKind $kind = CatalogueRequestKind::INTERVENTION_TYPE): CatalogueRequestProcessedMessage
     {
-        $instr = $this->makeInstrumentist();
-        $mission = $this->makeMission();
-        $this->mockEmFind($instr, $mission);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: true, push: true));
-
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SKIPPED));
-        $this->notificationService->expects($this->once())
-            ->method('catalogueRequestResolvedNotifyInstrumentist')
-            ->with($mission, $instr, 'PTG', 'intervention', $this->isInstanceOf(OutboundNotification::class), OutboundNotificationFallbackReason::NO_SUBSCRIPTION);
-
-        $this->handler()->__invoke($this->message($instr, $mission, accepted: true));
+        return new CatalogueRequestProcessedMessage($kind, 77, $accepted, $u->getId(), $m->getId(), 'Arthroscopie', new \DateTimeImmutable(),
+            $accepted ? null : CatalogueRequestIgnoreReason::cases()[0], $accepted ? null : 'Doublon');
     }
 
-    public function test_ignored_falls_back_to_email_when_push_not_deliverable(): void
+    public function test_accepted_proposal_is_one_dispatch_push_first_email_as_fallback(): void
     {
-        $instr = $this->makeInstrumentist();
-        $mission = $this->makeMission();
-        $this->mockEmFind($instr, $mission);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: true, push: true));
+        $u = $this->instrumentist();
+        $m = $this->mission();
+        $this->handler()($this->message($u, $m, true));
 
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SKIPPED));
-        $this->notificationService->expects($this->once())
-            ->method('catalogueRequestIgnoredNotifyInstrumentist')
-            ->with($mission, $instr, 'Vis titane', 'matériel', $this->isInstanceOf(OutboundNotification::class), OutboundNotificationFallbackReason::NO_SUBSCRIPTION);
-        $this->notificationService->expects($this->never())->method('catalogueRequestResolvedNotifyInstrumentist');
-
-        $this->handler()->__invoke($this->message($instr, $mission, accepted: false, kind: CatalogueRequestKind::MATERIAL_ITEM, label: 'Vis titane'));
+        self::assertCount(1, $this->intents);
+        $intent = $this->intents[0];
+        self::assertSame(NotificationType::CATALOGUE_REQUEST_RESOLVED, $intent->type);
+        self::assertSame($u, $intent->recipient);
+        self::assertSame($m, $intent->mission);
+        self::assertSame(NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT, $intent->emailPolicy, 'D-083 orchestration unchanged');
+        self::assertSame('catalogue_request:INTERVENTION_TYPE:77', $intent->episodeRef, 'a retry of the same processing is the same episode');
+        self::assertSame(['missionId' => $m->getId(), 'requestId' => 77, 'label' => 'Arthroscopie', 'kind' => 'INTERVENTION_TYPE'], $intent->inAppPayload);
+        self::assertSame('emails/catalogue_request_resolved.html.twig', $intent->email->htmlTemplate);
+        self::assertSame('Proposition acceptée', $intent->push->title);
+        self::assertStringContainsString('« Arthroscopie »', $intent->push->body);
     }
 
-    public function test_push_preference_disabled_goes_straight_to_email_without_attempting_push(): void
+    public function test_ignored_proposal_carries_the_reason_label_and_explanation(): void
     {
-        $instr = $this->makeInstrumentist();
-        $mission = $this->makeMission();
-        $this->mockEmFind($instr, $mission);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: true, push: false));
+        $u = $this->instrumentist();
+        $m = $this->mission();
+        $this->handler()($this->message($u, $m, false, CatalogueRequestKind::MATERIAL_ITEM));
 
-        $this->outboundNotificationService->expects($this->never())->method('recordPushSend');
-        $this->notificationService->expects($this->once())
-            ->method('catalogueRequestResolvedNotifyInstrumentist')
-            ->with($mission, $instr, 'PTG', 'intervention');
-
-        $this->handler()->__invoke($this->message($instr, $mission, accepted: true));
+        $intent = $this->intents[0];
+        self::assertSame(NotificationType::CATALOGUE_REQUEST_IGNORED, $intent->type);
+        self::assertSame('emails/catalogue_request_ignored.html.twig', $intent->email->htmlTemplate);
+        self::assertSame(CatalogueRequestIgnoreReason::cases()[0]->label(), $intent->email->context['reasonLabel']);
+        self::assertSame('Doublon', $intent->email->context['explanation']);
+        self::assertSame('matériel', $intent->email->context['kindLabel']);
+        self::assertSame('catalogue_request:MATERIAL_ITEM:77', $intent->episodeRef);
     }
 
-    public function test_both_channels_disabled_sends_nothing(): void
+    public function test_unknown_recipient_or_mission_dispatches_nothing(): void
     {
-        $instr = $this->makeInstrumentist();
-        $mission = $this->makeMission();
-        $this->mockEmFind($instr, $mission);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: false, email: false, push: false));
+        $u = $this->instrumentist();
+        $m = $this->mission();
+        $handler = $this->handler();
+        $handler(new CatalogueRequestProcessedMessage(CatalogueRequestKind::INTERVENTION_TYPE, 1, true, 999999, $m->getId(), 'x', new \DateTimeImmutable()));
+        $handler(new CatalogueRequestProcessedMessage(CatalogueRequestKind::INTERVENTION_TYPE, 1, true, $u->getId(), 999999, 'x', new \DateTimeImmutable()));
 
-        $this->outboundNotificationService->expects($this->never())->method('recordPushSend');
-        $this->notificationService->expects($this->never())->method('catalogueRequestResolvedNotifyInstrumentist');
-        $this->notificationService->expects($this->never())->method('catalogueRequestIgnoredNotifyInstrumentist');
-
-        $this->handler()->__invoke($this->message($instr, $mission, accepted: true));
-    }
-
-    public function test_never_sends_push_and_email_together(): void
-    {
-        $instr = $this->makeInstrumentist();
-        $mission = $this->makeMission();
-        $this->mockEmFind($instr, $mission);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: true, push: true));
-
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
-        $this->notificationService->expects($this->never())->method('catalogueRequestResolvedNotifyInstrumentist');
-
-        $this->handler()->__invoke($this->message($instr, $mission, accepted: true));
-    }
-
-    // ── Défensif ──────────────────────────────────────────────────────────────
-
-    public function test_does_nothing_when_recipient_not_found(): void
-    {
-        $mission = $this->makeMission();
-        $this->em->method('find')->willReturnCallback(
-            fn (string $class, $id) => $class === Mission::class ? $mission : null,
-        );
-
-        $this->outboundNotificationService->expects($this->never())->method('recordPushSend');
-        $this->notificationService->expects($this->never())->method('catalogueRequestResolvedNotifyInstrumentist');
-
-        $this->handler()->__invoke($this->message($this->makeInstrumentist(), $mission, accepted: true));
-    }
-
-    public function test_does_nothing_when_mission_not_found(): void
-    {
-        $instr = $this->makeInstrumentist();
-        $this->em->method('find')->willReturnCallback(
-            fn (string $class, $id) => $class === User::class ? $instr : null,
-        );
-
-        $this->outboundNotificationService->expects($this->never())->method('recordPushSend');
-        $this->notificationService->expects($this->never())->method('catalogueRequestResolvedNotifyInstrumentist');
-
-        $this->handler()->__invoke($this->message($instr, $this->makeMission(), accepted: true));
-    }
-
-    // ── Contenu : in-app row shape, aucune donnée patient ────────────────────
-
-    public function test_in_app_notification_event_is_created_with_mission_and_correct_type(): void
-    {
-        $instr = $this->makeInstrumentist();
-        $mission = $this->makeMission();
-        $this->mockEmFind($instr, $mission);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: false, push: false));
-
-        $persisted = null;
-        $this->em->expects($this->once())->method('persist')
-            ->willReturnCallback(function ($entity) use (&$persisted): void {
-                $persisted = $entity;
-            });
-        $this->em->expects($this->once())->method('flush');
-
-        $this->handler()->__invoke($this->message($instr, $mission, accepted: true, label: 'PTG'));
-
-        $this->assertInstanceOf(NotificationEvent::class, $persisted);
-        $this->assertSame(NotificationType::CATALOGUE_REQUEST_RESOLVED->value, $persisted->getEventType());
-        $this->assertSame($mission, $persisted->getMission());
-        $this->assertSame($instr, $persisted->getUser());
-        $payload = $persisted->getPayload();
-        $this->assertSame('PTG', $payload['label']);
-        $this->assertArrayNotHasKey('patientName', $payload);
-    }
-
-    public function test_ignored_in_app_notification_event_uses_ignored_type(): void
-    {
-        $instr = $this->makeInstrumentist();
-        $mission = $this->makeMission();
-        $this->mockEmFind($instr, $mission);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: false, push: false));
-
-        $persisted = null;
-        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
-            $persisted = $entity;
-        });
-
-        $this->handler()->__invoke($this->message($instr, $mission, accepted: false));
-
-        $this->assertSame(NotificationType::CATALOGUE_REQUEST_IGNORED->value, $persisted->getEventType());
+        self::assertSame([], $this->intents);
     }
 }

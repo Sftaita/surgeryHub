@@ -344,6 +344,11 @@ final class FinancialCalculationAnomalyExplainer
                 $action = ['code' => 'OPEN_MISSION', 'label' => 'Corriger les horaires'];
                 break;
 
+            case FirmBillingReason::MISSING_ACTUAL_HOURS:
+                $firm = null;
+                $action = ['code' => 'OPEN_MISSION', 'label' => 'Faire déclarer les heures réelles'];
+                break;
+
             default: // CALCULATION_FAILED — code moteur inconnu, jamais le message brut
                 $firm = null;
                 $action = ['code' => 'OPEN_MISSION', 'label' => 'Ouvrir la mission'];

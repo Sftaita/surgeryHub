@@ -227,14 +227,57 @@ final class MissionExecutionServiceTest extends TestCase
         $this->service->updateActuals($mission, $actor, $start, $end, 45, null);
     }
 
-    public function test_update_actuals_rejects_single_actual_time_without_the_other(): void
+    /** D-143 — un horaire seul est un brouillon valide : stocké, sans durée inventée. */
+    public function test_update_actuals_accepts_a_single_actual_time_as_a_draft(): void
+    {
+        $mission = $this->makeMission();
+        $actor = $this->makeActor();
+
+        $execution = $this->service->updateActuals($mission, $actor, new \DateTimeImmutable('2026-07-18 08:00:00'), null, null, null);
+
+        self::assertEquals(new \DateTimeImmutable('2026-07-18 08:00:00'), $execution->getActualStartAt());
+        self::assertNull($execution->getActualEndAt());
+        self::assertNull($execution->getActualDurationMinutes());
+        self::assertFalse($execution->hasCompleteActualTimes());
+    }
+
+    /** D-143 — la pause est retirée de la plage début → fin, partout (durée stockée et effective). */
+    public function test_update_actuals_subtracts_the_declared_break(): void
+    {
+        $mission = $this->makeMission();
+        $actor = $this->makeActor();
+
+        $execution = $this->service->updateActuals(
+            $mission,
+            $actor,
+            new \DateTimeImmutable('2026-07-18 08:00:00'),
+            new \DateTimeImmutable('2026-07-18 17:00:00'),
+            null,
+            null,
+            45,
+        );
+
+        self::assertSame(45, $execution->getBreakMinutes());
+        self::assertSame(495, $execution->getActualDurationMinutes());
+        self::assertSame(495, MissionExecutionService::resolveDuration($mission)->minutes);
+    }
+
+    public function test_update_actuals_rejects_a_break_covering_the_whole_span(): void
     {
         $mission = $this->makeMission();
         $actor = $this->makeActor();
 
         $this->expectException(UnprocessableEntityHttpException::class);
 
-        $this->service->updateActuals($mission, $actor, new \DateTimeImmutable('2026-07-18 08:00:00'), null, null, null);
+        $this->service->updateActuals(
+            $mission,
+            $actor,
+            new \DateTimeImmutable('2026-07-18 08:00:00'),
+            new \DateTimeImmutable('2026-07-18 09:00:00'),
+            null,
+            null,
+            60,
+        );
     }
 
     public function test_update_actuals_rejects_end_before_start(): void

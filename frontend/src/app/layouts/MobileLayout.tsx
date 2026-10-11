@@ -4,9 +4,9 @@ import { Box, Popover, useMediaQuery } from "@mui/material";
 import type { SxProps, Theme } from "@mui/material";
 
 import { useQuery } from "@tanstack/react-query";
-import { usePushNotifications } from "../features/push/usePushNotifications";
 import { fetchUnreadNotificationsCount } from "../features/notifications/api/notifications.api";
 import { PwaInstallBanner } from "../features/pwa-install/PwaInstallBanner";
+import { PushInvitationBanner } from "../features/push/PushInvitationBanner";
 import { usePwaInstallMenuState } from "../features/pwa-install/usePwaInstallMenuState";
 import { useAuth } from "../auth/AuthContext";
 import { fetchMissions, fetchInstrumentistOffersWithFallback, fetchOffersUnreadCount } from "../features/missions/api/missions.api";
@@ -952,8 +952,6 @@ export function MobileLayout() {
     refetchInterval: isInstrumentist ? 60_000 : false,
   });
 
-  const { status: pushStatus, subscribe: subscribeToPush } = usePushNotifications();
-
   // Bascule serveur (audit PWA/mobile/admin 2026-07-29, revue post-rapport) — la
   // cloche ne dépend plus d'un cache localStorage ni de l'état de la permission Push
   // (cette requête tourne même si pushStatus === "permission-denied"/"unsupported").
@@ -1083,33 +1081,8 @@ export function MobileLayout() {
         position: "relative",
       }}
     >
-      {isInstrumentist && pushStatus === "permission-default" && (
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-            mb: "14px",
-            px: "16px",
-            py: "10px",
-            borderRadius: "14px",
-            background: "#fff",
-            boxShadow: "0 1px 2px rgba(22,32,43,.05), 0 2px 6px rgba(22,32,43,.06)",
-          }}
-        >
-          <Box sx={{ flex: 1, fontSize: 13, color: GRAY_600 }}>
-            Activez les notifications pour les nouvelles missions
-          </Box>
-          <Box
-            component="button"
-            type="button"
-            onClick={subscribeToPush}
-            sx={{ border: "none", background: "transparent", color: GREEN_700, fontWeight: 700, fontSize: 13, cursor: "pointer", textDecoration: "underline", p: 0 }}
-          >
-            Activer
-          </Box>
-        </Box>
-      )}
+      {/* D-143 — invitation push volontaire (instrumentiste ET chirurgien), reportable. */}
+      {mobileScope !== null && <PushInvitationBanner />}
       <PwaInstallBanner />
       <Box
         key={pathname}

@@ -247,6 +247,14 @@ export function EncodingTrackingTable({
                           retard
                         </Box>
                       )}
+                      {item.encoding.escalatedAt && (
+                        <Box data-testid="tracking-escalated" title={`Alerte J+4 envoyée le ${new Date(item.encoding.escalatedAt).toLocaleDateString("fr-BE")}`} sx={{
+                          flexShrink: 0, display: "inline-flex", alignItems: "center", height: 24, padding: "0 8px",
+                          borderRadius: "999px", fontSize: 11.5, fontWeight: 800, whiteSpace: "nowrap", background: RED_50, color: RED_700,
+                        }}>
+                          J+4
+                        </Box>
+                      )}
                     </Box>
                     {/* D-136 — couleur = hours.comparison (backend) : vert dans le planifié,
                         orange au-delà, neutre sans heure réelle (jamais le repli planifié en vert). */}

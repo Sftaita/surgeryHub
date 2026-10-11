@@ -91,7 +91,7 @@ class AbsenceImpactServiceTest extends TestCase
 
     private function makeService(): AbsenceImpactService
     {
-        return new AbsenceImpactService($this->em, $this->alertService, $this->userRepository, $this->bus);
+        return new AbsenceImpactService($this->em, $this->alertService);
     }
 
     private function makeUser(string $email): User
@@ -163,7 +163,6 @@ class AbsenceImpactServiceTest extends TestCase
         $result = $this->makeService()->onAbsenceCreated($absence);
 
         $this->assertSame([], $result['created']);
-        $this->assertSame([], $result['notifications']);
     }
 
     // ── C. Absence after generation/publication — classification per status ──
@@ -403,101 +402,25 @@ class AbsenceImpactServiceTest extends TestCase
         $this->assertCount(0, $second['created'], 'Re-running impact detection on the same absence must not create a duplicate alert');
     }
 
-    // ── Batch 7: notification dispatch ───────────────────────────────────────
+    // ── H4 (D-130): alerts only, nobody notified from here ───────────────────
 
-    public function test_alert_creation_dispatches_exactly_one_notification_message(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $site    = $this->makeSite();
-        $mission = $this->makeMission($surgeon, null, $site, MissionStatus::DRAFT);
-        $this->overlappingMissions = [$mission];
-        $this->nextCreateResult = ['alert' => $this->makeAlert(), 'created' => true];
-
-        $this->makeService()->onAbsenceCreated($this->makeAbsence($surgeon));
-
-        $this->assertCount(1, $this->dispatched);
-        $this->assertInstanceOf(\App\Message\PlanningAlertRaisedMessage::class, $this->dispatched[0]);
-    }
-
-    public function test_idempotent_alert_sync_dispatches_nothing(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $site    = $this->makeSite();
-        $mission = $this->makeMission($surgeon, null, $site, MissionStatus::DRAFT);
-        $alert   = $this->makeAlert();
-        $alert->setMission($mission);
-
-        $this->overlappingMissions = [$mission];
-        $this->activeAlertsForAbsence = [$alert];
-        $this->nextCreateResult = ['alert' => $alert, 'created' => false]; // already exists, still applies
-
-        $this->makeService()->onAbsenceUpdated($this->makeAbsence($surgeon));
-
-        $this->assertSame([], $this->dispatched, 'No notification for an idempotent no-op resync');
-    }
-
-    public function test_surgeon_absence_notifies_managers_and_assigned_instrumentist(): void
+    /**
+     * The alert stays the manager's cockpit item, but the generic "Alerte planning" fan-out
+     * is gone: the planned person is informed at the right level by AbsenceImpactNotifier
+     * (N2), the managers by the consolidated ABSENCE_IMPACT_SUMMARY.
+     */
+    public function test_alert_creation_notifies_nobody(): void
     {
         $surgeon = $this->makeUser('surgeon@test.com');
         $inst    = $this->makeUser('inst@test.com');
-        $site    = $this->makeSite();
-        $manager = $this->makeUser('manager@test.com');
-        $this->managers = [$manager];
-
-        $mission = $this->makeMission($surgeon, $inst, $site, MissionStatus::ASSIGNED);
+        $this->managers = [$this->makeUser('manager@test.com')];
+        $mission = $this->makeMission($surgeon, $inst, $this->makeSite(), MissionStatus::DRAFT);
         $this->overlappingMissions = [$mission];
         $this->nextCreateResult = ['alert' => $this->makeAlert(), 'created' => true];
 
-        $this->makeService()->onAbsenceCreated($this->makeAbsence($surgeon));
+        $result = $this->makeService()->onAbsenceCreated($this->makeAbsence($surgeon));
 
-        $this->assertCount(1, $this->dispatched);
-        /** @var \App\Message\PlanningAlertRaisedMessage $message */
-        $message = $this->dispatched[0];
-        $this->assertContains($manager->getId(), $message->recipientUserIds);
-        $this->assertContains($inst->getId(), $message->recipientUserIds);
-    }
-
-    public function test_instrumentist_absence_notifies_managers_and_instrumentist(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $inst    = $this->makeUser('inst@test.com');
-        $site    = $this->makeSite();
-        $manager = $this->makeUser('manager@test.com');
-        $this->managers = [$manager];
-
-        $mission = $this->makeMission($surgeon, $inst, $site, MissionStatus::OPEN);
-        $this->overlappingMissions = [$mission];
-        $this->nextCreateResult = ['alert' => $this->makeAlert(), 'created' => true];
-
-        $this->makeService()->onAbsenceCreated($this->makeAbsence($inst));
-
-        $this->assertCount(1, $this->dispatched);
-        /** @var \App\Message\PlanningAlertRaisedMessage $message */
-        $message = $this->dispatched[0];
-        $this->assertContains($manager->getId(), $message->recipientUserIds);
-        $this->assertContains($inst->getId(), $message->recipientUserIds);
-    }
-
-    public function test_notification_payload_contains_no_patient_data(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $site    = $this->makeSite();
-        $mission = $this->makeMission($surgeon, null, $site, MissionStatus::DRAFT);
-        $this->overlappingMissions = [$mission];
-        $this->nextCreateResult = ['alert' => $this->makeAlert(), 'created' => true];
-
-        $this->makeService()->onAbsenceCreated($this->makeAbsence($surgeon));
-
-        /** @var \App\Message\PlanningAlertRaisedMessage $message */
-        $message = $this->dispatched[0];
-        $publicFields = get_object_vars($message);
-
-        $this->assertArrayHasKey('missionId', $publicFields);
-        $this->assertArrayHasKey('siteId', $publicFields);
-        $this->assertArrayHasKey('missionDate', $publicFields);
-        $this->assertArrayHasKey('alertType', $publicFields);
-        foreach (array_keys($publicFields) as $field) {
-            $this->assertStringNotContainsStringIgnoringCase('patient', $field, 'No patient-related field must ever exist on this message');
-        }
+        $this->assertCount(1, $result['created']);
+        $this->assertSame([], $this->dispatched);
     }
 }

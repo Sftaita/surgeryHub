@@ -2,200 +2,87 @@
 
 namespace App\Tests\Unit\MessageHandler;
 
+use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\MissionStatus;
+use App\Enum\MissionType;
+use App\Enum\NotificationEmailPolicy;
+use App\Enum\NotificationType;
 use App\Message\MissionUncoveredEscalationMessage;
-use App\Message\SendBillingEmailMessage;
 use App\MessageHandler\MissionUncoveredEscalationMessageHandler;
-use App\Service\NotificationChannels;
-use App\Service\NotificationPreferenceResolver;
 use App\Service\NotificationTargetResolver;
-use App\Service\WebPushServiceInterface;
+use App\Tests\Support\RecordsNotificationIntents;
 use Doctrine\ORM\EntityManagerInterface;
-use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
-use Symfony\Component\Messenger\Envelope;
-use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * D-110 (J-14) — unit coverage for channel routing and message content. Real Twig
- * rendering of the email template is covered separately; end-to-end delivery is verified
- * live per the Lot 7 methodology (MAIL_SAFE_MODE + fresh DB read).
+ * D-110 (J-14) — H5a: one dispatcher intent to the surgeon (in-app + push + email per
+ * preferences), idempotent per escalation episode. Formerly a raw push and an untraced
+ * SendBillingEmailMessage.
  */
 final class MissionUncoveredEscalationMessageHandlerTest extends TestCase
 {
-    private EntityManagerInterface&MockObject $em;
-    private NotificationPreferenceResolver&MockObject $preferenceResolver;
-    private WebPushServiceInterface&MockObject $webPushService;
-    private MessageBusInterface&MockObject $bus;
+    use RecordsNotificationIntents;
 
-    private array $dispatched = [];
-    private array $persisted  = [];
-    private array $entitiesById = [];
-    private array $pushCalls = [];
+    private array $entities = [];
 
-    protected function setUp(): void
+    private function handler(): MissionUncoveredEscalationMessageHandler
     {
-        $this->em = $this->createMock(EntityManagerInterface::class);
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->webPushService = $this->createMock(WebPushServiceInterface::class);
-        $this->bus = $this->createMock(MessageBusInterface::class);
+        $em = $this->createMock(EntityManagerInterface::class);
+        $em->method('find')->willReturnCallback(fn ($class, $id) => $this->entities[$class][$id] ?? null);
 
-        $this->dispatched = [];
-        $this->bus->method('dispatch')->willReturnCallback(function (object $msg): Envelope {
-            $this->dispatched[] = $msg;
-            return new Envelope($msg);
-        });
-
-        $this->persisted = [];
-        $this->em->method('persist')->willReturnCallback(function ($e) { $this->persisted[] = $e; });
-        $this->em->method('flush');
-
-        $this->entitiesById = [];
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => $this->entitiesById[$class][$id] ?? null);
-
-        $this->pushCalls = [];
-        $this->webPushService->method('sendToUser')->willReturnCallback(
-            function (User $user, string $title, string $body, array $data) {
-                $this->pushCalls[] = ['user' => $user, 'title' => $title, 'body' => $body, 'data' => $data];
-            }
-        );
+        return new MissionUncoveredEscalationMessageHandler($em, $this->recordingDispatcher(), new NotificationTargetResolver(), $this->createMock(LoggerInterface::class));
     }
 
-    private function makeHandler(): MissionUncoveredEscalationMessageHandler
+    private function fixture(): array
     {
-        return new MissionUncoveredEscalationMessageHandler(
-            $this->em,
-            $this->preferenceResolver,
-            $this->webPushService,
-            new NotificationTargetResolver(),
-            $this->bus,
-            new \Psr\Log\NullLogger(),
-            'noreply@test.com',
-            'SurgicalHub',
-        );
+        $surgeon = (new User())->setEmail('dr@test.com')->setFirstname('Paul')->setLastname('Martin')->setRoles(['ROLE_SURGEON']);
+        (new \ReflectionProperty($surgeon, 'id'))->setValue($surgeon, 7);
+        $mission = (new Mission())->setStatus(MissionStatus::OPEN)->setType(MissionType::BLOCK)->setSite((new Hospital())->setName('CHU'))->setSurgeon($surgeon)
+            ->setStartAt(new \DateTimeImmutable('2026-10-20 08:00'))->setEndAt(new \DateTimeImmutable('2026-10-20 12:00'));
+        (new \ReflectionProperty($mission, 'id'))->setValue($mission, 70);
+        $this->entities = [User::class => [7 => $surgeon], Mission::class => [70 => $mission]];
+
+        return [$surgeon, $mission];
     }
 
-    private static int $nextId = 1;
-
-    private function registerUser(string $role = 'ROLE_SURGEON'): User
+    private function message(): MissionUncoveredEscalationMessage
     {
-        $u = new User();
-        $u->setEmail('d110-' . bin2hex(random_bytes(4)) . '@surgicalhub.test');
-        $u->setRoles([$role]);
-        $u->setFirstname('Jean');
-        $u->setLastname('Dupont');
-        $id = self::$nextId++;
-        $ref = new \ReflectionProperty($u, 'id');
-        $ref->setAccessible(true);
-        $ref->setValue($u, $id);
-        $this->entitiesById[User::class][$id] = $u;
-        return $u;
+        return new MissionUncoveredEscalationMessage(70, 7, 'Paul Martin', 3, 'CHU', '2026-10-20T08:00:00+02:00', new \DateTimeImmutable('2026-10-06T08:00:00+02:00'));
     }
 
-    private function registerMission(): Mission
+    public function test_one_intent_carrying_in_app_push_and_email(): void
     {
-        $m = new Mission();
-        $id = self::$nextId++;
-        $ref = new \ReflectionProperty($m, 'id');
-        $ref->setAccessible(true);
-        $ref->setValue($m, $id);
-        $this->entitiesById[Mission::class][$id] = $m;
-        return $m;
-    }
+        [$surgeon, $mission] = $this->fixture();
+        $this->handler()($this->message());
 
-    public function test_all_three_channels_enabled_dispatches_inapp_push_and_email(): void
-    {
-        $surgeon = $this->registerUser();
-        $mission = $this->registerMission();
-
-        $this->preferenceResolver->method('resolve')
-            ->willReturn(new NotificationChannels(inApp: true, email: true, push: true));
-
-        $message = new MissionUncoveredEscalationMessage(
-            missionId: $mission->getId(),
-            surgeonId: $surgeon->getId(),
-            surgeonName: 'Jean Dupont',
-            siteId: 5,
-            siteName: 'Delta',
-            startAt: '2026-09-30T08:00:00+02:00',
-            occurredAt: new \DateTimeImmutable(),
-        );
-
-        $this->makeHandler()->__invoke($message);
-
-        self::assertCount(1, $this->persisted, 'One in-app NotificationEvent.');
-        self::assertCount(1, $this->pushCalls, 'One push send.');
-        self::assertStringContainsString('30/09/2026', $this->pushCalls[0]['body']);
-        self::assertStringContainsString('Delta', $this->pushCalls[0]['body']);
-
-        $emails = array_values(array_filter($this->dispatched, fn ($m) => $m instanceof SendBillingEmailMessage));
-        self::assertCount(1, $emails);
-        self::assertSame('30/09/2026', $emails[0]->context['dateLabel']);
-        self::assertSame('Delta', $emails[0]->context['siteName']);
-        self::assertSame('emails/mission_uncovered_escalation.html.twig', $emails[0]->htmlTemplate);
-    }
-
-    public function test_email_disabled_skips_email_but_keeps_inapp(): void
-    {
-        $surgeon = $this->registerUser();
-        $mission = $this->registerMission();
-
-        $this->preferenceResolver->method('resolve')
-            ->willReturn(new NotificationChannels(inApp: true, email: false, push: false));
-
-        $message = new MissionUncoveredEscalationMessage(
-            missionId: $mission->getId(), surgeonId: $surgeon->getId(), surgeonName: 'Jean Dupont',
-            siteId: null, siteName: null, startAt: '2026-09-30T08:00:00+02:00', occurredAt: new \DateTimeImmutable(),
-        );
-
-        $this->makeHandler()->__invoke($message);
-
-        self::assertCount(1, $this->persisted);
-        self::assertEmpty(array_filter($this->dispatched, fn ($m) => $m instanceof SendBillingEmailMessage));
-        self::assertEmpty($this->pushCalls);
-    }
-
-    public function test_mission_not_found_is_skipped_without_throwing(): void
-    {
-        $surgeon = $this->registerUser();
-
-        $message = new MissionUncoveredEscalationMessage(
-            missionId: 999999, surgeonId: $surgeon->getId(), surgeonName: 'Jean Dupont',
-            siteId: null, siteName: null, startAt: '2026-09-30T08:00:00+02:00', occurredAt: new \DateTimeImmutable(),
-        );
-
-        $this->makeHandler()->__invoke($message);
-
-        self::assertEmpty($this->persisted);
-        self::assertEmpty($this->dispatched);
+        self::assertCount(1, $this->intents);
+        $i = $this->intents[0];
+        self::assertSame(NotificationType::MISSION_UNCOVERED_ESCALATION, $i->type);
+        self::assertSame($surgeon, $i->recipient);
+        self::assertSame($mission, $i->mission);
+        self::assertSame(NotificationEmailPolicy::WHEN_ENABLED, $i->emailPolicy);
+        self::assertSame('uncovered_escalation:70:2026-10-06T08:00:00.000000+02:00', $i->episodeRef, 'a Messenger retry of the same escalation is the same episode');
+        self::assertSame('emails/mission_uncovered_escalation.html.twig', $i->email->htmlTemplate);
+        self::assertSame(['recipientName' => 'Paul Martin', 'dateLabel' => '20/10/2026', 'siteName' => 'CHU'], $i->email->context);
+        self::assertStringContainsString('20/10/2026 à CHU', $i->push->body);
     }
 
     public function test_payload_carries_no_patient_shaped_keys(): void
     {
-        $surgeon = $this->registerUser();
-        $mission = $this->registerMission();
+        $this->fixture();
+        $this->handler()($this->message());
 
-        $this->preferenceResolver->method('resolve')
-            ->willReturn(new NotificationChannels(inApp: true, email: true, push: false));
+        self::assertSame(['missionId', 'startAt', 'siteId', 'siteName', 'occurredAt'], array_keys($this->intents[0]->inAppPayload));
+    }
 
-        $message = new MissionUncoveredEscalationMessage(
-            missionId: $mission->getId(), surgeonId: $surgeon->getId(), surgeonName: 'Jean Dupont',
-            siteId: 5, siteName: 'Delta', startAt: '2026-09-30T08:00:00+02:00', occurredAt: new \DateTimeImmutable(),
-        );
+    public function test_unknown_mission_or_surgeon_dispatches_nothing(): void
+    {
+        $handler = $this->handler();
+        $handler($this->message());
 
-        $this->makeHandler()->__invoke($message);
-
-        /** @var \App\Entity\NotificationEvent $evt */
-        $evt = $this->persisted[0];
-        foreach (array_keys($evt->getPayload()) as $key) {
-            self::assertStringNotContainsStringIgnoringCase('patient', $key);
-        }
-
-        $emails = array_values(array_filter($this->dispatched, fn ($m) => $m instanceof SendBillingEmailMessage));
-        foreach (array_keys($emails[0]->context) as $key) {
-            self::assertStringNotContainsStringIgnoringCase('patient', $key);
-        }
+        self::assertSame([], $this->intents);
     }
 }

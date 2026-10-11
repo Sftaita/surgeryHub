@@ -8,13 +8,16 @@ use App\Dto\EncodingTrackingSummary;
 use App\Dto\FinancialStatisticsFilter;
 use App\Dto\MissionFinancialFacts;
 use App\Entity\Mission;
+use App\Entity\MissionEncodingReminder;
 use App\Entity\User;
 use App\Enum\EncodingFinancialState;
+use App\Enum\EncodingReminderStage;
 use App\Enum\EncodingState;
 use App\Enum\FinancialCalculationStatus;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Repository\EncodingTrackingRepository;
+use Doctrine\ORM\EntityManagerInterface;
 
 /**
  * Suivi des encodages (D-118) — orchestration du cockpit opérationnel manager.
@@ -39,6 +42,7 @@ final class EncodingTrackingService
         private readonly MissionExecutionService $executionService,
         private readonly FinancialCalculationAnomalyExplainer $anomalyExplainer,
         private readonly FinancialCalculationService $financialCalculationService,
+        private readonly EntityManagerInterface $em,
     ) {}
 
     /**
@@ -110,6 +114,8 @@ final class EncodingTrackingService
             static fn (MissionFinancialFacts $f) => $f->hasUnresolvedCalculationFailure,
         )));
 
+        $escalations = $this->escalationDates($ids);
+
         $items = [];
         foreach ($ids as $id) {
             $mission = $missions[$id] ?? null;
@@ -125,7 +131,15 @@ final class EncodingTrackingService
 
             $isStale = $state === EncodingState::IN_PROGRESS && $fact->endAt !== null && $fact->endAt <= $now;
 
-            $items[] = $this->buildItem($mission, $fact, $state, $isStale, $financialFacts[$id] ?? MissionFinancialFacts::none(), $failures[$id]['anomalies'] ?? []);
+            $items[] = $this->buildItem(
+                $mission,
+                $fact,
+                $state,
+                $isStale,
+                $financialFacts[$id] ?? MissionFinancialFacts::none(),
+                $failures[$id]['anomalies'] ?? [],
+                EncodingReminderService::isEncodingPending($mission) ? ($escalations[$id] ?? null) : null,
+            );
         }
 
         return ['items' => $items, 'total' => $total, 'page' => $page, 'limit' => $limit];
@@ -138,6 +152,7 @@ final class EncodingTrackingService
         bool $isStale,
         MissionFinancialFacts $financialFacts,
         array $rawFailureAnomalies = [],
+        ?\DateTimeImmutable $escalatedAt = null,
     ): EncodingTrackingItem {
         // Source canonique unique des heures — jamais recalculée ici (D-071).
         $effective = $this->executionService->resolveEffectiveDuration($mission);
@@ -182,7 +197,34 @@ final class EncodingTrackingService
             financialAnomalyReasons: $financialState === EncodingFinancialState::ANOMALY
                 ? $this->anomalyExplainer->summarize($rawFailureAnomalies)
                 : [],
+            escalatedAt: $escalatedAt,
         );
+    }
+
+    /**
+     * D-143 — alertes J+4 déjà envoyées pour ces missions (une requête pour la page).
+     *
+     * @param list<int> $ids
+     * @return array<int, \DateTimeImmutable>
+     */
+    private function escalationDates(array $ids): array
+    {
+        $rows = $this->em->createQueryBuilder()
+            ->select('IDENTITY(r.mission) AS missionId', 'r.sentAt AS sentAt')
+            ->from(MissionEncodingReminder::class, 'r')
+            ->where('r.mission IN (:ids)')
+            ->andWhere('r.stage = :stage')
+            ->setParameter('ids', $ids)
+            ->setParameter('stage', EncodingReminderStage::D4)
+            ->getQuery()
+            ->getArrayResult();
+
+        $dates = [];
+        foreach ($rows as $row) {
+            $dates[(int) $row['missionId']] = $row['sentAt'];
+        }
+
+        return $dates;
     }
 
     /**

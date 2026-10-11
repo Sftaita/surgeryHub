@@ -62,12 +62,21 @@ class MissionExecution
     /**
      * Toujours cohérente avec actualStartAt/actualEndAt quand les deux sont renseignés
      * (recalculée et écrasée par MissionExecutionService à chaque écriture des horaires
-     * réels — jamais deux sources de vérité en parallèle). Peut aussi être renseignée
-     * seule, sans horaires réels connus (durée déclarée explicite).
+     * réels — jamais deux sources de vérité en parallèle) : fin − début − pause (D-143).
+     * Peut aussi être renseignée seule, sans horaires réels connus (durée déclarée
+     * explicite, saisies antérieures à D-143).
      */
     #[ORM\Column(name: 'actual_duration_minutes', type: 'integer', nullable: true)]
     #[Groups(['execution:read', 'execution:read_manager'])]
     private ?int $actualDurationMinutes = null;
+
+    /**
+     * D-143 — pause déclarée pendant la plage réelle (minutes). Seule information qui
+     * sépare la plage début → fin de la durée prestée ; null = aucune pause déclarée.
+     */
+    #[ORM\Column(name: 'break_minutes', type: 'integer', nullable: true)]
+    #[Groups(['execution:read', 'execution:read_manager'])]
+    private ?int $breakMinutes = null;
 
     #[ORM\Column(name: 'hours_source', enumType: HoursSource::class, nullable: true)]
     #[Groups(['execution:read', 'execution:read_manager'])]
@@ -130,6 +139,23 @@ class MissionExecution
     {
         $this->actualDurationMinutes = $actualDurationMinutes;
         return $this;
+    }
+
+    public function getBreakMinutes(): ?int
+    {
+        return $this->breakMinutes;
+    }
+
+    public function setBreakMinutes(?int $breakMinutes): static
+    {
+        $this->breakMinutes = $breakMinutes;
+        return $this;
+    }
+
+    /** D-143 — début ET fin réels connus : seule forme acceptée à la soumission. */
+    public function hasCompleteActualTimes(): bool
+    {
+        return $this->actualStartAt !== null && $this->actualEndAt !== null;
     }
 
     public function getHoursSource(): ?HoursSource

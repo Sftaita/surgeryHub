@@ -29,7 +29,7 @@ use Symfony\Component\Messenger\MessageBusInterface;
  * explicit modes, never inferred:
  *
  *   POOL     → OPEN + POOL publication. Every eligible instrumentist may claim it.
- *              Notifications: pre-existing MissionPublishedMessage pipeline (unchanged).
+ *              Notifications: MissionPublishedMessage → OpenMissionPoolNotifier (H3, D-129).
  *   TARGETED → OPEN + TARGETED publication. A REQUEST to one instrumentist: the Mission is
  *              NOT covered until she accepts (= the existing claim(), unchanged), and she may
  *              decline (declineOffer()). Never broadcast to the pool (before D-125 the
@@ -109,7 +109,7 @@ class MissionDispatchService
             $this->em->flush();
         });
 
-        // Pre-existing pool notification pipeline (site instrumentists push + surgeon) — R-07.
+        // H3 (D-129) — pool (OpenMissionPoolNotifier: eligible instrumentists only) + surgeon — after commit (R-07).
         $this->bus->dispatch(new MissionPublishedMessage(
             missionId: $mission->getId(),
             actorId: $actor->getId(),

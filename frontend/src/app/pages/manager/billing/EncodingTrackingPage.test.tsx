@@ -51,6 +51,7 @@ vi.mock("../../../features/encoding/api/encoding.api", () => ({
   fetchMissionEncoding: (...args: unknown[]) => fetchMissionEncodingMock(...args),
   validateMissionEncoding: (...args: unknown[]) => validateMissionEncodingMock(...args),
   remindMissionEncoding: (...args: unknown[]) => remindMissionEncodingMock(...args),
+  newActionBatchId: () => "batch-test-0001",
 }));
 
 const fetchMissionAuditMock = vi.fn();

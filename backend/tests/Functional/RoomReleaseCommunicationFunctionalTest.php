@@ -32,6 +32,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class RoomReleaseCommunicationFunctionalTest extends WebTestCase
 {
+    use \App\Tests\Support\PurgesNotificationTraces;
+
     private const PASSWORD = 'RoomReleaseTest123!';
 
     private EntityManagerInterface $em;
@@ -84,6 +86,9 @@ final class RoomReleaseCommunicationFunctionalTest extends WebTestCase
             }
             $this->em->flush();
 
+            // H5b — D-114 deliveries are OutboundNotification rows addressed to these users.
+            $this->purgeNotificationTraces($this->em, $this->createdIds['users']);
+            $this->em->clear();
             foreach ($this->createdIds['users'] as $id) {
                 $e = $this->em->find(User::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
@@ -278,6 +283,30 @@ final class RoomReleaseCommunicationFunctionalTest extends WebTestCase
         self::assertCount(1, $emails, 'exactly one individual email dispatched, never a grouped send');
         self::assertSame($colleague->getEmail(), $emails[0]->getMessage()->to);
         self::assertSame($deliveries[0]->getId(), $emails[0]->getMessage()->absenceCommunicationDeliveryId);
+
+        // H5b (D-132) — the D-114 journal stays the source of truth, and the whole chain is
+        // also readable in the global history: absence → communication → traced delivery.
+        $conn       = $this->em->getConnection();
+        $absenceId  = end($this->createdIds['absences']);
+        $outboundId = $emails[0]->getMessage()->outboundNotificationId;
+        self::assertNotNull($outboundId, 'the D-114 delivery is an OutboundNotification of the common layer');
+        self::assertSame((string) $outboundId, (string) $conn->fetchOne(
+            'SELECT outbound_notification_id FROM surgeon_absence_communication_delivery WHERE id = ?', [$deliveries[0]->getId()]));
+        $outbound = $conn->fetchAssociative('SELECT * FROM outbound_notification WHERE id = ?', [$outboundId]);
+        self::assertSame(['QUEUED', 'ABSENCE_COMMUNICATION_ROOM_RELEASE', (string) $colleague->getId()],
+            [$outbound['status'], $outbound['notification_type'], (string) $outbound['recipient_user_id']]);
+
+        $absenceEvent = $conn->fetchAssociative("SELECT * FROM activity_event WHERE event_type = 'ABSENCE_CREATED' AND absence_id = ?", [$absenceId]);
+        $commEvent    = $conn->fetchAssociative("SELECT * FROM activity_event WHERE event_type = 'SURGEON_ABSENCE_COMMUNICATION_RECORDED' AND subject_id = ?", [$comms[0]->getId()]);
+        $queuedEvent  = $conn->fetchAssociative("SELECT * FROM activity_event WHERE event_type = 'NOTIFICATION_CHANNEL_QUEUED' AND subject_id = ?", [$outboundId]);
+        self::assertNotFalse($absenceEvent);
+        self::assertNotFalse($commEvent);
+        self::assertNotFalse($queuedEvent);
+        self::assertSame((string) $absenceEvent['id'], (string) $commEvent['causation_event_id'], 'communication ← absence');
+        self::assertSame((string) $absenceEvent['correlation_id'], (string) $commEvent['correlation_id']);
+        self::assertSame((string) $absenceEvent['correlation_id'], (string) $queuedEvent['correlation_id'], 'one operation, one correlation');
+        self::assertSame((string) $commEvent['id'], (string) $queuedEvent['causation_event_id'], 'delivery ← communication');
+        self::assertStringNotContainsString((string) $colleague->getEmail(), (string) $queuedEvent['payload']);
     }
 
     // ── Revue post-déploiement : nom du chirurgien dans le corps, objet inchangé,

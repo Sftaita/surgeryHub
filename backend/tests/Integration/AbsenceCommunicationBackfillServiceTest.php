@@ -31,6 +31,8 @@ use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
  */
 final class AbsenceCommunicationBackfillServiceTest extends KernelTestCase
 {
+    use \App\Tests\Support\PurgesNotificationTraces;
+
     private EntityManagerInterface $em;
     private AbsenceCommunicationBackfillService $service;
     private array $createdIds = ['absences' => [], 'users' => [], 'sites' => [], 'posts' => []];
@@ -87,6 +89,9 @@ final class AbsenceCommunicationBackfillServiceTest extends KernelTestCase
             if ($e !== null) { $this->em->remove($e); }
         }
         $this->em->flush();
+        // H5b — D-114 deliveries are OutboundNotification rows addressed to these users.
+        $this->purgeNotificationTraces($this->em, $this->createdIds['users']);
+        $this->em->clear();
         foreach ($this->createdIds['users'] as $id) {
             $e = $this->em->find(User::class, $id);
             if ($e !== null) { $this->em->remove($e); }

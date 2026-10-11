@@ -7,7 +7,11 @@ use App\Entity\Mission;
 use App\Entity\PlanningAlert;
 use App\Entity\User;
 use App\Enum\MissionStatus;
+use App\Enum\OpenEpisodeCause;
+use App\Message\OpenMissionPoolMessage;
+use App\Notification\OpenEpisode;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
@@ -33,9 +37,9 @@ class PlanningAlertActionService
     public function __construct(
         private readonly EntityManagerInterface    $em,
         private readonly PlanningAlertService      $alertService,
-        private readonly NotificationService       $notificationService,
         private readonly MissionPostDeployService  $missionPostDeployService,
         private readonly PlanningConflictDetectionService $conflictDetection,
+        private readonly MessageBusInterface $bus,
     ) {}
 
     /** @return array{mission: Mission, alert: PlanningAlert} */
@@ -52,7 +56,6 @@ class PlanningAlertActionService
 
         $this->assertEligible($mission, $instrumentist);
 
-        $oldInstrumentist = $mission->getInstrumentist();
 
         if (in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
             // Post-deploy: delegate to MissionPostDeployService so R-04/R-05/R-07 are enforced
@@ -70,9 +73,10 @@ class PlanningAlertActionService
         $resolvedNote = $note ?? sprintf('Réassigné à %s.', $instrumentist->getEmail());
         $this->alertService->resolve($alert, $actor, $resolvedNote);
 
-        // In-app only, synchronous — this is direct feedback on an action the manager
-        // just took, not the async absence-detection fan-out (PlanningAlertRaisedMessage).
-        $this->notificationService->planningAlertReassignedNotify($mission, $oldInstrumentist, $instrumentist);
+        // H5b (D-132) — the former direct in-app PLANNING_ALERT_REASSIGNED_AWAY / _TO rows are
+        // gone: post-deploy, MissionPostDeployService::assign() already tells both instrumentists
+        // through the dispatcher (lifecycle, traced, no duplicate); on a DRAFT, nobody is told
+        // (a DRAFT is never communicated — D-127).
 
         return ['mission' => $mission, 'alert' => $alert];
     }
@@ -83,6 +87,7 @@ class PlanningAlertActionService
         $this->assertAlertActive($alert);
         $mission = $alert->getMission();
         $this->assertMissionMutable($mission);
+        $alreadyOpen = $mission->getStatus() === MissionStatus::OPEN && $mission->getInstrumentist() === null;
 
         if ($mission->getStatus() === MissionStatus::ASSIGNED) {
             // Post-deploy: delegate so audit + flush + MissionLifecycleChangedMessage are emitted.
@@ -96,9 +101,20 @@ class PlanningAlertActionService
             $mission->setStatus(MissionStatus::OPEN);
         }
         // OPEN → already in the target state; no mutation needed.
+        // ASSIGNED → the RELEASED lifecycle message solicits the pool (OpenMissionPoolNotifier).
 
         $resolvedNote = $note ?? 'Mission ouverte au pool des missions disponibles.';
         $this->alertService->resolve($alert, $actor, $resolvedNote);
+
+        // H3 (D-129) — « ouvrir au pool » on a mission that was already OPEN (e.g. left out of
+        // the pool at deployment) used to change nothing: nobody was told. The manager's
+        // explicit decision now solicits the eligible pool, through the single entry point,
+        // after the alert resolution is flushed. Idempotent: an alert is resolved once.
+        if ($alreadyOpen && $mission->getId() !== null) {
+            $this->bus->dispatch(OpenMissionPoolMessage::of([OpenEpisode::forTransition(
+                $mission->getId(), OpenEpisodeCause::OPENED_FROM_ALERT, new \DateTimeImmutable(), actorId: $actor?->getId(),
+            )]));
+        }
 
         return ['mission' => $mission, 'alert' => $alert];
     }

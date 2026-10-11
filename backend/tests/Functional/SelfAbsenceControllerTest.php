@@ -43,6 +43,14 @@ final class SelfAbsenceControllerTest extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            // H4 (D-130) — dispatcher decision + per-channel delivery rows of this test's users.
+            if (($this->createdIds['users'] ?? []) !== []) {
+                $users = implode(',', array_map('intval', $this->createdIds['users']));
+                $conn = $this->em->getConnection();
+                $conn->executeStatement("DELETE FROM notification_dispatch WHERE recipient_user_id IN ($users)");
+                $conn->executeStatement("DELETE a FROM outbound_notification_attempt a JOIN outbound_notification o ON o.id = a.notification_id WHERE o.recipient_user_id IN ($users)");
+                $conn->executeStatement("DELETE FROM outbound_notification WHERE recipient_user_id IN ($users)");
+            }
             foreach ($this->createdIds['absences'] as $id) {
                 $e = $this->em->find(Absence::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
@@ -568,7 +576,12 @@ final class SelfAbsenceControllerTest extends WebTestCase
         self::assertNotNull($envelope, 'AbsenceSelfDeclaredMessage must have been dispatched when zero missions are impacted');
         self::assertContains($manager->getId(), $envelope->getMessage()->recipientUserIds);
 
-        static::getContainer()->get(AbsenceSelfDeclaredMessageHandler::class)->__invoke($envelope->getMessage());
+        // H4 (D-130) — handled for THIS test's manager only: the test database holds ~1500
+        // leaked managers and every notice is now a traced dispatcher decision.
+        $message = $envelope->getMessage();
+        static::getContainer()->get(AbsenceSelfDeclaredMessageHandler::class)->__invoke(
+            new AbsenceSelfDeclaredMessage(...array_merge(get_object_vars($message), ['recipientUserIds' => [$manager->getId()]])),
+        );
         $this->em->flush();
         $this->em->clear();
 

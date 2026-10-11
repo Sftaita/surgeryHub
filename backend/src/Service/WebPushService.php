@@ -29,6 +29,9 @@ class WebPushService implements WebPushServiceInterface
          * WebPushServiceInterface doubles in handler tests (Lot 1 / audit 24-07-2026).
          */
         private readonly array $httpClientOptions = [],
+        // H5b (D-132) — the provider's expiry cleanup is a bulk DELETE (no entity event):
+        // journaled here, in the same transaction. Optional for the hand-built test instances.
+        private readonly ?\App\Activity\ActivityJournal $journal = null,
     ) {
         self::assertValidVapidSubject($vapidSubject);
     }
@@ -100,57 +103,6 @@ class WebPushService implements WebPushServiceInterface
         return $this->sendToSubscriptions($subscriptions, $title, $body, $data);
     }
 
-    /** @param User[] $users */
-    public function sendToUsers(array $users, string $title, string $body, array $data = []): void
-    {
-        if (empty($users)) {
-            return;
-        }
-
-        $subscriptions = $this->em->getRepository(PushSubscription::class)->findBy(['user' => $users]);
-        if (empty($subscriptions)) {
-            return;
-        }
-
-        $this->sendToSubscriptions($subscriptions, $title, $body, $data);
-    }
-
-    public function sendToSiteInstrumentists(Mission $mission, string $title, string $body, array $data = []): void
-    {
-        $site = $mission->getSite();
-        if (!$site instanceof Hospital) {
-            return;
-        }
-
-        $memberships = $this->em->getRepository(\App\Entity\SiteMembership::class)->findBy([
-            'site'     => $site,
-            'siteRole' => 'INSTRUMENTIST',
-        ]);
-
-        if (empty($memberships)) {
-            return;
-        }
-
-        $users = [];
-        foreach ($memberships as $membership) {
-            $user = $membership->getUser();
-            if ($user instanceof User && $user->isActive()) {
-                $users[] = $user;
-            }
-        }
-
-        if (empty($users)) {
-            return;
-        }
-
-        $subscriptions = $this->em->getRepository(PushSubscription::class)->findBy(['user' => $users]);
-        if (empty($subscriptions)) {
-            return;
-        }
-
-        $this->sendToSubscriptions($subscriptions, $title, $body, $data);
-    }
-
     /**
      * @param PushSubscription[] $pushSubscriptions
      * @return array{sent:int, attempts:list<array{provider:string, success:bool, statusCode:?int, reason:?string}>}
@@ -212,13 +164,7 @@ class WebPushService implements WebPushServiceInterface
                         'endpoint_hint' => $endpointHint,
                         'type'          => $data['type'] ?? null,
                     ]);
-                    $this->em->getRepository(PushSubscription::class)
-                        ->createQueryBuilder('ps')
-                        ->delete()
-                        ->where('ps.endpoint = :endpoint')
-                        ->setParameter('endpoint', $report->getEndpoint())
-                        ->getQuery()
-                        ->execute();
+                    $this->removeExpired((string) $report->getEndpoint(), $provider);
                 } else {
                     $attempts[] = ['provider' => $provider, 'success' => false, 'statusCode' => $statusCode, 'reason' => $normalizedReason];
                     // Reason logged normalized, not raw: minishlink/web-push's own
@@ -260,7 +206,47 @@ class WebPushService implements WebPushServiceInterface
     }
 
     /** Derived from the endpoint's host only — never logs or persists the full endpoint. */
-    private static function providerForEndpoint(?string $endpoint): string
+    /**
+     * H5b (D-132) — the push service said the device is gone (404/410): delete it and journal
+     * PUSH_SUBSCRIPTION_REMOVED (reason PROVIDER_EXPIRED) atomically. Never the endpoint.
+     */
+    private function removeExpired(string $endpoint, string $provider): void
+    {
+        $connection = $this->em->getConnection();
+        $connection->transactional(function () use ($connection, $endpoint, $provider): void {
+            $rows = $connection->fetchAllAssociative('SELECT id, user_id FROM push_subscription WHERE endpoint = ?', [$endpoint]);
+            $this->em->getRepository(PushSubscription::class)
+                ->createQueryBuilder('ps')
+                ->delete()
+                ->where('ps.endpoint = :endpoint')
+                ->setParameter('endpoint', $endpoint)
+                ->getQuery()
+                ->execute();
+
+            if ($this->journal === null || !$this->journal->isEnabled()) {
+                return;
+            }
+            foreach ($rows as $row) {
+                $owner = $row['user_id'] !== null ? $this->em->find(User::class, (int) $row['user_id']) : null;
+                $name  = \App\Activity\ActivityJournal::displayName($owner) ?? '—';
+                $this->journal->record(new \App\Activity\ActivityRecord(
+                    eventType: \App\Enum\ActivityEventType::PUSH_SUBSCRIPTION_REMOVED,
+                    subjectType: 'User',
+                    subjectId: (int) $row['id'],
+                    subjectLabel: $name,
+                    summary: sprintf('Appareil push #%d de %s retiré : expiré chez le fournisseur (%s)', (int) $row['id'], $name, $provider),
+                    payload: [
+                        'entityId' => (int) $row['id'], 'action' => 'DELETED', 'userId' => $owner?->getId(), 'userName' => $name,
+                        'provider' => $provider, 'reason' => 'PROVIDER_EXPIRED',
+                    ],
+                    actorType: \App\Enum\ActivityActorType::SYSTEM,
+                    userId: $owner?->getId(),
+                ), $connection);
+            }
+        });
+    }
+
+    public static function providerForEndpoint(?string $endpoint): string
     {
         $host = $endpoint !== null ? (string) (parse_url($endpoint, PHP_URL_HOST) ?: '') : '';
 

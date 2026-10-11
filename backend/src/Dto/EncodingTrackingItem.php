@@ -84,6 +84,13 @@ final readonly class EncodingTrackingItem
          * @var list<array{code: string, label: string, count: int}>
          */
         public array $financialAnomalyReasons = [],
+
+        /**
+         * D-143 — date de l'alerte managers J+4, tant que l'encodage est toujours attendu :
+         * l'alerte reste visible dans le suivi jusqu'à la soumission, même si la
+         * notification a été lue. null sinon.
+         */
+        public ?\DateTimeImmutable $escalatedAt = null,
     ) {}
 
     /** L'écart entre planifié et réel n'a de sens que si le réel existe. */

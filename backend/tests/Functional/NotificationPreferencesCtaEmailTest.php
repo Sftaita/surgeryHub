@@ -51,8 +51,8 @@ final class NotificationPreferencesCtaEmailTest extends KernelTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
-            // Chaque appel à NotificationService::catalogueRequestResolvedNotifyInstrumentist()
-            // / catalogueRequestIgnoredNotifyInstrumentist() / missionOpenNotifySurgeon() crée
+            // (Historique, avant H5a) chaque appel à NotificationService::catalogueRequestResolvedNotifyInstrumentist()
+            // / catalogueRequestIgnoredNotifyInstrumentist() / missionOpenNotifySurgeon() créait
             // une OutboundNotification (FK vers mission ET vers l'utilisateur) — doit être
             // purgée avant la mission/les utilisateurs, sinon le flush() suivant échoue en
             // trouvant une association vers une entité qui n'est plus trackable.
@@ -149,8 +149,8 @@ final class NotificationPreferencesCtaEmailTest extends KernelTestCase
         $instr = $this->makeUser('ROLE_INSTRUMENTIST');
         $mission = $this->makeMission();
 
-        $this->notificationService->catalogueRequestResolvedNotifyInstrumentist($mission, $instr, 'PTG', 'intervention');
-        $context = $this->firstDispatchedContext();
+        // H5a — the content handed to NotificationDispatcher (which queues it unchanged).
+        $context = $this->notificationService->catalogueRequestResolvedEmail($mission, $instr, 'PTG', 'intervention')->context;
 
         self::assertNotNull($context['notificationPreferencesUrl']);
         self::assertStringContainsString('/app/i/profile', $context['notificationPreferencesUrl']);
@@ -165,8 +165,7 @@ final class NotificationPreferencesCtaEmailTest extends KernelTestCase
         $instr = $this->makeUser('ROLE_INSTRUMENTIST');
         $mission = $this->makeMission();
 
-        $this->notificationService->catalogueRequestIgnoredNotifyInstrumentist($mission, $instr, 'Vis titane', 'matériel');
-        $context = $this->firstDispatchedContext();
+        $context = $this->notificationService->catalogueRequestIgnoredEmail($mission, $instr, 'Vis titane', 'matériel')->context;
 
         self::assertStringContainsString('/app/i/profile', $context['notificationPreferencesUrl']);
 
@@ -184,8 +183,7 @@ final class NotificationPreferencesCtaEmailTest extends KernelTestCase
         $surgeon = $this->makeUser('ROLE_SURGEON');
         $mission = $this->makeMission();
 
-        $this->notificationService->missionOpenNotifySurgeon($mission, $surgeon);
-        $context = $this->firstDispatchedContext();
+        $context = $this->notificationService->missionOpenSurgeonEmail($mission, $surgeon)->context;
 
         self::assertNotNull($context['notificationPreferencesUrl']);
         self::assertStringContainsString('/app/s/profile', $context['notificationPreferencesUrl']);

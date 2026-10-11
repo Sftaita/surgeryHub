@@ -44,6 +44,17 @@ final class PlanningResendControllerTest extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            // H5a — the resend is now a traced dispatch (+ mission_communication, stored PDF).
+            $this->em->clear();
+            $conn = $this->em->getConnection();
+            if ($this->createdUserIds !== []) {
+                $ids = implode(',', array_map('intval', $this->createdUserIds));
+                $conn->executeStatement("DELETE FROM mission_communication WHERE user_id IN ($ids)");
+                $conn->executeStatement("DELETE FROM notification_dispatch WHERE recipient_user_id IN ($ids)");
+                $conn->executeStatement("DELETE a FROM outbound_notification_attempt a JOIN outbound_notification o ON o.id = a.notification_id WHERE o.recipient_user_id IN ($ids)");
+                $conn->executeStatement("DELETE FROM outbound_notification WHERE recipient_user_id IN ($ids)");
+            }
+            $conn->executeStatement("DELETE FROM generated_document WHERE filename LIKE 'planning-%test-user-%'");
             foreach ($this->createdMissionIds as $id) {
                 $e = $this->em->find(Mission::class, $id);
                 if ($e !== null) {
@@ -195,11 +206,81 @@ final class PlanningResendControllerTest extends WebTestCase
         $sentMessages = $transport->getSent();
         self::assertCount(1, $sentMessages, 'Exactly one email dispatched — the target only.');
 
+        // H5a — honest status: handed to the queue, SENT only once the relay accepts it.
+        self::assertSame('QUEUED', $body['status']);
+        $message = $sentMessages[0]->getMessage();
+        self::assertInstanceOf(\App\Message\SendTemplatedEmailMessage::class, $message);
+        self::assertSame([], $message->attachments, 'no base64 in the queued message');
+        self::assertCount(1, $message->documents, 'her planning PDF, by reference');
+
         $this->em->clear();
         $events = $this->em->getRepository(NotificationEvent::class)->findBy(['user' => $instr->getId()]);
-        self::assertCount(1, $events);
+        self::assertCount(1, $events, 'the in-app item (her preferences allow it by default)');
         self::assertSame('PLANNING_RESENT_MANUAL', $events[0]->getEventType());
-        self::assertSame('SENT', $events[0]->getPayload()['status']);
+        self::assertSame(\App\Enum\PublicationChannel::IN_APP, $events[0]->getChannel());
+        $conn = $this->em->getConnection();
+        $email = $conn->fetchAssociative("SELECT * FROM outbound_notification WHERE recipient_user_id = ? AND channel = 'EMAIL'", [$instr->getId()]);
+        self::assertSame('QUEUED', $email['status']);
+        self::assertSame($instr->getEmail(), $email['recipient_address']);
+        self::assertSame('RESEND', $conn->fetchOne('SELECT source FROM mission_communication WHERE user_id = ? AND withdrawn_at IS NULL', [$instr->getId()]),
+            'the in-app item reached her: the resent missions count as communicated (RESEND)');
+    }
+
+    /**
+     * H5b (D-132, §18) — a planning PDF is stored once per (person, period, content): a resend
+     * after an UNRELATED change (another person's mission) sends the very same bytes (same
+     * GeneratedDocument, same sha256), never a fresh rendering; a change of HER planning
+     * produces a new document. The deploy handler uses the same identity
+     * (PlanningDocumentIdentity::personal), so the published PDF is the one resent.
+     */
+    public function test_resend_reuses_the_frozen_pdf_until_her_own_planning_changes(): void
+    {
+        $client   = $this->boot();
+        $manager  = $this->createUser('ROLE_MANAGER');
+        $token    = $this->login($client, $manager);
+        $surgeon  = $this->createUser('ROLE_SURGEON');
+        $instr    = $this->createUser('ROLE_INSTRUMENTIST');
+        $other    = $this->createUser('ROLE_INSTRUMENTIST');
+        $site     = $this->makeSite();
+        $version  = $this->makeVersion($site, $manager, PlanningVersionStatus::ACTIVE);
+        $hers     = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $instr);
+        /** @var InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+        $uri       = "/api/planning/versions/{$version->getId()}/resend/{$instr->getId()}";
+
+        $document = function () use ($client, $token, $uri, $transport): \App\Notification\DocumentReference {
+            $transport->reset();
+            $response = $this->postJson($client, $token, $uri);
+            self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
+            $messages = array_values(array_filter(array_map(static fn ($e) => $e->getMessage(), $transport->getSent()),
+                static fn ($m) => $m instanceof \App\Message\SendTemplatedEmailMessage));
+            self::assertCount(1, $messages);
+            self::assertCount(1, $messages[0]->documents);
+
+            return \App\Notification\DocumentReference::fromArray($messages[0]->documents[0]);
+        };
+
+        $a = $document();
+
+        // Unrelated: another instrumentist's mission on the same site and period (entities
+        // reloaded — the request cleared the identity map).
+        $this->makeMission($this->em->find(PlanningVersion::class, $version->getId()), $this->em->find(Hospital::class, $site->getId()),
+            $this->em->find(User::class, $surgeon->getId()), $this->em->find(User::class, $manager->getId()), MissionStatus::ASSIGNED,
+            $this->em->find(User::class, $other->getId()));
+        $b = $document();
+        self::assertSame($a->documentId, $b->documentId, 'same frozen document');
+        self::assertSame($a->sha256, $b->sha256, 'same bytes as the first send');
+
+        // Her own planning changes: a new document.
+        $hers = $this->em->find(Mission::class, $hers->getId());
+        $hers->setEndAt($hers->getEndAt()->modify('+1 hour'));
+        $this->em->flush();
+        $c = $document();
+        self::assertNotSame($a->documentId, $c->documentId, 'her planning changed: a new PDF');
+
+        $conn = $this->em->getConnection();
+        self::assertSame('IMMUTABLE_EVIDENCE', $conn->fetchOne('SELECT retention_class FROM generated_document WHERE id = ?', [$a->documentId]));
+        self::assertStringStartsWith('planning_personal:INSTRUMENTIST:' . $instr->getId() . ':', (string) $conn->fetchOne('SELECT source_key FROM generated_document WHERE id = ?', [$a->documentId]));
     }
 
     public function test_resend_never_notifies_anyone_other_than_the_target(): void

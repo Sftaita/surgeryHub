@@ -41,6 +41,10 @@ final class MissionMapper
     public function toDetailDto(Mission $m, User $viewer): MissionDetailDto
     {
         $lastManualReminder = $this->reminders->lastManualReminder($m);
+        $isManagerViewer = in_array('ROLE_MANAGER', $viewer->getRoles(), true) || in_array('ROLE_ADMIN', $viewer->getRoles(), true);
+        // D-143 — historique des relances automatiques (J+1/J+2/J+4), manager uniquement.
+        $automaticReminders = $isManagerViewer ? $this->reminders->reminderHistory($m) : [];
+        $lastAutomatic = $automaticReminders !== [] ? $automaticReminders[array_key_last($automaticReminders)] : null;
 
         return new MissionDetailDto(
             id: (int) $m->getId(),
@@ -58,10 +62,15 @@ final class MissionMapper
             noMaterialComment: $m->getNoMaterialComment(),
             submittedWithoutMaterial: $m->isSubmittedWithoutMaterial(),
             covered: $this->coverage->isCovered($m),
-            automaticReminderSentAt: $m->getEncodingReminderSentAt()?->format(\DateTimeInterface::ATOM),
+            // D-143 — dernière relance automatique (historique mission_encoding_reminder) ;
+            // repli sur l'ancien marqueur D-083 pour une mission relancée avant D-143.
+            automaticReminderSentAt: $lastAutomatic['sentAt'] ?? $m->getEncodingReminderSentAt()?->format(\DateTimeInterface::ATOM),
             nextAutomaticReminderAt: $this->reminders->nextAutomaticReminderAt($m),
             lastManualReminderAt: $lastManualReminder !== null ? $lastManualReminder['at'] : null,
             lastManualReminderByName: $lastManualReminder !== null ? $lastManualReminder['byName'] : null,
+            lastManualReminderChannel: $lastManualReminder !== null ? $lastManualReminder['channel'] : null,
+            automaticReminders: $automaticReminders,
+            submittedAt: $m->getSubmittedAt()?->format(\DateTimeInterface::ATOM),
             targetedOffer: $this->targetedOffer($m),
         );
     }

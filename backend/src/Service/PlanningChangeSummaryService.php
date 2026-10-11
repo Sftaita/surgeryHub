@@ -5,324 +5,297 @@ namespace App\Service;
 use App\Entity\Mission;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
-use App\Message\SendBillingEmailMessage;
+use App\Enum\NotificationType;
+use App\Notification\DocumentReference;
+use App\Notification\DocumentStore;
+use App\Notification\PlanningDocumentIdentity;
+use App\Notification\EmailContent;
+use App\Notification\NotificationDispatcher;
+use App\Notification\MissionCommunicationSpec;
+use App\Notification\NotificationIntent;
+use App\Enum\MissionCommunicationSource;
+use App\Notification\PushContent;
 use App\Twig\DateExtension;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
-use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * Sends personalized "what changed" recap emails to affected instrumentists and
- * surgeons, comparing a PlanningVersion's current state against its diff baseline.
+ * Personalized "what changed" recap of a Planning V2 Modification batch, one per affected
+ * instrumentist / surgeon (only THEIR OWN changes), with their up-to-date planning PDF.
+ * Never sent during an initial deployment (PlanningDeployPdfsMessageHandler sends the
+ * planning itself), only after a published planning changes — see docs/api.md §26.6c.
  *
- * This is a standalone capability — NOT part of the initial deploy flow. Initial deploy
- * sends exactly one email per recipient (see PlanningDeployPdfsMessageHandler); this
- * service is for a *later* trigger, once a published planning changes (reassignment,
- * cancellation, added mission, etc.), per the "Planning Change Summary" policy: never
- * sent during initial deployment, only after. Wired up since Batch 15K by
- * PlanningModificationService, the only caller — Planning V2 Modification mode's
- * apply-modifications endpoint. See docs/api.md §26.6c.
+ * H3 (D-129): no longer an opaque SendBillingEmailMessage path. The recap is a
+ * PLANNING_CHANGE_SUMMARY notification sent through NotificationDispatcher — decision in
+ * notification_dispatch, in-app / email / push per preferences, each channel traced in
+ * outbound_notification, idempotent per batch — and it runs asynchronously, from
+ * PlanningModificationAppliedMessageHandler, only once the whole batch has committed.
+ * The recap IS the information of the people whose planning changed (an instrumentist the
+ * batch removed from a mission included): no second per-mission notification is sent to
+ * them for the same batch.
+ *
+ * recipients() is pure: the synchronous apply() uses it to report, before anything is
+ * sent, exactly who will be informed.
  */
 class PlanningChangeSummaryService
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly MessageBusInterface $bus,
-        private readonly PlanningDiffService $diffService,
         private readonly PdfService $pdfService,
         private readonly LoggerInterface $logger,
         private readonly DateExtension $dateExtension,
-        #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
-        private readonly string $fromAddress,
-        #[Autowire('%env(string:MAILER_FROM_NAME)%')]
-        private readonly string $fromName,
+        private readonly NotificationDispatcher $dispatcher,
+        private readonly NotificationService $notificationService,
+        private readonly NotificationTargetResolver $targetResolver,
+        #[Autowire('%env(string:FRONTEND_URL)%')]
+        private readonly string $frontendUrl,
+        private readonly DocumentStore $documents,
     ) {}
 
     /**
-     * @param Mission[]            $missions         All OPEN/ASSIGNED missions in the period
-     * @param array<int,Mission[]> $byInstrumentist  Missions grouped by instrumentist ID
-     * @param array<int,Mission[]> $bySurgeon        Missions grouped by surgeon ID
-     * @param int[]                $openUncoveredIds Mission IDs published as pool (no instrumentist)
-     * @param array{added:array<array>,removed:array<array>,modified:array<array>}|null $precomputedDiff
-     *        When null (default, existing behaviour): diffs $versionId against the previously
-     *        ACTIVE/ARCHIVED version for the same site/period, via PlanningDiffService::diff().
-     *        Pass a diff explicitly for a different baseline — e.g. Planning V2 Modification
-     *        mode diffs the *same* version against a before-edit-session snapshot of itself,
-     *        via PlanningDiffService::computeDiffFromSnapshots(), not diff().
-     * @return int[] Distinct user IDs an email was actually dispatched to (or attempted —
-     *         a dispatch failure is still counted here, it's logged separately by
-     *         dispatchOrLog(); this reflects "who this operation targeted", not delivery
-     *         confirmation). Each recipient appears at most once by construction: a person
-     *         is never in both $byInstrumentist and $bySurgeon (roles are exclusive), and
-     *         each of those maps has at most one entry per person — so a caller can use
-     *         count() on this directly as "how many people were notified" without its own
-     *         deduplication.
+     * Who is affected by $diff: every instrumentist / surgeon with at least one of THEIR OWN
+     * missions added, removed or modified (an instrumentist moved away from a mission
+     * included, even if she has no mission left in the scope).
+     *
+     * @param array{added: array<array>, removed: array<array>, modified: array<array>} $diff
+     * @return array{instrumentists: list<int>, surgeons: list<int>}
      */
-    public function sendChangeSummaryEmails(
-        int $versionId,
-        array $missions,
-        array $byInstrumentist,
-        array $bySurgeon,
-        array $openUncoveredIds,
-        ?string $globalPdf,
-        ?string $globalFilename,
-        \DateTimeImmutable $fromDate,
-        \DateTimeImmutable $toDate,
-        ?array $precomputedDiff = null,
-    ): array {
-        $version = $this->em->find(PlanningVersion::class, $versionId);
-        if ($version === null) {
-            return [];
+    public function recipients(array $diff): array
+    {
+        $instr = [];
+        $surg  = [];
+        foreach (['added', 'removed'] as $key) {
+            foreach ($diff[$key] ?? [] as $m) {
+                if (($m['instrumentistId'] ?? null) !== null) {
+                    $instr[(int) $m['instrumentistId']] = true;
+                }
+                if (($m['surgeonId'] ?? null) !== null) {
+                    $surg[(int) $m['surgeonId']] = true;
+                }
+            }
+        }
+        foreach ($diff['modified'] ?? [] as $entry) {
+            foreach ([$entry['mission']['instrumentistId'] ?? null, $entry['changes']['instrumentist']['from']['id'] ?? null, $entry['changes']['instrumentist']['to']['id'] ?? null] as $iid) {
+                if ($iid !== null) {
+                    $instr[(int) $iid] = true;
+                }
+            }
+            if (($entry['mission']['surgeonId'] ?? null) !== null) {
+                $surg[(int) $entry['mission']['surgeonId']] = true;
+            }
         }
 
-        $diff = $precomputedDiff ?? $this->diffService->diff($version);
+        return ['instrumentists' => array_keys($instr), 'surgeons' => array_keys($surg)];
+    }
 
-        // Skip entirely if the planning didn't change
+    /**
+     * Sends one PLANNING_CHANGE_SUMMARY per affected person through the dispatcher.
+     *
+     * @param array{added: array<array>, removed: array<array>, modified: array<array>} $diff
+     * @param Mission[] $scopeMissions every current mission of the version's operational scope (post-batch)
+     * @return list<int> user ids a recap was dispatched to
+     */
+    public function dispatchSummaries(PlanningVersion $version, array $diff, array $scopeMissions, string $batchKey): array
+    {
         if (empty($diff['added']) && empty($diff['removed']) && empty($diff['modified'])) {
             return [];
         }
 
-        $notifiedUserIds = [];
-
+        $fromDate = $version->getPeriodStart();
+        $toDate   = $version->getPeriodEnd();
+        $period   = sprintf('%s %s', $this->dateExtension->frenchMonthLong($fromDate), $fromDate->format('Y'));
         // Deliberately distinct from the initial-deploy subject ("Planning du {from} au {to}",
-        // PlanningDeployPdfsMessageHandler, D-058) — this is a redeploy-after-edit recap, and
-        // the subject must tell the recipient that upfront, before they open the email. Same
-        // wording for surgeons and instrumentists (one consistent "what happened" signal).
-        $subject = sprintf('Modification de votre planning – %s %s',
-            $this->dateExtension->frenchMonthLong($fromDate), $fromDate->format('Y'));
+        // D-058): this is an after-edit recap and the subject says so upfront.
+        $subject  = sprintf('Modification de votre planning – %s', $period);
 
-        // Correlates every log line produced by this single sendChangeSummaryEmails() call
-        // (one per redeploy/change-summary trigger) — there is no PlanningDeployment record
-        // for this flow (Modification mode mutates Missions directly, D-052), so this is the
-        // closest equivalent to a "redeployment id" for log correlation.
-        $batchId = bin2hex(random_bytes(8));
-
-        // ── Per-instrumentist: only THEIR OWN diff-relevant changes ───────────
-        // Gated strictly on the diff — NOT on "any open mission at my site", which would
-        // notify every instrumentist who happens to share a site with an unrelated pool
-        // mission (that's the existing, separate OPEN_MISSION_AVAILABLE pool-eligibility
-        // notification — Batch 15C/15D — not this targeted "what changed for you" recap).
-        foreach ($byInstrumentist as $instrId => $instrMissions) {
-            $myAdded = array_values(array_filter(
-                $diff['added'],
-                fn(array $m) => ($m['instrumentistId'] ?? null) === $instrId,
-            ));
-            $myRemoved = array_values(array_filter(
-                $diff['removed'],
-                fn(array $m) => ($m['instrumentistId'] ?? null) === $instrId,
-            ));
-            $myModified = array_values(array_filter(
-                $diff['modified'],
-                fn(array $entry) =>
-                    ($entry['mission']['instrumentistId'] ?? null) === $instrId ||
-                    ($entry['changes']['instrumentist']['from']['id'] ?? null) === $instrId ||
-                    ($entry['changes']['instrumentist']['to']['id'] ?? null) === $instrId,
-            ));
-
-            if (empty($myAdded) && empty($myRemoved) && empty($myModified)) {
-                continue;
+        $byInstrumentist = [];
+        $bySurgeon       = [];
+        foreach ($scopeMissions as $mission) {
+            if ($mission->getInstrumentist() !== null) {
+                $byInstrumentist[$mission->getInstrumentist()->getId()][] = $mission;
             }
+            if ($mission->getSurgeon() !== null) {
+                $bySurgeon[$mission->getSurgeon()->getId()][] = $mission;
+            }
+        }
 
+        $recipients = $this->recipients($diff);
+        $notified   = [];
+
+        foreach ($recipients['instrumentists'] as $instrId) {
+            $mine = $this->changesOf($diff, static fn (array $m) => ($m['instrumentistId'] ?? null) === $instrId,
+                static fn (array $e) => ($e['mission']['instrumentistId'] ?? null) === $instrId
+                    || ($e['changes']['instrumentist']['from']['id'] ?? null) === $instrId
+                    || ($e['changes']['instrumentist']['to']['id'] ?? null) === $instrId);
             $instrumentist = $this->em->find(User::class, $instrId);
-            if ($instrumentist === null || !$instrumentist->getEmail()) {
+            if ($instrumentist === null || $mine === null) {
                 continue;
             }
 
-            // Attach the instrumentist's own up-to-date planning (all their CURRENT missions
-            // in this version, post-mutation — not just the diff) alongside the recap, same
-            // template/mechanism as the initial deploy email (PlanningDeployPdfsMessageHandler).
-            [$pdfBase64, $pdfFilename] = $this->buildPersonalPdfOrLog(
-                'pdf/planning_instrumentist.html.twig',
-                ['instrumentist' => $instrumentist, 'missions' => $instrMissions, 'periodFrom' => $fromDate, 'periodTo' => $toDate],
-                sprintf('planning-%s-%s-%s.pdf', $this->slug($instrumentist), $fromDate->format('Y-m-d'), $toDate->format('Y-m-d')),
-                $versionId, $batchId, $instrId, 'instrumentist',
-            );
+            $attachment = $this->pdfOrNull('pdf/planning_instrumentist.html.twig',
+                ['instrumentist' => $instrumentist, 'missions' => $byInstrumentist[$instrId] ?? [], 'periodFrom' => $fromDate, 'periodTo' => $toDate],
+                sprintf('planning-%s-%s-%s.pdf', $this->slug($instrumentist), $fromDate->format('Y-m-d'), $toDate->format('Y-m-d')), $version, $instrId);
 
-            $this->dispatchOrLog(
-                new SendBillingEmailMessage(
-                    to: $instrumentist->getEmail(),
-                    cc: [],
-                    subject: $subject,
-                    fromAddress: $this->fromAddress,
-                    fromName: $this->fromName,
-                    htmlTemplate: 'emails/planning_change_summary_instrumentist.html.twig',
-                    context: [
-                        'instrumentist' => $instrumentist,
-                        'periodFrom'    => $fromDate,
-                        'periodTo'      => $toDate,
-                        'added'         => $myAdded,
-                        'removed'       => $myRemoved,
-                        'modified'      => $myModified,
-                        'uncovered'     => [],
-                    ],
-                    attachmentBase64: $pdfBase64,
-                    attachmentFilename: $pdfFilename,
-                ),
-                versionId: $versionId,
-                batchId: $batchId,
-                recipientId: $instrId,
-                recipientRole: 'instrumentist',
-            );
-            $notifiedUserIds[] = $instrId;
+            $this->dispatch($instrumentist, $version, $batchKey, $period, $subject, 'emails/planning_change_summary_instrumentist.html.twig', [
+                'instrumentist' => $instrumentist,
+                'periodFrom'    => $fromDate,
+                'periodTo'      => $toDate,
+                'added'         => $mine['added'],
+                'removed'       => $mine['removed'],
+                'modified'      => $mine['modified'],
+                'uncovered'     => [],
+            ], $mine, $attachment, self::communicated($mine, 'instrumentistId', $instrId, MissionCommunicationSpec::ROLE_INSTRUMENTIST));
+            $notified[] = $instrId;
         }
 
-        // ── Per-surgeon: only THEIR OWN diff-relevant changes ─────────────────
-        // Mirrors the instrumentist loop above: a surgeon is only notified when one of
-        // THEIR OWN interventions is in the diff (added, removed, or modified — instrumentist
-        // change, horaire/site/type change, cancellation). A surgeon with unrelated open
-        // missions elsewhere in the version, or with no diff entry at all, receives nothing.
-        foreach ($bySurgeon as $surgeonId => $surgeonMissions) {
-            $myAdded = array_values(array_filter(
-                $diff['added'],
-                fn(array $m) => ($m['surgeonId'] ?? null) === $surgeonId,
-            ));
-            $myRemoved = array_values(array_filter(
-                $diff['removed'],
-                fn(array $m) => ($m['surgeonId'] ?? null) === $surgeonId,
-            ));
-            $myModified = array_values(array_filter(
-                $diff['modified'],
-                fn(array $entry) => ($entry['mission']['surgeonId'] ?? null) === $surgeonId,
-            ));
-
-            if (empty($myAdded) && empty($myRemoved) && empty($myModified)) {
-                continue;
-            }
-
+        foreach ($recipients['surgeons'] as $surgeonId) {
+            $mine = $this->changesOf($diff, static fn (array $m) => ($m['surgeonId'] ?? null) === $surgeonId,
+                static fn (array $e) => ($e['mission']['surgeonId'] ?? null) === $surgeonId);
             $surgeon = $this->em->find(User::class, $surgeonId);
-            if ($surgeon === null || !$surgeon->getEmail()) {
+            if ($surgeon === null || $mine === null) {
                 continue;
             }
 
-            // Of THIS surgeon's own newly-added missions, the ones still without an
-            // instrumentist are surfaced separately ("needs an instrumentist") — never a
-            // pre-existing unrelated open mission from elsewhere in the version.
-            $myStillUncovered = array_values(array_filter(
-                $myAdded,
-                fn(array $m) => ($m['instrumentistId'] ?? null) === null,
-            ));
+            $attachment = $this->pdfOrNull('pdf/planning_surgeon.html.twig',
+                ['surgeon' => $surgeon, 'missions' => $bySurgeon[$surgeonId] ?? [], 'periodFrom' => $fromDate, 'periodTo' => $toDate],
+                sprintf('planning-chirurgien-%s-%s-%s.pdf', $this->slug($surgeon), $fromDate->format('Y-m-d'), $toDate->format('Y-m-d')), $version, $surgeonId);
 
-            // Attach the surgeon's own up-to-date planning (all their CURRENT missions in
-            // this version, post-mutation) — same template/mechanism as the initial deploy.
-            [$pdfBase64, $pdfFilename] = $this->buildPersonalPdfOrLog(
-                'pdf/planning_surgeon.html.twig',
-                ['surgeon' => $surgeon, 'missions' => $surgeonMissions, 'periodFrom' => $fromDate, 'periodTo' => $toDate],
-                sprintf('planning-chirurgien-%s-%s-%s.pdf', $this->slug($surgeon), $fromDate->format('Y-m-d'), $toDate->format('Y-m-d')),
-                $versionId, $batchId, $surgeonId, 'surgeon',
-            );
-
-            $this->dispatchOrLog(
-                new SendBillingEmailMessage(
-                    to: $surgeon->getEmail(),
-                    cc: [],
-                    subject: $subject,
-                    fromAddress: $this->fromAddress,
-                    fromName: $this->fromName,
-                    htmlTemplate: 'emails/planning_change_summary_surgeon.html.twig',
-                    context: [
-                        'surgeon'    => $surgeon,
-                        'periodFrom' => $fromDate,
-                        'periodTo'   => $toDate,
-                        'added'      => $myAdded,
-                        'removed'    => $myRemoved,
-                        'modified'   => $myModified,
-                        'uncovered'  => $myStillUncovered,
-                    ],
-                    attachmentBase64: $pdfBase64,
-                    attachmentFilename: $pdfFilename,
-                    extraAttachments: $globalPdf !== null
-                        ? [['base64' => base64_encode($globalPdf), 'filename' => $globalFilename]]
-                        : [],
-                ),
-                versionId: $versionId,
-                batchId: $batchId,
-                recipientId: $surgeonId,
-                recipientRole: 'surgeon',
-            );
-            $notifiedUserIds[] = $surgeonId;
+            $this->dispatch($surgeon, $version, $batchKey, $period, $subject, 'emails/planning_change_summary_surgeon.html.twig', [
+                'surgeon'    => $surgeon,
+                'periodFrom' => $fromDate,
+                'periodTo'   => $toDate,
+                'added'      => $mine['added'],
+                'removed'    => $mine['removed'],
+                'modified'   => $mine['modified'],
+                // Of THIS surgeon's own newly-added missions, the ones still uncovered.
+                'uncovered'  => array_values(array_filter($mine['added'], static fn (array $m) => ($m['instrumentistId'] ?? null) === null)),
+            ], $mine, $attachment, self::communicated($mine, 'surgeonId', $surgeonId, MissionCommunicationSpec::ROLE_SURGEON));
+            $notified[] = $surgeonId;
         }
 
-        return array_values(array_unique($notifiedUserIds));
+        return $notified;
     }
 
     /**
-     * Dispatches a change-summary email; a dispatch failure is never allowed to disappear
-     * silently. The planning mutation itself is not rolled back on notification failure —
-     * only the notification attempt is logged, with enough context to find and resend it.
+     * @param array{added: array<array>, removed: array<array>, modified: array<array>} $diff
+     * @return array{added: list<array>, removed: list<array>, modified: list<array>}|null null when nothing concerns this person
      */
-    private function dispatchOrLog(
-        SendBillingEmailMessage $message,
-        int $versionId,
-        string $batchId,
-        int $recipientId,
-        string $recipientRole,
-    ): void {
+    private function changesOf(array $diff, callable $ownsMission, callable $ownsModification): ?array
+    {
+        $mine = [
+            'added'    => array_values(array_filter($diff['added'] ?? [], $ownsMission)),
+            'removed'  => array_values(array_filter($diff['removed'] ?? [], $ownsMission)),
+            'modified' => array_values(array_filter($diff['modified'] ?? [], $ownsModification)),
+        ];
+
+        return ($mine['added'] === [] && $mine['removed'] === [] && $mine['modified'] === []) ? null : $mine;
+    }
+
+    /**
+     * @param array<string, mixed>                                                    $context
+     * @param array{added: list<array>, removed: list<array>, modified: list<array>} $mine
+     */
+    private function dispatch(User $recipient, PlanningVersion $version, string $batchKey, string $period, string $subject, string $template, array $context, array $mine, ?DocumentReference $attachment, ?MissionCommunicationSpec $communicates = null): void
+    {
+        $changes = count($mine['added']) + count($mine['removed']) + count($mine['modified']);
+        $path    = $this->targetResolver->resolve(NotificationType::PLANNING_CHANGE_SUMMARY, null, $recipient);
+
         try {
-            $this->bus->dispatch($message);
+            $this->dispatcher->dispatch(new NotificationIntent(
+                recipient: $recipient,
+                type: NotificationType::PLANNING_CHANGE_SUMMARY,
+                inAppPayload: [
+                    'planningVersionId' => $version->getId(),
+                    'periodLabel'       => $period,
+                    'addedCount'        => count($mine['added']),
+                    'removedCount'      => count($mine['removed']),
+                    'modifiedCount'     => count($mine['modified']),
+                ],
+                email: new EmailContent(
+                    subject: $subject,
+                    htmlTemplate: $template,
+                    context: $context + [
+                        'missionUrl' => $path !== null ? rtrim($this->frontendUrl, '/') . $path : null,
+                        'notificationPreferencesUrl' => $this->notificationService->notificationPreferencesUrl($recipient),
+                    ],
+                    attachments: $attachment !== null ? [$attachment] : [],
+                ),
+                push: new PushContent(
+                    'Votre planning a été modifié',
+                    sprintf('%d changement(s) sur votre planning de %s.', $changes, $period),
+                    ['type' => 'PLANNING_CHANGE_SUMMARY', 'url' => $path],
+                ),
+                episodeRef: 'planning_modification:' . $batchKey,
+                subjectType: 'PlanningVersion',
+                subjectId: $version->getId(),
+                communicates: $communicates,
+            ));
         } catch (\Throwable $e) {
-            $this->logger->error('Failed to dispatch planning change-summary notification', [
-                'planningVersionId' => $versionId,
-                'redeploymentBatchId' => $batchId,
-                'recipientId'    => $recipientId,
-                'recipientEmail' => $message->to,
-                'recipientRole'  => $recipientRole,
-                'summaryType'    => 'planning_change_summary',
-                'template'       => $message->htmlTemplate,
-                'exceptionClass' => $e::class,
-                'exceptionMessage' => $e->getMessage(),
-                'exceptionTrace' => $e->getTraceAsString(),
+            // One recipient's failure never prevents the next one (logged, never silent).
+            $this->logger->error('Planning change-summary dispatch failed', [
+                'planningVersionId' => $version->getId(), 'batchKey' => $batchKey,
+                'recipientId' => $recipient->getId(), 'exceptionClass' => $e::class, 'exceptionMessage' => $e->getMessage(),
             ]);
         }
     }
 
     /**
-     * Renders the recipient's personal up-to-date planning PDF (same templates/mechanism as
-     * PlanningDeployPdfsMessageHandler's initial-deploy emails). A rendering failure must not
-     * block the change-summary email itself — it's logged and the email is sent without the
-     * attachment rather than lost entirely.
+     * H4 (D-130) — the missions this recap presents as the recipient's own after the batch
+     * (added to her, or modified while she still holds them) — counted as communicated
+     * (MODIFICATION) once a channel reaches her. Removed ones are withdrawals, not this.
      *
-     * @return array{0: ?string, 1: ?string} [base64Pdf, filename] — both null on failure.
+     * @param array{added: list<array>, removed: list<array>, modified: list<array>} $mine
      */
-    private function buildPersonalPdfOrLog(
-        string $template,
-        array $context,
-        string $filename,
-        int $versionId,
-        string $batchId,
-        int $recipientId,
-        string $recipientRole,
-    ): array {
+    private static function communicated(array $mine, string $key, int $userId, string $role): ?MissionCommunicationSpec
+    {
+        $ids = [];
+        foreach ($mine['added'] as $m) {
+            if (($m[$key] ?? null) === $userId && ($m['missionId'] ?? null) !== null) {
+                $ids[] = (int) $m['missionId'];
+            }
+        }
+        foreach ($mine['modified'] as $e) {
+            if (($e['mission'][$key] ?? null) === $userId && ($e['mission']['missionId'] ?? null) !== null) {
+                $ids[] = (int) $e['mission']['missionId'];
+            }
+        }
+
+        return $ids === [] ? null : new MissionCommunicationSpec(MissionCommunicationSource::MODIFICATION, $role, array_values(array_unique($ids)));
+    }
+
+    /**
+     * The recipient's up-to-date planning PDF. A rendering failure never blocks the recap:
+     * logged, and the email goes without the attachment. H5a (§16): stored once
+     * (GeneratedDocument), attached by reference — never bytes in a message or a record.
+     */
+    private function pdfOrNull(string $template, array $context, string $filename, PlanningVersion $version, int $recipientId): ?DocumentReference
+    {
         try {
-            $pdf = $this->pdfService->generateFromTemplate($template, $context);
-            return [base64_encode($pdf), $filename];
+            $isSurgeon = str_contains($template, 'surgeon');
+            // H5b (D-132) — the up-to-date personal planning: the same identity as the deploy /
+            // resend one, so an unchanged planning is never rendered (and sent) as a new document.
+            $identity = PlanningDocumentIdentity::personal(
+                $isSurgeon ? PlanningDocumentIdentity::ROLE_SURGEON : PlanningDocumentIdentity::ROLE_INSTRUMENTIST,
+                $isSurgeon ? $context['surgeon'] : $context['instrumentist'], $context['periodFrom'], $context['periodTo'], $context['missions'],
+            );
+
+            return $this->documents->storeOnce($isSurgeon ? 'PLANNING_SURGEON' : 'PLANNING_INSTRUMENTIST', $identity['sourceKey'], $identity['fingerprint'],
+                $filename, fn () => $this->pdfService->generateFromTemplate($template, $context));
         } catch (\Throwable $e) {
             $this->logger->error('Failed to generate personal planning PDF for change-summary notification', [
-                'planningVersionId'   => $versionId,
-                'redeploymentBatchId' => $batchId,
-                'recipientId'         => $recipientId,
-                'recipientRole'       => $recipientRole,
-                'summaryType'         => 'planning_change_summary',
-                'template'            => $template,
-                'exceptionClass'      => $e::class,
-                'exceptionMessage'    => $e->getMessage(),
-                'exceptionTrace'      => $e->getTraceAsString(),
+                'planningVersionId' => $version->getId(), 'recipientId' => $recipientId, 'template' => $template,
+                'exceptionClass' => $e::class, 'exceptionMessage' => $e->getMessage(),
             ]);
-            return [null, null];
+
+            return null;
         }
     }
 
     private function slug(User $user): string
     {
-        return strtolower(str_replace(' ', '-', $this->displayName($user)));
-    }
-
-    private function displayName(?User $user): string
-    {
-        if ($user === null) {
-            return '';
-        }
         $name = trim(($user->getFirstname() ?? '') . ' ' . ($user->getLastname() ?? ''));
-        return $name !== '' ? $name : ($user->getEmail() ?? '');
+
+        return strtolower(str_replace(' ', '-', $name !== '' ? $name : 'utilisateur-' . $user->getId()));
     }
 }

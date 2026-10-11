@@ -17,6 +17,7 @@ final class MissionExecutionDto
         public readonly ?string $actualStartAt,
         public readonly ?string $actualEndAt,
         public readonly ?int $actualDurationMinutes,
+        public readonly ?int $breakMinutes,
         public readonly ?string $hoursSource,
         public readonly int $effectiveDurationMinutes,
         public readonly string $effectiveDurationSource,

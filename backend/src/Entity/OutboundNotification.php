@@ -2,6 +2,7 @@
 
 namespace App\Entity;
 
+use App\Enum\NotificationDeliverySkipReason;
 use App\Enum\OutboundNotificationChannel;
 use App\Enum\OutboundNotificationFallbackReason;
 use App\Enum\OutboundNotificationStatus;
@@ -32,6 +33,8 @@ use Doctrine\ORM\Mapping as ORM;
     new ORM\Index(name: 'idx_outbound_notification_type', columns: ['notification_type']),
     new ORM\Index(name: 'idx_outbound_notification_mission', columns: ['mission_id']),
 ])]
+#[ORM\Index(name: 'idx_outbound_notification_correlation', columns: ['correlation_id'])]
+#[ORM\UniqueConstraint(name: 'uniq_outbound_notification_group_key', columns: ['group_key'])]
 class OutboundNotification
 {
     #[ORM\Id]
@@ -40,8 +43,17 @@ class OutboundNotification
     private ?int $id = null;
 
     #[ORM\ManyToOne]
-    #[ORM\JoinColumn(name: 'recipient_user_id', nullable: false)]
+    /**
+     * H5b (D-132) — nullable: the common delivery layer also carries emails to addresses that
+     * are not SurgicalHub users (firm billing address, D-114 block management): no fake User,
+     * the address in recipientAddress and a readable recipientLabel instead.
+     */
+    #[ORM\JoinColumn(name: 'recipient_user_id', nullable: true)]
     private ?User $recipientUser = null;
+
+    /** H5b (D-132) — who the delivery is for when it is not a user ("Firme X — facturation", "Gestion du bloc — CHU"). */
+    #[ORM\Column(name: 'recipient_label', length: 120, nullable: true)]
+    private ?string $recipientLabel = null;
 
     #[ORM\Column(enumType: OutboundNotificationChannel::class)]
     private ?OutboundNotificationChannel $channel = null;
@@ -58,6 +70,14 @@ class OutboundNotification
 
     #[ORM\Column(nullable: true)]
     private ?string $subject = null;
+
+    /**
+     * H5a — the address the email was really handed to (EMAIL rows only). Differs from the
+     * recipient's current address when it was explicit (email change: previous address) or
+     * when the address changed since. Null for in-app / push and for pre-H5a rows.
+     */
+    #[ORM\Column(name: 'recipient_address', length: 180, nullable: true)]
+    private ?string $recipientAddress = null;
 
     #[ORM\Column(type: 'text', nullable: true)]
     private ?string $bodyText = null;
@@ -109,6 +129,27 @@ class OutboundNotification
     #[ORM\Column(enumType: OutboundNotificationFallbackReason::class, nullable: true)]
     private ?OutboundNotificationFallbackReason $fallbackReason = null;
 
+    /** H2 (D-128) — why this channel was deliberately not used (status SKIPPED only). */
+    #[ORM\Column(name: 'skip_reason', length: 32, nullable: true, enumType: NotificationDeliverySkipReason::class)]
+    private ?NotificationDeliverySkipReason $skipReason = null;
+
+    /** H2 (D-128) — correlation of the operation that produced this delivery (activity_event). */
+    #[ORM\Column(name: 'correlation_id', length: 36, nullable: true, options: ['fixed' => true])]
+    private ?string $correlationId = null;
+
+    /**
+     * H2 (D-128) — set only for a grouped delivery (NotificationDispatchMode::BATCH): one
+     * email / push per (type, recipient, channel, correlation), shared by every dispatch of
+     * the operation. UNIQUE: a Messenger retry finds it instead of creating a second email.
+     */
+    #[ORM\Column(name: 'group_key', length: 191, nullable: true)]
+    private ?string $groupKey = null;
+
+    /** H2 (D-128) — the in-app NotificationEvent this IN_APP delivery created. */
+    #[ORM\ManyToOne(targetEntity: NotificationEvent::class)]
+    #[ORM\JoinColumn(name: 'notification_event_id', nullable: true, onDelete: 'SET NULL')]
+    private ?NotificationEvent $notificationEvent = null;
+
     /** @var Collection<int, OutboundNotificationAttempt> */
     #[ORM\OneToMany(targetEntity: OutboundNotificationAttempt::class, mappedBy: 'notification', cascade: ['persist'], orphanRemoval: true)]
     #[ORM\OrderBy(['attemptNumber' => 'ASC'])]
@@ -128,7 +169,9 @@ class OutboundNotification
     public function getId(): ?int { return $this->id; }
 
     public function getRecipientUser(): ?User { return $this->recipientUser; }
-    public function setRecipientUser(User $recipientUser): static { $this->recipientUser = $recipientUser; return $this; }
+    public function setRecipientUser(?User $recipientUser): static { $this->recipientUser = $recipientUser; return $this; }
+    public function getRecipientLabel(): ?string { return $this->recipientLabel; }
+    public function setRecipientLabel(?string $label): static { $this->recipientLabel = $label !== null ? mb_substr($label, 0, 120) : null; return $this; }
 
     public function getChannel(): ?OutboundNotificationChannel { return $this->channel; }
     public function setChannel(OutboundNotificationChannel $channel): static { $this->channel = $channel; return $this; }
@@ -141,6 +184,9 @@ class OutboundNotification
 
     public function getTitle(): ?string { return $this->title; }
     public function setTitle(?string $title): static { $this->title = $title; return $this; }
+
+    public function getRecipientAddress(): ?string { return $this->recipientAddress; }
+    public function setRecipientAddress(?string $address): static { $this->recipientAddress = $address !== null ? mb_substr($address, 0, 180) : null; return $this; }
 
     public function getSubject(): ?string { return $this->subject; }
     public function setSubject(?string $subject): static { $this->subject = $subject; return $this; }
@@ -191,6 +237,18 @@ class OutboundNotification
     public function setFallbackReason(?OutboundNotificationFallbackReason $fallbackReason): static { $this->fallbackReason = $fallbackReason; return $this; }
 
     public function isFallback(): bool { return $this->fallbackOf !== null; }
+
+    public function getSkipReason(): ?NotificationDeliverySkipReason { return $this->skipReason; }
+    public function setSkipReason(?NotificationDeliverySkipReason $skipReason): static { $this->skipReason = $skipReason; return $this; }
+
+    public function getCorrelationId(): ?string { return $this->correlationId; }
+    public function setCorrelationId(?string $correlationId): static { $this->correlationId = $correlationId; return $this; }
+
+    public function getGroupKey(): ?string { return $this->groupKey; }
+    public function setGroupKey(?string $groupKey): static { $this->groupKey = $groupKey; return $this; }
+
+    public function getNotificationEvent(): ?NotificationEvent { return $this->notificationEvent; }
+    public function setNotificationEvent(?NotificationEvent $notificationEvent): static { $this->notificationEvent = $notificationEvent; return $this; }
 
     /** @return Collection<int, OutboundNotificationAttempt> */
     public function getAttempts(): Collection { return $this->attempts; }

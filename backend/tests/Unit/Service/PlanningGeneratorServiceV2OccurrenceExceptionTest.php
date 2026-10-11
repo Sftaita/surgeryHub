@@ -78,6 +78,7 @@ class PlanningGeneratorServiceV2OccurrenceExceptionTest extends TestCase
             $this->em,
             $this->createMock(\App\Service\PlanningConflictDetectionService::class),
             $this->createMock(\App\Service\MissionEligibilityService::class),
+            $this->createMock(\App\Activity\Recorder\PlanningActivityRecorder::class),
         );
     }
 

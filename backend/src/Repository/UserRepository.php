@@ -300,4 +300,34 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
         /** @var list<User> $res */
         return $qb->getQuery()->getResult();
     }
+
+    /**
+     * D-144 — destinataires opérationnels d'une alerte de suivi (escalade d'encodage J+4).
+     *
+     * Aucun périmètre de responsabilité manager ↔ site / firme / équipe n'existe dans le
+     * modèle (vérifié le 2026-10-11) : tous les managers et admins ont les mêmes droits sur le
+     * suivi des encodages. On retient donc les comptes manager/admin ACTIFS, ayant une
+     * adresse, à l'exclusion des comptes techniques du domaine réservé
+     * `surgicalhub.internal` (compte système, comptes jetables de recette/déploiement —
+     * convention documentée dans docs/mail-safe-mode.md). Un utilisateur n'apparaît qu'une
+     * fois.
+     *
+     * @return list<User>
+     */
+    public function findOperationalManagers(): array
+    {
+        $unique = [];
+        foreach ($this->findManagersAndAdmins(true) as $user) {
+            $email = strtolower(trim((string) $user->getEmail()));
+            if ($email === '' || str_ends_with($email, '@' . self::TECHNICAL_ACCOUNT_DOMAIN)) {
+                continue;
+            }
+            $unique[(int) $user->getId()] = $user;
+        }
+
+        return array_values($unique);
+    }
+
+    /** Domaine réservé aux comptes techniques et jetables (jamais une personne à prévenir). */
+    public const TECHNICAL_ACCOUNT_DOMAIN = 'surgicalhub.internal';
 }

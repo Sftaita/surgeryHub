@@ -2,6 +2,9 @@
 
 namespace App\EventListener;
 
+use App\Activity\CorrelationContext;
+use App\Messenger\CorrelationStamp;
+use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use App\Message\SendTemplatedEmailMessage;
 use App\Service\AbsenceCommunicationJournalService;
 use App\Service\OutboundNotificationService;
@@ -29,6 +32,7 @@ final class OutboundNotificationEmailFailureListener
     public function __construct(
         private readonly OutboundNotificationService $outboundNotificationService,
         private readonly AbsenceCommunicationJournalService $absenceCommunicationJournalService,
+        private readonly CorrelationContext $correlation,
     ) {
     }
 
@@ -39,6 +43,27 @@ final class OutboundNotificationEmailFailureListener
             return;
         }
 
+        // H2 (D-128) — the worker already left the message's operation (CorrelationMiddleware
+        // restored the previous context in its finally): re-adopt it, so the failure is traced
+        // under the same correlation as the email it concerns.
+        $stamp    = $event->getEnvelope()->last(CorrelationStamp::class);
+        $previous = $this->correlation->export();
+        $this->correlation->beginFromMessage(
+            $stamp?->correlationId,
+            $stamp?->anchors ?? [],
+            ($id = $event->getEnvelope()->last(TransportMessageIdStamp::class)?->getId()) !== null ? (string) $id : null,
+            $stamp?->causationEventId,
+        );
+
+        try {
+            $this->record($event, $message);
+        } finally {
+            $this->correlation->restore($previous);
+        }
+    }
+
+    private function record(WorkerMessageFailedEvent $event, SendTemplatedEmailMessage $message): void
+    {
         if ($message->outboundNotificationId !== null) {
             $this->outboundNotificationService->recordEmailAttempt(
                 $message->outboundNotificationId,
@@ -58,14 +83,32 @@ final class OutboundNotificationEmailFailureListener
     }
 
     /**
-     * Never persist a raw exception message verbatim — a mailer/transport error can
-     * embed the SMTP DSN (which may carry a password). Redacts any URI-like substring
-     * and truncates.
+     * Never persist a raw exception message verbatim — a mailer/transport error can embed
+     * the SMTP DSN (which may carry a password), internal host names / ports, file paths.
+     * H5a (§19): the recorded reason is a CONTROLLED code + French label, readable in the
+     * admin history; only our own controlled document errors keep their (safe) wording.
+     * Never a stack trace, a credential, a host or a path.
      */
-    private static function normalizeThrowableMessage(\Throwable $e): string
+    public static function normalizeThrowableMessage(\Throwable $e): string
     {
-        $message = preg_replace('#\w+://\S+#', '[redacted]', $e->getMessage()) ?? 'error';
+        // Messenger wraps the handler's exception: classify the original one.
+        while ($e instanceof \Symfony\Component\Messenger\Exception\HandlerFailedException && $e->getPrevious() !== null) {
+            $e = $e->getPrevious();
+        }
+        $raw = $e->getMessage();
 
-        return substr($message, 0, 200);
+        $reason = match (true) {
+            $e instanceof \Symfony\Component\Mailer\Exception\TransportExceptionInterface
+                && str_contains($raw, 'Connection could not be established') => 'SMTP_CONNECTION_FAILED — connexion au serveur d\'envoi impossible',
+            $e instanceof \Symfony\Component\Mailer\Exception\TransportExceptionInterface
+                && str_contains($raw, 'Expected response code') => 'SMTP_PROTOCOL_ERROR — réponse inattendue du serveur d\'envoi',
+            $e instanceof \Symfony\Component\Mailer\Exception\TransportExceptionInterface => 'SMTP_TRANSPORT_ERROR — erreur du serveur d\'envoi',
+            // DocumentStore — controlled wording, no path ("Document #9 introuvable.").
+            $e instanceof \RuntimeException && preg_match('/^Document #\d+ /', $raw) === 1 => 'DOCUMENT_UNAVAILABLE — ' . $raw,
+            $e instanceof \Twig\Error\Error => 'TEMPLATE_ERROR — le contenu de l\'email n\'a pas pu être généré',
+            default => 'EMAIL_SEND_FAILED — ' . (new \ReflectionClass($e))->getShortName(),
+        };
+
+        return substr(preg_replace('#\w+://\S+#', '[redacted]', $reason) ?? 'EMAIL_SEND_FAILED', 0, 200);
     }
 }

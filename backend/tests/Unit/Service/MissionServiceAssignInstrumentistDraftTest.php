@@ -43,6 +43,7 @@ final class MissionServiceAssignInstrumentistDraftTest extends TestCase
                 new MissionEncodingGuard(),
                 $this->createMock(AuditService::class),
                 $this->createMock(MessageBusInterface::class),
+                new \App\Service\EncodingCompletenessService(),
             ),
             new MissionEligibilityService($this->em),
             new \App\Service\PlanningVersionOperationalScope($this->em), // not exercised by assignInstrumentistDraft()

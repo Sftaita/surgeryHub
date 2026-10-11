@@ -34,6 +34,7 @@ use App\Service\FirmInvoiceService;
 use App\Service\InstrumentistStatementService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Pilotage financier, Lot 7 (D-077) — §31 du lot : overview (aucune donnée, une
@@ -43,6 +44,8 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class FinancialStatisticsQueryServiceTest extends KernelTestCase
 {
+    use DeclaresActualHours;
+
     private EntityManagerInterface $em;
     private FinancialCalculationService $calcService;
     private FirmInvoiceService $invoiceService;
@@ -221,6 +224,7 @@ final class FinancialStatisticsQueryServiceTest extends KernelTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();
@@ -572,6 +576,7 @@ final class FinancialStatisticsQueryServiceTest extends KernelTestCase
         $mission->setEndAt($today->modify('+1 hour'));
         $mission->setStatus(MissionStatus::VALIDATED);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $pipeline = $this->stats->pipeline($this->filter(new \DateTimeImmutable('2026-05-01'), new \DateTimeImmutable('2026-06-01'), surgeonId: $surgeon->getId()));

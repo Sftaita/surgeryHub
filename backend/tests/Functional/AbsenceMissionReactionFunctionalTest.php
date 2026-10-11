@@ -70,6 +70,22 @@ final class AbsenceMissionReactionFunctionalTest extends WebTestCase
             }
             $this->em->flush();
 
+            // H2 (D-128) — lifecycle notifications now leave per-channel delivery rows (and
+            // their dispatch decisions) for these users: remove them before the users.
+            if ($this->createdIds['users'] !== []) {
+                $conn = $this->em->getConnection();
+                $ids  = implode(',', array_map('intval', $this->createdIds['users']));
+                $conn->executeStatement("DELETE a FROM outbound_notification_attempt a JOIN outbound_notification o ON o.id = a.notification_id WHERE o.recipient_user_id IN ($ids)");
+                $conn->executeStatement("DELETE FROM outbound_notification WHERE recipient_user_id IN ($ids)");
+                $conn->executeStatement("DELETE FROM notification_dispatch WHERE recipient_user_id IN ($ids)");
+            }
+            // H3 (D-129) — pool offers may reach instrumentists outside this test (freelancers
+            // eligible everywhere): their feed items point to this test's missions.
+            if ($this->createdIds['missions'] !== []) {
+                $missions = implode(',', array_map('intval', $this->createdIds['missions']));
+                $this->em->getConnection()->executeStatement("DELETE FROM notification_event WHERE mission_id IN ($missions) AND user_id NOT IN (" . (implode(',', array_map('intval', $this->createdIds['users'])) ?: '0') . ')');
+            }
+
             foreach ($this->createdIds['users'] as $id) {
                 $user = $this->em->find(User::class, $id);
                 if ($user === null) { continue; }
@@ -436,9 +452,81 @@ final class AbsenceMissionReactionFunctionalTest extends WebTestCase
         $this->em->clear();
 
         $instr     = $this->em->find(User::class, $instr->getId());
+        $surgeon   = $this->em->find(User::class, $surgeon->getId());
         $unrelated = $this->em->find(User::class, $unrelated->getId());
-        self::assertNotEmpty($this->notificationsForUser($instr), 'The removed instrumentist must receive an in-app notification');
+        // Amendment D-130 (A.2, validated with H4) — the absent instrumentist is never told about
+        // the consequences of her own absence; the surgeon whose mission reopened is.
+        self::assertEmpty($this->notificationsForUser($instr), 'The absent instrumentist is never notified of her own absence\'s consequences');
+        self::assertNotEmpty($this->notificationsForUser($surgeon), 'The surgeon is told his mission needs covering again');
         self::assertEmpty($this->notificationsForUser($unrelated), 'An unrelated instrumentist must receive nothing');
+    }
+
+    /**
+     * H3 (D-129) — regression found during the real-stack validation: the RELEASED / CANCELLED
+     * messages this service builds itself (after its own transaction) did not carry
+     * causedByAbsenceId, so the lifecycle handler took an absence for a manager action:
+     * SURGEON_POST_UNCOVERED and PLANNING_MISSION_RELEASED on top of the absence recap, pool
+     * episode "RELEASED" with a bogus "removed by manager" exclusion. Proven here through the
+     * real producer → message → handler chain (the handler's unit test fed the key itself).
+     */
+    #[WithoutErrorHandler]
+    public function test_absence_driven_release_and_cancellation_are_recognised_by_the_lifecycle_handler(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+
+        $surgeon  = $this->makeUser('ROLE_SURGEON');
+        $absent   = $this->makeUser('ROLE_INSTRUMENTIST');
+        $site     = $this->makeSite();
+        $released = $this->makeMission($surgeon, $absent, $site, MissionStatus::ASSIGNED);
+
+        /** @var InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $absent->getId(), 'dateStart' => '2026-02-09', 'dateEnd' => '2026-02-09',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+        $absenceId = (int) $this->json($client->getResponse())['id'];
+        $this->createdIds['absences'][] = $absenceId;
+
+        $lifecycle = array_values(array_filter(array_map(static fn ($e) => $e->getMessage(), $transport->getSent()),
+            static fn ($m) => $m instanceof \App\Message\MissionLifecycleChangedMessage && $m->missionId === $released->getId()));
+        self::assertCount(1, $lifecycle);
+        self::assertSame($absenceId, $lifecycle[0]->payload['causedByAbsenceId'] ?? null, 'the message says why the mission was released');
+
+        $this->em->clear();
+        $this->processQueuedAsyncMessages();
+
+        $types = array_map(static fn (NotificationEvent $n) => $n->getEventType(), $this->em->getRepository(NotificationEvent::class)->findBy(['mission' => $released->getId()]));
+        self::assertNotContains('PLANNING_MISSION_RELEASED', $types, 'the absent person gets her absence recap, not a "removed by a manager" notice');
+        self::assertNotContains('SURGEON_POST_UNCOVERED', $types, 'the surgeon gets ABSENCE_SURGEON_MISSION_OPENED, not a second notice');
+        $evaluation = json_decode((string) $this->em->getConnection()->fetchOne(
+            "SELECT payload FROM activity_event WHERE event_type = 'OPEN_POOL_EVALUATED' AND mission_id = ? ORDER BY id DESC LIMIT 1", [$released->getId()]), true);
+        self::assertSame('INSTRUMENTIST_ABSENCE', $evaluation['cause']);
+        self::assertSame(0, $evaluation['excludedCount'], 'an absent person is ruled out by eligibility, never by a contextual exclusion');
+
+        // Surgeon absence → cancellation: the previously assigned instrumentist is left to the
+        // absence recap (ABSENCE_MISSION_CANCELLED), never a second PLANNING_MISSION_CANCELLED.
+        $surgeon   = $this->em->find(User::class, $surgeon->getId());
+        $site      = $this->em->find(Hospital::class, $site->getId());
+        $instr     = $this->makeUser('ROLE_INSTRUMENTIST');
+        $cancelled = $this->makeMission($surgeon, $instr, $site, MissionStatus::ASSIGNED, '2026-02-16');
+        $transport->reset();
+        $client->request('POST', '/api/absences', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode([
+            'userId' => $surgeon->getId(), 'dateStart' => '2026-02-16', 'dateEnd' => '2026-02-16',
+        ]));
+        self::assertSame(201, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+        $this->createdIds['absences'][] = (int) $this->json($client->getResponse())['id'];
+        $this->em->clear();
+        $this->processQueuedAsyncMessages();
+
+        $forInstr = array_map(static fn (NotificationEvent $n) => $n->getEventType(), $this->em->getRepository(NotificationEvent::class)->findBy(['mission' => $cancelled->getId(), 'user' => $instr->getId()]));
+        self::assertContains('ABSENCE_MISSION_CANCELLED', $forInstr);
+        self::assertNotContains('PLANNING_MISSION_CANCELLED', $forInstr);
     }
 
     // ── Idempotency: repeated processing of the same absence ────────────────

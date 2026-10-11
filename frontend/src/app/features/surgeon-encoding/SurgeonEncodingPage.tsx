@@ -2,6 +2,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Alert, Box, Chip, CircularProgress, IconButton, Stack, Typography } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import dayjs from "dayjs";
 
 import { fetchMissionById, getMissionExecution } from "../missions/api/missions.api";
 import { formatMissionStatus } from "../missions/utils/missions.format";
@@ -13,6 +14,28 @@ import { AnomalyReportSection } from "../encoding-anomaly-reports/components/Ano
 const GRAY_500 = "#727E8C";
 const GRAY_900 = "#16202B";
 const SHADOW_XS = "0 1px 2px rgba(22,32,43,.05)";
+
+const IN_PROGRESS_STATUSES = ["ASSIGNED", "IN_PROGRESS", "ENCODING_IN_PROGRESS", "DECLARED"];
+
+/**
+ * D-143 — la synthèse n'est jamais présentée comme définitive à tort : encore en cours
+ * (provisoire), soumise (date), en cours de correction après une soumission (ne plus
+ * s'y fier), validée. Dérivé du statut serveur et de submittedAt, rien d'autre.
+ */
+export function encodingStateBanner(status: string, submittedAt: string | null | undefined): { severity: "info" | "success" | "warning"; text: string } | null {
+  if (status === "SUBMITTED") {
+    return { severity: "success", text: submittedAt ? `Encodage soumis le ${dayjs(submittedAt).format("DD/MM/YYYY [à] HH[h]mm")}.` : "Encodage soumis." };
+  }
+  if (status === "VALIDATED" || status === "CLOSED") {
+    return { severity: "success", text: "Encodage soumis et validé par la coordination." };
+  }
+  if (IN_PROGRESS_STATUSES.includes(status)) {
+    return submittedAt
+      ? { severity: "warning", text: "Encodage en cours de correction par l'instrumentiste — les informations ci-dessous peuvent encore changer." }
+      : { severity: "info", text: "Encodage en cours — informations provisoires, pas encore soumises par l'instrumentiste." };
+  }
+  return null;
+}
 
 /**
  * Lot 6 (D-100) — consultation chirurgien de l'encodage réalisé par l'instrumentiste.
@@ -96,7 +119,21 @@ export default function SurgeonEncodingPage() {
         </Alert>
       ) : encoding ? (
         <>
-          <EncodingHoursSummary execution={execution} />
+          {(() => {
+            const banner = encodingStateBanner(mission.status ?? "", mission.submittedAt);
+            return banner ? <Alert severity={banner.severity} data-testid="surgeon-encoding-state">{banner.text}</Alert> : null;
+          })()}
+
+          {/* L'essentiel en un coup d'œil, le détail ensuite (D-143). */}
+          <Typography data-testid="surgeon-encoding-glance" sx={{ fontSize: 13, color: GRAY_500 }}>
+            {(() => {
+              const interventions = encoding.entries.length;
+              const materials = encoding.entries.reduce((sum, e) => sum + e.materialLines.length, 0);
+              return `${interventions} intervention${interventions > 1 ? "s" : ""} · ${materials} ligne${materials > 1 ? "s" : ""} de matériel`;
+            })()}
+          </Typography>
+
+          <EncodingHoursSummary execution={execution} plannedStartAt={mission.startAt} plannedEndAt={mission.endAt} />
 
           {encoding.entries.length === 0 ? (
             <Box sx={{ background: "#fff", borderRadius: "18px", boxShadow: SHADOW_XS, px: 2, py: 3, textAlign: "center" }}>

@@ -3,6 +3,9 @@
 namespace App\MessageHandler;
 
 use App\Message\SendTemplatedEmailMessage;
+use App\Notification\DocumentReference;
+use App\Notification\DocumentStore;
+use App\Notification\HtmlToTextRenderer;
 use App\Service\AbsenceCommunicationJournalService;
 use App\Service\OutboundNotificationService;
 use Psr\Log\LoggerInterface;
@@ -21,6 +24,8 @@ final class SendTemplatedEmailMessageHandler
         private readonly LoggerInterface $logger,
         private readonly OutboundNotificationService $outboundNotificationService,
         private readonly AbsenceCommunicationJournalService $absenceCommunicationJournalService,
+        private readonly DocumentStore $documentStore,
+        private readonly HtmlToTextRenderer $textRenderer,
     ) {
     }
 
@@ -30,7 +35,8 @@ final class SendTemplatedEmailMessageHandler
 
         $textBody = $message->textTemplate !== null
             ? $this->twig->render($message->textTemplate, $message->context)
-            : trim(html_entity_decode(strip_tags($htmlBody)));
+            // H5a (§20) — DOM-based, never strip_tags() (which leaked <style> CSS into text/plain).
+            : $this->textRenderer->render($htmlBody);
 
         $email = (new Email())
             ->from(new Address($message->fromAddress, $message->fromName))
@@ -50,6 +56,18 @@ final class SendTemplatedEmailMessageHandler
         // naturellement le chirurgien concerné.
         if ($message->replyTo !== null) {
             $email->replyTo($message->replyTo);
+        }
+
+        foreach ($message->attachments as $attachment) {
+            if (isset($attachment['base64'], $attachment['filename'])) {
+                $email->attach(base64_decode($attachment['base64']), $attachment['filename'], 'application/pdf');
+            }
+        }
+        // H5a (§16) — a missing or altered document fails the send (retried, then FAILED with
+        // a controlled reason): never an email silently without the PDF it announces.
+        foreach ($message->documents as $reference) {
+            $document = $this->documentStore->load(DocumentReference::fromArray($reference));
+            $email->attach($document->getContent(), $document->getFilename(), $document->getContentType());
         }
 
         $this->mailer->send($email);
@@ -77,8 +95,8 @@ final class SendTemplatedEmailMessageHandler
                 $message->outboundNotificationId,
                 success: true,
                 reason: null,
-                bodyText: $textBody,
-                bodyHtml: $htmlBody,
+                bodyText: $message->storeRenderedBody ? $textBody : null,
+                bodyHtml: $message->storeRenderedBody ? $htmlBody : null,
             );
         }
 

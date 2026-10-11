@@ -61,7 +61,8 @@ final class MissionExecutionService
             $end   = $execution->getActualEndAt();
 
             if ($start !== null && $end !== null) {
-                $minutes = (int) round(($end->getTimestamp() - $start->getTimestamp()) / 60);
+                // D-143 — la pause déclarée est retirée de la plage début → fin.
+                $minutes = (int) round(($end->getTimestamp() - $start->getTimestamp()) / 60) - ($execution->getBreakMinutes() ?? 0);
                 return new EffectiveDuration(max(0, $minutes), EffectiveDurationSource::ACTUAL_TIMES);
             }
 
@@ -111,13 +112,17 @@ final class MissionExecutionService
     }
 
     /**
-     * §3.2 — règle de cohérence unique : si actualStartAt ET actualEndAt sont fournis
+     * §3.2 — règle de cohérence unique : si actualStartAt ET actualEndAt sont connus
      * (dans l'état résultant, pas seulement dans cette requête), la durée est TOUJOURS
-     * dérivée des deux horaires — jamais deux sources de vérité. Une durée explicite
-     * fournie dans la même requête qui contredirait cette dérivation est un 422, jamais
-     * une acceptation silencieuse (§3.2 : "ne pas accepter silencieusement des valeurs
-     * contradictoires"). Fournir un seul des deux horaires (sans l'autre, existant ou
-     * nouveau) est également un 422 — un horaire seul ne décrit aucune durée.
+     * dérivée des deux horaires moins la pause déclarée (D-143) — jamais deux sources de
+     * vérité. Une durée explicite fournie dans la même requête qui contredirait cette
+     * dérivation est un 422, jamais une acceptation silencieuse (§3.2 : "ne pas accepter
+     * silencieusement des valeurs contradictoires").
+     *
+     * D-143 — encodage progressif : un horaire seul (typiquement le début, saisi le matin
+     * au bloc) est désormais accepté comme BROUILLON. Il ne décrit aucune durée (la durée
+     * enregistrée n'est pas touchée) et ne suffit jamais à soumettre l'encodage
+     * (EncodingCompletenessService). Les horaires planifiés ne sont jamais copiés ici.
      *
      * Idempotent : appeler deux fois avec les mêmes valeurs ne produit qu'un seul
      * AuditEvent (aucun changement détecté au deuxième appel → aucun événement).
@@ -129,24 +134,31 @@ final class MissionExecutionService
         ?\DateTimeImmutable $actualEndAt,
         ?int $actualDurationMinutes,
         ?HoursSource $hoursSource,
+        ?int $breakMinutes = null,
     ): MissionExecution {
         $execution = $this->findOrCreateExecution($mission, $actor);
 
         $resultStart = $actualStartAt ?? $execution->getActualStartAt();
         $resultEnd   = $actualEndAt ?? $execution->getActualEndAt();
+        $resultBreak = $breakMinutes ?? $execution->getBreakMinutes();
         $explicitDurationThisCall = $actualDurationMinutes !== null;
         $resultDuration = $actualDurationMinutes ?? $execution->getActualDurationMinutes();
 
-        if (($resultStart !== null) !== ($resultEnd !== null)) {
-            throw new UnprocessableEntityHttpException('actualStartAt et actualEndAt doivent être fournis ensemble, jamais un seul des deux.');
+        if ($resultBreak !== null && $resultBreak < 0) {
+            throw new UnprocessableEntityHttpException('breakMinutes ne peut pas être négatif.');
         }
 
         if ($resultStart !== null && $resultEnd !== null) {
             if ($resultEnd <= $resultStart) {
-                throw new UnprocessableEntityHttpException('actualEndAt doit être postérieur à actualStartAt.');
+                throw new UnprocessableEntityHttpException("L'heure de fin doit être postérieure à l'heure de début.");
             }
 
-            $derivedMinutes = (int) round(($resultEnd->getTimestamp() - $resultStart->getTimestamp()) / 60);
+            $spanMinutes = (int) round(($resultEnd->getTimestamp() - $resultStart->getTimestamp()) / 60);
+            if (($resultBreak ?? 0) >= $spanMinutes) {
+                throw new UnprocessableEntityHttpException('La pause doit être plus courte que la plage entre le début et la fin.');
+            }
+
+            $derivedMinutes = $spanMinutes - ($resultBreak ?? 0);
 
             if ($explicitDurationThisCall && $actualDurationMinutes !== $derivedMinutes) {
                 throw new UnprocessableEntityHttpException(sprintf(
@@ -162,11 +174,13 @@ final class MissionExecutionService
         $durationChanged = $execution->getActualDurationMinutes() !== $resultDuration;
         $startChanged     = $execution->getActualStartAt()?->getTimestamp() !== $resultStart?->getTimestamp();
         $endChanged       = $execution->getActualEndAt()?->getTimestamp() !== $resultEnd?->getTimestamp();
+        $breakChanged     = $execution->getBreakMinutes() !== $resultBreak;
         $sourceChanged    = $hoursSource !== null && $execution->getHoursSource() !== $hoursSource;
-        $anythingChanged  = $durationChanged || $startChanged || $endChanged || $sourceChanged;
+        $anythingChanged  = $durationChanged || $startChanged || $endChanged || $breakChanged || $sourceChanged;
 
         $execution->setActualStartAt($resultStart);
         $execution->setActualEndAt($resultEnd);
+        $execution->setBreakMinutes($resultBreak);
         $execution->setActualDurationMinutes($resultDuration);
         if ($hoursSource !== null) {
             $execution->setHoursSource($hoursSource);

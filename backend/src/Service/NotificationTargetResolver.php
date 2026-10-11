@@ -80,6 +80,30 @@ final class NotificationTargetResolver
             return '/app/i/offers';
         }
 
+        // D-143 — une relance ou un signalement mène directement à l'écran qui permet d'agir :
+        // l'encodage pour l'instrumentiste et le chirurgien, le suivi des encodages (tiroir de
+        // la mission ouvert) pour le manager.
+        if ($mission !== null) {
+            if ($type === NotificationType::ENCODING_REMINDER && $isInstrumentist) {
+                return sprintf('/app/i/missions/%d/encoding', $mission->getId());
+            }
+            if ($type === NotificationType::ENCODING_ESCALATION && $isManager) {
+                return sprintf('/app/m/billing/encodings?missionId=%d', $mission->getId());
+            }
+            if (in_array($type, [NotificationType::ENCODING_SUBMITTED, NotificationType::ENCODING_ANOMALY_RESOLVED], true) && $isSurgeon) {
+                return sprintf('/app/s/missions/%d/encoding', $mission->getId());
+            }
+            if ($type === NotificationType::ENCODING_ANOMALY_INSTRUMENTIST && $isInstrumentist) {
+                return sprintf('/app/i/missions/%d/encoding', $mission->getId());
+            }
+        }
+
+        // H2 (D-127) — the instrumentist no longer holds this mission (the manager removed
+        // her): its detail screen is not hers anymore — send her to her planning instead.
+        if ($type === NotificationType::PLANNING_MISSION_RELEASED && $isInstrumentist) {
+            return '/app/i/planning';
+        }
+
         if ($mission !== null) {
             if ($isManager) {
                 return '/app/m/missions/' . $mission->getId();
@@ -99,6 +123,7 @@ final class NotificationTargetResolver
             NotificationType::PLANNING_DEPLOYED_SURGEON => '/app/s/planning',
             NotificationType::OPEN_MISSION_AVAILABLE => '/app/i/offers',
             NotificationType::PLANNING_ALERT => $isManager ? '/app/m/planning/v2' : null,
+            NotificationType::PLANNING_CHANGE_SUMMARY => $isInstrumentist ? '/app/i/planning' : ($isSurgeon ? '/app/s/planning' : null),
             NotificationType::PLANNING_RESENT_MANUAL => $isManager ? '/app/m/missions' : ($isInstrumentist ? '/app/i/planning' : ($isSurgeon ? '/app/s/planning' : null)),
             // Purement informatif ou sans cible connue aujourd'hui — jamais une route
             // devinée. Le frontend traite `null` comme non cliquable.

@@ -119,6 +119,7 @@ final class PlanningGeneratorServiceV2PreviewVersionTest extends TestCase
             $this->em,
             $this->createMock(\App\Service\PlanningConflictDetectionService::class),
             new \App\Service\MissionEligibilityService($this->em),
+            $this->createMock(\App\Activity\Recorder\PlanningActivityRecorder::class),
         );
     }
 

@@ -24,6 +24,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * Task 11, section 9 — scénario obligatoire du référentiel canonique : UN SEUL
@@ -36,6 +37,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class InterventionTypeCanonicalScenarioTest extends WebTestCase
 {
+    use DeclaresActualHours;
+
     private const PASSWORD = 'CanonicalPTG15!';
     private const TZ = 'Europe/Brussels';
 
@@ -159,6 +162,7 @@ final class InterventionTypeCanonicalScenarioTest extends WebTestCase
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission);
         $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->createdIds['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();
