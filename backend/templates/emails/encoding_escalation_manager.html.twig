@@ -18,7 +18,8 @@ table.facts td.k { color: #727E8C; white-space: nowrap; }
 
   <p>Bonjour {{ firstname }},</p>
 
-  <p>L'encodage de la mission ci-dessous n'est toujours pas soumis, malgré les rappels envoyés à l'instrumentiste.</p>
+  {# D-144 — ne jamais évoquer des rappels qui n'ont pas eu lieu (ex. premiers jours après activation). #}
+  <p>L'encodage de la mission ci-dessous n'est toujours pas soumis{% if previousReminders is not empty %}, malgré les rappels envoyés à l'instrumentiste{% else %}, quatre jours après la mission{% endif %}.</p>
 
   <table class="facts">
     <tr><td class="k">Instrumentiste</td><td>{{ instrumentistName }}</td></tr>
