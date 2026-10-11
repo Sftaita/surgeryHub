@@ -28,6 +28,7 @@ use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * D-142 — régularisation du catalogue matériel : la vue manager
@@ -40,6 +41,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class MaterialBillingRegularisationTest extends WebTestCase
 {
+    use DeclaresActualHours;
+
     private const PASSWORD = 'Regul123!';
 
     private EntityManagerInterface $em;
@@ -226,8 +229,12 @@ final class MaterialBillingRegularisationTest extends WebTestCase
         return $this->site;
     }
 
-    /** Mission VALIDATED 13:00–18:00, instrumentiste avec un tarif horaire actif. */
-    private function mission(string $day = '2026-09-10'): Mission
+    /**
+     * Mission VALIDATED 13:00–18:00, instrumentiste avec un tarif horaire actif. Heures réelles
+     * déclarées par défaut (D-143 : le seul planifié n'est jamais rémunéré) ; $actualHours=false
+     * reproduit une mission historique sans aucune déclaration.
+     */
+    private function mission(string $day = '2026-09-10', bool $actualHours = true): Mission
     {
         $surgeon = $this->user('ROLE_SURGEON', 'Arnaud', 'Deltour-Test');
         $instrumentist = $this->user('ROLE_INSTRUMENTIST', 'Sophie', 'Collette-Test');
@@ -251,6 +258,9 @@ final class MaterialBillingRegularisationTest extends WebTestCase
         $m->setStatus(MissionStatus::VALIDATED);
         $m->setInstrumentist($instrumentist);
         $this->em->persist($m); $this->em->flush();
+        if ($actualHours) {
+            $this->declareActualHours($m);
+        }
         $this->created['missions'][] = $m->getId();
         return $m;
     }
@@ -663,6 +673,48 @@ final class MaterialBillingRegularisationTest extends WebTestCase
         $client->request('GET', $uri);
         self::assertSame(401, $client->getResponse()->getStatusCode(), 'anonyme');
         $this->json($this->request($client, $this->login($client, $this->user('ROLE_ADMIN')), 'GET', $uri));
+    }
+
+    // ── D-142 × D-143 : heures réelles obligatoires ──────────────────────
+
+    public function test_mission_without_actual_hours_is_never_shown_as_unblocked_by_fixing_the_material(): void
+    {
+        [$client, $token] = $this->boot();
+        $sn = $this->firm('Smith & Nephew');
+        $qfix = $this->item($sn, 'Q-FIX');
+        $lca = $this->type('LCA', 'Plastie du ligament croisé antérieur du genou');
+        $this->rule($sn, $lca, null, '135.00');
+        $m = $this->mission('2026-09-10', actualHours: false);
+        $itv = $this->intervention($m, $sn, $lca);
+        $this->material($m, $itv, $qfix);
+
+        $r = $this->calculate($client, $token, $m);
+        self::assertSame(422, $r->getStatusCode());
+        $codes = array_column(json_decode($r->getContent(), true)['error']['violations'], 'code');
+        sort($codes);
+        self::assertSame(['MISSING_ACTUAL_HOURS', 'MISSING_FIRM_MATERIAL_RATE'], $codes, 'deux causes distinctes, jamais fusionnées');
+
+        // Matériel non décidé : bloquée par lui ET par les heures — jamais « seule cause ».
+        $row = $this->regRow($this->regularisation($client, $token), $qfix);
+        $mission = $this->regMission($row, $m);
+        self::assertTrue($mission['blockedByThisItem']);
+        self::assertSame(1, $mission['otherBlockingAnomalyCount'], 'heures réelles manquantes = autre anomalie, pas une anomalie tarifaire');
+        self::assertSame(0, $row['usage']['onlyBlockerMissionCount']);
+
+        // Matériel corrigé : plus bloquée PAR LUI, mais toujours pas calculable.
+        $this->postMaterialRate($client, $token, $sn, $qfix, '45.00');
+        $mission = $this->regMission($this->regRow($this->regularisation($client, $token), $qfix), $m);
+        self::assertFalse($mission['blockedByThisItem']);
+        self::assertSame(1, $mission['otherBlockingAnomalyCount'], 'jamais présentée « Plus bloquée — à calculer »');
+        $detail = $this->detail($client, $token, $m);
+        self::assertFalse($detail['recalculation']['wouldSucceed'], 'le pronostic tient compte des heures réelles manquantes');
+
+        // Heures réelles déclarées : la mission devient calculable — et rien n'a été calculé seul.
+        $this->declareActualHours($this->managed($m));
+        $mission = $this->regMission($this->regRow($this->regularisation($client, $token), $qfix), $m);
+        self::assertSame(0, $mission['otherBlockingAnomalyCount']);
+        $this->em->clear();
+        self::assertSame(0, $this->em->getRepository(FinancialCalculation::class)->count(['mission' => $m->getId()]), 'aucun calcul automatique');
     }
 
     // ── Jamais de tarif matériel à 0 € ───────────────────────────────────

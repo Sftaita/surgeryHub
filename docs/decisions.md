@@ -12668,6 +12668,21 @@ Saisie d'un tarif : `unitPrice` non numérique (« abc », « 12abc », vide, bo
 VALIDATION_FAILED` (« 12abc » provoquait un 500 à l'écriture en base, toutes règles confondues) ;
 négatif → `422 VALIDATION_FAILED` (inchangé) ; `MATERIAL_FEE` à 0 → `422 MATERIAL_FEE_ZERO_REFUSED`.
 
+### Compatibilité avec D-143 / D-144 (intégration de `main` 247fa34)
+
+Le moteur ajoute `MISSING_ACTUAL_HOURS` (aucune heure réelle déclarée → calcul bloqué, jamais de
+rémunération sur le planifié). D-142 n'a rien à adapter dans sa logique : la vue rejoue
+`evaluate()`, qui produit cette anomalie ; ne portant sur aucune ligne de matériel, elle est
+comptée dans `otherBlockingAnomalyCount` — jamais transformée en anomalie tarifaire, jamais
+masquée par la correction d'un matériel (test
+`test_mission_without_actual_hours_is_never_shown_as_unblocked_by_fixing_the_material`).
+L'exécution de la mission est chargée avec les lignes, donc la règle lit bien les heures réelles.
+`ReadScopeCache` ne mémorise ni les heures ni l'exécution (lues sur l'entité), et n'est ouvert
+que par cette consultation. Production (lecture seule, 2026-10-11 après D-144) : les 14 missions
+bloquées uniquement par du matériel ont toutes des heures réelles déclarées ; deux missions
+validées en attente n'en ont pas (#1225, qui utilise du matériel non décidé et a d'autres
+anomalies, et #434, sans matériel).
+
 ### Production (lecture seule, 2026-10-11) — décisions métier à prendre, rien n'est modifié
 
 40 articles `UNSPECIFIED` sans tarif (25 utilisés dans des missions validées, 15 jamais utilisés) ;

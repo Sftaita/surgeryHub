@@ -1635,7 +1635,10 @@ dates) mais **pas listée** dans `missions[]`, qui ne contient que les missions 
   de tarif sur une ligne de cet article ; `onlyBlockerMissionCount` : parmi elles, celles sans aucune
   autre anomalie (`otherBlockingAnomalyCount = 0`).
 - `missions[].otherBlockingAnomalyCount` : anomalies du moteur qui ne viennent pas de cet article ;
-  > 0 = corriger l'article ne suffit pas à rendre la mission calculable.
+  > 0 = corriger l'article ne suffit pas à rendre la mission calculable. Elles incluent toutes les
+  causes du moteur, dont `MISSING_ACTUAL_HOURS` (D-143 : aucune heure réelle déclarée — le seul
+  planifié n'est jamais rémunéré) : une mission sans heures réelles n'est donc jamais « seule cause
+  : ce matériel » ni « Plus bloquée — à calculer », même une fois son matériel corrigé.
 - Tri : à configurer d'abord, puis missions bloquées, puis lignes.
 - Coût : les requêtes propres à la vue sont en nombre **constant** (lignes des missions en attente
   + exécution + site + chirurgien en une requête ; l'historique déjà calculé en une requête
