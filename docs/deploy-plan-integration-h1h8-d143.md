@@ -128,8 +128,9 @@ préférence un matin avant 09h00 ; vérifier le premier tick ≥ 09h00 :
 
 ## 7. Risques résiduels
 
-- **Volume d'e-mails managers à J+4** : chaque mission en retard à J+4 alerte les
-  6 managers/admins actifs (in-app + e-mail obligatoire). Aucun rattachement manager ↔ site
+- **Volume d'e-mails managers à J+4** : chaque mission en retard à J+4 alerte les managers/
+  admins actifs opérationnels (4 en prod au 2026-10-11 : comptes techniques
+  `@surgicalhub.internal` exclus, voir D-144 complément). Aucun rattachement manager ↔ site
   n'existe pour cibler davantage — à surveiller la première semaine.
 - **10 missions SUBMITTED avec durée seule** (anciennes) : validables (D-143), valorisables
   (D-144). Les **5 missions sans aucune heure** ne sont ni validables ni valorisables tant

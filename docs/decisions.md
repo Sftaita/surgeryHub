@@ -12822,3 +12822,20 @@ passent malgré leur ordre chronologique (H1–H5b datées avant `Version2026100
 
 H6 (API historique), H7 (UI historique), H8 (reprise de l'historique) ; procédure dev
 `Version20260107053952`/`export_log` (production-checklist §4, la prod est cohérente).
+
+### D-144 — complément (2026-10-11) : destinataires de l'alerte J+4
+
+Audit avant mise en production : aucun périmètre de responsabilité manager ↔ site, firme ou
+équipe n'existe dans le modèle (managers et admins ont les mêmes droits sur le suivi des
+encodages, `BillingVoter::MANAGE`). Aucune affectation n'est inventée. Règle retenue
+(`UserRepository::findOperationalManagers()`) : comptes `ROLE_MANAGER` / `ROLE_ADMIN`
+**actifs**, ayant une adresse, **hors comptes techniques du domaine réservé
+`surgicalhub.internal`** (compte système, comptes jetables de recette — convention de
+`docs/mail-safe-mode.md`), chacun une seule fois. In-app et e-mail toujours ensemble, une
+alerte par mission et par manager (épisode `encoding_escalation:{missionId}`), tracée.
+En production au 2026-10-11 : 4 destinataires (#1, #7, #31, #34) au lieu de 6 ; les comptes
+#72 et #81 (`@surgicalhub.internal`, reliquats de recette) sont exclus — leur désactivation
+reste une décision séparée. Les autres notifications « tous managers » ne changent pas.
+
+Relance manuelle (décision H5a confirmée) : e-mail obligatoire à l'instrumentiste, auteur
+audité, blocage de 10 min, aucun changement de statut ni de brouillon, canal renvoyé.

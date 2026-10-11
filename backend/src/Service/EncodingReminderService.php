@@ -365,7 +365,8 @@ class EncodingReminderService
         $previous = $this->previousReminderDates($mission);
 
         $notified = 0;
-        foreach ($this->userRepository->findManagersAndAdmins(true) as $manager) {
+        // D-144 — destinataires opérationnels : managers/admins actifs, hors comptes techniques.
+        foreach ($this->userRepository->findOperationalManagers() as $manager) {
             try {
                 $path = $this->targetResolver->resolve(NotificationType::ENCODING_ESCALATION, $mission, $manager)
                     ?? sprintf('/app/m/billing/encodings?missionId=%d', $mission->getId());

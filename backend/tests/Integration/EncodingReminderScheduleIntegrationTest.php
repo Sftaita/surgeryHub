@@ -472,4 +472,42 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
         $hoursFlags = array_map(static fn (SendTemplatedEmailMessage $m) => $m->context['hoursMissing'], $this->emailsTo($instr));
         self::assertSame([true, true, false], $hoursFlags);
     }
+
+    /**
+     * D-144 — destinataires J+4 : managers/admins actifs et opérationnels uniquement, une
+     * seule fois chacun ; ni compte inactif, ni compte technique @surgicalhub.internal, ni
+     * autre rôle. In-app et e-mail toujours ensemble, chaque envoi tracé.
+     */
+    public function test_d4_escalation_targets_only_active_operational_managers_once(): void
+    {
+        $instr = $this->makeUser('ROLE_INSTRUMENTIST');
+        $manager = $this->makeUser('ROLE_MANAGER', 'Marie');
+        $admin = $this->makeUser('ROLE_ADMIN', 'Alain');
+        $inactive = $this->makeUser('ROLE_MANAGER', 'Ines');
+        $inactive->setActive(false);
+        $technical = $this->makeUser('ROLE_MANAGER', 'Tech');
+        $technical->setEmail('deploytest-' . bin2hex(random_bytes(3)) . '@surgicalhub.internal');
+        $surgeonOnly = $this->makeUser('ROLE_SURGEON', 'Sam');
+        $this->em->flush();
+        $mission = $this->makeMission($instr);
+
+        $this->service(new MockHandler([]))->processReminder($mission, EncodingReminderStage::D4, $this->at('2026-07-18 09:05'));
+        // Réexécution : jamais une seconde alerte.
+        $this->service(new MockHandler([]))->processReminder($mission, EncodingReminderStage::D4, $this->at('2026-07-18 09:20'));
+
+        $conn = $this->em->getConnection();
+        $count = static fn (string $sql, User $u) => (int) $conn->fetchOne($sql, [$u->getId(), $mission->getId()]);
+        $dispatchSql = "SELECT COUNT(*) FROM notification_dispatch WHERE recipient_user_id = ? AND mission_id = ? AND notification_type = 'ENCODING_ESCALATION'";
+        $inAppSql = "SELECT COUNT(*) FROM notification_event WHERE user_id = ? AND mission_id = ? AND event_type = 'ENCODING_ESCALATION'";
+
+        foreach ([$manager, $admin] as $recipient) {
+            self::assertSame(1, $count($dispatchSql, $recipient), 'une seule alerte tracée');
+            self::assertSame(1, $count($inAppSql, $recipient), 'notification interne');
+            self::assertCount(1, $this->emailsTo($recipient), 'e-mail correspondant');
+        }
+        foreach ([$inactive, $technical, $surgeonOnly, $instr] as $notRecipient) {
+            self::assertSame(0, $count($dispatchSql, $notRecipient));
+            self::assertSame([], array_filter($this->emailsTo($notRecipient), static fn ($m) => $m->subject === 'Encodage en attente depuis 4 jours'));
+        }
+    }
 }
