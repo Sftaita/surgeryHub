@@ -947,4 +947,115 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         self::assertNotNull($this->em->find(MaterialLine::class, $line->getId()));
         self::assertCount(1, $this->em->getRepository(NotificationEvent::class)->findBy(['mission' => $mission->getId(), 'user' => $instr->getId(), 'eventType' => 'ENCODING_REMINDER']), 'la relance figure dans le centre de notifications');
     }
+
+    // ── Intégration H1–H8 × D-143 — régularisation des missions historiques (phase 4) ──
+
+    private function patchJson(KernelBrowser $client, string $token, string $uri, array $body): Response
+    {
+        $client->request('PATCH', $uri,
+            server: ['CONTENT_TYPE' => 'application/json', 'HTTP_AUTHORIZATION' => 'Bearer ' . $token],
+            content: json_encode($body),
+        );
+
+        return $client->getResponse();
+    }
+
+    /**
+     * Missions 435, 451 (SUBMITTED, aucune heure, commentaire libre) et 1224 (déclarée puis
+     * soumise sans heure) : le manager ne peut pas les valider, il les renvoie à
+     * l'instrumentiste ; celle-ci saisit ses heures réelles et soumet à nouveau ; la
+     * validation passe. Ancien commentaire conservé, chaque étape auditée, aucun droit
+     * élargi.
+     */
+    public function test_historical_submitted_mission_without_hours_is_regularised_through_the_authorised_circuit(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::SUBMITTED, $instr, new \DateTimeImmutable('-3 days'));
+        $mission->setSubmittedAt(new \DateTimeImmutable('-2 days'));
+        $mission->setSubmittedWithoutMaterial(true);
+        $mission->setNoMaterialComment('SP 2 PTH Zimmer (assistante Zimmer) 5H prestation');
+        $this->em->flush();
+        $id = $mission->getId();
+        $managerToken = $this->login($client, $manager);
+        $instrToken   = $this->login($client, $instr);
+        $surgeonToken = $this->login($client, $surgeon);
+
+        // Avant régularisation : validation refusée (jamais sur le planifié).
+        $validate = $this->postJson($client, $managerToken, "/api/missions/$id/encoding/validate");
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $validate->getStatusCode());
+        // L'instrumentiste ne peut pas réécrire ses heures sur une mission soumise.
+        self::assertSame(Response::HTTP_FORBIDDEN, $this->patchJson($client, $instrToken, "/api/missions/$id/execution", ['actualStartAt' => (new \DateTimeImmutable('-3 days'))->format(DATE_ATOM)])->getStatusCode());
+        // Le chirurgien n'a aucun droit sur le circuit.
+        self::assertSame(Response::HTTP_FORBIDDEN, $this->postJson($client, $surgeonToken, "/api/missions/$id/encoding/reject", ['comment' => 'x'])->getStatusCode());
+
+        // 1. Renvoi à l'instrumentiste.
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $managerToken, "/api/missions/$id/encoding/reject", ['comment' => 'Merci de renseigner vos heures réelles de début et de fin.'])->getStatusCode());
+
+        // 2. Saisie des heures réelles par l'instrumentiste elle-même.
+        $start = (new \DateTimeImmutable('-3 days'))->setTime(8, 0);
+        $hours = $this->patchJson($client, $instrToken, "/api/missions/$id/execution", [
+            'actualStartAt' => $start->format(DATE_ATOM),
+            'actualEndAt'   => $start->modify('+5 hours 30 minutes')->format(DATE_ATOM),
+            'breakMinutes'  => 30,
+            'hoursSource'   => 'INSTRUMENTIST',
+        ]);
+        self::assertSame(Response::HTTP_OK, $hours->getStatusCode(), (string) $hours->getContent());
+        self::assertSame(300, json_decode((string) $hours->getContent(), true)['actualDurationMinutes']);
+
+        // 3. Nouvelle soumission puis validation.
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $instrToken, "/api/missions/$id/encoding/complete", ['comment' => 'Heures réelles ajoutées.'])->getStatusCode());
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $managerToken, "/api/missions/$id/encoding/validate")->getStatusCode());
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $id);
+        self::assertSame(MissionStatus::VALIDATED, $reloaded->getStatus());
+        self::assertSame(300, $reloaded->getExecution()->getActualDurationMinutes());
+        $comments = array_map(static fn ($c) => $c->getComment(), $this->em->getRepository(MissionEncodingComment::class)->findBy(['mission' => $id]));
+        self::assertContains('Merci de renseigner vos heures réelles de début et de fin.', $comments, 'motif du renvoi historisé');
+        $types = $this->auditEventTypesFor($id);
+        foreach ([AuditEventType::MISSION_ENCODING_REJECTED, AuditEventType::MISSION_ENCODING_COMPLETED, AuditEventType::MISSION_ENCODING_VALIDATED] as $expected) {
+            self::assertContains($expected->value, $types);
+        }
+    }
+
+    /**
+     * Missions 434 et 1225 (VALIDATED, verrouillées, aucune heure, aucun calcul financier) :
+     * aucune valorisation possible tant que les heures manquent ; « Rouvrir » est autorisé
+     * (aucun calcul verrouillé) puis le même circuit s'applique.
+     */
+    public function test_historical_validated_mission_without_hours_is_blocked_financially_then_reopened(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::VALIDATED, $instr, new \DateTimeImmutable('-30 days'));
+        $mission->setSubmittedAt(new \DateTimeImmutable('-20 days'));
+        $mission->setEncodingLockedAt(new \DateTimeImmutable('-10 days'));
+        $this->em->flush();
+        $id = $mission->getId();
+
+        /** @var \App\Service\FinancialCalculationService $finance */
+        $finance = static::getContainer()->get(\App\Service\FinancialCalculationService::class);
+        $evaluation = $finance->evaluate($this->em->find(Mission::class, $id));
+        self::assertFalse($evaluation->succeeds(), 'aucune valorisation sur le planifié');
+        self::assertContains('MISSING_ACTUAL_HOURS', array_map(static fn ($a) => $a->code, $evaluation->anomalies));
+
+        $instrToken   = $this->login($client, $instr);
+        $managerToken = $this->login($client, $manager);
+        self::assertSame(Response::HTTP_FORBIDDEN, $this->postJson($client, $instrToken, "/api/missions/$id/encoding/reopen")->getStatusCode(), 'seul un manager rouvre');
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $managerToken, "/api/missions/$id/encoding/reopen", ['comment' => 'Heures réelles manquantes (régularisation D-143).'])->getStatusCode());
+
+        $this->em->clear();
+        $reopened = $this->em->find(Mission::class, $id);
+        self::assertSame(MissionStatus::ENCODING_IN_PROGRESS, $reopened->getStatus());
+        self::assertNull($reopened->getEncodingLockedAt());
+        self::assertNull($reopened->getExecution(), 'aucune heure inventée par la réouverture');
+        self::assertContains(AuditEventType::MISSION_ENCODING_REOPENED->value, $this->auditEventTypesFor($id));
+    }
 }
