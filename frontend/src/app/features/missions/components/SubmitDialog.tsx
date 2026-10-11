@@ -6,6 +6,7 @@ import type { Mission } from "../api/missions.types";
 import { submitMission, getMissionExecution } from "../api/missions.api";
 import { fetchMissionEncoding } from "../../encoding/api/encoding.api";
 import { formatExecutionHours } from "../utils/missions.format";
+import { hoursIncomplete } from "../../encoding/components/WorkedHoursCard";
 import { useToast } from "../../../ui/toast/useToast";
 import { requestMissionSync } from "../sync/missionSyncBus";
 import { SheetModal } from "../../../ui/sheet/SheetModal";
@@ -27,15 +28,33 @@ type Props = {
   onSubmitted?: () => void;
   /** Topic d'aide contextuel — omis par défaut, ce composant est réutilisé hors encodage. */
   helpTopicId?: string;
+  /** D-143 — ouvre directement la saisie des heures réelles (section concernée). */
+  onCompleteHours?: () => void;
 };
+
+type MissingItem = { code: string; label: string; section: string };
 
 function extractErrorMessage(err: any): string {
   return (
+    err?.response?.data?.error?.message ??
     err?.response?.data?.message ??
     err?.response?.data?.detail ??
     err?.message ??
     String(err)
   );
+}
+
+/** D-143 — refus serveur ENCODING_INCOMPLETE : ce qui manque, tel que décidé par le backend. */
+function incompleteFrom(err: any): { message: string; missing: MissingItem[] } | null {
+  const error = err?.response?.data?.error;
+  if (error?.code !== "ENCODING_INCOMPLETE") return null;
+  return { message: String(error.message ?? ""), missing: Array.isArray(error.missing) ? error.missing : [] };
+}
+
+function hoursRecapLabel(execution: Parameters<typeof formatExecutionHours>[0]): string {
+  if (execution?.actualStartAt && execution?.actualEndAt) return formatExecutionHours(execution);
+  if (execution?.actualStartAt) return "Fin à compléter";
+  return "À compléter";
 }
 
 function OkIcon() {
@@ -78,9 +97,10 @@ function RecapRow({ warn, label, value }: { warn: boolean; label: string; value:
  * exigé pour ce type. Le serveur recalcule lui-même le compte de lignes et applique cette
  * même règle par type, jamais une confiance aveugle dans ce que ce composant calcule ici.
  */
-export default function SubmitDialog({ open, mission, onClose, onSubmitted, helpTopicId }: Props) {
+export default function SubmitDialog({ open, mission, onClose, onSubmitted, helpTopicId, onCompleteHours }: Props) {
   const toast = useToast();
   const [comment, setComment] = React.useState("");
+  const [incomplete, setIncomplete] = React.useState<{ message: string; missing: MissingItem[] } | null>(null);
 
   const { data: encoding, isLoading } = useQuery({
     queryKey: ["missionEncoding", mission.id],
@@ -99,14 +119,19 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
   });
 
   React.useEffect(() => {
-    if (open) setComment("");
+    if (open) {
+      setComment("");
+      setIncomplete(null);
+    }
   }, [open]);
 
   const interventions = encoding?.interventions ?? [];
   const materialLineCount = interventions.reduce((sum, itv) => sum + (itv.materialLines?.length ?? 0), 0);
   const notFoundCount = interventions.reduce((sum, itv) => sum + (itv.materialItemRequests?.length ?? 0), 0);
-  const hoursLabel = formatExecutionHours(execution);
-  const hasHours = hoursLabel !== "Non renseigné";
+  // D-143 — début ET fin réels requis (une durée seule ne suffit plus) ; affichage seul,
+  // la décision reste celle du serveur (refus ENCODING_INCOMPLETE ci-dessous).
+  const hoursLabel = hoursRecapLabel(execution);
+  const hasHours = !hoursIncomplete(execution);
   const requiresComment = !isLoading && mission.type === "BLOCK" && materialLineCount === 0;
   const canSubmit = !requiresComment || comment.trim() !== "";
 
@@ -118,7 +143,15 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
       onClose();
       onSubmitted?.();
     },
-    onError: (err: any) => toast.error(extractErrorMessage(err)),
+    onError: (err: any) => {
+      const refused = incompleteFrom(err);
+      if (refused) {
+        // Seule la soumission est refusée : brouillon, heures et matériel restent intacts.
+        setIncomplete(refused);
+        return;
+      }
+      toast.error(extractErrorMessage(err));
+    },
   });
 
   return (
@@ -127,11 +160,35 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
         <Box sx={{ mt: "14px", fontSize: 14, color: GRAY_500 }}>Chargement…</Box>
       ) : (
         <Box sx={{ mt: "14px", display: "flex", flexDirection: "column" }}>
-          <RecapRow warn={!hasHours} label="Heures" value={hoursLabel} />
+          <RecapRow warn={!hasHours} label="Heures réelles" value={hoursLabel} />
           <RecapRow warn={false} label="Interventions" value={String(interventions.length)} />
           <RecapRow warn={false} label="Matériel encodé" value={`${materialLineCount} ligne${materialLineCount > 1 ? "s" : ""}`} />
           {notFoundCount > 0 && (
             <RecapRow warn label="Matériel non trouvé" value={`${notFoundCount} ligne${notFoundCount > 1 ? "s" : ""}`} />
+          )}
+        </Box>
+      )}
+
+      {(incomplete || (!isLoading && !hasHours)) && (
+        <Box data-testid="submit-incomplete" role={incomplete ? "alert" : undefined} sx={{ mt: "14px", background: AMBER_50, borderRadius: "12px", padding: "12px 14px" }}>
+          <Box sx={{ fontSize: 13.5, fontWeight: 700, color: AMBER_700 }}>
+            {incomplete?.message || "Il reste une petite étape avant de terminer : pensez à renseigner vos heures réelles de début et de fin."}
+          </Box>
+          {incomplete && incomplete.missing.length > 0 && (
+            <Box component="ul" sx={{ m: "6px 0 0", pl: "18px", fontSize: 13, color: GRAY_700 }}>
+              {incomplete.missing.map((m) => <li key={m.code}>{m.label}</li>)}
+            </Box>
+          )}
+          <Box sx={{ mt: "6px", fontSize: 12.5, color: GRAY_500 }}>Tout ce que vous avez déjà encodé est conservé.</Box>
+          {onCompleteHours && (
+            <Box
+              component="button"
+              type="button"
+              onClick={onCompleteHours}
+              sx={{ mt: "10px", height: 40, padding: "0 14px", border: "none", borderRadius: "10px", background: "#fff", color: GREEN_800, fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: "pointer", boxShadow: "0 1px 2px rgba(22,32,43,.08)" }}
+            >
+              Renseigner mes heures
+            </Box>
           )}
         </Box>
       )}

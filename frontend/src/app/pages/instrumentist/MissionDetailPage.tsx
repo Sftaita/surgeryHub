@@ -360,6 +360,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
           queryClient.invalidateQueries({ queryKey: ["missions"] });
           if (embedded) onCloseEmbedded?.();
         }}
+        onCompleteHours={canEditHours ? () => { setOpenSubmit(false); setOpenEditHours(true); } : undefined}
       />
 
       {canEditHours && openEditHours && (

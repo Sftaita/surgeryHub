@@ -47,6 +47,9 @@ export function ReadOnlyInterventionCard({ entry }: { entry: MissionEncodingEntr
         <Typography sx={{ fontSize: 12.5, color: GRAY_500, mb: 1 }}>{repLabel}</Typography>
       )}
 
+      <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase", color: GRAY_500, mb: 0.5 }}>
+        Matériel
+      </Typography>
       <ReadOnlyMaterialList lines={entry.materialLines} />
     </Box>
   );

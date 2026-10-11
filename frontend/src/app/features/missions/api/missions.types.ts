@@ -204,6 +204,12 @@ export interface Mission {
   nextAutomaticReminderAt?: string | null;
   lastManualReminderAt?: string | null;
   lastManualReminderByName?: string | null;
+  /** D-143 — canal de la dernière relance manuelle ('push' | 'email'). */
+  lastManualReminderChannel?: string | null;
+  /** D-143 — relances automatiques déjà envoyées (manager uniquement). */
+  automaticReminders?: AutomaticReminder[];
+  /** D-143 — dernière soumission de l'encodage (null si jamais soumis). */
+  submittedAt?: string | null;
 
   /** D-125 — demande nominative, calculée backend (jamais re-déduite) : PENDING = OPEN, non
    *  couverte, en attente de la réponse de cet instrumentiste ; DECLINED = refusée. */
@@ -232,4 +238,12 @@ export type MissionSyncResponse = {
   changed: boolean;
   missions: Mission[];
   removedMissionIds: number[];
+};
+
+/** D-143 — une relance automatique J+1/J+2/J+4 déjà envoyée (historique serveur). */
+export type AutomaticReminder = {
+  stage: "D1" | "D2" | "D4";
+  sentAt: string | null;
+  channels: string[];
+  managersNotified: number | null;
 };

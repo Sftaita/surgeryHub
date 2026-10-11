@@ -88,3 +88,27 @@ describe("formatNotificationBody — ROOM_TAKEOVER_MISSION_OFFER (D-124)", () =>
     );
   });
 });
+
+describe("D-143 — notifications d'encodage", () => {
+  it("relance : reprend le texte serveur", () => {
+    expect(formatNotificationTitle({ eventType: "ENCODING_REMINDER" })).toBe("Encodage à finaliser");
+    expect(formatNotificationBody({ eventType: "ENCODING_REMINDER", payload: { body: "Gardez votre journée en mémoire !" } } as any)).toBe("Gardez votre journée en mémoire !");
+  });
+
+  it("escalade J+4 : instrumentiste, date, chirurgien, éléments manquants", () => {
+    expect(formatNotificationBody({ eventType: "ENCODING_ESCALATION", payload: {
+      instrumentistName: "Diane D.", missionDate: "14/07/2026", surgeonName: "Dr X", missing: ["Heure réelle de fin"],
+    } } as any)).toBe("Diane D. — mission du 14/07/2026 — Dr X. Manquant : Heure réelle de fin.");
+  });
+
+  it("soumission chirurgien : une correction est annoncée comme telle", () => {
+    expect(formatNotificationBody({ eventType: "ENCODING_SUBMITTED", payload: { missionDate: "14/07/2026", resubmitted: true } } as any))
+      .toContain("a été corrigé");
+  });
+
+  it("signalement côté instrumentiste : catégorie seulement, jamais le commentaire", () => {
+    const body = formatNotificationBody({ eventType: "ENCODING_ANOMALY_INSTRUMENTIST", payload: { missionDate: "14/07/2026", type: "HOURS_INCORRECT", comment: "secret" } } as any);
+    expect(body).toContain("(horaires)");
+    expect(body).not.toContain("secret");
+  });
+});

@@ -197,6 +197,8 @@ export async function reopenMissionEncoding(
 }
 
 /** D-120 — relance manuelle (cockpit Suivi des encodages). Ne mute aucun statut. */
-export async function remindMissionEncoding(missionId: number): Promise<void> {
-  await apiClient.post(`/api/missions/${missionId}/encoding/remind`);
+/** D-143 — renvoie le détail mission à jour (lastManualReminderChannel : canal réellement utilisé). */
+export async function remindMissionEncoding(missionId: number): Promise<{ lastManualReminderChannel?: string | null }> {
+  const { data } = await apiClient.post(`/api/missions/${missionId}/encoding/remind`);
+  return data ?? {};
 }

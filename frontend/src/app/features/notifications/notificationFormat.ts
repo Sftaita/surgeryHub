@@ -27,6 +27,19 @@ const TITLES: Record<string, string> = {
   ABSENCE_INSTRUMENTIST_REASSIGNED: "Mission réaffectée (absence)",
   PLANNING_RESENT_MANUAL: "Planning renvoyé",
   ROOM_TAKEOVER_MISSION_OFFER: "Salle reprise — mission disponible",
+  // D-143 — encodage progressif, relances, retour chirurgien.
+  ENCODING_REMINDER: "Encodage à finaliser",
+  ENCODING_ESCALATION: "Encodage en attente depuis 4 jours",
+  ENCODING_SUBMITTED: "Encodage disponible",
+  ENCODING_ANOMALY_INSTRUMENTIST: "Point à vérifier sur votre encodage",
+};
+
+const ANOMALY_TYPE_LABELS: Record<string, string> = {
+  INTERVENTION_MISSING: "intervention manquante",
+  INTERVENTION_INCORRECT: "intervention incorrecte",
+  MATERIAL_INCORRECT: "matériel",
+  HOURS_INCORRECT: "horaires",
+  OTHER: "autre",
 };
 
 /**
@@ -114,6 +127,28 @@ export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "ev
     if (takenBy && original && missionDate && siteName) {
       return `${takenBy} reprend la salle de ${original} le ${missionDate} à ${siteName}. Une mission est disponible pour ce créneau.`;
     }
+  }
+
+  // D-143 — textes construits uniquement depuis le payload serveur.
+  if (n.eventType === "ENCODING_REMINDER") {
+    if (typeof payload.body === "string" && payload.body) return payload.body;
+    return missionDate ? `Votre mission du ${missionDate} est encore à finaliser.` : "Une mission est encore à finaliser.";
+  }
+  if (n.eventType === "ENCODING_ESCALATION") {
+    const who = typeof payload.instrumentistName === "string" ? payload.instrumentistName : "L'instrumentiste";
+    const surgeon = typeof payload.surgeonName === "string" ? ` — ${payload.surgeonName}` : "";
+    const missing = Array.isArray(payload.missing) && payload.missing.length > 0 ? ` Manquant : ${payload.missing.join(", ")}.` : "";
+    return `${who} — mission du ${missionDate ?? "—"}${surgeon}.${missing}`;
+  }
+  if (n.eventType === "ENCODING_SUBMITTED") {
+    const who = typeof payload.instrumentistName === "string" ? ` par ${payload.instrumentistName}` : "";
+    return payload.resubmitted === true
+      ? `L'encodage de votre mission du ${missionDate ?? "—"} a été corrigé${who}. Consultez la nouvelle version.`
+      : `L'encodage de votre mission du ${missionDate ?? "—"} a été soumis${who}.`;
+  }
+  if (n.eventType === "ENCODING_ANOMALY_INSTRUMENTIST") {
+    const category = typeof payload.type === "string" && ANOMALY_TYPE_LABELS[payload.type] ? ` (${ANOMALY_TYPE_LABELS[payload.type]})` : "";
+    return `Le chirurgien a signalé un point à vérifier${category} sur votre mission du ${missionDate ?? "—"}. La coordination reviendra vers vous si nécessaire.`;
   }
 
   if (missionDate && siteName) return `${missionDate} — ${siteName}`;

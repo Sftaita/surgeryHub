@@ -257,6 +257,7 @@ export default function MissionEncodingPage() {
           handleBack();
         }}
         helpTopicId="mission-encoding"
+        onCompleteHours={canEditHours ? () => { setOpenSubmit(false); setOpenEditHours(true); } : undefined}
       />
 
       {canEditHours && openEditHours && (

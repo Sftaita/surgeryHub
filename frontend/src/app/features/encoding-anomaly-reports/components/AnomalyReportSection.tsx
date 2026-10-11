@@ -79,6 +79,20 @@ export function AnomalyReportSection({ missionId }: { missionId: number }) {
         </Stack>
       )}
 
+      {/* D-143 — l'historique des signalements reste consultable (jamais seulement le dernier). */}
+      {reports && reports.length > 1 && (
+        <Box data-testid="anomaly-report-history" sx={{ mt: 1.5, pt: 1, borderTop: "1px dashed #E7EBEF" }}>
+          <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase", color: GRAY_500, mb: 0.5 }}>
+            Signalements précédents
+          </Typography>
+          {reports.slice(1).map((r) => (
+            <Typography key={r.id} sx={{ fontSize: 12, color: GRAY_500 }}>
+              {ENCODING_ANOMALY_REPORT_TYPE_LABELS[r.type]} · {dayjs(r.createdAt).format("D MMM YYYY")} · {r.status === "OPEN" ? "en attente" : "traité"}
+            </Typography>
+          ))}
+        </Box>
+      )}
+
       <AnomalyReportSheet open={sheetOpen} onClose={() => setSheetOpen(false)} missionId={missionId} />
     </Box>
   );

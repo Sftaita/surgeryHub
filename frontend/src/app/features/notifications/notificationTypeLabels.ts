@@ -25,6 +25,9 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   CATALOGUE_REQUEST_RESOLVED: "Votre proposition Catalogue acceptée",
   CATALOGUE_REQUEST_IGNORED: "Votre proposition Catalogue non retenue",
   ROOM_TAKEOVER_MISSION_OFFER: "Salle reprise — mission disponible pour vous",
+  // D-143 — les relances d'encodage elles-mêmes ne sont pas configurables (absentes de la liste).
+  ENCODING_SUBMITTED: "Encodage de vos missions disponible (chirurgien)",
+  ENCODING_ANOMALY_INSTRUMENTIST: "Point signalé sur votre encodage",
 };
 
 export function notificationTypeLabel(type: string): string {
