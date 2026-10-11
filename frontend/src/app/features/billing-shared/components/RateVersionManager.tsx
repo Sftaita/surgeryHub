@@ -165,7 +165,7 @@ export default function RateVersionManager({
             <TextField label="Montant" type="number" size="small" value={amount} onChange={(e) => setAmount(e.target.value)} inputProps={{ min: 0, step: "0.01" }} sx={{ width: 160 }} />
             <TextField label="Devise" size="small" value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} sx={{ width: 90 }} />
             <TextField label="Valide à partir de" type="date" size="small" value={validFrom} onChange={(e) => setValidFrom(e.target.value)} InputLabelProps={{ shrink: true }} helperText="Vide = sans date de début : s'applique aussi aux prestations passées" />
-            <TextField label="Valide jusqu'à" type="date" size="small" value={validTo} onChange={(e) => setValidTo(e.target.value)} InputLabelProps={{ shrink: true }} helperText="Vide = sans fin" />
+            <TextField label="Valide jusqu'à" type="date" size="small" value={validTo} onChange={(e) => setValidTo(e.target.value)} InputLabelProps={{ shrink: true }} helperText="Vide = sans fin. Date exclue : le dernier jour couvert est la veille." />
           </Stack>
           <Stack direction="row" spacing={1}>
             <Button size="small" onClick={() => setMode(null)}>Annuler</Button>
@@ -186,7 +186,7 @@ export default function RateVersionManager({
             <TextField label="Montant" type="number" size="small" value={amount} onChange={(e) => setAmount(e.target.value)} inputProps={{ min: 0, step: "0.01" }} sx={{ width: 160 }} />
             <TextField label="Devise" size="small" value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} sx={{ width: 90 }} />
             <TextField label="Valide à partir de" type="date" size="small" value={validFrom} onChange={(e) => setValidFrom(e.target.value)} InputLabelProps={{ shrink: true }} />
-            <TextField label="Valide jusqu'à" type="date" size="small" value={validTo} onChange={(e) => setValidTo(e.target.value)} InputLabelProps={{ shrink: true }} helperText="Vide = sans fin" />
+            <TextField label="Valide jusqu'à" type="date" size="small" value={validTo} onChange={(e) => setValidTo(e.target.value)} InputLabelProps={{ shrink: true }} helperText="Vide = sans fin. Date exclue : le dernier jour couvert est la veille." />
           </Stack>
           <Stack direction="row" spacing={1}>
             <Button size="small" onClick={() => setMode(null)}>Annuler</Button>

@@ -45,6 +45,7 @@ vi.mock("../features/manager-catalogue/api/catalogue.api", () => ({
   getFirms: vi.fn().mockResolvedValue([]),
   getMaterialItems: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 200 }),
   createMaterialItem: vi.fn(),
+  getMaterialBillingRegularisation: vi.fn().mockResolvedValue({ summary: { itemCount: 0, toConfigureCount: 0, undecidedCount: 0, rateMissingCount: 0, billableCount: 0, notBillableCount: 0, blockedMissionCount: 0, pendingMissionCount: 0 }, items: [] }),
 }));
 vi.mock("../features/manager-catalogue/api/interventionTypeRequests.api", () => ({
   getInterventionTypeRequests: vi.fn().mockResolvedValue({ items: [], total: 0 }),

@@ -11871,3 +11871,63 @@ Ce n'est pas une anomalie du code.
 - Tarif horaire de l'instrumentiste #19 valable seulement à partir du 10/09/2026 : 5 missions
   VALIDÉES antérieures (#425, #428, #437, #440, #624) ne sont pas couvertes — décision métier
   (le tarif s'appliquait-il avant ?).
+
+## D-142 — Régularisation du catalogue matériel : décisions de facturation explicites, missions bloquées selon le moteur (2026-10-11)
+
+### Contexte
+
+Après D-141 (`v2026.10.10-prod-2`), 40 des 45 articles du catalogue matériel de production n'ont
+aucune décision de facturation (`UNSPECIFIED`, aucun tarif) et bloquent le calcul de 31 des 40
+missions validées non calculées (audit en lecture seule du 2026-10-11). Le catalogue ne permettait
+de les traiter que firme par firme (Prestations → firme → Matériel), sans savoir lesquels bloquent
+des missions.
+
+### Décisions
+
+1. **Pas de nouveau moteur, pas de nouvelle page.** Catalogue > Prestations gagne une troisième
+   destination « Matériel à régulariser » (toutes firmes, compteur, filtres « À configurer » /
+   facturables / non facturables / tous, recherche, tri par missions bloquées, utilisations, firme,
+   nom ; `?vue=a-regulariser` survit à l'actualisation). La correction s'ouvre dans le dialogue
+   « Modifier le matériel » existant (tarif versionné `RateVersionManager`, « Marquer non facturable »).
+2. **Lecture : `GET /api/material-items/billing-regularisation`** (manager), décrit dans `docs/api.md`
+   §19.1b. « Bloque » = anomalie `MISSING_FIRM_MATERIAL_RATE` / `CONFLICTING_FIRM_MATERIAL_RATE`
+   produite par `FinancialCalculationService::evaluate()` (lecture seule) sur une ligne de l'article.
+   Les autres anomalies de la mission sont comptées à part : corriger un article ne présente jamais
+   une mission comme débloquée tant qu'une autre cause demeure. Les missions à calcul actif ne sont
+   jamais réévaluées.
+3. **Trois états, jamais confondus** : non décidé (`UNSPECIFIED`, reste à régulariser), facturable
+   (tarif posé → `BILLABLE`, comportement D-092 existant), non facturable (`NOT_BILLABLE`, sans règle à
+   0 €). Une décision « non facturable » se défait explicitement (« Revenir à « non décidé » »,
+   `PATCH billingStatus: UNSPECIFIED`) ; rien n'est déduit.
+4. **Dates** : la date de début d'un nouveau tarif reste vide par défaut (« Vide = sans date de début :
+   s'applique aussi aux prestations passées ») ; la date de fin est exclusive (D-072) et le dit.
+   C'est la date de la prestation qui détermine la règle (D-067).
+5. **Correctif de l'explicateur (D-141)** : tant qu'une anomalie auditée existe encore, son
+   explication décrit la cause **actuelle** (contexte du moteur prioritaire sur le contexte audité).
+   Ex. : un tarif posé depuis l'échec mais commençant après la prestation affichait encore « Aucune
+   décision de facturation » ; il affiche désormais « Aucun des tarifs … ne s'applique au … (règle
+   #… du …) ».
+6. **Aucun recalcul automatique, aucun historique réécrit** : la vue est en lecture ; les décisions
+   passent par les endpoints existants ; le recalcul reste un geste explicite (Suivi des encodages,
+   Facturation firmes). Un calcul verrouillé n'est jamais modifié.
+
+### Tests
+
+`MaterialBillingRegularisationTest` (HTTP + vraie base, données fictives) : 1 non décidé →
+facturable ; 2 non décidé → non facturable (sans règle à 0 €) puis retour à « non décidé » ;
+3 facturable dont le tarif a expiré ; 4 tarif couvrant une mission passée ; 5 tarif commençant après
+la mission (reste bloquée, explication actuelle) ; 6 matériel d'une autre firme que l'intervention ;
+7 plusieurs matériels bloquant la même mission (lignes ≠ missions, « seule cause ») ; 8 aucune
+correction ne crée de calcul ni d'audit ; 9 calcul verrouillé jamais réévalué ni modifié ;
+10 cohérence vue de régularisation / Suivi des encodages / Facturation firmes ; accès manager
+uniquement. Frontend : `PrestationsPage.test` (vue, compteur, filtres, missions, dialogue, retour
+à « non décidé »). Vérification navigateur sur données fictives.
+
+### Production (lecture seule, 2026-10-11) — décisions métier à prendre, rien n'est modifié
+
+40 articles `UNSPECIFIED` sans tarif (25 utilisés dans des missions validées, 15 jamais utilisés) ;
+31 missions validées non calculées en utilisent au moins un ; 14 de ces missions ne sont bloquées que
+par du matériel (#442, #444, #460, #468, #471, #473, #474, #489, #1048, #1051, #1055, #1056,
+#1216, #1218). Les autres causes (prestations sans tarif, couples firme × prestation sans
+configuration, firme principale manquante, présence du délégué, tarif instrumentiste #19) restent
+inventoriées dans D-141 et relèvent de décisions distinctes.

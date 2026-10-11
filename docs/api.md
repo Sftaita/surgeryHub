@@ -1595,6 +1595,52 @@ l'encodage, via `MaterialItemMapper::toSlim()`, qui lui n'expose jamais de tarif
 
 ---
 
+### 19.1b `GET /api/material-items/billing-regularisation` (D-142)
+
+Manager / admin (`BillingVoter::MANAGE`, 403 sinon). **Lecture seule** : aucune écriture, aucun
+audit, aucun calcul. Alimente Catalogue > Prestations > « Matériel à régulariser ».
+
+Les missions bloquées sont décidées par le moteur lui-même : `FinancialCalculationService::evaluate()`
+est rejoué pour chaque mission `VALIDATED` **sans calcul actif** (CALCULATED / APPROVED / LOCKED)
+qui utilise du matériel. Une mission dont le calcul est actif n'est jamais réévaluée (`calculationState:
+"CALCULATED"`) : modifier le catalogue ne la touche pas.
+
+```json
+{
+  "summary": { "itemCount": 45, "toConfigureCount": 40, "undecidedCount": 40, "rateMissingCount": 0,
+               "billableCount": 5, "notBillableCount": 0, "blockedMissionCount": 31, "pendingMissionCount": 40 },
+  "items": [{
+    "id": 34, "label": "SwiveLock C Anchor", "referenceCode": "SwiveLock", "unit": "pièce", "isImplant": true, "active": true,
+    "firm": { "id": 5, "name": "Arthrex" },
+    "billingStatus": "UNSPECIFIED", "status": "UNDECIDED", "statusLabel": "Non décidé", "toConfigure": true,
+    "currentRate": null, "pricingConflict": false, "rules": [],
+    "usage": { "lineCount": 26, "missionCount": 13, "firstDate": "2026-09-08", "lastDate": "2026-10-09",
+               "blockedMissionCount": 13, "onlyBlockerMissionCount": 1 },
+    "missions": [{ "id": 471, "date": "2026-09-23", "site": "…", "surgeon": "…", "lineCount": 2,
+                   "calculationState": "PENDING", "blockedByThisItem": true, "otherBlockingAnomalyCount": 0 }]
+  }]
+}
+```
+
+- `status` : `UNDECIDED` (« Non décidé » : `UNSPECIFIED` et aucun tarif — jamais assimilé à « non
+  facturable »), `BILLABLE_RATE_MISSING` (« Tarif manquant » : facturable/tarifé mais aucun tarif ne
+  couvre une mission en attente, ou aucun tarif aujourd'hui), `BILLABLE`, `NOT_BILLABLE`.
+  `toConfigure` = `UNDECIDED` ou `BILLABLE_RATE_MISSING`.
+- `rules` : tous les tarifs `MATERIAL_FEE` de l'article (actifs ou non), même forme que
+  `targetRules` (D-141). `currentRate` : tarif applicable aujourd'hui (`null` si aucun ou conflit).
+- `usage.lineCount` (lignes de matériel) ≠ `usage.missionCount` (missions) : une mission peut porter
+  plusieurs lignes du même article. `blockedMissionCount` : missions où le moteur produit une anomalie
+  de tarif sur une ligne de cet article ; `onlyBlockerMissionCount` : parmi elles, celles sans aucune
+  autre anomalie (`otherBlockingAnomalyCount = 0`).
+- `missions[].otherBlockingAnomalyCount` : anomalies du moteur qui ne viennent pas de cet article ;
+  > 0 = corriger l'article ne suffit pas à rendre la mission calculable.
+- Tri : à configurer d'abord, puis missions bloquées, puis lignes.
+
+Les décisions se prennent avec les endpoints existants : `POST /api/firms/{id}/pricing-rules`
+(facturable — l'article passe `BILLABLE`, D-092), `PATCH /api/material-items/{id}`
+`{billingStatus: "NOT_BILLABLE" | "UNSPECIFIED"}` (non facturable / retour à « non décidé »).
+Aucune ne recalcule quoi que ce soit.
+
 ### 19.2 `GET /api/material-items/quick-search?q=fiber&firmId=4`
 
 **AuthZ :** Tous rôles authentifiés

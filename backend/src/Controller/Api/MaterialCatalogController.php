@@ -8,6 +8,7 @@ use App\Entity\MaterialItem;
 use App\Entity\MaterialLine;
 use App\Enum\MaterialBillingStatus;
 use App\Security\Voter\BillingVoter;
+use App\Service\MaterialBillingRegularisationService;
 use App\Service\MaterialCatalogService;
 use App\Service\MaterialItemMapper;
 use App\Service\PricingRuleResolver;
@@ -31,6 +32,7 @@ final class MaterialCatalogController extends AbstractController
         private readonly EntityManagerInterface $em,
         private readonly ValidatorInterface $validator,
         private readonly PricingRuleResolver $pricingRuleResolver,
+        private readonly MaterialBillingRegularisationService $regularisation,
     ) {}
 
     /**
@@ -89,6 +91,22 @@ final class MaterialCatalogController extends AbstractController
             'page'  => $result['page'],
             'limit' => $result['limit'],
         ]);
+    }
+
+    /**
+     * GET /api/material-items/billing-regularisation
+     *
+     * D-142 — régularisation du catalogue matériel (manager/admin) : décision de facturation,
+     * tarifs, utilisations dans les missions validées et missions encore bloquées selon le
+     * moteur (FinancialCalculationService::evaluate(), lecture seule — aucune écriture, aucun
+     * recalcul). Voir MaterialBillingRegularisationService.
+     */
+    #[Route('/billing-regularisation', name: 'api_material_items_billing_regularisation', methods: ['GET'])]
+    public function billingRegularisation(): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        return $this->json($this->regularisation->overview());
     }
 
     /**
