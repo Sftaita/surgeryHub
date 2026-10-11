@@ -120,6 +120,8 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         // always available; EncodingReminderService decides fallback (J+1/J+2) or mandatory (J+4).
         NotificationType::ENCODING_REMINDER,
         NotificationType::ENCODING_ESCALATION,
+        // D-136 — rappel des heures : e-mail de secours (non configurable).
+        NotificationType::MISSION_HOURS_REMINDER,
     ];
 
     /**
@@ -135,6 +137,8 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         // D-143 — the reminder is pushed whenever a device is really subscribed ("push si
         // opérationnel"), the email being the fallback. Not configurable.
         NotificationType::ENCODING_REMINDER,
+        // D-136 — the hours reminder was always push first (unconditional): unchanged.
+        NotificationType::MISSION_HOURS_REMINDER,
     ];
 
     public function __construct(

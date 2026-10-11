@@ -7,6 +7,7 @@ use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -24,6 +25,11 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
  * UTC, voir docs/production.md). Une exécution avant 09h00 locale ne fait rien ; une
  * exécution répétée n'envoie jamais deux fois la même échéance.
  *   php bin/console app:notifications:send-encoding-reminders
+ *
+ * Recette uniquement (jamais en prod) : `--at="2026-07-15 09:05"` fixe l'horloge (heure de
+ * Bruxelles) pour exécuter le parcours complet à une échéance choisie, dans un
+ * environnement isolé. Refusé quand kernel.environment = prod : l'horloge de production
+ * n'est jamais modifiable.
  */
 #[AsCommand(
     name: 'app:notifications:send-encoding-reminders',
@@ -37,8 +43,15 @@ class SendEncodingRemindersCommand extends Command
         private readonly EncodingReminderService $service,
         #[Autowire(service: 'monolog.logger.push')]
         private readonly LoggerInterface $logger,
+        #[Autowire('%kernel.environment%')]
+        private readonly string $environment = 'prod',
     ) {
         parent::__construct();
+    }
+
+    protected function configure(): void
+    {
+        $this->addOption('at', null, InputOption::VALUE_REQUIRED, 'Recette uniquement (hors prod) : horloge fixée, heure de Bruxelles (ex. "2026-07-15 09:05").');
     }
 
     /** Overridden in tests to freeze "now" — no Clock abstraction exists in this codebase yet. */
@@ -50,7 +63,18 @@ class SendEncodingRemindersCommand extends Command
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
-        $now = $this->now()->setTimezone(new \DateTimeZone(self::TIMEZONE));
+
+        $at = $input->getOption('at');
+        if ($at !== null) {
+            if ($this->environment === 'prod') {
+                $io->error("--at est réservé à la recette : l'horloge de production n'est jamais modifiable.");
+
+                return Command::FAILURE;
+            }
+            $now = new \DateTimeImmutable((string) $at, new \DateTimeZone(self::TIMEZONE));
+        } else {
+            $now = $this->now()->setTimezone(new \DateTimeZone(self::TIMEZONE));
+        }
 
         if ((int) $now->format('G') < EncodingReminderService::SEND_HOUR) {
             $io->success(sprintf(

@@ -4,16 +4,17 @@ namespace App\MessageHandler;
 
 use App\Entity\Mission;
 use App\Entity\User;
-use App\Enum\OutboundNotificationStatus;
+use App\Enum\NotificationEmailPolicy;
+use App\Enum\NotificationType;
 use App\Message\MissionHoursReminderMessage;
-use App\Message\SendTemplatedEmailMessage;
-use App\Service\MissionHoursReminderService;
-use App\Service\OutboundNotificationService;
+use App\Notification\EmailContent;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
+use App\Notification\PushContent;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
-use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
  * D-136 — envoie le rappel des heures réelles à l'instrumentiste : Push d'abord, repli email
@@ -22,6 +23,11 @@ use Symfony\Component\Messenger\MessageBusInterface;
  *
  * Pas de filtrage par préférences : action explicite et ponctuelle d'un manager, même
  * précédent que la relance manuelle D-120 et PLANNING_RESENT_MANUAL.
+ *
+ * Intégration H1–H8 — via NotificationDispatcher (type MISSION_HOURS_REMINDER, non
+ * configurable) : même comportement que D-136 (push d'abord, e-mail en secours
+ * FALLBACK_WHEN_PUSH_NOT_SENT, pas d'élément in-app), chaque canal tracé, idempotent par
+ * demande (rejeu Messenger sans doublon).
  *
  * Aucune donnée patient : date de la mission et lien uniquement. Toute erreur est
  * journalisée et absorbée — le rappel a déjà été audité côté requête manager.
@@ -33,16 +39,11 @@ final class MissionHoursReminderMessageHandler
 
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly OutboundNotificationService $outboundNotificationService,
-        private readonly MessageBusInterface $bus,
+        private readonly NotificationDispatcher $dispatcher,
         #[Autowire(service: 'monolog.logger.push')]
         private readonly LoggerInterface $logger,
         #[Autowire('%env(string:FRONTEND_URL)%')]
         private readonly string $frontendUrl,
-        #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
-        private readonly string $fromAddress,
-        #[Autowire('%env(string:MAILER_FROM_NAME)%')]
-        private readonly string $fromName,
     ) {
     }
 
@@ -67,49 +68,24 @@ final class MissionHoursReminderMessageHandler
             $body = $day !== null
                 ? sprintf('Merci de renseigner les heures réellement prestées pour votre mission du %s.', $day)
                 : 'Merci de renseigner les heures réellement prestées pour cette mission.';
-            $path = sprintf('/app/i/missions/%d', $mission->getId());
+            $path = sprintf('/app/i/missions/%d/encoding', $mission->getId());
 
-            $push = $this->outboundNotificationService->recordPushSend(
-                $instrumentist,
-                MissionHoursReminderService::NOTIFICATION_TYPE,
-                $title,
-                $body,
-                ['missionId' => $mission->getId(), 'url' => $path],
-                $mission,
-            );
-
-            if ($push->getStatus() === OutboundNotificationStatus::SENT) {
-                $this->logger->info('hours_reminder.sent_push', ['missionId' => $mission->getId(), 'userId' => $instrumentist->getId()]);
-                return;
-            }
-
-            $missionUrl = $this->frontendUrl . $path;
-            $subject = 'SurgicalHub — Heures réelles à renseigner';
-            $email = $this->outboundNotificationService->recordEmailQueued(
-                $instrumentist,
-                MissionHoursReminderService::NOTIFICATION_TYPE,
-                $subject,
-                rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
+            $this->dispatcher->dispatch(new NotificationIntent(
+                recipient: $instrumentist,
+                type: NotificationType::MISSION_HOURS_REMINDER,
+                inAppPayload: ['missionId' => $mission->getId(), 'missionDate' => $day],
                 mission: $mission,
-                fallbackOf: $push,
-                fallbackReason: OutboundNotificationService::fallbackReasonFor($push),
-            );
-
-            $this->bus->dispatch(new SendTemplatedEmailMessage(
-                to: (string) $instrumentist->getEmail(),
-                subject: $subject,
-                fromAddress: $this->fromAddress,
-                fromName: $this->fromName,
-                htmlTemplate: 'emails/mission_hours_reminder.html.twig',
-                context: [
+                email: new EmailContent('SurgicalHub — Heures réelles à renseigner', 'emails/mission_hours_reminder.html.twig', [
                     'firstname'  => $instrumentist->getFirstname(),
                     'missionDay' => $day,
-                    'missionUrl' => $missionUrl,
-                ],
-                outboundNotificationId: $email->getId(),
+                    'missionUrl' => $this->frontendUrl . $path,
+                ]),
+                push: new PushContent($title, $body, ['missionId' => $mission->getId(), 'url' => $path]),
+                episodeRef: sprintf('hours_reminder:%d:%s', (int) $mission->getId(), $message->requestId ?? 'legacy'),
+                emailPolicy: NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT,
+                inApp: false,
             ));
-
-            $this->logger->info('hours_reminder.sent_email', ['missionId' => $mission->getId(), 'userId' => $instrumentist->getId()]);
+            $this->logger->info('hours_reminder.dispatched', ['missionId' => $mission->getId(), 'userId' => $instrumentist->getId()]);
         } catch (\Throwable $e) {
             $this->logger->error('hours_reminder.failed', [
                 'missionId' => $mission->getId(),

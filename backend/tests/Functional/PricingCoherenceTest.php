@@ -28,6 +28,7 @@ use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * D-141 — cohérence Catalogue (« Prestations ») ↔ moteur financier ↔ « Suivi des
@@ -42,6 +43,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class PricingCoherenceTest extends WebTestCase
 {
+    use DeclaresActualHours;
+
     private const PASSWORD = 'Coherence123!';
 
     private EntityManagerInterface $em;
@@ -253,6 +256,7 @@ final class PricingCoherenceTest extends WebTestCase
         $m->setStatus(MissionStatus::VALIDATED);
         $m->setInstrumentist($instrumentist);
         $this->em->persist($m); $this->em->flush();
+        $this->declareActualHours($m); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $m->getId();
         return $m;
     }

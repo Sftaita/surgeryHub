@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Enum\EffectiveDurationSource;
 use App\Dto\FinancialCalculationAnomaly;
 use App\Dto\MissionFinancialEvaluation;
 use App\Dto\RepresentativePolicy;
@@ -692,6 +693,20 @@ final class FinancialCalculationService
     private function resolveInstrumentistHourlyLine(Mission $mission, User $instrumentist, \DateTimeImmutable $effectiveAt, array &$anomalies): ?array
     {
         $duration = $this->missionExecutionService->resolveEffectiveDuration($mission);
+
+        // D-143 (intégration) — une prestation n'est JAMAIS valorisée sur les seuls horaires
+        // planifiés : sans aucune déclaration réelle (ni début + fin + pause, ni durée déclarée
+        // avant D-143), le calcul est bloqué. Aucune durée n'est fabriquée ; les calculs déjà
+        // persistés (approuvés, verrouillés, documents émis) ne sont jamais rejoués.
+        if ($duration->source === EffectiveDurationSource::PLANNED) {
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'MISSING_ACTUAL_HOURS',
+                sprintf('No declared actual hours for mission #%d: planned hours are never paid.', $mission->getId()),
+                ['missionId' => $mission->getId()],
+            );
+            return null;
+        }
+
         if ($duration->minutes <= 0) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'INVALID_EFFECTIVE_DURATION',

@@ -709,6 +709,7 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         $site    = $this->makeSite();
         $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ASSIGNED, $instr);
         $line    = $this->makeMaterialLine($mission, $instr, '1.00');
+        $this->giveActualHours($mission); // D-143 — heures réelles obligatoires à la soumission
         $id      = $mission->getId();
         $instrToken   = $this->login($client, $instr);
         $managerToken = $this->login($client, $manager);

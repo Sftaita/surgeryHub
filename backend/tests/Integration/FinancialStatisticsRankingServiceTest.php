@@ -26,6 +26,7 @@ use App\Service\FinancialCalculationService;
 use App\Service\FinancialStatisticsRankingService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Pilotage financier, Lot 7 (D-077) — §31 du lot : groupements par firme,
@@ -34,6 +35,8 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class FinancialStatisticsRankingServiceTest extends KernelTestCase
 {
+    use DeclaresActualHours;
+
     private EntityManagerInterface $em;
     private FinancialCalculationService $calcService;
     private FinancialStatisticsRankingService $ranking;
@@ -189,6 +192,7 @@ final class FinancialStatisticsRankingServiceTest extends KernelTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();

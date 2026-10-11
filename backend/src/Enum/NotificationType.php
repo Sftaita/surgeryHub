@@ -235,6 +235,9 @@ enum NotificationType: string
     case ENCODING_ESCALATION = 'ENCODING_ESCALATION';
     case ENCODING_SUBMITTED  = 'ENCODING_SUBMITTED';
     case ENCODING_ANOMALY_INSTRUMENTIST = 'ENCODING_ANOMALY_INSTRUMENTIST'; // 30 chars
+    // D-136 — « Rappeler les heures » (manager → instrumentiste), auparavant une chaîne libre
+    // sur les lignes outbound ; même valeur pour que l'historique existant garde son type.
+    case MISSION_HOURS_REMINDER = 'MISSION_HOURS_REMINDER';
 
     /**
      * H5a — types whose email is sent whatever the recipient's preferences
@@ -255,7 +258,7 @@ enum NotificationType: string
      */
     public function isOperationalObligation(): bool
     {
-        return in_array($this, [self::ENCODING_REMINDER, self::ENCODING_ESCALATION], true);
+        return in_array($this, [self::ENCODING_REMINDER, self::ENCODING_ESCALATION, self::MISSION_HOURS_REMINDER], true);
     }
 
     /** Offered in the person's notification preferences (a switch must change something). */

@@ -24,6 +24,7 @@ use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * Audit "la tarification du matériel par firme ne fonctionne pas" — preuve du scénario
@@ -41,6 +42,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class MaterialPricingEndToEndTest extends WebTestCase
 {
+    use DeclaresActualHours;
+
     private const PASSWORD = 'MatPricingE2E15!';
     private const TZ = 'Europe/Brussels';
 
@@ -268,6 +271,7 @@ final class MaterialPricingEndToEndTest extends WebTestCase
         $mission->setInstrumentist($this->em->find(User::class, $instrumentist->getId()));
         $this->em->persist($mission);
         $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->createdIds['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();

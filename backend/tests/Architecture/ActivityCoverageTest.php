@@ -65,6 +65,10 @@ final class ActivityCoverageTest extends TestCase
         'OutboundNotification'                => 'NOTIFICATION_CHANNEL_QUEUED / _SENT / _FAILED (H2, + TransactionalEmailSender since H5b)',
         'OutboundNotificationAttempt'         => 'technical attempt detail of an OutboundNotification (its channel events carry the outcome)',
         'SurgeonAbsenceCommunicationDelivery' => 'linked to its OutboundNotification (H5b) — NOTIFICATION_CHANNEL_* with cause absence / communication',
+        // Intégration H1–H8 × origin/main (D-134, D-140) et D-143 — entités postérieures à H5b.
+        'FirmBillingLineEvent'                => 'append-only per-line billing journal itself (D-134, immutable, PreUpdate/PreRemove guarded), written with the AuditEvent FIRM_INVOICE_* of the same action',
+        'MedVueAccountLink'                   => 'UserAuditEvent MEDVUE_LINKED / MEDVUE_UNLINKED / MEDVUE_LINK_FAILED (D-140), mirrored by AuditEventMirrorListener',
+        'MissionEncodingReminder'             => 'AuditEvent MISSION_ENCODING_AUTO_REMINDER_SENT (D-143) + the NotificationDispatch of each recipient — the row itself is the idempotence reservation',
         'GeneratedDocument'                   => 'evidence store referenced by the events that use it (generatedDocumentId + sha256 in *_SENT payloads)',
     ];
 

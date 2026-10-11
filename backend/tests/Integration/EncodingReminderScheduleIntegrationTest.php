@@ -28,6 +28,7 @@ use App\Service\NotificationService;
 use App\Service\NotificationTargetResolver;
 use App\Service\OutboundNotificationService;
 use App\Service\WebPushService;
+use App\Notification\NotificationDispatcher;
 use Doctrine\ORM\EntityManagerInterface;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
@@ -66,8 +67,10 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
     {
         $conn = $this->em->getConnection();
         foreach ($this->created['missions'] as $id) {
-            $conn->executeStatement('DELETE FROM notification_event WHERE mission_id = ?', [$id]);
             $conn->executeStatement('UPDATE outbound_notification SET fallback_of_id = NULL WHERE mission_id = ?', [$id]);
+            $conn->executeStatement('DELETE d FROM notification_dispatch_delivery d JOIN notification_dispatch n ON n.id = d.dispatch_id WHERE n.mission_id = ?', [$id]);
+            $conn->executeStatement('DELETE FROM notification_dispatch WHERE mission_id = ?', [$id]);
+            $conn->executeStatement('DELETE FROM notification_event WHERE mission_id = ?', [$id]);
             $conn->executeStatement('DELETE FROM outbound_notification WHERE mission_id = ?', [$id]);
             $conn->executeStatement('DELETE FROM audit_event WHERE mission_id = ?', [$id]);
             $conn->executeStatement('DELETE FROM material_line WHERE mission_id = ?', [$id]);
@@ -146,7 +149,11 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
         return new \DateTimeImmutable($local, new \DateTimeZone(self::TZ));
     }
 
-    /** Service réel, transport push simulé, e-mails capturés. */
+    /**
+     * Service réel branché sur le VRAI NotificationDispatcher (préférences, traces par canal,
+     * idempotence par épisode, activity_event) ; seuls le transport push (MockHandler Guzzle,
+     * jamais d'appel réel) et le bus (e-mails capturés, jamais envoyés) sont simulés.
+     */
     private function service(MockHandler $push): EncodingReminderService
     {
         $c = self::getContainer();
@@ -166,20 +173,30 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
                 return new Envelope($message);
             }
         };
+        $outbound = new OutboundNotificationService($this->em, $webPush, $c->get(\App\Activity\Recorder\NotificationActivityRecorder::class), $c->get(\App\Notification\MissionCommunicationService::class));
+        $dispatcher = new NotificationDispatcher(
+            $this->em,
+            $c->get(\App\Service\NotificationPreferenceResolver::class),
+            $outbound,
+            $c->get(\App\Activity\Recorder\NotificationActivityRecorder::class),
+            $c->get(\App\Activity\CorrelationContext::class),
+            $bus,
+            new NullLogger(),
+            $c->get(\App\Notification\MissionCommunicationService::class),
+            'noreply@test.com',
+            'SurgicalHub',
+        );
 
         return new EncodingReminderService(
             $this->em,
-            new OutboundNotificationService($this->em, $webPush),
+            $dispatcher,
             $c->get(NotificationService::class),
             $c->get(AuditService::class),
             new EncodingCompletenessService(),
             $c->get(UserRepository::class),
             new NotificationTargetResolver(),
-            $bus,
             new NullLogger(),
             'https://app.test',
-            'noreply@test.com',
-            'SurgicalHub',
             true,
         );
     }
@@ -193,10 +210,17 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
         ));
     }
 
-    /** @return list<OutboundNotification> */
+    /** @return list<OutboundNotification> toutes les livraisons tracées (dispatcher : une par canal) */
     private function outbound(User $user): array
     {
         return $this->em->getRepository(OutboundNotification::class)->findBy(['recipientUser' => $user], ['id' => 'ASC']);
+    }
+
+    private function channel(User $user, OutboundNotificationChannel $channel): ?OutboundNotification
+    {
+        $rows = array_values(array_filter($this->outbound($user), static fn (OutboundNotification $n) => $n->getChannel() === $channel));
+
+        return $rows[count($rows) - 1] ?? null;
     }
 
     private function reminderRow(Mission $mission, EncodingReminderStage $stage): ?MissionEncodingReminder
@@ -223,12 +247,13 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
 
         self::assertSame('sent', $result);
         self::assertSame([], $this->emailsTo($instr), 'jamais d\'e-mail quand le push est livré');
-        $outbound = $this->outbound($instr);
-        self::assertCount(1, $outbound);
-        self::assertSame(OutboundNotificationChannel::PUSH, $outbound[0]->getChannel());
-        self::assertSame(OutboundNotificationStatus::SENT, $outbound[0]->getStatus());
-        self::assertSame('ENCODING_REMINDER_D1', $outbound[0]->getNotificationType());
-        self::assertSame('Gardez votre journée en mémoire !', $outbound[0]->getTitle());
+        $push = $this->channel($instr, OutboundNotificationChannel::PUSH);
+        self::assertSame(OutboundNotificationStatus::SENT, $push->getStatus());
+        self::assertSame('ENCODING_REMINDER', $push->getNotificationType());
+        self::assertSame('Gardez votre journée en mémoire !', $push->getTitle());
+        $email = $this->channel($instr, OutboundNotificationChannel::EMAIL);
+        self::assertSame(OutboundNotificationStatus::SKIPPED, $email->getStatus(), 'e-mail tracé comme non envoyé : couvert par le push');
+        self::assertSame('COVERED_BY_PUSH', $email->getSkipReason()?->value);
 
         $row = $this->reminderRow($mission, EncodingReminderStage::D1);
         self::assertSame(['IN_APP', 'PUSH'], $row->getInstrumentistChannels());
@@ -249,11 +274,12 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
         self::assertSame('emails/encoding_reminder_d1.html.twig', $emails[0]->htmlTemplate);
         self::assertSame('https://app.test/app/i/missions/' . $mission->getId() . '/encoding', $emails[0]->context['missionUrl']);
 
-        $outbound = $this->outbound($instr);
-        self::assertSame(OutboundNotificationStatus::SKIPPED, $outbound[0]->getStatus());
-        self::assertSame(OutboundNotificationChannel::EMAIL, $outbound[1]->getChannel());
-        self::assertSame($outbound[0]->getId(), $outbound[1]->getFallbackOf()?->getId());
-        self::assertSame(OutboundNotificationFallbackReason::NO_SUBSCRIPTION, $outbound[1]->getFallbackReason());
+        $push = $this->channel($instr, OutboundNotificationChannel::PUSH);
+        $email = $this->channel($instr, OutboundNotificationChannel::EMAIL);
+        self::assertSame(OutboundNotificationStatus::SKIPPED, $push->getStatus());
+        self::assertSame(OutboundNotificationStatus::QUEUED, $email->getStatus());
+        self::assertSame($push->getId(), $email->getFallbackOf()?->getId());
+        self::assertSame(OutboundNotificationFallbackReason::NO_SUBSCRIPTION, $email->getFallbackReason());
 
         $row = $this->reminderRow($mission, EncodingReminderStage::D1);
         self::assertSame(['IN_APP', 'EMAIL'], $row->getInstrumentistChannels());
@@ -270,8 +296,10 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
         $this->service(new MockHandler([new Response(201)]))->processReminder($mission, EncodingReminderStage::D2, $this->at('2026-07-16 10:00'));
 
         self::assertSame([], $this->emailsTo($instr));
-        self::assertSame('Votre encodage attend sa dernière touche', $this->outbound($instr)[0]->getTitle());
-        self::assertStringContainsString('mission du 14/07/2026', (string) $this->outbound($instr)[0]->getBodyText());
+        $push = $this->channel($instr, OutboundNotificationChannel::PUSH);
+        self::assertSame(OutboundNotificationStatus::SENT, $push->getStatus());
+        self::assertSame('Votre encodage attend sa dernière touche', $push->getTitle());
+        self::assertStringContainsString('mission du 14/07/2026', (string) $push->getBodyText());
     }
 
     /** Scénario 10 — J+2, pas de push : e-mail détaillé. */
@@ -302,9 +330,8 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
             ->processReminder($mission, EncodingReminderStage::D1, $this->at('2026-07-15 09:05'));
 
         self::assertCount(1, $this->emailsTo($instr));
-        $outbound = $this->outbound($instr);
-        self::assertSame(OutboundNotificationStatus::FAILED, $outbound[0]->getStatus());
-        self::assertSame(OutboundNotificationFallbackReason::ALL_FAILED, $outbound[1]->getFallbackReason());
+        self::assertSame(OutboundNotificationStatus::FAILED, $this->channel($instr, OutboundNotificationChannel::PUSH)->getStatus());
+        self::assertSame(OutboundNotificationFallbackReason::ALL_FAILED, $this->channel($instr, OutboundNotificationChannel::EMAIL)->getFallbackReason());
         self::assertSame('PUSH_ALL_FAILED', $this->reminderRow($mission, EncodingReminderStage::D1)->getEmailReason());
     }
 
@@ -391,7 +418,8 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
         self::assertSame('skipped', $this->service(new MockHandler([]))->processReminder($mission, EncodingReminderStage::D1, $this->at('2026-07-15 11:00')));
 
         self::assertCount(1, $this->emailsTo($instr));
-        self::assertCount(2, $this->outbound($instr), 'un push SKIPPED + un e-mail, une seule fois');
+        self::assertCount(3, $this->outbound($instr), 'une seule livraison tracée par canal (in-app, push SKIPPED, e-mail), une seule fois');
+        self::assertSame(1, (int) $this->em->getConnection()->fetchOne('SELECT COUNT(*) FROM notification_dispatch WHERE mission_id = ?', [$mission->getId()]), 'un seul dispatch pour l\'échéance');
         self::assertCount(1, $this->inAppReminders($instr));
     }
 

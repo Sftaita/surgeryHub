@@ -27,6 +27,7 @@ use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Exécution & Valorisation, Lot 6 (D-076) — §26/§27 du lot : endpoints
@@ -35,6 +36,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class FinancialCorrectionControllerTest extends WebTestCase
 {
+    use DeclaresActualHours;
+
     private const PASSWORD = 'FinCorr76!';
 
     private EntityManagerInterface $em;
@@ -197,6 +200,7 @@ final class FinancialCorrectionControllerTest extends WebTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();
@@ -373,6 +377,7 @@ final class FinancialCorrectionControllerTest extends WebTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
         $intervention = new MissionIntervention();
         $intervention->setMission($mission);
@@ -514,6 +519,7 @@ final class FinancialCorrectionControllerTest extends WebTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $calcService = static::getContainer()->get(FinancialCalculationService::class);
