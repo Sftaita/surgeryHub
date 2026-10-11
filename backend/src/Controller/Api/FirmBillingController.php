@@ -118,6 +118,7 @@ class FirmBillingController extends AbstractController
         if ((float) $unitPrice < 0) {
             return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'unitPrice doit être >= 0.']], 422);
         }
+        if ($refused = $this->refuseZeroMaterialFee($ruleType, (string) $unitPrice)) return $refused;
 
         [$validFrom, $validTo, $dateError] = $this->parseValidityDates($data);
         if ($dateError !== null) {
@@ -197,6 +198,7 @@ class FirmBillingController extends AbstractController
         if (array_key_exists('unitPrice', $data) && (float) $data['unitPrice'] < 0) {
             return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'unitPrice doit être >= 0.']], 422);
         }
+        if (array_key_exists('unitPrice', $data) && ($refused = $this->refuseZeroMaterialFee($rule->getRuleType(), (string) $data['unitPrice']))) return $refused;
 
         [$validFrom, $validTo, $dateError] = $this->parseValidityDates($data, $rule, keepExistingAsDefault: false);
         if ($dateError !== null) {
@@ -264,6 +266,11 @@ class FirmBillingController extends AbstractController
             return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'effectiveFrom invalide.']], 422);
         }
 
+        if ((float) $unitPrice < 0) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'unitPrice doit être >= 0.']], 422);
+        }
+        if ($refused = $this->refuseZeroMaterialFee($rule->getRuleType(), (string) $unitPrice)) return $refused;
+
         $currency = isset($data['currency']) ? (string) $data['currency'] : $rule->getCurrency();
 
         $newRule = $this->versioningService->replaceCurrentRuleFrom($rule, (string) $unitPrice, $currency, $effectiveFrom, $actor);
@@ -272,6 +279,21 @@ class FirmBillingController extends AbstractController
     }
 
     // ── Helpers ───────────────────────────────────────────────────────
+
+    /**
+     * D-142 — un tarif matériel à 0 € n'est jamais une décision de facturation : il rendrait
+     * l'article « facturable » (D-092) pour un montant nul. « Non facturable » est un statut
+     * explicite de l'article (`PATCH /api/material-items/{id}`), pas un prix.
+     */
+    private function refuseZeroMaterialFee(PricingRuleType $ruleType, string $unitPrice): ?JsonResponse
+    {
+        if ($ruleType !== PricingRuleType::MATERIAL_FEE || (float) $unitPrice > 0) {
+            return null;
+        }
+
+        return $this->json(['error' => ['status' => 422, 'code' => 'MATERIAL_FEE_ZERO_REFUSED',
+            'message' => 'Un tarif matériel doit être supérieur à 0 €. Si ce matériel n\'est jamais facturé, marquez-le « non facturable ».']], 422);
+    }
 
     private function getFirmOr404(int $id): Firm|JsonResponse
     {

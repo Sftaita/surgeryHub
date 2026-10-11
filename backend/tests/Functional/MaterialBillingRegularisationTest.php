@@ -652,7 +652,87 @@ final class MaterialBillingRegularisationTest extends WebTestCase
     {
         $client = static::createClient();
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
-        $token = $this->login($client, $this->user('ROLE_INSTRUMENTIST'));
-        self::assertSame(403, $this->request($client, $token, 'GET', '/api/material-items/billing-regularisation')->getStatusCode());
+        $uri = '/api/material-items/billing-regularisation';
+        foreach (['ROLE_INSTRUMENTIST', 'ROLE_SURGEON'] as $role) {
+            self::assertSame(403, $this->request($client, $this->login($client, $this->user($role)), 'GET', $uri)->getStatusCode(), $role);
+        }
+        $client->request('GET', $uri);
+        self::assertSame(401, $client->getResponse()->getStatusCode(), 'anonyme');
+        $this->json($this->request($client, $this->login($client, $this->user('ROLE_ADMIN')), 'GET', $uri));
+    }
+
+    // ── Jamais de tarif matériel à 0 € ───────────────────────────────────
+
+    public function test_zero_material_rate_is_refused_and_never_makes_the_item_billable(): void
+    {
+        [$client, $token] = $this->boot();
+        $sn = $this->firm('Smith & Nephew');
+        $qfix = $this->item($sn, 'Q-FIX');
+        $uri = "/api/firms/{$sn->getId()}/pricing-rules";
+
+        foreach (['0', '0.00'] as $price) {
+            $r = $this->request($client, $token, 'POST', $uri, ['ruleType' => 'MATERIAL_FEE', 'materialItemId' => $qfix->getId(), 'unitPrice' => $price]);
+            self::assertSame(422, $r->getStatusCode(), $price);
+            self::assertSame('MATERIAL_FEE_ZERO_REFUSED', json_decode($r->getContent(), true)['error']['code']);
+        }
+        $this->em->clear();
+        self::assertSame(0, $this->em->getRepository(PricingRule::class)->count(['materialItem' => $qfix->getId()]), 'aucune règle créée');
+        $row = $this->regRow($this->regularisation($client, $token), $qfix);
+        self::assertSame('UNSPECIFIED', $row['billingStatus'], 'reste non décidé');
+        self::assertSame('UNDECIDED', $row['status']);
+
+        // Remplacement versionné et modification d'une règle future : même refus.
+        $rate = $this->rule($sn, null, $qfix, '45.00');
+        $r = $this->request($client, $token, 'POST', "{$uri}/{$rate->getId()}/replace", ['unitPrice' => '0', 'effectiveFrom' => (new \DateTimeImmutable('+5 days'))->format('Y-m-d')]);
+        self::assertSame(422, $r->getStatusCode());
+        $future = $this->rule($sn, null, $this->item($sn, 'Ultrabutton'), '30.00', (new \DateTimeImmutable('+10 days'))->format('Y-m-d'));
+        self::assertSame(422, $this->request($client, $token, 'PATCH', "{$uri}/{$future->getId()}", ['unitPrice' => '0.00'])->getStatusCode());
+        $this->em->clear();
+        self::assertSame('45.00', $this->em->find(PricingRule::class, $rate->getId())->getUnitPrice());
+        self::assertSame('30.00', $this->em->find(PricingRule::class, $future->getId())->getUnitPrice());
+    }
+
+    // ── Performance : le nombre de requêtes ne dépend ni du catalogue ni de l'historique ──
+
+    public function test_query_count_does_not_grow_with_catalogue_size_nor_calculated_history(): void
+    {
+        [$client] = $this->boot();
+        $conn = $this->em->getConnection();
+        $service = static::getContainer()->get(\App\Service\MaterialBillingRegularisationService::class);
+        $selects = static fn () => (int) $conn->fetchAssociative("SHOW SESSION STATUS LIKE 'Com_select'")['Value'];
+        $measure = function () use ($service, $selects): int {
+            $this->em->clear();
+            $before = $selects();
+            $service->overview();
+            return $selects() - $before - 1;
+        };
+
+        $sn = $this->firm('Smith & Nephew');
+        $fastfix = $this->item($sn, 'Fast-Fix', MaterialBillingStatus::BILLABLE);
+        $this->rule($sn, null, $fastfix, '17.00');
+        $baseline = $measure();
+
+        // 20 articles de plus (dont 10 tarifés) et 6 missions déjà calculées qui les utilisent.
+        $lca = $this->type('LCA', 'Plastie du ligament croisé antérieur du genou');
+        $items = [];
+        for ($i = 0; $i < 20; $i++) {
+            $items[] = $item = $this->item($sn, 'Article ' . $i, $i % 2 ? MaterialBillingStatus::BILLABLE : MaterialBillingStatus::UNSPECIFIED);
+            if ($i % 2) {
+                $this->rule($sn, null, $item, '10.00');
+            }
+        }
+        for ($k = 0; $k < 6; $k++) {
+            $m = $this->mission('2026-09-' . (10 + $k));
+            $itv = $this->intervention($m, $sn, $lca);
+            for ($l = 0; $l < 4; $l++) {
+                $this->material($m, $itv, $items[($k * 3 + $l) % 20]);
+            }
+            $conn->insert('financial_calculation', ['mission_id' => $m->getId(), 'version' => 1, 'status' => 'LOCKED', 'effective_at' => '2026-09-10',
+                'currency_policy' => 'PER_CURRENCY_NO_CONVERSION', 'calculated_at' => '2026-09-20 10:00:00', 'created_at' => '2026-09-20 10:00:00', 'updated_at' => '2026-09-20 10:00:00']);
+        }
+
+        self::assertSame($baseline, $measure(), 'aucune requête par article ni par mission déjà calculée');
+        $row = $this->regRow($this->regularisation($client, $this->login($client, $this->manager)), $items[0]);
+        self::assertSame('CALCULATED', $row['missions'][0]['calculationState']);
     }
 }

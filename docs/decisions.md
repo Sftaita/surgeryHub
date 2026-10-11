@@ -11907,7 +11907,13 @@ des missions.
    Ex. : un tarif posé depuis l'échec mais commençant après la prestation affichait encore « Aucune
    décision de facturation » ; il affiche désormais « Aucun des tarifs … ne s'applique au … (règle
    #… du …) ».
-6. **Aucun recalcul automatique, aucun historique réécrit** : la vue est en lecture ; les décisions
+6. **Jamais de tarif matériel à 0 €** : `POST`/`PATCH`/`replace` d'une règle `MATERIAL_FEE` à
+   0 € sont refusés (`422 MATERIAL_FEE_ZERO_REFUSED`, garde-fou aussi dans
+   `PricingRuleVersioningService`). Auparavant l'API acceptait `unitPrice >= 0` : un 0 € saisi dans
+   le dialogue rendait l'article « facturable » (D-092) pour un montant nul — trouvé à la
+   vérification navigateur. Les forfaits d'intervention gardent `>= 0` (hors périmètre). Aucune
+   règle à 0 € n'existe en production (lecture seule, 2026-10-11 : 0/68).
+7. **Aucun recalcul automatique, aucun historique réécrit** : la vue est en lecture ; les décisions
    passent par les endpoints existants ; le recalcul reste un geste explicite (Suivi des encodages,
    Facturation firmes). Un calcul verrouillé n'est jamais modifié.
 
@@ -11922,6 +11928,13 @@ correction ne crée de calcul ni d'audit ; 9 calcul verrouillé jamais réévalu
 10 cohérence vue de régularisation / Suivi des encodages / Facturation firmes ; accès manager
 uniquement. Frontend : `PrestationsPage.test` (vue, compteur, filtres, missions, dialogue, retour
 à « non décidé »). Vérification navigateur sur données fictives.
+
+Performance (test `test_query_count_does_not_grow_with_catalogue_size_nor_calculated_history`) :
+le nombre de requêtes ne dépend ni du nombre d'articles ni des missions déjà calculées — tarifs
+préchargés en une requête et résolus par `PricingRuleResolver::resolveMaterialFeeAmong()`, que
+`resolveMaterialFee()` utilise lui-même (une seule règle de sélection), exécution / site /
+chirurgien chargés avec les lignes, collections lues par `evaluate()` initialisées en deux
+requêtes. Le coût restant est celui du moteur pour chaque mission en attente.
 
 ### Production (lecture seule, 2026-10-11) — décisions métier à prendre, rien n'est modifié
 

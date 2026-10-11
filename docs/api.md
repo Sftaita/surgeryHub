@@ -1635,6 +1635,12 @@ qui utilise du matériel. Une mission dont le calcul est actif n'est jamais ré�
 - `missions[].otherBlockingAnomalyCount` : anomalies du moteur qui ne viennent pas de cet article ;
   > 0 = corriger l'article ne suffit pas à rendre la mission calculable.
 - Tri : à configurer d'abord, puis missions bloquées, puis lignes.
+- Coût : un nombre **constant** de requêtes quel que soit le nombre d'articles, de tarifs et de
+  missions déjà calculées (lignes + exécution + site + chirurgien en une requête ; tous les tarifs
+  `MATERIAL_FEE` en une requête, résolus par `PricingRuleResolver::resolveMaterialFeeAmong()` — la
+  même sélection que `resolveMaterialFee()`) ; seul `evaluate()` des missions **en attente** coûte
+  des requêtes (celles du moteur, ~14 par mission). Mesuré sur 500 articles / 880 missions dont
+  80 en attente : 1 147 requêtes, ~2 s (3 186 requêtes, ~4,5 s avant optimisation).
 
 Les décisions se prennent avec les endpoints existants : `POST /api/firms/{id}/pricing-rules`
 (facturable — l'article passe `BILLABLE`, D-092), `PATCH /api/material-items/{id}`
@@ -2283,6 +2289,10 @@ Retourne toutes les règles (actives + inactives) pour la firme.
 
 **Contraintes :**
 - `materialItem` doit appartenir à la même firme que la règle (`MATERIAL_FEE`)
+- `unitPrice >= 0` (`422 VALIDATION_FAILED` sinon) ; pour `MATERIAL_FEE`, `unitPrice > 0`
+  (D-142) : `422 MATERIAL_FEE_ZERO_REFUSED` — un matériel jamais facturé se marque
+  « non facturable » (`PATCH /api/material-items/{id}` `{billingStatus: "NOT_BILLABLE"}`),
+  jamais par un tarif à 0 €. Même refus sur `PATCH .../{ruleId}` et `POST .../{ruleId}/replace`.
 - `currency` : défaut `EUR` si omis
 - `validFrom`/`validTo` : nullables, `null` = borne ouverte (date au format `Y-m-d`)
 - `409` si la règle créée ou modifiée chevauche, en dates, une autre règle active déjà

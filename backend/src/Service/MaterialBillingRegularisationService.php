@@ -72,11 +72,16 @@ final class MaterialBillingRegularisationService
             ->getResult();
 
         /** @var MaterialLine[] $lines lignes de matériel des missions VALIDÉES */
+        // L'exécution (OneToOne inverse, sinon une requête par mission), le site et le
+        // chirurgien sont chargés avec les lignes : une requête pour tout l'historique.
         $lines = $this->em->createQueryBuilder()
-            ->select('ml', 'm', 'item')
+            ->select('ml', 'm', 'item', 'ex', 'site', 'surgeon')
             ->from(MaterialLine::class, 'ml')
             ->join('ml.mission', 'm')
             ->join('ml.item', 'item')
+            ->leftJoin('m.execution', 'ex')
+            ->leftJoin('m.site', 'site')
+            ->leftJoin('m.surgeon', 'surgeon')
             ->where('m.status = :validated')
             ->setParameter('validated', MissionStatus::VALIDATED)
             ->orderBy('ml.id', 'ASC')
@@ -92,20 +97,21 @@ final class MaterialBillingRegularisationService
         }
 
         $calculated = $this->missionsWithActiveCalculation(array_keys($missions));
+        $pending = array_values(array_diff(array_keys($missions), array_keys($calculated)));
+        $this->preloadForEvaluation($pending);
 
         // Une seule évaluation par mission, partagée par tous les articles.
         $evaluations = [];
-        foreach ($missions as $id => $mission) {
-            if (!isset($calculated[$id])) {
-                $evaluations[$id] = $this->financialCalculationService->evaluate($mission);
-            }
+        foreach ($pending as $id) {
+            $evaluations[$id] = $this->financialCalculationService->evaluate($missions[$id]);
         }
+        $rulesByItem = $this->pricingRuleResolver->materialFeeRulesByItem();
 
         $today = new \DateTimeImmutable('today');
         $rows = [];
         $blockedMissions = [];
         foreach ($items as $item) {
-            $row = $this->itemRow($item, $linesByItem[$item->getId()] ?? [], $calculated, $evaluations, $today);
+            $row = $this->itemRow($item, $rulesByItem[$item->getId()] ?? [], $linesByItem[$item->getId()] ?? [], $calculated, $evaluations, $today);
             foreach ($row['missions'] as $m) {
                 if ($m['blockedByThisItem']) {
                     $blockedMissions[$m['id']] = true;
@@ -145,15 +151,15 @@ final class MaterialBillingRegularisationService
     }
 
     /**
+     * @param \App\Entity\PricingRule[]                               $rules tarifs MATERIAL_FEE de l'article
      * @param MaterialLine[]                                         $itemLines
      * @param array<int, true>                                       $calculated
      * @param array<int, \App\Dto\MissionFinancialEvaluation>        $evaluations
      */
-    private function itemRow(MaterialItem $item, array $itemLines, array $calculated, array $evaluations, \DateTimeImmutable $today): array
+    private function itemRow(MaterialItem $item, array $rules, array $itemLines, array $calculated, array $evaluations, \DateTimeImmutable $today): array
     {
-        $rules = $this->pricingRuleResolver->materialFeeRulesFor($item);
         try {
-            $current = $this->pricingRuleResolver->resolveMaterialFee($item, $today);
+            $current = PricingRuleResolver::resolveMaterialFeeAmong($rules, $today);
             $conflict = false;
         } catch (PricingRuleConflictException) {
             $current = null;
@@ -250,6 +256,30 @@ final class MaterialBillingRegularisationService
         }
 
         return self::BILLABLE;
+    }
+
+    /**
+     * Initialise en deux requêtes les collections que evaluate() parcourt (interventions et
+     * lignes de matériel) pour les missions à évaluer — sinon deux requêtes par mission. Les
+     * entités sont déjà dans l'unité de travail : seules leurs collections sont remplies.
+     *
+     * @param list<int> $missionIds
+     */
+    private function preloadForEvaluation(array $missionIds): void
+    {
+        if ($missionIds === []) {
+            return;
+        }
+        foreach (['interventions', 'materialLines'] as $association) {
+            $this->em->createQueryBuilder()
+                ->select('m', 'a')
+                ->from(Mission::class, 'm')
+                ->leftJoin('m.' . $association, 'a')
+                ->where('m.id IN (:ids)')
+                ->setParameter('ids', $missionIds)
+                ->getQuery()
+                ->getResult();
+        }
     }
 
     /** @return array<int, true> */
