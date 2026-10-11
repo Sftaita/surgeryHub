@@ -326,6 +326,9 @@ final class PricingRuleVersioningService
 
     private function assertPositiveAmount(string $amount, ?PricingRuleType $ruleType = null): void
     {
+        if (!is_numeric(trim($amount))) {
+            throw new \InvalidArgumentException('Le montant doit être un nombre.');
+        }
         if ((float) $amount < 0) {
             throw new \InvalidArgumentException('Le montant doit être positif ou nul.');
         }

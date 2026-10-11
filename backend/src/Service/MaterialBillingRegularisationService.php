@@ -54,12 +54,22 @@ final class MaterialBillingRegularisationService
         private readonly EntityManagerInterface $em,
         private readonly FinancialCalculationService $financialCalculationService,
         private readonly PricingRuleResolver $pricingRuleResolver,
+        private readonly ReadScopeCache $readCache,
     ) {}
 
     /**
      * @return array{summary: array<string, int>, items: list<array<string, mixed>>}
      */
     public function overview(): array
+    {
+        // Lecture seule de bout en bout : la configuration tarifaire relue par evaluate() à
+        // chaque ligne (tarifs, offres firme × prestation, tarifs instrumentiste) n'est
+        // interrogée qu'une fois par clé pendant cet appel, puis le cache est vidé.
+        return $this->readCache->within(fn () => $this->buildOverview());
+    }
+
+    /** @return array{summary: array<string, int>, items: list<array<string, mixed>>} */
+    private function buildOverview(): array
     {
         /** @var MaterialItem[] $items */
         $items = $this->em->createQueryBuilder()
@@ -71,9 +81,11 @@ final class MaterialBillingRegularisationService
             ->getQuery()
             ->getResult();
 
-        /** @var MaterialLine[] $lines lignes de matériel des missions VALIDÉES */
-        // L'exécution (OneToOne inverse, sinon une requête par mission), le site et le
-        // chirurgien sont chargés avec les lignes : une requête pour tout l'historique.
+        /** @var MaterialLine[] $lines lignes de matériel des missions VALIDÉES EN ATTENTE de calcul */
+        // Seules les missions sans calcul actif sont chargées en entités (ce sont les seules
+        // évaluées et listées) ; l'historique déjà calculé, qui croît sans fin, n'est lu qu'en
+        // agrégats (calculatedUsageByItem). L'exécution (OneToOne inverse, sinon une requête par
+        // mission), le site et le chirurgien sont chargés avec les lignes, en une requête.
         $lines = $this->em->createQueryBuilder()
             ->select('ml', 'm', 'item', 'ex', 'site', 'surgeon')
             ->from(MaterialLine::class, 'ml')
@@ -83,7 +95,9 @@ final class MaterialBillingRegularisationService
             ->leftJoin('m.site', 'site')
             ->leftJoin('m.surgeon', 'surgeon')
             ->where('m.status = :validated')
+            ->andWhere('NOT EXISTS (SELECT 1 FROM ' . FinancialCalculation::class . ' fc WHERE fc.mission = m AND fc.status IN (:active))')
             ->setParameter('validated', MissionStatus::VALIDATED)
+            ->setParameter('active', self::ACTIVE_STATUSES)
             ->orderBy('ml.id', 'ASC')
             ->getQuery()
             ->getResult();
@@ -96,9 +110,9 @@ final class MaterialBillingRegularisationService
             $linesByItem[$ml->getItem()->getId()][] = $ml;
         }
 
-        $calculated = $this->missionsWithActiveCalculation(array_keys($missions));
-        $pending = array_values(array_diff(array_keys($missions), array_keys($calculated)));
+        $pending = array_keys($missions);
         $this->preloadForEvaluation($pending);
+        $calculatedUsage = $this->calculatedUsageByItem();
 
         // Une seule évaluation par mission, partagée par tous les articles.
         $evaluations = [];
@@ -111,7 +125,7 @@ final class MaterialBillingRegularisationService
         $rows = [];
         $blockedMissions = [];
         foreach ($items as $item) {
-            $row = $this->itemRow($item, $rulesByItem[$item->getId()] ?? [], $linesByItem[$item->getId()] ?? [], $calculated, $evaluations, $today);
+            $row = $this->itemRow($item, $rulesByItem[$item->getId()] ?? [], $linesByItem[$item->getId()] ?? [], $calculatedUsage[$item->getId()] ?? null, $evaluations, $today);
             foreach ($row['missions'] as $m) {
                 if ($m['blockedByThisItem']) {
                     $blockedMissions[$m['id']] = true;
@@ -152,11 +166,11 @@ final class MaterialBillingRegularisationService
 
     /**
      * @param \App\Entity\PricingRule[]                               $rules tarifs MATERIAL_FEE de l'article
-     * @param MaterialLine[]                                         $itemLines
-     * @param array<int, true>                                       $calculated
+     * @param MaterialLine[]                                         $itemLines lignes des missions en attente
+     * @param array{lineCount: int, missionCount: int, firstDate: string, lastDate: string}|null $calculatedUsage
      * @param array<int, \App\Dto\MissionFinancialEvaluation>        $evaluations
      */
-    private function itemRow(MaterialItem $item, array $rules, array $itemLines, array $calculated, array $evaluations, \DateTimeImmutable $today): array
+    private function itemRow(MaterialItem $item, array $rules, array $itemLines, ?array $calculatedUsage, array $evaluations, \DateTimeImmutable $today): array
     {
         try {
             $current = PricingRuleResolver::resolveMaterialFeeAmong($rules, $today);
@@ -199,7 +213,7 @@ final class MaterialBillingRegularisationService
                 'site' => $mission->getSite()?->getName(),
                 'surgeon' => $mission->getSurgeon() !== null ? trim(($mission->getSurgeon()->getFirstname() ?? '') . ' ' . ($mission->getSurgeon()->getLastname() ?? '')) : null,
                 'lineCount' => count($mLines),
-                'calculationState' => isset($calculated[$missionId]) ? 'CALCULATED' : 'PENDING',
+                'calculationState' => 'PENDING',
                 'blockedByThisItem' => $blocked,
                 // Anomalies du moteur qui ne viennent pas de cet article : tant qu'il en
                 // reste, corriger l'article ne suffit pas à rendre la mission calculable.
@@ -211,6 +225,10 @@ final class MaterialBillingRegularisationService
         $blockedRows = array_filter($missionRows, static fn (array $m) => $m['blockedByThisItem']);
         $status = $this->status($item, $rules !== [], count($blockedRows) > 0, $current !== null || $conflict);
 
+        if ($calculatedUsage !== null) {
+            $dates[] = $calculatedUsage['firstDate'];
+            $dates[] = $calculatedUsage['lastDate'];
+        }
         sort($dates);
 
         return [
@@ -229,8 +247,10 @@ final class MaterialBillingRegularisationService
             'pricingConflict' => $conflict,
             'rules' => PricingRuleResolver::snapshotRules($rules),
             'usage' => [
-                'lineCount' => count($itemLines),
-                'missionCount' => count($missionRows),
+                'lineCount' => count($itemLines) + ($calculatedUsage['lineCount'] ?? 0),
+                'missionCount' => count($missionRows) + ($calculatedUsage['missionCount'] ?? 0),
+                // Missions validées dont le calcul est actif : comptées, jamais réévaluées ni listées.
+                'calculatedMissionCount' => $calculatedUsage['missionCount'] ?? 0,
                 'firstDate' => $dates[0] ?? null,
                 'lastDate' => $dates !== [] ? $dates[count($dates) - 1] : null,
                 'blockedMissionCount' => count($blockedRows),
@@ -282,22 +302,39 @@ final class MaterialBillingRegularisationService
         }
     }
 
-    /** @return array<int, true> */
-    private function missionsWithActiveCalculation(array $missionIds): array
+    /**
+     * Utilisation de chaque article dans les missions validées dont le calcul est actif, en
+     * UNE requête d'agrégats : ces missions ne sont jamais réévaluées, seules leurs lignes,
+     * leur nombre et leurs dates (même date de référence que le moteur) sont nécessaires.
+     *
+     * @return array<int, array{lineCount: int, missionCount: int, firstDate: string, lastDate: string}>
+     */
+    private function calculatedUsageByItem(): array
     {
-        if ($missionIds === []) {
-            return [];
-        }
-        $ids = $this->em->createQueryBuilder()
-            ->select('DISTINCT IDENTITY(fc.mission)')
-            ->from(FinancialCalculation::class, 'fc')
-            ->where('IDENTITY(fc.mission) IN (:ids)')
-            ->andWhere('fc.status IN (:active)')
-            ->setParameter('ids', $missionIds)
+        $rows = $this->em->createQueryBuilder()
+            ->select('IDENTITY(ml.item) AS itemId', 'COUNT(ml.id) AS lineCount', 'COUNT(DISTINCT m.id) AS missionCount',
+                'MIN(COALESCE(ex.actualStartAt, m.startAt)) AS firstAt', 'MAX(COALESCE(ex.actualStartAt, m.startAt)) AS lastAt')
+            ->from(MaterialLine::class, 'ml')
+            ->join('ml.mission', 'm')
+            ->leftJoin('m.execution', 'ex')
+            ->where('m.status = :validated')
+            ->andWhere('EXISTS (SELECT 1 FROM ' . FinancialCalculation::class . ' fc WHERE fc.mission = m AND fc.status IN (:active))')
+            ->setParameter('validated', MissionStatus::VALIDATED)
             ->setParameter('active', self::ACTIVE_STATUSES)
+            ->groupBy('ml.item')
             ->getQuery()
-            ->getSingleColumnResult();
+            ->getArrayResult();
 
-        return array_fill_keys(array_map('intval', $ids), true);
+        $usage = [];
+        foreach ($rows as $r) {
+            $usage[(int) $r['itemId']] = [
+                'lineCount' => (int) $r['lineCount'],
+                'missionCount' => (int) $r['missionCount'],
+                'firstDate' => substr((string) $r['firstAt'], 0, 10),
+                'lastDate' => substr((string) $r['lastAt'], 0, 10),
+            ];
+        }
+
+        return $usage;
     }
 }

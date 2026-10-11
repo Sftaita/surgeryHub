@@ -117,8 +117,8 @@ export type MaterialRegularisationMission = {
   site: string | null;
   surgeon: string | null;
   lineCount: number;
-  /** CALCULATED = calcul actif (jamais réévalué ni modifié) ; PENDING = validée, pas encore calculée. */
-  calculationState: "CALCULATED" | "PENDING";
+  /** Toujours PENDING : seules les missions validées sans calcul actif sont listées (D-142). */
+  calculationState: "PENDING";
   blockedByThisItem: boolean;
   /** Anomalies du moteur ne venant pas de cet article : > 0 = la mission reste bloquée même corrigé. */
   otherBlockingAnomalyCount: number;
@@ -142,6 +142,8 @@ export type MaterialRegularisationItem = {
   usage: {
     lineCount: number;
     missionCount: number;
+    /** Missions validées dont le calcul est actif : comptées ici, jamais réévaluées ni listées. */
+    calculatedMissionCount: number;
     firstDate: string | null;
     lastDate: string | null;
     blockedMissionCount: number;

@@ -25,7 +25,10 @@ use Doctrine\ORM\EntityManagerInterface;
  */
 final class PricingRuleResolver
 {
-    public function __construct(private readonly EntityManagerInterface $em) {}
+    public function __construct(
+        private readonly EntityManagerInterface $em,
+        private readonly ?ReadScopeCache $readCache = null,
+    ) {}
 
     /**
      * $choiceOption : discriminant optionnel (tarification firme conditionnée à un choix
@@ -217,6 +220,28 @@ final class PricingRuleResolver
             return [];
         }
 
+        // D-142 — mémorisé seulement dans une portée de lecture explicite (ReadScopeCache).
+        $key = $firm->getId() === null || ($interventionType !== null && $interventionType->getId() === null)
+            || ($materialItem !== null && $materialItem->getId() === null) || ($choiceOption !== null && $choiceOption->getId() === null)
+            ? null
+            : sprintf('pricing_rule:%d:%s:%d:%s:%s:%s', $firm->getId(), $type->value, (int) $activeOnly,
+                $interventionType?->getId() ?? '-', $materialItem?->getId() ?? '-', $choiceOption?->getId() ?? '-');
+        if ($this->readCache !== null) {
+            return $this->readCache->remember($key, fn () => $this->queryTargetRules($firm, $type, $activeOnly, $interventionType, $materialItem, $choiceOption));
+        }
+
+        return $this->queryTargetRules($firm, $type, $activeOnly, $interventionType, $materialItem, $choiceOption);
+    }
+
+    /** @return PricingRule[] */
+    private function queryTargetRules(
+        Firm $firm,
+        PricingRuleType $type,
+        bool $activeOnly,
+        ?InterventionType $interventionType,
+        ?MaterialItem $materialItem,
+        ?ChoiceOption $choiceOption,
+    ): array {
         $qb = $this->em->getRepository(PricingRule::class)->createQueryBuilder('r')
             ->andWhere('r.firm = :firm')
             ->andWhere('r.ruleType = :type')

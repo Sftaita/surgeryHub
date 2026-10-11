@@ -115,6 +115,7 @@ class FirmBillingController extends AbstractController
             return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'ruleType invalide (INTERVENTION_FEE ou MATERIAL_FEE).']], 422);
         }
 
+        if ($invalid = $this->refuseNonNumericPrice($unitPrice)) return $invalid;
         if ((float) $unitPrice < 0) {
             return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'unitPrice doit être >= 0.']], 422);
         }
@@ -195,6 +196,7 @@ class FirmBillingController extends AbstractController
 
         $data = json_decode($request->getContent(), true) ?? [];
 
+        if (array_key_exists('unitPrice', $data) && ($invalid = $this->refuseNonNumericPrice($data['unitPrice']))) return $invalid;
         if (array_key_exists('unitPrice', $data) && (float) $data['unitPrice'] < 0) {
             return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'unitPrice doit être >= 0.']], 422);
         }
@@ -266,6 +268,7 @@ class FirmBillingController extends AbstractController
             return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'effectiveFrom invalide.']], 422);
         }
 
+        if ($invalid = $this->refuseNonNumericPrice($unitPrice)) return $invalid;
         if ((float) $unitPrice < 0) {
             return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'unitPrice doit être >= 0.']], 422);
         }
@@ -279,6 +282,19 @@ class FirmBillingController extends AbstractController
     }
 
     // ── Helpers ───────────────────────────────────────────────────────
+
+    /**
+     * D-142 — un montant non numérique (« abc », « 12abc », chaîne vide, booléen) est un 422
+     * explicite, jamais un 500 à l'écriture en base ni un refus « 0 € » trompeur.
+     */
+    private function refuseNonNumericPrice(mixed $unitPrice): ?JsonResponse
+    {
+        if ((is_int($unitPrice) || is_float($unitPrice) || is_string($unitPrice)) && is_numeric(trim((string) $unitPrice)) && is_finite((float) $unitPrice)) {
+            return null;
+        }
+
+        return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'unitPrice doit être un nombre (ex. 45 ou 45.50).']], 422);
+    }
 
     /**
      * D-142 — un tarif matériel à 0 € n'est jamais une décision de facturation : il rendrait

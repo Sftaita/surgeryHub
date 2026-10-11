@@ -174,7 +174,7 @@ function ItemRow({ item, open, onToggle, onConfigure }: {
     <>
       <TableRow hover data-testid={`regularisation-row-${item.id}`}>
         <TableCell padding="checkbox">
-          {item.missions.length > 0 && (
+          {(item.missions.length > 0 || u.calculatedMissionCount > 0) && (
             <IconButton size="small" aria-label={open ? `Masquer les missions de ${item.label}` : `Voir les missions de ${item.label}`} onClick={onToggle}>
               {open ? <KeyboardArrowUpIcon fontSize="small" /> : <KeyboardArrowDownIcon fontSize="small" />}
             </IconButton>
@@ -229,7 +229,12 @@ function ItemRow({ item, open, onToggle, onConfigure }: {
         <TableCell colSpan={7} sx={{ py: 0, borderBottom: open ? undefined : "none" }}>
           <Collapse in={open} unmountOnExit>
             <Box sx={{ py: 1.5 }} data-testid={`regularisation-missions-${item.id}`}>
-              <Typography variant="overline" color="text.secondary">Missions validées utilisant ce matériel</Typography>
+              <Typography variant="overline" color="text.secondary">Missions validées en attente de calcul</Typography>
+              {u.calculatedMissionCount > 0 && (
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }} data-testid={`regularisation-calculated-${item.id}`}>
+                  {count(u.calculatedMissionCount, "mission déjà calculée", "missions déjà calculées")} — calculs existants inchangés, jamais réévalués.
+                </Typography>
+              )}
               <Table size="small">
                 <TableBody>
                   {item.missions.map((m) => (
@@ -241,9 +246,7 @@ function ItemRow({ item, open, onToggle, onConfigure }: {
                       <TableCell>{[m.site, m.surgeon].filter(Boolean).join(" · ") || "—"}</TableCell>
                       <TableCell sx={{ width: 90 }}>{plural(m.lineCount, "ligne")}</TableCell>
                       <TableCell>
-                        {m.calculationState === "CALCULATED" ? (
-                          <Chip size="small" variant="outlined" label="Calcul existant — inchangé" />
-                        ) : m.blockedByThisItem ? (
+                        {m.blockedByThisItem ? (
                           m.otherBlockingAnomalyCount > 0 ? (
                             <Chip size="small" color="warning" label={`Bloquée par ce matériel et ${count(m.otherBlockingAnomalyCount, "autre anomalie", "autres anomalies")}`} />
                           ) : (

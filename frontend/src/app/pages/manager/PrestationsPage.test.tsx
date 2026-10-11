@@ -693,11 +693,10 @@ describe("PrestationsPage", () => {
       id: 34, label: "SwiveLock C Anchor", referenceCode: "SwiveLock", unit: "pièce", isImplant: true, active: true,
       firm: { id: 11, name: "ConMed" }, billingStatus: "UNSPECIFIED", status: "UNDECIDED", statusLabel: "Non décidé", toConfigure: true,
       currentRate: null, pricingConflict: false, rules: [],
-      usage: { lineCount: 26, missionCount: 13, firstDate: "2026-09-08", lastDate: "2026-10-09", blockedMissionCount: 13, onlyBlockerMissionCount: 4 },
+      usage: { lineCount: 26, missionCount: 13, calculatedMissionCount: 1, firstDate: "2026-09-08", lastDate: "2026-10-09", blockedMissionCount: 13, onlyBlockerMissionCount: 4 },
       missions: [
         { id: 471, date: "2026-09-23", site: "Delta", surgeon: "Dr X", lineCount: 2, calculationState: "PENDING", blockedByThisItem: true, otherBlockingAnomalyCount: 0 },
         { id: 1040, date: "2026-10-01", site: "Delta", surgeon: "Dr X", lineCount: 1, calculationState: "PENDING", blockedByThisItem: true, otherBlockingAnomalyCount: 9 },
-        { id: 900, date: "2026-08-20", site: "Delta", surgeon: "Dr X", lineCount: 1, calculationState: "CALCULATED", blockedByThisItem: false, otherBlockingAnomalyCount: 0 },
       ],
       ...overrides,
     };
@@ -710,9 +709,9 @@ describe("PrestationsPage", () => {
       items: [
         regItem(),
         regItem({ id: 12, label: "Fast-Fix", referenceCode: "FF", billingStatus: "BILLABLE", status: "BILLABLE", statusLabel: "Facturable", toConfigure: false, currentRate: { id: 28, unitPrice: "17.00", currency: "EUR" },
-          usage: { lineCount: 20, missionCount: 9, firstDate: "2026-09-02", lastDate: "2026-10-08", blockedMissionCount: 0, onlyBlockerMissionCount: 0 }, missions: [] }),
+          usage: { lineCount: 20, missionCount: 9, calculatedMissionCount: 9, firstDate: "2026-09-02", lastDate: "2026-10-08", blockedMissionCount: 0, onlyBlockerMissionCount: 0 }, missions: [] }),
         regItem({ id: 41, label: "JOURNEY II", referenceCode: "J2", billingStatus: "NOT_BILLABLE", status: "NOT_BILLABLE", statusLabel: "Non facturable", toConfigure: false,
-          usage: { lineCount: 8, missionCount: 5, firstDate: null, lastDate: null, blockedMissionCount: 0, onlyBlockerMissionCount: 0 }, missions: [] }),
+          usage: { lineCount: 8, missionCount: 5, calculatedMissionCount: 0, firstDate: null, lastDate: null, blockedMissionCount: 0, onlyBlockerMissionCount: 0 }, missions: [] }),
       ],
     };
     apiGetMock.mockImplementation((url: string) => mockGet(url, [], [], []));
@@ -734,7 +733,7 @@ describe("PrestationsPage", () => {
     const missions = screen.getByTestId("regularisation-missions-34");
     expect(within(missions).getByText("Bloquée par ce matériel seul")).toBeInTheDocument();
     expect(within(missions).getByText("Bloquée par ce matériel et 9 autres anomalies")).toBeInTheDocument();
-    expect(within(missions).getByText("Calcul existant — inchangé")).toBeInTheDocument();
+    expect(within(missions).getByText("1 mission déjà calculée — calculs existants inchangés, jamais réévalués.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /^Non facturables/ }));
     expect(screen.getByText("JOURNEY II")).toBeInTheDocument();

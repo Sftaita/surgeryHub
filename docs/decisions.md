@@ -11929,12 +11929,38 @@ correction ne crée de calcul ni d'audit ; 9 calcul verrouillé jamais réévalu
 uniquement. Frontend : `PrestationsPage.test` (vue, compteur, filtres, missions, dialogue, retour
 à « non décidé »). Vérification navigateur sur données fictives.
 
-Performance (test `test_query_count_does_not_grow_with_catalogue_size_nor_calculated_history`) :
-le nombre de requêtes ne dépend ni du nombre d'articles ni des missions déjà calculées — tarifs
-préchargés en une requête et résolus par `PricingRuleResolver::resolveMaterialFeeAmong()`, que
-`resolveMaterialFee()` utilise lui-même (une seule règle de sélection), exécution / site /
-chirurgien chargés avec les lignes, collections lues par `evaluate()` initialisées en deux
-requêtes. Le coût restant est celui du moteur pour chaque mission en attente.
+Performance (tests `test_query_count_does_not_grow_with_catalogue_size_nor_calculated_history`,
+`ReadScopeCacheTest`) :
+- le nombre de requêtes propres à la vue ne dépend ni du nombre d'articles ni des missions déjà
+  calculées — tarifs préchargés en une requête et résolus par
+  `PricingRuleResolver::resolveMaterialFeeAmong()`, que `resolveMaterialFee()` utilise lui-même (une
+  seule règle de sélection), exécution / site / chirurgien chargés avec les lignes, collections lues
+  par `evaluate()` initialisées en deux requêtes ;
+- l'historique déjà calculé (qui croît sans fin) n'est plus hydraté : une requête d'agrégats par
+  article (lignes, missions, dates selon la même date de référence que le moteur) ; ces missions sont
+  comptées (`calculatedMissionCount`) mais plus listées une à une ;
+- `ReadScopeCache` : les lectures de configuration de `evaluate()` (tarifs, `FirmServiceOffering`,
+  tarifs instrumentiste) sont mémorisées par clé **uniquement** dans `within()`, ouvert par la vue
+  de régularisation (GET, lecture seule) et refermé à la sortie, même en cas d'exception. Hors de
+  cette portée, aucun appel n'est mémorisé : `calculate()`, `recalculate()`, les écritures et le
+  worker Messenger lisent toujours la base. Ce n'est pas un second moteur : les mêmes résolveurs
+  exécutent les mêmes requêtes, une fois par clé. Réponses identiques avant / après (5 jeux
+  fictifs, comparaison champ à champ).
+
+Mesures (MySQL 8.3 jetable, `php -S` Windows, `APP_DEBUG=0`, opcache, 10 requêtes après 2 de
+chauffe ; `/api/me` ≈ 57 ms dans les mêmes conditions) — moyenne :
+
+| Jeu fictif | V0 avant optimisation | V1 requêtes constantes | V3 final |
+|---|---|---|---|
+| A proche prod (45 articles, 32 en attente, 0 calculée) | 955 req., ~0,7 s | 770 req., ~0,6 s | 222 req., ~0,3 s, 11 Mo |
+| B 500 articles, 80 en attente, 800 calculées | 3 503 req., ~2,3 s | 1 464 req., ~1,7 s | 554 req., ~0,6 s, 16 Mo |
+| C catalogue ×4 (2 000 articles) | 6 503 req., ~4,2–5,0 s | 1 464 req., ~1,7–1,9 s | 646 req., ~0,8 s, 23 Mo |
+| D historique ×4 (3 200 calculées) | 5 903 req., ~5,4 s, 115 Mo | 1 464 req., ~3,5–3,8 s, 115 Mo | 554 req., ~0,7 s, 16 Mo |
+| E en attente ×2 (160) | 5 139 req., ~3,8–4,5 s | 2 860 req., ~2,5–2,7 s | 793 req., ~0,9 s, 20 Mo |
+
+Saisie d'un tarif : `unitPrice` non numérique (« abc », « 12abc », vide, booléen) → `422
+VALIDATION_FAILED` (« 12abc » provoquait un 500 à l'écriture en base, toutes règles confondues) ;
+négatif → `422 VALIDATION_FAILED` (inchangé) ; `MATERIAL_FEE` à 0 → `422 MATERIAL_FEE_ZERO_REFUSED`.
 
 ### Production (lecture seule, 2026-10-11) — décisions métier à prendre, rien n'est modifié
 

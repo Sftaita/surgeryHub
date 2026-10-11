@@ -1602,8 +1602,10 @@ audit, aucun calcul. Alimente Catalogue > Prestations > « Matériel à régular
 
 Les missions bloquées sont décidées par le moteur lui-même : `FinancialCalculationService::evaluate()`
 est rejoué pour chaque mission `VALIDATED` **sans calcul actif** (CALCULATED / APPROVED / LOCKED)
-qui utilise du matériel. Une mission dont le calcul est actif n'est jamais réévaluée (`calculationState:
-"CALCULATED"`) : modifier le catalogue ne la touche pas.
+qui utilise du matériel. Une mission dont le calcul est actif n'est jamais réévaluée : modifier le
+catalogue ne la touche pas ; elle est **comptée** dans `usage` (`calculatedMissionCount`, lignes,
+dates) mais **pas listée** dans `missions[]`, qui ne contient que les missions en attente
+(`calculationState` vaut donc toujours `"PENDING"`).
 
 ```json
 {
@@ -1614,7 +1616,7 @@ qui utilise du matériel. Une mission dont le calcul est actif n'est jamais ré�
     "firm": { "id": 5, "name": "Arthrex" },
     "billingStatus": "UNSPECIFIED", "status": "UNDECIDED", "statusLabel": "Non décidé", "toConfigure": true,
     "currentRate": null, "pricingConflict": false, "rules": [],
-    "usage": { "lineCount": 26, "missionCount": 13, "firstDate": "2026-09-08", "lastDate": "2026-10-09",
+    "usage": { "lineCount": 26, "missionCount": 13, "calculatedMissionCount": 0, "firstDate": "2026-09-08", "lastDate": "2026-10-09",
                "blockedMissionCount": 13, "onlyBlockerMissionCount": 1 },
     "missions": [{ "id": 471, "date": "2026-09-23", "site": "…", "surgeon": "…", "lineCount": 2,
                    "calculationState": "PENDING", "blockedByThisItem": true, "otherBlockingAnomalyCount": 0 }]
@@ -1635,12 +1637,16 @@ qui utilise du matériel. Une mission dont le calcul est actif n'est jamais ré�
 - `missions[].otherBlockingAnomalyCount` : anomalies du moteur qui ne viennent pas de cet article ;
   > 0 = corriger l'article ne suffit pas à rendre la mission calculable.
 - Tri : à configurer d'abord, puis missions bloquées, puis lignes.
-- Coût : un nombre **constant** de requêtes quel que soit le nombre d'articles, de tarifs et de
-  missions déjà calculées (lignes + exécution + site + chirurgien en une requête ; tous les tarifs
-  `MATERIAL_FEE` en une requête, résolus par `PricingRuleResolver::resolveMaterialFeeAmong()` — la
-  même sélection que `resolveMaterialFee()`) ; seul `evaluate()` des missions **en attente** coûte
-  des requêtes (celles du moteur, ~14 par mission). Mesuré sur 500 articles / 880 missions dont
-  80 en attente : 1 147 requêtes, ~2 s (3 186 requêtes, ~4,5 s avant optimisation).
+- Coût : les requêtes propres à la vue sont en nombre **constant** (lignes des missions en attente
+  + exécution + site + chirurgien en une requête ; l'historique déjà calculé en une requête
+  d'agrégats, jamais hydraté ; tous les tarifs `MATERIAL_FEE` en une requête, résolus par
+  `PricingRuleResolver::resolveMaterialFeeAmong()` — la même sélection que `resolveMaterialFee()`).
+  Les lectures de configuration faites par `evaluate()` (tarifs, offres firme × prestation, tarifs
+  instrumentiste) sont mémorisées **pendant cet appel seulement** (`ReadScopeCache::within()`) : une
+  requête par clé distincte au lieu d'une par ligne ; hors de cette portée, rien n'est jamais
+  mémorisé (calculs, écritures et worker inchangés). Mesures (base jetable, `php -S` local) :
+  jeu proche de la production (45 articles, 32 missions en attente) ≈ 220 requêtes, ~0,3 s ;
+  500 articles / 80 en attente / 3 200 missions calculées ≈ 550 requêtes, ~0,7 s, ~16 Mo.
 
 Les décisions se prennent avec les endpoints existants : `POST /api/firms/{id}/pricing-rules`
 (facturable — l'article passe `BILLABLE`, D-092), `PATCH /api/material-items/{id}`
@@ -2289,7 +2295,7 @@ Retourne toutes les règles (actives + inactives) pour la firme.
 
 **Contraintes :**
 - `materialItem` doit appartenir à la même firme que la règle (`MATERIAL_FEE`)
-- `unitPrice >= 0` (`422 VALIDATION_FAILED` sinon) ; pour `MATERIAL_FEE`, `unitPrice > 0`
+- `unitPrice` numérique (« abc », « 12abc », vide, booléen → `422 VALIDATION_FAILED`, D-142) et `>= 0` (`422 VALIDATION_FAILED` sinon) ; pour `MATERIAL_FEE`, `unitPrice > 0`
   (D-142) : `422 MATERIAL_FEE_ZERO_REFUSED` — un matériel jamais facturé se marque
   « non facturable » (`PATCH /api/material-items/{id}` `{billingStatus: "NOT_BILLABLE"}`),
   jamais par un tarif à 0 €. Même refus sur `PATCH .../{ruleId}` et `POST .../{ruleId}/replace`.

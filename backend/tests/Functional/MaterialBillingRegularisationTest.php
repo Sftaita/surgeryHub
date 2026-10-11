@@ -415,7 +415,7 @@ final class MaterialBillingRegularisationTest extends WebTestCase
         self::assertSame('Non décidé', $row['statusLabel']);
         self::assertSame('UNSPECIFIED', $row['billingStatus'], 'non décidé reste UNSPECIFIED, jamais « non facturable »');
         self::assertTrue($row['toConfigure']);
-        self::assertSame(['lineCount' => 1, 'missionCount' => 1, 'firstDate' => '2026-09-10', 'lastDate' => '2026-09-10', 'blockedMissionCount' => 1, 'onlyBlockerMissionCount' => 1], $row['usage']);
+        self::assertSame(['lineCount' => 1, 'missionCount' => 1, 'calculatedMissionCount' => 0, 'firstDate' => '2026-09-10', 'lastDate' => '2026-09-10', 'blockedMissionCount' => 1, 'onlyBlockerMissionCount' => 1], $row['usage']);
         $mission = $this->regMission($row, $m);
         self::assertSame('PENDING', $mission['calculationState']);
         self::assertTrue($mission['blockedByThisItem']);
@@ -612,9 +612,13 @@ final class MaterialBillingRegularisationTest extends WebTestCase
 
         $this->replaceRule($client, $token, $sn, $rate, '25.00', (new \DateTimeImmutable('today'))->modify('+10 days'));
 
-        $mission = $this->regMission($this->regRow($this->regularisation($client, $token), $fastfix), $m);
-        self::assertSame('CALCULATED', $mission['calculationState']);
-        self::assertFalse($mission['blockedByThisItem']);
+        // Mission à calcul actif : comptée dans l'utilisation, jamais réévaluée ni listée.
+        $row = $this->regRow($this->regularisation($client, $token), $fastfix);
+        self::assertSame([], array_values(array_filter($row['missions'], static fn (array $x) => $x['id'] === $m->getId())));
+        self::assertSame(1, $row['usage']['calculatedMissionCount']);
+        self::assertSame(1, $row['usage']['missionCount']);
+        self::assertSame(1, $row['usage']['lineCount']);
+        self::assertSame(0, $row['usage']['blockedMissionCount']);
         self::assertNotSame(201, $this->request($client, $token, 'POST', "/api/financial-calculations/{$calcId}/recalculate")->getStatusCode());
         $line = $this->lineFor($this->firmLines($m), $ml);
         self::assertSame('51.00', $line->getTotalAmount(), 'montant figé : 3 × 17 €');
@@ -675,6 +679,12 @@ final class MaterialBillingRegularisationTest extends WebTestCase
             self::assertSame(422, $r->getStatusCode(), $price);
             self::assertSame('MATERIAL_FEE_ZERO_REFUSED', json_decode($r->getContent(), true)['error']['code']);
         }
+        // Négatif et non numérique : 422 explicite, jamais un 500 ni le message « 0 € ».
+        foreach (['-5', 'abc', '12abc', '', true] as $price) {
+            $r = $this->request($client, $token, 'POST', $uri, ['ruleType' => 'MATERIAL_FEE', 'materialItemId' => $qfix->getId(), 'unitPrice' => $price]);
+            self::assertSame(422, $r->getStatusCode(), var_export($price, true));
+            self::assertSame('VALIDATION_FAILED', json_decode($r->getContent(), true)['error']['code'], var_export($price, true));
+        }
         $this->em->clear();
         self::assertSame(0, $this->em->getRepository(PricingRule::class)->count(['materialItem' => $qfix->getId()]), 'aucune règle créée');
         $row = $this->regRow($this->regularisation($client, $token), $qfix);
@@ -687,6 +697,8 @@ final class MaterialBillingRegularisationTest extends WebTestCase
         self::assertSame(422, $r->getStatusCode());
         $future = $this->rule($sn, null, $this->item($sn, 'Ultrabutton'), '30.00', (new \DateTimeImmutable('+10 days'))->format('Y-m-d'));
         self::assertSame(422, $this->request($client, $token, 'PATCH', "{$uri}/{$future->getId()}", ['unitPrice' => '0.00'])->getStatusCode());
+        self::assertSame(422, $this->request($client, $token, 'PATCH', "{$uri}/{$future->getId()}", ['unitPrice' => '12abc'])->getStatusCode());
+        self::assertSame(422, $this->request($client, $token, 'POST', "{$uri}/{$rate->getId()}/replace", ['unitPrice' => '-1', 'effectiveFrom' => (new \DateTimeImmutable('+5 days'))->format('Y-m-d')])->getStatusCode());
         $this->em->clear();
         self::assertSame('45.00', $this->em->find(PricingRule::class, $rate->getId())->getUnitPrice());
         self::assertSame('30.00', $this->em->find(PricingRule::class, $future->getId())->getUnitPrice());
@@ -704,7 +716,7 @@ final class MaterialBillingRegularisationTest extends WebTestCase
             $this->em->clear();
             $before = $selects();
             $service->overview();
-            return $selects() - $before - 1;
+            return $selects() - $before;
         };
 
         $sn = $this->firm('Smith & Nephew');
@@ -733,6 +745,8 @@ final class MaterialBillingRegularisationTest extends WebTestCase
 
         self::assertSame($baseline, $measure(), 'aucune requête par article ni par mission déjà calculée');
         $row = $this->regRow($this->regularisation($client, $this->login($client, $this->manager)), $items[0]);
-        self::assertSame('CALCULATED', $row['missions'][0]['calculationState']);
+        self::assertSame([], $row['missions'], 'missions déjà calculées : comptées, pas listées');
+        self::assertSame(1, $row['usage']['calculatedMissionCount']);
+        self::assertSame('2026-09-10', $row['usage']['firstDate'], 'même date de référence que le moteur');
     }
 }
