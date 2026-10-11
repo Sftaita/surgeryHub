@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Activity\Recorder\PlanningActivityRecorder;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningDeployment;
@@ -21,6 +22,7 @@ class PlanningDeploymentService
         private readonly EntityManagerInterface $em,
         private readonly MessageBusInterface $bus,
         private readonly PlanningDraftRevalidationService $draftRevalidation,
+        private readonly PlanningActivityRecorder $activity,
     ) {}
 
     /**
@@ -74,6 +76,9 @@ class PlanningDeploymentService
                 $this->draftRevalidation->neutralize($revalidation['neutralized'], $deployedBy);
             }
         }
+        $neutralizedCount  = isset($revalidation) ? count($revalidation['neutralized'] ?? []) : 0;
+        $archivedVersionId = null;
+        $assignedCount     = null;
 
         // ── 2. Archive the current ACTIVE version (if any) ───────────────────
         if ($version !== null) {
@@ -81,6 +86,7 @@ class PlanningDeploymentService
             if ($previousActive !== null && $previousActive->getId() !== $version->getId()) {
                 $previousActive->setStatus(PlanningVersionStatus::ARCHIVED);
                 $previousActive->setArchivedAt(new \DateTimeImmutable());
+                $archivedVersionId = $previousActive->getId();
             }
 
             // ── 3. Activate the target version ────────────────────────────────
@@ -188,7 +194,31 @@ class PlanningDeploymentService
         }
 
         $this->em->persist($deployment);
-        $this->em->flush();
+
+        // H1 (D-126) — the PlanningDeployment row and its PLANNING_DEPLOYED journal entry
+        // commit together. (The earlier steps of deploy() keep their pre-existing,
+        // non-atomic sequence of flushes/bulk UPDATEs — unchanged by H1.)
+        $connection = $this->em->getConnection();
+        $connection->beginTransaction();
+        try {
+            $this->em->flush();
+            $this->activity->deployed($version, (int) $deployment->getId(), [
+                'periodFrom'        => $fromDate->format('Y-m-d'),
+                'periodTo'          => $toDate->format('Y-m-d'),
+                'siteId'            => $siteId,
+                'missionCount'      => $missionCount,
+                'assignedCount'     => $assignedCount,
+                'openPoolCount'     => $poolCount,
+                'archivedVersionId' => $archivedVersionId,
+                'neutralizedCount'  => $neutralizedCount,
+            ], $deployment->getDeployedBy());
+            $connection->commit();
+        } catch (\Throwable $e) {
+            if ($connection->isTransactionActive()) {
+                $connection->rollBack();
+            }
+            throw $e;
+        }
 
         // ── 6. Dispatch async PDF + email + notifications ─────────────────────
         // flush() above populates $deployment->getId() via Doctrine's identity map.

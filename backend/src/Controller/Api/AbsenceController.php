@@ -14,6 +14,7 @@ use App\Service\InstrumentistAbsenceOccurrenceImpactService;
 use App\Service\RoomReleaseCommunicationService;
 use App\Service\BlockManagementCommunicationService;
 use App\Service\ReleasedOperatingRoomSlotService;
+use App\Absence\AbsenceImpactCoordinator;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -26,15 +27,8 @@ class AbsenceController extends AbstractController
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly AbsenceImpactService $absenceImpactService,
-        private readonly AbsenceMissionReactionService $absenceMissionReactionService,
-        private readonly SurgeonAbsenceOccurrenceImpactService $surgeonAbsenceOccurrenceImpactService,
-        private readonly InstrumentistAbsenceOccurrenceImpactService $instrumentistAbsenceOccurrenceImpactService,
-        private readonly AbsenceImpactReconciliationService $reconciliationService,
-        private readonly AbsenceImpactSummaryService $absenceImpactSummaryService,
-        private readonly RoomReleaseCommunicationService $roomReleaseCommunicationService,
+        private readonly AbsenceImpactCoordinator $coordinator,
         private readonly BlockManagementCommunicationService $blockManagementCommunicationService,
-        private readonly ReleasedOperatingRoomSlotService $releasedOperatingRoomSlotService,
     ) {}
 
     #[Route('', name: 'api_absences_list', methods: ['GET'])]
@@ -105,51 +99,10 @@ class AbsenceController extends AbstractController
         $this->em->persist($absence);
         $this->em->flush();
 
-        // Mission auto-mutation MUST run before alert detection — AbsenceImpactService's own
-        // overlap query naturally excludes whatever this just released/cancelled (instrumentist
-        // now null, or status now CANCELLED), so it never raises a stale alert asking the
-        // manager to do what was already done automatically. See AbsenceMissionReactionService's
-        // class docblock for the full reasoning.
-        $missionSummaries = $this->absenceMissionReactionService->onAbsenceCreated($absence, $currentUser);
-        $this->absenceImpactService->onAbsenceCreated($absence);
-        // Lot 3 (D-103) — future Post occurrences with no Mission yet, independent of the
-        // two calls above (they only ever act on already-materialized Mission rows).
-        $occurrenceResult = $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceCreated($absence, $currentUser);
-        // Complementary lot — symmetric case, an INSTRUMENTIST absence covering future Post
-        // occurrences with no Mission yet. Independent of everything above (they only ever
-        // act on SURGEON absences or already-materialized Mission rows).
-        $this->instrumentistAbsenceOccurrenceImpactService->onInstrumentistAbsenceCreated($absence, $currentUser);
-
-        // Lot 5 (D-105) — ONE consolidated manager recap for this create, combining both
-        // results above; never dispatched if neither produced a real impact.
-        $this->absenceImpactSummaryService->dispatch(
-            absenceId: $absence->getId(),
-            absentUserId: $user->getId(),
-            absentUserName: self::displayName($user),
-            absentUserRole: self::personRole($user) ?? 'INSTRUMENTIST',
-            dateStart: $absence->getDateStart()->format('Y-m-d'),
-            dateEnd: $absence->getDateEnd()->format('Y-m-d'),
-            actor: $currentUser,
-            action: 'CREATED',
-            missionReactionSummaries: $missionSummaries,
-            occurrenceNeutralized: $occurrenceResult['occurrences'],
-        );
-
-        // Communication des absences chirurgiens, Lot A (D-114) — « Libération de salle »
-        // aux chirurgiens collègues du même site. Indépendant des 6 services ci-dessus
-        // (aucun impact sur les Missions/PlanningAlert/PlanningOccurrenceException), jamais
-        // appelé depuis delete() (une libération déjà communiquée n'est jamais rétractée).
-        $this->roomReleaseCommunicationService->onAbsenceCreated($absence, $currentUser);
-
-        // Lot B (D-114) — « gestion du bloc », 8ᵉ collaborateur indépendant. Aucun ordre
-        // requis vis-à-vis de RoomReleaseCommunicationService (domaines disjoints : deux
-        // destinataires, deux journaux de communications distincts).
-        $this->blockManagementCommunicationService->onAbsenceCreated($absence, $currentUser);
-
-        // Lot D (post D-114) — « Salles libérées », 9ᵉ collaborateur indépendant. Aucun
-        // couplage avec les deux services ci-dessus : un échec ici n'affecte jamais les
-        // emails déjà dispatchés, et réciproquement (§23).
-        $this->releasedOperatingRoomSlotService->onAbsenceCreated($absence, $currentUser);
+        // H4 (D-130) — the one absence-processing sequence (resolve N1/N2/N3 impacts, apply
+        // them through the existing services, trace, inform, manager summary, D-114
+        // communications) — shared with SelfAbsenceController.
+        $this->coordinator->afterCreated($absence, $currentUser);
 
         return $this->json($this->serialize($absence), 201);
     }
@@ -201,48 +154,9 @@ class AbsenceController extends AbstractController
 
         $this->em->flush();
 
-        // See create() — same ordering reasoning. Reconciliation (restoring what fell out of
-        // a shortened range) runs last, after the "create new impacts" services above have
-        // already reacted to the new (already-flushed) range.
-        $missionSummaries = $this->absenceMissionReactionService->onAbsenceUpdated($absence, $currentUser);
-        $this->absenceImpactService->onAbsenceUpdated($absence);
-        $occurrenceResult = $this->surgeonAbsenceOccurrenceImpactService->onSurgeonAbsenceUpdated($absence, $currentUser);
-        $this->instrumentistAbsenceOccurrenceImpactService->onInstrumentistAbsenceUpdated($absence, $currentUser, $previousDateStart, $previousDateEnd);
-        $reconciliation = $this->reconciliationService->reconcileForUpdate($absence, $previousDateStart, $previousDateEnd, $currentUser);
-
-        // Lot 5 (D-105) — ONE consolidated manager recap covering both new impacts (if the
-        // range grew) and restorations (if it shrank) from this single update.
-        $user = $absence->getUser();
-        if ($user !== null) {
-            $this->absenceImpactSummaryService->dispatch(
-                absenceId: $absence->getId(),
-                absentUserId: $user->getId(),
-                absentUserName: self::displayName($user),
-                absentUserRole: self::personRole($user) ?? 'INSTRUMENTIST',
-                dateStart: $absence->getDateStart()->format('Y-m-d'),
-                dateEnd: $absence->getDateEnd()->format('Y-m-d'),
-                actor: $currentUser,
-                action: 'UPDATED',
-                missionReactionSummaries: $missionSummaries,
-                occurrenceNeutralized: $occurrenceResult['occurrences'],
-                reconciliation: $reconciliation,
-            );
-        }
-
-        // Lot A (D-114) — complément « Libération de salle » uniquement si l'allongement du
-        // congé révèle de nouvelles occurrences BLOCK jamais annoncées (voir
-        // RoomReleaseCommunicationService::onAbsenceUpdated() pour le calcul du delta).
-        $this->roomReleaseCommunicationService->onAbsenceUpdated($absence, $currentUser);
-
-        // Lot B (D-114) — reschedule/annule/crée les communications « gestion du bloc »
-        // selon les sites BLOCK désormais concernés (§14 : mutation en place tant que
-        // jamais envoyée, sinon BLOCK_MANAGEMENT_MODIFICATION si les dates ont changé).
-        $this->blockManagementCommunicationService->onAbsenceUpdated($absence, $currentUser, $previousDateStart, $previousDateEnd);
-
-        // Lot D (post D-114) — nouveaux slots pour les occurrences révélées par un
-        // allongement ; un raccourcissement ne retire jamais les slots déjà créés (aucune
-        // méthode de suppression dans le service).
-        $this->releasedOperatingRoomSlotService->onAbsenceUpdated($absence, $currentUser);
+        // H4 (D-130) — same sequence as create(), plus the diff with the previous range
+        // (newly impacted / no longer impacted) and D-104 reconciliation of what fell out.
+        $this->coordinator->afterUpdated($absence, $currentUser, $previousDateStart, $previousDateEnd);
 
         return $this->json($this->serialize($absence));
     }
@@ -271,51 +185,10 @@ class AbsenceController extends AbstractController
         }
 
         // Lot B (D-114) — décision explicite transmise par le frontend (jamais déduite
-        // localement, §19-20) : n'a d'effet que sur les sites déjà SENT, voir
-        // BlockManagementCommunicationService::onAbsenceDeleted(). Appelé AVANT le
-        // remove() ci-dessous, comme les autres collaborateurs de suppression — a besoin
-        // de l'absence encore vivante pour construire le contenu de l'email d'annulation.
+        // localement, §19-20). H4 (D-130) — the two-phase deletion (D-104) lives in the
+        // coordinator, shared with SelfAbsenceController.
         $notifyBlockManagementCancellation = $request->query->getBoolean('notifyBlockManagementCancellation', false);
-        $this->blockManagementCommunicationService->onAbsenceDeleted($absence, $currentUser, $notifyBlockManagementCancellation);
-
-        // Resolve linked alerts BEFORE removing the row — PlanningAlert.absence is
-        // ON DELETE SET NULL so history survives, but resolution must happen while
-        // the association still exists for findActiveAlertsForAbsence() to find them.
-        // Reconciliation (D-104, Lot 4) is deliberately split around the removal itself —
-        // see AbsenceImpactReconciliationService's class docblock: occurrence restoration
-        // needs the FK still intact (beginDeletion(), before removal), mission restoration
-        // needs the Absence row physically gone for eligibility re-validation to be
-        // accurate (completeDeletion(), after removal+flush).
-        $absenceId = $absence->getId();
-        $user      = $absence->getUser();
-        $role      = $user !== null ? self::personRole($user) : null;
-        $dateStart = $absence->getDateStart()->format('Y-m-d');
-        $dateEnd   = $absence->getDateEnd()->format('Y-m-d');
-
-        $this->absenceImpactService->onAbsenceDeleted($absence);
-        $restoredOccurrences = $this->reconciliationService->beginDeletion($absence, $currentUser);
-        $this->absenceMissionReactionService->onAbsenceDeleted($absence, $currentUser);
-
-        $this->em->remove($absence);
-        $this->em->flush();
-
-        $reconciliation = $this->reconciliationService->completeDeletion($absence, $absenceId, $currentUser, $restoredOccurrences);
-
-        // Lot 5 (D-105) — ONE consolidated manager recap, only ever covering restorations
-        // (deletion never produces a new impact) — never dispatched if nothing was restored.
-        if ($user !== null && $role !== null) {
-            $this->absenceImpactSummaryService->dispatch(
-                absenceId: $absenceId,
-                absentUserId: $user->getId(),
-                absentUserName: self::displayName($user),
-                absentUserRole: $role,
-                dateStart: $dateStart,
-                dateEnd: $dateEnd,
-                actor: $currentUser,
-                action: 'DELETED',
-                reconciliation: $reconciliation,
-            );
-        }
+        $this->coordinator->delete($absence, $currentUser, $notifyBlockManagementCancellation);
 
         return $this->json(null, 204);
     }

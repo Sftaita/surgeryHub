@@ -2,11 +2,18 @@
 
 namespace App\Tests\Unit\Service;
 
+use App\Entity\NotificationDispatch;
+use App\Entity\OutboundNotification;
 use App\Entity\User;
-use App\Message\SendTemplatedEmailMessage;
+use App\Enum\NotificationEmailPolicy;
+use App\Enum\NotificationType;
+use App\Enum\OutboundNotificationChannel;
+use App\Enum\OutboundNotificationStatus;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
 use App\Repository\UserRepository;
-use App\Service\EmailService;
 use App\Service\UserAuditService;
+use App\Tests\Support\NotificationServiceFactory;
 use App\Service\UserEmailChangeService;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\MockObject\MockObject;
@@ -16,26 +23,46 @@ use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Validator\Validation;
 
+/**
+ * H5a (category C) — both notices go through NotificationDispatcher: MANDATORY email (never
+ * subject to preferences), explicit address (the PREVIOUS one for the security notice), no
+ * in-app, one episode per change and side. A notice that could not be queued is a warning,
+ * never a rollback of the change.
+ */
 final class UserEmailChangeServiceTest extends TestCase
 {
     private EntityManagerInterface&MockObject $em;
     private UserRepository&MockObject $users;
     private UserAuditService&MockObject $audit;
-    private EmailService&MockObject $emailService;
+    private NotificationDispatcher&MockObject $dispatcher;
     private UserEmailChangeService $service;
+    /** @var list<NotificationIntent> */
+    private array $intents = [];
+    /** @var callable(int): string email delivery status for the n-th notice (1-based), or throws */
+    private $emailOutcome;
 
     protected function setUp(): void
     {
         $this->em = $this->createMock(EntityManagerInterface::class);
         $this->users = $this->createMock(UserRepository::class);
         $this->audit = $this->createMock(UserAuditService::class);
-        $this->emailService = $this->createMock(EmailService::class);
+        $this->dispatcher = $this->createMock(NotificationDispatcher::class);
+        $this->intents = [];
+        $this->emailOutcome = static fn (int $n) => 'QUEUED';
+        $this->dispatcher->method('dispatch')->willReturnCallback(function (NotificationIntent $intent): NotificationDispatch {
+            $this->intents[] = $intent;
+            $status = ($this->emailOutcome)(count($this->intents));
+            $dispatch = new NotificationDispatch();
+            $dispatch->addDelivery((new OutboundNotification())->setChannel(OutboundNotificationChannel::EMAIL)->setStatus(OutboundNotificationStatus::from($status)));
+
+            return $dispatch;
+        });
 
         $this->service = new UserEmailChangeService(
             $this->em,
             $this->users,
             $this->audit,
-            $this->emailService,
+            NotificationServiceFactory::create($this, $this->dispatcher),
             Validation::createValidator(),
         );
     }
@@ -72,13 +99,12 @@ final class UserEmailChangeServiceTest extends TestCase
         $this->audit->expects(self::once())->method('userEmailChanged')
             ->with($actor, $target, 'old@example.com', 'new@example.com');
         $this->em->expects(self::once())->method('flush');
-        $this->emailService->expects(self::exactly(2))->method('sendTemplatedEmail');
-
         $result = $this->service->changeEmail($actor, $target, 'new@example.com');
 
         self::assertSame('new@example.com', $target->getEmail());
         self::assertSame('new@example.com', $result['user']->getEmail());
         self::assertSame([], $result['warnings']);
+        self::assertCount(2, $this->intents);
     }
 
     public function testOldAndNewAddressesAreCapturedCorrectly(): void
@@ -88,20 +114,26 @@ final class UserEmailChangeServiceTest extends TestCase
 
         $this->users->method('findOneByEmailInsensitive')->willReturn(null);
 
-        $captured = [];
-        $this->emailService->method('sendTemplatedEmail')
-            ->willReturnCallback(function (string $to, string $subject, string $htmlTemplate, array $context = [], ?string $textTemplate = null) use (&$captured) {
-                $captured[] = ['to' => $to, 'context' => $context];
-            });
-
         $this->service->changeEmail($actor, $target, 'new@example.com');
 
-        self::assertCount(2, $captured);
-        self::assertSame('old@example.com', $captured[0]['to']);
-        self::assertSame('old@example.com', $captured[0]['context']['oldEmail']);
-        self::assertSame('new@example.com', $captured[0]['context']['newEmail']);
-        self::assertSame('new@example.com', $captured[1]['to']);
-        self::assertSame('new@example.com', $captured[1]['context']['newEmail']);
+        self::assertCount(2, $this->intents);
+        [$old, $new] = $this->intents;
+        foreach ($this->intents as $i) {
+            self::assertSame(NotificationType::ACCOUNT_EMAIL_CHANGED, $i->type);
+            self::assertSame(NotificationEmailPolicy::MANDATORY, $i->emailPolicy, 'never subject to business preferences');
+            self::assertFalse($i->inApp);
+            self::assertNull($i->push);
+            self::assertSame($target, $i->recipient);
+        }
+        self::assertSame('old@example.com', $old->emailAddress, 'the security notice goes to the PREVIOUS address');
+        self::assertSame('old@example.com', $old->email->context['oldEmail']);
+        self::assertSame('new@example.com', $old->email->context['newEmail']);
+        self::assertSame('emails/user_email_changed_old_address.html.twig', $old->email->htmlTemplate);
+        self::assertSame('new@example.com', $new->emailAddress);
+        self::assertSame('emails/user_email_changed_new_address.html.twig', $new->email->htmlTemplate);
+        self::assertStringEndsWith(':old', $old->episodeRef);
+        self::assertStringEndsWith(':new', $new->episodeRef);
+        self::assertSame(substr($old->episodeRef, 0, -4), substr($new->episodeRef, 0, -4), 'one change, two sides');
     }
 
     public function testSameEmailIsRejected(): void
@@ -195,9 +227,11 @@ final class UserEmailChangeServiceTest extends TestCase
         $this->em->method('flush')->willReturnCallback(function () use (&$callOrder) {
             $callOrder[] = 'flush';
         });
-        $this->emailService->method('sendTemplatedEmail')->willReturnCallback(function () use (&$callOrder) {
+        $this->emailOutcome = function () use (&$callOrder) {
             $callOrder[] = 'dispatch';
-        });
+
+            return 'QUEUED';
+        };
 
         $this->service->changeEmail($actor, $target, 'new@example.com');
 
@@ -211,13 +245,7 @@ final class UserEmailChangeServiceTest extends TestCase
 
         $this->users->method('findOneByEmailInsensitive')->willReturn(null);
 
-        $callCount = 0;
-        $this->emailService->method('sendTemplatedEmail')->willReturnCallback(function () use (&$callCount) {
-            $callCount++;
-            if ($callCount === 1) {
-                throw new \RuntimeException('transport down');
-            }
-        });
+        $this->emailOutcome = static fn (int $n) => $n === 1 ? 'FAILED' : 'QUEUED';
 
         $result = $this->service->changeEmail($actor, $target, 'new@example.com');
 
@@ -234,13 +262,7 @@ final class UserEmailChangeServiceTest extends TestCase
 
         $this->users->method('findOneByEmailInsensitive')->willReturn(null);
 
-        $callCount = 0;
-        $this->emailService->method('sendTemplatedEmail')->willReturnCallback(function () use (&$callCount) {
-            $callCount++;
-            if ($callCount === 2) {
-                throw new \RuntimeException('transport down');
-            }
-        });
+        $this->emailOutcome = static fn (int $n) => $n === 2 ? throw new \RuntimeException('transport down') : 'QUEUED';
 
         $result = $this->service->changeEmail($actor, $target, 'new@example.com');
 
@@ -255,8 +277,7 @@ final class UserEmailChangeServiceTest extends TestCase
         $target = $this->buildTarget('old@example.com');
 
         $this->users->method('findOneByEmailInsensitive')->willReturn(null);
-        $this->emailService->method('sendTemplatedEmail')
-            ->willThrowException(new \RuntimeException('transport down'));
+        $this->emailOutcome = static fn (int $n) => 'FAILED';
 
         $result = $this->service->changeEmail($actor, $target, 'new@example.com');
 

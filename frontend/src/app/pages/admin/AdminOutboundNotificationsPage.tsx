@@ -26,13 +26,14 @@ import type {
   OutboundNotificationListItem,
   OutboundNotificationStatus,
 } from "../../features/admin/api/admin.types";
-import { AdminOutboundNotificationDrawer } from "../../features/admin/components/AdminOutboundNotificationDrawer";
+import { AdminOutboundNotificationDrawer, CHANNEL_LABELS } from "../../features/admin/components/AdminOutboundNotificationDrawer";
 import { useDebouncedValue } from "../../ui/hooks/useDebouncedValue";
 
 const CHANNEL_OPTIONS: { value: OutboundNotificationChannel | ""; label: string }[] = [
   { value: "",      label: "Tous les canaux" },
   { value: "PUSH",  label: "Push" },
   { value: "EMAIL", label: "Email" },
+  { value: "IN_APP", label: "In-app" },
 ];
 
 /**
@@ -240,7 +241,7 @@ export default function AdminOutboundNotificationsPage() {
                         <Typography variant="body2">{n.recipient?.name ?? "—"}</Typography>
                       </TableCell>
                       <TableCell>
-                        <Chip size="small" label={n.channel === "PUSH" ? "Push" : "Email"} variant="outlined" />
+                        <Chip size="small" label={CHANNEL_LABELS[n.channel] ?? n.channel} variant="outlined" />
                       </TableCell>
                       <TableCell>
                         <Typography variant="caption" sx={{ fontFamily: "monospace" }}>{n.notificationType}</Typography>

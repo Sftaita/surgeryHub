@@ -50,6 +50,11 @@ final class AbsenceImpactSummaryMessage
         public readonly array $futureOccurrencesRestored,
         public readonly array $recipientManagerIds,
         public readonly \DateTimeImmutable $occurredAt,
+        // H4 (D-130) — impacts the manager must see even though nothing was mutated yet.
+        public readonly array $draftsToCover = [],
+        public readonly array $draftsNeutralizedAtDeploy = [],
+        public readonly array $usualOccurrencesToCover = [],
+        public readonly array $managerDecisions = [],
     ) {
     }
 }

@@ -12,7 +12,6 @@ use App\Enum\PlanningAlertStatus;
 use App\Enum\PlanningAlertType;
 use App\Enum\SchedulePrecision;
 use App\Service\MissionPostDeployService;
-use App\Service\NotificationService;
 use App\Service\PlanningAlertActionService;
 use App\Service\PlanningAlertService;
 use App\Service\PlanningConflictDetectionService;
@@ -29,9 +28,11 @@ class PlanningAlertActionServiceTest extends TestCase
 {
     private EntityManagerInterface&MockObject  $em;
     private PlanningAlertService&MockObject    $alertService;
-    private NotificationService&MockObject     $notificationService;
     private MissionPostDeployService&MockObject $deployService;
     private PlanningConflictDetectionService&MockObject $conflictDetection;
+    private \Symfony\Component\Messenger\MessageBusInterface&MockObject $bus;
+    /** @var list<object> */
+    private array $busMessages = [];
 
     /** Toggle which eligibility check fails for the "instrumentist" query results. */
     private bool $affiliated   = true;
@@ -46,9 +47,15 @@ class PlanningAlertActionServiceTest extends TestCase
     {
         $this->em                  = $this->createMock(EntityManagerInterface::class);
         $this->alertService        = $this->createMock(PlanningAlertService::class);
-        $this->notificationService = $this->createMock(NotificationService::class);
         $this->deployService       = $this->createMock(MissionPostDeployService::class);
         $this->conflictDetection   = $this->createMock(PlanningConflictDetectionService::class);
+        $this->busMessages         = [];
+        $this->bus                 = $this->createMock(\Symfony\Component\Messenger\MessageBusInterface::class);
+        $this->bus->method('dispatch')->willReturnCallback(function (object $m): \Symfony\Component\Messenger\Envelope {
+            $this->busMessages[] = $m;
+
+            return new \Symfony\Component\Messenger\Envelope($m);
+        });
         $this->affiliated    = true;
         $this->absent        = false;
         $this->conflicting   = false;
@@ -93,7 +100,7 @@ class PlanningAlertActionServiceTest extends TestCase
 
     private function makeService(): PlanningAlertActionService
     {
-        return new PlanningAlertActionService($this->em, $this->alertService, $this->notificationService, $this->deployService, $this->conflictDetection);
+        return new PlanningAlertActionService($this->em, $this->alertService, $this->deployService, $this->conflictDetection, $this->bus);
     }
 
     private function makeUser(string $email, bool $active = true, array $roles = ['ROLE_INSTRUMENTIST']): User
@@ -161,10 +168,6 @@ class PlanningAlertActionServiceTest extends TestCase
         $this->alertService->expects($this->once())->method('resolve')
             ->with($alert, $this->anything(), $this->isType('string'));
 
-        $this->notificationService->expects($this->once())
-            ->method('planningAlertReassignedNotify')
-            ->with($mission, null, $newInst);
-
         $result = $this->makeService()->reassign($alert, $newInst->getId(), $actor, null);
 
         $this->assertSame($mission, $result['mission']);
@@ -183,18 +186,14 @@ class PlanningAlertActionServiceTest extends TestCase
         $this->deployService->expects($this->once())->method('assign')
             ->with($mission, $actor, $newInst->getId());
 
-        $this->notificationService->expects($this->once())
-            ->method('planningAlertReassignedNotify')
-            ->with($mission, $oldInst, $newInst);
-
         $this->makeService()->reassign($alert, $newInst->getId(), $actor, 'note');
     }
 
     public function test_reassign_does_not_dispatch_the_original_alert_raised_notification_again(): void
     {
-        // Reassign's feedback notification is synchronous (planningAlertReassignedNotify),
-        // entirely separate from the async PlanningAlertRaisedMessage fan-out — resolving
-        // the alert here must never re-trigger that original notification path.
+        // H5b (D-132): reassign sends no ad-hoc in-app any more (the assignment itself is
+        // notified by the mission lifecycle); resolving the alert must never re-trigger the
+        // original PlanningAlertRaisedMessage fan-out either.
         $site    = $this->makeSite();
         $mission = $this->makeMission($site, MissionStatus::OPEN);
         $alert   = $this->makeAlert($mission);
@@ -202,10 +201,9 @@ class PlanningAlertActionServiceTest extends TestCase
         $actor   = $this->makeUser('manager@test.com', true, ['ROLE_MANAGER']);
         $this->foundUsers[$newInst->getId()] = $newInst;
 
-        $this->notificationService->expects($this->never())->method('planningAlertRaisedNotifyInApp');
-        $this->notificationService->expects($this->once())->method('planningAlertReassignedNotify');
-
         $this->makeService()->reassign($alert, $newInst->getId(), $actor, null);
+
+        self::assertSame([], array_filter($this->busMessages, static fn (object $m) => $m instanceof \App\Message\PlanningAlertRaisedMessage));
     }
 
     public function test_reassign_uses_provided_note(): void
@@ -365,9 +363,28 @@ class PlanningAlertActionServiceTest extends TestCase
         $this->alertService->expects($this->once())->method('resolve')
             ->with($alert, $this->anything(), $this->isType('string'));
 
-        $this->notificationService->expects($this->never())->method('planningAlertReassignedNotify');
+        $this->makeService()->openAsAvailable($alert, $actor, null);
+
+        self::assertSame([], $this->busMessages, 'the RELEASED lifecycle message solicits the pool — never twice');
+    }
+
+    /** H3 (D-129) — an already-OPEN mission: the explicit « ouvrir au pool » now solicits the pool. */
+    public function test_open_as_available_on_an_already_open_mission_solicits_the_pool(): void
+    {
+        $mission = $this->makeMission($this->makeSite(), MissionStatus::OPEN);
+        $alert   = $this->makeAlert($mission);
+        $actor   = $this->makeUser('manager@test.com', true, ['ROLE_MANAGER']);
+        $this->deployService->expects($this->never())->method('release');
 
         $this->makeService()->openAsAvailable($alert, $actor, null);
+
+        self::assertCount(1, $this->busMessages);
+        $message = $this->busMessages[0];
+        self::assertInstanceOf(\App\Message\OpenMissionPoolMessage::class, $message);
+        $episode = $message->toEpisodes()[0];
+        self::assertSame($mission->getId(), $episode->missionId);
+        self::assertSame(\App\Enum\OpenEpisodeCause::OPENED_FROM_ALERT, $episode->cause);
+        self::assertSame($actor->getId(), $episode->actorId);
     }
 
     #[DataProvider('lockedStatusesProvider')]

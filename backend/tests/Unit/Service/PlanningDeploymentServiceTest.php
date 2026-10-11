@@ -99,7 +99,7 @@ class PlanningDeploymentServiceTest extends TestCase
 
     private function makeService(): PlanningDeploymentService
     {
-        return new PlanningDeploymentService($this->em, $this->bus, $this->draftRevalidation);
+        return new PlanningDeploymentService($this->em, $this->bus, $this->draftRevalidation, $this->createMock(\App\Activity\Recorder\PlanningActivityRecorder::class));
     }
 
     /**

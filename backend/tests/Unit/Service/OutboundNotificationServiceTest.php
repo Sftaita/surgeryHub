@@ -34,7 +34,20 @@ class OutboundNotificationServiceTest extends TestCase
 
     private function service(): OutboundNotificationService
     {
-        return new OutboundNotificationService($this->em, $this->webPushService);
+        // H2 (D-128) — recordEmailAttempt() now flushes inside a connection-level transaction
+        // (status change + its activity_event commit together): the mocked connection runs
+        // the callback like the real one would.
+        $connection = $this->createMock(\Doctrine\DBAL\Connection::class);
+        $connection->method('transactional')->willReturnCallback(static fn (callable $callback) => $callback());
+        $connection->method('fetchOne')->willReturn(false);
+        $this->em->method('getConnection')->willReturn($connection);
+
+        return new OutboundNotificationService(
+            $this->em,
+            $this->webPushService,
+            $this->createMock(\App\Activity\Recorder\NotificationActivityRecorder::class),
+            $this->createMock(\App\Notification\MissionCommunicationService::class),
+        );
     }
 
     private static int $nextId = 1;

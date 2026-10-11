@@ -57,7 +57,13 @@ use Doctrine\ORM\EntityManagerInterface;
  *                                           as CATALOGUE_REQUEST_CREATED — not urgent)
  *   - All others (pool, coverage, updates): inApp=true, email=false (informational)
  *
- * push: always false by default — requires an explicit device subscription (PushSubscription).
+ *   - ENCODING_REMINDER_D1 (H5a):          inApp=true (no in-app item exists), email=true, push=true —
+ *                                           push first, email as fallback, as before H5a.
+ *   - mandatory-email types (H5a, NotificationType::emailIsMandatory()): the email ignores
+ *                                           this resolver altogether (NotificationEmailPolicy::MANDATORY).
+ *
+ * push: false by default — except PUSH_ON_BY_DEFAULT (OPEN_MISSION_AVAILABLE, H3/D-129); a push
+ * is only ever delivered to a registered device (PushSubscription).
  */
 class DefaultNotificationPreferenceResolver implements NotificationPreferenceResolver
 {
@@ -100,15 +106,50 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::MISSION_OFFERED,
         NotificationType::MISSION_ASSIGNED_DIRECTLY,
         NotificationType::MISSION_OFFER_DECLINED,
-        // D-143 — relances d'encodage : le canal e-mail est piloté par
-        // EncodingReminderService (repli J+1/J+2, systématique J+4), jamais par une préférence.
+        // H2 (D-127) — a manager removed you from a published mission: a real change of your
+        // planning, same urgency as PLANNING_MISSION_CANCELLED.
+        NotificationType::PLANNING_MISSION_RELEASED,
+        // H3 (D-129) — a real OPEN mission proposed to the eligible pool: nobody should miss
+        // it for want of opening the app (validated decision, this type only).
+        NotificationType::OPEN_MISSION_AVAILABLE,
+        // H3 (D-129) — the Modification recap was always emailed: unchanged default.
+        NotificationType::PLANNING_CHANGE_SUMMARY,
+        // H5a — retired by D-143 (kept for historical rows): unchanged default.
+        NotificationType::ENCODING_REMINDER_D1,
+        // D-143 — operational encoding reminders (not configurable): the email channel is
+        // always available; EncodingReminderService decides fallback (J+1/J+2) or mandatory (J+4).
         NotificationType::ENCODING_REMINDER,
         NotificationType::ENCODING_ESCALATION,
+    ];
+
+    /**
+     * H3 (D-129) — types whose default is push=true (effective only when the person has a
+     * registered device — otherwise the push delivery is SKIPPED / NO_PUSH_SUBSCRIPTION).
+     * Every other type keeps push=false by default.
+     */
+    private const PUSH_ON_BY_DEFAULT = [
+        NotificationType::OPEN_MISSION_AVAILABLE,
+        // H5a — the encoding reminder was always push first (D-083), before any preference
+        // was consulted: same default, now an actual, changeable preference.
+        NotificationType::ENCODING_REMINDER_D1,
+        // D-143 — the reminder is pushed whenever a device is really subscribed ("push si
+        // opérationnel"), the email being the fallback. Not configurable.
+        NotificationType::ENCODING_REMINDER,
     ];
 
     public function __construct(
         private readonly EntityManagerInterface $em,
     ) {}
+
+    /** The type's product default (no stored preference) — also the "before" of a first save (H5b). */
+    public static function defaultsFor(NotificationType $type): NotificationChannels
+    {
+        return new NotificationChannels(
+            inApp: true,
+            email: in_array($type, self::EMAIL_ON_BY_DEFAULT, strict: true),
+            push:  in_array($type, self::PUSH_ON_BY_DEFAULT, strict: true),
+        );
+    }
 
     public function resolve(User $user, NotificationType $type): NotificationChannels
     {
@@ -116,17 +157,14 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
             ->findOneBy(['user' => $user, 'notificationType' => $type]);
 
         if ($preference === null) {
-            return new NotificationChannels(
-                inApp: true,
-                email: in_array($type, self::EMAIL_ON_BY_DEFAULT, strict: true),
-                push:  false,
-            );
+            return self::defaultsFor($type);
         }
 
         return new NotificationChannels(
             $preference->isInAppEnabled(),
             $preference->isEmailEnabled(),
             $preference->isPushEnabled(),
+            NotificationChannels::SOURCE_PREFERENCE,
         );
     }
 }

@@ -4,342 +4,143 @@ namespace App\Tests\Unit\MessageHandler;
 
 use App\Entity\Hospital;
 use App\Entity\Mission;
-use App\Entity\NotificationEvent;
-use App\Entity\OutboundNotification;
+use App\Entity\NotificationDispatch;
 use App\Entity\User;
 use App\Enum\CatalogueRequestKind;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Enum\NotificationEmailPolicy;
 use App\Enum\NotificationType;
-use App\Enum\OutboundNotificationChannel;
-use App\Enum\OutboundNotificationStatus;
 use App\Message\CatalogueRequestCreatedMessage;
 use App\MessageHandler\CatalogueRequestCreatedMessageHandler;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
 use App\Repository\UserRepository;
-use App\Service\NotificationChannels;
-use App\Service\NotificationPreferenceResolver;
-use App\Service\NotificationService;
 use App\Service\NotificationTargetResolver;
-use App\Service\OutboundNotificationService;
+use App\Tests\Support\NotificationServiceFactory;
+use App\Tests\Support\RecordsNotificationIntents;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
 
 /**
- * Follow-up D-093 — CatalogueRequestCreatedMessageHandler prévient les managers/admins
- * actifs (jamais l'instrumentiste créateur) qu'une nouvelle proposition catalogue attend
- * leur traitement.
- *
- * D-113 (amende D-094, 2026-09-04) — in-app + push + **email désormais**, les trois
- * canaux gouvernés indépendamment par NotificationPreferenceResolver
- * (CATALOGUE_REQUEST_CREATED ajouté à EMAIL_ON_BY_DEFAULT). L'email n'est PAS un repli du
- * push (contrairement à CatalogueRequestProcessedMessageHandler) : c'est un canal
- * indépendant, envoyé dès que la préférence l'autorise, que le push ait réussi ou non.
+ * Follow-up to D-093 / D-113 — every active manager/admin learns that a catalogue proposal
+ * awaits them. H5a: one dispatcher intent per manager, email an independent channel
+ * (WHEN_ENABLED, never a push fallback), failure isolated per manager.
  */
 final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
 {
-    private EntityManagerInterface&MockObject $em;
-    private UserRepository&MockObject $userRepository;
-    private OutboundNotificationService&MockObject $outboundNotificationService;
-    private NotificationPreferenceResolver&MockObject $preferenceResolver;
-    private NotificationTargetResolver $targetResolver;
-    private NotificationService&MockObject $notificationService;
-    private LoggerInterface&MockObject $logger;
+    use RecordsNotificationIntents;
 
+    private EntityManagerInterface&MockObject $em;
+    private UserRepository&MockObject $users;
+    private LoggerInterface&MockObject $logger;
     private static int $nextId = 1;
 
     protected function setUp(): void
     {
-        $this->em = $this->createMock(EntityManagerInterface::class);
-        $this->userRepository = $this->createMock(UserRepository::class);
-        $this->outboundNotificationService = $this->createMock(OutboundNotificationService::class);
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->targetResolver = new NotificationTargetResolver();
-        $this->notificationService = $this->createMock(NotificationService::class);
+        $this->em     = $this->createMock(EntityManagerInterface::class);
+        $this->users  = $this->createMock(UserRepository::class);
         $this->logger = $this->createMock(LoggerInterface::class);
     }
 
-    private function setId(object $entity, int $id): void
+    private function handler(?NotificationDispatcher $dispatcher = null): CatalogueRequestCreatedMessageHandler
     {
-        $ref = new \ReflectionProperty($entity, 'id');
-        $ref->setAccessible(true);
-        $ref->setValue($entity, $id);
+        return new CatalogueRequestCreatedMessageHandler(
+            $this->em, $this->users, $dispatcher ?? $this->recordingDispatcher(), new NotificationTargetResolver(),
+            NotificationServiceFactory::create($this), $this->logger,
+        );
     }
 
-    private function makeManager(): User
+    private function id(object $e): object
     {
-        $u = new User();
-        $u->setEmail('mgr-' . self::$nextId . '@test.com');
-        $u->setRoles(['ROLE_MANAGER']);
-        $this->setId($u, self::$nextId++);
-        return $u;
+        (new \ReflectionProperty($e, 'id'))->setValue($e, self::$nextId++);
+
+        return $e;
     }
 
-    private function makeMission(): Mission
+    private function manager(): User
     {
-        $site = new Hospital();
-        $site->setName('Site Test');
-        $this->setId($site, self::$nextId++);
+        return $this->id((new User())->setEmail('mgr' . self::$nextId . '@test.com')->setFirstname('Max')->setRoles(['ROLE_MANAGER']));
+    }
 
-        $m = new Mission();
-        $m->setStatus(MissionStatus::ASSIGNED);
-        $m->setType(MissionType::BLOCK);
-        $m->setSite($site);
-        $m->setStartAt(new \DateTimeImmutable('2026-08-10 08:00:00'));
-        $m->setEndAt(new \DateTimeImmutable('2026-08-10 10:00:00'));
-        $this->setId($m, self::$nextId++);
+    private function mission(): Mission
+    {
+        $instr = $this->id((new User())->setEmail('i@test.com')->setFirstname('Jane')->setLastname('Doe')->setRoles(['ROLE_INSTRUMENTIST']));
+        $m = $this->id((new Mission())->setStatus(MissionStatus::ASSIGNED)->setType(MissionType::BLOCK)
+            ->setSite($this->id((new Hospital())->setName('Site Test')))->setInstrumentist($instr)
+            ->setStartAt(new \DateTimeImmutable('2026-08-10 08:00'))->setEndAt(new \DateTimeImmutable('2026-08-10 10:00')));
+        $this->em->method('find')->willReturnCallback(fn ($class, $id) => $class === Mission::class && $id === $m->getId() ? $m : null);
+
         return $m;
     }
 
-    private function makePushNotification(OutboundNotificationStatus $status): OutboundNotification
+    private function message(Mission $m): CatalogueRequestCreatedMessage
     {
-        $n = (new OutboundNotification())->setChannel(OutboundNotificationChannel::PUSH)->setStatus($status);
-        $this->setId($n, self::$nextId++);
-        return $n;
+        return new CatalogueRequestCreatedMessage(CatalogueRequestKind::MATERIAL_ITEM, 55, $m->getId(), 'Pince X', new \DateTimeImmutable());
     }
 
-    private function handler(): CatalogueRequestCreatedMessageHandler
+    public function test_one_intent_per_active_manager_with_an_independent_email(): void
     {
-        return new CatalogueRequestCreatedMessageHandler(
-            $this->em,
-            $this->userRepository,
-            $this->outboundNotificationService,
-            $this->preferenceResolver,
-            $this->targetResolver,
-            $this->notificationService,
-            $this->logger,
-        );
-    }
+        $m = $this->mission();
+        [$a, $b] = [$this->manager(), $this->manager()];
+        $this->users->method('findManagersAndAdmins')->with(true)->willReturn([$a, $b]);
 
-    private function message(Mission $mission, CatalogueRequestKind $kind = CatalogueRequestKind::INTERVENTION_TYPE, string $label = 'PTH'): CatalogueRequestCreatedMessage
-    {
-        return new CatalogueRequestCreatedMessage(
-            kind: $kind,
-            requestId: 42,
-            missionId: $mission->getId(),
-            label: $label,
-            occurredAt: new \DateTimeImmutable(),
-        );
-    }
+        $this->handler()($this->message($m));
 
-    private function mockEmFindMission(Mission $mission): void
-    {
-        $this->em->method('find')->willReturnCallback(
-            fn (string $class, $id) => $class === Mission::class ? $mission : null,
-        );
-    }
-
-    // ── Destinataires ─────────────────────────────────────────────────────────
-
-    public function test_notifies_every_active_manager_and_admin(): void
-    {
-        $mission = $this->makeMission();
-        $this->mockEmFindMission($mission);
-        $mgr1 = $this->makeManager();
-        $mgr2 = $this->makeManager();
-        $this->userRepository->method('findManagersAndAdmins')->with(true)->willReturn([$mgr1, $mgr2]);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: false, push: false));
-
-        $persisted = [];
-        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
-            $persisted[] = $entity;
-        });
-
-        $this->handler()->__invoke($this->message($mission));
-
-        $this->assertCount(2, $persisted);
-        $this->assertSame($mgr1, $persisted[0]->getUser());
-        $this->assertSame($mgr2, $persisted[1]->getUser());
+        self::assertSame([$a, $b], array_map(static fn (NotificationIntent $i) => $i->recipient, $this->intents));
+        $intent = $this->intents[0];
+        self::assertSame(NotificationType::CATALOGUE_REQUEST_CREATED, $intent->type);
+        self::assertSame(NotificationEmailPolicy::WHEN_ENABLED, $intent->emailPolicy, 'D-113: an independent channel, not a push fallback');
+        self::assertSame('catalogue_request_created:MATERIAL_ITEM:55', $intent->episodeRef);
+        self::assertSame('emails/catalogue_request_created.html.twig', $intent->email->htmlTemplate);
+        self::assertSame('Jane Doe', $intent->email->context['requesterName']);
+        self::assertStringContainsString('requestId=55', $intent->email->context['requestsUrl']);
+        self::assertSame('Nouvelle proposition de matériel', $intent->push->title);
+        self::assertSame(['missionId' => $m->getId(), 'requestId' => 55, 'label' => 'Pince X', 'kind' => 'MATERIAL_ITEM'], $intent->inAppPayload);
     }
 
     public function test_one_manager_failing_does_not_block_the_others(): void
     {
-        $mission = $this->makeMission();
-        $this->mockEmFindMission($mission);
-        $mgr1 = $this->makeManager();
-        $mgr2 = $this->makeManager();
-        $this->userRepository->method('findManagersAndAdmins')->willReturn([$mgr1, $mgr2]);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: false, push: false));
-
-        // mgr1's in-app persist blows up entirely (simulates any unexpected failure
-        // mid-processing) — the per-recipient try/catch in notifyManager() must still
-        // let mgr2 be processed normally afterward.
-        $persisted = [];
-        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted, $mgr1): void {
-            if ($entity instanceof NotificationEvent && $entity->getUser() === $mgr1) {
+        $m = $this->mission();
+        [$a, $b] = [$this->manager(), $this->manager()];
+        $this->users->method('findManagersAndAdmins')->willReturn([$a, $b]);
+        $reached = [];
+        $dispatcher = $this->createMock(NotificationDispatcher::class);
+        $dispatcher->method('dispatch')->willReturnCallback(function (NotificationIntent $i) use ($a, &$reached) {
+            if ($i->recipient === $a) {
                 throw new \RuntimeException('boom');
             }
-            $persisted[] = $entity;
+            $reached[] = $i->recipient;
+
+            return new NotificationDispatch();
         });
         $this->logger->expects($this->once())->method('error');
 
-        $this->handler()->__invoke($this->message($mission));
+        $this->handler($dispatcher)($this->message($m));
 
-        $this->assertCount(1, $persisted);
-        $this->assertSame($mgr2, $persisted[0]->getUser());
+        self::assertSame([$b], $reached);
     }
 
-    // ── In-app ────────────────────────────────────────────────────────────────
-
-    public function test_in_app_notification_event_has_correct_type_and_payload(): void
+    public function test_the_email_carries_no_patient_data(): void
     {
-        $mission = $this->makeMission();
-        $this->mockEmFindMission($mission);
-        $mgr = $this->makeManager();
-        $this->userRepository->method('findManagersAndAdmins')->willReturn([$mgr]);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: false, push: false));
+        $m = $this->mission();
+        $this->users->method('findManagersAndAdmins')->willReturn([$this->manager()]);
+        $this->handler()($this->message($m));
 
-        $persisted = null;
-        $this->em->expects($this->once())->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
-            $persisted = $entity;
-        });
-
-        $this->handler()->__invoke($this->message($mission, CatalogueRequestKind::MATERIAL_ITEM, 'Vis titane'));
-
-        $this->assertInstanceOf(NotificationEvent::class, $persisted);
-        $this->assertSame(NotificationType::CATALOGUE_REQUEST_CREATED->value, $persisted->getEventType());
-        $this->assertSame($mgr, $persisted->getUser());
-        $this->assertSame($mission, $persisted->getMission());
-        $payload = $persisted->getPayload();
-        $this->assertSame('Vis titane', $payload['label']);
-        $this->assertSame('MATERIAL_ITEM', $payload['kind']);
-        $this->assertArrayNotHasKey('patientName', $payload);
-        $this->assertArrayNotHasKey('amount', $payload);
+        self::assertSame(
+            ['firstname', 'requesterName', 'label', 'kindLabel', 'siteName', 'requestsUrl', 'missionUrl', 'notificationPreferencesUrl'],
+            array_keys($this->intents[0]->email->context),
+        );
     }
 
-    public function test_in_app_disabled_by_preference_creates_no_notification_event(): void
-    {
-        $mission = $this->makeMission();
-        $this->mockEmFindMission($mission);
-        $mgr = $this->makeManager();
-        $this->userRepository->method('findManagersAndAdmins')->willReturn([$mgr]);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: false, email: false, push: false));
-
-        $this->em->expects($this->never())->method('persist');
-
-        $this->handler()->__invoke($this->message($mission));
-    }
-
-    // ── Push, jamais de repli email ──────────────────────────────────────────
-
-    public function test_push_enabled_records_a_push_send(): void
-    {
-        $mission = $this->makeMission();
-        $this->mockEmFindMission($mission);
-        $mgr = $this->makeManager();
-        $this->userRepository->method('findManagersAndAdmins')->willReturn([$mgr]);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: false, email: false, push: true));
-
-        $this->outboundNotificationService->expects($this->once())
-            ->method('recordPushSend')
-            ->with($mgr, NotificationType::CATALOGUE_REQUEST_CREATED->value, $this->anything(), $this->anything())
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
-
-        $this->handler()->__invoke($this->message($mission));
-    }
-
-    public function test_push_disabled_by_preference_never_attempts_push(): void
-    {
-        $mission = $this->makeMission();
-        $this->mockEmFindMission($mission);
-        $mgr = $this->makeManager();
-        $this->userRepository->method('findManagersAndAdmins')->willReturn([$mgr]);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: false, push: false));
-
-        $this->outboundNotificationService->expects($this->never())->method('recordPushSend');
-
-        $this->handler()->__invoke($this->message($mission));
-    }
-
-    // ── Email (D-113, canal indépendant du push) ─────────────────────────────
-
-    /**
-     * Le point central du lot D-113 : l'email est un canal indépendant, pas un repli du
-     * push — contrairement à CatalogueRequestProcessedMessageHandler, il est envoyé dès
-     * que la préférence l'autorise, même si le push a réussi (SENT).
-     */
-    public function test_email_sent_by_default_alongside_a_successful_push(): void
-    {
-        $mission = $this->makeMission();
-        $this->mockEmFindMission($mission);
-        $mgr = $this->makeManager();
-        $this->userRepository->method('findManagersAndAdmins')->willReturn([$mgr]);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: true, push: true));
-
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
-        $this->notificationService->expects($this->once())
-            ->method('catalogueRequestCreatedNotifyManager')
-            ->with($mission, $mgr, 42, 'PTH', $this->anything(), CatalogueRequestKind::INTERVENTION_TYPE);
-
-        $this->handler()->__invoke($this->message($mission));
-    }
-
-    public function test_no_duplicate_email_per_manager_on_a_single_nominal_processing(): void
-    {
-        $mission = $this->makeMission();
-        $this->mockEmFindMission($mission);
-        $mgr = $this->makeManager();
-        $this->userRepository->method('findManagersAndAdmins')->willReturn([$mgr]);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: true, push: false));
-
-        $this->notificationService->expects($this->once())->method('catalogueRequestCreatedNotifyManager');
-
-        $this->handler()->__invoke($this->message($mission));
-    }
-
-    /**
-     * catalogueRequestCreatedNotifyManager() n'accepte structurellement que
-     * (Mission, User manager, requestId, label, kindLabel, kind) — aucun paramètre
-     * patient n'existe dans sa signature, donc aucune donnée patient ne peut transiter
-     * vers l'email par ce chemin, même par erreur d'appel ultérieure.
-     */
-    public function test_email_call_carries_no_patient_data(): void
-    {
-        $mission = $this->makeMission();
-        $this->mockEmFindMission($mission);
-        $mgr = $this->makeManager();
-        $this->userRepository->method('findManagersAndAdmins')->willReturn([$mgr]);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: false, email: true, push: false));
-
-        $this->notificationService->expects($this->once())
-            ->method('catalogueRequestCreatedNotifyManager')
-            ->with(
-                $this->isInstanceOf(Mission::class),
-                $this->isInstanceOf(User::class),
-                $this->isType('int'),
-                $this->isType('string'),
-                $this->isType('string'),
-                $this->isInstanceOf(CatalogueRequestKind::class),
-            );
-
-        $this->handler()->__invoke($this->message($mission));
-    }
-
-    public function test_email_disabled_by_preference_never_sends_email(): void
-    {
-        $mission = $this->makeMission();
-        $this->mockEmFindMission($mission);
-        $mgr = $this->makeManager();
-        $this->userRepository->method('findManagersAndAdmins')->willReturn([$mgr]);
-        $this->preferenceResolver->method('resolve')->willReturn(new NotificationChannels(inApp: true, email: false, push: true));
-
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
-        $this->notificationService->expects($this->never())->method('catalogueRequestCreatedNotifyManager');
-
-        $this->handler()->__invoke($this->message($mission));
-    }
-
-    // ── Défensif ──────────────────────────────────────────────────────────────
-
-    public function test_does_nothing_when_mission_not_found(): void
+    public function test_unknown_mission_dispatches_nothing(): void
     {
         $this->em->method('find')->willReturn(null);
-        $this->userRepository->expects($this->never())->method('findManagersAndAdmins');
-        $this->outboundNotificationService->expects($this->never())->method('recordPushSend');
+        $this->users->expects($this->never())->method('findManagersAndAdmins');
+        $this->handler()(new CatalogueRequestCreatedMessage(CatalogueRequestKind::MATERIAL_ITEM, 1, 999, 'x', new \DateTimeImmutable()));
 
-        $this->handler()->__invoke($this->message($this->makeMission()));
+        self::assertSame([], $this->intents);
     }
 }

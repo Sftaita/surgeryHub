@@ -116,9 +116,10 @@ final class BlockManagementCommunicationConcurrencyTest extends KernelTestCase
             $em,
             $container->get(SurgeonAbsenceBlockOccurrenceResolver::class),
             new AbsenceCommunicationJournalService($em),
-            $container->get(MessageBusInterface::class),
-            'no-reply@surgicalhub.test',
-            'SurgicalHub',
+            new \App\Service\AbsenceCommunicationDeliverySender(new \App\Notification\TransactionalEmailSender(
+                $em, $container->get(\App\Activity\Recorder\NotificationActivityRecorder::class), $container->get(\App\Activity\CorrelationContext::class),
+                $container->get(MessageBusInterface::class), 'no-reply@surgicalhub.test', 'SurgicalHub',
+            ), $em),
         );
     }
 

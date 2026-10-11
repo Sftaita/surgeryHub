@@ -4,670 +4,295 @@ namespace App\Tests\Unit\Service;
 
 use App\Entity\Hospital;
 use App\Entity\Mission;
+use App\Entity\NotificationDispatch;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Enum\NotificationType;
 use App\Enum\SchedulePrecision;
-use App\Message\SendBillingEmailMessage;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
+use App\Service\NotificationService;
+use App\Service\NotificationTargetResolver;
 use App\Service\PdfService;
 use App\Service\PlanningChangeSummaryService;
-use App\Service\PlanningDiffService;
 use App\Twig\DateExtension;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
-use Symfony\Component\Messenger\Envelope;
-use Symfony\Component\Messenger\Exception\TransportException;
-use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * PlanningChangeSummaryService — extracted from PlanningDeployPdfsMessageHandler during
- * the deploy email policy redesign. This capability is NOT invoked during initial
- * deploy (see PlanningDeployPdfsHandlerTest::test_no_change_summary_email_ever_sent_during_deploy)
- * — that flow keeps its own distinct subject ("Planning du {from} au {to}"). Wired up
- * since Batch 15K by PlanningModificationService (Planning V2 Modification mode's
- * apply-modifications/cancel-all endpoints), the only caller.
+ * PlanningChangeSummaryService — the per-person recap of a committed Planning Modification
+ * batch. Since H3 (D-129) it is a PLANNING_CHANGE_SUMMARY notification handed to
+ * NotificationDispatcher (channels from preferences, every outcome traced, idempotent per
+ * batch) instead of an opaque SendBillingEmailMessage. This test checks WHO gets a recap and
+ * WHAT it carries; channel decisions belong to the dispatcher (NotificationDispatcherIntegrationTest).
+ * Never invoked during an initial deploy (PlanningDeployPdfsHandlerTest::test_no_change_summary_email_ever_sent_during_deploy).
  */
 class PlanningChangeSummaryServiceTest extends TestCase
 {
     private EntityManagerInterface&MockObject $em;
-    private MessageBusInterface&MockObject     $bus;
-    private PlanningDiffService&MockObject     $diffService;
-    private PdfService&MockObject              $pdfService;
-    private LoggerInterface&MockObject         $logger;
-    private array $dispatched = [];
+    private PdfService&MockObject             $pdfService;
+    private LoggerInterface&MockObject        $logger;
+    private NotificationDispatcher&MockObject $dispatcher;
+    /** @var list<NotificationIntent> */
+    private array $intents = [];
+    /** @var array<int, User> */
+    private array $users = [];
 
     protected function setUp(): void
     {
-        $this->em          = $this->createMock(EntityManagerInterface::class);
-        $this->bus         = $this->createMock(MessageBusInterface::class);
-        $this->diffService = $this->createMock(PlanningDiffService::class);
-        $this->pdfService  = $this->createMock(PdfService::class);
-        $this->logger      = $this->createMock(LoggerInterface::class);
+        $this->em         = $this->createMock(EntityManagerInterface::class);
+        $this->pdfService = $this->createMock(PdfService::class);
+        $this->logger     = $this->createMock(LoggerInterface::class);
+        $this->dispatcher = $this->createMock(NotificationDispatcher::class);
 
         $this->pdfService->method('generateFromTemplate')->willReturn('%PDF-1.4 fake pdf bytes');
+        $this->em->method('find')->willReturnCallback(fn (string $class, $id) => $class === User::class ? ($this->users[$id] ?? null) : null);
 
-        $this->dispatched = [];
-        $this->bus->method('dispatch')->willReturnCallback(function (object $msg): Envelope {
-            $this->dispatched[] = $msg;
-            return new Envelope($msg);
+        $this->intents = [];
+        $this->users   = [];
+        $this->dispatcher->method('dispatch')->willReturnCallback(function (NotificationIntent $i): NotificationDispatch {
+            $this->intents[] = $i;
+
+            return new NotificationDispatch();
         });
     }
 
     private function makeService(): PlanningChangeSummaryService
     {
+        $notificationService = $this->createMock(NotificationService::class);
+        $notificationService->method('notificationPreferencesUrl')->willReturn('https://app.test/app/settings/notifications');
+
         return new PlanningChangeSummaryService(
-            $this->em, $this->bus, $this->diffService, $this->pdfService, $this->logger,
-            new DateExtension(),
-            'noreply@test.com', 'SurgicalHub',
+            $this->em, $this->pdfService, $this->logger, new DateExtension(), $this->dispatcher,
+            $notificationService, new NotificationTargetResolver(), 'https://app.test', $this->documentStore(),
         );
     }
 
-    private function makeUser(string $email, int $id): User
+    /** H5a — the PDF is stored once and attached by reference. */
+    private function documentStore(): \App\Notification\DocumentStore
+    {
+        $store = $this->createMock(\App\Notification\DocumentStore::class);
+        $store->method('store')->willReturnCallback(static fn (string $type, string $filename, string $content) =>
+            new \App\Notification\DocumentReference(1, $type, $filename, hash('sha256', $content), strlen($content)));
+        // H5b — planning PDFs are stored once per (sourceKey, fingerprint): render on demand.
+        $store->method('storeOnce')->willReturnCallback(static function (string $type, string $key, string $fp, string $filename, callable $render) {
+            $content = $render();
+
+            return new \App\Notification\DocumentReference(1, $type, $filename, hash('sha256', $content), strlen($content));
+        });
+
+        return $store;
+    }
+
+    private function makeUser(string $email, int $id, string $role): User
     {
         $u = new User();
         $u->setEmail($email);
-        $u->setRoles(['ROLE_SURGEON']);
+        $u->setRoles([$role]);
         $u->setActive(true);
         $u->setFirstname('Test');
-        $u->setLastname('User');
+        $u->setLastname('User' . $id);
         (new \ReflectionProperty(User::class, 'id'))->setValue($u, $id);
+        $this->users[$id] = $u;
+
         return $u;
     }
 
-    private function makeMission(User $surgeon, ?User $instrumentist, MissionStatus $status, int $id): Mission
+    private function makeMission(User $surgeon, ?User $instrumentist, int $id): Mission
     {
         $m = new Mission();
-        $m->setStatus($status);
+        $m->setStatus($instrumentist !== null ? MissionStatus::ASSIGNED : MissionStatus::OPEN);
         $m->setType(MissionType::BLOCK);
         $m->setSchedulePrecision(SchedulePrecision::EXACT);
         $m->setStartAt(new \DateTimeImmutable('2026-03-24 08:00:00'));
         $m->setEndAt(new \DateTimeImmutable('2026-03-24 13:00:00'));
-        $site = new Hospital(); $site->setName('Alpha');
+        $site = new Hospital();
+        $site->setName('Alpha');
         $m->setSite($site);
         $m->setSurgeon($surgeon);
         $m->setCreatedBy($surgeon);
         $m->setInstrumentist($instrumentist);
         (new \ReflectionProperty(Mission::class, 'id'))->setValue($m, $id);
+
         return $m;
     }
 
-    private function makeVersion(int $id): PlanningVersion
+    private function makeVersion(): PlanningVersion
     {
         $version = new PlanningVersion();
-        $version->setPeriodStart(new \DateTimeImmutable('2026-03-23'));
-        $version->setPeriodEnd(new \DateTimeImmutable('2026-03-27'));
-        $version->setGeneratedBy($this->makeUser('mgr@test.com', 99));
-        (new \ReflectionProperty(PlanningVersion::class, 'id'))->setValue($version, $id);
+        $version->setPeriodStart(new \DateTimeImmutable('2026-03-01'));
+        $version->setPeriodEnd(new \DateTimeImmutable('2026-03-31'));
+        (new \ReflectionProperty(PlanningVersion::class, 'id'))->setValue($version, 7);
+
         return $version;
     }
 
-    public function test_no_email_sent_when_diff_is_empty(): void
+    private function row(array $overrides = []): array
     {
-        $version = $this->makeVersion(7);
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
-            $class === PlanningVersion::class && $id === 7 => $version,
-            default => null,
-        });
-        $this->diffService->method('diff')->willReturn(['added' => [], 'removed' => [], 'modified' => []]);
-
-        $this->makeService()->sendChangeSummaryEmails(
-            versionId: 7, missions: [], byInstrumentist: [], bySurgeon: [],
-            openUncoveredIds: [], globalPdf: null, globalFilename: null,
-            fromDate: new \DateTimeImmutable('2026-03-23'), toDate: new \DateTimeImmutable('2026-03-27'),
-        );
-
-        $this->assertEmpty($this->dispatched, 'No email must be sent when the diff is empty.');
+        return $overrides + [
+            'date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
+            'missionType' => 'BLOCK', 'surgeonId' => 1, 'surgeonName' => 'Jean Dupont',
+            'instrumentistId' => null, 'instrumentistName' => null, 'siteName' => 'Alpha',
+        ];
     }
 
-    public function test_affected_instrumentist_receives_change_summary_email(): void
+    /** @return list<NotificationIntent> */
+    private function intentsFor(int $userId): array
     {
-        $version = $this->makeVersion(7);
-        $surgeon = $this->makeUser('surgeon@test.com', 1);
-        $instr   = $this->makeUser('instr@test.com', 2);
-        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED, 50);
-
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
-            $class === PlanningVersion::class && $id === 7 => $version,
-            $class === User::class && $id === 2 => $instr,
-            default => null,
-        });
-        $this->diffService->method('diff')->willReturn([
-            'added' => [[
-                'date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
-                'missionType' => 'BLOCK', 'surgeonId' => 1, 'surgeonName' => 'Jean Dupont',
-                'instrumentistId' => 2, 'instrumentistName' => 'Test User', 'siteName' => 'Alpha',
-            ]],
-            'removed' => [], 'modified' => [],
-        ]);
-
-        $this->makeService()->sendChangeSummaryEmails(
-            versionId: 7,
-            missions: [$mission],
-            byInstrumentist: [2 => [$mission]],
-            bySurgeon: [1 => [$mission]],
-            openUncoveredIds: [],
-            globalPdf: null, globalFilename: null,
-            fromDate: new \DateTimeImmutable('2026-03-23'), toDate: new \DateTimeImmutable('2026-03-27'),
-        );
-
-        $toInstr = array_values(array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage
-                && $m->to === 'instr@test.com'
-                && $m->htmlTemplate === 'emails/planning_change_summary_instrumentist.html.twig',
-        ));
-        $this->assertCount(1, $toInstr, 'Affected instrumentist must receive exactly one change-summary email.');
-        $this->assertNotNull($toInstr[0]->attachmentBase64, 'The recap email must carry the instrumentist\'s own up-to-date planning PDF.');
-        $this->assertSame(base64_encode('%PDF-1.4 fake pdf bytes'), $toInstr[0]->attachmentBase64);
-        $this->assertStringStartsWith('planning-', $toInstr[0]->attachmentFilename);
-        $this->assertSame('Modification de votre planning – Mars 2026', $toInstr[0]->subject);
+        return array_values(array_filter($this->intents, static fn (NotificationIntent $i) => $i->recipient->getId() === $userId));
     }
 
-    public function test_subject_is_identical_for_surgeon_and_instrumentist_and_distinct_from_initial_deploy(): void
+    // ── recipients() — pure, used synchronously by apply() ─────────────────────
+
+    public function test_recipients_lists_every_person_whose_own_missions_changed_including_a_removed_instrumentist(): void
     {
-        // The initial-deploy subject ("Planning du {from} au {to}", PlanningDeployPdfsMessageHandler,
-        // D-058) must never be confused with this one — a recipient opening their inbox has to
-        // immediately tell "here's your new planning" apart from "your planning changed".
-        $version  = $this->makeVersion(9);
-        $surgeon  = $this->makeUser('surgeon@test.com', 3);
-        $instr    = $this->makeUser('instr@test.com', 4);
-        $mission  = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED, 60);
-
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
-            $class === PlanningVersion::class && $id === 9 => $version,
-            $class === User::class && $id === 4 => $instr,
-            $class === User::class && $id === 3 => $surgeon,
-            default => null,
-        });
-        $this->diffService->method('diff')->willReturn([
-            'added' => [[
-                'date' => '2026-09-06', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
-                'missionType' => 'BLOCK', 'surgeonId' => 3, 'surgeonName' => 'Test User',
-                'instrumentistId' => 4, 'instrumentistName' => 'Test User', 'siteName' => 'Alpha',
-            ]],
-            'removed' => [], 'modified' => [],
-        ]);
-
-        $this->makeService()->sendChangeSummaryEmails(
-            versionId: 9,
-            missions: [$mission],
-            byInstrumentist: [4 => [$mission]],
-            bySurgeon: [3 => [$mission]],
-            openUncoveredIds: [],
-            globalPdf: null, globalFilename: null,
-            fromDate: new \DateTimeImmutable('2026-09-01'), toDate: new \DateTimeImmutable('2026-09-30'),
-        );
-
-        $subjects = array_map(
-            fn (SendBillingEmailMessage $m) => $m->subject,
-            array_filter($this->dispatched, fn ($m) => $m instanceof SendBillingEmailMessage),
-        );
-        $this->assertNotEmpty($subjects);
-        $this->assertSame(['Modification de votre planning – Septembre 2026'], array_unique($subjects));
-        $this->assertStringNotContainsString('Récapitulatif', $subjects[0]);
-        $this->assertStringNotContainsString('Planning du', $subjects[0], 'Must never collide with the initial-deploy subject.');
-    }
-
-    public function test_pdf_generation_failure_is_logged_and_email_still_sent_without_attachment(): void
-    {
-        $version = $this->makeVersion(7);
-        $surgeon = $this->makeUser('surgeon@test.com', 1);
-        $instr   = $this->makeUser('instr@test.com', 2);
-        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED, 50);
-
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
-            $class === PlanningVersion::class && $id === 7 => $version,
-            $class === User::class && $id === 2 => $instr,
-            default => null,
-        });
-        $this->pdfService = $this->createMock(PdfService::class);
-        $this->pdfService->method('generateFromTemplate')->willThrowException(new \RuntimeException('dompdf choked'));
-
-        $this->logger->expects($this->once())->method('error')->with(
-            'Failed to generate personal planning PDF for change-summary notification',
-            $this->callback(fn (array $c) => $c['recipientId'] === 2 && $c['recipientRole'] === 'instrumentist'),
-        );
-
-        $this->diffService->method('diff')->willReturn([
-            'added' => [[
-                'date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
-                'missionType' => 'BLOCK', 'surgeonId' => 1, 'surgeonName' => 'Jean Dupont',
-                'instrumentistId' => 2, 'instrumentistName' => 'Test User', 'siteName' => 'Alpha',
-            ]],
-            'removed' => [], 'modified' => [],
-        ]);
-
-        $this->makeService()->sendChangeSummaryEmails(
-            versionId: 7,
-            missions: [$mission],
-            byInstrumentist: [2 => [$mission]],
-            bySurgeon: [1 => [$mission]],
-            openUncoveredIds: [],
-            globalPdf: null, globalFilename: null,
-            fromDate: new \DateTimeImmutable('2026-03-23'), toDate: new \DateTimeImmutable('2026-03-27'),
-        );
-
-        $toInstr = array_values(array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com',
-        ));
-        $this->assertCount(1, $toInstr, 'A PDF failure must not prevent the recap email itself from being sent.');
-        $this->assertNull($toInstr[0]->attachmentBase64, 'No attachment when PDF generation failed.');
-    }
-
-    public function test_instrumentist_with_unrelated_open_mission_at_same_site_receives_nothing(): void
-    {
-        // Same bug class as test_surgeon_with_unrelated_open_mission_elsewhere_receives_nothing,
-        // but on the instrumentist side: sharing a site with an unrelated pool mission must
-        // never be a trigger on its own — that's the separate OPEN_MISSION_AVAILABLE flow.
-        $version = $this->makeVersion(7);
-        $surgeon = $this->makeUser('surgeon@test.com', 1);
-
-        $changedInstr    = $this->makeUser('changed-instr@test.com', 2);
-        $changedMission  = $this->makeMission($surgeon, $changedInstr, MissionStatus::ASSIGNED, 50);
-
-        $unrelatedInstr   = $this->makeUser('unrelated-instr@test.com', 77);
-        $unrelatedMission = $this->makeMission($surgeon, $unrelatedInstr, MissionStatus::ASSIGNED, 51);
-        $poolMission      = $this->makeMission($surgeon, null, MissionStatus::OPEN, 200);
-
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
-            $class === PlanningVersion::class && $id === 7 => $version,
-            $class === User::class && $id === 2 => $changedInstr,
-            $class === User::class && $id === 77 => $unrelatedInstr,
-            default => null,
-        });
-        // Only mission 50 (changedInstr's) is in the diff; mission 200 is a pre-existing,
-        // unrelated open mission at the same site as unrelatedInstr's own mission 51.
-        $this->diffService->method('diff')->willReturn([
-            'added' => [], 'removed' => [],
+        $diff = [
+            'added'    => [$this->row(['surgeonId' => 1, 'instrumentistId' => 2])],
+            'removed'  => [],
             'modified' => [[
-                'mission' => [
-                    'date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
-                    'surgeonId' => 1, 'surgeonName' => 'Jean Dupont', 'siteName' => 'Alpha',
-                ],
-                'changes' => [
-                    'instrumentist' => ['from' => null, 'to' => ['id' => 2, 'name' => 'Changed Instr']],
-                ],
+                'mission' => $this->row(['surgeonId' => 3, 'instrumentistId' => null]),
+                'changes' => ['instrumentist' => ['from' => ['id' => 4, 'name' => 'Françoise'], 'to' => null]],
             ]],
-        ]);
-
-        $this->makeService()->sendChangeSummaryEmails(
-            versionId: 7,
-            missions: [$changedMission, $unrelatedMission, $poolMission],
-            byInstrumentist: [2 => [$changedMission], 77 => [$unrelatedMission]],
-            bySurgeon: [1 => [$changedMission, $unrelatedMission, $poolMission]],
-            openUncoveredIds: [200],
-            globalPdf: null, globalFilename: null,
-            fromDate: new \DateTimeImmutable('2026-03-23'), toDate: new \DateTimeImmutable('2026-03-27'),
-        );
-
-        $toUnrelated = array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'unrelated-instr@test.com',
-        );
-        $this->assertEmpty($toUnrelated, 'An instrumentist with an unrelated open mission at the same site must receive nothing.');
-
-        $toChanged = array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'changed-instr@test.com',
-        );
-        $this->assertCount(1, $toChanged, 'The instrumentist actually assigned by the diff must still receive exactly one email.');
-    }
-
-    public function test_surgeon_with_uncovered_slot_receives_email_with_global_pdf(): void
-    {
-        $version = $this->makeVersion(7);
-        $surgeon = $this->makeUser('surgeon@test.com', 1);
-        $poolMission = $this->makeMission($surgeon, null, MissionStatus::OPEN, 101);
-
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
-            $class === PlanningVersion::class && $id === 7 => $version,
-            $class === User::class && $id === 1 => $surgeon,
-            default => null,
-        });
-        $this->diffService->method('diff')->willReturn([
-            'added' => [[
-                'date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
-                'missionType' => 'BLOCK', 'surgeonId' => 1, 'surgeonName' => 'Jean Dupont',
-                'instrumentistId' => null, 'instrumentistName' => null, 'siteName' => 'Alpha',
-            ]],
-            'removed' => [], 'modified' => [],
-        ]);
-
-        $this->makeService()->sendChangeSummaryEmails(
-            versionId: 7,
-            missions: [$poolMission],
-            byInstrumentist: [],
-            bySurgeon: [1 => [$poolMission]],
-            openUncoveredIds: [101],
-            globalPdf: 'fake-pdf-bytes', globalFilename: 'planning-global.pdf',
-            fromDate: new \DateTimeImmutable('2026-03-23'), toDate: new \DateTimeImmutable('2026-03-27'),
-        );
-
-        $toSurgeon = array_values(array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage
-                && $m->to === 'surgeon@test.com'
-                && $m->htmlTemplate === 'emails/planning_change_summary_surgeon.html.twig',
-        ));
-        $this->assertCount(1, $toSurgeon);
-        $this->assertNotEmpty($toSurgeon[0]->extraAttachments,
-            'Global PDF must be attached to the change-summary surgeon email.'
-        );
-    }
-
-    public function test_surgeon_whose_own_mission_was_reassigned_receives_email(): void
-    {
-        $version   = $this->makeVersion(7);
-        $surgeon   = $this->makeUser('surgeon@test.com', 1);
-        $newInstr  = $this->makeUser('newinstr@test.com', 3);
-        $mission   = $this->makeMission($surgeon, $newInstr, MissionStatus::ASSIGNED, 60);
-
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
-            $class === PlanningVersion::class && $id === 7 => $version,
-            $class === User::class && $id === 1 => $surgeon,
-            default => null,
-        });
-        $this->diffService->method('diff')->willReturn([
-            'added' => [], 'removed' => [],
-            'modified' => [[
-                'mission' => [
-                    'date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
-                    'surgeonId' => 1, 'surgeonName' => 'Jean Dupont', 'siteName' => 'Alpha',
-                ],
-                'changes' => [
-                    'instrumentist' => ['from' => ['id' => 2, 'name' => 'Diane Morel'], 'to' => ['id' => 3, 'name' => 'Léa Martin']],
-                ],
-            ]],
-        ]);
-
-        $this->makeService()->sendChangeSummaryEmails(
-            versionId: 7,
-            missions: [$mission],
-            byInstrumentist: [3 => [$mission]],
-            bySurgeon: [1 => [$mission]],
-            openUncoveredIds: [],
-            globalPdf: null, globalFilename: null,
-            fromDate: new \DateTimeImmutable('2026-03-23'), toDate: new \DateTimeImmutable('2026-03-27'),
-        );
-
-        $toSurgeon = array_values(array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage
-                && $m->to === 'surgeon@test.com'
-                && $m->htmlTemplate === 'emails/planning_change_summary_surgeon.html.twig',
-        ));
-        $this->assertCount(1, $toSurgeon, 'A surgeon whose own mission was reassigned must receive exactly one recap email.');
-    }
-
-    public function test_surgeon_with_unrelated_open_mission_elsewhere_receives_nothing(): void
-    {
-        // Regression test: a real live run against production data showed surgeons with
-        // ANY open mission anywhere in the whole PlanningVersion were emailed regardless
-        // of whether the diff concerned them at all. Only a diff entry belonging to THIS
-        // surgeon may trigger their email.
-        $version        = $this->makeVersion(7);
-        $unrelatedSurgeon = $this->makeUser('unrelated@test.com', 99);
-        $unrelatedOpenMission = $this->makeMission($unrelatedSurgeon, null, MissionStatus::OPEN, 200);
-
-        $reassignedSurgeon = $this->makeUser('reassigned-surgeon@test.com', 1);
-        $instr             = $this->makeUser('instr@test.com', 2);
-        $reassignedMission = $this->makeMission($reassignedSurgeon, $instr, MissionStatus::ASSIGNED, 50);
-
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
-            $class === PlanningVersion::class && $id === 7 => $version,
-            $class === User::class && $id === 1 => $reassignedSurgeon,
-            $class === User::class && $id === 2 => $instr,
-            $class === User::class && $id === 99 => $unrelatedSurgeon,
-            default => null,
-        });
-        // Only mission 50 (reassignedSurgeon's) is actually in the diff. Mission 200
-        // (unrelatedSurgeon's, OPEN) is NOT part of this diff — it was open before and after.
-        $this->diffService->method('diff')->willReturn([
-            'added' => [], 'removed' => [],
-            'modified' => [[
-                'mission' => [
-                    'date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
-                    'surgeonId' => 1, 'surgeonName' => 'Reassigned Surgeon', 'siteName' => 'Alpha',
-                ],
-                'changes' => [
-                    'instrumentist' => ['from' => null, 'to' => ['id' => 2, 'name' => 'Test User']],
-                ],
-            ]],
-        ]);
-
-        $this->makeService()->sendChangeSummaryEmails(
-            versionId: 7,
-            missions: [$reassignedMission, $unrelatedOpenMission],
-            byInstrumentist: [2 => [$reassignedMission]],
-            bySurgeon: [1 => [$reassignedMission], 99 => [$unrelatedOpenMission]],
-            openUncoveredIds: [200], // mission 200 is open, but pre-existing and unrelated to the diff
-            globalPdf: null, globalFilename: null,
-            fromDate: new \DateTimeImmutable('2026-03-23'), toDate: new \DateTimeImmutable('2026-03-27'),
-        );
-
-        $toUnrelated = array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'unrelated@test.com',
-        );
-        $this->assertEmpty($toUnrelated, 'A surgeon with an unrelated pre-existing open mission must receive nothing.');
-
-        $toReassigned = array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'reassigned-surgeon@test.com',
-        );
-        $this->assertCount(1, $toReassigned, 'The surgeon whose mission was actually reassigned must still receive exactly one email.');
-    }
-
-    public function test_precomputed_diff_bypasses_diff_service_and_is_used_directly(): void
-    {
-        $version = $this->makeVersion(7);
-        $surgeon = $this->makeUser('surgeon@test.com', 1);
-        $instr   = $this->makeUser('instr@test.com', 2);
-        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED, 50);
-
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
-            $class === PlanningVersion::class && $id === 7 => $version,
-            $class === User::class && $id === 2 => $instr,
-            default => null,
-        });
-
-        // Planning V2 Modification mode never diffs against the previous version.
-        $this->diffService->expects($this->never())->method('diff');
-
-        $precomputedDiff = [
-            'added' => [[
-                'date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
-                'missionType' => 'BLOCK', 'surgeonId' => 1, 'surgeonName' => 'Jean Dupont',
-                'instrumentistId' => 2, 'instrumentistName' => 'Test User', 'siteName' => 'Alpha',
-            ]],
-            'removed' => [], 'modified' => [],
         ];
 
-        $this->makeService()->sendChangeSummaryEmails(
-            versionId: 7,
-            missions: [$mission],
-            byInstrumentist: [2 => [$mission]],
-            bySurgeon: [1 => [$mission]],
-            openUncoveredIds: [],
-            globalPdf: null, globalFilename: null,
-            fromDate: new \DateTimeImmutable('2026-03-23'), toDate: new \DateTimeImmutable('2026-03-27'),
-            precomputedDiff: $precomputedDiff,
-        );
+        $r = $this->makeService()->recipients($diff);
 
-        $toInstr = array_values(array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com',
-        ));
-        $this->assertCount(1, $toInstr);
+        self::assertEqualsCanonicalizing([2, 4], $r['instrumentists']);
+        self::assertEqualsCanonicalizing([1, 3], $r['surgeons']);
     }
 
-    // ── Async dispatch failures must never disappear silently ───────────────────────────
+    // ── dispatchSummaries() ────────────────────────────────────────────────────
 
-    public function test_dispatch_failure_is_logged_with_full_context(): void
+    public function test_nothing_is_dispatched_when_the_diff_is_empty(): void
     {
-        $version = $this->makeVersion(7);
-        $surgeon = $this->makeUser('surgeon@test.com', 1);
-        $instr   = $this->makeUser('instr@test.com', 2);
-        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED, 50);
+        $sent = $this->makeService()->dispatchSummaries($this->makeVersion(), ['added' => [], 'removed' => [], 'modified' => []], [], 'batch-1');
 
-        $this->em = $this->createMock(EntityManagerInterface::class);
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
-            $class === PlanningVersion::class && $id === 7 => $version,
-            $class === User::class && $id === 2 => $instr,
-            default => null,
-        });
-
-        $this->bus = $this->createMock(MessageBusInterface::class);
-        $this->bus->method('dispatch')->willThrowException(new TransportException('Redis connection refused'));
-
-        $this->logger->expects($this->once())->method('error')->with(
-            'Failed to dispatch planning change-summary notification',
-            $this->callback(function (array $context) {
-                $this->assertSame(7, $context['planningVersionId']);
-                $this->assertSame(2, $context['recipientId']);
-                $this->assertSame('instr@test.com', $context['recipientEmail']);
-                $this->assertSame('instrumentist', $context['recipientRole']);
-                $this->assertSame('planning_change_summary', $context['summaryType']);
-                $this->assertArrayHasKey('redeploymentBatchId', $context);
-                $this->assertNotEmpty($context['redeploymentBatchId']);
-                $this->assertSame(TransportException::class, $context['exceptionClass']);
-                $this->assertStringContainsString('Redis connection refused', $context['exceptionMessage']);
-                $this->assertArrayHasKey('exceptionTrace', $context);
-                return true;
-            }),
-        );
-
-        $this->diffService->method('diff')->willReturn([
-            'added' => [], 'removed' => [],
-            'modified' => [[
-                'mission' => [
-                    'date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00',
-                    'surgeonId' => 1, 'surgeonName' => 'Jean Dupont', 'siteName' => 'Alpha',
-                ],
-                'changes' => ['instrumentist' => ['from' => null, 'to' => ['id' => 2, 'name' => 'Test User']]],
-            ]],
-        ]);
-
-        $this->makeService()->sendChangeSummaryEmails(
-            versionId: 7,
-            missions: [$mission],
-            byInstrumentist: [2 => [$mission]],
-            bySurgeon: [],
-            openUncoveredIds: [],
-            globalPdf: null, globalFilename: null,
-            fromDate: new \DateTimeImmutable('2026-03-23'), toDate: new \DateTimeImmutable('2026-03-27'),
-        );
+        self::assertSame([], $sent);
+        self::assertSame([], $this->intents);
     }
 
-    public function test_one_recipient_dispatch_failure_does_not_prevent_other_recipients_from_being_notified(): void
+    public function test_affected_instrumentist_gets_one_change_summary_through_the_dispatcher(): void
     {
-        $version = $this->makeVersion(7);
-        $surgeon  = $this->makeUser('surgeon@test.com', 1);
-        $failingInstr = $this->makeUser('failing-instr@test.com', 2);
-        $okInstr      = $this->makeUser('ok-instr@test.com', 3);
-        $missionA = $this->makeMission($surgeon, $failingInstr, MissionStatus::ASSIGNED, 50);
-        $missionB = $this->makeMission($surgeon, $okInstr, MissionStatus::ASSIGNED, 51);
+        $surgeon = $this->makeUser('s@test.com', 1, 'ROLE_SURGEON');
+        $instr   = $this->makeUser('i@test.com', 2, 'ROLE_INSTRUMENTIST');
+        $mission = $this->makeMission($surgeon, $instr, 50);
 
-        $this->em = $this->createMock(EntityManagerInterface::class);
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
-            $class === PlanningVersion::class && $id === 7 => $version,
-            $class === User::class && $id === 2 => $failingInstr,
-            $class === User::class && $id === 3 => $okInstr,
-            default => null,
-        });
+        $sent = $this->makeService()->dispatchSummaries($this->makeVersion(), [
+            'added' => [$this->row(['instrumentistId' => 2])], 'removed' => [], 'modified' => [],
+        ], [$mission], 'batch-1');
 
-        $sentTo = [];
-        $this->bus = $this->createMock(MessageBusInterface::class);
-        $this->bus->method('dispatch')->willReturnCallback(function (SendBillingEmailMessage $m) use (&$sentTo) {
-            $sentTo[] = $m->to;
-            if ($m->to === 'failing-instr@test.com') {
-                throw new TransportException('boom');
+        self::assertEqualsCanonicalizing([1, 2], $sent);
+        $mine = $this->intentsFor(2);
+        self::assertCount(1, $mine);
+        $intent = $mine[0];
+        self::assertSame(NotificationType::PLANNING_CHANGE_SUMMARY, $intent->type);
+        self::assertSame('planning_modification:batch-1', $intent->episodeRef);
+        self::assertSame('PlanningVersion', $intent->subjectType);
+        self::assertSame(7, $intent->subjectId);
+        self::assertSame(1, $intent->inAppPayload['addedCount']);
+        self::assertSame('emails/planning_change_summary_instrumentist.html.twig', $intent->email->htmlTemplate);
+        self::assertStringStartsWith('Modification de votre planning', $intent->email->subject);
+        self::assertSame('https://app.test/app/i/planning', $intent->email->context['missionUrl']);
+        self::assertCount(1, $intent->email->attachments, 'her up-to-date planning PDF');
+        self::assertSame('Votre planning a été modifié', $intent->push->title);
+    }
+
+    public function test_surgeon_recap_lists_only_his_own_uncovered_added_missions(): void
+    {
+        $this->makeUser('s1@test.com', 1, 'ROLE_SURGEON');
+        $this->makeUser('s3@test.com', 3, 'ROLE_SURGEON');
+
+        $this->makeService()->dispatchSummaries($this->makeVersion(), [
+            'added' => [$this->row(['surgeonId' => 1]), $this->row(['surgeonId' => 3, 'date' => '2026-03-25'])],
+            'removed' => [], 'modified' => [],
+        ], [], 'batch-1');
+
+        $intent = $this->intentsFor(1)[0];
+        self::assertSame('emails/planning_change_summary_surgeon.html.twig', $intent->email->htmlTemplate);
+        self::assertCount(1, $intent->email->context['uncovered']);
+        self::assertSame('https://app.test/app/s/planning', $intent->email->context['missionUrl']);
+    }
+
+    public function test_person_with_no_change_of_their_own_receives_nothing(): void
+    {
+        $this->makeUser('s1@test.com', 1, 'ROLE_SURGEON');
+        $this->makeUser('other@test.com', 9, 'ROLE_INSTRUMENTIST');
+
+        $this->makeService()->dispatchSummaries($this->makeVersion(), [
+            'added' => [$this->row(['surgeonId' => 1])], 'removed' => [], 'modified' => [],
+        ], [], 'batch-1');
+
+        self::assertSame([], $this->intentsFor(9));
+    }
+
+    public function test_one_recap_per_recipient_even_with_several_changes(): void
+    {
+        $this->makeUser('s1@test.com', 1, 'ROLE_SURGEON');
+        $this->makeUser('i@test.com', 2, 'ROLE_INSTRUMENTIST');
+
+        $this->makeService()->dispatchSummaries($this->makeVersion(), [
+            'added'    => [$this->row(['instrumentistId' => 2]), $this->row(['instrumentistId' => 2, 'date' => '2026-03-26'])],
+            'removed'  => [$this->row(['instrumentistId' => 2, 'date' => '2026-03-27'])],
+            'modified' => [],
+        ], [], 'batch-1');
+
+        $mine = $this->intentsFor(2);
+        self::assertCount(1, $mine);
+        self::assertSame(2, $mine[0]->inAppPayload['addedCount']);
+        self::assertSame(1, $mine[0]->inAppPayload['removedCount']);
+    }
+
+    public function test_pdf_failure_is_logged_and_the_recap_goes_without_attachment(): void
+    {
+        $this->makeUser('s1@test.com', 1, 'ROLE_SURGEON');
+        $this->pdfService = $this->createMock(PdfService::class);
+        $this->pdfService->method('generateFromTemplate')->willThrowException(new \RuntimeException('dompdf'));
+        $this->logger->expects($this->once())->method('error');
+
+        $this->makeService()->dispatchSummaries($this->makeVersion(), [
+            'added' => [$this->row()], 'removed' => [], 'modified' => [],
+        ], [], 'batch-1');
+
+        self::assertCount(1, $this->intents);
+        self::assertSame([], $this->intents[0]->email->attachments);
+    }
+
+    public function test_one_recipient_failure_does_not_prevent_the_others(): void
+    {
+        $this->makeUser('s1@test.com', 1, 'ROLE_SURGEON');
+        $this->makeUser('i@test.com', 2, 'ROLE_INSTRUMENTIST');
+        $this->dispatcher = $this->createMock(NotificationDispatcher::class);
+        $this->dispatcher->method('dispatch')->willReturnCallback(function (NotificationIntent $i): NotificationDispatch {
+            if ($i->recipient->getId() === 2) {
+                throw new \RuntimeException('boom');
             }
-            return new Envelope($m);
+            $this->intents[] = $i;
+
+            return new NotificationDispatch();
         });
+        $this->logger->expects($this->once())->method('error')->with('Planning change-summary dispatch failed', $this->arrayHasKey('recipientId'));
 
-        $this->diffService->method('diff')->willReturn([
-            'added' => [], 'removed' => [],
-            'modified' => [
-                [
-                    'mission' => ['date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00', 'surgeonId' => 1, 'surgeonName' => 'X', 'siteName' => 'Alpha'],
-                    'changes' => ['instrumentist' => ['from' => null, 'to' => ['id' => 2, 'name' => 'Failing']]],
-                ],
-                [
-                    'mission' => ['date' => '2026-03-25', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00', 'surgeonId' => 1, 'surgeonName' => 'X', 'siteName' => 'Alpha'],
-                    'changes' => ['instrumentist' => ['from' => null, 'to' => ['id' => 3, 'name' => 'Ok']]],
-                ],
-            ],
-        ]);
+        $this->makeService()->dispatchSummaries($this->makeVersion(), [
+            'added' => [$this->row(['instrumentistId' => 2])], 'removed' => [], 'modified' => [],
+        ], [], 'batch-1');
 
-        // Failure is expected and logged, not re-thrown — the assertion is that BOTH
-        // recipients were attempted despite the first one throwing.
-        $this->makeService()->sendChangeSummaryEmails(
-            versionId: 7,
-            missions: [$missionA, $missionB],
-            byInstrumentist: [2 => [$missionA], 3 => [$missionB]],
-            bySurgeon: [],
-            openUncoveredIds: [],
-            globalPdf: null, globalFilename: null,
-            fromDate: new \DateTimeImmutable('2026-03-23'), toDate: new \DateTimeImmutable('2026-03-27'),
-        );
-
-        $this->assertContains('failing-instr@test.com', $sentTo, 'The failing recipient must still be attempted.');
-        $this->assertContains('ok-instr@test.com', $sentTo, 'A later recipient must not be skipped because an earlier one threw.');
+        self::assertCount(1, $this->intentsFor(1));
     }
 
-    public function test_single_call_sends_at_most_one_email_per_recipient_even_with_multiple_diff_entries(): void
+    public function test_the_same_batch_key_produces_the_same_episode_so_a_retry_is_deduplicated(): void
     {
-        // Guards against duplicate sends within one redeploy: an instrumentist with TWO
-        // modified missions in the same diff must still receive exactly one consolidated
-        // email, not one per changed mission (Messenger-level retry duplication is a
-        // separate, transport-level concern already covered by max_retries/failure_transport
-        // in messenger.yaml — this test guards the application-level fan-out only).
-        $version = $this->makeVersion(7);
-        $surgeon = $this->makeUser('surgeon@test.com', 1);
-        $instr   = $this->makeUser('instr@test.com', 2);
-        $missionA = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED, 50);
-        $missionB = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED, 51);
+        $this->makeUser('s1@test.com', 1, 'ROLE_SURGEON');
+        $diff = ['added' => [$this->row()], 'removed' => [], 'modified' => []];
 
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
-            $class === PlanningVersion::class && $id === 7 => $version,
-            $class === User::class && $id === 2 => $instr,
-            default => null,
-        });
+        $this->makeService()->dispatchSummaries($this->makeVersion(), $diff, [], 'batch-1');
+        $this->makeService()->dispatchSummaries($this->makeVersion(), $diff, [], 'batch-1');
+        $this->makeService()->dispatchSummaries($this->makeVersion(), $diff, [], 'batch-2');
 
-        $this->diffService->method('diff')->willReturn([
-            'added' => [], 'removed' => [],
-            'modified' => [
-                [
-                    'mission' => ['date' => '2026-03-24', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00', 'surgeonId' => 1, 'surgeonName' => 'X', 'siteName' => 'Alpha'],
-                    'changes' => ['instrumentist' => ['from' => null, 'to' => ['id' => 2, 'name' => 'Test']]],
-                ],
-                [
-                    'mission' => ['date' => '2026-03-25', 'period' => 'AM', 'startAt' => '08:00', 'endAt' => '13:00', 'surgeonId' => 1, 'surgeonName' => 'X', 'siteName' => 'Alpha'],
-                    'changes' => ['instrumentist' => ['from' => null, 'to' => ['id' => 2, 'name' => 'Test']]],
-                ],
-            ],
-        ]);
-
-        $this->makeService()->sendChangeSummaryEmails(
-            versionId: 7,
-            missions: [$missionA, $missionB],
-            byInstrumentist: [2 => [$missionA, $missionB]],
-            bySurgeon: [],
-            openUncoveredIds: [],
-            globalPdf: null, globalFilename: null,
-            fromDate: new \DateTimeImmutable('2026-03-23'), toDate: new \DateTimeImmutable('2026-03-27'),
-        );
-
-        $toInstr = array_values(array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com',
-        ));
-        $this->assertCount(1, $toInstr, 'Two modified missions for the same instrumentist must still produce exactly one email.');
-        $this->assertCount(2, $toInstr[0]->context['modified'], 'Both changes must be inside that single email though.');
+        self::assertSame($this->intents[0]->episodeRef, $this->intents[1]->episodeRef);
+        self::assertNotSame($this->intents[0]->episodeRef, $this->intents[2]->episodeRef);
     }
 }

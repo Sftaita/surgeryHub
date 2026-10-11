@@ -23,6 +23,8 @@ class InstrumentistServiceManager
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly UserRepository $users,
+        private readonly ?UserAuditService $userAudit = null,
+        private readonly ?\Symfony\Bundle\SecurityBundle\Security $security = null,
     ) {
     }
 
@@ -77,6 +79,7 @@ class InstrumentistServiceManager
         }
 
         $this->em->persist($user);
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userCreated($actor, $user));
         $this->em->flush();
 
         return $user;
@@ -180,6 +183,7 @@ class InstrumentistServiceManager
         $instrumentist->addSiteMembership($membership);
 
         $this->em->persist($membership);
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userSiteAdded($actor, $instrumentist, (string) $membership->getSite()?->getName()));
         $this->em->flush();
 
         return $membership;
@@ -202,6 +206,7 @@ class InstrumentistServiceManager
         }
 
         $instrumentist->removeSiteMembership($membership);
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userSiteRemoved($actor, $instrumentist, (string) $membership->getSite()?->getName()));
         $this->em->remove($membership);
         $this->em->flush();
     }
@@ -213,6 +218,7 @@ class InstrumentistServiceManager
         }
 
         $instrumentist->setActive(false);
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userSuspended($actor, $instrumentist));
         $this->em->flush();
 
         return $instrumentist;
@@ -225,6 +231,7 @@ class InstrumentistServiceManager
         }
 
         $instrumentist->setActive(true);
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userReactivated($actor, $instrumentist));
         $this->em->flush();
 
         return $instrumentist;
@@ -260,5 +267,28 @@ class InstrumentistServiceManager
         }
 
         return sprintf('Mission #%d', (int) $mission->getId());
+    }
+
+    /** H5b (D-132) — the invitation was queued (H5a: traced delivery): its business audit, like the admin screen. */
+    public function invitationSent(User $user): void
+    {
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userInvitationSent($actor, $user));
+        $this->em->flush();
+    }
+
+    /**
+     * H5b (D-132) — these screens (instrumentist / surgeon management) wrote no UserAuditEvent,
+     * unlike the admin screen (UserAdministrationService): creation, suspension, reactivation
+     * and site affiliations happened silently. Same UserAuditEvent as the admin screen, mirrored
+     * into activity_event by H1. Optional dependencies for the hand-built unit-test instances.
+     *
+     * @param callable(UserAuditService, User): void $write
+     */
+    private function audit(callable $write): void
+    {
+        $actor = $this->security?->getUser();
+        if ($this->userAudit !== null && $actor instanceof User) {
+            $write($this->userAudit, $actor);
+        }
     }
 }

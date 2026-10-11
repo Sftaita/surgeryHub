@@ -98,6 +98,12 @@ final class NotificationTargetResolver
             }
         }
 
+        // H2 (D-127) — the instrumentist no longer holds this mission (the manager removed
+        // her): its detail screen is not hers anymore — send her to her planning instead.
+        if ($type === NotificationType::PLANNING_MISSION_RELEASED && $isInstrumentist) {
+            return '/app/i/planning';
+        }
+
         if ($mission !== null) {
             if ($isManager) {
                 return '/app/m/missions/' . $mission->getId();
@@ -117,6 +123,7 @@ final class NotificationTargetResolver
             NotificationType::PLANNING_DEPLOYED_SURGEON => '/app/s/planning',
             NotificationType::OPEN_MISSION_AVAILABLE => '/app/i/offers',
             NotificationType::PLANNING_ALERT => $isManager ? '/app/m/planning/v2' : null,
+            NotificationType::PLANNING_CHANGE_SUMMARY => $isInstrumentist ? '/app/i/planning' : ($isSurgeon ? '/app/s/planning' : null),
             NotificationType::PLANNING_RESENT_MANUAL => $isManager ? '/app/m/missions' : ($isInstrumentist ? '/app/i/planning' : ($isSurgeon ? '/app/s/planning' : null)),
             // Purement informatif ou sans cible connue aujourd'hui — jamais une route
             // devinée. Le frontend traite `null` comme non cliquable.

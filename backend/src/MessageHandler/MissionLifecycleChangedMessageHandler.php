@@ -4,23 +4,29 @@ namespace App\MessageHandler;
 
 use App\Entity\AuditEvent;
 use App\Entity\Mission;
-use App\Entity\NotificationEvent;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Enum\NotificationType;
-use App\Enum\PublicationChannel;
+use App\Notification\NotificationIntent;
+use App\Notification\EmailContent;
+use App\Notification\PushContent;
+use App\Notification\MissionCommunicationSpec;
+use App\Enum\MissionCommunicationSource;
+use App\Enum\NotificationEmailPolicy;
+use App\Enum\MissionType;
 use App\Message\MissionLifecycleChangedMessage;
+use App\Notification\MissionLifecycleNotificationFactory;
+use App\Notification\NotificationDispatcher;
+use App\Notification\OpenEpisode;
+use App\Notification\OpenMissionPoolNotifier;
+use App\Enum\OpenEpisodeCause;
+use App\Enum\OpenPoolExclusionReason;
 use App\Service\MissionEligibilityService;
-use App\Service\NotificationChannels;
-use App\Service\NotificationPreferenceResolver;
 use App\Service\NotificationTargetResolver;
-use App\Enum\OutboundNotificationStatus;
 use App\Repository\UserRepository;
 use App\Service\NotificationService;
-use App\Service\OutboundNotificationService;
-use App\Service\WebPushServiceInterface;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
@@ -31,6 +37,21 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
  * MissionPostDeployService is responsible for: validation, state mutation, AuditEvent, dispatch.
  * This handler is responsible for: every subsequent side-effect — notifications, and future
  * integrations (coverage, history projections, webhooks, Slack, analytics).
+ *
+ * H2 (D-128): every person-addressed notification of CLAIMED / RELEASED / REASSIGNED /
+ * CANCELLED goes through NotificationDispatcher — channels come from
+ * NotificationPreferenceResolver only (the email flag is now honoured), every channel gets
+ * its own traced OutboundNotification, idempotent per lifecycle episode. RELEASED also
+ * tells the instrumentist a manager removed (PLANNING_MISSION_RELEASED, D-127); CANCELLED
+ * tells the previously assigned instrumentist from the message snapshot. The pool fan-out
+ * (OPEN_MISSION_AVAILABLE), the room take-over offer and the D-125 dispatch cases are
+ * unchanged in H2 (H3 / H5a).
+ *
+ * H3 (D-129): RELEASED and ROOM_TAKEN_OVER solicit the pool ONLY through
+ * OpenMissionPoolNotifier (per-mission eligibility, contextual exclusion of the person a
+ * manager removed / of the person who got the personal take-over offer, preferences,
+ * idempotency per opening episode). An absence-driven release no longer sends
+ * SURGEON_POST_UNCOVERED (the absence recap informs the surgeon).
  *
  * Implemented in Batch 15E:
  *   CLAIMED  → SURGEON_POST_COVERED in-app + push notification to surgeon
@@ -82,15 +103,20 @@ final class MissionLifecycleChangedMessageHandler
 {
     public function __construct(
         private readonly EntityManagerInterface         $em,
-        private readonly NotificationPreferenceResolver $preferenceResolver,
-        private readonly WebPushServiceInterface        $webPushService,
         private readonly LoggerInterface                $logger,
         private readonly MissionEligibilityService      $eligibilityService,
         private readonly NotificationTargetResolver     $targetResolver,
-        // D-125 — push with email fallback (D-083) + manager recipients for the dispatch cases.
-        private readonly OutboundNotificationService    $outboundNotificationService,
+        // D-125 — email contents + manager recipients for the dispatch cases.
         private readonly NotificationService            $notificationService,
         private readonly UserRepository                 $userRepository,
+        // H2 (D-128) — CLAIMED / RELEASED / REASSIGNED / CANCELLED notifications go through
+        // the single dispatcher (channels from preferences, every outcome traced).
+        private readonly NotificationDispatcher         $dispatcher,
+        private readonly MissionLifecycleNotificationFactory $contentFactory,
+        // H3 (D-129) — the single pool entry point (RELEASED, ROOM_TAKEN_OVER).
+        private readonly OpenMissionPoolNotifier        $poolNotifier,
+        #[\Symfony\Component\DependencyInjection\Attribute\Autowire('%env(string:FRONTEND_URL)%')]
+        private readonly string                         $frontendUrl = '',
     ) {}
 
     public function __invoke(MissionLifecycleChangedMessage $message): void
@@ -208,8 +234,6 @@ final class MissionLifecycleChangedMessageHandler
             return;
         }
 
-        $channels = $this->resolveChannelsSafely($surgeon, NotificationType::SURGEON_POST_COVERED);
-
         $payload = [
             'missionId'         => $mission->getId(),
             'dayLabel'          => $mission->getStartAt()?->format('l'),
@@ -221,48 +245,11 @@ final class MissionLifecycleChangedMessageHandler
             'coveredAt'         => $message->occurredAt->format(\DateTimeInterface::ATOM),
         ];
 
-        if ($channels->inApp) {
-            try {
-                $this->createNotificationEvent($surgeon, $mission, NotificationType::SURGEON_POST_COVERED, $payload);
-                $this->em->flush();
-                $this->logger->info('MissionLifecycleChanged::CLAIMED: SURGEON_POST_COVERED inApp created', [
-                    'missionId' => $mission->getId(),
-                    'surgeonId' => $surgeon->getId(),
-                ]);
-            } catch (\Throwable $e) {
-                $this->logger->error('MissionLifecycleChanged::CLAIMED: inApp notification failed', [
-                    'missionId' => $message->missionId,
-                    'surgeonId' => $surgeon->getId(),
-                    'error'     => $e->getMessage(),
-                ]);
-            }
-        }
-
-        if ($channels->push) {
-            try {
-                $instrName = $message->payload['instrumentistName'] ?? 'Un instrumentiste';
-                $siteName  = $mission->getSite()?->getName() ?? '';
-                $this->webPushService->sendToUser(
-                    $surgeon,
-                    'Mission couverte',
-                    "{$instrName} a pris en charge votre mission à {$siteName}.",
-                    ['type' => 'MISSION_COVERED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::SURGEON_POST_COVERED, $mission, $surgeon)],
-                );
-                $this->logger->info('MissionLifecycleChanged::CLAIMED: push sent', [
-                    'missionId' => $mission->getId(),
-                    'surgeonId' => $surgeon->getId(),
-                ]);
-            } catch (\Throwable $e) {
-                $this->logger->error('MissionLifecycleChanged::CLAIMED: push notification failed', [
-                    'missionId' => $message->missionId,
-                    'surgeonId' => $surgeon->getId(),
-                    'error'     => $e->getMessage(),
-                ]);
-            }
-        }
+        $this->notify($surgeon, NotificationType::SURGEON_POST_COVERED, MissionLifecycleNotificationFactory::ROLE_SURGEON,
+            $mission, $payload, ['instrumentistName' => $payload['instrumentistName']], $message, 'CLAIMED');
     }
 
-    // ── RELEASED → SURGEON_POST_UNCOVERED + OPEN_MISSION_AVAILABLE ───────────
+    // ── RELEASED → SURGEON_POST_UNCOVERED + PLANNING_MISSION_RELEASED + OPEN_MISSION_AVAILABLE ──
 
     private function handleReleased(MissionLifecycleChangedMessage $message): void
     {
@@ -271,63 +258,55 @@ final class MissionLifecycleChangedMessageHandler
             return;
         }
 
+        // A missing surgeon only skips the surgeon's notice — never the pool (H3).
         $surgeon = $this->resolveSurgeon($mission, 'RELEASED');
-        if ($surgeon === null) {
-            return;
-        }
 
-        $channels = $this->resolveChannelsSafely($surgeon, NotificationType::SURGEON_POST_UNCOVERED);
-
+        $fromName = $message->payload['fromInstrumentistName'] ?? null;
         $payload = [
             'missionId'             => $mission->getId(),
             'dayLabel'              => $mission->getStartAt()?->format('l'),
+            'missionDate'           => $mission->getStartAt()?->format('d/m/Y'),
             'siteName'              => $mission->getSite()?->getName(),
             'periodLabel'           => $this->periodLabel($mission),
-            'fromInstrumentistName' => $message->payload['fromInstrumentistName'] ?? null,
+            'fromInstrumentistName' => $fromName,
             'releasedAt'            => $message->occurredAt->format(\DateTimeInterface::ATOM),
         ];
 
-        if ($channels->inApp) {
-            try {
-                $this->createNotificationEvent($surgeon, $mission, NotificationType::SURGEON_POST_UNCOVERED, $payload);
-                $this->em->flush();
-                $this->logger->info('MissionLifecycleChanged::RELEASED: SURGEON_POST_UNCOVERED inApp created', [
-                    'missionId' => $mission->getId(),
-                    'surgeonId' => $surgeon->getId(),
-                ]);
-            } catch (\Throwable $e) {
-                $this->logger->error('MissionLifecycleChanged::RELEASED: inApp notification failed', [
-                    'missionId' => $message->missionId,
-                    'surgeonId' => $surgeon->getId(),
-                    'error'     => $e->getMessage(),
-                ]);
-            }
+        $absenceDriven = ($message->payload['causedByAbsenceId'] ?? null) !== null;
+
+        // H3 (D-127) — for an instrumentist-absence release the surgeon is told by the
+        // absence recap (ABSENCE_SURGEON_MISSION_OPENED, AbsenceMissionsReactedMessageHandler):
+        // SURGEON_POST_UNCOVERED would be a second notification about the same event.
+        if (!$absenceDriven && $surgeon !== null) {
+            $this->notify($surgeon, NotificationType::SURGEON_POST_UNCOVERED, MissionLifecycleNotificationFactory::ROLE_SURGEON,
+                $mission, $payload, ['fromInstrumentistName' => $fromName], $message, 'RELEASED');
         }
 
-        if ($channels->push) {
-            try {
-                $siteName = $mission->getSite()?->getName() ?? '';
-                $this->webPushService->sendToUser(
-                    $surgeon,
-                    'Mission non couverte',
-                    "Votre mission à {$siteName} n'a plus d'instrumentiste.",
-                    ['type' => 'MISSION_UNCOVERED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::SURGEON_POST_UNCOVERED, $mission, $surgeon)],
-                );
-                $this->logger->info('MissionLifecycleChanged::RELEASED: push sent', [
-                    'missionId' => $mission->getId(),
-                    'surgeonId' => $surgeon->getId(),
-                ]);
-            } catch (\Throwable $e) {
-                $this->logger->error('MissionLifecycleChanged::RELEASED: push notification failed', [
-                    'missionId' => $message->missionId,
-                    'surgeonId' => $surgeon->getId(),
-                    'error'     => $e->getMessage(),
-                ]);
+        // H2 (D-127) — the instrumentist a manager deliberately removed is told her planning
+        // changed. Not for an absence-driven release: AbsenceMissionsReactedMessageHandler
+        // already sends the absent person her own recap (ABSENCE_INSTRUMENTIST_RELEASED).
+        $fromId   = $message->payload['fromInstrumentistId'] ?? null;
+        $excluded = [];
+        if ($fromId !== null && !$absenceDriven) {
+            $removed = $this->em->find(User::class, (int) $fromId);
+            if ($removed !== null) {
+                $this->notify($removed, NotificationType::PLANNING_MISSION_RELEASED, MissionLifecycleNotificationFactory::ROLE_INSTRUMENTIST,
+                    $mission, $payload + ['fromInstrumentistId' => (int) $fromId], [], $message, 'RELEASED');
             }
+            // …and is never offered back the very mission she was just removed from, for
+            // this opening episode (she is a candidate again at the next one).
+            $excluded[(int) $fromId] = OpenPoolExclusionReason::REMOVED_BY_MANAGER;
         }
 
-        // Notify eligible instrumentists that the mission is back in the pool (RC1-B).
-        $this->sendOpenMissionAvailableNotifications($mission, $message);
+        // H3 (D-129) — the pool, through the single entry point. An absent instrumentist is
+        // not excluded here: MissionEligibilityService already rules her out (ABSENT).
+        $this->solicitPool(OpenEpisode::forTransition(
+            $mission->getId(),
+            $absenceDriven ? OpenEpisodeCause::INSTRUMENTIST_ABSENCE : OpenEpisodeCause::RELEASED,
+            $message->occurredAt,
+            $excluded,
+            $message->actorId,
+        ), 'RELEASED');
     }
 
     // ── REASSIGNED → PLANNING_MISSION_REASSIGNED (old/new instr) ─────────────
@@ -358,40 +337,8 @@ final class MissionLifecycleChangedMessageHandler
         if ($fromId !== null) {
             $fromInstrumentist = $this->em->find(User::class, $fromId);
             if ($fromInstrumentist !== null) {
-                $ch = $this->resolveChannelsSafely($fromInstrumentist, NotificationType::PLANNING_MISSION_REASSIGNED);
-                if ($ch->inApp) {
-                    try {
-                        $this->createNotificationEvent($fromInstrumentist, $mission, NotificationType::PLANNING_MISSION_REASSIGNED, $payload);
-                        $this->em->flush();
-                        $this->logger->info('MissionLifecycleChanged::REASSIGNED: inApp sent to old instrumentist', [
-                            'missionId' => $mission->getId(),
-                            'userId'    => $fromInstrumentist->getId(),
-                        ]);
-                    } catch (\Throwable $e) {
-                        $this->logger->error('MissionLifecycleChanged::REASSIGNED: old instr inApp failed', [
-                            'missionId' => $message->missionId,
-                            'userId'    => $fromInstrumentist->getId(),
-                            'error'     => $e->getMessage(),
-                        ]);
-                    }
-                }
-                if ($ch->push) {
-                    try {
-                        $siteName = $mission->getSite()?->getName() ?? '';
-                        $this->webPushService->sendToUser(
-                            $fromInstrumentist,
-                            'Mission réassignée',
-                            "Vous avez été retiré d'une mission à {$siteName}.",
-                            ['type' => 'MISSION_REASSIGNED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::PLANNING_MISSION_REASSIGNED, $mission, $fromInstrumentist)],
-                        );
-                    } catch (\Throwable $e) {
-                        $this->logger->error('MissionLifecycleChanged::REASSIGNED: old instr push failed', [
-                            'missionId' => $message->missionId,
-                            'userId'    => $fromInstrumentist->getId(),
-                            'error'     => $e->getMessage(),
-                        ]);
-                    }
-                }
+                $this->notify($fromInstrumentist, NotificationType::PLANNING_MISSION_REASSIGNED, MissionLifecycleNotificationFactory::ROLE_INSTRUMENTIST,
+                    $mission, $payload, [], $message, 'REASSIGNED');
             }
         }
 
@@ -407,40 +354,8 @@ final class MissionLifecycleChangedMessageHandler
         if ($toId !== null && !$isAbsenceDrivenReassignment) {
             $toInstrumentist = $this->em->find(User::class, $toId);
             if ($toInstrumentist !== null) {
-                $ch = $this->resolveChannelsSafely($toInstrumentist, NotificationType::PLANNING_MISSION_REASSIGNED);
-                if ($ch->inApp) {
-                    try {
-                        $this->createNotificationEvent($toInstrumentist, $mission, NotificationType::PLANNING_MISSION_REASSIGNED, $payload);
-                        $this->em->flush();
-                        $this->logger->info('MissionLifecycleChanged::REASSIGNED: inApp sent to new instrumentist', [
-                            'missionId' => $mission->getId(),
-                            'userId'    => $toInstrumentist->getId(),
-                        ]);
-                    } catch (\Throwable $e) {
-                        $this->logger->error('MissionLifecycleChanged::REASSIGNED: new instr inApp failed', [
-                            'missionId' => $message->missionId,
-                            'userId'    => $toInstrumentist->getId(),
-                            'error'     => $e->getMessage(),
-                        ]);
-                    }
-                }
-                if ($ch->push) {
-                    try {
-                        $siteName = $mission->getSite()?->getName() ?? '';
-                        $this->webPushService->sendToUser(
-                            $toInstrumentist,
-                            'Mission assignée',
-                            "Vous avez été assigné à une mission à {$siteName}.",
-                            ['type' => 'MISSION_REASSIGNED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::PLANNING_MISSION_REASSIGNED, $mission, $toInstrumentist)],
-                        );
-                    } catch (\Throwable $e) {
-                        $this->logger->error('MissionLifecycleChanged::REASSIGNED: new instr push failed', [
-                            'missionId' => $message->missionId,
-                            'userId'    => $toInstrumentist->getId(),
-                            'error'     => $e->getMessage(),
-                        ]);
-                    }
-                }
+                $this->notify($toInstrumentist, NotificationType::PLANNING_MISSION_REASSIGNED, MissionLifecycleNotificationFactory::ROLE_NEW_INSTRUMENTIST,
+                    $mission, $payload, [], $message, 'REASSIGNED');
             }
         }
 
@@ -451,7 +366,6 @@ final class MissionLifecycleChangedMessageHandler
         if ($fromId === null) {
             $surgeon = $this->resolveSurgeon($mission, 'REASSIGNED');
             if ($surgeon !== null) {
-                $ch = $this->resolveChannelsSafely($surgeon, NotificationType::SURGEON_POST_COVERED);
                 $surgeonPayload = [
                     'missionId'         => $mission->getId(),
                     'dayLabel'          => $mission->getStartAt()?->format('l'),
@@ -462,40 +376,8 @@ final class MissionLifecycleChangedMessageHandler
                     'instrumentistName' => $message->payload['toInstrumentistName'] ?? null,
                     'coveredAt'         => $message->occurredAt->format(\DateTimeInterface::ATOM),
                 ];
-                if ($ch->inApp) {
-                    try {
-                        $this->createNotificationEvent($surgeon, $mission, NotificationType::SURGEON_POST_COVERED, $surgeonPayload);
-                        $this->em->flush();
-                        $this->logger->info('MissionLifecycleChanged::REASSIGNED: SURGEON_POST_COVERED inApp created', [
-                            'missionId' => $mission->getId(),
-                            'surgeonId' => $surgeon->getId(),
-                        ]);
-                    } catch (\Throwable $e) {
-                        $this->logger->error('MissionLifecycleChanged::REASSIGNED: surgeon inApp failed', [
-                            'missionId' => $message->missionId,
-                            'surgeonId' => $surgeon->getId(),
-                            'error'     => $e->getMessage(),
-                        ]);
-                    }
-                }
-                if ($ch->push) {
-                    try {
-                        $instrName = $message->payload['toInstrumentistName'] ?? 'Un instrumentiste';
-                        $siteName  = $mission->getSite()?->getName() ?? '';
-                        $this->webPushService->sendToUser(
-                            $surgeon,
-                            'Mission couverte',
-                            "{$instrName} a pris en charge votre mission à {$siteName}.",
-                            ['type' => 'MISSION_COVERED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::SURGEON_POST_COVERED, $mission, $surgeon)],
-                        );
-                    } catch (\Throwable $e) {
-                        $this->logger->error('MissionLifecycleChanged::REASSIGNED: surgeon push failed', [
-                            'missionId' => $message->missionId,
-                            'surgeonId' => $surgeon->getId(),
-                            'error'     => $e->getMessage(),
-                        ]);
-                    }
-                }
+                $this->notify($surgeon, NotificationType::SURGEON_POST_COVERED, MissionLifecycleNotificationFactory::ROLE_SURGEON,
+                    $mission, $surgeonPayload, ['instrumentistName' => $surgeonPayload['instrumentistName']], $message, 'REASSIGNED');
             }
         }
     }
@@ -509,12 +391,14 @@ final class MissionLifecycleChangedMessageHandler
             return;
         }
 
+        $reason  = $message->payload['reason'] ?? null;
         $payload = [
             'missionId'   => $mission->getId(),
             'dayLabel'    => $mission->getStartAt()?->format('l'),
+            'missionDate' => $mission->getStartAt()?->format('d/m/Y'),
             'siteName'    => $mission->getSite()?->getName(),
             'periodLabel' => $this->periodLabel($mission),
-            'reason'      => $message->payload['reason'] ?? null,
+            'reason'      => $reason,
             'cancelledAt' => $message->occurredAt->format(\DateTimeInterface::ATOM),
         ];
 
@@ -525,90 +409,72 @@ final class MissionLifecycleChangedMessageHandler
         // ── Surgeon ────────────────────────────────────────────────────────────
         $surgeon = $this->resolveSurgeon($mission, 'CANCELLED');
         if ($surgeon !== null && !($isRoomRelease && $surgeon->getId() === $message->actorId)) {
-            $ch = $this->resolveChannelsSafely($surgeon, NotificationType::PLANNING_MISSION_CANCELLED);
-            if ($ch->inApp) {
-                try {
-                    $this->createNotificationEvent($surgeon, $mission, NotificationType::PLANNING_MISSION_CANCELLED, $payload);
-                    $this->em->flush();
-                    $this->logger->info('MissionLifecycleChanged::CANCELLED: PLANNING_MISSION_CANCELLED inApp created for surgeon', [
-                        'missionId' => $mission->getId(),
-                        'surgeonId' => $surgeon->getId(),
-                    ]);
-                } catch (\Throwable $e) {
-                    $this->logger->error('MissionLifecycleChanged::CANCELLED: surgeon inApp failed', [
-                        'missionId' => $message->missionId,
-                        'surgeonId' => $surgeon->getId(),
-                        'error'     => $e->getMessage(),
-                    ]);
-                }
-            }
-            if ($ch->push) {
-                try {
-                    $siteName = $mission->getSite()?->getName() ?? '';
-                    $this->webPushService->sendToUser(
-                        $surgeon,
-                        'Mission annulée',
-                        "Une mission à {$siteName} a été annulée.",
-                        ['type' => 'MISSION_CANCELLED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::PLANNING_MISSION_CANCELLED, $mission, $surgeon)],
-                    );
-                } catch (\Throwable $e) {
-                    $this->logger->error('MissionLifecycleChanged::CANCELLED: surgeon push failed', [
-                        'missionId' => $message->missionId,
-                        'surgeonId' => $surgeon->getId(),
-                        'error'     => $e->getMessage(),
-                    ]);
-                }
-            }
+            $this->notify($surgeon, NotificationType::PLANNING_MISSION_CANCELLED, MissionLifecycleNotificationFactory::ROLE_SURGEON,
+                $mission, $payload, ['reason' => $reason], $message, 'CANCELLED');
         }
 
-        // ── Instrumentist (defensive — cancel() clears the instrumentist as part of the
-        //    transition regardless of source status, so getInstrumentist() is null here in
-        //    every current code path; kept as a safety net in case a future caller changes
-        //    that) ─────────────────────────────────────────────────────────────────────────
-        $instrumentist = $mission->getInstrumentist();
-        // D-124 — room release: cancel() cleared the FK before this handler runs, so the
-        // instrumentist who had claimed the taken-over room's Mission is resolved from the
-        // payload snapshot instead. Scoped to room releases only — the absence-driven cancel
-        // paths notify that person through AbsenceMissionsReactedMessage (never twice).
-        if ($instrumentist === null && $isRoomRelease && ($message->payload['fromInstrumentistId'] ?? null) !== null) {
-            $instrumentist = $this->em->find(User::class, (int) $message->payload['fromInstrumentistId']);
+        // ── Previously assigned instrumentist ──────────────────────────────────
+        // H2 (D-128) — cancel() clears the instrumentist FK before this handler runs, so the
+        // person is resolved from the pre-mutation snapshot carried by the message
+        // (fromInstrumentistId) — for every cancellation (manager cancel, room release…), not
+        // only room releases as before. Absence-driven cancellations are excluded: the
+        // instrumentist gets AbsenceMissionsReactedMessageHandler's richer recap
+        // (ABSENCE_MISSION_CANCELLED / ABSENCE_INSTRUMENTIST_REASSIGNED) — never twice.
+        $fromId = $message->payload['fromInstrumentistId'] ?? null;
+        $instrumentist = $mission->getInstrumentist()
+            ?? ($fromId !== null ? $this->em->find(User::class, (int) $fromId) : null);
+        if ($instrumentist !== null && ($message->payload['causedByAbsenceId'] ?? null) === null) {
+            $this->notify($instrumentist, NotificationType::PLANNING_MISSION_CANCELLED, MissionLifecycleNotificationFactory::ROLE_INSTRUMENTIST,
+                $mission, $payload, ['reason' => $reason], $message, 'CANCELLED');
         }
-        if ($instrumentist !== null) {
-            $ch = $this->resolveChannelsSafely($instrumentist, NotificationType::PLANNING_MISSION_CANCELLED);
-            if ($ch->inApp) {
-                try {
-                    $this->createNotificationEvent($instrumentist, $mission, NotificationType::PLANNING_MISSION_CANCELLED, $payload);
-                    $this->em->flush();
-                    $this->logger->info('MissionLifecycleChanged::CANCELLED: PLANNING_MISSION_CANCELLED inApp created for instrumentist', [
-                        'missionId'       => $mission->getId(),
-                        'instrumentistId' => $instrumentist->getId(),
-                    ]);
-                } catch (\Throwable $e) {
-                    $this->logger->error('MissionLifecycleChanged::CANCELLED: instrumentist inApp failed', [
-                        'missionId'       => $message->missionId,
-                        'instrumentistId' => $instrumentist->getId(),
-                        'error'           => $e->getMessage(),
-                    ]);
-                }
-            }
-            if ($ch->push) {
-                try {
-                    $siteName = $mission->getSite()?->getName() ?? '';
-                    $this->webPushService->sendToUser(
-                        $instrumentist,
-                        'Mission annulée',
-                        "Une mission à {$siteName} a été annulée.",
-                        ['type' => 'MISSION_CANCELLED', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::PLANNING_MISSION_CANCELLED, $mission, $instrumentist)],
-                    );
-                } catch (\Throwable $e) {
-                    $this->logger->error('MissionLifecycleChanged::CANCELLED: instrumentist push failed', [
-                        'missionId'       => $message->missionId,
-                        'instrumentistId' => $instrumentist->getId(),
-                        'error'           => $e->getMessage(),
-                    ]);
-                }
-            }
+    }
+
+    /**
+     * H2 (D-128) — one recipient, one lifecycle notification, through the single
+     * NotificationDispatcher (preferences decide every channel; each channel traced).
+     * Failure isolation per recipient: an error never prevents the next recipient.
+     *
+     * @param array<string, mixed> $payload
+     * @param array<string, mixed> $facts
+     */
+    private function notify(
+        User $recipient,
+        NotificationType $type,
+        string $role,
+        Mission $mission,
+        array $payload,
+        array $facts,
+        MissionLifecycleChangedMessage $message,
+        string $context,
+    ): void {
+        // H4 (D-130, final rule) — never tell the absent person about the consequences of
+        // her own absence (her mission cancelled / opened because of it).
+        if (($message->payload['absentUserId'] ?? null) !== null && (int) $message->payload['absentUserId'] === $recipient->getId()) {
+            $this->logger->info("MissionLifecycleChanged::{$context}: {$type->value} not sent to the absent person herself", [
+                'missionId' => $mission->getId(), 'userId' => $recipient->getId(),
+            ]);
+
+            return;
         }
+        try {
+            $this->dispatcher->dispatch($this->contentFactory->intent(
+                $recipient, $type, $role, $mission, $payload, $facts, self::episodeRef($message, $role),
+            ));
+            $this->logger->info("MissionLifecycleChanged::{$context}: {$type->value} dispatched", [
+                'missionId' => $mission->getId(), 'userId' => $recipient->getId(),
+            ]);
+        } catch (\Throwable $e) {
+            $this->logger->error("MissionLifecycleChanged::{$context}: {$type->value} dispatch failed", [
+                'missionId' => $mission->getId(), 'userId' => $recipient->getId(), 'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /** Stable across Messenger retries of the same message (payload + occurredAt never change). */
+    private static function episodeRef(MissionLifecycleChangedMessage $message, string $role): string
+    {
+        return sprintf('lifecycle:%s:%d:%s:%s', $message->changeType->value, $message->missionId,
+            $message->occurredAt->format('Y-m-d\TH:i:s.uP'), $role);
     }
 
     // ── ROOM_TAKEN_OVER → contextual offer + pool (D-124) ────────────────────
@@ -640,11 +506,13 @@ final class MissionLifecycleChangedMessageHandler
         $initial = $initialId !== null ? $this->em->find(User::class, (int) $initialId) : null;
 
         if ($initial !== null) {
-            $excluded[] = $initial->getId(); // never both the contextual offer and the generic one
             $eligibility = $this->eligibilityService->evaluate($mission, $initial);
 
             if ($eligibility->eligible) {
                 $this->sendRoomTakeoverOffer($mission, $initial, $message);
+                // Never both the contextual offer and the generic one. (Ineligible: no offer
+                // and no exclusion needed — the pool's eligibility rules her out anyway.)
+                $excluded[] = $initial->getId();
             } else {
                 $this->logger->info('MissionLifecycleChanged::ROOM_TAKEN_OVER: initial instrumentist ineligible — no offer', [
                     'missionId'       => $mission->getId(),
@@ -654,141 +522,74 @@ final class MissionLifecycleChangedMessageHandler
             }
         }
 
-        $this->sendOpenMissionAvailableNotifications($mission, $message, $excluded);
+        // H3 (D-129) — same pool pipeline as every other opening; the initial instrumentist
+        // who received the contextual offer is excluded from the generic one (never both).
+        $this->solicitPool(OpenEpisode::forTransition(
+            $mission->getId(),
+            OpenEpisodeCause::ROOM_TAKEN_OVER,
+            $message->occurredAt,
+            array_fill_keys($excluded, OpenPoolExclusionReason::PERSONAL_OFFER_SENT),
+            $message->actorId,
+        ), 'ROOM_TAKEN_OVER');
     }
-
-    private function sendRoomTakeoverOffer(Mission $mission, User $instrumentist, MissionLifecycleChangedMessage $message): void
-    {
-        $channels = $this->resolveChannelsSafely($instrumentist, NotificationType::ROOM_TAKEOVER_MISSION_OFFER);
-        $siteName = $mission->getSite()?->getName() ?? '';
-        $takenBy = $message->payload['takenByName'] ?? null;
-        $original = $message->payload['originalSurgeonName'] ?? null;
-
-        $payload = [
-            'missionId'           => $mission->getId(),
-            'roomSlotId'          => $message->payload['roomSlotId'] ?? null,
-            'dayLabel'            => $mission->getStartAt()?->format('l'),
-            'missionDate'         => $mission->getStartAt()?->format('d/m/Y'),
-            'startTime'           => $mission->getStartAt()?->format('H:i'),
-            'endTime'             => $mission->getEndAt()?->format('H:i'),
-            'siteName'            => $siteName,
-            'periodLabel'         => $this->periodLabel($mission),
-            'takenByName'         => $takenBy,
-            'originalSurgeonName' => $original,
-        ];
-
-        if ($channels->inApp) {
-            try {
-                $this->createNotificationEvent($instrumentist, $mission, NotificationType::ROOM_TAKEOVER_MISSION_OFFER, $payload);
-                $this->em->flush();
-                $this->logger->info('MissionLifecycleChanged::ROOM_TAKEN_OVER: ROOM_TAKEOVER_MISSION_OFFER inApp created', [
-                    'missionId'       => $mission->getId(),
-                    'instrumentistId' => $instrumentist->getId(),
-                ]);
-            } catch (\Throwable $e) {
-                $this->logger->error('MissionLifecycleChanged::ROOM_TAKEN_OVER: offer inApp failed', [
-                    'missionId'       => $message->missionId,
-                    'instrumentistId' => $instrumentist->getId(),
-                    'error'           => $e->getMessage(),
-                ]);
-            }
-        }
-
-        if ($channels->push) {
-            try {
-                $date = $mission->getStartAt()?->format('d/m') ?? '';
-                $this->webPushService->sendToUser(
-                    $instrumentist,
-                    'Salle reprise — mission disponible',
-                    sprintf('%s reprend la salle de %s le %s à %s. Une mission est disponible.', $takenBy ?? 'Un chirurgien', $original ?? 'un confrère', $date, $siteName),
-                    ['type' => 'ROOM_TAKEOVER_MISSION_OFFER', 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::ROOM_TAKEOVER_MISSION_OFFER, $mission, $instrumentist)],
-                );
-            } catch (\Throwable $e) {
-                $this->logger->error('MissionLifecycleChanged::ROOM_TAKEN_OVER: offer push failed', [
-                    'missionId'       => $message->missionId,
-                    'instrumentistId' => $instrumentist->getId(),
-                    'error'           => $e->getMessage(),
-                ]);
-            }
-        }
-    }
-
-    // ── Pool notifications (RELEASED) ────────────────────────────────────────
 
     /**
-     * Sends OPEN_MISSION_AVAILABLE to instrumentists eligible for the newly-reopened mission.
-     * Reuses MissionEligibilityService::findEligible() — the exact same model as deploy.
-     * Push is not gated through preferences (consistent with deploy handler behavior).
-     *
-     * @param list<int> $excludeUserIds D-124 — recipients already sent a more specific notice
+     * D-124 offer to the initially planned instrumentist. H5b (D-132) — through
+     * NotificationDispatcher (in-app + push per preferences, no email content), every channel
+     * traced, idempotent per takeover: formerly an in-app row and a raw push, both untraced.
+     * The business rule of the offer itself is unchanged.
      */
-    private function sendOpenMissionAvailableNotifications(Mission $mission, MissionLifecycleChangedMessage $message, array $excludeUserIds = []): void
+    private function sendRoomTakeoverOffer(Mission $mission, User $instrumentist, MissionLifecycleChangedMessage $message): void
+    {
+        $siteName = $mission->getSite()?->getName() ?? '';
+        $takenBy  = $message->payload['takenByName'] ?? null;
+        $original = $message->payload['originalSurgeonName'] ?? null;
+        $type     = NotificationType::ROOM_TAKEOVER_MISSION_OFFER;
+
+        try {
+            $this->dispatcher->dispatch(new NotificationIntent(
+                recipient: $instrumentist,
+                type: $type,
+                inAppPayload: [
+                    'missionId'           => $mission->getId(),
+                    'roomSlotId'          => $message->payload['roomSlotId'] ?? null,
+                    'dayLabel'            => $mission->getStartAt()?->format('l'),
+                    'missionDate'         => $mission->getStartAt()?->format('d/m/Y'),
+                    'startTime'           => $mission->getStartAt()?->format('H:i'),
+                    'endTime'             => $mission->getEndAt()?->format('H:i'),
+                    'siteName'            => $siteName,
+                    'periodLabel'         => $this->periodLabel($mission),
+                    'takenByName'         => $takenBy,
+                    'originalSurgeonName' => $original,
+                ],
+                mission: $mission,
+                push: new PushContent(
+                    'Salle reprise — mission disponible',
+                    sprintf('%s reprend la salle de %s le %s à %s. Une mission est disponible.', $takenBy ?? 'Un chirurgien', $original ?? 'un confrère', $mission->getStartAt()?->format('d/m') ?? '', $siteName),
+                    ['type' => $type->value, 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve($type, $mission, $instrumentist)],
+                ),
+                episodeRef: sprintf('room_takeover:%d:%s', (int) $mission->getId(), (string) ($message->payload['roomSlotId'] ?? $message->occurredAt->format('Y-m-d\TH:i:s'))),
+            ));
+            $this->logger->info('MissionLifecycleChanged::ROOM_TAKEN_OVER: ROOM_TAKEOVER_MISSION_OFFER dispatched', [
+                'missionId' => $mission->getId(), 'instrumentistId' => $instrumentist->getId(),
+            ]);
+        } catch (\Throwable $e) {
+            $this->logger->error('MissionLifecycleChanged::ROOM_TAKEN_OVER: offer dispatch failed', [
+                'missionId' => $message->missionId, 'instrumentistId' => $instrumentist->getId(), 'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    // ── Pool (H3, D-129) ─────────────────────────────────────────────────────
+
+    /** Failure isolation: a pool failure never undoes the person-addressed notifications above. */
+    private function solicitPool(OpenEpisode $episode, string $context): void
     {
         try {
-            $eligibleBySiteId = $this->eligibilityService->findEligible([$mission]);
+            $this->poolNotifier->notify($episode);
         } catch (\Throwable $e) {
-            $this->logger->error('MissionLifecycleChanged::RELEASED: eligibility query failed', [
-                'missionId' => $message->missionId,
-                'error'     => $e->getMessage(),
-            ]);
-            return;
-        }
-
-        $siteId        = $mission->getSite()?->getId();
-        $eligibleUsers = array_values(array_filter(
-            $eligibleBySiteId[$siteId] ?? [],
-            static fn (User $u) => !in_array($u->getId(), $excludeUserIds, true),
-        ));
-
-        if (empty($eligibleUsers)) {
-            $this->logger->info('MissionLifecycleChanged::RELEASED: no eligible instrumentists for pool notification', [
-                'missionId' => $mission->getId(),
-                'siteId'    => $siteId,
-            ]);
-            return;
-        }
-
-        $siteName    = $mission->getSite()?->getName() ?? '';
-        $periodLabel = $this->periodLabel($mission);
-
-        foreach ($eligibleUsers as $instrumentist) {
-            $ch = $this->resolveChannelsSafely($instrumentist, NotificationType::OPEN_MISSION_AVAILABLE);
-            if ($ch->inApp) {
-                try {
-                    $this->createNotificationEvent($instrumentist, $mission, NotificationType::OPEN_MISSION_AVAILABLE, [
-                        'openMissionIds' => [$mission->getId()],
-                        'missionCount'   => 1,
-                        'siteName'       => $siteName,
-                        'periodLabel'    => $periodLabel,
-                        'releasedAt'     => $message->occurredAt->format(\DateTimeInterface::ATOM),
-                    ]);
-                    $this->em->flush();
-                    $this->logger->info('MissionLifecycleChanged::RELEASED: OPEN_MISSION_AVAILABLE inApp created', [
-                        'missionId'       => $mission->getId(),
-                        'instrumentistId' => $instrumentist->getId(),
-                    ]);
-                } catch (\Throwable $e) {
-                    $this->logger->error('MissionLifecycleChanged::RELEASED: pool inApp failed', [
-                        'missionId'       => $message->missionId,
-                        'instrumentistId' => $instrumentist->getId(),
-                        'error'           => $e->getMessage(),
-                    ]);
-                }
-            }
-        }
-
-        // Push to all eligible users in one batch (not preference-gated — mirrors deploy handler).
-        try {
-            $this->webPushService->sendToUsers(
-                $eligibleUsers,
-                'Nouvelle mission disponible',
-                "1 nouvelle mission disponible à {$siteName}.",
-                ['type' => 'PLANNING_OPEN_MISSIONS_AVAILABLE', 'missionId' => $mission->getId()],
-            );
-        } catch (\Throwable $e) {
-            $this->logger->error('MissionLifecycleChanged::RELEASED: pool push failed', [
-                'missionId' => $message->missionId,
-                'error'     => $e->getMessage(),
+            $this->logger->error("MissionLifecycleChanged::{$context}: pool solicitation failed", [
+                'missionId' => $episode->missionId, 'episodeRef' => $episode->episodeRef, 'error' => $e->getMessage(),
             ]);
         }
     }
@@ -820,14 +621,26 @@ final class MissionLifecycleChangedMessageHandler
         $siteName = $mission->getSite()?->getName() ?? '';
         $date     = $mission->getStartAt()?->format('d/m') ?? '';
 
-        $this->notifyPersonally(
-            $target, $mission, NotificationType::MISSION_OFFERED,
-            $this->dispatchPayload($mission, $message),
-            'Mission proposée',
-            "Le manager vous propose une mission le {$date} à {$siteName}. Acceptez-la ou refusez-la depuis vos offres.",
-            fn ($fallbackOf, $reason) => $this->notificationService->missionOfferedNotifyInstrumentist($mission, $target, $fallbackOf, $reason),
-            'OFFERED',
-        );
+        // H5a — through the dispatcher: in-app, push first, email fallback (D-083 policy
+        // unchanged), every channel traced, idempotent per request.
+        try {
+            $this->dispatcher->dispatch(new NotificationIntent(
+                recipient: $target,
+                type: NotificationType::MISSION_OFFERED,
+                inAppPayload: $this->dispatchPayload($mission, $message),
+                mission: $mission,
+                email: $this->notificationService->missionOfferedEmail($mission, $target),
+                push: new PushContent('Mission proposée',
+                    "Le manager vous propose une mission le {$date} à {$siteName}. Acceptez-la ou refusez-la depuis vos offres.",
+                    ['type' => NotificationType::MISSION_OFFERED->value, 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve(NotificationType::MISSION_OFFERED, $mission, $target)]),
+                episodeRef: 'lifecycle:OFFERED:' . $mission->getId() . ':' . $message->occurredAt->format('Y-m-d\TH:i:s.uP'),
+                emailPolicy: NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT,
+            ));
+        } catch (\Throwable $e) {
+            $this->logger->error('MissionLifecycleChanged::OFFERED: dispatch failed', [
+                'missionId' => $mission->getId(), 'userId' => $target->getId(), 'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -844,17 +657,43 @@ final class MissionLifecycleChangedMessageHandler
 
         $instrumentist = $mission->getInstrumentist();
         if ($instrumentist !== null && $instrumentist->getId() === ($message->payload['instrumentistId'] ?? null)) {
+            // H4 (D-130) — through the dispatcher (same push-first / email-fallback policy as
+            // before, D-083), so that a channel reaching her makes the mission communicated
+            // (DIRECT_ASSIGN) — formerly an untraceable push + fallback email.
             $siteName = $mission->getSite()?->getName() ?? '';
-            $date     = $mission->getStartAt()?->format('d/m') ?? '';
-
-            $this->notifyPersonally(
-                $instrumentist, $mission, NotificationType::MISSION_ASSIGNED_DIRECTLY,
-                $this->dispatchPayload($mission, $message),
-                'Mission attribuée',
-                "Une nouvelle mission vous a été attribuée le {$date} à {$siteName}. Elle est déjà confirmée, aucune action n'est requise.",
-                fn ($fallbackOf, $reason) => $this->notificationService->missionAssignedDirectlyNotifyInstrumentist($mission, $instrumentist, $fallbackOf, $reason),
-                'ASSIGNED_DIRECTLY',
-            );
+            $surgeon  = $mission->getSurgeon();
+            $path     = $this->targetResolver->resolve(NotificationType::MISSION_ASSIGNED_DIRECTLY, $mission, $instrumentist);
+            try {
+                $this->dispatcher->dispatch(new NotificationIntent(
+                    recipient: $instrumentist,
+                    type: NotificationType::MISSION_ASSIGNED_DIRECTLY,
+                    inAppPayload: $this->dispatchPayload($mission, $message),
+                    mission: $mission,
+                    email: new EmailContent('SurgicalHub — Mission attribuée (confirmée)', 'emails/mission_assigned_directly.html.twig', [
+                        'greeting'    => $this->notificationService->greetingFor($instrumentist),
+                        'dateLabel'   => $mission->getStartAt()?->format('d/m/Y'),
+                        'timeLabel'   => $mission->getStartAt() !== null && $mission->getEndAt() !== null
+                            ? $mission->getStartAt()->format('H:i') . ' – ' . $mission->getEndAt()->format('H:i') : null,
+                        'siteName'    => $siteName,
+                        'typeLabel'   => $mission->getType() === MissionType::CONSULTATION ? 'Consultation' : 'Bloc opératoire',
+                        'surgeonName' => $surgeon !== null ? trim(($surgeon->getFirstname() ?? '') . ' ' . ($surgeon->getLastname() ?? '')) : null,
+                        'missionUrl'  => $path !== null ? rtrim($this->frontendUrl, '/') . $path : null,
+                        'notificationPreferencesUrl' => $this->notificationService->notificationPreferencesUrl($instrumentist),
+                    ]),
+                    push: new PushContent('Mission attribuée',
+                        sprintf("Une nouvelle mission vous a été attribuée le %s à %s. Elle est déjà confirmée, aucune action n'est requise.", $mission->getStartAt()?->format('d/m') ?? '', $siteName),
+                        ['type' => NotificationType::MISSION_ASSIGNED_DIRECTLY->value, 'missionId' => $mission->getId(), 'url' => $path]),
+                    episodeRef: 'lifecycle:ASSIGNED_DIRECTLY:' . $mission->getId() . ':' . $message->occurredAt->format('Y-m-d\TH:i:s.uP'),
+                    emailPolicy: NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT,
+                    communicates: new MissionCommunicationSpec(
+                        MissionCommunicationSource::DIRECT_ASSIGN, MissionCommunicationSpec::ROLE_INSTRUMENTIST, [(int) $mission->getId()],
+                    ),
+                ));
+            } catch (\Throwable $e) {
+                $this->logger->error('MissionLifecycleChanged::ASSIGNED_DIRECTLY: dispatch failed', [
+                    'missionId' => $mission->getId(), 'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         $this->handleClaimed($message);
@@ -881,26 +720,22 @@ final class MissionLifecycleChangedMessageHandler
             && array_intersect(['ROLE_MANAGER', 'ROLE_ADMIN'], $offeredBy->getRoles()) !== [];
         $recipients = $isManager ? [$offeredBy] : $this->userRepository->findManagersAndAdmins(true);
 
+        // H5a — through the dispatcher (in-app + email per preferences, no push — as before),
+        // every channel traced, idempotent per refusal; failure isolated per manager.
         foreach ($recipients as $manager) {
-            $channels = $this->resolveChannelsSafely($manager, NotificationType::MISSION_OFFER_DECLINED);
-            if ($channels->inApp) {
-                try {
-                    $this->createNotificationEvent($manager, $mission, NotificationType::MISSION_OFFER_DECLINED, $payload);
-                    $this->em->flush();
-                } catch (\Throwable $e) {
-                    $this->logger->error('MissionLifecycleChanged::OFFER_DECLINED: inApp failed', [
-                        'missionId' => $mission->getId(), 'userId' => $manager->getId(), 'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-            if ($channels->email) {
-                try {
-                    $this->notificationService->missionOfferDeclinedNotifyManager($mission, $manager, $name, $reason);
-                } catch (\Throwable $e) {
-                    $this->logger->error('MissionLifecycleChanged::OFFER_DECLINED: email failed', [
-                        'missionId' => $mission->getId(), 'userId' => $manager->getId(), 'error' => $e->getMessage(),
-                    ]);
-                }
+            try {
+                $this->dispatcher->dispatch(new NotificationIntent(
+                    recipient: $manager,
+                    type: NotificationType::MISSION_OFFER_DECLINED,
+                    inAppPayload: $payload,
+                    mission: $mission,
+                    email: $this->notificationService->missionOfferDeclinedEmail($mission, $manager, $name, $reason),
+                    episodeRef: 'lifecycle:OFFER_DECLINED:' . $mission->getId() . ':' . $message->occurredAt->format('Y-m-d\TH:i:s.uP'),
+                ));
+            } catch (\Throwable $e) {
+                $this->logger->error('MissionLifecycleChanged::OFFER_DECLINED: dispatch failed', [
+                    'missionId' => $mission->getId(), 'userId' => $manager->getId(), 'error' => $e->getMessage(),
+                ]);
             }
         }
     }
@@ -920,59 +755,6 @@ final class MissionLifecycleChangedMessageHandler
             'instrumentistName' => $message->payload['instrumentistName'] ?? null,
             'actorName'         => $message->payload['actorName'] ?? null,
         ];
-    }
-
-    /**
-     * In-app (preference-gated) + push, email as fallback when push is not deliverable or
-     * disabled — the D-083 orchestration MissionPublishedMessageHandler::notifySurgeon()
-     * already uses. Each channel isolated in its own try/catch (failure isolation).
-     *
-     * @param callable(?\App\Entity\OutboundNotification, ?\App\Enum\OutboundNotificationFallbackReason): mixed $sendEmail
-     */
-    private function notifyPersonally(
-        User $recipient,
-        Mission $mission,
-        NotificationType $type,
-        array $payload,
-        string $pushTitle,
-        string $pushBody,
-        callable $sendEmail,
-        string $context,
-    ): void {
-        $channels = $this->resolveChannelsSafely($recipient, $type);
-
-        if ($channels->inApp) {
-            try {
-                $this->createNotificationEvent($recipient, $mission, $type, $payload);
-                $this->em->flush();
-            } catch (\Throwable $e) {
-                $this->logger->error("MissionLifecycleChanged::{$context}: inApp failed", [
-                    'missionId' => $mission->getId(), 'userId' => $recipient->getId(), 'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
-        try {
-            if ($channels->push) {
-                $push = $this->outboundNotificationService->recordPushSend(
-                    $recipient,
-                    $type->value,
-                    $pushTitle,
-                    $pushBody,
-                    ['type' => $type->value, 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve($type, $mission, $recipient)],
-                    $mission,
-                );
-                if ($push->getStatus() !== OutboundNotificationStatus::SENT && $channels->email) {
-                    $sendEmail($push, OutboundNotificationService::fallbackReasonFor($push));
-                }
-            } elseif ($channels->email) {
-                $sendEmail(null, null);
-            }
-        } catch (\Throwable $e) {
-            $this->logger->error("MissionLifecycleChanged::{$context}: push/email failed", [
-                'missionId' => $mission->getId(), 'userId' => $recipient->getId(), 'error' => $e->getMessage(),
-            ]);
-        }
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -997,27 +779,6 @@ final class MissionLifecycleChangedMessageHandler
             ]);
         }
         return $surgeon;
-    }
-
-    private function resolveChannelsSafely(User $user, NotificationType $type): NotificationChannels
-    {
-        try {
-            return $this->preferenceResolver->resolve($user, $type);
-        } catch (\Throwable) {
-            return new NotificationChannels(inApp: true, email: false, push: false);
-        }
-    }
-
-    private function createNotificationEvent(User $user, Mission $mission, NotificationType $type, array $payload): void
-    {
-        $evt = (new NotificationEvent())
-            ->setUser($user)
-            ->setMission($mission)
-            ->setEventType($type->value)
-            ->setChannel(PublicationChannel::IN_APP)
-            ->setSentAt(new \DateTimeImmutable())
-            ->setPayload($payload);
-        $this->em->persist($evt);
     }
 
     private function periodLabel(Mission $mission): ?string

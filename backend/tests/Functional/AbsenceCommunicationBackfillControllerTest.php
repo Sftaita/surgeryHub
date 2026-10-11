@@ -27,6 +27,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class AbsenceCommunicationBackfillControllerTest extends WebTestCase
 {
+    use \App\Tests\Support\PurgesNotificationTraces;
+
     private const PASSWORD = 'BackfillTest123!';
 
     private EntityManagerInterface $em;
@@ -74,6 +76,8 @@ final class AbsenceCommunicationBackfillControllerTest extends WebTestCase
                 if ($e !== null) { $this->em->remove($e); }
             }
             $this->em->flush();
+            $this->purgeNotificationTraces($this->em, $this->createdIds['users']);
+            $this->em->clear(); // the purged OutboundNotification rows may still be managed
             foreach ($this->createdIds['users'] as $id) {
                 $e = $this->em->find(User::class, $id);
                 if ($e !== null) { $this->em->remove($e); }

@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { fetchMissionById, getMissionExecution, remindMissionHours } from "../../missions/api/missions.api";
 import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
-import { fetchMissionEncoding, remindMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
+import { fetchMissionEncoding, newActionBatchId, remindMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
 import { EncodingContentPanel } from "./EncodingContentPanel";
 import type { EncodingAnomalyMarks, EncodingFocusTarget } from "./EncodingContentPanel";
 import { FinancialAnomaliesCard } from "./FinancialAnomaliesCard";
@@ -191,16 +191,19 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   });
 
   const remindMutation = useMutation({
-    mutationFn: async () => remindMissionEncoding(missionId!),
-    onSuccess: async (updated: any) => {
-      // D-143 — retour explicite du canal réellement utilisé (décidé par le serveur).
+    // H5a — the batch id is fixed at click time: a retry of this mutation reuses it.
+    mutationFn: async (batchId: string) => remindMissionEncoding(missionId!, batchId),
+    onSuccess: async (updated) => {
+      // D-143 — retour explicite des canaux réellement utilisés (décidés par le serveur).
       const channel = updated?.lastManualReminderChannel;
       toast.success(
-        channel === "push"
-          ? "Relance envoyée à l'instrumentiste par notification push."
-          : channel === "email"
-            ? "Relance envoyée à l'instrumentiste par e-mail (push indisponible sur ses appareils)."
-            : "Relance envoyée à l'instrumentiste.",
+        channel === "push+email"
+          ? "Relance envoyée à l'instrumentiste par notification push et par e-mail."
+          : channel === "push"
+            ? "Relance envoyée à l'instrumentiste par notification push."
+            : channel === "email"
+              ? "Relance envoyée à l'instrumentiste par e-mail."
+              : "Relance envoyée à l'instrumentiste.",
       );
       await refreshAfterAction();
     },
@@ -457,7 +460,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             <Box
               component="button"
               type="button"
-              onClick={() => remindMutation.mutate()}
+              onClick={() => remindMutation.mutate(newActionBatchId())}
               disabled={remindMutation.isPending}
               sx={{
                 display: "flex", alignItems: "center", gap: "6px", height: 40, padding: "0 14px", borderRadius: "11px",

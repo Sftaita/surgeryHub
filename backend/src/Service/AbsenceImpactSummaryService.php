@@ -46,6 +46,8 @@ class AbsenceImpactSummaryService
         array $missionReactionSummaries = [],
         array $occurrenceNeutralized = [],
         array $reconciliation = [],
+        // H4 (D-130) — AbsenceImpact list of the run (only N2 / N1-to-cover / manager decisions are read here)
+        array $impacts = [],
     ): void {
         $missionsCancelled = array_values(array_filter(
             $missionReactionSummaries,
@@ -68,8 +70,22 @@ class AbsenceImpactSummaryService
 
         $futureOccurrencesRestored = $reconciliation['restoredOccurrences'] ?? [];
 
+        $bucket = static fn (\App\Enum\AbsenceImpactConsequence $c) => array_values(array_map(
+            static fn (\App\Absence\AbsenceImpact $i) => [
+                'missionId' => $i->missionId, 'date' => (new \DateTimeImmutable($i->date))->format('d/m/Y'),
+                'horaire' => $i->startTime !== null ? $i->startTime . '–' . $i->endTime : null, 'siteName' => $i->siteName,
+                'surgeonName' => $i->surgeonName, 'instrumentistName' => $i->instrumentistName,
+            ],
+            array_filter($impacts, static fn (\App\Absence\AbsenceImpact $i) => $i->consequence === $c),
+        ));
+        $draftsToCover          = $bucket(\App\Enum\AbsenceImpactConsequence::DRAFT_TO_COVER);
+        $draftsNeutralized      = $bucket(\App\Enum\AbsenceImpactConsequence::DRAFT_TO_NEUTRALIZE);
+        $usualToCover           = $bucket(\App\Enum\AbsenceImpactConsequence::OCCURRENCE_TO_COVER);
+        $managerDecisions       = $bucket(\App\Enum\AbsenceImpactConsequence::MANAGER_DECISION);
+
         if (empty($missionsCancelled) && empty($missionsReleased) && empty($missionsRestoredAssigned)
             && empty($missionsRestoredOpen) && empty($occurrenceNeutralized) && empty($futureOccurrencesRestored)
+            && $draftsToCover === [] && $draftsNeutralized === [] && $usualToCover === [] && $managerDecisions === []
         ) {
             return;
         }
@@ -99,6 +115,10 @@ class AbsenceImpactSummaryService
             futureOccurrencesRestored: $futureOccurrencesRestored,
             recipientManagerIds: $managerIds,
             occurredAt: new \DateTimeImmutable(),
+            draftsToCover: $draftsToCover,
+            draftsNeutralizedAtDeploy: $draftsNeutralized,
+            usualOccurrencesToCover: $usualToCover,
+            managerDecisions: $managerDecisions,
         ));
     }
 }

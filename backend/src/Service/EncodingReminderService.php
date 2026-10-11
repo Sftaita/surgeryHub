@@ -5,22 +5,26 @@ namespace App\Service;
 use App\Entity\AuditEvent;
 use App\Entity\Mission;
 use App\Entity\MissionEncodingReminder;
-use App\Entity\NotificationEvent;
+use App\Entity\NotificationDispatch;
+use App\Entity\OutboundNotification;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\EncodingReminderStage;
 use App\Enum\EncodingSituation;
 use App\Enum\MissionStatus;
+use App\Enum\NotificationEmailPolicy;
 use App\Enum\NotificationType;
+use App\Enum\OutboundNotificationChannel;
 use App\Enum\OutboundNotificationStatus;
-use App\Enum\PublicationChannel;
-use App\Message\SendTemplatedEmailMessage;
+use App\Notification\EmailContent;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
+use App\Notification\PushContent;
 use App\Repository\UserRepository;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
-use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
  * D-143 — relance progressive d'encodage (remplace le rappel unique D+1 08 h de D-083 et
@@ -50,10 +54,14 @@ use Symfony\Component\Messenger\MessageBusInterface;
  *
  * Aucune donnée patient : date de la mission, prénom, lien. Préférences : ces relances
  * sont une obligation de service (validation, rémunération) — non configurables
- * (NotificationType::isConfigurable()). Le push n'est tenté que vers les appareils
- * réellement abonnés et n'est compté comme livré que si le transport l'a accepté
- * (OutboundNotificationService::recordPushSend()) ; les abonnements expirés sont
- * nettoyés par WebPushService (D-081).
+ * (NotificationType::isOperationalObligation()). Le push n'est tenté que vers les appareils
+ * réellement abonnés et n'est compté comme livré que si le transport l'a accepté ; les
+ * abonnements expirés sont nettoyés par WebPushService (D-081).
+ *
+ * Intégration H1–H8 : tous les envois (instrumentiste, managers, relance manuelle) passent
+ * par NotificationDispatcher (D-128/D-131) — une intention par destinataire et par épisode,
+ * idempotence par épisode en plus de la réservation, chaque canal tracé dans
+ * OutboundNotification + notification_dispatch + activity_event. Aucun envoi direct.
  */
 class EncodingReminderService
 {
@@ -73,21 +81,16 @@ class EncodingReminderService
 
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly OutboundNotificationService $outboundNotificationService,
+        private readonly NotificationDispatcher $dispatcher,
         private readonly NotificationService $notificationService,
         private readonly AuditService $audit,
         private readonly EncodingCompletenessService $completeness,
         private readonly UserRepository $userRepository,
         private readonly NotificationTargetResolver $targetResolver,
-        private readonly MessageBusInterface $bus,
         #[Autowire(service: 'monolog.logger.push')]
         private readonly LoggerInterface $logger,
         #[Autowire('%env(string:FRONTEND_URL)%')]
         private readonly string $frontendUrl,
-        #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
-        private readonly string $fromAddress,
-        #[Autowire('%env(string:MAILER_FROM_NAME)%')]
-        private readonly string $fromName,
         /** true seulement là où la commande est réellement planifiée (cron). */
         #[Autowire('%env(bool:ENCODING_REMINDER_AUTO_ENABLED)%')]
         private readonly bool $automaticRemindersScheduled = false,
@@ -287,7 +290,17 @@ class EncodingReminderService
     }
 
     /**
-     * @return array{0: list<string>, 1: ?string} canaux utilisés, raison de l'e-mail
+     * Relance à l'instrumentiste, à travers NotificationDispatcher (D-128/D-131) : une seule
+     * intention, l'idempotence par épisode (`encoding_reminder:{D1|D2|D4}:{missionId}`, en plus
+     * de la réservation mission_encoding_reminder), chaque canal tracé.
+     *
+     *  - centre de notifications : toujours ;
+     *  - push : vers les appareils réellement abonnés (ENCODING_REMINDER : push par défaut,
+     *    non configurable) — « livré » = accepté par le transport, jamais un simple abonnement ;
+     *  - e-mail : J+1/J+2 en secours d'un push non livré (FALLBACK_WHEN_PUSH_NOT_SENT),
+     *    J+4 toujours (MANDATORY).
+     *
+     * @return array{0: list<string>, 1: ?string} canaux réellement utilisés, raison de l'e-mail
      */
     private function notifyInstrumentist(Mission $mission, User $instrumentist, EncodingReminderStage $stage, EncodingSituation $situation): array
     {
@@ -296,81 +309,49 @@ class EncodingReminderService
         $path = $this->targetResolver->resolve(NotificationType::ENCODING_REMINDER, $mission, $instrumentist)
             ?? sprintf('/app/i/missions/%d/encoding', $mission->getId());
 
-        $channels = [];
-
-        // Centre de notifications — toujours (architecture existante, D-086).
-        $this->em->persist((new NotificationEvent())
-            ->setUser($instrumentist)
-            ->setMission($mission)
-            ->setEventType(NotificationType::ENCODING_REMINDER->value)
-            ->setChannel(PublicationChannel::IN_APP)
-            ->setSentAt(new \DateTimeImmutable())
-            ->setPayload([
+        $dispatch = $this->dispatcher->dispatch(new NotificationIntent(
+            recipient: $instrumentist,
+            type: NotificationType::ENCODING_REMINDER,
+            inAppPayload: [
                 'missionId'   => $mission->getId(),
                 'missionDate' => $missionDate,
                 'stage'       => $stage->value,
                 'situation'   => $situation->value,
                 'title'       => $content['title'],
                 'body'        => $content['push'],
-            ]));
-        $this->em->flush();
-        $channels[] = MissionEncodingReminder::CHANNEL_IN_APP;
+            ],
+            mission: $mission,
+            email: new EmailContent($content['subject'], sprintf('emails/encoding_reminder_%s.html.twig', strtolower($stage->value)), [
+                'firstname'    => $instrumentist->getFirstname(),
+                'missionDate'  => $missionDate,
+                'missionUrl'   => $this->frontendUrl . $path,
+                'hoursMissing' => $situation !== EncodingSituation::NOT_SUBMITTED,
+            ]),
+            push: new PushContent($content['title'], $content['push'], [
+                'missionId'        => $mission->getId(),
+                'url'              => $path,
+                'notificationType' => NotificationType::ENCODING_REMINDER->value,
+            ]),
+            episodeRef: sprintf('encoding_reminder:%s:%d', $stage->value, $mission->getId()),
+            emailPolicy: $stage->isEscalation() ? NotificationEmailPolicy::MANDATORY : NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT,
+        ));
 
-        $push = $this->outboundNotificationService->recordPushSend(
-            $instrumentist,
-            self::outboundType($stage),
-            $content['title'],
-            $content['push'],
-            ['missionId' => $mission->getId(), 'url' => $path, 'notificationType' => NotificationType::ENCODING_REMINDER->value],
-            $mission,
-        );
-        $pushDelivered = $push->getStatus() === OutboundNotificationStatus::SENT;
-        if ($pushDelivered) {
-            $channels[] = MissionEncodingReminder::CHANNEL_PUSH;
-        }
-
-        // J+1/J+2 : e-mail uniquement en secours d'un push non livré. J+4 : toujours.
+        $channels = self::channelsUsed($dispatch);
         $emailReason = null;
-        if ($stage->isEscalation()) {
-            $emailReason = 'MANDATORY';
-        } elseif (!$pushDelivered) {
-            $emailReason = 'PUSH_' . OutboundNotificationService::fallbackReasonFor($push)->value;
-        }
-
-        if ($emailReason !== null) {
-            $missionUrl = $this->frontendUrl . $path;
-            $email = $this->outboundNotificationService->recordEmailQueued(
-                $instrumentist,
-                self::outboundType($stage),
-                $content['subject'],
-                rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
-                mission: $mission,
-                fallbackOf: $pushDelivered || $stage->isEscalation() ? null : $push,
-                fallbackReason: $pushDelivered || $stage->isEscalation() ? null : OutboundNotificationService::fallbackReasonFor($push),
-            );
-            $this->bus->dispatch(new SendTemplatedEmailMessage(
-                to: (string) $instrumentist->getEmail(),
-                subject: $content['subject'],
-                fromAddress: $this->fromAddress,
-                fromName: $this->fromName,
-                htmlTemplate: sprintf('emails/encoding_reminder_%s.html.twig', strtolower($stage->value)),
-                context: [
-                    'firstname'   => $instrumentist->getFirstname(),
-                    'missionDate' => $missionDate,
-                    'missionUrl'  => $missionUrl,
-                    'hoursMissing' => $situation !== EncodingSituation::NOT_SUBMITTED,
-                ],
-                outboundNotificationId: $email->getId(),
-            ));
-            $channels[] = MissionEncodingReminder::CHANNEL_EMAIL;
+        if (in_array(MissionEncodingReminder::CHANNEL_EMAIL, $channels, true)) {
+            $email = self::delivery($dispatch, OutboundNotificationChannel::EMAIL);
+            $emailReason = $stage->isEscalation()
+                ? 'MANDATORY'
+                : 'PUSH_' . ($email?->getFallbackReason()?->value ?? self::delivery($dispatch, OutboundNotificationChannel::PUSH)?->getSkipReason()?->value ?? 'NOT_SENT');
         }
 
         return [$channels, $emailReason];
     }
 
     /**
-     * J+4 — chaque manager/admin actif : centre de notifications + e-mail. Isolation par
-     * destinataire (un échec n'empêche jamais les autres). Retourne le nombre de managers
+     * J+4 — chaque manager/admin actif : centre de notifications + e-mail obligatoire, à
+     * travers le dispatcher (épisode `encoding_escalation:{missionId}`). Isolation par
+     * destinataire : un échec n'empêche jamais les autres. Retourne le nombre de managers
      * effectivement alertés.
      *
      * @param list<string> $missing
@@ -386,13 +367,12 @@ class EncodingReminderService
         $notified = 0;
         foreach ($this->userRepository->findManagersAndAdmins(true) as $manager) {
             try {
-                $this->em->persist((new NotificationEvent())
-                    ->setUser($manager)
-                    ->setMission($mission)
-                    ->setEventType(NotificationType::ENCODING_ESCALATION->value)
-                    ->setChannel(PublicationChannel::IN_APP)
-                    ->setSentAt(new \DateTimeImmutable())
-                    ->setPayload([
+                $path = $this->targetResolver->resolve(NotificationType::ENCODING_ESCALATION, $mission, $manager)
+                    ?? sprintf('/app/m/billing/encodings?missionId=%d', $mission->getId());
+                $dispatch = $this->dispatcher->dispatch(new NotificationIntent(
+                    recipient: $manager,
+                    type: NotificationType::ENCODING_ESCALATION,
+                    inAppPayload: [
                         'missionId'         => $mission->getId(),
                         'missionDate'       => $missionDate,
                         'instrumentistName' => $instrumentistName,
@@ -401,27 +381,9 @@ class EncodingReminderService
                         'situationLabel'    => $situation->label(),
                         'missing'           => $missingLabels,
                         'previousReminders' => $previous,
-                    ]));
-                $this->em->flush();
-
-                $path = $this->targetResolver->resolve(NotificationType::ENCODING_ESCALATION, $mission, $manager)
-                    ?? sprintf('/app/m/billing/encodings?missionId=%d', $mission->getId());
-                $trackingUrl = $this->frontendUrl . $path;
-                $subject = 'Encodage en attente depuis 4 jours';
-                $email = $this->outboundNotificationService->recordEmailQueued(
-                    $manager,
-                    NotificationType::ENCODING_ESCALATION->value,
-                    $subject,
-                    rawData: ['missionId' => $mission->getId(), 'url' => $trackingUrl],
+                    ],
                     mission: $mission,
-                );
-                $this->bus->dispatch(new SendTemplatedEmailMessage(
-                    to: (string) $manager->getEmail(),
-                    subject: $subject,
-                    fromAddress: $this->fromAddress,
-                    fromName: $this->fromName,
-                    htmlTemplate: 'emails/encoding_escalation_manager.html.twig',
-                    context: [
+                    email: new EmailContent('Encodage en attente depuis 4 jours', 'emails/encoding_escalation_manager.html.twig', [
                         'firstname'         => $manager->getFirstname(),
                         'instrumentistName' => $instrumentistName,
                         'missionDate'       => $missionDate,
@@ -429,11 +391,15 @@ class EncodingReminderService
                         'situationLabel'    => $situation->label(),
                         'missing'           => $missingLabels,
                         'previousReminders' => $previous,
-                        'trackingUrl'       => $trackingUrl,
-                    ],
-                    outboundNotificationId: $email->getId(),
+                        'trackingUrl'       => $this->frontendUrl . $path,
+                        'missionUrl'        => $this->frontendUrl . $path,
+                    ]),
+                    episodeRef: sprintf('encoding_escalation:%d', $mission->getId()),
+                    emailPolicy: NotificationEmailPolicy::MANDATORY,
                 ));
-                ++$notified;
+                if (self::channelsUsed($dispatch) !== []) {
+                    ++$notified;
+                }
             } catch (\Throwable $e) {
                 $this->logger->error('encoding_reminder.manager_failed', [
                     'missionId' => $mission->getId(),
@@ -475,21 +441,26 @@ class EncodingReminderService
         };
     }
 
-    // ── Relance manuelle (D-120, conservée) ─────────────────────────────────────
+    // ── Relance manuelle (D-120, H5a, D-143) ────────────────────────────────────
 
     /** Délai minimal entre deux relances manuelles d'une même mission (anti double clic / répétition). */
     public const MANUAL_COOLDOWN_MINUTES = 10;
 
     /**
      * D-120 — relance manuelle depuis le cockpit "Suivi des encodages". Ne touche jamais
-     * l'historique des relances automatiques, ni le statut, ni le brouillon. D-143 : la
-     * relance apparaît aussi dans le centre de notifications de l'instrumentiste, et une
-     * nouvelle relance de la même mission est refusée pendant MANUAL_COOLDOWN_MINUTES
-     * (le contrôleur traduit en 409 explicite).
+     * l'historique des relances automatiques, ni le statut, ni le brouillon.
      *
-     * @return 'push'|'email'
+     * H5a (décision validée) — action explicite d'un manager : e-mail OBLIGATOIRE
+     * (NotificationEmailPolicy::MANDATORY), push selon les appareils ; $batchId = l'action du
+     * manager (une requête rejouée avec le même lot n'envoie jamais une seconde relance ;
+     * absent → la corrélation de la requête).
+     * D-143 — même type ENCODING_REMINDER que les relances automatiques (centre de
+     * notifications, lien direct vers l'encodage) ; une nouvelle relance de la même mission
+     * est refusée pendant MANUAL_COOLDOWN_MINUTES (le contrôleur traduit en 409 explicite).
+     *
+     * @return 'push+email'|'push'|'email'|'none' les canaux réellement utilisés
      */
-    public function sendManualReminder(Mission $mission, User $actor): string
+    public function sendManualReminder(Mission $mission, User $actor, ?string $batchId = null): string
     {
         $instrumentist = $mission->getInstrumentist();
         if (!$instrumentist instanceof User) {
@@ -500,39 +471,30 @@ class EncodingReminderService
         $body = "Un manager vous rappelle de finaliser l'encodage de cette mission.";
         $path = sprintf('/app/i/missions/%d/encoding', $mission->getId());
 
-        $this->em->persist((new NotificationEvent())
-            ->setUser($instrumentist)
-            ->setMission($mission)
-            ->setEventType(NotificationType::ENCODING_REMINDER->value)
-            ->setChannel(PublicationChannel::IN_APP)
-            ->setSentAt(new \DateTimeImmutable())
-            ->setPayload([
+        $dispatch = $this->dispatcher->dispatch(new NotificationIntent(
+            recipient: $instrumentist,
+            type: NotificationType::ENCODING_REMINDER,
+            inAppPayload: [
                 'missionId'   => $mission->getId(),
                 'missionDate' => $this->missionDate($mission),
                 'stage'       => 'MANUAL',
                 'title'       => $title,
                 'body'        => $body,
-            ]));
-        $this->em->flush();
+            ],
+            mission: $mission,
+            email: $this->notificationService->missionEncodingReminderEmail($mission, $instrumentist),
+            push: new PushContent($title, $body, ['missionId' => $mission->getId(), 'url' => $path]),
+            episodeRef: $batchId !== null ? sprintf('encoding_reminder:manual:%d:%s', $mission->getId(), $batchId) : null,
+            emailPolicy: NotificationEmailPolicy::MANDATORY,
+        ));
 
-        $pushNotification = $this->outboundNotificationService->recordPushSend(
-            $instrumentist,
-            'ENCODING_REMINDER_MANUAL',
-            $title,
-            $body,
-            ['missionId' => $mission->getId(), 'url' => $path],
-            $mission,
-        );
-
-        $channel = 'push';
-        if ($pushNotification->getStatus() !== OutboundNotificationStatus::SENT) {
-            $this->notificationService->missionEncodingReminderNotifyInstrumentist(
-                $mission,
-                $pushNotification,
-                OutboundNotificationService::fallbackReasonFor($pushNotification),
-            );
-            $channel = 'email';
-        }
+        $used = self::channelsUsed($dispatch);
+        $channel = match (true) {
+            in_array(MissionEncodingReminder::CHANNEL_PUSH, $used, true) && in_array(MissionEncodingReminder::CHANNEL_EMAIL, $used, true) => 'push+email',
+            in_array(MissionEncodingReminder::CHANNEL_PUSH, $used, true) => 'push',
+            in_array(MissionEncodingReminder::CHANNEL_EMAIL, $used, true) => 'email',
+            default => 'none',
+        };
 
         $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT, [
             'actorId'   => $actor->getId(),
@@ -548,6 +510,41 @@ class EncodingReminderService
         ]);
 
         return $channel;
+    }
+
+    /**
+     * Canaux réellement utilisés pour une intention, lus sur ses livraisons tracées :
+     * in-app créé, push accepté par le transport, e-mail en file ou envoyé.
+     *
+     * @return list<string>
+     */
+    private static function channelsUsed(NotificationDispatch $dispatch): array
+    {
+        $used = [];
+        foreach ($dispatch->getDeliveries() as $delivery) {
+            $status = $delivery->getStatus();
+            $used[] = match ($delivery->getChannel()) {
+                OutboundNotificationChannel::IN_APP => $status === OutboundNotificationStatus::SENT ? MissionEncodingReminder::CHANNEL_IN_APP : null,
+                OutboundNotificationChannel::PUSH   => $status === OutboundNotificationStatus::SENT ? MissionEncodingReminder::CHANNEL_PUSH : null,
+                OutboundNotificationChannel::EMAIL  => in_array($status, [OutboundNotificationStatus::QUEUED, OutboundNotificationStatus::SENT], true) ? MissionEncodingReminder::CHANNEL_EMAIL : null,
+                default => null,
+            };
+        }
+
+        $order = [MissionEncodingReminder::CHANNEL_IN_APP, MissionEncodingReminder::CHANNEL_PUSH, MissionEncodingReminder::CHANNEL_EMAIL];
+
+        return array_values(array_intersect($order, $used));
+    }
+
+    private static function delivery(NotificationDispatch $dispatch, OutboundNotificationChannel $channel): ?OutboundNotification
+    {
+        foreach ($dispatch->getDeliveries() as $delivery) {
+            if ($delivery->getChannel() === $channel) {
+                return $delivery;
+            }
+        }
+
+        return null;
     }
 
     /** Une relance manuelle a-t-elle déjà été envoyée pour cette mission il y a moins de MANUAL_COOLDOWN_MINUTES ? */

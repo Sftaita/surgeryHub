@@ -131,7 +131,9 @@ final class MeController extends AbstractController
                     'pushEnabled' => $channels->push,
                 ];
             },
-            // D-143 — les notifications de service (relances d'encodage) ne se coupent pas.
+            // H3 (D-129) — a retired type changes nothing any more: never offered as a switch.
+            // H5a — nor a type whose email is mandatory (identity, explicit manager action).
+            // D-143 — nor an operational encoding reminder (service obligation).
             array_values(array_filter(NotificationType::cases(), static fn (NotificationType $t) => $t->isConfigurable())),
         );
 

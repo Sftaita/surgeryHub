@@ -39,6 +39,40 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 - [ ] `doctrine:migrations:migrate --dry-run --env=prod` (après build, avant exécution réelle)
 - [ ] SQL de chaque migration relu — `DROP`/`DELETE`/`TRUNCATE` confirmés présents uniquement dans `down()`, jamais `up()` (sauf cas documenté explicitement)
 - [ ] Aucune migration exécutée sans avoir été relue
+- [ ] **BLOQUANT (H1–H5, 2026-10-05)** — avant tout déploiement, comparer
+  `doctrine_migration_versions`, les migrations du repository et le **schéma réel**. Écart connu
+  en local : la base de dev contient le schéma de `Version20260107053952` (table `export_log`)
+  sans que la version soit enregistrée. **Ne jamais lancer `doctrine:migrations:migrate` en
+  aveugle si une divergence est détectée** ; aucun déploiement tant que l'écart n'est pas compris.
+- [ ] **Diagnostic `Version20260107053952` / `export_log` (H5b, 2026-10-05 — lecture seule, rien
+  modifié)** :
+  - *La migration* : baseline complète (20 tables dont `export_log`, `user`, `mission`…), ajoutée
+    le 2026-01-11 (commit `278864f`) **en remplacement** des baselines `Version20251225075014`,
+    `Version20251230053638` / `060706` supprimées le même jour. Une base créée avant cette date
+    contenait déjà ces tables : migration *recréée* (historique, documenté aussi par `752b83e`
+    qui a neutralisé un doublon de cette baseline).
+  - *Prod* : cohérente — 2026-09-29, `migrations:status` 72/72 avant, 0 nouvelle, 0
+    indisponible, puis 2 migrations jouées (74). La baseline y est enregistrée.
+  - *Tests (`surgicalhub_test`) et repro (`surgicalhub_repro`)* : cohérents — 68 versions
+    enregistrées au même instant (2026-09-07 05:36:45, import / `version --add` en bloc), puis
+    les suivantes une à une ; schémas identiques au dépôt.
+  - *Dev (`surgicalhub`)* : **métadonnées perdues** — toutes les tables créées en une passe le
+    2026-09-09 16:34:57 (reconstruction hors migrations : `schema:create` ou import), et
+    `doctrine_migration_versions` ne contient que les versions jouées ensuite une par une
+    (6 aujourd'hui, 73 « nouvelles »). Le schéma dev est identique à repro (colonnes + index)
+    **sauf** `mission_publication.declined_at` : `Version20260926100000` n'a jamais été jouée en
+    dev. `migrate` y échoue sur la première version non enregistrée (`export_log` existe déjà).
+  - *Cause* : base locale reconstruite hors migrations (métadonnées perdues) — ni défaut de la
+    migration, ni divergence de la prod.
+  - *Procédure proposée (non exécutée, décision attendue)* — **prod**, avant le déploiement :
+    sauvegarde ; `migrations:status` doit montrer exactement 74 exécutées, 0 indisponible et les
+    5 nouvelles `Version20261003120000`, `Version20261004100000`, `Version20261005100000`,
+    `Version20261006100000`, `Version20261007100000` ; `migrate --dry-run` ne doit lister
+    qu'elles ; toute autre différence = arrêt. **Dev** : sauvegarde ;
+    `migrations:execute --up Version20260926100000` ; puis `migrations:version --add` pour
+    chacune des 73 autres versions, après vérification que son schéma est présent (comparaison
+    `information_schema` avec repro) ; `migrations:status` doit alors être à jour. Ne jamais
+    supprimer `export_log`, ni marquer une version exécutée sans cette comparaison.
 
 ## 5. Déploiement
 
