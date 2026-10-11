@@ -24,6 +24,11 @@ function buildDetail(overrides: Partial<OutboundNotificationDetail> = {}): Outbo
     missionId: 690,
     attemptCount: 1,
     fallback: false,
+    skipReason: null,
+    correlationId: null,
+    grouped: false,
+    notificationEventId: null,
+    notificationEventSeenAt: null,
     bodyText: "La mission d'hier n'a pas encore été soumise.",
     bodyHtml: null,
     payload: { missionId: 690, url: "/app/i/missions/690" },
@@ -98,6 +103,39 @@ describe("AdminOutboundNotificationDrawer", () => {
     expect(iframe.tagName).toBe("IFRAME");
     expect(iframe.getAttribute("sandbox")).toBe("");
     expect(iframe.getAttribute("srcdoc") ?? iframe.getAttribute("srcDoc")).toContain("Bonjour Jane");
+  });
+
+  it("H2 — explique pourquoi un canal n'a pas été utilisé", async () => {
+    vi.mocked(getAdminOutboundNotification).mockResolvedValue(buildDetail({
+      channel: "EMAIL",
+      status: "SKIPPED",
+      skipReason: "DISABLED_BY_PREFERENCE",
+      correlationId: "01a105b6-12f5-7b61-a5ee-9ad5c0900852",
+      sentAt: null,
+      attempts: [],
+    }));
+
+    renderDrawer(1);
+
+    await screen.findByText("Raison du non-envoi");
+    expect(screen.getByText("Désactivé par les préférences")).toBeInTheDocument();
+    expect(screen.getByText("01a105b6-12f5-7b61-a5ee-9ad5c0900852")).toBeInTheDocument();
+  });
+
+  it("H2 — affiche une notification in-app et si elle a été vue", async () => {
+    vi.mocked(getAdminOutboundNotification).mockResolvedValue(buildDetail({
+      channel: "IN_APP",
+      status: "SENT",
+      notificationEventId: 77,
+      notificationEventSeenAt: null,
+      attempts: [],
+    }));
+
+    renderDrawer(1);
+
+    await screen.findByText("In-app");
+    expect(screen.getByText("Créée dans l'application")).toBeInTheDocument();
+    expect(screen.getByText("Pas encore vue")).toBeInTheDocument();
   });
 
   it("affiche le repli email et sa raison", async () => {

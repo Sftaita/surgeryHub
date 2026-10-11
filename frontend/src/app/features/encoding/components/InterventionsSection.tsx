@@ -1038,7 +1038,7 @@ function EntryCard({
             ))}
 
             {requests.map((req) => (
-              <MaterialRequestRow key={req.id} label={req.label} referenceCode={req.referenceCode} pending={isPending(req.id)} />
+              <MaterialRequestRow key={req.id} label={req.label} referenceCode={req.referenceCode} comment={req.comment} pending={isPending(req.id)} />
             ))}
 
             {unusedSuggested.map((sm) => (
@@ -1251,12 +1251,13 @@ function MaterialLineRow({ line, editable, busy, isNew, tabIndex, onInc, onDec, 
 // Demande hors catalogue ("À préciser") et matériel suggéré (Lot 6)
 // ─────────────────────────────────────────────────────────────────────────
 
-function MaterialRequestRow({ label, referenceCode, pending }: { label: string; referenceCode: string; pending: boolean }) {
+function MaterialRequestRow({ label, referenceCode, comment, pending }: { label: string; referenceCode: string; comment?: string | null; pending: boolean }) {
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: "12px", padding: "13px 0", borderBottom: "1px solid", borderColor: GRAY_150 }}>
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Box sx={{ fontSize: 15, fontWeight: 700, color: GRAY_950, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</Box>
+        <Box sx={{ fontSize: 15, fontWeight: 700, color: GRAY_950, overflowWrap: "anywhere" }}>{label}</Box>
         {referenceCode && <Box sx={{ mt: "3px", fontSize: 12, color: GRAY_500 }}>Réf : {referenceCode}</Box>}
+        {comment && <Box sx={{ mt: "3px", fontSize: 12.5, color: GRAY_500, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{comment}</Box>}
       </Box>
       {pending ? (
         <Box sx={{ flexShrink: 0, fontSize: 11, fontWeight: 600, fontStyle: "italic", color: GRAY_500 }}>Enregistrement…</Box>

@@ -30,6 +30,17 @@ final class MissionDetailDto
         public readonly ?string $nextAutomaticReminderAt,
         public readonly ?string $lastManualReminderAt,
         public readonly ?string $lastManualReminderByName,
+        /** D-143 — canal de la dernière relance manuelle ('push'|'email'), pour le retour au manager. */
+        public readonly ?string $lastManualReminderChannel,
+        /**
+         * D-143 — relances automatiques déjà envoyées (manager uniquement, [] sinon) :
+         * [{stage: 'D1'|'D2'|'D4', sentAt, channels: ['IN_APP','PUSH'|'EMAIL'…], managersNotified}].
+         *
+         * @var list<array<string,mixed>>
+         */
+        public readonly array $automaticReminders,
+        /** D-143 — dernière soumission de l'encodage (null si jamais soumis). */
+        public readonly ?string $submittedAt,
         /**
          * D-125 — nominative request state, computed server-side (MissionDispatchService::
          * pendingOffer()/lastDeclinedOffer()), never re-derived client-side:

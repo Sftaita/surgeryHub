@@ -22,6 +22,10 @@ class MissionExecutionUpdateRequest
     #[Assert\PositiveOrZero]
     public ?int $actualDurationMinutes = null;
 
+    /** D-143 — pause déclarée pendant la plage réelle, en minutes. */
+    #[Assert\PositiveOrZero]
+    public ?int $breakMinutes = null;
+
     #[Assert\Choice(callback: [HoursSource::class, 'cases'])]
     public ?HoursSource $hoursSource = null;
 }

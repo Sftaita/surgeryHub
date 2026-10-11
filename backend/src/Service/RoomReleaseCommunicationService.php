@@ -41,11 +41,7 @@ class RoomReleaseCommunicationService
         private readonly AbsenceCommunicationJournalService $journal,
         private readonly UserRepository $userRepository,
         private readonly Environment $twig,
-        private readonly MessageBusInterface $bus,
-        #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
-        private readonly string $mailerFromAddress,
-        #[Autowire('%env(string:MAILER_FROM_NAME)%')]
-        private readonly string $mailerFromName,
+        private readonly AbsenceCommunicationDeliverySender $deliverySender,
         #[Autowire('%env(string:FRONTEND_URL)%')]
         private readonly string $frontendUrl,
     ) {
@@ -147,15 +143,8 @@ class RoomReleaseCommunicationService
             // CheckUncoveredEscalationsCommand) : un email individuel et distinct par
             // collègue, jamais un envoi groupé (§16, décision actée).
             foreach ($result['deliveries'] as $delivery) {
-                $this->bus->dispatch(new SendTemplatedEmailMessage(
-                    to: $delivery->getRecipientEmailSnapshot(),
-                    subject: $subject,
-                    fromAddress: $this->mailerFromAddress,
-                    fromName: $this->mailerFromName,
-                    htmlTemplate: 'emails/absence_room_release.html.twig',
-                    context: $finalContext,
-                    absenceCommunicationDeliveryId: $delivery->getId(),
-                ));
+                // H5b (D-132) — common low-level delivery layer (traced), D-114 journal unchanged.
+                $this->deliverySender->send($delivery, $delivery->getRecipientEmailSnapshot(), $subject, 'emails/absence_room_release.html.twig', $finalContext);
             }
         }
     }

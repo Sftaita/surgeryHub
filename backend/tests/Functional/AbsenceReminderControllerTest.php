@@ -15,6 +15,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
 final class AbsenceReminderControllerTest extends WebTestCase
 {
+    use \App\Tests\Support\PurgesNotificationTraces;
+
     private const PASSWORD = 'ReminderTest123!';
 
     private EntityManagerInterface $em;
@@ -46,6 +48,7 @@ final class AbsenceReminderControllerTest extends WebTestCase
                 foreach ($events as $event) { $this->em->remove($event); }
             }
             $this->em->flush();
+            $this->purgeNotificationTraces($this->em, $this->createdIds['users']);
             foreach ($this->createdIds['users'] as $id) {
                 $e = $this->em->find(User::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
@@ -238,17 +241,20 @@ final class AbsenceReminderControllerTest extends WebTestCase
         $client->disableReboot();
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
-        $this->makeUser('ROLE_INSTRUMENTIST');
-        $this->makeUser('ROLE_SURGEON');
+        $instr = $this->makeUser('ROLE_INSTRUMENTIST');
+        $surgeon = $this->makeUser('ROLE_SURGEON');
 
         /** @var InMemoryTransport $transport */
         $transport = static::getContainer()->get('messenger.transport.async');
         $transport->reset();
 
-        $client->request('POST', '/api/planning/absences/request-missing', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: '{}');
+        // H5a — scoped to this test's people: every email is now a real traced dispatch, and
+        // the shared test DB holds thousands of leaked instrumentists/surgeons.
+        $client->request('POST', '/api/planning/absences/request-missing', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['userIds' => [$instr->getId(), $surgeon->getId()]]));
 
         self::assertSame(200, $client->getResponse()->getStatusCode());
         $recipients = array_map(static fn ($e) => $e->getMessage()->to, $transport->getSent());
+        self::assertCount(2, $recipients);
         self::assertNotContains('boost.conge@gmail.com', $recipients);
     }
 
@@ -285,8 +291,9 @@ final class AbsenceReminderControllerTest extends WebTestCase
         $client->disableReboot();
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['user' => $manager, 'token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+        $instr = $this->makeUser('ROLE_INSTRUMENTIST');
 
-        $client->request('POST', '/api/planning/absences/request-missing', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: '{}');
+        $client->request('POST', '/api/planning/absences/request-missing', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['userIds' => [$instr->getId()]]));
         self::assertSame(200, $client->getResponse()->getStatusCode());
 
         $this->em->clear();
@@ -428,7 +435,9 @@ final class AbsenceReminderControllerTest extends WebTestCase
         self::assertCount(1, $message->context['absences'], 'Only the future absence must be included, never the past one');
         $today = new \DateTimeImmutable('today');
         foreach ($message->context['absences'] as $absence) {
-            self::assertGreaterThanOrEqual($today, $absence->getDateEnd());
+            // H5a — dates only (no entity in the queued message, never the free-text reason).
+            self::assertSame(['dateStart', 'dateEnd'], array_keys($absence));
+            self::assertGreaterThanOrEqual($today, new \DateTimeImmutable($absence['dateEnd']));
         }
     }
 
@@ -526,6 +535,37 @@ final class AbsenceReminderControllerTest extends WebTestCase
         self::assertNotContains($excluded->getEmail(), $recipients);
     }
 
+    // ── H5a — traced, idempotent per reminder batch ────────────────────────────
+
+    #[WithoutErrorHandler]
+    public function test_a_retried_reminder_batch_never_emails_anyone_twice_and_is_traced(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
+        $instr = $this->makeUser('ROLE_INSTRUMENTIST');
+        $noAddress = $this->makeUser('ROLE_SURGEON');
+        $this->em->getConnection()->executeStatement("UPDATE user SET email = '' WHERE id = ?", [$noAddress->getId()]);
+        $this->em->clear();
+
+        $body = json_encode(['userIds' => [$instr->getId(), $noAddress->getId()], 'batchId' => 'batch-' . bin2hex(random_bytes(6))]);
+        foreach ([1, 2] as $attempt) {
+            $client->request('POST', '/api/planning/absences/request-missing', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: $body);
+            self::assertSame(200, $client->getResponse()->getStatusCode());
+            $result = $this->json($client->getResponse());
+            self::assertSame(1, $result['count'], "attempt $attempt: one email really queued");
+            self::assertSame([['id' => $noAddress->getId(), 'name' => 'Marie Curie', 'reason' => 'NO_EMAIL_ADDRESS']], $result['notSent']);
+        }
+
+        $conn = $this->em->getConnection();
+        self::assertSame(1, (int) $conn->fetchOne("SELECT COUNT(*) FROM outbound_notification WHERE recipient_user_id = ? AND channel = 'EMAIL'", [$instr->getId()]), 'the retry of the same batch sends nothing more');
+        $dispatch = $conn->fetchAssociative('SELECT * FROM notification_dispatch WHERE recipient_user_id = ?', [$instr->getId()]);
+        self::assertSame('ABSENCE_REQUEST_MISSING', $dispatch['notification_type']);
+        self::assertSame('MANDATORY', json_decode($dispatch['channels_resolved'], true)['source'], 'an explicit manager request is never filtered by preferences');
+        self::assertSame('SKIPPED', $conn->fetchOne("SELECT status FROM outbound_notification WHERE recipient_user_id = ? AND channel = 'IN_APP'", [$instr->getId()]), 'no in-app item');
+    }
+
     // ── Previews ───────────────────────────────────────────────────────────────
 
     #[WithoutErrorHandler]
@@ -535,19 +575,27 @@ final class AbsenceReminderControllerTest extends WebTestCase
         $client->disableReboot();
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
         ['token' => $token] = $this->authenticate($client, 'ROLE_MANAGER');
-        $this->makeUser('ROLE_SURGEON');
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $withAbsence = $this->makeUser('ROLE_INSTRUMENTIST');
+        $this->makeAbsenceFor($withAbsence, '+10 days', '+12 days');
 
         $client->request('GET', '/api/planning/absences/missing-preview', server: $this->auth($token));
         self::assertSame(200, $client->getResponse()->getStatusCode());
-        $preview = $this->json($client->getResponse());
+        $previewIds = array_column($this->json($client->getResponse())['people'], 'id');
+        self::assertContains($surgeon->getId(), $previewIds);
+        self::assertNotContains($withAbsence->getId(), $previewIds);
 
+        // H5a — both endpoints use the same selection (AbsenceReminderService); the send is
+        // checked on this test's people only (thousands of leaked users in the shared test DB,
+        // each email now a real traced dispatch): the previewed one is sent, the other never.
         /** @var InMemoryTransport $transport */
         $transport = static::getContainer()->get('messenger.transport.async');
         $transport->reset();
-        $client->request('POST', '/api/planning/absences/request-missing', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: '{}');
+        $client->request('POST', '/api/planning/absences/request-missing', server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']), content: json_encode(['userIds' => [$surgeon->getId(), $withAbsence->getId()]]));
         $sendBody = $this->json($client->getResponse());
 
-        self::assertSame($preview['count'], $sendBody['count'], 'Preview count must match what is actually sent');
+        self::assertSame(1, $sendBody['count'], 'only the previewed person is sent the request');
+        self::assertSame([$surgeon->getEmail()], array_map(static fn ($e) => $e->getMessage()->to, $transport->getSent()));
     }
 
     #[WithoutErrorHandler]

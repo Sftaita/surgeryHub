@@ -484,6 +484,34 @@ final class EncodingTrackingControllerTest extends WebTestCase
         self::assertTrue($this->findItem($payload, $alreadyFinished->getId())['encoding']['isStale']);
     }
 
+    /**
+     * Intégration H1–H8 × D-143 — l'alerte managers J+4 reste visible dans le suivi tant que
+     * l'encodage est attendu (même notification lue), et disparaît dès la soumission.
+     */
+    public function test_d4_escalation_stays_visible_until_the_encoding_is_submitted(): void
+    {
+        $client = $this->boot();
+        $token = $this->login($client, $this->createUser('ROLE_MANAGER'));
+        $site = $this->createSite();
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr = $this->createUser('ROLE_INSTRUMENTIST');
+
+        $pending = $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS, $site, $surgeon, $instr, '2026-03-10 08:00:00');
+        $submitted = $this->makeMission(MissionStatus::SUBMITTED, $site, $surgeon, $instr, '2026-03-10 13:00:00');
+        foreach ([$pending, $submitted] as $m) {
+            $this->em->getConnection()->insert('mission_encoding_reminder', [
+                'mission_id' => $m->getId(), 'instrumentist_id' => $instr->getId(), 'stage' => 'D4',
+                'due_at' => '2026-03-14 09:00:00', 'sent_at' => '2026-03-14 09:00:00', 'situation' => 'HOURS_MISSING',
+                'missing_items' => '[]', 'instrumentist_channels' => '["IN_APP","EMAIL"]', 'managers_notified' => 1,
+            ]);
+        }
+
+        $payload = $this->json($this->getWithPeriod($client, $token, '2026-03-10T00:00:00', '2026-03-11T00:00:00', '&siteId=' . $site->getId()));
+
+        self::assertNotNull($this->findItem($payload, $pending->getId())['encoding']['escalatedAt']);
+        self::assertNull($this->findItem($payload, $submitted->getId())['encoding']['escalatedAt'], 'soumis : plus aucune alerte');
+    }
+
     // ── Comptages d'encodage ─────────────────────────────────────────────
 
     /** Une ligne à quantité nulle n'est pas du matériel réellement utilisé. */

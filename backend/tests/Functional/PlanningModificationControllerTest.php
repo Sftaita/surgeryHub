@@ -15,11 +15,15 @@ use App\Enum\AuditEventType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PlanningVersionStatus;
+use App\Message\PlanningModificationAppliedMessage;
 use App\Message\SendBillingEmailMessage;
+use App\Message\SendTemplatedEmailMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Messenger\MessageBusInterface;
+use Symfony\Component\Messenger\Stamp\ReceivedStamp;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
@@ -49,6 +53,24 @@ final class PlanningModificationControllerTest extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            // H3 (D-129) — the recaps and pool offers are now traced notifications (dispatch,
+            // per-channel outbound rows, in-app items): removed before their users/missions.
+            if ($this->createdUserIds !== []) {
+                $conn = $this->em->getConnection();
+                $ids  = implode(',', array_map('intval', $this->createdUserIds));
+                $conn->executeStatement("DELETE FROM notification_dispatch WHERE recipient_user_id IN ($ids)");
+                $conn->executeStatement("DELETE a FROM outbound_notification_attempt a JOIN outbound_notification o ON o.id = a.notification_id WHERE o.recipient_user_id IN ($ids)");
+                $conn->executeStatement("DELETE FROM outbound_notification WHERE recipient_user_id IN ($ids)");
+                $conn->executeStatement("DELETE FROM notification_event WHERE user_id IN ($ids)");
+                $conn->executeStatement("DELETE FROM site_membership WHERE user_id IN ($ids)");
+                // Pool offers may also reach instrumentists outside this test (e.g. freelancers):
+                // their in-app items point to this test's missions.
+                $versions = implode(',', array_map('intval', $this->createdVersionIds)) ?: '0';
+                $missions = implode(',', array_map('intval', $this->createdMissionIds)) ?: '0';
+                $conn->executeStatement("DELETE FROM notification_event WHERE mission_id IN ($missions) OR mission_id IN (SELECT id FROM mission WHERE planning_version_id IN ($versions))");
+                // Forget the notification entities the in-process worker left managed.
+                $this->em->clear();
+            }
             foreach ($this->createdMissionIds as $id) {
                 foreach ($this->em->getRepository(AuditEvent::class)->findBy(['mission' => $id]) as $evt) {
                     $this->em->remove($evt);
@@ -883,24 +905,32 @@ final class PlanningModificationControllerTest extends WebTestCase
     }
 
     // ── Notification targeting — real diff, real dispatch, captured on the in-memory
-    // async transport (when@test: async -> in-memory://). Proves the full chain from HTTP
-    // request to SendBillingEmailMessage dispatch, independent of any Mailpit/worker state.
+    // async transport (when@test: async -> in-memory://). Since H3 (D-129) the recap is sent
+    // after the batch commits, by PlanningModificationAppliedMessage → NotificationDispatcher
+    // → SendTemplatedEmailMessage: the helper plays the worker for that message, then
+    // collects the emails. Independent of any Mailpit/worker state.
 
-    /** @return SendBillingEmailMessage[] */
+    /** @return list<SendBillingEmailMessage|SendTemplatedEmailMessage> */
     private function drainSentMessages(InMemoryTransport $transport): array
     {
-        return array_map(
-            static fn ($envelope) => $envelope->getMessage(),
-            $transport->getSent(),
-        );
+        $bus    = static::getContainer()->get(MessageBusInterface::class);
+        $emails = [];
+        for ($i = 0; $i < count($transport->getSent()); $i++) {
+            $envelope = $transport->getSent()[$i];
+            $message  = $envelope->getMessage();
+            if ($message instanceof SendBillingEmailMessage || $message instanceof SendTemplatedEmailMessage) {
+                $emails[] = $message;
+            } elseif ($message instanceof PlanningModificationAppliedMessage) {
+                $bus->dispatch($envelope->with(new ReceivedStamp('async')));
+            }
+        }
+
+        return $emails;
     }
 
     private function emailsTo(array $messages, string $email): array
     {
-        return array_values(array_filter(
-            $messages,
-            fn (SendBillingEmailMessage $m) => $m->to === $email,
-        ));
+        return array_values(array_filter($messages, static fn ($m) => $m->to === $email));
     }
 
     public function test_reassignment_notifies_old_instrumentist_new_instrumentist_and_surgeon_only(): void
@@ -1163,5 +1193,64 @@ final class PlanningModificationControllerTest extends WebTestCase
         $response = $this->postJson($client, $token, '/api/planning/versions/' . $version->getId() . '/cancel-all', []);
 
         self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
+    }
+
+    /**
+     * H3 (D-129) — the historic gap: a manager removing an instrumentist in Modification mode
+     * used to notify nobody (release(notify: false)). Now, after the batch commits:
+     *   - the removed instrumentist gets her recap (PLANNING_CHANGE_SUMMARY), not a pool offer
+     *     for the mission she was removed from (excluded for that episode only);
+     *   - the eligible pool gets ONE email for the whole batch, listing only the missions
+     *     each person can take (the released one + the one the batch created).
+     */
+    public function test_modification_batch_notifies_the_pool_once_after_commit_and_excludes_the_removed_instrumentist(): void
+    {
+        $client    = $this->boot();
+        $manager   = $this->createUser('ROLE_MANAGER');
+        $token     = $this->login($client, $manager);
+        $surgeon   = $this->createUser('ROLE_SURGEON');
+        $removed   = $this->createUser('ROLE_INSTRUMENTIST');
+        $colleague = $this->createUser('ROLE_INSTRUMENTIST');
+        $site      = $this->makeSite();
+        foreach ([$removed, $colleague] as $person) {
+            $this->em->persist((new \App\Entity\SiteMembership())->setUser($person)->setSite($site)->setSiteRole('INSTRUMENTIST'));
+        }
+        $this->em->flush();
+        $version = $this->makeVersion($site, $manager);
+        $mission = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $removed);
+
+        /** @var InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+
+        $response = $this->postJson($client, $token, "/api/planning/versions/{$version->getId()}/apply-modifications", ['lines' => [
+            $this->lineFor($mission, ['instrumentistId' => null, 'status' => 'UNCOVERED']),
+            $this->newLineFor($site, $surgeon, null, '2026-09-16', '14:00', '18:00'),
+        ]]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+
+        $queued = array_map(static fn ($e) => $e->getMessage(), $transport->getSent());
+        self::assertCount(1, array_filter($queued, static fn ($m) => $m instanceof PlanningModificationAppliedMessage), 'one post-commit message for the whole batch');
+        self::assertCount(0, array_filter($queued, static fn ($m) => $m instanceof SendTemplatedEmailMessage || $m instanceof SendBillingEmailMessage), 'nothing is sent before the batch has committed');
+
+        $sent = $this->drainSentMessages($transport);
+        $pool = static fn (array $mails) => array_values(array_filter($mails, static fn ($m) => $m->htmlTemplate === 'emails/open_missions_available.html.twig'));
+
+        $toRemoved = $this->emailsTo($sent, $removed->getEmail());
+        self::assertCount(1, array_filter($toRemoved, static fn ($m) => $m->htmlTemplate === 'emails/planning_change_summary_instrumentist.html.twig'), 'her recap');
+        $removedPool = $pool($toRemoved);
+        self::assertCount(1, $removedPool);
+        self::assertSame(['16/09/2026'], array_column($removedPool[0]->context['missions'], 'dateLabel'), 'offered the new mission, never the one she was removed from');
+
+        $colleaguePool = $pool($this->emailsTo($sent, $colleague->getEmail()));
+        self::assertCount(1, $colleaguePool, 'ONE pool email for the whole batch');
+        self::assertSame(['15/09/2026', '16/09/2026'], array_column($colleaguePool[0]->context['missions'], 'dateLabel'));
+
+        $conn = $this->em->getConnection();
+        $correlation = $conn->fetchOne("SELECT correlation_id FROM activity_event WHERE event_type = 'PLANNING_MODIFICATION_APPLIED' AND planning_version_id = ? ORDER BY id DESC LIMIT 1", [$version->getId()]);
+        $evaluation = $conn->fetchAssociative("SELECT * FROM activity_event WHERE event_type = 'OPEN_POOL_EVALUATED' AND mission_id = ?", [$mission->getId()]);
+        self::assertSame($correlation, $evaluation['correlation_id'], 'same correlation from the HTTP request to the pool');
+        $ep = json_decode((string) $evaluation['payload'], true);
+        self::assertSame(['PLANNING_MODIFICATION', 'BATCH', 1], [$ep['cause'], $ep['mode'], $ep['excludedCount']]);
     }
 }

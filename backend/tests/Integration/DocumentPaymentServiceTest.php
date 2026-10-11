@@ -33,6 +33,7 @@ use App\Service\FirmInvoiceService;
 use App\Service\InstrumentistStatementService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Exécution & Valorisation, Lot 5 (D-075) — §23 du lot : émission, numérotation,
@@ -41,6 +42,8 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class DocumentPaymentServiceTest extends KernelTestCase
 {
+    use DeclaresActualHours;
+
     private EntityManagerInterface $em;
     private FinancialCalculationService $calcService;
     private FirmInvoiceService $invoiceService;
@@ -170,6 +173,7 @@ final class DocumentPaymentServiceTest extends KernelTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();
@@ -202,6 +206,79 @@ final class DocumentPaymentServiceTest extends KernelTestCase
     private function issueInvoice(FirmInvoice $invoice, User $actor): FirmInvoice
     {
         return $this->invoiceService->issue($invoice, $actor);
+    }
+
+    // ── H5b (D-132) — envoi et renvoi tracés, document figé ───────────────
+
+    public function test_issue_send_and_resend_are_traced_and_the_resend_carries_the_frozen_document(): void
+    {
+        $actor   = $this->makeUser('ROLE_MANAGER');
+        $invoice = $this->issueInvoice($this->makeGeneratedInvoice('180.00', $actor), $actor);
+        $to      = 'facturation-' . bin2hex(random_bytes(4)) . '@firme.test';
+        $conn    = $this->em->getConnection();
+        /** @var \Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport $transport */
+        $transport = self::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+        $mailer = self::getContainer()->get(\App\Service\BillingDocumentMailer::class);
+
+        try {
+            $mailer->sendFirmInvoiceEmail($invoice, $to, ['compta@firme.test'], $actor);
+
+            // An unrelated change that WOULD change a fresh rendering of the PDF.
+            $invoice->getFirm()->setName($invoice->getFirm()->getName() . ' (renommée)');
+            $this->em->flush();
+            $mailer->sendFirmInvoiceEmail($invoice, $to, [], $actor, resend: true);
+
+            $events = $conn->fetchAllAssociative(
+                "SELECT * FROM activity_event WHERE subject_type = 'FirmInvoice' AND subject_id = ? ORDER BY id", [$invoice->getId()]);
+            // The whole life of the invoice on its own timeline: creation, issue (AuditEvent mirrors), sends.
+            self::assertSame(['FIRM_INVOICE_CREATED_FROM_CALCULATION', 'FIRM_INVOICE_ISSUED', 'FIRM_INVOICE_SENT', 'FIRM_INVOICE_RESENT'], array_column($events, 'event_type'));
+            $sent   = json_decode($events[2]['payload'], true);
+            $resent = json_decode($events[3]['payload'], true);
+            self::assertSame('BILLING', $events[2]['domain']);
+            self::assertSame((string) $actor->getId(), (string) $events[2]['actor_user_id']);
+            self::assertSame('FIRM_BILLING', $sent['recipientKind']);
+            self::assertSame(1, $sent['ccCount']);
+            self::assertSame($sent['generatedDocumentId'], $resent['generatedDocumentId'], 'the resend reuses the frozen document');
+            self::assertSame($sent['sha256'], $resent['sha256'], 'same bytes as the first send, not a new rendering');
+            self::assertSame($sent['sha256'], $conn->fetchOne('SELECT sha256 FROM generated_document WHERE id = ?', [$sent['generatedDocumentId']]));
+            self::assertSame('IMMUTABLE_EVIDENCE', $conn->fetchOne('SELECT retention_class FROM generated_document WHERE id = ?', [$sent['generatedDocumentId']]));
+            foreach ($events as $e) {
+                self::assertStringNotContainsString($to, (string) $e['payload'], 'no address in the business event');
+            }
+
+            // Two traced deliveries on the common low-level layer, caused by their business events.
+            $deliveries = $conn->fetchAllAssociative(
+                "SELECT * FROM outbound_notification WHERE recipient_address = ? ORDER BY id", [$to]);
+            self::assertCount(2, $deliveries);
+            self::assertSame(['QUEUED', 'QUEUED'], array_column($deliveries, 'status'));
+            self::assertSame(['FIRM_INVOICE_DOCUMENT', 'FIRM_INVOICE_DOCUMENT'], array_column($deliveries, 'notification_type'));
+            self::assertNull($deliveries[0]['recipient_user_id'], 'an external recipient, never a fake user');
+            self::assertSame('EMAIL', $deliveries[0]['channel']);
+            foreach ([2 => 0, 3 => 1] as $eventIndex => $deliveryIndex) {
+                $queued = $conn->fetchAssociative(
+                    "SELECT * FROM activity_event WHERE event_type = 'NOTIFICATION_CHANNEL_QUEUED' AND subject_id = ?", [$deliveries[$deliveryIndex]['id']]);
+                self::assertNotFalse($queued);
+                self::assertSame((string) $events[$eventIndex]['id'], (string) $queued['causation_event_id'], 'queued ← sent / resent');
+                self::assertSame($events[$eventIndex]['correlation_id'], $queued['correlation_id']);
+            }
+
+            // The worker sends the first one: SENT on both the delivery and the timeline.
+            $messages = array_values(array_filter(array_map(static fn ($e) => $e->getMessage(), $transport->getSent()),
+                static fn ($m) => $m instanceof \App\Message\SendTemplatedEmailMessage));
+            self::assertCount(2, $messages);
+            self::getContainer()->get(\App\MessageHandler\SendTemplatedEmailMessageHandler::class)($messages[0]);
+            self::assertSame('SENT', $conn->fetchOne('SELECT status FROM outbound_notification WHERE id = ?', [$deliveries[0]['id']]));
+            self::assertSame(1, (int) $conn->fetchOne(
+                "SELECT COUNT(*) FROM activity_event WHERE event_type = 'NOTIFICATION_CHANNEL_SENT' AND subject_id = ?", [$deliveries[0]['id']]));
+        } finally {
+            $ids = $conn->fetchFirstColumn('SELECT id FROM outbound_notification WHERE recipient_address = ?', [$to]);
+            if ($ids !== []) {
+                $in = implode(',', array_map('intval', $ids));
+                $conn->executeStatement("DELETE FROM outbound_notification_attempt WHERE notification_id IN ($in)");
+                $conn->executeStatement("DELETE FROM outbound_notification WHERE id IN ($in)");
+            }
+        }
     }
 
     // ── Émission ──────────────────────────────────────────────────────────
@@ -405,6 +482,7 @@ final class DocumentPaymentServiceTest extends KernelTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $calc = $this->calcService->calculate($mission, $actor);

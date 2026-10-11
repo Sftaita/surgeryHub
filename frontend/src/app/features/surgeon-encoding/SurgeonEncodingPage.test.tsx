@@ -214,19 +214,55 @@ describe("SurgeonEncodingPage — état vide", () => {
   });
 });
 
-describe("SurgeonEncodingPage — heures prestées", () => {
-  it("affiche 'Non renseigné' quand aucune saisie n'existe", async () => {
+describe("SurgeonEncodingPage — horaires (D-143)", () => {
+  it("indique que les heures réelles ne sont pas déclarées, sans inventer de plage", async () => {
     mockRoutes(baseMission(), baseEncoding({ entries: [] }), baseExecution({ hasExecutionRecord: false }));
     renderPage();
 
-    expect(await screen.findByText("Non renseigné")).toBeInTheDocument();
+    const summary = await screen.findByTestId("surgeon-hours-summary");
+    expect(summary).toHaveTextContent("Non déclarées");
+    expect(summary).not.toHaveTextContent("Écart");
   });
 
-  it("affiche les heures réellement enregistrées, même format que les autres écrans", async () => {
-    mockRoutes(baseMission(), baseEncoding({ entries: [] }), baseExecution({ hasExecutionRecord: true, actualDurationMinutes: 270 }));
+  it("affiche planifié, réel (début → fin · pause), durée réelle et écart", async () => {
+    mockRoutes(
+      baseMission({ startAt: "2026-07-05T08:00:00+02:00", endAt: "2026-07-05T16:00:00+02:00" }),
+      baseEncoding({ entries: [] }),
+      baseExecution({
+        hasExecutionRecord: true,
+        actualStartAt: "2026-07-05T07:45:00+02:00",
+        actualEndAt: "2026-07-05T17:15:00+02:00",
+        breakMinutes: 30,
+        actualDurationMinutes: 540,
+      }),
+    );
     renderPage();
 
-    expect(await screen.findByText("4.5 h")).toBeInTheDocument();
+    const summary = await screen.findByTestId("surgeon-hours-summary");
+    expect(summary).toHaveTextContent("08h00 → 16h00");
+    expect(summary).toHaveTextContent("07h45 → 17h15 · pause 30 min");
+    expect(summary).toHaveTextContent("9h00");
+    expect(summary).toHaveTextContent("+1h00 par rapport au planning");
+  });
+});
+
+describe("SurgeonEncodingPage — état de la synthèse (D-143)", () => {
+  it("encodage soumis : date de soumission affichée", async () => {
+    mockRoutes(baseMission({ status: "SUBMITTED", submittedAt: "2026-07-05T18:30:00+02:00" }), baseEncoding({ entries: [] }));
+    renderPage();
+    expect(await screen.findByTestId("surgeon-encoding-state")).toHaveTextContent("Encodage soumis le 05/07/2026");
+  });
+
+  it("brouillon jamais soumis : informations provisoires", async () => {
+    mockRoutes(baseMission({ status: "ENCODING_IN_PROGRESS", submittedAt: null }), baseEncoding({ entries: [] }));
+    renderPage();
+    expect(await screen.findByTestId("surgeon-encoding-state")).toHaveTextContent("informations provisoires");
+  });
+
+  it("correction après soumission : la synthèse n'est jamais présentée comme définitive", async () => {
+    mockRoutes(baseMission({ status: "ENCODING_IN_PROGRESS", submittedAt: "2026-07-05T18:30:00+02:00" }), baseEncoding({ entries: [] }));
+    renderPage();
+    expect(await screen.findByTestId("surgeon-encoding-state")).toHaveTextContent("en cours de correction");
   });
 });
 

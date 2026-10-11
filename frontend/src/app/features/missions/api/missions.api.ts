@@ -384,6 +384,8 @@ export interface MissionExecutionInfo {
   actualStartAt: string | null;
   actualEndAt: string | null;
   actualDurationMinutes: number | null;
+  /** D-143 — pause déclarée (minutes) ; la durée réelle = fin − début − pause. */
+  breakMinutes?: number | null;
   hoursSource: string | null;
   effectiveDurationMinutes: number;
   effectiveDurationSource: string;
@@ -417,6 +419,10 @@ export async function remindMissionHours(id: number): Promise<void> {
  * resynchroniser le cache ["mission-execution", missionId] sans deviner de champs.
  */
 export type MissionExecutionUpdateBody = {
+  /** D-143 — ISO 8601 avec décalage ; un début seul est un brouillon valide (jamais soumissible). */
+  actualStartAt?: string | null;
+  actualEndAt?: string | null;
+  breakMinutes?: number | null;
   actualDurationMinutes?: number | null;
   hoursSource?: string | null;
 };

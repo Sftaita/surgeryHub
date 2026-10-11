@@ -24,6 +24,7 @@ describe("formatNotificationTitle — alignement avec NotificationType (backend)
     "ABSENCE_MISSION_CANCELLED",
     "ABSENCE_INSTRUMENTIST_REASSIGNED",
     "PLANNING_RESENT_MANUAL",
+    "PLANNING_CHANGE_SUMMARY",
   ];
 
   it.each(REAL_EVENT_TYPES)("a un titre lisible dédié pour %s (jamais le repli générique)", (eventType) => {
@@ -86,5 +87,66 @@ describe("formatNotificationBody — ROOM_TAKEOVER_MISSION_OFFER (D-124)", () =>
     expect(formatNotificationBody(n)).toBe(
       "Dr Bruno reprend la salle de Dr Alain le 15/10/2026 à Delta. Une mission est disponible pour ce créneau.",
     );
+  });
+});
+
+describe("D-143 — notifications d'encodage", () => {
+  it("relance : reprend le texte serveur", () => {
+    expect(formatNotificationTitle({ eventType: "ENCODING_REMINDER" })).toBe("Encodage à finaliser");
+    expect(formatNotificationBody({ eventType: "ENCODING_REMINDER", payload: { body: "Gardez votre journée en mémoire !" } } as any)).toBe("Gardez votre journée en mémoire !");
+  });
+
+  it("escalade J+4 : instrumentiste, date, chirurgien, éléments manquants", () => {
+    expect(formatNotificationBody({ eventType: "ENCODING_ESCALATION", payload: {
+      instrumentistName: "Diane D.", missionDate: "14/07/2026", surgeonName: "Dr X", missing: ["Heure réelle de fin"],
+    } } as any)).toBe("Diane D. — mission du 14/07/2026 — Dr X. Manquant : Heure réelle de fin.");
+  });
+
+  it("soumission chirurgien : une correction est annoncée comme telle", () => {
+    expect(formatNotificationBody({ eventType: "ENCODING_SUBMITTED", payload: { missionDate: "14/07/2026", resubmitted: true } } as any))
+      .toContain("a été corrigé");
+  });
+
+  it("signalement côté instrumentiste : catégorie seulement, jamais le commentaire", () => {
+    const body = formatNotificationBody({ eventType: "ENCODING_ANOMALY_INSTRUMENTIST", payload: { missionDate: "14/07/2026", type: "HOURS_INCORRECT", comment: "secret" } } as any);
+    expect(body).toContain("(horaires)");
+    expect(body).not.toContain("secret");
+  });
+});
+
+describe("formatNotificationBody — PLANNING_MISSION_RELEASED (H2, D-127)", () => {
+  it("dit que la mission ne fait plus partie du planning, sans jamais la proposer", () => {
+    const n = { eventType: "PLANNING_MISSION_RELEASED", payload: { missionDate: "13/11/2026", siteName: "Delta" } };
+    expect(formatNotificationTitle(n)).toBe("Mission retirée de votre planning");
+    const body = formatNotificationBody(n);
+    expect(body).toBe("13/11/2026 — Delta — cette mission ne fait plus partie de votre planning.");
+    expect(body).not.toMatch(/disponible|reprendre|offre/i);
+  });
+});
+
+describe("H3 (D-129) — corps des notifications pool et récapitulatif", () => {
+  it("décrit une mission disponible depuis le payload serveur (date, heures, site, chirurgien)", () => {
+    const body = formatNotificationBody({
+      eventType: "OPEN_MISSION_AVAILABLE",
+      payload: { missionDate: "15/01/2027", startTime: "08:00", endTime: "16:00", siteName: "Repro Delta", surgeonName: "Philippe Schiepers" },
+    });
+    expect(body).toBe("15/01/2027 08:00–16:00 — Repro Delta — Dr Philippe Schiepers. Consultez vos offres pour la prendre.");
+  });
+
+  it("résume les changements d'une modification de planning", () => {
+    const body = formatNotificationBody({
+      eventType: "PLANNING_CHANGE_SUMMARY",
+      payload: { periodLabel: "janvier 2027", addedCount: 1, removedCount: 2, modifiedCount: 0 },
+    });
+    expect(body).toBe("Planning de janvier 2027 : 1 ajout, 2 retraits.");
+  });
+});
+
+describe("H4 (D-130) — informations d'absence N1 / N2", () => {
+  it("affiche la phrase métier fournie par le serveur, jamais « mission annulée » avant publication", () => {
+    const sentence = "Le Dr Philippe Schiepers sera absent le 25/06/2027. Le créneau sur lequel vous étiez prévue dans le planning en préparation est impacté.";
+    expect(formatNotificationBody({ eventType: "ABSENCE_OCCURRENCE_CANCELLED", payload: { level: "DRAFT", sentence } })).toBe(sentence);
+    expect(formatNotificationTitle({ eventType: "ABSENCE_OCCURRENCE_CANCELLED" })).not.toBe("Notification");
+    expect(formatNotificationTitle({ eventType: "ABSENCE_OCCURRENCE_UNCOVERED" })).not.toBe("Notification");
   });
 });

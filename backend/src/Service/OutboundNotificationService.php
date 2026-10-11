@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Activity\Recorder\NotificationActivityRecorder;
 use App\Entity\Mission;
 use App\Entity\OutboundNotification;
 use App\Entity\OutboundNotificationAttempt;
@@ -24,11 +25,14 @@ use Doctrine\ORM\EntityManagerInterface;
  */
 class OutboundNotificationService
 {
-    private const PAYLOAD_ALLOWLIST = ['missionId', 'planningVersionId', 'url', 'notificationType'];
+    // H5a — 'attachments': DocumentReference arrays (id, type, filename, sha256, size), never content.
+    private const PAYLOAD_ALLOWLIST = ['missionId', 'planningVersionId', 'url', 'notificationType', 'attachments'];
 
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly WebPushService $webPushService,
+        private readonly NotificationActivityRecorder $activity,
+        private readonly \App\Notification\MissionCommunicationService $communications,
     ) {
     }
 
@@ -128,9 +132,11 @@ class OutboundNotificationService
         ?Mission $mission = null,
         ?OutboundNotification $fallbackOf = null,
         ?OutboundNotificationFallbackReason $fallbackReason = null,
+        ?string $recipientAddress = null,
     ): OutboundNotification {
         $notification = (new OutboundNotification())
             ->setRecipientUser($recipient)
+            ->setRecipientAddress($recipientAddress ?? $recipient->getEmail())
             ->setChannel(OutboundNotificationChannel::EMAIL)
             ->setNotificationType($notificationType)
             ->setStatus(OutboundNotificationStatus::QUEUED)
@@ -201,7 +207,32 @@ class OutboundNotificationService
                 ->setFailureMessage($reason);
         }
 
-        $this->em->flush();
+        // H2 (D-128) — the status change and its timeline entry commit together. Only the
+        // two meaningful transitions are traced: accepted by the relay (SENT — never
+        // "received"), or definitively failed. An intermediate retryable failure is an
+        // Attempt row only.
+        $this->em->getConnection()->transactional(function () use ($notification, $success, $final, $reason): void {
+            $this->em->flush();
+            if ($success) {
+                $this->activity->channelSent($notification, $this->dispatchIdOf($notification));
+                // H4 (D-130) — the relay accepted the email: the missions it presented now
+                // count as communicated (never at queue time).
+                $this->communications->activateForDelivery($notification);
+            } elseif ($final) {
+                $this->activity->channelFailed($notification, $reason, $this->dispatchIdOf($notification));
+            }
+        });
+    }
+
+    /** H2 (D-128) — first NotificationDispatch linked to this delivery, if it came from the dispatcher. */
+    private function dispatchIdOf(OutboundNotification $notification): ?int
+    {
+        $id = $this->em->getConnection()->fetchOne(
+            'SELECT dispatch_id FROM notification_dispatch_delivery WHERE outbound_notification_id = ? ORDER BY dispatch_id LIMIT 1',
+            [$notification->getId()],
+        );
+
+        return $id === false ? null : (int) $id;
     }
 
     /**

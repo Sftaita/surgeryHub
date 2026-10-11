@@ -66,6 +66,12 @@
 {% for mission in missionsRestoredOpen %}
   {{ m.card(actionRequiredColor, mission.date ~ (mission.siteName ? ' · ' ~ mission.siteName : ''), (mission.surgeonName ? mission.surgeonName : '') ~ ' — restaurée mais toujours non couverte', 'À réaffecter') }}
 {% endfor %}
+{% for slot in draftsToCover %}
+  {{ m.card(actionRequiredColor, slot.date ~ (slot.horaire ? ' · ' ~ slot.horaire : '') ~ (slot.siteName ? ' · ' ~ slot.siteName : ''), (slot.surgeonName ? slot.surgeonName : '') ~ ' — planning en préparation, instrumentiste indisponible', 'DRAFT à recouvrir') }}
+{% endfor %}
+{% for slot in managerDecisions %}
+  {{ m.card(actionRequiredColor, slot.date ~ (slot.horaire ? ' · ' ~ slot.horaire : '') ~ (slot.siteName ? ' · ' ~ slot.siteName : ''), (slot.surgeonName ? slot.surgeonName : '') ~ (slot.instrumentistName ? ' / ' ~ slot.instrumentistName : ''), 'Décision requise') }}
+{% endfor %}
 </td></tr>
 {% endif %}
 
@@ -84,6 +90,19 @@
 {% endfor %}
 {% for occurrence in futureOccurrencesRestored %}
   {{ m.card(automaticColor, occurrence.occurrenceDate ~ (occurrence.startTime ? ' · ' ~ occurrence.startTime ~ '–' ~ occurrence.endTime : '') ~ (occurrence.siteName ? ' · ' ~ occurrence.siteName : ''), (occurrence.instrumentistName ? occurrence.instrumentistName : 'Aucun instrumentiste habituel'), 'Poste futur réactivé') }}
+{% endfor %}
+{% for slot in draftsNeutralizedAtDeploy %}
+  {{ m.card(automaticColor, slot.date ~ (slot.horaire ? ' · ' ~ slot.horaire : '') ~ (slot.siteName ? ' · ' ~ slot.siteName : ''), (slot.instrumentistName ? slot.instrumentistName : 'Aucune affectation'), 'DRAFT neutralisé au déploiement') }}
+{% endfor %}
+</td></tr>
+{% endif %}
+
+{% if usualOccurrencesToCover|length > 0 %}
+<!-- À anticiper (organisation habituelle, aucune mission encore générée) -->
+<tr><td class="sh-pad" style="padding:16px 32px 4px 32px;">
+<div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:#727E8C;margin-bottom:8px;">À anticiper — créneaux habituels</div>
+{% for slot in usualOccurrencesToCover %}
+  {{ m.card(automaticColor, slot.date ~ (slot.horaire ? ' · ' ~ slot.horaire : '') ~ (slot.siteName ? ' · ' ~ slot.siteName : ''), (slot.surgeonName ? slot.surgeonName : '') ~ ' — instrumentiste habituelle indisponible', 'À couvrir à la génération') }}
 {% endfor %}
 </td></tr>
 {% endif %}

@@ -23,6 +23,7 @@ use App\Service\RequiredChoiceGroupResolver;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Exécution & Valorisation, Lot 3 (D-073) — §22 du lot : verrou pessimiste sur la
@@ -34,6 +35,8 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class FinancialCalculationConcurrencyTest extends KernelTestCase
 {
+    use DeclaresActualHours;
+
     private const LOCK_TIMEOUT_SECONDS = 2;
 
     private EntityManagerInterface $em;
@@ -139,6 +142,7 @@ final class FinancialCalculationConcurrencyTest extends KernelTestCase
         $m->setStatus(MissionStatus::VALIDATED);
         $m->setInstrumentist($instrumentist);
         $this->em->persist($m); $this->em->flush();
+        $this->declareActualHours($m); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $m->getId();
         return $m;
     }

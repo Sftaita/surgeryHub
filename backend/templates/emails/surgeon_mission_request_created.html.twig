@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><style>
+body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+.container { max-width: 600px; margin: 0 auto; padding: 24px; }
+.header { border-bottom: 2px solid #566270; padding-bottom: 12px; margin-bottom: 20px; }
+.title { color: #566270; font-size: 18px; font-weight: bold; }
+.details { background: #F5F7FA; border-radius: 8px; padding: 14px 18px; margin: 16px 0; }
+.details div { margin: 2px 0; }
+.cta { display: inline-block; margin-top: 8px; padding: 10px 18px; background: #338F6E; color: #fff; border-radius: 8px; text-decoration: none; font-weight: bold; }
+.footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+</style></head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">SurgicalHub — Nouvelle demande de mission</div>
+  </div>
+
+  <p>Bonjour {{ firstname }},</p>
+
+  <p>Dr {{ surgeonName }} a demandé une mission :</p>
+
+  <div class="details">
+    <div><strong>{{ date }}</strong> — {{ startTime }} à {{ endTime }}</div>
+    <div>Établissement : {{ siteName }}</div>
+  </div>
+
+  <p>Cette demande attend votre décision.</p>
+
+  <p><a class="cta" href="{{ requestsUrl }}">Examiner la demande</a></p>
+
+  <p><a href="{{ requestsUrl }}">{{ requestsUrl }}</a></p>
+
+  <p>Bien à vous,<br>SurgicalHub</p>
+
+  {% include 'emails/_notification_preferences_cta.html.twig' %}
+
+  <div class="footer">SurgicalHub — document confidentiel</div>
+</div>
+</body>
+</html>

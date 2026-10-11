@@ -7,36 +7,57 @@ use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 /**
- * D-083 — rappel unique d'encodage D+1, au plus tôt 08 h Europe/Brussels.
+ * D-143 — relance progressive d'encodage J+1 / J+2 / J+4 à 09 h Europe/Brussels
+ * (remplace le rappel unique D+1 08 h de D-083).
  *
- * Orchestre uniquement (sélection → traitement isolé par mission → résumé) ; toute la
- * décision (éligibilité, canal, idempotence) vit dans EncodingReminderService.
+ * Orchestre uniquement (garde horaire → sélection → traitement isolé par mission →
+ * résumé) ; toute la décision (échéance, état, canaux, idempotence) vit dans
+ * EncodingReminderService.
  *
- * Cron recommandé : toutes les 15-30 min (garde métier interne ci-dessous, pas une
- * exécution unique à 08h00 pile — évite toute dérive été/hiver si le cron serveur est en
- * UTC fixe, voir docs/production.md). Une exécution avant 08h00 locale ne fait rien.
+ * Cron recommandé : toutes les 15 min (garde métier interne ci-dessous, pas une
+ * exécution unique à 09h00 pile — aucune dérive été/hiver si le cron serveur est en
+ * UTC, voir docs/production.md). Une exécution avant 09h00 locale ne fait rien ; une
+ * exécution répétée n'envoie jamais deux fois la même échéance.
  *   php bin/console app:notifications:send-encoding-reminders
+ *
+ * Recette uniquement (jamais en prod) : `--at="2026-07-15 09:05"` fixe l'horloge (heure de
+ * Bruxelles) pour exécuter le parcours complet à une échéance choisie, dans un
+ * environnement isolé. Refusé quand kernel.environment = prod : l'horloge de production
+ * n'est jamais modifiable.
+ *
+ * `--dry-run` : LECTURE SEULE — liste les relances qui seraient traitées (mission, échéance,
+ * situation, déjà envoyée ou non, nombre de managers alertés à J+4) sans rien réserver ni
+ * envoyer. Autorisé en prod, y compris avec `--at` (contrôle de la sélection d'une échéance
+ * à venir), puisqu'aucune écriture n'a lieu.
  */
 #[AsCommand(
     name: 'app:notifications:send-encoding-reminders',
-    description: "Envoie le rappel d'encodage D+1 (Push, repli email) aux missions éligibles, au plus tôt 08h Europe/Brussels."
+    description: "Relance progressive d'encodage J+1/J+2/J+4 (09h Europe/Brussels) — push ou e-mail de secours, e-mail + managers à J+4."
 )]
 class SendEncodingRemindersCommand extends Command
 {
     private const TIMEZONE = 'Europe/Brussels';
-    private const EARLIEST_HOUR = 8;
 
     public function __construct(
         private readonly EncodingReminderService $service,
         #[Autowire(service: 'monolog.logger.push')]
         private readonly LoggerInterface $logger,
+        #[Autowire('%kernel.environment%')]
+        private readonly string $environment = 'prod',
     ) {
         parent::__construct();
+    }
+
+    protected function configure(): void
+    {
+        $this->addOption('at', null, InputOption::VALUE_REQUIRED, 'Horloge fixée, heure de Bruxelles (ex. "2026-07-15 09:05") — hors prod, ou en prod avec --dry-run uniquement.');
+        $this->addOption('dry-run', null, InputOption::VALUE_NONE, 'Lecture seule : liste les relances dues sans rien réserver ni envoyer.');
     }
 
     /** Overridden in tests to freeze "now" — no Clock abstraction exists in this codebase yet. */
@@ -48,42 +69,64 @@ class SendEncodingRemindersCommand extends Command
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
-        $now = $this->now();
 
-        if ((int) $now->format('G') < self::EARLIEST_HOUR) {
+        $at = $input->getOption('at');
+        $dryRun = (bool) $input->getOption('dry-run');
+        if ($at !== null) {
+            if ($this->environment === 'prod' && !$dryRun) {
+                $io->error("--at est réservé à la recette : l'horloge de production n'est jamais modifiable.");
+
+                return Command::FAILURE;
+            }
+            $now = new \DateTimeImmutable((string) $at, new \DateTimeZone(self::TIMEZONE));
+        } else {
+            $now = $this->now()->setTimezone(new \DateTimeZone(self::TIMEZONE));
+        }
+
+        if ((int) $now->format('G') < EncodingReminderService::SEND_HOUR) {
             $io->success(sprintf(
-                'Trop tôt (%s, avant 08h00 Europe/Brussels) — aucun rappel envoyé.',
+                'Trop tôt (%s, avant %02dh00 Europe/Brussels) — aucune relance envoyée.',
                 $now->format('H:i'),
+                EncodingReminderService::SEND_HOUR,
             ));
 
             return Command::SUCCESS;
         }
 
-        $missions = $this->service->findEligibleMissions($now);
+        $due = $this->service->findDueReminders($now);
 
-        $counts = ['eligible' => count($missions), 'push_sent' => 0, 'email_sent' => 0, 'skipped' => 0, 'failed' => 0];
+        if ($dryRun) {
+            $rows = [];
+            foreach ($due as ['mission' => $mission, 'stage' => $stage]) {
+                $rows[] = [$mission->getId(), $stage->value, ...array_values($this->service->describeDue($mission, $stage))];
+            }
+            $io->table(['mission', 'échéance', 'échéance (Bruxelles)', 'instrumentiste', 'situation', 'déjà envoyée', 'managers J+4'], $rows);
+            $io->success(sprintf('DRY-RUN %s — %d relance(s) due(s), rien n\'a été réservé ni envoyé.', $now->format('Y-m-d H:i'), count($due)));
 
-        foreach ($missions as $mission) {
+            return Command::SUCCESS;
+        }
+
+        $counts = ['due' => count($due), 'sent' => 0, 'skipped' => 0, 'failed' => 0];
+
+        foreach ($due as ['mission' => $mission, 'stage' => $stage]) {
             try {
-                match ($this->service->processMission($mission, $now)) {
-                    'push'  => $counts['push_sent']++,
-                    'email' => $counts['email_sent']++,
-                    default => $counts['skipped']++,
-                };
+                $this->service->processReminder($mission, $stage, $now) === 'sent'
+                    ? $counts['sent']++
+                    : $counts['skipped']++;
             } catch (\Throwable $e) {
                 $counts['failed']++;
                 $this->logger->error('encoding_reminder.failed', [
                     'missionId' => $mission->getId(),
-                    'reason'    => $e->getMessage(),
+                    'stage'     => $stage->value,
+                    'error'     => $e::class,
                 ]);
             }
         }
 
         $io->success(sprintf(
-            'eligible=%d push_sent=%d email_sent=%d skipped=%d failed=%d',
-            $counts['eligible'],
-            $counts['push_sent'],
-            $counts['email_sent'],
+            'due=%d sent=%d skipped=%d failed=%d',
+            $counts['due'],
+            $counts['sent'],
             $counts['skipped'],
             $counts['failed'],
         ));

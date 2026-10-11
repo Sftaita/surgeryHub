@@ -1,3 +1,4 @@
+import dayjs from "dayjs";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as React from "react";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -115,8 +116,9 @@ describe("EditServiceHoursDialog — préremplissage à l'ouverture", () => {
     const user = userEvent.setup();
     apiPatchMock.mockImplementation((_url: string, body: any) => Promise.resolve({
       data: executionInfo({
-        hasExecutionRecord: true, actualDurationMinutes: body.actualDurationMinutes, hoursSource: "INSTRUMENTIST",
-        effectiveDurationMinutes: body.actualDurationMinutes, effectiveDurationSource: "ACTUAL_EXPLICIT",
+        hasExecutionRecord: true, actualStartAt: body.actualStartAt, actualEndAt: body.actualEndAt, breakMinutes: body.breakMinutes,
+        actualDurationMinutes: 255, hoursSource: "INSTRUMENTIST",
+        effectiveDurationMinutes: 255, effectiveDurationSource: "ACTUAL_TIMES",
       }),
     }));
     renderReopenable(baseMission(), executionInfo());
@@ -127,7 +129,8 @@ describe("EditServiceHoursDialog — préremplissage à l'ouverture", () => {
     expect(screen.getByText("4h15")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Enregistrer les heures" }));
     await waitFor(() => expect(apiPatchMock).toHaveBeenCalledWith(
-      `/api/missions/${MISSION_ID}/execution`, { actualDurationMinutes: 255, hoursSource: "INSTRUMENTIST" },
+      `/api/missions/${MISSION_ID}/execution`,
+      { actualStartAt: dayjs("2026-07-05T08:00:00Z").format(), actualEndAt: dayjs("2026-07-05T12:15:00Z").format(), breakMinutes: 0, hoursSource: "INSTRUMENTIST" },
     ));
     await waitFor(() => expect(screen.queryByText("Enregistrer les heures")).not.toBeInTheDocument());
 
@@ -139,7 +142,7 @@ describe("EditServiceHoursDialog — préremplissage à l'ouverture", () => {
 });
 
 describe("EditServiceHoursDialog — mutation optimiste des heures prestées", () => {
-  it("appelle PATCH .../execution avec des minutes entières, pas l'ancien endpoint /service", async () => {
+  it("D-143 — appelle PATCH .../execution avec début, fin et pause réels (jamais une durée seule)", async () => {
     apiPatchMock.mockResolvedValue({ data: executionInfo({ hasExecutionRecord: true, actualDurationMinutes: 240, hoursSource: "INSTRUMENTIST", effectiveDurationMinutes: 240, effectiveDurationSource: "ACTUAL_EXPLICIT" }) });
     renderDialog(baseMission());
 
@@ -148,7 +151,7 @@ describe("EditServiceHoursDialog — mutation optimiste des heures prestées", (
     await waitFor(() => {
       expect(apiPatchMock).toHaveBeenCalledWith(
         `/api/missions/${MISSION_ID}/execution`,
-        { actualDurationMinutes: 240, hoursSource: "INSTRUMENTIST" },
+        { actualStartAt: dayjs("2026-07-05T08:00:00Z").format(), actualEndAt: dayjs("2026-07-05T12:00:00Z").format(), breakMinutes: 0, hoursSource: "INSTRUMENTIST" },
       );
     });
   });
@@ -216,5 +219,32 @@ describe("EditServiceHoursDialog — mutation optimiste des heures prestées", (
     await waitFor(() => {
       expect(client.getQueryData<MissionExecutionInfo>(["mission-execution", MISSION_ID])).toEqual(previous);
     });
+  });
+});
+
+describe("EditServiceHoursDialog — encodage progressif (D-143)", () => {
+  it("« Fin pas encore connue » n'envoie que le début, sans durée inventée", async () => {
+    apiPatchMock.mockResolvedValue({ data: executionInfo({ hasExecutionRecord: true, actualStartAt: dayjs("2026-07-05T08:00:00Z").format(), hoursSource: "INSTRUMENTIST" }) });
+    renderDialog(baseMission(), vi.fn(), vi.fn(), null);
+
+    await userEvent.click(screen.getByRole("button", { name: "Fin pas encore connue" }));
+    expect(screen.queryByText("Fin")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Enregistrer les heures" }));
+
+    await waitFor(() => expect(apiPatchMock).toHaveBeenCalledWith(
+      `/api/missions/${MISSION_ID}/execution`,
+      { actualStartAt: dayjs("2026-07-05T08:00:00Z").format(), breakMinutes: 0, hoursSource: "INSTRUMENTIST" },
+    ));
+  });
+
+  it("rouvre un début seul avec « Fin pas encore connue » cochée", () => {
+    renderDialog(baseMission(), vi.fn(), vi.fn(), executionInfo({ hasExecutionRecord: true, actualStartAt: dayjs("2026-07-05T07:45:00Z").format() }));
+    expect(screen.getByRole("button", { name: "Fin pas encore connue" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("hours-hint")).toHaveTextContent("Revenez indiquer la fin");
+  });
+
+  it("première saisie : signale que les valeurs proposées viennent du planning", () => {
+    renderDialog(baseMission(), vi.fn(), vi.fn(), null);
+    expect(screen.getByTestId("hours-hint")).toHaveTextContent("ajustez-les à vos heures réellement prestées");
   });
 });

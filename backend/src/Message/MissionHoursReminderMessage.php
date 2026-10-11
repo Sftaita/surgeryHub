@@ -15,6 +15,8 @@ final class MissionHoursReminderMessage
     public function __construct(
         public readonly int $missionId,
         public readonly int $instrumentistId,
+        /** Intégration H1–H8 — identifie la demande du manager : un rejeu Messenger n'envoie jamais deux fois. */
+        public readonly ?string $requestId = null,
     ) {
     }
 }

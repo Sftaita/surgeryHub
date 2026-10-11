@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { fetchMissionById, getMissionExecution, remindMissionHours } from "../../missions/api/missions.api";
 import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
-import { fetchMissionEncoding, remindMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
+import { fetchMissionEncoding, newActionBatchId, remindMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
 import { EncodingContentPanel } from "./EncodingContentPanel";
 import type { EncodingAnomalyMarks, EncodingFocusTarget } from "./EncodingContentPanel";
 import { FinancialAnomaliesCard } from "./FinancialAnomaliesCard";
@@ -53,7 +53,20 @@ function initials(name: string): string {
 }
 
 function extractErrorMessage(err: any): string {
-  return err?.response?.data?.message ?? err?.response?.data?.detail ?? err?.message ?? String(err);
+  return err?.response?.data?.error?.message ?? err?.response?.data?.message ?? err?.response?.data?.detail ?? err?.message ?? String(err);
+}
+
+const STAGE_LABEL: Record<string, string> = { D1: "J+1", D2: "J+2", D4: "J+4" };
+const CHANNEL_LABEL: Record<string, string> = { PUSH: "push", EMAIL: "e-mail" };
+
+/** D-143 — "J+1 15/07 (push) · J+2 16/07 (e-mail) · J+4 18/07 (push + e-mail, managers alertés)". */
+function automaticRemindersLabel(reminders: { stage: string; sentAt: string | null; channels: string[]; managersNotified: number | null }[] | undefined): string | null {
+  if (!reminders || reminders.length === 0) return null;
+  return reminders.map((r) => {
+    const channels = r.channels.filter((c) => c !== "IN_APP").map((c) => CHANNEL_LABEL[c] ?? c).join(" + ") || "centre de notifications";
+    const managers = r.managersNotified ? ", managers alertés" : "";
+    return `${STAGE_LABEL[r.stage] ?? r.stage} ${r.sentAt ? new Date(r.sentAt).toLocaleDateString("fr-BE", { day: "2-digit", month: "2-digit" }) : ""} (${channels}${managers})`;
+  }).join(" · ");
 }
 
 function formatDateTime(iso: string | null | undefined): string {
@@ -178,8 +191,22 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   });
 
   const remindMutation = useMutation({
-    mutationFn: async () => remindMissionEncoding(missionId!),
-    onSuccess: async () => { toast.success("Relance envoyée à l'instrumentiste."); await refreshAfterAction(); },
+    // H5a — the batch id is fixed at click time: a retry of this mutation reuses it.
+    mutationFn: async (batchId: string) => remindMissionEncoding(missionId!, batchId),
+    onSuccess: async (updated) => {
+      // D-143 — retour explicite des canaux réellement utilisés (décidés par le serveur).
+      const channel = updated?.lastManualReminderChannel;
+      toast.success(
+        channel === "push+email"
+          ? "Relance envoyée à l'instrumentiste par notification push et par e-mail."
+          : channel === "push"
+            ? "Relance envoyée à l'instrumentiste par notification push."
+            : channel === "email"
+              ? "Relance envoyée à l'instrumentiste par e-mail."
+              : "Relance envoyée à l'instrumentiste.",
+      );
+      await refreshAfterAction();
+    },
     onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : extractErrorMessage(err)),
   });
 
@@ -231,12 +258,16 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
     ? Math.min(100, Math.round((item.hours.effectiveMinutes / item.hours.plannedMinutes) * 100))
     : 0;
 
+  const automaticHistory = automaticRemindersLabel(missionQuery.data?.automaticReminders);
   const reminderTooltip = [
-    missionQuery.data?.automaticReminderSentAt
-      ? `Relance automatique envoyée le ${formatDateTime(missionQuery.data.automaticReminderSentAt)}`
-      : missionQuery.data?.nextAutomaticReminderAt
-        ? `Prochaine relance automatique : ${formatDateTime(missionQuery.data.nextAutomaticReminderAt)}`
+    automaticHistory
+      ? `Relances automatiques : ${automaticHistory}`
+      : missionQuery.data?.automaticReminderSentAt
+        ? `Relance automatique envoyée le ${formatDateTime(missionQuery.data.automaticReminderSentAt)}`
         : null,
+    missionQuery.data?.nextAutomaticReminderAt
+      ? `Prochaine relance automatique : ${formatDateTime(missionQuery.data.nextAutomaticReminderAt)}`
+      : null,
     missionQuery.data?.lastManualReminderAt
       ? `Dernière relance manuelle le ${formatDateTime(missionQuery.data.lastManualReminderAt)} par ${missionQuery.data.lastManualReminderByName ?? "—"}`
       : null,
@@ -273,6 +304,11 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             {item.financial.isBlocking && (
               <Box data-testid="drawer-finance-status" sx={{ display: "inline-flex", alignItems: "center", height: 24, padding: "0 8px", borderRadius: "999px", fontSize: 11.5, fontWeight: 800, background: RED_50, color: RED_700 }}>
                 Finance : {item.financial.label.toLowerCase()}
+              </Box>
+            )}
+            {item.encoding.escalatedAt && (
+              <Box data-testid="drawer-escalated" sx={{ display: "inline-flex", alignItems: "center", height: 24, padding: "0 8px", borderRadius: "999px", fontSize: 11.5, fontWeight: 800, background: RED_50, color: RED_700 }}>
+                alerte J+4 · {formatDateTime(item.encoding.escalatedAt)}
               </Box>
             )}
             {item.encoding.isStale && (
@@ -397,7 +433,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
         </Card>
       </Box>
 
-      <Box sx={{ flexShrink: 0, background: "#fff", borderTop: "1px solid", borderColor: GRAY_150, padding: "13px 20px", display: "flex", alignItems: "center", gap: "10px" }}>
+      <Box sx={{ flexShrink: 0, background: "#fff", borderTop: "1px solid", borderColor: GRAY_150, padding: "13px 20px", display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px" }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Box sx={{ fontSize: 12.5, fontWeight: 800, color: GRAY_950 }}>
             {canValidate ? "Prêt à valider" : isValidated ? "Validé" : "Encodage en cours"}
@@ -414,12 +450,17 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           </Box>
         </Box>
 
+        {automaticHistory && (
+          <Box data-testid="drawer-reminder-history" sx={{ flexBasis: "100%", order: -1, fontSize: 11.5, color: GRAY_500 }}>
+            Relances automatiques : {automaticHistory}
+          </Box>
+        )}
         {canRemind && (
           <Tooltip title={reminderTooltip} describeChild>
             <Box
               component="button"
               type="button"
-              onClick={() => remindMutation.mutate()}
+              onClick={() => remindMutation.mutate(newActionBatchId())}
               disabled={remindMutation.isPending}
               sx={{
                 display: "flex", alignItems: "center", gap: "6px", height: 40, padding: "0 14px", borderRadius: "11px",

@@ -20,7 +20,7 @@ use Doctrine\ORM\EntityManagerInterface;
  * rules in controllers, voters, notification handlers, or anywhere else.
  *
  * Performance contract (D-036): ≤ 3 DB queries for the batch methods
- * (findEligible, evaluateAllCandidates), regardless of candidate or mission count.
+ * (findEligibleByMission, evaluateAllCandidates), regardless of candidate or mission count.
  */
 class MissionEligibilityService
 {
@@ -82,7 +82,7 @@ class MissionEligibilityService
      * the mission already has someone, or isn't OPEN).
      *
      * NO_SITE_MEMBERSHIP is intentionally scoped to evaluate() (claim() self-service) and
-     * to the candidate-listing methods (evaluateAllCandidates()/findEligible()) only — a
+     * to the candidate-listing methods (evaluateAllCandidates()/findEligibleByMission()) only — a
      * manager reassigning a mission has always been able to target any instrumentist
      * regardless of formal site affiliation (confirmed: no existing manager-facing
      * assign/reassign functional test ever set up a SiteMembership row), and this lot's
@@ -228,16 +228,36 @@ class MissionEligibilityService
     }
 
     /**
-     * Returns eligible candidates per site for pool notifications.
-     * Uses exactly 3 DB queries for any number of open missions (D-036).
+     * H3 (D-129) — eligible candidates PER MISSION for pool solicitation: exactly the people
+     * who could take THAT mission (missionId → User[]), never a per-site union. This is the
+     * only candidate list OpenMissionPoolNotifier may use — the former per-site findEligible()
+     * (which let a person receive missions she was in conflict with) is gone.
      *
-     * @param  Mission[] $openMissions
-     * @return array<int, User[]>  siteId → eligible User[]
+     * Same rules as evaluate() / claim()'s pre-lock gate (D-057): active ROLE_INSTRUMENTIST,
+     * site membership or FREELANCER, not absent that day, no overlapping non-cancelled
+     * mission. A mission that is not OPEN, or already has an instrumentist, has no candidates
+     * (mission-level ALREADY_ASSIGNED / INCOMPATIBLE_STATUS — never solicit for it).
+     *
+     * Exactly 3 DB queries whatever the number of missions and candidates (D-036): no N+1.
+     *
+     * @param  Mission[] $missions
+     * @return array<int, User[]>  missionId → eligible User[] (every input mission id is a key)
      */
-    public function findEligible(array $openMissions): array
+    public function findEligibleByMission(array $missions): array
     {
+        $result = [];
+        $openMissions = [];
+        foreach ($missions as $m) {
+            if ($m->getId() === null) {
+                continue;
+            }
+            $result[$m->getId()] = [];
+            if ($m->getStatus() === MissionStatus::OPEN && $m->getInstrumentist() === null) {
+                $openMissions[] = $m;
+            }
+        }
         if (empty($openMissions)) {
-            return [];
+            return $result;
         }
 
         // Collect unique sites from the open missions
@@ -249,7 +269,7 @@ class MissionEligibilityService
             }
         }
         if (empty($siteById)) {
-            return [];
+            return $result;
         }
 
         // Q1 — every active ROLE_INSTRUMENTIST who is either a FREELANCER (eligible at any
@@ -275,7 +295,7 @@ class MissionEligibilityService
             ->getResult();
 
         if (empty($rows)) {
-            return [];
+            return $result;
         }
 
         $candidateById = []; // userId → User
@@ -372,32 +392,21 @@ class MissionEligibilityService
             }
         }
 
-        // Group open missions by site for per-site PHP evaluation
-        $missionsBySiteId = [];
-        foreach ($openMissions as $m) {
-            $siteId = $m->getSite()?->getId();
-            if ($siteId !== null) {
-                $missionsBySiteId[$siteId][] = $m;
+        // Per-mission PHP evaluation over the preloaded data — no further query.
+        foreach ($openMissions as $mission) {
+            $siteId = $mission->getSite()?->getId();
+            if ($siteId === null) {
+                continue;
             }
-        }
-
-        // For each site, collect candidates eligible for at least one mission there
-        $eligibleBySiteId = [];
-        foreach ($siteById as $siteId => $_) {
             foreach (array_keys($usersBySiteId[$siteId] ?? []) as $userId) {
-                $candidate    = $candidateById[$userId];
-                $siteMissions = $missionsBySiteId[$siteId] ?? [];
-
-                foreach ($siteMissions as $mission) {
-                    if ($this->isEligibleForMission($candidate, $mission, $absencesByUser, $conflictsByUser)) {
-                        $eligibleBySiteId[$siteId][] = $candidate;
-                        break;
-                    }
+                $candidate = $candidateById[$userId];
+                if ($this->isEligibleForMission($candidate, $mission, $absencesByUser, $conflictsByUser)) {
+                    $result[$mission->getId()][] = $candidate;
                 }
             }
         }
 
-        return $eligibleBySiteId;
+        return $result;
     }
 
     /**
@@ -540,7 +549,7 @@ class MissionEligibilityService
      * already active-only, so structurally never fires — kept for interface symmetry
      * with evaluateAllCandidates()/EligibilityReason completeness), NO_SITE_MEMBERSHIP,
      * ABSENT, SCHEDULE_CONFLICT. 4 DB queries (roster, membership, absence, conflict) —
-     * the same batch-query discipline as findEligible()/evaluateAllCandidates() (D-036),
+     * the same batch-query discipline as findEligibleByMission()/evaluateAllCandidates() (D-036),
      * one more query than those because this method is not pre-scoped to a single site
      * by its JOIN the way evaluateAllCandidates() is.
      *

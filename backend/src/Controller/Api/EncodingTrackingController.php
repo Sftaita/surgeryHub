@@ -189,6 +189,8 @@ final class EncodingTrackingController extends AbstractController
                 // EncodingTrackingSummary::staleInProgress, exposée par mission pour la
                 // vue "À traiter" (ajouté lors de l'intégration frontend, D-118).
                 'isStale' => $item->isStale,
+                // D-143 — alerte J+4 envoyée aux managers, visible jusqu'à la soumission.
+                'escalatedAt' => $item->escalatedAt?->format(\DateTimeInterface::ATOM),
             ],
             'financial' => [
                 'state' => $item->financialState->value,

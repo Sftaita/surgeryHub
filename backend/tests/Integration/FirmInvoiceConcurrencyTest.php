@@ -31,6 +31,7 @@ use App\Repository\EncodingTrackingRepository;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Exécution & Valorisation, Lot 4 (D-074) — §14/§22/§34 du lot : deux créations de
@@ -41,6 +42,8 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class FirmInvoiceConcurrencyTest extends KernelTestCase
 {
+    use DeclaresActualHours;
+
     private const LOCK_TIMEOUT_SECONDS = 2;
 
     private EntityManagerInterface $em;
@@ -205,6 +208,7 @@ final class FirmInvoiceConcurrencyTest extends KernelTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();

@@ -57,6 +57,8 @@ enum FirmBillingReason: string
     case MISSING_REPRESENTATIVE_PRESENCE_ANSWER = 'MISSING_REPRESENTATIVE_PRESENCE_ANSWER';
     case MISSING_REQUIRED_CHOICE_ANSWER = 'MISSING_REQUIRED_CHOICE_ANSWER';
     case INVALID_EFFECTIVE_DURATION = 'INVALID_EFFECTIVE_DURATION';
+    /** D-143 — aucune heure réelle déclarée : jamais une rémunération sur le planifié. */
+    case MISSING_ACTUAL_HOURS = 'MISSING_ACTUAL_HOURS';
     /** D-138 — plusieurs règles actives couvrent la même cible à la même date. */
     case CONFLICTING_FIRM_INTERVENTION_RATE = 'CONFLICTING_FIRM_INTERVENTION_RATE';
     case CONFLICTING_FIRM_MATERIAL_RATE = 'CONFLICTING_FIRM_MATERIAL_RATE';
@@ -109,7 +111,7 @@ enum FirmBillingReason: string
         return in_array($this, [
             self::MISSING_FIRM_INTERVENTION_RATE, self::MISSING_FIRM_MATERIAL_RATE, self::MISSING_INSTRUMENTIST_RATE,
             self::MISSING_PRIMARY_FIRM, self::MISSING_INTERVENTION_TYPE, self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER,
-            self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION, self::CALCULATION_FAILED,
+            self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION, self::MISSING_ACTUAL_HOURS, self::CALCULATION_FAILED,
             self::CONFLICTING_FIRM_INTERVENTION_RATE, self::CONFLICTING_FIRM_MATERIAL_RATE, self::CONFLICTING_INSTRUMENTIST_RATE,
         ], true);
     }
@@ -126,7 +128,7 @@ enum FirmBillingReason: string
             self::MISSING_FIRM_INTERVENTION_RATE, self::MISSING_FIRM_MATERIAL_RATE, self::MISSING_INSTRUMENTIST_RATE,
             self::CONFLICTING_FIRM_INTERVENTION_RATE, self::CONFLICTING_FIRM_MATERIAL_RATE, self::CONFLICTING_INSTRUMENTIST_RATE => 'CONFIGURATION',
             self::MISSING_PRIMARY_FIRM, self::MISSING_INTERVENTION_TYPE, self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER,
-            self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION => 'ENCODING',
+            self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION, self::MISSING_ACTUAL_HOURS => 'ENCODING',
             self::CALCULATION_FAILED => 'TECHNICAL',
             default => null,
         };
@@ -157,6 +159,7 @@ enum FirmBillingReason: string
             self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER => 'Présence du délégué non renseignée',
             self::MISSING_REQUIRED_CHOICE_ANSWER => 'Choix obligatoire non renseigné',
             self::INVALID_EFFECTIVE_DURATION => 'Durée de mission invalide',
+            self::MISSING_ACTUAL_HOURS => 'Heures réelles non déclarées',
             self::CALCULATION_FAILED => 'Calcul financier en erreur',
             self::CONFLICTING_FIRM_INTERVENTION_RATE => "Tarifs d'intervention contradictoires",
             self::CONFLICTING_FIRM_MATERIAL_RATE => 'Tarifs matériel contradictoires',
@@ -189,6 +192,7 @@ enum FirmBillingReason: string
             self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER => "L'encodage doit indiquer si le délégué de la firme était présent : cela détermine le forfait.",
             self::MISSING_REQUIRED_CHOICE_ANSWER => "Une réponse obligatoire manque dans l'encodage de cette intervention : elle détermine le forfait.",
             self::INVALID_EFFECTIVE_DURATION => 'La durée réelle de la mission est nulle ou négative : corrigez les horaires.',
+            self::MISSING_ACTUAL_HOURS => "Aucune heure réelle n'a été déclarée : la prestation n'est jamais rémunérée sur les horaires planifiés. Renvoyez l'encodage à l'instrumentiste.",
             self::CALCULATION_FAILED => 'Le calcul financier a échoué pour une raison non reconnue. Le détail technique est disponible dans les journaux.',
             self::CONFLICTING_FIRM_INTERVENTION_RATE, self::CONFLICTING_FIRM_MATERIAL_RATE, self::CONFLICTING_INSTRUMENTIST_RATE
                 => "Plusieurs tarifs actifs s'appliquent à la même date : le calcul ne choisit jamais entre eux. Clôturez ou corrigez l'un d'eux.",

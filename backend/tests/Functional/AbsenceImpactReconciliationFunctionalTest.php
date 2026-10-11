@@ -64,6 +64,24 @@ final class AbsenceImpactReconciliationFunctionalTest extends WebTestCase
             }
             $this->em->flush();
 
+            // H4 (D-130) — restoration notices now go through the dispatcher, which attaches the
+            // feed item and the delivery rows to the mission: removed before the missions.
+            if ($this->createdIds['missions'] !== []) {
+                $ids = implode(',', array_map('intval', $this->createdIds['missions']));
+                $conn = $this->em->getConnection();
+                $conn->executeStatement("DELETE FROM mission_communication WHERE mission_id_snapshot IN ($ids)");
+                $conn->executeStatement("DELETE FROM notification_event WHERE mission_id IN ($ids)");
+                $this->em->clear();
+            }
+            if ($this->createdIds['users'] !== []) {
+                $users = implode(',', array_map('intval', $this->createdIds['users']));
+                $conn = $this->em->getConnection();
+                $conn->executeStatement("DELETE FROM notification_dispatch WHERE recipient_user_id IN ($users)");
+                $conn->executeStatement("DELETE a FROM outbound_notification_attempt a JOIN outbound_notification o ON o.id = a.notification_id WHERE o.recipient_user_id IN ($users)");
+                $conn->executeStatement("DELETE FROM outbound_notification WHERE recipient_user_id IN ($users)");
+                $this->em->clear();
+            }
+
             foreach ($this->createdIds['missions'] as $id) {
                 $mission = $this->em->find(Mission::class, $id);
                 if ($mission === null) { continue; }

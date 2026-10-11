@@ -90,6 +90,8 @@ export interface EncodingTrackingEncoding {
   submittedWithoutMaterial: boolean;
   hasNoMaterialJustification: boolean;
   isStale: boolean;
+  /** D-143 — alerte managers J+4 envoyée, tant que l'encodage n'est pas soumis. */
+  escalatedAt?: string | null;
 }
 
 /** D-138 — un motif d'anomalie et son nombre d'occurrences (ventilation backend). */

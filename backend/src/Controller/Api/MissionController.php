@@ -127,9 +127,9 @@ class MissionController extends AbstractController
         $dto = $this->deserializeAndValidate($request->getContent(), MissionPublishRequest::class);
 
         // D-125 — POOL and TARGETED both go through MissionDispatchService (audit + the right
-        // notification per mode). POOL keeps the pre-existing MissionPublishedMessage pipeline
-        // (Point 8 / D-081: async site-instrumentist push + surgeon notification); TARGETED is a
-        // nominative request, never broadcast to the pool anymore.
+        // notification per mode). POOL → MissionPublishedMessage (async): eligible pool through
+        // OpenMissionPoolNotifier (H3, D-129) + surgeon notification; TARGETED is a nominative
+        // request, never broadcast to the pool anymore.
         $this->dispatchService->dispatch(
             $mission,
             $user,
@@ -228,7 +228,7 @@ class MissionController extends AbstractController
         $data = json_decode($request->getContent(), true) ?? [];
         $instrumentistId = $data['instrumentistId'] ?? null;
 
-        $mission = $this->missionService->assignInstrumentistDraft($mission, $instrumentistId);
+        $mission = $this->missionService->assignInstrumentistDraft($mission, $instrumentistId, $this->getUser() instanceof User ? $this->getUser() : null);
 
         return $this->json($this->mapper->toDetailDto($mission, $currentUser));
     }

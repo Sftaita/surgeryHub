@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Activity\Recorder\PlanningActivityRecorder;
 use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Entity\AuditEvent;
 use App\Entity\EncodingAnomalyReport;
@@ -31,6 +32,7 @@ use App\Entity\SurgeonRatingByInstrumentist;
 use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Enum\PlanningDraftDeletionSource;
 use App\Enum\PlanningVersionScopeSource;
 use App\Enum\PlanningVersionStatus;
 use App\Enum\SchedulePrecision;
@@ -60,6 +62,7 @@ final class PlanningDraftService
         private readonly EntityManagerInterface $em,
         private readonly PlanningGeneratorServiceV2 $generator,
         private readonly MissionEligibilityService $eligibilityService,
+        private readonly PlanningActivityRecorder $activity,
     ) {
     }
 
@@ -337,7 +340,7 @@ final class PlanningDraftService
      * version with a single bulk DQL DELETE instead — one statement instead of ~100,
      * same transaction, same 409 guards, zero change to what gets deleted or refused.
      */
-    public function delete(PlanningVersion $version): void
+    public function delete(PlanningVersion $version, ?User $actor = null): void
     {
         if ($version->getStatus() !== PlanningVersionStatus::DRAFT) {
             throw new PlanningVersionNotDraftException(sprintf(
@@ -361,7 +364,15 @@ final class PlanningDraftService
             $this->assertNoProtectedArtifacts($missionIds);
         }
 
-        $this->em->wrapInTransaction(function () use ($version, $missionIds): void {
+        $this->em->wrapInTransaction(function () use ($version, $missionIds, $missions, $actor): void {
+            // H1 (D-126) — the journal entry is written FIRST, inside this same transaction,
+            // while every Mission (and its names) is still loaded: CLEANUP_ON_MISSION_DELETE
+            // below physically removes these DRAFT missions together with their AuditEvent,
+            // NotificationEvent and PlanningAlert rows (unchanged contract), so this
+            // snapshot is what keeps the deletion explainable afterwards. No FK ties
+            // activity_event to them, so it survives the DELETEs.
+            $this->activity->draftDeleted($version, $missions->toArray(), PlanningDraftDeletionSource::MANUAL, $actor);
+
             foreach (self::CLEANUP_ON_MISSION_DELETE as $entityClass) {
                 if ($missionIds === []) {
                     break;

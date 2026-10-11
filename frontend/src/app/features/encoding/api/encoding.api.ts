@@ -196,7 +196,21 @@ export async function reopenMissionEncoding(
   await apiClient.post(`/api/missions/${missionId}/encoding/reopen`, { comment });
 }
 
-/** D-120 — relance manuelle (cockpit Suivi des encodages). Ne mute aucun statut. */
-export async function remindMissionEncoding(missionId: number): Promise<void> {
-  await apiClient.post(`/api/missions/${missionId}/encoding/remind`);
+/**
+ * D-120 — relance manuelle (cockpit Suivi des encodages). Ne mute aucun statut.
+ * H5a — `batchId` : une relance = un lot ; une requête rejouée avec le même lot n'envoie
+ * jamais une seconde relance (l'email de cette action explicite est obligatoire).
+ * D-143 — renvoie le détail mission à jour (lastManualReminderChannel : canaux réellement
+ * utilisés, 'push+email' | 'push' | 'email' | 'none') ; 409 si une relance date de < 10 min.
+ */
+export async function remindMissionEncoding(missionId: number, batchId?: string): Promise<{ lastManualReminderChannel?: string | null }> {
+  const { data } = await apiClient.post(`/api/missions/${missionId}/encoding/remind`, batchId ? { batchId } : {});
+  return data ?? {};
+}
+
+/** H5a — identifiant d'un lot d'action manager (idempotence côté serveur). */
+export function newActionBatchId(): string {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }

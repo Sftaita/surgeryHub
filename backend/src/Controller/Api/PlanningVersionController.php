@@ -119,7 +119,7 @@ class PlanningVersionController extends AbstractController
      * Never touches a SurgeonSchedulePost or any mission outside this version.
      */
     #[Route('/api/planning/versions/{id}', name: 'api_planning_version_delete', methods: ['DELETE'])]
-    public function delete(int $id): JsonResponse
+    public function delete(int $id, #[CurrentUser] User $user): JsonResponse
     {
         $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
 
@@ -128,7 +128,7 @@ class PlanningVersionController extends AbstractController
             throw new NotFoundHttpException('PlanningVersion introuvable.');
         }
 
-        $this->draftService->delete($version);
+        $this->draftService->delete($version, $user);
 
         return new JsonResponse(null, 204);
     }

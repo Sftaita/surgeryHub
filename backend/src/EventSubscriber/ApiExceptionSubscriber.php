@@ -43,6 +43,7 @@ use App\Exception\ReleasedRoomSlotConflictException;
 use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
 use App\Exception\SurgeonMissionRequestConflictException;
 use App\Exception\EncodingAnomalyReportAlreadyResolvedException;
+use App\Exception\EncodingIncompleteException;
 use App\Exception\IncompatibleChoiceMaterialException;
 use App\Exception\ChoiceOptionChangeRequiresConfirmationException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
@@ -280,6 +281,12 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'ENCODING_ANOMALY_REPORT_ALREADY_RESOLVED';
             $message = $e->getMessage() ?: 'Ce signalement a déjà été traité.';
+        } elseif ($e instanceof EncodingIncompleteException) {
+            // D-143 — ce qui manque, avec la section à ouvrir : le frontend n'en rejoue rien.
+            $status = 422;
+            $code = EncodingIncompleteException::CODE;
+            $message = $e->getMessage();
+            $extra = ['missing' => $e->getMissing()];
         } elseif ($e instanceof ReleasedRoomSlotConflictException) {
             $status = 409;
             $code = $e->getErrorCode();
@@ -307,6 +314,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             && !$e instanceof PaymentCurrencyMismatchException
             && !$e instanceof CorrectionValidationException
             && !$e instanceof RefundExceedsOverpaidException
+            && !$e instanceof EncodingIncompleteException
         ) {
             $violations = $this->extractViolationsFromMessage($message);
             if (count($violations) > 0) {

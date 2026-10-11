@@ -1,6 +1,8 @@
 import * as React from "react";
 import { Box, Stack, Tab, Tabs, Typography } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
+import dayjs from "dayjs";
 import TrackChangesOutlinedIcon from "@mui/icons-material/TrackChangesOutlined";
 import { PageHeader } from "../../../ui/PageHeader";
 import { PeriodNav } from "../../../features/encoding-tracking/components/PeriodNav";
@@ -15,6 +17,7 @@ import { ToTreatPanel } from "../../../features/encoding-tracking/components/ToT
 import { ByInstrumentistView } from "../../../features/encoding-tracking/components/ByInstrumentistView";
 import { MissionTrackingDrawer } from "../../../features/encoding-tracking/components/MissionTrackingDrawer";
 import { periodForShortcut, type Period } from "../../../features/encoding-tracking/period";
+import { fetchMissionById } from "../../../features/missions/api/missions.api";
 import {
   getEncodingTracking,
   getEncodingTrackingSummary,
@@ -75,6 +78,26 @@ export default function EncodingTrackingPage() {
   const [selectedMissionId, setSelectedMissionId] = React.useState<number | null>(null);
 
   const baseFilter = React.useMemo(() => toApiFilter(period, filter), [period, filter]);
+
+  // D-143 — lien de l'alerte J+4 (?missionId=) : se place sur le jour de la mission et
+  // ouvre son tiroir, une seule fois (la navigation reprend ensuite la main).
+  const [searchParams] = useSearchParams();
+  const deepLinkId = Number(searchParams.get("missionId"));
+  const deepLinkHandled = React.useRef(false);
+  const deepLinkQuery = useQuery({
+    queryKey: ["mission", deepLinkId],
+    queryFn: () => fetchMissionById(deepLinkId),
+    enabled: Number.isFinite(deepLinkId) && deepLinkId > 0,
+  });
+  React.useEffect(() => {
+    const startAt = deepLinkQuery.data?.startAt;
+    if (deepLinkHandled.current || !startAt) return;
+    deepLinkHandled.current = true;
+    const day = dayjs(startAt);
+    setPeriod({ from: day.format("YYYY-MM-DD"), to: day.add(1, "day").format("YYYY-MM-DD") });
+    setTab("table");
+    setSelectedMissionId(deepLinkId);
+  }, [deepLinkQuery.data, deepLinkId]);
 
   // Réinitialise la page quand la population change — sinon "page 3" peut pointer sur
   // une page qui n'existe plus après un changement de filtre/période.

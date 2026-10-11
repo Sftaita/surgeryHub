@@ -29,6 +29,7 @@ use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * D-133 — worklist « Facturation firmes » (projection depuis l'activité validée) + contrat
@@ -38,6 +39,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class FirmBillingWorklistControllerTest extends WebTestCase
 {
+    use DeclaresActualHours;
+
     private const PASSWORD = 'Worklist123!';
     private const FROM = '2026-09-01';
     private const TO = '2026-09-30';
@@ -288,6 +291,7 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         $m->setStatus($status);
         $m->setInstrumentist($this->instrumentist($instrumentistRate));
         $this->em->persist($m); $this->em->flush();
+        $this->declareActualHours($m); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $m->getId();
 
         $itv = new MissionIntervention();

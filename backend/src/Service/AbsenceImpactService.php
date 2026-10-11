@@ -7,10 +7,7 @@ use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\PlanningAlertType;
-use App\Message\PlanningAlertRaisedMessage;
-use App\Repository\UserRepository;
 use Doctrine\ORM\EntityManagerInterface;
-use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
  * Detects the impact of an absence (surgeon or instrumentist) on already-generated
@@ -18,13 +15,20 @@ use Symfony\Component\Messenger\MessageBusInterface;
  *
  * Hard rule: this service NEVER mutates a Mission. Regardless of status (DRAFT, OPEN,
  * ASSIGNED, SUBMITTED, VALIDATED, IN_PROGRESS), it only ever creates or resolves
- * PlanningAlert rows and prepares notification payloads. Manager-driven resolution
+ * PlanningAlert rows. Manager-driven resolution
  * actions reassign/open-as-available now exist (PlanningAlertController::reassign()/
  * openAsAvailable(), which do mutate the Mission — deliberately, outside this service).
  * A cancel-from-alert action remains unbuilt.
  *
  * Missions in a terminal-or-out-of-band state (CLOSED, REJECTED, DECLARED) are excluded
  * from impact detection — there is no actionable manager decision left to make about them.
+ *
+ * H4 (D-130) — the alerts stay (they are the manager's cockpit: a DRAFT to re-cover, a mission
+ * needing a manual decision), but this service no longer notifies anyone. Formerly every new
+ * alert fanned out a generic "Alerte planning" (PlanningAlertRaisedMessage) to every manager
+ * AND to the planned person — a second, vaguer message about an occurrence the person is now
+ * informed of at the right level by AbsenceImpactNotifier (N2: "le créneau prévu dans le
+ * planning en préparation…"), and the managers by the consolidated ABSENCE_IMPACT_SUMMARY.
  */
 class AbsenceImpactService
 {
@@ -40,8 +44,6 @@ class AbsenceImpactService
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly PlanningAlertService $alertService,
-        private readonly UserRepository $userRepository,
-        private readonly MessageBusInterface $bus,
     ) {}
 
     /**
@@ -51,14 +53,14 @@ class AbsenceImpactService
      * absence's current range", which naturally resolves alerts that no longer apply
      * and creates only the ones that don't already exist (idempotent either way).
      *
-     * @return array{created: \App\Entity\PlanningAlert[], resolved: \App\Entity\PlanningAlert[], notifications: PlanningAlertRaisedMessage[]}
+     * @return array{created: \App\Entity\PlanningAlert[], resolved: \App\Entity\PlanningAlert[]}
      */
     public function onAbsenceCreated(Absence $absence): array
     {
         return $this->sync($absence);
     }
 
-    /** @return array{created: \App\Entity\PlanningAlert[], resolved: \App\Entity\PlanningAlert[], notifications: PlanningAlertRaisedMessage[]} */
+    /** @return array{created: \App\Entity\PlanningAlert[], resolved: \App\Entity\PlanningAlert[]} */
     public function onAbsenceUpdated(Absence $absence): array
     {
         return $this->sync($absence);
@@ -126,7 +128,7 @@ class AbsenceImpactService
             ->getOneOrNullResult();
     }
 
-    /** @return array{created: \App\Entity\PlanningAlert[], resolved: \App\Entity\PlanningAlert[], notifications: PlanningAlertRaisedMessage[]} */
+    /** @return array{created: \App\Entity\PlanningAlert[], resolved: \App\Entity\PlanningAlert[]} */
     private function sync(Absence $absence): array
     {
         $user             = $absence->getUser();
@@ -142,32 +144,19 @@ class AbsenceImpactService
             }
         }
 
-        $created       = [];
-        $createdContext = [];
+        $created = [];
         foreach ($overlapping as $mission) {
             $type = $this->classify($mission, $user);
 
             $result = $this->alertService->createIfNotDuplicate($mission, $type, $absence, $this->snapshot($mission, $absence, $type));
             if ($result['created']) {
-                $created[]        = $result['alert'];
-                $createdContext[] = $mission;
+                $created[] = $result['alert'];
             }
         }
 
-        // Flush first so newly-created alerts get a real ID before building notification payloads.
         $this->em->flush();
 
-        // Dispatch exactly one message per newly-created alert — never for idempotent
-        // no-ops (the $created array above already excludes those) and never twice for
-        // the same alert (sync() re-running finds it via createIfNotDuplicate and skips it).
-        $notifications = [];
-        foreach ($created as $i => $alert) {
-            $notification = $this->buildNotification($alert, $createdContext[$i], $absence, $user);
-            $notifications[] = $notification;
-            $this->bus->dispatch($notification);
-        }
-
-        return ['created' => $created, 'resolved' => $resolved, 'notifications' => $notifications];
+        return ['created' => $created, 'resolved' => $resolved];
     }
 
     /**
@@ -240,47 +229,5 @@ class AbsenceImpactService
             'absenceDateEnd'   => $absence->getDateEnd()->format('Y-m-d'),
             'absenceReason'    => $absence->getReason(),
         ];
-    }
-
-    /**
-     * Recipients per Batch 7 rules:
-     *   - every active manager/admin, for every alert type;
-     *   - SURGEON_ABSENCE: the mission's assigned instrumentist (if any) — their work
-     *     risks being cancelled/changed even though they aren't the absent person;
-     *   - REASSIGNMENT_REQUIRED / INSTRUMENTIST_ABSENCE: the absent instrumentist
-     *     themself, so they know their absence is already impacting a real mission;
-     *   - surgeons are intentionally never notified yet — no surgeon-facing
-     *     notification UX exists in the product today, so it would be silent noise.
-     */
-    private function buildNotification(\App\Entity\PlanningAlert $alert, Mission $mission, Absence $absence, User $absentUser): PlanningAlertRaisedMessage
-    {
-        $recipients = [];
-        foreach ($this->userRepository->findManagersAndAdmins(true) as $manager) {
-            $recipients[$manager->getId()] = true;
-        }
-
-        if ($alert->getType() === PlanningAlertType::SURGEON_ABSENCE) {
-            if ($mission->getInstrumentist() !== null) {
-                $recipients[$mission->getInstrumentist()->getId()] = true;
-            }
-        } elseif (in_array($alert->getType(), [PlanningAlertType::REASSIGNMENT_REQUIRED, PlanningAlertType::INSTRUMENTIST_ABSENCE], true)) {
-            $recipients[$absentUser->getId()] = true;
-        }
-
-        $site = $mission->getSite();
-
-        return new PlanningAlertRaisedMessage(
-            alertId: $alert->getId() ?? 0,
-            alertType: $alert->getType()->value,
-            missionId: $mission->getId(),
-            siteId: $site?->getId(),
-            siteName: $site?->getName(),
-            missionDate: $mission->getStartAt()->format('Y-m-d'),
-            absenceId: $absence->getId(),
-            surgeonId: $mission->getSurgeon()->getId(),
-            instrumentistId: $mission->getInstrumentist()?->getId(),
-            recipientUserIds: array_keys($recipients),
-            detectedAt: $alert->getDetectedAt()->format(\DateTimeInterface::ATOM),
-        );
     }
 }

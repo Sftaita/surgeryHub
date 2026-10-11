@@ -33,6 +33,17 @@ const STATUS_LABELS: Record<OutboundNotificationStatus, string> = {
   SKIPPED: "Non envoyé",
 };
 
+export const CHANNEL_LABELS: Record<string, string> = { PUSH: "Push", EMAIL: "Email", IN_APP: "In-app" };
+
+/** H2 (D-128) — raison explicite d'un canal non utilisé. */
+export const SKIP_REASON_LABELS: Record<string, string> = {
+  DISABLED_BY_PREFERENCE: "Désactivé par les préférences",
+  NO_PUSH_SUBSCRIPTION: "Aucun appareil Push enregistré",
+  NO_EMAIL_ADDRESS: "Aucune adresse email",
+  COVERED_BY_PUSH: "Non nécessaire : Push accepté",
+  NOT_APPLICABLE: "Canal non applicable à cette notification",
+};
+
 const FALLBACK_REASON_LABELS: Record<string, string> = {
   NO_SUBSCRIPTION: "Aucun abonnement Push",
   EXPIRED: "Abonnement(s) Push expiré(s)",
@@ -102,9 +113,10 @@ export function AdminOutboundNotificationDrawer({ id, onClose }: Props) {
           {n && (
             <Stack spacing={2}>
               <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                <Chip size="small" label={n.channel === "PUSH" ? "Push" : "Email"} variant="outlined" />
-                <Chip size="small" label={STATUS_LABELS[n.status]} color={statusColor(n.status)} />
+                <Chip size="small" label={CHANNEL_LABELS[n.channel] ?? n.channel} variant="outlined" />
+                <Chip size="small" label={n.channel === "IN_APP" && n.status === "SENT" ? "Créée dans l'application" : STATUS_LABELS[n.status]} color={statusColor(n.status)} />
                 {n.fallback && <Chip size="small" label="Repli email" variant="outlined" />}
+                {n.grouped && <Chip size="small" label="Envoi groupé" variant="outlined" />}
               </Stack>
 
               <Stack direction="row" spacing={0.5} alignItems="center">
@@ -145,6 +157,27 @@ export function AdminOutboundNotificationDrawer({ id, onClose }: Props) {
                   {n.failedAt && <Typography variant="body2" color="text.secondary">Échec : {formatDate(n.failedAt)}</Typography>}
                 </Stack>
               </Box>
+
+              {n.status === "SKIPPED" && n.skipReason && (
+                <Box>
+                  <Typography variant="overline" color="text.secondary">Raison du non-envoi</Typography>
+                  <Typography variant="body2">{SKIP_REASON_LABELS[n.skipReason] ?? n.skipReason}</Typography>
+                </Box>
+              )}
+
+              {n.channel === "IN_APP" && n.notificationEventId && (
+                <Box>
+                  <Typography variant="overline" color="text.secondary">Notification in-app</Typography>
+                  <Typography variant="body2">{n.notificationEventSeenAt ? `Vue le ${formatDate(n.notificationEventSeenAt)}` : "Pas encore vue"}</Typography>
+                </Box>
+              )}
+
+              {n.correlationId && (
+                <Box>
+                  <Typography variant="overline" color="text.secondary">Opération (corrélation)</Typography>
+                  <Typography variant="body2" sx={{ fontFamily: "monospace" }}>{n.correlationId}</Typography>
+                </Box>
+              )}
 
               {n.fallback && n.fallbackReason && (
                 <Box>

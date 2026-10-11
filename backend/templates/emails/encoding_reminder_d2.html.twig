@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><style>
+body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+.container { max-width: 600px; margin: 0 auto; padding: 24px; }
+.header { border-bottom: 2px solid #1B5FD0; padding-bottom: 12px; margin-bottom: 20px; }
+.title { color: #1B5FD0; font-size: 18px; font-weight: bold; }
+.cta { display: inline-block; background: #2C7D5F; color: #fff !important; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-weight: bold; }
+.footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+</style></head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">Un petit rappel pour votre mission SurgicalHub</div>
+  </div>
+
+  <p>Bonjour {{ firstname }},</p>
+
+  <p>Nous espérons que vous allez bien !</p>
+
+  <p>Votre mission{% if missionDate %} du {{ missionDate }}{% endif %} n'a pas encore été entièrement finalisée dans SurgicalHub.</p>
+
+  <p>Nous vous invitons à compléter les informations manquantes{% if hoursMissing %}, notamment vos horaires réels si ceux-ci ne sont pas encore renseignés{% endif %}.</p>
+
+  <p>Ces informations sont importantes : sans un encodage complet, nous ne pouvons pas valider vos heures ni procéder à leur rémunération.</p>
+
+  <p>Vous pouvez reprendre votre brouillon à tout moment, sans perdre les informations déjà enregistrées.</p>
+
+  <p><a class="cta" href="{{ missionUrl }}">Finaliser mon encodage</a></p>
+
+  <p>Merci beaucoup pour votre collaboration !</p>
+
+  <p>L'équipe SurgicalHub</p>
+
+  <div class="footer">Vous recevez cet e-mail car les notifications push ne sont pas disponibles sur vos appareils.</div>
+</div>
+</body>
+</html>

@@ -2,201 +2,124 @@
 
 namespace App\MessageHandler;
 
-use App\Entity\NotificationEvent;
+use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\MissionCommunicationSource;
 use App\Enum\NotificationType;
-use App\Enum\PublicationChannel;
 use App\Message\PlanningRestoredAfterAbsenceMessage;
-use App\Message\SendBillingEmailMessage;
-use App\Service\NotificationChannels;
-use App\Service\NotificationPreferenceResolver;
+use App\Notification\EmailContent;
+use App\Notification\MissionCommunicationSpec;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
+use App\Notification\PushContent;
+use App\Service\NotificationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
-use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
-use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * D-104 (Lot 4) — recap notifications for AbsenceImpactReconciliationService, mirroring the
- * D-062/D-103 pattern: grouped by recipient, batched email, unitary in-app.
+ * D-104 (Lot 4), H4 (D-130) — what an absence shortened / deleted gave back, through
+ * NotificationDispatcher (BATCH: in-app per item, one email per recipient and type):
  *
- * A mission restored to OPEN (old instrumentist no longer eligible) does NOT get a
- * per-recipient MISSION_RESTORED notification here — that outcome already surfaces via the
- * REASSIGNMENT_REQUIRED PlanningAlert the reconciliation service creates for it (§10), and
- * via the existing SURGEON_POST_UNCOVERED pipeline.
+ *   - a habitual occurrence re-activated (pre-generation)   → its usual instrumentist,
+ *     ABSENCE_OCCURRENCE_RESTORED;
+ *   - a mission restored to ASSIGNED (post-generation)      → its surgeon and its instrumentist,
+ *     MISSION_RESTORED — the instrumentist's mission counts as communicated again (ASSIGN)
+ *     once a channel reaches her.
  *
- * Manager notification for this event moved to AbsenceImpactSummaryMessageHandler (Lot 5,
- * D-105) — this handler used to also email every manager/admin separately here, which meant
- * a single absence could produce two independent manager emails for what felt like one
- * event. It now only ever notifies the individual surgeon/instrumentist.
+ * A mission restored to OPEN (former instrumentist no longer eligible) gets no personal notice
+ * here: it surfaces through the REASSIGNMENT_REQUIRED planning alert, and its pool is solicited
+ * by OpenMissionPoolNotifier (RESTORED_AFTER_ABSENCE). Managers are informed by the
+ * consolidated ABSENCE_IMPACT_SUMMARY (D-105).
  */
 #[AsMessageHandler]
 final class PlanningRestoredAfterAbsenceMessageHandler
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly NotificationPreferenceResolver $preferenceResolver,
-        private readonly MessageBusInterface $bus,
+        private readonly NotificationDispatcher $dispatcher,
+        private readonly NotificationService $notificationService,
         private readonly LoggerInterface $logger,
-        #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
-        private readonly string $fromAddress,
-        #[Autowire('%env(string:MAILER_FROM_NAME)%')]
-        private readonly string $fromName,
     ) {
     }
 
     public function __invoke(PlanningRestoredAfterAbsenceMessage $message): void
     {
-        if (empty($message->restoredOccurrences) && empty($message->restoredMissions)) {
-            return;
-        }
-
-        $this->notifyOccurrenceInstrumentists($message);
-        $this->notifyMissionRecipients($message);
-    }
-
-    // ── Occurrences restored (pre-generation) — post's default instrumentist ─────
-
-    private function notifyOccurrenceInstrumentists(PlanningRestoredAfterAbsenceMessage $message): void
-    {
-        $byInstrumentist = [];
+        $byType = [];
         foreach ($message->restoredOccurrences as $o) {
-            if ($o['instrumentistId'] !== null) {
-                $byInstrumentist[$o['instrumentistId']][] = $o;
+            if (($o['instrumentistId'] ?? null) !== null && (int) $o['instrumentistId'] !== $message->absentUserId && ($recipient = $this->em->find(User::class, $o['instrumentistId'])) !== null) {
+                $byType[NotificationType::ABSENCE_OCCURRENCE_RESTORED->value][] = new NotificationIntent(
+                    recipient: $recipient,
+                    type: NotificationType::ABSENCE_OCCURRENCE_RESTORED,
+                    inAppPayload: $o + ['absenceId' => $message->absenceId, 'level' => 'USUAL_SCHEDULE'],
+                    episodeRef: sprintf('absence:%d:restored:post:%s:%s', $message->absenceId, $o['postId'] ?? '?', $o['occurrenceDate'] ?? '?'),
+                    subjectType: 'AbsenceOccurrence',
+                    subjectId: $message->absenceId,
+                );
             }
         }
 
-        foreach ($byInstrumentist as $instrumentistId => $occurrences) {
-            $instrumentist = $this->em->find(User::class, $instrumentistId);
-            if ($instrumentist === null) {
+        foreach ($message->restoredMissions as $m) {
+            if (($m['restoredStatus'] ?? null) !== 'ASSIGNED') {
                 continue;
             }
-
-            $count   = count($occurrences);
-            $subject = $count > 1
-                ? sprintf('%d de vos postes habituels sont de nouveau prévus', $count)
-                : 'Un de vos postes habituels est de nouveau prévu';
-
-            $this->notifyRecipient(
-                $instrumentist,
-                NotificationType::ABSENCE_OCCURRENCE_RESTORED,
-                $occurrences,
-                'emails/absence_occurrence_restored.html.twig',
-                $subject,
-            );
-        }
-    }
-
-    // ── Missions restored to ASSIGNED (post-generation) — surgeon + instrumentist ──
-
-    private function notifyMissionRecipients(PlanningRestoredAfterAbsenceMessage $message): void
-    {
-        $assigned = array_values(array_filter(
-            $message->restoredMissions,
-            static fn (array $m) => $m['restoredStatus'] === 'ASSIGNED',
-        ));
-
-        $bySurgeon = [];
-        $byInstrumentist = [];
-        foreach ($assigned as $m) {
-            if ($m['surgeonId'] !== null) {
-                $bySurgeon[$m['surgeonId']][] = $m;
-            }
-            if ($m['instrumentistId'] !== null) {
-                $byInstrumentist[$m['instrumentistId']][] = $m;
-            }
-        }
-
-        foreach ($bySurgeon as $surgeonId => $missions) {
-            $surgeon = $this->em->find(User::class, $surgeonId);
-            if ($surgeon === null) {
-                continue;
-            }
-            $count   = count($missions);
-            $subject = $count > 1
-                ? sprintf('%d de vos missions ont été réactivées', $count)
-                : 'Une de vos missions a été réactivée';
-            $this->notifyRecipient($surgeon, NotificationType::MISSION_RESTORED, $missions, 'emails/mission_restored.html.twig', $subject);
-        }
-
-        foreach ($byInstrumentist as $instrumentistId => $missions) {
-            $instrumentist = $this->em->find(User::class, $instrumentistId);
-            if ($instrumentist === null) {
-                continue;
-            }
-            $count   = count($missions);
-            $subject = $count > 1
-                ? sprintf('%d missions ont été réaffectées à votre planning', $count)
-                : 'Une mission a été réaffectée à votre planning';
-            $this->notifyRecipient($instrumentist, NotificationType::MISSION_RESTORED, $missions, 'emails/mission_restored.html.twig', $subject);
-        }
-    }
-
-    // ── Shared: in-app (per item) + email (batched) ───────────────────────────
-
-    private function notifyRecipient(
-        User $recipient,
-        NotificationType $type,
-        array $items,
-        string $emailTemplate,
-        string $subject,
-    ): void {
-        $channels = $this->resolveChannelsSafely($recipient, $type);
-
-        if ($channels->inApp) {
-            foreach ($items as $item) {
-                try {
-                    $evt = (new NotificationEvent())
-                        ->setUser($recipient)
-                        ->setEventType($type->value)
-                        ->setChannel(PublicationChannel::IN_APP)
-                        ->setSentAt(new \DateTimeImmutable())
-                        ->setPayload($item);
-                    $this->em->persist($evt);
-                    $this->em->flush();
-                } catch (\Throwable $e) {
-                    $this->logger->error('PlanningRestoredAfterAbsence: inApp notification failed', [
-                        'type' => $type->value, 'userId' => $recipient->getId(), 'error' => $e->getMessage(),
-                    ]);
+            $mission = $this->em->getReference(Mission::class, $m['missionId']);
+            foreach (['surgeonId' => MissionCommunicationSpec::ROLE_SURGEON, 'instrumentistId' => MissionCommunicationSpec::ROLE_INSTRUMENTIST] as $key => $role) {
+                if (($m[$key] ?? null) === null || (int) $m[$key] === $message->absentUserId || ($recipient = $this->em->find(User::class, $m[$key])) === null) {
+                    continue;
                 }
+                $byType[NotificationType::MISSION_RESTORED->value][] = new NotificationIntent(
+                    recipient: $recipient,
+                    type: NotificationType::MISSION_RESTORED,
+                    inAppPayload: $m + ['absenceId' => $message->absenceId, 'missionDate' => $m['date'] ?? null],
+                    mission: $mission,
+                    episodeRef: sprintf('absence:%d:restored:mission:%d:%s', $message->absenceId, $m['missionId'], $role),
+                    communicates: $role === MissionCommunicationSpec::ROLE_INSTRUMENTIST
+                        ? new MissionCommunicationSpec(MissionCommunicationSource::ASSIGN, $role, [(int) $m['missionId']])
+                        : null,
+                );
             }
         }
 
-        if ($channels->email && $recipient->getEmail()) {
+        foreach ($byType as $typeValue => $intents) {
+            $type = NotificationType::from($typeValue);
             try {
-                $this->bus->dispatch(new SendBillingEmailMessage(
-                    to: $recipient->getEmail(),
-                    cc: [],
-                    subject: $subject,
-                    fromAddress: $this->fromAddress,
-                    fromName: $this->fromName,
-                    htmlTemplate: $emailTemplate,
-                    context: [
-                        'recipientName' => self::displayName($recipient),
-                        'items'         => $items,
-                        'itemCount'     => count($items),
-                    ],
-                ));
+                $this->dispatcher->dispatchBatch(
+                    $intents,
+                    fn (User $u, array $its) => $this->email($u, $type, $its),
+                    static fn (User $u, array $its) => new PushContent(
+                        $type === NotificationType::MISSION_RESTORED ? 'Mission réactivée' : 'Poste habituel de nouveau prévu',
+                        count($its) > 1 ? sprintf('%d éléments de votre planning sont de nouveau prévus.', count($its)) : 'Un élément de votre planning est de nouveau prévu.',
+                        ['type' => $type->value],
+                    ),
+                );
             } catch (\Throwable $e) {
-                $this->logger->error('PlanningRestoredAfterAbsence: email dispatch failed', [
-                    'type' => $type->value, 'userId' => $recipient->getId(), 'error' => $e->getMessage(),
-                ]);
+                $this->logger->error('PlanningRestoredAfterAbsence: dispatch failed', ['type' => $typeValue, 'error' => $e->getMessage()]);
             }
         }
     }
 
-    private function resolveChannelsSafely(User $user, NotificationType $type): NotificationChannels
+    /** @param list<NotificationIntent> $intents */
+    private function email(User $recipient, NotificationType $type, array $intents): EmailContent
     {
-        try {
-            return $this->preferenceResolver->resolve($user, $type);
-        } catch (\Throwable) {
-            return new NotificationChannels(inApp: true, email: true, push: false);
-        }
-    }
+        $items = array_map(static fn (NotificationIntent $i) => $i->inAppPayload, $intents);
+        $count = count($items);
+        $isInstrumentist = in_array('ROLE_INSTRUMENTIST', $recipient->getRoles(), true);
+        $subject = match (true) {
+            $type === NotificationType::ABSENCE_OCCURRENCE_RESTORED => $count > 1 ? sprintf('%d de vos postes habituels sont de nouveau prévus', $count) : 'Un de vos postes habituels est de nouveau prévu',
+            $isInstrumentist => $count > 1 ? sprintf('%d missions ont été réaffectées à votre planning', $count) : 'Une mission a été réaffectée à votre planning',
+            default => $count > 1 ? sprintf('%d de vos missions ont été réactivées', $count) : 'Une de vos missions a été réactivée',
+        };
 
-    private static function displayName(User $user): string
-    {
-        $name = trim(($user->getFirstname() ?? '') . ' ' . ($user->getLastname() ?? ''));
-        return $name !== '' ? $name : ($user->getEmail() ?? '');
+        return new EmailContent(
+            $subject,
+            $type === NotificationType::ABSENCE_OCCURRENCE_RESTORED ? 'emails/absence_occurrence_restored.html.twig' : 'emails/mission_restored.html.twig',
+            [
+                'recipientName' => trim(($recipient->getFirstname() ?? '') . ' ' . ($recipient->getLastname() ?? '')) ?: (string) $recipient->getEmail(),
+                'items'         => $items,
+                'itemCount'     => $count,
+                'notificationPreferencesUrl' => $this->notificationService->notificationPreferencesUrl($recipient),
+            ],
+        );
     }
 }

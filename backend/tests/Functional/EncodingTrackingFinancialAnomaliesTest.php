@@ -28,6 +28,7 @@ use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * D-138 — Suivi des encodages : toute « Anomalie » FINANCE est justifiée, localisée et
@@ -41,6 +42,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
 {
+    use DeclaresActualHours;
+
     private const PASSWORD = 'Anomalie123!';
     private const LIST = '/api/billing/encoding-tracking?from=2026-09-01&to=2026-10-01';
 
@@ -271,6 +274,7 @@ final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
         $m->setStatus(MissionStatus::VALIDATED);
         $m->setInstrumentist($instrumentist);
         $this->em->persist($m); $this->em->flush();
+        $this->declareActualHours($m); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $m->getId();
 
         $itv = new MissionIntervention();
@@ -287,7 +291,8 @@ final class EncodingTrackingFinancialAnomaliesTest extends WebTestCase
         }
 
         if ($actualMinutes !== null) {
-            $execution = new MissionExecution();
+            // D-143 — remplace la durée déclarée par défaut par celle du scénario.
+            $execution = $m->getExecution() ?? new MissionExecution();
             $execution->setMission($m);
             $execution->setActualDurationMinutes($actualMinutes);
             $this->em->persist($execution); $this->em->flush();
