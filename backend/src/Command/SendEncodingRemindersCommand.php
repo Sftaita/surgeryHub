@@ -30,6 +30,11 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
  * Bruxelles) pour exécuter le parcours complet à une échéance choisie, dans un
  * environnement isolé. Refusé quand kernel.environment = prod : l'horloge de production
  * n'est jamais modifiable.
+ *
+ * `--dry-run` : LECTURE SEULE — liste les relances qui seraient traitées (mission, échéance,
+ * situation, déjà envoyée ou non, nombre de managers alertés à J+4) sans rien réserver ni
+ * envoyer. Autorisé en prod, y compris avec `--at` (contrôle de la sélection d'une échéance
+ * à venir), puisqu'aucune écriture n'a lieu.
  */
 #[AsCommand(
     name: 'app:notifications:send-encoding-reminders',
@@ -51,7 +56,8 @@ class SendEncodingRemindersCommand extends Command
 
     protected function configure(): void
     {
-        $this->addOption('at', null, InputOption::VALUE_REQUIRED, 'Recette uniquement (hors prod) : horloge fixée, heure de Bruxelles (ex. "2026-07-15 09:05").');
+        $this->addOption('at', null, InputOption::VALUE_REQUIRED, 'Horloge fixée, heure de Bruxelles (ex. "2026-07-15 09:05") — hors prod, ou en prod avec --dry-run uniquement.');
+        $this->addOption('dry-run', null, InputOption::VALUE_NONE, 'Lecture seule : liste les relances dues sans rien réserver ni envoyer.');
     }
 
     /** Overridden in tests to freeze "now" — no Clock abstraction exists in this codebase yet. */
@@ -65,8 +71,9 @@ class SendEncodingRemindersCommand extends Command
         $io = new SymfonyStyle($input, $output);
 
         $at = $input->getOption('at');
+        $dryRun = (bool) $input->getOption('dry-run');
         if ($at !== null) {
-            if ($this->environment === 'prod') {
+            if ($this->environment === 'prod' && !$dryRun) {
                 $io->error("--at est réservé à la recette : l'horloge de production n'est jamais modifiable.");
 
                 return Command::FAILURE;
@@ -87,6 +94,17 @@ class SendEncodingRemindersCommand extends Command
         }
 
         $due = $this->service->findDueReminders($now);
+
+        if ($dryRun) {
+            $rows = [];
+            foreach ($due as ['mission' => $mission, 'stage' => $stage]) {
+                $rows[] = [$mission->getId(), $stage->value, ...array_values($this->service->describeDue($mission, $stage))];
+            }
+            $io->table(['mission', 'échéance', 'échéance (Bruxelles)', 'instrumentiste', 'situation', 'déjà envoyée', 'managers J+4'], $rows);
+            $io->success(sprintf('DRY-RUN %s — %d relance(s) due(s), rien n\'a été réservé ni envoyé.', $now->format('Y-m-d H:i'), count($due)));
+
+            return Command::SUCCESS;
+        }
 
         $counts = ['due' => count($due), 'sent' => 0, 'skipped' => 0, 'failed' => 0];
 

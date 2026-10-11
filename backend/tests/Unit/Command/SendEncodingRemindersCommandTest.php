@@ -153,4 +153,29 @@ class SendEncodingRemindersCommandTest extends TestCase
         self::assertSame(Command::SUCCESS, $tester->execute([]));
         self::assertStringContainsString('due=0 sent=0 skipped=0 failed=0', $tester->getDisplay());
     }
+
+    /** D-144 — contrôle de la sélection en prod : lecture seule, aucune réservation ni envoi. */
+    public function test_dry_run_lists_due_reminders_without_processing_them(): void
+    {
+        $m = $this->makeMission();
+        $this->service->method('findDueReminders')->willReturn([['mission' => $m, 'stage' => EncodingReminderStage::D4]]);
+        $this->service->expects(self::never())->method('processReminder');
+        $this->service->expects(self::once())->method('describeDue')->willReturn([
+            'dueAt' => '2026-10-12 09:00', 'instrumentistId' => 7, 'situation' => 'HOURS_MISSING', 'alreadySent' => 'non', 'managers' => '4',
+        ]);
+
+        $tester = new CommandTester(new SendEncodingRemindersCommand($this->service, $this->logger, 'prod'));
+        self::assertSame(Command::SUCCESS, $tester->execute(['--dry-run' => true, '--at' => '2026-10-12 09:05']));
+        self::assertStringContainsString('DRY-RUN 2026-10-12 09:05', $tester->getDisplay());
+        self::assertStringContainsString('HOURS_MISSING', $tester->getDisplay());
+    }
+
+    /** L'horloge de production n'est jamais modifiable pour un envoi réel. */
+    public function test_at_is_refused_in_prod_without_dry_run(): void
+    {
+        $this->service->expects(self::never())->method('findDueReminders');
+
+        $tester = new CommandTester(new SendEncodingRemindersCommand($this->service, $this->logger, 'prod'));
+        self::assertSame(Command::FAILURE, $tester->execute(['--at' => '2026-10-12 09:05']));
+    }
 }

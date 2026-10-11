@@ -583,6 +583,36 @@ Entrée crontab prévue (à ajouter après les jobs existants, jamais réécrits
 4. **Dans le même geste que l'ajout du cron**, passer `ENCODING_REMINDER_AUTO_ENABLED=1`
    dans `/opt/stack/apps/surgicalhub/.env` puis recréer `php` : le tiroir « Suivi des
    encodages » annonce alors la prochaine relance. À remettre à `0` en cas de désactivation.
+5. **Contrôle de la sélection sans envoi (D-144)** — lecture seule, autorisé en prod :
+   `docker compose exec -T php php bin/console app:notifications:send-encoding-reminders --env=prod --dry-run --at="AAAA-MM-JJ 09:05"`
+   liste les relances qui partiraient à cette échéance (mission, J+N, situation, déjà
+   envoyée, nombre de managers J+4) sans rien réserver ni envoyer. `--at` sans `--dry-run`
+   est refusé en prod.
+6. **Activation après 09h00** : ne jamais déclencher en retard les relances du jour. Le
+   script porte une date de premier envoi (`NOT_BEFORE`, date locale Bruxelles) : avant
+   cette date il journalise « en attente » et sort sans appeler la commande. Le premier
+   tick ≥ 09h00 de cette date traite les échéances du jour ; les fenêtres déjà écoulées ne
+   sont jamais rattrapées (anti-rafale du code).
+
+Modèle de script (`/home/deploy/scripts/send_encoding_reminders.sh`, même style que
+`missions_start_due.sh`) :
+
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+LOG=/home/deploy/logs/encoding-reminders.log
+LOCK=/home/deploy/locks/encoding-reminders.lock
+NOT_BEFORE=2026-10-12            # date locale du premier envoi autorisé (Europe/Brussels)
+log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG"; }
+exec 9>"$LOCK"
+flock -n 9 || { log "SKIP déjà en cours"; exit 0; }
+if [[ "$(TZ=Europe/Brussels date +%F)" < "$NOT_BEFORE" ]]; then log "WAIT premier envoi le $NOT_BEFORE"; exit 0; fi
+[[ "$(docker inspect -f '{{.State.Running}}' surgicalhub-php 2>/dev/null)" == "true" ]] || { log "ERROR surgicalhub-php arrêté"; exit 1; }
+cd /opt/stack/apps/surgicalhub || exit 1
+OUT=$(docker compose exec -T php php bin/console app:notifications:send-encoding-reminders --env=prod 2>&1); RC=$?
+log "rc=$RC $(echo "$OUT" | grep -E 'due=|Trop tôt|ERROR' | tr -s ' ' | head -3)"
+exit $RC
+```
 
 ### Vérification (une fois activée)
 

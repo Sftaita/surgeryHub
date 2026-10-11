@@ -182,6 +182,25 @@ class EncodingReminderService
         return $due;
     }
 
+    /**
+     * Lecture seule (--dry-run de la commande) : ce que la relance ferait, sans rien réserver
+     * ni envoyer.
+     *
+     * @return array{dueAt: ?string, instrumentistId: ?int, situation: string, alreadySent: string, managers: string}
+     */
+    public function describeDue(Mission $mission, EncodingReminderStage $stage): array
+    {
+        $alreadySent = $this->em->getRepository(MissionEncodingReminder::class)->findOneBy(['mission' => $mission, 'stage' => $stage]) !== null;
+
+        return [
+            'dueAt'           => self::dueAt($mission, $stage)?->format('Y-m-d H:i'),
+            'instrumentistId' => $mission->getInstrumentist()?->getId(),
+            'situation'       => $this->completeness->situation($mission)->value,
+            'alreadySent'     => $alreadySent ? 'oui' : 'non',
+            'managers'        => $stage->isEscalation() ? (string) count($this->userRepository->findOperationalManagers()) : '—',
+        ];
+    }
+
     // ── Envoi ───────────────────────────────────────────────────────────────────
 
     /**
