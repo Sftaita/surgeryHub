@@ -12734,7 +12734,91 @@ inventée, aucune donnée corrigée. Procédure de régularisation proposée, à
 
 ### Hors périmètre / points ouverts
 
-- Réconciliation avec le chantier H1–H8 non commité (`NotificationDispatcher`, D-128/D-131) :
-  les envois de ce lot passent par `OutboundNotificationService` (socle actuel de `main`) et
-  devront être migrés vers le dispatcher lors de l'intégration (`EmailThroughDispatcherTest`).
+- Réconciliation avec le chantier H1–H8 : faite par D-144 (tous les envois via
+  `NotificationDispatcher`).
 - Planification du cron en production : procédure dans `docs/production.md`, non exécutée.
+
+---
+
+## D-144 — Intégration H1–H8 (H1–H5b) × D-143 × origin/main : un seul système de notifications, aucune rémunération sur le planifié (2026-10-11)
+
+Branche `integration/h1h8-encodage-rappels` (worktree `SurgicalHub-integration`), non fusionnée
+dans `main`, non déployée.
+
+### Contexte
+
+- Chantier B (H1–H5b, D-126 → D-132) : non commité dans le dossier principal, base `815831e`
+  (huit déploiements de retard sur `origin/main`), dernière modification le 2026-10-06.
+- Chantier A (D-143) : branche `feat/encodage-progressif-rappels`, base `origin/main` `796f515`.
+- D-136 (« Rappeler les heures ») et D-133→D-141 sont arrivés sur `origin/main` après la
+  conception de H5a ; H6, H7, H8 ne sont pas commencés.
+
+### Décision — préserver l'état exact du chantier B sans le toucher
+
+Instantané par index Git temporaire (`GIT_INDEX_FILE`) de l'arbre de travail du dossier
+principal, fichiers non suivis compris, en un commit `05d5b39` (parent `815831e`) sur la
+branche `snapshot/h1-h8-wip-2026-10-11`. Index, HEAD et fichiers du dossier principal
+inchangés (empreinte de `.git/index` et `git status` identiques avant/après) ; fidélité
+vérifiée fichier par fichier (1 747 empreintes). Le raccourci Windows
+`backend/src/EventListener/backend - Raccourci.lnk` (déjà suivi par Git et présent en prod,
+sans effet sur PHP) est conservé tel quel — sa suppression est une décision de nettoyage
+séparée.
+
+### Décision — un seul chemin de notification : `NotificationDispatcher`
+
+Les tests d'architecture H5a/H5b (`EmailThroughDispatcherTest`,
+`NotificationChannelsThroughDispatcherTest`) font foi : aucun producteur n'envoie
+directement.
+- `EncodingReminderService` (D-143) : calendrier, fenêtres, réservation
+  `mission_encoding_reminder` inchangés ; chaque destinataire = une `NotificationIntent`,
+  épisode `encoding_reminder:{D1|D2|D4}:{missionId}` / `encoding_escalation:{missionId}` —
+  double idempotence (réservation + clé d'épisode).
+  - J+1/J+2 : `FALLBACK_WHEN_PUSH_NOT_SENT` (push si accepté par le transport, sinon e-mail
+    lié au push et motivé) ;
+  - J+4 : instrumentiste `MANDATORY` + push ; managers in-app + e-mail `MANDATORY`.
+- Relance manuelle : décision H5a conservée (**e-mail obligatoire** — action explicite d'un
+  manager — push selon les appareils, `batchId` par clic) + D-143 (anti-répétition 10 min,
+  centre de notifications, canal renvoyé : `push+email`|`push`|`email`|`none`).
+- `ENCODING_SUBMITTED` (chirurgien), `ENCODING_ANOMALY_INSTRUMENTIST` : dispatcher, préférences
+  respectées (in-app par défaut).
+- « Rappeler les heures » (D-136) : type `MISSION_HOURS_REMINDER`, comportement D-136
+  inchangé (push d'abord, e-mail de secours, pas d'in-app), idempotent par demande
+  (`requestId` dans le message). Lien vers l'écran d'encodage.
+- Types : `ENCODING_REMINDER_D1` (H5a) **retiré** (`isRetired()`, remplacé par
+  `ENCODING_REMINDER`, conservé pour l'historique). `ENCODING_REMINDER`,
+  `ENCODING_ESCALATION`, `MISSION_HOURS_REMINDER` = `isOperationalObligation()` : non
+  configurables, push + e-mail par défaut — délivrables même sans push activé.
+
+### Décision — jamais de rémunération sur les seuls horaires planifiés
+
+Un seul moteur (`FinancialCalculationService`), un seul point modifié
+(`resolveInstrumentistHourlyLine()`) : si la durée effective vient du planifié (aucune
+déclaration réelle), anomalie bloquante `MISSING_ACTUAL_HOURS` (catégorie ENCODING,
+expliquée par `FinancialCalculationAnomalyExplainer`, action « Faire déclarer les heures
+réelles »). Trois situations :
+1. durée réelle déclarée avant D-143 (48 missions en prod) : valorisable, aucune heure de
+   début/fin fabriquée ;
+2. début, fin, pause réels : valorisable (fin − début − pause) ;
+3. aucune déclaration : calcul bloqué, rien n'est persisté ; même verdict en lecture
+   (`evaluate()`, worklist, suivi).
+Aucun calcul existant n'est rejoué (les calculs APPROVED/LOCKED et les documents émis ne
+sont jamais recalculés) — en production, aucune des 5 missions sans heure n'a de calcul.
+Les fixtures financières qui valorisaient des missions sans déclaration déclarent désormais
+une durée explicite (trait de test `DeclaresActualHours`).
+
+### Décision — recette du parcours automatique sans toucher à l'horloge de production
+
+`app:notifications:send-encoding-reminders --at="AAAA-MM-JJ HH:MM"` fixe l'horloge (heure de
+Bruxelles) pour une recette isolée ; refusé quand `kernel.environment = prod`.
+
+### Vérifications sur le code intégré
+
+Backend complet, frontend complet, TypeScript, build, 24 vérifications HTTP de bout en
+bout, recette réelle J+1/J+2/J+4 (Mailpit et serveur push jetables), base simulant l'état
+exact de la prod (76 migrations) : seules les 6 nouvelles migrations sont planifiées et
+passent malgré leur ordre chronologique (H1–H5b datées avant `Version20261007180000`).
+
+### Hors périmètre
+
+H6 (API historique), H7 (UI historique), H8 (reprise de l'historique) ; procédure dev
+`Version20260107053952`/`export_log` (production-checklist §4, la prod est cohérente).

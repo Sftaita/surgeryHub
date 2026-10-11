@@ -67,3 +67,35 @@ Principe : **jamais d'heure inventée, jamais d'écriture SQL directe** ; tout p
 
 Les étapes 1 et 2 modifient des données de production : **à exécuter uniquement après
 accord explicite**, par un manager depuis l'interface.
+
+## 5. Checklist nominative de régularisation (version intégrée D-144 — à exécuter après déploiement et autorisation)
+
+Préalable : version intégrée déployée (validation sans heure bloquée, valorisation sans heure
+bloquée — `MISSING_ACTUAL_HOURS`). Toutes les actions passent par l'interface manager, sont
+auditées (`AuditEvent` + `activity_event`) et n'écrivent **aucune** heure à la place de
+l'instrumentiste. Parcours prouvé sur le code intégré par
+`MissionEncodingWorkflowControllerTest::test_historical_*` (renvoi, réouverture, saisie,
+re-soumission, validation, droits).
+
+| # | Mission | Instr. | Statut prod (11/10) | Action manager | Ce que fait ensuite l'instrumentiste | Contrôle |
+|---|---|---|---|---|---|---|
+| 1 | **435** (08/09) | #35 | SUBMITTED, aucune heure | « Rejeter » — commentaire : « Merci de renseigner vos heures réelles de début et de fin. » | saisit début / fin / pause, soumet | statut SUBMITTED, heures présentes, puis « Valider » |
+| 2 | **451** (14/09) | #35 | SUBMITTED, aucune heure | idem | idem | idem |
+| 3 | **1224** (21/09) | #19 | SUBMITTED (mission déclarée), aucune heure | idem | idem | idem |
+| 4 | **434** (07/09) | #35 | VALIDATED (29/09), verrouillée, aucun calcul | « Rouvrir » — commentaire : « Heures réelles manquantes (régularisation D-143). » | saisit ses heures (le texte libre « 6h de prestation » n'est **pas** repris automatiquement), soumet | re-« Valider » ; calcul financier possible ensuite |
+| 5 | **1225** (24/09) | #20 | VALIDATED (26/09), verrouillée, aucun calcul | « Rouvrir » — même commentaire | idem | idem |
+
+Avant chaque « Rouvrir » : vérifier (lecture seule) qu'aucun `financial_calculation` n'existe
+pour la mission — vrai au 2026-10-11 ; s'il en existait un verrouillé, la réouverture serait
+refusée (D-073) et la mission resterait en l'état.
+
+Contrôle final (lecture seule) : aucune mission `SUBMITTED|VALIDATED|CLOSED` sans
+`actual_duration_minutes` ni `actual_start_at`/`actual_end_at` :
+
+```sql
+SELECT m.id, m.status FROM mission m LEFT JOIN mission_execution e ON e.mission_id = m.id
+WHERE m.status IN ('SUBMITTED','VALIDATED','CLOSED') AND (e.id IS NULL OR (e.actual_duration_minutes IS NULL AND e.actual_start_at IS NULL));
+```
+
+**Nécessite ton autorisation** : les 5 renvois / réouvertures (modifications de données de
+production) et l'information préalable des instrumentistes #35, #19, #20.

@@ -2365,7 +2365,7 @@ elle est libre).
 | `TO_REVIEW` | `CALCULATION_BLOCKED` | élément correct, calcul de la mission en échec sur une autre anomalie. **D-141 :** `reasonDetail` donne le tarif résolu (montant, règle, période) et les anomalies qui bloquent ENCORE la mission (évaluation actuelle du moteur) | `null` |
 | `TO_REVIEW` | `FIXED_PENDING_RECALCULATION` | **D-141** — mission en échec dont l'évaluation actuelle du moteur ne trouve plus aucune anomalie : il reste à relancer le calcul (`reasonDetail` = tarif résolu) | `null` |
 | `TO_REVIEW` | `MISSING_FIRM_INTERVENTION_RATE`, `MISSING_FIRM_MATERIAL_RATE`, `MISSING_PRIMARY_FIRM`, `MISSING_INTERVENTION_TYPE`, `MISSING_REPRESENTATIVE_PRESENCE_ANSWER`, `MISSING_REQUIRED_CHOICE_ANSWER` | anomalie rattachée à l'élément (codes identiques au moteur ; `MISSING_PRIMARY_FIRM` aussi avant calcul). **D-141 :** pour une mission en échec sans calcul actif, c'est l'anomalie que le moteur produit MAINTENANT pour l'élément — une anomalie auditée dont la cause a disparu ne qualifie plus la ligne (ex. « Pas de forfait » posé depuis → `FEE_NOT_APPLICABLE`, `reasonDetail` le signale) | `null` |
-| — (anomalie de mission) | `MISSING_INSTRUMENTIST_RATE`, `INVALID_EFFECTIVE_DURATION`, `CALCULATION_FAILED` (code moteur inconnu) | uniquement dans `anomalies[]` | — |
+| — (anomalie de mission) | `MISSING_INSTRUMENTIST_RATE`, `INVALID_EFFECTIVE_DURATION`, `MISSING_ACTUAL_HOURS` (D-144 — aucune heure réelle déclarée, jamais de valorisation sur le planifié), `CALCULATION_FAILED` (code moteur inconnu) | uniquement dans `anomalies[]` | — |
 
 **`anomalies[]` (onglet « À corriger ») :** `key`, `code`, `title` (libellé français),
 `explanation` (contextualisée : élément, firme, date), `mission`, `firm | null`

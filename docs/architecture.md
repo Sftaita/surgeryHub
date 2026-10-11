@@ -2583,12 +2583,14 @@ aussi dans le centre de notifications de l'instrumentiste.
 
 ### 11.2 Canaux et traçabilité
 
-Push réellement tenté vers les abonnements de l'appareil (`OutboundNotificationService::
-recordPushSend()`) : il n'est compté comme livré que si le transport l'a accepté ; les
-abonnements expirés (404/410) sont supprimés par `WebPushService`. J+1/J+2 : e-mail
-uniquement en secours (`fallbackOf` + raison). J+4 : e-mail toujours. Chaque canal est tracé
-dans `OutboundNotification` (D-084) ; l'envoi est journalisé dans `AuditEvent`
-(`MISSION_ENCODING_AUTO_REMINDER_SENT`, acteur système).
+Depuis D-144, chaque relance est une `NotificationIntent` remise au `NotificationDispatcher`
+(§26) : épisode `encoding_reminder:{D1|D2|D4}:{missionId}` (managers :
+`encoding_escalation:{missionId}`), politique e-mail `FALLBACK_WHEN_PUSH_NOT_SENT` à J+1/J+2,
+`MANDATORY` à J+4 et pour la relance manuelle. Push réellement tenté vers les abonnements de
+l'appareil : compté comme livré seulement si le transport l'a accepté ; abonnements expirés
+(404/410) supprimés par `WebPushService`. Chaque canal (in-app, push, e-mail) est tracé dans
+`OutboundNotification` + `notification_dispatch` + `activity_event` ; l'envoi est aussi
+journalisé dans `AuditEvent` (`MISSION_ENCODING_AUTO_REMINDER_SENT`, acteur système).
 
 ### 11.3 Planification
 
