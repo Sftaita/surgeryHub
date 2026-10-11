@@ -2156,7 +2156,8 @@ ReleasedRoomSlotTakeoverService::takeOver()  ── une transaction ────
 MissionLifecycleChangedMessage(ROOM_TAKEN_OVER) → MissionLifecycleChangedMessageHandler (async)
   ├── instrumentiste initialement prévue : MissionEligibilityService::evaluate()
   │     éligible → ROOM_TAKEOVER_MISSION_OFFER · sinon rien
-  └── pool : findEligible() moins elle → OPEN_MISSION_AVAILABLE
+  └── pool : OpenMissionPoolNotifier (H3, D-129) — éligibles à CETTE mission, elle exclue
+        si l'offre contextuelle lui a été envoyée (PERSONAL_OFFER_SENT) → OPEN_MISSION_AVAILABLE
         ▼
 POST /api/missions/{id}/claim (inchangé)  → OPEN → ASSIGNED, SURGEON_POST_COVERED au repreneur
 ```
@@ -2360,7 +2361,9 @@ sélectives complètes, rappel de 19 h et mises à jour applicatives restent hor
   `POST .../subscribe` (idempotent, upsert), `DELETE .../unsubscribe` (idempotent, scopé
   au propriétaire). Voir `docs/api.md` §40 pour le contrat complet.
 - `App\Service\WebPushService` (implémente `WebPushServiceInterface`) —
-  `sendToUser()`/`sendToUsers()`/`sendToSiteInstrumentists()`. Seul point d'envoi HTTP
+  `sendToUser()` / `sendToUserWithAttempts()` (un destinataire à la fois ; les envois groupés
+  `sendToUsers()` / `sendToSiteInstrumentists()`, qui ignoraient les préférences, ont été
+  supprimés en H3, D-129). Seul point d'envoi HTTP
   réel (`minishlink/web-push`) ; tout appelant métier passe par l'interface, jamais par
   un appel HTTP direct.
 - Canal Monolog `push` (`config/packages/monolog.yaml`) + handler `sentry` (type
@@ -2456,7 +2459,11 @@ côté backend (§9.4) — aucune complexité multi-compte par appareil n'a ét�
 
 ### 9.5 Dette technique connue
 
-`MissionController::publish()` appelle `WebPushService::sendToSiteInstrumentists()` de
+> **Résolu (point 8 audit UX, puis H3/D-129)** : la publication passe par
+> `MissionPublishedMessage` (async) et le pool par `OpenMissionPoolNotifier` (éligibles
+> seulement, préférences respectées). Paragraphe conservé pour l'historique.
+
+`MissionController::publish()` appelait `WebPushService::sendToSiteInstrumentists()` de
 façon synchrone dans la requête HTTP, contrairement au reste des envois push
 post-déploiement (tous async via `MissionLifecycleChangedMessage`, D-043/D-056).
 `publish()` agit en pré-déploiement (`DRAFT`), hors du domaine couvert par
@@ -3147,7 +3154,9 @@ table d'affiliation.
 
 ### 18.2 Notifications & audit — même famille que D-093
 
-`SURGEON_MISSION_REQUEST_CREATED` (→ managers/admins, in-app + push, jamais email) ;
+`SURGEON_MISSION_REQUEST_CREATED` (→ managers/admins, in-app + push ; email opt-in —
+défaut désactivé, envoyé seulement si le manager coche « E-mail » dans ses préférences,
+amendement 2026-10-06 de D-099) ;
 `SURGEON_MISSION_REQUEST_ACCEPTED`/`REJECTED` (→ chirurgien, push puis repli email).
 `NotificationTargetResolver` gagne deux routes de deep-link dédiées (demande créée →
 `/app/m/missions/requests` pour un manager ; demande refusée → `/app/s/requests`,
@@ -3575,3 +3584,272 @@ qui garde `MissionPublishedMessage`.
   `dispatch-candidates`, `mission/{id}`).
 - `fetchAllMissions()` : pagination complète (l'API plafonne à 100 par page ; un seul appel
   `limit: 500` tronquait silencieusement les premières missions d'un mois chargé).
+
+## 24. Journal d'activité transversal et corrélation (H1, D-126)
+
+### 24.1 Rôle de chaque stockage — à ne jamais confondre
+
+| Stockage | Rôle | Source de vérité ? |
+|---|---|---|
+| `Mission` (et autres entités métier) | état courant | **oui** |
+| `AuditEvent` | preuve métier spécialisée (mission, financier, salles…) | oui, pour ce qu'il prouve |
+| `UserAuditEvent` | audit administration / utilisateurs | oui, pour ce qu'il prouve |
+| `NotificationEvent` | flux in-app de l'utilisateur | oui, pour le « vu / non vu » |
+| `OutboundNotification` (+ attempts) | livraison push / email | oui, pour la livraison |
+| **`activity_event`** | **chronologie et corrélation transversales** | **jamais** — projection de traçabilité, aucune décision métier ne la lit |
+
+### 24.2 Écriture
+
+```text
+HTTP request / console command ──► CorrelationContextListener ──► CorrelationContext (correlationId UUID v7)
+                                                                        │
+ business service ──► flush ──► postPersist(AuditEvent | UserAuditEvent) ──► AuditEventMirrorListener ─┐
+                         │  └─► postPersist/postUpdate/postRemove(Absence) ──► AbsenceActivityListener ─┤
+                         └─ planning services (generate / deploy / draft delete / modification) ────────┤
+                                                                                                        ▼
+                                                     ActivityJournal::record()  (DBAL INSERT, même transaction)
+                                                                        │
+ bus->dispatch() ──► CorrelationMiddleware ajoute CorrelationStamp ──► transport Doctrine ──► worker
+                          worker: CorrelationMiddleware restaure l'opération, handler, puis restaure l'état précédent (finally)
+```
+
+- `ActivityJournal` est la **seule** API d'écriture ; il refuse d'écrire hors transaction (sauf
+  `recordStandalone()`), valide le type (registre fermé), filtre le payload
+  (`ActivityPayloadPolicy`), snapshotte l'acteur (nom, rôle principal, `USER`/`SYSTEM`/
+  `WORKER`/`SCHEDULED_TASK` — jamais d'email), applique l'`idempotencyKey`, et résout la
+  causalité **uniquement** depuis un id explicite ou une ancre (`absence:{id}`,
+  `planning_version:{id}`).
+- Les recorders de domaine (`AbsenceActivityListener`, `PlanningActivityRecorder`,
+  `AuditEventActivityMapper`) construisent le résumé lisible (texte, sans HTML) et le payload ;
+  ils décrivent une décision déjà prise, ils n'en prennent aucune.
+- Append-only : `AppendOnlyDriverMiddleware` (SQL) + `ActivityEventOrmGuard` (ORM). Pas de
+  trigger (privilèges prod, cf. D-126).
+
+### 24.3 Lecture (préparée pour H6)
+
+Index : `(occurred_at, id)`, `correlation_id`, `(mission_id, occurred_at)`,
+`(user_id, occurred_at)`, `(absence_id, occurred_at)`, `(planning_version_id, occurred_at)`,
+`(domain, occurred_at)`, `(subject_type, subject_id)`, `(actor_user_id, occurred_at)`,
+`UNIQUE(idempotency_key)`. Pagination prévue par curseur `(occurred_at, id)`. Le journal complet
+sera réservé Manager/Admin ; les historiques contextuels passeront par les voters métier et
+filtreront les domaines financiers (`ActivityDomain::isFinancial()`).
+
+## 25. Distribution et traçabilité des notifications (H2, D-128)
+
+### 25.1 Les trois niveaux
+
+| Niveau | Stockage | Question à laquelle il répond |
+|---|---|---|
+| Décision | `notification_dispatch` | qui devait être prévenu, de quoi, dans quelle opération, avec quels canaux accordés (préférence ou défaut) ? |
+| Livraison | `outbound_notification` (+ `outbound_notification_attempt`) | pour chaque canal : créé / en file / accepté par le fournisseur / échec / non envoyé (et pourquoi) ? |
+| Flux in-app | `notification_event` | l'utilisateur l'a-t-il vu ? |
+
+`notification_dispatch_delivery` relie les deux premiers (N:N : un email groupé d'une opération par
+lot sert plusieurs dispatchs).
+
+### 25.2 Chemin d'une notification
+
+```text
+handler métier (ex. MissionLifecycleChangedMessageHandler)
+   └─ MissionLifecycleNotificationFactory → NotificationIntent (destinataire, type, payload in-app, contenus email/push, épisode)
+        └─ NotificationDispatcher::dispatch() | dispatchBatch()
+              1. NotificationPreferenceResolver::resolve()        (seule autorité sur les canaux)
+              2. NotificationDispatch (idempotent : type|destinataire|sujet|épisode)
+              3. IN_APP → NotificationEvent + livraison SENT, ou SKIPPED(DISABLED_BY_PREFERENCE)
+                 PUSH   → OutboundNotificationService::recordPushSend() (SENT/FAILED/SKIPPED + raison)
+                 EMAIL  → livraison QUEUED + SendTemplatedEmailMessage + NOTIFICATION_CHANNEL_QUEUED (même transaction)
+                          ou SKIPPED(DISABLED_BY_PREFERENCE | NO_EMAIL_ADDRESS | COVERED_BY_PUSH | NOT_APPLICABLE)
+              4. NOTIFICATION_DISPATCHED (activity_event) — décision + issue de chaque canal
+worker : SendTemplatedEmailMessageHandler → recordEmailAttempt(SENT) → NOTIFICATION_CHANNEL_SENT
+         OutboundNotificationEmailFailureListener → FAILED (retries épuisés) → NOTIFICATION_CHANNEL_FAILED
+```
+
+Chaque canal est isolé (un échec n'empêche jamais les autres) ; un retry du même épisode ne crée
+rien de nouveau. `SENT` = accepté par le relais SMTP ou le service push, jamais « reçu » ni « lu ».
+
+### 25.3 Lire la trace
+
+- Écran admin « Historique des notifications » (`/api/admin/outbound-notifications`) : une ligne par
+  canal, y compris `IN_APP` et les `SKIPPED` avec leur raison, plus la `correlationId`.
+- `activity_event` : `NOTIFICATION_DISPATCHED`, `NOTIFICATION_CHANNEL_QUEUED/SENT/FAILED`, reliés à
+  l'événement de mission qui les a causés (même `correlationId`, causalité explicite).
+
+## 26. Sollicitation du pool pour une mission OPEN (H3, D-129)
+
+### 26.1 Une seule porte d'entrée
+
+Toute mission réelle qui devient (ou est déclarée) disponible passe par
+`App\Notification\OpenMissionPoolNotifier` — aucun handler ne possède plus sa propre diffusion
+pool (garde-fou : `tests/Architecture/OpenMissionPoolSingleEntryTest`).
+
+| Chemin métier | Déclencheur | Cause (`OpenEpisodeCause`) | Mode |
+|---|---|---|---|
+| Libération d'une instrumentiste (`POST /release`, action d'alerte sur mission ASSIGNED) | `MissionLifecycleChangedMessage(RELEASED)` | `RELEASED` (exclusion `REMOVED_BY_MANAGER` si un manager l'a retirée) | isolé |
+| Absence de l'instrumentiste (D-062) | idem, `causedByAbsenceId` | `INSTRUMENTIST_ABSENCE` (l'absente est écartée par l'éligibilité, pas par exclusion) | isolé |
+| Déploiement (missions cochées `openUncoveredIds`) | `PlanningDeployPdfsMessageHandler` | `DEPLOYED`, clé `deployment:{id}` | lot |
+| Publication POOL (D-125) | `MissionPublishedMessage` | `PUBLISHED_TO_POOL` | isolé |
+| Reprise de salle (D-124) | `MissionLifecycleChangedMessage(ROOM_TAKEN_OVER)` | `ROOM_TAKEN_OVER` (exclusion `PERSONAL_OFFER_SENT`) | isolé |
+| Lot du mode Modification | `PlanningModificationAppliedMessage` (après commit) | `PLANNING_MODIFICATION`, clé = `correlationId` du lot | lot |
+| Restauration en OPEN après suppression d'absence (D-104) | `OpenMissionPoolMessage` | `RESTORED_AFTER_ABSENCE` | isolé |
+| « Ouvrir au pool » sur une alerte, mission déjà OPEN | `OpenMissionPoolMessage` | `OPENED_FROM_ALERT` | isolé |
+
+### 26.2 Pipeline
+
+```text
+OpenEpisode(missionId, episodeRef, cause, exclusions contextuelles, acteur)
+  └─ OpenMissionPoolNotifier::notify() | notifyBatch()
+       1. recharge les missions (une mission plus OPEN / déjà prise → personne n'est sollicité)
+       2. MissionEligibilityService::findEligibleByMission()   missionId → éligibles (3 requêtes, D-036)
+       3. retire les exclusions de l'épisode (jamais une règle d'éligibilité ; tracées)
+       4. OPEN_POOL_EVALUATED (activity_event) : éligibles / exclues / sollicitées / aucun candidat
+       5. NotificationIntent(OPEN_MISSION_AVAILABLE, épisode) par (personne, mission)
+          → NotificationDispatcher : isolé = un email par personne ;
+            lot = in-app par mission, UN email + UN push par personne listant SES missions
+```
+
+- **Épisode** : `open:{missionId}:{cause}:{instant de la transition}` (ou `:{clé de lot}`). Un retry
+  Messenger rejoue le même épisode → rien de nouveau (idempotence du dispatcher et de la trace).
+  Une nouvelle ouverture (OPEN → ASSIGNED → OPEN) est un nouvel épisode : les exclusions du
+  précédent ne s'appliquent plus.
+- **Canaux** : uniquement `NotificationPreferenceResolver` ; défauts `OPEN_MISSION_AVAILABLE`
+  in-app, email et push activés.
+- **Contenu** : date, horaires, période, site, chirurgien, type, lien vers les offres — jamais de
+  patient ni de donnée financière. Template `emails/open_missions_available.html.twig`.
+
+### 26.3 Mode Modification : atomique, notifications après commit
+
+`PlanningModificationService::apply()` exécute tout le lot dans **une** transaction (mutations,
+alertes de conflit, diff, trace `PLANNING_MODIFICATION_APPLIED`). Échec → rollback complet, trace
+`FAILED` (`rolledBack`), EntityManager vidé, aucune notification. Succès → un
+`PlanningModificationAppliedMessage` : récapitulatifs `PLANNING_CHANGE_SUMMARY` par personne
+concernée (dispatcher), puis pool en lot pour les missions ouvertes par le lot.
+Les messages émis par des services imbriqués pendant le lot partent dans le transport Doctrine
+(même connexion) : ils sont annulés avec le lot.
+
+### 26.4 Lire ce qui s'est passé
+
+`OPEN_POOL_EVALUATED` (domaine MISSIONS, ancre `mission:{id}`) donne au manager, par mission et par
+épisode : `eligibleCount`, `excludedCount` (+ qui et pourquoi, `wasEligible`), `notifiedCount`,
+`noEligibleCandidates`, `mode`, `cause`. Les dispatchs qui suivent pointent vers cette évaluation ;
+le détail par canal reste dans `notification_dispatch` / `outbound_notification` (§25).
+
+## 27. Impact d'une absence : résolution unique N1 / N2 / N3 (H4, D-130)
+
+### 27.1 Les trois niveaux
+
+| Niveau | Source | Personne informée | Conséquence (appliquée par) |
+|---|---|---|---|
+| N1 — organisation habituelle | `SurgeonSchedulePost` (+ exceptions), aucune Mission sur le créneau | chirurgien absent → instrumentiste habituelle ; instrumentiste absente → chirurgien | occurrence neutralisée (`SurgeonAbsenceOccurrenceImpactService`) / à couvrir (`InstrumentistAbsenceOccurrenceImpactService`, audit seul) |
+| N2 — prévu, non publié | Mission `DRAFT` | la personne de la Mission (jamais celle du template) | alerte cockpit (`AbsenceImpactService`) ; neutralisation / blocage au déploiement (D-090) |
+| N3 — publié / opérationnel | Mission ≠ DRAFT | la personne de la Mission | annulation / libération (`AbsenceMissionReactionService`), pool via H3 ; SUBMITTED/VALIDATED/IN_PROGRESS : décision manager |
+
+Pour une occurrence : **N3 > N2 > N1**.
+
+### 27.2 Séquence
+
+```text
+AbsenceController / SelfAbsenceController
+  └─ AbsenceImpactCoordinator::afterCreated | afterUpdated | delete
+       1. AbsenceImpactResolver::resolve()  → list<AbsenceImpact>   (avant toute mutation)
+          (+ resolveRange(ancienne plage) pour une modification : nouveaux / plus impactés)
+       2. appliquer : AbsenceMissionReactionService (N3) → AbsenceImpactService (alertes)
+                      → SurgeonAbsenceOccurrenceImpactService::neutralize (N1)
+                      → InstrumentistAbsenceOccurrenceImpactService::record (N1)
+                      → AbsenceImpactReconciliationService (modification : D-104)
+       3. AbsenceImpactActivityRecorder : ABSENCE_IMPACT_EVALUATED + USER_PLANNING_IMPACTED
+       4. AbsenceImpactNotificationMessage (N1/N2) → AbsenceImpactNotifier → NotificationDispatcher (BATCH)
+          AbsenceMissionsReactedMessage (N3, émis par la réaction) → handler → NotificationDispatcher (BATCH)
+          MissionLifecycleChangedMessage(RELEASED, causedByAbsenceId) → OpenMissionPoolNotifier (H3)
+       5. AbsenceImpactSummaryService → ABSENCE_IMPACT_SUMMARY (managers, dispatcher)
+          + communications D-114 (salle libérée, gestion du bloc, salles disponibles)
+```
+
+### 27.3 `mission_communication`
+
+```text
+NotificationIntent(communicates: MissionCommunicationSpec{source, role, missionIds})
+  └─ NotificationDispatcher : notification_dispatch.communicates
+       ├─ IN_APP SENT ou PUSH SENT  → MissionCommunicationService::activateFromDispatch()
+       └─ EMAIL QUEUED → worker → OutboundNotificationService::recordEmailAttempt(success)
+                                  → activateForDelivery() (tous les dispatchs servis par l'email)
+MissionPostDeployService::claim()                 → activate(CLAIM)        (preuve = l'action elle-même)
+MissionPostDeployService::release/cancel/assign/reassign → withdraw(RELEASED | CANCELLED | REASSIGNED)
+```
+
+Une activation n'a lieu que si la personne détient encore la mission ; une ligne active par
+(mission, personne, rôle) ; rien n'est jamais supprimé.
+
+## 28. Notifications métier utilisateur de classe A par le dispatcher (H5a, D-131)
+
+Règle : toute notification métier utilisateur de classe A est un `NotificationIntent` remis à
+`NotificationDispatcher` (les documents de facturation B et les communications D-114 restent
+spécialisés ; les emails d'identité y passent en `MANDATORY` confidentiel).
+Les services métier ne fabriquent que le contenu (`NotificationService::*Email()` →
+`EmailContent`) ; le dispatcher décide des canaux, enregistre la décision et chaque livraison
+avec un statut honnête.
+
+```
+Handler / service ──► NotificationIntent ──► NotificationDispatcher
+   (qui, quoi, épisode,      │  emailPolicy: WHEN_ENABLED | FALLBACK_WHEN_PUSH_NOT_SENT | MANDATORY
+    politique, contenu)      │  inApp (bool), emailAddress (adresse explicite), confidential
+                             ▼
+             NotificationPreferenceResolver (sauf email MANDATORY)
+                             ▼
+     notification_dispatch ─► outbound_notification (IN_APP / PUSH / EMAIL, recipient_address)
+                             ▼                 └─ payload.attachments = DocumentReference[]
+                SendTemplatedEmailMessage (documents par référence, storeRenderedBody)
+                             ▼
+     SendTemplatedEmailMessageHandler ─► DocumentStore::load() (sha256 vérifié) ─► Mailer
+                             ▼
+     recordEmailAttempt() : SENT (accepté par le relais) / FAILED après retries + activity_event
+```
+
+- **`MANDATORY`** : identité (invitation, changement d'email) et actions explicites d'un
+  manager vers une personne (renvoi du planning, rappels d'absence) ; ces types sont exclus des
+  préférences (`NotificationType::isConfigurable()`).
+- **`confidential`** : corps rendu jamais recopié, lien jamais enregistré (jeton d'invitation).
+- **`GeneratedDocument`** : PDF rendu une fois, stocké une fois, référencé partout ailleurs.
+- Exceptions, et elles seules (test `EmailThroughDispatcherTest`) : documents financiers
+  (facture firme, décompte — `SendBillingEmailMessage`) et communications D-114 (journal
+  propre, adresses externes de gestion du bloc).
+
+## 29. Couverture de l'historique global (H5b, D-132)
+
+`activity_event` raconte ; il ne décide jamais. Trois mécanismes, et chaque entité Doctrine
+relève d'exactement un d'entre eux (`tests/Architecture/ActivityCoverageTest.php`) :
+
+```
+1. Audit spécialisé existant ──► AuditEvent / UserAuditEvent ──► AuditEventMirrorListener ──► activity_event
+   (missions, encodage, finance, tarifs, comptes)                  (sujet = mission / document / personne)
+
+2. Entité gouvernée (aucun audit) ──► flush Doctrine
+      onFlush : diff des champs suivis (avant → après), suppression décrite tant que chargeable
+      postPersist / postUpdate / postRemove : GovernedEntityDescriber::describe()
+         ──► ActivityJournal::record(record, connexion du flush)   (même transaction)
+
+3. Écriture directe ──► ActivityJournal (absences, planning, dispatch H2, envois de documents)
+```
+
+- **Describers** (`src/Activity/Governed/Describer`) : un par entité, `trackedFields()` (libellés
+  FR), champs rédigés (texte libre → « modifié »), phrase lisible, contexte whitelisté, sujet =
+  objet métier recherché (offre, mission, personne), ancres de causalité.
+- **Livraisons non-utilisateur** : `TransactionalEmailSender` — `OutboundNotification` (destinataire
+  nullable + libellé), `SendTemplatedEmailMessage`, `NOTIFICATION_CHANNEL_*` causés par l'acte
+  métier ; utilisé par `BillingDocumentMailer` et `AbsenceCommunicationDeliverySender`. Jamais de
+  préférences, jamais d'in-app.
+
+```
+Facture : FIRM_INVOICE_CREATED_FROM_CALCULATION → FIRM_INVOICE_ISSUED → FIRM_INVOICE_SENT
+            → NOTIFICATION_CHANNEL_QUEUED (← SENT) → NOTIFICATION_CHANNEL_SENT (← QUEUED)
+            → FIRM_INVOICE_RESENT (même GeneratedDocument, même sha256) → QUEUED → SENT
+D-114   : ABSENCE_CREATED → SURGEON_ABSENCE_COMMUNICATION_RECORDED (← absence)
+            → NOTIFICATION_CHANNEL_QUEUED (← communication) → SENT ;
+          surgeon_absence_communication_delivery.outbound_notification_id → outbound_notification
+```
+
+- **Documents figés** : `GeneratedDocument.retentionClass` (`IMMUTABLE_EVIDENCE` /
+  `REGENERABLE`), `sourceKey` + `inputFingerprint` ; `DocumentStore::storeOnce()` réutilise le
+  document de même identité ; `PlanningDocumentIdentity` pour les plannings. Aucune purge
+  automatique.
+- **Garde-fous** : `ActivityCoverageTest`, `NotificationChannelsThroughDispatcherTest`,
+  `EmailThroughDispatcherTest`, `ActivityJournalIntegrationTest` (append-only).

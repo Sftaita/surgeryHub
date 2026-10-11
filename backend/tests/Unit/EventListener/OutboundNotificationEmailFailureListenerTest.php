@@ -29,7 +29,7 @@ class OutboundNotificationEmailFailureListenerTest extends TestCase
 
     private function listener(): OutboundNotificationEmailFailureListener
     {
-        return new OutboundNotificationEmailFailureListener($this->outboundNotificationService, $this->absenceCommunicationJournalService);
+        return new OutboundNotificationEmailFailureListener($this->outboundNotificationService, $this->absenceCommunicationJournalService, new \App\Activity\CorrelationContext());
     }
 
     private function makeEvent(SendTemplatedEmailMessage $message, \Throwable $error, bool $willRetry): WorkerMessageFailedEvent
@@ -129,5 +129,28 @@ class OutboundNotificationEmailFailureListenerTest extends TestCase
         $this->assertIsString($capturedReason);
         $this->assertStringNotContainsString('s3cr3t', $capturedReason);
         $this->assertStringNotContainsString('smtp://', $capturedReason);
+    }
+
+    /** H5a (§19) — a controlled code + label: no internal host, port, path or stack trace. */
+    public function test_the_recorded_reason_is_a_controlled_code_without_infrastructure_details(): void
+    {
+        $message = new SendTemplatedEmailMessage('to@x.test', 'S', 'from@x.test', 'F', 'tpl.html.twig', [], null, 777);
+        $reasons = [];
+        $this->outboundNotificationService->method('recordEmailAttempt')
+            ->willReturnCallback(function (int $id, bool $success, ?string $reason) use (&$reasons): void { $reasons[] = $reason; });
+
+        $smtp = new \Symfony\Component\Mailer\Exception\TransportException('Connection could not be established with host "mailer:1025": stream_socket_client(): getaddrinfo for mailer failed');
+        $wrapped = new \Symfony\Component\Messenger\Exception\HandlerFailedException(new \Symfony\Component\Messenger\Envelope($message), [$smtp]);
+        $this->listener()->__invoke($this->makeEvent($message, $wrapped, willRetry: false));
+        $this->listener()->__invoke($this->makeEvent($message, new \RuntimeException('Document #9 introuvable.'), willRetry: false));
+        $this->listener()->__invoke($this->makeEvent($message, new \LogicException('/var/www/backend/src/X.php:12 secret'), willRetry: false));
+
+        $this->assertSame("SMTP_CONNECTION_FAILED — connexion au serveur d'envoi impossible", $reasons[0]);
+        $this->assertSame('DOCUMENT_UNAVAILABLE — Document #9 introuvable.', $reasons[1]);
+        $this->assertSame('EMAIL_SEND_FAILED — LogicException', $reasons[2]);
+        foreach ($reasons as $reason) {
+            $this->assertStringNotContainsString('mailer:1025', $reason);
+            $this->assertStringNotContainsString('/var/www', $reason);
+        }
     }
 }

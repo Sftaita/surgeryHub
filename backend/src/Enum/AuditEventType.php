@@ -8,6 +8,13 @@ enum AuditEventType: string
     case MISSION_DECLARED_APPROVED = 'MISSION_DECLARED_APPROVED';
     case MISSION_DECLARED_REJECTED = 'MISSION_DECLARED_REJECTED';
 
+    // H5b (D-132) — a manager's DRAFT mission work, silent until now: created by hand, edited
+    // (structured before → after), instrumentist set / cleared before publication. Nobody is
+    // notified (a DRAFT is not communicated — D-127); the mission's history still says who did it.
+    case MISSION_CREATED_MANUALLY            = 'MISSION_CREATED_MANUALLY';
+    case MISSION_DRAFT_UPDATED               = 'MISSION_DRAFT_UPDATED';
+    case MISSION_DRAFT_INSTRUMENTIST_CHANGED = 'MISSION_DRAFT_INSTRUMENTIST_CHANGED';
+
     // Planning generation & deployment
     case PLANNING_GENERATED              = 'PLANNING_GENERATED';
     case PLANNING_UNASSIGNED_HANDLED     = 'PLANNING_UNASSIGNED_HANDLED';

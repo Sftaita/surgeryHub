@@ -3,55 +3,49 @@
 namespace App\MessageHandler;
 
 use App\Entity\Mission;
-use App\Entity\NotificationEvent;
-use App\Entity\PushSubscription;
 use App\Entity\User;
+use App\Enum\MissionCommunicationSource;
 use App\Enum\NotificationType;
-use App\Enum\PublicationChannel;
 use App\Message\AbsenceMissionsReactedMessage;
-use App\Message\SendBillingEmailMessage;
-use App\Service\MissionEligibilityService;
-use App\Service\NotificationChannels;
-use App\Service\NotificationPreferenceResolver;
+use App\Notification\EmailContent;
+use App\Notification\MissionCommunicationSpec;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
+use App\Notification\PushContent;
+use App\Service\NotificationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
-use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
-use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * Sends the absence-specific recap notifications for AbsenceMissionReactionService — the
- * missing piece the "free" MissionLifecycleChangedMessage pipeline never covered (that
- * pipeline is in-app/push only, no email, for any change type).
+ * Level 3 (published / operational missions) of an absence — D-062, CAS B (D-118), H4 (D-127 /
+ * D-130). Sends the absence-specific notifications of the missions AbsenceMissionReactionService
+ * actually mutated, through NotificationDispatcher (BATCH: one dispatch and one in-app item per
+ * mission, ONE email and ONE push per recipient and type for the whole run):
  *
- * Recipients, per §7 of the feature spec:
- *   - Instrumentist absence (RELEASED missions): the removed instrumentist gets ONE
- *     recap covering every released mission; each distinct affected surgeon gets their
- *     own recap covering only their own missions.
- *   - Surgeon absence (CANCELLED missions): each distinct affected instrumentist gets
- *     ONE recap covering only their own cancelled missions. Missions with no
- *     instrumentist at cancellation time (were OPEN) have no instrumentist recipient —
- *     by design, per spec: "Aucune mission OPEN ne doit être créée... le chirurgien absent
- *     n'a pas besoin de recevoir un email".
+ *   instrumentist absent (missions RELEASED → OPEN)
+ *     - (never the absent instrumentist herself: no notification about the consequences of
+ *       one's own absence — final H4 rule; ABSENCE_INSTRUMENTIST_RELEASED is no longer sent)
+ *     - each surgeon concerned     ABSENCE_SURGEON_MISSION_OPENED   (the pool is solicited by
+ *       OpenMissionPoolNotifier from the RELEASED lifecycle message — never here)
+ *   surgeon absent (missions CANCELLED)
+ *     - the instrumentist          ABSENCE_MISSION_CANCELLED        ("votre mission … est annulée")
+ *       or, when CAS B moved her to another mission, ABSENCE_INSTRUMENTIST_REASSIGNED (never
+ *       both for one mission) — the new mission counts as communicated to her (ASSIGN) once
+ *       a channel reaches her.
  *
- * Email is batched per recipient (one email per person per absence-processing run, never
- * one per mission) — in-app notifications stay one NotificationEvent per mission, which the
- * spec explicitly allows ("Les notifications in-app peuvent rester unitaires si
- * l'architecture existante le justifie").
+ * These N3 types never overlap with the N1 / N2 types (ABSENCE_OCCURRENCE_*): one occurrence
+ * is qualified once. The lifecycle handler leaves these people to this recap (causedByAbsenceId).
+ * Idempotent: the episode is (absence, mission, type).
  */
 #[AsMessageHandler]
 final class AbsenceMissionsReactedMessageHandler
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly NotificationPreferenceResolver $preferenceResolver,
-        private readonly MissionEligibilityService $eligibilityService,
-        private readonly MessageBusInterface $bus,
+        private readonly NotificationDispatcher $dispatcher,
+        private readonly NotificationService $notificationService,
         private readonly LoggerInterface $logger,
-        #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
-        private readonly string $fromAddress,
-        #[Autowire('%env(string:MAILER_FROM_NAME)%')]
-        private readonly string $fromName,
     ) {
     }
 
@@ -61,302 +55,106 @@ final class AbsenceMissionsReactedMessageHandler
             return;
         }
 
+        /** @var array<string, list<NotificationIntent>> $byType */
+        $byType = [];
+        $add = function (int $recipientId, NotificationType $type, array $mission, ?MissionCommunicationSpec $communicates = null) use (&$byType, $message): void {
+            if ($recipientId === $message->absentUserId) {
+                return; // H4 — never the absent person about the consequences of her own absence
+            }
+            $recipient = $this->em->find(User::class, $recipientId);
+            if ($recipient === null) {
+                $this->logger->warning('AbsenceMissionsReacted: recipient not found', ['userId' => $recipientId, 'absenceId' => $message->absenceId]);
+                return;
+            }
+            $byType[$type->value][] = new NotificationIntent(
+                recipient: $recipient,
+                type: $type,
+                inAppPayload: $mission + ['level' => 'PUBLISHED', 'absenceId' => $message->absenceId, 'missionDate' => $mission['date'] ?? null],
+                mission: $this->em->getReference(Mission::class, $mission['missionId']),
+                episodeRef: sprintf('absence:%d:PUBLISHED:mission:%d:%s', $message->absenceId, $mission['missionId'], $type->value),
+                communicates: $communicates,
+            );
+        };
+
         if ($message->absentUserRole === 'INSTRUMENTIST') {
-            $this->handleInstrumentistAbsence($message);
-        } else {
-            $this->handleSurgeonAbsence($message);
-        }
-    }
-
-    // ── Instrumentist absence: notify removed instrumentist + each affected surgeon ──
-
-    private function handleInstrumentistAbsence(AbsenceMissionsReactedMessage $message): void
-    {
-        $absentInstrumentist = $this->em->find(User::class, $message->absentUserId);
-        if ($absentInstrumentist !== null) {
-            $count   = count($message->missions);
-            $subject = $count > 1
-                ? sprintf('%d missions retirées suite à votre absence', $count)
-                : 'Une mission retirée suite à votre absence';
-
-            $this->notifyRecipient(
-                $absentInstrumentist,
-                NotificationType::ABSENCE_INSTRUMENTIST_RELEASED,
-                $message->missions,
-                'emails/absence_instrumentist_released.html.twig',
-                $subject,
-            );
-        } else {
-            $this->logger->warning('AbsenceMissionsReacted: absent instrumentist not found', [
-                'absentUserId' => $message->absentUserId,
-            ]);
-        }
-
-        $bySurgeon = [];
-        foreach ($message->missions as $m) {
-            if ($m['surgeonId'] !== null) {
-                $bySurgeon[$m['surgeonId']][] = $m;
-            }
-        }
-
-        foreach ($bySurgeon as $surgeonId => $missions) {
-            $surgeon = $this->em->find(User::class, $surgeonId);
-            if ($surgeon === null) {
-                continue;
-            }
-
-            $count   = count($missions);
-            $subject = $count > 1
-                ? sprintf('%d de vos missions sont désormais à pourvoir', $count)
-                : 'Une de vos missions est désormais à pourvoir';
-
-            $this->notifyRecipient(
-                $surgeon,
-                NotificationType::ABSENCE_SURGEON_MISSION_OPENED,
-                $missions,
-                'emails/absence_surgeon_mission_opened.html.twig',
-                $subject,
-            );
-        }
-
-        $this->notifyEligiblePoolWithoutPushByEmail($message);
-    }
-
-    // ── Email fallback for the OPEN_MISSION_AVAILABLE pool push (D-108) ──────
-    //
-    // MissionLifecycleChangedMessageHandler::sendOpenMissionAvailableNotifications() already
-    // sends OPEN_MISSION_AVAILABLE (in-app + push) to every eligible instrumentist for EACH
-    // released mission individually — that pipeline runs regardless of cause and must never be
-    // duplicated here. This method only ever reaches instrumentists who have ZERO push
-    // subscription at all (an unambiguous "push indisponible" signal, not a delivery-failure
-    // guess), and groups every mission they're eligible for across this whole
-    // absence-processing run into ONE email — never one per mission.
-
-    private function notifyEligiblePoolWithoutPushByEmail(AbsenceMissionsReactedMessage $message): void
-    {
-        $missionIds = array_map(static fn (array $m) => $m['missionId'], $message->missions);
-        $missions   = $this->em->getRepository(Mission::class)->findBy(['id' => $missionIds]);
-        if (empty($missions)) {
-            return;
-        }
-
-        try {
-            $eligibleBySiteId = $this->eligibilityService->findEligible($missions);
-        } catch (\Throwable $e) {
-            $this->logger->error('AbsenceMissionsReacted: pool eligibility query failed', [
-                'absenceId' => $message->absenceId,
-                'error'     => $e->getMessage(),
-            ]);
-            return;
-        }
-
-        $snapshotByMissionId = [];
-        foreach ($message->missions as $m) {
-            $snapshotByMissionId[$m['missionId']] = $m;
-        }
-
-        /** @var array<int, array{user: User, missions: array}> $byInstrumentist */
-        $byInstrumentist = [];
-        foreach ($missions as $mission) {
-            $siteId        = $mission->getSite()?->getId();
-            $eligibleUsers = $eligibleBySiteId[$siteId] ?? [];
-            $snapshot      = $snapshotByMissionId[$mission->getId()] ?? null;
-            if ($snapshot === null) {
-                continue;
-            }
-
-            foreach ($eligibleUsers as $user) {
-                if ($this->hasAnyPushSubscription($user)) {
-                    // Already covered by the push pipeline — never a duplicate channel.
-                    continue;
+            foreach ($message->missions as $m) {
+                if ($m['surgeonId'] !== null) {
+                    $add((int) $m['surgeonId'], NotificationType::ABSENCE_SURGEON_MISSION_OPENED, $m);
                 }
-                $byInstrumentist[$user->getId()]['user'] ??= $user;
-                $byInstrumentist[$user->getId()]['missions'][] = $snapshot;
             }
-        }
-
-        foreach ($byInstrumentist as $entry) {
-            /** @var User $user */
-            $user     = $entry['user'];
-            $missionsForUser = $entry['missions'];
-            $channels = $this->resolveChannelsSafely($user, NotificationType::ABSENCE_POOL_MISSION_AVAILABLE);
-            if (!$channels->email || !$user->getEmail()) {
-                continue;
-            }
-
-            $count   = count($missionsForUser);
-            $subject = $count > 1
-                ? sprintf('%d nouvelles missions disponibles', $count)
-                : 'Une nouvelle mission disponible';
-
-            try {
-                $this->bus->dispatch(new SendBillingEmailMessage(
-                    to: $user->getEmail(),
-                    cc: [],
-                    subject: $subject,
-                    fromAddress: $this->fromAddress,
-                    fromName: $this->fromName,
-                    htmlTemplate: 'emails/absence_pool_missions_available.html.twig',
-                    context: [
-                        'recipientName' => self::displayName($user),
-                        'missions'      => $missionsForUser,
-                        'missionCount'  => $count,
-                    ],
-                ));
-            } catch (\Throwable $e) {
-                $this->logger->error('AbsenceMissionsReacted: pool email fallback dispatch failed', [
-                    'userId' => $user->getId(),
-                    'error'  => $e->getMessage(),
-                ]);
-            }
-        }
-    }
-
-    private function hasAnyPushSubscription(User $user): bool
-    {
-        return $this->em->getRepository(PushSubscription::class)->count(['user' => $user]) > 0;
-    }
-
-    // ── Surgeon absence: notify each affected instrumentist ──────────────────
-
-    /**
-     * CAS B (D-118) — split by outcome, never both for the same mission: a mission whose
-     * freed instrumentist was automatically reassigned (non-empty 'reassignedTo', see
-     * AbsenceMissionReactionService::buildMissionSummary()) gets the combined-context
-     * ABSENCE_INSTRUMENTIST_REASSIGNED instead of the pre-existing, unconditional
-     * ABSENCE_MISSION_CANCELLED. If the same instrumentist has both outcomes across several
-     * missions cancelled by this same absence-processing run (rare — a multi-day absence
-     * with more than one affected mission for them), they correctly get one email of each
-     * kind, never a contradictory mix inside a single email.
-     */
-    private function handleSurgeonAbsence(AbsenceMissionsReactedMessage $message): void
-    {
-        $byInstrumentistReassigned = [];
-        $byInstrumentistReleased   = [];
-
-        foreach ($message->missions as $m) {
-            if ($m['instrumentistId'] === null) {
-                continue;
-            }
-            if (!empty($m['reassignedTo'])) {
-                $byInstrumentistReassigned[$m['instrumentistId']][] = $m;
-            } else {
-                $byInstrumentistReleased[$m['instrumentistId']][] = $m;
-            }
-        }
-
-        foreach ($byInstrumentistReassigned as $instrumentistId => $missions) {
-            $instrumentist = $this->em->find(User::class, $instrumentistId);
-            if ($instrumentist === null) {
-                continue;
-            }
-
-            $count   = count($missions);
-            $subject = $count > 1
-                ? sprintf('%d missions réaffectées suite à une absence chirurgien', $count)
-                : 'Mission réaffectée suite à une absence chirurgien';
-
-            $this->notifyRecipient(
-                $instrumentist,
-                NotificationType::ABSENCE_INSTRUMENTIST_REASSIGNED,
-                $missions,
-                'emails/absence_instrumentist_reassigned.html.twig',
-                $subject,
-            );
-        }
-
-        foreach ($byInstrumentistReleased as $instrumentistId => $missions) {
-            $instrumentist = $this->em->find(User::class, $instrumentistId);
-            if ($instrumentist === null) {
-                continue;
-            }
-
-            $count   = count($missions);
-            $subject = $count > 1
-                ? sprintf('%d missions annulées suite à une absence chirurgien', $count)
-                : 'Une mission annulée suite à une absence chirurgien';
-
-            $this->notifyRecipient(
-                $instrumentist,
-                NotificationType::ABSENCE_MISSION_CANCELLED,
-                $missions,
-                'emails/absence_mission_cancelled.html.twig',
-                $subject,
-            );
-        }
-    }
-
-    // ── Shared: in-app (per mission) + email (batched) ───────────────────────
-
-    private function notifyRecipient(
-        User $recipient,
-        NotificationType $type,
-        array $missions,
-        string $emailTemplate,
-        string $subject,
-    ): void {
-        $channels = $this->resolveChannelsSafely($recipient, $type);
-
-        if ($channels->inApp) {
-            foreach ($missions as $m) {
-                try {
-                    $evt = (new NotificationEvent())
-                        ->setUser($recipient)
-                        ->setMission($this->em->getReference(Mission::class, $m['missionId']))
-                        ->setEventType($type->value)
-                        ->setChannel(PublicationChannel::IN_APP)
-                        ->setSentAt(new \DateTimeImmutable())
-                        ->setPayload($m);
-                    $this->em->persist($evt);
-                    $this->em->flush();
-                } catch (\Throwable $e) {
-                    $this->logger->error('AbsenceMissionsReacted: inApp notification failed', [
-                        'type'       => $type->value,
-                        'userId'     => $recipient->getId(),
-                        'missionId'  => $m['missionId'],
-                        'error'      => $e->getMessage(),
-                    ]);
+        } else {
+            foreach ($message->missions as $m) {
+                if ($m['instrumentistId'] === null) {
+                    continue; // an OPEN mission had nobody to tell
+                }
+                if (!empty($m['reassignedTo'])) {
+                    $add((int) $m['instrumentistId'], NotificationType::ABSENCE_INSTRUMENTIST_REASSIGNED, $m, new MissionCommunicationSpec(
+                        MissionCommunicationSource::ASSIGN, MissionCommunicationSpec::ROLE_INSTRUMENTIST,
+                        array_map(static fn (array $t) => (int) $t['missionId'], $m['reassignedTo']),
+                    ));
+                } else {
+                    $add((int) $m['instrumentistId'], NotificationType::ABSENCE_MISSION_CANCELLED, $m);
                 }
             }
         }
 
-        if ($channels->email && $recipient->getEmail()) {
+        foreach ($byType as $typeValue => $intents) {
+            $type = NotificationType::from($typeValue);
             try {
-                $this->bus->dispatch(new SendBillingEmailMessage(
-                    to: $recipient->getEmail(),
-                    cc: [],
-                    subject: $subject,
-                    fromAddress: $this->fromAddress,
-                    fromName: $this->fromName,
-                    htmlTemplate: $emailTemplate,
-                    context: [
-                        'recipientName' => self::displayName($recipient),
-                        'missions'      => $missions,
-                        'missionCount'  => count($missions),
-                    ],
-                ));
+                $this->dispatcher->dispatchBatch(
+                    $intents,
+                    fn (User $u, array $its) => $this->email($u, $type, $its),
+                    fn (User $u, array $its) => self::push($type, $its),
+                );
             } catch (\Throwable $e) {
-                $this->logger->error('AbsenceMissionsReacted: email dispatch failed', [
-                    'type'   => $type->value,
-                    'userId' => $recipient->getId(),
-                    'error'  => $e->getMessage(),
-                ]);
+                $this->logger->error('AbsenceMissionsReacted: dispatch failed', ['type' => $typeValue, 'absenceId' => $message->absenceId, 'error' => $e->getMessage()]);
             }
         }
     }
 
-    private function resolveChannelsSafely(User $user, NotificationType $type): NotificationChannels
+    /** @param list<NotificationIntent> $intents */
+    private function email(User $recipient, NotificationType $type, array $intents): EmailContent
     {
-        try {
-            return $this->preferenceResolver->resolve($user, $type);
-        } catch (\Throwable) {
-            return new NotificationChannels(inApp: true, email: true, push: false);
-        }
+        $missions = array_map(static fn (NotificationIntent $i) => $i->inAppPayload, $intents);
+        $count = count($missions);
+        [$template, $subject] = match ($type) {
+            NotificationType::ABSENCE_INSTRUMENTIST_RELEASED => ['emails/absence_instrumentist_released.html.twig',
+                $count > 1 ? sprintf('%d missions retirées suite à votre absence', $count) : 'Une mission retirée suite à votre absence'],
+            NotificationType::ABSENCE_SURGEON_MISSION_OPENED => ['emails/absence_surgeon_mission_opened.html.twig',
+                $count > 1 ? sprintf('%d de vos missions sont désormais à pourvoir', $count) : 'Une de vos missions est désormais à pourvoir'],
+            NotificationType::ABSENCE_INSTRUMENTIST_REASSIGNED => ['emails/absence_instrumentist_reassigned.html.twig',
+                $count > 1 ? sprintf('%d missions réaffectées suite à une absence chirurgien', $count) : 'Mission réaffectée suite à une absence chirurgien'],
+            default => ['emails/absence_mission_cancelled.html.twig',
+                $count > 1 ? sprintf('%d missions annulées suite à une absence chirurgien', $count) : 'Une mission annulée suite à une absence chirurgien'],
+        };
+
+        return new EmailContent($subject, $template, [
+            'recipientName' => self::name($recipient),
+            'missions'      => $missions,
+            'missionCount'  => $count,
+            'notificationPreferencesUrl' => $this->notificationService->notificationPreferencesUrl($recipient),
+        ]);
     }
 
-    private static function displayName(User $user): string
+    /** @param list<NotificationIntent> $intents */
+    private static function push(NotificationType $type, array $intents): PushContent
+    {
+        $m = $intents[0]->inAppPayload;
+        $count = count($intents);
+        $one = sprintf('%s · %s', $m['date'] ?? '', $m['siteName'] ?? '');
+
+        return match ($type) {
+            NotificationType::ABSENCE_INSTRUMENTIST_RELEASED => new PushContent('Mission retirée suite à votre absence', $count > 1 ? sprintf('%d missions retirées de votre planning.', $count) : $one, ['type' => $type->value, 'url' => '/app/i/planning']),
+            NotificationType::ABSENCE_SURGEON_MISSION_OPENED => new PushContent('Mission à pourvoir', $count > 1 ? sprintf('%d de vos missions sont à pourvoir (absence de l\'instrumentiste).', $count) : $one . ' — instrumentiste indisponible', ['type' => $type->value, 'url' => '/app/s/planning']),
+            NotificationType::ABSENCE_INSTRUMENTIST_REASSIGNED => new PushContent('Mission réaffectée', $count > 1 ? sprintf('%d missions réaffectées.', $count) : $one, ['type' => $type->value, 'url' => '/app/i/planning']),
+            default => new PushContent('Mission annulée', $count > 1 ? sprintf('%d de vos missions sont annulées (absence du chirurgien).', $count) : sprintf('Votre mission du %s avec le Dr %s est annulée en raison de son absence.', $m['date'] ?? '', $m['surgeonName'] ?? ''), ['type' => $type->value, 'url' => '/app/i/planning']),
+        };
+    }
+
+    private static function name(User $user): string
     {
         $name = trim(($user->getFirstname() ?? '') . ' ' . ($user->getLastname() ?? ''));
-        return $name !== '' ? $name : ($user->getEmail() ?? '');
+
+        return $name !== '' ? $name : (string) $user->getEmail();
     }
 }

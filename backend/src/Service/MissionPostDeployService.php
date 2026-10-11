@@ -2,6 +2,13 @@
 
 namespace App\Service;
 
+use App\Message\OpenMissionPoolMessage;
+use App\Notification\MissionCommunicationService;
+use App\Notification\MissionCommunicationSpec;
+use App\Enum\MissionCommunicationSource;
+use App\Enum\MissionCommunicationWithdrawal;
+use App\Notification\OpenEpisode;
+use App\Enum\OpenEpisodeCause;
 use App\Dto\EligibilityResult;
 use App\Entity\Hospital;
 use App\Entity\Mission;
@@ -43,6 +50,10 @@ class MissionPostDeployService
         private readonly MessageBusInterface       $bus,
         private readonly AuditService              $audit,
         private readonly MissionEligibilityService $eligibilityService,
+        // H4 (D-130) — every mutation that takes a person off a Mission closes what had been
+        // communicated to her about it (mission_communication). Optional only so plain unit
+        // tests can build the service; always autowired.
+        private readonly ?MissionCommunicationService $communications = null,
     ) {}
 
     /**
@@ -85,6 +96,7 @@ class MissionPostDeployService
         $mission->setStatus(MissionStatus::OPEN);
         $mission->setInstrumentist(null);
         $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
+        $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::RELEASED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
 
         $payload = [
             'fromInstrumentistId'   => $fromInstrumentistId,
@@ -213,9 +225,23 @@ class MissionPostDeployService
             ? $this->displayName($fromInstrumentist)
             : null;
 
+        // H2 (D-128) — snapshot taken BEFORE the mutation: cancel() clears the instrumentist
+        // FK, so the async handler must find in the message everything it needs to tell the
+        // previously assigned person what happened (who, which surgeon, where, when, why).
+        $surgeon = $mission->getSurgeon();
+        $snapshot = [
+            'surgeonId'   => $surgeon?->getId(),
+            'surgeonName' => $surgeon !== null ? $this->displayName($surgeon) : null,
+            'siteId'      => $mission->getSite()?->getId(),
+            'startAt'     => $mission->getStartAt()?->format(\DateTimeInterface::ATOM),
+            'endAt'       => $mission->getEndAt()?->format(\DateTimeInterface::ATOM),
+        ];
+
         $mission->setStatus(MissionStatus::CANCELLED);
         $mission->setInstrumentist(null);
         $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
+        $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::CANCELLED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
+        $this->withdrawCommunication($mission, $surgeon, MissionCommunicationWithdrawal::CANCELLED, MissionCommunicationSpec::ROLE_SURGEON);
 
         $payload = [
             'reason'                => $reason,
@@ -225,7 +251,7 @@ class MissionPostDeployService
             'causedByAbsenceId'     => $causedByAbsenceId,
             'actorId'               => $actor->getId(),
             'actorName'             => $this->displayName($actor),
-        ];
+        ] + $snapshot;
 
         $this->audit->record($mission, $actor, AuditEventType::MISSION_CANCELLED_POST_DEPLOY, $payload);
 
@@ -302,6 +328,15 @@ class MissionPostDeployService
         $this->audit->record($mission, $actor, AuditEventType::MISSION_RESTORED_AFTER_SURGEON_ABSENCE, $payload);
 
         $this->em->flush();  // R-05: flush before dispatch
+
+        // H3 (D-129) — a mission restored as OPEN is a real opening: its pool is solicited
+        // through OpenMissionPoolNotifier, independently of $notify (which only governs the
+        // person-addressed lifecycle notifications, handled by PlanningRestoredAfterAbsence).
+        if ($restoredStatus === MissionStatus::OPEN) {
+            $this->bus->dispatch(OpenMissionPoolMessage::of([
+                OpenEpisode::forTransition((int) $mission->getId(), OpenEpisodeCause::RESTORED_AFTER_ABSENCE, new \DateTimeImmutable(), actorId: $actor->getId()),
+            ]));
+        }
 
         if (!$notify) {
             return;
@@ -396,6 +431,10 @@ class MissionPostDeployService
             throw new ConflictHttpException('Mission already claimed');
         }
 
+        // H4 (D-130) — she took it herself (pool, or accepting a nominative request): the
+        // mission is part of her planning by her own action, no delivery proof needed.
+        $this->communications?->activate($mission, $actor, MissionCommunicationSpec::ROLE_INSTRUMENTIST, MissionCommunicationSource::CLAIM);
+
         // Dispatch after transaction commits — R-07
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
             missionId:  $mission->getId(),
@@ -456,6 +495,9 @@ class MissionPostDeployService
             $mission->setStatus(MissionStatus::ASSIGNED);
         }
         $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
+        if ($fromInstrumentist !== null && $fromInstrumentist->getId() !== $newInstrumentist->getId()) {
+            $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::REASSIGNED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
+        }
 
         $payload = [
             'fromInstrumentistId'      => $fromInstrumentistId,
@@ -518,6 +560,9 @@ class MissionPostDeployService
 
         $mission->setInstrumentist($newInstrumentist);
         // Status stays ASSIGNED
+        if ($fromInstrumentist !== null && $fromInstrumentist->getId() !== $newInstrumentist->getId()) {
+            $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::REASSIGNED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
+        }
 
         $payload = [
             'fromInstrumentistId'   => $fromInstrumentistId,
@@ -872,6 +917,14 @@ class MissionPostDeployService
     {
         if ($previousStatus === MissionStatus::OPEN && $mission->getStatus() !== MissionStatus::OPEN) {
             $mission->setUncoveredEscalationSentAt(null);
+        }
+    }
+
+    /** H4 (D-130) — persisted by the caller's own flush, in the same transaction as the mutation. */
+    private function withdrawCommunication(Mission $mission, ?User $person, MissionCommunicationWithdrawal $reason, string $role): void
+    {
+        if ($person !== null && $mission->getId() !== null) {
+            $this->communications?->withdraw($mission, $person, $reason, $role);
         }
     }
 

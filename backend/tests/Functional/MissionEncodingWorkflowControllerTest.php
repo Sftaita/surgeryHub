@@ -661,6 +661,48 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         self::assertSame(Response::HTTP_FORBIDDEN, $lockedStart->getStatusCode());
     }
 
+    /**
+     * H5b (D-132, §22/§33) — the same chain read from the global history: each transition
+     * once (AuditEvent mirrors), the correction between rejection and resubmission as ONE
+     * readable material change (before → after), never a field-by-field autosave noise.
+     */
+    public function test_submit_reject_correct_validate_chain_is_readable_in_the_activity_history(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::ASSIGNED, $instr);
+        $line    = $this->makeMaterialLine($mission, $instr, '1.00');
+        $id      = $mission->getId();
+        $instrToken   = $this->login($client, $instr);
+        $managerToken = $this->login($client, $manager);
+
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $instrToken, "/api/missions/$id/encoding/start")->getStatusCode());
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $instrToken, "/api/missions/$id/encoding/complete")->getStatusCode());
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $managerToken, "/api/missions/$id/encoding/reject", ['comment' => 'Il y avait deux vis'])->getStatusCode());
+        $client->request('PATCH', "/api/missions/$id/material-lines/{$line->getId()}",
+            server: ['CONTENT_TYPE' => 'application/json', 'HTTP_AUTHORIZATION' => 'Bearer ' . $instrToken],
+            content: json_encode(['quantity' => '2.00']));
+        self::assertSame(Response::HTTP_OK, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $instrToken, "/api/missions/$id/encoding/complete")->getStatusCode());
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $managerToken, "/api/missions/$id/encoding/validate")->getStatusCode());
+
+        $events = static::getContainer()->get(EntityManagerInterface::class)->getConnection()->fetchAllAssociative(
+            "SELECT event_type, summary, payload, domain FROM activity_event WHERE mission_id = ? AND domain = 'ENCODING' ORDER BY occurred_at, id", [$id]);
+        self::assertSame([
+            'MISSION_MATERIAL_LINE_ADDED', // the fixture's line, first encoded
+            'MISSION_ENCODING_STARTED', 'MISSION_ENCODING_COMPLETED', 'MISSION_ENCODING_REJECTED',
+            'MISSION_MATERIAL_LINE_UPDATED', 'MISSION_ENCODING_COMPLETED', 'MISSION_ENCODING_VALIDATED',
+        ], array_column($events, 'event_type'));
+        self::assertStringContainsString('« Vis titane »', $events[4]['summary']);
+        self::assertEquals(['quantity'], array_column(json_decode($events[4]['payload'], true)['changes'], 'field'));
+        $rejected = json_decode($events[3]['payload'], true);
+        self::assertTrue($rejected['hasReason'] ?? false, 'the reason exists…');
+        self::assertStringNotContainsString('deux vis', $events[3]['payload'] . $events[3]['summary'], '…but its free text never reaches the history');
+    }
+
     // ── remind (D-120) ───────────────────────────────────────────────────────
 
     public function test_manager_can_remind_assigned_mission_without_touching_automatic_guard(): void

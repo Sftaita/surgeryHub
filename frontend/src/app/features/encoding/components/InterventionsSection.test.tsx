@@ -367,6 +367,18 @@ describe("InterventionsSection — rendu d'une intervention réelle", () => {
   });
 });
 
+describe("InterventionsSection — demandes de matériel", () => {
+  it("affiche le commentaire saisi avec la demande, retours à la ligne conservés", async () => {
+    renderSection([makeInterventionEntry({
+      materialItemRequests: [{ id: 31, label: "Vis 4.5 mm", referenceCode: "VX-45", comment: "Boîte bleue\ntaille M" }],
+    })]);
+
+    expect(await screen.findByText("Vis 4.5 mm")).toBeInTheDocument();
+    expect(screen.getByText("Réf : VX-45")).toBeInTheDocument();
+    expect(screen.getByText((_, el) => el?.textContent === "Boîte bleue\ntaille M" && el.children.length === 0)).toBeInTheDocument();
+  });
+});
+
 describe("InterventionsSection — rendu d'un draft OPEN", () => {
   it("affiche le libellé, la firme demandée et un badge 'en attente de validation'", async () => {
     renderSection([makeDraftEntry({ label: "Reconstruction LCL", firm: { id: 10, name: "Arthrex" }, requestedFirmNameSnapshot: "Arthrex" })]);

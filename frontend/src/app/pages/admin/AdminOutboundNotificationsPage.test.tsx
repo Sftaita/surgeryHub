@@ -25,6 +25,9 @@ function buildItem(overrides: Partial<OutboundNotificationListItem> = {}): Outbo
     missionId: 690,
     attemptCount: 1,
     fallback: false,
+    skipReason: null,
+    correlationId: null,
+    grouped: false,
     ...overrides,
   };
 }

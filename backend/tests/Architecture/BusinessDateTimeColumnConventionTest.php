@@ -42,6 +42,11 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
      */
     private const SAFE_ALLOWLIST = [
         'App\Entity\ReleasedOperatingRoomSlot::claimedAt' => 'server-generated (new \DateTimeImmutable() at take-over, D-124), never client-submitted',
+        'App\Entity\MissionCommunication::communicatedAt' => 'server-generated (new \DateTimeImmutable() when a delivery is proven, D-130), never client-submitted',
+        'App\Entity\MissionCommunication::withdrawnAt' => 'server-generated (new \DateTimeImmutable() at withdrawal, D-130), never client-submitted',
+        'App\Entity\GeneratedDocument::createdAt' => 'server-generated (new \DateTimeImmutable() in the constructor, H5a), never client-submitted',
+        'App\Entity\NotificationDispatch::createdAt' => 'server-generated (new \DateTimeImmutable() in the constructor, D-128), never client-submitted',
+        'App\Entity\ActivityEvent::occurredAt' => 'server-generated absolute instant, stored as UTC DATETIME(6) by its own utc_datetime_micro_immutable type (D-126) — deliberately not a business wall clock',
         // Always date-only (Y-m-d), no time-of-day component is ever read or written —
         // an offset has nothing to attach to.
         'App\Entity\Absence::dateStart' => 'date-only (Y-m-d), never formatted with a time/offset component',

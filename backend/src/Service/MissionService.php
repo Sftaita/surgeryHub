@@ -14,6 +14,7 @@ use App\Entity\Mission;
 use App\Entity\PlanningVersion;
 use App\Entity\SiteMembership;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
@@ -71,6 +72,17 @@ class MissionService
         $this->em->persist($mission);
         $this->em->flush();
 
+        // H5b (D-132) — who added this mission by hand (no notification: a DRAFT is not communicated).
+        $this->auditService->record($mission, $creator, AuditEventType::MISSION_CREATED_MANUALLY, [
+            'startAt' => $mission->getStartAt()?->format(\DateTimeInterface::ATOM),
+            'endAt' => $mission->getEndAt()?->format(\DateTimeInterface::ATOM),
+            'type' => $mission->getType()?->value,
+            'surgeonId' => $surgeon->getId(), 'surgeonName' => $surgeon->getDrName(),
+            'instrumentistId' => $instrumentist?->getId(),
+            'instrumentistName' => $instrumentist !== null ? trim(($instrumentist->getFirstname() ?? '') . ' ' . ($instrumentist->getLastname() ?? '')) : null,
+        ]);
+        $this->em->flush();
+
         return $mission;
     }
 
@@ -116,9 +128,10 @@ class MissionService
 
         // ✅ Lot B4 — Audit + Notifications (sans changer la logique métier)
         $this->auditService->missionDeclared($mission, $currentUser);
-        $this->notificationService->missionDeclaredNotifyManagersAdmins($mission);
 
         $this->em->flush();
+        // H5b (D-132) — after the flush: the dispatcher needs the mission's id.
+        $this->notificationService->missionDeclaredNotifyManagersAdmins($mission);
 
         return $mission;
     }
@@ -134,9 +147,9 @@ class MissionService
 
         // ✅ Lot B4 — Audit + Notifications
         $this->auditService->missionDeclaredApproved($mission, $actor);
-        $this->notificationService->missionDeclaredApprovedNotifyInstrumentist($mission);
 
         $this->em->flush();
+        $this->notificationService->missionDeclaredApprovedNotifyInstrumentist($mission);
 
         return $mission;
     }
@@ -162,7 +175,6 @@ class MissionService
 
             // ✅ Lot B4 — Audit + Notifications
             $this->auditService->missionDeclaredRejected($mission, $actor);
-            $this->notificationService->missionDeclaredRejectedNotifyInstrumentist($mission);
 
             $this->em->flush();
 
@@ -170,6 +182,8 @@ class MissionService
             $this->em->refresh($mission);
 
             $conn->commit();
+            // H5b (D-132) — after the commit: through the dispatcher.
+            $this->notificationService->missionDeclaredRejectedNotifyInstrumentist($mission);
 
             return $mission;
         } catch (\Throwable $e) {
@@ -238,6 +252,10 @@ class MissionService
         if ($mission->getStatus() !== MissionStatus::DRAFT) {
             throw new ConflictHttpException('Mission not editable');
         }
+        $before = [
+            'fromSiteId' => $mission->getSite()?->getId(), 'fromType' => $mission->getType()?->value,
+            'fromStartAt' => $mission->getStartAt()?->format(\DateTimeInterface::ATOM), 'fromEndAt' => $mission->getEndAt()?->format(\DateTimeInterface::ATOM),
+        ];
 
         if ($dto->siteId !== null) {
             $site = $this->em->find(Hospital::class, $dto->siteId) ?? throw new NotFoundHttpException('Site not found');
@@ -282,6 +300,15 @@ class MissionService
             throw new UnprocessableEntityHttpException('endAt must be after startAt');
         }
 
+        // H5b (D-132) — only when something really changed (before → after of the edited facts).
+        $after = [
+            'toSiteId' => $mission->getSite()?->getId(), 'toType' => $mission->getType()?->value,
+            'toStartAt' => $mission->getStartAt()?->format(\DateTimeInterface::ATOM), 'toEndAt' => $mission->getEndAt()?->format(\DateTimeInterface::ATOM),
+        ];
+        if (array_values($before) !== array_values($after)) {
+            $this->auditService->record($mission, $actor, AuditEventType::MISSION_DRAFT_UPDATED, $before + $after);
+        }
+
         $this->em->flush();
         return $mission;
     }
@@ -296,11 +323,12 @@ class MissionService
      * recipient), so — consistent with create() and patch() — this method intentionally does
      * not audit or notify.
      */
-    public function assignInstrumentistDraft(Mission $mission, ?int $instrumentistId): Mission
+    public function assignInstrumentistDraft(Mission $mission, ?int $instrumentistId, ?User $actor = null): Mission
     {
         if ($mission->getStatus() !== MissionStatus::DRAFT) {
             throw new MissionNotDraftException('Utilisez /release ou /reassign pour les missions déployées.');
         }
+        $previous = $mission->getInstrumentist();
 
         if ($instrumentistId === null) {
             $mission->setInstrumentist(null);
@@ -316,6 +344,16 @@ class MissionService
             }
 
             $mission->setInstrumentist($instrumentist);
+        }
+
+        // H5b (D-132) — the affectation of a DRAFT (no notification, no communication).
+        $current = $mission->getInstrumentist();
+        if ($actor !== null && $previous?->getId() !== $current?->getId()) {
+            $name = static fn (?User $u) => $u !== null ? trim(($u->getFirstname() ?? '') . ' ' . ($u->getLastname() ?? '')) : null;
+            $this->auditService->record($mission, $actor, AuditEventType::MISSION_DRAFT_INSTRUMENTIST_CHANGED, [
+                'fromInstrumentistId' => $previous?->getId(), 'fromInstrumentistName' => $name($previous),
+                'toInstrumentistId' => $current?->getId(), 'toInstrumentistName' => $name($current),
+            ]);
         }
 
         $this->em->flush();

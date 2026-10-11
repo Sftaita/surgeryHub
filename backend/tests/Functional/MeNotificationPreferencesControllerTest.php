@@ -108,7 +108,9 @@ final class MeNotificationPreferencesControllerTest extends WebTestCase
 
         self::assertSame(200, $client->getResponse()->getStatusCode());
         $body = $this->json($client->getResponse());
-        self::assertCount(count(NotificationType::cases()), $body['items']);
+        self::assertCount(count(array_filter(NotificationType::cases(), static fn (NotificationType $t) => $t->isConfigurable())), $body['items']);
+        self::assertNotContains('ACCOUNT_INVITATION', array_column($body['items'], 'type'), 'H5a: mandatory email, never offered as a switch');
+        self::assertNotContains('ABSENCE_POOL_MISSION_AVAILABLE', array_column($body['items'], 'type'), 'H3: retired type, never offered as a switch');
 
         $planningAlert = current(array_filter($body['items'], fn ($i) => $i['type'] === 'PLANNING_ALERT'));
         self::assertNotFalse($planningAlert);
@@ -117,7 +119,9 @@ final class MeNotificationPreferencesControllerTest extends WebTestCase
         self::assertFalse($planningAlert['pushEnabled']);
 
         $openMission = current(array_filter($body['items'], fn ($i) => $i['type'] === 'OPEN_MISSION_AVAILABLE'));
-        self::assertFalse($openMission['emailEnabled'], 'OPEN_MISSION_AVAILABLE defaults to email=false (informational)');
+        // H3 (D-129) — a mission becoming available is actionable: every channel on by default.
+        self::assertTrue($openMission['emailEnabled'], 'OPEN_MISSION_AVAILABLE defaults to email=true (H3)');
+        self::assertTrue($openMission['pushEnabled'], 'OPEN_MISSION_AVAILABLE defaults to push=true (H3)');
     }
 
     // ── PATCH — creates a row on first write ────────────────────────────────
@@ -134,14 +138,14 @@ final class MeNotificationPreferencesControllerTest extends WebTestCase
             'PATCH',
             '/api/me/notification-preferences/OPEN_MISSION_AVAILABLE',
             server: $this->auth($token, ['CONTENT_TYPE' => 'application/json']),
-            content: json_encode(['emailEnabled' => true]),
+            content: json_encode(['emailEnabled' => false]),
         );
 
         self::assertSame(200, $client->getResponse()->getStatusCode());
         $body = $this->json($client->getResponse());
-        self::assertTrue($body['emailEnabled']);
+        self::assertFalse($body['emailEnabled']);
         self::assertTrue($body['inAppEnabled'], 'Untouched channel must keep its resolved default (in-app was already true)');
-        self::assertFalse($body['pushEnabled']);
+        self::assertTrue($body['pushEnabled'], 'Untouched channel must keep its resolved default (push on since H3)');
 
         $this->em->clear();
         $row = $this->em->getRepository(NotificationPreference::class)->findOneBy([
@@ -150,7 +154,7 @@ final class MeNotificationPreferencesControllerTest extends WebTestCase
         ]);
         self::assertNotNull($row);
         $this->createdIds['preferences'][] = $row->getId();
-        self::assertTrue($row->isEmailEnabled());
+        self::assertFalse($row->isEmailEnabled());
     }
 
     #[WithoutErrorHandler]

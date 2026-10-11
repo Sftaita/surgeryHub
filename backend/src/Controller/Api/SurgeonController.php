@@ -95,6 +95,7 @@ final class SurgeonController extends AbstractController
         $warnings = [];
         try {
             $this->notifications->sendSurgeonInvitation($surgeon);
+            $this->service->invitationSent($surgeon);
         } catch (\Throwable) {
             $warnings[] = ['code' => 'INVITATION_EMAIL_NOT_SENT', 'message' => 'Surgeon created but invitation email could not be queued.'];
         }

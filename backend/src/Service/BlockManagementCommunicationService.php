@@ -45,11 +45,7 @@ class BlockManagementCommunicationService
         private readonly EntityManagerInterface $em,
         private readonly SurgeonAbsenceBlockOccurrenceResolver $resolver,
         private readonly AbsenceCommunicationJournalService $journal,
-        private readonly MessageBusInterface $bus,
-        #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
-        private readonly string $mailerFromAddress,
-        #[Autowire('%env(string:MAILER_FROM_NAME)%')]
-        private readonly string $mailerFromName,
+        private readonly AbsenceCommunicationDeliverySender $deliverySender,
     ) {
     }
 
@@ -292,17 +288,9 @@ class BlockManagementCommunicationService
         $this->journal->markDispatchClaimed($delivery->getId());
 
         try {
-            $this->bus->dispatch(new SendTemplatedEmailMessage(
-                to: $delivery->getRecipientEmailSnapshot(),
-                subject: $subject,
-                fromAddress: $this->mailerFromAddress,
-                fromName: $this->mailerFromName,
-                htmlTemplate: $htmlTemplate,
-                context: $context,
-                absenceCommunicationDeliveryId: $delivery->getId(),
-                cc: $delivery->getRecipientCcSnapshot(),
-                replyTo: $surgeon->getEmail(),
-            ));
+            // H5b (D-132) — common low-level delivery layer (traced), D-114 journal unchanged.
+            $this->deliverySender->send($delivery, $delivery->getRecipientEmailSnapshot(), $subject, $htmlTemplate, $context,
+                $delivery->getRecipientCcSnapshot(), $surgeon->getEmail());
         } catch (\Throwable $e) {
             // Revue finale (§1) — le dispatch Messenger lui-même a échoué (jamais un échec
             // SMTP ultérieur dans le worker, qui reste couvert par recordDeliveryFailure()) :

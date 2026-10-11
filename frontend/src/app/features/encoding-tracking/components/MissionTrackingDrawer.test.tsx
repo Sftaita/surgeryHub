@@ -21,6 +21,7 @@ vi.mock("../../encoding/api/encoding.api", () => ({
   fetchMissionEncoding: (...args: unknown[]) => fetchMissionEncodingMock(...args),
   validateMissionEncoding: (...args: unknown[]) => validateMissionEncodingMock(...args),
   remindMissionEncoding: (...args: unknown[]) => remindMissionEncodingMock(...args),
+  newActionBatchId: () => "batch-test-0001",
 }));
 
 const fetchMissionAuditMock = vi.fn();
@@ -130,7 +131,7 @@ describe("MissionTrackingDrawer", () => {
     const btn = await screen.findByText("Relancer");
     await user.click(btn);
 
-    await waitFor(() => expect(remindMissionEncodingMock).toHaveBeenCalledWith(42));
+    await waitFor(() => expect(remindMissionEncodingMock).toHaveBeenCalledWith(42, expect.any(String)));
   });
 
   it("affiche l'encart d'absence de matériel quand aucune intervention n'est encodée", async () => {

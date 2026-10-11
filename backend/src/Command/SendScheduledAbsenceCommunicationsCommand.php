@@ -44,11 +44,7 @@ class SendScheduledAbsenceCommunicationsCommand extends Command
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly AbsenceCommunicationJournalService $journal,
-        private readonly MessageBusInterface $bus,
-        #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
-        private readonly string $mailerFromAddress,
-        #[Autowire('%env(string:MAILER_FROM_NAME)%')]
-        private readonly string $mailerFromName,
+        private readonly \App\Service\AbsenceCommunicationDeliverySender $deliverySender,
     ) {
         parent::__construct();
     }
@@ -106,17 +102,10 @@ class SendScheduledAbsenceCommunicationsCommand extends Command
                 $surgeon = $communication->getSurgeon();
 
                 try {
-                    $this->bus->dispatch(new SendTemplatedEmailMessage(
-                        to: (string) $claim['to'],
-                        subject: $communication->getSubjectSnapshot(),
-                        fromAddress: $this->mailerFromAddress,
-                        fromName: $this->mailerFromName,
-                        htmlTemplate: BlockManagementCommunicationService::templateFor($communication->getType()),
-                        context: BlockManagementCommunicationService::contextFor($communication),
-                        absenceCommunicationDeliveryId: $delivery->getId(),
-                        cc: $claim['cc'],
-                        replyTo: $surgeon->getEmail(),
-                    ));
+                    // H5b (D-132) — common low-level delivery layer (traced), D-114 journal unchanged.
+                    $this->deliverySender->send($delivery, (string) $claim['to'], $communication->getSubjectSnapshot(),
+                        BlockManagementCommunicationService::templateFor($communication->getType()),
+                        BlockManagementCommunicationService::contextFor($communication), $claim['cc'], $surgeon->getEmail());
                 } catch (\Throwable $dispatchException) {
                     // Le dispatch Messenger lui-même a échoué (jamais un échec SMTP ultérieur
                     // dans le worker, qui reste de la responsabilité de celui-ci) — libérer le

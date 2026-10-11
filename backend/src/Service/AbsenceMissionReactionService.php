@@ -159,27 +159,44 @@ class AbsenceMissionReactionService
      *
      * @return array<string, mixed>|null mission summary — see buildMissionSummary()
      */
-    public function reconcileMissionAgainstCurrentAbsences(Mission $mission, User $actor): ?array
+    public function reconcileMissionAgainstCurrentAbsences(Mission $mission, User $actor, bool $notify = true): ?array
     {
+        [$summary, $absence, $role] = [null, null, null];
+
         $surgeon = $mission->getSurgeon();
         if ($surgeon !== null && in_array($mission->getStatus(), self::SURGEON_ACTIONABLE_STATUSES, true)) {
             $absence = $this->findCoveringAbsence($surgeon, $mission->getStartAt());
             if ($absence !== null) {
-                return $this->processSurgeonAbsence($mission, $actor, $absence);
+                [$summary, $role] = [$this->processSurgeonAbsence($mission, $actor, $absence), 'SURGEON'];
             }
         }
 
-        if ($mission->getStatus() === MissionStatus::ASSIGNED) {
+        if ($summary === null && $mission->getStatus() === MissionStatus::ASSIGNED) {
             $instrumentist = $mission->getInstrumentist();
             if ($instrumentist !== null) {
                 $absence = $this->findCoveringAbsence($instrumentist, $mission->getStartAt());
                 if ($absence !== null) {
-                    return $this->processInstrumentistAbsence($mission, $actor, $absence);
+                    [$summary, $role] = [$this->processInstrumentistAbsence($mission, $actor, $absence), 'INSTRUMENTIST'];
                 }
             }
         }
 
-        return null;
+        // H4 (D-130) — a late correction is still an absence impact on a published mission:
+        // the people concerned get the same level-3 recap as at absence creation (formerly
+        // nobody was told on this path). Not from Planning Modification ($notify = false):
+        // its own change recap already informs them, after the batch commits.
+        if ($summary !== null && $notify && $absence !== null && $absence->getUser() !== null) {
+            $this->bus->dispatch(new AbsenceMissionsReactedMessage(
+                absenceId: $absence->getId(),
+                absentUserId: $absence->getUser()->getId(),
+                absentUserRole: $role,
+                actorId: $actor->getId(),
+                missions: [$summary],
+                occurredAt: new \DateTimeImmutable(),
+            ));
+        }
+
+        return $summary;
     }
 
     /** Earliest-starting Absence row currently covering this user on this date, if any. */
@@ -282,10 +299,10 @@ class AbsenceMissionReactionService
 
         // Dispatched here, AFTER the transaction above committed — mirrors what
         // MissionPostDeployService::release() would itself have dispatched with notify=true,
-        // just correctly timed. Preserves the existing free notification pipeline
-        // (SURGEON_POST_UNCOVERED in-app+push to the surgeon, OPEN_MISSION_AVAILABLE fan-out
-        // to eligible instrumentists) — this service never re-implements that, only adds the
-        // absence-specific recap email on top via AbsenceMissionsReactedMessage.
+        // just correctly timed. The lifecycle handler solicits the eligible pool through
+        // OpenMissionPoolNotifier (H3, D-129 — the absent person is ineligible, so never
+        // solicited); the surgeon and the absent instrumentist are informed by the
+        // absence-specific recap (AbsenceMissionsReactedMessage) — never twice.
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
             missionId: $mission->getId(),
             changeType: MissionChangeType::RELEASED,
@@ -293,6 +310,14 @@ class AbsenceMissionReactionService
             payload: [
                 'fromInstrumentistId'   => $captured['fromInstrumentistId'],
                 'fromInstrumentistName' => $captured['fromInstrumentistName'],
+                // H3 (D-129) — the handler keys on it: pool episode INSTRUMENTIST_ABSENCE, no
+                // SURGEON_POST_UNCOVERED / PLANNING_MISSION_RELEASED (the absence recap informs
+                // them), no "removed by manager" exclusion. Was missing: the release() audit had
+                // it, this hand-built payload did not.
+                'causedByAbsenceId'     => $absence->getId(),
+                // H4 (D-130) — the absent person is never notified of the consequences of
+                // her own absence (reflexive notification).
+                'absentUserId'          => $absence->getUser()?->getId(),
                 'reason'                => $reason,
                 'actorId'               => $actor->getId(),
                 'actorName'             => self::displayName($actor),
@@ -350,6 +375,10 @@ class AbsenceMissionReactionService
                 'reason'                => $reason,
                 'fromInstrumentistId'   => $captured['fromInstrumentistId'],
                 'fromInstrumentistName' => $captured['fromInstrumentistName'],
+                // H3 (D-129) — same fix: lets the handler leave the instrumentist to the absence
+                // recap (ABSENCE_MISSION_CANCELLED) instead of a second PLANNING_MISSION_CANCELLED.
+                'causedByAbsenceId'     => $absence->getId(),
+                'absentUserId'          => $absence->getUser()?->getId(),
                 'actorId'               => $actor->getId(),
                 'actorName'             => self::displayName($actor),
             ],
@@ -424,7 +453,7 @@ class AbsenceMissionReactionService
      * Best same-day, same-site, genuinely uncovered OPEN mission, ranked per the documented
      * CAS B matching order: largest overlap with the freed slot first, then smallest gap to
      * it, then earliest start time, then id as the final stable tie-break. No existing
-     * scoring engine in this codebase does this (MissionEligibilityService::findEligible() is
+     * scoring engine in this codebase does this (MissionEligibilityService::findEligibleByMission() is
      * a fan-out — candidates per mission — never "best mission for one already-known
      * candidate"), so this is deliberately new, minimal, and scoped to exactly this need.
      *

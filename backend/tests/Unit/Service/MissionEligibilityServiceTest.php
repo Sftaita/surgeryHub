@@ -453,9 +453,9 @@ final class MissionEligibilityServiceTest extends TestCase
         $this->assertSame(3, $queryCount, 'evaluateAllCandidates() must run exactly 3 DB queries.');
     }
 
-    // ── findEligible() ────────────────────────────────────────────────────────
+    // ── findEligibleByMission() — H3 (D-129): per-mission candidates, same 3 queries ──
 
-    public function test_find_eligible_returns_eligible_users_by_site(): void
+    public function test_find_eligible_by_mission_returns_eligible_users_keyed_by_mission(): void
     {
         $site      = $this->makeSite();
         $mission   = $this->makeMission(site: $site);
@@ -476,14 +476,13 @@ final class MissionEligibilityServiceTest extends TestCase
                 return $q;
             });
 
-        $result = $this->service->findEligible([$mission]);
+        $result = $this->service->findEligibleByMission([$mission]);
 
-        $siteId = $site->getId();
-        $this->assertArrayHasKey($siteId, $result);
-        $this->assertContains($candidate, $result[$siteId]);
+        $this->assertSame([$mission->getId()], array_keys($result));
+        $this->assertContains($candidate, $result[$mission->getId()]);
     }
 
-    public function test_find_eligible_excludes_absent_candidate(): void
+    public function test_find_eligible_by_mission_excludes_absent_candidate(): void
     {
         $site      = $this->makeSite();
         $mission   = $this->makeMission(site: $site);
@@ -505,12 +504,13 @@ final class MissionEligibilityServiceTest extends TestCase
                 return $q;
             });
 
-        $result = $this->service->findEligible([$mission]);
+        $result = $this->service->findEligibleByMission([$mission]);
 
-        $this->assertEmpty($result[$site->getId()] ?? []);
+        $this->assertArrayHasKey($mission->getId(), $result, 'every input mission is a key');
+        $this->assertSame([], $result[$mission->getId()]);
     }
 
-    public function test_find_eligible_excludes_candidate_with_schedule_conflict(): void
+    public function test_find_eligible_by_mission_excludes_candidate_with_schedule_conflict(): void
     {
         $site      = $this->makeSite();
         $mission   = $this->makeMission(site: $site);
@@ -532,21 +532,22 @@ final class MissionEligibilityServiceTest extends TestCase
                 return $q;
             });
 
-        $result = $this->service->findEligible([$mission]);
+        $result = $this->service->findEligibleByMission([$mission]);
 
-        $this->assertEmpty($result[$site->getId()] ?? []);
+        $this->assertArrayHasKey($mission->getId(), $result, 'every input mission is a key');
+        $this->assertSame([], $result[$mission->getId()]);
     }
 
-    public function test_find_eligible_returns_empty_for_empty_input(): void
+    public function test_find_eligible_by_mission_returns_empty_for_empty_input(): void
     {
         $this->em->expects($this->never())->method('createQuery');
 
-        $result = $this->service->findEligible([]);
+        $result = $this->service->findEligibleByMission([]);
 
         $this->assertEmpty($result);
     }
 
-    public function test_find_eligible_uses_exactly_3_db_queries_for_multiple_missions(): void
+    public function test_find_eligible_by_mission_uses_exactly_3_db_queries_for_multiple_missions(): void
     {
         $site      = $this->makeSite();
         $candidate = $this->makeUser();
@@ -567,14 +568,14 @@ final class MissionEligibilityServiceTest extends TestCase
                 return $q;
             });
 
-        $this->service->findEligible([$m1, $m2, $m3]);
+        $this->service->findEligibleByMission([$m1, $m2, $m3]);
 
         $this->assertSame(3, $queryCount,
-            'findEligible() must run exactly 3 DB queries regardless of mission count (D-036).'
+            'findEligibleByMission() must run exactly 3 DB queries regardless of mission count (D-036, no N+1).'
         );
     }
 
-    public function test_find_eligible_freelancer_without_membership_is_included(): void
+    public function test_find_eligible_by_mission_freelancer_without_membership_is_included(): void
     {
         $site       = $this->makeSite();
         $mission    = $this->makeMission(site: $site);
@@ -597,9 +598,52 @@ final class MissionEligibilityServiceTest extends TestCase
                 return $q;
             });
 
-        $result = $this->service->findEligible([$mission]);
+        $result = $this->service->findEligibleByMission([$mission]);
 
-        $this->assertContains($freelancer, $result[$site->getId()] ?? []);
+        $this->assertContains($freelancer, $result[$mission->getId()]);
+    }
+
+    public function test_find_eligible_by_mission_isolates_candidates_per_mission(): void
+    {
+        // Same site, two missions: the candidate has a conflict only with m2's slot.
+        $site      = $this->makeSite();
+        $candidate = $this->makeUser();
+        $m1        = $this->makeMission(site: $site);
+        $m2        = $this->makeMission(site: $site);
+        $m2->setStartAt(new \DateTimeImmutable('2026-07-16 08:00:00'));
+        $m2->setEndAt(new \DateTimeImmutable('2026-07-16 13:00:00'));
+        $conflict = $this->makeConflictMission($candidate);
+        $conflict->setStartAt(new \DateTimeImmutable('2026-07-16 09:00:00'));
+        $conflict->setEndAt(new \DateTimeImmutable('2026-07-16 12:00:00'));
+
+        $callCount = 0;
+        $this->em->method('createQuery')
+            ->willReturnCallback(function () use (&$callCount, $candidate, $site, $conflict): Query {
+                $callCount++;
+                $q = $this->createMock(Query::class);
+                $q->method('setParameter')->willReturnSelf();
+                $q->method('getResult')->willReturn(match ($callCount) {
+                    1 => [['user' => $candidate, 'siteId' => $site->getId()]],
+                    3 => [$conflict],
+                    default => [],
+                });
+                return $q;
+            });
+
+        $result = $this->service->findEligibleByMission([$m1, $m2]);
+
+        $this->assertContains($candidate, $result[$m1->getId()], 'eligible for the mission she is free for');
+        $this->assertSame([], $result[$m2->getId()], 'not offered the mission she has a conflict with');
+    }
+
+    public function test_find_eligible_by_mission_returns_an_empty_list_for_a_mission_that_is_no_longer_open(): void
+    {
+        $assigned = $this->makeMission(status: MissionStatus::ASSIGNED, instrumentist: $this->makeUser());
+        $this->em->expects($this->never())->method('createQuery');
+
+        $result = $this->service->findEligibleByMission([$assigned]);
+
+        $this->assertSame([$assigned->getId() => []], $result);
     }
 
     // ── evaluateForReassignment() — D-101, single canonical source of truth ────

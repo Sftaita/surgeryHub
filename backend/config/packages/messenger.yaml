@@ -2,6 +2,14 @@ framework:
     messenger:
         failure_transport: failed
 
+        # H1 (D-126) — CorrelationStamp propagation: every message carries the correlation
+        # of the operation that dispatched it; the worker restores it around the handler.
+        default_bus: messenger.bus.default
+        buses:
+            messenger.bus.default:
+                middleware:
+                    - App\Messenger\CorrelationMiddleware
+
         transports:
             async:
                 dsn: "%env(MESSENGER_TRANSPORT_DSN)%"
@@ -21,6 +29,7 @@ framework:
             App\Message\PlanningAlertRaisedMessage:         async
             App\Message\MissionLifecycleChangedMessage:     async
             App\Message\AbsenceMissionsReactedMessage:      async
+            App\Message\AbsenceImpactNotificationMessage:   async
             App\Message\MissionPublishedMessage:            async
             App\Message\CatalogueRequestProcessedMessage:   async
             App\Message\CatalogueRequestCreatedMessage:     async
@@ -29,11 +38,11 @@ framework:
             App\Message\SurgeonMissionRequestDecidedMessage: async
             App\Message\EncodingAnomalyReportCreatedMessage: async
             App\Message\EncodingAnomalyReportResolvedMessage: async
-            App\Message\SurgeonAbsenceOccurrencesNeutralizedMessage: async
-            App\Message\InstrumentistAbsenceOccurrenceImpactMessage: async
             App\Message\MissionUncoveredEscalationMessage: async
             App\Message\PlanningRestoredAfterAbsenceMessage: async
             App\Message\AbsenceImpactSummaryMessage:         async
+            App\Message\OpenMissionPoolMessage:              async
+            App\Message\PlanningModificationAppliedMessage:  async
 
 when@test:
     framework:

@@ -2,7 +2,10 @@
 
 namespace App\Tests\Unit\MessageHandler;
 
+use App\Entity\GeneratedDocument;
 use App\Message\SendTemplatedEmailMessage;
+use App\Notification\DocumentReference;
+use App\Notification\DocumentStore;
 use App\MessageHandler\SendTemplatedEmailMessageHandler;
 use App\Service\AbsenceCommunicationJournalService;
 use App\Service\OutboundNotificationService;
@@ -26,6 +29,7 @@ class SendTemplatedEmailMessageHandlerTest extends TestCase
     private LoggerInterface&MockObject $logger;
     private OutboundNotificationService&MockObject $outboundNotificationService;
     private AbsenceCommunicationJournalService&MockObject $absenceCommunicationJournalService;
+    private DocumentStore&MockObject $documentStore;
 
     protected function setUp(): void
     {
@@ -34,11 +38,12 @@ class SendTemplatedEmailMessageHandlerTest extends TestCase
         $this->logger = $this->createMock(LoggerInterface::class);
         $this->outboundNotificationService = $this->createMock(OutboundNotificationService::class);
         $this->absenceCommunicationJournalService = $this->createMock(AbsenceCommunicationJournalService::class);
+        $this->documentStore = $this->createMock(DocumentStore::class);
     }
 
     private function handler(): SendTemplatedEmailMessageHandler
     {
-        return new SendTemplatedEmailMessageHandler($this->mailer, $this->twig, $this->logger, $this->outboundNotificationService, $this->absenceCommunicationJournalService);
+        return new SendTemplatedEmailMessageHandler($this->mailer, $this->twig, $this->logger, $this->outboundNotificationService, $this->absenceCommunicationJournalService, $this->documentStore, new \App\Notification\HtmlToTextRenderer());
     }
 
     public function test_records_success_attempt_with_rendered_body_when_notification_id_present(): void
@@ -131,5 +136,58 @@ class SendTemplatedEmailMessageHandlerTest extends TestCase
         );
 
         $this->handler()->__invoke($message);
+    }
+
+    // ── H5a ──────────────────────────────────────────────────────────────────
+
+    public function test_a_confidential_email_never_copies_its_rendered_body_into_the_history(): void
+    {
+        $this->twig->method('render')->willReturn('<a href="https://app/complete-account?token=SECRET">x</a>');
+        $this->mailer->expects($this->once())->method('send');
+        $this->outboundNotificationService->expects($this->once())
+            ->method('recordEmailAttempt')
+            ->with(42, true, null, true, null, null);
+
+        $this->handler()->__invoke(new SendTemplatedEmailMessage(
+            to: 'new@example.com', subject: 'Invitation', fromAddress: 'no-reply@surgicalhub.be', fromName: 'SurgicalHub',
+            htmlTemplate: 'emails/instrumentist_invitation.html.twig', outboundNotificationId: 42, storeRenderedBody: false,
+        ));
+    }
+
+    public function test_attaches_stored_documents_by_reference(): void
+    {
+        $this->twig->method('render')->willReturn('<p>x</p>');
+        $document = new GeneratedDocument('PLANNING_INSTRUMENTIST', 'planning.pdf', '%PDF-1.4 bytes');
+        (new \ReflectionProperty($document, 'id'))->setValue($document, 9);
+        $this->documentStore->expects($this->once())->method('load')
+            ->with($this->callback(static fn (DocumentReference $r) => $r->documentId === 9 && $r->sha256 === $document->getSha256()))
+            ->willReturn($document);
+
+        $sent = null;
+        $this->mailer->expects($this->once())->method('send')->willReturnCallback(function ($email) use (&$sent) { $sent = $email; });
+
+        $this->handler()->__invoke(new SendTemplatedEmailMessage(
+            to: 'jane@example.com', subject: 'Planning', fromAddress: 'no-reply@surgicalhub.be', fromName: 'SurgicalHub',
+            htmlTemplate: 'emails/planning_instrumentist.html.twig', documents: [DocumentReference::of($document)->toArray()],
+        ));
+
+        self::assertCount(1, $sent->getAttachments());
+        self::assertSame('planning.pdf', $sent->getAttachments()[0]->getFilename());
+        self::assertSame('%PDF-1.4 bytes', $sent->getAttachments()[0]->getBody());
+    }
+
+    public function test_a_missing_document_fails_the_send_instead_of_mailing_without_it(): void
+    {
+        $this->twig->method('render')->willReturn('<p>x</p>');
+        $this->documentStore->method('load')->willThrowException(new \RuntimeException('Document #9 introuvable.'));
+        $this->mailer->expects($this->never())->method('send');
+        $this->outboundNotificationService->expects($this->never())->method('recordEmailAttempt');
+
+        $this->expectException(\RuntimeException::class);
+        $this->handler()->__invoke(new SendTemplatedEmailMessage(
+            to: 'jane@example.com', subject: 'Planning', fromAddress: 'no-reply@surgicalhub.be', fromName: 'SurgicalHub',
+            htmlTemplate: 'emails/planning_instrumentist.html.twig', outboundNotificationId: 5,
+            documents: [['documentId' => 9, 'documentType' => 'PLANNING_INSTRUMENTIST', 'filename' => 'p.pdf', 'sha256' => str_repeat('a', 64), 'byteSize' => 3]],
+        ));
     }
 }

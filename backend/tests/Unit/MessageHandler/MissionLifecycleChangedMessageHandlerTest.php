@@ -4,16 +4,26 @@ namespace App\Tests\Unit\MessageHandler;
 
 use App\Entity\Hospital;
 use App\Entity\Mission;
+use App\Entity\NotificationDispatch;
 use App\Entity\NotificationEvent;
 use App\Entity\User;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Enum\NotificationType;
+use App\Enum\OpenEpisodeCause;
+use App\Enum\OpenPoolExclusionReason;
 use App\Message\MissionLifecycleChangedMessage;
 use App\MessageHandler\MissionLifecycleChangedMessageHandler;
+use App\Notification\MissionLifecycleNotificationFactory;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
+use App\Notification\OpenEpisode;
+use App\Notification\OpenMissionPoolNotifier;
+use App\Notification\OpenPoolResult;
 use App\Service\MissionEligibilityService;
 use App\Service\NotificationChannels;
 use App\Service\NotificationPreferenceResolver;
+use App\Service\NotificationService;
 use App\Service\NotificationTargetResolver;
 use App\Service\WebPushServiceInterface;
 use Doctrine\ORM\EntityManagerInterface;
@@ -21,6 +31,19 @@ use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
 
+/**
+ * Batch 15E / RC1-B / H2 (D-128).
+ *
+ * Since H2, every person-addressed notification of CLAIMED / RELEASED / REASSIGNED /
+ * CANCELLED is handed to NotificationDispatcher as a NotificationIntent: this test checks
+ * WHO is notified, with WHICH type, payload and content. Channel decisions (preferences,
+ * push, email, failure isolation between channels, idempotency) belong to the dispatcher
+ * and are covered against the real database by NotificationDispatcherIntegrationTest.
+ *
+ * Since H3 (D-129) the pool is solicited ONLY through OpenMissionPoolNotifier: this test
+ * checks the OpenEpisode handed to it (cause, episodeRef, contextual exclusions). Eligibility,
+ * counters and delivery are covered by OpenMissionPoolNotifierIntegrationTest.
+ */
 final class MissionLifecycleChangedMessageHandlerTest extends TestCase
 {
     private EntityManagerInterface&MockObject         $em;
@@ -28,8 +51,13 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
     private WebPushServiceInterface&MockObject        $webPushService;
     private LoggerInterface&MockObject                $logger;
     private MissionEligibilityService&MockObject      $eligibilityService;
-    private NotificationTargetResolver                $targetResolver;
+    private NotificationDispatcher&MockObject         $dispatcher;
+    private OpenMissionPoolNotifier&MockObject        $poolNotifier;
+    /** @var list<OpenEpisode> */
+    private array                                     $episodes = [];
     private array                                     $persisted = [];
+    /** @var list<NotificationIntent> */
+    private array                                     $dispatched = [];
 
     private static int $nextId = 1;
 
@@ -40,68 +68,77 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         $this->webPushService     = $this->createMock(WebPushServiceInterface::class);
         $this->logger             = $this->createMock(LoggerInterface::class);
         $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
-        // Pure computation, no dependencies — real instance rather than a mock (nothing
-        // to stub, a mock would just duplicate the real routing logic).
-        $this->targetResolver = new NotificationTargetResolver();
+        $this->dispatcher         = $this->createMock(NotificationDispatcher::class);
 
-        // Default: inApp=true, email=false, push=false
         $this->preferenceResolver->method('resolve')
             ->willReturn(new NotificationChannels(inApp: true, email: false, push: false));
 
-        // Default: no eligible instrumentists for the pool (RELEASED) — tests opt in explicitly.
-        $this->eligibilityService->method('findEligible')->willReturn([]);
+        $this->episodes     = [];
+        $this->poolNotifier = $this->createMock(OpenMissionPoolNotifier::class);
+        $this->poolNotifier->method('notify')->willReturnCallback(function (OpenEpisode $episode): OpenPoolResult {
+            $this->episodes[] = $episode;
+
+            return new OpenPoolResult($episode, true, 0, 0, 0);
+        });
+
+        $this->dispatched = [];
+        $this->dispatcher->method('dispatch')->willReturnCallback(function (NotificationIntent $intent): NotificationDispatch {
+            $this->dispatched[] = $intent;
+
+            return new NotificationDispatch();
+        });
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private function makeHandler(): MissionLifecycleChangedMessageHandler
     {
+        $notificationService = $this->createMock(NotificationService::class);
+        $notificationService->method('greetingFor')->willReturn('Bonjour');
+        // H5a — the D-125 dispatch emails are content handed to the dispatcher.
+        $notificationService->method('missionOfferedEmail')->willReturn(new \App\Notification\EmailContent('Proposée', 'emails/mission_offered.html.twig', []));
+        $notificationService->method('missionOfferDeclinedEmail')->willReturn(new \App\Notification\EmailContent('Refusée', 'emails/mission_offer_declined.html.twig', []));
+
         return new MissionLifecycleChangedMessageHandler(
             $this->em,
-            $this->preferenceResolver,
-            $this->webPushService,
             $this->logger,
             $this->eligibilityService,
-            $this->targetResolver,
-            // D-125 dispatch cases only — covered by MissionLifecycleDispatchNotificationsTest.
-            $this->createMock(\App\Service\OutboundNotificationService::class),
-            $this->createMock(\App\Service\NotificationService::class),
+            new NotificationTargetResolver(),
+            $notificationService,
             $this->createMock(\App\Repository\UserRepository::class),
+            $this->dispatcher,
+            new MissionLifecycleNotificationFactory(new NotificationTargetResolver(), $notificationService, 'https://app.test'),
+            $this->poolNotifier,
         );
     }
 
     private function setId(object $entity, int $id): void
     {
-        $rp = new \ReflectionProperty($entity, 'id');
-        $rp->setAccessible(true);
-        $rp->setValue($entity, $id);
+        (new \ReflectionProperty($entity, 'id'))->setValue($entity, $id);
     }
 
-    private function makeUser(string $email = null): User
+    private function makeUser(?string $email = null, array $roles = ['ROLE_USER'], string $first = 'First', string $last = 'Last'): User
     {
         $u = new User();
         $u->setEmail($email ?? ('user' . self::$nextId . '@test.com'));
-        $u->setFirstname('First');
-        $u->setLastname('Last');
+        $u->setFirstname($first);
+        $u->setLastname($last);
+        $u->setRoles($roles);
         $this->setId($u, self::$nextId++);
         return $u;
     }
 
-    private function makeSite(string $name = 'Delta'): Hospital
+    private function makeMission(?User $surgeon = null, MissionStatus $status = MissionStatus::OPEN, ?User $instrumentist = null, string $start = '2026-07-15 08:00:00'): Mission
     {
-        $s = new Hospital();
-        $s->setName($name);
-        $this->setId($s, self::$nextId++);
-        return $s;
-    }
+        $site = new Hospital();
+        $site->setName('Delta');
+        $this->setId($site, self::$nextId++);
 
-    private function makeMission(?User $surgeon = null, MissionStatus $status = MissionStatus::OPEN, ?User $instrumentist = null): Mission
-    {
         $m = new Mission();
         $m->setStatus($status);
-        $m->setSite($this->makeSite());
-        $m->setStartAt(new \DateTimeImmutable('2026-07-15 08:00:00'));
-        $m->setEndAt(new \DateTimeImmutable('2026-07-15 13:00:00'));
+        $m->setSite($site);
+        $m->setStartAt(new \DateTimeImmutable($start));
+        $m->setEndAt((new \DateTimeImmutable($start))->modify('+5 hours'));
         if ($surgeon !== null) {
             $m->setSurgeon($surgeon);
         }
@@ -112,12 +149,8 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         return $m;
     }
 
-    private function makeMessage(
-        Mission           $mission,
-        MissionChangeType $changeType,
-        array             $payload = [],
-        int               $actorId = 99,
-    ): MissionLifecycleChangedMessage {
+    private function makeMessage(Mission $mission, MissionChangeType $changeType, array $payload = [], int $actorId = 99): MissionLifecycleChangedMessage
+    {
         return new MissionLifecycleChangedMessage(
             missionId:  $mission->getId(),
             changeType: $changeType,
@@ -127,7 +160,6 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         );
     }
 
-    /** Stubs em->find() for the mission plus an optional map of userId => User. */
     private function stubFind(Mission $mission, array $usersById = []): void
     {
         $this->em->method('find')
@@ -142,12 +174,6 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
             });
     }
 
-    private function stubMissionFind(Mission $mission): void
-    {
-        $this->stubFind($mission);
-    }
-
-    /** Wires em->persist() to accumulate every persisted entity into $this->persisted. */
     private function capturePersisted(): void
     {
         $this->persisted = [];
@@ -156,792 +182,489 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         });
     }
 
-    private function eventsOfType(array $persisted, NotificationType $type): array
+    /** @return list<NotificationIntent> */
+    private function intents(NotificationType $type): array
+    {
+        return array_values(array_filter($this->dispatched, static fn (NotificationIntent $i) => $i->type === $type));
+    }
+
+    private function eventsOfType(NotificationType $type): array
     {
         return array_values(array_filter(
-            $persisted,
+            $this->persisted,
             fn ($e) => $e instanceof NotificationEvent && $e->getEventType() === $type->value,
         ));
     }
 
     // ── CLAIMED → SURGEON_POST_COVERED ────────────────────────────────────────
 
-    public function test_claimed_creates_surgeon_post_covered_inapp_notification(): void
+    public function test_claimed_dispatches_surgeon_post_covered_with_payload_and_content(): void
     {
-        $surgeon = $this->makeUser('surgeon@test.com');
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
         $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED);
-        $this->stubMissionFind($mission);
-        $this->capturePersisted();
+        $this->stubFind($mission);
 
-        $message = $this->makeMessage($mission, MissionChangeType::CLAIMED, [
-            'instrumentistId'   => 7,
-            'instrumentistName' => 'Sophie Martin',
-        ]);
-
+        $message = $this->makeMessage($mission, MissionChangeType::CLAIMED, ['instrumentistId' => 7, 'instrumentistName' => 'Sophie Martin']);
         $this->makeHandler()->__invoke($message);
 
-        $events = $this->eventsOfType($this->persisted,NotificationType::SURGEON_POST_COVERED);
-
-        $this->assertCount(1, $events);
-        $this->assertSame($surgeon, $events[0]->getUser());
-        $this->assertSame($mission, $events[0]->getMission());
+        $intents = $this->intents(NotificationType::SURGEON_POST_COVERED);
+        self::assertCount(1, $intents);
+        $intent = $intents[0];
+        self::assertSame($surgeon, $intent->recipient);
+        self::assertSame($mission, $intent->mission);
+        self::assertSame(7, $intent->inAppPayload['instrumentistId']);
+        self::assertSame('Sophie Martin', $intent->inAppPayload['instrumentistName']);
+        self::assertSame('Matin', $intent->inAppPayload['periodLabel']);
+        self::assertSame($message->occurredAt->format(\DateTimeInterface::ATOM), $intent->inAppPayload['coveredAt']);
+        self::assertSame('Mission couverte', $intent->push->title);
+        self::assertStringContainsString('pris en charge', $intent->push->body);
+        self::assertStringContainsString('couverte', $intent->email->subject);
+        self::assertSame('Sophie Martin', $intent->email->context['instrumentistName']);
+        self::assertStringStartsWith('https://app.test/app/s/missions/', (string) $intent->email->context['missionUrl']);
     }
 
-    public function test_claimed_payload_contains_instrumentist_name_and_covered_at(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED);
-        $this->stubMissionFind($mission);
-        $this->capturePersisted();
-
-        $message = $this->makeMessage($mission, MissionChangeType::CLAIMED, [
-            'instrumentistId'   => 7,
-            'instrumentistName' => 'Sophie Martin',
-        ]);
-
-        $this->makeHandler()->__invoke($message);
-
-        $event = $this->eventsOfType($this->persisted,NotificationType::SURGEON_POST_COVERED)[0] ?? null;
-
-        $this->assertNotNull($event);
-        $payload = $event->getPayload();
-        $this->assertSame(7, $payload['instrumentistId']);
-        $this->assertSame('Sophie Martin', $payload['instrumentistName']);
-        $this->assertSame($mission->getId(), $payload['missionId']);
-        $this->assertSame($mission->getSite()->getName(), $payload['siteName']);
-        $this->assertSame('Matin', $payload['periodLabel']);
-        $this->assertArrayHasKey('coveredAt', $payload);
-        $this->assertSame($message->occurredAt->format(\DateTimeInterface::ATOM), $payload['coveredAt']);
-    }
-
-    public function test_claimed_sends_push_when_push_enabled(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED);
-        $this->stubMissionFind($mission);
-        $this->em->method('persist');
-
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->preferenceResolver->method('resolve')
-            ->willReturn(new NotificationChannels(inApp: true, email: false, push: true));
-
-        $this->webPushService->expects($this->once())
-            ->method('sendToUser')
-            ->with(
-                $surgeon,
-                'Mission couverte',
-                $this->stringContains('pris en charge'),
-                $this->arrayHasKey('missionId'),
-            );
-
-        $message = $this->makeMessage($mission, MissionChangeType::CLAIMED, [
-            'instrumentistName' => 'Sophie Martin',
-        ]);
-
-        $this->makeHandler()->__invoke($message);
-    }
-
-    public function test_claimed_no_push_when_push_disabled(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED);
-        $this->stubMissionFind($mission);
-        $this->em->method('persist');
-
-        // Default setUp(): push=false
-        $this->webPushService->expects($this->never())->method('sendToUser');
-
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::CLAIMED, ['instrumentistName' => 'Sophie Martin'])
-        );
-    }
-
-    public function test_claimed_no_inapp_when_inapp_disabled(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED);
-        $this->stubMissionFind($mission);
-
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->preferenceResolver->method('resolve')
-            ->willReturn(new NotificationChannels(inApp: false, email: false, push: false));
-
-        $this->em->expects($this->never())->method('persist');
-
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::CLAIMED)
-        );
-    }
-
-    public function test_claimed_skips_gracefully_when_mission_not_found(): void
+    public function test_claimed_skips_gracefully_when_mission_not_found_or_no_surgeon(): void
     {
         $this->em->method('find')->willReturn(null);
-        $this->em->expects($this->never())->method('persist');
+        $this->makeHandler()->__invoke(new MissionLifecycleChangedMessage(9999, MissionChangeType::CLAIMED, 1, [], new \DateTimeImmutable()));
 
-        $msg = new MissionLifecycleChangedMessage(
-            missionId:  9999,
-            changeType: MissionChangeType::CLAIMED,
-            actorId:    1,
-            payload:    [],
-            occurredAt: new \DateTimeImmutable(),
-        );
-
-        // Must not throw
-        $this->makeHandler()->__invoke($msg);
-    }
-
-    public function test_claimed_skips_gracefully_when_no_surgeon(): void
-    {
         $mission = $this->makeMission(null, MissionStatus::ASSIGNED);
-        $this->stubMissionFind($mission);
-        $this->em->expects($this->never())->method('persist');
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::CLAIMED));
 
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::CLAIMED)
-        );
+        self::assertSame([], $this->dispatched);
     }
 
-    // ── RELEASED → SURGEON_POST_UNCOVERED ─────────────────────────────────────
+    // ── RELEASED ──────────────────────────────────────────────────────────────
 
-    public function test_released_creates_surgeon_post_uncovered_inapp_notification(): void
+    public function test_released_dispatches_surgeon_post_uncovered(): void
     {
-        $surgeon = $this->makeUser('surgeon@test.com');
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
         $mission = $this->makeMission($surgeon, MissionStatus::OPEN);
-        $this->stubMissionFind($mission);
-        $this->capturePersisted();
+        $this->stubFind($mission);
 
-        $message = $this->makeMessage($mission, MissionChangeType::RELEASED, [
-            'fromInstrumentistName' => 'Françoise Dubois',
-        ]);
-
+        $message = $this->makeMessage($mission, MissionChangeType::RELEASED, ['fromInstrumentistName' => 'Françoise Detrembleur']);
         $this->makeHandler()->__invoke($message);
 
-        $events = $this->eventsOfType($this->persisted,NotificationType::SURGEON_POST_UNCOVERED);
-
-        $this->assertCount(1, $events);
-        $this->assertSame($surgeon, $events[0]->getUser());
-        $this->assertSame($mission, $events[0]->getMission());
+        $intents = $this->intents(NotificationType::SURGEON_POST_UNCOVERED);
+        self::assertCount(1, $intents);
+        self::assertSame($surgeon, $intents[0]->recipient);
+        self::assertSame('Françoise Detrembleur', $intents[0]->inAppPayload['fromInstrumentistName']);
+        self::assertSame($message->occurredAt->format(\DateTimeInterface::ATOM), $intents[0]->inAppPayload['releasedAt']);
+        self::assertStringContainsString('Françoise Detrembleur', $intents[0]->email->context['intro']);
+        self::assertSame('Mission non couverte', $intents[0]->push->title);
     }
 
-    public function test_released_payload_contains_from_instrumentist_name_and_released_at(): void
+    public function test_manager_release_tells_the_removed_instrumentist_her_planning_changed(): void
     {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::OPEN);
-        $this->stubMissionFind($mission);
-        $this->capturePersisted();
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $francoise = $this->makeUser('f@test.com', ['ROLE_INSTRUMENTIST'], 'Françoise', 'Detrembleur');
+        $mission  = $this->makeMission($surgeon, MissionStatus::OPEN);
+        $this->stubFind($mission, [$francoise->getId() => $francoise]);
 
-        $message = $this->makeMessage($mission, MissionChangeType::RELEASED, [
-            'fromInstrumentistName' => 'Françoise Dubois',
-        ]);
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::RELEASED, [
+            'fromInstrumentistId' => $francoise->getId(), 'fromInstrumentistName' => 'Françoise Detrembleur', 'causedByAbsenceId' => null,
+        ]));
 
-        $this->makeHandler()->__invoke($message);
-
-        $event = $this->eventsOfType($this->persisted,NotificationType::SURGEON_POST_UNCOVERED)[0] ?? null;
-
-        $this->assertNotNull($event);
-        $payload = $event->getPayload();
-        $this->assertSame('Françoise Dubois', $payload['fromInstrumentistName']);
-        $this->assertSame($mission->getId(), $payload['missionId']);
-        $this->assertSame($mission->getSite()->getName(), $payload['siteName']);
-        $this->assertSame('Matin', $payload['periodLabel']);
-        $this->assertArrayHasKey('releasedAt', $payload);
-        $this->assertSame($message->occurredAt->format(\DateTimeInterface::ATOM), $payload['releasedAt']);
+        $intents = $this->intents(NotificationType::PLANNING_MISSION_RELEASED);
+        self::assertCount(1, $intents);
+        self::assertSame($francoise, $intents[0]->recipient);
+        self::assertStringContainsString('ne fait plus partie de votre planning', $intents[0]->email->context['intro']);
+        self::assertSame('https://app.test/app/i/planning', $intents[0]->email->context['missionUrl']);
+        self::assertSame([], $this->intents(NotificationType::OPEN_MISSION_AVAILABLE), 'the pool is never addressed by this handler directly');
     }
 
-    public function test_released_sends_push_when_push_enabled(): void
+    public function test_absence_driven_release_does_not_duplicate_the_absent_persons_recap(): void
     {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::OPEN);
-        $this->stubMissionFind($mission);
-        $this->em->method('persist');
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $absent   = $this->makeUser('a@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission  = $this->makeMission($surgeon, MissionStatus::OPEN);
+        $this->stubFind($mission, [$absent->getId() => $absent]);
 
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->preferenceResolver->method('resolve')
-            ->willReturn(new NotificationChannels(inApp: true, email: false, push: true));
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::RELEASED, [
+            'fromInstrumentistId' => $absent->getId(), 'causedByAbsenceId' => 58,
+        ]));
 
-        $this->webPushService->expects($this->once())
-            ->method('sendToUser')
-            ->with(
-                $surgeon,
-                'Mission non couverte',
-                $this->stringContains("n'a plus d'instrumentiste"),
-                $this->arrayHasKey('missionId'),
-            );
-
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::RELEASED, [
-                'fromInstrumentistName' => 'Françoise Dubois',
-            ])
-        );
+        self::assertSame([], $this->intents(NotificationType::PLANNING_MISSION_RELEASED));
+        // D-127 — the surgeon learns it from the absence recap (ABSENCE_SURGEON_MISSION_OPENED).
+        self::assertSame([], $this->intents(NotificationType::SURGEON_POST_UNCOVERED));
     }
 
     public function test_released_skips_gracefully_when_mission_not_found(): void
     {
         $this->em->method('find')->willReturn(null);
-        $this->em->expects($this->never())->method('persist');
+        $this->makeHandler()->__invoke(new MissionLifecycleChangedMessage(9999, MissionChangeType::RELEASED, 1, [], new \DateTimeImmutable()));
 
-        $msg = new MissionLifecycleChangedMessage(
-            missionId:  9999,
-            changeType: MissionChangeType::RELEASED,
-            actorId:    1,
-            payload:    [],
-            occurredAt: new \DateTimeImmutable(),
-        );
-
-        $this->makeHandler()->__invoke($msg);
+        self::assertSame([], $this->dispatched);
     }
 
-    // ── RELEASED → OPEN_MISSION_AVAILABLE (pool, RC1-B) ───────────────────────
+    // ── RELEASED → pool, through OpenMissionPoolNotifier only (H3, D-129) ─────
 
-    public function test_released_notifies_eligible_instrumentists_of_open_mission(): void
+    public function test_manager_release_solicits_the_pool_excluding_the_removed_instrumentist_for_this_episode(): void
     {
-        $surgeon       = $this->makeUser('surgeon@test.com');
-        $mission       = $this->makeMission($surgeon, MissionStatus::OPEN);
-        $siteId        = $mission->getSite()->getId();
-        $instrumentist = $this->makeUser('instr@test.com');
-        $this->stubMissionFind($mission);
-        $this->capturePersisted();
+        $surgeon   = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $francoise = $this->makeUser('f@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission   = $this->makeMission($surgeon, MissionStatus::OPEN);
+        $this->stubFind($mission, [$francoise->getId() => $francoise]);
+        $message = $this->makeMessage($mission, MissionChangeType::RELEASED, ['fromInstrumentistId' => $francoise->getId()], actorId: 1001);
 
-        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
-        $this->eligibilityService->expects($this->once())
-            ->method('findEligible')
-            ->with([$mission])
-            ->willReturn([$siteId => [$instrumentist]]);
+        $this->makeHandler()->__invoke($message);
 
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::RELEASED, ['fromInstrumentistName' => 'Ancien'])
-        );
-
-        $events = $this->eventsOfType($this->persisted,NotificationType::OPEN_MISSION_AVAILABLE);
-        $this->assertCount(1, $events);
-        $this->assertSame($instrumentist, $events[0]->getUser());
-
-        $payload = $events[0]->getPayload();
-        $this->assertSame([$mission->getId()], $payload['openMissionIds']);
-        $this->assertSame(1, $payload['missionCount']);
-        $this->assertSame($mission->getSite()->getName(), $payload['siteName']);
+        self::assertCount(1, $this->episodes);
+        $episode = $this->episodes[0];
+        self::assertSame($mission->getId(), $episode->missionId);
+        self::assertSame(OpenEpisodeCause::RELEASED, $episode->cause);
+        self::assertSame([$francoise->getId() => OpenPoolExclusionReason::REMOVED_BY_MANAGER], $episode->excluded);
+        self::assertSame(1001, $episode->actorId);
+        self::assertSame(OpenEpisode::forTransition($mission->getId(), OpenEpisodeCause::RELEASED, $message->occurredAt)->episodeRef, $episode->episodeRef);
     }
 
-    public function test_released_pool_push_sent_to_all_eligible_instrumentists(): void
+    public function test_absence_release_solicits_the_pool_without_contextual_exclusion(): void
     {
-        $surgeon        = $this->makeUser('surgeon@test.com');
-        $mission        = $this->makeMission($surgeon, MissionStatus::OPEN);
-        $siteId         = $mission->getSite()->getId();
-        $instrumentist1 = $this->makeUser('i1@test.com');
-        $instrumentist2 = $this->makeUser('i2@test.com');
-        $this->stubMissionFind($mission);
-        $this->em->method('persist');
-
-        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
-        $this->eligibilityService->method('findEligible')
-            ->willReturn([$siteId => [$instrumentist1, $instrumentist2]]);
-
-        $this->webPushService->expects($this->once())
-            ->method('sendToUsers')
-            ->with(
-                [$instrumentist1, $instrumentist2],
-                'Nouvelle mission disponible',
-                $this->stringContains('disponible'),
-                $this->arrayHasKey('missionId'),
-            );
-
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::RELEASED, ['fromInstrumentistName' => 'Ancien'])
-        );
-    }
-
-    public function test_released_pool_no_op_when_no_eligible_instrumentists(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $absent  = $this->makeUser('a@test.com', ['ROLE_INSTRUMENTIST']);
         $mission = $this->makeMission($surgeon, MissionStatus::OPEN);
-        $this->stubMissionFind($mission);
-        $this->em->method('persist');
+        $this->stubFind($mission, [$absent->getId() => $absent]);
 
-        // Default setUp(): findEligible() returns []
-        $this->webPushService->expects($this->never())->method('sendToUsers');
-
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::RELEASED, ['fromInstrumentistName' => 'Ancien'])
-        );
-    }
-
-    public function test_released_pool_eligibility_failure_does_not_prevent_surgeon_notification(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::OPEN);
-        $this->stubMissionFind($mission);
-        $this->capturePersisted();
-
-        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
-        $this->eligibilityService->method('findEligible')
-            ->willThrowException(new \RuntimeException('DB unavailable'));
-
-        // Must not throw
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::RELEASED, ['fromInstrumentistName' => 'Ancien'])
-        );
-
-        $this->assertCount(1, $this->eventsOfType($this->persisted,NotificationType::SURGEON_POST_UNCOVERED));
-        $this->assertCount(0, $this->eventsOfType($this->persisted,NotificationType::OPEN_MISSION_AVAILABLE));
-    }
-
-    public function test_released_pool_respects_preference_gating_per_instrumentist(): void
-    {
-        $surgeon        = $this->makeUser('surgeon@test.com');
-        $mission        = $this->makeMission($surgeon, MissionStatus::OPEN);
-        $siteId         = $mission->getSite()->getId();
-        $enabledInstr   = $this->makeUser('enabled@test.com');
-        $disabledInstr  = $this->makeUser('disabled@test.com');
-        $this->stubMissionFind($mission);
-        $this->capturePersisted();
-
-        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
-        $this->eligibilityService->method('findEligible')
-            ->willReturn([$siteId => [$enabledInstr, $disabledInstr]]);
-
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->preferenceResolver->method('resolve')
-            ->willReturnCallback(function (User $user, NotificationType $type) use ($surgeon, $enabledInstr) {
-                if ($type === NotificationType::OPEN_MISSION_AVAILABLE) {
-                    return new NotificationChannels(inApp: $user === $enabledInstr, email: false, push: false);
-                }
-                return new NotificationChannels(inApp: true, email: false, push: false);
-            });
-
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::RELEASED, ['fromInstrumentistName' => 'Ancien'])
-        );
-
-        $events = $this->eventsOfType($this->persisted,NotificationType::OPEN_MISSION_AVAILABLE);
-        $this->assertCount(1, $events);
-        $this->assertSame($enabledInstr, $events[0]->getUser());
-    }
-
-    // ── REASSIGNED → PLANNING_MISSION_REASSIGNED (RC1-B) ──────────────────────
-
-    public function test_reassigned_notifies_old_instrumentist_of_removal(): void
-    {
-        $oldInstr = $this->makeUser('old@test.com');
-        $newInstr = $this->makeUser('new@test.com');
-        $mission  = $this->makeMission(null, MissionStatus::ASSIGNED, $newInstr);
-        $this->stubFind($mission, [$oldInstr->getId() => $oldInstr, $newInstr->getId() => $newInstr]);
-        $this->capturePersisted();
-
-        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::REASSIGNED, [
-            'fromInstrumentistId'   => $oldInstr->getId(),
-            'fromInstrumentistName' => 'Old Instr',
-            'toInstrumentistId'     => $newInstr->getId(),
-            'toInstrumentistName'   => 'New Instr',
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::RELEASED, [
+            'fromInstrumentistId' => $absent->getId(), 'causedByAbsenceId' => 58,
         ]));
 
-        $events = $this->eventsOfType($this->persisted,NotificationType::PLANNING_MISSION_REASSIGNED);
-        $recipients = array_map(fn ($e) => $e->getUser(), $events);
-        $this->assertContains($oldInstr, $recipients);
+        self::assertCount(1, $this->episodes);
+        self::assertSame(OpenEpisodeCause::INSTRUMENTIST_ABSENCE, $this->episodes[0]->cause);
+        self::assertSame([], $this->episodes[0]->excluded, 'the absent person is ruled out by eligibility (ABSENT), not by a contextual exclusion');
     }
 
-    public function test_reassigned_notifies_new_instrumentist_of_assignment(): void
+    public function test_self_release_without_known_instrumentist_still_solicits_the_pool(): void
     {
-        $oldInstr = $this->makeUser('old@test.com');
-        $newInstr = $this->makeUser('new@test.com');
-        $mission  = $this->makeMission(null, MissionStatus::ASSIGNED, $newInstr);
-        $this->stubFind($mission, [$oldInstr->getId() => $oldInstr, $newInstr->getId() => $newInstr]);
+        $mission = $this->makeMission($this->makeUser('surgeon@test.com', ['ROLE_SURGEON']), MissionStatus::OPEN);
+        $this->stubFind($mission);
+
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::RELEASED));
+
+        self::assertCount(1, $this->episodes);
+        self::assertSame([], $this->episodes[0]->excluded);
+    }
+
+    public function test_release_of_a_mission_without_surgeon_still_solicits_the_pool(): void
+    {
+        $mission = $this->makeMission(null, MissionStatus::OPEN);
+        $this->stubFind($mission);
+
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::RELEASED));
+
+        self::assertSame([], $this->intents(NotificationType::SURGEON_POST_UNCOVERED));
+        self::assertCount(1, $this->episodes);
+    }
+
+    public function test_pool_failure_is_logged_and_does_not_undo_the_personal_notices(): void
+    {
+        $mission = $this->makeMission($this->makeUser('surgeon@test.com', ['ROLE_SURGEON']), MissionStatus::OPEN);
+        $this->stubFind($mission);
+        $this->poolNotifier = $this->createMock(OpenMissionPoolNotifier::class);
+        $this->poolNotifier->method('notify')->willThrowException(new \RuntimeException('DB unavailable'));
+        $this->logger->expects($this->atLeastOnce())->method('error');
+
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::RELEASED));
+
+        self::assertCount(1, $this->intents(NotificationType::SURGEON_POST_UNCOVERED));
+    }
+
+    public function test_a_retry_of_the_same_release_reuses_the_same_episode_and_a_new_release_opens_a_new_one(): void
+    {
+        $mission = $this->makeMission($this->makeUser('surgeon@test.com', ['ROLE_SURGEON']), MissionStatus::OPEN);
+        $this->stubFind($mission);
+        $first = $this->makeMessage($mission, MissionChangeType::RELEASED);
+        $later = new MissionLifecycleChangedMessage($mission->getId(), MissionChangeType::RELEASED, 99, [], new \DateTimeImmutable('2026-07-16T09:00:00+02:00'));
+
+        $this->makeHandler()->__invoke($first);
+        $this->makeHandler()->__invoke($first);   // Messenger retry
+        $this->makeHandler()->__invoke($later);   // OPEN → ASSIGNED → OPEN again
+
+        self::assertSame($this->episodes[0]->episodeRef, $this->episodes[1]->episodeRef);
+        self::assertNotSame($this->episodes[0]->episodeRef, $this->episodes[2]->episodeRef);
+    }
+
+    // ── ROOM_TAKEN_OVER → personal offer + pool (never both to the same person) ──
+
+    public function test_room_taken_over_excludes_the_offered_instrumentist_from_the_pool_episode(): void
+    {
+        $initial = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission = $this->makeMission($this->makeUser('taker@test.com', ['ROLE_SURGEON']), MissionStatus::OPEN);
+        $this->stubFind($mission, [$initial->getId() => $initial]);
         $this->capturePersisted();
+        $this->eligibilityService->method('evaluate')->willReturn(new \App\Dto\EligibilityResult($initial, []));
+
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::ROOM_TAKEN_OVER, ['initialInstrumentistId' => $initial->getId(), 'roomSlotId' => 5]));
+
+        // H5b (D-132) — the personal offer is a dispatcher intent (traced), no longer a hand-built in-app row.
+        $offers = array_values(array_filter($this->dispatched, static fn ($i) => $i->type === NotificationType::ROOM_TAKEOVER_MISSION_OFFER));
+        self::assertCount(1, $offers);
+        self::assertSame($initial, $offers[0]->recipient);
+        self::assertNull($offers[0]->email, 'no email content for this offer');
+        self::assertSame('Salle reprise — mission disponible', $offers[0]->push->title);
+        self::assertCount(1, $this->episodes);
+        self::assertSame(OpenEpisodeCause::ROOM_TAKEN_OVER, $this->episodes[0]->cause);
+        self::assertSame([$initial->getId() => OpenPoolExclusionReason::PERSONAL_OFFER_SENT], $this->episodes[0]->excluded);
+    }
+
+    public function test_room_taken_over_with_an_ineligible_initial_instrumentist_excludes_nobody(): void
+    {
+        $initial = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission = $this->makeMission($this->makeUser('taker@test.com', ['ROLE_SURGEON']), MissionStatus::OPEN);
+        $this->stubFind($mission, [$initial->getId() => $initial]);
+        $this->capturePersisted();
+        $this->eligibilityService->method('evaluate')->willReturn(new \App\Dto\EligibilityResult($initial, [\App\Enum\EligibilityReason::ABSENT]));
+
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::ROOM_TAKEN_OVER, ['initialInstrumentistId' => $initial->getId()]));
+
+        self::assertCount(0, $this->eventsOfType(NotificationType::ROOM_TAKEOVER_MISSION_OFFER));
+        self::assertSame([], $this->episodes[0]->excluded);
+    }
+
+    // ── REASSIGNED ────────────────────────────────────────────────────────────
+
+    public function test_reassigned_notifies_old_and_new_instrumentist_but_not_surgeon_on_pure_reassign(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $old = $this->makeUser('old@test.com', ['ROLE_INSTRUMENTIST']);
+        $new = $this->makeUser('new@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED, $new);
+        $this->stubFind($mission, [$old->getId() => $old, $new->getId() => $new]);
 
         $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::REASSIGNED, [
-            'fromInstrumentistId'   => $oldInstr->getId(),
-            'fromInstrumentistName' => 'Old Instr',
-            'toInstrumentistId'     => $newInstr->getId(),
-            'toInstrumentistName'   => 'New Instr',
+            'fromInstrumentistId' => $old->getId(), 'fromInstrumentistName' => 'Old', 'toInstrumentistId' => $new->getId(), 'toInstrumentistName' => 'New',
         ]));
 
-        $events = $this->eventsOfType($this->persisted,NotificationType::PLANNING_MISSION_REASSIGNED);
-        $recipients = array_map(fn ($e) => $e->getUser(), $events);
-        $this->assertContains($newInstr, $recipients);
-        $this->assertCount(2, $events, 'both old and new instrumentist must each receive one PLANNING_MISSION_REASSIGNED event');
+        $intents = $this->intents(NotificationType::PLANNING_MISSION_REASSIGNED);
+        self::assertCount(2, $intents);
+        self::assertSame($old, $intents[0]->recipient);
+        self::assertStringContainsString('ne fait plus partie de votre planning', $intents[0]->email->context['intro']);
+        self::assertSame($new, $intents[1]->recipient);
+        self::assertStringContainsString('fait désormais partie de votre planning', $intents[1]->email->context['intro']);
+        self::assertNotSame($intents[0]->episodeRef, $intents[1]->episodeRef);
+        self::assertSame([], $this->intents(NotificationType::SURGEON_POST_COVERED));
     }
 
-    public function test_reassigned_notifies_surgeon_when_assigned_from_pool(): void
+    public function test_reassigned_from_pool_notifies_surgeon_covered(): void
     {
-        // fromInstrumentistId === null → this reassignment is really a manager assign() from OPEN.
-        $newInstr = $this->makeUser('new@test.com');
-        $surgeon  = $this->makeUser('surgeon@test.com');
-        $mission  = $this->makeMission($surgeon, MissionStatus::ASSIGNED, $newInstr);
-        $this->stubFind($mission, [$newInstr->getId() => $newInstr]);
-        $this->capturePersisted();
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $new = $this->makeUser('new@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED, $new);
+        $this->stubFind($mission, [$new->getId() => $new]);
 
         $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::REASSIGNED, [
-            'fromInstrumentistId' => null,
-            'toInstrumentistId'   => $newInstr->getId(),
-            'toInstrumentistName' => 'New Instr',
+            'fromInstrumentistId' => null, 'toInstrumentistId' => $new->getId(), 'toInstrumentistName' => 'New',
         ]));
 
-        $events = $this->eventsOfType($this->persisted,NotificationType::SURGEON_POST_COVERED);
-        $this->assertCount(1, $events);
-        $this->assertSame($surgeon, $events[0]->getUser());
+        $covered = $this->intents(NotificationType::SURGEON_POST_COVERED);
+        self::assertCount(1, $covered);
+        self::assertSame('New', $covered[0]->inAppPayload['instrumentistName']);
     }
 
-    public function test_reassigned_does_not_notify_surgeon_on_pure_reassign(): void
+    public function test_absence_driven_reassignment_suppresses_only_the_new_instrumentist_generic_notice(): void
     {
-        // fromInstrumentistId present → ASSIGNED → ASSIGNED, surgeon's coverage view is unchanged.
-        $oldInstr = $this->makeUser('old@test.com');
-        $newInstr = $this->makeUser('new@test.com');
-        $surgeon  = $this->makeUser('surgeon@test.com');
-        $mission  = $this->makeMission($surgeon, MissionStatus::ASSIGNED, $newInstr);
-        $this->stubFind($mission, [$oldInstr->getId() => $oldInstr, $newInstr->getId() => $newInstr]);
-        $this->capturePersisted();
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $new = $this->makeUser('new@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED, $new);
+        $this->stubFind($mission, [$new->getId() => $new]);
 
         $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::REASSIGNED, [
-            'fromInstrumentistId' => $oldInstr->getId(),
-            'toInstrumentistId'   => $newInstr->getId(),
-            'toInstrumentistName' => 'New Instr',
+            'fromInstrumentistId' => null, 'toInstrumentistId' => $new->getId(), 'causedByAbsenceId' => 3,
         ]));
 
-        $this->assertCount(0, $this->eventsOfType($this->persisted,NotificationType::SURGEON_POST_COVERED));
+        self::assertSame([], $this->intents(NotificationType::PLANNING_MISSION_REASSIGNED));
+        self::assertCount(1, $this->intents(NotificationType::SURGEON_POST_COVERED));
     }
 
-    public function test_reassigned_old_instrumentist_not_found_does_not_error(): void
+    public function test_reassigned_unknown_old_instrumentist_does_not_error_and_dispatch_failure_does_not_block_next_recipient(): void
     {
-        $newInstr = $this->makeUser('new@test.com');
-        $mission  = $this->makeMission(null, MissionStatus::ASSIGNED, $newInstr);
-        // fromInstrumentistId points to a user that no longer exists.
-        $this->stubFind($mission, [$newInstr->getId() => $newInstr]);
-        $this->em->method('persist');
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $old = $this->makeUser('old@test.com', ['ROLE_INSTRUMENTIST']);
+        $new = $this->makeUser('new@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED, $new);
+        $this->stubFind($mission, [$old->getId() => $old, $new->getId() => $new]);
 
-        // Must not throw
-        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::REASSIGNED, [
-            'fromInstrumentistId' => 12345,
-            'toInstrumentistId'   => $newInstr->getId(),
-            'toInstrumentistName' => 'New Instr',
-        ]));
+        $this->dispatcher = $this->createMock(NotificationDispatcher::class);
+        $this->dispatcher->method('dispatch')->willReturnCallback(function (NotificationIntent $intent) use ($old): NotificationDispatch {
+            if ($intent->recipient === $old) {
+                throw new \RuntimeException('SMTP down');
+            }
+            $this->dispatched[] = $intent;
 
-        $this->addToAssertionCount(1);
-    }
-
-    public function test_reassigned_respects_preference_gating_per_recipient(): void
-    {
-        $oldInstr = $this->makeUser('old@test.com');
-        $newInstr = $this->makeUser('new@test.com');
-        $mission  = $this->makeMission(null, MissionStatus::ASSIGNED, $newInstr);
-        $this->stubFind($mission, [$oldInstr->getId() => $oldInstr, $newInstr->getId() => $newInstr]);
-        $this->capturePersisted();
-
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->preferenceResolver->method('resolve')
-            ->willReturnCallback(fn (User $u) => new NotificationChannels(inApp: $u === $newInstr, email: false, push: false));
+            return new NotificationDispatch();
+        });
+        $this->logger->expects($this->atLeastOnce())->method('error');
 
         $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::REASSIGNED, [
-            'fromInstrumentistId' => $oldInstr->getId(),
-            'toInstrumentistId'   => $newInstr->getId(),
-            'toInstrumentistName' => 'New Instr',
+            'fromInstrumentistId' => $old->getId(), 'toInstrumentistId' => $new->getId(),
         ]));
 
-        $events = $this->eventsOfType($this->persisted,NotificationType::PLANNING_MISSION_REASSIGNED);
-        $this->assertCount(1, $events);
-        $this->assertSame($newInstr, $events[0]->getUser());
+        self::assertCount(1, $this->dispatched);
+        self::assertSame($new, $this->dispatched[0]->recipient);
     }
 
-    public function test_reassigned_skips_gracefully_when_mission_not_found(): void
+    // ── CANCELLED ─────────────────────────────────────────────────────────────
+
+    public function test_cancelled_notifies_surgeon_and_previous_instrumentist_from_the_message_snapshot(): void
     {
-        $this->em->method('find')->willReturn(null);
-        $this->em->expects($this->never())->method('persist');
-
-        $msg = new MissionLifecycleChangedMessage(
-            missionId:  9999,
-            changeType: MissionChangeType::REASSIGNED,
-            actorId:    1,
-            payload:    [],
-            occurredAt: new \DateTimeImmutable(),
-        );
-
-        $this->makeHandler()->__invoke($msg);
-    }
-
-    public function test_reassigned_push_failure_for_old_instrumentist_does_not_block_new_instrumentist(): void
-    {
-        $oldInstr = $this->makeUser('old@test.com');
-        $newInstr = $this->makeUser('new@test.com');
-        $mission  = $this->makeMission(null, MissionStatus::ASSIGNED, $newInstr);
-        $this->stubFind($mission, [$oldInstr->getId() => $oldInstr, $newInstr->getId() => $newInstr]);
-        $this->capturePersisted();
-
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->preferenceResolver->method('resolve')
-            ->willReturn(new NotificationChannels(inApp: true, email: false, push: true));
-
-        $this->webPushService->method('sendToUser')
-            ->willThrowException(new \RuntimeException('push down'));
-
-        // Must not throw, and both inApp events must still be persisted.
-        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::REASSIGNED, [
-            'fromInstrumentistId' => $oldInstr->getId(),
-            'toInstrumentistId'   => $newInstr->getId(),
-            'toInstrumentistName' => 'New Instr',
-        ]));
-
-        $this->assertCount(2, $this->eventsOfType($this->persisted,NotificationType::PLANNING_MISSION_REASSIGNED));
-    }
-
-    // ── CANCELLED → PLANNING_MISSION_CANCELLED (RC1-B) ────────────────────────
-
-    public function test_cancelled_notifies_surgeon(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::CANCELLED);
-        $this->stubMissionFind($mission);
-        $this->capturePersisted();
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $previous = $this->makeUser('p@test.com', ['ROLE_INSTRUMENTIST'], 'Françoise', 'Detrembleur');
+        // cancel() already cleared the FK: the mission has no instrumentist anymore.
+        $mission  = $this->makeMission($surgeon, MissionStatus::CANCELLED);
+        $this->stubFind($mission, [$previous->getId() => $previous]);
 
         $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::CANCELLED, [
-            'reason' => 'Chirurgien absent',
+            'reason' => 'Bloc fermé', 'fromInstrumentistId' => $previous->getId(), 'fromInstrumentistName' => 'Françoise Detrembleur', 'causedByAbsenceId' => null,
         ]));
 
-        $events = $this->eventsOfType($this->persisted,NotificationType::PLANNING_MISSION_CANCELLED);
-        $this->assertNotEmpty($events);
-        $recipients = array_map(fn ($e) => $e->getUser(), $events);
-        $this->assertContains($surgeon, $recipients);
-
-        $surgeonEvent = current(array_filter($events, fn ($e) => $e->getUser() === $surgeon));
-        $this->assertSame('Chirurgien absent', $surgeonEvent->getPayload()['reason']);
+        $intents = $this->intents(NotificationType::PLANNING_MISSION_CANCELLED);
+        self::assertCount(2, $intents);
+        self::assertSame($surgeon, $intents[0]->recipient);
+        self::assertSame($previous, $intents[1]->recipient);
+        self::assertStringContainsString('faisait partie de votre planning', $intents[1]->email->context['intro']);
+        self::assertSame('Bloc fermé', $intents[1]->email->context['reason']);
+        self::assertSame('Bloc fermé', $intents[1]->inAppPayload['reason']);
     }
 
-    public function test_cancelled_notifies_instrumentist_when_assigned(): void
+    public function test_absence_driven_cancellation_leaves_the_instrumentist_to_the_absence_recap(): void
     {
-        // cancel() currently requires OPEN, so this exercises the defensive branch.
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $instr   = $this->makeUser('instr@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::CANCELLED, $instr);
-        $this->stubMissionFind($mission);
-        $this->capturePersisted();
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $previous = $this->makeUser('p@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission  = $this->makeMission($surgeon, MissionStatus::CANCELLED);
+        $this->stubFind($mission, [$previous->getId() => $previous]);
 
-        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::CANCELLED));
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::CANCELLED, [
+            'fromInstrumentistId' => $previous->getId(), 'causedByAbsenceId' => 58,
+        ]));
 
-        $events = $this->eventsOfType($this->persisted,NotificationType::PLANNING_MISSION_CANCELLED);
-        $recipients = array_map(fn ($e) => $e->getUser(), $events);
-        $this->assertContains($instr, $recipients);
-        $this->assertCount(2, $events, 'both surgeon and instrumentist must each receive one event');
+        $intents = $this->intents(NotificationType::PLANNING_MISSION_CANCELLED);
+        self::assertCount(1, $intents);
+        self::assertSame($surgeon, $intents[0]->recipient);
     }
 
-    public function test_cancelled_does_not_notify_instrumentist_when_none_assigned(): void
+    /** H4 (D-130, final rule) — never the absent person about the consequences of her own absence. */
+    public function test_an_absence_driven_cancellation_never_notifies_the_absent_surgeon(): void
     {
-        $surgeon = $this->makeUser('surgeon@test.com');
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $previous = $this->makeUser('p@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission  = $this->makeMission($surgeon, MissionStatus::CANCELLED);
+        $this->stubFind($mission, [$previous->getId() => $previous]);
+
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::CANCELLED, [
+            'fromInstrumentistId' => $previous->getId(), 'causedByAbsenceId' => 58, 'absentUserId' => $surgeon->getId(),
+        ]));
+
+        self::assertSame([], $this->dispatched, 'the instrumentist gets the absence recap, the absent surgeon nothing');
+    }
+
+    public function test_room_release_by_the_taker_notifies_only_the_instrumentist(): void
+    {
+        $taker = $this->makeUser('taker@test.com', ['ROLE_SURGEON']);
+        $instr = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission = $this->makeMission($taker, MissionStatus::CANCELLED);
+        $this->stubFind($mission, [$instr->getId() => $instr]);
+
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::CANCELLED, [
+            'roomSlotId' => 5, 'fromInstrumentistId' => $instr->getId(),
+        ], actorId: $taker->getId()));
+
+        $intents = $this->intents(NotificationType::PLANNING_MISSION_CANCELLED);
+        self::assertCount(1, $intents);
+        self::assertSame($instr, $intents[0]->recipient);
+    }
+
+    public function test_cancelled_without_instrumentist_notifies_only_the_surgeon(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
         $mission = $this->makeMission($surgeon, MissionStatus::CANCELLED);
-        $this->stubMissionFind($mission);
-        $this->capturePersisted();
+        $this->stubFind($mission);
 
-        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::CANCELLED));
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::CANCELLED, ['fromInstrumentistId' => null]));
 
-        $events = $this->eventsOfType($this->persisted,NotificationType::PLANNING_MISSION_CANCELLED);
-        $this->assertCount(1, $events, 'only the surgeon is notified when no instrumentist is assigned');
+        self::assertCount(1, $this->dispatched);
     }
 
-    public function test_cancelled_skips_gracefully_when_no_surgeon_and_no_instrumentist(): void
+    // ── Generic ───────────────────────────────────────────────────────────────
+
+    public function test_unhandled_change_types_log_and_do_not_throw(): void
     {
-        $mission = $this->makeMission(null, MissionStatus::CANCELLED);
-        $this->stubMissionFind($mission);
-        $this->em->expects($this->never())->method('persist');
+        $mission = $this->makeMission($this->makeUser());
+        $this->stubFind($mission);
 
-        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::CANCELLED));
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::ADDED));
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::TIME_CHANGED));
+
+        self::assertSame([], $this->dispatched);
     }
 
-    public function test_cancelled_skips_gracefully_when_mission_not_found(): void
-    {
-        $this->em->method('find')->willReturn(null);
-        $this->em->expects($this->never())->method('persist');
-
-        $msg = new MissionLifecycleChangedMessage(
-            missionId:  9999,
-            changeType: MissionChangeType::CANCELLED,
-            actorId:    1,
-            payload:    [],
-            occurredAt: new \DateTimeImmutable(),
-        );
-
-        $this->makeHandler()->__invoke($msg);
-    }
-
-    public function test_cancelled_respects_preference_gating(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $instr   = $this->makeUser('instr@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::CANCELLED, $instr);
-        $this->stubMissionFind($mission);
-        $this->capturePersisted();
-
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->preferenceResolver->method('resolve')
-            ->willReturnCallback(fn (User $u) => new NotificationChannels(inApp: $u === $surgeon, email: false, push: false));
-
-        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::CANCELLED));
-
-        $events = $this->eventsOfType($this->persisted,NotificationType::PLANNING_MISSION_CANCELLED);
-        $this->assertCount(1, $events);
-        $this->assertSame($surgeon, $events[0]->getUser());
-    }
-
-    // ── Unknown / forward-compatible changeTypes ──────────────────────────────
-
-    public function test_added_change_type_logs_and_does_not_throw(): void
-    {
-        $this->em->expects($this->never())->method('persist');
-
-        $msg = new MissionLifecycleChangedMessage(
-            missionId:  1,
-            changeType: MissionChangeType::ADDED,
-            actorId:    1,
-            payload:    [],
-            occurredAt: new \DateTimeImmutable(),
-        );
-
-        // Must not throw
-        $this->makeHandler()->__invoke($msg);
-    }
-
-    public function test_time_changed_change_type_logs_and_does_not_throw(): void
-    {
-        $this->em->expects($this->never())->method('persist');
-
-        $msg = new MissionLifecycleChangedMessage(
-            missionId:  1,
-            changeType: MissionChangeType::TIME_CHANGED,
-            actorId:    1,
-            payload:    [],
-            occurredAt: new \DateTimeImmutable(),
-        );
-
-        $this->makeHandler()->__invoke($msg);
-    }
-
-    // ── Failure isolation ─────────────────────────────────────────────────────
-
-    public function test_inapp_failure_does_not_prevent_push(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED);
-        $this->stubMissionFind($mission);
-
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->preferenceResolver->method('resolve')
-            ->willReturn(new NotificationChannels(inApp: true, email: false, push: true));
-
-        // em->flush() throws — inApp step fails
-        $this->em->method('persist');
-        $this->em->method('flush')->willThrowException(new \RuntimeException('DB write failed'));
-
-        // push must still be attempted
-        $this->webPushService->expects($this->once())
-            ->method('sendToUser');
-
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::CLAIMED, ['instrumentistName' => 'Sophie'])
-        );
-    }
-
-    public function test_push_failure_does_not_propagate_exception(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED);
-        $this->stubMissionFind($mission);
-
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->preferenceResolver->method('resolve')
-            ->willReturn(new NotificationChannels(inApp: true, email: false, push: true));
-
-        $this->capturePersisted();
-
-        $this->webPushService->method('sendToUser')
-            ->willThrowException(new \RuntimeException('Push service unavailable'));
-
-        // Must not throw; inApp notification must still be persisted
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::CLAIMED, ['instrumentistName' => 'Sophie'])
-        );
-
-        $events = $this->eventsOfType($this->persisted,NotificationType::SURGEON_POST_COVERED);
-        $this->assertCount(1, $events, 'inApp notification must survive a push failure.');
-    }
-
-    public function test_preference_resolver_failure_falls_back_to_inapp_only(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED);
-        $this->stubMissionFind($mission);
-
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->preferenceResolver->method('resolve')
-            ->willThrowException(new \RuntimeException('Preference service unavailable'));
-
-        $this->capturePersisted();
-
-        // Must not throw and must still create the inApp notification (fallback: inApp=true)
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::CLAIMED, ['instrumentistName' => 'Sophie'])
-        );
-
-        $events = $this->eventsOfType($this->persisted,NotificationType::SURGEON_POST_COVERED);
-        $this->assertCount(1, $events);
-    }
-
-    // ── Structured logging ────────────────────────────────────────────────────
-
-    public function test_handler_logs_received_event_on_every_invocation(): void
+    public function test_handler_logs_received_event_and_warning_when_mission_not_found(): void
     {
         $this->em->method('find')->willReturn(null);
+        $this->logger->expects($this->atLeastOnce())->method('info')
+            ->with('MissionLifecycleChanged received', $this->arrayHasKey('missionId'));
+        $this->logger->expects($this->atLeastOnce())->method('warning');
 
-        $this->logger->expects($this->atLeastOnce())
-            ->method('info')
-            ->with(
-                'MissionLifecycleChanged received',
-                $this->arrayHasKey('missionId'),
-            );
-
-        $msg = new MissionLifecycleChangedMessage(
-            missionId:  42,
-            changeType: MissionChangeType::CLAIMED,
-            actorId:    1,
-            payload:    [],
-            occurredAt: new \DateTimeImmutable(),
-        );
-
-        $this->makeHandler()->__invoke($msg);
+        $this->makeHandler()->__invoke(new MissionLifecycleChangedMessage(9999, MissionChangeType::CLAIMED, 1, [], new \DateTimeImmutable()));
     }
 
-    public function test_handler_logs_warning_when_mission_not_found(): void
+    public function test_episode_ref_is_stable_for_a_retry_of_the_same_message(): void
     {
-        $this->em->method('find')->willReturn(null);
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED, null, '2026-07-15 14:00:00');
+        $this->stubFind($mission);
+        $message = $this->makeMessage($mission, MissionChangeType::CLAIMED);
 
-        $this->logger->expects($this->atLeastOnce())
-            ->method('warning')
-            ->with(
-                $this->stringContains('mission not found'),
-                $this->arrayHasKey('missionId'),
-            );
+        $this->makeHandler()->__invoke($message);
+        $this->makeHandler()->__invoke($message);
 
-        $msg = new MissionLifecycleChangedMessage(
-            missionId:  9999,
-            changeType: MissionChangeType::CLAIMED,
-            actorId:    1,
-            payload:    [],
-            occurredAt: new \DateTimeImmutable(),
-        );
-
-        $this->makeHandler()->__invoke($msg);
+        self::assertCount(2, $this->dispatched);
+        self::assertSame($this->dispatched[0]->episodeRef, $this->dispatched[1]->episodeRef);
+        self::assertSame('Après-midi', $this->dispatched[0]->inAppPayload['periodLabel']);
     }
 
-    // ── Afternoon period label ─────────────────────────────────────────────────
+    // ── D-125 dispatch through NotificationDispatcher (H5a) ──────────────────
 
-    public function test_afternoon_mission_uses_apres_midi_period_label(): void
+    public function test_offered_is_one_intent_to_the_targeted_instrumentist_push_first_email_fallback(): void
     {
-        $surgeon = $this->makeUser('surgeon@test.com');
-        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED);
-        $mission->setStartAt(new \DateTimeImmutable('2026-07-15 14:00:00'));
-        $this->stubMissionFind($mission);
-        $this->capturePersisted();
+        $instr   = $this->makeUser('instr@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission = $this->makeMission($this->makeUser('dr@test.com', ['ROLE_SURGEON']), MissionStatus::OPEN);
+        $mission->addPublication((new \App\Entity\MissionPublication())->setMission($mission)
+            ->setScope(\App\Enum\PublicationScope::TARGETED)->setChannel(\App\Enum\PublicationChannel::IN_APP)
+            ->setTargetInstrumentist($instr)->setPublishedAt(new \DateTimeImmutable()));
+        $this->stubFind($mission);
 
-        $this->makeHandler()->__invoke(
-            $this->makeMessage($mission, MissionChangeType::CLAIMED, ['instrumentistName' => 'Sophie'])
-        );
+        $this->makeHandler()->__invoke(new MissionLifecycleChangedMessage($mission->getId(), MissionChangeType::OFFERED, 1,
+            ['instrumentistId' => $instr->getId()], new \DateTimeImmutable('2026-07-01T10:00:00+02:00')));
 
-        $event = $this->eventsOfType($this->persisted,NotificationType::SURGEON_POST_COVERED)[0] ?? null;
+        self::assertCount(1, $this->dispatched);
+        $i = $this->dispatched[0];
+        self::assertSame(NotificationType::MISSION_OFFERED, $i->type);
+        self::assertSame($instr, $i->recipient);
+        self::assertSame(\App\Enum\NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT, $i->emailPolicy);
+        self::assertSame('emails/mission_offered.html.twig', $i->email->htmlTemplate);
+        self::assertSame('Mission proposée', $i->push->title);
+        self::assertSame('lifecycle:OFFERED:' . $mission->getId() . ':2026-07-01T10:00:00.000000+02:00', $i->episodeRef);
+    }
 
-        $this->assertSame('Après-midi', $event?->getPayload()['periodLabel'] ?? null);
+    public function test_offer_declined_tells_the_requesting_manager_in_app_and_email_no_push(): void
+    {
+        $manager = $this->makeUser('mgr@test.com', ['ROLE_MANAGER']);
+        $mission = $this->makeMission($this->makeUser('dr@test.com', ['ROLE_SURGEON']), MissionStatus::OPEN);
+        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
+            $class === Mission::class && $id === $mission->getId() => $mission,
+            $class === User::class && $id === $manager->getId() => $manager,
+            default => null,
+        });
+
+        $this->makeHandler()->__invoke(new MissionLifecycleChangedMessage($mission->getId(), MissionChangeType::OFFER_DECLINED, 2,
+            ['offeredById' => $manager->getId(), 'instrumentistName' => 'Jane Doe', 'reason' => 'Indisponible'], new \DateTimeImmutable('2026-07-01T11:00:00+02:00')));
+
+        self::assertCount(1, $this->dispatched);
+        $i = $this->dispatched[0];
+        self::assertSame(NotificationType::MISSION_OFFER_DECLINED, $i->type);
+        self::assertSame($manager, $i->recipient);
+        self::assertNull($i->push, 'no push for a refusal — as before');
+        self::assertSame(\App\Enum\NotificationEmailPolicy::WHEN_ENABLED, $i->emailPolicy);
+        self::assertSame('Indisponible', $i->inAppPayload['reason']);
     }
 }

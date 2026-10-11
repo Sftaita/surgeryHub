@@ -104,6 +104,10 @@ final class AdminOutboundNotificationController extends AbstractController
             'missionId'        => $n->getMission()?->getId(),
             'attemptCount'     => $n->getAttemptCount(),
             'fallback'         => $n->isFallback(),
+            // H2 (D-128) — why a channel was not used (SKIPPED rows) + the operation it belongs to.
+            'skipReason'       => $n->getSkipReason()?->value,
+            'correlationId'    => $n->getCorrelationId(),
+            'grouped'          => $n->getGroupKey() !== null,
         ];
     }
 
@@ -123,6 +127,8 @@ final class AdminOutboundNotificationController extends AbstractController
             'fallbackOfId'    => $n->getFallbackOf()?->getId(),
             'fallbackReason'  => $n->getFallbackReason()?->value,
             'attempts'        => array_map([$this, 'attemptPayload'], $n->getAttempts()->toArray()),
+            'notificationEventId' => $n->getNotificationEvent()?->getId(),
+            'notificationEventSeenAt' => $n->getNotificationEvent()?->getSeenAt()?->format(\DateTimeInterface::ATOM),
         ]);
 
         return $payload;

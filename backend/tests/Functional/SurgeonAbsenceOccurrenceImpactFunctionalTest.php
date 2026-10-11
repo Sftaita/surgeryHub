@@ -19,8 +19,8 @@ use App\Enum\OccurrenceExceptionSource;
 use App\Enum\OccurrenceExceptionType;
 use App\Enum\RecurrenceFrequency;
 use App\Enum\ShiftPeriod;
-use App\Message\SurgeonAbsenceOccurrencesNeutralizedMessage;
-use App\MessageHandler\SurgeonAbsenceOccurrencesNeutralizedMessageHandler;
+use App\Message\AbsenceImpactNotificationMessage;
+use App\MessageHandler\AbsenceImpactNotificationMessageHandler;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\WithoutErrorHandler;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
@@ -51,6 +51,14 @@ final class SurgeonAbsenceOccurrenceImpactFunctionalTest extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            // H4 (D-130) — dispatcher decision + per-channel delivery rows of this test's users.
+            if ($this->createdIds['users'] !== []) {
+                $users = implode(',', array_map('intval', $this->createdIds['users']));
+                $conn = $this->em->getConnection();
+                $conn->executeStatement("DELETE FROM notification_dispatch WHERE recipient_user_id IN ($users)");
+                $conn->executeStatement("DELETE a FROM outbound_notification_attempt a JOIN outbound_notification o ON o.id = a.notification_id WHERE o.recipient_user_id IN ($users)");
+                $conn->executeStatement("DELETE FROM outbound_notification WHERE recipient_user_id IN ($users)");
+            }
             foreach ($this->createdIds['posts'] as $id) {
                 foreach ($this->em->createQueryBuilder()->select('e')->from(PlanningOccurrenceException::class, 'e')->where('e.post = :p')->setParameter('p', $id)->getQuery()->getResult() as $exception) {
                     $this->em->remove($exception);
@@ -402,10 +410,10 @@ final class SurgeonAbsenceOccurrenceImpactFunctionalTest extends WebTestCase
 
         $neutralized = array_values(array_filter(
             $transport->getSent(),
-            fn ($envelope) => $envelope->getMessage() instanceof SurgeonAbsenceOccurrencesNeutralizedMessage,
+            fn ($envelope) => $envelope->getMessage() instanceof AbsenceImpactNotificationMessage,
         ));
-        self::assertCount(1, $neutralized, 'Exactly one SurgeonAbsenceOccurrencesNeutralizedMessage per absence-processing run, never one per occurrence');
-        self::assertCount(2, $neutralized[0]->getMessage()->occurrences);
+        self::assertCount(1, $neutralized, 'Exactly one AbsenceImpactNotificationMessage per absence-processing run (H4), never one per occurrence');
+        self::assertCount(2, $neutralized[0]->getMessage()->impacts);
     }
 
     // ── §23 — Mission déjà existante ──────────────────────────────────────────
@@ -693,13 +701,13 @@ final class SurgeonAbsenceOccurrenceImpactFunctionalTest extends WebTestCase
 
         $envelope = null;
         foreach ($transport->getSent() as $e) {
-            if ($e->getMessage() instanceof SurgeonAbsenceOccurrencesNeutralizedMessage) {
+            if ($e->getMessage() instanceof AbsenceImpactNotificationMessage) {
                 $envelope = $e;
             }
         }
         self::assertNotNull($envelope);
 
-        static::getContainer()->get(SurgeonAbsenceOccurrencesNeutralizedMessageHandler::class)
+        static::getContainer()->get(AbsenceImpactNotificationMessageHandler::class)
             ->__invoke($envelope->getMessage());
         $this->em->flush();
         $this->em->clear();
@@ -767,13 +775,13 @@ final class SurgeonAbsenceOccurrenceImpactFunctionalTest extends WebTestCase
 
         $envelope = null;
         foreach ($transport->getSent() as $e) {
-            if ($e->getMessage() instanceof SurgeonAbsenceOccurrencesNeutralizedMessage) {
+            if ($e->getMessage() instanceof AbsenceImpactNotificationMessage) {
                 $envelope = $e;
             }
         }
         self::assertNotNull($envelope);
 
-        static::getContainer()->get(SurgeonAbsenceOccurrencesNeutralizedMessageHandler::class)
+        static::getContainer()->get(AbsenceImpactNotificationMessageHandler::class)
             ->__invoke($envelope->getMessage());
         $this->em->flush();
         $this->em->clear();

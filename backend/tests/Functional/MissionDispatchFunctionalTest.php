@@ -68,7 +68,11 @@ final class MissionDispatchFunctionalTest extends WebTestCase
     {
         return array_map(
             static fn (OutboundNotification $o) => $o->getNotificationType(),
-            $this->em->getRepository(OutboundNotification::class)->findBy(['recipientUser' => $userId, 'mission' => $missionId]),
+            // H4 (D-130) — the dispatcher records one row per channel (in-app, push, email,
+            // skipped ones included): only the email deliveries are emails.
+            $this->em->getRepository(OutboundNotification::class)->findBy([
+                'recipientUser' => $userId, 'mission' => $missionId, 'channel' => \App\Enum\OutboundNotificationChannel::EMAIL,
+            ]),
         );
     }
 
@@ -295,7 +299,7 @@ final class MissionDispatchFunctionalTest extends WebTestCase
 
         $this->em->clear();
         self::assertSame(MissionStatus::DRAFT, $this->em->find(Mission::class, $id)->getStatus());
-        self::assertSame([], $this->auditTypes($id));
+        self::assertSame([AuditEventType::MISSION_CREATED_MANUALLY], $this->auditTypes($id), 'only the manual creation (H5b) — the refused assignment changes nothing');
     }
 
     // ── Same choice when accepting a surgeon request ─────────────────────────

@@ -3,6 +3,7 @@
 namespace App\MessageHandler;
 
 use App\Message\SendBillingEmailMessage;
+use App\Notification\HtmlToTextRenderer;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Mailer\MailerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
@@ -17,12 +18,14 @@ final class SendBillingEmailMessageHandler
         private readonly MailerInterface $mailer,
         private readonly Environment $twig,
         private readonly LoggerInterface $logger,
+        private readonly HtmlToTextRenderer $textRenderer,
     ) {}
 
     public function __invoke(SendBillingEmailMessage $message): void
     {
         $htmlBody = $this->twig->render($message->htmlTemplate, $message->context);
-        $textBody = trim(html_entity_decode(strip_tags($htmlBody)));
+        // H5a (§20) — same DOM-based text part as every other email.
+        $textBody = $this->textRenderer->render($htmlBody);
 
         $email = (new Email())
             ->from(new Address($message->fromAddress, $message->fromName))

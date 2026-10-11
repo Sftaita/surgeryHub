@@ -51,13 +51,14 @@ class DefaultNotificationPreferenceResolverTest extends TestCase
 
     // ── Per-type email defaults (Batch 15A) ───────────────────────────────────
 
-    public function test_resolver_open_mission_available_default_email_false(): void
+    /** H3 (D-129) — a mission becoming available is actionable: every channel on by default. */
+    public function test_resolver_open_mission_available_defaults_to_every_channel(): void
     {
         $this->stored = null;
         $channels = $this->makeResolver()->resolve($this->makeUser(), NotificationType::OPEN_MISSION_AVAILABLE);
-        $this->assertTrue($channels->inApp,  'in-app must be enabled for pool notifications');
-        $this->assertFalse($channels->email, 'email must default to false for informational pool notifications');
-        $this->assertFalse($channels->push);
+        $this->assertTrue($channels->inApp);
+        $this->assertTrue($channels->email, 'H3: email on by default for available missions');
+        $this->assertTrue($channels->push, 'H3: push on by default for available missions');
     }
 
     public function test_resolver_planning_deployed_instrumentist_default_email_true(): void

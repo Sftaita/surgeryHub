@@ -80,6 +80,7 @@ final class InstrumentistController extends AbstractController
 
         try {
             $this->notificationService->sendInstrumentistInvitation($instrumentist);
+            $this->instrumentistServiceManager->invitationSent($instrumentist);
         } catch (\Throwable) {
             $warnings[] = [
                 'code' => 'INVITATION_EMAIL_NOT_SENT',

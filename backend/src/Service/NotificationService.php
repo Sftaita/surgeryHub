@@ -2,19 +2,18 @@
 
 namespace App\Service;
 
-use App\Entity\FirmInvoice;
-use App\Entity\InstrumentistStatement;
 use App\Entity\Mission;
-use App\Entity\NotificationEvent;
-use App\Entity\OutboundNotification;
+use App\Entity\NotificationDispatch;
 use App\Entity\User;
 use App\Enum\CatalogueRequestIgnoreReason;
 use App\Enum\CatalogueRequestKind;
-use App\Enum\OutboundNotificationFallbackReason;
-use App\Enum\PublicationChannel;
-use App\Message\PlanningAlertRaisedMessage;
-use App\Message\SendBillingEmailMessage;
-use App\Message\SendTemplatedEmailMessage;
+use App\Enum\NotificationEmailPolicy;
+use App\Enum\NotificationType;
+use App\Enum\OutboundNotificationChannel;
+use App\Enum\OutboundNotificationStatus;
+use App\Notification\EmailContent;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
 use App\Repository\UserRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -27,7 +26,6 @@ class NotificationService
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly UserRepository $userRepository,
-        private readonly EmailService $emailService,
         private readonly MessageBusInterface $bus,
         #[Autowire('%env(string:FRONTEND_URL)%')]
         private readonly string $frontendUrl,
@@ -35,57 +33,59 @@ class NotificationService
         private readonly string $fromAddress,
         #[Autowire('%env(string:MAILER_FROM_NAME)%')]
         private readonly string $fromName,
-        private readonly OutboundNotificationService $outboundNotificationService,
+        private readonly NotificationDispatcher $dispatcher,
     ) {
     }
 
     /**
-     * Déclaration -> managers/admins globaux.
+     * Déclaration -> managers/admins globaux. H5b (D-132) — through NotificationDispatcher
+     * (in-app per preferences, traced); call AFTER the mission is flushed (it needs its id).
      */
     public function missionDeclaredNotifyManagersAdmins(Mission $mission): void
     {
-        $recipients = $this->userRepository->findManagersAndAdmins(true);
-
-        foreach ($recipients as $user) {
-            $this->createInApp($user, $mission, 'MISSION_DECLARED');
+        foreach ($this->userRepository->findManagersAndAdmins(true) as $user) {
+            $this->declarationNotice($user, $mission, NotificationType::MISSION_DECLARED);
         }
     }
 
-    /**
-     * Approbation -> instrumentiste.
-     */
+    /** Approbation -> instrumentiste (H5b: dispatcher). */
     public function missionDeclaredApprovedNotifyInstrumentist(Mission $mission): void
     {
-        $instrumentist = $mission->getInstrumentist();
-        if (!$instrumentist instanceof User) {
-            return;
+        if ($mission->getInstrumentist() instanceof User) {
+            $this->declarationNotice($mission->getInstrumentist(), $mission, NotificationType::MISSION_DECLARED_APPROVED);
         }
-
-        $this->createInApp($instrumentist, $mission, 'MISSION_DECLARED_APPROVED');
     }
 
-    /**
-     * Rejet -> instrumentiste.
-     */
+    /** Rejet -> instrumentiste (H5b: dispatcher). */
     public function missionDeclaredRejectedNotifyInstrumentist(Mission $mission): void
     {
-        $instrumentist = $mission->getInstrumentist();
-        if (!$instrumentist instanceof User) {
-            return;
+        if ($mission->getInstrumentist() instanceof User) {
+            $this->declarationNotice($mission->getInstrumentist(), $mission, NotificationType::MISSION_DECLARED_REJECTED);
         }
+    }
 
-        $this->createInApp($instrumentist, $mission, 'MISSION_DECLARED_REJECTED');
+    private function declarationNotice(User $user, Mission $mission, NotificationType $type): void
+    {
+        $this->dispatcher->dispatch(new NotificationIntent(
+            recipient: $user,
+            type: $type,
+            inAppPayload: ['missionId' => $mission->getId(), 'siteId' => $mission->getSite()?->getId(), 'status' => $mission->getStatus()->value],
+            mission: $mission,
+            episodeRef: sprintf('declaration:%s:%d', $type->value, (int) $mission->getId()),
+        ));
     }
 
     /**
-     * Méthode générique d'envoi d'invitation, quel que soit le rôle.
+     * H5a (category C) — account invitation, whatever the role, through NotificationDispatcher
+     * with a MANDATORY email (never subject to preferences), no in-app, no push. Traced like
+     * every other email (NotificationDispatch, OutboundNotification QUEUED → SENT / FAILED,
+     * attempts, activity) — but CONFIDENTIAL: the link carries the invitation token, so the
+     * rendered body is never copied into outbound_notification and the token never appears
+     * in any payload (the episode only carries a fragment of its hash).
      *
-     * "Succès" ici signifie uniquement que `sendTemplatedEmail()` a dispatché le
-     * message vers Messenger sans lever d'exception (transport async — voir
-     * docs/production.md) : l'envoi SMTP réel a lieu plus tard, hors de cet appel, et
-     * peut encore échouer sans que ce code le sache (revue post-rapport, 2026-07-29).
-     * Met à jour invitationLastSentAt sur l'entité (flush géré par l'appelant) —
-     * horodate ce dispatch, pas une livraison confirmée.
+     * invitationLastSentAt is set only when the email was really queued (QUEUED / SENT) —
+     * it timestamps the hand-off to the queue, not a delivery. Throws otherwise, so the
+     * callers' existing "email not sent" warnings still fire.
      */
     public function sendUserInvitation(User $user): void
     {
@@ -94,21 +94,33 @@ class NotificationService
             throw new \LogicException('Invitation token is missing.');
         }
 
-        $invitationUrl = $this->buildFrontendUrl(self::INSTRUMENTIST_INVITATION_PATH, [
-            'token' => $token,
-        ]);
+        $roleLabel = self::invitationRoleLabel($user);
+        $dispatch = $this->dispatcher->dispatch(new NotificationIntent(
+            recipient: $user,
+            type: NotificationType::ACCOUNT_INVITATION,
+            inAppPayload: [],
+            email: new EmailContent(
+                subject: sprintf('SurgicalHub — Activez votre compte %s', $roleLabel),
+                htmlTemplate: 'emails/instrumentist_invitation.html.twig',
+                context: [
+                    'displayName'   => $this->resolveDisplayName($user),
+                    'roleLabel'     => $roleLabel,
+                    'invitationUrl' => $this->buildFrontendUrl(self::INSTRUMENTIST_INVITATION_PATH, ['token' => $token]),
+                    'expiresAt'     => $user->getInvitationExpiresAt(),
+                ],
+                textTemplate: 'emails/instrumentist_invitation.txt.twig',
+            ),
+            episodeRef: 'invitation:' . substr(hash('sha256', $token), 0, 16),
+            subjectType: 'User',
+            subjectId: $user->getId(),
+            emailPolicy: NotificationEmailPolicy::MANDATORY,
+            inApp: false,
+            confidential: true,
+        ));
 
-        $this->emailService->sendTemplatedEmail(
-            to: (string) $user->getEmail(),
-            subject: 'Complete your SurgicalHub account',
-            htmlTemplate: 'emails/instrumentist_invitation.html.twig',
-            context: [
-                'displayName' => $this->resolveDisplayName($user),
-                'invitationUrl' => $invitationUrl,
-                'expiresAt' => $user->getInvitationExpiresAt(),
-            ],
-            textTemplate: 'emails/instrumentist_invitation.txt.twig',
-        );
+        if (!self::emailQueued($dispatch)) {
+            throw new \RuntimeException('Invitation email could not be queued.');
+        }
 
         $user->setInvitationLastSentAt(new \DateTimeImmutable());
     }
@@ -125,568 +137,287 @@ class NotificationService
         $this->em->flush();
     }
 
-    public function sendFirmInvoiceEmail(FirmInvoice $invoice, string $emailTo, array $emailCc, string $pdfBinary): void
-    {
-        $filename = sprintf('facture-%s-%s.pdf',
-            strtolower(str_replace(' ', '-', $invoice->getFirm()->getName())),
-            $invoice->getNumber() ?? $invoice->getId()
-        );
-
-        $this->bus->dispatch(new SendBillingEmailMessage(
-            to: $emailTo,
-            cc: $emailCc,
-            subject: sprintf('Facture %s — %s', $invoice->getNumber() ?? $invoice->getId(), $invoice->getFirm()->getName()),
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: 'emails/firm_invoice_sent.html.twig',
-            context: ['invoice' => $invoice],
-            attachmentBase64: base64_encode($pdfBinary),
-            attachmentFilename: $filename,
-        ));
-    }
-
-    public function sendStatementEmail(InstrumentistStatement $statement, string $emailTo, string $pdfBinary): void
-    {
-        $filename = sprintf('decompte-%02d-%d.pdf', $statement->getPeriodMonth(), $statement->getPeriodYear());
-
-        $this->bus->dispatch(new SendBillingEmailMessage(
-            to: $emailTo,
-            cc: [],
-            subject: sprintf('Décompte %02d/%d — %s', $statement->getPeriodMonth(), $statement->getPeriodYear(), $statement->getInstrumentistNameSnapshot() ?? ''),
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: 'emails/instrumentist_statement_sent.html.twig',
-            context: ['statement' => $statement],
-            attachmentBase64: base64_encode($pdfBinary),
-            attachmentFilename: $filename,
-        ));
-    }
-
-    // ── Absences — manager reminder emails (D-051) ───────────────────────────
-    //
-    // Both actions send ONE INDIVIDUAL email PER selected person, to their OWN address —
-    // never to a fixed mailbox. `boost.conge@gmail.com` only ever appears as plain text
-    // inside the request-missing message (asking the recipient to reply there), never as an
-    // actual `to:` — see D-051 second amendment. Both dispatch SendTemplatedEmailMessage via
-    // the bus (async, same as billing emails), never block the request, never duplicate the
-    // period computation (that lives only in AbsenceReminderService).
-
     /**
-     * D-083 — repli email du rappel d'encodage D+1, uniquement quand Push n'est pas
-     * réellement livrable pour l'instrumentiste (voir EncodingReminderService).
+     * H5a (category C) — an email address change: the PREVIOUS address is told (security
+     * signal), the new one is confirmed. MANDATORY email, explicit address recorded on the
+     * delivery, one episode per change and side.
      *
-     * D-084 — crée d'abord la ligne OutboundNotification (QUEUED), avant de dispatcher
-     * le message Messenger, afin que son id circule dans le message et que le
-     * handler/listener mettent à jour la même ligne plutôt que d'en créer une nouvelle
-     * à chaque retry. $fallbackOf/$fallbackReason relient cette ligne au Push non
-     * livrable qui l'a déclenchée.
+     * @return bool whether the email was really queued
      */
-    public function missionEncodingReminderNotifyInstrumentist(
-        Mission $mission,
-        ?OutboundNotification $fallbackOf = null,
-        ?OutboundNotificationFallbackReason $fallbackReason = null,
-    ): ?OutboundNotification {
-        $instrumentist = $mission->getInstrumentist();
-        if (!$instrumentist instanceof User) {
-            return null;
-        }
-
-        $missionUrl = sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId());
-        $subject = 'SurgicalHub — Encodage à finaliser';
-
-        $notification = $this->outboundNotificationService->recordEmailQueued(
-            $instrumentist,
-            'ENCODING_REMINDER_D1',
-            $subject,
-            rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
-            mission: $mission,
-            fallbackOf: $fallbackOf,
-            fallbackReason: $fallbackReason,
-        );
-
-        $this->bus->dispatch(new SendTemplatedEmailMessage(
-            to: (string) $instrumentist->getEmail(),
-            subject: $subject,
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: 'emails/mission_encoding_reminder.html.twig',
-            context: [
-                'firstname'  => $instrumentist->getFirstname(),
-                'missionUrl' => $missionUrl,
-                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($instrumentist),
-            ],
-            outboundNotificationId: $notification->getId(),
-        ));
-
-        return $notification;
-    }
-
-    /**
-     * Point 8 (audit UX) — repli email quand Push n'est pas livrable au chirurgien pour
-     * `SURGEON_MISSION_OPEN_PUBLISHED` (mission OPEN publiée pour lui, sans instrumentiste
-     * assigné). Même orchestration D-083/D-084 que `missionEncodingReminderNotifyInstrumentist`
-     * ci-dessus. Aucune donnée patient : date/horaire/site/type uniquement.
-     */
-    public function missionOpenNotifySurgeon(
-        Mission $mission,
-        User $surgeon,
-        ?OutboundNotification $fallbackOf = null,
-        ?OutboundNotificationFallbackReason $fallbackReason = null,
-    ): OutboundNotification {
-        $missionUrl = sprintf('%s/app/s', $this->frontendUrl);
-        $subject = 'SurgicalHub — Nouvelle mission ouverte';
-
-        $notification = $this->outboundNotificationService->recordEmailQueued(
-            $surgeon,
-            'SURGEON_MISSION_OPEN_PUBLISHED',
-            $subject,
-            rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
-            mission: $mission,
-            fallbackOf: $fallbackOf,
-            fallbackReason: $fallbackReason,
-        );
-
-        $this->bus->dispatch(new SendTemplatedEmailMessage(
-            to: (string) $surgeon->getEmail(),
-            subject: $subject,
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: 'emails/mission_open_notify_surgeon.html.twig',
-            context: [
-                'firstname'   => $surgeon->getFirstname(),
-                'dateLabel'   => $mission->getStartAt()?->format('d/m/Y'),
-                'timeLabel'   => $mission->getStartAt() !== null && $mission->getEndAt() !== null
-                    ? $mission->getStartAt()->format('H:i') . ' – ' . $mission->getEndAt()->format('H:i')
-                    : null,
-                'siteName'    => $mission->getSite()?->getName(),
-                'typeLabel'   => $mission->getType() === \App\Enum\MissionType::CONSULTATION ? 'Consultation' : 'Bloc opératoire',
-                'missionUrl'  => $missionUrl,
-                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($surgeon),
-            ],
-            outboundNotificationId: $notification->getId(),
-        ));
-
-        return $notification;
-    }
-
-    /**
-     * D-125 — demande nominative : l'instrumentiste doit accepter (prendre la mission) ou
-     * refuser. Même orchestration D-083/D-084 que missionOpenNotifySurgeon ci-dessus (repli
-     * email si le push n'est pas livrable, ou email direct si le push est désactivé).
-     */
-    public function missionOfferedNotifyInstrumentist(
-        Mission $mission,
-        User $instrumentist,
-        ?OutboundNotification $fallbackOf = null,
-        ?OutboundNotificationFallbackReason $fallbackReason = null,
-    ): OutboundNotification {
-        return $this->sendMissionDispatchEmail(
-            $mission, $instrumentist, 'MISSION_OFFERED',
-            'SurgicalHub — Une mission vous est proposée',
-            'emails/mission_offered.html.twig',
-            sprintf('%s/app/i/offers', $this->frontendUrl),
-            [], $fallbackOf, $fallbackReason,
-        );
-    }
-
-    /**
-     * D-125 — attribution directe : CONFIRMATION uniquement, jamais formulée comme une
-     * demande (la mission est déjà attribuée, aucune action attendue).
-     */
-    public function missionAssignedDirectlyNotifyInstrumentist(
-        Mission $mission,
-        User $instrumentist,
-        ?OutboundNotification $fallbackOf = null,
-        ?OutboundNotificationFallbackReason $fallbackReason = null,
-    ): OutboundNotification {
-        return $this->sendMissionDispatchEmail(
-            $mission, $instrumentist, 'MISSION_ASSIGNED_DIRECTLY',
-            'SurgicalHub — Mission attribuée (confirmée)',
-            'emails/mission_assigned_directly.html.twig',
-            sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId()),
-            [], $fallbackOf, $fallbackReason,
-        );
-    }
-
-    /** D-125 — la demande nominative a été refusée : la mission reste à couvrir. */
-    public function missionOfferDeclinedNotifyManager(Mission $mission, User $manager, string $instrumentistName, ?string $reason): OutboundNotification
+    public function sendEmailChangeNotice(User $user, string $address, string $side, string $changeRef, string $oldEmail, string $newEmail): bool
     {
-        return $this->sendMissionDispatchEmail(
-            $mission, $manager, 'MISSION_OFFER_DECLINED',
-            'SurgicalHub — Demande de mission refusée',
-            'emails/mission_offer_declined.html.twig',
-            sprintf('%s/app/m/missions/%d', $this->frontendUrl, $mission->getId()),
-            ['instrumentistName' => $instrumentistName, 'reason' => $reason],
-            null, null,
-        );
+        $old = $side === 'old';
+        $dispatch = $this->dispatcher->dispatch(new NotificationIntent(
+            recipient: $user,
+            type: NotificationType::ACCOUNT_EMAIL_CHANGED,
+            inAppPayload: [],
+            email: new EmailContent(
+                subject: $old ? 'SurgicalHub — Votre adresse email a été modifiée' : 'SurgicalHub — Votre adresse email est confirmée',
+                htmlTemplate: $old ? 'emails/user_email_changed_old_address.html.twig' : 'emails/user_email_changed_new_address.html.twig',
+                context: $old
+                    ? ['displayName' => $this->resolveDisplayName($user), 'oldEmail' => $oldEmail, 'newEmail' => $newEmail]
+                    : ['displayName' => $this->resolveDisplayName($user), 'newEmail' => $newEmail],
+                textTemplate: $old ? 'emails/user_email_changed_old_address.txt.twig' : 'emails/user_email_changed_new_address.txt.twig',
+            ),
+            episodeRef: sprintf('email_change:%s:%s', $changeRef, $side),
+            subjectType: 'User',
+            subjectId: $user->getId(),
+            emailPolicy: NotificationEmailPolicy::MANDATORY,
+            inApp: false,
+            emailAddress: $address,
+        ));
+
+        return self::emailQueued($dispatch);
+    }
+
+    // ── H5a — email CONTENT of the business notifications ────────────────────
+    //
+    // These methods only build what the email says (subject, template, context): the
+    // decision to send it, the channel policy, the delivery record and its honest status
+    // belong to NotificationDispatcher, which the handlers call with these contents.
+    // Formerly each one queued its own email (D-083/D-084 OutboundNotification only, no
+    // NotificationDispatch, no channel decision recorded).
+
+    /** D-083 / D-120 — encoding reminder (automatic D+1 or manual relaunch). */
+    public function missionEncodingReminderEmail(Mission $mission, User $instrumentist): EmailContent
+    {
+        return new EmailContent('SurgicalHub — Encodage à finaliser', 'emails/mission_encoding_reminder.html.twig', [
+            'firstname'  => $instrumentist->getFirstname(),
+            'missionUrl' => sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId()),
+            'notificationPreferencesUrl' => $this->notificationPreferencesUrl($instrumentist),
+        ]);
+    }
+
+    /** Point 8 (audit UX) — OPEN mission published for this surgeon. No patient data. */
+    public function missionOpenSurgeonEmail(Mission $mission, User $surgeon): EmailContent
+    {
+        return new EmailContent('SurgicalHub — Nouvelle mission ouverte', 'emails/mission_open_notify_surgeon.html.twig', [
+            'firstname'   => $surgeon->getFirstname(),
+            'dateLabel'   => $mission->getStartAt()?->format('d/m/Y'),
+            'timeLabel'   => self::timeLabel($mission),
+            'siteName'    => $mission->getSite()?->getName(),
+            'typeLabel'   => self::typeLabel($mission),
+            'missionUrl'  => sprintf('%s/app/s', $this->frontendUrl),
+            'notificationPreferencesUrl' => $this->notificationPreferencesUrl($surgeon),
+        ]);
+    }
+
+    /** D-125 — nominative request: she must accept or decline. */
+    public function missionOfferedEmail(Mission $mission, User $instrumentist): EmailContent
+    {
+        return $this->missionDispatchEmail($mission, $instrumentist, 'SurgicalHub — Une mission vous est proposée',
+            'emails/mission_offered.html.twig', sprintf('%s/app/i/offers', $this->frontendUrl), []);
+    }
+
+    /** D-125 — the nominative request was declined: the mission is still to cover. */
+    public function missionOfferDeclinedEmail(Mission $mission, User $manager, string $instrumentistName, ?string $reason): EmailContent
+    {
+        return $this->missionDispatchEmail($mission, $manager, 'SurgicalHub — Demande de mission refusée',
+            'emails/mission_offer_declined.html.twig', sprintf('%s/app/m/missions/%d', $this->frontendUrl, $mission->getId()),
+            ['instrumentistName' => $instrumentistName, 'reason' => $reason]);
     }
 
     /** @param array<string,mixed> $extraContext */
-    private function sendMissionDispatchEmail(
-        Mission $mission,
-        User $recipient,
-        string $type,
-        string $subject,
-        string $template,
-        string $url,
-        array $extraContext,
-        ?OutboundNotification $fallbackOf,
-        ?OutboundNotificationFallbackReason $fallbackReason,
-    ): OutboundNotification {
-        $notification = $this->outboundNotificationService->recordEmailQueued(
-            $recipient,
-            $type,
-            $subject,
-            rawData: ['missionId' => $mission->getId(), 'url' => $url],
-            mission: $mission,
-            fallbackOf: $fallbackOf,
-            fallbackReason: $fallbackReason,
-        );
-
+    private function missionDispatchEmail(Mission $mission, User $recipient, string $subject, string $template, string $url, array $extraContext): EmailContent
+    {
         $surgeon = $mission->getSurgeon();
 
-        $this->bus->dispatch(new SendTemplatedEmailMessage(
-            to: (string) $recipient->getEmail(),
-            subject: $subject,
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: $template,
-            context: [
-                'greeting'    => $this->greetingFor($recipient),
-                'dateLabel'   => $mission->getStartAt()?->format('d/m/Y'),
-                'timeLabel'   => $mission->getStartAt() !== null && $mission->getEndAt() !== null
-                    ? $mission->getStartAt()->format('H:i') . ' – ' . $mission->getEndAt()->format('H:i')
-                    : null,
-                'siteName'    => $mission->getSite()?->getName(),
-                'typeLabel'   => $mission->getType() === \App\Enum\MissionType::CONSULTATION ? 'Consultation' : 'Bloc opératoire',
-                'surgeonName' => $surgeon !== null ? trim(($surgeon->getFirstname() ?? '') . ' ' . ($surgeon->getLastname() ?? '')) : null,
-                'missionUrl'  => $url,
-                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($recipient),
-            ] + $extraContext,
-            outboundNotificationId: $notification->getId(),
-        ));
-
-        return $notification;
+        return new EmailContent($subject, $template, [
+            'greeting'    => $this->greetingFor($recipient),
+            'dateLabel'   => $mission->getStartAt()?->format('d/m/Y'),
+            'timeLabel'   => self::timeLabel($mission),
+            'siteName'    => $mission->getSite()?->getName(),
+            'typeLabel'   => self::typeLabel($mission),
+            'surgeonName' => $surgeon !== null ? trim(($surgeon->getFirstname() ?? '') . ' ' . ($surgeon->getLastname() ?? '')) : null,
+            'missionUrl'  => $url,
+            'notificationPreferencesUrl' => $this->notificationPreferencesUrl($recipient),
+        ] + $extraContext);
     }
 
-    /**
-     * D-093 — repli email quand Push n'est pas livrable à l'instrumentiste dont la
-     * proposition catalogue (InterventionType ou MaterialItem) vient d'être acceptée.
-     * Même orchestration D-083/D-084 que missionOpenNotifySurgeon ci-dessus.
-     */
-    public function catalogueRequestResolvedNotifyInstrumentist(
+    /** D-093 — the instrumentist's catalogue proposal was accepted. */
+    public function catalogueRequestResolvedEmail(Mission $mission, User $instrumentist, string $label, string $kindLabel): EmailContent
+    {
+        return new EmailContent('SurgicalHub — Votre proposition a été acceptée', 'emails/catalogue_request_resolved.html.twig', [
+            'firstname'  => $instrumentist->getFirstname(),
+            'label'      => $label,
+            'kindLabel'  => $kindLabel,
+            'missionUrl' => sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId()),
+            'notificationPreferencesUrl' => $this->notificationPreferencesUrl($instrumentist),
+        ]);
+    }
+
+    /** D-093 — the instrumentist's catalogue proposal was not retained (never deleted — IGNORED). */
+    public function catalogueRequestIgnoredEmail(
         Mission $mission,
         User $instrumentist,
         string $label,
         string $kindLabel,
-        ?OutboundNotification $fallbackOf = null,
-        ?OutboundNotificationFallbackReason $fallbackReason = null,
-    ): OutboundNotification {
-        $missionUrl = sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId());
-        $subject = 'SurgicalHub — Votre proposition a été acceptée';
-
-        $notification = $this->outboundNotificationService->recordEmailQueued(
-            $instrumentist,
-            'CATALOGUE_REQUEST_RESOLVED',
-            $subject,
-            rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
-            mission: $mission,
-            fallbackOf: $fallbackOf,
-            fallbackReason: $fallbackReason,
-        );
-
-        $this->bus->dispatch(new SendTemplatedEmailMessage(
-            to: (string) $instrumentist->getEmail(),
-            subject: $subject,
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: 'emails/catalogue_request_resolved.html.twig',
-            context: [
-                'firstname'  => $instrumentist->getFirstname(),
-                'label'      => $label,
-                'kindLabel'  => $kindLabel,
-                'missionUrl' => $missionUrl,
-                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($instrumentist),
-            ],
-            outboundNotificationId: $notification->getId(),
-        ));
-
-        return $notification;
-    }
-
-    /**
-     * D-093 — repli email quand Push n'est pas livrable à l'instrumentiste dont la
-     * proposition catalogue vient d'être écartée par le manager (jamais supprimée —
-     * IGNORED, voir InterventionTypeRequest/MaterialItemRequest).
-     */
-    public function catalogueRequestIgnoredNotifyInstrumentist(
-        Mission $mission,
-        User $instrumentist,
-        string $label,
-        string $kindLabel,
-        ?OutboundNotification $fallbackOf = null,
-        ?OutboundNotificationFallbackReason $fallbackReason = null,
         ?CatalogueRequestIgnoreReason $ignoreReason = null,
         ?string $explanation = null,
-    ): OutboundNotification {
-        $missionUrl = sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId());
-        $subject = 'SurgicalHub — Votre proposition n\'a pas été retenue';
-        // Wording FR produit ici uniquement — voir docblock de CatalogueRequestProcessedMessage :
-        // le message ne transporte que le code métier stable.
-        $reasonLabel = $ignoreReason?->label();
-
-        $notification = $this->outboundNotificationService->recordEmailQueued(
-            $instrumentist,
-            'CATALOGUE_REQUEST_IGNORED',
-            $subject,
-            rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
-            mission: $mission,
-            fallbackOf: $fallbackOf,
-            fallbackReason: $fallbackReason,
-        );
-
-        $this->bus->dispatch(new SendTemplatedEmailMessage(
-            to: (string) $instrumentist->getEmail(),
-            subject: $subject,
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: 'emails/catalogue_request_ignored.html.twig',
-            context: [
-                'firstname'   => $instrumentist->getFirstname(),
-                'label'       => $label,
-                'kindLabel'   => $kindLabel,
-                'reasonLabel' => $reasonLabel,
-                'explanation' => $explanation,
-                'missionUrl'  => $missionUrl,
-                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($instrumentist),
-            ],
-            outboundNotificationId: $notification->getId(),
-        ));
-
-        return $notification;
+    ): EmailContent {
+        // French wording produced here only — the message carries the stable business code.
+        return new EmailContent('SurgicalHub — Votre proposition n\'a pas été retenue', 'emails/catalogue_request_ignored.html.twig', [
+            'firstname'   => $instrumentist->getFirstname(),
+            'label'       => $label,
+            'kindLabel'   => $kindLabel,
+            'reasonLabel' => $ignoreReason?->label(),
+            'explanation' => $explanation,
+            'missionUrl'  => sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId()),
+            'notificationPreferencesUrl' => $this->notificationPreferencesUrl($instrumentist),
+        ]);
     }
 
-    /**
-     * D-113 (amende D-094) — email manager/admin à la création d'une proposition
-     * catalogue, en plus de l'in-app/push existants (CatalogueRequestCreatedMessageHandler).
-     * Canal indépendant, pas un repli du push (contrairement à
-     * catalogueRequestResolvedNotifyInstrumentist/catalogueRequestIgnoredNotifyInstrumentist
-     * ci-dessus) : géré par CATALOGUE_REQUEST_CREATED désormais présent dans
-     * EMAIL_ON_BY_DEFAULT, chaque canal étant décidé indépendamment par
-     * NotificationPreferenceResolver.
-     */
-    public function catalogueRequestCreatedNotifyManager(
-        Mission $mission,
-        User $manager,
-        int $requestId,
-        string $label,
-        string $kindLabel,
-        CatalogueRequestKind $kind,
-    ): OutboundNotification {
-        $requestsUrl = sprintf('%s/app/m/catalogue/requests?kind=%s&requestId=%d', $this->frontendUrl, $kind->value, $requestId);
-        $subject = 'SurgicalHub — Nouvelle demande Catalogue à valider';
-
-        $notification = $this->outboundNotificationService->recordEmailQueued(
-            $manager,
-            'CATALOGUE_REQUEST_CREATED',
-            $subject,
-            rawData: ['missionId' => $mission->getId(), 'requestId' => $requestId, 'url' => $requestsUrl],
-            mission: $mission,
-        );
-
-        $this->bus->dispatch(new SendTemplatedEmailMessage(
-            to: (string) $manager->getEmail(),
-            subject: $subject,
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: 'emails/catalogue_request_created.html.twig',
-            context: [
-                'firstname'    => $manager->getFirstname(),
-                'requesterName' => trim(($mission->getInstrumentist()?->getFirstname() ?? '') . ' ' . ($mission->getInstrumentist()?->getLastname() ?? '')),
-                'label'        => $label,
-                'kindLabel'    => $kindLabel,
-                'siteName'     => $mission->getSite()?->getName(),
-                'requestsUrl'  => $requestsUrl,
-                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($manager),
-            ],
-            outboundNotificationId: $notification->getId(),
-        ));
-
-        return $notification;
-    }
-
-    /**
-     * Lot 5 (D-099) — repli email quand Push n'est pas livrable au chirurgien dont la
-     * SurgeonMissionRequest vient d'être acceptée (Mission réelle créée). Même
-     * raisonnement que catalogueRequestResolvedNotifyInstrumentist : actionnable/
-     * attendu, jamais silencieux.
-     */
-    public function surgeonMissionRequestAcceptedNotifySurgeon(
-        Mission $mission,
-        User $surgeon,
-        ?OutboundNotification $fallbackOf = null,
-        ?OutboundNotificationFallbackReason $fallbackReason = null,
-    ): OutboundNotification {
-        $missionUrl = sprintf('%s/app/s/missions/%d', $this->frontendUrl, $mission->getId());
-        $subject = 'SurgicalHub — Votre demande de mission a été acceptée';
-
-        $notification = $this->outboundNotificationService->recordEmailQueued(
-            $surgeon,
-            'SURGEON_MISSION_REQUEST_ACCEPTED',
-            $subject,
-            rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
-            mission: $mission,
-            fallbackOf: $fallbackOf,
-            fallbackReason: $fallbackReason,
-        );
-
-        $this->bus->dispatch(new SendTemplatedEmailMessage(
-            to: (string) $surgeon->getEmail(),
-            subject: $subject,
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: 'emails/surgeon_mission_request_accepted.html.twig',
-            context: [
-                'firstname'  => $surgeon->getFirstname(),
-                'siteName'   => $mission->getSite()?->getName(),
-                'startAt'    => $mission->getStartAt(),
-                'missionUrl' => $missionUrl,
-                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($surgeon),
-            ],
-            outboundNotificationId: $notification->getId(),
-        ));
-
-        return $notification;
-    }
-
-    /**
-     * Lot 5 (D-099) — repli email quand Push n'est pas livrable au chirurgien dont la
-     * SurgeonMissionRequest vient d'être refusée. Aucune Mission n'existe (jamais
-     * créée) — le lien renvoie vers "Mes demandes", pas un détail mission.
-     */
-    public function surgeonMissionRequestRejectedNotifySurgeon(
-        User $surgeon,
-        string $siteName,
-        \DateTimeImmutable $startAt,
-        string $reviewComment,
-        ?OutboundNotification $fallbackOf = null,
-        ?OutboundNotificationFallbackReason $fallbackReason = null,
-    ): OutboundNotification {
-        $requestsUrl = sprintf('%s/app/s/requests', $this->frontendUrl);
-        $subject = 'SurgicalHub — Votre demande de mission a été refusée';
-
-        $notification = $this->outboundNotificationService->recordEmailQueued(
-            $surgeon,
-            'SURGEON_MISSION_REQUEST_REJECTED',
-            $subject,
-            rawData: ['url' => $requestsUrl],
-            mission: null,
-            fallbackOf: $fallbackOf,
-            fallbackReason: $fallbackReason,
-        );
-
-        $this->bus->dispatch(new SendTemplatedEmailMessage(
-            to: (string) $surgeon->getEmail(),
-            subject: $subject,
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: 'emails/surgeon_mission_request_rejected.html.twig',
-            context: [
-                'firstname'     => $surgeon->getFirstname(),
-                'siteName'      => $siteName,
-                'startAt'       => $startAt,
-                'reviewComment' => $reviewComment,
-                'requestsUrl'   => $requestsUrl,
-                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($surgeon),
-            ],
-            outboundNotificationId: $notification->getId(),
-        ));
-
-        return $notification;
-    }
-
-    /**
-     * Lot 6 (D-100) — repli email quand Push n'est pas livrable au chirurgien dont le
-     * signalement d'anomalie d'encodage vient d'être résolu par un manager.
-     */
-    public function encodingAnomalyResolvedNotifySurgeon(
-        Mission $mission,
-        User $surgeon,
-        string $resolutionComment,
-        ?OutboundNotification $fallbackOf = null,
-        ?OutboundNotificationFallbackReason $fallbackReason = null,
-    ): OutboundNotification {
-        $missionUrl = sprintf('%s/app/s/missions/%d', $this->frontendUrl, $mission->getId());
-        $subject = 'SurgicalHub — Votre signalement a été traité';
-
-        $notification = $this->outboundNotificationService->recordEmailQueued(
-            $surgeon,
-            'ENCODING_ANOMALY_RESOLVED',
-            $subject,
-            rawData: ['missionId' => $mission->getId(), 'url' => $missionUrl],
-            mission: $mission,
-            fallbackOf: $fallbackOf,
-            fallbackReason: $fallbackReason,
-        );
-
-        $this->bus->dispatch(new SendTemplatedEmailMessage(
-            to: (string) $surgeon->getEmail(),
-            subject: $subject,
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: 'emails/encoding_anomaly_resolved.html.twig',
-            context: [
-                'firstname'         => $surgeon->getFirstname(),
-                'resolutionComment' => $resolutionComment,
-                'missionUrl'        => $missionUrl,
-                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($surgeon),
-            ],
-            outboundNotificationId: $notification->getId(),
-        ));
-
-        return $notification;
-    }
-
-    public function sendAbsenceRequestMissingEmailToUser(User $user, string $message): void
+    /** D-113 (amends D-094) — a new catalogue proposal awaits a manager. */
+    public function catalogueRequestCreatedEmail(Mission $mission, User $manager, int $requestId, string $label, string $kindLabel, CatalogueRequestKind $kind): EmailContent
     {
-        $this->bus->dispatch(new SendTemplatedEmailMessage(
-            to: (string) $user->getEmail(),
-            subject: 'SurgicalHub — Vos congés à venir',
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: 'emails/absences_request_missing.html.twig',
-            context: [
-                'user' => $user,
-                'greeting' => $this->greetingFor($user),
-                'message' => $message,
-                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($user),
-            ],
-        ));
+        $requestsUrl = sprintf('%s/app/m/catalogue/requests?kind=%s&requestId=%d', $this->frontendUrl, $kind->value, $requestId);
+
+        return new EmailContent('SurgicalHub — Nouvelle demande Catalogue à valider', 'emails/catalogue_request_created.html.twig', [
+            'firstname'     => $manager->getFirstname(),
+            'requesterName' => trim(($mission->getInstrumentist()?->getFirstname() ?? '') . ' ' . ($mission->getInstrumentist()?->getLastname() ?? '')),
+            'label'         => $label,
+            'kindLabel'     => $kindLabel,
+            'siteName'      => $mission->getSite()?->getName(),
+            'requestsUrl'   => $requestsUrl,
+            'missionUrl'    => $requestsUrl,
+            'notificationPreferencesUrl' => $this->notificationPreferencesUrl($manager),
+        ]);
     }
 
     /**
-     * One individual email, to the person's OWN address, containing ALL of their future
-     * absences (dateEnd >= today, no 3-month cap — unlike the missing-absence selection
-     * criteria, this is a confirmation of everything currently on record).
+     * Lot 5 (D-099) — a surgeon requested a mission (manager side). Opt-in: email=false by
+     * default, sent only to a manager who ticked "E-mail" for this type in their preferences.
+     * Dates are formatted from the message's own offset (same as the push), never re-zoned.
+     */
+    public function surgeonMissionRequestCreatedEmail(User $manager, string $surgeonName, string $siteName, string $startAt, string $endAt): EmailContent
+    {
+        $requestsUrl = sprintf('%s/app/m/missions/requests', $this->frontendUrl);
+        $start = new \DateTimeImmutable($startAt);
+        $end = new \DateTimeImmutable($endAt);
+
+        return new EmailContent('SurgicalHub — Nouvelle demande de mission', 'emails/surgeon_mission_request_created.html.twig', [
+            'firstname'   => $manager->getFirstname(),
+            'surgeonName' => $surgeonName,
+            'siteName'    => $siteName,
+            'date'        => $start->format('d/m/Y'),
+            'startTime'   => $start->format('H:i'),
+            'endTime'     => $end->format('H:i'),
+            'requestsUrl' => $requestsUrl,
+            'missionUrl'  => $requestsUrl,
+            'notificationPreferencesUrl' => $this->notificationPreferencesUrl($manager),
+        ]);
+    }
+
+    /** Lot 5 (D-099) — the surgeon's mission request was accepted (a real Mission exists). */
+    public function surgeonMissionRequestAcceptedEmail(Mission $mission, User $surgeon): EmailContent
+    {
+        return new EmailContent('SurgicalHub — Votre demande de mission a été acceptée', 'emails/surgeon_mission_request_accepted.html.twig', [
+            'firstname'  => $surgeon->getFirstname(),
+            'siteName'   => $mission->getSite()?->getName(),
+            'startAt'    => $mission->getStartAt(),
+            'missionUrl' => sprintf('%s/app/s/missions/%d', $this->frontendUrl, $mission->getId()),
+            'notificationPreferencesUrl' => $this->notificationPreferencesUrl($surgeon),
+        ]);
+    }
+
+    /** Lot 5 (D-099) — the surgeon's mission request was declined (no Mission ever existed). */
+    public function surgeonMissionRequestRejectedEmail(User $surgeon, string $siteName, \DateTimeImmutable $startAt, string $reviewComment): EmailContent
+    {
+        $requestsUrl = sprintf('%s/app/s/requests', $this->frontendUrl);
+
+        return new EmailContent('SurgicalHub — Votre demande de mission a été refusée', 'emails/surgeon_mission_request_rejected.html.twig', [
+            'firstname'     => $surgeon->getFirstname(),
+            'siteName'      => $siteName,
+            'startAt'       => $startAt,
+            'reviewComment' => $reviewComment,
+            'requestsUrl'   => $requestsUrl,
+            'missionUrl'    => $requestsUrl,
+            'notificationPreferencesUrl' => $this->notificationPreferencesUrl($surgeon),
+        ]);
+    }
+
+    /** Lot 6 (D-100) — the surgeon's encoding anomaly report was resolved. */
+    public function encodingAnomalyResolvedEmail(Mission $mission, User $surgeon, string $resolutionComment): EmailContent
+    {
+        return new EmailContent('SurgicalHub — Votre signalement a été traité', 'emails/encoding_anomaly_resolved.html.twig', [
+            'firstname'         => $surgeon->getFirstname(),
+            'resolutionComment' => $resolutionComment,
+            'missionUrl'        => sprintf('%s/app/s/missions/%d', $this->frontendUrl, $mission->getId()),
+            'notificationPreferencesUrl' => $this->notificationPreferencesUrl($surgeon),
+        ]);
+    }
+
+    // ── Absences — manager reminder emails (D-051, H5a) ──────────────────────
+    //
+    // ONE INDIVIDUAL email PER selected person, to their OWN address — never to a fixed
+    // mailbox. `boost.conge@gmail.com` only ever appears as plain text inside the
+    // request-missing message (asking the recipient to reply there), never as a recipient
+    // (D-051 second amendment). H5a: sent by AbsenceReminderController through the
+    // dispatcher (MANDATORY email, traced, idempotent per reminder batch).
+
+    public function absenceRequestMissingEmail(User $user, string $message): EmailContent
+    {
+        return new EmailContent('SurgicalHub — Vos congés à venir', 'emails/absences_request_missing.html.twig', [
+            'greeting' => $this->greetingFor($user),
+            'message'  => $message,
+            'notificationPreferencesUrl' => $this->notificationPreferencesUrl($user),
+        ]);
+    }
+
+    /**
+     * ALL of the person's future absences (dateEnd >= today, no 3-month cap). Dates only:
+     * the free-text reason of an absence never leaves the Absence (H4 decision A.5), and no
+     * entity travels in the queued message.
      *
      * @param \App\Entity\Absence[] $absences
      */
-    public function sendAbsenceConfirmEncodedEmailToUser(User $user, array $absences, string $message): void
+    public function absenceEncodedRecapEmail(User $user, array $absences, string $message): EmailContent
     {
-        $this->bus->dispatch(new SendTemplatedEmailMessage(
-            to: (string) $user->getEmail(),
-            subject: 'SurgicalHub — Récapitulatif de vos congés encodés',
-            fromAddress: $this->fromAddress,
-            fromName: $this->fromName,
-            htmlTemplate: 'emails/absences_confirm_encoded.html.twig',
-            context: [
-                'user' => $user,
-                'greeting' => $this->greetingFor($user),
-                'absences' => $absences,
-                'message' => $message,
-                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($user),
-            ],
-        ));
+        return new EmailContent('SurgicalHub — Récapitulatif de vos congés encodés', 'emails/absences_confirm_encoded.html.twig', [
+            'greeting' => $this->greetingFor($user),
+            'absences' => array_map(static fn (\App\Entity\Absence $a) => [
+                'dateStart' => $a->getDateStart()->format('Y-m-d'),
+                'dateEnd'   => $a->getDateEnd()->format('Y-m-d'),
+            ], array_values($absences)),
+            'message'  => $message,
+            'notificationPreferencesUrl' => $this->notificationPreferencesUrl($user),
+        ]);
+    }
+
+    private static function timeLabel(Mission $mission): ?string
+    {
+        return $mission->getStartAt() !== null && $mission->getEndAt() !== null
+            ? $mission->getStartAt()->format('H:i') . ' – ' . $mission->getEndAt()->format('H:i')
+            : null;
+    }
+
+    private static function typeLabel(Mission $mission): string
+    {
+        return $mission->getType() === \App\Enum\MissionType::CONSULTATION ? 'Consultation' : 'Bloc opératoire';
+    }
+
+    private static function invitationRoleLabel(User $user): string
+    {
+        $roles = $user->getRoles();
+
+        return match (true) {
+            in_array('ROLE_ADMIN', $roles, true)        => 'administrateur',
+            in_array('ROLE_MANAGER', $roles, true)      => 'manager',
+            in_array('ROLE_SURGEON', $roles, true)      => 'chirurgien',
+            default                                     => 'instrumentiste',
+        };
+    }
+
+    /** The email delivery of this dispatch was really handed to the queue (or already sent). */
+    private static function emailQueued(NotificationDispatch $dispatch): bool
+    {
+        foreach ($dispatch->getDeliveries() as $delivery) {
+            if ($delivery->getChannel() === OutboundNotificationChannel::EMAIL) {
+                return in_array($delivery->getStatus(), [OutboundNotificationStatus::QUEUED, OutboundNotificationStatus::SENT], true);
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -694,7 +425,7 @@ class NotificationService
      * (instrumentists) — falls back to "Bonjour" alone if the relevant name part is missing,
      * never an empty/broken greeting.
      */
-    private function greetingFor(User $user): string
+    public function greetingFor(User $user): string
     {
         if (in_array('ROLE_SURGEON', $user->getRoles(), true)) {
             $lastname = $user->getLastname();
@@ -703,162 +434,6 @@ class NotificationService
 
         $firstname = $user->getFirstname();
         return $firstname ? "Bonjour {$firstname}" : 'Bonjour';
-    }
-
-    // ── Planning notifications ────────────────────────────────────────────────
-
-    /**
-     * Notify an instrumentist that a mission has been individually assigned to them at deploy time.
-     */
-    public function planningMissionAssignedNotifyInstrumentist(Mission $mission): void
-    {
-        $instrumentist = $mission->getInstrumentist();
-        if (!$instrumentist instanceof User) {
-            return;
-        }
-
-        $this->createInAppPlanning(
-            $instrumentist,
-            'PLANNING_MISSION_ASSIGNED',
-            [
-                'missionId' => $mission->getId(),
-                'siteId'    => $mission->getSite()?->getId(),
-                'siteName'  => $mission->getSite()?->getName(),
-                'startAt'   => $mission->getStartAt()?->format(\DateTimeInterface::ATOM),
-            ]
-        );
-    }
-
-    /**
-     * Notify all active instrumentists of a site that new OPEN missions are available (pool).
-     * Sends one notification per instrumentist (not one per mission).
-     * Message template: "X nouvelles missions publiées à [site] entre [from] et [to]".
-     *
-     * @param User[] $siteInstrumentists Active instrumentists of the site
-     */
-    public function planningNewOpenMissionsNotifySite(
-        array $siteInstrumentists,
-        int $missionCount,
-        string $siteName,
-        string $periodFrom,
-        string $periodTo,
-    ): void {
-        foreach ($siteInstrumentists as $instrumentist) {
-            $this->createInAppPlanning(
-                $instrumentist,
-                'PLANNING_OPEN_MISSIONS_AVAILABLE',
-                [
-                    'siteName'     => $siteName,
-                    'missionCount' => $missionCount,
-                    'periodFrom'   => $periodFrom,
-                    'periodTo'     => $periodTo,
-                ]
-            );
-        }
-    }
-
-    /**
-     * Notify the manager that a planning version was deployed successfully.
-     */
-    public function planningDeployedNotifyManager(User $manager, int $missionCount, string $from, string $to): void
-    {
-        $this->createInAppPlanning(
-            $manager,
-            'PLANNING_DEPLOYED',
-            [
-                'missionCount' => $missionCount,
-                'from'         => $from,
-                'to'           => $to,
-            ]
-        );
-    }
-
-    /**
-     * In-app row for a PlanningAlert (Batch 7). Channel gating (whether to also email/push)
-     * is the caller's responsibility (PlanningAlertRaisedMessageHandler) via
-     * NotificationPreferenceResolver — this method only ever writes the IN_APP row.
-     * Payload is deliberately generic: mission/site/date/type only, no patient data.
-     */
-    public function planningAlertRaisedNotifyInApp(User $recipient, PlanningAlertRaisedMessage $message): void
-    {
-        $this->createInAppPlanning(
-            $recipient,
-            'PLANNING_ALERT_RAISED',
-            [
-                'alertId'         => $message->alertId,
-                'alertType'       => $message->alertType,
-                'missionId'       => $message->missionId,
-                'siteId'          => $message->siteId,
-                'siteName'        => $message->siteName,
-                'missionDate'     => $message->missionDate,
-            ],
-        );
-    }
-
-    /**
-     * Notify the old and new instrumentist after a manager reassigns a mission from a
-     * PlanningAlert resolution action. Either side may be null/absent: a mission that had
-     * no instrumentist yet has no "old" one; this is still called with whichever exists.
-     */
-    public function planningAlertReassignedNotify(Mission $mission, ?User $oldInstrumentist, User $newInstrumentist): void
-    {
-        if ($oldInstrumentist !== null && $oldInstrumentist->getId() !== $newInstrumentist->getId()) {
-            $this->createInAppPlanning(
-                $oldInstrumentist,
-                'PLANNING_ALERT_REASSIGNED_AWAY',
-                [
-                    'missionId' => $mission->getId(),
-                    'siteId'    => $mission->getSite()?->getId(),
-                    'siteName'  => $mission->getSite()?->getName(),
-                    'missionDate' => $mission->getStartAt()->format('Y-m-d'),
-                ],
-            );
-        }
-
-        $this->createInAppPlanning(
-            $newInstrumentist,
-            'PLANNING_ALERT_REASSIGNED_TO',
-            [
-                'missionId' => $mission->getId(),
-                'siteId'    => $mission->getSite()?->getId(),
-                'siteName'  => $mission->getSite()?->getName(),
-                'missionDate' => $mission->getStartAt()->format('Y-m-d'),
-            ],
-        );
-    }
-
-    // ── Private helpers ───────────────────────────────────────────────────────
-
-    private function createInApp(User $user, Mission $mission, string $eventType): void
-    {
-        $evt = new NotificationEvent();
-        $evt
-            ->setUser($user)
-            ->setMission($mission)
-            ->setEventType($eventType)
-            ->setChannel(PublicationChannel::IN_APP)
-            ->setPayload([
-                'missionId' => $mission->getId(),
-                'siteId' => $mission->getSite()?->getId(),
-                'status' => $mission->getStatus()->value,
-            ])
-            ->setSentAt(new \DateTimeImmutable());
-
-        $this->em->persist($evt);
-        // flush géré par MissionService
-    }
-
-    private function createInAppPlanning(User $user, string $eventType, array $payload): void
-    {
-        $evt = new NotificationEvent();
-        $evt
-            ->setUser($user)
-            ->setEventType($eventType)
-            ->setChannel(PublicationChannel::IN_APP)
-            ->setPayload($payload)
-            ->setSentAt(new \DateTimeImmutable());
-
-        $this->em->persist($evt);
     }
 
     /**
@@ -871,7 +446,7 @@ class NotificationService
      * la route unique `/app/s`) : le partial _notification_preferences_cta.html.twig
      * n'affiche alors rien plutôt que de pointer vers une route qui n'existe pas.
      */
-    private function notificationPreferencesUrl(User $user): ?string
+    public function notificationPreferencesUrl(User $user): ?string
     {
         $roles = $user->getRoles();
 

@@ -3,16 +3,19 @@
 namespace App\Tests\Unit\Service;
 
 use App\Entity\Mission;
+use App\Entity\NotificationDispatch;
 use App\Entity\OutboundNotification;
-use App\Entity\OutboundNotificationAttempt;
 use App\Entity\User;
+use App\Enum\AuditEventType;
+use App\Enum\NotificationEmailPolicy;
+use App\Enum\NotificationType;
 use App\Enum\OutboundNotificationChannel;
-use App\Enum\OutboundNotificationFallbackReason;
 use App\Enum\OutboundNotificationStatus;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
 use App\Service\AuditService;
 use App\Service\EncodingReminderService;
-use App\Service\NotificationService;
-use App\Service\OutboundNotificationService;
+use App\Tests\Support\NotificationServiceFactory;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Query;
 use Doctrine\ORM\QueryBuilder;
@@ -21,36 +24,34 @@ use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
 
 /**
- * D-083 — covers processMission()'s channel selection (Push prioritaire, repli email
- * uniquement si Push n'est pas livrable) and idempotence (réclamation atomique). The
- * eligibility query itself (findEligibleMissions()) is DQL-heavy and covered by a real-DB
- * functional test instead (EncodingReminderServiceEligibilityTest) — mocking QueryBuilder
- * can't meaningfully verify WHERE-clause correctness.
- *
- * D-084 — Push/email dispatch itself now goes through OutboundNotificationService
- * (traced history); this test mocks that service and controls the OutboundNotification
- * it returns to drive the push-vs-email branch, same as WebPushServiceTest already
- * covers the transport-level detail.
+ * D-083 — processMission()'s idempotence (atomic claim) and channel report; D-120 — the
+ * manual relaunch. H5a: the send is ONE NotificationDispatcher intent (ENCODING_REMINDER_D1,
+ * push first, email fallback, no in-app) — channel decisions and records are the
+ * dispatcher's; this test drives the dispatcher's outcome to check what the service reports.
+ * The eligibility query (findEligibleMissions()) is covered by a real-DB functional test.
  */
 class EncodingReminderServiceTest extends TestCase
 {
     private EntityManagerInterface&MockObject $em;
-    private OutboundNotificationService&MockObject $outboundNotificationService;
-    private NotificationService&MockObject $notificationService;
+    private NotificationDispatcher&MockObject $dispatcher;
     private AuditService&MockObject $auditService;
     private LoggerInterface&MockObject $logger;
 
     /** Controls what the atomic claim UPDATE reports as affected rows. */
     private int $claimAffectedRows = 1;
+    /** @var list<NotificationIntent> */
+    private array $intents = [];
+    /** Outcome the fake dispatcher reports: channel => status. */
+    private array $outcome = ['PUSH' => 'SENT', 'EMAIL' => 'SKIPPED'];
 
     protected function setUp(): void
     {
         $this->em = $this->createMock(EntityManagerInterface::class);
-        $this->outboundNotificationService = $this->createMock(OutboundNotificationService::class);
-        $this->notificationService = $this->createMock(NotificationService::class);
+        $this->dispatcher = $this->createMock(NotificationDispatcher::class);
         $this->auditService = $this->createMock(AuditService::class);
         $this->logger = $this->createMock(LoggerInterface::class);
         $this->claimAffectedRows = 1;
+        $this->intents = [];
 
         $qb = $this->createMock(QueryBuilder::class);
         $qb->method('update')->willReturnSelf();
@@ -62,20 +63,28 @@ class EncodingReminderServiceTest extends TestCase
         $q->method('execute')->willReturnCallback(fn () => $this->claimAffectedRows);
         $qb->method('getQuery')->willReturn($q);
         $this->em->method('createQueryBuilder')->willReturn($qb);
+
+        $this->dispatcher->method('dispatch')->willReturnCallback(function (NotificationIntent $intent): NotificationDispatch {
+            $this->intents[] = $intent;
+            $dispatch = new NotificationDispatch();
+            foreach ($this->outcome as $channel => $status) {
+                $dispatch->addDelivery((new OutboundNotification())->setChannel(OutboundNotificationChannel::from($channel))->setStatus(OutboundNotificationStatus::from($status)));
+            }
+
+            return $dispatch;
+        });
     }
 
     private static int $nextId = 1;
 
     private function setId(object $entity, int $id): void
     {
-        $ref = new \ReflectionProperty($entity, 'id');
-        $ref->setAccessible(true);
-        $ref->setValue($entity, $id);
+        (new \ReflectionProperty($entity, 'id'))->setValue($entity, $id);
     }
 
     private function makeInstrumentist(): User
     {
-        $u = new User();
+        $u = (new User())->setEmail('i' . self::$nextId . '@test.com')->setFirstname('Jane')->setRoles(['ROLE_INSTRUMENTIST']);
         $this->setId($u, self::$nextId++);
         return $u;
     }
@@ -90,20 +99,9 @@ class EncodingReminderServiceTest extends TestCase
         return $m;
     }
 
-    /** A real OutboundNotification (not a mock) with a chosen status, as recordPushSend() would return. */
-    private function makePushNotification(OutboundNotificationStatus $status, bool $withExpiredAttempt = false): OutboundNotification
-    {
-        $n = (new OutboundNotification())->setChannel(OutboundNotificationChannel::PUSH)->setStatus($status);
-        if ($withExpiredAttempt) {
-            $n->addAttempt((new OutboundNotificationAttempt())->setSuccess(false)->setReason('expired'));
-        }
-        $this->setId($n, self::$nextId++);
-        return $n;
-    }
-
     private function service(bool $automaticRemindersScheduled = true): EncodingReminderService
     {
-        return new EncodingReminderService($this->em, $this->outboundNotificationService, $this->notificationService, $this->auditService, $this->logger, $automaticRemindersScheduled);
+        return new EncodingReminderService($this->em, $this->dispatcher, NotificationServiceFactory::create($this), $this->auditService, $this->logger, $automaticRemindersScheduled);
     }
 
     private function now(): \DateTimeImmutable
@@ -111,228 +109,106 @@ class EncodingReminderServiceTest extends TestCase
         return new \DateTimeImmutable('2026-07-26 10:00:00', new \DateTimeZone('Europe/Brussels'));
     }
 
-    // ── canal ────────────────────────────────────────────────────────────────
+    // ── canal (H5a : décidé par le dispatcher) ───────────────────────────────
 
-    public function test_sends_push_only_when_deliverable_no_email(): void
+    public function test_one_intent_push_first_email_fallback_no_in_app(): void
     {
-        $mission = $this->makeMission($this->makeInstrumentist());
+        $instr = $this->makeInstrumentist();
+        $mission = $this->makeMission($instr);
 
-        $this->outboundNotificationService->expects($this->once())
-            ->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
-        $this->notificationService->expects($this->never())->method('missionEncodingReminderNotifyInstrumentist');
+        $this->assertSame('push', $this->service()->processMission($mission, $this->now()));
 
-        $result = $this->service()->processMission($mission, $this->now());
-
-        $this->assertSame('push', $result);
+        $this->assertCount(1, $this->intents);
+        $i = $this->intents[0];
+        $this->assertSame(NotificationType::ENCODING_REMINDER_D1, $i->type);
+        $this->assertSame($instr, $i->recipient);
+        $this->assertSame(NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT, $i->emailPolicy);
+        $this->assertFalse($i->inApp, 'no in-app item — as before');
+        $this->assertSame('encoding_reminder:auto:' . $mission->getId(), $i->episodeRef, 'at most one automatic reminder per mission, retry included');
+        $this->assertSame('emails/mission_encoding_reminder.html.twig', $i->email->htmlTemplate);
     }
 
-    public function test_falls_back_to_email_when_push_is_skipped(): void
+    public function test_reports_email_when_the_dispatcher_fell_back_to_email(): void
     {
-        $mission = $this->makeMission($this->makeInstrumentist());
-
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SKIPPED));
-        $this->notificationService->expects($this->once())
-            ->method('missionEncodingReminderNotifyInstrumentist')
-            ->with($mission, $this->isInstanceOf(OutboundNotification::class), OutboundNotificationFallbackReason::NO_SUBSCRIPTION);
-
-        $result = $this->service()->processMission($mission, $this->now());
-
-        $this->assertSame('email', $result);
+        $this->outcome = ['PUSH' => 'SKIPPED', 'EMAIL' => 'QUEUED'];
+        $this->assertSame('email', $this->service()->processMission($this->makeMission($this->makeInstrumentist()), $this->now()));
     }
 
-    public function test_falls_back_to_email_when_all_push_attempts_fail(): void
+    public function test_reports_skipped_when_no_channel_carried_it(): void
     {
-        $mission = $this->makeMission($this->makeInstrumentist());
-
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::FAILED));
-        $this->notificationService->expects($this->once())->method('missionEncodingReminderNotifyInstrumentist');
-
-        $this->assertSame('email', $this->service()->processMission($mission, $this->now()));
+        $this->outcome = ['PUSH' => 'SKIPPED', 'EMAIL' => 'SKIPPED'];
+        $this->assertSame('skipped', $this->service()->processMission($this->makeMission($this->makeInstrumentist()), $this->now()));
     }
-
-    public function test_fallback_reason_is_expired_when_all_attempts_expired(): void
-    {
-        $mission = $this->makeMission($this->makeInstrumentist());
-
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::FAILED, withExpiredAttempt: true));
-        $this->notificationService->expects($this->once())
-            ->method('missionEncodingReminderNotifyInstrumentist')
-            ->with($mission, $this->isInstanceOf(OutboundNotification::class), OutboundNotificationFallbackReason::EXPIRED);
-
-        $this->service()->processMission($mission, $this->now());
-    }
-
-    public function test_never_sends_push_and_email_together(): void
-    {
-        $mission = $this->makeMission($this->makeInstrumentist());
-
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
-        $this->notificationService->expects($this->never())->method('missionEncodingReminderNotifyInstrumentist');
-
-        $this->service()->processMission($mission, $this->now());
-    }
-
-    // ── idempotence ─────────────────────────────────────────────────────────
 
     public function test_skips_when_the_atomic_claim_finds_it_already_reserved(): void
     {
-        $this->claimAffectedRows = 0; // a concurrent run already claimed this mission
-        $mission = $this->makeMission($this->makeInstrumentist());
-
-        $this->outboundNotificationService->expects($this->never())->method('recordPushSend');
-        $this->notificationService->expects($this->never())->method('missionEncodingReminderNotifyInstrumentist');
-
-        $this->assertSame('skipped', $this->service()->processMission($mission, $this->now()));
-    }
-
-    public function test_second_call_for_the_same_mission_sends_nothing_more(): void
-    {
-        $mission = $this->makeMission($this->makeInstrumentist());
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
-
-        $service = $this->service();
-        $first = $service->processMission($mission, $this->now());
-
-        $this->claimAffectedRows = 0; // simulates the row now having encodingReminderSentAt set
-        $second = $service->processMission($mission, $this->now());
-
-        $this->assertSame('push', $first);
-        $this->assertSame('skipped', $second);
-    }
-
-    public function test_two_distinct_missions_are_processed_independently(): void
-    {
-        $missionA = $this->makeMission($this->makeInstrumentist());
-        $missionB = $this->makeMission($this->makeInstrumentist());
-
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
-
-        $service = $this->service();
-        $resultA = $service->processMission($missionA, $this->now());
-        $resultB = $service->processMission($missionB, $this->now());
-
-        $this->assertSame('push', $resultA);
-        $this->assertSame('push', $resultB);
+        $this->claimAffectedRows = 0;
+        $this->assertSame('skipped', $this->service()->processMission($this->makeMission($this->makeInstrumentist()), $this->now()));
+        $this->assertSame([], $this->intents);
     }
 
     public function test_skips_defensively_when_instrumentist_is_somehow_missing(): void
     {
-        $mission = $this->makeMission(null);
-
-        $this->outboundNotificationService->expects($this->never())->method('recordPushSend');
-        $this->notificationService->expects($this->never())->method('missionEncodingReminderNotifyInstrumentist');
-
-        $this->assertSame('skipped', $this->service()->processMission($mission, $this->now()));
+        $this->assertSame('skipped', $this->service()->processMission($this->makeMission(null), $this->now()));
+        $this->assertSame([], $this->intents);
     }
 
-    // ── contenu ─────────────────────────────────────────────────────────────
-
-    public function test_push_payload_contains_no_patient_data(): void
+    public function test_push_payload_contains_no_patient_data_and_text_is_not_guilt_inducing(): void
     {
         $mission = $this->makeMission($this->makeInstrumentist());
-        $missionId = $mission->getId();
-
-        $captured = [];
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturnCallback(function (User $user, string $type, string $title, string $body, array $data) use (&$captured): OutboundNotification {
-                $captured = ['title' => $title, 'body' => $body, 'data' => $data];
-                return $this->makePushNotification(OutboundNotificationStatus::SENT);
-            });
-
         $this->service()->processMission($mission, $this->now());
 
-        $this->assertSame('Encodage à finaliser', $captured['title']);
-        $this->assertStringNotContainsStringIgnoringCase('patient', $captured['body']);
-        $this->assertSame(['missionId', 'url'], array_keys($captured['data']));
-        $this->assertSame($missionId, $captured['data']['missionId']);
-        $this->assertSame("/app/i/missions/{$missionId}", $captured['data']['url']);
+        $push = $this->intents[0]->push;
+        $this->assertSame(['missionId', 'url'], array_keys($push->data));
+        $this->assertSame('Encodage à finaliser', $push->title);
+        $this->assertStringContainsString('lorsque vous êtes disponible', $push->body);
     }
 
-    public function test_message_text_is_human_and_not_guilt_inducing(): void
+    // ── D-120 : relance manuelle ─────────────────────────────────────────────
+
+    public function test_manual_reminder_is_a_new_episode_and_records_the_channel_in_the_audit(): void
     {
         $mission = $this->makeMission($this->makeInstrumentist());
-
-        $captured = null;
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturnCallback(function (User $user, string $type, string $title, string $body) use (&$captured): OutboundNotification {
-                $captured = $body;
-                return $this->makePushNotification(OutboundNotificationStatus::SENT);
-            });
-
-        $this->service()->processMission($mission, $this->now());
-
-        $this->assertStringNotContainsStringIgnoringCase('retard', $captured);
-        $this->assertStringNotContainsStringIgnoringCase('urgent', $captured);
-        $this->assertStringContainsString('lorsque vous êtes disponible', $captured);
-    }
-
-    // ── D-120 : relance manuelle ────────────────────────────────────────────
-
-    public function test_manual_reminder_sends_push_and_records_audit(): void
-    {
-        $mission = $this->makeMission($this->makeInstrumentist());
+        $this->outcome = ['PUSH' => 'SKIPPED', 'EMAIL' => 'QUEUED'];
         $actor = $this->makeInstrumentist();
-
-        $this->outboundNotificationService->expects($this->once())
-            ->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
-        $this->notificationService->expects($this->never())->method('missionEncodingReminderNotifyInstrumentist');
-        $this->auditService->expects($this->once())
-            ->method('record')
-            ->with($mission, $actor, \App\Enum\AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT, $this->callback(
-                fn (array $payload) => $payload['channel'] === 'push' && $payload['actorId'] === $actor->getId(),
-            ));
-
-        $this->assertSame('push', $this->service()->sendManualReminder($mission, $actor));
-    }
-
-    public function test_manual_reminder_falls_back_to_email_and_still_records_audit(): void
-    {
-        $mission = $this->makeMission($this->makeInstrumentist());
-        $actor = $this->makeInstrumentist();
-
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::FAILED));
-        $this->notificationService->expects($this->once())->method('missionEncodingReminderNotifyInstrumentist');
-        $this->auditService->expects($this->once())
-            ->method('record')
-            ->with($mission, $actor, \App\Enum\AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT, $this->callback(
-                fn (array $payload) => $payload['channel'] === 'email',
-            ));
+        $this->auditService->expects($this->once())->method('record')
+            ->with($mission, $actor, AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT, $this->callback(static fn (array $p) => $p['channel'] === 'email'));
 
         $this->assertSame('email', $this->service()->sendManualReminder($mission, $actor));
+        $this->assertNull($this->intents[0]->episodeRef, 'one episode per manager action (the operation\'s correlation)');
+        $this->assertStringContainsString('Un manager vous rappelle', $this->intents[0]->push->body);
+        $this->assertSame(NotificationEmailPolicy::MANDATORY, $this->intents[0]->emailPolicy, 'H5a — explicit manager action: the email never depends on preferences');
+    }
+
+    public function test_manual_reminder_batch_is_its_episode_and_reports_both_channels(): void
+    {
+        $mission = $this->makeMission($this->makeInstrumentist());
+        $this->outcome = ['PUSH' => 'SENT', 'EMAIL' => 'QUEUED'];
+
+        $this->assertSame('push+email', $this->service()->sendManualReminder($mission, $this->makeInstrumentist(), 'batch-1234abcd'));
+        $this->assertSame('encoding_reminder:manual:' . $mission->getId() . ':batch-1234abcd', $this->intents[0]->episodeRef, 'a retry of the same action is the same episode');
+    }
+
+    public function test_the_automatic_reminder_keeps_the_preference_driven_fallback(): void
+    {
+        $this->service()->processMission($this->makeMission($this->makeInstrumentist()), $this->now());
+
+        $this->assertSame(NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT, $this->intents[0]->emailPolicy, 'never MANDATORY for the automatic reminder');
     }
 
     public function test_manual_reminder_never_touches_the_automatic_reminder_guard(): void
     {
-        // sendManualReminder() must not run the atomic encodingReminderSentAt claim UPDATE
-        // (processMission()'s guard) — a manual send is independent of the automatic pipeline.
         $mission = $this->makeMission($this->makeInstrumentist());
-        $actor = $this->makeInstrumentist();
-
-        $this->outboundNotificationService->method('recordPushSend')
-            ->willReturn($this->makePushNotification(OutboundNotificationStatus::SENT));
-
-        $this->service()->sendManualReminder($mission, $actor);
+        $this->em->expects($this->never())->method('createQueryBuilder');
+        $this->service()->sendManualReminder($mission, $this->makeInstrumentist());
 
         $this->assertNull($mission->getEncodingReminderSentAt());
     }
 
     public function test_manual_reminder_throws_when_mission_has_no_instrumentist(): void
     {
-        $mission = $this->makeMission(null);
-        $actor = $this->makeInstrumentist();
-
         $this->expectException(\LogicException::class);
-
-        $this->service()->sendManualReminder($mission, $actor);
+        $this->service()->sendManualReminder($this->makeMission(null), $this->makeInstrumentist());
     }
 
     // ── D-120 : prochaine relance automatique (calcul pur, aucune requête) ──

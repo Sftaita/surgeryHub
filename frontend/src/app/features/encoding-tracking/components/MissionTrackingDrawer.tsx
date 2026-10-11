@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { fetchMissionById, getMissionExecution } from "../../missions/api/missions.api";
 import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
-import { fetchMissionEncoding, remindMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
+import { fetchMissionEncoding, newActionBatchId, remindMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
 import { ReadOnlyInterventionCard } from "../../surgeon-encoding/components/ReadOnlyInterventionCard";
 import { useToast } from "../../../ui/toast/useToast";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
@@ -143,7 +143,8 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   });
 
   const remindMutation = useMutation({
-    mutationFn: async () => remindMissionEncoding(missionId!),
+    // H5a — the batch id is fixed at click time: a retry of this mutation reuses it.
+    mutationFn: async (batchId: string) => remindMissionEncoding(missionId!, batchId),
     onSuccess: async () => { toast.success("Relance envoyée à l'instrumentiste."); await refreshAfterAction(); },
     onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : extractErrorMessage(err)),
   });
@@ -296,7 +297,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             <Box
               component="button"
               type="button"
-              onClick={() => remindMutation.mutate()}
+              onClick={() => remindMutation.mutate(newActionBatchId())}
               disabled={remindMutation.isPending}
               sx={{
                 display: "flex", alignItems: "center", gap: "6px", height: 40, padding: "0 14px", borderRadius: "11px",

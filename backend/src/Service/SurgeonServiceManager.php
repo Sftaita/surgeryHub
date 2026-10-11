@@ -23,6 +23,8 @@ class SurgeonServiceManager
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly UserRepository $users,
+        private readonly ?UserAuditService $userAudit = null,
+        private readonly ?\Symfony\Bundle\SecurityBundle\Security $security = null,
     ) {}
 
     public function createSurgeon(CreateSurgeonRequest $dto): User
@@ -76,6 +78,7 @@ class SurgeonServiceManager
         }
 
         $this->em->persist($user);
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userCreated($actor, $user));
         $this->em->flush();
 
         return $user;
@@ -143,6 +146,7 @@ class SurgeonServiceManager
 
         $surgeon->addSiteMembership($membership);
         $this->em->persist($membership);
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userSiteAdded($actor, $surgeon, (string) $membership->getSite()?->getName()));
         $this->em->flush();
 
         return $membership;
@@ -165,6 +169,7 @@ class SurgeonServiceManager
         }
 
         $surgeon->removeSiteMembership($membership);
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userSiteRemoved($actor, $surgeon, (string) $membership->getSite()?->getName()));
         $this->em->remove($membership);
         $this->em->flush();
     }
@@ -196,5 +201,28 @@ class SurgeonServiceManager
         }
         $normalized = trim($value);
         return $normalized === '' ? null : $normalized;
+    }
+
+    /** H5b (D-132) — the invitation was queued (H5a: traced delivery): its business audit, like the admin screen. */
+    public function invitationSent(User $user): void
+    {
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userInvitationSent($actor, $user));
+        $this->em->flush();
+    }
+
+    /**
+     * H5b (D-132) — these screens (instrumentist / surgeon management) wrote no UserAuditEvent,
+     * unlike the admin screen (UserAdministrationService): creation, suspension, reactivation
+     * and site affiliations happened silently. Same UserAuditEvent as the admin screen, mirrored
+     * into activity_event by H1. Optional dependencies for the hand-built unit-test instances.
+     *
+     * @param callable(UserAuditService, User): void $write
+     */
+    private function audit(callable $write): void
+    {
+        $actor = $this->security?->getUser();
+        if ($this->userAudit !== null && $actor instanceof User) {
+            $write($this->userAudit, $actor);
+        }
     }
 }

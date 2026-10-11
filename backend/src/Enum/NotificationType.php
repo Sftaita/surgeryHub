@@ -27,6 +27,15 @@ enum NotificationType: string
     // ── Post-deploy lifecycle notifications (Batch 15A / future) ─────────────
     case PLANNING_MISSION_REASSIGNED = 'PLANNING_MISSION_REASSIGNED';
     case PLANNING_MISSION_CANCELLED  = 'PLANNING_MISSION_CANCELLED';
+    // H2 (D-127/D-128) — to the instrumentist a manager deliberately removed from a
+    // published mission (ASSIGNED → OPEN): her planning changed. Distinct from
+    // PLANNING_MISSION_REASSIGNED (someone else was put in her place) and from
+    // OPEN_MISSION_AVAILABLE (a pool offer, which she must NOT receive for this episode).
+    case PLANNING_MISSION_RELEASED   = 'PLANNING_MISSION_RELEASED';
+    // H3 (D-129) — personalized recap of a Planning V2 Modification batch (only the
+    // recipient's own added / removed / modified missions, with the updated planning PDF).
+    // Formerly an untracked SendBillingEmailMessage; now dispatched like any notification.
+    case PLANNING_CHANGE_SUMMARY     = 'PLANNING_CHANGE_SUMMARY';
     case PLANNING_MISSION_ADDED      = 'PLANNING_MISSION_ADDED';
     case PLANNING_MISSION_UPDATED    = 'PLANNING_MISSION_UPDATED';
 
@@ -94,7 +103,12 @@ enum NotificationType: string
     // instrumentists with NO push subscription at all — never a duplicate of the push that
     // already went out to everyone else. Grouped: one email per recipient per
     // absence-processing run, covering every mission they're eligible for in that run.
-    case ABSENCE_POOL_MISSION_AVAILABLE = 'ABSENCE_POOL_MISSION_AVAILABLE'; // to eligible instrumentists without push
+    //
+    // RETIRED by H3 (D-129): nothing produces it any more — the absence's released missions
+    // are solicited by OpenMissionPoolNotifier like every other opening (email for everyone
+    // per preferences, not only for people without push). Kept so the history (feed items,
+    // outbound rows) stays readable; hidden from the preferences list (see isRetired()).
+    case ABSENCE_POOL_MISSION_AVAILABLE = 'ABSENCE_POOL_MISSION_AVAILABLE'; // retired — historical rows only
 
     // D-110 (J-14) — a Mission stayed OPEN into the 14-day-before-start window with no
     // escalation yet sent for the current episode. One per episode (never a daily repeat —
@@ -184,4 +198,54 @@ enum NotificationType: string
     // OPEN_MISSION_AVAILABLE. In-app + push selon préférences (même pipeline que
     // MissionLifecycleChangedMessageHandler), email=false par défaut. 27 caractères (< 32).
     case ROOM_TAKEOVER_MISSION_OFFER = 'ROOM_TAKEOVER_MISSION_OFFER';
+
+    // ── H5a — email flows migrated to NotificationDispatcher ─────────────────
+    // Encoding reminder (D-083 automatic D+1, D-120 manual relaunch) — formerly a free string
+    // on outbound rows, never resolved through preferences. Push first, email as fallback;
+    // no in-app item. Value kept so the existing outbound history keeps its type.
+    case ENCODING_REMINDER_D1 = 'ENCODING_REMINDER_D1';
+
+    // Absence reminders sent by a manager (D-051): one individual email per selected person.
+    // Explicit one-off manager action → MANDATORY email (see emailIsMandatory()).
+    case ABSENCE_REQUEST_MISSING = 'ABSENCE_REQUEST_MISSING';
+    case ABSENCE_ENCODED_RECAP   = 'ABSENCE_ENCODED_RECAP';
+
+    // Identity / security (category C) — never subject to business preferences.
+    case ACCOUNT_INVITATION    = 'ACCOUNT_INVITATION';
+    case ACCOUNT_EMAIL_CHANGED = 'ACCOUNT_EMAIL_CHANGED';
+
+    // H5b (D-132) — the mission declaration flow (Lot B3/B4): formerly in-app rows written
+    // directly (no preference, no trace). Same eventType values, so existing feed items keep
+    // reading the same; now through NotificationDispatcher (in-app, no email / push content).
+    case MISSION_DECLARED          = 'MISSION_DECLARED';          // to managers / admins
+    case MISSION_DECLARED_APPROVED = 'MISSION_DECLARED_APPROVED'; // to the declaring instrumentist
+    case MISSION_DECLARED_REJECTED = 'MISSION_DECLARED_REJECTED'; // to the declaring instrumentist
+
+    /**
+     * H5a — types whose email is sent whatever the recipient's preferences
+     * (NotificationEmailPolicy::MANDATORY): identity / security emails and explicit one-off
+     * manager actions addressed to one person. Never offered as a preference switch.
+     */
+    public function emailIsMandatory(): bool
+    {
+        return in_array($this, [
+            self::PLANNING_RESENT_MANUAL, self::ABSENCE_REQUEST_MISSING, self::ABSENCE_ENCODED_RECAP,
+            self::ACCOUNT_INVITATION, self::ACCOUNT_EMAIL_CHANGED,
+        ], true);
+    }
+
+    /** Offered in the person's notification preferences (a switch must change something). */
+    public function isConfigurable(): bool
+    {
+        return !$this->isRetired() && !$this->emailIsMandatory();
+    }
+
+    /**
+     * H3 (D-129) — types no code produces any more, kept only so historical rows stay
+     * readable. Never offered as a preference (a switch that changes nothing would lie).
+     */
+    public function isRetired(): bool
+    {
+        return $this === self::ABSENCE_POOL_MISSION_AVAILABLE;
+    }
 }

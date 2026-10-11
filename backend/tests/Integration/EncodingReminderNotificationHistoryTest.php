@@ -32,9 +32,15 @@ use Symfony\Component\Messenger\MessageBusInterface;
  * never both channels for the same successful attempt, and never a duplicate on a second
  * run of the same mission (idempotence, already covered by
  * EncodingReminderServiceEligibilityTest, re-verified here at the history level).
+ *
+ * H5a (D-131): the reminder now goes through NotificationDispatcher — the same push-first /
+ * linked-email-fallback history, plus the dispatcher's honest rows for the channels it did
+ * not use (IN_APP SKIPPED/NOT_APPLICABLE, EMAIL SKIPPED/COVERED_BY_PUSH).
  */
 final class EncodingReminderNotificationHistoryTest extends KernelTestCase
 {
+    use \App\Tests\Support\PurgesNotificationTraces;
+
     private EntityManagerInterface $em;
     private array $createdIds = ['missions' => [], 'users' => [], 'sites' => [], 'subscriptions' => [], 'notifications' => []];
 
@@ -46,6 +52,8 @@ final class EncodingReminderNotificationHistoryTest extends KernelTestCase
 
     protected function tearDown(): void
     {
+        $this->em->clear();
+        $this->purgeNotificationTraces($this->em, $this->createdIds['users']);
         foreach ($this->createdIds['notifications'] as $id) {
             $e = $this->em->find(OutboundNotification::class, $id);
             if ($e !== null) { $this->em->remove($e); }
@@ -144,7 +152,7 @@ final class EncodingReminderNotificationHistoryTest extends KernelTestCase
             ['handler' => HandlerStack::create($mockHandler)],
         );
 
-        $outboundNotificationService = new OutboundNotificationService($this->em, $webPushService);
+        $outboundNotificationService = new OutboundNotificationService($this->em, $webPushService, $container->get(\App\Activity\Recorder\NotificationActivityRecorder::class), $container->get(\App\Notification\MissionCommunicationService::class));
 
         /** @var NotificationService $notificationService */
         $notificationService = $container->get(NotificationService::class);
@@ -152,12 +160,36 @@ final class EncodingReminderNotificationHistoryTest extends KernelTestCase
         /** @var \App\Service\AuditService $auditService */
         $auditService = $container->get(\App\Service\AuditService::class);
 
-        return new EncodingReminderService($this->em, $outboundNotificationService, $notificationService, $auditService, new NullLogger());
+        $dispatcher = new \App\Notification\NotificationDispatcher(
+            $this->em,
+            $container->get(\App\Service\NotificationPreferenceResolver::class),
+            $outboundNotificationService,
+            $container->get(\App\Activity\Recorder\NotificationActivityRecorder::class),
+            $container->get(\App\Activity\CorrelationContext::class),
+            $container->get(\Symfony\Component\Messenger\MessageBusInterface::class),
+            new NullLogger(),
+            $container->get(\App\Notification\MissionCommunicationService::class),
+            'no-reply@surgicalhub.test',
+            'SurgicalHub',
+        );
+
+        return new EncodingReminderService($this->em, $dispatcher, $notificationService, $auditService, new NullLogger());
     }
 
     private function findNotifications(User $recipient): array
     {
         return $this->em->getRepository(OutboundNotification::class)->findBy(['recipientUser' => $recipient], ['id' => 'ASC']);
+    }
+
+    /** @return array<string, OutboundNotification> channel => delivery */
+    private function byChannel(array $notifications): array
+    {
+        $rows = [];
+        foreach ($notifications as $n) {
+            $rows[$n->getChannel()->value] = $n;
+        }
+
+        return $rows;
     }
 
     // ── Push réussi ──────────────────────────────────────────────────────────
@@ -178,11 +210,14 @@ final class EncodingReminderNotificationHistoryTest extends KernelTestCase
         $notifications = $this->findNotifications($instrumentist);
         $this->createdIds['notifications'] = array_map(fn (OutboundNotification $n) => $n->getId(), $notifications);
 
-        $this->assertCount(1, $notifications, 'exactly one trace — no email alongside a successful push');
-        $this->assertSame(OutboundNotificationChannel::PUSH, $notifications[0]->getChannel());
-        $this->assertSame(OutboundNotificationStatus::SENT, $notifications[0]->getStatus());
-        $this->assertSame($mission->getId(), $notifications[0]->getMission()?->getId());
-        $this->assertFalse($notifications[0]->isFallback());
+        $rows = $this->byChannel($notifications);
+        $this->assertCount(3, $notifications, 'one row per channel, each with its honest outcome');
+        $this->assertSame(OutboundNotificationStatus::SENT, $rows['PUSH']->getStatus());
+        $this->assertSame($mission->getId(), $rows['PUSH']->getMission()?->getId());
+        $this->assertFalse($rows['PUSH']->isFallback());
+        $this->assertSame(OutboundNotificationStatus::SKIPPED, $rows['EMAIL']->getStatus(), 'no email alongside a successful push');
+        $this->assertSame(\App\Enum\NotificationDeliverySkipReason::COVERED_BY_PUSH, $rows['EMAIL']->getSkipReason());
+        $this->assertSame(\App\Enum\NotificationDeliverySkipReason::NOT_APPLICABLE, $rows['IN_APP']->getSkipReason(), 'no in-app item for this reminder');
     }
 
     // ── Push impossible → repli email ───────────────────────────────────────
@@ -202,10 +237,9 @@ final class EncodingReminderNotificationHistoryTest extends KernelTestCase
         $notifications = $this->findNotifications($instrumentist);
         $this->createdIds['notifications'] = array_map(fn (OutboundNotification $n) => $n->getId(), $notifications);
 
-        $this->assertCount(2, $notifications, 'one Push (skipped) trace + one Email trace');
-
-        $push = $notifications[0];
-        $email = $notifications[1];
+        $rows = $this->byChannel($notifications);
+        $push = $rows['PUSH'];
+        $email = $rows['EMAIL'];
 
         $this->assertSame(OutboundNotificationChannel::PUSH, $push->getChannel());
         $this->assertSame(OutboundNotificationStatus::SKIPPED, $push->getStatus());
@@ -236,9 +270,10 @@ final class EncodingReminderNotificationHistoryTest extends KernelTestCase
         $notifications = $this->findNotifications($instrumentist);
         $this->createdIds['notifications'] = array_map(fn (OutboundNotification $n) => $n->getId(), $notifications);
 
-        $this->assertCount(2, $notifications);
-        $push = $notifications[0];
-        $email = $notifications[1];
+        $rows = $this->byChannel($notifications);
+        $push = $rows['PUSH'];
+        $email = $rows['EMAIL'];
+        $this->assertSame($push->getId(), $email->getFallbackOf()?->getId());
 
         $this->assertSame(OutboundNotificationStatus::FAILED, $push->getStatus());
         $this->assertSame(OutboundNotificationFallbackReason::ALL_FAILED, $email->getFallbackReason());
@@ -259,6 +294,7 @@ final class EncodingReminderNotificationHistoryTest extends KernelTestCase
         $now = new \DateTimeImmutable('2026-07-26 10:00:00', new \DateTimeZone('Europe/Brussels'));
 
         $first = $this->encodingReminderService(new MockHandler([new Response(201)]))->processMission($mission, $now);
+        $afterFirst = count($this->findNotifications($instrumentist));
         // Reload the mission the way the real command would on a second run: encodingReminderSentAt is now set.
         $this->em->clear();
         $reloadedMission = $this->em->find(Mission::class, $mission->getId());
@@ -269,6 +305,6 @@ final class EncodingReminderNotificationHistoryTest extends KernelTestCase
 
         $notifications = $this->findNotifications($instrumentist);
         $this->createdIds['notifications'] = array_map(fn (OutboundNotification $n) => $n->getId(), $notifications);
-        $this->assertCount(1, $notifications, 'the second run must not create any new trace');
+        $this->assertCount($afterFirst, $notifications, 'the second run must not create any new trace');
     }
 }

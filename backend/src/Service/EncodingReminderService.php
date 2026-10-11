@@ -7,7 +7,14 @@ use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\MissionStatus;
+use App\Entity\NotificationDispatch;
+use App\Enum\NotificationEmailPolicy;
+use App\Enum\NotificationType;
+use App\Enum\OutboundNotificationChannel;
 use App\Enum\OutboundNotificationStatus;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
+use App\Notification\PushContent;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -16,6 +23,18 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
  * D-083 — rappel unique d'encodage D+1 à 08 h Europe/Brussels (remplace le TODO "rappel
  * de 19 h" jamais implémenté, docs/decisions.md). Décide et envoie ; la commande
  * (SendEncodingRemindersCommand) ne fait qu'orchestrer.
+ *
+ * H5a — l'envoi passe par NotificationDispatcher (type ENCODING_REMINDER_D1 : push d'abord,
+ * email en repli, pas d'item in-app) : les préférences de la personne sont désormais
+ * réellement appliquées (auparavant jamais consultées) et chaque canal est tracé. Rappel
+ * automatique idempotent par mission (épisode `encoding_reminder:auto:{id}`, en plus du
+ * garde-fou encodingReminderSentAt) ; relance manuelle : un épisode par lot d'action du manager.
+ *
+ * Décision H5a validée : le rappel AUTOMATIQUE respecte les préférences (push d'abord, email
+ * en repli) ; la relance MANUELLE explicite d'un manager rend l'email obligatoire
+ * (NotificationEmailPolicy::MANDATORY — communication opérationnelle demandée, pas un
+ * abonnement facultatif), le push restant soumis aux préférences. Le type reste configurable :
+ * seule l'intention de la relance manuelle porte la politique MANDATORY.
  */
 class EncodingReminderService
 {
@@ -31,7 +50,7 @@ class EncodingReminderService
 
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly OutboundNotificationService $outboundNotificationService,
+        private readonly NotificationDispatcher $dispatcher,
         private readonly NotificationService $notificationService,
         private readonly AuditService $audit,
         #[Autowire(service: 'monolog.logger.push')]
@@ -121,45 +140,18 @@ class EncodingReminderService
             return 'skipped';
         }
 
-        $title = 'Encodage à finaliser';
-        $body = "La mission d'hier n'a pas encore été soumise. Pensez à finaliser votre encodage lorsque vous êtes disponible.";
-        $data = [
-            'missionId' => $mission->getId(),
-            'url'       => sprintf('/app/i/missions/%d', $mission->getId()),
-        ];
-
-        // D-084 — recordPushSend() attempts the real Push send AND creates the traced
-        // OutboundNotification (+ one Attempt per subscription) in the same call.
-        $pushNotification = $this->outboundNotificationService->recordPushSend(
-            $instrumentist,
-            'ENCODING_REMINDER_D1',
-            $title,
-            $body,
-            $data,
-            $mission,
+        $channel = $this->remind(
+            $mission, $instrumentist,
+            "La mission d'hier n'a pas encore été soumise. Pensez à finaliser votre encodage lorsque vous êtes disponible.",
+            'encoding_reminder:auto:' . $mission->getId(),
         );
 
-        if ($pushNotification->getStatus() === OutboundNotificationStatus::SENT) {
-            $this->logger->info('encoding_reminder.sent_push', [
-                'missionId' => $mission->getId(),
-                'userId'    => $instrumentist->getId(),
-            ]);
-
-            return 'push';
-        }
-
-        $this->notificationService->missionEncodingReminderNotifyInstrumentist(
-            $mission,
-            $pushNotification,
-            OutboundNotificationService::fallbackReasonFor($pushNotification),
-        );
-
-        $this->logger->info('encoding_reminder.sent_email', [
+        $this->logger->info('encoding_reminder.sent_' . $channel, [
             'missionId' => $mission->getId(),
             'userId'    => $instrumentist->getId(),
         ]);
 
-        return 'email';
+        return $channel === 'none' ? 'skipped' : $channel;
     }
 
     /**
@@ -170,40 +162,26 @@ class EncodingReminderService
      * ni le dupliquer côté planification. Même canal (Push avec repli email) et même contenu
      * mission que le rappel automatique — seule la trace d'audit distingue les deux.
      *
-     * @return 'push'|'email'
+     * H5a — the email is MANDATORY for this explicit manager action (push per preferences).
+     * $batchId: the manager's action — a retried request with the same batch never sends a
+     * second reminder; absent → the request's correlation (one action, one reminder).
+     *
+     * @return 'push+email'|'push'|'email'|'none'
      */
-    public function sendManualReminder(Mission $mission, User $actor): string
+    public function sendManualReminder(Mission $mission, User $actor, ?string $batchId = null): string
     {
         $instrumentist = $mission->getInstrumentist();
         if (!$instrumentist instanceof User) {
             throw new \LogicException('Cannot remind a mission with no assigned instrumentist');
         }
 
-        $title = 'Encodage à finaliser';
-        $body = "Un manager vous rappelle de finaliser l'encodage de cette mission.";
-        $data = [
-            'missionId' => $mission->getId(),
-            'url'       => sprintf('/app/i/missions/%d', $mission->getId()),
-        ];
-
-        $pushNotification = $this->outboundNotificationService->recordPushSend(
-            $instrumentist,
-            'ENCODING_REMINDER_D1',
-            $title,
-            $body,
-            $data,
-            $mission,
+        // One episode per manager action (batch, or the operation's correlation): a deliberate
+        // second relaunch is a new reminder, a retry of the same one is not.
+        $channel = $this->remind(
+            $mission, $instrumentist, "Un manager vous rappelle de finaliser l'encodage de cette mission.",
+            $batchId !== null ? sprintf('encoding_reminder:manual:%d:%s', $mission->getId(), $batchId) : null,
+            NotificationEmailPolicy::MANDATORY,
         );
-
-        $channel = 'push';
-        if ($pushNotification->getStatus() !== OutboundNotificationStatus::SENT) {
-            $this->notificationService->missionEncodingReminderNotifyInstrumentist(
-                $mission,
-                $pushNotification,
-                OutboundNotificationService::fallbackReasonFor($pushNotification),
-            );
-            $channel = 'email';
-        }
 
         $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT, [
             'actorId'   => $actor->getId(),
@@ -219,6 +197,58 @@ class EncodingReminderService
         ]);
 
         return $channel;
+    }
+
+    /**
+     * H5a — push first, email fallback (D-083), through the dispatcher.
+     *
+     * @return 'push'|'email'|'none' the channel that actually carried the reminder
+     */
+    private function remind(
+        Mission $mission,
+        User $instrumentist,
+        string $pushBody,
+        ?string $episodeRef,
+        NotificationEmailPolicy $emailPolicy = NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT,
+    ): string {
+        $dispatch = $this->dispatcher->dispatch(new NotificationIntent(
+            recipient: $instrumentist,
+            type: NotificationType::ENCODING_REMINDER_D1,
+            inAppPayload: ['missionId' => $mission->getId()],
+            mission: $mission,
+            email: $this->notificationService->missionEncodingReminderEmail($mission, $instrumentist),
+            push: new PushContent('Encodage à finaliser', $pushBody, [
+                'missionId' => $mission->getId(),
+                'url'       => sprintf('/app/i/missions/%d', $mission->getId()),
+            ]),
+            episodeRef: $episodeRef,
+            emailPolicy: $emailPolicy,
+            inApp: false,
+        ));
+
+        return self::channelUsed($dispatch);
+    }
+
+    /** @return 'push+email'|'push'|'email'|'none' the channels that actually carried it */
+    private static function channelUsed(NotificationDispatch $dispatch): string
+    {
+        $push = $email = false;
+        foreach ($dispatch->getDeliveries() as $delivery) {
+            if ($delivery->getChannel() === OutboundNotificationChannel::PUSH && $delivery->getStatus() === OutboundNotificationStatus::SENT) {
+                $push = true;
+            }
+            if ($delivery->getChannel() === OutboundNotificationChannel::EMAIL
+                && in_array($delivery->getStatus(), [OutboundNotificationStatus::QUEUED, OutboundNotificationStatus::SENT], true)) {
+                $email = true;
+            }
+        }
+
+        return match (true) {
+            $push && $email => 'push+email',
+            $push           => 'push',
+            $email          => 'email',
+            default         => 'none',
+        };
     }
 
     /**

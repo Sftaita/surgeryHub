@@ -2435,9 +2435,26 @@ lit les mêmes snapshots). Lien bidirectionnel : `financialCalculationLineId` �
 }
 ```
 
-**Effets :** `status → SENT`, snapshot email mis à jour, PDF envoyé en pièce jointe via Messenger.
+**Effets :** `status → SENT`, snapshot email mis à jour. H5b (D-132) : le PDF est rendu **une
+fois** et figé (`GeneratedDocument` `IMMUTABLE_EVIDENCE`, source `firm_invoice:{id}`) ;
+événement `FIRM_INVOICE_SENT` (sujet : la facture) ; email remis à la couche de livraison
+tracée (`OutboundNotification` QUEUED → SENT / FAILED, jamais soumis aux préférences, aucun
+in-app). La réponse n'affirme pas la réception : l'état de livraison se lit dans l'historique.
 
 **Réponse — 200 :** FirmInvoice mise à jour
+
+#### `POST /api/firm-invoices/{id}/resend`
+
+H5b (D-132). **Précondition :** `status ∈ {SENT, PAID}` (sinon `409`).
+
+**Body JSON (optionnel) :** `{ "emailTo": "…", "emailCc": ["…"] }` — par défaut, les
+destinataires enregistrés lors du premier envoi.
+
+**Effets :** aucun changement de statut ; renvoie **exactement le même PDF** que le premier
+envoi (même `sha256`), événement `FIRM_INVOICE_RESENT`, nouvelle livraison tracée. Le
+`GET /{id}/pdf` reste la vue vivante (solde, paiements) — ce n'est pas le document envoyé.
+
+**Réponse — 200 :** FirmInvoice
 
 #### `POST /api/firm-invoices/{id}/mark-paid`
 
@@ -2518,7 +2535,15 @@ exclusivement des `FinancialCalculationLine` déjà figées.
 { "emailTo": "ole@example.com" }
 ```
 
-**Effets :** `status → SENT`, PDF envoyé en pièce jointe.
+**Effets :** `status → SENT`, PDF figé au premier envoi (source `instrumentist_statement:{id}`),
+événement `INSTRUMENTIST_STATEMENT_SENT`, livraison tracée (destinataire rattaché à
+l'instrumentiste quand l'adresse est la sienne, sinon « adresse explicite »).
+
+#### `POST /api/instrumentist-statements/{id}/resend`
+
+H5b (D-132). **Précondition :** `status ∈ {SENT, PAID}` (sinon `409`). Body optionnel
+`{ "emailTo": "…" }` (défaut : adresse du premier envoi). Même PDF (même `sha256`),
+événement `INSTRUMENTIST_STATEMENT_RESENT`, nouvelle livraison tracée, aucun changement de statut.
 
 #### `POST /api/instrumentist-statements/{id}/mark-paid`
 
@@ -2756,6 +2781,16 @@ Utilisé notamment pour les déplacements drag & drop (changement de `dayOfWeek`
 > jamais un email par catégorie. `delete()` ne restaure jamais rien à l'aveugle (revalidation
 > systématique, voir D-104) et n'envoie plus aucune notice si rien n'a réellement été
 > restauré. Voir docs/decisions.md D-105 pour l'architecture complète.
+>
+> **H4 (D-130)** : contrats inchangés. Qui est informé dépend du niveau de chaque occurrence
+> (N3 mission publiée > N2 DRAFT > N1 organisation habituelle), une seule fois par occurrence :
+> `ABSENCE_OCCURRENCE_CANCELLED` (chirurgien absent → instrumentiste prévue) et
+> `ABSENCE_OCCURRENCE_UNCOVERED` (instrumentiste absente → chirurgien) portent dans leur payload
+> `level` (`USUAL_SCHEDULE` | `DRAFT`), `status` (`IMPACTED` | `RESTORED`), `date`,
+> `occurrenceDate`, `startTime`, `endTime`, `siteName`, `surgeonName`, `instrumentistName`,
+> `missionId` (N2), `postId` (N1) et `sentence` (la phrase D-127 à afficher telle quelle). Les
+> notifications N3 (`ABSENCE_MISSION_CANCELLED`, …) portent `level: PUBLISHED`. Les
+> `PlanningAlert` d'absence ne déclenchent plus de notification « Alerte planning ».
 
 **Modèle Absence :**
 
@@ -3226,7 +3261,9 @@ défaut) : envoyée à l'instrumentiste initialement prévue **seulement si**
 `MissionEligibilityService::evaluate()` la juge éligible au moment de l'envoi. Payload :
 `{ missionId, roomSlotId, dayLabel, missionDate, startTime, endTime, siteName, periodLabel,
 takenByName, originalSurgeonName }` — aucune donnée patient. Deep link : `/app/i/offers`
-(claim existant). Les autres instrumentistes éligibles reçoivent `OPEN_MISSION_AVAILABLE`.
+(claim existant). Les autres instrumentistes éligibles reçoivent `OPEN_MISSION_AVAILABLE` via
+`OpenMissionPoolNotifier` (H3, D-129) ; celle qui a reçu l'offre contextuelle en est exclue pour
+cet épisode (`PERSONAL_OFFER_SENT`, tracé) — jamais les deux offres à la même personne.
 
 ---
 
@@ -3280,34 +3317,40 @@ restreindre l'envoi à une sélection (absent = tout le monde dans le périmètr
 
 **AuthZ :** `MANAGER` / `ADMIN`
 
-**Body JSON (optionnel) :** `{ "message": "Texte personnalisé", "userIds": [12, 18] }` — `message` absent → message par défaut backend (explique qu'aucun congé n'est encodé et invite à répondre à `boost.conge@gmail.com`). `userIds` absent (champ non présent dans un JSON valide) → toutes les personnes sans absence sur la période. **Si le body n'est pas un JSON valide → 400**, jamais de fallback silencieux vers "tout le monde".
+**Body JSON (optionnel) :** `{ "message": "Texte personnalisé", "userIds": [12, 18], "batchId": "uuid" }` — `message` absent → message par défaut backend (explique qu'aucun congé n'est encodé et invite à répondre à `boost.conge@gmail.com`). `userIds` absent (champ non présent dans un JSON valide) → toutes les personnes sans absence sur la période. `batchId` (H5a, optionnel, 8–64 caractères `[A-Za-z0-9-]`) : identifiant du lot de rappel — une requête rejouée avec le même `batchId` n'envoie rien une seconde fois ; absent → la corrélation de la requête. **Si le body n'est pas un JSON valide → 400**, jamais de fallback silencieux vers "tout le monde".
 
-**Effet :** dispatch d'**un `SendTemplatedEmailMessage` par personne sélectionnée**, à sa propre
-adresse (jamais vers `boost.conge@gmail.com`, qui n'apparaît que comme texte dans le message).
-Enregistre un `UserAuditEvent` (`ABSENCES_REQUEST_SENT`, `targetUser` null,
-`payload.count` = nombre d'emails individuels envoyés).
+**Effet (H5a, D-131) :** **un dispatch `ABSENCE_REQUEST_MISSING` par personne sélectionnée**
+via `NotificationDispatcher` — un email individuel à sa propre adresse (jamais vers
+`boost.conge@gmail.com`, qui n'apparaît que comme texte), email obligatoire (indépendant des
+préférences), sans in-app ni push, tracé (`notification_dispatch`, `outbound_notification`
+QUEUED → SENT / FAILED). Enregistre un `UserAuditEvent` (`ABSENCES_REQUEST_SENT`, `targetUser`
+null, `payload.count` = nombre d'emails réellement mis en file).
 
 **Réponse — 200 :**
 
 ```json
-{ "sent": true, "count": 3 }
+{ "sent": true, "batchId": "…", "count": 3, "notSent": [{ "id": 18, "name": "Jean Martin", "reason": "NO_EMAIL_ADDRESS" }] }
 ```
+
+`count` = emails mis en file d'envoi (pas « reçus ») ; `notSent` = personnes sélectionnées
+dont l'email n'a pas pu être mis en file, avec la raison (`NO_EMAIL_ADDRESS`, `FAILED`).
 
 #### `POST /api/planning/absences/confirm-encoded`
 
 **AuthZ :** `MANAGER` / `ADMIN`
 
-**Body JSON (optionnel) :** `{ "message": "Texte personnalisé", "userIds": [12, 18] }` — `userIds` absent (champ non présent dans un JSON valide) → toutes les personnes avec au moins une absence future. **Si le body n'est pas un JSON valide → 400**, jamais de fallback silencieux vers "tout le monde".
+**Body JSON (optionnel) :** `{ "message": "Texte personnalisé", "userIds": [12, 18], "batchId": "uuid" }` — `userIds` absent (champ non présent dans un JSON valide) → toutes les personnes avec au moins une absence future. `batchId` : comme ci-dessus. **Si le body n'est pas un JSON valide → 400**, jamais de fallback silencieux vers "tout le monde".
 
-**Effet :** dispatch d'**un `SendTemplatedEmailMessage` par personne sélectionnée**, à sa propre
-adresse, contenant **tous ses congés futurs** (`dateEnd >= aujourd'hui`, sans plafond de 3
-mois) — jamais vers `boost.conge@gmail.com`. Enregistre un `UserAuditEvent`
-(`ABSENCES_CONFIRMATION_SENT`, `payload.count` = nombre d'emails individuels envoyés).
+**Effet (H5a, D-131) :** **un dispatch `ABSENCE_ENCODED_RECAP` par personne sélectionnée**, un
+email individuel à sa propre adresse, contenant **les dates de tous ses congés futurs**
+(`dateEnd >= aujourd'hui`, sans plafond de 3 mois) — **jamais le motif libre** (D-130 A.5) —
+mêmes garanties que `request-missing`. Enregistre un `UserAuditEvent`
+(`ABSENCES_CONFIRMATION_SENT`, `payload.count` = nombre d'emails réellement mis en file).
 
 **Réponse — 200 :**
 
 ```json
-{ "sent": true, "count": 2 }
+{ "sent": true, "batchId": "…", "count": 2, "notSent": [] }
 ```
 
 Aucune des deux réponses n'a de champ `recipient` — il y a toujours N destinataires
@@ -3547,6 +3590,19 @@ Publie les missions `DRAFT` de la version selon les règles ci-dessous, puis dis
 
 Aucun email "récapitulatif de changements" (`planning_change_summary_*`) n'est envoyé lors du déploiement initial — voir §26.6c.
 
+Depuis H3 (D-129), l'email de planning de l'instrumentiste ne contient plus de section « missions
+disponibles » (`availableMissions` toujours vide) : les missions publiées en pool sont proposées par
+**l'email pool** ci-dessous, une seule fois.
+
+**Pool (H3, D-129) — missions cochées `openUncoveredIds` :** `OpenMissionPoolNotifier` en mode lot
+(clé `deployment:{deploymentId}`). Seules les instrumentistes réellement éligibles à **chaque**
+mission sont sollicitées ; chacune reçoit **un seul** email (« SurgicalHub — N missions
+disponibles » / « Mission disponible le jj/mm/aaaa », template
+`emails/open_missions_available.html.twig`) et **un seul** push pour tout le déploiement, listant
+uniquement ses missions, plus un élément in-app par mission. Canaux selon préférences
+(`OPEN_MISSION_AVAILABLE` : in-app, email et push activés par défaut). Contenu : date, horaires,
+période, site, chirurgien, type, lien vers les offres — jamais de donnée patient ni financière.
+
 **Notifications in-app créées par le worker (Batch 15C) :**
 
 Toutes les notifications in-app sont créées via `NotificationEvent` (channel `IN_APP`) et gérées par `NotificationPreferenceResolver`. Les emails et les notifications in-app sont désactivables par préférence utilisateur.
@@ -3556,7 +3612,7 @@ Toutes les notifications in-app sont créées via `NotificationEvent` (channel `
 | `PLANNING_DEPLOYED_INSTRUMENTIST` | Chaque instrumentiste avec au moins 1 mission | `{ periodLabel, missionCount, deployedAt }` |
 | `PLANNING_DEPLOYED_SURGEON` | Chaque chirurgien avec au moins 1 poste | `{ periodLabel, posts[] }` |
 | `PLANNING_DEPLOYED_MANAGER` | Le manager qui a déclenché le déploiement | `{ missionCount, assignedCount, openPoolCount, periodLabel }` |
-| `OPEN_MISSION_AVAILABLE` | Chaque instrumentiste du site (missions en pool uniquement) | `{ openMissionIds, missionCount, siteName, periodLabel }` |
+| `OPEN_MISSION_AVAILABLE` | Chaque instrumentiste **éligible à la mission** (H3 : une par mission) | `{ missionId, openMissionIds: [missionId], missionCount: 1, missionDate, startTime, endTime, periodLabel, siteName, surgeonName, cause }` |
 
 **Format d'un élément `posts[]` (payload `PLANNING_DEPLOYED_SURGEON`) :**
 
@@ -3733,7 +3789,15 @@ changement d'horaire/site/type, nouvelle mission) à une `PlanningVersion` **dé
 déployée** — jamais un nouveau cycle `generate`/`deploy`. Mute directement les `Mission`
 existantes via `MissionPostDeployService` (D-052/D-056), chaque appel avec `notify:
 false` — les notifications unitaires `PLANNING_MISSION_*` (§26.4, L4) ne sont **pas**
-déclenchées ligne par ligne ; voir "Emails envoyés" ci-dessous.
+déclenchées ligne par ligne ; voir "Notifications" ci-dessous.
+
+**Atomicité (H3, D-129) :** le lot entier s'exécute dans **une seule transaction** — toutes
+les lignes, la resynchronisation des alertes de conflit, le diff et la trace
+`PLANNING_MODIFICATION_APPLIED` sont validés ensemble ou annulés ensemble. Une ligne refusée
+(ex. réassignation à une instrumentiste absente → 4xx) annule **tout** le lot : aucune
+mission n'est modifiée, personne n'est notifié, et la trace est un
+`PLANNING_MODIFICATION_APPLIED` `FAILED` (`rolledBack: true`). Il n'existe plus d'état
+« partiellement appliqué ».
 
 **Body JSON :**
 
@@ -3787,7 +3851,11 @@ Planning V2) sont dérivés du diff — le nombre à afficher au manager, jamais
 de mutations : `functionalChanges` = missions ajoutées + supprimées + modifiées dans le
 diff (jamais `updatedAt`, l'ordre des tableaux, ou une ligne renvoyée inchangée par le
 frontend — le frontend envoie systématiquement **toutes** les lignes du mois, pas
-seulement celles éditées). `usersNotified`/`emailsSent` sont toujours égaux aujourd'hui.
+seulement celles éditées). `usersNotified`/`emailsSent` sont toujours égaux : depuis H3
+(D-129), ils valent le nombre de personnes **qui recevront** le récapitulatif — l'envoi est
+asynchrone, après validation du lot, et ses canaux suivent les préférences de chacun ; le
+détail réel par canal se lit dans l'historique des notifications. Le pool sollicité pour les
+missions ouvertes par le lot n'est pas compté ici (trace `OPEN_POOL_EVALUATED`).
 
 > **Correctif D-090** : le frontend envoyant toutes les lignes du mois, un bug de fuseau
 > horaire (`combineDateTime()` sans Europe/Brussels explicite, voir D-090) faisait
@@ -3799,45 +3867,45 @@ seulement celles éditées). `usersNotified`/`emailsSent` sont toujours égaux a
 
 **Réponse — 404 :** `PlanningVersion` inexistante.
 
-**Emails envoyés — un seul récapitulatif ciblé par personne réellement affectée :**
+**Notifications — après validation du lot uniquement (H3, D-129) :**
 
-À la fin du lot, `PlanningModificationService` calcule un diff avant/après sur
-l'ensemble des missions de la version, **indexé par `missionId`**
-(`PlanningDiffService::computeDiffByMissionId()`, D-090 — pas `computeDiffFromSnapshots()`/
-`diff()`, qui indexent par clé composite site/chirurgien/type/date/heure-arrondie et sont
-réservées à la comparaison de deux `PlanningVersion` **différentes** ; appliquée à un
-auto-diff avant/après édition de la même mission, cette clé composite ferait apparaître
-un simple changement d'horaire comme "suppression + ajout", soit deux changements
-fonctionnels pour une seule édition) et appelle **une seule fois**
-`PlanningChangeSummaryService::sendChangeSummaryEmails()` avec ce diff précalculé.
+Une fois la transaction validée, le service publie **un** message
+`PlanningModificationAppliedMessage` (même `correlationId` que la requête). Le worker produit :
 
-| Destinataire | Condition d'envoi | Template |
-|---|---|---|
-| Instrumentiste | Au moins une mission le concernant apparaît dans le diff (ajoutée, modifiée, ou dont il a perdu/gagné l'affectation) | `emails/planning_change_summary_instrumentist.html.twig` |
-| Chirurgien | Au moins une de ses propres interventions apparaît dans le diff | `emails/planning_change_summary_surgeon.html.twig` |
+1. **Le récapitulatif par personne réellement affectée** — type `PLANNING_CHANGE_SUMMARY`,
+   envoyé par `NotificationDispatcher` (in-app / email / push selon les préférences ; email
+   activé par défaut), idempotent par lot. Le diff avant/après est indexé par `missionId`
+   (`PlanningDiffService::computeDiffByMissionId()`, D-090 — pas la clé composite réservée à
+   la comparaison de deux versions différentes, qui ferait apparaître un changement d'horaire
+   comme « suppression + ajout »).
 
-Chaque email contient une liste unifiée "Modifications (N)" (une carte par changement,
-quel que soit le type — ajout/modification/annulation) et le PDF planning personnel à
-jour en pièce jointe (même mécanisme que le déploiement initial, §26.6). **Jamais de
-renvoi global** aux chirurgiens/instrumentistes non concernés — un utilisateur avec une
-mission non modifiée ailleurs dans la même version ne reçoit rien.
+   | Destinataire | Condition | Template email |
+   |---|---|---|
+   | Instrumentiste | Au moins une mission la concernant dans le diff (ajoutée, modifiée, ou dont elle a perdu/gagné l'affectation — y compris la personne retirée d'une mission) | `emails/planning_change_summary_instrumentist.html.twig` |
+   | Chirurgien | Au moins une de ses propres interventions dans le diff | `emails/planning_change_summary_surgeon.html.twig` |
 
-Si le lot ne produit aucun changement effectif (toutes les lignes `unchanged`), le diff
-est vide et **aucun email n'est envoyé**.
+   Chaque email liste « Modifications (N) » et joint le PDF planning personnel à jour (§26.6).
+   **Jamais de renvoi global** aux personnes non concernées. Diff vide → aucun récapitulatif.
+   Le récapitulatif est l'information de la personne retirée d'une mission : elle ne reçoit pas
+   en plus un `PLANNING_MISSION_RELEASED` pour le même lot.
+
+2. **Le pool pour les missions que le lot a ouvertes** (instrumentiste retirée par le manager,
+   ou nouvelle mission sans instrumentiste) — `OpenMissionPoolNotifier` en mode lot : seules
+   les instrumentistes réellement éligibles à **chaque** mission (affiliation ou freelance, pas
+   absente, pas de mission qui chevauche), **un seul email et un seul push par personne** pour
+   tout le lot, listant uniquement ses missions. La personne retirée d'une mission n'est pas
+   sollicitée pour cette mission-là (exclusion de l'épisode, tracée), mais peut l'être pour une
+   autre mission du lot.
 
 **Notes :**
-- Aucune notification in-app `PLANNING_MISSION_*` (celles-ci restent réservées aux
-  actions unitaires post-déploiement hors mode Modification — release/cancel/reassign/
-  assign appelés individuellement, §26.4).
-- Envoi synchrone (`MessageBusInterface::dispatch`, transport `async`) — une erreur de
-  rendu PDF ou de dispatch pour un destinataire est loguée (`logger->error`, jamais
-  silencieuse) et n'empêche ni la mutation déjà persistée, ni l'envoi aux autres
-  destinataires.
-- Aucune nouvelle migration — cette capacité mute uniquement des `Mission` déjà
-  existantes en base.
-- Voir D-058 (`docs/decisions.md`) pour la politique email de déploiement initial, dont
-  ce mode est explicitement le "futur déclencheur" annoncé ; `docs/planning-v2-architecture-freeze.md`
-  §L9 pour le détail architecture de l'éditeur unifié.
+- Aucune notification `PLANNING_MISSION_*` unitaire (réservées aux actions post-déploiement
+  hors mode Modification, §26.4).
+- Lot refusé → rien n'est publié : ni récapitulatif, ni pool.
+- Un échec d'envoi pour un destinataire est tracé (historique des notifications,
+  `activity_event`) et n'empêche ni les autres destinataires, ni l'autre étape.
+- Aucune nouvelle migration.
+- Voir D-058 (politique email de déploiement initial), D-129 (pool et atomicité) ;
+  `docs/planning-v2-architecture-freeze.md` §L9 pour l'éditeur unifié.
 
 ---
 
@@ -3873,8 +3941,9 @@ ce flux.
 
 **Réponse — 404 :** version inexistante.
 
-**Emails envoyés :** identique à `apply-modifications` — un seul récapitulatif ciblé par
-personne réellement affectée, calculé via le même diff avant/après. Une mission `OPEN`
+**Notifications :** identiques à `apply-modifications` (même transaction unique, même
+message post-commit) — un seul récapitulatif ciblé par personne réellement affectée, calculé
+via le même diff avant/après ; aucune mission n'étant ouverte, le pool n'est pas sollicité. Une mission `OPEN`
 sans instrumentiste qui est annulée ne produit **aucune entrée de diff** (son
 instrumentiste reste `null` avant/après — `PlanningDiffService::detectChanges()` ignore
 le statut) : son chirurgien ne reçoit donc rien pour cette mission-là spécifiquement.
@@ -3897,8 +3966,11 @@ jamais un format divergent.
 
 **Réponse — 200 :**
 ```json
-{ "missionCount": 4, "email": "instrumentiste@example.com" }
+{ "missionCount": 4, "email": "instrumentiste@example.com", "status": "QUEUED" }
 ```
+
+`status` (H5a) : statut honnête de l'email au moment de la réponse — `QUEUED` (mis en file ;
+l'historique des envois passe à `SENT` quand le relais l'accepte, jamais « reçu »).
 
 **Réponse — 409 :** la version ciblée n'est pas `ACTIVE` — **exclusivement le planning
 publié, jamais un brouillon**, refusé structurellement (pas seulement par convention).
@@ -3907,15 +3979,23 @@ publié, jamais un brouillon**, refusé structurellement (pas seulement par conv
 chirurgien/instrumentiste, ou sans email, ou sans mission publiée dans cette version
 pour ce rôle.
 
-**Réponse — 502 :** échec d'envoi de l'email (transport indisponible, etc.).
+**Réponse — 502 :** l'email n'a pas pu être mis en file (message contrôlé, jamais un détail
+de transport ; la livraison `FAILED` reste consultable dans l'historique des envois).
 
 **Missions incluses :** `ASSIGNED` pour un instrumentiste ; `OPEN` + `ASSIGNED` pour un
 chirurgien (même périmètre que l'email de déploiement initial).
 
-**Historique des notifications :** enregistre systématiquement un `NotificationEvent`
-(`eventType: "PLANNING_RESENT_MANUAL"`) pour le destinataire uniquement — jamais pour
-personne d'autre — avec `payload.status` (`SENT`/`FAILED`) et `payload.error` le cas
-échéant, visible dans `GET /api/notifications` (§41.1) du destinataire.
+**Historique des notifications (H5a, D-131) :** un dispatch `PLANNING_RESENT_MANUAL` via
+`NotificationDispatcher` pour le destinataire uniquement — jamais pour personne d'autre :
+email **obligatoire** (une action explicite du manager ne dépend pas des préférences), PDF
+attaché par référence (`GeneratedDocument`, sha256 dans `outbound_notification.payload
+.attachments`), élément in-app (`eventType: "PLANNING_RESENT_MANUAL"`, canal `IN_APP`, payload
+`planningVersionId`, `periodFrom`, `periodTo`, `missionCount`, `actorId`, `actorName`) selon ses
+préférences, visible dans `GET /api/notifications` (§41.1). Les missions renvoyées sont
+enregistrées comme communiquées (`mission_communication`, source `RESEND`) dès qu'un canal l'a
+réellement atteinte — jamais si tous les canaux échouent. L'ancien `payload.status` /
+`payload.error` du `NotificationEvent` canal EMAIL n'existe plus (le statut vit sur la
+livraison).
 
 ---
 
@@ -4950,7 +5030,7 @@ autres rôles reçoivent 403.
 | `from`              | ISO8601 | Depuis (inclusif) |
 | `to`                | ISO8601 | Jusqu'au (inclusif) |
 | `recipientUserId`   | integer | Filtrer par destinataire |
-| `channel`           | string  | `PUSH` \| `EMAIL` |
+| `channel`           | string  | `PUSH` \| `EMAIL` \| `IN_APP` (H2, D-128) |
 | `notificationType`  | string  | ex : `ENCODING_REMINDER_D1` |
 | `status`            | string  | `QUEUED` \| `SENT` \| `FAILED` \| `SKIPPED` |
 | `missionId`         | integer | Filtrer par mission liée |
@@ -4974,7 +5054,10 @@ autres rôles reçoivent 403.
       "subject": null,
       "missionId": 690,
       "attemptCount": 1,
-      "fallback": false
+      "fallback": false,
+      "skipReason": null,
+      "correlationId": "01a105b6-12f5-7b61-a5ee-9ad5c0900852",
+      "grouped": false
     }
   ],
   "page": 1,
@@ -4988,7 +5071,17 @@ autres rôles reçoivent 403.
 `planningVersionId`, `queuedAt`, `sentAt`, `failedAt`, `failureCode`, `failureMessage`,
 `fallbackOfId`, `fallbackReason` (`NO_SUBSCRIPTION` \| `EXPIRED` \| `ALL_FAILED` \|
 `PUSH_DISABLED`), et `attempts` (chronologie : `attemptNumber`, `startedAt`, `finishedAt`,
-`success`, `statusCode`, `reason`, `provider`).
+`success`, `statusCode`, `reason`, `provider`), `notificationEventId` et
+`notificationEventSeenAt` (ligne `IN_APP` : élément du flux in-app créé et, s'il a été vu,
+quand).
+
+**H2 (D-128) — champs ajoutés (additifs, rétrocompatibles) :** chaque canal d'une notification
+passée par `NotificationDispatcher` a sa propre ligne, y compris `IN_APP` et y compris un canal
+non utilisé (`status: SKIPPED`). `skipReason` explique alors pourquoi :
+`DISABLED_BY_PREFERENCE` \| `NO_PUSH_SUBSCRIPTION` \| `NO_EMAIL_ADDRESS` \| `COVERED_BY_PUSH` \|
+`NOT_APPLICABLE` (`null` sinon). `correlationId` relie la ligne à l'opération (journal
+`activity_event`) ; `grouped` vaut `true` pour un email/push groupé d'une opération par lot
+(un seul envoi pour plusieurs dispatchs).
 
 **Jamais dans la réponse :** endpoint Push complet, `p256dh`, `auth`, JWT, clé VAPID,
 secret SMTP, mot de passe, donnée patient.
@@ -5522,11 +5615,16 @@ aucun statut : simple envoi de notification + trace d'audit.
 **AuthZ :** `MissionVoter::ENCODING_REMIND` — Manager/Admin uniquement, mission avec
 instrumentiste assigné, statut parmi `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS`.
 
-**Body :** aucun.
+**Body (optionnel, H5a) :** `{ "batchId": "uuid" }` — identifiant de l'action du manager
+(8–64 caractères `[A-Za-z0-9-]`) : une requête rejouée avec le même lot n'envoie jamais une
+seconde relance. Absent → la corrélation de la requête.
 
 **Effets backend :**
-- Envoie la même notification que la relance automatique D+1 (D-083) — Push avec repli
-  email, `NotificationService::missionEncodingReminderNotifyInstrumentist()`.
+- H5a (D-131) — dispatch `ENCODING_REMINDER_D1` via `NotificationDispatcher` : push selon les
+  préférences, **email obligatoire** (`MANDATORY` — action explicite du manager, contrairement à la
+  relance automatique D+1 qui reste soumise aux préférences), sans in-app, tracé
+  (`notification_dispatch`, `outbound_notification`). L'audit `MISSION_ENCODING_MANUAL_REMINDER_SENT`
+  porte `channel` = `push+email` / `email` / `push` / `none`.
 - **Ne touche jamais** `mission.encodingReminderSentAt` (réservé au garde-fou "au plus un
   rappel automatique" — la relance manuelle est indépendante, répétable, sans effet sur la
   planification du cron).
@@ -6412,7 +6510,9 @@ effectuée.
 
 ### Envoi (interne, jamais exposé en HTTP)
 
-`WebPushService::sendToUser()`/`sendToUsers()`/`sendToSiteInstrumentists()` — voir
+`WebPushService::sendToUser()` / `sendToUserWithAttempts()` — un destinataire à la fois, appelé par
+`NotificationDispatcher` après le resolver de préférences (H3, D-129 : les envois groupés
+`sendToUsers()` / `sendToSiteInstrumentists()`, qui ignoraient les préférences, sont supprimés). Voir
 `docs/architecture.md` pour le flux complet et D-081 pour la politique d'observabilité
 (canal Monolog `push`, erreurs non-expirées routées vers Sentry, jamais d'endpoint
 complet ni de clé dans un log). Un abonnement retournant `404`/`410` est supprimé
@@ -6753,7 +6853,10 @@ au plus une fois par requête `create()`/`update()`/`delete()`, uniquement si au
 des six compartiments d'impact (`missionsCancelled`, `missionsReleased`,
 `missionsRestoredAssigned`, `missionsRestoredOpen`, `futureOccurrencesCancelled`,
 `futureOccurrencesRestored`) est non vide — voir docs/decisions.md D-105 pour
-l'architecture de consolidation complète.
+l'architecture de consolidation complète. H4 (D-130) : quatre compartiments de plus
+(`draftsToCover`, `managerDecisions` en « Action requise », `draftsNeutralizedAtDeploy` en
+« Impact automatique », `usualOccurrencesToCover` en « À anticiper ») ; envoyé par
+`NotificationDispatcher`.
 
 ## 43. Activité chirurgien + podium personnel (Lot 4, D-098)
 

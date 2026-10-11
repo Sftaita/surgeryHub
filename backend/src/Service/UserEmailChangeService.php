@@ -18,6 +18,10 @@ use Symfony\Component\Validator\Validator\ValidatorInterface;
  * Emails are sent even to a suspended target: the point is account security, not
  * whether the account can currently log in. A failed dispatch never rolls back the
  * (already-flushed) email change; it only surfaces as a warning to the caller.
+ *
+ * H5a (category C) — both emails go through NotificationDispatcher with a MANDATORY email
+ * (never subject to preferences), the explicit address recorded on each delivery, one
+ * episode per change and side: the notice to the previous address is traceable as such.
  */
 class UserEmailChangeService
 {
@@ -25,7 +29,7 @@ class UserEmailChangeService
         private readonly EntityManagerInterface $em,
         private readonly UserRepository $userRepository,
         private readonly UserAuditService $userAuditService,
-        private readonly EmailService $emailService,
+        private readonly NotificationService $notifications,
         private readonly ValidatorInterface $validator,
     ) {
     }
@@ -57,60 +61,28 @@ class UserEmailChangeService
             throw new ConflictHttpException('This email address is already used by another account.');
         }
 
-        $displayName = self::displayName($target);
-
         $target->setEmail($newEmail);
         $this->userAuditService->userEmailChanged($actor, $target, $oldEmail, $newEmail);
         $this->em->flush();
 
         $warnings = [];
 
-        try {
-            $this->emailService->sendTemplatedEmail(
-                to: $oldEmail,
-                subject: 'SurgicalHub — Votre adresse email a été modifiée',
-                htmlTemplate: 'emails/user_email_changed_old_address.html.twig',
-                context: [
-                    'displayName' => $displayName,
-                    'oldEmail' => $oldEmail,
-                    'newEmail' => $newEmail,
-                ],
-                textTemplate: 'emails/user_email_changed_old_address.txt.twig',
-            );
-        } catch (\Throwable) {
-            $warnings[] = [
-                'code' => 'EMAIL_CHANGE_NOTIFICATION_NOT_QUEUED',
-                'recipient' => 'old',
-                'message' => 'The email address was changed, but the notification to the previous address could not be queued.',
-            ];
-        }
-
-        try {
-            $this->emailService->sendTemplatedEmail(
-                to: $newEmail,
-                subject: 'SurgicalHub — Votre adresse email est confirmée',
-                htmlTemplate: 'emails/user_email_changed_new_address.html.twig',
-                context: [
-                    'displayName' => $displayName,
-                    'newEmail' => $newEmail,
-                ],
-                textTemplate: 'emails/user_email_changed_new_address.txt.twig',
-            );
-        } catch (\Throwable) {
-            $warnings[] = [
-                'code' => 'EMAIL_CHANGE_NOTIFICATION_NOT_QUEUED',
-                'recipient' => 'new',
-                'message' => 'The email address was changed, but the notification to the new address could not be queued.',
-            ];
+        $changeRef = bin2hex(random_bytes(8));
+        foreach (['old' => $oldEmail, 'new' => $newEmail] as $side => $address) {
+            try {
+                $queued = $this->notifications->sendEmailChangeNotice($target, $address, $side, $changeRef, $oldEmail, $newEmail);
+            } catch (\Throwable) {
+                $queued = false;
+            }
+            if (!$queued) {
+                $warnings[] = [
+                    'code' => 'EMAIL_CHANGE_NOTIFICATION_NOT_QUEUED',
+                    'recipient' => $side,
+                    'message' => sprintf('The email address was changed, but the notification to the %s address could not be queued.', $side === 'old' ? 'previous' : 'new'),
+                ];
+            }
         }
 
         return ['user' => $target, 'warnings' => $warnings];
-    }
-
-    private static function displayName(User $user): string
-    {
-        $name = trim((string) ($user->getFirstname() ?? '') . ' ' . (string) ($user->getLastname() ?? ''));
-
-        return $name !== '' ? $name : (string) $user->getEmail();
     }
 }

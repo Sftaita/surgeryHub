@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+    .container { max-width: 600px; margin: 0 auto; padding: 24px; }
+    .header { border-bottom: 2px solid #1B5FD0; padding-bottom: 12px; margin-bottom: 20px; }
+    .title { color: #1B5FD0; font-size: 18px; font-weight: bold; }
+    .details { background: #F5F7FA; border-radius: 8px; padding: 14px 18px; margin: 16px 0; }
+    .footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">SurgicalHub — {{ headline }}</div>
+  </div>
+
+  <p>{{ greeting }},</p>
+  <p>{{ intro }}</p>
+
+  <div class="details">
+    {% if dateLabel %}<div><strong>Date :</strong> {{ dateLabel }}</div>{% endif %}
+    {% if timeLabel %}<div><strong>Horaire :</strong> {{ timeLabel }}</div>{% endif %}
+    {% if siteName %}<div><strong>Site :</strong> {{ siteName }}</div>{% endif %}
+    {% if surgeonName %}<div><strong>Chirurgien :</strong> Dr {{ surgeonName }}</div>{% endif %}
+    {% if instrumentistName %}<div><strong>Instrumentiste :</strong> {{ instrumentistName }}</div>{% endif %}
+    <div><strong>Type :</strong> {{ typeLabel }}</div>
+    {% if reason %}<div><strong>Motif :</strong> {{ reason }}</div>{% endif %}
+  </div>
+
+  {% if missionUrl %}<p><a href="{{ missionUrl }}">{{ missionUrl }}</a></p>{% endif %}
+
+  <p>Bien à vous,<br>SurgicalHub</p>
+
+  {% include 'emails/_notification_preferences_cta.html.twig' %}
+
+  <div class="footer">SurgicalHub — document confidentiel</div>
+</div>
+</body>
+</html>

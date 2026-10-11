@@ -96,6 +96,43 @@ final class MissionPostDeployServiceTest extends TestCase
         return $m;
     }
 
+    // ── restoreAfterCancellation() — H3 (D-129) ───────────────────────────────
+
+    public function test_restore_as_open_solicits_the_pool_through_the_single_entry_point(): void
+    {
+        $mission = $this->makeMission(MissionStatus::CANCELLED);
+        $actor   = $this->makeActor();
+        $sent    = [];
+        $this->bus = $this->createMock(MessageBusInterface::class);
+        $this->bus->method('dispatch')->willReturnCallback(function (object $m) use (&$sent) { $sent[] = $m; return new Envelope($m); });
+        $service = new MissionPostDeployService($this->em, $this->bus, $this->audit, $this->eligibilityService);
+
+        $service->restoreAfterCancellation($mission, $actor, null, causedByAbsenceId: 42);
+
+        self::assertSame(MissionStatus::OPEN, $mission->getStatus());
+        $pool = array_values(array_filter($sent, static fn ($m) => $m instanceof \App\Message\OpenMissionPoolMessage));
+        self::assertCount(1, $pool, 'even with notify=false: a real opening always reaches the pool');
+        $episode = $pool[0]->toEpisodes()[0];
+        self::assertSame($mission->getId(), $episode->missionId);
+        self::assertSame(\App\Enum\OpenEpisodeCause::RESTORED_AFTER_ABSENCE, $episode->cause);
+    }
+
+    public function test_restore_as_assigned_never_solicits_the_pool(): void
+    {
+        $mission = $this->makeMission(MissionStatus::CANCELLED);
+        $instr   = $this->makeInstrumentist();
+        $this->em->method('find')->willReturn($instr);
+        $sent    = [];
+        $this->bus = $this->createMock(MessageBusInterface::class);
+        $this->bus->method('dispatch')->willReturnCallback(function (object $m) use (&$sent) { $sent[] = $m; return new Envelope($m); });
+        $service = new MissionPostDeployService($this->em, $this->bus, $this->audit, $this->eligibilityService);
+
+        $service->restoreAfterCancellation($mission, $this->makeActor(), $instr->getId(), causedByAbsenceId: 42);
+
+        self::assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
+        self::assertSame([], array_filter($sent, static fn ($m) => $m instanceof \App\Message\OpenMissionPoolMessage));
+    }
+
     // ── release() ─────────────────────────────────────────────────────────────
 
     public function test_release_transitions_status_to_open(): void

@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Activity\Recorder\PlanningActivityRecorder;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningOccurrenceException;
@@ -34,6 +35,7 @@ class PlanningGeneratorServiceV2
         private readonly EntityManagerInterface $em,
         private readonly PlanningConflictDetectionService $conflictDetection,
         private readonly MissionEligibilityService $eligibilityService,
+        private readonly PlanningActivityRecorder $activity,
     ) {}
 
     /**
@@ -507,7 +509,31 @@ class PlanningGeneratorServiceV2
             $created++;
         }
 
-        $this->em->flush();
+        $result = [
+            'versionId'           => null,
+            'created'             => $created,
+            'updated'             => $updated,
+            'skipped'             => $skipped,
+            'rejectedAssignments' => $rejected,
+        ];
+
+        // H1 (D-126) — the version, its missions and its PLANNING_GENERATED journal entry
+        // commit together: a generated version never exists without its trace (nor the
+        // reverse). Plain connection-level transaction (not wrapInTransaction()) so the
+        // existing flush-based behaviour and its tests stay byte-for-byte the same.
+        $connection = $this->em->getConnection();
+        $connection->beginTransaction();
+        try {
+            $this->em->flush();
+            $result['versionId'] = $version->getId();
+            $this->activity->generated($version, array_values($lines), $result, $overrideLines !== null, $generatedBy);
+            $connection->commit();
+        } catch (\Throwable $e) {
+            if ($connection->isTransactionActive()) {
+                $connection->rollBack();
+            }
+            throw $e;
+        }
 
         // D-091 — surface cross-site conflicts as PlanningAlert rows right after
         // generation, so the manager sees them in the Alertes tab before ever attempting
@@ -517,13 +543,7 @@ class PlanningGeneratorServiceV2
         // discipline the rest of this generator already follows.
         $this->conflictDetection->syncAlertsForVersion($version);
 
-        return [
-            'versionId'           => $version->getId(),
-            'created'             => $created,
-            'updated'             => $updated,
-            'skipped'             => $skipped,
-            'rejectedAssignments' => $rejected,
-        ];
+        return $result;
     }
 
     /**

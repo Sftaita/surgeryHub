@@ -698,7 +698,7 @@ export default function CatalogueRequestsPage() {
                       <Stack spacing={0.25}>
                         <Typography variant="body2">{request.label}</Typography>
                         {request.comment ? (
-                          <Typography variant="caption" color="text.secondary">
+                          <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
                             {request.comment}
                           </Typography>
                         ) : null}

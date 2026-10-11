@@ -20,7 +20,6 @@ use App\Service\ExportService;
 use App\Service\InstrumentistServiceManager;
 use App\Service\MissionMapper;
 use App\Service\MissionPostDeployService;
-use App\Service\NotificationService;
 use App\Service\PlanningAlertService;
 use App\Service\SurgeonServiceManager;
 use Doctrine\ORM\EntityManagerInterface;
@@ -545,33 +544,7 @@ final class MissionBusinessTimezoneIntegrationTest extends KernelTestCase
     // (D-065 audit finding #7 — dormant: no endpoint exposes NotificationEvent.payload
     // today, but it must still carry the correct offset)
 
-    public function test_notification_service_payload_gets_the_correct_offset(): void
-    {
-        $surgeon = $this->makeUser('ROLE_SURGEON');
-        $instr = $this->makeUser('ROLE_INSTRUMENTIST');
-        $site = $this->makeSite();
-        $mission = $this->makeMission(
-            $surgeon, $instr, $site,
-            new \DateTimeImmutable('2026-07-15T10:11:00+02:00'),
-            new \DateTimeImmutable('2026-07-15T12:11:00+02:00'),
-        );
-        $id = $mission->getId();
-        $instrId = $instr->getId();
-
-        $this->em->clear();
-        $reread = $this->em->find(Mission::class, $id);
-
-        $service = self::getContainer()->get(NotificationService::class);
-        $service->planningMissionAssignedNotifyInstrumentist($reread);
-        $this->em->flush();
-
-        $freshInstr = $this->em->find(User::class, $instrId);
-        $notifications = $this->em->createQueryBuilder()
-            ->select('n')->from(NotificationEvent::class, 'n')
-            ->where('n.user = :u')->setParameter('u', $freshInstr)
-            ->getQuery()->getResult();
-
-        self::assertCount(1, $notifications);
-        self::assertSame('2026-07-15T10:11:00+02:00', $notifications[0]->getPayload()['startAt']);
-    }
+    // H5b (D-132) — test_notification_service_payload_gets_the_correct_offset removed: it
+    // guarded NotificationService::planningMissionAssignedNotifyInstrumentist(), a method with
+    // no caller in src/ (dead before H5b) deleted with the legacy direct in-app creations (§27).
 }
