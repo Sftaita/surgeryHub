@@ -13056,7 +13056,7 @@ que la décision (et la carte « Heures prestées ») repose sur le début et la
 exécution portant début et fin sans durée stockée (données écrites hors
 `MissionExecutionService`, seul écrivain applicatif, qui dérive toujours la durée)
 s'affichait « Non renseigné ». La durée affichée est désormais dérivée comme côté serveur
-(fin − début − pause) ; « Non renseignées » uniquement si rien n'est saisi.
+(fin − début) ; « Non renseignées » uniquement si rien n'est saisi.
 
 **Page « Demandes ».** 6 colonnes au lieu de 8 (référence dans la demande, demandeur avec la
 mission, actions empilées) : plus de défilement horizontal à 1280 px.
@@ -13069,3 +13069,29 @@ ses hunks de `MaterialItemRequestService` / `MissionInterventionDraftService` (s
 audit et double pose du décideur), garder le frontend et les tests en ajoutant aux corps de
 résolution les champs désormais obligatoires (firme, quantité / `newItem`), résoudre les
 conflits `api.md` / `decisions.md` (numérotation D-139 conservée).
+
+### D-146 bis — correction (2026-10-12) : aucune pause, consultation après validation
+
+**Heures prestées = heure réelle de fin − heure réelle de début.** Aucune pause n'est saisie,
+affichée ni déduite. Remplace la partie « pause » de D-143 (« début, fin, pause ») : le
+dialogue des heures, la carte « Heures prestées », les récapitulatifs instrumentiste,
+chirurgien et manager, le calcul serveur (`MissionExecutionService::resolveDuration()` et
+`updateActuals()`) et donc la valorisation appliquent fin − début. `breakMinutes` n'est plus
+exposé par l'API ; envoyé par un ancien client, il est ignoré.
+
+- La colonne `mission_execution.break_minutes` (migration `Version20261011090000`, déjà en
+  production) n'est **pas supprimée** : elle n'a plus aucun effet. Son nettoyage éventuel
+  (migration de suppression) est une opération ultérieure distincte.
+- Aucune réécriture rétroactive : les calculs financiers déjà persistés (approuvés,
+  verrouillés, facturés) ne sont jamais rejoués ; les durées historiques déclarées seules
+  (sans début ni fin) restent utilisées telles quelles ; rien n'est déduit du planifié.
+  Une exécution dont la durée stockée avait été diminuée d'une pause est désormais lue
+  fin − début (affichage et prochain calcul), comme le serveur.
+
+**Consultation après validation.** L'instrumentiste assignée retrouve sa mission `VALIDATED`
+(ou `CLOSED`) et consulte, en lecture seule, ses heures prestées, interventions et matériel :
+`MissionVoter::VIEW_ENCODING` et l'action `view_encoding` couvrent ces statuts pour elle
+(mêmes statuts que pour le chirurgien), sur l'écran d'encodage existant. Aucune action
+d'écriture (`encoding`, `edit_encoding`, `edit_hours`, `submit`) n'est ouverte ; les gardes
+d'écriture (`EDIT_ENCODING`, `MissionEncodingGuard`, `MissionExecutionVoter::UPDATE`) et la
+protection des missions verrouillées sont inchangées ; une autre instrumentiste reste refusée.

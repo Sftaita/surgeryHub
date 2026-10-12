@@ -5994,7 +5994,6 @@ chirurgien de la mission.
   "actualStartAt": null,
   "actualEndAt": null,
   "actualDurationMinutes": null,
-  "breakMinutes": null,
   "hoursSource": null,
   "effectiveDurationMinutes": 120,
   "effectiveDurationSource": "PLANNED",
@@ -6022,7 +6021,6 @@ de `MissionExecution` (voir §"Correction de sécurité" dans architecture.md). 
 {
   "actualStartAt": "2026-09-01T08:05:00+02:00",
   "actualEndAt": "2026-09-01T10:20:00+02:00",
-  "breakMinutes": 30,
   "actualDurationMinutes": null,
   "hoursSource": "INSTRUMENTIST"
 }
@@ -6033,8 +6031,9 @@ de `MissionExecution` (voir §"Correction de sécurité" dans architecture.md). 
   accepté comme brouillon ; il ne décrit aucune durée et ne permet pas de soumettre
   (`POST .../encoding/complete` → `422 ENCODING_INCOMPLETE`).
 - Si les deux sont connus, `actualDurationMinutes` est **toujours dérivée**
-  (`round((end - start) / 60) - breakMinutes`) — jamais deux sources de vérité.
-- `breakMinutes` (D-143) : `≥ 0` et strictement inférieure à la plage début → fin.
+  (`round((end - start) / 60)`, heures prestées = fin − début) — jamais deux sources de vérité.
+- **D-146 bis :** aucune pause. `breakMinutes` n'est plus exposé ; s'il est encore envoyé
+  par un ancien client, il est ignoré (ni enregistré, ni déduit).
 - Fournir en plus une `actualDurationMinutes` explicite qui contredit cette dérivation
   est un `422`, jamais une acceptation silencieuse.
 
@@ -6045,7 +6044,7 @@ de `MissionExecution` (voir §"Correction de sécurité" dans architecture.md). 
 | Code | Description |
 |---|---|
 | `403` | Non autorisé |
-| `422` | `actualEndAt ≤ actualStartAt`, pause ≥ plage, ou durée contradictoire |
+| `422` | `actualEndAt ≤ actualStartAt`, ou durée contradictoire |
 
 ### `POST /api/missions/{id}/execution/remind`
 
@@ -7406,8 +7405,10 @@ l'ensemble des décisions.
 
 **AuthZ :** `MissionVoter::VIEW_ENCODING` (lecture — nouveau, distinct d'`EDIT_ENCODING`
 qui reste l'unique porte pour les mutations, inchangé). Manager/Admin : toujours
-autorisé. Instrumentiste assigné : mêmes statuts qu'avant (`DECLARED`/`ASSIGNED`/
-`IN_PROGRESS`/`ENCODING_IN_PROGRESS`/`SUBMITTED`). **Chirurgien (nouveau) :**
+autorisé. Instrumentiste assigné : `DECLARED`/`ASSIGNED`/`IN_PROGRESS`/
+`ENCODING_IN_PROGRESS`/`SUBMITTED`, plus `VALIDATED`/`CLOSED` en lecture seule depuis
+D-146 bis (`allowedActions` contient alors `"view_encoding"`, jamais une action d'écriture).
+**Chirurgien (nouveau) :**
 `mission.surgeon === utilisateur authentifié`, statuts `DECLARED`/`ASSIGNED`/
 `IN_PROGRESS`/`ENCODING_IN_PROGRESS`/`SUBMITTED`/`VALIDATED`/`CLOSED` (jamais
 `DRAFT`/`OPEN`/`REJECTED`/`CANCELLED`) — `403` sinon, y compris pour une mission d'un
