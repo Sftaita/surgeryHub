@@ -12953,3 +12953,75 @@ reste une décision séparée. Les autres notifications « tous managers » ne c
 
 Relance manuelle (décision H5a confirmée) : e-mail obligatoire à l'instrumentiste, auteur
 audité, blocage de 10 min, aucun changement de statut ni de brouillon, canal renvoyé.
+
+## D-146 bis — Fiabilisation des demandes de matériel et d'intervention : firme obligatoire, quantité exacte, résolution atomique (2026-10-12)
+
+### Contexte
+
+Audit D-146 bis (lecture seule, prod) : les deux flux de demande perdaient l'information
+qui détermine la facturation. Une demande de matériel n'enregistrait ni la firme ni la
+quantité (ligne créée à `quantity = 1`, firme réécrite par le manager — missions #462,
+#478, #415, #458) ; une demande d'intervention pouvait être résolue sans firme, ou avec une
+autre firme que celle indiquée, et `resolve()` contournait les contrôles de la création
+classique (délégué, système choisi, exclusivité matérielle). Rien n'empêchait de résoudre
+une demande sur une mission validée, ni de valider une mission dont une intervention était
+incomplète ou une demande encore en attente.
+
+### Décision métier
+
+« Toute nouvelle intervention doit obligatoirement être associée à une firme. » Question
+posée : « Avec quelle firme cette intervention a-t-elle été réalisée ? ». Jamais
+« Aucune firme » ; l'instrumentiste peut proposer une firme inconnue (« Ma firme n'est pas
+dans la liste »), jamais créée automatiquement. La règle s'applique à chaque intervention.
+
+### Décisions techniques
+
+1. **Demande de matériel** : `label` (non vide), firme fabricante **existante OU nom
+   proposé** (exactement l'un des deux), `quantity` (> 0, 2 décimales) obligatoires
+   (`material_item_request.proposed_firm_id / proposed_firm_name / quantity`, migration
+   additive `Version20261012090000`, valeurs `NULL` pour l'historique — aucune valeur
+   fictive).
+2. **Demande d'intervention** : firme demandée OU nom proposé obligatoire
+   (`mission_intervention_draft.proposed_firm_name`), conservée sur le draft.
+3. **Résolution atomique** (une seule requête, une seule transaction, verrou pessimiste) :
+   création éventuelle de la firme (`CatalogueFactory`, doublon insensible à la casse →
+   409), du matériel (`UNSPECIFIED`, aucun tarif → « Matériel à régulariser », D-142) ou du
+   type et de la prestation, rattachement, décision tracée (`decidedBy/decidedAt`, audit
+   `MATERIAL_ITEM_REQUEST_RESOLVED` / `MISSION_INTERVENTION_DRAFT_RESOLVED` enrichi). Le
+   moindre refus annule tout.
+4. **Firme validée par le manager** (préremplie depuis la demande, jamais remise à zéro) :
+   appliquée à la seule intervention créée ; un matériel existant garde sa firme et ses
+   tarifs ; la firme d'une intervention n'est jamais déduite ni modifiée par du matériel.
+5. **Prestation firme × intervention absente** : décision explicite obligatoire
+   (`FEE_APPLICABLE` sans montant inventé / `NO_FEE` / `LEAVE_UNCONFIGURED`), jamais
+   « Pas de forfait » par défaut.
+6. **Invariants communs** (`InterventionRequirementsService`, partagé par la création
+   classique, la résolution et la validation) : firme, réponse délégué quand la prestation
+   la requiert (jamais un « Non » inventé), choix obligatoire (jamais une option Globus
+   choisie arbitrairement), exclusivité matérielle (y compris le matériel transféré depuis
+   le draft et la réaffectation `REASSIGN`). Retirer la firme d'une intervention est refusé.
+7. **Missions verrouillées** (`CatalogueResolutionGuard`) : validée, clôturée, annulée,
+   refusée, encodage verrouillé ou facturée → `409 MISSION_LOCKED_FOR_CATALOGUE_RESOLUTION`
+   avec `reopenAvailable` ; la réouverture existante est proposée, jamais déclenchée.
+8. **Soumission / validation** (`EncodingContentCompletenessService`, aussi par appel API
+   direct et par l'alias legacy `/submit`) : `422 ENCODING_INCOMPLETE` si une intervention
+   n'a pas de firme, de réponse délégué requise ou de choix requis, ou si du matériel
+   contredit le système choisi (section `interventions`). Les demandes **en attente**
+   bloquent la **validation** manager (section `requests`), pas la soumission
+   instrumentiste (le manager doit pouvoir les traiter sur la mission soumise).
+9. **Ignorer une demande portant du matériel** : stratégie explicite obligatoire côté
+   écran (conserver en historique / rattacher à une intervention choisie).
+
+### Hors périmètre / signalé
+
+- **ALTERA (Globus)** : TLIF-1 210 € et TLIF-2 300 € incluent le matériel ; le forfait
+  matériel ALTERA (210 €) peut encore se cumuler. Correctif moteur/configuration séparé —
+  aucun tarif de production modifié ici.
+- **Délégué Smith & Nephew** : l'exception est configurable par prestation
+  (`representativePresenceRelevant` sans suppression) ; BANKART / MOSAICPLASTIE S&N
+  suppriment actuellement le forfait — politique de production inchangée, à trancher.
+- Aucune donnée historique corrigée (missions #462, #478, #415, #458 ; demande #12 en
+  attente sur la mission 1224) ; aucun calcul financier ni facture déclenché.
+- PR #4 (D-139) : `decidedBy/decidedAt` et le cas d'audit `MATERIAL_ITEM_REQUEST_RESOLVED`
+  sont repris à l'identique ; ses modifications de service deviennent redondantes et
+  entreront en conflit — à rebaser après ce lot, sans fusion automatique.

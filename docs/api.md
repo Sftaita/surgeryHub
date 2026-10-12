@@ -1786,7 +1786,11 @@ PENDING → IGNORED   (via ignore)
       "referenceCode": "AR-7234",
       "comment": "Utilisé lors de la ligamentoplastie",
       "createdAt": "2026-03-15T10:00:00+01:00",
-      "mission": { "id": 42, "site": "Delta" },
+      "mission": { "id": 42, "site": "Delta", "status": "SUBMITTED", "locked": false, "reopenAvailable": false },
+      "proposedFirm": { "id": 3, "name": "Arthrex", "active": true },
+      "proposedFirmName": null,
+      "quantity": "2.00",
+      "target": { "kind": "INTERVENTION", "id": 12, "label": "Ligamentoplastie LCA", "firm": { "id": 3, "name": "Arthrex" } },
       "requestedBy": { "id": 5, "displayName": "Ole Salve" },
       "materialItem": null,
       "ignoreReason": null,
@@ -1799,9 +1803,22 @@ PENDING → IGNORED   (via ignore)
 }
 ```
 
-`ignoreReason`/`ignoreComment`/`decidedBy`/`decidedAt` (correctif Demandes Catalogue,
-D-113) ne sont renseignés que pour une demande `IGNORED` — toujours `null` pour
-`PENDING`/`RESOLVED`.
+`ignoreReason`/`ignoreComment` (correctif Demandes Catalogue, D-113) ne sont renseignés
+que pour une demande `IGNORED`. `decidedBy`/`decidedAt` sont posés à toute décision
+(`IGNORED` depuis D-113, `RESOLVED` depuis D-146 bis).
+
+**D-146 bis :** `proposedFirm` (firme du référentiel) **ou** `proposedFirmName` (nom libre
+« Ma firme n'est pas dans la liste », jamais créé automatiquement) et `quantity` reflètent
+la déclaration de l'instrumentiste — `null` pour une demande antérieure à D-146 bis.
+`target` = intervention (ou demande d'intervention `DRAFT`) concernée avec sa firme.
+`mission.locked` / `mission.reopenAvailable` : la résolution sera refusée (voir 20.2).
+
+### 20.1 bis `GET /api/material-item-requests/{id}/duplicate-candidates` (D-146 bis)
+
+**AuthZ :** `MANAGER` / `ADMIN`. Lecture seule, jamais bloquant : matériels actifs dont la
+référence ou le nom ressemble à la demande, ceux de la firme proposée en premier (max 10).
+
+**Réponse — 200 :** `{ "items": [{ "id", "label", "referenceCode", "firm": {id, name}, "billingStatus", "active" }] }`
 
 ---
 
@@ -1809,36 +1826,69 @@ D-113) ne sont renseignés que pour une demande `IGNORED` — toujours `null` po
 
 **AuthZ :** `MANAGER` / `ADMIN`
 
-**Précondition :** `status = PENDING`
+**Précondition :** `status = PENDING`, mission non verrouillée.
 
-**Body JSON :**
+**Body JSON (D-146 bis — une seule transaction, tout ou rien) :**
 
 ```json
-{ "materialItemId": 45 }
+{ "materialItemId": 45, "quantity": "2" }
 ```
 
-**Effets backend :**
-1. Lie la demande au `MaterialItem` (`materialItem_id`)
-2. Passe `status → RESOLVED`
-3. Crée une `MaterialLine` sur la mission (quantity=1, même intervention)
+ou, pour créer la référence :
+
+```json
+{
+  "quantity": "2",
+  "newItem": {
+    "label": "Ultrabutton Adjustable",
+    "unit": "pièce",
+    "referenceCode": "AR-8920",
+    "isImplant": false,
+    "firmId": 3
+  },
+  "confirmPossibleDuplicate": false
+}
+```
+
+| Champ | Description |
+|---|---|
+| `quantity` | Quantité validée (> 0, 2 décimales max). Défaut : celle de la demande ; **obligatoire** pour une demande antérieure qui n'en porte pas (jamais 1 inventé). |
+| `materialItemId` | Associer un matériel existant : sa firme et ses tarifs sont repris tels quels, jamais modifiés. |
+| `newItem` | Créer la référence (exclusif avec `materialItemId`) : `firmId` (firme existante) **ou** `newFirmName` (firme créée dans la même transaction). Statut de facturation `UNSPECIFIED`, aucun tarif (→ « Matériel à régulariser », D-142). |
+| `confirmPossibleDuplicate` | Confirme la création malgré un doublon possible. |
+
+**Effets backend (même transaction, verrou pessimiste sur la demande) :**
+1. Crée éventuellement la firme puis le matériel.
+2. Vérifie l'exclusivité matérielle (D-111) quand la cible est une intervention réelle.
+3. Crée la `MaterialLine` sur la cible de la demande (intervention, ou draft encore ouvert) avec la quantité validée.
+4. `status → RESOLVED`, `decidedBy`/`decidedAt`, `AuditEvent` `MATERIAL_ITEM_REQUEST_RESOLVED` (firme proposée/validée, quantités, créations).
+5. La firme de l'intervention n'est jamais modifiée ; aucun calcul financier n'est lancé.
 
 **Réponse — 200 :**
 
 ```json
 {
   "request": { "id": 14, "status": "RESOLVED", "materialItem": { "...": "..." }, "...": "..." },
-  "materialLine": { "id": 88 }
+  "materialLine": { "id": 88, "quantity": "2.00" },
+  "createdFirm": false,
+  "createdItem": true
 }
 ```
 
-**Erreurs :**
+**Erreurs (`{error:{status, code, message, ...extra}}`) :**
 
 | Code | Description |
 |---|---|
 | `404` | Demande introuvable |
-| `404` | MaterialItem introuvable |
-| `409` | `MATERIAL_ITEM_REQUEST_ALREADY_PROCESSED` — demande déjà `RESOLVED`/`IGNORED` (verrouillage pessimiste, D-113 — couvre aussi une tentative concurrente) |
-| `422` | `materialItemId` manquant |
+| `409` `MATERIAL_ITEM_REQUEST_ALREADY_PROCESSED` | Demande déjà `RESOLVED`/`IGNORED` (verrou pessimiste, D-113) |
+| `409` `MISSION_LOCKED_FOR_CATALOGUE_RESOLUTION` | Mission validée / clôturée / annulée / refusée, encodage verrouillé ou facturée. `extra` : `missionId`, `missionStatus`, `reopenAvailable` (réouverture existante possible — jamais automatique). |
+| `409` `MATERIAL_ITEM_DUPLICATE` | Même firme + même référence existe déjà — `extra.existingMaterialItem` |
+| `409` `MATERIAL_ITEM_POSSIBLE_DUPLICATE` | Même nom chez la même firme, ou même référence ailleurs — `extra.candidates` ; renvoyer avec `confirmPossibleDuplicate: true` |
+| `409` `FIRM_ALREADY_EXISTS` | `newFirmName` existe déjà (insensible à la casse) — `extra.existingFirm` |
+| `409` `INCOMPATIBLE_CHOICE_MATERIAL` | Matériel lié à une autre option du système choisi sur l'intervention |
+| `422` `MATERIAL_ITEM_REQUIRED` | Ni `materialItemId` ni `newItem`, les deux, ou matériel introuvable |
+| `422` `FIRM_REQUIRED` / `FIRM_AMBIGUOUS` | Firme du nouveau matériel manquante / `firmId` et `newFirmName` ensemble |
+| `422` `QUANTITY_REQUIRED` | Quantité absente ou invalide |
 
 **Effet async (D-093) :** dispatche `CatalogueRequestProcessedMessage(accepted: true)` —
 notifie l'instrumentiste auteur (in-app + push prioritaire, repli email si le push n'est
@@ -1975,17 +2025,22 @@ Déclarer un matériel absent du catalogue lors de l'encodage. La demande est tr
 ```json
 {
   "missionInterventionId": 12,
-  "label": "Anchor suture 5.5mm Smith & Nephew",
+  "label": "Anchor suture 5.5mm",
   "referenceCode": "REF-12345",
+  "firmId": 4,
+  "quantity": "2",
   "comment": "Utilisé lors de la ligamentoplastie LCA"
 }
 ```
 
 | Champ | Requis | Description |
 |---|---|---|
-| `missionInterventionId` | — | Intervention concernée (recommandé) |
-| `label` | ✓ | Nom du matériel demandé |
+| `missionInterventionId` / `interventionDraftId` | — | Intervention (ou demande d'intervention) concernée |
+| `label` | ✓ | Nom du matériel demandé (non vide après normalisation — `422 LABEL_REQUIRED`) |
 | `referenceCode` | — | Référence fabricant connue |
+| `firmId` | ✓ (D-146 bis) | Firme fabricante du référentiel… |
+| `proposedFirmName` | ✓ (D-146 bis) | …**ou** nom libre (« Ma firme n'est pas dans la liste », 150 car. max, jamais créé). Exactement l'un des deux : `422 FIRM_REQUIRED` / `FIRM_AMBIGUOUS`. |
+| `quantity` | ✓ (D-146 bis) | Quantité utilisée, > 0, 2 décimales max (`422 QUANTITY_REQUIRED`) |
 | `comment` | — | Informations complémentaires pour le manager |
 
 **Effets backend :**
@@ -5554,13 +5609,16 @@ l'intervention (jamais l'inverse).
 {
   "label": "Prothèse épaule inversée",
   "suggestedCode": "PTE-INV",
+  "requestedFirmId": 4,
   "comment": "Pas encore dans le catalogue"
 }
 ```
 
 | Champ | Requis | Description |
 |---|---|---|
-| `label` | ✓ | Nom du type souhaité |
+| `label` | ✓ | Nom du type souhaité (non vide — `422 LABEL_REQUIRED`) |
+| `requestedFirmId` | ✓ (D-146 bis) | « Avec quelle firme cette intervention a-t-elle été réalisée ? » — firme du référentiel… |
+| `proposedFirmName` | ✓ (D-146 bis) | …**ou** nom libre (jamais créé). Exactement l'un des deux : `422 FIRM_REQUIRED` / `FIRM_AMBIGUOUS`. Conservé sur le draft (`proposedFirmName`, relu après rechargement). |
 | `suggestedCode` | — | Code suggéré (le manager reste libre de choisir un autre code au moment de créer le type) |
 | `comment` | — | Informations complémentaires |
 
@@ -5579,27 +5637,52 @@ Voir `docs/decisions.md` D-094/D-113.
 **Query params :** `status` (`PENDING`\|`RESOLVED`\|`IGNORED`, optionnel).
 
 **Réponse — 200 :** `{ "items": [...], "total": N }` — chaque item :
-`{ id, status, label, suggestedCode, comment, createdAt, mission: {id, site}, requestedBy: {id, displayName}, resolvedInterventionType, ignoreReason, ignoreComment, decidedBy: {id, displayName} | null, decidedAt }`.
-Les 4 derniers champs (D-113) ne sont renseignés que pour une demande `IGNORED`.
+`{ id, status, label, suggestedCode, comment, createdAt, requestedFirm, requestedFirmNameSnapshot, proposedFirmName, draft: {id, status, materialLineCount, materialItemRequestCount}, mission: {id, site, status, locked, reopenAvailable, interventions[]}, requestedBy: {id, displayName}, resolvedInterventionType, ignoreReason, ignoreComment, decidedBy: {id, displayName} | null, decidedAt }`.
+`ignoreReason`/`ignoreComment` ne concernent que `IGNORED` ; `decidedBy`/`decidedAt` sont
+posés à toute décision. D-146 bis : `requestedFirm`/`proposedFirmName` préremplissent la
+résolution ; `mission.interventions` (demandes en attente uniquement) liste les cibles
+d'une réaffectation du matériel (`ignore` + `REASSIGN`).
 
 #### `POST /api/intervention-type-requests/{id}/resolve`
 
-**AuthZ :** `BillingVoter::MANAGE` — **Précondition :** `status = PENDING`
+**AuthZ :** `BillingVoter::MANAGE` — **Précondition :** `status = PENDING`, draft `OPEN`,
+mission non verrouillée.
 
-**Body JSON :** `{ "interventionTypeId": 12, "primaryFirmId": 4 }` (`primaryFirmId` optionnel) —
-`interventionTypeId` peut référencer un type déjà existant ou un type que le manager
-vient de créer via `POST /api/intervention-types` pour cette demande.
+**Body JSON (D-146 bis — une seule transaction, tout ou rien) :**
 
-**Effets backend :**
-1. Crée la `MissionIntervention` réelle sur la mission d'origine (`InterventionService::create()` —
-   mêmes validations et le même instantané `code`/`label` qu'une création directe).
-2. Lie la demande au type choisi (`resolvedInterventionType`), passe `status → RESOLVED`.
+```json
+{
+  "interventionTypeId": 12,
+  "firmId": 4,
+  "offeringDecision": "FEE_APPLICABLE",
+  "representativePresent": false,
+  "selectedChoiceOptionId": 31
+}
+```
 
-**Réponse — 200 :** `{ "request": {...}, "intervention": { "id": 55 } }`
+| Champ | Description |
+|---|---|
+| `interventionTypeId` **ou** `newInterventionType {code, label}` | Intervention existante, ou créée dans la transaction (`409 INTERVENTION_TYPE_CODE_EXISTS` + `extra.existingInterventionType` si le code existe). |
+| `firmId` **ou** `newFirmName` | **Obligatoire** — firme validée par le manager (préremplie depuis la demande). Appliquée à la seule intervention créée. `409 FIRM_ALREADY_EXISTS` + `extra.existingFirm`. |
+| `offeringDecision` | Requis seulement si la prestation firme × intervention n'existe pas : `FEE_APPLICABLE` (prestation créée, montant à configurer ensuite), `NO_FEE` (prestation sans forfait), `LEAVE_UNCONFIGURED` (rien créé). Jamais de valeur par défaut — `422 OFFERING_DECISION_REQUIRED`. |
+| `representativePresent` | Requis si la prestation le rend pertinent (jamais un « Non » inventé). |
+| `selectedChoiceOptionId` | Requis si la prestation a un choix obligatoire (D-111) ; doit appartenir à cette prestation. |
 
-**Erreurs :** mêmes codes stables qu'en §8 (`INTERVENTION_TYPE_NOT_FOUND`,
-`INTERVENTION_TYPE_INACTIVE`, `PRIMARY_FIRM_NOT_FOUND`, `PRIMARY_FIRM_INACTIVE`), plus
-`404` demande introuvable, `409` demande non `PENDING`.
+**Effets backend :** crée la `MissionIntervention` (orderIndex du draft, mêmes invariants
+que la création directe — `InterventionRequirementsService`), repointe le matériel du
+draft (refus `409 INCOMPATIBLE_CHOICE_MATERIAL` si incompatible avec le système choisi),
+`request → RESOLVED`, `draft → CONVERTED`, `decidedBy`/`decidedAt`, `AuditEvent` enrichi
+(créations firme/type/prestation, décision). Aucun calcul financier.
+
+**Réponse — 200 :** `{ requestId, draftId, missionInterventionId, status, draftStatus, orderIndex, firm, interventionType, createdFirm, createdInterventionType, createdOffering, offeringDecision }`
+
+**Erreurs :** `404` demande introuvable ; `409` `DRAFT_ALREADY_RESOLVED`,
+`INTERVENTION_TYPE_REQUEST_WITHOUT_DRAFT`, `MISSION_LOCKED_FOR_CATALOGUE_RESOLUTION`
+(`extra.reopenAvailable`), `FIRM_ALREADY_EXISTS`, `INTERVENTION_TYPE_CODE_EXISTS`,
+`INCOMPATIBLE_CHOICE_MATERIAL` ; `422` `FIRM_REQUIRED`, `FIRM_AMBIGUOUS`,
+`INTERVENTION_TYPE_REQUIRED`, `OFFERING_DECISION_REQUIRED`, réponse délégué / choix
+manquante, option d'une autre prestation ; codes §8 (`INTERVENTION_TYPE_INACTIVE`,
+`PRIMARY_FIRM_INACTIVE`…).
 
 **Effet async (D-093) :** dispatche `CatalogueRequestProcessedMessage(accepted: true)` —
 notifie l'instrumentiste auteur (in-app + push prioritaire, repli email si le push n'est
@@ -5619,7 +5702,11 @@ seulement pour `OTHER`).
 
 **Erreurs :** `404` introuvable, `409` `DRAFT_ALREADY_RESOLVED` (déjà traitée, sous
 verrouillage pessimiste), `422` `reason`/`comment` manquant ou `strategy` invalide/requis
-(voir §8 pour les codes liés à `strategy`).
+(voir §8 pour les codes liés à `strategy`). D-146 bis : `strategy` est **obligatoire**
+dès que le draft porte du matériel (`422 MISSING_IGNORE_STRATEGY`) ; `REASSIGN` est
+refusé sur une mission verrouillée (`409 MISSION_LOCKED_FOR_CATALOGUE_RESOLUTION`) et si
+le matériel déplacé contredit le système choisi sur l'intervention cible
+(`409 INCOMPATIBLE_CHOICE_MATERIAL`, rien n'est déplacé). `KEEP_AS_HISTORY` reste possible.
 
 **Effet async (D-093/D-113) :** dispatche `CatalogueRequestProcessedMessage(accepted:
 false, ignoreReason, explanation)` — même orchestration que `resolve()` ci-dessus, motif +
