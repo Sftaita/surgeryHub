@@ -439,16 +439,17 @@ export default function CatalogueRequestsPage() {
       ) : rows.length === 0 ? (
         <EmptyState title="Aucune demande." />
       ) : (
+        // D-146 bis — 6 colonnes (référence intégrée à la demande, demandeur à la mission,
+        // actions empilées) : plus de défilement horizontal à 1280 px ; le défilement reste
+        // possible sur petit écran (TableContainer), jamais d'information masquée.
         <TableContainer component={Paper} variant="outlined">
-          <Table size="small">
+          <Table size="small" sx={{ "& td, & th": { px: 1.25 } }}>
             <TableHead>
               <TableRow>
                 <TableCell>Type</TableCell>
                 <TableCell>Demande</TableCell>
-                <TableCell>Référence</TableCell>
                 <TableCell>Firme · Qté</TableCell>
-                <TableCell>Mission</TableCell>
-                <TableCell>Demandé par</TableCell>
+                <TableCell>Mission · demandeur</TableCell>
                 <TableCell>Statut</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
@@ -496,17 +497,18 @@ export default function CatalogueRequestsPage() {
                       >
                         {request.label}
                       </Link>
+                      {(isMaterial ? (request as MaterialRequestDTO).referenceCode : (request as InterventionTypeRequestDTO).suggestedCode) ? (
+                        <Typography variant="caption" display="block" color="text.secondary">
+                          {isMaterial ? "Réf. " : "Code suggéré "}
+                          {isMaterial ? (request as MaterialRequestDTO).referenceCode : (request as InterventionTypeRequestDTO).suggestedCode}
+                        </Typography>
+                      ) : null}
                       {request.comment ? (
                         // Déplier l'aperçu ne doit pas ouvrir le détail.
                         <Box onClick={(e) => e.stopPropagation()}>
                           <RequesterCommentPreview comment={request.comment} />
                         </Box>
                       ) : null}
-                    </TableCell>
-                    <TableCell>
-                      {isMaterial
-                        ? (request as MaterialRequestDTO).referenceCode || "—"
-                        : (request as InterventionTypeRequestDTO).suggestedCode || "—"}
                     </TableCell>
                     <TableCell>
                       <Typography variant="body2">{requestFirmLabel(row) ?? "—"}</Typography>
@@ -517,18 +519,18 @@ export default function CatalogueRequestsPage() {
                       ) : null}
                     </TableCell>
                     <TableCell>
-                      {request.mission ? (
-                        <Stack spacing={0}>
-                          <Typography variant="body2">#{request.mission.id}</Typography>
-                          {request.mission.site ? (
-                            <Typography variant="caption" color="text.secondary">
-                              {request.mission.site}
-                            </Typography>
-                          ) : null}
-                        </Stack>
-                      ) : "—"}
+                      <Stack spacing={0}>
+                        <Typography variant="body2">{request.mission ? `#${request.mission.id}` : "—"}</Typography>
+                        {request.mission?.site ? (
+                          <Typography variant="caption" color="text.secondary">
+                            {request.mission.site}
+                          </Typography>
+                        ) : null}
+                        <Typography variant="caption" color="text.secondary">
+                          {request.requestedBy?.displayName ?? "—"}
+                        </Typography>
+                      </Stack>
                     </TableCell>
-                    <TableCell>{request.requestedBy?.displayName ?? "—"}</TableCell>
                     <TableCell>
                       <Chip
                         label={statusLabel(request.status)}
@@ -566,7 +568,7 @@ export default function CatalogueRequestsPage() {
                       ) : null}
                     </TableCell>
                     <TableCell align="right" onClick={(e) => e.stopPropagation()}>
-                      <Stack direction="row" spacing={0.5} justifyContent="flex-end" sx={{ "& .MuiButton-root": { whiteSpace: "nowrap" } }}>
+                      <Stack spacing={0.5} alignItems="flex-end" sx={{ "& .MuiButton-root": { whiteSpace: "nowrap", minWidth: 96 } }}>
                         <Button size="small" variant="text" onClick={() => setDetailTarget(row)}>
                           Voir le détail
                         </Button>

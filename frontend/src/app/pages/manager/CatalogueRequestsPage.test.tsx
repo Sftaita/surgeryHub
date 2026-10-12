@@ -366,7 +366,8 @@ describe("CatalogueRequestsPage — ignorance avec matériel déjà déclaré (D
     await waitFor(() => expect(ignoreInterventionTypeRequestMock).toHaveBeenCalledWith({
       id: 11, reason: "DUPLICATE", comment: "Déjà encodée sous Bankart.", strategy: "REASSIGN", missionInterventionId: 70,
     }, expect.anything()));
-  });
+    // Parcours long (deux Select MUI + saisie) : délai explicite plutôt qu'un échec intermittent.
+  }, 15000);
 });
 
 describe("CatalogueRequestsPage — ignorance (modal obligatoire, D-113)", () => {
