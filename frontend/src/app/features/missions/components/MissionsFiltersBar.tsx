@@ -1,46 +1,138 @@
-import { Box, MenuItem, TextField } from "@mui/material";
+import { Box, Button, MenuItem, TextField, ToggleButton, ToggleButtonGroup, Tooltip } from "@mui/material";
+import { useQuery } from "@tanstack/react-query";
+import ViewDayOutlinedIcon from "@mui/icons-material/ViewDayOutlined";
+import TableRowsOutlinedIcon from "@mui/icons-material/TableRowsOutlined";
 
-type Props = {
+import { SearchBox } from "../../../ui/SearchBox";
+import { fetchSites } from "../api/missions.api";
+import { MISSIONS_PERIODS, type MissionsPeriod } from "../utils/missionsListPeriod";
+
+export type MissionsView = "day" | "table";
+
+export interface MissionsFiltersValue {
+  search: string;
+  period: MissionsPeriod;
   status?: string;
   type?: string;
   siteId?: number;
-  onChange: (next: { status?: string; type?: string; siteId?: number }) => void;
+  view: MissionsView;
+}
+
+type Props = {
+  value: MissionsFiltersValue;
+  onChange: (patch: Partial<MissionsFiltersValue>) => void;
+  /** « À valider » : le statut est imposé par l'onglet. */
+  statusLocked?: boolean;
+  onReset?: () => void;
 };
 
-export function MissionsFiltersBar({ status, type, onChange }: Props) {
-  return (
-    <Box sx={{ display: "flex", gap: 2, mb: 2, flexWrap: "wrap" }}>
-      <TextField
-        select
-        label="Statut"
-        size="small"
-        value={status ?? ""}
-        onChange={(e) => onChange({ status: e.target.value || undefined, type })}
-        sx={{ minWidth: 160 }}
-      >
-        <MenuItem value="">Tous les statuts</MenuItem>
-        <MenuItem value="DRAFT">Brouillon</MenuItem>
-        <MenuItem value="OPEN">Publiée</MenuItem>
-        <MenuItem value="ASSIGNED">Assignée</MenuItem>
-        <MenuItem value="SUBMITTED">Soumise</MenuItem>
-        <MenuItem value="DECLARED">À valider</MenuItem>
-        <MenuItem value="VALIDATED">Validée</MenuItem>
-        <MenuItem value="CLOSED">Clôturée</MenuItem>
-        <MenuItem value="REJECTED">Rejetée</MenuItem>
-      </TextField>
+const STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "DRAFT", label: "Brouillon" },
+  { value: "OPEN", label: "Publiée" },
+  { value: "ASSIGNED", label: "Assignée" },
+  { value: "IN_PROGRESS", label: "En cours" },
+  { value: "SUBMITTED", label: "Soumise" },
+  { value: "DECLARED", label: "À valider" },
+  { value: "VALIDATED", label: "Validée" },
+  { value: "CLOSED", label: "Clôturée" },
+  { value: "REJECTED", label: "Rejetée" },
+  { value: "CANCELLED", label: "Annulée" },
+];
 
-      <TextField
-        select
-        label="Type"
-        size="small"
-        value={type ?? ""}
-        onChange={(e) => onChange({ status, type: e.target.value || undefined })}
-        sx={{ minWidth: 160 }}
-      >
-        <MenuItem value="">Tous les types</MenuItem>
-        <MenuItem value="BLOCK">Bloc opératoire</MenuItem>
-        <MenuItem value="CONSULTATION">Consultation</MenuItem>
-      </TextField>
+/**
+ * D-147 — barre de filtres de la vue Missions manager : recherche libre (serveur, `q`),
+ * période, statut, type, site et choix de vue (par jour / tableau). Contrôlée : l'état
+ * vit dans l'URL de la page.
+ */
+export function MissionsFiltersBar({ value, onChange, statusLocked, onReset }: Props) {
+  const sitesQuery = useQuery({ queryKey: ["sites"], queryFn: fetchSites, staleTime: 5 * 60_000 });
+  const sites = sitesQuery.data ?? [];
+
+  return (
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, mb: 2 }}>
+      <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", alignItems: "center" }}>
+        <SearchBox
+          value={value.search}
+          onChange={(search) => onChange({ search })}
+          placeholder="Chirurgien, instrumentiste, site, #id…"
+          sx={{ flex: "1 1 280px", minWidth: 220 }}
+        />
+
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={value.view}
+          onChange={(_, v: MissionsView | null) => { if (v) onChange({ view: v }); }}
+          aria-label="Affichage"
+        >
+          <ToggleButton value="day" aria-label="Par jour">
+            <Tooltip title="Grouper par jour"><ViewDayOutlinedIcon fontSize="small" /></Tooltip>
+          </ToggleButton>
+          <ToggleButton value="table" aria-label="Tableau">
+            <Tooltip title="Tableau"><TableRowsOutlinedIcon fontSize="small" /></Tooltip>
+          </ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
+
+      <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", alignItems: "center" }}>
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={value.period}
+          onChange={(_, v: MissionsPeriod | null) => { if (v) onChange({ period: v }); }}
+          aria-label="Période"
+          sx={{ flexWrap: "wrap", "& .MuiToggleButton-root": { textTransform: "none", px: 1.5 } }}
+        >
+          {MISSIONS_PERIODS.map((p) => (
+            <ToggleButton key={p.value} value={p.value}>{p.label}</ToggleButton>
+          ))}
+        </ToggleButtonGroup>
+
+        {!statusLocked && (
+          <TextField
+            select
+            label="Statut"
+            size="small"
+            value={value.status ?? ""}
+            onChange={(e) => onChange({ status: e.target.value || undefined })}
+            sx={{ minWidth: 150 }}
+          >
+            <MenuItem value="">Tous les statuts</MenuItem>
+            {STATUS_OPTIONS.map((o) => <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>)}
+          </TextField>
+        )}
+
+        <TextField
+          select
+          label="Type"
+          size="small"
+          value={value.type ?? ""}
+          onChange={(e) => onChange({ type: e.target.value || undefined })}
+          sx={{ minWidth: 150 }}
+        >
+          <MenuItem value="">Tous les types</MenuItem>
+          <MenuItem value="BLOCK">Bloc opératoire</MenuItem>
+          <MenuItem value="CONSULTATION">Consultation</MenuItem>
+        </TextField>
+
+        <TextField
+          select
+          label="Site"
+          size="small"
+          value={value.siteId ? String(value.siteId) : ""}
+          onChange={(e) => onChange({ siteId: e.target.value ? Number(e.target.value) : undefined })}
+          sx={{ minWidth: 180 }}
+        >
+          <MenuItem value="">Tous les sites</MenuItem>
+          {sites.map((s) => <MenuItem key={s.id} value={String(s.id)}>{s.name}</MenuItem>)}
+        </TextField>
+
+        {onReset && (
+          <Button size="small" onClick={onReset} sx={{ textTransform: "none" }}>
+            Réinitialiser
+          </Button>
+        )}
+      </Box>
     </Box>
   );
 }

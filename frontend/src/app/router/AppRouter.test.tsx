@@ -89,7 +89,7 @@ vi.mock("../features/manager-mission-requests/api/managerSurgeonMissionRequests.
   getSurgeonMissionRequests: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   acceptSurgeonMissionRequest: vi.fn(),
   rejectSurgeonMissionRequest: vi.fn(),
-  getPendingSurgeonMissionRequestsCount: vi.fn().mockResolvedValue(0),
+  getSurgeonMissionRequestCounts: vi.fn().mockResolvedValue({ PENDING: 0, ACCEPTED: 0, REJECTED: 0 }),
 }));
 vi.mock("../features/notifications/api/notifications.api", () => ({
   fetchUnreadNotificationsCount: vi.fn().mockResolvedValue(0),

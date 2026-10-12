@@ -70,6 +70,21 @@ class MissionFilter
     public ?bool $validatedWithoutCalculation = null;
 
     /**
+     * D-147 — free-text search (manager missions list): surgeon / instrumentist name, site
+     * name, or the mission id (`#123` or `123`). Case-insensitive substring match, see
+     * MissionService::list().
+     */
+    #[Assert\Length(max: 100)]
+    public ?string $q = null;
+
+    /**
+     * D-147 — chronological order on startAt: `desc` (default, legacy) or `asc` (upcoming
+     * missions, soonest first). eligibleToMe keeps its own fixed ASC order.
+     */
+    #[Assert\Choice(choices: ['asc', 'desc'])]
+    public ?string $order = null;
+
+    /**
      * Only used programmatically (not part of the public query-string contract —
      * see MissionFilter::fromQuery) by the offers "unread count" endpoint
      * (GET /api/missions/offers/unread-count, Lot 6). Filters to missions created
@@ -112,6 +127,12 @@ class MissionFilter
         if (isset($q['validatedWithoutCalculation'])) {
             $dto->validatedWithoutCalculation = filter_var($q['validatedWithoutCalculation'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
         }
+
+        $search = isset($q['q']) ? trim((string) $q['q']) : null;
+        $dto->q = ($search === '') ? null : $search;
+
+        $order = isset($q['order']) ? strtolower(trim((string) $q['order'])) : null;
+        $dto->order = ($order === '') ? null : $order;
 
         $periodStart = isset($q['periodStart']) ? trim((string) $q['periodStart']) : null;
         $dto->periodStart = ($periodStart === '') ? null : $periodStart;

@@ -1,16 +1,32 @@
 import * as React from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
-  DialogTitle, Stack, Tab, TextField, Table, TableBody, TableCell, TableContainer,
+  DialogTitle, Link, Stack, Tab, TextField, Table, TableBody, TableCell, TableContainer,
   TableHead, TableRow, Tabs, Typography,
 } from "@mui/material";
+import HourglassEmptyOutlinedIcon from "@mui/icons-material/HourglassEmptyOutlined";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import HighlightOffIcon from "@mui/icons-material/HighlightOff";
+import { Link as RouterLink } from "react-router-dom";
 
 import {
   acceptSurgeonMissionRequest,
+  getSurgeonMissionRequestCounts,
   getSurgeonMissionRequests,
   rejectSurgeonMissionRequest,
 } from "./api/managerSurgeonMissionRequests.api";
+import {
+  REQUESTS_COUNTS_KEY,
+  REQUESTS_HISTORY_KEY,
+  REQUESTS_LIST_KEY,
+  applyOptimisticReview,
+  rollbackOptimisticReview,
+  settleReview,
+} from "./requestReviewOptimistic";
+import { fetchSurgeonMissionRequestHistory, nextAuditPage } from "../audit-journal/api/auditJournal.api";
+import AuditTimeline from "../audit-journal/components/AuditTimeline";
+import StatCard from "../../ui/StatCard";
 import type { ManagerSurgeonMissionRequest } from "./api/managerSurgeonMissionRequests.types";
 import { formatBrusselsRange, formatMissionType } from "../missions/utils/missions.format";
 import { useToast } from "../../ui/toast/useToast";
@@ -23,9 +39,13 @@ import {
   type MissionDispatchChoice,
 } from "../missions/dispatch/missionDispatch.api";
 
-type TabValue = "PENDING" | "ACCEPTED" | "REJECTED";
+type StatusValue = "PENDING" | "ACCEPTED" | "REJECTED";
+type TabValue = StatusValue | "HISTORY";
 
-function statusLabel(status: TabValue): string {
+/** D-147 — les demandes arrivent sans action du manager : rafraîchies en tâche de fond. */
+const LIVE_REFRESH_MS = 30_000;
+
+function statusLabel(status: StatusValue): string {
   switch (status) {
     case "PENDING": return "En attente";
     case "ACCEPTED": return "Acceptée";
@@ -33,7 +53,7 @@ function statusLabel(status: TabValue): string {
   }
 }
 
-function statusColor(status: TabValue): "warning" | "success" | "default" {
+function statusColor(status: StatusValue):"warning" | "success" | "default" {
   switch (status) {
     case "PENDING": return "warning";
     case "ACCEPTED": return "success";
@@ -169,19 +189,44 @@ export default function SurgeonMissionRequestsPanel() {
   const [acceptTarget, setAcceptTarget] = React.useState<ManagerSurgeonMissionRequest | null>(null);
   const [rejectTarget, setRejectTarget] = React.useState<ManagerSurgeonMissionRequest | null>(null);
 
+  // D-147 — même clé que le badge de l'onglet « Demandes chirurgien » (MissionsListPage) :
+  // cartes, onglets et badge bougent ensemble, sans rechargement de page.
+  const countsQuery = useQuery({
+    queryKey: REQUESTS_COUNTS_KEY,
+    queryFn: getSurgeonMissionRequestCounts,
+    refetchInterval: LIVE_REFRESH_MS,
+  });
+  const counts = countsQuery.data;
+
   const requestsQuery = useQuery({
-    queryKey: ["surgeon-mission-requests-manager", tab],
+    queryKey: [...REQUESTS_LIST_KEY, tab],
     queryFn: () => getSurgeonMissionRequests(tab),
+    enabled: tab !== "HISTORY",
+    refetchInterval: LIVE_REFRESH_MS,
   });
 
+  const historyQuery = useInfiniteQuery({
+    queryKey: REQUESTS_HISTORY_KEY,
+    queryFn: ({ pageParam }) => fetchSurgeonMissionRequestHistory(pageParam),
+    initialPageParam: 1,
+    getNextPageParam: nextAuditPage,
+    enabled: tab === "HISTORY",
+    refetchInterval: LIVE_REFRESH_MS,
+  });
+
+  // D-147 — optimiste : le dialogue se ferme et la demande quitte « En attente » dès le
+  // clic ; le toast de succès n'arrive qu'avec la confirmation serveur, l'erreur remet
+  // la demande à sa place (voir requestReviewOptimistic.ts).
   const acceptMutation = useMutation({
-    mutationFn: ({ id, reviewComment, dispatch }: { id: number; reviewComment?: string; dispatch: MissionDispatchChoice }) =>
-      acceptSurgeonMissionRequest(id, reviewComment, dispatch),
+    mutationFn: ({ request, reviewComment, dispatch }: { request: ManagerSurgeonMissionRequest; reviewComment?: string; dispatch: MissionDispatchChoice }) =>
+      acceptSurgeonMissionRequest(request.id, reviewComment, dispatch),
+    onMutate: ({ request }) => {
+      setAcceptTarget(null);
+      return applyOptimisticReview(queryClient, request, "ACCEPTED");
+    },
     onSuccess: (accepted, { dispatch }) => {
-      queryClient.invalidateQueries({ queryKey: ["surgeon-mission-requests-manager"] });
       // D-125 — the created mission is immediately part of the operational planning.
       invalidateOperationalPlanning(queryClient, accepted.createdMissionId);
-      setAcceptTarget(null);
       toast.success(
         dispatch.mode === "DIRECT"
           ? "Demande acceptée. Mission créée et attribuée."
@@ -190,7 +235,8 @@ export default function SurgeonMissionRequestsPanel() {
             : "Demande acceptée. Mission créée et proposée au pool.",
       );
     },
-    onError: (err: any) => {
+    onError: (err: any, { request }, context) => {
+      rollbackOptimisticReview(queryClient, request, "ACCEPTED", context);
       const code = err?.response?.data?.error?.code;
       const msg = code === "SURGEON_MISSION_REQUEST_CONFLICT"
         ? "Le chirurgien a déjà une autre mission active sur cette période."
@@ -201,35 +247,76 @@ export default function SurgeonMissionRequestsPanel() {
         queryClient.invalidateQueries({ queryKey: ["dispatch-candidates"] });
       }
     },
+    onSettled: () => settleReview(queryClient),
   });
 
   const rejectMutation = useMutation({
-    mutationFn: ({ id, reviewComment }: { id: number; reviewComment: string }) => rejectSurgeonMissionRequest(id, reviewComment),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["surgeon-mission-requests-manager"] });
+    mutationFn: ({ request, reviewComment }: { request: ManagerSurgeonMissionRequest; reviewComment: string }) =>
+      rejectSurgeonMissionRequest(request.id, reviewComment),
+    onMutate: ({ request }) => {
       setRejectTarget(null);
+      return applyOptimisticReview(queryClient, request, "REJECTED");
+    },
+    onSuccess: () => {
       toast.success("Demande refusée.");
     },
-    onError: (err: any) => {
+    onError: (err: any, { request }, context) => {
+      rollbackOptimisticReview(queryClient, request, "REJECTED", context);
       toast.error(err?.response?.data?.error?.message ?? "Erreur lors du refus.");
     },
+    onSettled: () => settleReview(queryClient),
   });
 
   const requests = requestsQuery.data?.items ?? [];
+  const historyEntries = historyQuery.data?.pages.flatMap((p) => p.items) ?? [];
+  const historyTotal = historyQuery.data?.pages[0]?.total ?? 0;
+  const countLabel = (status: StatusValue) => (counts ? ` (${counts[status]})` : "");
 
   return (
     <Box>
+      <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" }, gap: 1.5, mb: 2 }}>
+        <StatCard
+          label="En attente"
+          value={counts?.PENDING ?? "—"}
+          color={counts?.PENDING ? "warning.main" : undefined}
+          hint={counts?.PENDING ? "À traiter" : undefined}
+          icon={HourglassEmptyOutlinedIcon}
+          onClick={() => setTab("PENDING")}
+        />
+        <StatCard label="Acceptées" value={counts?.ACCEPTED ?? "—"} color="success.main" icon={CheckCircleOutlineIcon} onClick={() => setTab("ACCEPTED")} />
+        <StatCard label="Refusées" value={counts?.REJECTED ?? "—"} icon={HighlightOffIcon} onClick={() => setTab("REJECTED")} />
+      </Box>
+
       <Tabs
         value={tab}
         onChange={(_, v: TabValue) => setTab(v)}
         sx={{ mb: 2, borderBottom: 1, borderColor: "divider", minHeight: 40 }}
       >
-        <Tab label="En attente" value="PENDING" sx={{ minHeight: 40 }} />
-        <Tab label="Acceptées" value="ACCEPTED" sx={{ minHeight: 40 }} />
-        <Tab label="Refusées" value="REJECTED" sx={{ minHeight: 40 }} />
+        <Tab label={`En attente${countLabel("PENDING")}`} value="PENDING" sx={{ minHeight: 40 }} />
+        <Tab label={`Acceptées${countLabel("ACCEPTED")}`} value="ACCEPTED" sx={{ minHeight: 40 }} />
+        <Tab label={`Refusées${countLabel("REJECTED")}`} value="REJECTED" sx={{ minHeight: 40 }} />
+        <Tab label="Historique" value="HISTORY" sx={{ minHeight: 40 }} />
       </Tabs>
 
-      {requestsQuery.isLoading ? (
+      {tab === "HISTORY" ? (
+        historyQuery.isLoading ? (
+          <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+            <CircularProgress size={28} />
+          </Box>
+        ) : historyQuery.isError ? (
+          <Alert severity="error">Impossible de charger l'historique.</Alert>
+        ) : historyEntries.length === 0 ? (
+          <EmptyState title="Aucune action pour l'instant." />
+        ) : (
+          <AuditTimeline
+            entries={historyEntries}
+            total={historyTotal}
+            hasMore={historyQuery.hasNextPage}
+            loadingMore={historyQuery.isFetchingNextPage}
+            onLoadMore={() => historyQuery.fetchNextPage()}
+          />
+        )
+      ) : requestsQuery.isLoading ? (
         <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
           <CircularProgress size={28} />
         </Box>
@@ -247,6 +334,7 @@ export default function SurgeonMissionRequestsPanel() {
                 <TableCell>Date / heure</TableCell>
                 <TableCell>Type</TableCell>
                 <TableCell>Commentaire</TableCell>
+                {tab !== "PENDING" ? <TableCell>Traitée par</TableCell> : null}
                 <TableCell>Statut</TableCell>
                 {tab === "PENDING" ? <TableCell align="right">Actions</TableCell> : null}
               </TableRow>
@@ -263,8 +351,25 @@ export default function SurgeonMissionRequestsPanel() {
                       {tab === "REJECTED" ? (r.reviewComment ?? "—") : (r.comment ?? "—")}
                     </Typography>
                   </TableCell>
+                  {tab !== "PENDING" ? (
+                    <TableCell>
+                      <Typography variant="body2">{r.reviewedBy?.displayName ?? "—"}</Typography>
+                      {r.reviewedAt && (
+                        <Typography variant="caption" color="text.secondary">
+                          {new Date(r.reviewedAt).toLocaleString("fr-BE", { timeZone: "Europe/Brussels", dateStyle: "short", timeStyle: "short" })}
+                        </Typography>
+                      )}
+                    </TableCell>
+                  ) : null}
                   <TableCell>
-                    <Chip label={statusLabel(r.status)} color={statusColor(r.status)} size="small" variant="outlined" />
+                    <Stack direction="row" spacing={0.75} alignItems="center">
+                      <Chip label={statusLabel(r.status)} color={statusColor(r.status)} size="small" variant="outlined" />
+                      {r.createdMissionId ? (
+                        <Link component={RouterLink} to={`/app/m/missions/${r.createdMissionId}`} variant="body2" underline="hover">
+                          Mission #{r.createdMissionId}
+                        </Link>
+                      ) : null}
+                    </Stack>
                   </TableCell>
                   {tab === "PENDING" ? (
                     <TableCell align="right">
@@ -289,18 +394,18 @@ export default function SurgeonMissionRequestsPanel() {
         open={acceptTarget !== null}
         request={acceptTarget}
         onClose={() => setAcceptTarget(null)}
-        accepting={acceptMutation.isPending}
+        accepting={false}
         onAccept={(reviewComment, dispatch) => {
-          if (acceptTarget) acceptMutation.mutate({ id: acceptTarget.id, reviewComment, dispatch });
+          if (acceptTarget) acceptMutation.mutate({ request: acceptTarget, reviewComment, dispatch });
         }}
       />
       <RejectDialog
         open={rejectTarget !== null}
         request={rejectTarget}
         onClose={() => setRejectTarget(null)}
-        rejecting={rejectMutation.isPending}
+        rejecting={false}
         onReject={(reviewComment) => {
-          if (rejectTarget) rejectMutation.mutate({ id: rejectTarget.id, reviewComment });
+          if (rejectTarget) rejectMutation.mutate({ request: rejectTarget, reviewComment });
         }}
       />
     </Box>

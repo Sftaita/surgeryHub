@@ -120,6 +120,7 @@ const NAV_ITEMS = [
   { label: "Chirurgiens", href: "/app/m/surgeons", icon: PersonOutlineOutlinedIcon },
   { label: "Établissements", href: "/app/m/hospitals", icon: ApartmentOutlinedIcon },
   { label: "Notifications", href: "/app/m/notifications", icon: NotificationsActiveOutlinedIcon },
+  { label: "Journal d'activité", href: "/app/m/journal", icon: HistoryOutlinedIcon },
   {
     label: "Catalogue",
     children: [

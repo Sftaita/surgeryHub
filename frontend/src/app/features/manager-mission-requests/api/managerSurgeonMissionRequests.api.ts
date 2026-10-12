@@ -1,5 +1,5 @@
 import { apiClient } from "../../../api/apiClient";
-import type { ManagerSurgeonMissionRequest } from "./managerSurgeonMissionRequests.types";
+import type { ManagerSurgeonMissionRequest, SurgeonMissionRequestCounts } from "./managerSurgeonMissionRequests.types";
 import { toDispatchPayload, type MissionDispatchChoice } from "../../missions/dispatch/missionDispatch.api";
 
 /**
@@ -33,8 +33,12 @@ export async function rejectSurgeonMissionRequest(id: number, reviewComment: str
   return data;
 }
 
-/** Réutilisé par le badge nav (useNavBadgeCount) — même endpoint que la liste, filtré PENDING. */
-export async function getPendingSurgeonMissionRequestsCount(): Promise<number> {
-  const { total } = await getSurgeonMissionRequests("PENDING");
-  return total;
+/**
+ * D-147 — compteurs par statut, en une requête. Source unique du badge d'onglet et des
+ * cartes de l'en-tête Demandes (même clé de cache : la mise à jour optimiste les déplace
+ * ensemble).
+ */
+export async function getSurgeonMissionRequestCounts(): Promise<SurgeonMissionRequestCounts> {
+  const { data } = await apiClient.get<SurgeonMissionRequestCounts>("/api/manager/surgeon-mission-requests/counts");
+  return data;
 }

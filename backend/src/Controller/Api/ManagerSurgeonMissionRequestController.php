@@ -4,8 +4,10 @@ namespace App\Controller\Api;
 
 use App\Entity\SurgeonMissionRequest;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Enum\MissionDispatchMode;
 use App\Security\Voter\SurgeonMissionRequestVoter;
+use App\Service\AuditJournalService;
 use App\Service\SurgeonMissionRequestService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -53,6 +55,50 @@ final class ManagerSurgeonMissionRequestController extends AbstractController
             'items' => array_map(fn (SurgeonMissionRequest $r) => $this->serialize($r), $requests),
             'total' => count($requests),
         ]);
+    }
+
+    /**
+     * D-147 — compteurs par statut (en-tête de l'onglet Demandes), en une requête.
+     * Tous les statuts sont toujours présents (0 si aucune demande).
+     */
+    #[Route('/counts', name: 'api_manager_surgeon_mission_requests_counts', methods: ['GET'])]
+    public function counts(): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(SurgeonMissionRequestVoter::MANAGE);
+
+        $rows = $this->em->createQueryBuilder()
+            ->select('r.status AS status', 'COUNT(r.id) AS n')
+            ->from(SurgeonMissionRequest::class, 'r')
+            ->groupBy('r.status')
+            ->getQuery()
+            ->getArrayResult();
+
+        $counts = [
+            SurgeonMissionRequest::STATUS_PENDING => 0,
+            SurgeonMissionRequest::STATUS_ACCEPTED => 0,
+            SurgeonMissionRequest::STATUS_REJECTED => 0,
+        ];
+        foreach ($rows as $row) {
+            $counts[(string) $row['status']] = (int) $row['n'];
+        }
+
+        return $this->json($counts);
+    }
+
+    /**
+     * D-147 — historique des demandes : toutes les actions (création par le chirurgien,
+     * acceptation, refus), les plus récentes d'abord, lues dans AuditEvent.
+     */
+    #[Route('/history', name: 'api_manager_surgeon_mission_requests_history', methods: ['GET'])]
+    public function history(Request $request, AuditJournalService $journal): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(SurgeonMissionRequestVoter::MANAGE);
+
+        return $this->json($journal->search([
+            'category' => AuditEventType::CATEGORY_SURGEON_REQUEST,
+            'page' => $request->query->getInt('page', 1),
+            'limit' => $request->query->getInt('limit', 50),
+        ]));
     }
 
     #[Route('/{id}/accept', name: 'api_manager_surgeon_mission_requests_accept', methods: ['POST'], requirements: ['id' => '\d+'])]

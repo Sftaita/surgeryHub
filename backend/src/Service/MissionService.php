@@ -427,8 +427,33 @@ class MissionService
         // intent consistent for ties.
         if ($filter->eligibleToMe === true) {
             $qb->orderBy('m.startAt', 'ASC')->addOrderBy('m.id', 'ASC');
+        } elseif ($filter->order === 'asc') {
+            $qb->orderBy('m.startAt', 'ASC')->addOrderBy('m.id', 'ASC');
         } else {
             $qb->orderBy('m.startAt', 'DESC')->addOrderBy('m.id', 'DESC');
+        }
+
+        // D-147 — free-text search. Each whitespace-separated term must match one of the
+        // searchable fields (AND across terms, OR across fields), so "dupont clinique"
+        // narrows instead of widening. A purely numeric term (optionally `#`-prefixed)
+        // also matches the mission id exactly.
+        $q = $this->normalizeNullableString($filter->q);
+        if ($q !== null) {
+            $terms = preg_split('/\s+/u', mb_strtolower($q)) ?: [];
+            foreach (array_values(array_filter($terms, static fn (string $t) => $t !== '')) as $i => $term) {
+                $param = 'q' . $i;
+                $or = $qb->expr()->orX(
+                    "LOWER(CONCAT(COALESCE(surgeon.firstname, ''), ' ', COALESCE(surgeon.lastname, ''))) LIKE :{$param}",
+                    "LOWER(CONCAT(COALESCE(instr.firstname, ''), ' ', COALESCE(instr.lastname, ''))) LIKE :{$param}",
+                    "LOWER(s.name) LIKE :{$param}",
+                );
+                $digits = ltrim($term, '#');
+                if ($digits !== '' && ctype_digit($digits)) {
+                    $or->add("m.id = :{$param}Id");
+                    $qb->setParameter($param . 'Id', (int) $digits);
+                }
+                $qb->andWhere($or)->setParameter($param, '%' . addcslashes($term, '%_\\') . '%');
+            }
         }
 
         if ($filter->siteId) {

@@ -8,11 +8,19 @@ import type { ManagerSurgeonMissionRequest } from "./api/managerSurgeonMissionRe
 const getSurgeonMissionRequestsMock = vi.fn();
 const acceptSurgeonMissionRequestMock = vi.fn();
 const rejectSurgeonMissionRequestMock = vi.fn();
+const getCountsMock = vi.fn();
 
 vi.mock("./api/managerSurgeonMissionRequests.api", () => ({
   getSurgeonMissionRequests: (...args: unknown[]) => getSurgeonMissionRequestsMock(...args),
   acceptSurgeonMissionRequest: (...args: unknown[]) => acceptSurgeonMissionRequestMock(...args),
   rejectSurgeonMissionRequest: (...args: unknown[]) => rejectSurgeonMissionRequestMock(...args),
+  getSurgeonMissionRequestCounts: (...args: unknown[]) => getCountsMock(...args),
+}));
+
+const fetchHistoryMock = vi.fn();
+vi.mock("../audit-journal/api/auditJournal.api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../audit-journal/api/auditJournal.api")>()),
+  fetchSurgeonMissionRequestHistory: (...args: unknown[]) => fetchHistoryMock(...args),
 }));
 
 // D-125 — the dispatch picker loads the site's instrumentists (backend eligibility).
@@ -62,6 +70,9 @@ beforeEach(() => {
   toastSuccess.mockReset();
   toastError.mockReset();
   apiGetMock.mockReset();
+  getCountsMock.mockReset();
+  getCountsMock.mockResolvedValue({ PENDING: 1, ACCEPTED: 4, REJECTED: 2 });
+  fetchHistoryMock.mockReset();
   apiGetMock.mockResolvedValue({
     data: {
       candidates: [
@@ -150,7 +161,8 @@ describe("SurgeonMissionRequestsPanel — détail et acceptation", () => {
     expect(apiGetMock).toHaveBeenCalledWith("/api/missions/dispatch-candidates", {
       params: { siteId: 1, startAt: "2026-09-10T08:00:00+02:00", endAt: "2026-09-10T13:00:00+02:00" },
     });
-  });
+    // Typing into the Autocomplete alone takes ~4–5 s under jsdom — above the 5 s default.
+  }, 15_000);
 
   it("conflit planning à l'acceptation → message d'erreur explicite", async () => {
     getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest()], total: 1 });
@@ -208,5 +220,109 @@ describe("SurgeonMissionRequestsPanel — refus", () => {
 
     await waitFor(() => expect(rejectSurgeonMissionRequestMock).toHaveBeenCalledWith(1, "Bloc déjà complet"));
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Demande refusée."));
+  });
+});
+
+describe("SurgeonMissionRequestsPanel — compteurs, optimisme, historique (D-147)", () => {
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+
+  function card(label: string): HTMLElement {
+    return screen.getByText(label, { selector: "span" }).closest(".MuiPaper-root") as HTMLElement;
+  }
+
+  it("affiche les compteurs par statut au-dessus des demandes et dans les onglets", async () => {
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest()], total: 1 });
+    renderPanel();
+
+    expect(await screen.findByRole("tab", { name: "En attente (1)" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Acceptées (4)" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Refusées (2)" })).toBeInTheDocument();
+    expect(within(card("Acceptées")).getByText("4")).toBeInTheDocument();
+  });
+
+  it("refuser : la demande quitte la liste et les compteurs bougent AVANT la réponse serveur", async () => {
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest()], total: 1 });
+    const pending = deferred<ManagerSurgeonMissionRequest>();
+    rejectSurgeonMissionRequestMock.mockReturnValue(pending.promise);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await screen.findByRole("tab", { name: "En attente (1)" });
+    await user.click(await screen.findByText("Refuser"));
+    await user.type(screen.getByLabelText(/Motif du refus/), "Bloc complet");
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Refuser" }));
+
+    // Serveur pas encore revenu : déjà retirée, compteurs déjà déplacés, pas de toast.
+    await waitFor(() => expect(screen.queryByText("Dr Arnaud Deltour")).not.toBeInTheDocument());
+    expect(screen.getByRole("tab", { name: "En attente (0)" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Refusées (3)" })).toBeInTheDocument();
+    expect(toastSuccess).not.toHaveBeenCalled();
+
+    getCountsMock.mockResolvedValue({ PENDING: 0, ACCEPTED: 4, REJECTED: 3 });
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [], total: 0 });
+    pending.resolve(makeRequest({ status: "REJECTED", reviewComment: "Bloc complet" }));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Demande refusée."));
+    expect(screen.getByRole("tab", { name: "Refusées (3)" })).toBeInTheDocument();
+  });
+
+  it("échec serveur : la demande revient à sa place et les compteurs sont rétablis", async () => {
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest()], total: 1 });
+    const pending = deferred<ManagerSurgeonMissionRequest>();
+    acceptSurgeonMissionRequestMock.mockReturnValue(pending.promise);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await screen.findByRole("tab", { name: "En attente (1)" });
+    await user.click(await screen.findByText("Accepter"));
+    await user.click(await screen.findByText("Accepter et créer"));
+
+    await waitFor(() => expect(screen.queryByText("Dr Arnaud Deltour")).not.toBeInTheDocument());
+    expect(screen.getByRole("tab", { name: "Acceptées (5)" })).toBeInTheDocument();
+
+    pending.reject({ response: { data: { error: { code: "SURGEON_MISSION_REQUEST_CONFLICT" } } } });
+
+    expect(await screen.findByText("Dr Arnaud Deltour")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "En attente (1)" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Acceptées (4)" })).toBeInTheDocument();
+    expect(toastError).toHaveBeenCalledWith("Le chirurgien a déjà une autre mission active sur cette période.");
+  });
+
+  it("l'onglet Historique liste toutes les actions avec leur auteur", async () => {
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [], total: 0 });
+    fetchHistoryMock.mockResolvedValue({
+      total: 2, page: 1, limit: 50,
+      items: [
+        {
+          id: 11, eventType: "SURGEON_MISSION_REQUEST_REJECTED", category: "SURGEON_REQUEST",
+          occurredAt: "2026-09-02T09:15:00+02:00", actor: { id: 3, displayName: "Gérard Manager" },
+          mission: null,
+          surgeonMissionRequest: { id: 1, status: "REJECTED", startAt: "2026-09-10T08:00:00+02:00", endAt: "2026-09-10T13:00:00+02:00", site: { id: 1, name: "CHIREC - Hôpital Delta" }, surgeon: { id: 5, displayName: "Arnaud Deltour" } },
+          payload: { reviewComment: "Bloc complet" },
+        },
+        {
+          id: 10, eventType: "SURGEON_MISSION_REQUEST_CREATED", category: "SURGEON_REQUEST",
+          occurredAt: "2026-09-01T10:00:00+02:00", actor: { id: 5, displayName: "Arnaud Deltour" },
+          mission: null,
+          surgeonMissionRequest: { id: 1, status: "REJECTED", startAt: "2026-09-10T08:00:00+02:00", endAt: "2026-09-10T13:00:00+02:00", site: { id: 1, name: "CHIREC - Hôpital Delta" }, surgeon: { id: 5, displayName: "Arnaud Deltour" } },
+          payload: { type: "BLOCK" },
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole("tab", { name: "Historique" }));
+
+    expect(await screen.findByText("Demande refusée")).toBeInTheDocument();
+    expect(screen.getByText(/par Gérard Manager/)).toBeInTheDocument();
+    expect(screen.getByText("« Bloc complet »")).toBeInTheDocument();
+    expect(screen.getByText("Demande de mission envoyée")).toBeInTheDocument();
+    expect(screen.getAllByTestId("audit-entry")).toHaveLength(2);
+    expect(fetchHistoryMock).toHaveBeenCalledWith(1);
   });
 });

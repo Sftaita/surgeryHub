@@ -12953,3 +12953,65 @@ reste une décision séparée. Les autres notifications « tous managers » ne c
 
 Relance manuelle (décision H5a confirmée) : e-mail obligatoire à l'instrumentiste, auteur
 audité, blocage de 10 min, aucun changement de statut ni de brouillon, canal renvoyé.
+
+## D-147 — Vue Missions manager (recherche, filtres, regroupement par jour), demandes chirurgien optimistes avec compteurs en direct, journal d'activité (2026-10-12)
+
+Branche `feat/manager-missions-demandes-ux` (worktree `SurgicalHub-missions-ux`), base
+`origin/main` `8f4eb86`.
+
+### Demande
+
+Côté manager : un vrai visuel pour « Missions » (filtres, recherche dynamique, grouper par
+jour) ; dans les demandes chirurgien, une interface optimiste dont les chiffres se mettent
+à jour sans rechargement ; un historique de toutes les actions. Précisé par l'utilisateur :
+« Demandes » = l'onglet *Missions > Demandes chirurgien* (pas *Catalogue > Demandes*, en
+cours de refonte par D-146) ; historique = celui des demandes **et** un journal global.
+
+### Décisions
+
+1. **Recherche côté serveur** (`GET /api/missions?q=`), pas en mémoire : la liste est
+   paginée (100 max), filtrer une page côté client masquerait des résultats. Chaque terme
+   doit correspondre (ET entre termes, OU entre chirurgien / instrumentiste / site), un
+   terme numérique vise aussi l'id. Ajout de `order=asc|desc` : « À venir » se lit du plus
+   proche au plus lointain ; le défaut reste `desc` pour tous les autres appelants.
+2. **Regroupement par jour = présentation.** Jour civil Europe/Brussels (D-066), ordre des
+   jours et des missions = ordre serveur. Aucun statut ni « couverture » recalculé.
+   Pagination par 50 avec chargement automatique en bas de liste. Vue tableau conservée.
+   Filtres dans l'URL (`q`, `period`, `status`, `type`, `siteId`, `view`) : partageables et
+   conservés au retour depuis le détail d'une mission. Période par défaut « À venir » sur
+   *Toutes* ; « Toutes les dates » sur *À valider* et sur le diagnostic « validées sans
+   calcul » (rien ne doit y être masqué).
+3. **Optimisme borné à la transition déclenchée.** Accepter / refuser passe toujours par
+   les endpoints dédiés. Avant la réponse, seule la conséquence certaine de *cette*
+   transition est affichée : la demande quitte « En attente », les compteurs se déplacent
+   d'une unité. Aucune ligne n'est fabriquée dans Acceptées / Refusées (`reviewedBy`,
+   mission créée… restent serveur) ; tout est rechargé au règlement. Échec → opération
+   inverse (pas de restauration d'instantané, pour que deux décisions concurrentes ne
+   s'annulent pas l'une l'autre) + message d'erreur ; le toast de succès attend la
+   confirmation serveur. Compatible avec « le frontend ne dérive pas les statuts » : rien
+   n'est décidé localement, la réponse serveur fait foi quelques centaines de ms plus tard.
+4. **Compteurs : un endpoint, un cache.** `GET …/surgeon-mission-requests/counts` (une
+   requête GROUP BY) alimente à la fois les cartes, les libellés d'onglets et le badge
+   « Demandes chirurgien » (même clé TanStack) : ils bougent ensemble. Les demandes
+   créées par les chirurgiens arrivent sans action du manager → rafraîchissement en tâche
+   de fond toutes les 30 s (et au retour sur l'onglet du navigateur). Le badge utilisait
+   avant la liste PENDING complète pour n'en lire que `total`.
+5. **Historique = AuditEvent, lecture seule.** Aucun nouvel enregistrement : les
+   événements existent déjà (création, acceptation, refus des demandes ; toutes les
+   actions mission/planning/encodage/facturation). `AuditJournalService` les lit, enrichit
+   d'un résumé de mission ou de demande (les événements CREATED / REJECTED n'ont pas de
+   Mission — la demande est chargée par l'id du payload, en une requête).
+   `AuditEventType::category()` regroupe les 96 types en 6 domaines pour filtrer ; un
+   test garantit que chaque type a une catégorie connue.
+6. **Autorisation.** Journal global : nouveau `AuditJournalVoter::VIEW` (manager/admin,
+   sans sujet) — le journal par mission reste `MissionVoter::VIEW_AUDIT`. Compteurs et
+   historique des demandes : `SurgeonMissionRequestVoter::MANAGE`, comme la liste.
+7. **Tri par id** dans le journal (clé primaire, monotone avec `createdAt` puisque
+   l'audit est append-only) : pas d'index ni de migration à ajouter sur `audit_event`.
+
+### Hors périmètre
+
+- *Catalogue > Demandes* (D-146 en cours dans une autre session).
+- Mise à jour poussée (SSE / WebSocket) : le rafraîchissement à 30 s suffit pour un flux
+  de quelques demandes par jour ; à revoir si le volume change.
+- Recherche dans le journal sur le contenu des payloads (JSON non indexé).
