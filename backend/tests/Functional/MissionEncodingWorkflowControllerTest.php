@@ -823,7 +823,7 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
         $error = json_decode((string) $response->getContent(), true)['error'];
         self::assertSame('ENCODING_INCOMPLETE', $error['code']);
-        self::assertStringContainsString('heures réelles de début et de fin', $error['message']);
+        self::assertStringContainsString('heures prestées (début et fin)', $error['message']);
         self::assertSame(['ACTUAL_START_TIME', 'ACTUAL_END_TIME'], array_column($error['missing'], 'code'));
         self::assertSame(['hours', 'hours'], array_column($error['missing'], 'section'));
 

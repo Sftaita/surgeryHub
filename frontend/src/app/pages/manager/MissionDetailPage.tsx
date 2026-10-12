@@ -406,18 +406,18 @@ export function MissionDetailContent({
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
               <AccessTimeIcon fontSize="small" color="action" />
-              <Typography variant="subtitle2" fontWeight={600}>Exécution réelle</Typography>
+              <Typography variant="subtitle2" fontWeight={600}>Exécution — heures prestées</Typography>
               {!executionQuery.data.hasExecutionRecord && (
                 <Chip label="Non renseignée — repli sur le planifié" size="small" variant="outlined" />
               )}
             </Stack>
             <Divider sx={{ mb: 1.5 }} />
-            <InfoRow label="Début réel">
+            <InfoRow label="Début presté">
               <Typography variant="body2">
                 {executionQuery.data.actualStartAt ? new Date(executionQuery.data.actualStartAt).toLocaleString("fr-BE") : "—"}
               </Typography>
             </InfoRow>
-            <InfoRow label="Fin réelle">
+            <InfoRow label="Fin prestée">
               <Typography variant="body2">
                 {executionQuery.data.actualEndAt ? new Date(executionQuery.data.actualEndAt).toLocaleString("fr-BE") : "—"}
               </Typography>
@@ -427,7 +427,7 @@ export function MissionDetailContent({
                 {executionQuery.data.effectiveDurationMinutes} min
                 {" "}
                 <Typography component="span" variant="caption" color="text.secondary">
-                  ({executionQuery.data.effectiveDurationSource === "ACTUAL_TIMES" ? "horaires réels"
+                  ({executionQuery.data.effectiveDurationSource === "ACTUAL_TIMES" ? "heures prestées"
                     : executionQuery.data.effectiveDurationSource === "ACTUAL_EXPLICIT" ? "durée déclarée"
                     : "repli planifié"})
                 </Typography>

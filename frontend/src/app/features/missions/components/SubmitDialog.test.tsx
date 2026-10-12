@@ -183,14 +183,15 @@ describe("SubmitDialog — ligne Heures du récapitulatif (source de vérité mi
   it("affiche 'À compléter' quand aucune heure réelle n'existe", async () => {
     renderDialog(1, MISSION, executionInfo({ hasExecutionRecord: false }));
 
-    expect(await screen.findByText("À compléter")).toBeInTheDocument();
-    expect(screen.getByTestId("submit-incomplete")).toHaveTextContent("heures réelles de début et de fin");
+    expect(await screen.findByText("Heures prestées")).toBeInTheDocument();
+    expect(screen.getByText("Non renseignées")).toBeInTheDocument();
+    expect(screen.getByTestId("submit-incomplete")).toHaveTextContent("heures prestées (début et fin)");
   });
 
   it("D-143 — une durée seule ne suffit plus : début et fin restent à compléter", async () => {
     renderDialog(1, MISSION, executionInfo({ hasExecutionRecord: true, actualDurationMinutes: 240 }));
 
-    expect(await screen.findByText("À compléter")).toBeInTheDocument();
+    expect(await screen.findByText("Début et fin à compléter")).toBeInTheDocument();
   });
 
   it("affiche la durée quand début et fin réels sont connus, sans avertissement", async () => {
@@ -198,7 +199,17 @@ describe("SubmitDialog — ligne Heures du récapitulatif (source de vérité mi
       hasExecutionRecord: true, actualStartAt: "2026-07-05T08:00:00Z", actualEndAt: "2026-07-05T12:00:00Z", actualDurationMinutes: 240,
     }));
 
-    expect(await screen.findByText("4 h")).toBeInTheDocument();
+    expect(await screen.findByText("10h00 → 14h00 · 4h00")).toBeInTheDocument();
+    expect(screen.queryByTestId("submit-incomplete")).not.toBeInTheDocument();
+  });
+
+  it("D-146 bis — début et fin enregistrés sans durée stockée : affiche les heures prestées, jamais « Non renseignées »", async () => {
+    renderDialog(1, MISSION, executionInfo({
+      hasExecutionRecord: true, actualStartAt: "2026-07-05T08:00:00Z", actualEndAt: "2026-07-05T11:00:00Z", actualDurationMinutes: null, breakMinutes: 30,
+    }));
+
+    expect(await screen.findByText("10h00 → 13h00 · 2h30")).toBeInTheDocument();
+    expect(screen.queryByText("Non renseignées")).not.toBeInTheDocument();
     expect(screen.queryByTestId("submit-incomplete")).not.toBeInTheDocument();
   });
 });

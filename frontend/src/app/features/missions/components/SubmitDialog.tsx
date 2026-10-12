@@ -5,8 +5,8 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import type { Mission } from "../api/missions.types";
 import { submitMission, getMissionExecution } from "../api/missions.api";
 import { fetchMissionEncoding } from "../../encoding/api/encoding.api";
-import { formatExecutionHours } from "../utils/missions.format";
-import { hoursIncomplete } from "../../encoding/components/WorkedHoursCard";
+import { executionDurationMinutes, HOURS_NOT_PROVIDED } from "../utils/missions.format";
+import { formatHm, hoursIncomplete } from "../../encoding/components/WorkedHoursCard";
 import { useToast } from "../../../ui/toast/useToast";
 import { requestMissionSync } from "../sync/missionSyncBus";
 import { SheetModal } from "../../../ui/sheet/SheetModal";
@@ -28,7 +28,7 @@ type Props = {
   onSubmitted?: () => void;
   /** Topic d'aide contextuel — omis par défaut, ce composant est réutilisé hors encodage. */
   helpTopicId?: string;
-  /** D-143 — ouvre directement la saisie des heures réelles (section concernée). */
+  /** D-143 — ouvre directement la saisie des heures prestées (section concernée). */
   onCompleteHours?: () => void;
 };
 
@@ -51,10 +51,23 @@ function incompleteFrom(err: any): { message: string; missing: MissingItem[] } |
   return { message: String(error.message ?? ""), missing: Array.isArray(error.missing) ? error.missing : [] };
 }
 
-function hoursRecapLabel(execution: Parameters<typeof formatExecutionHours>[0]): string {
-  if (execution?.actualStartAt && execution?.actualEndAt) return formatExecutionHours(execution);
-  if (execution?.actualStartAt) return "Fin à compléter";
-  return "À compléter";
+/** D-146 bis — heures prestées réellement enregistrées (début → fin · total), « Non renseignées »
+ *  seulement si rien n'est saisi ; même lecture que la carte « Heures prestées ». */
+function hoursRecapLabel(execution: Parameters<typeof executionDurationMinutes>[0]): string {
+  if (execution?.actualStartAt && execution?.actualEndAt) {
+    const range = `${hm(execution.actualStartAt)} → ${hm(execution.actualEndAt)}`;
+    const minutes = executionDurationMinutes(execution);
+    // Même format que le total net de la carte « Heures prestées » (ex. 3h15).
+    return minutes == null ? range : `${range} · ${formatHm(minutes)}`;
+  }
+  if (execution?.actualStartAt) return `Début ${hm(execution.actualStartAt)} — fin à compléter`;
+  // D-143 — une durée seule ne suffit pas : début et fin restent à déclarer.
+  if (execution?.hasExecutionRecord) return "Début et fin à compléter";
+  return HOURS_NOT_PROVIDED;
+}
+
+function hm(iso: string): string {
+  return new Intl.DateTimeFormat("fr-BE", { timeZone: "Europe/Brussels", hour: "2-digit", minute: "2-digit" }).format(new Date(iso)).replace(":", "h");
 }
 
 function OkIcon() {
@@ -160,7 +173,7 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
         <Box sx={{ mt: "14px", fontSize: 14, color: GRAY_500 }}>Chargement…</Box>
       ) : (
         <Box sx={{ mt: "14px", display: "flex", flexDirection: "column" }}>
-          <RecapRow warn={!hasHours} label="Heures réelles" value={hoursLabel} />
+          <RecapRow warn={!hasHours} label="Heures prestées" value={hoursLabel} />
           <RecapRow warn={false} label="Interventions" value={String(interventions.length)} />
           <RecapRow warn={false} label="Matériel encodé" value={`${materialLineCount} ligne${materialLineCount > 1 ? "s" : ""}`} />
           {notFoundCount > 0 && (
@@ -172,7 +185,7 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
       {(incomplete || (!isLoading && !hasHours)) && (
         <Box data-testid="submit-incomplete" role={incomplete ? "alert" : undefined} sx={{ mt: "14px", background: AMBER_50, borderRadius: "12px", padding: "12px 14px" }}>
           <Box sx={{ fontSize: 13.5, fontWeight: 700, color: AMBER_700 }}>
-            {incomplete?.message || "Il reste une petite étape avant de terminer : pensez à renseigner vos heures réelles de début et de fin."}
+            {incomplete?.message || "Il reste une petite étape avant de terminer : pensez à renseigner vos heures prestées (début et fin)."}
           </Box>
           {incomplete && incomplete.missing.length > 0 && (
             <Box component="ul" sx={{ m: "6px 0 0", pl: "18px", fontSize: 13, color: GRAY_700 }}>

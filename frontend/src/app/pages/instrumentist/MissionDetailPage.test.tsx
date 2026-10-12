@@ -85,7 +85,7 @@ describe("MissionDetailPage (instrumentiste) — heures prestées (source de vé
     mockRoutes(baseMission(), executionInfo({ hasExecutionRecord: false }));
     renderPage();
 
-    expect(await screen.findByText("Non renseigné")).toBeInTheDocument();
+    expect(await screen.findByText("Non renseignées")).toBeInTheDocument();
   });
 
   it("affiche les heures réellement enregistrées, au même format que l'écran d'encodage", async () => {
@@ -93,7 +93,7 @@ describe("MissionDetailPage (instrumentiste) — heures prestées (source de vé
     renderPage();
 
     expect(await screen.findByText("4.5 h")).toBeInTheDocument();
-    expect(screen.queryByText("Non renseigné")).not.toBeInTheDocument();
+    expect(screen.queryByText("Non renseignées")).not.toBeInTheDocument();
   });
 });
 

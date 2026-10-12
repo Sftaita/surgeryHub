@@ -116,7 +116,7 @@ final class MissionEncodingWorkflowService
         // planifiés, jamais une durée seule. Seule la transition est refusée, rien n'est perdu.
         $this->completeness->assertSubmittable(
             $mission,
-            'Il reste une petite étape avant de terminer : pensez à renseigner vos heures réelles de début et de fin.',
+            'Il reste une petite étape avant de terminer : pensez à renseigner vos heures prestées (début et fin).',
         );
 
         // D-146 bis — chaque intervention doit être complète (firme, réponse délégué,
@@ -195,7 +195,7 @@ final class MissionEncodingWorkflowService
         // Une durée seule déclarée avant D-143 reste validable.
         $this->completeness->assertHasDeclaredHours(
             $mission,
-            "Heures réelles manquantes : renseignez-les ou renvoyez l'encodage à l'instrumentiste avant de valider.",
+            "Heures prestées manquantes : renseignez-les ou renvoyez l'encodage à l'instrumentiste avant de valider.",
         );
 
         // D-146 bis — jamais une validation définitive d'un contenu incomplet (intervention

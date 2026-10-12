@@ -28,7 +28,7 @@ import "dayjs/locale/fr";
 
 import { fetchMissionById, getMissionExecution } from "../../features/missions/api/missions.api";
 import type { Mission } from "../../features/missions/api/missions.types";
-import { formatExecutionHours } from "../../features/missions/utils/missions.format";
+import { formatExecutionHours, HOURS_NOT_PROVIDED } from "../../features/missions/utils/missions.format";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
 import { MobileCard } from "../../ui/mobile/MobileCard";
@@ -252,7 +252,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
             <Typography variant="body2" color="text.secondary">
               Heures prestées
             </Typography>
-            <Typography variant="body2" fontWeight={700} color={hoursLabel === "Non renseigné" ? "text.disabled" : "text.primary"}>
+            <Typography variant="body2" fontWeight={700} color={hoursLabel === HOURS_NOT_PROVIDED ? "text.disabled" : "text.primary"}>
               {hoursLabel}
             </Typography>
           </Stack>

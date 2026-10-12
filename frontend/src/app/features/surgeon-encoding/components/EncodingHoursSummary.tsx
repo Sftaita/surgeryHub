@@ -2,6 +2,7 @@ import { Box, Stack, Typography } from "@mui/material";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import dayjs from "dayjs";
 import type { MissionExecutionInfo } from "../../missions/api/missions.api";
+import { executionDurationMinutes } from "../../missions/utils/missions.format";
 
 const GRAY_500 = "#727E8C";
 const GRAY_700 = "#3A4754";
@@ -59,7 +60,7 @@ export function EncodingHoursSummary({ execution, plannedStartAt, plannedEndAt }
     : start
       ? `Début ${hm(start)} — fin non déclarée`
       : "Non déclarées";
-  const actualMinutes = execution?.hasExecutionRecord && execution.actualDurationMinutes != null ? execution.actualDurationMinutes : null;
+  const actualMinutes = executionDurationMinutes(execution);
 
   return (
     <Box data-testid="surgeon-hours-summary" sx={{ background: "#fff", borderRadius: "16px", padding: "14px 16px", boxShadow: SHADOW_XS }}>
@@ -67,9 +68,9 @@ export function EncodingHoursSummary({ execution, plannedStartAt, plannedEndAt }
         <AccessTimeIcon sx={{ fontSize: 18, color: GREEN_700 }} />
         <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: GRAY_700 }}>Horaires</Typography>
       </Stack>
-      <Row label="Planifiés" value={planned} />
-      <Row label="Réels déclarés" value={actual} tone={start && end ? undefined : AMBER_700} />
-      <Row label="Durée réelle" value={actualMinutes != null ? duration(actualMinutes) : "—"} />
+      <Row label="Heures planifiées" value={planned} />
+      <Row label="Heures prestées" value={actual} tone={start && end ? undefined : AMBER_700} />
+      <Row label="Durée prestée" value={actualMinutes != null ? duration(actualMinutes) : "—"} />
       {actualMinutes != null && plannedMinutes != null && (
         <Row label="Écart" value={formatGap(actualMinutes, plannedMinutes)} tone={actualMinutes === plannedMinutes ? GREEN_700 : GRAY_900} />
       )}

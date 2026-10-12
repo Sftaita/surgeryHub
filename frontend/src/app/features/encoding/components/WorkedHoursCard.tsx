@@ -31,7 +31,7 @@ function ChevronRightIcon() {
 /** "4h00" — le pendant tabulaire de fmtDuration() (EditServiceHoursDialog.tsx), pour le
  *  bloc TOTAL NET. Local à ce composant : formatExecutionHours() (missions.format.ts)
  *  reste le format "X h" partagé par SubmitDialog/instrumentist MissionDetailPage. */
-function formatHm(minutes: number): string {
+export function formatHm(minutes: number): string {
   return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
 }
 

@@ -19,7 +19,7 @@ final class EncodingEscalationEmailTemplateTest extends KernelTestCase
 
         return $twig->render('emails/encoding_escalation_manager.html.twig', [
             'firstname' => 'Marie', 'instrumentistName' => 'Diane D.', 'missionDate' => '08/10/2026',
-            'surgeonName' => 'Dr X', 'situationLabel' => 'Encodage non commencé', 'missing' => ['Heure réelle de début'],
+            'surgeonName' => 'Dr X', 'situationLabel' => 'Encodage non commencé', 'missing' => ['Heure de début prestée'],
             'previousReminders' => $previous, 'trackingUrl' => 'https://app.test/app/m/billing/encodings?missionId=1',
         ]);
     }
