@@ -130,6 +130,23 @@ export function CatalogueRequestDetailDialog({ row, onClose, onResolve, onIgnore
           <DetailRow term={isMaterial ? "Référence" : "Code suggéré"}>
             {reference || <Missing />}
           </DetailRow>
+          {/* D-146 bis — firme indiquée (référentiel ou nom proposé) et quantité déclarée. */}
+          <DetailRow term={isMaterial ? "Firme fabricante indiquée" : "Firme indiquée"}>
+            {(row.kind === "material"
+              ? row.request.proposedFirm?.name ?? (row.request.proposedFirmName ? `${row.request.proposedFirmName} (absente du catalogue)` : null)
+              : row.request.requestedFirm?.name ?? (row.request.proposedFirmName ? `${row.request.proposedFirmName} (absente du catalogue)` : row.request.requestedFirmNameSnapshot ?? null)
+            ) || <Missing />}
+          </DetailRow>
+          {row.kind === "material" ? (
+            <>
+              <DetailRow term="Quantité déclarée">
+                {row.request.quantity ? String(Number(row.request.quantity)).replace(".", ",") : <Missing />}
+              </DetailRow>
+              <DetailRow term="Intervention concernée">
+                {row.request.target ? `${row.request.target.label}${row.request.target.firm ? ` · ${row.request.target.firm.name}` : ""}` : <Missing />}
+              </DetailRow>
+            </>
+          ) : null}
           <DetailRow term="Instrumentiste">
             {request.requestedBy?.displayName || <Missing />}
           </DetailRow>

@@ -84,7 +84,8 @@ type Props = {
   recentFirmIds?: number[];
   onClose: () => void;
   onSubmit: (values: CreateMaterialLineBody) => void;
-  onNotFound?: (target: MaterialTarget) => void;
+  /** D-146 bis — la firme déjà choisie (étape Marque) est transmise à la demande. */
+  onNotFound?: (target: MaterialTarget, firm: CatalogFirm | null) => void;
 };
 
 /**
@@ -135,7 +136,7 @@ export default function MaterialWizard({
   function handleNotFound() {
     if (target == null || !onNotFound) return;
     onClose();
-    onNotFound(target);
+    onNotFound(target, selectedFirm);
   }
   function handleAdd() {
     if (target == null || !selectedItem) return;

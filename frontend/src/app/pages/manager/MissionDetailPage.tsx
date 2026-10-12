@@ -1,4 +1,5 @@
 import * as React from "react";
+import { encodingIncompleteText } from "../../features/encoding/api/encodingIncomplete";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -182,7 +183,7 @@ export function MissionDetailContent({
       toast.success("Encodage validé.");
     },
     onError: (err: any) => {
-      toast.error(err?.response?.status === 403 ? "Accès interdit." : "Erreur lors de la validation.");
+      toast.error(err?.response?.status === 403 ? "Accès interdit." : encodingIncompleteText(err) ?? "Erreur lors de la validation.");
     },
   });
 

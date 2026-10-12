@@ -176,7 +176,7 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
           </Box>
           {incomplete && incomplete.missing.length > 0 && (
             <Box component="ul" sx={{ m: "6px 0 0", pl: "18px", fontSize: 13, color: GRAY_700 }}>
-              {incomplete.missing.map((m) => <li key={m.code}>{m.label}</li>)}
+              {incomplete.missing.map((m, i) => <li key={`${m.code}-${i}`}>{m.label}</li>)}
             </Box>
           )}
           <Box sx={{ mt: "6px", fontSize: 12.5, color: GRAY_500 }}>Tout ce que vous avez déjà encodé est conservé.</Box>

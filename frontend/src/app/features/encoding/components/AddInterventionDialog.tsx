@@ -5,7 +5,7 @@ import { SheetModal } from "../../../ui/sheet/SheetModal";
 import { SelectField } from "../../../ui/sheet/SelectField";
 import { Field } from "../../../ui/sheet/Field";
 import type { CatalogFirm, CatalogInterventionType, CreateInterventionBody } from "../api/encoding.types";
-import { fetchInterventionTypeEncodingContext, fetchFirmServiceOfferings, type FirmServiceOfferingSummary } from "../api/encoding.api";
+import { fetchFirmServiceOfferings, type FirmServiceOfferingSummary } from "../api/encoding.api";
 
 const GREEN_500 = "#42A882";
 const GREEN_700 = "#2C7D5F";
@@ -20,9 +20,11 @@ const RED_600 = "#E5484D";
 const BORDER_DEFAULT = GRAY_200;
 const FOCUS_RING = "0 0 0 3px rgba(66,168,130,.32)";
 
-/** Sentinel jamais atteignable par un vrai id de firme/type (toujours positifs en base). */
-const NO_FIRM = 0;
+/** Sentinel jamais atteignable par un vrai id de type (toujours positifs en base). */
 const NOT_IN_CATALOG = -1;
+
+/** D-146 bis — question posée pour chaque intervention (jamais « Aucune firme »). */
+export const FIRM_QUESTION = "Avec quelle firme cette intervention a-t-elle été réalisée ?";
 
 type Step = 1 | 2;
 
@@ -31,6 +33,8 @@ export type DraftSubmitValues = {
   suggestedCode?: string;
   comment?: string;
   requestedFirmId?: number;
+  /** D-146 bis — firme absente du référentiel, proposée au manager (jamais créée ici). */
+  proposedFirmName?: string;
 };
 
 type Props = {
@@ -73,7 +77,8 @@ function searchInputSx() {
 /**
  * EPIC Revue instrumentiste, Lot 3, commit 8 — parcours "firme puis intervention" :
  * 1. choix explicite d'une firme (recherche locale sur le référentiel déjà chargé, ou
- *    "Aucune firme" — jamais de création automatique de firme) ;
+ *    « Ma firme n'est pas dans la liste » + nom libre, qui force une demande au manager —
+ *    D-146 bis : jamais « Aucune firme », jamais de création automatique de firme) ;
  * 2. type d'intervention, toujours un `select` (SelectField), filtré aux prestations de
  *    la firme choisie quand elle en a, sinon replié sur le catalogue complet ; une option
  *    explicite "Intervention absente du catalogue" reste toujours disponible et déclenche
@@ -90,10 +95,11 @@ export default function AddInterventionDialog({
 }: Props) {
   const [step, setStep] = React.useState<Step>(1);
   const [firmQuery, setFirmQuery] = React.useState("");
-  const [selectedFirm, setSelectedFirm] = React.useState<CatalogFirm | typeof NO_FIRM | null>(null);
+  const [selectedFirm, setSelectedFirm] = React.useState<CatalogFirm | null>(null);
+  /** Non null = « Ma firme n'est pas dans la liste » : seule une demande est possible. */
+  const [proposedFirmName, setProposedFirmName] = React.useState<string | null>(null);
 
   const [typeId, setTypeId] = React.useState<number | null>(null);
-  const [firmAutoSuggested, setFirmAutoSuggested] = React.useState(false);
   const [representativePresent, setRepresentativePresent] = React.useState<boolean | null>(null);
   const [selectedChoiceOptionId, setSelectedChoiceOptionId] = React.useState<number | null>(null);
 
@@ -108,8 +114,8 @@ export default function AddInterventionDialog({
     setStep(1);
     setFirmQuery("");
     setSelectedFirm(null);
+    setProposedFirmName(null);
     setTypeId(null);
-    setFirmAutoSuggested(false);
     setRepresentativePresent(null);
     setSelectedChoiceOptionId(null);
     setDraftLabel("");
@@ -120,7 +126,8 @@ export default function AddInterventionDialog({
   const activeFirms = firms.filter((f) => f.active !== false);
   const filteredFirms = activeFirms.filter((f) => f.name.toLowerCase().includes(firmQuery.toLowerCase()));
 
-  const firmId = selectedFirm === NO_FIRM ? null : selectedFirm?.id ?? null;
+  const firmId = selectedFirm?.id ?? null;
+  const firmName = selectedFirm?.name ?? proposedFirmName?.trim() ?? "";
 
   // Prestations de la firme choisie — accélérateur de saisie, jamais une restriction dure
   // (voir FirmServiceOfferingController) : si la firme n'en a aucune, on retombe sur le
@@ -136,30 +143,23 @@ export default function AddInterventionDialog({
     .map((o) => o.interventionType);
   const typesToShow = firmId != null && firmTypes.length > 0 ? firmTypes : interventionTypes;
 
-  // Lot 6 : dès qu'un type réel est choisi, si une seule prestation active existe pour ce
-  // type, sa firme est pré-sélectionnée (jamais devinée côté frontend) — ne s'applique
-  // qu'en repli catalogue complet (firme pas encore choisie), sinon la firme est déjà fixée.
-  React.useEffect(() => {
-    if (typeId == null || typeId === NOT_IN_CATALOG || firmId != null) return;
-    let cancelled = false;
-    fetchInterventionTypeEncodingContext(typeId)
-      .then((ctx) => {
-        if (cancelled || !ctx.suggestedPrimaryFirm) return;
-        const match = activeFirms.find((f) => f.id === ctx.suggestedPrimaryFirm!.id);
-        if (match) {
-          setSelectedFirm(match);
-          setFirmAutoSuggested(true);
-        }
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [typeId]);
-
-  function pickFirm(firm: CatalogFirm | typeof NO_FIRM) {
+  function pickFirm(firm: CatalogFirm) {
     setSelectedFirm(firm);
+    setProposedFirmName(null);
     setTypeId(null);
-    setFirmAutoSuggested(false);
+    setRepresentativePresent(null);
+    setSelectedChoiceOptionId(null);
+    setStep(2);
+  }
+
+  /** Firme hors référentiel : le type ne peut pas encore être catalogué pour elle — la
+   *  saisie devient une demande au manager (firme + intervention à valider). */
+  function proposeFirm() {
+    const name = (proposedFirmName ?? "").trim();
+    if (name === "") return;
+    setSelectedFirm(null);
+    setProposedFirmName(name);
+    setTypeId(NOT_IN_CATALOG);
     setRepresentativePresent(null);
     setSelectedChoiceOptionId(null);
     setStep(2);
@@ -186,7 +186,7 @@ export default function AddInterventionDialog({
 
   const notInCatalog = typeId === NOT_IN_CATALOG;
   const canSubmitIntervention =
-    !notInCatalog && typeId != null && !loading
+    !notInCatalog && typeId != null && firmId != null && !loading
     && (!showRepresentativeQuestion || representativePresent !== null)
     && (!showChoiceQuestion || selectedChoiceOptionId !== null);
   const canSubmitDraft = notInCatalog && draftLabel.trim() !== "" && !loading;
@@ -198,14 +198,14 @@ export default function AddInterventionDialog({
         label: draftLabel.trim(),
         suggestedCode: draftSuggestedCode.trim() || undefined,
         comment: draftComment.trim() || undefined,
-        requestedFirmId: firmId ?? undefined,
+        ...(firmId != null ? { requestedFirmId: firmId } : { proposedFirmName: (proposedFirmName ?? "").trim() }),
       });
       return;
     }
-    if (typeId == null) return;
+    if (typeId == null || firmId == null) return;
     onSubmit({
       interventionTypeId: typeId,
-      primaryFirmId: firmId ?? undefined,
+      primaryFirmId: firmId,
       orderIndex: existingCount,
       ...(showRepresentativeQuestion && representativePresent !== null ? { representativePresent } : {}),
       ...(showChoiceQuestion && selectedChoiceOptionId !== null ? { selectedChoiceOptionId } : {}),
@@ -221,7 +221,7 @@ export default function AddInterventionDialog({
     <SheetModal open={open} title="Ajouter une intervention" onClose={onClose} closeDisabled={loading} helpTopicId="mission-encoding">
       {step === 1 && (
         <Box sx={{ mt: "18px" }}>
-          <Box sx={{ fontSize: 14.5, fontWeight: 700 }}>Étape 1/2 – Choisir une firme</Box>
+          <Box sx={{ fontSize: 14.5, fontWeight: 700 }}>Étape 1/2 – {FIRM_QUESTION}</Box>
 
           <Box sx={{ position: "relative", mt: "12px" }}>
             <Box sx={{ position: "absolute", left: "14px", top: "14px", pointerEvents: "none", display: "flex" }}>
@@ -238,22 +238,6 @@ export default function AddInterventionDialog({
           </Box>
 
           <Box sx={{ mt: "14px" }}>
-            <Box
-              component="button"
-              type="button"
-              onClick={() => pickFirm(NO_FIRM)}
-              sx={{
-                display: "flex", alignItems: "center", gap: "10px", height: 50, border: "none",
-                borderBottom: "1px solid", borderColor: GRAY_100, background: "transparent",
-                fontFamily: "inherit", fontSize: 14.5, fontWeight: 600, color: GRAY_500, cursor: "pointer",
-                textAlign: "left", width: "100%", padding: "0 4px", fontStyle: "italic",
-                "&:hover": { background: "#F5F7FA" },
-              }}
-            >
-              <Box sx={{ flex: 1 }}>— Aucune firme (voir tout le catalogue)</Box>
-              <ChevronRightIcon />
-            </Box>
-
             {filteredFirms.length === 0 && (
               <Box sx={{ py: "16px", px: "4px", fontSize: 13.5, color: GRAY_400 }}>Aucune firme ne correspond.</Box>
             )}
@@ -276,6 +260,50 @@ export default function AddInterventionDialog({
                 <ChevronRightIcon />
               </Box>
             ))}
+
+            {proposedFirmName === null ? (
+              <Box
+                component="button"
+                type="button"
+                onClick={() => setProposedFirmName(firmQuery.trim())}
+                sx={{
+                  display: "flex", alignItems: "center", gap: "10px", height: 50, border: "none",
+                  borderBottom: "1px solid", borderColor: GRAY_100, background: "transparent",
+                  fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, color: GREEN_700, cursor: "pointer",
+                  textAlign: "left", width: "100%", padding: "0 4px",
+                  "&:hover": { background: "#F5F7FA" },
+                }}
+              >
+                <Box sx={{ flex: 1 }}>Ma firme n'est pas dans la liste</Box>
+                <ChevronRightIcon />
+              </Box>
+            ) : (
+              <Box sx={{ mt: "14px", display: "flex", flexDirection: "column", gap: "10px" }}>
+                <Field
+                  id="add-itv-proposed-firm"
+                  label="Nom de la firme *"
+                  value={proposedFirmName}
+                  onChange={setProposedFirmName}
+                  disabled={loading}
+                  placeholder="ex: Medacta"
+                  helperText="Le manager vérifiera cette firme avant de l'ajouter au catalogue."
+                  autoFocus
+                />
+                <Box
+                  component="button"
+                  type="button"
+                  onClick={proposeFirm}
+                  disabled={proposedFirmName.trim() === ""}
+                  sx={{
+                    width: "100%", height: 46, border: "none", borderRadius: "12px", background: GREEN_800, color: "#fff",
+                    fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer",
+                    "&:disabled": { opacity: 0.6, cursor: "default" },
+                  }}
+                >
+                  Continuer avec cette firme
+                </Box>
+              </Box>
+            )}
           </Box>
 
           <Box
@@ -298,7 +326,10 @@ export default function AddInterventionDialog({
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Box sx={{ fontSize: 11.5, color: GRAY_500 }}>Firme</Box>
               <Box sx={{ mt: "1px", fontSize: 15, fontWeight: 700 }}>
-                {selectedFirm === NO_FIRM ? "Aucune" : selectedFirm?.name}
+                {firmName}
+                {proposedFirmName !== null && (
+                  <Box component="span" sx={{ ml: "8px", fontSize: 12, fontWeight: 600, color: GRAY_500 }}>(à valider par le manager)</Box>
+                )}
               </Box>
             </Box>
             <Box
@@ -312,34 +343,30 @@ export default function AddInterventionDialog({
             </Box>
           </Box>
 
-          <Box sx={{ mt: "16px" }}>
-            <SelectField
-              id="add-itv-type"
-              label="Type d'intervention *"
-              placeholder="Sélectionner un type"
-              value={typeId}
-              options={typeOptions}
-              onChange={pickType}
-              disabled={loading}
-            />
-          </Box>
-
-          {typesToShow.length === 0 && (
-            <Box sx={{ mt: "8px", fontSize: 12.5, color: GRAY_500 }}>
-              Le catalogue est vide pour le moment.
+          {proposedFirmName === null && (
+            <Box sx={{ mt: "16px" }}>
+              <SelectField
+                id="add-itv-type"
+                label="Type d'intervention *"
+                placeholder="Sélectionner un type"
+                value={typeId}
+                options={typeOptions}
+                onChange={pickType}
+                disabled={loading}
+              />
             </Box>
           )}
 
-          {firmAutoSuggested && (
+          {proposedFirmName === null && typesToShow.length === 0 && (
             <Box sx={{ mt: "8px", fontSize: 12.5, color: GRAY_500 }}>
-              Firme suggérée automatiquement (seule prestation active pour ce type).
+              Le catalogue est vide pour le moment.
             </Box>
           )}
 
           {showRepresentativeQuestion && (
             <Box sx={{ mt: "16px", background: "#F5F7FA", borderRadius: "12px", padding: "14px" }}>
               <Box sx={{ fontSize: 14, fontWeight: 700, mb: "4px" }}>
-                Un délégué de {selectedFirm !== NO_FIRM ? selectedFirm?.name : ""} était-il présent ?
+                Un délégué de {firmName} était-il présent ?
               </Box>
               <Box sx={{ fontSize: 12.5, color: GRAY_500, mb: "10px" }}>
                 Cette information est nécessaire pour cette intervention.
@@ -366,7 +393,7 @@ export default function AddInterventionDialog({
               </Box>
               {representativePresent === null && (
                 <Box sx={{ mt: "10px", fontSize: 12.5, color: RED_600, fontWeight: 600 }}>
-                  Indiquez si un délégué de {selectedFirm !== NO_FIRM ? selectedFirm?.name : ""} était présent.
+                  Indiquez si un délégué de {firmName} était présent.
                 </Box>
               )}
             </Box>

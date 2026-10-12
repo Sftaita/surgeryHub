@@ -44,33 +44,41 @@ describe("getInterventionTypeRequests()", () => {
 });
 
 describe("resolveInterventionTypeRequest()", () => {
-  it("posts to /resolve with interventionTypeId and firmId (not primaryFirmId) — le backend lit exclusivement `firmId`", async () => {
-    apiPost.mockResolvedValueOnce({ data: { requestId: 7, draftId: 2, status: "RESOLVED", draftStatus: "RESOLVED", missionInterventionId: 9 } });
+  // D-146 bis — le corps est transmis tel quel : une seule requête atomique (firme,
+  // intervention, décision de prestation, réponses obligatoires).
+  it("posts the resolution body as-is to /resolve", async () => {
+    apiPost.mockResolvedValueOnce({ data: { requestId: 7, draftId: 2, status: "RESOLVED", draftStatus: "CONVERTED", missionInterventionId: 9 } });
 
-    await resolveInterventionTypeRequest(7, 42, 3);
+    await resolveInterventionTypeRequest(7, { interventionTypeId: 42, firmId: 3, representativePresent: false });
 
     expect(apiPost).toHaveBeenCalledWith("/api/intervention-type-requests/7/resolve", {
       interventionTypeId: 42,
       firmId: 3,
+      representativePresent: false,
     });
   });
 
-  it("sends firmId=undefined when no primary firm is selected", async () => {
-    apiPost.mockResolvedValueOnce({ data: { requestId: 7, draftId: 2, status: "RESOLVED", draftStatus: "RESOLVED", missionInterventionId: 9 } });
+  it("supports creating the firm, the intervention and deciding the missing offering in the same call", async () => {
+    apiPost.mockResolvedValueOnce({ data: { requestId: 7, draftId: 2, status: "RESOLVED", draftStatus: "CONVERTED", missionInterventionId: 9 } });
 
-    await resolveInterventionTypeRequest(7, 42);
+    await resolveInterventionTypeRequest(7, {
+      newInterventionType: { code: "PTE-INV", label: "Prothèse épaule inversée" },
+      newFirmName: "Medacta",
+      offeringDecision: "LEAVE_UNCONFIGURED",
+    });
 
     expect(apiPost).toHaveBeenCalledWith("/api/intervention-type-requests/7/resolve", {
-      interventionTypeId: 42,
-      firmId: undefined,
+      newInterventionType: { code: "PTE-INV", label: "Prothèse épaule inversée" },
+      newFirmName: "Medacta",
+      offeringDecision: "LEAVE_UNCONFIGURED",
     });
   });
 
   it("returns the response payload directly (no .request unwrapping — le backend ne renvoie jamais cette enveloppe)", async () => {
-    const payload = { requestId: 7, draftId: 2, status: "RESOLVED", draftStatus: "RESOLVED", missionInterventionId: 9 };
+    const payload = { requestId: 7, draftId: 2, status: "RESOLVED", draftStatus: "CONVERTED", missionInterventionId: 9 };
     apiPost.mockResolvedValueOnce({ data: payload });
 
-    const result = await resolveInterventionTypeRequest(7, 42);
+    const result = await resolveInterventionTypeRequest(7, { interventionTypeId: 42, firmId: 3 });
 
     expect(result).toEqual(payload);
   });
@@ -87,6 +95,19 @@ describe("ignoreInterventionTypeRequest()", () => {
     expect(apiPost).toHaveBeenCalledWith("/api/intervention-type-requests/7/ignore", {
       reason: "DUPLICATE",
       comment: "Demande en doublon.",
+    });
+  });
+
+  it("sends the explicit material strategy and the reassignment target when provided (D-146 bis)", async () => {
+    apiPost.mockResolvedValueOnce({ data: { requestId: 7, draftId: 2, status: "IGNORED", draftStatus: "MATERIAL_REASSIGNED", missionInterventionId: 5 } });
+
+    await ignoreInterventionTypeRequest({ id: 7, reason: "DUPLICATE", comment: "Déjà encodée.", strategy: "REASSIGN", missionInterventionId: 5 });
+
+    expect(apiPost).toHaveBeenCalledWith("/api/intervention-type-requests/7/ignore", {
+      reason: "DUPLICATE",
+      comment: "Déjà encodée.",
+      strategy: "REASSIGN",
+      missionInterventionId: 5,
     });
   });
 
