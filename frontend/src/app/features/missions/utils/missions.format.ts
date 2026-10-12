@@ -16,20 +16,18 @@ const BRUSSELS_TZ = "Europe/Brussels";
 export const HOURS_NOT_PROVIDED = "Non renseignées";
 
 /**
- * D-146 bis — durée prestée affichable : la durée enregistrée, sinon celle des heures de
- * début et de fin (moins la pause) — exactement la règle serveur
- * (MissionExecutionService). Une ligne qui porte début et fin sans durée stockée (données
- * historiques) n'est plus présentée comme « non renseignée ».
+ * D-146 bis — durée prestée affichable, exactement la règle serveur
+ * (MissionExecutionService::resolveDuration()) : début et fin connus → fin − début (aucune
+ * pause, même si une ancienne durée stockée la déduisait) ; sinon la durée déclarée seule
+ * (missions historiques, jamais réécrite) ; sinon rien — jamais le planifié.
  */
 export function executionDurationMinutes(execution: MissionExecutionInfo | null | undefined): number | null {
   if (!execution?.hasExecutionRecord) return null;
-  if (execution.actualDurationMinutes != null) return execution.actualDurationMinutes;
   if (execution.actualStartAt && execution.actualEndAt) {
     const span = Math.round((new Date(execution.actualEndAt).getTime() - new Date(execution.actualStartAt).getTime()) / 60000);
-    const minutes = span - (execution.breakMinutes ?? 0);
-    return minutes > 0 ? minutes : null;
+    return span > 0 ? span : null;
   }
-  return null;
+  return execution.actualDurationMinutes ?? null;
 }
 
 export function formatExecutionHours(execution: MissionExecutionInfo | null | undefined): string {

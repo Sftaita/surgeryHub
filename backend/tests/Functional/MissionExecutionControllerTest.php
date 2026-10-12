@@ -250,7 +250,7 @@ final class MissionExecutionControllerTest extends WebTestCase
 
     /**
      * D-143 — encodage progressif (scénarios 1-2) : le début seul est enregistré en
-     * brouillon le matin, la fin et la pause plus tard ; tout est relu tel quel depuis le
+     * brouillon le matin, la fin plus tard ; tout est relu tel quel depuis le
      * serveur (rien ne vit seulement dans le navigateur).
      */
     public function test_instrumentist_saves_start_alone_then_completes_hours_progressively(): void
@@ -275,7 +275,6 @@ final class MissionExecutionControllerTest extends WebTestCase
 
         $second = $this->patchJson($client, $token, "/api/missions/{$mission->getId()}/execution", [
             'actualEndAt' => '2026-09-01T16:15:00+02:00',
-            'breakMinutes' => 30,
             'hoursSource' => 'INSTRUMENTIST',
         ]);
         self::assertSame(Response::HTTP_OK, $second->getStatusCode(), (string) $second->getContent());
@@ -284,13 +283,14 @@ final class MissionExecutionControllerTest extends WebTestCase
         $reread = json_decode((string) $this->getJson($client, $token, "/api/missions/{$mission->getId()}/execution")->getContent(), true);
         self::assertSame('2026-09-01T07:45:00+02:00', $reread['actualStartAt']);
         self::assertSame('2026-09-01T16:15:00+02:00', $reread['actualEndAt']);
-        self::assertSame(30, $reread['breakMinutes']);
-        self::assertSame(480, $reread['actualDurationMinutes'], '8h30 de plage − 30 min de pause');
-        self::assertSame(480, $reread['effectiveDurationMinutes']);
+        self::assertArrayNotHasKey('breakMinutes', $reread, 'D-146 bis — aucune pause exposée');
+        self::assertSame(510, $reread['actualDurationMinutes'], 'heures prestées = fin − début (8h30)');
+        self::assertSame(510, $reread['effectiveDurationMinutes']);
         self::assertSame('ACTUAL_TIMES', $reread['effectiveDurationSource']);
     }
 
-    public function test_break_longer_than_the_span_returns_422(): void
+    /** D-146 bis — 08h00 → 11h30 = 3h30 ; une pause envoyée par un ancien client est ignorée. */
+    public function test_duration_is_end_minus_start_and_a_legacy_break_is_ignored(): void
     {
         $client  = $this->boot();
         $manager = $this->createUser('ROLE_MANAGER');
@@ -302,11 +302,17 @@ final class MissionExecutionControllerTest extends WebTestCase
 
         $response = $this->patchJson($client, $token, "/api/missions/{$mission->getId()}/execution", [
             'actualStartAt' => '2026-09-01T08:00:00+02:00',
-            'actualEndAt' => '2026-09-01T09:00:00+02:00',
+            'actualEndAt' => '2026-09-01T11:30:00+02:00',
             'breakMinutes' => 60,
         ]);
 
-        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $data = json_decode((string) $response->getContent(), true);
+        self::assertSame(210, $data['actualDurationMinutes']);
+        self::assertSame(210, $data['effectiveDurationMinutes']);
+        self::assertArrayNotHasKey('breakMinutes', $data);
+        $this->em->clear();
+        self::assertNull($this->em->find(\App\Entity\Mission::class, $mission->getId())->getExecution()->getBreakMinutes(), 'jamais enregistrée');
     }
 
     /** D-143 — après soumission, l'instrumentiste ne réécrit plus ses heures (le manager peut, avant validation). */

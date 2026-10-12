@@ -1000,11 +1000,10 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         $hours = $this->patchJson($client, $instrToken, "/api/missions/$id/execution", [
             'actualStartAt' => $start->format(DATE_ATOM),
             'actualEndAt'   => $start->modify('+5 hours 30 minutes')->format(DATE_ATOM),
-            'breakMinutes'  => 30,
             'hoursSource'   => 'INSTRUMENTIST',
         ]);
         self::assertSame(Response::HTTP_OK, $hours->getStatusCode(), (string) $hours->getContent());
-        self::assertSame(300, json_decode((string) $hours->getContent(), true)['actualDurationMinutes']);
+        self::assertSame(330, json_decode((string) $hours->getContent(), true)['actualDurationMinutes'], 'fin − début, aucune pause');
 
         // 3. Nouvelle soumission puis validation.
         self::assertSame(Response::HTTP_OK, $this->postJson($client, $instrToken, "/api/missions/$id/encoding/complete", ['comment' => 'Heures réelles ajoutées.'])->getStatusCode());
@@ -1013,7 +1012,7 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         $this->em->clear();
         $reloaded = $this->em->find(Mission::class, $id);
         self::assertSame(MissionStatus::VALIDATED, $reloaded->getStatus());
-        self::assertSame(300, $reloaded->getExecution()->getActualDurationMinutes());
+        self::assertSame(330, $reloaded->getExecution()->getActualDurationMinutes(), 'fin − début (5h30), aucune pause');
         $comments = array_map(static fn ($c) => $c->getComment(), $this->em->getRepository(MissionEncodingComment::class)->findBy(['mission' => $id]));
         self::assertContains('Merci de renseigner vos heures réelles de début et de fin.', $comments, 'motif du renvoi historisé');
         $types = $this->auditEventTypesFor($id);

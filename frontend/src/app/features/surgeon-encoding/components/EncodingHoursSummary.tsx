@@ -45,7 +45,7 @@ type Props = {
 
 /**
  * Lot 6 (D-100), complété par D-143 — horaires en lecture seule pour le chirurgien :
- * planifié, réel déclaré (début → fin, pause), durée réelle et écart au planning. Aucun
+ * planifié, réel déclaré (début → fin), durée réelle et écart au planning. Aucun
  * contrôle de modification, aucune donnée tarifaire. Une durée seule (saisie antérieure à
  * D-143) est affichée telle quelle, sans inventer de plage horaire.
  */
@@ -56,7 +56,7 @@ export function EncodingHoursSummary({ execution, plannedStartAt, plannedEndAt }
   const start = execution?.actualStartAt ?? null;
   const end = execution?.actualEndAt ?? null;
   const actual = start && end
-    ? `${hm(start)} → ${hm(end)}${execution?.breakMinutes ? ` · pause ${execution.breakMinutes} min` : ""}`
+    ? `${hm(start)} → ${hm(end)}`
     : start
       ? `Début ${hm(start)} — fin non déclarée`
       : "Non déclarées";

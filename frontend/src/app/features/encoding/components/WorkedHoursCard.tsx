@@ -36,7 +36,7 @@ export function formatHm(minutes: number): string {
 }
 
 /**
- * Détail sous le libellé (DOCUMENTATION §2 : "10h45 → 18h15 · pause 45 min"). D-143 :
+ * Détail sous le libellé (ex. "10h45 → 18h15" ; D-146 bis : aucune pause). D-143 :
  * début et fin réels sont enregistrés (plus une durée seule) ; un début seul est un
  * brouillon de la journée en cours ; une durée seule (saisie antérieure) reste affichée
  * mais signalée à compléter — début et fin sont nécessaires pour terminer l'encodage.
@@ -45,7 +45,7 @@ function detailLabel(execution: MissionExecutionInfo | null | undefined): string
   if (!execution?.hasExecutionRecord) return "Non renseignées — appuyez pour saisir";
   if (execution.actualStartAt && execution.actualEndAt) {
     const range = `${dayjs(execution.actualStartAt).format("HH[h]mm")} → ${dayjs(execution.actualEndAt).format("HH[h]mm")}`;
-    return execution.breakMinutes ? `${range} · pause ${execution.breakMinutes} min` : range;
+    return range;
   }
   if (execution.actualStartAt) {
     return `Début ${dayjs(execution.actualStartAt).format("HH[h]mm")} — fin à compléter`;

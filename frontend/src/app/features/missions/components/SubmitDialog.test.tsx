@@ -205,10 +205,11 @@ describe("SubmitDialog — ligne Heures du récapitulatif (source de vérité mi
 
   it("D-146 bis — début et fin enregistrés sans durée stockée : affiche les heures prestées, jamais « Non renseignées »", async () => {
     renderDialog(1, MISSION, executionInfo({
-      hasExecutionRecord: true, actualStartAt: "2026-07-05T08:00:00Z", actualEndAt: "2026-07-05T11:00:00Z", actualDurationMinutes: null, breakMinutes: 30,
+      hasExecutionRecord: true, actualStartAt: "2026-07-05T08:00:00Z", actualEndAt: "2026-07-05T11:00:00Z", actualDurationMinutes: null,
     }));
 
-    expect(await screen.findByText("10h00 → 13h00 · 2h30")).toBeInTheDocument();
+    expect(await screen.findByText("10h00 → 13h00 · 3h00")).toBeInTheDocument();
+    expect(screen.queryByText(/pause/i)).not.toBeInTheDocument();
     expect(screen.queryByText("Non renseignées")).not.toBeInTheDocument();
     expect(screen.queryByTestId("submit-incomplete")).not.toBeInTheDocument();
   });
