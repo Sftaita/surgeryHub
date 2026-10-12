@@ -58,6 +58,7 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
             $this->audit,
             $this->bus,
             new EncodingCompletenessService(),
+            \App\Tests\Support\CatalogueRequestServiceFactory::contentCompleteness($this->em),
         );
     }
 

@@ -56,5 +56,10 @@ final class MissionEncodingEntryDto
         /** Tarification firme conditionnée à un choix obligatoire — toujours null pour kind=DRAFT. */
         public readonly ?int $selectedChoiceOptionId = null,
         public readonly ?string $selectedChoiceOptionLabel = null,
+        /**
+         * D-146 bis — kind=DRAFT : firme proposée en texte libre (« Ma firme n'est pas dans
+         * la liste ») quand `firm` est null. Toujours null pour kind=INTERVENTION.
+         */
+        public readonly ?string $proposedFirmName = null,
     ) {}
 }

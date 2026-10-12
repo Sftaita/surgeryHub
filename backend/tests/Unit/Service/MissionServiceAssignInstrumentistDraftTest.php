@@ -44,6 +44,7 @@ final class MissionServiceAssignInstrumentistDraftTest extends TestCase
                 $this->createMock(AuditService::class),
                 $this->createMock(MessageBusInterface::class),
                 new \App\Service\EncodingCompletenessService(),
+                \App\Tests\Support\CatalogueRequestServiceFactory::contentCompleteness($this->em),
             ),
             new MissionEligibilityService($this->em),
             new \App\Service\PlanningVersionOperationalScope($this->em), // not exercised by assignInstrumentistDraft()
