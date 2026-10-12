@@ -8094,3 +8094,69 @@ Dissociation demandée depuis MedVue. `204` si la liaison était active (audit
 active par compte et par `linkId` (`active_user_id` / `active_link_id` uniques, NULL une fois
 révoquée). Plusieurs lignes historiques peuvent porter le même `linkId` (révocation SurgicalHub
 puis reconfirmation de la même paire par MedVue).
+
+## Vue Missions manager, demandes chirurgien en direct, journal d'activité (D-147)
+
+### `GET /api/missions` — paramètres `q` et `order` (nouveaux, optionnels)
+
+- `q` (≤ 100 caractères) : recherche libre, insensible à la casse. Découpée en termes
+  (espaces) ; **chaque** terme doit correspondre à l'un des champs : nom complet du
+  chirurgien, nom complet de l'instrumentiste, nom du site. Un terme numérique (`123` ou
+  `#123`) correspond aussi à l'id de mission. `%` et `_` sont pris littéralement.
+  Le cloisonnement par rôle (W10-1 : chirurgien/instrumentiste limités à leurs missions)
+  s'applique avant la recherche, inchangé.
+- `order` : `asc` | `desc` sur `startAt` (puis `id`, même sens). Défaut `desc` (inchangé).
+  Toute autre valeur → `422`. `eligibleToMe=true` garde son ordre `ASC` fixe.
+
+### `GET /api/manager/surgeon-mission-requests/counts`
+
+**AuthZ :** `SurgeonMissionRequestVoter::MANAGE`. **Réponse — 200 :**
+`{ "PENDING": n, "ACCEPTED": n, "REJECTED": n }` — les trois clés toujours présentes.
+Source unique du badge « Demandes chirurgien » et des compteurs de l'en-tête Demandes.
+
+### `GET /api/manager/surgeon-mission-requests/history?page=&limit=`
+
+**AuthZ :** `SurgeonMissionRequestVoter::MANAGE`. Toutes les actions sur les demandes
+(`SURGEON_MISSION_REQUEST_CREATED` / `_ACCEPTED` / `_REJECTED`), plus récentes d'abord.
+Même réponse que le journal ci-dessous (`limit` ≤ 100, défaut 50).
+
+### `GET /api/manager/audit-events`
+
+**AuthZ :** `AuditJournalVoter::VIEW` (`ROLE_MANAGER` / `ROLE_ADMIN`). Lecture seule de
+tous les `AuditEvent` (rattachés à une mission ou globaux), tri `id` DESC.
+
+| Paramètre | Effet |
+|---|---|
+| `category` | `MISSION` \| `SURGEON_REQUEST` \| `PLANNING` \| `ENCODING` \| `FINANCE` \| `CATALOGUE` (`AuditEventType::category()`) — autre valeur → `422` |
+| `eventType` | liste CSV de valeurs `AuditEventType` — valeur inconnue → `422` |
+| `actorId`, `missionId` | filtres exacts |
+| `from` (inclus), `to` (exclu) | ISO 8601 sur la date de l'événement — illisible → `422` |
+| `q` | même règle que `GET /api/missions?q` sur auteur, chirurgien / instrumentiste / site de la mission, `#id` mission |
+| `page`, `limit` | `limit` ≤ 100, défaut 50 |
+
+**Réponse — 200 :**
+
+```json
+{
+  "items": [{
+    "id": 812,
+    "eventType": "SURGEON_MISSION_REQUEST_REJECTED",
+    "category": "SURGEON_REQUEST",
+    "occurredAt": "2026-10-12T09:15:00+02:00",
+    "actor": { "id": 3, "displayName": "Gérard Manager" },
+    "mission": null,
+    "surgeonMissionRequest": {
+      "id": 41, "status": "REJECTED",
+      "startAt": "…", "endAt": "…",
+      "site": { "id": 1, "name": "…" },
+      "surgeon": { "id": 5, "displayName": "…" }
+    },
+    "payload": { "surgeonMissionRequestId": 41, "reviewComment": "Bloc complet" }
+  }],
+  "total": 1, "page": 1, "limit": 50
+}
+```
+
+`mission` (`id`, `status`, `startAt`, `endAt`, `site`, `surgeon`, `instrumentist`) est
+renseigné quand l'événement porte une mission ; `surgeonMissionRequest` quand le payload
+porte `surgeonMissionRequestId`. `payload` est renvoyé tel qu'enregistré.

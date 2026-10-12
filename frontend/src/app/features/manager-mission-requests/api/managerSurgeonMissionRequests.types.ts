@@ -21,3 +21,10 @@ export interface ManagerSurgeonMissionRequest {
   /** D-125 — status of the created Mission (DRAFT/OPEN/ASSIGNED…), computed backend. */
   createdMissionStatus?: string | null;
 }
+
+/** D-147 — GET /api/manager/surgeon-mission-requests/counts (tous les statuts, 0 inclus). */
+export interface SurgeonMissionRequestCounts {
+  PENDING: number;
+  ACCEPTED: number;
+  REJECTED: number;
+}

@@ -314,4 +314,58 @@ enum AuditEventType: string
     case ROOM_SLOT_MADE_AVAILABLE = 'ROOM_SLOT_MADE_AVAILABLE';
     case ROOM_SLOT_TAKEN_OVER     = 'ROOM_SLOT_TAKEN_OVER';
     case ROOM_SLOT_REOPENED       = 'ROOM_SLOT_REOPENED';
+
+    // D-147 — journal d'activité manager : regroupement des événements par domaine, pour
+    // filtrer le journal. Purement descriptif (aucune règle métier ne s'appuie dessus).
+    public const CATEGORY_MISSION         = 'MISSION';
+    public const CATEGORY_SURGEON_REQUEST = 'SURGEON_REQUEST';
+    public const CATEGORY_PLANNING        = 'PLANNING';
+    public const CATEGORY_ENCODING        = 'ENCODING';
+    public const CATEGORY_FINANCE         = 'FINANCE';
+    public const CATEGORY_CATALOGUE       = 'CATALOGUE';
+
+    public const CATEGORIES = [
+        self::CATEGORY_MISSION,
+        self::CATEGORY_SURGEON_REQUEST,
+        self::CATEGORY_PLANNING,
+        self::CATEGORY_ENCODING,
+        self::CATEGORY_FINANCE,
+        self::CATEGORY_CATALOGUE,
+    ];
+
+    public function category(): string
+    {
+        $v = $this->value;
+
+        return match (true) {
+            str_starts_with($v, 'SURGEON_MISSION_REQUEST_') => self::CATEGORY_SURGEON_REQUEST,
+            str_starts_with($v, 'PLANNING_'),
+            str_starts_with($v, 'ROOM_SLOT_')               => self::CATEGORY_PLANNING,
+            str_starts_with($v, 'MISSION_DECLARED'),
+            str_starts_with($v, 'MISSION_ENCODING_'),
+            str_starts_with($v, 'MISSION_EXECUTION_'),
+            str_starts_with($v, 'MISSION_INTERVENTION_DRAFT_'),
+            str_starts_with($v, 'ENCODING_ANOMALY_'),
+            $this === self::MISSION_STARTED,
+            $this === self::MISSION_HOURS_MANUAL_REMINDER_SENT => self::CATEGORY_ENCODING,
+            str_starts_with($v, 'PRICING_RULE_'),
+            str_starts_with($v, 'INSTRUMENTIST_RATE_'),
+            str_starts_with($v, 'FINANCIAL_'),
+            str_starts_with($v, 'FIRM_INVOICE_'),
+            str_starts_with($v, 'INSTRUMENTIST_STATEMENT_'),
+            str_starts_with($v, 'DOCUMENT_'),
+            str_ends_with($v, '_NOTE_CREATED'),
+            $this === self::REFUND_RECORDED                 => self::CATEGORY_FINANCE,
+            $this === self::INTERVENTION_TYPE_MERGED,
+            $this === self::MATERIAL_ITEM_REQUEST_IGNORED,
+            $this === self::MATERIAL_ITEM_REQUEST_RESOLVED  => self::CATEGORY_CATALOGUE,
+            default                                         => self::CATEGORY_MISSION,
+        };
+    }
+
+    /** @return list<self> */
+    public static function casesInCategory(string $category): array
+    {
+        return array_values(array_filter(self::cases(), static fn (self $t) => $t->category() === $category));
+    }
 }

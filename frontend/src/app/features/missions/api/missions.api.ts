@@ -45,6 +45,10 @@ export type MissionsFilters = {
   // FinancialCalculation (tuile dashboard "Missions validées sans calcul", même règle
   // que FinancialStatisticsQueryService::pipeline()). Backend = source de vérité.
   validatedWithoutCalculation?: boolean;
+
+  // D-147 — recherche libre (chirurgien, instrumentiste, site, #id) et ordre sur startAt.
+  q?: string;
+  order?: "asc" | "desc";
 };
 
 export async function fetchMissions(

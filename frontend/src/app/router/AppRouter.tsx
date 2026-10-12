@@ -70,6 +70,7 @@ const NotificationsPageM     = React.lazy(() => import("../pages/manager/Notific
 const MissionsListPage       = React.lazy(() => import("../pages/manager/MissionsListPage"));
 const MissionDetailPageM     = React.lazy(() => import("../pages/manager/MissionDetailPage"));
 const MissionCreatePage      = React.lazy(() => import("../pages/manager/MissionCreatePage"));
+const ActivityJournalPage    = React.lazy(() => import("../pages/manager/ActivityJournalPage"));
 const InstrumentistsPage     = React.lazy(() => import("../pages/manager/InstrumentistsPage"));
 const SurgeonsPage           = React.lazy(() => import("../pages/manager/SurgeonsPage"));
 const CataloguePage                     = React.lazy(() => import("../pages/manager/CataloguePage"));
@@ -198,6 +199,7 @@ export function AppRouter() {
                 <Route path="m/missions/requests" element={<MissionsListPage />} />
                 <Route path="m/missions/new" element={<MissionCreatePage />} />
                 <Route path="m/missions/:id" element={<MissionDetailPageM />} />
+                <Route path="m/journal" element={<ActivityJournalPage />} />
                 <Route path="m/instrumentists" element={<InstrumentistsPage />} />
                 <Route path="m/surgeons" element={<SurgeonsPage />} />
                 <Route path="m/hospitals" element={<HospitalsPage />} />
