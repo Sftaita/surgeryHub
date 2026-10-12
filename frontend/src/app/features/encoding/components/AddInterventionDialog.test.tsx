@@ -58,7 +58,7 @@ beforeEach(() => {
 describe("AddInterventionDialog — parcours firme puis intervention", () => {
   it("étape 1 affiche la recherche de firme, jamais le type d'abord", async () => {
     renderDialog();
-    expect(screen.getByText("Étape 1/2 – Choisir une firme")).toBeInTheDocument();
+    expect(screen.getByText("Étape 1/2 – Avec quelle firme cette intervention a-t-elle été réalisée ?")).toBeInTheDocument();
     expect(screen.getByLabelText("Rechercher une firme")).toBeInTheDocument();
     expect(screen.queryByText("Type d'intervention *")).not.toBeInTheDocument();
   });
@@ -103,19 +103,41 @@ describe("AddInterventionDialog — parcours firme puis intervention", () => {
     expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 2, primaryFirmId: 10, orderIndex: 2 });
   });
 
-  it("'Aucune firme' permet de voir tout le catalogue et de soumettre sans primaryFirmId", async () => {
+  it("D-146 bis — aucune option « Aucune firme » : chaque intervention a une firme", async () => {
+    renderDialog();
+
+    expect(screen.queryByText(/Aucune firme/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ma firme n'est pas dans la liste" })).toBeInTheDocument();
+  });
+
+  it("D-146 bis — firme absente de la liste : nom libre obligatoire, transforme la saisie en demande au manager", async () => {
     const user = userEvent.setup();
-    const { onSubmit } = renderDialog();
+    const { onSubmit, onSubmitDraft } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "— Aucune firme (voir tout le catalogue)" }));
+    await user.click(screen.getByRole("button", { name: "Ma firme n'est pas dans la liste" }));
+    const continueButton = screen.getByRole("button", { name: "Continuer avec cette firme" });
+    expect(continueButton).toBeDisabled();
+    await user.type(screen.getByLabelText("Nom de la firme *"), "  Lima  ");
+    await user.click(continueButton);
+
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
-    expect(screen.getByText("Aucune")).toBeInTheDocument();
+    expect(screen.getByText("Lima")).toBeInTheDocument();
+    expect(screen.getByText("(à valider par le manager)")).toBeInTheDocument();
+    // Pas de type catalogué possible pour une firme inconnue : seule la demande est proposée.
+    expect(screen.queryByLabelText(/^Type d'intervention \*$/)).not.toBeInTheDocument();
 
-    await user.click(screen.getByLabelText(/type d'intervention/i));
-    await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
-    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+    const send = screen.getByRole("button", { name: "Envoyer la demande" });
+    expect(send).toBeDisabled();
+    await user.type(screen.getByLabelText("Type d'intervention souhaité *"), "Prothèse de hanche");
+    await user.click(send);
 
-    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: undefined, orderIndex: 2 });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmitDraft).toHaveBeenCalledWith({
+      label: "Prothèse de hanche",
+      suggestedCode: undefined,
+      comment: undefined,
+      proposedFirmName: "Lima",
+    });
   });
 
   it("possibilité de revenir en arrière et changer la firme avant validation", async () => {
@@ -126,7 +148,7 @@ describe("AddInterventionDialog — parcours firme puis intervention", () => {
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
 
     await user.click(screen.getByRole("button", { name: "Changer" }));
-    await screen.findByText("Étape 1/2 – Choisir une firme");
+    await screen.findByText("Étape 1/2 – Avec quelle firme cette intervention a-t-elle été réalisée ?");
 
     await user.click(screen.getByRole("button", { name: "Medacta" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
@@ -193,7 +215,7 @@ describe("AddInterventionDialog — intervention absente du catalogue (draft)", 
     const user = userEvent.setup();
     renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "— Aucune firme (voir tout le catalogue)" }));
+    await user.click(screen.getByRole("button", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("Intervention absente du catalogue"));
@@ -205,7 +227,7 @@ describe("AddInterventionDialog — intervention absente du catalogue (draft)", 
     const user = userEvent.setup();
     renderDialog({ interventionTypes: [] });
 
-    await user.click(screen.getByRole("button", { name: "— Aucune firme (voir tout le catalogue)" }));
+    await user.click(screen.getByRole("button", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
 
     expect(screen.getByText("Le catalogue est vide pour le moment.")).toBeInTheDocument();
@@ -364,7 +386,7 @@ describe("AddInterventionDialog — présence d'un délégué (D-092)", () => {
     expect(await screen.findByText("Un délégué de Arthrex était-il présent ?")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Changer" }));
-    await screen.findByText("Étape 1/2 – Choisir une firme");
+    await screen.findByText("Étape 1/2 – Avec quelle firme cette intervention a-t-elle été réalisée ?");
     await user.click(screen.getByRole("button", { name: "Medacta" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));

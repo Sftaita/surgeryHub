@@ -13,11 +13,29 @@ const BRUSSELS_TZ = "Europe/Brussels";
  * SubmitDialog.tsx et instrumentist/MissionDetailPage.tsx affichent toujours exactement
  * la même valeur, au même format, jamais trois logiques locales divergentes.
  */
-export function formatExecutionHours(execution: MissionExecutionInfo | null | undefined): string {
-  if (!execution?.hasExecutionRecord || execution.actualDurationMinutes == null) {
-    return "Non renseigné";
+export const HOURS_NOT_PROVIDED = "Non renseignées";
+
+/**
+ * D-146 bis — durée prestée affichable, exactement la règle serveur
+ * (MissionExecutionService::resolveDuration()) : début et fin connus → fin − début (aucune
+ * pause, même si une ancienne durée stockée la déduisait) ; sinon la durée déclarée seule
+ * (missions historiques, jamais réécrite) ; sinon rien — jamais le planifié.
+ */
+export function executionDurationMinutes(execution: MissionExecutionInfo | null | undefined): number | null {
+  if (!execution?.hasExecutionRecord) return null;
+  if (execution.actualStartAt && execution.actualEndAt) {
+    const span = Math.round((new Date(execution.actualEndAt).getTime() - new Date(execution.actualStartAt).getTime()) / 60000);
+    return span > 0 ? span : null;
   }
-  const hours = execution.actualDurationMinutes / 60;
+  return execution.actualDurationMinutes ?? null;
+}
+
+export function formatExecutionHours(execution: MissionExecutionInfo | null | undefined): string {
+  const minutes = executionDurationMinutes(execution);
+  if (minutes == null) {
+    return HOURS_NOT_PROVIDED;
+  }
+  const hours = minutes / 60;
   return `${Number.isInteger(hours) ? hours : hours.toFixed(2).replace(/\.?0+$/, "")} h`;
 }
 

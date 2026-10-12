@@ -13,6 +13,7 @@ use App\Message\CatalogueRequestProcessedMessage;
 use App\Security\Voter\BillingVoter;
 use App\Service\ActiveFirmResolver;
 use App\Service\ActiveInterventionTypeResolver;
+use App\Service\CatalogueResolutionGuard;
 use App\Service\MissionInterventionDraftService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -47,6 +48,7 @@ final class InterventionTypeRequestManagerController extends AbstractController
         private readonly ActiveInterventionTypeResolver $interventionTypeResolver,
         private readonly ActiveFirmResolver $firmResolver,
         private readonly MessageBusInterface $bus,
+        private readonly CatalogueResolutionGuard $resolutionGuard,
     ) {}
 
     /**
@@ -105,20 +107,16 @@ final class InterventionTypeRequestManagerController extends AbstractController
             ));
         }
 
-        $body = json_decode($request->getContent(), true) ?? [];
-        $interventionTypeId = $body['interventionTypeId'] ?? null;
-        if (!$interventionTypeId) {
-            return $this->json(['message' => 'interventionTypeId is required'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        $body = json_decode($request->getContent(), true);
+        if (!is_array($body)) {
+            $body = [];
         }
 
-        // Résolues AVANT MissionInterventionDraftService::resolve() : de simples lectures,
-        // si l'une échoue rien n'est encore verrouillé/modifié (même principe que
-        // InterventionTypeRequestController::create(), commit 3).
-        $interventionType = $this->interventionTypeResolver->resolveActive((int) $interventionTypeId);
-        $firmId = $body['firmId'] ?? null;
-        $firm = $firmId !== null ? $this->firmResolver->resolveActive((int) $firmId) : null;
-
-        $intervention = $this->draftService->resolve($draft, $interventionType, $firm, $user);
+        // D-146 bis — résolution complète et atomique (type existant ou créé, firme
+        // obligatoire existante ou créée, prestation firme × type, réponses obligatoires,
+        // matériel, traçabilité) : une seule transaction, aucun état intermédiaire.
+        $result = $this->draftService->resolveRequest($draft, $body, $user);
+        $intervention = $result['intervention'];
 
         // D-093 — prévient l'instrumentiste (jamais bloquant : dispatché après le succès
         // de la transaction métier, échec de notification isolé dans le handler async).
@@ -130,6 +128,14 @@ final class InterventionTypeRequestManagerController extends AbstractController
             missionId: $draft->getMission()->getId(),
             label: $req->getLabel(),
             occurredAt: new \DateTimeImmutable(),
+            resolution: [
+                // Nom et code du référentiel réellement retenus (instantané de l'intervention
+                // créée), jamais le libellé initialement demandé.
+                'name'        => $intervention->getLabel(),
+                'code'        => $intervention->getCode(),
+                'firm'        => $intervention->getPrimaryFirm()?->getName(),
+                'createdType' => $result['createdInterventionType'],
+            ],
         ));
 
         return $this->json([
@@ -139,6 +145,12 @@ final class InterventionTypeRequestManagerController extends AbstractController
             'status' => $req->getStatus(),
             'draftStatus' => $draft->getStatus(),
             'orderIndex' => $intervention->getOrderIndex(),
+            'firm' => ['id' => $intervention->getPrimaryFirm()?->getId(), 'name' => $intervention->getPrimaryFirm()?->getName()],
+            'interventionType' => ['id' => $intervention->getInterventionType()?->getId(), 'code' => $intervention->getCode(), 'label' => $intervention->getLabel()],
+            'createdFirm' => $result['createdFirm'],
+            'createdInterventionType' => $result['createdInterventionType'],
+            'createdOffering' => $result['createdOffering'],
+            'offeringDecision' => $result['offeringDecision'],
         ]);
     }
 
@@ -235,6 +247,9 @@ final class InterventionTypeRequestManagerController extends AbstractController
         $by = $r->getCreatedBy();
         $type = $r->getResolvedInterventionType();
         $decidedBy = $r->getDecidedBy();
+        $draft = $r->getDraft();
+        $requestedFirm = $draft?->getRequestedFirm();
+        $pending = $r->getStatus() === InterventionTypeRequest::STATUS_PENDING;
 
         return [
             'id' => $r->getId(),
@@ -242,10 +257,31 @@ final class InterventionTypeRequestManagerController extends AbstractController
             'label' => $r->getLabel(),
             'suggestedCode' => $r->getSuggestedCode(),
             'comment' => $r->getComment(),
+            // D-146 bis — firme indiquée par l'instrumentiste (« Avec quelle firme cette
+            // intervention a-t-elle été réalisée ? ») : existante, ou nom libre proposé.
+            // Préremplit la résolution ; c'est la firme validée par le manager qui compte.
+            'requestedFirm' => $requestedFirm ? ['id' => $requestedFirm->getId(), 'name' => $requestedFirm->getName(), 'active' => $requestedFirm->isActive()] : null,
+            'requestedFirmNameSnapshot' => $draft?->getRequestedFirmNameSnapshot(),
+            'proposedFirmName' => $draft?->getProposedFirmName(),
+            'draft' => $draft ? [
+                'id' => $draft->getId(),
+                'status' => $draft->getStatus(),
+                'materialLineCount' => $draft->getMaterialLines()->count(),
+                'materialItemRequestCount' => $draft->getMaterialItemRequests()->count(),
+            ] : null,
             'createdAt' => $r->getCreatedAt()?->format(\DateTimeInterface::ATOM),
             'mission' => $mission ? [
                 'id' => $mission->getId(),
                 'site' => $mission->getSite()?->getName(),
+                'status' => $mission->getStatus()->value,
+                'locked' => $this->resolutionGuard->isLocked($mission),
+                'reopenAvailable' => $pending && $this->resolutionGuard->isLocked($mission) && $this->resolutionGuard->reopenAvailable($mission),
+                // Cibles possibles d'une réaffectation du matériel (« Ignorer » + REASSIGN).
+                'interventions' => $pending ? array_values(array_map(static fn (MissionIntervention $i) => [
+                    'id' => $i->getId(),
+                    'label' => $i->getLabel(),
+                    'firm' => $i->getPrimaryFirm()?->getName(),
+                ], $mission->getInterventions()->toArray())) : [],
             ] : null,
             'requestedBy' => $by ? [
                 'id' => $by->getId(),

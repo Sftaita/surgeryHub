@@ -15,11 +15,11 @@ describe("HoursCell", () => {
     const hours: EncodingTrackingHours = { plannedMinutes: 180, effectiveMinutes: 180, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" };
     const { container } = render(<HoursCell hours={hours} />);
     expect(screen.getByText("3 h planifiées")).toBeInTheDocument();
-    expect(screen.getByText("Heures réelles non renseignées")).toBeInTheDocument();
+    expect(screen.getByText("Heures prestées non renseignées")).toBeInTheDocument();
     expect(screen.queryByText(/effectives/)).toBeNull();
     // Neutre : jamais le vert « conforme » pour un planifié de repli.
     expect(container.querySelector("[data-hours-comparison]")?.getAttribute("data-hours-comparison")).toBe("NO_REAL_HOURS");
-    expect(screen.getByText("Heures réelles non renseignées")).toHaveStyle({ color: rgb(HOURS_COMPARISON_TONE.NO_REAL_HOURS.fg) });
+    expect(screen.getByText("Heures prestées non renseignées")).toHaveStyle({ color: rgb(HOURS_COMPARISON_TONE.NO_REAL_HOURS.fg) });
   });
 
   it("réel ≤ planifié → vert", () => {
@@ -34,7 +34,7 @@ describe("HoursCell", () => {
     const hours: EncodingTrackingHours = { plannedMinutes: 300, effectiveMinutes: 312, effectiveSource: "ACTUAL_TIMES", hasRealHours: true, comparison: "OVER_PLAN" };
     const { container } = render(<HoursCell hours={hours} />);
     expect(container.textContent).toContain("5 h planifiées · 5 h 12 effectives");
-    expect(screen.getByText("Heures réelles")).toBeInTheDocument();
+    expect(screen.getByText("Heures prestées")).toBeInTheDocument();
     expect(screen.getByTestId("hours-effective")).toHaveStyle({ color: rgb(HOURS_COMPARISON_TONE.OVER_PLAN.fg) });
   });
 

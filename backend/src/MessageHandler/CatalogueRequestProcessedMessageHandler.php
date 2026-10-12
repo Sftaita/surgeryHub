@@ -59,6 +59,13 @@ final class CatalogueRequestProcessedMessageHandler
         try {
             $type = $message->accepted ? NotificationType::CATALOGUE_REQUEST_RESOLVED : NotificationType::CATALOGUE_REQUEST_IGNORED;
             $kindLabel = $message->kind === CatalogueRequestKind::INTERVENTION_TYPE ? 'intervention' : 'matériel';
+            // D-146 bis — résolution acceptée avec l'instantané de ce qui a été DÉFINITIVEMENT
+            // enregistré : e-mail d'accusé (nom exact à rechercher) envoyé selon les
+            // préférences de l'instrumentiste (activé par défaut), plus seulement en repli du
+            // push. Un message sans instantané (émis avant D-146 bis) garde l'ancien
+            // comportement — jamais d'envoi rétroactif ni de champ inventé.
+            $withResolution = $message->accepted && $message->resolution !== [];
+            $finalName = $withResolution ? (string) ($message->resolution['name'] ?? $message->label) : $message->label;
 
             $this->dispatcher->dispatch(new NotificationIntent(
                 recipient: $recipient,
@@ -68,20 +75,24 @@ final class CatalogueRequestProcessedMessageHandler
                     'requestId' => $message->requestId,
                     'label'     => $message->label,
                     'kind'      => $message->kind->value,
-                ],
+                ] + ($withResolution ? ['finalName' => $finalName] : []),
                 mission: $mission,
-                email: $message->accepted
+                email: $withResolution
+                    ? $this->notificationService->catalogueRequestResolutionEmail($mission, $recipient, $message->kind, $message->label, $message->resolution)
+                    : ($message->accepted
                     ? $this->notificationService->catalogueRequestResolvedEmail($mission, $recipient, $message->label, $kindLabel)
-                    : $this->notificationService->catalogueRequestIgnoredEmail($mission, $recipient, $message->label, $kindLabel, $message->ignoreReason, $message->explanation),
+                    : $this->notificationService->catalogueRequestIgnoredEmail($mission, $recipient, $message->label, $kindLabel, $message->ignoreReason, $message->explanation)),
                 push: new PushContent(
                     $message->accepted ? 'Proposition acceptée' : 'Proposition non retenue',
-                    $message->accepted
+                    $withResolution
+                        ? sprintf('Votre demande de %s a été acceptée : recherchez désormais « %s » dans SurgicalHub.', $kindLabel, $finalName)
+                        : ($message->accepted
                         ? sprintf('Votre proposition de %s « %s » a été acceptée et ajoutée au catalogue.', $kindLabel, $message->label)
-                        : sprintf('Votre proposition de %s « %s » n\'a pas été retenue. Motif : %s.', $kindLabel, $message->label, $message->ignoreReason?->label() ?? 'non précisé'),
+                        : sprintf('Votre proposition de %s « %s » n\'a pas été retenue. Motif : %s.', $kindLabel, $message->label, $message->ignoreReason?->label() ?? 'non précisé')),
                     ['missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve($type, $mission, $recipient)],
                 ),
                 episodeRef: sprintf('catalogue_request:%s:%d', $message->kind->value, $message->requestId),
-                emailPolicy: NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT,
+                emailPolicy: $withResolution ? NotificationEmailPolicy::WHEN_ENABLED : NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT,
             ));
         } catch (\Throwable $e) {
             $this->logger->error('CatalogueRequestProcessed: notification failed', [

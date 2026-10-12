@@ -50,6 +50,7 @@ final class MissionEncodingWorkflowService
         private readonly AuditService $audit,
         private readonly MessageBusInterface $bus,
         private readonly EncodingCompletenessService $completeness,
+        private readonly EncodingContentCompletenessService $contentCompleteness,
     ) {}
 
     /** ASSIGNED|IN_PROGRESS → ENCODING_IN_PROGRESS. */
@@ -115,7 +116,17 @@ final class MissionEncodingWorkflowService
         // planifiés, jamais une durée seule. Seule la transition est refusée, rien n'est perdu.
         $this->completeness->assertSubmittable(
             $mission,
-            'Il reste une petite étape avant de terminer : pensez à renseigner vos heures réelles de début et de fin.',
+            'Il reste une petite étape avant de terminer : pensez à renseigner vos heures prestées (début et fin).',
+        );
+
+        // D-146 bis — chaque intervention doit être complète (firme, réponse délégué,
+        // système choisi, matériel compatible) : jamais une mission soumise puis bloquée
+        // au calcul financier. Les demandes catalogue en attente ne bloquent pas la
+        // soumission (le manager les traite pendant la phase SUBMITTED).
+        $this->contentCompleteness->assertComplete(
+            $mission,
+            false,
+            "Certaines interventions sont incomplètes : complétez-les avant de terminer l'encodage.",
         );
 
         $trimmedComment = $comment !== null ? trim($comment) : null;
@@ -184,7 +195,17 @@ final class MissionEncodingWorkflowService
         // Une durée seule déclarée avant D-143 reste validable.
         $this->completeness->assertHasDeclaredHours(
             $mission,
-            "Heures réelles manquantes : renseignez-les ou renvoyez l'encodage à l'instrumentiste avant de valider.",
+            "Heures prestées manquantes : renseignez-les ou renvoyez l'encodage à l'instrumentiste avant de valider.",
+        );
+
+        // D-146 bis — jamais une validation définitive d'un contenu incomplet (intervention
+        // sans firme, réponse obligatoire absente, matériel incompatible) ni avec une
+        // demande catalogue encore en attente : la mission serait verrouillée alors qu'une
+        // intervention ou une ligne de matériel peut encore lui être ajoutée.
+        $this->contentCompleteness->assertComplete(
+            $mission,
+            true,
+            "Encodage incomplet : complétez les interventions et traitez les demandes en attente avant de valider.",
         );
 
         $mission->setStatus(MissionStatus::VALIDATED);

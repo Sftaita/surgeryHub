@@ -11,9 +11,12 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   Link,
   MenuItem,
   Paper,
+  Radio,
+  RadioGroup,
   Select,
   Stack,
   Tab,
@@ -29,37 +32,33 @@ import {
 } from "@mui/material";
 
 import {
-  createMaterialItem,
-  getFirms,
-  getMaterialItems,
   getMaterialRequests,
   ignoreMaterialRequest,
   resolveMaterialRequest,
 } from "../../features/manager-catalogue/api/catalogue.api";
 import type {
   CatalogueRequestIgnoreReason,
-  MaterialItemDTO,
   MaterialRequestDTO,
+  ResolveMaterialRequestBody,
 } from "../../features/manager-catalogue/api/catalogue.types";
 import {
   getInterventionTypeRequests,
   ignoreInterventionTypeRequest,
   resolveInterventionTypeRequest,
+  type IgnoreStrategy,
   type InterventionTypeRequestDTO,
+  type ResolveInterventionTypeRequestBody,
 } from "../../features/manager-catalogue/api/interventionTypeRequests.api";
-import {
-  createInterventionType,
-  getInterventionTypes,
-  type InterventionType,
-} from "../../features/intervention-types/api/interventionTypes.api";
-import {
-  MaterialItemFormDialog,
-  type MaterialItemFormValues,
-} from "../../features/manager-catalogue/components/MaterialItemFormDialog";
 import {
   CatalogueRequestContext,
   RequesterCommentPreview,
 } from "../../features/manager-catalogue/components/CatalogueRequestComment";
+import {
+  ResolveInterventionDialog,
+  ResolveMaterialDialog,
+  toCatalogueApiError,
+  type CatalogueApiError,
+} from "../../features/manager-catalogue/components/CatalogueRequestResolveDialogs";
 import { CatalogueRequestDetailDialog } from "../../features/manager-catalogue/components/CatalogueRequestDetailDialog";
 import {
   IGNORE_REASON_LABELS,
@@ -87,302 +86,19 @@ function RequestContext({ row }: { row: UnifiedRequest }) {
       requestedBy={request.requestedBy}
       mission={request.mission}
       comment={request.comment}
+      firm={requestFirmLabel(row)}
+      quantity={row.kind === "material" ? (row.request.quantity ? String(Number(row.request.quantity)).replace(".", ",") : null) : undefined}
     />
   );
 }
 
-// ── Dialog résolution matériel (inchangé, extrait tel quel de l'ancienne page) ──
-function ResolveMaterialDialog({
-  open,
-  request,
-  onClose,
-  onResolve,
-  resolving,
-}: {
-  open: boolean;
-  request: MaterialRequestDTO | null;
-  onClose: () => void;
-  onResolve: (materialItemId: number) => void;
-  resolving: boolean;
-}) {
-  const [mode, setMode] = React.useState<"pick" | "create">("create");
-  const [createError, setCreateError] = React.useState<string | null>(null);
-  const queryClient = useQueryClient();
-
-  const createMutation = useMutation({
-    mutationFn: createMaterialItem,
-    onSuccess: (item) => {
-      queryClient.invalidateQueries({ queryKey: ["material-items"] });
-      onResolve(item.id);
-    },
-    onError: (err: any) => {
-      setCreateError(
-        err?.response?.data?.message ?? "Erreur lors de la création.",
-      );
-    },
-  });
-
-  const itemsQuery = useQuery({
-    queryKey: ["material-items", ""],
-    queryFn: () => getMaterialItems({ limit: 200 }),
-    enabled: mode === "pick",
-  });
-
-  const [selectedItemId, setSelectedItemId] = React.useState<number | null>(
-    null,
-  );
-
-  React.useEffect(() => {
-    if (open) {
-      setMode("create");
-      setCreateError(null);
-      setSelectedItemId(null);
-    }
-  }, [open]);
-
-  if (!request) return null;
-
-  const preFilledInitial: Partial<MaterialItemFormValues> = {
-    label: request.label,
-    referenceCode: request.referenceCode ?? "",
-  };
-
-  const items: MaterialItemDTO[] = itemsQuery.data?.items ?? [];
-  return (
-    <>
-      <MaterialItemFormDialog
-        open={open && mode === "create"}
-        title="Créer un produit depuis la demande"
-        initial={preFilledInitial}
-        submitLabel="Créer et résoudre"
-        loading={createMutation.isPending}
-        error={createError}
-        headerExtra={
-          <>
-            <RequestContext row={{ kind: "material", request }} />
-            <Button
-              size="small"
-              variant="text"
-              onClick={() => setMode("pick")}
-              sx={{ alignSelf: "flex-start" }}
-            >
-              Plutôt associer un produit existant →
-            </Button>
-          </>
-        }
-        onClose={onClose}
-        onSubmit={(values) => {
-          if (!values.firmId) return;
-          createMutation.mutate({
-            firmId: values.firmId,
-            label: values.label,
-            unit: values.unit,
-            referenceCode: values.referenceCode || undefined,
-            isImplant: values.isImplant,
-          });
-        }}
-      />
-
-      <Dialog open={open && mode === "pick"} onClose={onClose} fullWidth maxWidth="sm">
-        <DialogTitle>Associer un produit existant</DialogTitle>
-        <DialogContent>
-          <Stack spacing={1.5} sx={{ pt: 0.5 }}>
-            <RequestContext row={{ kind: "material", request }} />
-            <Button
-              size="small"
-              variant="text"
-              onClick={() => setMode("create")}
-              sx={{ alignSelf: "flex-start" }}
-            >
-              ← Créer un nouveau produit
-            </Button>
-
-            {itemsQuery.isLoading ? (
-              <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
-                <CircularProgress size={24} />
-              </Box>
-            ) : (
-              <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 360 }}>
-                <Table size="small" stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Nom</TableCell>
-                      <TableCell>Firme</TableCell>
-                      <TableCell>Référence</TableCell>
-                      <TableCell />
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {items.map((item) => (
-                      <TableRow
-                        key={item.id}
-                        hover
-                        selected={selectedItemId === item.id}
-                        onClick={() => setSelectedItemId(item.id)}
-                        sx={{ cursor: "pointer" }}
-                      >
-                        <TableCell>{item.label}</TableCell>
-                        <TableCell>{item.firm?.name ?? "—"}</TableCell>
-                        <TableCell>{item.referenceCode || "—"}</TableCell>
-                        <TableCell>
-                          {selectedItemId === item.id ? (
-                            <Chip label="Sélectionné" size="small" color="primary" />
-                          ) : null}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            )}
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={onClose} disabled={resolving}>Annuler</Button>
-          <Button
-            variant="contained"
-            disabled={selectedItemId === null || resolving}
-            onClick={() => {
-              if (selectedItemId !== null) onResolve(selectedItemId);
-            }}
-          >
-            {resolving ? <CircularProgress size={18} /> : "Associer et résoudre"}
-          </Button>
-        </DialogActions>
-      </Dialog>
-    </>
-  );
-}
-
-// ── Dialog résolution intervention (nouveau, calqué sur le pattern matériel) ──
-function ResolveInterventionDialog({
-  open,
-  request,
-  onClose,
-  onResolve,
-  resolving,
-}: {
-  open: boolean;
-  request: InterventionTypeRequestDTO | null;
-  onClose: () => void;
-  onResolve: (interventionTypeId: number, primaryFirmId?: number) => void;
-  resolving: boolean;
-}) {
-  const [mode, setMode] = React.useState<"pick" | "create">("create");
-  const [newCode, setNewCode] = React.useState("");
-  const [newLabel, setNewLabel] = React.useState("");
-  const [selectedTypeId, setSelectedTypeId] = React.useState<number | "">("");
-  const [primaryFirmId, setPrimaryFirmId] = React.useState<number | "">("");
-  const queryClient = useQueryClient();
-
-  const typesQuery = useQuery({
-    queryKey: ["intervention-types", "active"],
-    queryFn: () => getInterventionTypes(true),
-    enabled: open && mode === "pick",
-  });
-  const firmsQuery = useQuery({ queryKey: ["firms"], queryFn: getFirms, enabled: open });
-
-  const createTypeMutation = useMutation({
-    mutationFn: createInterventionType,
-    onSuccess: (created: InterventionType) => {
-      queryClient.invalidateQueries({ queryKey: ["intervention-types"] });
-      onResolve(created.id, primaryFirmId === "" ? undefined : primaryFirmId);
-    },
-  });
-
-  React.useEffect(() => {
-    if (open) {
-      setMode("create");
-      setNewCode(request?.suggestedCode ?? "");
-      setNewLabel(request?.label ?? "");
-      setSelectedTypeId("");
-      setPrimaryFirmId("");
-    }
-  }, [open, request]);
-
-  if (!request) return null;
-  const types = typesQuery.data ?? [];
-  const firms = firmsQuery.data ?? [];
-
-  return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>Résoudre la demande de type d'intervention</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ pt: 1 }}>
-          <RequestContext row={{ kind: "intervention", request }} />
-
-          {mode === "create" ? (
-            <>
-              <TextField
-                label="Code *"
-                size="small"
-                value={newCode}
-                onChange={(e) => setNewCode(e.target.value.toUpperCase())}
-                inputProps={{ style: { fontFamily: "monospace", fontWeight: 700 } }}
-              />
-              <TextField
-                label="Libellé *"
-                size="small"
-                value={newLabel}
-                onChange={(e) => setNewLabel(e.target.value)}
-              />
-              <Button size="small" onClick={() => setMode("pick")} sx={{ alignSelf: "flex-start" }}>
-                Plutôt associer un type existant →
-              </Button>
-            </>
-          ) : (
-            <>
-              <Select
-                fullWidth size="small" displayEmpty
-                value={selectedTypeId}
-                onChange={(e) => setSelectedTypeId(Number(e.target.value))}
-              >
-                <MenuItem value="" disabled>
-                  {typesQuery.isLoading ? "Chargement…" : "Sélectionner un type d'intervention"}
-                </MenuItem>
-                {types.map((t) => (
-                  <MenuItem key={t.id} value={t.id}>{t.label} ({t.code})</MenuItem>
-                ))}
-              </Select>
-              <Button size="small" onClick={() => setMode("create")} sx={{ alignSelf: "flex-start" }}>
-                ← Créer un nouveau type
-              </Button>
-            </>
-          )}
-
-          <Select
-            fullWidth size="small" displayEmpty
-            value={primaryFirmId}
-            onChange={(e) => setPrimaryFirmId(String(e.target.value) === "" ? "" : Number(e.target.value))}
-          >
-            <MenuItem value="">Aucune firme principale (optionnel)</MenuItem>
-            {firms.map((f) => (
-              <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>
-            ))}
-          </Select>
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={resolving || createTypeMutation.isPending}>Annuler</Button>
-        <Button
-          variant="contained"
-          disabled={
-            resolving || createTypeMutation.isPending ||
-            (mode === "create" ? (!newCode.trim() || !newLabel.trim()) : !selectedTypeId)
-          }
-          onClick={() => {
-            if (mode === "create") {
-              createTypeMutation.mutate({ code: newCode.trim(), label: newLabel.trim() });
-            } else if (selectedTypeId !== "") {
-              onResolve(selectedTypeId, primaryFirmId === "" ? undefined : primaryFirmId);
-            }
-          }}
-        >
-          {resolving || createTypeMutation.isPending ? <CircularProgress size={18} /> : "Résoudre"}
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
+/** D-146 bis — firme indiquée par l'instrumentiste (référentiel ou nom proposé). */
+function requestFirmLabel(row: UnifiedRequest): string | null {
+  if (row.kind === "material") {
+    return row.request.proposedFirm?.name ?? (row.request.proposedFirmName ? `${row.request.proposedFirmName} (proposée)` : null);
+  }
+  return row.request.requestedFirm?.name
+    ?? (row.request.proposedFirmName ? `${row.request.proposedFirmName} (proposée)` : row.request.requestedFirmNameSnapshot ?? null);
 }
 
 function ignoreReasonsFor(kind: "material" | "intervention"): CatalogueRequestIgnoreReason[] {
@@ -408,23 +124,33 @@ function IgnoreCatalogueRequestDialog({
   open: boolean;
   target: UnifiedRequest | null;
   onClose: () => void;
-  onConfirm: (reason: CatalogueRequestIgnoreReason, comment: string) => void;
+  onConfirm: (reason: CatalogueRequestIgnoreReason, comment: string, strategy?: IgnoreStrategy, missionInterventionId?: number) => void;
   submitting: boolean;
   error: string | null;
 }) {
   const [reason, setReason] = React.useState<CatalogueRequestIgnoreReason | "">("");
   const [comment, setComment] = React.useState("");
+  const [strategy, setStrategy] = React.useState<IgnoreStrategy | "">("");
+  const [reassignTargetId, setReassignTargetId] = React.useState<number | "">("");
 
   React.useEffect(() => {
     if (open) {
       setReason("");
       setComment("");
+      setStrategy("");
+      setReassignTargetId("");
     }
   }, [open]);
 
   if (!target) return null;
   const reasons = ignoreReasonsFor(target.kind);
-  const canSubmit = reason !== "" && comment.trim() !== "";
+  // D-146 bis — matériel déjà déclaré sur la demande d'intervention : le manager choisit
+  // explicitement ce qu'il devient (jamais perdu, jamais déplacé implicitement).
+  const draft = target.kind === "intervention" ? target.request.draft : null;
+  const materialCount = draft ? draft.materialLineCount + draft.materialItemRequestCount : 0;
+  const reassignTargets = target.kind === "intervention" ? target.request.mission?.interventions ?? [] : [];
+  const strategyComplete = materialCount === 0 || strategy === "KEEP_AS_HISTORY" || (strategy === "REASSIGN" && reassignTargetId !== "");
+  const canSubmit = reason !== "" && comment.trim() !== "" && strategyComplete;
 
   return (
     <Dialog open={open} onClose={submitting ? undefined : onClose} fullWidth maxWidth="sm">
@@ -455,6 +181,37 @@ function IgnoreCatalogueRequestDialog({
             value={comment}
             onChange={(e) => setComment(e.target.value)}
           />
+
+          {materialCount > 0 ? (
+            <Stack spacing={1}>
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                Du matériel est déjà déclaré sur cette demande ({materialCount} élément(s)). Que devient-il ?
+              </Typography>
+              <RadioGroup value={strategy} onChange={(e) => setStrategy(e.target.value as IgnoreStrategy)}>
+                <FormControlLabel value="KEEP_AS_HISTORY" control={<Radio size="small" />} label="Le conserver en historique (non rattaché à une intervention)" />
+                <FormControlLabel
+                  value="REASSIGN"
+                  disabled={reassignTargets.length === 0}
+                  control={<Radio size="small" />}
+                  label={reassignTargets.length === 0 ? "Le rattacher à une intervention existante (aucune sur cette mission)" : "Le rattacher à une intervention existante de la mission"}
+                />
+              </RadioGroup>
+              {strategy === "REASSIGN" ? (
+                <Select
+                  fullWidth
+                  size="small"
+                  displayEmpty
+                  value={reassignTargetId}
+                  onChange={(e) => setReassignTargetId(Number(e.target.value))}
+                >
+                  <MenuItem value="" disabled>Intervention de destination</MenuItem>
+                  {reassignTargets.map((i) => (
+                    <MenuItem key={i.id} value={i.id}>{i.label}{i.firm ? ` · ${i.firm}` : ""}</MenuItem>
+                  ))}
+                </Select>
+              ) : null}
+            </Stack>
+          ) : null}
         </Stack>
       </DialogContent>
       <DialogActions>
@@ -464,7 +221,12 @@ function IgnoreCatalogueRequestDialog({
           color="error"
           disabled={!canSubmit || submitting}
           onClick={() => {
-            if (reason !== "") onConfirm(reason, comment.trim());
+            if (reason === "") return;
+            if (materialCount > 0 && strategy !== "") {
+              onConfirm(reason, comment.trim(), strategy, strategy === "REASSIGN" && reassignTargetId !== "" ? reassignTargetId : undefined);
+            } else {
+              onConfirm(reason, comment.trim());
+            }
           }}
         >
           {submitting ? <CircularProgress size={18} /> : "Ignorer la demande"}
@@ -521,6 +283,7 @@ export default function CatalogueRequestsPage() {
   // Ouvrir le détail est une pure consultation (aucun appel réseau) ; les deux handlers
   // ci-dessous ne font qu'ouvrir les modals de traitement existantes.
   const openResolve = (row: UnifiedRequest) => {
+    setResolveError(null);
     if (row.kind === "material") setResolveMaterialTarget(row.request);
     else setResolveInterventionTarget(row.request);
   };
@@ -568,16 +331,26 @@ export default function CatalogueRequestsPage() {
     return () => clearTimeout(timer);
   }, [highlightKey, tab, materialQuery.isLoading, interventionQuery.isLoading, rows]);
 
+  // D-146 bis — une seule requête atomique ; en cas de refus la modal reste ouverte avec
+  // l'erreur du serveur (doublons, firme existante, mission verrouillée…), jamais un toast seul.
+  const [resolveError, setResolveError] = React.useState<CatalogueApiError | null>(null);
   const resolveMaterialMutation = useMutation({
-    mutationFn: ({ id, materialItemId }: { id: number; materialItemId: number }) =>
-      resolveMaterialRequest(id, materialItemId),
-    onSuccess: () => {
+    mutationFn: ({ id, body }: { id: number; body: ResolveMaterialRequestBody }) => resolveMaterialRequest(id, body),
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["material-requests"] });
+      queryClient.invalidateQueries({ queryKey: ["material-items"] });
+      queryClient.invalidateQueries({ queryKey: ["firms"] });
       setResolveMaterialTarget(null);
-      toast.success("Demande résolue. Ligne matériel créée.");
+      setResolveError(null);
+      toast.success(result.createdItem
+        ? "Demande résolue : matériel ajouté au catalogue (facturation à décider) et à la mission."
+        : "Demande résolue : matériel ajouté à la mission.");
     },
-    onError: (err: any) => {
-      toast.error(err?.response?.data?.message ?? "Erreur lors de la résolution.");
+    onError: (err: unknown) => {
+      if ((err as { response?: { status?: number } })?.response?.status === 409) {
+        queryClient.invalidateQueries({ queryKey: ["material-requests"] });
+      }
+      setResolveError(toCatalogueApiError(err));
     },
   });
 
@@ -601,15 +374,23 @@ export default function CatalogueRequestsPage() {
   });
 
   const resolveInterventionMutation = useMutation({
-    mutationFn: ({ id, interventionTypeId, primaryFirmId }: { id: number; interventionTypeId: number; primaryFirmId?: number }) =>
-      resolveInterventionTypeRequest(id, interventionTypeId, primaryFirmId),
-    onSuccess: () => {
+    mutationFn: ({ id, body }: { id: number; body: ResolveInterventionTypeRequestBody }) => resolveInterventionTypeRequest(id, body),
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["intervention-type-requests"] });
+      queryClient.invalidateQueries({ queryKey: ["intervention-types"] });
+      queryClient.invalidateQueries({ queryKey: ["firms"] });
+      queryClient.invalidateQueries({ queryKey: ["firmServiceOfferings"] });
       setResolveInterventionTarget(null);
-      toast.success("Demande résolue. Intervention créée sur la mission.");
+      setResolveError(null);
+      toast.success(result.offeringDecision === "FEE_APPLICABLE"
+        ? "Demande résolue. Intervention créée ; configurez le montant du forfait dans Catalogue › Prestations."
+        : "Demande résolue. Intervention créée sur la mission.");
     },
-    onError: (err: any) => {
-      toast.error(err?.response?.data?.message ?? "Erreur lors de la résolution.");
+    onError: (err: unknown) => {
+      if ((err as { response?: { status?: number } })?.response?.status === 409) {
+        queryClient.invalidateQueries({ queryKey: ["intervention-type-requests"] });
+      }
+      setResolveError(toCatalogueApiError(err));
     },
   });
 
@@ -658,15 +439,17 @@ export default function CatalogueRequestsPage() {
       ) : rows.length === 0 ? (
         <EmptyState title="Aucune demande." />
       ) : (
+        // D-146 bis — 6 colonnes (référence intégrée à la demande, demandeur à la mission,
+        // actions empilées) : plus de défilement horizontal à 1280 px ; le défilement reste
+        // possible sur petit écran (TableContainer), jamais d'information masquée.
         <TableContainer component={Paper} variant="outlined">
-          <Table size="small">
+          <Table size="small" sx={{ "& td, & th": { px: 1.25 } }}>
             <TableHead>
               <TableRow>
                 <TableCell>Type</TableCell>
                 <TableCell>Demande</TableCell>
-                <TableCell>Référence</TableCell>
-                <TableCell>Mission</TableCell>
-                <TableCell>Demandé par</TableCell>
+                <TableCell>Firme · Qté</TableCell>
+                <TableCell>Mission · demandeur</TableCell>
                 <TableCell>Statut</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
@@ -714,6 +497,12 @@ export default function CatalogueRequestsPage() {
                       >
                         {request.label}
                       </Link>
+                      {(isMaterial ? (request as MaterialRequestDTO).referenceCode : (request as InterventionTypeRequestDTO).suggestedCode) ? (
+                        <Typography variant="caption" display="block" color="text.secondary">
+                          {isMaterial ? "Réf. " : "Code suggéré "}
+                          {isMaterial ? (request as MaterialRequestDTO).referenceCode : (request as InterventionTypeRequestDTO).suggestedCode}
+                        </Typography>
+                      ) : null}
                       {request.comment ? (
                         // Déplier l'aperçu ne doit pas ouvrir le détail.
                         <Box onClick={(e) => e.stopPropagation()}>
@@ -722,23 +511,26 @@ export default function CatalogueRequestsPage() {
                       ) : null}
                     </TableCell>
                     <TableCell>
-                      {isMaterial
-                        ? (request as MaterialRequestDTO).referenceCode || "—"
-                        : (request as InterventionTypeRequestDTO).suggestedCode || "—"}
+                      <Typography variant="body2">{requestFirmLabel(row) ?? "—"}</Typography>
+                      {isMaterial && (request as MaterialRequestDTO).quantity ? (
+                        <Typography variant="caption" color="text.secondary">
+                          Qté {String(Number((request as MaterialRequestDTO).quantity)).replace(".", ",")}
+                        </Typography>
+                      ) : null}
                     </TableCell>
                     <TableCell>
-                      {request.mission ? (
-                        <Stack spacing={0}>
-                          <Typography variant="body2">#{request.mission.id}</Typography>
-                          {request.mission.site ? (
-                            <Typography variant="caption" color="text.secondary">
-                              {request.mission.site}
-                            </Typography>
-                          ) : null}
-                        </Stack>
-                      ) : "—"}
+                      <Stack spacing={0}>
+                        <Typography variant="body2">{request.mission ? `#${request.mission.id}` : "—"}</Typography>
+                        {request.mission?.site ? (
+                          <Typography variant="caption" color="text.secondary">
+                            {request.mission.site}
+                          </Typography>
+                        ) : null}
+                        <Typography variant="caption" color="text.secondary">
+                          {request.requestedBy?.displayName ?? "—"}
+                        </Typography>
+                      </Stack>
                     </TableCell>
-                    <TableCell>{request.requestedBy?.displayName ?? "—"}</TableCell>
                     <TableCell>
                       <Chip
                         label={statusLabel(request.status)}
@@ -776,7 +568,7 @@ export default function CatalogueRequestsPage() {
                       ) : null}
                     </TableCell>
                     <TableCell align="right" onClick={(e) => e.stopPropagation()}>
-                      <Stack direction="row" spacing={0.5} justifyContent="flex-end" sx={{ "& .MuiButton-root": { whiteSpace: "nowrap" } }}>
+                      <Stack spacing={0.5} alignItems="flex-end" sx={{ "& .MuiButton-root": { whiteSpace: "nowrap", minWidth: 96 } }}>
                         <Button size="small" variant="text" onClick={() => setDetailTarget(row)}>
                           Voir le détail
                         </Button>
@@ -788,7 +580,7 @@ export default function CatalogueRequestsPage() {
                               onClick={() => openResolve(row)}
                               disabled={ignoreMaterialMutation.isPending || ignoreInterventionMutation.isPending}
                             >
-                              {isMaterial ? "Créer produit" : "Résoudre"}
+                              Résoudre
                             </Button>
                             <Button
                               size="small"
@@ -829,9 +621,10 @@ export default function CatalogueRequestsPage() {
         request={resolveMaterialTarget}
         onClose={() => setResolveMaterialTarget(null)}
         resolving={resolveMaterialMutation.isPending}
-        onResolve={(materialItemId) => {
+        error={resolveError}
+        onResolve={(body) => {
           if (!resolveMaterialTarget) return;
-          resolveMaterialMutation.mutate({ id: resolveMaterialTarget.id, materialItemId });
+          resolveMaterialMutation.mutate({ id: resolveMaterialTarget.id, body });
         }}
       />
 
@@ -840,9 +633,10 @@ export default function CatalogueRequestsPage() {
         request={resolveInterventionTarget}
         onClose={() => setResolveInterventionTarget(null)}
         resolving={resolveInterventionMutation.isPending}
-        onResolve={(interventionTypeId, primaryFirmId) => {
+        error={resolveError}
+        onResolve={(body) => {
           if (!resolveInterventionTarget) return;
-          resolveInterventionMutation.mutate({ id: resolveInterventionTarget.id, interventionTypeId, primaryFirmId });
+          resolveInterventionMutation.mutate({ id: resolveInterventionTarget.id, body });
         }}
       />
 
@@ -855,12 +649,12 @@ export default function CatalogueRequestsPage() {
         }}
         submitting={ignoreMaterialMutation.isPending || ignoreInterventionMutation.isPending}
         error={ignoreError}
-        onConfirm={(reason, comment) => {
+        onConfirm={(reason, comment, strategy, missionInterventionId) => {
           if (!ignoreTarget) return;
           if (ignoreTarget.kind === "material") {
             ignoreMaterialMutation.mutate({ id: ignoreTarget.request.id, reason, comment });
           } else {
-            ignoreInterventionMutation.mutate({ id: ignoreTarget.request.id, reason, comment });
+            ignoreInterventionMutation.mutate({ id: ignoreTarget.request.id, reason, comment, strategy, missionInterventionId });
           }
         }}
       />

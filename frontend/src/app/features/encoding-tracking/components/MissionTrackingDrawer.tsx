@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { fetchMissionById, getMissionExecution, remindMissionHours } from "../../missions/api/missions.api";
 import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
 import { fetchMissionEncoding, newActionBatchId, remindMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
+import { encodingIncompleteText } from "../../encoding/api/encodingIncomplete";
 import { EncodingContentPanel } from "./EncodingContentPanel";
 import type { EncodingAnomalyMarks, EncodingFocusTarget } from "./EncodingContentPanel";
 import { FinancialAnomaliesCard } from "./FinancialAnomaliesCard";
@@ -187,7 +188,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   const validateMutation = useMutation({
     mutationFn: async () => validateMissionEncoding(missionId!),
     onSuccess: async () => { toast.success("Encodage validé."); await refreshAfterAction(); },
-    onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : extractErrorMessage(err)),
+    onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : encodingIncompleteText(err) ?? extractErrorMessage(err)),
   });
 
   const remindMutation = useMutation({

@@ -54,6 +54,11 @@ export type EncodingMaterialItemRequest = {
   label: string;
   referenceCode: string;
   comment: string; // backend: "Optionnel"
+  /** D-146 bis — firme fabricante choisie (référentiel) OU proposée en texte libre. */
+  proposedFirm?: { id: number; name: string } | null;
+  proposedFirmName?: string | null;
+  /** D-146 bis — quantité déclarée ("2.00") ; null pour une demande antérieure. */
+  quantity?: string | null;
 };
 
 /** Référentiel fermé (Lot 1) — voir intervention-types feature. */
@@ -160,6 +165,8 @@ export type MissionEncodingDraftEntry = {
    *  supprimée/renommée ; voir requestedFirmNameSnapshot pour le nom figé à la création. */
   firm: { id: number; name: string } | null;
   requestedFirmNameSnapshot: string | null;
+  /** D-146 bis — firme proposée en texte libre (« Ma firme n'est pas dans la liste »). */
+  proposedFirmName?: string | null;
   /** "OPEN" (modifiable) ou "KEPT_AS_HISTORY" (lecture seule, voir readOnly). */
   status: "OPEN" | "KEPT_AS_HISTORY" | string;
   readOnly: boolean;
@@ -331,7 +338,9 @@ export type CreateInterventionTypeRequestBody = {
   label: string;
   suggestedCode?: string;
   comment?: string;
+  /** D-146 bis — firme obligatoire : exactement l'un des deux. */
   requestedFirmId?: number;
+  proposedFirmName?: string;
 };
 
 /**
@@ -387,6 +396,11 @@ export type CreateMaterialItemRequestBody = {
   label: string;
   referenceCode?: string;
   comment?: string;
+  /** D-146 bis — exactement l'un des deux (firme existante OU nom proposé). */
+  firmId?: number;
+  proposedFirmName?: string;
+  /** D-146 bis — obligatoire, strictement positive. */
+  quantity: string;
 };
 
 /**

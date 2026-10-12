@@ -303,7 +303,7 @@ final class InterventionControllerLot5Test extends WebTestCase
         [$client, $mission, $token] = $this->bootMissionScenario();
         $type = $this->makeType();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, ['primaryFirmId' => $this->makeFirm()->getId(), 
             'interventionTypeId' => $type->getId(),
             'orderIndex' => 0,
         ]);
@@ -410,17 +410,19 @@ final class InterventionControllerLot5Test extends WebTestCase
         // contourner la garde à la création, puis la prestation devient pertinente sans
         // que la ligne ne soit jamais modifiée (représentatif de l'historique réel : une
         // FirmServiceOffering peut devenir pertinente après coup).
-        $createResponse = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
-            'interventionTypeId' => $type->getId(),
-            'primaryFirmId' => null,
-            'orderIndex' => 0,
-        ]);
-        $id = json_decode($createResponse->getContent(), true)['id'];
-
+        // D-146 bis — la création sans firme n'est plus possible par l'API : la ligne legacy
+        // (firme renseignée, réponse délégué jamais donnée) est insérée directement.
         $this->em->clear();
-        $intervention = $this->em->find(MissionIntervention::class, $id);
-        $intervention->setPrimaryFirm($this->em->find(Firm::class, $firm->getId()));
+        $intervention = (new MissionIntervention())
+            ->setMission($this->em->find(Mission::class, $mission->getId()))
+            ->setInterventionType($this->em->find(InterventionType::class, $type->getId()))
+            ->setPrimaryFirm($this->em->find(Firm::class, $firm->getId()))
+            ->setCode($type->getCode())
+            ->setLabel($type->getLabel())
+            ->setOrderIndex(0);
+        $this->em->persist($intervention);
         $this->em->flush();
+        $id = $intervention->getId();
 
         $reorderResponse = $this->request($client, 'PATCH', "/api/missions/{$mission->getId()}/interventions/{$id}", $token, [
             'orderIndex' => 3,
@@ -449,19 +451,27 @@ final class InterventionControllerLot5Test extends WebTestCase
         ]);
         $id = json_decode($createResponse->getContent(), true)['id'];
 
+        // D-146 bis — la firme ne peut plus être retirée : on change de firme vers une
+        // prestation où la question n'est pas pertinente (aucune prestation configurée).
+        $otherFirm = $this->makeFirm();
         $updateResponse = $this->request($client, 'PATCH', "/api/missions/{$mission->getId()}/interventions/{$id}", $token, [
-            'primaryFirmId' => null,
+            'primaryFirmId' => $otherFirm->getId(),
             'representativePresent' => null,
         ]);
         self::assertSame(Response::HTTP_NO_CONTENT, $updateResponse->getStatusCode(), $updateResponse->getContent());
 
         $this->em->clear();
         $intervention = $this->em->find(MissionIntervention::class, $id);
-        self::assertNull($intervention->getPrimaryFirm());
+        self::assertSame($otherFirm->getId(), $intervention->getPrimaryFirm()?->getId());
         self::assertNull($intervention->getRepresentativePresent());
     }
 
-    public function test_create_with_type_and_no_primary_firm_succeeds(): void
+    /**
+     * D-146 bis — décision métier : chaque intervention est réalisée avec une firme. Une
+     * création sans firme est refusée côté serveur (la question est rappelée), même si
+     * l'appel contourne l'interface. Une firme absente du catalogue passe par une demande.
+     */
+    public function test_create_without_primary_firm_is_refused(): void
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
         $type = $this->makeType();
@@ -471,7 +481,10 @@ final class InterventionControllerLot5Test extends WebTestCase
             'orderIndex' => 0,
         ]);
 
-        self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode(), $response->getContent());
+        self::assertStringContainsString('Avec quelle firme cette intervention a-t-elle été réalisée ?', json_encode(json_decode($response->getContent(), true), JSON_UNESCAPED_UNICODE));
+        $this->em->clear();
+        self::assertCount(0, $this->em->getRepository(MissionIntervention::class)->findBy(['mission' => $mission->getId()]));
     }
 
     public function test_create_without_intervention_type_id_is_rejected(): void
@@ -489,7 +502,7 @@ final class InterventionControllerLot5Test extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, ['primaryFirmId' => $this->makeFirm()->getId(), 
             'interventionTypeId' => 999999999,
             'orderIndex' => 0,
         ]);
@@ -504,7 +517,7 @@ final class InterventionControllerLot5Test extends WebTestCase
         [$client, $mission, $token] = $this->bootMissionScenario();
         $type = $this->makeType(active: false);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, ['primaryFirmId' => $this->makeFirm()->getId(), 
             'interventionTypeId' => $type->getId(),
             'orderIndex' => 0,
         ]);
@@ -553,7 +566,7 @@ final class InterventionControllerLot5Test extends WebTestCase
         $typeA = $this->makeType();
         $typeB = $this->makeType();
 
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, ['primaryFirmId' => $this->makeFirm()->getId(), 
             'interventionTypeId' => $typeA->getId(), 'orderIndex' => 0,
         ]);
         $id = json_decode($created->getContent(), true)['id'];
@@ -570,13 +583,13 @@ final class InterventionControllerLot5Test extends WebTestCase
         self::assertSame($typeB->getLabel(), $intervention->getLabel());
     }
 
-    public function test_update_can_set_then_remove_primary_firm(): void
+    public function test_update_can_change_but_never_remove_primary_firm(): void
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
         $type = $this->makeType();
         $firm = $this->makeFirm();
 
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, ['primaryFirmId' => $this->makeFirm()->getId(),
             'interventionTypeId' => $type->getId(), 'orderIndex' => 0,
         ]);
         $id = json_decode($created->getContent(), true)['id'];
@@ -588,13 +601,14 @@ final class InterventionControllerLot5Test extends WebTestCase
         $this->em->clear();
         self::assertSame($firm->getId(), $this->em->find(MissionIntervention::class, $id)->getPrimaryFirm()?->getId());
 
-        // Retrait explicite : primaryFirmId présent mais null.
+        // D-146 bis — retrait explicite (primaryFirmId présent mais null) refusé : la firme
+        // de l'intervention reste celle choisie, jamais effacée.
         $remove = $this->request($client, 'PATCH', "/api/missions/{$mission->getId()}/interventions/{$id}", $token, [
             'primaryFirmId' => null,
         ]);
-        self::assertSame(Response::HTTP_NO_CONTENT, $remove->getStatusCode());
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $remove->getStatusCode(), $remove->getContent());
         $this->em->clear();
-        self::assertNull($this->em->find(MissionIntervention::class, $id)->getPrimaryFirm());
+        self::assertSame($firm->getId(), $this->em->find(MissionIntervention::class, $id)->getPrimaryFirm()?->getId());
     }
 
     public function test_update_with_primary_firm_key_absent_leaves_it_unchanged(): void
@@ -627,7 +641,7 @@ final class InterventionControllerLot5Test extends WebTestCase
         $missionB = $this->makeEncodableMission($surgeonB, $instr, $site);
         $type = $this->makeType();
 
-        $created = $this->request($client, 'POST', "/api/missions/{$missionB->getId()}/interventions", $token, [
+        $created = $this->request($client, 'POST', "/api/missions/{$missionB->getId()}/interventions", $token, ['primaryFirmId' => $this->makeFirm()->getId(), 
             'interventionTypeId' => $type->getId(), 'orderIndex' => 0,
         ]);
         $id = json_decode($created->getContent(), true)['id'];
@@ -648,7 +662,7 @@ final class InterventionControllerLot5Test extends WebTestCase
         $originalCode = $type->getCode();
         $originalLabel = $type->getLabel();
 
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, ['primaryFirmId' => $this->makeFirm()->getId(), 
             'interventionTypeId' => $type->getId(), 'orderIndex' => 0,
         ]);
         $id = json_decode($created->getContent(), true)['id'];
@@ -672,7 +686,8 @@ final class InterventionControllerLot5Test extends WebTestCase
         [$client, $mission, $token] = $this->bootMissionScenario();
         $type = $this->makeType();
 
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+        $firm = $this->makeFirm();
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, ['primaryFirmId' => $firm->getId(),
             'interventionTypeId' => $type->getId(), 'orderIndex' => 0,
         ]);
         self::assertSame(Response::HTTP_CREATED, $created->getStatusCode());
@@ -686,7 +701,7 @@ final class InterventionControllerLot5Test extends WebTestCase
         self::assertSame($type->getCode(), $itv['code']);
         self::assertSame($type->getLabel(), $itv['label']);
         self::assertSame($type->getId(), $itv['interventionType']['id']);
-        self::assertNull($itv['primaryFirm']);
+        self::assertSame($firm->getId(), $itv['primaryFirm']['id']);
 
         // Le catalogue expose les types actifs pour le picker.
         self::assertNotEmpty($body['catalog']['interventionTypes']);
@@ -698,7 +713,7 @@ final class InterventionControllerLot5Test extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Prothèse épaule inversée',
             'suggestedCode' => 'PTE-INV',
             'comment' => 'Pas encore dans le catalogue',
@@ -732,7 +747,7 @@ final class InterventionControllerLot5Test extends WebTestCase
         $transport = static::getContainer()->get('messenger.transport.async');
         $transport->reset();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Arthroplastie de hanche',
         ]);
         self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
@@ -753,7 +768,7 @@ final class InterventionControllerLot5Test extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Ligamentoplastie', 'suggestedCode' => 'LIG',
         ]);
         $requestId = json_decode($created->getContent(), true)['id'];
@@ -764,7 +779,7 @@ final class InterventionControllerLot5Test extends WebTestCase
         $type = $this->makeType();
         $firm = $this->makeFirm();
 
-        $resolve = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+        $resolve = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
             'firmId' => $firm->getId(),
         ]);
@@ -795,7 +810,7 @@ final class InterventionControllerLot5Test extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Demande à ignorer',
         ]);
         $requestId = json_decode($created->getContent(), true)['id'];
@@ -821,7 +836,7 @@ final class InterventionControllerLot5Test extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Demande',
         ]);
         $requestId = json_decode($created->getContent(), true)['id'];
@@ -830,7 +845,7 @@ final class InterventionControllerLot5Test extends WebTestCase
         self::assertSame(Response::HTTP_FORBIDDEN, $this->request($client, 'GET', '/api/intervention-type-requests', $token)->getStatusCode());
         self::assertSame(
             Response::HTTP_FORBIDDEN,
-            $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $token, ['interventionTypeId' => 1])->getStatusCode()
+            $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $token, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 'interventionTypeId' => 1])->getStatusCode()
         );
     }
 

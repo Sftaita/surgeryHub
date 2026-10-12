@@ -11,8 +11,10 @@ const ignoreMaterialRequestMock = vi.fn();
 const getFirmsMock = vi.fn();
 const getMaterialItemsMock = vi.fn();
 const createMaterialItemMock = vi.fn();
+const getDuplicateCandidatesMock = vi.fn();
 
 vi.mock("../../features/manager-catalogue/api/catalogue.api", () => ({
+  getMaterialRequestDuplicateCandidates: (...args: unknown[]) => getDuplicateCandidatesMock(...args),
   getMaterialRequests: (...args: unknown[]) => getMaterialRequestsMock(...args),
   resolveMaterialRequest: (...args: unknown[]) => resolveMaterialRequestMock(...args),
   ignoreMaterialRequest: (...args: unknown[]) => ignoreMaterialRequestMock(...args),
@@ -37,6 +39,11 @@ const createInterventionTypeMock = vi.fn();
 vi.mock("../../features/intervention-types/api/interventionTypes.api", () => ({
   getInterventionTypes: (...args: unknown[]) => getInterventionTypesMock(...args),
   createInterventionType: (...args: unknown[]) => createInterventionTypeMock(...args),
+}));
+
+const fetchFirmServiceOfferingsMock = vi.fn();
+vi.mock("../../features/encoding/api/encoding.api", () => ({
+  fetchFirmServiceOfferings: (...args: unknown[]) => fetchFirmServiceOfferingsMock(...args),
 }));
 
 const toastSuccess = vi.fn();
@@ -102,6 +109,8 @@ beforeEach(() => {
   getFirmsMock.mockReset().mockResolvedValue([]);
   getMaterialItemsMock.mockReset().mockResolvedValue({ items: [], total: 0, page: 1, limit: 200 });
   createMaterialItemMock.mockReset();
+  getDuplicateCandidatesMock.mockReset().mockResolvedValue([]);
+  fetchFirmServiceOfferingsMock.mockReset().mockResolvedValue([]);
   getInterventionTypeRequestsMock.mockReset().mockResolvedValue({ items: [], total: 0 });
   resolveInterventionTypeRequestMock.mockReset();
   ignoreInterventionTypeRequestMock.mockReset();
@@ -149,56 +158,216 @@ describe("CatalogueRequestsPage — affichage", () => {
   });
 });
 
-describe("CatalogueRequestsPage — résolution matériel", () => {
-  it("résout une demande matériel en créant un produit", async () => {
+describe("CatalogueRequestsPage — résolution matériel (D-146 bis, une seule requête atomique)", () => {
+  const withFirm = {
+    ...materialRequest,
+    proposedFirm: { id: 1, name: "Arthrex" },
+    proposedFirmName: null,
+    quantity: "2.00",
+    target: { kind: "INTERVENTION" as const, id: 70, label: "Bankart", firm: { id: 4, name: "Smith & Nephew" } },
+    mission: { id: 501, site: "Clinique Saint-Jean", status: "SUBMITTED", locked: false, reopenAvailable: false },
+  };
+
+  it("affiche la firme proposée, la quantité et l'intervention, puis crée la référence avec la firme validée", async () => {
     const user = userEvent.setup();
-    getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
-    createMaterialItemMock.mockResolvedValue({ id: 99, firm: { id: 1, name: "Arthrex" }, label: "Vis titane 4mm", referenceCode: "REF-10", unit: "u", isImplant: false });
+    getMaterialRequestsMock.mockResolvedValue({ items: [withFirm], total: 1 });
+    getFirmsMock.mockResolvedValue([{ id: 1, name: "Arthrex" }, { id: 4, name: "Smith & Nephew" }]);
+    resolveMaterialRequestMock.mockResolvedValue({ request: { ...withFirm, status: "RESOLVED" }, materialLine: { id: 7, quantity: "2.00" }, createdFirm: false, createdItem: true });
     renderPage();
 
-    await screen.findByText("Vis titane 4mm");
-    await user.click(screen.getByRole("button", { name: "Créer produit" }));
+    const row = (await screen.findByText("Vis titane 4mm")).closest("tr")!;
+    expect(within(row).getByText("Arthrex")).toBeInTheDocument();
+    expect(within(row).getByText("Qté 2")).toBeInTheDocument();
+    await user.click(within(row).getByRole("button", { name: "Résoudre" }));
 
-    const dialog = await screen.findByRole("dialog");
-    await user.type(within(dialog).getByLabelText(/firme/i), "Arthrex");
+    const dialog = await screen.findByRole("dialog", { name: "Résoudre la demande de matériel" });
+    expect(within(dialog).getByText("Firme fabricante indiquée")).toBeInTheDocument();
+    expect(within(dialog).getByText("Bankart · Smith & Nephew")).toBeInTheDocument();
+    await waitFor(() => expect(within(dialog).getByLabelText(/Firme du matériel/)).toHaveValue("Arthrex"));
+    expect(within(dialog).getByLabelText(/Quantité utilisée/)).toHaveValue("2");
 
-    // Le formulaire de création de produit (MaterialItemFormDialog, déjà sur HEAD) exige
-    // une firme sélectionnée — non simulée ici en détail, ce test couvre l'ouverture du
-    // flux de résolution, la mutation elle-même étant testée côté MaterialItemFormDialog.
-    expect(dialog).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Créer et résoudre" }));
+
+    await waitFor(() => expect(resolveMaterialRequestMock).toHaveBeenCalledWith(10, {
+      quantity: "2",
+      newItem: { label: "Vis titane 4mm", unit: "pièce", referenceCode: "REF-10", isImplant: false, firmId: 1 },
+    }));
+    expect(toastSuccess).toHaveBeenCalledWith("Demande résolue : matériel ajouté au catalogue (facturation à décider) et à la mission.");
+  });
+
+  it("firme proposée absente du catalogue : préremplie en création de firme, jamais une firme existante devinée", async () => {
+    const user = userEvent.setup();
+    getMaterialRequestsMock.mockResolvedValue({ items: [{ ...withFirm, proposedFirm: null, proposedFirmName: "Medacta" }], total: 1 });
+    getFirmsMock.mockResolvedValue([{ id: 1, name: "Arthrex" }]);
+    resolveMaterialRequestMock.mockResolvedValue({ request: withFirm, materialLine: { id: 7, quantity: "2.00" }, createdFirm: true, createdItem: true });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Résoudre" }));
+    const dialog = await screen.findByRole("dialog", { name: "Résoudre la demande de matériel" });
+    await waitFor(() => expect(within(dialog).getByLabelText(/nouvelle firme/)).toHaveValue("Medacta"));
+    await user.click(within(dialog).getByRole("button", { name: "Créer et résoudre" }));
+
+    await waitFor(() => expect(resolveMaterialRequestMock).toHaveBeenCalledWith(10, expect.objectContaining({
+      newItem: expect.objectContaining({ newFirmName: "Medacta" }),
+    })));
+  });
+
+  it("doublon possible signalé par le serveur : la modal reste ouverte, propose d'associer ou de confirmer", async () => {
+    const user = userEvent.setup();
+    getMaterialRequestsMock.mockResolvedValue({ items: [withFirm], total: 1 });
+    getFirmsMock.mockResolvedValue([{ id: 1, name: "Arthrex" }]);
+    resolveMaterialRequestMock
+      .mockRejectedValueOnce({ response: { status: 409, data: { error: { code: "MATERIAL_ITEM_POSSIBLE_DUPLICATE", message: "Un matériel semblable existe déjà.", candidates: [{ id: 42, label: "Vis titane 4 mm", referenceCode: "REF-10", firm: { id: 9, name: "Stryker" }, billingStatus: "BILLABLE", active: true }] } } } })
+      .mockResolvedValueOnce({ request: withFirm, materialLine: { id: 7, quantity: "2.00" }, createdFirm: false, createdItem: true });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Résoudre" }));
+    const dialog = await screen.findByRole("dialog", { name: "Résoudre la demande de matériel" });
+    await waitFor(() => expect(within(dialog).getByLabelText(/Firme du matériel/)).toHaveValue("Arthrex"));
+    await user.click(within(dialog).getByRole("button", { name: "Créer et résoudre" }));
+
+    expect(await within(dialog).findByText("Un matériel semblable existe déjà.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Vis titane 4 mm")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Créer quand même" }));
+
+    await waitFor(() => expect(resolveMaterialRequestMock).toHaveBeenLastCalledWith(10, expect.objectContaining({ confirmPossibleDuplicate: true })));
+  });
+
+  it("mission validée : refus expliqué, réouverture proposée, aucune résolution possible", async () => {
+    const user = userEvent.setup();
+    getMaterialRequestsMock.mockResolvedValue({ items: [{ ...withFirm, mission: { id: 501, site: "Clinique Saint-Jean", status: "VALIDATED", locked: true, reopenAvailable: true } }], total: 1 });
+    getFirmsMock.mockResolvedValue([{ id: 1, name: "Arthrex" }]);
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Résoudre" }));
+    const dialog = await screen.findByRole("dialog", { name: "Résoudre la demande de matériel" });
+    expect(within(dialog).getByText(/est validée : rien ne peut y être ajouté directement/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Rouvrez d'abord son encodage/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Créer et résoudre" })).toBeDisabled();
   });
 });
 
-describe("CatalogueRequestsPage — résolution type d'intervention", () => {
-  it("résout une demande de type d'intervention en associant un type existant, avec la firme principale choisie", async () => {
+describe("CatalogueRequestsPage — résolution type d'intervention (D-146 bis)", () => {
+  const withFirm = {
+    ...interventionRequest,
+    requestedFirm: { id: 3, name: "Zimmer Biomet" },
+    requestedFirmNameSnapshot: "Zimmer Biomet",
+    proposedFirmName: null,
+    draft: { id: 1, status: "OPEN", materialLineCount: 0, materialItemRequestCount: 0 },
+    mission: { id: 502, site: "Clinique du Parc", status: "ASSIGNED", locked: false, reopenAvailable: false, interventions: [] },
+  };
+  const TYPE = { id: 5, code: "PEI", label: "Prothèse épaule inversée", specialty: null, active: true };
+
+  async function pickType(user: ReturnType<typeof userEvent.setup>, dialog: HTMLElement) {
+    await user.click(within(dialog).getByLabelText(/Intervention correspondante/));
+    await user.click(await screen.findByRole("option", { name: /Prothèse épaule inversée \(PEI\)/ }));
+  }
+
+  it("préremplit la firme demandée et résout en associant un type existant dont la prestation existe", async () => {
     const user = userEvent.setup();
-    getInterventionTypeRequestsMock.mockResolvedValue({ items: [interventionRequest], total: 1 });
-    getInterventionTypesMock.mockResolvedValue([{ id: 5, code: "PEI", label: "Prothèse épaule inversée", specialty: null, active: true }]);
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [withFirm], total: 1 });
+    getInterventionTypesMock.mockResolvedValue([TYPE]);
     getFirmsMock.mockResolvedValue([{ id: 3, name: "Zimmer Biomet" }]);
-    resolveInterventionTypeRequestMock.mockResolvedValue({ requestId: 11, draftId: 1, status: "RESOLVED", draftStatus: "RESOLVED", missionInterventionId: 77 });
+    fetchFirmServiceOfferingsMock.mockResolvedValue([{ id: 8, interventionType: TYPE, active: true, representativePresenceRelevant: false, choiceGroup: null }]);
+    resolveInterventionTypeRequestMock.mockResolvedValue({ requestId: 11, draftId: 1, status: "RESOLVED", draftStatus: "CONVERTED", missionInterventionId: 77, offeringDecision: null });
     renderPage();
 
-    await screen.findByText("Prothèse épaule inversée");
-    await user.click(screen.getByRole("button", { name: "Résoudre" }));
-
-    const dialog = await screen.findByRole("dialog");
-    await user.click(within(dialog).getByText("Plutôt associer un type existant →"));
-
-    const typeSelect = await within(dialog).findByText("Sélectionner un type d'intervention");
-    await user.click(typeSelect);
-    await user.click(await screen.findByRole("option", { name: /Prothèse épaule inversée \(PEI\)/ }));
-
-    const firmSelect = within(dialog).getByText("Aucune firme principale (optionnel)");
-    await user.click(firmSelect);
-    await user.click(await screen.findByRole("option", { name: "Zimmer Biomet" }));
-
+    await user.click(await screen.findByRole("button", { name: "Résoudre" }));
+    const dialog = await screen.findByRole("dialog", { name: "Résoudre la demande d'intervention" });
+    await waitFor(() => expect(within(dialog).getByLabelText(/Avec quelle firme/)).toHaveValue("Zimmer Biomet"));
+    await pickType(user, dialog);
     await user.click(within(dialog).getByRole("button", { name: "Résoudre" }));
 
-    await waitFor(() => {
-      expect(resolveInterventionTypeRequestMock).toHaveBeenCalledWith(11, 5, 3);
-    });
+    await waitFor(() => expect(resolveInterventionTypeRequestMock).toHaveBeenCalledWith(11, { interventionTypeId: 5, firmId: 3 }));
     expect(toastSuccess).toHaveBeenCalledWith("Demande résolue. Intervention créée sur la mission.");
   });
+
+  it("prestation absente : décision explicite obligatoire, jamais « Pas de forfait » par défaut", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [withFirm], total: 1 });
+    getInterventionTypesMock.mockResolvedValue([TYPE]);
+    getFirmsMock.mockResolvedValue([{ id: 3, name: "Zimmer Biomet" }]);
+    fetchFirmServiceOfferingsMock.mockResolvedValue([]);
+    resolveInterventionTypeRequestMock.mockResolvedValue({ requestId: 11, draftId: 1, status: "RESOLVED", draftStatus: "CONVERTED", missionInterventionId: 77, offeringDecision: "NO_FEE" });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Résoudre" }));
+    const dialog = await screen.findByRole("dialog", { name: "Résoudre la demande d'intervention" });
+    await waitFor(() => expect(within(dialog).getByLabelText(/Avec quelle firme/)).toHaveValue("Zimmer Biomet"));
+    await pickType(user, dialog);
+
+    expect(await within(dialog).findByText(/n'est pas encore configurée chez Zimmer Biomet/)).toBeInTheDocument();
+    const radios = within(dialog).getAllByRole("radio");
+    expect(radios.every((r) => !(r as HTMLInputElement).checked)).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Résoudre" })).toBeDisabled();
+
+    await user.click(within(dialog).getByLabelText(/Aucun forfait n'est prévu/));
+    await user.click(within(dialog).getByRole("button", { name: "Résoudre" }));
+    await waitFor(() => expect(resolveInterventionTypeRequestMock).toHaveBeenCalledWith(11, { interventionTypeId: 5, firmId: 3, offeringDecision: "NO_FEE" }));
+  });
+
+  it("délégué et système choisi exigés par la prestation : jamais répondus à la place du manager", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [withFirm], total: 1 });
+    getInterventionTypesMock.mockResolvedValue([TYPE]);
+    getFirmsMock.mockResolvedValue([{ id: 3, name: "Zimmer Biomet" }]);
+    fetchFirmServiceOfferingsMock.mockResolvedValue([{
+      id: 8, interventionType: TYPE, active: true, representativePresenceRelevant: true,
+      choiceGroup: { id: 2, question: "Quel système ?", options: [{ id: 31, label: "Altera", active: true }, { id: 32, label: "Signature", active: true }] },
+    }]);
+    resolveInterventionTypeRequestMock.mockResolvedValue({ requestId: 11, draftId: 1, status: "RESOLVED", draftStatus: "CONVERTED", missionInterventionId: 77 });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Résoudre" }));
+    const dialog = await screen.findByRole("dialog", { name: "Résoudre la demande d'intervention" });
+    await waitFor(() => expect(within(dialog).getByLabelText(/Avec quelle firme/)).toHaveValue("Zimmer Biomet"));
+    await pickType(user, dialog);
+
+    expect(await within(dialog).findByText("Un délégué de Zimmer Biomet était-il présent ?")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Résoudre" })).toBeDisabled();
+    await user.click(within(dialog).getByLabelText("Non"));
+    expect(within(dialog).getByRole("button", { name: "Résoudre" })).toBeDisabled();
+    await user.click(within(dialog).getByLabelText("Altera"));
+    await user.click(within(dialog).getByRole("button", { name: "Résoudre" }));
+
+    await waitFor(() => expect(resolveInterventionTypeRequestMock).toHaveBeenCalledWith(11, {
+      interventionTypeId: 5, firmId: 3, representativePresent: false, selectedChoiceOptionId: 31,
+    }));
+  });
+});
+
+describe("CatalogueRequestsPage — ignorance avec matériel déjà déclaré (D-146 bis)", () => {
+  it("exige une stratégie explicite et transmet la réaffectation choisie", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [{
+      ...interventionRequest,
+      draft: { id: 1, status: "OPEN", materialLineCount: 2, materialItemRequestCount: 0 },
+      mission: { id: 502, site: "Clinique du Parc", status: "ASSIGNED", locked: false, reopenAvailable: false, interventions: [{ id: 70, label: "Bankart", firm: "Smith & Nephew" }] },
+    }], total: 1 });
+    ignoreInterventionTypeRequestMock.mockResolvedValue({ requestId: 11, draftId: 1, status: "IGNORED", draftStatus: "MATERIAL_REASSIGNED", missionInterventionId: 70 });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Ignorer" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Demande en doublon" }));
+    await user.type(within(dialog).getByLabelText("Explication"), "Déjà encodée sous Bankart.");
+
+    expect(within(dialog).getByText(/Du matériel est déjà déclaré sur cette demande \(2 élément\(s\)\)/)).toBeInTheDocument();
+    const confirm = within(dialog).getByRole("button", { name: "Ignorer la demande" });
+    expect(confirm).toBeDisabled();
+
+    await user.click(within(dialog).getByLabelText(/Le rattacher à une intervention existante/));
+    expect(confirm).toBeDisabled();
+    await user.click(within(dialog).getByText("Intervention de destination"));
+    await user.click(await screen.findByRole("option", { name: "Bankart · Smith & Nephew" }));
+    await user.click(confirm);
+
+    await waitFor(() => expect(ignoreInterventionTypeRequestMock).toHaveBeenCalledWith({
+      id: 11, reason: "DUPLICATE", comment: "Déjà encodée sous Bankart.", strategy: "REASSIGN", missionInterventionId: 70,
+    }, expect.anything()));
+    // Parcours long (deux Select MUI + saisie) : délai explicite plutôt qu'un échec intermittent.
+  }, 15000);
 });
 
 describe("CatalogueRequestsPage — ignorance (modal obligatoire, D-113)", () => {
@@ -406,7 +575,7 @@ describe("CatalogueRequestsPage — commentaire de l'instrumentiste", () => {
     renderPage();
 
     await screen.findByText("Plaque tibia 12 trous");
-    await user.click(screen.getByRole("button", { name: "Créer produit" }));
+    await user.click(screen.getByRole("button", { name: "Résoudre" }));
     const dialog = await screen.findByRole("dialog");
 
     expect(within(dialog).getByText("Matériel demandé")).toBeInTheDocument();
@@ -421,22 +590,27 @@ describe("CatalogueRequestsPage — commentaire de l'instrumentiste", () => {
     getMaterialRequestsMock.mockResolvedValue({ items: [materialRequest], total: 1 });
     getMaterialItemsMock.mockResolvedValue({
       items: [{ id: 42, firm: { id: 1, name: "Arthrex" }, label: "Vis titane 4mm Arthrex", referenceCode: "AR-4", unit: "u", isImplant: false }],
-      total: 1, page: 1, limit: 200,
+      total: 1, page: 1, limit: 50,
     });
-    resolveMaterialRequestMock.mockResolvedValue({ request: { ...materialRequest, status: "RESOLVED" }, materialLine: { id: 7 } });
+    resolveMaterialRequestMock.mockResolvedValue({ request: { ...materialRequest, status: "RESOLVED" }, materialLine: { id: 7, quantity: "3.00" }, createdFirm: false, createdItem: false });
     renderPage();
 
     await screen.findByText("Vis titane 4mm");
-    await user.click(screen.getByRole("button", { name: "Créer produit" }));
-    await user.click(within(await screen.findByRole("dialog")).getByText("Plutôt associer un produit existant →"));
+    await user.click(screen.getByRole("button", { name: "Résoudre" }));
+    const dialog = await screen.findByRole("dialog", { name: "Résoudre la demande de matériel" });
+    expect(within(dialog).getByText("Utilisée hors catalogue")).toBeInTheDocument();
+    // Demande antérieure sans quantité : jamais une valeur inventée, le manager la saisit.
+    expect(within(dialog).getByLabelText(/Quantité utilisée/)).toHaveValue("");
+    await user.type(within(dialog).getByLabelText(/Quantité utilisée/), "3");
 
-    const pickDialog = await screen.findByRole("dialog", { name: "Associer un produit existant" });
-    expect(within(pickDialog).getByText("Utilisée hors catalogue")).toBeInTheDocument();
-    await user.click(await within(pickDialog).findByText("Vis titane 4mm Arthrex"));
-    await user.click(within(pickDialog).getByRole("button", { name: "Associer et résoudre" }));
+    await user.click(within(dialog).getByRole("button", { name: "Associer un matériel existant" }));
+    await user.click(within(dialog).getByLabelText(/Rechercher un matériel/));
+    await user.click(await screen.findByRole("option", { name: /Vis titane 4mm Arthrex/ }));
+    expect(within(dialog).getByText(/garde sa firme \(Arthrex\)/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Associer et résoudre" }));
 
-    await waitFor(() => expect(resolveMaterialRequestMock).toHaveBeenCalledWith(10, 42));
-    expect(toastSuccess).toHaveBeenCalledWith("Demande résolue. Ligne matériel créée.");
+    await waitFor(() => expect(resolveMaterialRequestMock).toHaveBeenCalledWith(10, { quantity: "3", materialItemId: 42 }));
+    expect(toastSuccess).toHaveBeenCalledWith("Demande résolue : matériel ajouté à la mission.");
   });
 
   it("la modal Ignorer affiche le commentaire de l'instrumentiste, ou « Aucun commentaire »", async () => {
@@ -625,7 +799,7 @@ describe("CatalogueRequestsPage — détail d'une demande (consultation sans tra
     dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
     await user.click(within(dialog).getByRole("button", { name: "Résoudre" }));
     dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("Résoudre la demande de type d'intervention")).toBeInTheDocument();
+    expect(within(dialog).getByText("Résoudre la demande d'intervention")).toBeInTheDocument();
     expect(within(dialog).getByText(/Ancre fémorale 4.5/)).toBeInTheDocument();
     expectNoMutation();
   });

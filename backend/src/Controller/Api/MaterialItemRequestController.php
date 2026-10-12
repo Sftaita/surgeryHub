@@ -16,9 +16,11 @@ use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\MessageBusInterface;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 use Symfony\Component\Serializer\SerializerInterface;
+use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 #[Route('/api/missions/{missionId}/material-item-requests')]
 class MaterialItemRequestController extends AbstractController
@@ -29,6 +31,7 @@ class MaterialItemRequestController extends AbstractController
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
         private readonly MessageBusInterface $bus,
+        private readonly ValidatorInterface $validator,
     ) {}
 
     #[Route('', methods: ['POST'])]
@@ -48,6 +51,14 @@ class MaterialItemRequestController extends AbstractController
             MaterialItemRequestCreateRequest::class,
             'json'
         );
+
+        // D-146 bis — les contraintes du DTO (nom, quantité, longueurs) sont désormais
+        // réellement appliquées côté serveur : jusqu'ici le DTO était désérialisé sans
+        // jamais être validé (un nom vide était accepté par l'API).
+        $errors = $this->validator->validate($dto);
+        if (count($errors) > 0) {
+            throw new UnprocessableEntityHttpException((string) $errors);
+        }
 
         $req = $this->service->create($mission, $dto, $user);
 
