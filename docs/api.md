@@ -1890,9 +1890,14 @@ ou, pour créer la référence :
 | `422` `FIRM_REQUIRED` / `FIRM_AMBIGUOUS` | Firme du nouveau matériel manquante / `firmId` et `newFirmName` ensemble |
 | `422` `QUANTITY_REQUIRED` | Quantité absente ou invalide |
 
-**Effet async (D-093) :** dispatche `CatalogueRequestProcessedMessage(accepted: true)` —
-notifie l'instrumentiste auteur (in-app + push prioritaire, repli email si le push n'est
-pas livrable). Voir `docs/decisions.md` D-093/D-094.
+**Effet async (D-093, D-146 bis) :** dispatche `CatalogueRequestProcessedMessage(accepted: true,
+resolution: {name, reference, firm, quantity, existingItem})` — instantané de ce qui a été
+DÉFINITIVEMENT enregistré. L'instrumentiste reçoit l'in-app, le push et un **e-mail
+d'accusé** (« recherchez désormais « nom » dans SurgicalHub ») selon ses préférences
+(activé par défaut, `WHEN_ENABLED`), avec nom, référence, firme retenus et quantité ajoutée
+à la mission — jamais le libellé ou la firme initialement proposés comme valeur finale,
+aucune donnée patient ni financière. Envoyé uniquement après le commit de la résolution ;
+idempotent par demande (`catalogue_request:MATERIAL_ITEM:{id}`). Voir D-093/D-094/D-146 bis.
 
 ---
 
@@ -5684,9 +5689,10 @@ draft (refus `409 INCOMPATIBLE_CHOICE_MATERIAL` si incompatible avec le système
 manquante, option d'une autre prestation ; codes §8 (`INTERVENTION_TYPE_INACTIVE`,
 `PRIMARY_FIRM_INACTIVE`…).
 
-**Effet async (D-093) :** dispatche `CatalogueRequestProcessedMessage(accepted: true)` —
-notifie l'instrumentiste auteur (in-app + push prioritaire, repli email si le push n'est
-pas livrable).
+**Effet async (D-093, D-146 bis) :** dispatche `CatalogueRequestProcessedMessage(accepted: true,
+resolution: {name, code, firm, createdType})` — même e-mail d'accusé que pour le matériel :
+nom et code du référentiel réellement retenus, firme associée, mission et date. Idempotent
+par demande (`catalogue_request:INTERVENTION_TYPE:{id}`).
 
 #### `POST /api/intervention-type-requests/{id}/ignore`
 

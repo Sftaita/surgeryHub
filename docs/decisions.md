@@ -13025,3 +13025,47 @@ dans la liste »), jamais créée automatiquement. La règle s'applique à chaqu
 - PR #4 (D-139) : `decidedBy/decidedAt` et le cas d'audit `MATERIAL_ITEM_REQUEST_RESOLVED`
   sont repris à l'identique ; ses modifications de service deviennent redondantes et
   entreront en conflit — à rebaser après ce lot, sans fusion automatique.
+
+### D-146 bis — complément (2026-10-12) : finition, e-mail d'accusé, « Heures prestées »
+
+**E-mail d'accusé de résolution.** Après une résolution acceptée (matériel ou intervention),
+l'instrumentiste reçoit un e-mail qui donne le **nom exact sous lequel l'élément est
+désormais enregistré** (nom, référence ou code, firme retenus par le manager, quantité
+ajoutée, mission et date), pour le retrouver lors de ses prochains encodages. Réutilise
+l'infrastructure existante : `CatalogueRequestProcessedMessage` (nouvel instantané
+`resolution`, scalaires uniquement, construit par le controller après le commit),
+`CatalogueRequestProcessedMessageHandler` → `NotificationDispatcher` (in-app + push +
+e-mail), gabarit `emails/catalogue_request_resolution.html.twig`. Politique e-mail passée de
+`FALLBACK_WHEN_PUSH_NOT_SENT` à `WHEN_ENABLED` pour ces seules résolutions acceptées : les
+préférences de l'instrumentiste s'appliquent (e-mail activé par défaut pour
+`CATALOGUE_REQUEST_RESOLVED`). Garanties : jamais d'envoi si la transaction est annulée
+(le message n'est émis qu'après le succès du service) ; une seule notification par demande
+(clé d'idempotence du dispatcher sur l'épisode `catalogue_request:{kind}:{id}`, y compris en
+cas de redélivrance par le worker) ; un incident SMTP n'annule jamais la résolution (envoi
+asynchrone relancé, puis `FAILED` avec un motif contrôlé) ; aucun envoi rétroactif — un
+message émis avant ce lot (sans instantané) garde l'ancien comportement. Refus / ignore :
+notifications existantes (D-093/D-113) inchangées.
+
+**« Heures prestées ».** Libellés visibles uniquement (écrans d'encodage, récapitulatif,
+suivi des encodages, validation manager, rappels, e-mails, messages d'erreur) : « heures
+réelles / horaires réels » → « heures prestées », distinctes des « heures planifiées ».
+Champs techniques, contrats API, calculs et données inchangés.
+
+**Récapitulatif de soumission.** Il lisait la durée stockée (`actualDurationMinutes`) alors
+que la décision (et la carte « Heures prestées ») repose sur le début et la fin : une
+exécution portant début et fin sans durée stockée (données écrites hors
+`MissionExecutionService`, seul écrivain applicatif, qui dérive toujours la durée)
+s'affichait « Non renseigné ». La durée affichée est désormais dérivée comme côté serveur
+(fin − début − pause) ; « Non renseignées » uniquement si rien n'est saisi.
+
+**Page « Demandes ».** 6 colonnes au lieu de 8 (référence dans la demande, demandeur avec la
+mission, actions empilées) : plus de défilement horizontal à 1280 px.
+
+**PR #4 (D-139) — adaptations à la reprise.** Déjà couvert ici : `decidedBy/decidedAt` posés
+à la résolution (matériel et intervention), cas d'audit `MATERIAL_ITEM_REQUEST_RESOLVED`
+(identique). Propre à D-139 et non repris : affichage « Par X le … » pour les demandes
+résolues (tableau), tests de traçabilité, ADR. À la reprise : rebaser sur ce lot, abandonner
+ses hunks de `MaterialItemRequestService` / `MissionInterventionDraftService` (sinon double
+audit et double pose du décideur), garder le frontend et les tests en ajoutant aux corps de
+résolution les champs désormais obligatoires (firme, quantité / `newItem`), résoudre les
+conflits `api.md` / `decisions.md` (numérotation D-139 conservée).
