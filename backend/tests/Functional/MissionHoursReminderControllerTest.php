@@ -256,11 +256,11 @@ final class MissionHoursReminderControllerTest extends WebTestCase
         ));
         self::assertCount(1, $emails);
         self::assertSame($instr->getEmail(), $emails[0]->to);
-        self::assertSame('SurgicalHub — Heures réelles à renseigner', $emails[0]->subject);
+        self::assertSame('SurgicalHub — Heures prestées à renseigner', $emails[0]->subject);
 
         // Rendu réel du gabarit : message explicite sur les heures, aucune donnée patient.
         $html = static::getContainer()->get('twig')->render($emails[0]->htmlTemplate, $emails[0]->context);
-        self::assertStringContainsString('heures réellement prestées', $html);
+        self::assertStringContainsString('vos heures prestées', $html);
         self::assertStringContainsString("/app/i/missions/{$mission->getId()}", $html);
         self::assertStringNotContainsString('finaliser', $html, "ce n'est pas la relance d'encodage");
     }

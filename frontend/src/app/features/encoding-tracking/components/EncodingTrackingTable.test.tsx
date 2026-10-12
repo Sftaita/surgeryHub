@@ -84,7 +84,7 @@ describe("EncodingTrackingTable — colonne Heures (D-136)", () => {
     expect(screen.getByText("5 h")).toHaveStyle({ color: "rgb(183, 121, 31)" }); // orange
     // Sans heure réelle : libellé explicite, le planifié n'est jamais présenté comme effectif.
     expect(cells[2]).toHaveTextContent("4 h planifiées");
-    expect(cells[2]).toHaveTextContent("Heures réelles non renseignées");
+    expect(cells[2]).toHaveTextContent("Heures prestées non renseignées");
   });
 });
 

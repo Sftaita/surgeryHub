@@ -61,8 +61,9 @@ final class MissionExecutionService
             $end   = $execution->getActualEndAt();
 
             if ($start !== null && $end !== null) {
-                // D-143 — la pause déclarée est retirée de la plage début → fin.
-                $minutes = (int) round(($end->getTimestamp() - $start->getTimestamp()) / 60) - ($execution->getBreakMinutes() ?? 0);
+                // D-146 bis — heures prestées = fin − début, aucune pause déduite
+                // (mission_execution.break_minutes n'a plus d'effet, voir docs/decisions.md).
+                $minutes = (int) round(($end->getTimestamp() - $start->getTimestamp()) / 60);
                 return new EffectiveDuration(max(0, $minutes), EffectiveDurationSource::ACTUAL_TIMES);
             }
 
@@ -114,7 +115,7 @@ final class MissionExecutionService
     /**
      * §3.2 — règle de cohérence unique : si actualStartAt ET actualEndAt sont connus
      * (dans l'état résultant, pas seulement dans cette requête), la durée est TOUJOURS
-     * dérivée des deux horaires moins la pause déclarée (D-143) — jamais deux sources de
+     * dérivée des deux horaires (fin − début, aucune pause déduite — D-146 bis) — jamais deux sources de
      * vérité. Une durée explicite fournie dans la même requête qui contredirait cette
      * dérivation est un 422, jamais une acceptation silencieuse (§3.2 : "ne pas accepter
      * silencieusement des valeurs contradictoires").
@@ -134,31 +135,20 @@ final class MissionExecutionService
         ?\DateTimeImmutable $actualEndAt,
         ?int $actualDurationMinutes,
         ?HoursSource $hoursSource,
-        ?int $breakMinutes = null,
     ): MissionExecution {
         $execution = $this->findOrCreateExecution($mission, $actor);
 
         $resultStart = $actualStartAt ?? $execution->getActualStartAt();
         $resultEnd   = $actualEndAt ?? $execution->getActualEndAt();
-        $resultBreak = $breakMinutes ?? $execution->getBreakMinutes();
         $explicitDurationThisCall = $actualDurationMinutes !== null;
         $resultDuration = $actualDurationMinutes ?? $execution->getActualDurationMinutes();
-
-        if ($resultBreak !== null && $resultBreak < 0) {
-            throw new UnprocessableEntityHttpException('breakMinutes ne peut pas être négatif.');
-        }
 
         if ($resultStart !== null && $resultEnd !== null) {
             if ($resultEnd <= $resultStart) {
                 throw new UnprocessableEntityHttpException("L'heure de fin doit être postérieure à l'heure de début.");
             }
 
-            $spanMinutes = (int) round(($resultEnd->getTimestamp() - $resultStart->getTimestamp()) / 60);
-            if (($resultBreak ?? 0) >= $spanMinutes) {
-                throw new UnprocessableEntityHttpException('La pause doit être plus courte que la plage entre le début et la fin.');
-            }
-
-            $derivedMinutes = $spanMinutes - ($resultBreak ?? 0);
+            $derivedMinutes = (int) round(($resultEnd->getTimestamp() - $resultStart->getTimestamp()) / 60);
 
             if ($explicitDurationThisCall && $actualDurationMinutes !== $derivedMinutes) {
                 throw new UnprocessableEntityHttpException(sprintf(
@@ -174,13 +164,11 @@ final class MissionExecutionService
         $durationChanged = $execution->getActualDurationMinutes() !== $resultDuration;
         $startChanged     = $execution->getActualStartAt()?->getTimestamp() !== $resultStart?->getTimestamp();
         $endChanged       = $execution->getActualEndAt()?->getTimestamp() !== $resultEnd?->getTimestamp();
-        $breakChanged     = $execution->getBreakMinutes() !== $resultBreak;
         $sourceChanged    = $hoursSource !== null && $execution->getHoursSource() !== $hoursSource;
-        $anythingChanged  = $durationChanged || $startChanged || $endChanged || $breakChanged || $sourceChanged;
+        $anythingChanged  = $durationChanged || $startChanged || $endChanged || $sourceChanged;
 
         $execution->setActualStartAt($resultStart);
         $execution->setActualEndAt($resultEnd);
-        $execution->setBreakMinutes($resultBreak);
         $execution->setActualDurationMinutes($resultDuration);
         if ($hoursSource !== null) {
             $execution->setHoursSource($hoursSource);

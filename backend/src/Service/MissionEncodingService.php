@@ -511,6 +511,7 @@ final class MissionEncodingService
             interventionType: null,
             firm: $firmDto,
             requestedFirmNameSnapshot: $draft->getRequestedFirmNameSnapshot(),
+            proposedFirmName: $draft->getProposedFirmName(),
             status: $draft->getStatus(),
             readOnly: !$draft->acceptsNewMaterial(),
             materialLines: $lines,
@@ -543,11 +544,16 @@ final class MissionEncodingService
 
     private function mapMaterialItemRequest(MaterialItemRequest $r): MissionEncodingMaterialItemRequestDto
     {
+        $proposedFirm = $r->getProposedFirm();
+
         return new MissionEncodingMaterialItemRequestDto(
             id: (int) $r->getId(),
             label: (string) $r->getLabel(),
             referenceCode: $r->getReferenceCode(),
             comment: $r->getComment(),
+            proposedFirm: $proposedFirm ? new FirmSlimDto(id: (int) $proposedFirm->getId(), name: (string) $proposedFirm->getName()) : null,
+            proposedFirmName: $r->getProposedFirmName(),
+            quantity: $r->getQuantity(),
         );
     }
 }

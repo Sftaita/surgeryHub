@@ -67,6 +67,21 @@ export type CatalogueRequestIgnoreReason =
   | "INVALID_REQUEST"
   | "OTHER";
 
+/**
+ * D-146 bis — état de la mission vu par la résolution : une mission validée, facturée ou
+ * verrouillée refuse toute résolution (409) ; `reopenAvailable` indique si la procédure
+ * de réouverture existante peut être proposée (jamais déclenchée automatiquement).
+ */
+export type CatalogueRequestMissionDTO = {
+  id: number;
+  site: string | null;
+  status?: string;
+  locked?: boolean;
+  reopenAvailable?: boolean;
+};
+
+export type CatalogueFirmRefDTO = { id: number; name: string; active?: boolean };
+
 export type MaterialRequestDTO = {
   id: number;
   status: MaterialRequestStatus;
@@ -74,10 +89,14 @@ export type MaterialRequestDTO = {
   referenceCode: string | null;
   comment: string | null;
   createdAt: string;
-  mission: {
-    id: number;
-    site: string | null;
-  } | null;
+  /** D-146 bis — firme fabricante choisie (référentiel) OU proposée en texte libre. */
+  proposedFirm?: CatalogueFirmRefDTO | null;
+  proposedFirmName?: string | null;
+  /** D-146 bis — quantité déclarée ("2.00") ; null pour une demande antérieure. */
+  quantity?: string | null;
+  /** Intervention (ou demande d'intervention) de la mission concernée. */
+  target?: { kind: "INTERVENTION" | "DRAFT"; id: number; label: string; firm: { id: number; name: string } | null } | null;
+  mission: CatalogueRequestMissionDTO | null;
   requestedBy: {
     id: number;
     displayName: string;
@@ -88,6 +107,41 @@ export type MaterialRequestDTO = {
   ignoreComment: string | null;
   decidedBy: { id: number; displayName: string } | null;
   decidedAt: string | null;
+};
+
+/** D-146 bis — matériel existant ressemblant à la demande (aide au dédoublonnage). */
+export type MaterialDuplicateCandidateDTO = {
+  id: number;
+  label: string;
+  referenceCode: string | null;
+  firm: { id: number; name: string } | null;
+  billingStatus: MaterialBillingStatus;
+  active: boolean;
+};
+
+/**
+ * D-146 bis — corps de POST /api/material-item-requests/{id}/resolve (transaction unique) :
+ * matériel existant OU nouvelle référence (firme existante OU créée), quantité validée.
+ */
+export type ResolveMaterialRequestBody = {
+  quantity?: string;
+  materialItemId?: number;
+  newItem?: {
+    label: string;
+    unit: string;
+    referenceCode?: string;
+    isImplant?: boolean;
+    firmId?: number;
+    newFirmName?: string;
+  };
+  confirmPossibleDuplicate?: boolean;
+};
+
+export type ResolveMaterialRequestResultDTO = {
+  request: MaterialRequestDTO;
+  materialLine: { id: number; quantity: string };
+  createdFirm: boolean;
+  createdItem: boolean;
 };
 
 export type MaterialRequestsListResponseDTO = {

@@ -241,8 +241,8 @@ final class MissionExecutionServiceTest extends TestCase
         self::assertFalse($execution->hasCompleteActualTimes());
     }
 
-    /** D-143 — la pause est retirée de la plage début → fin, partout (durée stockée et effective). */
-    public function test_update_actuals_subtracts_the_declared_break(): void
+    /** D-146 bis — heures prestées = fin − début (08h00 → 11h30 = 3h30), aucune pause déduite. */
+    public function test_update_actuals_duration_is_end_minus_start(): void
     {
         $mission = $this->makeMission();
         $actor = $this->makeActor();
@@ -251,33 +251,31 @@ final class MissionExecutionServiceTest extends TestCase
             $mission,
             $actor,
             new \DateTimeImmutable('2026-07-18 08:00:00'),
+            new \DateTimeImmutable('2026-07-18 11:30:00'),
+            null,
+            null,
+        );
+
+        self::assertSame(210, $execution->getActualDurationMinutes());
+        self::assertSame(210, MissionExecutionService::resolveDuration($mission)->minutes);
+        self::assertNull($execution->getBreakMinutes());
+    }
+
+    /** D-146 bis — une pause historique (D-143) encore en base n'a plus aucun effet sur la durée. */
+    public function test_a_historical_break_value_is_no_longer_deducted(): void
+    {
+        $mission = $this->makeMission();
+        $execution = $this->service->updateActuals(
+            $mission,
+            $this->makeActor(),
+            new \DateTimeImmutable('2026-07-18 08:00:00'),
             new \DateTimeImmutable('2026-07-18 17:00:00'),
             null,
             null,
-            45,
         );
+        $execution->setBreakMinutes(45);
 
-        self::assertSame(45, $execution->getBreakMinutes());
-        self::assertSame(495, $execution->getActualDurationMinutes());
-        self::assertSame(495, MissionExecutionService::resolveDuration($mission)->minutes);
-    }
-
-    public function test_update_actuals_rejects_a_break_covering_the_whole_span(): void
-    {
-        $mission = $this->makeMission();
-        $actor = $this->makeActor();
-
-        $this->expectException(UnprocessableEntityHttpException::class);
-
-        $this->service->updateActuals(
-            $mission,
-            $actor,
-            new \DateTimeImmutable('2026-07-18 08:00:00'),
-            new \DateTimeImmutable('2026-07-18 09:00:00'),
-            null,
-            null,
-            60,
-        );
+        self::assertSame(540, MissionExecutionService::resolveDuration($mission)->minutes);
     }
 
     public function test_update_actuals_rejects_end_before_start(): void

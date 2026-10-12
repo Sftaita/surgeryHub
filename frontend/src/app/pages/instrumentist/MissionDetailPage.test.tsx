@@ -85,7 +85,7 @@ describe("MissionDetailPage (instrumentiste) — heures prestées (source de vé
     mockRoutes(baseMission(), executionInfo({ hasExecutionRecord: false }));
     renderPage();
 
-    expect(await screen.findByText("Non renseigné")).toBeInTheDocument();
+    expect(await screen.findByText("Non renseignées")).toBeInTheDocument();
   });
 
   it("affiche les heures réellement enregistrées, au même format que l'écran d'encodage", async () => {
@@ -93,7 +93,7 @@ describe("MissionDetailPage (instrumentiste) — heures prestées (source de vé
     renderPage();
 
     expect(await screen.findByText("4.5 h")).toBeInTheDocument();
-    expect(screen.queryByText("Non renseigné")).not.toBeInTheDocument();
+    expect(screen.queryByText("Non renseignées")).not.toBeInTheDocument();
   });
 });
 
@@ -247,5 +247,29 @@ describe("MissionDetailPage — régression instrumentiste (canEncoding priorita
     expect(screen.getByText("Gérer")).toBeInTheDocument();
     expect(screen.queryByText("Encodage de l'intervention")).not.toBeInTheDocument();
     expect(screen.queryByText("Voir")).not.toBeInTheDocument();
+  });
+});
+
+describe("MissionDetailPage — instrumentiste, mission validée (D-146 bis)", () => {
+  it("le CTA de consultation reste dans l'espace instrumentiste (/app/i/missions/:id/encoding)", async () => {
+    mockRoutes(baseMission({ status: "VALIDATED", allowedActions: ["view_encoding"] }), executionInfo());
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={["/app/i/missions/690"]}>
+        <QueryClientProvider client={client}>
+          <Routes>
+            <Route path="/app/i/missions/:id" element={<MissionDetailContent missionId={MISSION_ID} />} />
+            <Route path="/app/i/missions/:id/encoding" element={<div>Instrumentist encoding screen</div>} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    const user = userEvent.setup();
+    expect(await screen.findByText("Consultez vos heures prestées, interventions et matériel encodés (lecture seule).")).toBeInTheDocument();
+    expect(screen.queryByText("Encoder la mission")).not.toBeInTheDocument();
+    await user.click(screen.getByText("Encodage de l'intervention"));
+
+    expect(await screen.findByText("Instrumentist encoding screen")).toBeInTheDocument();
   });
 });

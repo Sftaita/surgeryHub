@@ -12954,6 +12954,148 @@ reste une décision séparée. Les autres notifications « tous managers » ne c
 Relance manuelle (décision H5a confirmée) : e-mail obligatoire à l'instrumentiste, auteur
 audité, blocage de 10 min, aucun changement de statut ni de brouillon, canal renvoyé.
 
+## D-146 bis — Fiabilisation des demandes de matériel et d'intervention : firme obligatoire, quantité exacte, résolution atomique (2026-10-12)
+
+### Contexte
+
+Audit D-146 bis (lecture seule, prod) : les deux flux de demande perdaient l'information
+qui détermine la facturation. Une demande de matériel n'enregistrait ni la firme ni la
+quantité (ligne créée à `quantity = 1`, firme réécrite par le manager — missions #462,
+#478, #415, #458) ; une demande d'intervention pouvait être résolue sans firme, ou avec une
+autre firme que celle indiquée, et `resolve()` contournait les contrôles de la création
+classique (délégué, système choisi, exclusivité matérielle). Rien n'empêchait de résoudre
+une demande sur une mission validée, ni de valider une mission dont une intervention était
+incomplète ou une demande encore en attente.
+
+### Décision métier
+
+« Toute nouvelle intervention doit obligatoirement être associée à une firme. » Question
+posée : « Avec quelle firme cette intervention a-t-elle été réalisée ? ». Jamais
+« Aucune firme » ; l'instrumentiste peut proposer une firme inconnue (« Ma firme n'est pas
+dans la liste »), jamais créée automatiquement. La règle s'applique à chaque intervention.
+
+### Décisions techniques
+
+1. **Demande de matériel** : `label` (non vide), firme fabricante **existante OU nom
+   proposé** (exactement l'un des deux), `quantity` (> 0, 2 décimales) obligatoires
+   (`material_item_request.proposed_firm_id / proposed_firm_name / quantity`, migration
+   additive `Version20261012090000`, valeurs `NULL` pour l'historique — aucune valeur
+   fictive).
+2. **Demande d'intervention** : firme demandée OU nom proposé obligatoire
+   (`mission_intervention_draft.proposed_firm_name`), conservée sur le draft.
+3. **Résolution atomique** (une seule requête, une seule transaction, verrou pessimiste) :
+   création éventuelle de la firme (`CatalogueFactory`, doublon insensible à la casse →
+   409), du matériel (`UNSPECIFIED`, aucun tarif → « Matériel à régulariser », D-142) ou du
+   type et de la prestation, rattachement, décision tracée (`decidedBy/decidedAt`, audit
+   `MATERIAL_ITEM_REQUEST_RESOLVED` / `MISSION_INTERVENTION_DRAFT_RESOLVED` enrichi). Le
+   moindre refus annule tout.
+4. **Firme validée par le manager** (préremplie depuis la demande, jamais remise à zéro) :
+   appliquée à la seule intervention créée ; un matériel existant garde sa firme et ses
+   tarifs ; la firme d'une intervention n'est jamais déduite ni modifiée par du matériel.
+5. **Prestation firme × intervention absente** : décision explicite obligatoire
+   (`FEE_APPLICABLE` sans montant inventé / `NO_FEE` / `LEAVE_UNCONFIGURED`), jamais
+   « Pas de forfait » par défaut.
+6. **Invariants communs** (`InterventionRequirementsService`, partagé par la création
+   classique, la résolution et la validation) : firme, réponse délégué quand la prestation
+   la requiert (jamais un « Non » inventé), choix obligatoire (jamais une option Globus
+   choisie arbitrairement), exclusivité matérielle (y compris le matériel transféré depuis
+   le draft et la réaffectation `REASSIGN`). Retirer la firme d'une intervention est refusé.
+7. **Missions verrouillées** (`CatalogueResolutionGuard`) : validée, clôturée, annulée,
+   refusée, encodage verrouillé ou facturée → `409 MISSION_LOCKED_FOR_CATALOGUE_RESOLUTION`
+   avec `reopenAvailable` ; la réouverture existante est proposée, jamais déclenchée.
+8. **Soumission / validation** (`EncodingContentCompletenessService`, aussi par appel API
+   direct et par l'alias legacy `/submit`) : `422 ENCODING_INCOMPLETE` si une intervention
+   n'a pas de firme, de réponse délégué requise ou de choix requis, ou si du matériel
+   contredit le système choisi (section `interventions`). Les demandes **en attente**
+   bloquent la **validation** manager (section `requests`), pas la soumission
+   instrumentiste (le manager doit pouvoir les traiter sur la mission soumise).
+9. **Ignorer une demande portant du matériel** : stratégie explicite obligatoire côté
+   écran (conserver en historique / rattacher à une intervention choisie).
+
+### Hors périmètre / signalé
+
+- **ALTERA (Globus)** : TLIF-1 210 € et TLIF-2 300 € incluent le matériel ; le forfait
+  matériel ALTERA (210 €) peut encore se cumuler. Correctif moteur/configuration séparé —
+  aucun tarif de production modifié ici.
+- **Délégué Smith & Nephew** : l'exception est configurable par prestation
+  (`representativePresenceRelevant` sans suppression) ; BANKART / MOSAICPLASTIE S&N
+  suppriment actuellement le forfait — politique de production inchangée, à trancher.
+- Aucune donnée historique corrigée (missions #462, #478, #415, #458 ; demande #12 en
+  attente sur la mission 1224) ; aucun calcul financier ni facture déclenché.
+- PR #4 (D-139) : `decidedBy/decidedAt` et le cas d'audit `MATERIAL_ITEM_REQUEST_RESOLVED`
+  sont repris à l'identique ; ses modifications de service deviennent redondantes et
+  entreront en conflit — à rebaser après ce lot, sans fusion automatique.
+
+### D-146 bis — complément (2026-10-12) : finition, e-mail d'accusé, « Heures prestées »
+
+**E-mail d'accusé de résolution.** Après une résolution acceptée (matériel ou intervention),
+l'instrumentiste reçoit un e-mail qui donne le **nom exact sous lequel l'élément est
+désormais enregistré** (nom, référence ou code, firme retenus par le manager, quantité
+ajoutée, mission et date), pour le retrouver lors de ses prochains encodages. Réutilise
+l'infrastructure existante : `CatalogueRequestProcessedMessage` (nouvel instantané
+`resolution`, scalaires uniquement, construit par le controller après le commit),
+`CatalogueRequestProcessedMessageHandler` → `NotificationDispatcher` (in-app + push +
+e-mail), gabarit `emails/catalogue_request_resolution.html.twig`. Politique e-mail passée de
+`FALLBACK_WHEN_PUSH_NOT_SENT` à `WHEN_ENABLED` pour ces seules résolutions acceptées : les
+préférences de l'instrumentiste s'appliquent (e-mail activé par défaut pour
+`CATALOGUE_REQUEST_RESOLVED`). Garanties : jamais d'envoi si la transaction est annulée
+(le message n'est émis qu'après le succès du service) ; une seule notification par demande
+(clé d'idempotence du dispatcher sur l'épisode `catalogue_request:{kind}:{id}`, y compris en
+cas de redélivrance par le worker) ; un incident SMTP n'annule jamais la résolution (envoi
+asynchrone relancé, puis `FAILED` avec un motif contrôlé) ; aucun envoi rétroactif — un
+message émis avant ce lot (sans instantané) garde l'ancien comportement. Refus / ignore :
+notifications existantes (D-093/D-113) inchangées.
+
+**« Heures prestées ».** Libellés visibles uniquement (écrans d'encodage, récapitulatif,
+suivi des encodages, validation manager, rappels, e-mails, messages d'erreur) : « heures
+réelles / horaires réels » → « heures prestées », distinctes des « heures planifiées ».
+Champs techniques, contrats API, calculs et données inchangés.
+
+**Récapitulatif de soumission.** Il lisait la durée stockée (`actualDurationMinutes`) alors
+que la décision (et la carte « Heures prestées ») repose sur le début et la fin : une
+exécution portant début et fin sans durée stockée (données écrites hors
+`MissionExecutionService`, seul écrivain applicatif, qui dérive toujours la durée)
+s'affichait « Non renseigné ». La durée affichée est désormais dérivée comme côté serveur
+(fin − début) ; « Non renseignées » uniquement si rien n'est saisi.
+
+**Page « Demandes ».** 6 colonnes au lieu de 8 (référence dans la demande, demandeur avec la
+mission, actions empilées) : plus de défilement horizontal à 1280 px.
+
+**PR #4 (D-139) — adaptations à la reprise.** Déjà couvert ici : `decidedBy/decidedAt` posés
+à la résolution (matériel et intervention), cas d'audit `MATERIAL_ITEM_REQUEST_RESOLVED`
+(identique). Propre à D-139 et non repris : affichage « Par X le … » pour les demandes
+résolues (tableau), tests de traçabilité, ADR. À la reprise : rebaser sur ce lot, abandonner
+ses hunks de `MaterialItemRequestService` / `MissionInterventionDraftService` (sinon double
+audit et double pose du décideur), garder le frontend et les tests en ajoutant aux corps de
+résolution les champs désormais obligatoires (firme, quantité / `newItem`), résoudre les
+conflits `api.md` / `decisions.md` (numérotation D-139 conservée).
+
+### D-146 bis — correction (2026-10-12) : aucune pause, consultation après validation
+
+**Heures prestées = heure réelle de fin − heure réelle de début.** Aucune pause n'est saisie,
+affichée ni déduite. Remplace la partie « pause » de D-143 (« début, fin, pause ») : le
+dialogue des heures, la carte « Heures prestées », les récapitulatifs instrumentiste,
+chirurgien et manager, le calcul serveur (`MissionExecutionService::resolveDuration()` et
+`updateActuals()`) et donc la valorisation appliquent fin − début. `breakMinutes` n'est plus
+exposé par l'API ; envoyé par un ancien client, il est ignoré.
+
+- La colonne `mission_execution.break_minutes` (migration `Version20261011090000`, déjà en
+  production) n'est **pas supprimée** : elle n'a plus aucun effet. Son nettoyage éventuel
+  (migration de suppression) est une opération ultérieure distincte.
+- Aucune réécriture rétroactive : les calculs financiers déjà persistés (approuvés,
+  verrouillés, facturés) ne sont jamais rejoués ; les durées historiques déclarées seules
+  (sans début ni fin) restent utilisées telles quelles ; rien n'est déduit du planifié.
+  Une exécution dont la durée stockée avait été diminuée d'une pause est désormais lue
+  fin − début (affichage et prochain calcul), comme le serveur.
+
+**Consultation après validation.** L'instrumentiste assignée retrouve sa mission `VALIDATED`
+(ou `CLOSED`) et consulte, en lecture seule, ses heures prestées, interventions et matériel :
+`MissionVoter::VIEW_ENCODING` et l'action `view_encoding` couvrent ces statuts pour elle
+(mêmes statuts que pour le chirurgien), sur l'écran d'encodage existant. Aucune action
+d'écriture (`encoding`, `edit_encoding`, `edit_hours`, `submit`) n'est ouverte ; les gardes
+d'écriture (`EDIT_ENCODING`, `MissionEncodingGuard`, `MissionExecutionVoter::UPDATE`) et la
+protection des missions verrouillées sont inchangées ; une autre instrumentiste reste refusée.
+
 ## D-147 — Vue Missions manager (recherche, filtres, regroupement par jour), demandes chirurgien optimistes avec compteurs en direct, journal d'activité (2026-10-12)
 
 Branche `feat/manager-missions-demandes-ux` (worktree `SurgicalHub-missions-ux`), base

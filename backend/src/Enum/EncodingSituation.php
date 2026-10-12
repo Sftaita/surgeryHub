@@ -21,7 +21,7 @@ enum EncodingSituation: string
     {
         return match ($this) {
             self::NOT_STARTED   => 'Encodage non commencé',
-            self::HOURS_MISSING => 'Brouillon enregistré — heures réelles manquantes',
+            self::HOURS_MISSING => 'Brouillon enregistré — heures prestées manquantes',
             self::NOT_SUBMITTED => 'Brouillon enregistré — non soumis',
         };
     }

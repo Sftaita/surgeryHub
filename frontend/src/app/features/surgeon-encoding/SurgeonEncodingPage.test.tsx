@@ -224,7 +224,7 @@ describe("SurgeonEncodingPage — horaires (D-143)", () => {
     expect(summary).not.toHaveTextContent("Écart");
   });
 
-  it("affiche planifié, réel (début → fin · pause), durée réelle et écart", async () => {
+  it("affiche planifié, presté (début → fin), durée prestée = fin − début et écart — aucune pause (D-146 bis)", async () => {
     mockRoutes(
       baseMission({ startAt: "2026-07-05T08:00:00+02:00", endAt: "2026-07-05T16:00:00+02:00" }),
       baseEncoding({ entries: [] }),
@@ -232,7 +232,7 @@ describe("SurgeonEncodingPage — horaires (D-143)", () => {
         hasExecutionRecord: true,
         actualStartAt: "2026-07-05T07:45:00+02:00",
         actualEndAt: "2026-07-05T17:15:00+02:00",
-        breakMinutes: 30,
+        // Ancienne durée stockée diminuée d'une pause (D-143) : n'est plus prise en compte.
         actualDurationMinutes: 540,
       }),
     );
@@ -240,9 +240,10 @@ describe("SurgeonEncodingPage — horaires (D-143)", () => {
 
     const summary = await screen.findByTestId("surgeon-hours-summary");
     expect(summary).toHaveTextContent("08h00 → 16h00");
-    expect(summary).toHaveTextContent("07h45 → 17h15 · pause 30 min");
-    expect(summary).toHaveTextContent("9h00");
-    expect(summary).toHaveTextContent("+1h00 par rapport au planning");
+    expect(summary).toHaveTextContent("07h45 → 17h15");
+    expect(summary).not.toHaveTextContent("pause");
+    expect(summary).toHaveTextContent("9h30");
+    expect(summary).toHaveTextContent("+1h30 par rapport au planning");
   });
 });
 

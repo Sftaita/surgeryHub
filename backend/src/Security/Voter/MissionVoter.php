@@ -328,12 +328,17 @@ class MissionVoter extends Voter
         $roles = $user->getRoles();
 
         if (in_array('ROLE_INSTRUMENTIST', $roles, true) && $mission->getInstrumentist()?->getId() === $user->getId()) {
+            // D-146 bis — après validation (et clôture), l'instrumentiste assignée consulte
+            // encore son encodage, en lecture seule : VIEW_ENCODING n'ouvre aucune écriture
+            // (EDIT_ENCODING / MissionEncodingGuard restent inchangés).
             return in_array($mission->getStatus(), [
                 MissionStatus::DECLARED,
                 MissionStatus::ASSIGNED,
                 MissionStatus::IN_PROGRESS,
                 MissionStatus::ENCODING_IN_PROGRESS,
                 MissionStatus::SUBMITTED,
+                MissionStatus::VALIDATED,
+                MissionStatus::CLOSED,
             ], true);
         }
 

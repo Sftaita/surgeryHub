@@ -893,8 +893,11 @@ final class FinancialCalculationServiceTest extends KernelTestCase
 
     // ── D-143 — jamais de rémunération sur les seuls horaires planifiés ──────────
 
-    /** Situation 2 — début, fin et pause réels : durée = fin − début − pause. */
-    public function test_actual_start_end_and_break_are_paid(): void
+    /**
+     * Situation 2 — début et fin réels : durée = fin − début. D-146 bis — une pause
+     * historique encore présente en base (D-143) n'est plus déduite.
+     */
+    public function test_actual_start_and_end_are_paid_without_any_break_deduction(): void
     {
         $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
         $this->hourlyRate($instrumentist, '40.00', new \DateTimeImmutable('2020-01-01'));
@@ -902,13 +905,13 @@ final class FinancialCalculationServiceTest extends KernelTestCase
         $e = $this->addExecutionWithActualStart($mission, new \DateTimeImmutable('2026-06-01 08:00:00'));
         $e->setActualEndAt(new \DateTimeImmutable('2026-06-01 15:30:00'));
         $e->setBreakMinutes(30);
-        $e->setActualDurationMinutes(420);
+        $e->setActualDurationMinutes(450);
         $this->em->flush();
 
         $line = $this->trackCalculation($this->service->calculate($mission, $this->makeUser('ROLE_MANAGER')))->getLines()->first();
 
-        self::assertSame(420, $line->getDurationMinutes(), '7h30 − 30 min, jamais les 10 h planifiées');
-        self::assertSame('280.00', $line->getTotalAmount());
+        self::assertSame(450, $line->getDurationMinutes(), '7h30, aucune pause déduite, jamais les 10 h planifiées');
+        self::assertSame('300.00', $line->getTotalAmount());
     }
 
     /** Situation 1 — mission historique avec durée réelle déclarée (avant D-143) : compatible. */

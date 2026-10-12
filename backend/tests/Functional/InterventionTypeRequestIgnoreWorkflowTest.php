@@ -246,7 +246,7 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
 
     private function createPendingRequest(KernelBrowser $client, Mission $mission, string $instrToken, string $label = 'Demande IgnoreWF'): int
     {
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $instrToken, [
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $instrToken, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => $label,
         ]);
         self::assertSame(Response::HTTP_CREATED, $created->getStatusCode(), $created->getContent());

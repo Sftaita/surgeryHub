@@ -85,6 +85,10 @@ export default function MissionEncodingPage() {
     mission?.allowedActions?.includes("encoding") ||
     mission?.allowedActions?.includes("edit_encoding");
 
+  // D-146 bis — consultation en lecture seule d'une mission validée / clôturée : mêmes
+  // composants, aucune action d'écriture (canEdit / canSubmit / canEditHours restent faux).
+  const canView = !canEncoding && (mission?.allowedActions?.includes("view_encoding") ?? false);
+
   const canSubmit = mission?.allowedActions?.includes("submit") ?? false;
   const canEditHours = mission?.allowedActions?.includes("edit_hours") ?? false;
 
@@ -104,7 +108,7 @@ export default function MissionEncodingPage() {
   } = useQuery({
     queryKey: ["missionEncoding", missionId],
     queryFn: () => fetchMissionEncoding(missionId),
-    enabled: isValidId && !!mission && !!canEncoding,
+    enabled: isValidId && !!mission && (!!canEncoding || canView),
   });
 
   if (!isValidId) return <Typography>Identifiant invalide</Typography>;
@@ -123,7 +127,7 @@ export default function MissionEncodingPage() {
 
   if (!mission) return <Typography>Mission introuvable</Typography>;
 
-  if (!canEncoding) {
+  if (!canEncoding && !canView) {
     return (
       <Stack spacing={2}>
         <Button variant="outlined" size="small" startIcon={<ArrowBackIcon />} onClick={handleBack}>

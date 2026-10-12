@@ -4,8 +4,9 @@ import { SheetModal } from "../../../ui/sheet/SheetModal";
 import { SelectField } from "../../../ui/sheet/SelectField";
 import { Field } from "../../../ui/sheet/Field";
 
-import type { MissionEncodingEntry } from "../api/encoding.types";
+import type { CatalogFirm, MissionEncodingEntry } from "../api/encoding.types";
 import type { MaterialTarget } from "./MaterialWizard";
+import FirmPickerField, { firmChoiceBody, firmChoiceIsComplete, type FirmChoice } from "./FirmPickerField";
 
 const GREEN_800 = "#1F6B4F";
 const GRAY_500 = "#727E8C";
@@ -27,6 +28,10 @@ type Props = {
    *  n'apparaît jamais dans cette liste, aucune mutation ne doit jamais lui être envoyée. */
   entries: MissionEncodingEntry[];
   preferredTarget: MaterialTarget | null;
+  /** Référentiel des firmes actives (catalogue d'encodage). */
+  firms: CatalogFirm[];
+  /** Firme déjà choisie dans l'assistant d'ajout de matériel, reprise telle quelle. */
+  preferredFirm?: CatalogFirm | null;
   onClose: () => void;
   onSubmit: (values: {
     missionInterventionId?: number;
@@ -34,14 +39,26 @@ type Props = {
     label: string;
     referenceCode?: string;
     comment?: string;
+    firmId?: number;
+    proposedFirmName?: string;
+    quantity: string;
   }) => void;
 };
+
+/** Quantité saisie : strictement positive, deux décimales au plus (le serveur revalide). */
+export function parseRequestQuantity(raw: string): string | null {
+  const normalized = raw.trim().replace(",", ".");
+  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) return null;
+  return Number(normalized) > 0 ? normalized : null;
+}
 
 export default function MaterialItemRequestDialog({
   open,
   loading,
   entries,
   preferredTarget,
+  firms,
+  preferredFirm = null,
   onClose,
   onSubmit,
 }: Props) {
@@ -49,6 +66,8 @@ export default function MaterialItemRequestDialog({
   const [label, setLabel] = React.useState("");
   const [referenceCode, setReferenceCode] = React.useState("");
   const [comment, setComment] = React.useState("");
+  const [firmChoice, setFirmChoice] = React.useState<FirmChoice | null>(null);
+  const [quantity, setQuantity] = React.useState("1");
 
   const sorted = React.useMemo(
     () => entries.filter((e) => !e.readOnly).slice().sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0)),
@@ -63,9 +82,12 @@ export default function MaterialItemRequestDialog({
     setLabel("");
     setReferenceCode("");
     setComment("");
-  }, [open, preferredTarget, sorted]);
+    setFirmChoice(preferredFirm ? { kind: "EXISTING", firm: preferredFirm } : null);
+    setQuantity("1");
+  }, [open, preferredTarget, sorted, preferredFirm]);
 
-  const canSubmit = !loading && targetValue != null && label.trim() !== "";
+  const parsedQuantity = parseRequestQuantity(quantity);
+  const canSubmit = !loading && targetValue != null && label.trim() !== "" && firmChoiceIsComplete(firmChoice) && parsedQuantity != null;
 
   function handleSubmit() {
     if (!canSubmit || targetValue == null) return;
@@ -76,6 +98,8 @@ export default function MaterialItemRequestDialog({
       label: label.trim(),
       referenceCode: referenceCode.trim() || undefined,
       comment: comment.trim() || undefined,
+      ...firmChoiceBody(firmChoice, "firmId"),
+      quantity: parsedQuantity!,
     });
   }
 
@@ -118,6 +142,25 @@ export default function MaterialItemRequestDialog({
           onChange={setReferenceCode}
           disabled={loading}
           placeholder="ex: REF-12345"
+        />
+
+        <FirmPickerField
+          id="mat-req-firm"
+          label="Firme fabricante *"
+          firms={firms}
+          value={firmChoice}
+          onChange={setFirmChoice}
+          disabled={loading}
+        />
+
+        <Field
+          id="mat-req-quantity"
+          label="Quantité utilisée *"
+          value={quantity}
+          onChange={setQuantity}
+          disabled={loading}
+          inputMode="decimal"
+          helperText={quantity.trim() !== "" && parsedQuantity == null ? "Quantité strictement positive (ex: 2 ou 1,5)." : undefined}
         />
 
         <Field

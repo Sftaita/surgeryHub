@@ -118,6 +118,12 @@ final class MissionActionsService
             }
         }
 
+        // D-146 bis — instrumentiste assignée : consultation (lecture seule) de son encodage
+        // une fois la mission validée ou clôturée — même règle que MissionVoter::canViewEncoding().
+        if ($isInstr && $isAssignedInstr && in_array($mission->getStatus(), [MissionStatus::VALIDATED, MissionStatus::CLOSED], true)) {
+            $actions[] = 'view_encoding';
+        }
+
         // Chirurgien : uniquement view sur DECLARED (contrat)
         if ($isSurgeon && $mission->getStatus() !== MissionStatus::DECLARED) {
             $actions[] = 'rate_instrumentist';

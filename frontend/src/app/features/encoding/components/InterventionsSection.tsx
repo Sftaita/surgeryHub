@@ -222,6 +222,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
 
   const [openRequestDialog, setOpenRequestDialog] = React.useState(false);
   const [preferredRequestTarget, setPreferredRequestTarget] = React.useState<MaterialTarget | null>(null);
+  const [preferredRequestFirm, setPreferredRequestFirm] = React.useState<CatalogFirm | null>(null);
 
   // Accordéon exclusif (DOCUMENTATION §1/§11) — `undefined` = jamais touché (on retombe
   // sur defaultOpenKey), `null` = explicitement tout fermé, sinon la clé ouverte.
@@ -345,6 +346,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
             interventionType: null,
             firm: firm ? { id: firm.id, name: firm.name } : null,
             requestedFirmNameSnapshot: firm?.name ?? null,
+            proposedFirmName: body.proposedFirmName ?? null,
             status: "OPEN",
             readOnly: false,
             materialLines: [],
@@ -524,7 +526,12 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
             ...e,
             materialItemRequests: [
               ...(e.materialItemRequests ?? []),
-              { id: tempId, label: body.label, referenceCode: body.referenceCode ?? "", comment: body.comment ?? "" },
+              {
+                id: tempId, label: body.label, referenceCode: body.referenceCode ?? "", comment: body.comment ?? "",
+                proposedFirm: body.firmId != null ? (catalog?.firms ?? []).find((f) => f.id === body.firmId) ?? null : null,
+                proposedFirmName: body.proposedFirmName ?? null,
+                quantity: body.quantity,
+              },
             ],
           };
         }),
@@ -803,8 +810,9 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
         recentFirmIds={recentFirmIds(sorted)}
         onClose={() => (isBusy ? null : setOpenAddMaterial(false))}
         onSubmit={(values) => createLineMutation.mutate(values)}
-        onNotFound={(target) => {
+        onNotFound={(target, firm) => {
           setPreferredRequestTarget(target ?? preferredTarget);
+          setPreferredRequestFirm(firm);
           setOpenRequestDialog(true);
         }}
       />
@@ -846,6 +854,8 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
         loading={createRequestMutation.isPending}
         entries={sorted}
         preferredTarget={preferredRequestTarget}
+        firms={catalog?.firms ?? []}
+        preferredFirm={preferredRequestFirm}
         onClose={() => (isBusy ? null : setOpenRequestDialog(false))}
         onSubmit={(values) => createRequestMutation.mutate(values)}
       />
@@ -916,7 +926,7 @@ function EntryCard({
     ? `${plural(lines.length, "matériel", "matériels")} · ${plural(Math.round(units), "unité", "unités")}`
     : "Aucun matériel encodé";
   const badge = draftBadge(entry);
-  const firmName = entry.kind === "DRAFT" ? (entry.firm?.name ?? entry.requestedFirmNameSnapshot ?? null) : null;
+  const firmName = entry.kind === "DRAFT" ? (entry.firm?.name ?? entry.requestedFirmNameSnapshot ?? entry.proposedFirmName ?? null) : null;
 
   const bodyRef = React.useRef<HTMLDivElement | null>(null);
   const [height, setHeight] = React.useState(0);
@@ -1038,7 +1048,7 @@ function EntryCard({
             ))}
 
             {requests.map((req) => (
-              <MaterialRequestRow key={req.id} label={req.label} referenceCode={req.referenceCode} comment={req.comment} pending={isPending(req.id)} />
+              <MaterialRequestRow key={req.id} label={req.label} referenceCode={req.referenceCode} comment={req.comment} firmName={req.proposedFirm?.name ?? req.proposedFirmName ?? null} quantity={req.quantity ?? null} pending={isPending(req.id)} />
             ))}
 
             {unusedSuggested.map((sm) => (
@@ -1251,12 +1261,13 @@ function MaterialLineRow({ line, editable, busy, isNew, tabIndex, onInc, onDec, 
 // Demande hors catalogue ("À préciser") et matériel suggéré (Lot 6)
 // ─────────────────────────────────────────────────────────────────────────
 
-function MaterialRequestRow({ label, referenceCode, comment, pending }: { label: string; referenceCode: string; comment?: string | null; pending: boolean }) {
+function MaterialRequestRow({ label, referenceCode, comment, firmName, quantity, pending }: { label: string; referenceCode: string; comment?: string | null; firmName?: string | null; quantity?: string | null; pending: boolean }) {
+  const details = [firmName, quantity ? `Qté ${formatRequestQuantity(quantity)}` : null, referenceCode ? `Réf : ${referenceCode}` : null].filter(Boolean).join(" · ");
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: "12px", padding: "13px 0", borderBottom: "1px solid", borderColor: GRAY_150 }}>
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Box sx={{ fontSize: 15, fontWeight: 700, color: GRAY_950, overflowWrap: "anywhere" }}>{label}</Box>
-        {referenceCode && <Box sx={{ mt: "3px", fontSize: 12, color: GRAY_500 }}>Réf : {referenceCode}</Box>}
+        {details && <Box sx={{ mt: "3px", fontSize: 12, color: GRAY_500 }}>{details}</Box>}
         {comment && <Box sx={{ mt: "3px", fontSize: 12.5, color: GRAY_500, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{comment}</Box>}
       </Box>
       {pending ? (
@@ -1268,6 +1279,11 @@ function MaterialRequestRow({ label, referenceCode, comment, pending }: { label:
       )}
     </Box>
   );
+}
+
+/** "2.00" → "2", "1.50" → "1,5" — affichage seul, la valeur reste celle du serveur. */
+function formatRequestQuantity(quantity: string): string {
+  return String(Number(quantity)).replace(".", ",");
 }
 
 function SuggestedMaterialRow({ label, firmName, disabled, tabIndex, onAdd }: { label: string; firmName: string; disabled: boolean; tabIndex: number; onAdd: () => void }) {

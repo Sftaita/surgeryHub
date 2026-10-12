@@ -44,6 +44,7 @@ use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
 use App\Exception\SurgeonMissionRequestConflictException;
 use App\Exception\EncodingAnomalyReportAlreadyResolvedException;
 use App\Exception\EncodingIncompleteException;
+use App\Exception\CatalogueRequestException;
 use App\Exception\IncompatibleChoiceMaterialException;
 use App\Exception\ChoiceOptionChangeRequiresConfirmationException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
@@ -287,6 +288,13 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $code = EncodingIncompleteException::CODE;
             $message = $e->getMessage();
             $extra = ['missing' => $e->getMissing()];
+        } elseif ($e instanceof CatalogueRequestException) {
+            // D-146 bis — refus explicite d'une demande / résolution catalogue, avec les
+            // données utiles au manager (firme existante, doublons, réponses à compléter).
+            $status = $e->getStatusCode();
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
         } elseif ($e instanceof ReleasedRoomSlotConflictException) {
             $status = 409;
             $code = $e->getErrorCode();
@@ -315,6 +323,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             && !$e instanceof CorrectionValidationException
             && !$e instanceof RefundExceedsOverpaidException
             && !$e instanceof EncodingIncompleteException
+            && !$e instanceof CatalogueRequestException
         ) {
             $violations = $this->extractViolationsFromMessage($message);
             if (count($violations) > 0) {

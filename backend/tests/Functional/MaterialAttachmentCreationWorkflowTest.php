@@ -508,7 +508,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane',
         ]);
 
@@ -524,7 +524,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
         [$client, $mission, $token] = $this->bootMissionScenario();
         $intervention = $this->addIntervention($mission);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane', 'missionInterventionId' => $intervention->getId(),
         ]);
 
@@ -544,7 +544,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
         [$client, $mission, $token, $instr] = $this->bootMissionScenario();
         $draft = $this->addDraft($mission, $instr);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane', 'interventionDraftId' => $draft->getId(),
         ]);
 
@@ -565,7 +565,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
         $intervention = $this->addIntervention($mission);
         $draft = $this->addDraft($mission, $instr);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane',
             'missionInterventionId' => $intervention->getId(), 'interventionDraftId' => $draft->getId(),
         ]);
@@ -581,7 +581,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
         $otherMission = $this->makeEncodableMission($this->createUser('ROLE_SURGEON'), $this->createUser('ROLE_INSTRUMENTIST'), $this->makeSite());
         $foreignIntervention = $this->addIntervention($otherMission);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane', 'missionInterventionId' => $foreignIntervention->getId(),
         ]);
 
@@ -596,7 +596,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
         $otherMission = $this->makeEncodableMission($this->createUser('ROLE_SURGEON'), $instr, $this->makeSite());
         $foreignDraft = $this->addDraft($otherMission, $instr);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane', 'interventionDraftId' => $foreignDraft->getId(),
         ]);
 
@@ -609,7 +609,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane', 'interventionDraftId' => 999999999,
         ]);
 
@@ -621,7 +621,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane', 'missionInterventionId' => 999999999,
         ]);
 
@@ -635,7 +635,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
         $resolved = $this->addIntervention($mission);
         $draft = $this->addDraft($mission, $instr, MissionInterventionDraft::STATUS_CONVERTED, $resolved);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane', 'interventionDraftId' => $draft->getId(),
         ]);
 
@@ -652,7 +652,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
         $resolved = $this->addIntervention($mission);
         $draft = $this->addDraft($mission, $instr, MissionInterventionDraft::STATUS_MATERIAL_REASSIGNED, $resolved);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane', 'interventionDraftId' => $draft->getId(),
         ]);
 
@@ -668,7 +668,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
         [$client, $mission, $token, $instr] = $this->bootMissionScenario();
         $draft = $this->addDraft($mission, $instr, MissionInterventionDraft::STATUS_KEPT_AS_HISTORY);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane', 'interventionDraftId' => $draft->getId(),
         ]);
 
@@ -682,7 +682,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
         [$client, $mission, $token, $instr] = $this->bootMissionScenario();
         $draft = $this->addDraft($mission, $instr, MissionInterventionDraft::STATUS_MATERIAL_REASSIGNED, null);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane', 'interventionDraftId' => $draft->getId(),
         ]);
 
@@ -696,7 +696,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
         $otherInstrumentist = $this->createUser('ROLE_INSTRUMENTIST');
         $otherToken = $this->login($client, $otherInstrumentist);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $otherToken, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $otherToken, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Ancre titane',
         ]);
 
@@ -729,7 +729,7 @@ final class MaterialAttachmentCreationWorkflowTest extends WebTestCase
 
         $token = $this->login($client, $instr);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$m->getId()}/material-item-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$m->getId()}/material-item-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => 'Trop tôt',
         ]);
 

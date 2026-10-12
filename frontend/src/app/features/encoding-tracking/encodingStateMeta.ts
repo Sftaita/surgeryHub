@@ -33,7 +33,7 @@ export const FINANCIAL_STATE_CONFIG: Record<EncodingFinancialState, StatusBadgeC
 
 export const EFFECTIVE_SOURCE_LABEL: Record<EffectiveDurationSource, string> = {
   PLANNED: "Planifié",
-  ACTUAL_TIMES: "Heures réelles",
+  ACTUAL_TIMES: "Heures prestées",
   ACTUAL_EXPLICIT: "Heures explicites",
 };
 
@@ -42,7 +42,7 @@ export const EFFECTIVE_SOURCE_LABEL: Record<EffectiveDurationSource, string> = {
  * backend. NO_REAL_HOURS reste neutre : le planifié de repli n'est jamais présenté comme conforme.
  */
 export const HOURS_COMPARISON_TONE: Record<HoursComparison, { fg: string; bar: string; label: string }> = {
-  NO_REAL_HOURS: { fg: "#727E8C", bar: "#DDE2E8", label: "Heures réelles non renseignées" },
+  NO_REAL_HOURS: { fg: "#727E8C", bar: "#DDE2E8", label: "Heures prestées non renseignées" },
   WITHIN_PLAN: { fg: "#1F6B4F", bar: "#42A882", label: "Dans le temps planifié" },
   OVER_PLAN: { fg: "#B7791F", bar: "#F0A91B", label: "Dépasse le temps planifié" },
 };

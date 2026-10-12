@@ -450,7 +450,7 @@ class EncodingReminderService
             ],
             EncodingReminderStage::D2 => [
                 'title'   => 'Votre encodage attend sa dernière touche',
-                'push'    => sprintf('Un petit rappel pour finaliser votre mission du %s. Vos horaires réels et les informations nécessaires à votre prestation permettent sa validation et sa rémunération. Merci de prendre quelques instants pour terminer votre encodage !', $date),
+                'push'    => sprintf('Un petit rappel pour finaliser votre mission du %s. Vos heures prestées et les informations nécessaires à votre prestation permettent sa validation et sa rémunération. Merci de prendre quelques instants pour terminer votre encodage !', $date),
                 'subject' => 'Un petit rappel pour votre mission SurgicalHub',
             ],
             EncodingReminderStage::D4 => [

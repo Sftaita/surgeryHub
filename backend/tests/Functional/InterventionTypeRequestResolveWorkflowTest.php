@@ -211,7 +211,8 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
 
     private function createPendingRequest(KernelBrowser $client, Mission $mission, string $instrToken, string $label = 'Demande ResolveWF', ?string $comment = null): int
     {
-        $body = ['label' => $label];
+        // D-146 bis — « Avec quelle firme cette intervention a-t-elle été réalisée ? » obligatoire.
+        $body = ['label' => $label, 'proposedFirmName' => 'Firme proposée (test D-146)'];
         if ($comment !== null) {
             $body['comment'] = $comment;
         }
@@ -233,7 +234,7 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         $admin = $this->createUser('ROLE_ADMIN');
         $adminToken = $this->login($client, $admin);
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $adminToken, [
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $adminToken, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
         ]);
 
@@ -250,7 +251,7 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         $surgeon = $this->createUser('ROLE_SURGEON');
         $surgeonToken = $this->login($client, $surgeon);
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $surgeonToken, [
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $surgeonToken, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
         ]);
 
@@ -263,7 +264,7 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         $requestId = $this->createPendingRequest($client, $mission, $instrToken);
         $type = $this->makeType();
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", null, [
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", null, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
         ]);
 
@@ -293,7 +294,7 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => 999999999,
         ]);
 
@@ -310,7 +311,7 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
         ]);
 
@@ -327,7 +328,7 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
             'firmId' => 999999999,
         ]);
@@ -346,7 +347,7 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
             'firmId' => $firm->getId(),
         ]);
@@ -361,7 +362,7 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
 
-        $response = $this->request($client, 'POST', '/api/intervention-type-requests/999999999/resolve', $managerToken, [
+        $response = $this->request($client, 'POST', '/api/intervention-type-requests/999999999/resolve', $managerToken, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => 1,
         ]);
 
@@ -385,7 +386,7 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$req->getId()}/resolve", $managerToken, [
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$req->getId()}/resolve", $managerToken, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
         ]);
 
@@ -402,12 +403,12 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
 
-        $first = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+        $first = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
         ]);
         self::assertSame(Response::HTTP_OK, $first->getStatusCode(), $first->getContent());
 
-        $second = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+        $second = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
         ]);
         self::assertSame(Response::HTTP_CONFLICT, $second->getStatusCode());
@@ -436,7 +437,7 @@ final class InterventionTypeRequestResolveWorkflowTest extends WebTestCase
         $transport = static::getContainer()->get('messenger.transport.async');
         $transport->reset();
 
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
         ]);
         self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
@@ -502,7 +503,7 @@ Ancre fémorale 4.5 fournie par le représentant — à facturer à la firme.";
 
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
-        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+        $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
         ]);
         self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());

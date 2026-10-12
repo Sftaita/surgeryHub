@@ -275,7 +275,7 @@ describe("MissionTrackingDrawer", () => {
 
     renderDrawer(makeItem({ hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" } }));
     expect(screen.getByTestId("drawer-hours-status")).toHaveAttribute("data-hours-comparison", "NO_REAL_HOURS");
-    expect(screen.getAllByText("Heures réelles non renseignées").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Heures prestées non renseignées").length).toBeGreaterThan(0);
     // Le planifié de repli n'est jamais affiché comme total réel : « 4 h » n'apparaît que sur
     // la ligne Planifié, la ligne Réel affiche « — ».
     expect(screen.getAllByText("4 h")).toHaveLength(1);
