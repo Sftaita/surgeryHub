@@ -128,6 +128,14 @@ final class InterventionTypeRequestManagerController extends AbstractController
             missionId: $draft->getMission()->getId(),
             label: $req->getLabel(),
             occurredAt: new \DateTimeImmutable(),
+            resolution: [
+                // Nom et code du référentiel réellement retenus (instantané de l'intervention
+                // créée), jamais le libellé initialement demandé.
+                'name'        => $intervention->getLabel(),
+                'code'        => $intervention->getCode(),
+                'firm'        => $intervention->getPrimaryFirm()?->getName(),
+                'createdType' => $result['createdInterventionType'],
+            ],
         ));
 
         return $this->json([

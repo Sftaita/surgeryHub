@@ -12,17 +12,32 @@ use App\Entity\MaterialItem;
 use App\Entity\Mission;
 use App\Entity\MissionExecution;
 use App\Entity\MissionIntervention;
+use App\Entity\OutboundNotification;
 use App\Entity\RequiredChoiceGroup;
 use App\Entity\User;
 use App\Enum\FinancialCalculationStatus;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Enum\OutboundNotificationChannel;
+use App\Enum\OutboundNotificationStatus;
+use App\EventListener\OutboundNotificationEmailFailureListener;
+use App\Message\CatalogueRequestProcessedMessage;
+use App\Message\SendTemplatedEmailMessage;
+use App\MessageHandler\CatalogueRequestProcessedMessageHandler;
+use App\MessageHandler\SendTemplatedEmailMessageHandler;
 use App\Enum\SchedulePrecision;
 use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Mailer\Exception\TransportException;
+use Symfony\Component\Mailer\MailerInterface;
+use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
+use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
+use Symfony\Component\Mime\RawMessage;
+use Symfony\Component\Mailer\Envelope as MailerEnvelope;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
 /**
@@ -99,6 +114,7 @@ final class CatalogueRequestFiabilisationTest extends WebTestCase
                 ['notification_event', 'mission_id', $missions],
                 ['outbound_notification', 'mission_id', $missions],
                 ['notification_dispatch', 'mission_id', $missions],
+                ['notification_dispatch', 'recipient_user_id', $users],
                 ['material_line', 'mission_id', $missions],
                 ['material_item_request', 'mission_id', $missions],
                 ['mission_intervention_draft', 'mission_id', $missions],
@@ -1103,6 +1119,302 @@ final class CatalogueRequestFiabilisationTest extends WebTestCase
         self::assertSame(422, $status);
         self::assertSame('ENCODING_INCOMPLETE', $this->errorCode($json));
         self::assertContains('hours', array_column($json['error']['missing'], 'section'));
+    }
+
+
+    // ── D-146 bis (finition) : e-mail d'accusé de résolution ─────────────────────
+
+    /**
+     * Ce que le worker ferait : messages CatalogueRequestProcessedMessage mis en file par la
+     * DERNIÈRE requête HTTP, traités par le vrai handler du conteneur ; renvoie les
+     * e-mails mis en file pour l'instrumentiste.
+     *
+     * @return array{0: list<CatalogueRequestProcessedMessage>, 1: list<SendTemplatedEmailMessage>}
+     */
+    private function deliverProcessedNotifications(): array
+    {
+        /** @var InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+        $processed = array_values(array_filter(
+            array_map(static fn ($e) => $e->getMessage(), $transport->getSent()),
+            static fn ($m) => $m instanceof CatalogueRequestProcessedMessage,
+        ));
+        $handler = static::getContainer()->get(CatalogueRequestProcessedMessageHandler::class);
+        foreach ($processed as $message) {
+            $handler($message);
+        }
+
+        return [$processed, $this->queuedEmailsFor($this->instr->getEmail())];
+    }
+
+    /** @return list<SendTemplatedEmailMessage> */
+    private function queuedEmailsFor(string $to): array
+    {
+        /** @var InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+
+        return array_values(array_filter(
+            array_map(static fn ($e) => $e->getMessage(), $transport->getSent()),
+            static fn ($m) => $m instanceof SendTemplatedEmailMessage && $m->to === $to,
+        ));
+    }
+
+    private function renderEmail(SendTemplatedEmailMessage $email): string
+    {
+        return static::getContainer()->get('twig')->render($email->htmlTemplate, $email->context);
+    }
+
+    private function assertNoPatientNorFinancialData(string $html): void
+    {
+        foreach (['patient', 'Patient', '€', 'tarif', 'Tarif', 'forfait', 'Forfait', 'montant'] as $forbidden) {
+            self::assertStringNotContainsString($forbidden, $html, "aucune donnée patient ni financière ({$forbidden})");
+        }
+    }
+
+    /** E-mail : nouveau matériel — nom, référence et firme DÉFINITIFS (firme corrigée par le manager). */
+    public function test_26_email_new_item_shows_the_final_name_reference_and_corrected_firm(): void
+    {
+        $m = $this->mission();
+        $proposed = $this->firm('SNProp');
+        $actual = $this->firm('ArthrexVal');
+        $interventionId = $this->addIntervention($m->getId(), $this->type()->getId(), $proposed->getId());
+        $id = $this->materialRequestOk($m->getId(), ['label' => self::PREFIX . 'Ancre demandée', 'firmId' => $proposed->getId(), 'quantity' => '2', 'missionInterventionId' => $interventionId]);
+
+        [$status, $json] = $this->call('POST', "/api/material-item-requests/{$id}/resolve", $this->managerToken, [
+            'newItem' => ['label' => self::PREFIX . 'Ancre officielle 5.5', 'referenceCode' => 'AR-OFF-55', 'firmId' => $actual->getId()],
+        ]);
+        self::assertSame(200, $status, json_encode($json));
+
+        [$processed, $emails] = $this->deliverProcessedNotifications();
+        self::assertCount(1, $processed);
+        self::assertSame(self::PREFIX . 'Ancre officielle 5.5', $processed[0]->resolution['name']);
+        self::assertCount(1, $emails, 'e-mail envoyé selon les préférences (activé par défaut), plus seulement en repli du push');
+        self::assertSame('SurgicalHub — Votre demande de matériel a été acceptée', $emails[0]->subject);
+
+        $html = $this->renderEmail($emails[0]);
+        self::assertStringContainsString(self::PREFIX . 'Ancre officielle 5.5', $html);
+        self::assertStringContainsString('Référence : <strong>AR-OFF-55</strong>', $html);
+        self::assertStringContainsString('Firme : <strong>' . $actual->getName() . '</strong>', $html);
+        self::assertStringNotContainsString($proposed->getName(), $html, 'jamais la firme initialement proposée');
+        self::assertStringContainsString('Quantité ajoutée à votre mission : <strong>2</strong>', $html);
+        self::assertStringContainsString('Votre demande : « ' . self::PREFIX . 'Ancre demandée »', $html);
+        self::assertStringContainsString('recherchez ce matériel', $html);
+        self::assertStringContainsString("/app/i/missions/{$m->getId()}", $html);
+        self::assertStringContainsString((new \DateTimeImmutable('now', new \DateTimeZone(self::TZ)))->modify('-3 hours')->format('d/m/Y'), $html);
+        $this->assertNoPatientNorFinancialData($html);
+    }
+
+    /** E-mail : association à un matériel existant — la dénomination EXISTANTE est communiquée. */
+    public function test_27_email_existing_item_communicates_the_existing_name(): void
+    {
+        $m = $this->mission();
+        $firm = $this->firm();
+        $interventionId = $this->addIntervention($m->getId(), $this->type()->getId(), $firm->getId());
+        $existing = $this->item($firm->getId(), 'Vis canulée catalogue', 'VC-7');
+        $id = $this->materialRequestOk($m->getId(), ['label' => self::PREFIX . 'petite vis', 'firmId' => $firm->getId(), 'quantity' => '1', 'missionInterventionId' => $interventionId]);
+
+        [$status] = $this->call('POST', "/api/material-item-requests/{$id}/resolve", $this->managerToken, ['materialItemId' => $existing->getId()]);
+        self::assertSame(200, $status);
+
+        [, $emails] = $this->deliverProcessedNotifications();
+        self::assertCount(1, $emails);
+        $html = $this->renderEmail($emails[0]);
+        self::assertStringContainsString('Ce matériel existait déjà dans SurgicalHub', $html);
+        self::assertStringContainsString($existing->getLabel(), $html);
+        self::assertStringContainsString('Référence : <strong>VC-7</strong>', $html);
+        self::assertStringContainsString('Firme : <strong>' . $firm->getName() . '</strong>', $html);
+    }
+
+    /** E-mail : nouvelle intervention — nom et code du référentiel retenu, firme finale. */
+    public function test_28_email_new_intervention_shows_final_name_code_and_firm(): void
+    {
+        $m = $this->mission();
+        $requested = $this->firm('Demandee');
+        $validated = $this->firm('Validee');
+        $type = $this->type('Prothèse épaule inversée');
+        $this->offering($validated->getId(), $type->getId());
+        [$req] = $this->interventionRequestOk($m->getId(), ['label' => self::PREFIX . 'épaule à l envers', 'requestedFirmId' => $requested->getId()]);
+
+        [$status, $json] = $this->call('POST', "/api/intervention-type-requests/{$req}/resolve", $this->managerToken,
+            ['interventionTypeId' => $type->getId(), 'firmId' => $validated->getId()]);
+        self::assertSame(200, $status, json_encode($json));
+
+        [$processed, $emails] = $this->deliverProcessedNotifications();
+        self::assertSame($type->getCode(), $processed[0]->resolution['code']);
+        self::assertCount(1, $emails);
+        self::assertSame("SurgicalHub — Votre demande d'intervention a été acceptée", $emails[0]->subject);
+        $html = $this->renderEmail($emails[0]);
+        self::assertStringContainsString($type->getLabel(), $html);
+        self::assertStringContainsString('Code : <strong>' . $type->getCode() . '</strong>', $html);
+        self::assertStringContainsString('Firme associée : <strong>' . $validated->getName() . '</strong>', $html);
+        self::assertStringNotContainsString($requested->getName(), $html);
+        self::assertStringContainsString('recherchez cette intervention', $html);
+        $this->assertNoPatientNorFinancialData($html);
+    }
+
+    /** E-mail : résolution annulée (rollback) ou répétée, redélivrance du message — jamais d'envoi en trop. */
+    public function test_29_no_email_on_rollback_nor_on_repeated_resolution_or_redelivery(): void
+    {
+        $m = $this->mission();
+        $firm = $this->firm();
+        $interventionId = $this->addIntervention($m->getId(), $this->type()->getId(), $firm->getId());
+        $this->item($firm->getId(), 'Doublon', 'DUP-E');
+        $id = $this->materialRequestOk($m->getId(), ['firmId' => $firm->getId(), 'quantity' => '1', 'missionInterventionId' => $interventionId]);
+
+        // Refus (doublon certain) : transaction annulée, aucun message, aucun e-mail.
+        [$status] = $this->call('POST', "/api/material-item-requests/{$id}/resolve", $this->managerToken,
+            ['newItem' => ['label' => 'x', 'referenceCode' => 'DUP-E', 'firmId' => $firm->getId()]]);
+        self::assertSame(409, $status);
+        [$processed, $emails] = $this->deliverProcessedNotifications();
+        self::assertSame([], $processed);
+        self::assertSame([], $emails);
+
+        // Succès, puis redélivrance du même message (relance du worker) : un seul e-mail tracé.
+        [$status] = $this->call('POST', "/api/material-item-requests/{$id}/resolve", $this->managerToken,
+            ['newItem' => ['label' => self::PREFIX . 'Unique', 'referenceCode' => 'UNI-1', 'firmId' => $firm->getId()]]);
+        self::assertSame(200, $status);
+        [$processed, $emails] = $this->deliverProcessedNotifications();
+        static::getContainer()->get(CatalogueRequestProcessedMessageHandler::class)($processed[0]);
+        self::assertCount(1, $this->queuedEmailsFor($this->instr->getEmail()), 'redélivrance idempotente');
+        self::assertSame(1, $this->scalar("SELECT COUNT(*) FROM outbound_notification WHERE mission_id = ? AND channel = 'EMAIL' AND notification_type = 'CATALOGUE_REQUEST_RESOLVED'", [$m->getId()]));
+
+        // Seconde résolution de la même demande : 409, aucun nouveau message.
+        [$status] = $this->call('POST', "/api/material-item-requests/{$id}/resolve", $this->managerToken, ['materialItemId' => 1]);
+        self::assertSame(409, $status);
+        [$processed] = $this->deliverProcessedNotifications();
+        self::assertSame([], $processed);
+    }
+
+    /** E-mail : incident SMTP — la résolution reste acquise, l'envoi échoue proprement (relancé puis FAILED). */
+    public function test_30_smtp_failure_never_undoes_the_resolution(): void
+    {
+        $m = $this->mission();
+        $firm = $this->firm();
+        $interventionId = $this->addIntervention($m->getId(), $this->type()->getId(), $firm->getId());
+        $id = $this->materialRequestOk($m->getId(), ['firmId' => $firm->getId(), 'quantity' => '3', 'missionInterventionId' => $interventionId]);
+        [$status] = $this->call('POST', "/api/material-item-requests/{$id}/resolve", $this->managerToken,
+            ['newItem' => ['label' => self::PREFIX . 'SMTP', 'referenceCode' => 'SMTP-1', 'firmId' => $firm->getId()]]);
+        self::assertSame(200, $status);
+        [, $emails] = $this->deliverProcessedNotifications();
+        self::assertCount(1, $emails);
+
+        $c = static::getContainer();
+        $failingMailer = new class implements MailerInterface {
+            public function send(RawMessage $message, ?MailerEnvelope $envelope = null): void
+            {
+                throw new TransportException('Connection could not be established with host "smtp.example"');
+            }
+        };
+        $sender = new SendTemplatedEmailMessageHandler(
+            $failingMailer,
+            $c->get('twig'),
+            $c->get('logger'),
+            $c->get(\App\Service\OutboundNotificationService::class),
+            $c->get(\App\Service\AbsenceCommunicationJournalService::class),
+            $c->get(\App\Notification\DocumentStore::class),
+            $c->get(\App\Notification\HtmlToTextRenderer::class),
+        );
+        $thrown = null;
+        try {
+            $sender($emails[0]);
+        } catch (TransportException $e) {
+            $thrown = $e;
+        }
+        self::assertNotNull($thrown, "l'échec SMTP remonte au worker (relance Messenger), jamais avalé en silence");
+        // Retries épuisés : statut FAILED, motif contrôlé (jamais l'hôte ni le DSN).
+        $c->get(OutboundNotificationEmailFailureListener::class)(new WorkerMessageFailedEvent(new Envelope($emails[0]), 'async', $thrown));
+
+        self::assertSame('RESOLVED', $this->conn()->fetchOne('SELECT status FROM material_item_request WHERE id = ?', [$id]));
+        self::assertSame(1, $this->scalar('SELECT COUNT(*) FROM material_line WHERE mission_id = ? AND quantity = 3', [$m->getId()]));
+        $email = $this->conn()->fetchAssociative("SELECT status, failure_message FROM outbound_notification WHERE id = ?", [$emails[0]->outboundNotificationId]);
+        self::assertSame(OutboundNotificationStatus::FAILED->value, $email['status']);
+        self::assertStringNotContainsString('smtp.example', (string) $email["failure_message"]);
+    }
+
+    /** E-mail : demandes historiques — aucun envoi rétroactif ; un message sans instantané garde l'ancien comportement. */
+    public function test_31_no_retroactive_email_for_historical_requests(): void
+    {
+        $m = $this->mission();
+        $firm = $this->firm();
+        $interventionId = $this->addIntervention($m->getId(), $this->type()->getId(), $firm->getId());
+        // Demande déjà résolue avant D-146 bis (insérée telle quelle).
+        $this->conn()->executeStatement(
+            "INSERT INTO material_item_request (mission_id, mission_intervention_id, label, status, created_by_id, created_at, updated_at) VALUES (?, ?, ?, 'RESOLVED', ?, NOW(), NOW())",
+            [$m->getId(), $interventionId, self::PREFIX . 'Ancienne demande', $this->instr->getId()],
+        );
+        $id = $this->materialRequestOk($m->getId(), ['firmId' => $firm->getId(), 'quantity' => '1', 'missionInterventionId' => $interventionId]);
+        [$status] = $this->call('POST', "/api/material-item-requests/{$id}/resolve", $this->managerToken,
+            ['newItem' => ['label' => self::PREFIX . 'Nouvelle', 'referenceCode' => 'NV-1', 'firmId' => $firm->getId()]]);
+        self::assertSame(200, $status);
+
+        [$processed, $emails] = $this->deliverProcessedNotifications();
+        self::assertCount(1, $processed, 'seule la demande résolue maintenant est notifiée');
+        self::assertSame($id, $processed[0]->requestId);
+        self::assertCount(1, $emails);
+        self::assertStringNotContainsString('Ancienne demande', $this->renderEmail($emails[0]));
+
+        // Message émis avant D-146 bis (sans instantané) : ancien comportement inchangé.
+        $legacy = new CatalogueRequestProcessedMessage(\App\Enum\CatalogueRequestKind::MATERIAL_ITEM, 999001, true, $this->instr->getId(), $m->getId(), 'Ancien libellé', new \DateTimeImmutable());
+        static::getContainer()->get(CatalogueRequestProcessedMessageHandler::class)($legacy);
+        $legacyEmails = array_values(array_filter($this->queuedEmailsFor($this->instr->getEmail()), static fn ($e) => $e->subject === 'SurgicalHub — Votre proposition a été acceptée'));
+        self::assertCount(1, $legacyEmails, 'repli e-mail historique (push non livré), aucun champ inventé');
+        self::assertArrayNotHasKey('reference', $legacyEmails[0]->context);
+    }
+
+    // ── D-146 bis (finition) : résolution sur une mission SUBMITTED ──────────────
+
+    /** Mission soumise : le manager résout les deux demandes (contrôles appliqués), puis valide ; ensuite protégée. */
+    public function test_32_requests_are_resolved_on_a_submitted_mission_then_validation_proceeds(): void
+    {
+        $m = $this->mission(MissionStatus::ENCODING_IN_PROGRESS);
+        $this->giveHours($m->getId());
+        $globus = $this->firm('Globus');
+        $arthrex = $this->firm('Arthrex');
+        $tlif = $this->type('TLIF');
+        $offering = $this->offering($globus->getId(), $tlif->getId());
+        $options = $this->choiceGroup($offering->getId(), ['ALTERA' => null, 'Cage standard' => null]);
+        $bankart = $this->type('Bankart');
+        $this->offering($arthrex->getId(), $bankart->getId(), representativeRelevant: true);
+        $existingId = $this->addIntervention($m->getId(), $bankart->getId(), $arthrex->getId(), ['representativePresent' => true]);
+        $matReq = $this->materialRequestOk($m->getId(), ['firmId' => $arthrex->getId(), 'quantity' => '2', 'missionInterventionId' => $existingId]);
+        [$req, $draftId] = $this->interventionRequestOk($m->getId(), ['requestedFirmId' => $globus->getId()]);
+
+        [$status, $json] = $this->call('POST', "/api/missions/{$m->getId()}/encoding/complete", $this->instrToken, ['comment' => 'demandes en cours']);
+        self::assertSame(200, $status, json_encode($json));
+        self::assertSame('SUBMITTED', $this->conn()->fetchOne('SELECT status FROM mission WHERE id = ?', [$m->getId()]));
+        [$status, $json] = $this->call('POST', "/api/missions/{$m->getId()}/encoding/validate", $this->managerToken);
+        self::assertSame(422, $status, 'validation bloquée tant que les demandes sont en attente');
+
+        // Contrôles obligatoires inchangés sur mission soumise (choix Globus exigé).
+        [$status] = $this->call('POST', "/api/intervention-type-requests/{$req}/resolve", $this->managerToken, ['interventionTypeId' => $tlif->getId(), 'firmId' => $globus->getId()]);
+        self::assertSame(422, $status);
+        [$status, $json] = $this->call('POST', "/api/intervention-type-requests/{$req}/resolve", $this->managerToken,
+            ['interventionTypeId' => $tlif->getId(), 'firmId' => $globus->getId(), 'selectedChoiceOptionId' => $options['ALTERA']]);
+        self::assertSame(200, $status, json_encode($json));
+        [$status, $json] = $this->call('POST', "/api/material-item-requests/{$matReq}/resolve", $this->managerToken,
+            ['newItem' => ['label' => self::PREFIX . 'Ancre Bankart', 'referenceCode' => 'AB-1', 'firmId' => $arthrex->getId()]]);
+        self::assertSame(200, $status, json_encode($json));
+
+        $firms = $this->conn()->fetchAllKeyValue('SELECT id, primary_firm_id FROM mission_intervention WHERE mission_id = ?', [$m->getId()]);
+        $newId = $this->scalar('SELECT resolved_mission_intervention_id FROM mission_intervention_draft WHERE id = ?', [$draftId]);
+        self::assertSame($arthrex->getId(), (int) $firms[$existingId]);
+        self::assertSame($globus->getId(), (int) $firms[$newId]);
+        self::assertSame(1, $this->scalar('SELECT COUNT(*) FROM material_line WHERE mission_intervention_id = ? AND quantity = 2', [$existingId]));
+        self::assertSame('SUBMITTED', $this->conn()->fetchOne('SELECT status FROM mission WHERE id = ?', [$m->getId()]), 'la résolution ne change pas le statut');
+
+        [$status, $json] = $this->call('POST', "/api/missions/{$m->getId()}/encoding/validate", $this->managerToken);
+        self::assertSame(200, $status, json_encode($json));
+        self::assertSame(0, $this->scalar('SELECT COUNT(*) FROM financial_calculation WHERE mission_id = ?', [$m->getId()]), 'aucun calcul déclenché');
+
+        // Validée : plus aucune résolution possible.
+        $late = $this->conn()->executeStatement(
+            "INSERT INTO material_item_request (mission_id, mission_intervention_id, label, status, created_by_id, created_at, updated_at, proposed_firm_id, quantity) VALUES (?, ?, ?, 'PENDING', ?, NOW(), NOW(), ?, 1)",
+            [$m->getId(), $existingId, self::PREFIX . 'Tardive', $this->instr->getId(), $arthrex->getId()],
+        );
+        $lateId = (int) $this->conn()->lastInsertId();
+        [$status, $json] = $this->call('POST', "/api/material-item-requests/{$lateId}/resolve", $this->managerToken, ['materialItemId' => $this->item($arthrex->getId())->getId()]);
+        self::assertSame(409, $status);
+        self::assertSame('MISSION_LOCKED_FOR_CATALOGUE_RESOLUTION', $this->errorCode($json));
     }
 
     // ── Droits ────────────────────────────────────────────────────────────────

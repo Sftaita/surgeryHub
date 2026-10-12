@@ -123,6 +123,13 @@ final class MaterialItemRequestManagerController extends AbstractController
             missionId: $req->getMission()->getId(),
             label: $req->getLabel(),
             occurredAt: new \DateTimeImmutable(),
+            resolution: [
+                'name'         => $line->getItem()->getLabel(),
+                'reference'    => $line->getItem()->getReferenceCode() ?: null,
+                'firm'         => $line->getItem()->getFirm()?->getName(),
+                'quantity'     => $line->getQuantity(),
+                'existingItem' => !$created['createdItem'],
+            ],
         ));
 
         return $this->json([

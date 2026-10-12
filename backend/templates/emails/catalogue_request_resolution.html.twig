@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>
+body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+.container { max-width: 600px; margin: 0 auto; padding: 24px; }
+.header { border-bottom: 2px solid #1F6B4F; padding-bottom: 12px; margin-bottom: 20px; }
+.title { color: #1F6B4F; font-size: 18px; font-weight: bold; }
+.details { background: #EFFAF5; border-radius: 8px; padding: 14px 18px; margin: 16px 0; }
+.name { font-size: 17px; font-weight: bold; color: #16202B; word-break: break-word; }
+.row { margin-top: 6px; }
+.muted { color: #727E8C; font-size: 13px; }
+.footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+</style></head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">SurgicalHub — {% if isMaterial %}Demande de matériel acceptée{% else %}Demande d'intervention acceptée{% endif %}</div>
+  </div>
+
+  <p>Bonjour {{ firstname }},</p>
+
+  {% if isMaterial %}
+    <p>Votre demande de nouveau matériel a été acceptée.</p>
+    <p>{% if existingItem %}Ce matériel existait déjà dans SurgicalHub. Il y est enregistré sous le nom :{% else %}Le matériel est maintenant enregistré dans SurgicalHub sous le nom :{% endif %}</p>
+  {% else %}
+    <p>Votre demande de nouvelle intervention a été acceptée.</p>
+    <p>L'intervention a été enregistrée sous la dénomination :</p>
+  {% endif %}
+
+  <div class="details">
+    <div class="name">{{ name }}</div>
+    {% if firm %}<div class="row">{% if isMaterial %}Firme{% else %}Firme associée{% endif %} : <strong>{{ firm }}</strong></div>{% endif %}
+    {% if reference %}<div class="row">Référence : <strong>{{ reference }}</strong></div>{% endif %}
+    {% if code %}<div class="row">Code : <strong>{{ code }}</strong></div>{% endif %}
+    {% if quantity %}<div class="row">Quantité ajoutée à votre mission : <strong>{{ quantity }}</strong></div>{% endif %}
+    {% if renamed %}<div class="row muted">Votre demande : « {{ requestedLabel }} »</div>{% endif %}
+  </div>
+
+  <p>
+    {% if isMaterial %}Il a été ajouté à votre mission{% else %}Elle a été ajoutée à votre mission{% endif %}
+    {% if missionDate %} du {{ missionDate }}{% endif %}{% if siteName %} ({{ siteName }}){% endif %}.
+  </p>
+
+  <p><strong>Pour vos prochaines prestations, {% if isMaterial %}recherchez ce matériel{% else %}recherchez cette intervention{% endif %} sous ce nom dans SurgicalHub.</strong></p>
+
+  <p><a href="{{ missionUrl }}">Voir la mission dans SurgicalHub</a></p>
+
+  <p>Bien à vous,<br>SurgicalHub</p>
+
+  {% include 'emails/_notification_preferences_cta.html.twig' %}
+
+  <div class="footer">SurgicalHub — document confidentiel</div>
+</div>
+</body>
+</html>
