@@ -357,5 +357,7 @@ final class ManagerMissionsJournalD147Test extends WebTestCase
         self::assertSame(AuditEventType::CATEGORY_FINANCE, AuditEventType::CREDIT_NOTE_CREATED->category());
         self::assertSame(AuditEventType::CATEGORY_PLANNING, AuditEventType::ROOM_SLOT_TAKEN_OVER->category());
         self::assertSame(AuditEventType::CATEGORY_MISSION, AuditEventType::MISSION_ASSIGNED_DIRECTLY->category());
+        // D-146 bis — la résolution d'une demande matériel rejoint son pendant « ignorée ».
+        self::assertSame(AuditEventType::CATEGORY_CATALOGUE, AuditEventType::MATERIAL_ITEM_REQUEST_RESOLVED->category());
     }
 }

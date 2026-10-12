@@ -357,7 +357,8 @@ enum AuditEventType: string
             str_ends_with($v, '_NOTE_CREATED'),
             $this === self::REFUND_RECORDED                 => self::CATEGORY_FINANCE,
             $this === self::INTERVENTION_TYPE_MERGED,
-            $this === self::MATERIAL_ITEM_REQUEST_IGNORED   => self::CATEGORY_CATALOGUE,
+            $this === self::MATERIAL_ITEM_REQUEST_IGNORED,
+            $this === self::MATERIAL_ITEM_REQUEST_RESOLVED  => self::CATEGORY_CATALOGUE,
             default                                         => self::CATEGORY_MISSION,
         };
     }

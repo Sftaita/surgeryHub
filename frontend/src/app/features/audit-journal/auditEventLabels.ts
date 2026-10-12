@@ -110,6 +110,7 @@ export const AUDIT_EVENT_LABELS: Record<string, string> = {
 
   // Catalogue
   INTERVENTION_TYPE_MERGED: "Types d'intervention fusionnés",
+  MATERIAL_ITEM_REQUEST_RESOLVED: "Demande de matériel résolue",
   MATERIAL_ITEM_REQUEST_IGNORED: "Demande de matériel ignorée",
 };
 

@@ -13143,7 +13143,9 @@ cours de refonte par D-146) ; historique = celui des demandes **et** un journal 
    actions mission/planning/encodage/facturation). `AuditJournalService` les lit, enrichit
    d'un résumé de mission ou de demande (les événements CREATED / REJECTED n'ont pas de
    Mission — la demande est chargée par l'id du payload, en une requête).
-   `AuditEventType::category()` regroupe les 96 types en 6 domaines pour filtrer ; un
+   `AuditEventType::category()` regroupe les 96 types en 6 domaines pour filtrer (dont
+   `MATERIAL_ITEM_REQUEST_RESOLVED`, ajouté par D-146 bis, en *Catalogue* avec son pendant
+   « ignorée ») ; un
    test garantit que chaque type a une catégorie connue.
 6. **Autorisation.** Journal global : nouveau `AuditJournalVoter::VIEW` (manager/admin,
    sans sujet) — le journal par mission reste `MissionVoter::VIEW_AUDIT`. Compteurs et
@@ -13153,7 +13155,8 @@ cours de refonte par D-146) ; historique = celui des demandes **et** un journal 
 
 ### Hors périmètre
 
-- *Catalogue > Demandes* (D-146 en cours dans une autre session).
+- *Catalogue > Demandes* (D-146 bis, livré séparément en v2026.10.12-prod) — workflow
+  distinct, inchangé ici.
 - Mise à jour poussée (SSE / WebSocket) : le rafraîchissement à 30 s suffit pour un flux
   de quelques demandes par jour ; à revoir si le volume change.
 - Recherche dans le journal sur le contenu des payloads (JSON non indexé).
