@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SurgeonMissionRequestsPanel from "./SurgeonMissionRequestsPanel";
@@ -176,7 +176,8 @@ describe("SurgeonMissionRequestsPanel — détail et acceptation", () => {
     await screen.findByText("Demande du Dr Arnaud Deltour");
     await user.click(screen.getByText("Accepter et créer"));
 
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Le chirurgien a déjà une autre mission active sur cette période."));
+    expect(await within(screen.getByRole("dialog")).findByText("Le chirurgien a déjà une autre mission active sur cette période.")).toBeInTheDocument();
+    expect(toastError).not.toHaveBeenCalled();
   });
 
   /** §22 — une demande déjà traitée par un autre manager entre-temps (revue concurrente). */
@@ -192,7 +193,7 @@ describe("SurgeonMissionRequestsPanel — détail et acceptation", () => {
     await screen.findByText("Demande du Dr Arnaud Deltour");
     await user.click(screen.getByText("Accepter et créer"));
 
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Cette demande a déjà été traitée."));
+    expect(await within(screen.getByRole("dialog")).findByText("Cette demande a déjà été traitée.")).toBeInTheDocument();
   });
 });
 
@@ -245,32 +246,7 @@ describe("SurgeonMissionRequestsPanel — compteurs, optimisme, historique (D-14
     expect(within(card("Acceptées")).getByText("4")).toBeInTheDocument();
   });
 
-  it("refuser : la demande quitte la liste et les compteurs bougent AVANT la réponse serveur", async () => {
-    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest()], total: 1 });
-    const pending = deferred<ManagerSurgeonMissionRequest>();
-    rejectSurgeonMissionRequestMock.mockReturnValue(pending.promise);
-    const user = userEvent.setup();
-    renderPanel();
-
-    await screen.findByRole("tab", { name: "En attente (1)" });
-    await user.click(await screen.findByText("Refuser"));
-    await user.type(screen.getByLabelText(/Motif du refus/), "Bloc complet");
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Refuser" }));
-
-    // Serveur pas encore revenu : déjà retirée, compteurs déjà déplacés, pas de toast.
-    await waitFor(() => expect(screen.queryByText("Dr Arnaud Deltour")).not.toBeInTheDocument());
-    expect(screen.getByRole("tab", { name: "En attente (0)" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Refusées (3)" })).toBeInTheDocument();
-    expect(toastSuccess).not.toHaveBeenCalled();
-
-    getCountsMock.mockResolvedValue({ PENDING: 0, ACCEPTED: 4, REJECTED: 3 });
-    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [], total: 0 });
-    pending.resolve(makeRequest({ status: "REJECTED", reviewComment: "Bloc complet" }));
-    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Demande refusée."));
-    expect(screen.getByRole("tab", { name: "Refusées (3)" })).toBeInTheDocument();
-  });
-
-  it("échec serveur : la demande revient à sa place et les compteurs sont rétablis", async () => {
+  it("accepter : la fenêtre reste ouverte pendant l'enregistrement, se ferme et met à jour les compteurs une fois confirmé", async () => {
     getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest()], total: 1 });
     const pending = deferred<ManagerSurgeonMissionRequest>();
     acceptSurgeonMissionRequestMock.mockReturnValue(pending.promise);
@@ -279,17 +255,97 @@ describe("SurgeonMissionRequestsPanel — compteurs, optimisme, historique (D-14
 
     await screen.findByRole("tab", { name: "En attente (1)" });
     await user.click(await screen.findByText("Accepter"));
-    await user.click(await screen.findByText("Accepter et créer"));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Commentaire (optionnel)"), "OK pour le bloc");
+    await user.click(within(dialog).getByRole("button", { name: "Accepter et créer" }));
 
-    await waitFor(() => expect(screen.queryByText("Dr Arnaud Deltour")).not.toBeInTheDocument());
-    expect(screen.getByRole("tab", { name: "Acceptées (5)" })).toBeInTheDocument();
+    // Serveur pas encore revenu : fenêtre ouverte, chargement, rien n'a bougé.
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Enregistrement en cours")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Annuler" })).toBeDisabled();
+    expect(screen.getByRole("tab", { name: "En attente (1)", hidden: true })).toBeInTheDocument();
+    expect(toastSuccess).not.toHaveBeenCalled();
 
-    pending.reject({ response: { data: { error: { code: "SURGEON_MISSION_REQUEST_CONFLICT" } } } });
+    getCountsMock.mockResolvedValue({ PENDING: 0, ACCEPTED: 5, REJECTED: 2 });
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [], total: 0 });
+    pending.resolve(makeRequest({ status: "ACCEPTED", createdMissionId: 999 }));
 
-    expect(await screen.findByText("Dr Arnaud Deltour")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "En attente (1)" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Acceptées (4)" })).toBeInTheDocument();
-    expect(toastError).toHaveBeenCalledWith("Le chirurgien a déjà une autre mission active sur cette période.");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(toastSuccess).toHaveBeenCalledWith("Demande acceptée. Mission créée et proposée au pool.");
+    expect(await screen.findByRole("tab", { name: "Acceptées (5)" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "En attente (0)" })).toBeInTheDocument();
+    expect(acceptSurgeonMissionRequestMock).toHaveBeenCalledWith(1, "OK pour le bloc", { mode: "POOL", instrumentistId: null });
+  });
+
+  it("accepter : échec serveur → fenêtre ouverte, erreur affichée, commentaire conservé, nouvelle tentative possible", async () => {
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest()], total: 1 });
+    acceptSurgeonMissionRequestMock.mockRejectedValueOnce({
+      response: { data: { error: { code: "SURGEON_MISSION_REQUEST_CONFLICT" } } },
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await screen.findByRole("tab", { name: "En attente (1)" });
+    await user.click(await screen.findByText("Accepter"));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Commentaire (optionnel)"), "OK pour le bloc");
+    await user.click(within(dialog).getByRole("button", { name: "Accepter et créer" }));
+
+    expect(await within(dialog).findByText("Le chirurgien a déjà une autre mission active sur cette période.")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Commentaire (optionnel)")).toHaveValue("OK pour le bloc");
+    expect(screen.getByRole("tab", { name: "En attente (1)", hidden: true })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Acceptées (4)", hidden: true })).toBeInTheDocument();
+
+    // Nouvelle tentative avec la même saisie : réussit, la fenêtre se ferme.
+    acceptSurgeonMissionRequestMock.mockResolvedValueOnce(makeRequest({ status: "ACCEPTED", createdMissionId: 999 }));
+    await user.click(within(dialog).getByRole("button", { name: "Accepter et créer" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(acceptSurgeonMissionRequestMock).toHaveBeenCalledTimes(2);
+    expect(acceptSurgeonMissionRequestMock).toHaveBeenLastCalledWith(1, "OK pour le bloc", { mode: "POOL", instrumentistId: null });
+    expect(toastSuccess).toHaveBeenCalledWith("Demande acceptée. Mission créée et proposée au pool.");
+  });
+
+  it("accepter : un double clic n'envoie qu'une seule demande", async () => {
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest()], total: 1 });
+    const pending = deferred<ManagerSurgeonMissionRequest>();
+    acceptSurgeonMissionRequestMock.mockReturnValue(pending.promise);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByText("Accepter"));
+    const button = within(await screen.findByRole("dialog")).getByRole("button", { name: "Accepter et créer" });
+    // Clics synchrones, avant tout rendu : seul le verrou synchrone peut les écarter.
+    fireEvent.click(button);
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    await waitFor(() => expect(acceptSurgeonMissionRequestMock).toHaveBeenCalledTimes(1));
+    expect(within(screen.getByRole("dialog")).getByLabelText("Enregistrement en cours").closest("button")).toBeDisabled();
+    pending.resolve(makeRequest({ status: "ACCEPTED", createdMissionId: 999 }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(acceptSurgeonMissionRequestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuser : échec serveur → fenêtre ouverte, erreur affichée, motif conservé", async () => {
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest()], total: 1 });
+    rejectSurgeonMissionRequestMock.mockRejectedValueOnce({
+      response: { data: { error: { code: "SURGEON_MISSION_REQUEST_ALREADY_REVIEWED", message: "Cette demande a déjà été traitée." } } },
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await screen.findByRole("tab", { name: "En attente (1)" });
+    await user.click(await screen.findByText("Refuser"));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(/Motif du refus/), "Bloc complet");
+    await user.click(within(dialog).getByRole("button", { name: "Refuser" }));
+
+    expect(await within(dialog).findByText("Cette demande a déjà été traitée.")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(/Motif du refus/)).toHaveValue("Bloc complet");
+    expect(screen.getByRole("tab", { name: "Refusées (2)", hidden: true })).toBeInTheDocument();
+    expect(toastSuccess).not.toHaveBeenCalled();
   });
 
   it("l'onglet Historique liste toutes les actions avec leur auteur", async () => {

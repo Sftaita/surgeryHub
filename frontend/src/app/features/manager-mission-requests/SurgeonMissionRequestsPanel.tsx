@@ -20,8 +20,7 @@ import {
   REQUESTS_COUNTS_KEY,
   REQUESTS_HISTORY_KEY,
   REQUESTS_LIST_KEY,
-  applyOptimisticReview,
-  rollbackOptimisticReview,
+  applyConfirmedReview,
   settleReview,
 } from "./requestReviewOptimistic";
 import { fetchSurgeonMissionRequestHistory, nextAuditPage } from "../audit-journal/api/auditJournal.api";
@@ -64,13 +63,15 @@ function statusColor(status: StatusValue):"warning" | "success" | "default" {
 // §9 — résumé en lecture seule + revue légère (accepter/refuser + commentaire), pas un
 // second formulaire complet de création de mission.
 function AcceptDialog({
-  open, request, onClose, onAccept, accepting,
+  open, request, onClose, onAccept, accepting, error,
 }: {
   open: boolean;
   request: ManagerSurgeonMissionRequest | null;
   onClose: () => void;
   onAccept: (reviewComment: string | undefined, dispatch: MissionDispatchChoice) => void;
   accepting: boolean;
+  /** Refus du serveur : affiché dans la fenêtre, la saisie reste en place pour réessayer. */
+  error: string | null;
 }) {
   const [comment, setComment] = React.useState("");
   const [dispatch, setDispatch] = React.useState<MissionDispatchChoice>(DEFAULT_DISPATCH_CHOICE);
@@ -85,10 +86,11 @@ function AcceptDialog({
   if (!request) return null;
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
+    <Dialog open={open} onClose={accepting ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle>Demande du Dr {request.surgeon?.displayName ?? "—"}</DialogTitle>
       <DialogContent>
         <Stack spacing={1.5} sx={{ pt: 0.5 }}>
+          {error && <Alert severity="error">{error}</Alert>}
           <Typography variant="body2">
             {request.site?.name ?? "—"} · {formatBrusselsRange(request.startAt, request.endAt)} · {formatMissionType(request.type)}
           </Typography>
@@ -102,6 +104,7 @@ function AcceptDialog({
             minRows={2}
             value={comment}
             onChange={(e) => setComment(e.target.value)}
+            disabled={accepting}
           />
           {/* D-125 — même choix que pour une mission créée manuellement. */}
           <Typography variant="subtitle2">Mission créée</Typography>
@@ -120,7 +123,7 @@ function AcceptDialog({
           disabled={accepting || !isDispatchChoiceComplete(dispatch)}
           onClick={() => onAccept(comment.trim() || undefined, dispatch)}
         >
-          {accepting ? <CircularProgress size={18} /> : "Accepter et créer"}
+          {accepting ? <CircularProgress size={18} aria-label="Enregistrement en cours" /> : "Accepter et créer"}
         </Button>
       </DialogActions>
     </Dialog>
@@ -128,13 +131,14 @@ function AcceptDialog({
 }
 
 function RejectDialog({
-  open, request, onClose, onReject, rejecting,
+  open, request, onClose, onReject, rejecting, error,
 }: {
   open: boolean;
   request: ManagerSurgeonMissionRequest | null;
   onClose: () => void;
   onReject: (reviewComment: string) => void;
   rejecting: boolean;
+  error: string | null;
 }) {
   const [comment, setComment] = React.useState("");
 
@@ -146,10 +150,11 @@ function RejectDialog({
   const canSubmit = comment.trim().length > 0;
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
+    <Dialog open={open} onClose={rejecting ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle>Refuser la demande</DialogTitle>
       <DialogContent>
         <Stack spacing={1.5} sx={{ pt: 0.5 }}>
+          {error && <Alert severity="error">{error}</Alert>}
           <Typography variant="body2" color="text.secondary">
             Dr {request.surgeon?.displayName ?? "—"} — {request.site?.name ?? "—"} · {formatBrusselsRange(request.startAt, request.endAt)}
           </Typography>
@@ -162,13 +167,14 @@ function RejectDialog({
             onChange={(e) => setComment(e.target.value)}
             placeholder="Ex. bloc déjà complet à cette date"
             required
+            disabled={rejecting}
           />
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={rejecting}>Annuler</Button>
         <Button variant="contained" color="error" disabled={rejecting || !canSubmit} onClick={() => onReject(comment.trim())}>
-          {rejecting ? <CircularProgress size={18} /> : "Refuser"}
+          {rejecting ? <CircularProgress size={18} aria-label="Enregistrement en cours" /> : "Refuser"}
         </Button>
       </DialogActions>
     </Dialog>
@@ -214,17 +220,17 @@ export default function SurgeonMissionRequestsPanel() {
     refetchInterval: LIVE_REFRESH_MS,
   });
 
-  // D-147 — optimiste : le dialogue se ferme et la demande quitte « En attente » dès le
-  // clic ; le toast de succès n'arrive qu'avec la confirmation serveur, l'erreur remet
-  // la demande à sa place (voir requestReviewOptimistic.ts).
+  // D-147 — la fenêtre reste ouverte pendant l'enregistrement et en cas d'échec (message
+  // dans la fenêtre, saisie conservée, nouvelle tentative possible) ; elle se ferme, et la
+  // liste et les compteurs bougent, seulement quand le serveur a confirmé (voir
+  // requestReviewOptimistic.ts). Un verrou synchrone écarte le double clic.
+  const reviewInFlight = React.useRef(false);
   const acceptMutation = useMutation({
     mutationFn: ({ request, reviewComment, dispatch }: { request: ManagerSurgeonMissionRequest; reviewComment?: string; dispatch: MissionDispatchChoice }) =>
       acceptSurgeonMissionRequest(request.id, reviewComment, dispatch),
-    onMutate: ({ request }) => {
+    onSuccess: async (accepted, { request, dispatch }) => {
       setAcceptTarget(null);
-      return applyOptimisticReview(queryClient, request, "ACCEPTED");
-    },
-    onSuccess: (accepted, { dispatch }) => {
+      await applyConfirmedReview(queryClient, request, "ACCEPTED");
       // D-125 — the created mission is immediately part of the operational planning.
       invalidateOperationalPlanning(queryClient, accepted.createdMissionId);
       toast.success(
@@ -235,37 +241,44 @@ export default function SurgeonMissionRequestsPanel() {
             : "Demande acceptée. Mission créée et proposée au pool.",
       );
     },
-    onError: (err: any, { request }, context) => {
-      rollbackOptimisticReview(queryClient, request, "ACCEPTED", context);
+    onError: (err: any) => {
       const code = err?.response?.data?.error?.code;
-      const msg = code === "SURGEON_MISSION_REQUEST_CONFLICT"
-        ? "Le chirurgien a déjà une autre mission active sur cette période."
-        : err?.response?.data?.error?.message ?? "Erreur lors de l'acceptation.";
-      toast.error(msg);
       // An ineligibility refusal leaves the request PENDING — refresh candidates' state.
       if (code === "INSTRUMENTIST_INCOMPATIBLE") {
         queryClient.invalidateQueries({ queryKey: ["dispatch-candidates"] });
       }
     },
-    onSettled: () => settleReview(queryClient),
+    onSettled: () => {
+      reviewInFlight.current = false;
+      return settleReview(queryClient);
+    },
   });
 
   const rejectMutation = useMutation({
     mutationFn: ({ request, reviewComment }: { request: ManagerSurgeonMissionRequest; reviewComment: string }) =>
       rejectSurgeonMissionRequest(request.id, reviewComment),
-    onMutate: ({ request }) => {
+    onSuccess: async (_rejected, { request }) => {
       setRejectTarget(null);
-      return applyOptimisticReview(queryClient, request, "REJECTED");
-    },
-    onSuccess: () => {
+      await applyConfirmedReview(queryClient, request, "REJECTED");
       toast.success("Demande refusée.");
     },
-    onError: (err: any, { request }, context) => {
-      rollbackOptimisticReview(queryClient, request, "REJECTED", context);
-      toast.error(err?.response?.data?.error?.message ?? "Erreur lors du refus.");
+    onSettled: () => {
+      reviewInFlight.current = false;
+      return settleReview(queryClient);
     },
-    onSettled: () => settleReview(queryClient),
   });
+
+  const acceptError = acceptMutation.isError
+    ? (acceptMutation.error as any)?.response?.data?.error?.code === "SURGEON_MISSION_REQUEST_CONFLICT"
+      ? "Le chirurgien a déjà une autre mission active sur cette période."
+      : (acceptMutation.error as any)?.response?.data?.error?.message ?? "Erreur lors de l'acceptation."
+    : null;
+  const rejectError = rejectMutation.isError
+    ? (rejectMutation.error as any)?.response?.data?.error?.message ?? "Erreur lors du refus."
+    : null;
+
+  const openAccept = (r: ManagerSurgeonMissionRequest) => { acceptMutation.reset(); setAcceptTarget(r); };
+  const openReject = (r: ManagerSurgeonMissionRequest) => { rejectMutation.reset(); setRejectTarget(r); };
 
   const requests = requestsQuery.data?.items ?? [];
   const historyEntries = historyQuery.data?.pages.flatMap((p) => p.items) ?? [];
@@ -374,10 +387,10 @@ export default function SurgeonMissionRequestsPanel() {
                   {tab === "PENDING" ? (
                     <TableCell align="right">
                       <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                        <Button size="small" variant="contained" onClick={() => setAcceptTarget(r)}>
+                        <Button size="small" variant="contained" onClick={() => openAccept(r)}>
                           Accepter
                         </Button>
-                        <Button size="small" color="inherit" variant="outlined" onClick={() => setRejectTarget(r)}>
+                        <Button size="small" color="inherit" variant="outlined" onClick={() => openReject(r)}>
                           Refuser
                         </Button>
                       </Stack>
@@ -394,18 +407,24 @@ export default function SurgeonMissionRequestsPanel() {
         open={acceptTarget !== null}
         request={acceptTarget}
         onClose={() => setAcceptTarget(null)}
-        accepting={false}
+        accepting={acceptMutation.isPending}
+        error={acceptError}
         onAccept={(reviewComment, dispatch) => {
-          if (acceptTarget) acceptMutation.mutate({ request: acceptTarget, reviewComment, dispatch });
+          if (!acceptTarget || reviewInFlight.current) return;
+          reviewInFlight.current = true;
+          acceptMutation.mutate({ request: acceptTarget, reviewComment, dispatch });
         }}
       />
       <RejectDialog
         open={rejectTarget !== null}
         request={rejectTarget}
         onClose={() => setRejectTarget(null)}
-        rejecting={false}
+        rejecting={rejectMutation.isPending}
+        error={rejectError}
         onReject={(reviewComment) => {
-          if (rejectTarget) rejectMutation.mutate({ request: rejectTarget, reviewComment });
+          if (!rejectTarget || reviewInFlight.current) return;
+          reviewInFlight.current = true;
+          rejectMutation.mutate({ request: rejectTarget, reviewComment });
         }}
       />
     </Box>

@@ -13123,15 +13123,17 @@ cours de refonte par D-146) ; historique = celui des demandes **et** un journal 
    conservés au retour depuis le détail d'une mission. Période par défaut « À venir » sur
    *Toutes* ; « Toutes les dates » sur *À valider* et sur le diagnostic « validées sans
    calcul » (rien ne doit y être masqué).
-3. **Optimisme borné à la transition déclenchée.** Accepter / refuser passe toujours par
-   les endpoints dédiés. Avant la réponse, seule la conséquence certaine de *cette*
-   transition est affichée : la demande quitte « En attente », les compteurs se déplacent
-   d'une unité. Aucune ligne n'est fabriquée dans Acceptées / Refusées (`reviewedBy`,
-   mission créée… restent serveur) ; tout est rechargé au règlement. Échec → opération
-   inverse (pas de restauration d'instantané, pour que deux décisions concurrentes ne
-   s'annulent pas l'une l'autre) + message d'erreur ; le toast de succès attend la
-   confirmation serveur. Compatible avec « le frontend ne dérive pas les statuts » : rien
-   n'est décidé localement, la réponse serveur fait foi quelques centaines de ms plus tard.
+3. **Fenêtre de revue tenue jusqu'à la confirmation serveur** (révisé le 2026-10-12,
+   avant livraison). Accepter / refuser passe toujours par les endpoints dédiés. Pendant
+   l'enregistrement, la fenêtre reste ouverte, le bouton affiche un chargement et un
+   verrou synchrone écarte les doubles soumissions. Échec → la fenêtre reste ouverte, le
+   message d'erreur y est affiché, le commentaire / motif et le choix de diffusion sont
+   conservés, le manager peut corriger et réessayer. Succès confirmé → la fenêtre se
+   ferme, la demande quitte « En attente » et les compteurs se déplacent d'une unité sans
+   attendre le rechargement ; aucune ligne n'est fabriquée dans Acceptées / Refusées
+   (`reviewedBy`, mission créée… restent serveur), tout est rechargé ensuite. La première
+   version fermait la fenêtre au clic (affichage optimiste) et perdait la saisie en cas de
+   refus du serveur.
 4. **Compteurs : un endpoint, un cache.** `GET …/surgeon-mission-requests/counts` (une
    requête GROUP BY) alimente à la fois les cartes, les libellés d'onglets et le badge
    « Demandes chirurgien » (même clé TanStack) : ils bougent ensemble. Les demandes
