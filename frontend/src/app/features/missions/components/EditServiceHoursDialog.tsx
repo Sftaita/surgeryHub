@@ -31,7 +31,7 @@ type Props = {
 };
 
 /** endUnknown (D-143) : journée en cours — seul le début est enregistré, en brouillon. */
-type HoursDraft = { start: number; end: number; pause: number; nextDay: boolean; endUnknown: boolean };
+type HoursDraft = { start: number; end: number; nextDay: boolean; endUnknown: boolean };
 
 function extractErrorMessage(err: any): string {
   return (
@@ -60,11 +60,10 @@ function toStepperMinutes(d: dayjs.Dayjs): number {
 function defaultDraft(mission: Mission): HoursDraft {
   const start = mission.startAt ? dayjs(mission.startAt) : null;
   const end = mission.endAt ? dayjs(mission.endAt) : null;
-  if (!start || !end) return { start: 450, end: 930, pause: 0, nextDay: false, endUnknown: false };
+  if (!start || !end) return { start: 450, end: 930, nextDay: false, endUnknown: false };
   return {
     start: toStepperMinutes(start),
     end: toStepperMinutes(end),
-    pause: 0,
     nextDay: !end.isSame(start, "day"),
     endUnknown: false,
   };
@@ -74,7 +73,7 @@ function defaultDraft(mission: Mission): HoursDraft {
  * Valeur initiale à l'ouverture — toujours la valeur ACTUELLEMENT enregistrée quand il y
  * en a une, l'horaire prévu seulement comme point de départ des steppers d'une première
  * saisie (jamais enregistré tant que l'instrumentiste ne confirme pas, D-143) :
- * - début ET fin réels connus → repris tels quels, pause = pause enregistrée ;
+ * - début ET fin réels connus → repris tels quels ;
  * - début seul (brouillon de la journée en cours) → repris, « fin pas encore connue » cochée ;
  * - durée seule (saisie antérieure à D-143) → début prévu, fin = début + durée : à
  *   confirmer, car début et fin sont désormais obligatoires pour soumettre ;
@@ -84,24 +83,21 @@ function initialDraft(mission: Mission, execution: MissionExecutionInfo | undefi
   if (execution?.hasExecutionRecord && execution.actualStartAt && execution.actualEndAt) {
     const start = dayjs(execution.actualStartAt);
     const end = dayjs(execution.actualEndAt);
-    const span = Math.max(0, end.diff(start, "minute"));
-    const recorded = execution.actualDurationMinutes ?? span;
     return {
       start: start.hour() * 60 + start.minute(),
       end: end.hour() * 60 + end.minute(),
-      pause: execution.breakMinutes ?? Math.max(0, span - recorded),
       nextDay: !end.isSame(start, "day"),
       endUnknown: false,
     };
   }
   if (execution?.hasExecutionRecord && execution.actualStartAt) {
     const start = dayjs(execution.actualStartAt);
-    return { ...defaultDraft(mission), start: start.hour() * 60 + start.minute(), pause: execution.breakMinutes ?? 0, endUnknown: true };
+    return { ...defaultDraft(mission), start: start.hour() * 60 + start.minute(), endUnknown: true };
   }
   if (execution?.hasExecutionRecord && execution.actualDurationMinutes != null) {
     const planned = defaultDraft(mission);
     const endAbs = planned.start + execution.actualDurationMinutes;
-    return { start: planned.start, end: endAbs % 1440, pause: 0, nextDay: endAbs >= 1440, endUnknown: false };
+    return { start: planned.start, end: endAbs % 1440, nextDay: endAbs >= 1440, endUnknown: false };
   }
   return defaultDraft(mission);
 }
@@ -110,11 +106,10 @@ function initialDraft(mission: Mission, execution: MissionExecutionInfo | undefi
  * D-143 — instants réels envoyés au serveur (ISO 8601 avec décalage local), construits sur
  * le JOUR de la mission : début = jour + minutes, fin = jour (+1 si lendemain) + minutes.
  */
-function toActualBody(mission: Mission, draft: HoursDraft): { actualStartAt: string; actualEndAt?: string; breakMinutes: number } {
+function toActualBody(mission: Mission, draft: HoursDraft): { actualStartAt: string; actualEndAt?: string } {
   const day = dayjs(mission.startAt).startOf("day");
-  const body: { actualStartAt: string; actualEndAt?: string; breakMinutes: number } = {
+  const body: { actualStartAt: string; actualEndAt?: string } = {
     actualStartAt: day.add(draft.start, "minute").format(),
-    breakMinutes: draft.pause,
   };
   if (!draft.endUnknown) {
     body.actualEndAt = day.add(draft.end + (draft.nextDay ? 1440 : 0), "minute").format();
@@ -143,8 +138,8 @@ export default function EditServiceHoursDialog({ open, onClose, mission, onSaved
   }, [open, mission.id]);
 
   const endEff = draft.end + (draft.nextDay ? 1440 : 0);
-  const totalMinutes = Math.max(0, endEff - draft.start - draft.pause);
-  const maxPause = draft.endUnknown ? 600 : Math.max(0, endEff - draft.start - STEP);
+  // D-146 bis — heures prestées = fin − début, aucune pause.
+  const totalMinutes = Math.max(0, endEff - draft.start);
   const isFirstEntry = !readExecution()?.hasExecutionRecord;
 
   // Source de vérité unique des heures prestées : ["mission-execution", missionId], lu
@@ -156,7 +151,7 @@ export default function EditServiceHoursDialog({ open, onClose, mission, onSaved
   const executionKey = React.useMemo(() => ["mission-execution", mission.id] as const, [mission.id]);
 
   const mutation = useMutation({
-    mutationFn: (body: { actualStartAt: string; actualEndAt?: string; breakMinutes: number; hoursSource: string }) =>
+    mutationFn: (body: { actualStartAt: string; actualEndAt?: string; hoursSource: string }) =>
       updateMissionExecution(mission.id, body),
     onMutate: async (body) => {
       await queryClient.cancelQueries({ queryKey: executionKey });
@@ -174,7 +169,6 @@ export default function EditServiceHoursDialog({ open, onClose, mission, onSaved
         actualStartAt: body.actualStartAt,
         actualEndAt: body.actualEndAt ?? previous?.actualEndAt ?? null,
         actualDurationMinutes: complete ? totalMinutes : previous?.actualDurationMinutes ?? null,
-        breakMinutes: body.breakMinutes,
         hoursSource: body.hoursSource,
         effectiveDurationMinutes: complete ? totalMinutes : previous?.effectiveDurationMinutes ?? 0,
         effectiveDurationSource: complete ? "ACTUAL_TIMES" : previous?.effectiveDurationSource ?? "PLANNED",
@@ -200,8 +194,8 @@ export default function EditServiceHoursDialog({ open, onClose, mission, onSaved
   });
 
   function handleSave() {
-    // D-143 — début, fin et pause réels ; la durée est dérivée par le serveur (fin − début −
-    // pause), jamais envoyée séparément. « Fin pas encore connue » n'envoie que le début.
+    // D-143 / D-146 bis — début et fin réels ; la durée est dérivée par le serveur (fin −
+    // début), jamais envoyée séparément. « Fin pas encore connue » n'envoie que le début.
     mutation.mutate({ ...toActualBody(mission, draft), hoursSource: "INSTRUMENTIST" });
   }
 
@@ -271,16 +265,6 @@ export default function EditServiceHoursDialog({ open, onClose, mission, onSaved
         />
         </>)}
 
-        <StepperRow
-          label="Pause"
-          value={`${draft.pause} min`}
-          onMinus={() => setDraft((d) => ({ ...d, pause: Math.max(0, d.pause - STEP) }))}
-          onPlus={() => setDraft((d) => ({ ...d, pause: Math.min(maxPause, d.pause + STEP) }))}
-          minusDisabled={mutation.isPending || draft.pause <= 0}
-          plusDisabled={mutation.isPending || draft.pause >= maxPause}
-          minusAriaLabel="Moins 15 minutes"
-          plusAriaLabel="Plus 15 minutes"
-        />
       </Stack>
 
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: GREEN_50, borderRadius: "13px", padding: "14px 16px", mt: "18px" }}>

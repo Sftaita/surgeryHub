@@ -442,3 +442,21 @@ email verification
 manager validation before activation
 
 This functionality is not part of the current V1 scope.
+
+Catalogue requests during encoding (D-146 bis — see docs/decisions.md, docs/api.md §20/§22)
+
+Every intervention is performed with a firm: "Avec quelle firme cette intervention a-t-elle été réalisée ?". No "no firm" option; an unknown firm can be proposed by name ("Ma firme n'est pas dans la liste") and is never created automatically.
+
+Material request (instrumentist): intervention, name (required), reference (optional), manufacturer firm (existing or proposed name, required), quantity used (> 0, required), comment.
+
+Intervention request (instrumentist): label (required), firm (existing or proposed name, required), suggested code, comment.
+
+Resolution (manager, "Demandes"): one atomic action. The manager confirms or corrects the firm (existing or created), links an existing item / intervention type or creates it (duplicate detection, new items created "billing to decide", no tariff), validates the quantity, and decides explicitly when the firm × intervention offering does not exist. The validated firm applies only to the resolved intervention; existing items keep their own firm and tariffs.
+
+Required answers (delegate presence, required choice, material exclusivity) are enforced identically for direct encoding and for resolution — never answered on the user's behalf.
+
+Validated / locked / invoiced missions refuse any resolution; the existing reopen procedure is suggested, never triggered automatically.
+
+Submission is refused while an intervention lacks its firm or a required answer; manager validation is additionally refused while a request is still pending.
+
+Ignoring an intervention request that already carries material requires an explicit choice: keep as history, or reassign to an existing intervention of the mission.

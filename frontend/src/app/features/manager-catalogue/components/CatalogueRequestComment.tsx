@@ -65,6 +65,11 @@ type RequestContextProps = {
   requestedBy: { displayName: string } | null;
   mission: { id: number; site: string | null } | null;
   comment: string | null;
+  /** D-146 bis — firme indiquée par l'instrumentiste (affichage seul). */
+  firm?: string | null;
+  quantity?: string | null;
+  /** Intervention de la mission concernée (demande de matériel). */
+  target?: string | null;
 };
 
 function ContextRow({ term, children }: { term: string; children: React.ReactNode }) {
@@ -84,7 +89,7 @@ function ContextRow({ term, children }: { term: string; children: React.ReactNod
  * Récapitulatif de la demande en tête des modals de traitement (résolution / ignore) :
  * le manager décide avec le contexte complet sous les yeux, commentaire intégral inclus.
  */
-export function CatalogueRequestContext({ kind, label, reference, requestedBy, mission, comment }: RequestContextProps) {
+export function CatalogueRequestContext({ kind, label, reference, requestedBy, mission, comment, firm, quantity, target }: RequestContextProps) {
   return (
     <Box
       component="dl"
@@ -97,6 +102,17 @@ export function CatalogueRequestContext({ kind, label, reference, requestedBy, m
           <Box component="span" sx={{ color: "text.secondary" }}> · {reference}</Box>
         ) : null}
       </ContextRow>
+      {firm !== undefined ? (
+        <ContextRow term={kind === "material" ? "Firme fabricante indiquée" : "Firme indiquée"}>
+          {firm ?? <Box component="span" sx={{ color: "text.disabled", fontStyle: "italic" }}>Non indiquée (demande antérieure)</Box>}
+        </ContextRow>
+      ) : null}
+      {quantity !== undefined ? (
+        <ContextRow term="Quantité déclarée">
+          {quantity ?? <Box component="span" sx={{ color: "text.disabled", fontStyle: "italic" }}>Non indiquée (demande antérieure)</Box>}
+        </ContextRow>
+      ) : null}
+      {target ? <ContextRow term="Intervention concernée">{target}</ContextRow> : null}
       <ContextRow term="Demandé par">{requestedBy?.displayName ?? "—"}</ContextRow>
       <ContextRow term="Mission">
         {mission ? `#${mission.id}${mission.site ? ` · ${mission.site}` : ""}` : "—"}

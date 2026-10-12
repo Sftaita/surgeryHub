@@ -60,7 +60,7 @@ final class MissionHoursReminderMessageHandlerTest extends TestCase
         self::assertSame(NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT, $intent->emailPolicy);
         self::assertFalse($intent->inApp, 'pas d\'élément in-app (comportement D-136)');
         self::assertSame('hours_reminder:42:req1', $intent->episodeRef, 'idempotent par demande du manager');
-        self::assertSame('Heures réelles à renseigner', $intent->push?->title);
+        self::assertSame('Heures prestées à renseigner', $intent->push?->title);
         self::assertStringContainsString('14/07/2026', $intent->push?->body);
         self::assertSame('emails/mission_hours_reminder.html.twig', $intent->email?->htmlTemplate);
         self::assertSame('https://app.test/app/i/missions/42/encoding', $intent->email?->context['missionUrl']);

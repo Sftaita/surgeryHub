@@ -246,7 +246,7 @@ final class MissionEncodingEntriesTest extends WebTestCase
 
     private function createPendingRequest(KernelBrowser $client, Mission $mission, string $instrToken, string $label = 'Demande Entries'): int
     {
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $instrToken, [
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $instrToken, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => $label,
         ]);
         self::assertSame(Response::HTTP_CREATED, $created->getStatusCode(), $created->getContent());
@@ -272,7 +272,7 @@ final class MissionEncodingEntriesTest extends WebTestCase
 
     private function addMaterialItemRequestToDraft(KernelBrowser $client, Mission $mission, string $instrToken, string $label, int $draftId): Response
     {
-        return $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $instrToken, [
+        return $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $instrToken, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => $label,
             'interventionDraftId' => $draftId,
         ]);
@@ -280,10 +280,8 @@ final class MissionEncodingEntriesTest extends WebTestCase
 
     private function makeRealIntervention(KernelBrowser $client, Mission $mission, string $instrToken, InterventionType $type, ?Firm $firm = null, int $orderIndex = 0): int
     {
-        $body = ['interventionTypeId' => $type->getId(), 'orderIndex' => $orderIndex];
-        if ($firm !== null) {
-            $body['primaryFirmId'] = $firm->getId();
-        }
+        // D-146 bis — firme désormais obligatoire sur chaque intervention.
+        $body = ['interventionTypeId' => $type->getId(), 'orderIndex' => $orderIndex, 'primaryFirmId' => ($firm ?? $this->makeFirm())->getId()];
         $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $instrToken, $body);
         self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
         return json_decode($response->getContent(), true)['id'];
@@ -460,7 +458,7 @@ final class MissionEncodingEntriesTest extends WebTestCase
 
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
-        $resolve = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+        $resolve = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
         ]);
         self::assertSame(Response::HTTP_OK, $resolve->getStatusCode(), $resolve->getContent());

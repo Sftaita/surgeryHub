@@ -574,8 +574,8 @@ describe("InterventionsSection — lignes de matériel", () => {
 describe("InterventionsSection — création optimiste d'une intervention réelle", () => {
   async function openAddInterventionAndPickCatalogType(user: ReturnType<typeof userEvent.setup>) {
     await user.click(screen.getByRole("button", { name: /nouvelle intervention/i }));
-    await screen.findByText("Étape 1/2 – Choisir une firme");
-    await user.click(screen.getByRole("button", { name: "— Aucune firme (voir tout le catalogue)" }));
+    await screen.findByText("Étape 1/2 – Avec quelle firme cette intervention a-t-elle été réalisée ?");
+    await user.click(screen.getByRole("button", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("GEN01 — Réparation coiffe des rotateurs"));
@@ -637,7 +637,7 @@ describe("InterventionsSection — création optimiste d'une intervention réell
 describe("InterventionsSection — création optimiste d'un draft (intervention absente du catalogue)", () => {
   async function openAddInterventionAndRequestDraft(user: ReturnType<typeof userEvent.setup>, label: string) {
     await user.click(screen.getByRole("button", { name: /nouvelle intervention/i }));
-    await screen.findByText("Étape 1/2 – Choisir une firme");
+    await screen.findByText("Étape 1/2 – Avec quelle firme cette intervention a-t-elle été réalisée ?");
     await user.click(screen.getByRole("button", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
@@ -827,7 +827,8 @@ describe("InterventionsSection — demande de matériel hors catalogue sur une i
     await waitFor(() => {
       expect(apiPostMock).toHaveBeenCalledWith(
         `/api/missions/${MISSION_ID}/material-item-requests`,
-        expect.objectContaining({ missionInterventionId: 1, interventionDraftId: undefined }),
+        // D-146 bis — la firme choisie à l'étape « Marque » est reprise, quantité par défaut 1.
+        expect.objectContaining({ missionInterventionId: 1, interventionDraftId: undefined, firmId: 10, quantity: "1" }),
       );
     });
   });

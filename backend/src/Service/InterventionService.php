@@ -32,12 +32,18 @@ class InterventionService
         private readonly RepresentativePolicyResolver $representativePolicyResolver,
         private readonly RequiredChoiceGroupResolver $choiceGroupResolver,
         private readonly ChoiceMaterialExclusivityService $exclusivityService,
+        private readonly InterventionRequirementsService $requirements,
     ) {}
 
     /**
      * Lot 5 (D-068) : `interventionTypeId` obligatoire (référentiel fermé) — `code`/`label`
      * ne sont plus fournis par le client, ils sont dérivés (instantané figé) depuis le
-     * type résolu. `primaryFirmId` reste facultatif.
+     * type résolu.
+     *
+     * D-146 bis — `primaryFirmId` est désormais OBLIGATOIRE : chaque intervention est
+     * réalisée avec une firme (« Avec quelle firme cette intervention a-t-elle été
+     * réalisée ? »). Une firme absente du catalogue passe par une demande d'intervention
+     * (firme proposée en texte libre), jamais par une intervention sans firme.
      *
      * EPIC Revue instrumentiste, Lot 3 — `$dto->orderIndex` n'est PLUS utilisé pour une
      * création : voir le docblock `@deprecated` sur MissionInterventionCreateRequest::
@@ -50,6 +56,7 @@ class InterventionService
     {
         $type = $this->interventionTypeResolver->resolveActive((int) $dto->interventionTypeId);
         $firm = $dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null;
+        $this->requirements->assertFirmProvided($firm);
         $representativePresent = $dto->representativePresent;
         $selectedChoiceOption = $dto->selectedChoiceOptionId !== null
             ? $this->resolveChoiceOption($dto->selectedChoiceOptionId, $firm, $type)
@@ -95,6 +102,12 @@ class InterventionService
         $firm = $dto->primaryFirmIdProvided
             ? ($dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null)
             : $intervention->getPrimaryFirm();
+
+        // D-146 bis — la firme ne peut plus être retirée explicitement (une ancienne
+        // intervention déjà sans firme reste modifiable tant qu'on ne touche pas ce champ).
+        if ($dto->primaryFirmIdProvided) {
+            $this->requirements->assertFirmProvided($firm);
+        }
 
         $representativePresent = $dto->representativePresentProvided
             ? $dto->representativePresent
@@ -162,64 +175,22 @@ class InterventionService
         });
     }
 
-    /**
-     * Refonte Catalogue/Prestations (D-092) — défense serveur (jamais uniquement le
-     * frontend) : si la prestation (firme × type) effective exige la réponse délégué,
-     * elle doit être fournie (true/false), jamais null. Sans firme ou sans type résolu,
-     * la question ne peut pas être pertinente (voir RepresentativePolicyResolver::resolve,
-     * jamais appelé sans les deux).
-     */
+    /** Règle partagée — voir InterventionRequirementsService (D-092). */
     private function assertRepresentativePresenceAnswered(?Firm $firm, ?InterventionType $type, ?bool $representativePresent): void
     {
-        if ($firm === null || $type === null) {
-            return;
-        }
-
-        $policy = $this->representativePolicyResolver->resolve($firm, $type);
-        if ($policy->representativePresenceRelevant && $representativePresent === null) {
-            throw new UnprocessableEntityHttpException(sprintf(
-                'Indiquez si un délégué de %s était présent.',
-                $firm->getName(),
-            ));
-        }
+        $this->requirements->assertRepresentativePresenceAnswered($firm, $type, $representativePresent);
     }
 
-    /**
-     * Résout et valide une ChoiceOption fournie par le client : doit exister, être
-     * active, et appartenir au groupe de la prestation (firm, type) effectivement
-     * concernée — jamais une option d'une autre prestation/firme (défense contre un id
-     * arbitraire envoyé par un client compromis ou obsolète).
-     */
+    /** Règle partagée — voir InterventionRequirementsService (D-111). */
     private function resolveChoiceOption(int $id, ?Firm $firm, ?InterventionType $type): ChoiceOption
     {
-        $option = $this->em->find(ChoiceOption::class, $id);
-        if (!$option instanceof ChoiceOption || !$option->isActive()) {
-            throw new NotFoundHttpException('Option de choix introuvable.');
-        }
-
-        $offering = $option->getGroup()->getOffering();
-        if ($firm === null || $type === null || $offering->getFirm()->getId() !== $firm->getId() || $offering->getInterventionType()->getId() !== $type->getId()) {
-            throw new UnprocessableEntityHttpException('Cette option ne correspond pas à la prestation de cette intervention.');
-        }
-
-        return $option;
+        return $this->requirements->resolveChoiceOption($id, $firm, $type);
     }
 
-    /**
-     * Tarification firme conditionnée à un choix obligatoire — même défense serveur que
-     * assertRepresentativePresenceAnswered() : si la prestation (firm × type) effective
-     * exige une réponse, elle doit être fournie, jamais null.
-     */
+    /** Règle partagée — voir InterventionRequirementsService (D-111). */
     private function assertChoiceAnswered(?Firm $firm, ?InterventionType $type, ?ChoiceOption $selected): void
     {
-        if ($firm === null || $type === null) {
-            return;
-        }
-
-        $policy = $this->choiceGroupResolver->resolve($firm, $type);
-        if ($policy->required && $selected === null) {
-            throw new UnprocessableEntityHttpException($policy->question ?? 'Une réponse est requise pour cette prestation.');
-        }
+        $this->requirements->assertChoiceAnswered($firm, $type, $selected);
     }
 
     public function delete(MissionIntervention $intervention): void

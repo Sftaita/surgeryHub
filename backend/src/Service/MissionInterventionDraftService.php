@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Entity\ChoiceOption;
 use App\Entity\Firm;
 use App\Entity\InterventionType;
 use App\Entity\InterventionTypeRequest;
@@ -13,8 +14,10 @@ use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\CatalogueRequestIgnoreReason;
 use App\Enum\MissionInterventionDraftIgnoreStrategy;
+use App\Exception\CatalogueRequestException;
 use App\Exception\DraftAlreadyExistsException;
 use App\Exception\DraftAlreadyResolvedException;
+use App\Exception\IncompatibleChoiceMaterialException;
 use App\Exception\MaterialAttachmentTargetNotFoundException;
 use App\Exception\MissingIgnoreStrategyException;
 use Doctrine\DBAL\LockMode;
@@ -36,7 +39,16 @@ final class MissionInterventionDraftService
         private readonly EntityManagerInterface $em,
         private readonly MissionEntryOrderAllocator $orderAllocator,
         private readonly AuditService $audit,
+        private readonly InterventionRequirementsService $requirements,
+        private readonly CatalogueResolutionGuard $resolutionGuard,
+        private readonly CatalogueFactory $catalogue,
+        private readonly ActiveFirmResolver $firmResolver,
+        private readonly ActiveInterventionTypeResolver $interventionTypeResolver,
     ) {}
+
+    public const OFFERING_FEE_APPLICABLE = 'FEE_APPLICABLE';
+    public const OFFERING_NO_FEE = 'NO_FEE';
+    public const OFFERING_LEAVE_UNCONFIGURED = 'LEAVE_UNCONFIGURED';
 
     /**
      * $request est construit par l'appelant (label/mission/createdBy déjà renseignés)
@@ -53,10 +65,11 @@ final class MissionInterventionDraftService
         InterventionTypeRequest $request,
         ?Firm $requestedFirm,
         User $actor,
+        ?string $proposedFirmName = null,
     ): MissionInterventionDraft {
         $draft = null;
 
-        $this->em->wrapInTransaction(function () use (&$draft, $request, $requestedFirm, $actor): void {
+        $this->em->wrapInTransaction(function () use (&$draft, $request, $requestedFirm, $actor, $proposedFirmName): void {
             $mission = $request->getMission();
             if ($mission === null) {
                 throw new \LogicException('InterventionTypeRequest must belong to a Mission before a draft can be created for it.');
@@ -78,6 +91,8 @@ final class MissionInterventionDraftService
                 ->setLabel($request->getLabel())
                 ->setRequestedFirm($requestedFirm)
                 ->setRequestedFirmNameSnapshot($requestedFirm?->getName())
+                // D-146 bis — firme absente du catalogue proposée en texte libre (jamais créée).
+                ->setProposedFirmName($requestedFirm === null && $proposedFirmName !== null && $proposedFirmName !== '' ? $proposedFirmName : null)
                 ->setOrderIndex($orderIndex)
                 ->setStatus(MissionInterventionDraft::STATUS_OPEN)
                 ->setCreatedBy($actor);
@@ -98,12 +113,121 @@ final class MissionInterventionDraftService
                 'label' => $draft->getLabel(),
                 'requestedFirmId' => $requestedFirm?->getId(),
                 'requestedFirmNameSnapshot' => $draft->getRequestedFirmNameSnapshot(),
+                'proposedFirmName' => $draft->getProposedFirmName(),
                 'orderIndex' => $draft->getOrderIndex(),
             ]);
             $this->em->flush();
         });
 
         return $draft;
+    }
+
+    /**
+     * D-146 bis — résolution COMPLÈTE et ATOMIQUE d'une demande d'intervention par le
+     * manager, en une seule transaction (remplace l'enchaînement « POST /intervention-types
+     * puis /resolve » côté frontend, qui pouvait laisser un type créé sans résolution) :
+     *
+     *  1. type : existant (`interventionTypeId`) OU créé (`newInterventionType` {code, label}) ;
+     *  2. firme (OBLIGATOIRE) : existante (`firmId`) OU créée (`newFirmName`) — la firme
+     *     proposée par l'instrumentiste n'est qu'une proposition, c'est celle validée ici
+     *     qui est enregistrée sur la nouvelle intervention, et sur elle seule ;
+     *  3. prestation firme × type absente → décision explicite exigée
+     *     (`offeringDecision` : FEE_APPLICABLE | NO_FEE | LEAVE_UNCONFIGURED, jamais « Pas
+     *     de forfait » par défaut, jamais un montant) ;
+     *  4. réponses obligatoires (`representativePresent`, `selectedChoiceOptionId`) validées
+     *     par les mêmes règles que la création classique (InterventionRequirementsService) ;
+     *  5. résolution du draft (resolve() ci-dessous : intervention, matériel, traçabilité).
+     *
+     * Le moindre refus (mission verrouillée, firme ou code existant, décision manquante,
+     * réponse obligatoire absente, matériel incompatible) annule TOUT.
+     *
+     * @param array<string, mixed> $input
+     * @return array{intervention: MissionIntervention, createdFirm: bool, createdInterventionType: bool, createdOffering: bool, offeringDecision: ?string}
+     */
+    public function resolveRequest(MissionInterventionDraft $draft, array $input, User $actor): array
+    {
+        $result = null;
+
+        $this->em->wrapInTransaction(function () use (&$result, $draft, $input, $actor): void {
+            $this->em->lock($draft, LockMode::PESSIMISTIC_WRITE);
+            $this->em->refresh($draft);
+            $this->assertResolvable($draft);
+            $this->resolutionGuard->assertResolutionAllowed($draft->getMission());
+
+            $createdType = false;
+            $typeId = $input['interventionTypeId'] ?? null;
+            $newType = is_array($input['newInterventionType'] ?? null) ? $input['newInterventionType'] : null;
+            if ($typeId !== null && $newType !== null) {
+                throw new CatalogueRequestException(422, CatalogueRequestException::INTERVENTION_TYPE_REQUIRED, 'Choisissez une intervention existante OU créez-en une nouvelle, pas les deux.');
+            }
+            if ($typeId !== null) {
+                $type = $this->interventionTypeResolver->resolveActive((int) $typeId);
+            } elseif ($newType !== null) {
+                $type = $this->catalogue->createInterventionType((string) ($newType['code'] ?? ''), (string) ($newType['label'] ?? ''));
+                $createdType = true;
+            } else {
+                throw new CatalogueRequestException(422, CatalogueRequestException::INTERVENTION_TYPE_REQUIRED, 'Choisissez l\'intervention existante correspondante ou créez la nouvelle intervention.');
+            }
+
+            $createdFirm = false;
+            $firmId = $input['firmId'] ?? null;
+            $newFirmName = CatalogueFactory::normalizeName((string) ($input['newFirmName'] ?? ''));
+            if ($firmId !== null && $newFirmName !== '') {
+                throw new CatalogueRequestException(422, CatalogueRequestException::FIRM_AMBIGUOUS, 'Choisissez une firme existante OU créez une nouvelle firme, pas les deux.');
+            }
+            if ($firmId !== null) {
+                $firm = $this->firmResolver->resolveActive((int) $firmId);
+            } elseif ($newFirmName !== '') {
+                $firm = $this->catalogue->createFirm($newFirmName);
+                $createdFirm = true;
+            } else {
+                throw new CatalogueRequestException(422, CatalogueRequestException::FIRM_REQUIRED, InterventionRequirementsService::FIRM_QUESTION . ' La firme est obligatoire pour résoudre la demande.');
+            }
+
+            // Ids nécessaires aux lectures de politique (prestation, délégué, choix) ci-dessous.
+            $this->em->flush();
+
+            $createdOffering = false;
+            $decision = null;
+            if ($this->catalogue->findOffering($firm, $type) === null) {
+                $decision = $input['offeringDecision'] ?? null;
+                if (!in_array($decision, [self::OFFERING_FEE_APPLICABLE, self::OFFERING_NO_FEE, self::OFFERING_LEAVE_UNCONFIGURED], true)) {
+                    throw new CatalogueRequestException(422, CatalogueRequestException::OFFERING_DECISION_REQUIRED, sprintf(
+                        'La prestation « %s » n\'est pas encore configurée chez %s : indiquez si un forfait est applicable (le montant se configure ensuite dans Catalogue > Prestations), si aucun forfait n\'est prévu, ou laissez-la à configurer.',
+                        $type->getLabel(),
+                        $firm->getName(),
+                    ), ['firm' => ['id' => $firm->getId(), 'name' => $firm->getName()], 'interventionType' => ['id' => $type->getId(), 'code' => $type->getCode(), 'label' => $type->getLabel()]]);
+                }
+                if ($decision !== self::OFFERING_LEAVE_UNCONFIGURED) {
+                    $this->catalogue->createOffering($firm, $type, $decision === self::OFFERING_FEE_APPLICABLE);
+                    $createdOffering = true;
+                    $this->em->flush();
+                }
+            }
+
+            $representativePresent = array_key_exists('representativePresent', $input) && $input['representativePresent'] !== null
+                ? (bool) $input['representativePresent']
+                : null;
+            $choiceId = $input['selectedChoiceOptionId'] ?? null;
+            $choice = $choiceId !== null ? $this->requirements->resolveChoiceOption((int) $choiceId, $firm, $type) : null;
+
+            $intervention = $this->resolve($draft, $type, $firm, $actor, $representativePresent, $choice, [
+                'createdFirm' => $createdFirm,
+                'createdInterventionType' => $createdType,
+                'createdOffering' => $createdOffering,
+                'offeringDecision' => $decision,
+            ]);
+
+            $result = [
+                'intervention' => $intervention,
+                'createdFirm' => $createdFirm,
+                'createdInterventionType' => $createdType,
+                'createdOffering' => $createdOffering,
+                'offeringDecision' => $decision,
+            ];
+        });
+
+        return $result;
     }
 
     /**
@@ -123,51 +247,53 @@ final class MissionInterventionDraftService
      * mission (ce slot n'a jamais pu être réattribué depuis, voir MissionEntryOrderAllocator).
      *
      * $interventionType et $firm sont déjà résolus/validés par l'appelant (voir
-     * ActiveInterventionTypeResolver/ActiveFirmResolver, jamais dupliqués ici) — cette
-     * méthode ne fait qu'appliquer le choix du manager, jamais de validation catalogue,
-     * jamais de création de type/firme.
+     * ActiveInterventionTypeResolver/ActiveFirmResolver, jamais dupliqués ici) ; la
+     * création éventuelle de firme/type/prestation est orchestrée par resolveRequest().
+     *
+     * D-146 bis — mêmes invariants métier que la création classique
+     * (InterventionRequirementsService, jamais une règle divergente) :
+     *  - firme OBLIGATOIRE, appliquée à la seule intervention créée (jamais aux autres
+     *    interventions de la mission, jamais déduite de la marque du matériel) ;
+     *  - réponse délégué et système choisi exigés quand la prestation les requiert
+     *    (jamais un « Non » ni une option inventés) ;
+     *  - aucun matériel transféré depuis le draft incompatible avec le système choisi
+     *    (409, jamais une suppression silencieuse) ;
+     *  - jamais sur une mission validée/verrouillée/facturée (CatalogueResolutionGuard).
+     * Décideur/date posés sur la demande (même champs que ignore()).
      *
      * label/requestedFirm/requestedFirmNameSnapshot du draft ne sont jamais réécrits ici
      * (instantané figé à la création, D-068) — même si $firm diffère de
      * $draft->getRequestedFirm().
+     *
+     * @param array<string, mixed> $catalogueMeta créations faites par resolveRequest() (audit)
      */
     public function resolve(
         MissionInterventionDraft $draft,
         InterventionType $interventionType,
         ?Firm $firm,
         User $actor,
+        ?bool $representativePresent = null,
+        ?ChoiceOption $selectedChoiceOption = null,
+        array $catalogueMeta = [],
     ): MissionIntervention {
         $intervention = null;
 
-        $this->em->wrapInTransaction(function () use (&$intervention, $draft, $interventionType, $firm, $actor): void {
+        $this->em->wrapInTransaction(function () use (&$intervention, $draft, $interventionType, $firm, $actor, $representativePresent, $selectedChoiceOption, $catalogueMeta): void {
             $this->em->lock($draft, LockMode::PESSIMISTIC_WRITE);
             $this->em->refresh($draft);
-
-            if ($draft->getStatus() !== MissionInterventionDraft::STATUS_OPEN) {
-                throw new DraftAlreadyResolvedException(sprintf(
-                    'MissionInterventionDraft #%d is %s, not OPEN — cannot be resolved (again).',
-                    $draft->getId(),
-                    $draft->getStatus(),
-                ));
-            }
+            $this->assertResolvable($draft);
 
             $request = $draft->getInterventionTypeRequest();
-            if ($request->getStatus() !== InterventionTypeRequest::STATUS_PENDING) {
-                throw new DraftAlreadyResolvedException(sprintf(
-                    'InterventionTypeRequest #%d is %s, not PENDING — cannot be resolved (again).',
-                    $request->getId(),
-                    $request->getStatus(),
-                ));
-            }
-
             $mission = $draft->getMission();
-            if ($request->getMission()?->getId() !== $mission->getId()) {
-                throw new \LogicException(sprintf(
-                    'MissionInterventionDraft #%d and its InterventionTypeRequest #%d belong to different missions — invalid state.',
-                    $draft->getId(),
-                    $request->getId(),
-                ));
+
+            $this->resolutionGuard->assertResolutionAllowed($mission);
+            $this->requirements->assertFirmProvided($firm);
+            if ($selectedChoiceOption !== null) {
+                // Revalide l'appartenance de l'option à la prestation (firme × type) effective.
+                $selectedChoiceOption = $this->requirements->resolveChoiceOption((int) $selectedChoiceOption->getId(), $firm, $interventionType);
             }
+            $this->requirements->assertRepresentativePresenceAnswered($firm, $interventionType, $representativePresent);
+            $this->requirements->assertChoiceAnswered($firm, $interventionType, $selectedChoiceOption);
 
             $intervention = new MissionIntervention();
             $intervention
@@ -176,7 +302,9 @@ final class MissionInterventionDraftService
                 ->setPrimaryFirm($firm)
                 ->setCode($interventionType->getCode())
                 ->setLabel($interventionType->getLabel())
-                ->setOrderIndex($draft->getOrderIndex());
+                ->setOrderIndex($draft->getOrderIndex())
+                ->setRepresentativePresent($representativePresent)
+                ->setSelectedChoiceOption($selectedChoiceOption);
 
             $this->em->persist($intervention);
             // Flush intermédiaire : la MissionIntervention doit avoir un id avant que le
@@ -185,9 +313,12 @@ final class MissionInterventionDraftService
             $this->em->flush();
 
             $moved = $this->repointMaterial($draft, $intervention);
+            $this->assertMovedMaterialCompatible($intervention, $selectedChoiceOption);
 
             $request->setResolvedInterventionType($interventionType);
             $request->setStatus(InterventionTypeRequest::STATUS_RESOLVED);
+            $request->setDecidedBy($actor);
+            $request->setDecidedAt(new \DateTimeImmutable());
 
             $draft->setStatus(MissionInterventionDraft::STATUS_CONVERTED);
             $draft->setResolvedMissionIntervention($intervention);
@@ -203,14 +334,80 @@ final class MissionInterventionDraftService
                 'finalFirmId' => $firm?->getId(),
                 'requestedFirmId' => $draft->getRequestedFirm()?->getId(),
                 'requestedFirmNameSnapshot' => $draft->getRequestedFirmNameSnapshot(),
+                'proposedFirmName' => $draft->getProposedFirmName(),
+                'representativePresent' => $representativePresent,
+                'selectedChoiceOptionId' => $selectedChoiceOption?->getId(),
                 'orderIndex' => $intervention->getOrderIndex(),
                 'materialLinesMovedCount' => $moved['lines'],
                 'materialItemRequestsMovedCount' => $moved['materialItemRequests'],
-            ]);
+            ] + $catalogueMeta);
             $this->em->flush();
         });
 
         return $intervention;
+    }
+
+    private function assertResolvable(MissionInterventionDraft $draft): void
+    {
+        if ($draft->getStatus() !== MissionInterventionDraft::STATUS_OPEN) {
+            throw new DraftAlreadyResolvedException(sprintf(
+                'MissionInterventionDraft #%d is %s, not OPEN — cannot be resolved (again).',
+                $draft->getId(),
+                $draft->getStatus(),
+            ));
+        }
+
+        $request = $draft->getInterventionTypeRequest();
+        if ($request->getStatus() !== InterventionTypeRequest::STATUS_PENDING) {
+            throw new DraftAlreadyResolvedException(sprintf(
+                'InterventionTypeRequest #%d is %s, not PENDING — cannot be resolved (again).',
+                $request->getId(),
+                $request->getStatus(),
+            ));
+        }
+
+        if ($request->getMission()?->getId() !== $draft->getMission()->getId()) {
+            throw new \LogicException(sprintf(
+                'MissionInterventionDraft #%d and its InterventionTypeRequest #%d belong to different missions — invalid state.',
+                $draft->getId(),
+                $request->getId(),
+            ));
+        }
+    }
+
+    /**
+     * D-146 bis / D-111 — le matériel déjà déclaré sur le draft (repointé en masse, donc
+     * absent de la collection en mémoire) ne doit pas contredire le système choisi : un
+     * matériel lié à une AUTRE option du groupe est refusé (409, rollback), jamais retiré.
+     */
+    private function assertMovedMaterialCompatible(MissionIntervention $intervention, ?ChoiceOption $selected): void
+    {
+        if ($selected === null) {
+            return;
+        }
+
+        $incompatibleItemIds = [];
+        foreach ($selected->getGroup()->getOptions() as $option) {
+            if ($option->getId() !== $selected->getId() && $option->getMaterialItem() !== null) {
+                $incompatibleItemIds[] = $option->getMaterialItem()->getId();
+            }
+        }
+        if ($incompatibleItemIds === []) {
+            return;
+        }
+
+        $labels = $this->em->createQuery(sprintf(
+            'SELECT i.label FROM %s l JOIN l.item i WHERE l.missionIntervention = :intervention AND i.id IN (:ids)',
+            MaterialLine::class,
+        ))->setParameter('intervention', $intervention)->setParameter('ids', $incompatibleItemIds)->getSingleColumnResult();
+
+        if ($labels !== []) {
+            throw new IncompatibleChoiceMaterialException(sprintf(
+                'Le matériel « %s » déclaré sur cette demande n\'est pas compatible avec « %s » : choisissez le système correspondant, ou corrigez d\'abord le matériel.',
+                $labels[0],
+                $selected->getLabel(),
+            ));
+        }
     }
 
     /**
@@ -304,8 +501,15 @@ final class MissionInterventionDraftService
                         'Mission intervention not found on this mission.',
                     );
                 }
+                // D-146 bis — REASSIGN modifie le contenu de la mission (matériel déplacé
+                // vers une intervention réelle) : jamais sur une mission verrouillée.
+                // KEEP_AS_HISTORY, lui, ne touche à aucune ligne et reste possible.
+                $this->resolutionGuard->assertResolutionAllowed($mission);
 
                 $moved = $this->repointMaterial($draft, $reassignTarget);
+                // Le matériel déplacé ne doit pas contredire le système déjà choisi sur
+                // l'intervention cible (409, rollback du déplacement).
+                $this->assertMovedMaterialCompatible($reassignTarget, $reassignTarget->getSelectedChoiceOption());
 
                 $draft->setStatus(MissionInterventionDraft::STATUS_MATERIAL_REASSIGNED);
                 $draft->setResolvedMissionIntervention($reassignTarget);

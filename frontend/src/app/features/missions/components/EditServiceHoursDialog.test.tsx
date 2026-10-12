@@ -112,11 +112,22 @@ describe("EditServiceHoursDialog — préremplissage à l'ouverture", () => {
     expect(screen.getByText("5h30")).toBeInTheDocument();
   });
 
+  it("D-146 bis — 08h00 → 11h30 = 3h30 : aucun champ Pause, aucune déduction", () => {
+    renderDialog(baseMission(), vi.fn(), vi.fn(), executionInfo({
+      hasExecutionRecord: true, actualStartAt: "2026-07-05T08:00:00", actualEndAt: "2026-07-05T11:30:00",
+      actualDurationMinutes: 210, effectiveDurationMinutes: 210, effectiveDurationSource: "ACTUAL_TIMES",
+    }));
+
+    expect(screen.getByText("3h30")).toBeInTheDocument();
+    expect(screen.queryByText("Pause")).not.toBeInTheDocument();
+    expect(screen.queryByText(/pause/i)).not.toBeInTheDocument();
+  });
+
   it("régression : modifier, enregistrer puis rouvrir affiche la dernière valeur sauvegardée", async () => {
     const user = userEvent.setup();
     apiPatchMock.mockImplementation((_url: string, body: any) => Promise.resolve({
       data: executionInfo({
-        hasExecutionRecord: true, actualStartAt: body.actualStartAt, actualEndAt: body.actualEndAt, breakMinutes: body.breakMinutes,
+        hasExecutionRecord: true, actualStartAt: body.actualStartAt, actualEndAt: body.actualEndAt,
         actualDurationMinutes: 255, hoursSource: "INSTRUMENTIST",
         effectiveDurationMinutes: 255, effectiveDurationSource: "ACTUAL_TIMES",
       }),
@@ -130,7 +141,7 @@ describe("EditServiceHoursDialog — préremplissage à l'ouverture", () => {
     await user.click(screen.getByRole("button", { name: "Enregistrer les heures" }));
     await waitFor(() => expect(apiPatchMock).toHaveBeenCalledWith(
       `/api/missions/${MISSION_ID}/execution`,
-      { actualStartAt: dayjs("2026-07-05T08:00:00Z").format(), actualEndAt: dayjs("2026-07-05T12:15:00Z").format(), breakMinutes: 0, hoursSource: "INSTRUMENTIST" },
+      { actualStartAt: dayjs("2026-07-05T08:00:00Z").format(), actualEndAt: dayjs("2026-07-05T12:15:00Z").format(), hoursSource: "INSTRUMENTIST" },
     ));
     await waitFor(() => expect(screen.queryByText("Enregistrer les heures")).not.toBeInTheDocument());
 
@@ -142,7 +153,7 @@ describe("EditServiceHoursDialog — préremplissage à l'ouverture", () => {
 });
 
 describe("EditServiceHoursDialog — mutation optimiste des heures prestées", () => {
-  it("D-143 — appelle PATCH .../execution avec début, fin et pause réels (jamais une durée seule)", async () => {
+  it("D-143 — appelle PATCH .../execution avec début et fin réels, sans pause (jamais une durée seule)", async () => {
     apiPatchMock.mockResolvedValue({ data: executionInfo({ hasExecutionRecord: true, actualDurationMinutes: 240, hoursSource: "INSTRUMENTIST", effectiveDurationMinutes: 240, effectiveDurationSource: "ACTUAL_EXPLICIT" }) });
     renderDialog(baseMission());
 
@@ -151,7 +162,7 @@ describe("EditServiceHoursDialog — mutation optimiste des heures prestées", (
     await waitFor(() => {
       expect(apiPatchMock).toHaveBeenCalledWith(
         `/api/missions/${MISSION_ID}/execution`,
-        { actualStartAt: dayjs("2026-07-05T08:00:00Z").format(), actualEndAt: dayjs("2026-07-05T12:00:00Z").format(), breakMinutes: 0, hoursSource: "INSTRUMENTIST" },
+        { actualStartAt: dayjs("2026-07-05T08:00:00Z").format(), actualEndAt: dayjs("2026-07-05T12:00:00Z").format(), hoursSource: "INSTRUMENTIST" },
       );
     });
   });
@@ -166,7 +177,7 @@ describe("EditServiceHoursDialog — mutation optimiste des heures prestées", (
     await userEvent.click(screen.getByRole("button", { name: "Enregistrer les heures" }));
 
     // Affichage optimiste : la modale se ferme et le cache reflète déjà la nouvelle
-    // valeur (08h00 → 12h00, pas de pause = 4h = 240 min) sans attendre la résolution de
+    // valeur (08h00 → 12h00 = 4h = 240 min) sans attendre la résolution de
     // l'appel API. hasExecutionRecord doit déjà valoir true (sinon la carte retomberait
     // sur "Non renseigné" malgré la saisie).
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
@@ -233,7 +244,7 @@ describe("EditServiceHoursDialog — encodage progressif (D-143)", () => {
 
     await waitFor(() => expect(apiPatchMock).toHaveBeenCalledWith(
       `/api/missions/${MISSION_ID}/execution`,
-      { actualStartAt: dayjs("2026-07-05T08:00:00Z").format(), breakMinutes: 0, hoursSource: "INSTRUMENTIST" },
+      { actualStartAt: dayjs("2026-07-05T08:00:00Z").format(), hoursSource: "INSTRUMENTIST" },
     ));
   });
 

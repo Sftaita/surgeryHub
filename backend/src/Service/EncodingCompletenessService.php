@@ -28,8 +28,8 @@ final class EncodingCompletenessService
     public const INCOHERENT_ACTUAL_TIMES = 'ACTUAL_TIMES_INCOHERENT';
 
     private const LABELS = [
-        self::MISSING_ACTUAL_START    => 'Heure réelle de début',
-        self::MISSING_ACTUAL_END      => 'Heure réelle de fin',
+        self::MISSING_ACTUAL_START    => 'Heure de début prestée',
+        self::MISSING_ACTUAL_END      => 'Heure de fin prestée',
         self::INCOHERENT_ACTUAL_TIMES => "L'heure de fin doit être postérieure à l'heure de début",
     ];
 

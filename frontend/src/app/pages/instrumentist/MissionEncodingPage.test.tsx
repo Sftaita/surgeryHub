@@ -511,3 +511,30 @@ describe("MissionEncodingPage — bouton retour (origine mémorisée par MobileL
     expect(await screen.findByText("Origin content")).toBeInTheDocument();
   });
 });
+
+describe("MissionEncodingPage — mission validée, consultation en lecture seule (D-146 bis)", () => {
+  it("affiche heures prestées (fin − début), interventions et matériel, sans aucune action de modification", async () => {
+    const line = { id: 801, missionInterventionId: 1, item: { id: 100, label: "Vis canulée", referenceCode: "VC-1", unit: "pièce", isImplant: false, firm: { id: 10, name: "Arthrex" } }, quantity: "2.00", comment: "" };
+    mockRoutes(
+      baseMission({ status: "VALIDATED", allowedActions: ["view", "view_encoding"] }),
+      baseEncoding({
+        mission: { id: 529, type: "BLOCK", status: "VALIDATED", allowedActions: ["view", "view_encoding"] },
+        interventions: [{ id: 1, code: "A", label: "Intervention A", orderIndex: 0, materialLines: [line], materialItemRequests: [] }],
+        entries: [
+          { kind: "INTERVENTION", id: 1, requestId: null, orderIndex: 0, label: "Intervention A", interventionType: null, firm: { id: 10, name: "Arthrex" }, requestedFirmNameSnapshot: null, status: "CATALOGUED", readOnly: false, materialLines: [line], materialItemRequests: [] },
+        ],
+        progress: { interventionCount: 1, encodedInterventionCount: 1, materialLineCount: 1 },
+      }),
+      baseExecution({ hasExecutionRecord: true, actualStartAt: "2026-07-05T08:00:00Z", actualEndAt: "2026-07-05T11:30:00Z", actualDurationMinutes: 210, effectiveDurationMinutes: 210, effectiveDurationSource: "ACTUAL_TIMES" }),
+    );
+    renderPage();
+
+    expect(await screen.findByText("Intervention A")).toBeInTheDocument();
+    expect(screen.getByText("3h30")).toBeInTheDocument();
+    expect(screen.queryByText("L'encodage n'est pas disponible pour cette mission.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Valider" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /nouvelle intervention/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /ajouter du matériel/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/pause/i)).not.toBeInTheDocument();
+  });
+});

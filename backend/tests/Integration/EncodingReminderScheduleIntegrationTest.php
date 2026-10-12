@@ -361,7 +361,7 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
         self::assertSame('Diane D143', $ctx['instrumentistName']);
         self::assertSame('14/07/2026', $ctx['missionDate']);
         self::assertSame('Chirurgien D143', $ctx['surgeonName']);
-        self::assertSame(['Heure réelle de début', 'Heure réelle de fin'], $ctx['missing']);
+        self::assertSame(['Heure de début prestée', 'Heure de fin prestée'], $ctx['missing']);
         self::assertCount(2, $ctx['previousReminders']);
         self::assertSame('https://app.test/app/m/billing/encodings?missionId=' . $mission->getId(), $ctx['trackingUrl']);
 

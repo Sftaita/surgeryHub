@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Box,
@@ -28,7 +28,7 @@ import "dayjs/locale/fr";
 
 import { fetchMissionById, getMissionExecution } from "../../features/missions/api/missions.api";
 import type { Mission } from "../../features/missions/api/missions.types";
-import { formatExecutionHours } from "../../features/missions/utils/missions.format";
+import { formatExecutionHours, HOURS_NOT_PROVIDED } from "../../features/missions/utils/missions.format";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
 import { MobileCard } from "../../ui/mobile/MobileCard";
@@ -154,6 +154,7 @@ type Props = {
 
 export function MissionDetailContent({ missionId, embedded = false, onCloseEmbedded }: Props) {
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
 
   const [openSubmit, setOpenSubmit] = React.useState(false);
@@ -187,6 +188,12 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
   // (allowedActions ne renvoie jamais les deux pour un même viewer), mais vérifié quand
   // même pour ne jamais faire disparaître le CTA "Gérer" de l'instrumentiste.
   const canViewEncoding = !canEncoding && allowed.includes("view_encoding");
+  // D-146 bis — même composant pour l'instrumentiste (/app/i, consultation de sa mission
+  // validée) et le chirurgien (/app/s) : la consultation reste dans l'espace de l'utilisateur.
+  const viewEncodingPath = location.pathname.startsWith("/app/i/")
+    ? `/app/i/missions/${mission.id}/encoding`
+    : `/app/s/missions/${mission.id}/encoding`;
+  const isInstrumentistView = location.pathname.startsWith("/app/i/");
 
   const { label: chipLabel, color: chipColor } = getStatusChip(String(mission.status ?? ""));
   const hoursLabel = formatExecutionHours(execution);
@@ -252,7 +259,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
             <Typography variant="body2" color="text.secondary">
               Heures prestées
             </Typography>
-            <Typography variant="body2" fontWeight={700} color={hoursLabel === "Non renseigné" ? "text.disabled" : "text.primary"}>
+            <Typography variant="body2" fontWeight={700} color={hoursLabel === HOURS_NOT_PROVIDED ? "text.disabled" : "text.primary"}>
               {hoursLabel}
             </Typography>
           </Stack>
@@ -292,7 +299,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
             <Button
               size="small"
               variant="text"
-              onClick={() => navigate(`/app/s/missions/${mission.id}/encoding`)}
+              onClick={() => navigate(viewEncodingPath)}
             >
               Voir
             </Button>
@@ -303,7 +310,9 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
           {canEncoding
             ? "Encodez les interventions et le matériel utilisé."
             : canViewEncoding
-            ? "Consultez les interventions et le matériel encodés par l'instrumentiste."
+            ? isInstrumentistView
+              ? "Consultez vos heures prestées, interventions et matériel encodés (lecture seule)."
+              : "Consultez les interventions et le matériel encodés par l'instrumentiste."
             : "Encodage non disponible pour cette mission."}
         </Typography>
       </SectionCard>
@@ -329,7 +338,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
               disableElevation
               fullWidth
               size="large"
-              onClick={() => navigate(`/app/s/missions/${mission.id}/encoding`)}
+              onClick={() => navigate(viewEncodingPath)}
               sx={{ borderRadius: 2, fontWeight: 700 }}
             >
               Encodage de l'intervention

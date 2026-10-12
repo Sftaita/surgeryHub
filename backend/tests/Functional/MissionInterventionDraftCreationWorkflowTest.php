@@ -244,7 +244,7 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Prothèse épaule inversée',
         ]);
         self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
@@ -295,7 +295,7 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Sans firme',
         ]);
         self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
@@ -309,7 +309,7 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Ligamentoplastie du LCA',
         ]);
         self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
@@ -342,7 +342,7 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Sans firme demandée',
         ]);
         self::assertSame(Response::HTTP_CREATED, $response->getStatusCode(), $response->getContent());
@@ -423,7 +423,7 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Première entrée',
         ]);
         $requestId = $this->trackCreatedRequest($response);
@@ -437,7 +437,7 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
         [$client, $mission, $token] = $this->bootMissionScenario();
         $type = $this->makeType();
 
-        $interventionResponse = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+        $interventionResponse = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, ['primaryFirmId' => $this->makeFirm()->getId(), 
             'interventionTypeId' => $type->getId(),
         ]);
         self::assertSame(Response::HTTP_CREATED, $interventionResponse->getStatusCode(), $interventionResponse->getContent());
@@ -445,7 +445,7 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
         $this->createdIds['interventions'][] = $interventionId;
         self::assertSame(0, json_decode($interventionResponse->getContent(), true)['orderIndex']);
 
-        $draftResponse = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $draftResponse = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Deuxième entrée',
         ]);
         $requestId = $this->trackCreatedRequest($draftResponse);
@@ -459,7 +459,7 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
         [$client, $mission, $token] = $this->bootMissionScenario();
         $type = $this->makeType();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, ['primaryFirmId' => $this->makeFirm()->getId(), 
             'interventionTypeId' => $type->getId(),
             'orderIndex' => 999, // volontairement incohérent — doit être ignoré côté serveur
         ]);
@@ -482,12 +482,12 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
         [$client, $mission, $token] = $this->bootMissionScenario();
         $type = $this->makeType();
 
-        $first = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+        $first = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, ['primaryFirmId' => $this->makeFirm()->getId(), 
             'interventionTypeId' => $type->getId(),
         ]);
         $firstId = json_decode($first->getContent(), true)['id'];
 
-        $second = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+        $second = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, ['primaryFirmId' => $this->makeFirm()->getId(), 
             'interventionTypeId' => $type->getId(),
         ]);
         $secondId = json_decode($second->getContent(), true)['id'];
@@ -497,7 +497,7 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
         $delete = $this->request($client, 'DELETE', "/api/missions/{$mission->getId()}/interventions/{$firstId}", $token);
         self::assertSame(Response::HTTP_NO_CONTENT, $delete->getStatusCode());
 
-        $third = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
+        $third = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, ['primaryFirmId' => $this->makeFirm()->getId(), 
             'interventionTypeId' => $type->getId(),
         ]);
         self::assertSame(Response::HTTP_CREATED, $third->getStatusCode(), $third->getContent());
@@ -514,7 +514,7 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
     {
         [$client, $mission, $token] = $this->bootMissionScenario();
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Autorisé',
         ]);
 
@@ -528,7 +528,7 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
         $otherInstrumentist = $this->createUser('ROLE_INSTRUMENTIST');
         $otherToken = $this->login($client, $otherInstrumentist);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $otherToken, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $otherToken, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Refusé',
         ]);
 
@@ -555,7 +555,7 @@ final class MissionInterventionDraftCreationWorkflowTest extends WebTestCase
         $mission = $this->makeNotYetStartedMission($surgeon, $instr, $site);
         $token = $this->login($client, $instr);
 
-        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, [
+        $response = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $token, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Trop tôt',
         ]);
 

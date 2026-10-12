@@ -228,7 +228,7 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
 
     await waitFor(() => expect(screen.getByText("5 h 12")).toBeInTheDocument());
     expect(screen.getByText("/ 5 h")).toBeInTheDocument();
-    expect(screen.getByText("Heures réelles")).toBeInTheDocument();
+    expect(screen.getByText("Heures prestées")).toBeInTheDocument();
   });
 
   it("n'affiche jamais d'heures « effectives » quand la source est PLANNED (pas de champ encodedMinutes fantôme)", async () => {
@@ -241,7 +241,7 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
 
     await waitFor(() => expect(screen.getByText(/3 h planifiées/)).toBeInTheDocument());
     expect(screen.queryByText(/effectives/)).toBeNull();
-    expect(screen.getByText("Heures réelles non renseignées")).toBeInTheDocument();
+    expect(screen.getByText("Heures prestées non renseignées")).toBeInTheDocument();
   });
 
   it("ne masque jamais une heure réelle au motif que la mission n'est pas SUBMITTED", async () => {

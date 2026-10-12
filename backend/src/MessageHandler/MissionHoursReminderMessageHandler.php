@@ -64,10 +64,10 @@ final class MissionHoursReminderMessageHandler
 
         try {
             $day = $mission->getStartAt()?->setTimezone(new \DateTimeZone(self::TIMEZONE))->format('d/m/Y');
-            $title = 'Heures réelles à renseigner';
+            $title = 'Heures prestées à renseigner';
             $body = $day !== null
-                ? sprintf('Merci de renseigner les heures réellement prestées pour votre mission du %s.', $day)
-                : 'Merci de renseigner les heures réellement prestées pour cette mission.';
+                ? sprintf('Merci de renseigner vos heures prestées pour votre mission du %s.', $day)
+                : 'Merci de renseigner vos heures prestées pour cette mission.';
             $path = sprintf('/app/i/missions/%d/encoding', $mission->getId());
 
             $this->dispatcher->dispatch(new NotificationIntent(
@@ -75,7 +75,7 @@ final class MissionHoursReminderMessageHandler
                 type: NotificationType::MISSION_HOURS_REMINDER,
                 inAppPayload: ['missionId' => $mission->getId(), 'missionDate' => $day],
                 mission: $mission,
-                email: new EmailContent('SurgicalHub — Heures réelles à renseigner', 'emails/mission_hours_reminder.html.twig', [
+                email: new EmailContent('SurgicalHub — Heures prestées à renseigner', 'emails/mission_hours_reminder.html.twig', [
                     'firstname'  => $instrumentist->getFirstname(),
                     'missionDay' => $day,
                     'missionUrl' => $this->frontendUrl . $path,

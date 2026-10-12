@@ -246,6 +246,45 @@ class NotificationService
         ]);
     }
 
+    /**
+     * D-146 bis — accusé de résolution : dit à l'instrumentiste sous quel nom EXACT
+     * l'élément est désormais enregistré (nom, référence ou code, firme retenus par le
+     * manager — jamais le libellé initialement proposé), pour qu'il le retrouve lors de ses
+     * prochains encodages. Aucune donnée patient, aucune information financière.
+     *
+     * @param array<string, scalar|null> $resolution instantané CatalogueRequestProcessedMessage::$resolution
+     */
+    public function catalogueRequestResolutionEmail(Mission $mission, User $instrumentist, CatalogueRequestKind $kind, string $requestedLabel, array $resolution): EmailContent
+    {
+        $isMaterial = $kind === CatalogueRequestKind::MATERIAL_ITEM;
+        $quantity = isset($resolution['quantity']) && is_numeric($resolution['quantity'])
+            ? rtrim(rtrim(number_format((float) $resolution['quantity'], 2, ',', ''), '0'), ',')
+            : null;
+        $name = (string) ($resolution['name'] ?? $requestedLabel);
+
+        return new EmailContent(
+            $isMaterial ? 'SurgicalHub — Votre demande de matériel a été acceptée' : "SurgicalHub — Votre demande d'intervention a été acceptée",
+            'emails/catalogue_request_resolution.html.twig',
+            [
+                'firstname'      => $instrumentist->getFirstname(),
+                'isMaterial'     => $isMaterial,
+                'name'           => $name,
+                'requestedLabel' => $requestedLabel,
+                'renamed'        => mb_strtolower(trim($requestedLabel)) !== mb_strtolower(trim($name)),
+                'reference'      => $isMaterial ? ($resolution['reference'] ?? null) : null,
+                'code'           => $isMaterial ? null : ($resolution['code'] ?? null),
+                'firm'           => $resolution['firm'] ?? null,
+                'quantity'       => $isMaterial ? $quantity : null,
+                'existingItem'   => (bool) ($resolution['existingItem'] ?? false),
+                'missionId'      => $mission->getId(),
+                'missionDate'    => $mission->getStartAt()?->setTimezone(new \DateTimeZone('Europe/Brussels'))->format('d/m/Y'),
+                'siteName'       => $mission->getSite()?->getName(),
+                'missionUrl'     => sprintf('%s/app/i/missions/%d', $this->frontendUrl, $mission->getId()),
+                'notificationPreferencesUrl' => $this->notificationPreferencesUrl($instrumentist),
+            ],
+        );
+    }
+
     /** D-093 — the instrumentist's catalogue proposal was not retained (never deleted — IGNORED). */
     public function catalogueRequestIgnoredEmail(
         Mission $mission,
