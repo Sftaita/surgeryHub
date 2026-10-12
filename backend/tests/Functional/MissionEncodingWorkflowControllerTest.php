@@ -583,6 +583,60 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
 
     // ── reopen ───────────────────────────────────────────────────────────────
 
+    /**
+     * D-146 bis — après validation, l'instrumentiste assignée consulte encore son encodage
+     * (heures prestées, interventions, matériel) en lecture seule ; aucune écriture possible,
+     * aucun accès pour une autre instrumentiste.
+     */
+    public function test_assigned_instrumentist_can_read_but_never_modify_a_validated_mission(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $other   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::VALIDATED, $instr);
+        $this->giveActualHours($mission, '2026-09-01 08:00:00', '2026-09-01 11:30:00');
+        $line = $this->makeMaterialLine($mission, $instr);
+        $mission->setEncodingLockedAt(new \DateTimeImmutable());
+        $this->em->flush();
+        $id = $mission->getId();
+        $token = $this->login($client, $instr);
+
+        $encoding = $this->getJson($client, $token, "/api/missions/$id/encoding");
+        self::assertSame(Response::HTTP_OK, $encoding->getStatusCode(), (string) $encoding->getContent());
+        $read = json_decode((string) $encoding->getContent(), true);
+        self::assertSame('VALIDATED', $read['mission']['status']);
+        self::assertSame(1, $read['progress']['materialLineCount'], 'matériel déclaré consultable');
+
+        $execution = json_decode((string) $this->getJson($client, $token, "/api/missions/$id/execution")->getContent(), true);
+        self::assertSame(210, $execution['effectiveDurationMinutes'], '08h00 → 11h30 = 3h30, aucune pause');
+
+        $detail = json_decode((string) $this->getJson($client, $token, "/api/missions/$id")->getContent(), true);
+        self::assertContains('view_encoding', $detail['allowedActions']);
+        foreach (['encoding', 'edit_encoding', 'edit_hours', 'submit'] as $write) {
+            self::assertNotContains($write, $detail['allowedActions']);
+        }
+
+        // Aucune modification : heures, matériel, soumission.
+        $patch = $this->patchJson($client, $token, "/api/missions/$id/execution", ['actualEndAt' => '2026-09-01T12:30:00+00:00']);
+        self::assertContains($patch->getStatusCode(), [Response::HTTP_FORBIDDEN, Response::HTTP_CONFLICT, Response::HTTP_UNPROCESSABLE_ENTITY]);
+        $add = $this->postJson($client, $token, "/api/missions/$id/material-lines", ['itemId' => $line->getItem()->getId(), 'quantity' => 1]);
+        self::assertContains($add->getStatusCode(), [Response::HTTP_FORBIDDEN, Response::HTTP_CONFLICT, Response::HTTP_UNPROCESSABLE_ENTITY]);
+        $submit = $this->postJson($client, $token, "/api/missions/$id/encoding/complete", ['comment' => 'x']);
+        self::assertContains($submit->getStatusCode(), [Response::HTTP_FORBIDDEN, Response::HTTP_CONFLICT]);
+
+        $this->em->clear();
+        $reloaded = $this->em->find(Mission::class, $id);
+        self::assertSame(MissionStatus::VALIDATED, $reloaded->getStatus());
+        self::assertSame((new \DateTimeImmutable('2026-09-01 11:30:00'))->getTimestamp(), $reloaded->getExecution()->getActualEndAt()->getTimestamp(), 'heures prestées inchangées');
+
+        // Une autre instrumentiste n'y a pas accès.
+        $otherToken = $this->login($client, $other);
+        self::assertSame(Response::HTTP_FORBIDDEN, $this->getJson($client, $otherToken, "/api/missions/$id/encoding")->getStatusCode());
+    }
+
     public function test_manager_can_reopen_validated_mission(): void
     {
         $client  = $this->boot();

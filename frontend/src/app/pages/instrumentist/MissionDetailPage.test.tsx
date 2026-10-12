@@ -249,3 +249,27 @@ describe("MissionDetailPage — régression instrumentiste (canEncoding priorita
     expect(screen.queryByText("Voir")).not.toBeInTheDocument();
   });
 });
+
+describe("MissionDetailPage — instrumentiste, mission validée (D-146 bis)", () => {
+  it("le CTA de consultation reste dans l'espace instrumentiste (/app/i/missions/:id/encoding)", async () => {
+    mockRoutes(baseMission({ status: "VALIDATED", allowedActions: ["view_encoding"] }), executionInfo());
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={["/app/i/missions/690"]}>
+        <QueryClientProvider client={client}>
+          <Routes>
+            <Route path="/app/i/missions/:id" element={<MissionDetailContent missionId={MISSION_ID} />} />
+            <Route path="/app/i/missions/:id/encoding" element={<div>Instrumentist encoding screen</div>} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    const user = userEvent.setup();
+    expect(await screen.findByText("Consultez vos heures prestées, interventions et matériel encodés (lecture seule).")).toBeInTheDocument();
+    expect(screen.queryByText("Encoder la mission")).not.toBeInTheDocument();
+    await user.click(screen.getByText("Encodage de l'intervention"));
+
+    expect(await screen.findByText("Instrumentist encoding screen")).toBeInTheDocument();
+  });
+});
