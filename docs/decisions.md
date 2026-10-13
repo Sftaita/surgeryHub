@@ -13204,3 +13204,70 @@ les instrumentistes saisiront elles-mêmes leurs horaires réels.
 
 **Hors périmètre.** Fiche mission complète (seul le motif de réouverture y devient
 obligatoire), PR #4 (D-139), H6–H8.
+
+## D-149 — Avenant D-144 : toute notification « tous les managers » cible les managers opérationnels ; les comptes de test se désactivent (2026-10-13)
+
+### Contexte
+
+Incident signalé le 2026-10-13 : des notifications manager arrivaient en double dans la
+boîte Gmail du manager #7. Les doublons portaient sur les absences et sur les demandes au
+catalogue. Diagnostic en lecture seule sur la production :
+
+- **Aucun double dispatch technique.** Pour l'absence #89 (12/10, 17:15), il y a un
+  `notification_dispatch` par utilisateur (corrélation unique) et un e-mail `SENT` par
+  utilisateur (`attempt_count = 1`) ; la file `failed` est vide. Pour le catalogue, chaque
+  compte a reçu 34 e-mails pour 34 demandes depuis le 07/09.
+- **Deux `User` distincts.** Le second e-mail était adressé au compte #31
+  `samy.ftaita89+testmgr1782332852@gmail.com` (« TestPrenom TestNom », `ROLE_MANAGER`,
+  actif). Ce compte a été créé le 24/06/2026 à 20:27 lors d'un test, avec #32 (chirurgien)
+  et #33 (instrumentiste). Il n'a jamais été nettoyé, contrairement à la procédure
+  (`deployment-versioning.md`, « Toujours nettoyer »), et il est antérieur à la convention
+  `@surgicalhub.internal` (12/07). Gmail livre les alias `+…` dans la même boîte.
+- `findManagersAndAdmins(true)` renvoyait 6 destinataires : #1, #7, #31, #34 et deux
+  comptes techniques `@surgicalhub.internal`, #72 (smoke) et #81 (deploytest), qui
+  recevaient de vrais envois SMTP. Seule l'escalade J+4 (D-144) les excluait déjà.
+
+### Décision
+
+1. **Une seule règle de destinataires.** Toutes les notifications « tous les managers »
+   passent par `UserRepository::findOperationalManagers()` (D-144) :
+   - absences (`AbsenceImpactSummaryService`, `SelfAbsenceController`) ;
+   - catalogue (`CatalogueRequestCreatedMessageHandler`) ;
+   - déclarations (`NotificationService`) ;
+   - demandes chirurgien (`SurgeonMissionRequestService`) ;
+   - anomalies d'encodage (`EncodingAnomalyReportService`) ;
+   - conflits de planning (`PlanningConflictDetectionService`) ;
+   - refus d'offre sans manager émetteur (`MissionLifecycleChangedMessageHandler`).
+
+   La règle de D-144 est inchangée : comptes `ROLE_MANAGER` / `ROLE_ADMIN` actifs, ayant
+   une adresse, hors domaine réservé `surgicalhub.internal`, une seule fois par User. Le
+   passage « les autres notifications ne changent pas » de D-144 est levé. Aucun périmètre
+   manager ↔ site n'est créé.
+2. **Aucune normalisation d'adresse.** Le dédoublonnage se fait par `User`, jamais par
+   adresse : `nom@…` et `nom+x@…` sont deux comptes, donc deux destinataires. Le code ne
+   contient aucune logique propre à Gmail.
+3. **Limite assumée.** L'exclusion par domaine ne protège que les comptes de test
+   conformes à la convention `@surgicalhub.internal`. Un compte de test créé avec une
+   adresse réelle (cas de #31) reste un destinataire tant qu'il est actif : il se traite
+   par **désactivation** (`active = 0`, jamais de suppression), opération de données
+   séparée du code, décidée explicitement. **L'incident n'est clos qu'après la
+   désactivation de #31.**
+4. **Procédure.** Après chaque test en production, la requête de contrôle des comptes de
+   test actifs (`deployment-versioning.md`) doit être vide.
+5. **Garde-fou.** Un test unitaire refuse tout appel à `findManagersAndAdmins(` hors de
+   `UserRepository`.
+
+### Préférences et idempotence (inchangées)
+
+Les préférences de chaque type (`NotificationPreferenceResolver`) s'appliquent comme
+avant. Un retry Messenger rejoue la même enveloppe avec le même `CorrelationStamp`. Il
+retrouve donc la même clé `idempotency_key` (type, destinataire, sujet, épisode) et ne crée
+aucune seconde notification. C'est prouvé sur base réelle par
+`OperationalManagerRecipientsIntegrationTest` (double livraison).
+
+### Hors périmètre
+
+- La désactivation des comptes de test en production (#31, #32, #33, #72, #73, #74, #81)
+  est un audit séparé, à exécuter seulement sur accord explicite.
+- Les notifications ciblant une personne précise (instrumentiste, chirurgien, manager
+  émetteur d'une offre) sont inchangées.

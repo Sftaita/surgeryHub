@@ -110,7 +110,7 @@ class SurgeonMissionRequestService
         ]);
         $this->em->flush();
 
-        $managers = $this->userRepository->findManagersAndAdmins(true);
+        $managers = $this->userRepository->findOperationalManagers();
         if (!empty($managers)) {
             $this->bus->dispatch(new SurgeonMissionRequestCreatedMessage(
                 requestId: $request->getId(),

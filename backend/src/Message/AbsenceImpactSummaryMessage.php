@@ -31,7 +31,7 @@ final class AbsenceImpactSummaryMessage
      * @param array<int, array<string, mixed>> $missionsRestoredOpen       reconciliation — restored but still OPEN (uncovered)
      * @param array<int, array<string, mixed>> $futureOccurrencesCancelled surgeon absence — Post occurrences neutralized, no Mission yet
      * @param array<int, array<string, mixed>> $futureOccurrencesRestored  reconciliation — neutralized occurrences reactivated
-     * @param int[] $recipientManagerIds every active manager/admin at dispatch time
+     * @param int[] $recipientManagerIds every operational manager/admin at dispatch time (D-149)
      */
     public function __construct(
         public readonly int $absenceId,

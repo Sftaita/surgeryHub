@@ -92,7 +92,7 @@ class AbsenceImpactSummaryService
 
         $managerIds = array_map(
             static fn (User $m) => $m->getId(),
-            $this->userRepository->findManagersAndAdmins(true),
+            $this->userRepository->findOperationalManagers(),
         );
         if (empty($managerIds)) {
             return;

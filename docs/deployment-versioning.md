@@ -277,6 +277,18 @@ génériques ci-dessus) :
 - **Toujours nettoyer** les comptes/données de test créés à la fin
   (utilisateurs, refresh tokens associés, ressources métier créées) et
   vérifier que le nettoyage a réussi (requête de confirmation vide).
+  Un compte de test qui ne peut pas être supprimé (missions, audit) est
+  **désactivé** (`active = 0`) : un compte manager/admin actif reçoit toutes
+  les notifications « tous les managers » (D-149 — incident du compte
+  `…+testmgr1782332852@gmail.com`, resté actif de juin à octobre 2026).
+  Contrôle final obligatoire, résultat attendu vide :
+
+  ```sql
+  SELECT id, email, roles, created_at FROM user
+  WHERE active = 1 AND (email LIKE '%@surgicalhub.internal'
+        OR email LIKE '%+test%' OR email LIKE '%deploy%test%' OR email LIKE '%smoke%')
+    AND email <> 'system@surgicalhub.internal';
+  ```
 - Pour une action non réversible et indépendante des emails (ex: création de
   compte via `POST /api/admin/users`, qui ne peut pas être supprimée — aucun
   endpoint `DELETE` n'existe), **ne pas l'exécuter en chemin de succès** :
