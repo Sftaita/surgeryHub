@@ -139,6 +139,8 @@ final class MissionLifecycleChangedMessageHandler
             MissionChangeType::CANCELLED  => $this->handleCancelled($message),
             MissionChangeType::ROOM_TAKEN_OVER => $this->handleRoomTakenOver($message),
             MissionChangeType::ENCODING_COMPLETED => $this->handleEncodingCompleted($message),
+            MissionChangeType::ENCODING_REJECTED,
+            MissionChangeType::ENCODING_REOPENED => $this->handleEncodingCorrectionRequested($message),
             default => $this->logger->info('MissionLifecycleChanged: unhandled changeType — forward-compatible skip', [
                 'changeType' => $message->changeType->value,
                 'missionId'  => $message->missionId,
@@ -209,6 +211,62 @@ final class MissionLifecycleChangedMessageHandler
         } catch (\Throwable $e) {
             $this->logger->error('MissionLifecycleChanged::ENCODING_COMPLETED: dispatch failed', [
                 'missionId' => $mission->getId(), 'surgeonId' => $surgeon->getId(), 'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    // ── ENCODING_REJECTED / ENCODING_REOPENED → ENCODING_CORRECTION_REQUESTED (D-148) ──
+
+    /**
+     * D-148 — l'instrumentiste affectée apprend qu'un manager lui renvoie son encodage
+     * (« Renvoyer en correction » depuis SUBMITTED, « Rouvrir l'encodage » depuis VALIDATED),
+     * avec le motif saisi : c'est à elle qu'il s'adresse. Dispatché par le workflow après le
+     * flush de la transition seulement. Via NotificationDispatcher (in-app + push selon ses
+     * préférences, pas d'e-mail imposé) ; un épisode par transition : un rejeu Messenger ne
+     * notifie jamais deux fois, une nouvelle demande de correction notifie à nouveau.
+     */
+    private function handleEncodingCorrectionRequested(MissionLifecycleChangedMessage $message): void
+    {
+        $mission = $this->em->find(Mission::class, $message->missionId);
+        $instrumentist = $mission?->getInstrumentist();
+        if (!$mission instanceof Mission || !$instrumentist instanceof User) {
+            return;
+        }
+
+        $reopened = $message->changeType === MissionChangeType::ENCODING_REOPENED;
+        $reason = is_string($message->payload['comment'] ?? null) ? $message->payload['comment'] : null;
+        $payload = [
+            'missionId'   => $mission->getId(),
+            'missionDate' => $mission->getStartAt()?->format('d/m/Y'),
+            'siteName'    => $mission->getSite()?->getName(),
+            'action'      => $reopened ? 'REOPENED' : 'RETURNED',
+            'fromStatus'  => $message->payload['fromStatus'] ?? null,
+            'reason'      => $reason,
+            'managerName' => $message->payload['actorName'] ?? null,
+        ];
+
+        $type = NotificationType::ENCODING_CORRECTION_REQUESTED;
+        try {
+            $this->dispatcher->dispatch(new NotificationIntent(
+                recipient: $instrumentist,
+                type: $type,
+                inAppPayload: $payload,
+                mission: $mission,
+                push: new PushContent(
+                    'Correction de votre encodage demandée',
+                    sprintf(
+                        'Mission #%d du %s : %s',
+                        (int) $mission->getId(),
+                        $payload['missionDate'] ?? '—',
+                        $reason !== null ? mb_strimwidth($reason, 0, 140, '…') : 'merci de corriger votre encodage.',
+                    ),
+                    ['missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve($type, $mission, $instrumentist)],
+                ),
+                episodeRef: sprintf('encoding_correction:%d:%s', (int) $mission->getId(), $message->occurredAt->format('Y-m-d\TH:i:s.u')),
+            ));
+        } catch (\Throwable $e) {
+            $this->logger->error('MissionLifecycleChanged::' . $message->changeType->value . ': dispatch failed', [
+                'missionId' => $mission->getId(), 'instrumentistId' => $instrumentist->getId(), 'error' => $e->getMessage(),
             ]);
         }
     }

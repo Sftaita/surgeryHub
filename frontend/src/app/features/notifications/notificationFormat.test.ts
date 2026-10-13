@@ -107,6 +107,14 @@ describe("D-143 — notifications d'encodage", () => {
       .toContain("a été corrigé");
   });
 
+  it("D-148 — correction demandée : mission identifiée et motif du manager", () => {
+    const returned = { eventType: "ENCODING_CORRECTION_REQUESTED", payload: { missionId: 435, missionDate: "14/07/2026", action: "RETURNED", reason: "Merci de renseigner vos horaires réels." } };
+    expect(formatNotificationTitle(returned)).toBe("Correction de votre encodage demandée");
+    expect(formatNotificationBody(returned as any)).toBe("L'encodage de votre mission #435 du 14/07/2026 vous a été renvoyé pour correction. Motif : Merci de renseigner vos horaires réels.");
+    const reopened = { ...returned, payload: { ...returned.payload, action: "REOPENED" } };
+    expect(formatNotificationBody(reopened as any)).toContain("a été rouvert pour correction");
+  });
+
   it("signalement côté instrumentiste : catégorie seulement, jamais le commentaire", () => {
     const body = formatNotificationBody({ eventType: "ENCODING_ANOMALY_INSTRUMENTIST", payload: { missionDate: "14/07/2026", type: "HOURS_INCORRECT", comment: "secret" } } as any);
     expect(body).toContain("(horaires)");

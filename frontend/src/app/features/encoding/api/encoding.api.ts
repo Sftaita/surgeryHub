@@ -189,9 +189,10 @@ export async function rejectMissionEncoding(
   await apiClient.post(`/api/missions/${missionId}/encoding/reject`, { comment });
 }
 
+/** D-148 — motif de la correction obligatoire (refusé en 422 par le backend sinon). */
 export async function reopenMissionEncoding(
   missionId: number,
-  comment?: string,
+  comment: string,
 ): Promise<void> {
   await apiClient.post(`/api/missions/${missionId}/encoding/reopen`, { comment });
 }

@@ -235,6 +235,10 @@ enum NotificationType: string
     case ENCODING_ESCALATION = 'ENCODING_ESCALATION';
     case ENCODING_SUBMITTED  = 'ENCODING_SUBMITTED';
     case ENCODING_ANOMALY_INSTRUMENTIST = 'ENCODING_ANOMALY_INSTRUMENTIST'; // 30 chars
+    // D-148 — instrumentiste : un manager a renvoyé son encodage en correction (SUBMITTED) ou
+    //                       l'a rouvert (VALIDATED), avec le motif. Mêmes canaux que
+    //                       ENCODING_ANOMALY_INSTRUMENTIST (in-app + push selon préférences).
+    case ENCODING_CORRECTION_REQUESTED = 'ENCODING_CORRECTION_REQUESTED'; // 29 chars
     // D-136 — « Rappeler les heures » (manager → instrumentiste), auparavant une chaîne libre
     // sur les lignes outbound ; même valeur pour que l'historique existant garde son type.
     case MISSION_HOURS_REMINDER = 'MISSION_HOURS_REMINDER';

@@ -50,6 +50,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   // D-143 — les relances d'encodage elles-mêmes ne sont pas configurables (absentes de la liste).
   ENCODING_SUBMITTED: "Encodage de vos missions disponible (chirurgien)",
   ENCODING_ANOMALY_INSTRUMENTIST: "Point signalé sur votre encodage",
+  ENCODING_CORRECTION_REQUESTED: "Correction de votre encodage demandée",
 };
 
 export function notificationTypeLabel(type: string): string {

@@ -26,7 +26,7 @@ use Symfony\Component\Messenger\MessageBusInterface;
  *                                                          ▼                                               ▼
  *                                                      VALIDATED                                ENCODING_IN_PROGRESS
  *                                                          │
- *                                                      reopen (commentaire optionnel)
+ *                                                      reopen (motif requis, D-148)
  *                                                          ▼
  *                                                  ENCODING_IN_PROGRESS
  *
@@ -224,6 +224,10 @@ final class MissionEncodingWorkflowService
      * SUBMITTED → ENCODING_IN_PROGRESS, commentaire obligatoire (matériel manquant, quantité
      * incorrecte, mauvaise firme, intervention incomplète...) — historisé sur la mission via
      * MissionEncodingComment, jamais perdu.
+     *
+     * D-148 — « Renvoyer en correction » (Suivi des encodages) : seul le statut change.
+     * Interventions, matériel, heures, affectation, planning et calculs financiers restent
+     * intacts ; l'instrumentiste est prévenue par le handler (ENCODING_CORRECTION_REQUESTED).
      */
     public function reject(Mission $mission, User $actor, string $comment): Mission
     {
@@ -231,10 +235,12 @@ final class MissionEncodingWorkflowService
             throw new ConflictHttpException('Mission must be SUBMITTED to reject its encoding');
         }
 
+        $comment = $this->requireReason($comment);
+        $from = $mission->getStatus();
         $mission->setStatus(MissionStatus::ENCODING_IN_PROGRESS);
         $this->addComment($mission, $actor, $comment);
 
-        $payload = array_merge($this->actorPayload($actor), ['comment' => $comment]);
+        $payload = array_merge($this->actorPayload($actor), ['comment' => $comment], $this->transitionPayload($from, $mission));
         $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_REJECTED, $payload);
         $this->em->flush();
 
@@ -244,7 +250,8 @@ final class MissionEncodingWorkflowService
     }
 
     /**
-     * VALIDATED → ENCODING_IN_PROGRESS, commentaire optionnel. Déverrouille explicitement
+     * VALIDATED → ENCODING_IN_PROGRESS, motif obligatoire depuis D-148 (optionnel en D-070) :
+     * l'instrumentiste doit savoir ce qu'elle corrige. Déverrouille explicitement
      * (encodingLockedAt = null) — c'est le seul chemin qui le fait ; jamais depuis CLOSED
      * (terminal, message d'erreur dédié pour ne pas confondre avec un simple mauvais état).
      *
@@ -254,34 +261,34 @@ final class MissionEncodingWorkflowService
      * seulement CALCULATED/APPROVED (jamais LOCKED) : la réouverture reste libre comme
      * avant ce lot — rien ne change tant qu'aucun engagement financier n'existe.
      */
-    public function reopen(Mission $mission, User $actor, ?string $comment = null): Mission
+    public function reopen(Mission $mission, User $actor, string $comment): Mission
     {
         if ($mission->getStatus() === MissionStatus::CLOSED) {
-            throw new ConflictHttpException('A CLOSED mission can never be reopened');
+            throw new ConflictHttpException(MissionEncodingCorrectionPolicy::CLOSED_MESSAGE);
         }
 
         if ($mission->getStatus() !== MissionStatus::VALIDATED) {
             throw new ConflictHttpException('Mission must be VALIDATED to reopen its encoding');
         }
 
+        // Requête directe (jamais la collection en mémoire) : c'est l'autorité au moment de
+        // la transition ; MissionEncodingCorrectionPolicy n'en est que le reflet affiché.
         if ($this->hasLockedFinancialCalculation($mission)) {
-            throw new ConflictHttpException('This mission has a LOCKED financial calculation and can no longer be reopened — a future correction workflow will be needed.');
+            throw new ConflictHttpException(MissionEncodingCorrectionPolicy::FINANCIAL_LOCK_MESSAGE);
         }
 
+        $comment = $this->requireReason($comment);
+        $from = $mission->getStatus();
         $mission->setStatus(MissionStatus::ENCODING_IN_PROGRESS);
         $mission->setEncodingLockedAt(null);
+        $this->addComment($mission, $actor, $comment);
 
-        if ($comment !== null && trim($comment) !== '') {
-            $this->addComment($mission, $actor, $comment);
-        }
-
-        $payload = array_merge($this->actorPayload($actor), ['comment' => $comment]);
+        $payload = array_merge($this->actorPayload($actor), ['comment' => $comment], $this->transitionPayload($from, $mission));
         $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_REOPENED, $payload);
         $this->em->flush();
 
-        // "notifier l'instrumentiste (préparer le mécanisme, même si la notification est
-        // réalisée plus tard)" — dispatché comme les 4 autres transitions ; le handler
-        // n'a pas encore de cas ENCODING_REOPENED, il no-op proprement (branche par défaut).
+        // D-148 — le handler prévient l'instrumentiste (ENCODING_CORRECTION_REQUESTED), après
+        // le flush : jamais de notification pour une transition qui n'a pas abouti.
         $this->dispatch($mission, MissionChangeType::ENCODING_REOPENED, $actor, $payload);
 
         return $mission;
@@ -321,6 +328,23 @@ final class MissionEncodingWorkflowService
         // Keeps the in-memory collection consistent within the same request — Doctrine
         // does not sync the inverse side automatically from the owning side's FK alone.
         $mission->getEncodingComments()->add($entity);
+    }
+
+    /** D-148 — motif de correction obligatoire, jamais un texte vide ou fait d'espaces. */
+    private function requireReason(string $comment): string
+    {
+        $comment = trim($comment);
+        if ($comment === '') {
+            throw new UnprocessableEntityHttpException('Le motif de la correction est obligatoire.');
+        }
+
+        return $comment;
+    }
+
+    /** @return array{fromStatus: string, toStatus: string} */
+    private function transitionPayload(MissionStatus $from, Mission $mission): array
+    {
+        return ['fromStatus' => $from->value, 'toStatus' => $mission->getStatus()->value];
     }
 
     /** @return array{actorId: int, actorName: string} */

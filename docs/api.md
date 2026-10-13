@@ -5868,8 +5868,14 @@ vers l'instrumentiste, ou saisie des heures par le manager (`PATCH .../execution
 **Effets backend :**
 - Crée une `MissionEncodingComment` (auteur = manager) — **jamais perdue**, exposée
   ensuite dans `GET .../encoding` → `encodingComments[]`
-- Audit `MISSION_ENCODING_REJECTED` (payload inclut le commentaire)
-- `MissionLifecycleChangedMessage(ENCODING_REJECTED)` dispatché
+- Audit `MISSION_ENCODING_REJECTED` (payload : commentaire, `fromStatus`, `toStatus`, acteur — D-148)
+- `MissionLifecycleChangedMessage(ENCODING_REJECTED)` dispatché après le flush → **D-148 :**
+  l'instrumentiste affectée reçoit `ENCODING_CORRECTION_REQUESTED` (NotificationDispatcher,
+  in-app + push selon ses préférences, pas d'e-mail ; payload `missionId`, `missionDate`,
+  `siteName`, `action: "RETURNED"`, `fromStatus`, `reason`, `managerName` ; un épisode par
+  transition, jamais de doublon au rejeu)
+- Aucune autre donnée touchée : interventions, matériel, heures, affectation, planning et
+  calculs financiers restent intacts (D-148)
 
 **Erreurs :**
 
@@ -5877,7 +5883,7 @@ vers l'instrumentiste, ou saisie des heures par le manager (`PATCH .../execution
 |---|---|
 | `403` | Non manager |
 | `409` | Mission ≠ `SUBMITTED` |
-| `422` | `comment` manquant ou vide |
+| `422` | `comment` manquant, vide ou fait d'espaces (D-148) |
 
 ---
 
@@ -5887,7 +5893,7 @@ vers l'instrumentiste, ou saisie des heures par le manager (`PATCH .../execution
 
 **Transition :** `VALIDATED → ENCODING_IN_PROGRESS`
 
-**Body JSON (commentaire optionnel) :**
+**Body JSON (motif obligatoire depuis D-148, optionnel en D-070) :**
 
 ```json
 { "comment": "Merci de vérifier la quantité de vis" }
@@ -5895,18 +5901,28 @@ vers l'instrumentiste, ou saisie des heures par le manager (`PATCH .../execution
 
 **Effets backend :**
 - `mission.encodingLockedAt = null` — **seul chemin qui déverrouille une mission validée**
-- Crée une `MissionEncodingComment` seulement si `comment` non vide
-- Audit `MISSION_ENCODING_REOPENED`
-- `MissionLifecycleChangedMessage(ENCODING_REOPENED)` dispatché — mécanisme de
-  notification instrumentiste préparé, pas encore branché
+- Crée une `MissionEncodingComment` (motif)
+- Audit `MISSION_ENCODING_REOPENED` (payload : commentaire, `fromStatus: "VALIDATED"`,
+  `toStatus`, acteur) ; l'audit de la validation précédente est conservé
+- `MissionLifecycleChangedMessage(ENCODING_REOPENED)` dispatché après le flush → **D-148 :**
+  `ENCODING_CORRECTION_REQUESTED` à l'instrumentiste (`action: "REOPENED"`, même contrat que
+  `reject`)
+- Aucun recalcul, aucune modification d'un calcul ou document financier (D-148)
 
 **Erreurs :**
 
 | Code | Description |
 |---|---|
 | `403` | Non manager |
-| `409` (`CLOSED`) | *"A CLOSED mission can never be reopened"* — message dédié, jamais confondu avec un simple mauvais état |
+| `409` (`CLOSED`) | *"Mission clôturée : son encodage ne peut plus être rouvert."* (D-148, auparavant en anglais) — en pratique le voter répond déjà `403` sur une mission `CLOSED` |
+| `409` (calcul `LOCKED`) | *"Verrou financier : le calcul de cette mission est intégré à un document financier. Son encodage ne peut plus être rouvert."* (D-073) |
 | `409` | Mission ≠ `VALIDATED` (autre cas) |
+| `422` | `comment` manquant, vide ou fait d'espaces (D-148) |
+
+**D-148 — `GET /api/missions/{id}`** : `allowedActions` ne contient `reopen` que si la
+réouverture est réellement possible (jamais avec un calcul `LOCKED`) ; le champ
+`encodingCorrectionBlockedReason` (managers seulement, `null` sinon) donne le motif d'un refus
+(`CLOSED` ou calcul `LOCKED`, mêmes textes que les `409`) pour l'afficher tel quel.
 
 ---
 
@@ -6956,7 +6972,9 @@ n'existe encore). **D-143 :** `ENCODING_REMINDER` et `ENCODING_ESCALATION` (rela
 d'encodage, obligations de service) sont exclus (`NotificationType::isConfigurable()`), et le
 `PATCH` de ces types répond `400`. Nouveaux types configurables : `ENCODING_SUBMITTED`
 (chirurgien, encodage soumis/corrigé) et `ENCODING_ANOMALY_INSTRUMENTIST` (instrumentiste,
-point signalé par le chirurgien — jamais le commentaire libre).
+point signalé par le chirurgien — jamais le commentaire libre). **D-148 :**
+`ENCODING_CORRECTION_REQUESTED` (instrumentiste, encodage renvoyé en correction ou rouvert par
+un manager, avec le motif) — configurable, défauts in-app oui / e-mail non / push non.
 
 ```
 PATCH /api/me/notification-preferences/{type}

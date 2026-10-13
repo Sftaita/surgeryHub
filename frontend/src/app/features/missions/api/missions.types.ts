@@ -214,6 +214,8 @@ export interface Mission {
   /** D-125 — demande nominative, calculée backend (jamais re-déduite) : PENDING = OPEN, non
    *  couverte, en attente de la réponse de cet instrumentiste ; DECLINED = refusée. */
   targetedOffer?: TargetedOffer | null;
+  /** D-148 — pourquoi l'encodage ne peut pas être rouvert (clôture, verrou financier), managers seulement. */
+  encodingCorrectionBlockedReason?: string | null;
 
   [key: string]: unknown;
 }

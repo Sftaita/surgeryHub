@@ -13162,3 +13162,45 @@ cours de refonte par D-146) ; historique = celui des demandes **et** un journal 
 - Mise à jour poussée (SSE / WebSocket) : le rafraîchissement à 30 s suffit pour un flux
   de quelques demandes par jour ; à revoir si le volume change.
 - Recherche dans le journal sur le contenu des payloads (JSON non indexé).
+
+## D-148 — Renvoi en correction et réouverture de l'encodage depuis « Suivi des encodages » (2026-10-13)
+
+**Contexte.** Le workflow D-070 sait déjà renvoyer un encodage `SUBMITTED` (`reject`) et
+rouvrir un encodage `VALIDATED` (`reopen`), mais seulement depuis la fiche mission ; le
+manager valide pourtant depuis « Suivi des encodages ». L'instrumentiste n'était pas prévenue
+(`ENCODING_REJECTED` / `ENCODING_REOPENED` sans traitement dans le handler) et le motif de
+réouverture était optionnel.
+
+**Décision.** Aucun nouveau circuit : mêmes endpoints, voter, transitions et audit.
+1. **Tiroir du suivi** (`MissionTrackingDrawer`) : « Renvoyer en correction » si
+   `allowedActions` contient `reject` sur une mission `SUBMITTED`, « Rouvrir l'encodage » si
+   elle contient `reopen`. Fenêtre de confirmation : mission (n°, date, site), instrumentiste,
+   statut actuel, **motif de la correction obligatoire**, « Confirmer le renvoi / la
+   réouverture », « Annuler ». Rien n'est envoyé avant confirmation ; la fenêtre reste ouverte
+   pendant l'enregistrement et en cas d'erreur (motif conservé, nouvelle tentative), un seul
+   envoi à la fois ; au succès : statut, listes et compteurs rechargés, filtres conservés.
+2. **Motif obligatoire pour `reopen`** (amende D-070) : `NotBlank` + refus d'un texte fait
+   d'espaces (aussi pour `reject`) ; le motif est historisé (`MissionEncodingComment`) et
+   l'audit porte `fromStatus` / `toStatus` en plus de l'acteur et de la date.
+3. **Refus expliqués, jamais contournés** : `MissionEncodingCorrectionPolicy` reflète les deux
+   refus existants de `reopen()` (mission `CLOSED`, calcul financier `LOCKED` — D-073) ;
+   `reopen` n'est plus proposé dans `allowedActions` quand il serait refusé, et
+   `encodingCorrectionBlockedReason` (managers seulement) donne le motif affiché. Aucune
+   procédure de déverrouillage financier.
+4. **Notification** `ENCODING_CORRECTION_REQUESTED` à l'instrumentiste affectée, via
+   `NotificationDispatcher` dans `MissionLifecycleChangedMessageHandler` — donc seulement après
+   une transition réussie ; mission, date, site, action, motif ; in-app + push selon ses
+   préférences, pas d'e-mail imposé (mêmes défauts que `ENCODING_ANOMALY_INSTRUMENTIST`) ; un
+   épisode par transition (rejeu Messenger sans doublon). Lien direct vers son encodage.
+5. **Données conservées** : seul le statut change (et `encodingLockedAt` pour `reopen`) ;
+   interventions, matériel, heures réelles, affectation, planning, calculs et documents
+   financiers intacts, aucun recalcul. La nouvelle soumission exige toujours les heures
+   réelles (D-143) ; durée = fin − début, sans pause.
+
+**Missions historiques 434, 435, 451, 1224, 1225** : état vérifié en lecture seule le
+2026-10-13 (435/451/1224 `SUBMITTED`, 434/1225 `VALIDATED`, aucune heure réelle, aucun calcul
+`LOCKED`) ; **aucune action effectuée** — les managers les traiteront depuis l'interface,
+les instrumentistes saisiront elles-mêmes leurs horaires réels.
+
+**Hors périmètre.** Fiche mission complète (seul le motif de réouverture y devient
+obligatoire), PR #4 (D-139), H6–H8.

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
@@ -19,7 +19,11 @@ vi.mock("../../missions/api/missions.api", () => ({
 const fetchMissionEncodingMock = vi.fn();
 const validateMissionEncodingMock = vi.fn();
 const remindMissionEncodingMock = vi.fn();
+const rejectMissionEncodingMock = vi.fn();
+const reopenMissionEncodingMock = vi.fn();
 vi.mock("../../encoding/api/encoding.api", () => ({
+  rejectMissionEncoding: (...args: unknown[]) => rejectMissionEncodingMock(...args),
+  reopenMissionEncoding: (...args: unknown[]) => reopenMissionEncodingMock(...args),
   fetchMissionEncoding: (...args: unknown[]) => fetchMissionEncodingMock(...args),
   validateMissionEncoding: (...args: unknown[]) => validateMissionEncodingMock(...args),
   remindMissionEncoding: (...args: unknown[]) => remindMissionEncodingMock(...args),
@@ -82,6 +86,8 @@ beforeEach(() => {
   validateMissionEncodingMock.mockReset();
   remindMissionEncodingMock.mockReset();
   remindMissionHoursMock.mockReset();
+  rejectMissionEncodingMock.mockReset();
+  reopenMissionEncodingMock.mockReset();
   getMissionFinancialAnomaliesMock.mockReset();
   calculateMissionMock.mockReset();
   recalculateFinancialCalculationMock.mockReset();
@@ -541,6 +547,159 @@ describe("MissionTrackingDrawer", () => {
 
       await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["encoding-tracking"], exact: false }));
       expect(screen.queryByTestId("financial-anomaly")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("renvoi en correction / réouverture (D-148)", () => {
+    const REASON = "Merci de renseigner vos horaires réels de début et de fin.";
+
+    function deferred<T>() {
+      let resolve!: (v: T) => void;
+      let reject!: (e: unknown) => void;
+      const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+      return { promise, resolve, reject };
+    }
+
+    function submitted(allowedActions = ["view", "validate", "reject"]) {
+      fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions, encodingCorrectionBlockedReason: null });
+    }
+
+    async function openReturnDialog(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(await screen.findByRole("button", { name: "Renvoyer en correction" }));
+      return screen.findByRole("dialog", { name: "Renvoyer en correction" });
+    }
+
+    it("SUBMITTED : la fenêtre rappelle mission, instrumentiste et statut ; motif obligatoire ; Annuler ne modifie rien", async () => {
+      const user = userEvent.setup();
+      submitted();
+      renderDrawer(makeItem());
+
+      const dialog = await openReturnDialog(user);
+      expect(within(dialog).getByText(/#42 · .* · Delta/)).toBeInTheDocument();
+      expect(within(dialog).getByText("Salve Decorte")).toBeInTheDocument();
+      expect(within(dialog).getByText("Soumis")).toBeInTheDocument();
+      const confirm = within(dialog).getByRole("button", { name: "Confirmer le renvoi" });
+      expect(confirm).toBeDisabled();
+      await user.type(within(dialog).getByLabelText(/Motif de la correction/), "   ");
+      expect(confirm).toBeDisabled();
+
+      await user.click(within(dialog).getByRole("button", { name: "Annuler" }));
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Renvoyer en correction" })).not.toBeInTheDocument());
+      expect(rejectMissionEncodingMock).not.toHaveBeenCalled();
+      expect(screen.getByTestId("mission-tracking-drawer")).toBeInTheDocument();
+    });
+
+    it("confirmation : fenêtre ouverte pendant l'enregistrement, puis fermée ; statut, liste et compteurs rechargés", async () => {
+      const user = userEvent.setup();
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const invalidate = vi.spyOn(client, "invalidateQueries");
+      submitted();
+      const pending = deferred<void>();
+      rejectMissionEncodingMock.mockReturnValue(pending.promise);
+      renderDrawer(makeItem(), () => {}, client);
+
+      const dialog = await openReturnDialog(user);
+      fireEvent.change(within(dialog).getByLabelText(/Motif de la correction/), { target: { value: REASON } });
+      await user.click(within(dialog).getByRole("button", { name: "Confirmer le renvoi" }));
+
+      await waitFor(() => expect(rejectMissionEncodingMock).toHaveBeenCalledWith(42, REASON));
+      expect(screen.getByRole("dialog", { name: "Renvoyer en correction" })).toBeInTheDocument();
+      expect(within(dialog).getByLabelText("Enregistrement en cours")).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Annuler" })).toBeDisabled();
+      expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["encoding-tracking"], exact: false });
+
+      pending.resolve();
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Renvoyer en correction" })).not.toBeInTheDocument());
+      expect(await screen.findByText("Encodage renvoyé en correction à l'instrumentiste.")).toBeInTheDocument();
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["encoding-tracking"], exact: false });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["mission", 42] });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["mission-audit", 42] });
+    });
+
+    it("échec serveur : fenêtre ouverte, erreur affichée, motif conservé, nouvelle tentative possible", async () => {
+      const user = userEvent.setup();
+      submitted();
+      rejectMissionEncodingMock.mockRejectedValueOnce({ response: { status: 409, data: { error: { message: "Mission must be SUBMITTED to reject its encoding" } } } });
+      renderDrawer(makeItem());
+
+      const dialog = await openReturnDialog(user);
+      fireEvent.change(within(dialog).getByLabelText(/Motif de la correction/), { target: { value: REASON } });
+      await user.click(within(dialog).getByRole("button", { name: "Confirmer le renvoi" }));
+
+      expect(await within(dialog).findByText("Mission must be SUBMITTED to reject its encoding")).toBeInTheDocument();
+      expect(within(dialog).getByLabelText(/Motif de la correction/)).toHaveValue(REASON);
+
+      rejectMissionEncodingMock.mockResolvedValueOnce(undefined);
+      await user.click(within(dialog).getByRole("button", { name: "Confirmer le renvoi" }));
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Renvoyer en correction" })).not.toBeInTheDocument());
+      expect(rejectMissionEncodingMock).toHaveBeenCalledTimes(2);
+      expect(rejectMissionEncodingMock).toHaveBeenLastCalledWith(42, REASON);
+    });
+
+    it("un double clic n'envoie qu'une seule demande", async () => {
+      const user = userEvent.setup();
+      submitted();
+      const pending = deferred<void>();
+      rejectMissionEncodingMock.mockReturnValue(pending.promise);
+      renderDrawer(makeItem());
+
+      const dialog = await openReturnDialog(user);
+      fireEvent.change(within(dialog).getByLabelText(/Motif de la correction/), { target: { value: REASON } });
+      const confirm = within(dialog).getByRole("button", { name: "Confirmer le renvoi" });
+      fireEvent.click(confirm);
+      fireEvent.click(confirm);
+      fireEvent.click(confirm);
+
+      await waitFor(() => expect(rejectMissionEncodingMock).toHaveBeenCalledTimes(1));
+      pending.resolve();
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Renvoyer en correction" })).not.toBeInTheDocument());
+      expect(rejectMissionEncodingMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("Échap dans la fenêtre ne ferme pas le tiroir", async () => {
+      const user = userEvent.setup();
+      const onClose = vi.fn();
+      submitted();
+      renderDrawer(makeItem(), onClose);
+
+      await openReturnDialog(user);
+      await user.keyboard("{Escape}");
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("VALIDATED : « Rouvrir l'encodage » appelle l'endpoint de réouverture avec le motif", async () => {
+      const user = userEvent.setup();
+      fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "VALIDATED", allowedActions: ["view", "reopen"], encodingCorrectionBlockedReason: null });
+      reopenMissionEncodingMock.mockResolvedValue(undefined);
+      renderDrawer(validatedItem());
+
+      await user.click(await screen.findByRole("button", { name: "Rouvrir l'encodage" }));
+      const dialog = await screen.findByRole("dialog", { name: "Rouvrir l'encodage" });
+      expect(within(dialog).getByText("Validé")).toBeInTheDocument();
+      fireEvent.change(within(dialog).getByLabelText(/Motif de la correction/), { target: { value: REASON } });
+      await user.click(within(dialog).getByRole("button", { name: "Confirmer la réouverture" }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Rouvrir l'encodage" })).not.toBeInTheDocument());
+      expect(reopenMissionEncodingMock).toHaveBeenCalledWith(42, REASON);
+      expect(rejectMissionEncodingMock).not.toHaveBeenCalled();
+    });
+
+    it("verrou financier : aucune action, la raison donnée par le backend est affichée", async () => {
+      const reason = "Verrou financier : le calcul de cette mission est intégré à un document financier. Son encodage ne peut plus être rouvert.";
+      fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "VALIDATED", allowedActions: ["view"], encodingCorrectionBlockedReason: reason });
+      renderDrawer(validatedItem());
+
+      expect(await screen.findByTestId("drawer-correction-blocked")).toHaveTextContent(reason);
+      expect(screen.queryByRole("button", { name: "Rouvrir l'encodage" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Renvoyer en correction" })).not.toBeInTheDocument();
+    });
+
+    it("les actions ne sont jamais déduites du statut : sans allowedActions, aucun bouton", async () => {
+      submitted(["view", "validate"]);
+      renderDrawer(makeItem());
+
+      expect(await screen.findByRole("button", { name: "Valider l'encodage" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Renvoyer en correction" })).not.toBeInTheDocument();
     });
   });
 });

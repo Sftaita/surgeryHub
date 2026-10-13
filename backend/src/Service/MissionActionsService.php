@@ -55,7 +55,10 @@ final class MissionActionsService
                 // Lot 7 (D-070) : corrigé — 'reopen' n'est valide que depuis VALIDATED
                 // (une mission SUBMITTED n'a jamais été validée, donc rien à "rouvrir").
                 MissionStatus::SUBMITTED => ['view', 'validate', 'reject'],
-                MissionStatus::VALIDATED => ['view', 'reopen'],
+                // D-148 — jamais proposé quand reopen() le refuserait (calcul LOCKED).
+                MissionStatus::VALIDATED => MissionEncodingCorrectionPolicy::reopenBlockedReason($mission) === null
+                    ? ['view', 'reopen']
+                    : ['view'],
                 MissionStatus::DECLARED => [...['view', 'approve', 'reject', 'edit'], ...$remind],
                 default => ['view'],
             };

@@ -47,6 +47,7 @@ const TITLES: Record<string, string> = {
   ENCODING_ESCALATION: "Encodage en attente depuis 4 jours",
   ENCODING_SUBMITTED: "Encodage disponible",
   ENCODING_ANOMALY_INSTRUMENTIST: "Point à vérifier sur votre encodage",
+  ENCODING_CORRECTION_REQUESTED: "Correction de votre encodage demandée",
 };
 
 const ANOMALY_TYPE_LABELS: Record<string, string> = {
@@ -198,6 +199,13 @@ export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "ev
     return payload.resubmitted === true
       ? `L'encodage de votre mission du ${missionDate ?? "—"} a été corrigé${who}. Consultez la nouvelle version.`
       : `L'encodage de votre mission du ${missionDate ?? "—"} a été soumis${who}.`;
+  }
+  // D-148 — renvoi en correction / réouverture par un manager : mission + motif saisi.
+  if (n.eventType === "ENCODING_CORRECTION_REQUESTED") {
+    const mission = typeof payload.missionId === "number" ? `#${payload.missionId} ` : "";
+    const what = payload.action === "REOPENED" ? "a été rouvert" : "vous a été renvoyé";
+    const reason = typeof payload.reason === "string" && payload.reason ? ` Motif : ${payload.reason}` : "";
+    return `L'encodage de votre mission ${mission}du ${missionDate ?? "—"} ${what} pour correction.${reason}`;
   }
   if (n.eventType === "ENCODING_ANOMALY_INSTRUMENTIST") {
     const category = typeof payload.type === "string" && ANOMALY_TYPE_LABELS[payload.type] ? ` (${ANOMALY_TYPE_LABELS[payload.type]})` : "";
