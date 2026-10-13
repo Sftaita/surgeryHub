@@ -302,7 +302,9 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
     }
 
     /**
-     * D-144 — destinataires opérationnels d'une alerte de suivi (escalade d'encodage J+4).
+     * D-144 / D-149 — destinataires de toute notification « tous les managers » (escalade
+     * d'encodage J+4 depuis D-144 ; absences, catalogue, déclarations, demandes chirurgien,
+     * anomalies d'encodage, conflits de planning, refus d'offre depuis D-149).
      *
      * Aucun périmètre de responsabilité manager ↔ site / firme / équipe n'existe dans le
      * modèle (vérifié le 2026-10-11) : tous les managers et admins ont les mêmes droits sur le
@@ -310,7 +312,9 @@ class UserRepository extends ServiceEntityRepository implements PasswordUpgrader
      * adresse, à l'exclusion des comptes techniques du domaine réservé
      * `surgicalhub.internal` (compte système, comptes jetables de recette/déploiement —
      * convention documentée dans docs/mail-safe-mode.md). Un utilisateur n'apparaît qu'une
-     * fois.
+     * fois — dédoublonnage par User, jamais par adresse : deux comptes distincts restent deux
+     * destinataires, même si leurs adresses ne diffèrent que par un suffixe « + ». Un compte
+     * de test laissé actif hors de ce domaine reste un destinataire : il se désactive.
      *
      * @return list<User>
      */

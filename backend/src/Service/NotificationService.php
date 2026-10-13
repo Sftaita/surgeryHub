@@ -43,7 +43,7 @@ class NotificationService
      */
     public function missionDeclaredNotifyManagersAdmins(Mission $mission): void
     {
-        foreach ($this->userRepository->findManagersAndAdmins(true) as $user) {
+        foreach ($this->userRepository->findOperationalManagers() as $user) {
             $this->declarationNotice($user, $mission, NotificationType::MISSION_DECLARED);
         }
     }

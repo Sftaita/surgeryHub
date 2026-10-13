@@ -914,6 +914,93 @@ identifiable comme anomalie par les destinataires.
   est désormais une étape **obligatoire**, non optionnelle, avant tout test
   fonctionnel touchant un flux email en production.
 
+### 2026-10-13 — Doublons d'emails « managers » : désactivation de 7 comptes de test
+
+**Version déployée** : `v2026.10.13-prod` (commit `c0d56ee`).
+
+**Description** : chaque notification « tous les managers » (absence
+déclarée, demande catalogue, escalade d'encodage…) était reçue deux fois
+sur la même boîte Gmail. Ce n'était pas un double envoi technique : un
+envoi par `User`, `attempt_count = 1`, file `failed` vide. La seconde copie
+visait le compte de test #31 `samy.ftaita89+testmgr1782332852@gmail.com`,
+un manager actif créé le 2026-06-24 et resté actif.
+
+**Cause racine** : des comptes de test créés en production n'avaient pas été
+nettoyés, et les fan-outs « tous les managers » appelaient
+`findManagersAndAdmins(true)`, qui ne filtre que sur `active`.
+
+**Action réalisée** (2026-10-13 10:32:35, sur accord explicite) : passage à
+`active = 0` des comptes #31, #32, #33, #72, #73, #74 et #81. Aucune
+suppression, aucun autre compte modifié. La transaction SQL vérifiait les
+ids et les emails exacts (7) et le `ROW_COUNT` (7), puis contrôlait le
+nombre d'actifs (32 avant, 25 après) et que les managers #1, #7 et #34
+restaient actifs. Toute anomalie déclenchait un `ROLLBACK`. Contrôlé
+ensuite : les seuls managers et admins actifs sont #1, #7 et #34, et la
+sélection des destinataires renvoie exactement ces trois comptes.
+Auparavant, les dépendances avaient été auditées : aucune mission future ou
+ouverte, aucune donnée financière, aucun site, aucun jeton de
+rafraîchissement valide. Les missions 494, 495 et 496 de #74 sont
+inchangées.
+
+**Sauvegardes** (serveur, `/opt/stack/backups/d149/`) :
+- `surgicalhub_full_20261013_103208.sql.gz` : base complète, gzip vérifié ;
+- `users_7_before_20261013_103208.sql` : les 7 lignes `user` avant
+  modification.
+
+**Rollback** : `UPDATE user SET active = 1 WHERE id IN (31,32,33,72,73,74,81);`
+
+**Actions préventives** : D-149. Les fan-outs « tous les managers » passent
+par `UserRepository::findOperationalManagers()`, qui exclut
+`@surgicalhub.internal`. Un test d'architecture interdit
+`findManagersAndAdmins(` hors du repository. Dans
+`docs/deployment-versioning.md`, une requête contrôle les comptes de test
+encore actifs. Un compte de test à adresse réelle (alias Gmail `+…`) n'est
+pas filtré par le code, de manière délibérée : il doit être désactivé.
+
+### 2026-10-13 — Suppression de la mission de test #495
+
+**Version déployée** : `v2026.10.13-prod` (commit `c0d56ee`).
+
+**Description** : mission `SUBMITTED` du 2026-08-04 (site 1, chirurgien de
+test #74, instrumentiste #62). Son commentaire de déclaration : « Ceci est un
+test et doit être supprimé ». Elle apparaissait « à valider » dans le suivi
+des encodages : une validation par erreur aurait créé un calcul financier.
+L'application n'offre aucune transition `SUBMITTED → CANCELLED` (`cancel`
+n'accepte que DRAFT, OPEN ou ASSIGNED). Une mise à jour SQL du statut aurait
+produit un état qu'aucun endpoint ne peut créer. La suppression a donc été
+retenue, sur accord explicite.
+
+**Action réalisée** (2026-10-13 16:33:50) : une transaction a supprimé
+14 lignes, avec `foreign_key_checks = 1` vérifié et jamais désactivé :
+- `material_line` #1 ;
+- `mission_intervention` #3 et #4 ;
+- `mission_execution` #1 ;
+- `audit_event` #233 à #236 ;
+- `notification_event` #135 à #139 ;
+- puis la ligne `mission` #495.
+
+Contrôles faits dans la transaction, avec `ROLLBACK` à la moindre anomalie :
+- identifiants exacts, verrouillés par `FOR UPDATE` ;
+- aucune dépendance indirecte : lignes financières, factures firmes,
+  `outbound_notification`, litiges, brouillons d'intervention ;
+- `ROW_COUNT` attendu pour chaque `DELETE` ;
+- totaux des tables touchées exactement diminués des lignes supprimées
+  (missions : 369 → 368).
+
+Un premier essai s'est arrêté en `ROLLBACK` automatique, à cause d'une
+erreur de lecture de `ROW_COUNT` dans le script, et a été vérifié sans
+effet.
+
+Vérifié ensuite : aucune ligne orpheline, missions 494 et 496 inchangées, et
+`GET /api/billing/encoding-tracking` (368 missions parcourues) sans la #495.
+Le compteur « à valider » est à 13, comme en base. Le compte #62 n'a pas été
+modifié.
+
+**Sauvegardes** (serveur, `/opt/stack/backups/d149/`) :
+- `mission_495_before_20261013_163245.sql` : les 14 `INSERT` complets, dans
+  l'ordre parent → enfants : à rejouer tel quel pour restaurer ;
+- `surgicalhub_full_20261013_163245.sql.gz` : base complète, gzip vérifié.
+
 ---
 
 ## Infrastructure complète

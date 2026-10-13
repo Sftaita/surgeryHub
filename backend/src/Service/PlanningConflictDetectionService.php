@@ -381,14 +381,14 @@ class PlanningConflictDetectionService
     }
 
     /**
-     * Recipients: every active manager/admin, same as AbsenceImpactService — no
+     * Recipients: every operational manager/admin (D-149), same as AbsenceImpactService — no
      * surgeon/instrumentist-facing notification UX exists yet for planning alerts, so the
      * conflicting person themself is deliberately not notified here either.
      */
     private function dispatchNotification(PlanningAlert $alert, Mission $anchor, Mission $other, PlanningAlertType $type): void
     {
         $recipients = [];
-        foreach ($this->userRepository->findManagersAndAdmins(true) as $manager) {
+        foreach ($this->userRepository->findOperationalManagers() as $manager) {
             $recipients[$manager->getId()] = true;
         }
 

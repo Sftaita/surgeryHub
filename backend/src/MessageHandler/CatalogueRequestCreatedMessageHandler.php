@@ -22,8 +22,8 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
  * proposer une intervention ou un matériel absent du catalogue (InterventionTypeRequest
  * ou MaterialItemRequest), pendant son encodage.
  *
- * Destinataires : tous les managers/admins actifs (UserRepository::findManagersAndAdmins(
- * true)) — une proposition catalogue impacte le référentiel global, pas seulement le site.
+ * Destinataires : les managers/admins opérationnels (UserRepository::findOperationalManagers(),
+ * D-149) — une proposition catalogue impacte le référentiel global, pas seulement le site.
  *
  * D-113 (amende D-094) — in-app + push + email, chacun gouverné indépendamment par les
  * préférences (l'email n'est PAS un repli du push : politique WHEN_ENABLED).
@@ -55,7 +55,7 @@ final class CatalogueRequestCreatedMessageHandler
 
         $kindLabel = $message->kind === CatalogueRequestKind::INTERVENTION_TYPE ? 'intervention' : 'matériel';
 
-        foreach ($this->userRepository->findManagersAndAdmins(true) as $manager) {
+        foreach ($this->userRepository->findOperationalManagers() as $manager) {
             $this->notifyManager($manager, $mission, $message, $kindLabel);
         }
     }

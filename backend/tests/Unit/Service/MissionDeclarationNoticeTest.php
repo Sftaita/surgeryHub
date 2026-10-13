@@ -73,7 +73,7 @@ final class MissionDeclarationNoticeTest extends TestCase
     private function service(array $managers): NotificationService
     {
         $users = $this->createMock(UserRepository::class);
-        $users->method('findManagersAndAdmins')->with(true)->willReturn($managers);
+        $users->method('findOperationalManagers')->willReturn($managers);
 
         return new NotificationService($this->createMock(EntityManagerInterface::class), $users, $this->createMock(MessageBusInterface::class),
             'https://app.test', 'no-reply@surgicalhub.test', 'SurgicalHub', $this->recordingDispatcher());

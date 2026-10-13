@@ -42,7 +42,7 @@ class AbsenceImpactServiceTest extends TestCase
     private array $activeAlertsForAbsence = [];
     /** Stub return value for findOtherOverlappingAbsence()'s query (onAbsenceDeleted). */
     private ?Absence $nextOverlappingAbsence = null;
-    /** Managers/admins returned by userRepository->findManagersAndAdmins() — empty by default so tests stay focused. */
+    /** Managers/admins returned by userRepository->findOperationalManagers() — empty by default so tests stay focused. */
     private array $managers = [];
     /** Every message passed to bus->dispatch(), in call order. */
     private array $dispatched = [];
@@ -81,7 +81,7 @@ class AbsenceImpactServiceTest extends TestCase
         $this->alertService->method('createIfNotDuplicate')
             ->willReturnCallback(fn () => $this->nextCreateResult ?? ['alert' => $this->makeAlert(), 'created' => true]);
 
-        $this->userRepository->method('findManagersAndAdmins')->willReturnCallback(fn () => $this->managers);
+        $this->userRepository->method('findOperationalManagers')->willReturnCallback(fn () => $this->managers);
 
         $this->bus->method('dispatch')->willReturnCallback(function (object $message) {
             $this->dispatched[] = $message;

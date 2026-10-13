@@ -273,7 +273,7 @@ final class AbsenceImpactSummaryFunctionalTest extends WebTestCase
     /**
      * Scoped to a specific recipient email — the real dev database this suite runs against
      * accumulates managers/admins across the whole session's functional test history, so
-     * findManagersAndAdmins(true) legitimately returns far more than just this test's own
+     * findOperationalManagers() legitimately returns far more than just this test's own
      * fixtures. Counting the raw transport is not meaningful; only per-recipient counts are.
      *
      * H4 (D-130): the summary email is queued by NotificationDispatcher (SendTemplatedEmailMessage).

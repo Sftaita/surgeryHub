@@ -85,7 +85,7 @@ final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
     {
         $m = $this->mission();
         [$a, $b] = [$this->manager(), $this->manager()];
-        $this->users->method('findManagersAndAdmins')->with(true)->willReturn([$a, $b]);
+        $this->users->method('findOperationalManagers')->willReturn([$a, $b]);
 
         $this->handler()($this->message($m));
 
@@ -105,7 +105,7 @@ final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
     {
         $m = $this->mission();
         [$a, $b] = [$this->manager(), $this->manager()];
-        $this->users->method('findManagersAndAdmins')->willReturn([$a, $b]);
+        $this->users->method('findOperationalManagers')->willReturn([$a, $b]);
         $reached = [];
         $dispatcher = $this->createMock(NotificationDispatcher::class);
         $dispatcher->method('dispatch')->willReturnCallback(function (NotificationIntent $i) use ($a, &$reached) {
@@ -126,7 +126,7 @@ final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
     public function test_the_email_carries_no_patient_data(): void
     {
         $m = $this->mission();
-        $this->users->method('findManagersAndAdmins')->willReturn([$this->manager()]);
+        $this->users->method('findOperationalManagers')->willReturn([$this->manager()]);
         $this->handler()($this->message($m));
 
         self::assertSame(
@@ -138,7 +138,7 @@ final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
     public function test_unknown_mission_dispatches_nothing(): void
     {
         $this->em->method('find')->willReturn(null);
-        $this->users->expects($this->never())->method('findManagersAndAdmins');
+        $this->users->expects($this->never())->method('findOperationalManagers');
         $this->handler()(new CatalogueRequestCreatedMessage(CatalogueRequestKind::MATERIAL_ITEM, 1, 999, 'x', new \DateTimeImmutable()));
 
         self::assertSame([], $this->intents);

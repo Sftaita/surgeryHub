@@ -769,7 +769,7 @@ final class MissionLifecycleChangedMessageHandler
         $offeredBy  = isset($message->payload['offeredById']) ? $this->em->find(User::class, (int) $message->payload['offeredById']) : null;
         $isManager  = $offeredBy !== null && $offeredBy->isActive()
             && array_intersect(['ROLE_MANAGER', 'ROLE_ADMIN'], $offeredBy->getRoles()) !== [];
-        $recipients = $isManager ? [$offeredBy] : $this->userRepository->findManagersAndAdmins(true);
+        $recipients = $isManager ? [$offeredBy] : $this->userRepository->findOperationalManagers();
 
         // H5a — through the dispatcher (in-app + email per preferences, no push — as before),
         // every channel traced, idempotent per refusal; failure isolated per manager.

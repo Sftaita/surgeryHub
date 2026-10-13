@@ -397,7 +397,7 @@ class SelfAbsenceController extends AbstractController
             return;
         }
 
-        $managers = $this->userRepository->findManagersAndAdmins(true);
+        $managers = $this->userRepository->findOperationalManagers();
         if (empty($managers)) {
             return;
         }
