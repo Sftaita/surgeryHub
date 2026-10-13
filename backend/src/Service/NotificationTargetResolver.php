@@ -93,7 +93,7 @@ final class NotificationTargetResolver
             if (in_array($type, [NotificationType::ENCODING_SUBMITTED, NotificationType::ENCODING_ANOMALY_RESOLVED], true) && $isSurgeon) {
                 return sprintf('/app/s/missions/%d/encoding', $mission->getId());
             }
-            if ($type === NotificationType::ENCODING_ANOMALY_INSTRUMENTIST && $isInstrumentist) {
+            if (in_array($type, [NotificationType::ENCODING_ANOMALY_INSTRUMENTIST, NotificationType::ENCODING_CORRECTION_REQUESTED], true) && $isInstrumentist) {
                 return sprintf('/app/i/missions/%d/encoding', $mission->getId());
             }
         }

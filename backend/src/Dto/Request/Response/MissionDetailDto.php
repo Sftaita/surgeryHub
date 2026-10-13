@@ -50,5 +50,11 @@ final class MissionDetailDto
          * @var array<string,mixed>|null
          */
         public readonly ?array $targetedOffer = null,
+        /**
+         * D-148 — pourquoi l'encodage ne peut pas être rouvert (mission CLOSED ou calcul
+         * financier LOCKED), servi aux managers seulement ; null quand rien ne s'y oppose ou
+         * que la question ne se pose pas (MissionEncodingCorrectionPolicy).
+         */
+        public readonly ?string $encodingCorrectionBlockedReason = null,
     ) {}
 }

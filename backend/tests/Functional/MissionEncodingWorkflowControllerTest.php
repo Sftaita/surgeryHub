@@ -662,7 +662,8 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         self::assertNull($reloaded->getEncodingLockedAt());
     }
 
-    public function test_reopen_without_comment_is_allowed(): void
+    /** D-148 — le motif de la correction est désormais obligatoire (optionnel en D-070). */
+    public function test_reopen_without_comment_is_refused(): void
     {
         $client  = $this->boot();
         $manager = $this->createUser('ROLE_MANAGER');
@@ -674,7 +675,9 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
 
         $response = $this->postJson($client, $token, "/api/missions/{$mission->getId()}/encoding/reopen", []);
 
-        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
+        $this->em->clear();
+        self::assertSame(MissionStatus::VALIDATED, $this->em->find(Mission::class, $mission->getId())->getStatus());
     }
 
     public function test_closed_mission_can_never_be_reopened(): void

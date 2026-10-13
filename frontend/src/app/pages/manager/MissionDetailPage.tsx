@@ -200,7 +200,7 @@ export function MissionDetailContent({
   });
 
   const reopenEncodingMutation = useMutation({
-    mutationFn: async (comment: string) => reopenMissionEncoding(missionId, comment || undefined),
+    mutationFn: async (comment: string) => reopenMissionEncoding(missionId, comment),
     onSuccess: async () => {
       await refreshAfterAction();
       toast.success("Encodage rouvert.");
@@ -622,22 +622,23 @@ export function MissionDetailContent({
         <DialogTitle>Rouvrir l'encodage</DialogTitle>
         <DialogContent dividers>
           <Typography variant="body2" color="text.secondary" mb={1.5}>
-            La mission repasse en encodage modifiable côté instrumentiste. Commentaire
-            optionnel.
+            La mission repasse en encodage modifiable côté instrumentiste. Motif
+            obligatoire (D-148).
           </Typography>
           <TextField
             autoFocus
             fullWidth
             multiline
             minRows={3}
-            label="Commentaire (optionnel)"
+            required
+            label="Motif de la correction"
             value={reopenComment}
             onChange={(e) => setReopenComment(e.target.value)}
           />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setReopenOpen(false)} disabled={anyLoading}>Annuler</Button>
-          <Button color="warning" variant="contained" disabled={anyLoading}
+          <Button color="warning" variant="contained" disabled={anyLoading || reopenComment.trim() === ""}
             onClick={() => { setReopenOpen(false); reopenEncodingMutation.mutate(reopenComment.trim()); }}>
             Rouvrir
           </Button>

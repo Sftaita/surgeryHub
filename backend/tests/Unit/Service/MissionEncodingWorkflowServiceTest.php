@@ -533,16 +533,62 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
         self::assertSame(MissionChangeType::ENCODING_REOPENED, $this->dispatchedMessages[0]->changeType);
     }
 
-    public function test_reopen_without_comment_does_not_persist_a_comment(): void
+    /** D-148 — motif obligatoire : un texte vide ou d'espaces ne rouvre rien. */
+    public function test_reopen_with_blank_reason_is_refused_and_changes_nothing(): void
     {
         $mission = $this->makeMission(MissionStatus::VALIDATED);
+        $mission->setEncodingLockedAt(new \DateTimeImmutable());
+        $actor   = $this->makeManager();
+
+        $this->em->expects($this->never())->method('persist');
+        $this->audit->expects($this->never())->method('record');
+
+        try {
+            $this->service->reopen($mission, $actor, '   ');
+            self::fail('blank reason accepted');
+        } catch (\Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException) {
+        }
+
+        self::assertSame(MissionStatus::VALIDATED, $mission->getStatus());
+        self::assertNotNull($mission->getEncodingLockedAt());
+        self::assertCount(0, $this->dispatchedMessages);
+    }
+
+    /** D-148 — même règle pour le renvoi en correction. */
+    public function test_reject_with_blank_reason_is_refused_and_changes_nothing(): void
+    {
+        $mission = $this->makeMission(MissionStatus::SUBMITTED);
         $actor   = $this->makeManager();
 
         $this->em->expects($this->never())->method('persist');
 
-        $this->service->reopen($mission, $actor, null);
+        try {
+            $this->service->reject($mission, $actor, '');
+            self::fail('blank reason accepted');
+        } catch (\Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException) {
+        }
 
-        self::assertCount(0, $mission->getEncodingComments());
+        self::assertSame(MissionStatus::SUBMITTED, $mission->getStatus());
+        self::assertCount(0, $this->dispatchedMessages);
+    }
+
+    public function test_reject_and_reopen_audit_the_previous_and_new_status(): void
+    {
+        $actor = $this->makeManager();
+        $payloads = [];
+        $this->audit->method('record')->willReturnCallback(function ($m, $a, $type, array $payload) use (&$payloads) {
+            $payloads[$type->value] = $payload;
+        });
+
+        $this->service->reject($this->makeMission(MissionStatus::SUBMITTED), $actor, '  Horaires manquants  ');
+        $this->service->reopen($this->makeMission(MissionStatus::VALIDATED), $actor, 'Quantité incorrecte');
+
+        self::assertSame(['SUBMITTED', 'ENCODING_IN_PROGRESS', 'Horaires manquants'], [
+            $payloads['MISSION_ENCODING_REJECTED']['fromStatus'], $payloads['MISSION_ENCODING_REJECTED']['toStatus'], $payloads['MISSION_ENCODING_REJECTED']['comment'],
+        ]);
+        self::assertSame(['VALIDATED', 'ENCODING_IN_PROGRESS', 'Quantité incorrecte'], [
+            $payloads['MISSION_ENCODING_REOPENED']['fromStatus'], $payloads['MISSION_ENCODING_REOPENED']['toStatus'], $payloads['MISSION_ENCODING_REOPENED']['comment'],
+        ]);
     }
 
     public function test_reopen_rejects_closed_mission_with_dedicated_message(): void
@@ -551,9 +597,9 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
         $actor   = $this->makeManager();
 
         $this->expectException(ConflictHttpException::class);
-        $this->expectExceptionMessage('A CLOSED mission can never be reopened');
+        $this->expectExceptionMessage(\App\Service\MissionEncodingCorrectionPolicy::CLOSED_MESSAGE);
 
-        $this->service->reopen($mission, $actor);
+        $this->service->reopen($mission, $actor, 'Tentative');
     }
 
     public function test_reopen_rejects_mission_not_validated(): void
@@ -563,7 +609,7 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
 
         $this->expectException(ConflictHttpException::class);
 
-        $this->service->reopen($mission, $actor);
+        $this->service->reopen($mission, $actor, 'Tentative');
     }
 
     /** EPIC Exécution & Valorisation, Lot 3 (D-073) — politique de réouverture à seuil. */
@@ -577,9 +623,9 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
         $this->em->method('getRepository')->with(\App\Entity\FinancialCalculation::class)->willReturn($repo);
 
         $this->expectException(ConflictHttpException::class);
-        $this->expectExceptionMessage('LOCKED financial calculation');
+        $this->expectExceptionMessage(\App\Service\MissionEncodingCorrectionPolicy::FINANCIAL_LOCK_MESSAGE);
 
-        $this->service->reopen($mission, $actor);
+        $this->service->reopen($mission, $actor, 'Tentative');
     }
 
     // ── isBillable() / findMissionsReadyForBilling() ────────────────────────

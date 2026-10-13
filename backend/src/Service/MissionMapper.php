@@ -72,6 +72,7 @@ final class MissionMapper
             automaticReminders: $automaticReminders,
             submittedAt: $m->getSubmittedAt()?->format(\DateTimeInterface::ATOM),
             targetedOffer: $this->targetedOffer($m),
+            encodingCorrectionBlockedReason: $isManagerViewer ? MissionEncodingCorrectionPolicy::reopenBlockedReason($m) : null,
         );
     }
 

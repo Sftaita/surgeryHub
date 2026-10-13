@@ -4,11 +4,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { fetchMissionById, getMissionExecution, remindMissionHours } from "../../missions/api/missions.api";
 import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
-import { fetchMissionEncoding, newActionBatchId, remindMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
+import { fetchMissionEncoding, newActionBatchId, rejectMissionEncoding, remindMissionEncoding, reopenMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
 import { encodingIncompleteText } from "../../encoding/api/encodingIncomplete";
 import { EncodingContentPanel } from "./EncodingContentPanel";
 import type { EncodingAnomalyMarks, EncodingFocusTarget } from "./EncodingContentPanel";
 import { FinancialAnomaliesCard } from "./FinancialAnomaliesCard";
+import { EncodingCorrectionDialog } from "./EncodingCorrectionDialog";
+import type { EncodingCorrectionKind } from "./EncodingCorrectionDialog";
 import { useToast } from "../../../ui/toast/useToast";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 import { getMissionFinancialAnomalies } from "../api/encodingTracking.api";
@@ -108,7 +110,10 @@ interface Props {
  *
  * D-118 §22.6 avait choisi que ce module observe sans agir ; élargi ici (D-120) au strict
  * nécessaire de la maquette : Valider (réutilise POST .../encoding/validate) et Relancer
- * (POST .../encoding/remind, D-120). Rejeter/Rouvrir restent sur la fiche mission complète.
+ * (POST .../encoding/remind, D-120). D-148 : « Renvoyer en correction » (POST .../encoding/reject)
+ * et « Rouvrir l'encodage » (POST .../encoding/reopen), proposés seulement si allowedActions les
+ * contient ; un refus (clôture, verrou financier) est expliqué par le backend
+ * (encodingCorrectionBlockedReason), jamais déduit ici.
  */
 export function MissionTrackingDrawer({ item, onClose }: Props) {
   const toast = useToast();
@@ -211,6 +216,35 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
     onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : extractErrorMessage(err)),
   });
 
+  // D-148 — la fenêtre reste ouverte jusqu'à la confirmation serveur ; un seul envoi à la fois.
+  const [correctionKind, setCorrectionKind] = React.useState<EncodingCorrectionKind | null>(null);
+  const correctionInFlight = React.useRef(false);
+  const correctionMutation = useMutation({
+    mutationFn: async ({ kind, reason }: { kind: EncodingCorrectionKind; reason: string }) =>
+      kind === "RETURN" ? rejectMissionEncoding(missionId!, reason) : reopenMissionEncoding(missionId!, reason),
+    onSuccess: async (_data, { kind }) => {
+      setCorrectionKind(null);
+      toast.success(kind === "RETURN" ? "Encodage renvoyé en correction à l'instrumentiste." : "Encodage rouvert : l'instrumentiste peut le corriger.");
+      await refreshAfterAction();
+    },
+    onSettled: () => { correctionInFlight.current = false; },
+  });
+  React.useEffect(() => { setCorrectionKind(null); }, [missionId]);
+  function openCorrection(kind: EncodingCorrectionKind) {
+    correctionMutation.reset();
+    setCorrectionKind(kind);
+  }
+  function confirmCorrection(reason: string) {
+    if (correctionKind === null || correctionInFlight.current) return;
+    correctionInFlight.current = true;
+    correctionMutation.mutate({ kind: correctionKind, reason });
+  }
+  const correctionError = correctionMutation.isError
+    ? (correctionMutation.error as any)?.response?.status === 403
+      ? "Action non autorisée pour cette mission (son statut a peut-être changé)."
+      : extractErrorMessage(correctionMutation.error)
+    : null;
+
   const remindHoursMutation = useMutation({
     mutationFn: async () => remindMissionHours(missionId!),
     onSuccess: async () => { toast.success("Rappel des heures envoyé à l'instrumentiste."); await refreshAfterAction(); },
@@ -218,12 +252,13 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   });
 
   // Le tiroir se superpose à la liste (aucun reflow) : Échap le ferme, comme un tiroir MUI.
+  // D-148 — pendant la fenêtre de motif, Échap ne concerne que la fenêtre (jamais le tiroir).
   React.useEffect(() => {
-    if (!open) return;
+    if (!open || correctionKind !== null) return;
     const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose]);
+  }, [open, onClose, correctionKind]);
 
   if (!open || !item) return null;
 
@@ -243,6 +278,10 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   // D-136 — décidé uniquement par le backend (MissionHoursReminderPolicy) : jamais déduit
   // ici de hasRealHours ou de la date.
   const canRemindHours = allowedActions.includes("remind_hours");
+  // D-148 — 'reject' n'est offert qu'en SUBMITTED dans le suivi (DECLARED = autre circuit).
+  const canReturnEncoding = allowedActions.includes("reject") && missionQuery.data?.status === "SUBMITTED";
+  const canReopenEncoding = allowedActions.includes("reopen");
+  const correctionBlockedReason = missionQuery.data?.encodingCorrectionBlockedReason ?? null;
   const isValidated = item.encodingState === "VALIDATED" || item.encodingState === "LOCKED";
   const entries = encodingQuery.data?.entries ?? [];
   const refs = item.encoding.materialLineCount;
@@ -456,6 +495,27 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             Relances automatiques : {automaticHistory}
           </Box>
         )}
+        {correctionBlockedReason && (
+          <Box data-testid="drawer-correction-blocked" sx={{ flexBasis: "100%", order: -1, padding: "8px 10px", borderRadius: "9px", background: GRAY_75, fontSize: 12, fontWeight: 600, color: GRAY_600 }}>
+            {correctionBlockedReason}
+          </Box>
+        )}
+        {(canReturnEncoding || canReopenEncoding) && (
+          <Box
+            component="button"
+            type="button"
+            onClick={() => openCorrection(canReturnEncoding ? "RETURN" : "REOPEN")}
+            sx={{
+              display: "flex", alignItems: "center", gap: "6px", height: 40, padding: "0 14px", borderRadius: "11px",
+              border: "1px solid", borderColor: AMBER_100, background: AMBER_50, color: AMBER_700, font: "inherit",
+              fontSize: 13, fontWeight: 700, cursor: "pointer",
+              "&:hover": { background: AMBER_100 },
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></svg>
+            {canReturnEncoding ? "Renvoyer en correction" : "Rouvrir l'encodage"}
+          </Box>
+        )}
         {canRemind && (
           <Tooltip title={reminderTooltip} describeChild>
             <Box
@@ -494,6 +554,17 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           {item.encodingState === "VALIDATED" || item.encodingState === "LOCKED" ? "Encodage validé" : "Valider l'encodage"}
         </Box>
       </Box>
+
+      <EncodingCorrectionDialog
+        kind={correctionKind}
+        missionLabel={`#${item.missionId} · ${item.startAt ? new Date(item.startAt).toLocaleDateString("fr-BE") : "—"} · ${item.site?.name ?? "—"}`}
+        instrumentistName={item.instrumentist?.name ?? "—"}
+        statusLabel={item.encodingStateLabel}
+        pending={correctionMutation.isPending}
+        error={correctionError}
+        onConfirm={confirmCorrection}
+        onCancel={() => setCorrectionKind(null)}
+      />
     </Box>
   );
 }
