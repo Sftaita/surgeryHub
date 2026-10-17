@@ -361,4 +361,32 @@ final class MeNotificationPreferencesControllerTest extends WebTestCase
         self::assertNotNull($kept, 'préférence enregistrée conservée');
         self::assertFalse($kept->isInAppEnabled());
     }
+
+    #[WithoutErrorHandler]
+    public function test_types_no_code_produces_any_more_are_hidden_for_every_role_and_their_stored_preferences_kept(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        $retired = ['PLANNING_MISSION_ADDED', 'PLANNING_MISSION_UPDATED', 'ABSENCE_INSTRUMENTIST_RELEASED',
+            'ABSENCE_OCCURRENCE_CANCELLED_MGR', 'ABSENCE_OCCURRENCE_RESTORED_MGR', 'MISSION_RESTORED_MGR'];
+
+        ['user' => $user, 'token' => $token] = $this->authenticate($client, ['ROLE_SURGEON', 'ROLE_INSTRUMENTIST', 'ROLE_MANAGER']);
+        $pref = (new NotificationPreference())->setUser($user)->setNotificationType(NotificationType::PLANNING_MISSION_ADDED)
+            ->setInAppEnabled(false)->setEmailEnabled(true)->setPushEnabled(false);
+        $this->em->persist($pref);
+        $this->em->flush();
+        $this->createdIds['preferences'][] = $pref->getId();
+
+        $listed = $this->listedTypes($client, $token);
+        self::assertSame([], array_values(array_intersect($retired, $listed)), 'aucun type sans producteur proposé, même à tous les rôles');
+        self::assertContains('PLANNING_CHANGE_SUMMARY', $listed);
+        self::assertContains('ABSENCE_IMPACT_SUMMARY', $listed);
+
+        $this->em->clear();
+        $kept = $this->em->find(NotificationPreference::class, $pref->getId());
+        self::assertNotNull($kept, 'préférence historique conservée en base');
+        self::assertFalse($kept->isInAppEnabled());
+        self::assertTrue($kept->isEmailEnabled());
+    }
 }

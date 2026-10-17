@@ -14023,9 +14023,18 @@ Tests : `NotificationTypeAudienceTest`, `MeNotificationPreferencesControllerTest
 admin, multi-rôles, préférence enregistrée conservée), `EncodingTrackingTable.test.tsx`,
 `MissionTrackingDrawer.test.tsx`, `MissionDetailPage.test.tsx` (manager).
 
-Relevé hors périmètre : cinq types non retirés n'ont plus aucun producteur
-(`PLANNING_MISSION_ADDED`, `PLANNING_MISSION_UPDATED`, `ABSENCE_INSTRUMENTIST_RELEASED`, et les
-trois `*_MGR` morts depuis D-105) et restent proposés à leurs rôles ; plusieurs types n'ont
-pas de libellé frontend (`MISSION_RESTORED`, `SURGEON_MISSION_REQUEST_ACCEPTED` /
-`_REJECTED`, `ENCODING_ANOMALY_RESOLVED`, `ABSENCE_INSTRUMENTIST_REASSIGNED`,
-`ABSENCE_OCCURRENCE_RESTORED`) et s'affichent avec leur code.
+Finitions (2026-10-16) :
+
+- **Types sans producteur masqués.** Audit du code d'envoi : aucun producteur actif pour
+  `PLANNING_MISSION_ADDED` / `_UPDATED` (remplacés par `PLANNING_CHANGE_SUMMARY`, H3),
+  `ABSENCE_INSTRUMENTIST_RELEASED` (plus jamais envoyé à la personne absente, H4) ni
+  `ABSENCE_OCCURRENCE_CANCELLED_MGR` / `ABSENCE_OCCURRENCE_RESTORED_MGR` / `MISSION_RESTORED_MGR`
+  (remplacés par `ABSENCE_IMPACT_SUMMARY`, D-105). Ils rejoignent `NotificationType::isRetired()`
+  (mécanisme H3) : absents de la liste des préférences et refusés par le `PATCH`, comme les
+  autres types retirés. Les cas backend, les préférences enregistrées et la distribution restent
+  inchangés.
+- **Libellés.** Tout type proposé dans les préférences a un libellé français
+  (`notificationTypeLabels.ts`, contrôlé par `notificationTypeLabels.test.ts`), dont
+  `MISSION_RESTORED`, `SURGEON_MISSION_REQUEST_ACCEPTED` / `_REJECTED`,
+  `ENCODING_ANOMALY_RESOLVED`, `ABSENCE_INSTRUMENTIST_REASSIGNED`, `ABSENCE_OCCURRENCE_RESTORED`,
+  `ABSENCE_SELF_DECLARED` et `ABSENCE_IMPACT_SUMMARY`.

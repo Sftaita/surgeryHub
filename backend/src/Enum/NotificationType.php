@@ -353,9 +353,17 @@ enum NotificationType: string
      * H3 (D-129) — types no code produces any more, kept only so historical rows stay
      * readable. Never offered as a preference (a switch that changes nothing would lie).
      * D-143 — ENCODING_REMINDER_D1 replaced by ENCODING_REMINDER.
+     * D-155 (recette) — audited: no active producer for PLANNING_MISSION_ADDED / _UPDATED
+     * (superseded by PLANNING_CHANGE_SUMMARY, H3), ABSENCE_INSTRUMENTIST_RELEASED (never sent
+     * to the absent person, H4) nor the three *_MGR types (replaced by ABSENCE_IMPACT_SUMMARY,
+     * D-105). Hidden from the preferences only: stored rows stay, distribution is unchanged.
      */
     public function isRetired(): bool
     {
-        return in_array($this, [self::ABSENCE_POOL_MISSION_AVAILABLE, self::ENCODING_REMINDER_D1], true);
+        return in_array($this, [
+            self::ABSENCE_POOL_MISSION_AVAILABLE, self::ENCODING_REMINDER_D1,
+            self::PLANNING_MISSION_ADDED, self::PLANNING_MISSION_UPDATED, self::ABSENCE_INSTRUMENTIST_RELEASED,
+            self::ABSENCE_OCCURRENCE_CANCELLED_MGR, self::ABSENCE_OCCURRENCE_RESTORED_MGR, self::MISSION_RESTORED_MGR,
+        ], true);
     }
 }

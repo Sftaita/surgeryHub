@@ -55,6 +55,15 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   ENCODING_ANOMALY_INSTRUMENTIST: "Point signalé sur votre encodage",
   ENCODING_CORRECTION_REQUESTED: "Correction de votre encodage demandée",
   ENCODING_UPDATED_BY_SURGEON: "Encodage complété par le chirurgien",
+  // D-155 (recette) — types visibles dans les préférences qui s'affichaient avec leur code.
+  ABSENCE_INSTRUMENTIST_REASSIGNED: "Mission réaffectée suite à l'absence d'un chirurgien",
+  ABSENCE_OCCURRENCE_RESTORED: "Créneau habituel de nouveau prévu après une absence",
+  MISSION_RESTORED: "Mission rétablie après l'annulation d'une absence",
+  ABSENCE_SELF_DECLARED: "Absence déclarée par un membre de l'équipe",
+  ABSENCE_IMPACT_SUMMARY: "Impact d'une absence sur le planning",
+  SURGEON_MISSION_REQUEST_ACCEPTED: "Votre demande de mission acceptée",
+  SURGEON_MISSION_REQUEST_REJECTED: "Votre demande de mission refusée",
+  ENCODING_ANOMALY_RESOLVED: "Anomalie d'encodage résolue",
 };
 
 export function notificationTypeLabel(type: string): string {

@@ -43,4 +43,22 @@ final class NotificationTypeAudienceTest extends TestCase
         self::assertTrue(NotificationType::ENCODING_SUBMITTED->concernsRoles(['ROLE_SURGEON', 'ROLE_MANAGER']));
         self::assertFalse(NotificationType::ENCODING_SUBMITTED->concernsRoles(['ROLE_USER']));
     }
+
+    public function test_types_without_any_active_producer_are_retired_but_kept(): void
+    {
+        foreach ([
+            NotificationType::PLANNING_MISSION_ADDED, NotificationType::PLANNING_MISSION_UPDATED,
+            NotificationType::ABSENCE_INSTRUMENTIST_RELEASED, NotificationType::ABSENCE_OCCURRENCE_CANCELLED_MGR,
+            NotificationType::ABSENCE_OCCURRENCE_RESTORED_MGR, NotificationType::MISSION_RESTORED_MGR,
+        ] as $type) {
+            self::assertTrue($type->isRetired(), $type->value);
+            self::assertFalse($type->isConfigurable(), $type->value);
+            self::assertSame($type, NotificationType::from($type->value), 'le type backend existe toujours');
+        }
+        // Types encore produits : toujours proposés.
+        self::assertTrue(NotificationType::PLANNING_CHANGE_SUMMARY->isConfigurable());
+        self::assertTrue(NotificationType::ABSENCE_IMPACT_SUMMARY->isConfigurable());
+        self::assertTrue(NotificationType::ABSENCE_INSTRUMENTIST_REASSIGNED->isConfigurable());
+        self::assertTrue(NotificationType::MISSION_RESTORED->isConfigurable());
+    }
 }
