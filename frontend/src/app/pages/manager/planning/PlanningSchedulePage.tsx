@@ -158,13 +158,10 @@ const STATUS_LABEL: Record<string, {
 
 // ── InstrumentistCell ─────────────────────────────────────────────────────────
 
-interface Instrumentist { id: number; displayName: string }
-
 function ScheduleInstrumentistCell({
-  row, instrumentists, onUpdated,
+  row, onUpdated,
 }: {
   row:            ScheduleRow;
-  instrumentists: Instrumentist[];
   onUpdated:      (missionId: number, instId: number | null, name: string | null) => void;
 }) {
   const toast = useToast();
@@ -183,7 +180,7 @@ function ScheduleInstrumentistCell({
       apiClient.post(`/api/missions/${row.missionId}/assign-instrumentist`, { instrumentistId }),
     onSuccess: (_d, { instrumentistId }) => {
       const name = instrumentistId
-        ? (instrumentists.find((i) => i.id === instrumentistId)?.displayName ?? null)
+        ? (candidates?.find((c) => c.id === instrumentistId)?.name ?? null)
         : null;
       onUpdated(row.missionId, instrumentistId, name);
       toast.success("Instrumentiste mis à jour");
@@ -233,9 +230,16 @@ function ScheduleInstrumentistCell({
               {c.name}{!c.selectable ? ` — ${candidateGhostLabel(c) ?? ""}` : ""}
             </MenuItem>
           ))
-        : instrumentists.map((i) => (
-            <MenuItem key={i.id} value={i.id}>{i.displayName}</MenuItem>
-          ))}
+        : [
+            // D-152 (réserve 1) — while the backend roster loads (or if it failed), only the
+            // current instrumentist: never the whole list of accounts, never an unchecked choice.
+            ...(row.instrumentistId !== null
+              ? [<MenuItem key={row.instrumentistId} value={row.instrumentistId}>{row.instrumentistName ?? `#${row.instrumentistId}`}</MenuItem>]
+              : []),
+            <MenuItem key="roster-pending" disabled data-testid="schedule-instrumentist-roster-pending">
+              {rosterQuery.isError ? "Liste des instrumentistes indisponible" : "Chargement des instrumentistes…"}
+            </MenuItem>,
+          ]}
     </Select>
   );
 }
@@ -273,15 +277,6 @@ export default function PlanningSchedulePage() {
   const [reassignTarget, setReassignTarget]     = React.useState<ScheduleRow | null>(null);
 
   const sitesQuery = useQuery({ queryKey: ["sites"], queryFn: fetchSites });
-  const instrumentistsQuery = useQuery({
-    queryKey: ["instrumentists-all"],
-    queryFn: async () => {
-      const r = await apiClient.get("/api/instrumentists", { params: { active: true } });
-      return r.data.items as Instrumentist[];
-    },
-    staleTime: 5 * 60_000,
-  });
-
   const missionsQuery = useQuery({
     queryKey: ["planning-schedule", applied?.from, applied?.to, applied?.siteId],
     queryFn: async () => {
@@ -427,7 +422,6 @@ export default function PlanningSchedulePage() {
 
   const filteredRows = statusFilter === "ALL" ? rows : rows.filter((r) => r.status === statusFilter);
   const weeks = groupRows(filteredRows);
-  const instrumentists = instrumentistsQuery.data ?? [];
 
   return (
     <Stack spacing={3}>
@@ -584,7 +578,6 @@ export default function PlanningSchedulePage() {
                         <TableCell sx={{ py: "2px !important" }} onClick={(e) => e.stopPropagation()}>
                           <ScheduleInstrumentistCell
                             row={row}
-                            instrumentists={instrumentists}
                             onUpdated={handleUpdated}
                           />
                         </TableCell>

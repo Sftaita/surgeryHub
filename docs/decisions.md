@@ -13671,6 +13671,18 @@ refonte de L3 tant qu'aucun contournement actif n'est trouvé.
    (incompatibilités, attribution) chargent la liste des instrumentistes en une page de 500 ;
    au-delà, un compte n'est pas sélectionnable. À remplacer par une recherche paginée côté
    serveur (aucun impact sur la règle : l'éligibilité reste décidée par le backend).
+   **Levée le 2026-10-17.** Constat : `/api/instrumentists` et `/api/surgeons` ne paginent pas
+   (le `limit: 500` du frontend était ignoré) — le navigateur chargeait **tous** les comptes.
+   Fiches chirurgien et instrumentiste : `GET /api/incompatibilities/candidates`, recherche
+   paginée côté serveur (voter `MANAGE`, comptes actifs du bon rôle, jamais une personne déjà
+   incompatible, 20 par page, page suivante au défilement). Planning vivant : la cellule
+   d'attribution ne propose que le roster d'éligibilité du backend ; pendant son chargement ou
+   s'il échoue, seulement l'instrumentiste actuel, plus jamais la liste complète (requête
+   `/api/instrumentists` retirée de l'écran). Tests : `IncompatibilityCandidatesSearchTest`
+   (520 instrumentistes, pages au-delà de 500, recherche, exclusions, droits),
+   `Incompatibilities.test.tsx`, `PlanningSchedulePage.test.tsx`. Hors périmètre, inchangé :
+   l'éditeur de génération V2 charge encore la liste des instrumentistes actifs pour afficher
+   ses lignes ; ses sélecteurs d'affectation utilisent le roster du backend.
 2. **Déploiement Planning V1.** Vérifié le 2026-10-15 : la seule route qui déploie
    (`PlanningV2GenerationController::deploy`) passe toujours un `versionId` à
    `PlanningDeploymentService::deploy()` ; la branche historique sans version n'est plus

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Autocomplete, Box, Button, Chip, CircularProgress, Divider, Link, Stack, TextField, Typography } from "@mui/material";
 import { Link as RouterLink } from "react-router-dom";
 import dayjs from "dayjs";
@@ -10,21 +10,18 @@ import {
   fetchIncompatibilitiesOf,
   liftIncompatibility,
   ORIGIN_LABELS,
+  searchIncompatibilityCandidates,
+  type CandidateOption,
   type Incompatibility,
-  type PersonOption,
 } from "../api/incompatibilities.api";
-import { fetchInstrumentists, fetchSurgeons } from "../../missions/api/missions.api";
 import { useToast } from "../../../ui/toast/useToast";
+import { useDebouncedValue } from "../../../ui/hooks/useDebouncedValue";
 
 type Props = {
   /** Whose file this is: a surgeon (lists his incompatible instrumentists) or an instrumentist. */
   mode: "surgeon" | "instrumentist";
   personId: number;
 };
-
-function displayName(u: { firstname?: string | null; lastname?: string | null; displayName?: string | null; email: string }): string {
-  return `${u.firstname ?? ""} ${u.lastname ?? ""}`.trim() || u.displayName?.trim() || u.email;
-}
 
 /**
  * D-152 — manager view of the incompatibilities on a surgeon's or an instrumentist's file:
@@ -35,22 +32,30 @@ function displayName(u: { firstname?: string | null; lastname?: string | null; d
 export default function IncompatibilitiesSection({ mode, personId }: Props) {
   const queryClient = useQueryClient();
   const toast = useToast();
-  const [other, setOther] = React.useState<PersonOption | null>(null);
+  const [other, setOther] = React.useState<CandidateOption | null>(null);
+  const [search, setSearch] = React.useState("");
+  const debouncedSearch = useDebouncedValue(search.trim(), 300);
   const queryKey = ["incompatibilities", mode, personId];
 
   const list = useQuery({ queryKey, queryFn: () => fetchIncompatibilitiesOf(mode, personId) });
-  const candidates = useQuery({
-    queryKey: ["incompatibilities", "candidates", mode],
-    queryFn: async (): Promise<PersonOption[]> => {
-      if (mode === "surgeon") {
-        const res = await fetchInstrumentists({ limit: 500 });
-        return res.items.filter((u) => u.active !== false).map((u) => ({ id: u.id, name: displayName(u) }));
-      }
-      const res = await fetchSurgeons(1, 500);
-      return res.items.filter((u) => u.active !== false).map((u) => ({ id: u.id, name: displayName(u) }));
-    },
-    staleTime: 60_000,
+  // D-152 (réserve 1) — searched and paged by the backend (active accounts of the right role,
+  // never one already incompatible): next pages load as the list scrolls.
+  const candidates = useInfiniteQuery({
+    queryKey: ["incompatibilities", "candidates", mode, personId, debouncedSearch],
+    queryFn: ({ pageParam }) => searchIncompatibilityCandidates(mode, personId, debouncedSearch, pageParam),
+    initialPageParam: 1,
+    getNextPageParam: (last) => (last.hasMore ? last.page + 1 : undefined),
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
   });
+  const options = (candidates.data?.pages ?? []).flatMap((p) => p.items);
+  const total = candidates.data?.pages[0]?.total ?? 0;
+  const loadMoreOnScroll = (event: React.UIEvent<HTMLElement>) => {
+    const box = event.currentTarget;
+    if (box.scrollTop + box.clientHeight >= box.scrollHeight - 40 && candidates.hasNextPage && !candidates.isFetchingNextPage) {
+      void candidates.fetchNextPage();
+    }
+  };
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["incompatibilities"] });
@@ -141,14 +146,35 @@ export default function IncompatibilitiesSection({ mode, personId }: Props) {
         <Autocomplete
           sx={{ flex: 1 }}
           size="small"
-          options={(candidates.data ?? []).filter((o) => !blocked.has(o.id))}
+          options={options.filter((o) => !blocked.has(o.id))}
           value={other}
           onChange={(_e, value) => setOther(value)}
+          inputValue={search}
+          onInputChange={(_e, value, reason) => {
+            if (reason !== "reset") setSearch(value);
+          }}
+          filterOptions={(x) => x}
           getOptionLabel={(o) => o.name}
           isOptionEqualToValue={(a, b) => a.id === b.id}
-          noOptionsText="Aucune personne"
+          renderOption={(props, o) => (
+            <li {...props} key={o.id}>
+              <Box>
+                <Typography variant="body2">{o.name}</Typography>
+                <Typography variant="caption" color="text.secondary">{o.email}</Typography>
+              </Box>
+            </li>
+          )}
+          loading={candidates.isFetching}
+          loadingText="Recherche…"
+          noOptionsText={debouncedSearch ? "Aucune personne trouvée" : "Aucune personne"}
+          slotProps={{ listbox: { onScroll: loadMoreOnScroll } }}
           renderInput={(params) => (
-            <TextField {...params} label={mode === "surgeon" ? "Instrumentiste incompatible" : "Chirurgien incompatible"} />
+            <TextField
+              {...params}
+              label={mode === "surgeon" ? "Instrumentiste incompatible" : "Chirurgien incompatible"}
+              placeholder="Nom, prénom ou e-mail"
+              helperText={total > options.length ? `${options.length} sur ${total} — affinez la recherche ou faites défiler la liste` : undefined}
+            />
           )}
         />
         <Button variant="outlined" disabled={!other || create.isPending} onClick={() => other && create.mutate(other.id)}>

@@ -58,6 +58,33 @@ export async function fetchIncompatibilitiesOf(mode: "surgeon" | "instrumentist"
   return (res.data?.items ?? []) as Incompatibility[];
 }
 
+export type CandidateOption = PersonOption & { email: string };
+
+export type CandidatePage = {
+  items: CandidateOption[];
+  page: number;
+  limit: number;
+  total: number;
+  hasMore: boolean;
+};
+
+/**
+ * D-152 (réserve 1) — whom the manager may declare incompatible with this file's person,
+ * searched and paged by the backend (never the whole list of accounts in the browser).
+ */
+export async function searchIncompatibilityCandidates(
+  mode: "surgeon" | "instrumentist",
+  personId: number,
+  q: string,
+  page: number,
+  limit = 20,
+): Promise<CandidatePage> {
+  const res = await apiClient.get("/api/incompatibilities/candidates", {
+    params: { [mode === "surgeon" ? "surgeonId" : "instrumentistId"]: personId, q, page, limit },
+  });
+  return res.data as CandidatePage;
+}
+
 export async function createIncompatibility(surgeonId: number, instrumentistId: number): Promise<Incompatibility> {
   const res = await apiClient.post("/api/incompatibilities", { surgeonId, instrumentistId });
   return res.data as Incompatibility;

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
@@ -121,7 +121,9 @@ describe("D-152 — manager files « Incompatibilités »", () => {
   it("creates an incompatibility from the instrumentist's file with the right surgeon / instrumentist order", async () => {
     apiGetMock.mockImplementation((url: string) => {
       if (url === "/api/instrumentists/7/incompatibilities") return Promise.resolve({ data: { items: [] } });
-      if (url === "/api/surgeons") return Promise.resolve({ data: { items: [{ id: 2, email: "s@x", firstname: "Simon", lastname: "Chirurgien", active: true }], total: 1 } });
+      if (url === "/api/incompatibilities/candidates") {
+        return Promise.resolve({ data: { items: [{ id: 2, name: "Simon Chirurgien", email: "s@x" }], page: 1, limit: 20, total: 1, hasMore: false } });
+      }
       return Promise.reject(new Error(url));
     });
     apiPostMock.mockResolvedValue({ data: incompatibility({ origin: "MANAGER", conflicts: [] }) });
@@ -133,5 +135,44 @@ describe("D-152 — manager files « Incompatibilités »", () => {
 
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/incompatibilities", { surgeonId: 2, instrumentistId: 7 }));
     expect(toastSuccess).toHaveBeenCalledWith("Incompatibilité créée.");
+    expect(apiGetMock).toHaveBeenCalledWith("/api/incompatibilities/candidates", { params: { instrumentistId: 7, q: "", page: 1, limit: 20 } });
+  });
+
+  it("searches the candidates on the server and loads the next page on scroll, never the whole account list", async () => {
+    const page = (n: number, q: string, hasMore: boolean) => ({
+      data: {
+        items: Array.from({ length: 20 }, (_, i) => ({ id: n * 100 + i, name: `${q || "Inst"} ${n}-${i}`, email: `i${n}-${i}@x` })),
+        page: n, limit: 20, total: 530, hasMore,
+      },
+    });
+    apiGetMock.mockImplementation((url: string, config?: { params?: Record<string, unknown> }) => {
+      if (url === "/api/surgeons/2/incompatibilities") return Promise.resolve({ data: { items: [] } });
+      if (url === "/api/incompatibilities/candidates") {
+        const p = config?.params ?? {};
+        return Promise.resolve(page(Number(p.page), String(p.q), Number(p.page) < 3));
+      }
+      return Promise.reject(new Error(url));
+    });
+    renderWith(<IncompatibilitiesSection mode="surgeon" personId={2} />);
+
+    const input = await screen.findByLabelText("Instrumentiste incompatible");
+    await userEvent.type(input, "dupont");
+    await waitFor(() =>
+      expect(apiGetMock).toHaveBeenCalledWith("/api/incompatibilities/candidates", { params: { surgeonId: 2, q: "dupont", page: 1, limit: 20 } }),
+    );
+    expect(await screen.findByText("dupont 1-0")).toBeInTheDocument();
+    expect(screen.getByText(/20 sur 530/)).toBeInTheDocument();
+
+    const listbox = screen.getByRole("listbox");
+    Object.defineProperty(listbox, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(listbox, "clientHeight", { configurable: true, value: 300 });
+    Object.defineProperty(listbox, "scrollTop", { configurable: true, get: () => 680, set: () => {} });
+    fireEvent.scroll(listbox);
+    expect(await screen.findByText("dupont 2-0")).toBeInTheDocument();
+    expect(apiGetMock).toHaveBeenCalledWith("/api/incompatibilities/candidates", { params: { surgeonId: 2, q: "dupont", page: 2, limit: 20 } });
+
+    const urls = apiGetMock.mock.calls.map((c) => c[0]);
+    expect(urls).not.toContain("/api/instrumentists");
+    expect(urls).not.toContain("/api/surgeons");
   });
 });

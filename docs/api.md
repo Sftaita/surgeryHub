@@ -429,6 +429,7 @@ affectées à la paire.
 | `POST /api/me/blocked-instrumentists` `{instrumentistId}` | `ROLE_SURGEON` | crée (origine `SURGEON`) → 201 ; `422 INSTRUMENTIST_NOT_BLOCKABLE` hors périmètre ; `409 INCOMPATIBILITY_ALREADY_ACTIVE` |
 | `GET /api/surgeons/{id}/incompatibilities` | manager | actives + historique, avec conflits |
 | `GET /api/instrumentists/{id}/incompatibilities` | manager | idem côté instrumentiste |
+| `GET /api/incompatibilities/candidates?surgeonId=\|instrumentistId=&q=&page=&limit=` | manager | recherche paginée côté serveur des personnes déclarables incompatibles : instrumentistes (fiche chirurgien) ou chirurgiens (fiche instrumentiste) actifs, jamais une personne déjà incompatible ; chaque terme de `q` sur prénom, nom ou e-mail ; `limit` 1–50 (défaut 20) → `{items: [{id, name, email}], page, limit, total, hasMore}` ; un seul des deux identifiants (sinon 422), personne inconnue 404, mauvais rôle 422 |
 | `POST /api/incompatibilities` `{surgeonId, instrumentistId}` | manager | crée (origine `MANAGER`) → 201 ; `422 INCOMPATIBILITY_INVALID_PAIR` |
 | `POST /api/incompatibilities/{id}/lift` | manager, ou le chirurgien pour ses propres blocages | lève (une fois, `409 INCOMPATIBILITY_ALREADY_LIFTED`), ferme ses conflits ouverts |
 

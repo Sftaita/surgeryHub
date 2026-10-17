@@ -203,6 +203,41 @@ class SurgeonInstrumentistIncompatibilityService
         return $qb->getQuery()->getResult();
     }
 
+    /**
+     * D-152 (réserve 1) — manager search of the counterparts that may be declared incompatible
+     * with $person: active instrumentists for a surgeon's file, active surgeons for an
+     * instrumentist's file, never one already actively incompatible with $person. Paginated
+     * on the server (the browser never loads the whole list); every term of $query must match
+     * the first name, last name or e-mail. Same population create() accepts from a manager.
+     *
+     * @return array{items: User[], total: int}
+     */
+    public function managerCandidates(User $person, bool $personIsSurgeon, string $query, int $page, int $limit): array
+    {
+        $qb = $this->em->createQueryBuilder()
+            ->from(User::class, 'u')
+            ->where('u.active = true AND u.roles LIKE :role AND u <> :person')
+            ->andWhere($personIsSurgeon
+                ? 'NOT EXISTS (SELECT b.id FROM App\Entity\SurgeonInstrumentistIncompatibility b WHERE b.surgeon = :person AND b.instrumentist = u AND b.liftedAt IS NULL)'
+                : 'NOT EXISTS (SELECT b.id FROM App\Entity\SurgeonInstrumentistIncompatibility b WHERE b.instrumentist = :person AND b.surgeon = u AND b.liftedAt IS NULL)')
+            ->setParameter('role', $personIsSurgeon ? '%ROLE_INSTRUMENTIST%' : '%ROLE_SURGEON%')
+            ->setParameter('person', $person);
+
+        foreach (array_values(array_filter(preg_split('/\s+/u', mb_strtolower(trim($query))) ?: [])) as $i => $term) {
+            $qb->andWhere("(LOWER(COALESCE(u.firstname, '')) LIKE :q{$i} OR LOWER(COALESCE(u.lastname, '')) LIKE :q{$i} OR LOWER(u.email) LIKE :q{$i})")
+                ->setParameter("q{$i}", '%' . addcslashes($term, '%_\\') . '%');
+        }
+
+        $total = (int) (clone $qb)->select('COUNT(u.id)')->getQuery()->getSingleScalarResult();
+        $items = $qb->select('u')
+            ->orderBy('u.lastname', 'ASC')->addOrderBy('u.firstname', 'ASC')->addOrderBy('u.id', 'ASC')
+            ->setFirstResult(($page - 1) * $limit)
+            ->setMaxResults($limit)
+            ->getQuery()->getResult();
+
+        return ['items' => $items, 'total' => $total];
+    }
+
     public function isBlockableBy(User $surgeon, User $instrumentist): bool
     {
         if (!$instrumentist->isActive() || !in_array('ROLE_INSTRUMENTIST', $instrumentist->getRoles(), true)) {

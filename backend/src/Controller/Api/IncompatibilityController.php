@@ -23,7 +23,7 @@ use Symfony\Component\Security\Http\Attribute\CurrentUser;
  *
  * Surgeon (own blocks): GET/POST /api/me/blocked-instrumentists, GET /api/me/blockable-instrumentists.
  * Manager: GET /api/surgeons/{id}/incompatibilities, GET /api/instrumentists/{id}/incompatibilities,
- *          POST /api/incompatibilities.
+ *          GET /api/incompatibilities/candidates, POST /api/incompatibilities.
  * Both: POST /api/incompatibilities/{id}/lift (SurgeonInstrumentistIncompatibilityVoter::LIFT).
  */
 final class IncompatibilityController extends AbstractController
@@ -85,6 +85,57 @@ final class IncompatibilityController extends AbstractController
             fn ($i) => $this->serialize($i, $user, true),
             $this->incompatibilities->historyOf($this->userOr404($id), false),
         )]);
+    }
+
+    /**
+     * D-152 (réserve 1) — paginated server-side search of whom a manager may declare
+     * incompatible: `surgeonId` (→ instrumentists) or `instrumentistId` (→ surgeons), `q`,
+     * `page` (≥ 1), `limit` (1–50, default 20).
+     */
+    #[Route('/api/incompatibilities/candidates', name: 'api_incompatibilities_candidates', methods: ['GET'])]
+    public function candidates(Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(SurgeonInstrumentistIncompatibilityVoter::MANAGE);
+
+        $surgeonId = $request->query->get('surgeonId');
+        $instrumentistId = $request->query->get('instrumentistId');
+        if (($surgeonId === null) === ($instrumentistId === null)) {
+            throw new UnprocessableEntityHttpException('Exactement un des paramètres surgeonId ou instrumentistId est requis.');
+        }
+        $personIsSurgeon = $surgeonId !== null;
+        $personId = $this->positiveInt($personIsSurgeon ? $surgeonId : $instrumentistId, $personIsSurgeon ? 'surgeonId' : 'instrumentistId');
+        $person = $this->userOr404($personId);
+        if (!in_array($personIsSurgeon ? 'ROLE_SURGEON' : 'ROLE_INSTRUMENTIST', $person->getRoles(), true)) {
+            throw new UnprocessableEntityHttpException($personIsSurgeon ? "Cette personne n'est pas chirurgien." : "Cette personne n'est pas instrumentiste.");
+        }
+        $page = $this->positiveInt($request->query->get('page', '1'), 'page');
+        $limit = $this->positiveInt($request->query->get('limit', '20'), 'limit');
+        if ($limit > 50) {
+            throw new UnprocessableEntityHttpException('limit ne peut pas dépasser 50.');
+        }
+
+        $result = $this->incompatibilities->managerCandidates($person, $personIsSurgeon, (string) $request->query->get('q', ''), $page, $limit);
+
+        return $this->json([
+            'items'   => array_map(static fn (User $u) => [
+                'id'    => $u->getId(),
+                'name'  => SurgeonInstrumentistIncompatibilityService::name($u),
+                'email' => $u->getEmail(),
+            ], $result['items']),
+            'page'    => $page,
+            'limit'   => $limit,
+            'total'   => $result['total'],
+            'hasMore' => $page * $limit < $result['total'],
+        ]);
+    }
+
+    private function positiveInt(mixed $value, string $name): int
+    {
+        if (!is_scalar($value) || !ctype_digit((string) $value) || (int) $value < 1) {
+            throw new UnprocessableEntityHttpException(sprintf('%s doit être un entier positif.', $name));
+        }
+
+        return (int) $value;
     }
 
     #[Route('/api/incompatibilities', name: 'api_incompatibilities_create', methods: ['POST'])]
