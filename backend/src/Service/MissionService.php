@@ -16,6 +16,8 @@ use App\Entity\SiteMembership;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\EmploymentType;
+use App\Enum\MissionAssignmentEndReason;
+use App\Enum\MissionAssignmentSource;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PublicationScope;
@@ -34,6 +36,9 @@ class MissionService
 {
     private const DEFAULT_TIMEZONE = 'Europe/Brussels';
 
+    /** D-150 — writer of the instrumentist (and affectation history) of a published mission. */
+    private readonly MissionAssignmentService $assignments;
+
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly MissionEncodingGuard $encodingGuard,
@@ -42,7 +47,11 @@ class MissionService
         private readonly MissionEncodingWorkflowService $encodingWorkflowService,
         private readonly MissionEligibilityService $eligibilityService,
         private readonly PlanningVersionOperationalScope $operationalScope,
-    ) {}
+        ?MissionAssignmentService $assignments = null,
+    ) {
+        // D-150 — always autowired; a plain unit test that omits it still gets the real writer.
+        $this->assignments = $assignments ?? new MissionAssignmentService($em);
+    }
 
     public function create(MissionCreateRequest $dto, User $creator): Mission
     {
@@ -114,7 +123,6 @@ class MissionService
             ->setType($dto->type)
             ->setSchedulePrecision($dto->schedulePrecision)
             ->setSurgeon($surgeon)
-            ->setInstrumentist($currentUser)
             ->setCreatedBy($currentUser)
             ->setStatus(MissionStatus::DECLARED)
             ->setDeclaredAt(new \DateTimeImmutable())
@@ -125,6 +133,8 @@ class MissionService
         // ⚠️ strict: aucune MissionPublication créée
 
         $this->em->persist($mission);
+        // D-150 — a declared mission is a real affectation of its declarer, from the start.
+        $this->assignments->assign($mission, $currentUser, MissionAssignmentSource::DECLARED, $currentUser);
 
         // ✅ Lot B4 — Audit + Notifications (sans changer la logique métier)
         $this->auditService->missionDeclared($mission, $currentUser);
@@ -172,6 +182,8 @@ class MissionService
             $this->purgeDeclaredEncoding($mission);
 
             $mission->setStatus(MissionStatus::REJECTED);
+            // D-150 — statut définitif : l'affectation se ferme, l'instrumentiste reste sur la mission.
+            $this->assignments->endOnFinalStatus($mission, MissionAssignmentEndReason::REJECTED, $actor);
 
             // ✅ Lot B4 — Audit + Notifications
             $this->auditService->missionDeclaredRejected($mission, $actor);

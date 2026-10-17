@@ -13271,3 +13271,149 @@ aucune seconde notification. C'est prouvé sur base réelle par
   est un audit séparé, à exécuter seulement sur accord explicite.
 - Les notifications ciblant une personne précise (instrumentiste, chirurgien, manager
   émetteur d'une offre) sont inchangées.
+
+
+## D-150 — Socle d'affectation : `MissionAssignment`, écrit par un seul service explicite (2026-10-14)
+
+**Statut : implémenté sur `feat/surgeon-refusal-compat` (lot L1), non commité, non déployé.**
+
+### Contexte
+
+Le refus d'affectation par le chirurgien (lot L2) doit reposer sur un horodatage propre à
+chaque affectation, jamais sur la date de création de la mission. Or rien ne l'enregistrait :
+`Mission.instrumentist` ne garde que l'état courant, et `MissionClaim` ne trace que les claims
+du pool et ne doit jamais servir de règle métier (D-117). L'instrumentiste d'une mission était
+écrit à 21 endroits, dont 11 sur des missions DRAFT (planning en préparation), et `release`,
+`assign`, `reassign`, `cancel`, `restoreAfterCancellation` ne prenaient aucun verrou.
+
+### Décision 1 — une ligne `mission_assignment` par affectation d'une mission publiée
+
+`MissionAssignment` : `mission`, `instrumentist`, `source`, `assignedAt`, `assignedBy`, puis,
+une seule fois, `endedAt`, `endReason`, `endedBy`. Aucune ligne n'est jamais supprimée.
+
+- `source` (`MissionAssignmentSource`) est toujours passée explicitement par le service
+  appelant : `POOL_CLAIM`, `OFFER_ACCEPTED` (claim d'une offre nominative TARGETED active,
+  D-125), `DIRECT_ASSIGNMENT`, `MANAGER_ASSIGNMENT`, `PLANNING_DEPLOYMENT`,
+  `POST_DEPLOY_ADDITION`, `RESTORED_AFTER_ABSENCE`, `DECLARED`, `LEGACY`. Seules
+  `POOL_CLAIM` et `OFFER_ACCEPTED` sont des acceptations volontaires
+  (`isVoluntaryAcceptance()`).
+- `endReason` (`MissionAssignmentEndReason`) : `RELEASED`, `REPLACED`, `CANCELLED`,
+  `REJECTED` (déclaration refusée), `CLOSED` (reprise uniquement : aucun code ne pose ce
+  statut).
+- Réaffecter la personne déjà affectée ne crée rien : son affectation continue, son
+  `assignedAt` est conservé.
+- **Une mission DRAFT n'a jamais d'affectation.** L'instrumentiste d'un brouillon de planning
+  (éditeur, générateur V2, création manuelle, `assignInstrumentistDraft`) reste écrit
+  directement. L'affectation commence à la publication.
+- **Au plus une affectation ouverte par mission, garanti par la base** : colonne générée
+  `active_mission_key` (= `mission_id` tant que `ended_at IS NULL`) avec index UNIQUE.
+  Générée plutôt qu'écrite par l'application, car l'id d'une mission neuve n'existe pas
+  encore quand son affectation est créée.
+- FK sans `ON DELETE` vers `mission` et `user`, comme `audit_event` et `mission_claim` :
+  l'historique n'est jamais effacé en silence.
+
+### Décision 2 — `MissionAssignmentService`, seul écrivain, appelé explicitement
+
+Aucun listener Doctrine : le service est appelé par les services applicatifs qui portent déjà
+chaque transition (D-056) ; ceux-ci gardent statut, AuditEvent, flush et message.
+
+| Appelant | Source |
+|---|---|
+| `MissionPostDeployService::claim()` | `POOL_CLAIM` / `OFFER_ACCEPTED` |
+| `assign()`, `reassign()` | `MANAGER_ASSIGNMENT` (l'ancienne se termine en `REPLACED`) |
+| `assignDirectly()` (DRAFT ou OPEN → ASSIGNED) | `DIRECT_ASSIGNMENT` |
+| `createPostDeploy()` avec instrumentiste | `POST_DEPLOY_ADDITION` |
+| `restoreAfterCancellation()` | `RESTORED_AFTER_ABSENCE` |
+| `release()` / `cancel()` | fin `RELEASED` / `CANCELLED` |
+| `MissionService::declareMission()` | `DECLARED` |
+| `MissionService::rejectDeclared()` (DECLARED → REJECTED) | fin `REJECTED`, instrumentiste conservé (`endOnFinalStatus()`) |
+| `PlanningAlertActionService` (statuts publiés non verrouillés) | `MANAGER_ASSIGNMENT` / fin `RELEASED` |
+| `PlanningDeploymentService::deploy()` | `PLANNING_DEPLOYMENT`, en masse |
+
+- **Déploiement** : les deux UPDATE en masse (DRAFT → ASSIGNED / OPEN) et l'insertion en masse
+  des affectations (`INSERT … SELECT` des missions ASSIGNED de la version sans affectation
+  ouverte) sont désormais dans une même transaction. Le résultat ASSIGNED / OPEN est inchangé.
+- **`PlanningAlertActionService`** : ses branches « DRAFT » s'appliquaient aussi aux statuts
+  publiés non verrouillés (DECLARED, IN_PROGRESS, ENCODING_IN_PROGRESS, CANCELLED, REJECTED).
+  Leur comportement est conservé à l'identique ; seule l'affectation est désormais tracée.
+- **Garde-fou** : `MissionInstrumentistWriteArchitectureTest` fige la liste nominative des
+  fichiers autorisés à appeler `->setInstrumentist(` (nombre exact d'appels et raison) et
+  interdit toute écriture DQL/SQL en masse de l'instrumentiste.
+
+### Décision 3 — concurrence
+
+- `release`, `cancel`, `assign`, `reassign` et `restoreAfterCancellation` s'exécutent sous
+  `MissionAssignmentService::inLockedChange()` : transaction (ou celle de l'appelant) et
+  lecture verrouillante `SELECT status, instrumentist_id … FOR UPDATE`. Si l'état validé
+  diffère de celui que la requête a chargé, réponse **409** au lieu d'écraser la modification
+  d'un autre. Pas de `refresh()`, qui effacerait les changements non flushés d'un appelant en
+  lot. `claim()` et `assignDirectly()` gardent leur verrou + `refresh` existant (D-124).
+- La fin d'une affectation déjà en base est écrite immédiatement et conditionnellement
+  (`… WHERE id = ? AND ended_at IS NULL`) : deux fins concurrentes de la même affectation
+  donnent 409, jamais une double fin.
+
+### Décision 4 — invariant d'affectation (validé le 2026-10-17)
+
+1. Une mission a au plus une affectation ouverte (garanti par la base).
+2. L'affectation ouverte désigne `mission.instrumentist`.
+3. Elle n'existe que pour les statuts actifs : `DECLARED`, `ASSIGNED`, `IN_PROGRESS`,
+   `ENCODING_IN_PROGRESS`, `SUBMITTED`, `VALIDATED` (une mission validée reste rouvrable,
+   D-148 : son affectation reste ouverte).
+4. `CANCELLED`, `REJECTED`, `CLOSED` n'ont jamais d'affectation ouverte ; `OPEN` et `DRAFT`
+   non plus.
+5. Une affectation fermée n'est jamais rouverte : une réaffectation crée une nouvelle ligne.
+
+Sur un statut définitif, `mission.instrumentist` n'est **pas** effacé : encodage, calculs
+financiers, facturation firmes, relevés et consultations continuent d'y lire qui a travaillé
+sur la mission. L'annulation (`cancel()`) retirait déjà l'instrumentiste avant D-150 et le
+retire toujours ; le refus d'une déclaration (`rejectDeclared()`) ferme l'affectation
+(`REJECTED`) et garde l'instrumentiste, qui consulte toujours sa mission complète.
+
+### Décision 5 — reprise de l'existant (migration `Version20261014090000`)
+
+Toutes les lignes reprises ont `source = LEGACY` (jamais refusables) et `ended_by_id = NULL`.
+
+| Mission (avec instrumentiste) | Ligne reprise |
+|---|---|
+| `DECLARED` … `VALIDATED` (statuts actifs) | ouverte |
+| `CANCELLED`, `REJECTED`, `CLOSED` | **fermée**, `end_reason` = statut de la mission |
+| `DRAFT`, `OPEN`, ou sans instrumentiste | aucune (`OPEN` avec instrumentiste = anomalie relevée par le protocole de migration) |
+
+Dates — aucune n'est présentée comme certaine :
+
+- `assigned_at` : dernier AuditEvent d'affectation de la mission, sinon date de déploiement
+  de sa version, sinon création de la mission ;
+- `ended_at` : date de l'AuditEvent qui a rendu la mission définitive
+  (`MISSION_CANCELLED_POST_DEPLOY`, `MISSION_DECLARED_REJECTED`) s'il existe et n'est pas
+  antérieur à `assigned_at` ; **sinon `ended_at = assigned_at`**. Règle identifiable :
+  `source = 'LEGACY' AND ended_by_id IS NULL AND ended_at = assigned_at` signifie « fin non
+  datée, seulement constatée à la reprise » (durée nulle conventionnelle, jamais une durée
+  réelle). Aucun code ne lit `ended_at` pour une règle métier.
+
+Aucune donnée existante n'est modifiée (`mission`, `audit_event` identiques avant/après,
+vérifié sur base de travail, aller-retour `down`/`up` compris). Rollback :
+`DROP TABLE mission_assignment`.
+
+### Complète D-117
+
+`MissionClaim` reste l'historique des claims du pool, jamais une règle. Toute règle métier qui
+a besoin de la date d'une affectation lit `MissionAssignment.assignedAt`.
+
+### Limites connues
+
+- Le déploiement « legacy » sans version (`deploy()` sans `versionId`, V1) passe ses DRAFT en
+  OPEN sans toucher l'instrumentiste ; il n'ouvre aucune affectation (comportement inchangé).
+- Aucun changement d'API ni d'écran dans ce lot : l'affectation n'est pas encore exposée.
+- Les branches « statut publié » de `PlanningAlertActionService` n'écrivaient aucun AuditEvent
+  et n'en écrivent toujours pas (comportement conservé) ; seule leur affectation est tracée.
+
+### Tests
+
+`MissionAssignmentIntegrationTest` (base réelle : chaque source et chaque fin, invariant
+« mission active couverte ⇔ une affectation ouverte du même instrumentiste ; statut définitif,
+OPEN, DRAFT ⇒ aucune », refus d'une déclaration, DRAFT sans affectation, déploiement, unicité
+garantie par la base, requête périmée refusée après un release commité),
+`MissionFinalStatusAffectationD150Test` (endpoints `reject-declared` puis consultation par
+l'instrumentiste) et `MissionInstrumentistWriteArchitectureTest`. Reprise : base de travail
+migrée à `Version20261012090000`, une mission par cas de statut, résultat comparé ligne à
+ligne à l'attendu, contrôles d'invariant, aller-retour `down`/`up`.

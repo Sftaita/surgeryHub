@@ -18,9 +18,12 @@ use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\EligibilityReason;
+use App\Enum\MissionAssignmentEndReason;
+use App\Enum\MissionAssignmentSource;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Enum\PublicationScope;
 use App\Enum\SchedulePrecision;
 use App\Exception\InstrumentistIneligibleException;
 use App\Exception\MissionClaimIneligibleException;
@@ -45,6 +48,9 @@ use Symfony\Component\Messenger\MessageBusInterface;
  */
 class MissionPostDeployService
 {
+    /** D-150 — sole writer of the instrumentist of a published mission and of its affectation history. */
+    private readonly MissionAssignmentService $assignments;
+
     public function __construct(
         private readonly EntityManagerInterface    $em,
         private readonly MessageBusInterface       $bus,
@@ -54,7 +60,12 @@ class MissionPostDeployService
         // communicated to her about it (mission_communication). Optional only so plain unit
         // tests can build the service; always autowired.
         private readonly ?MissionCommunicationService $communications = null,
-    ) {}
+        ?MissionAssignmentService $assignments = null,
+    ) {
+        // Always autowired; a plain unit test that omits it still gets the real writer (built
+        // on the same EntityManager), never a shortcut that would skip the history.
+        $this->assignments = $assignments ?? new MissionAssignmentService($em);
+    }
 
     /**
      * ASSIGNED → OPEN.
@@ -80,37 +91,42 @@ class MissionPostDeployService
      */
     public function release(Mission $mission, User $actor, bool $notify = true, ?string $reason = null, ?int $causedByAbsenceId = null): void
     {
-        if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
-            throw new ConflictHttpException('Mission must be ASSIGNED to release');
-        }
+        // D-150 — under the mission row lock, re-checked against the committed state.
+        $payload = $this->assignments->inLockedChange($mission, function () use ($mission, $actor, $reason, $causedByAbsenceId): array {
+            if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
+                throw new ConflictHttpException('Mission must be ASSIGNED to release');
+            }
 
-        $previousStatusEnum = $mission->getStatus();
-        $previousStatus     = $previousStatusEnum->value;
+            $previousStatusEnum = $mission->getStatus();
+            $previousStatus     = $previousStatusEnum->value;
 
-        $fromInstrumentist     = $mission->getInstrumentist();
-        $fromInstrumentistId   = $fromInstrumentist?->getId();
-        $fromInstrumentistName = $fromInstrumentist !== null
-            ? $this->displayName($fromInstrumentist)
-            : null;
+            $fromInstrumentist     = $mission->getInstrumentist();
+            $fromInstrumentistId   = $fromInstrumentist?->getId();
+            $fromInstrumentistName = $fromInstrumentist !== null
+                ? $this->displayName($fromInstrumentist)
+                : null;
 
-        $mission->setStatus(MissionStatus::OPEN);
-        $mission->setInstrumentist(null);
-        $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
-        $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::RELEASED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
+            $mission->setStatus(MissionStatus::OPEN);
+            $this->assignments->unassign($mission, MissionAssignmentEndReason::RELEASED, $actor);
+            $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
+            $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::RELEASED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
 
-        $payload = [
-            'fromInstrumentistId'   => $fromInstrumentistId,
-            'fromInstrumentistName' => $fromInstrumentistName,
-            'previousStatus'        => $previousStatus,
-            'causedByAbsenceId'     => $causedByAbsenceId,
-            'reason'                => $reason,
-            'actorId'               => $actor->getId(),
-            'actorName'             => $this->displayName($actor),
-        ];
+            $payload = [
+                'fromInstrumentistId'   => $fromInstrumentistId,
+                'fromInstrumentistName' => $fromInstrumentistName,
+                'previousStatus'        => $previousStatus,
+                'causedByAbsenceId'     => $causedByAbsenceId,
+                'reason'                => $reason,
+                'actorId'               => $actor->getId(),
+                'actorName'             => $this->displayName($actor),
+            ];
 
-        $this->audit->record($mission, $actor, AuditEventType::MISSION_RELEASED_TO_POOL, $payload);
+            $this->audit->record($mission, $actor, AuditEventType::MISSION_RELEASED_TO_POOL, $payload);
 
-        $this->em->flush();  // R-05: flush before dispatch
+            $this->em->flush();  // R-05: flush before dispatch
+
+            return $payload;
+        });
 
         if (!$notify) {
             return;
@@ -212,6 +228,25 @@ class MissionPostDeployService
      */
     public function cancel(Mission $mission, User $actor, ?string $reason = null, bool $notify = true, ?int $causedByAbsenceId = null): void
     {
+        // D-150 — under the mission row lock, re-checked against the committed state.
+        $payload = $this->assignments->inLockedChange($mission, fn (): array => $this->applyCancel($mission, $actor, $reason, $causedByAbsenceId));
+
+        if (!$notify) {
+            return;
+        }
+
+        $this->bus->dispatch(new MissionLifecycleChangedMessage(
+            missionId:  $mission->getId(),
+            changeType: MissionChangeType::CANCELLED,
+            actorId:    $actor->getId(),
+            payload:    $payload,
+            occurredAt: new \DateTimeImmutable(),
+        ));
+    }
+
+    /** cancel()'s mutation, run under the mission lock; returns the audit/lifecycle payload. */
+    private function applyCancel(Mission $mission, User $actor, ?string $reason, ?int $causedByAbsenceId): array
+    {
         if (!in_array($mission->getStatus(), [MissionStatus::DRAFT, MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
             throw new ConflictHttpException('Mission must be DRAFT, OPEN or ASSIGNED to cancel');
         }
@@ -238,7 +273,8 @@ class MissionPostDeployService
         ];
 
         $mission->setStatus(MissionStatus::CANCELLED);
-        $mission->setInstrumentist(null);
+        // A DRAFT has no affectation yet (D-150): unassign() then only clears the field.
+        $this->assignments->unassign($mission, MissionAssignmentEndReason::CANCELLED, $actor);
         $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
         $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::CANCELLED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
         $this->withdrawCommunication($mission, $surgeon, MissionCommunicationWithdrawal::CANCELLED, MissionCommunicationSpec::ROLE_SURGEON);
@@ -257,17 +293,7 @@ class MissionPostDeployService
 
         $this->em->flush();  // R-05: flush before dispatch
 
-        if (!$notify) {
-            return;
-        }
-
-        $this->bus->dispatch(new MissionLifecycleChangedMessage(
-            missionId:  $mission->getId(),
-            changeType: MissionChangeType::CANCELLED,
-            actorId:    $actor->getId(),
-            payload:    $payload,
-            occurredAt: new \DateTimeImmutable(),
-        ));
+        return $payload;
     }
 
     /**
@@ -296,38 +322,47 @@ class MissionPostDeployService
         int $causedByAbsenceId,
         bool $notify = false,
     ): void {
-        if ($mission->getStatus() !== MissionStatus::CANCELLED) {
-            throw new ConflictHttpException('Mission must be CANCELLED to restore');
-        }
-
-        $newInstrumentist = null;
-        if ($instrumentistId !== null) {
-            $newInstrumentist = $this->em->find(User::class, $instrumentistId);
-            if ($newInstrumentist === null) {
-                throw new NotFoundHttpException('Instrumentist not found');
+        // D-150 — under the mission row lock, re-checked against the committed state.
+        [$payload, $restoredStatus] = $this->assignments->inLockedChange($mission, function () use ($mission, $actor, $instrumentistId, $causedByAbsenceId): array {
+            if ($mission->getStatus() !== MissionStatus::CANCELLED) {
+                throw new ConflictHttpException('Mission must be CANCELLED to restore');
             }
-            $this->guardEligibility($mission, $newInstrumentist, EligibilityEnforcementPolicy::STRICT_ASSIGNMENT);
-        }
 
-        $restoredStatus = $newInstrumentist !== null ? MissionStatus::ASSIGNED : MissionStatus::OPEN;
+            $newInstrumentist = null;
+            if ($instrumentistId !== null) {
+                $newInstrumentist = $this->em->find(User::class, $instrumentistId);
+                if ($newInstrumentist === null) {
+                    throw new NotFoundHttpException('Instrumentist not found');
+                }
+                $this->guardEligibility($mission, $newInstrumentist, EligibilityEnforcementPolicy::STRICT_ASSIGNMENT);
+            }
 
-        $previousStatusEnum = $mission->getStatus();
-        $mission->setStatus($restoredStatus);
-        $mission->setInstrumentist($newInstrumentist);
-        $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
+            $restoredStatus = $newInstrumentist !== null ? MissionStatus::ASSIGNED : MissionStatus::OPEN;
 
-        $payload = [
-            'previousStatus'         => MissionStatus::CANCELLED->value,
-            'restoredStatus'         => $restoredStatus->value,
-            'restoredInstrumentistId' => $newInstrumentist?->getId(),
-            'causedByAbsenceId'      => $causedByAbsenceId,
-            'actorId'                => $actor->getId(),
-            'actorName'              => $this->displayName($actor),
-        ];
+            $previousStatusEnum = $mission->getStatus();
+            $mission->setStatus($restoredStatus);
+            if ($newInstrumentist !== null) {
+                $this->assignments->assign($mission, $newInstrumentist, MissionAssignmentSource::RESTORED_AFTER_ABSENCE, $actor);
+            } else {
+                $this->assignments->unassign($mission, MissionAssignmentEndReason::CANCELLED, $actor);
+            }
+            $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
 
-        $this->audit->record($mission, $actor, AuditEventType::MISSION_RESTORED_AFTER_SURGEON_ABSENCE, $payload);
+            $payload = [
+                'previousStatus'         => MissionStatus::CANCELLED->value,
+                'restoredStatus'         => $restoredStatus->value,
+                'restoredInstrumentistId' => $newInstrumentist?->getId(),
+                'causedByAbsenceId'      => $causedByAbsenceId,
+                'actorId'                => $actor->getId(),
+                'actorName'              => $this->displayName($actor),
+            ];
 
-        $this->em->flush();  // R-05: flush before dispatch
+            $this->audit->record($mission, $actor, AuditEventType::MISSION_RESTORED_AFTER_SURGEON_ABSENCE, $payload);
+
+            $this->em->flush();  // R-05: flush before dispatch
+
+            return [$payload, $restoredStatus];
+        });
 
         // H3 (D-129) — a mission restored as OPEN is a real opening: its pool is solicited
         // through OpenMissionPoolNotifier, independently of $notify (which only governs the
@@ -409,7 +444,7 @@ class MissionPostDeployService
                     ->setClaimedAt(new \DateTimeImmutable());
 
                 $previousStatusEnum = $mission->getStatus();
-                $mission->setInstrumentist($actor);
+                $this->assignments->assign($mission, $actor, $this->claimSource($mission, $actor), $actor);
                 $mission->setStatus(MissionStatus::ASSIGNED);
                 $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
 
@@ -472,6 +507,34 @@ class MissionPostDeployService
         ?int $causedByAbsenceId = null,
         ?int $reassignedFromMissionId = null,
     ): void {
+        // D-150 — under the mission row lock, re-checked against the committed state.
+        $payload = $this->assignments->inLockedChange(
+            $mission,
+            fn (): array => $this->applyAssign($mission, $actor, $newInstrumentistId, $policy, $causedByAbsenceId, $reassignedFromMissionId),
+        );
+
+        if (!$notify) {
+            return;
+        }
+
+        $this->bus->dispatch(new MissionLifecycleChangedMessage(
+            missionId:  $mission->getId(),
+            changeType: MissionChangeType::REASSIGNED,
+            actorId:    $actor->getId(),
+            payload:    $payload,
+            occurredAt: new \DateTimeImmutable(),
+        ));
+    }
+
+    /** assign()'s mutation, run under the mission lock; returns the audit/lifecycle payload. */
+    private function applyAssign(
+        Mission $mission,
+        User $actor,
+        int $newInstrumentistId,
+        EligibilityEnforcementPolicy $policy,
+        ?int $causedByAbsenceId,
+        ?int $reassignedFromMissionId,
+    ): array {
         if (!in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
             throw new ConflictHttpException('Mission must be OPEN or ASSIGNED to assign');
         }
@@ -490,7 +553,7 @@ class MissionPostDeployService
             : null;
 
         $previousStatusEnum = $mission->getStatus();
-        $mission->setInstrumentist($newInstrumentist);
+        $this->assignments->assign($mission, $newInstrumentist, MissionAssignmentSource::MANAGER_ASSIGNMENT, $actor);
         if ($mission->getStatus() === MissionStatus::OPEN) {
             $mission->setStatus(MissionStatus::ASSIGNED);
         }
@@ -514,17 +577,7 @@ class MissionPostDeployService
 
         $this->em->flush();  // R-05: flush before dispatch
 
-        if (!$notify) {
-            return;
-        }
-
-        $this->bus->dispatch(new MissionLifecycleChangedMessage(
-            missionId:  $mission->getId(),
-            changeType: MissionChangeType::REASSIGNED,
-            actorId:    $actor->getId(),
-            payload:    $payload,
-            occurredAt: new \DateTimeImmutable(),
-        ));
+        return $payload;
     }
 
     /**
@@ -541,6 +594,28 @@ class MissionPostDeployService
         bool $notify = true,
         EligibilityEnforcementPolicy $policy = EligibilityEnforcementPolicy::STRICT_ASSIGNMENT,
     ): void {
+        // D-150 — under the mission row lock, re-checked against the committed state.
+        $payload = $this->assignments->inLockedChange(
+            $mission,
+            fn (): array => $this->applyReassign($mission, $actor, $newInstrumentistId, $policy),
+        );
+
+        if (!$notify) {
+            return;
+        }
+
+        $this->bus->dispatch(new MissionLifecycleChangedMessage(
+            missionId:  $mission->getId(),
+            changeType: MissionChangeType::REASSIGNED,
+            actorId:    $actor->getId(),
+            payload:    $payload,
+            occurredAt: new \DateTimeImmutable(),
+        ));
+    }
+
+    /** reassign()'s mutation, run under the mission lock; returns the audit/lifecycle payload. */
+    private function applyReassign(Mission $mission, User $actor, int $newInstrumentistId, EligibilityEnforcementPolicy $policy): array
+    {
         if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
             throw new ConflictHttpException('Mission must be ASSIGNED to reassign');
         }
@@ -558,7 +633,7 @@ class MissionPostDeployService
             ? $this->displayName($fromInstrumentist)
             : null;
 
-        $mission->setInstrumentist($newInstrumentist);
+        $this->assignments->assign($mission, $newInstrumentist, MissionAssignmentSource::MANAGER_ASSIGNMENT, $actor);
         // Status stays ASSIGNED
         if ($fromInstrumentist !== null && $fromInstrumentist->getId() !== $newInstrumentist->getId()) {
             $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::REASSIGNED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
@@ -577,17 +652,7 @@ class MissionPostDeployService
 
         $this->em->flush();  // R-05: flush before dispatch
 
-        if (!$notify) {
-            return;
-        }
-
-        $this->bus->dispatch(new MissionLifecycleChangedMessage(
-            missionId:  $mission->getId(),
-            changeType: MissionChangeType::REASSIGNED,
-            actorId:    $actor->getId(),
-            payload:    $payload,
-            occurredAt: new \DateTimeImmutable(),
-        ));
+        return $payload;
     }
 
     /**
@@ -722,8 +787,8 @@ class MissionPostDeployService
         // D-101 — "ajout post-deploy" is still a real affectation.
         if ($instrumentist !== null) {
             $this->guardEligibility($mission, $instrumentist, $policy);
+            $this->assignments->assign($mission, $instrumentist, MissionAssignmentSource::POST_DEPLOY_ADDITION, $actor);
         }
-        $mission->setInstrumentist($instrumentist);
         $mission->setStatus($instrumentist !== null ? MissionStatus::ASSIGNED : MissionStatus::OPEN);
 
         $this->em->persist($mission);
@@ -794,7 +859,8 @@ class MissionPostDeployService
 
             $this->guardEligibility($mission, $instrumentist, EligibilityEnforcementPolicy::STRICT_ASSIGNMENT);
 
-            $mission->setInstrumentist($instrumentist);
+            // A DRAFT becomes a published, covered mission right here: its affectation starts now.
+            $this->assignments->assign($mission, $instrumentist, MissionAssignmentSource::DIRECT_ASSIGNMENT, $actor);
             $mission->setStatus(MissionStatus::ASSIGNED);
             $this->resetEscalationIfLeavingOpen($mission, $previousStatus);
 
@@ -900,6 +966,24 @@ class MissionPostDeployService
         if (!empty($blocking)) {
             throw new InstrumentistIneligibleException($blocking);
         }
+    }
+
+    /**
+     * D-150 — a claim is the acceptance of a nominative offer when an active TARGETED
+     * publication addressed to this instrumentist exists (D-125), otherwise a pool claim.
+     * Read inside claim()'s lock, from the publications the voter already granted on.
+     */
+    private function claimSource(Mission $mission, User $instrumentist): MissionAssignmentSource
+    {
+        foreach ($mission->getPublications() as $publication) {
+            if ($publication->isActive()
+                && $publication->getScope() === PublicationScope::TARGETED
+                && $publication->getTargetInstrumentist()?->getId() === $instrumentist->getId()) {
+                return MissionAssignmentSource::OFFER_ACCEPTED;
+            }
+        }
+
+        return MissionAssignmentSource::POOL_CLAIM;
     }
 
     /**

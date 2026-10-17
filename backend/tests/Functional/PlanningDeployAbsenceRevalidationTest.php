@@ -63,6 +63,9 @@ final class PlanningDeployAbsenceRevalidationTest extends WebTestCase
                     foreach ($this->em->getRepository(AuditEvent::class)->findBy(['mission' => $m->getId()]) as $evt) {
                         $this->em->remove($evt);
                     }
+                    foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $m]) as $assignment) {
+                        $this->em->remove($assignment); // D-150 — affectation history first
+                    }
                     $this->em->remove($m);
                 }
                 $this->em->flush();

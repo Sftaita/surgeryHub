@@ -37,6 +37,7 @@ final class ActivityCoverageTest extends TestCase
         'UserAuditEvent'                      => 'mirrored one-to-one by AuditEventMirrorListener (sourceRef user_audit_event:{id})',
         'Mission'                             => 'AuditEvent MISSION_* (lifecycle, post-deploy, pool, manual creation and draft edits since H5b)',
         'MissionClaim'                        => 'AuditEvent MISSION_CLAIMED_FROM_POOL / MISSION_RELEASED_TO_POOL',
+        'MissionAssignment'                   => 'D-150 — opened/ended only inside a Mission transition journaled by its own AuditEvent MISSION_* (claim, assign, reassign, release, cancel, restore, declare, post-deploy add, direct assignment) or ActivityJournal PLANNING_DEPLOYED (bulk opening at deploy); exception kept as found: PlanningAlertActionService published-status branches write no AuditEvent (D-150 limits)',
         'MissionPublication'                  => 'AuditEvent MISSION_PUBLISHED_TO_POOL / MISSION_OFFERED_TO_INSTRUMENTIST / MISSION_ASSIGNED_DIRECTLY (D-125)',
         'MissionCommunication'                => 'ActivityJournal direct — MISSION_COMMUNICATION_* (H4, D-130)',
         'MissionExecution'                    => 'AuditEvent MISSION_EXECUTION_CREATED / _UPDATED / _DURATION_CHANGED',

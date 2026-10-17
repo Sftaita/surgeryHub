@@ -65,6 +65,7 @@ final class EncodingCorrectionFromTrackingD148Test extends WebTestCase
             $c->executeStatement("DELETE FROM material_line WHERE mission_id IN ($missions)");
             $c->executeStatement("DELETE FROM mission_intervention WHERE mission_id IN ($missions)");
             $c->executeStatement("DELETE FROM mission_execution WHERE mission_id IN ($missions)");
+            $c->executeStatement("DELETE FROM mission_assignment WHERE mission_id IN ($missions)");
             $c->executeStatement("DELETE FROM mission WHERE id IN ($missions)");
             foreach ($this->created['items'] as $id) { $c->executeStatement('DELETE FROM material_item WHERE id = ?', [$id]); }
             foreach ($this->created['firms'] as $id) { $c->executeStatement('DELETE FROM firm WHERE id = ?', [$id]); }

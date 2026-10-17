@@ -83,6 +83,7 @@ final class RoomTakeoverFunctionalTest extends WebTestCase
             foreach (['notification_event', 'audit_event', 'mission_claim', 'planning_alert'] as $table) {
                 $sql("DELETE FROM {$table} WHERE mission_id = ?", [$mid]);
             }
+            $sql('DELETE FROM mission_assignment WHERE mission_id = ?', [$mid]);
             $sql('DELETE FROM mission WHERE id = ?', [$mid]);
         }
         foreach ($this->userIds as $uid) {

@@ -98,6 +98,9 @@ final class PlanningModificationControllerTest extends WebTestCase
                     foreach ($this->em->getRepository(PlanningAlert::class)->findBy(['mission' => $m->getId()]) as $alert) {
                         $this->em->remove($alert);
                     }
+                    foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $m]) as $assignment) {
+                        $this->em->remove($assignment); // D-150 — affectation history first
+                    }
                     $this->em->remove($m);
                 }
                 $this->em->flush();
@@ -105,7 +108,7 @@ final class PlanningModificationControllerTest extends WebTestCase
 
             foreach ($this->createdMissionIds as $id) {
                 $e = $this->em->find(Mission::class, $id);
-                if ($e !== null) { $this->em->remove($e); }
+                if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
             }
             $this->em->flush();
 

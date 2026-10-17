@@ -4219,3 +4219,24 @@ D-114   : ABSENCE_CREATED → SURGEON_ABSENCE_COMMUNICATION_RECORDED (← absenc
 
   `EmailThroughDispatcherTest`, `ActivityJournalIntegrationTest` (append-only).
 
+## 31. Affectations d'instrumentistes (D-150)
+
+`mission_assignment` enregistre chaque affectation d'un instrumentiste à une mission
+**publiée** : source métier, `assignedAt` propre à l'affectation, puis fin (`endedAt`,
+`endReason`, `endedBy`). Une mission DRAFT n'en a jamais : l'affectation commence à la
+publication.
+
+- **Seul écrivain** : `App\Service\MissionAssignmentService` (`assign`, `unassign`,
+  `findCurrent`, `inLockedChange`, `openForDeployedVersion`), appelé explicitement par
+  `MissionPostDeployService`, `MissionService::declareMission()`, `PlanningAlertActionService`
+  et `PlanningDeploymentService`. Statuts, AuditEvents et messages restent chez ces appelants.
+- **Unicité** : colonne générée `active_mission_key` + index UNIQUE → au plus une affectation
+  ouverte par mission, garanti par MySQL.
+- **Concurrence** : `inLockedChange()` = transaction + `SELECT … FOR UPDATE` comparant le
+  statut et l'instrumentiste validés à l'état chargé ; écart → 409.
+- **Garde-fou** : `tests/Architecture/MissionInstrumentistWriteArchitectureTest` (liste
+  nominative des écritures directes autorisées : DRAFT ou autres entités).
+- **Affectation courante** : `MissionAssignmentService::findCurrent($mission)`.
+- **Invariant** (D-150 Décision 4) : affectation ouverte seulement pour DECLARED … VALIDATED,
+  et pour `mission.instrumentist` ; un statut définitif ferme l'affectation
+  (`endOnFinalStatus()`, refus d'une déclaration) sans retirer l'instrumentiste.

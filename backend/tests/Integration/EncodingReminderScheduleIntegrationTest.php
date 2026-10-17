@@ -76,6 +76,7 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
             $conn->executeStatement('DELETE FROM material_line WHERE mission_id = ?', [$id]);
             $conn->executeStatement('DELETE FROM mission_execution WHERE mission_id = ?', [$id]);
             $conn->executeStatement('DELETE FROM mission_encoding_reminder WHERE mission_id = ?', [$id]);
+            $conn->executeStatement('DELETE FROM mission_assignment WHERE mission_id = ?', [$id]);
             $conn->executeStatement('DELETE FROM mission WHERE id = ?', [$id]);
         }
         foreach ($this->created['users'] as $id) {

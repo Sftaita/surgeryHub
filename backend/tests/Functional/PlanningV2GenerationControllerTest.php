@@ -88,7 +88,7 @@ final class PlanningV2GenerationControllerTest extends WebTestCase
             // Mission has a FK to PlanningVersion — missions must be deleted first.
             foreach ($this->createdIds['missions'] as $id) {
                 $e = $this->em->find(Mission::class, $id);
-                if ($e !== null) { $this->em->remove($e); }
+                if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
             }
             $this->em->flush();
             foreach ($this->createdIds['versions'] as $id) {

@@ -128,6 +128,7 @@ final class AbsenceImpactFunctionalTest extends WebTestCase
             $c->executeStatement("DELETE FROM audit_event WHERE mission_id IN ($missions) OR actor_id IN ($u)");
             $c->executeStatement("DELETE FROM mission_claim WHERE mission_id IN ($missions)");
             $c->executeStatement("DELETE FROM mission_publication WHERE mission_id IN ($missions)");
+            $c->executeStatement("DELETE FROM mission_assignment WHERE mission_id IN (SELECT id FROM mission WHERE site_id IN ($s))");
             $c->executeStatement("DELETE FROM mission WHERE site_id IN ($s)");
             $c->executeStatement("DELETE FROM absence WHERE user_id IN ($u)");
             $c->executeStatement("DELETE FROM surgeon_schedule_post WHERE id IN ($p)");

@@ -90,6 +90,7 @@ final class OperationalManagerRecipientsIntegrationTest extends KernelTestCase
             $conn->executeStatement('DELETE FROM outbound_notification WHERE mission_id = ?', [$id]);
             $conn->executeStatement('DELETE FROM notification_event WHERE mission_id = ?', [$id]);
             $conn->executeStatement('DELETE FROM audit_event WHERE mission_id = ?', [$id]);
+            $conn->executeStatement('DELETE FROM mission_assignment WHERE mission_id = ?', [$id]);
             $conn->executeStatement('DELETE FROM mission WHERE id = ?', [$id]);
         }
         foreach ($this->created['users'] as $id) {
