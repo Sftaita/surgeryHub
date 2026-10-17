@@ -336,6 +336,54 @@ confirmer via l'historique ADMIN (`/app/admin/outbound-notifications`) que les
 nouveaux envois apparaissent normalement. Les utilisateurs réels devront réactiver
 les notifications sur leurs appareils.
 
+### Clé Sentry (backend) — remplacement préparé le 2026-10-17, non exécuté
+
+**Nature.** `SENTRY_DSN` est un DSN d'**ingestion** moderne
+(`https://<clé publique>@o<org>.ingest.de.sentry.io/<projet>`) : clé publique de 32
+caractères, **sans partie secrète**. Il permet seulement d'**envoyer** des événements au
+projet Sentry du backend ; il ne donne aucune lecture des événements ni aucun accès au
+compte. Le frontend utilise une autre clé d'un autre projet (`VITE_SENTRY_DSN`, publique
+par conception, livrée dans le bundle).
+
+**Constat** (comparaison d'empreintes sur le serveur, lecture seule) : la valeur de
+production est celle qui était commitée dans `backend/.env` depuis 2026-06-13. Les
+environnements locaux et les tests l'utilisaient aussi. Risque : événements parasites
+dans le projet de production (bruit, quota), pas de fuite de données. Depuis ce lot, les
+fichiers suivis ont `SENTRY_DSN=` vide (garde-fou `NoRealSentryDsnCommittedTest`) ; le
+développement local règle son propre DSN dans `backend/.env.local` (de préférence un
+projet séparé).
+
+**Remplacement sans interruption de la collecte** (à faire par une personne ayant accès
+au projet Sentry ; l'ancienne clé reste active jusqu'à l'étape 6) :
+
+1. Sentry → projet backend → *Settings → Client Keys (DSN)* → **Generate New Key**.
+   Optionnel : limite de débit sur la nouvelle clé.
+2. Sauvegarde du `.env` :
+   `cp /opt/stack/apps/surgicalhub/.env /home/deploy/backups/env/surgicalhub.env.bak_$(date +%Y%m%d_%H%M%S)`
+3. Saisie sans affichage ni historique :
+   ```bash
+   read -rs -p 'Nouveau DSN : ' NEW_DSN; echo
+   NEW_DSN="$NEW_DSN" python3 - << 'EOF'
+   import os, re
+   p = "/opt/stack/apps/surgicalhub/.env"; v = os.environ["NEW_DSN"].strip()
+   assert re.fullmatch(r"https://[0-9a-f]{32}@o\d+\.ingest\.[a-z]+\.sentry\.io/\d+", v), "format inattendu"
+   s = open(p).read(); assert len(re.findall(r"^SENTRY_DSN=.*$", s, flags=re.M)) == 1
+   open(p, "w").write(re.sub(r"^SENTRY_DSN=.*$", lambda m: "SENTRY_DSN=" + v, s, flags=re.M)); print("OK")
+   EOF
+   unset NEW_DSN
+   ```
+4. `cd /opt/stack/apps/surgicalhub && docker compose up -d && docker compose restart nginx`
+   (recrée `php` et `worker` avec le nouveau `.env`).
+5. Contrôle : `docker exec surgicalhub-php php bin/console sentry:test` → l'événement de
+   test arrive dans le projet, compté sur la **nouvelle** clé (*Client Keys*, statistiques
+   par clé). Vérifier sans afficher de valeur que `php` et `worker` ont la même empreinte que
+   le `.env`.
+6. Après quelques jours sans événement légitime sur l'ancienne clé : la **désactiver**, puis
+   la supprimer.
+
+Rien à réécrire dans l'historique Git : une fois l'ancienne clé désactivée, la valeur qui y
+figure n'est plus acceptée par Sentry.
+
 ---
 
 ### Intégration MedVue (D-140)
