@@ -49,6 +49,7 @@ const TITLES: Record<string, string> = {
   ENCODING_SUBMITTED: "Encodage disponible",
   ENCODING_ANOMALY_INSTRUMENTIST: "Point à vérifier sur votre encodage",
   ENCODING_CORRECTION_REQUESTED: "Correction de votre encodage demandée",
+  ENCODING_UPDATED_BY_SURGEON: "Encodage complété par le chirurgien",
   // D-151
   ASSIGNMENT_REFUSED_BY_SURGEON: "Refus d'affectation par le chirurgien",
   ASSIGNMENT_REVIEW_REQUESTED: "Intervention demandée sur une affectation",
@@ -244,6 +245,11 @@ export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "ev
     const what = payload.action === "REOPENED" ? "a été rouvert" : "vous a été renvoyé";
     const reason = typeof payload.reason === "string" && payload.reason ? ` Motif : ${payload.reason}` : "";
     return `L'encodage de votre mission ${mission}du ${missionDate ?? "—"} ${what} pour correction.${reason}`;
+  }
+  // D-154 — une notification par série de modifications du chirurgien (regroupées).
+  if (n.eventType === "ENCODING_UPDATED_BY_SURGEON") {
+    const who = typeof payload.surgeonName === "string" && payload.surgeonName ? payload.surgeonName : "Le chirurgien";
+    return `${who} a complété ou corrigé les interventions / le matériel de votre mission du ${missionDate ?? "—"}. Consultez votre encodage.`;
   }
   if (n.eventType === "ENCODING_ANOMALY_INSTRUMENTIST") {
     const category = typeof payload.type === "string" && ANOMALY_TYPE_LABELS[payload.type] ? ` (${ANOMALY_TYPE_LABELS[payload.type]})` : "";

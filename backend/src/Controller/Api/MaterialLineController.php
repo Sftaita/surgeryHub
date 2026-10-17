@@ -11,9 +11,12 @@ use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
 use App\Entity\User;
+use App\Exception\EncodingConcurrencyException;
 use App\Security\Voter\MissionVoter;
+use App\Service\EncodingVersionGuard;
 use App\Service\InterventionService;
 use App\Service\MissionEncodingGuard;
+use App\Service\SurgeonEncodingChangeNotifier;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -38,6 +41,7 @@ class MaterialLineController extends AbstractController
         private readonly InterventionService $service,
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
+        private readonly SurgeonEncodingChangeNotifier $surgeonChanges,
     ) {}
 
     #[Route('', name: 'api_material_lines_create', methods: ['POST'])]
@@ -59,6 +63,7 @@ class MaterialLineController extends AbstractController
         );
 
         $line = $this->service->createMaterialLine($mission, $dto, $user);
+        $this->surgeonChanges->afterWrite($mission, $user);
 
         return $this->json($this->toDto($line), Response::HTTP_CREATED);
     }
@@ -78,6 +83,8 @@ class MaterialLineController extends AbstractController
         if (!$line || $line->getMission()?->getId() !== $mission->getId()) {
             return $this->json(['message' => 'Material line not found'], Response::HTTP_NOT_FOUND);
         }
+        // D-154 — jamais l'écrasement silencieux d'une modification concurrente.
+        EncodingVersionGuard::assertCurrent($request, $mission, $user, $line->getVersion(), EncodingConcurrencyException::SUBJECT_MATERIAL_LINE);
 
         /** @var MaterialLineUpdateRequest $dto */
         $dto = $this->serializer->deserialize(
@@ -103,12 +110,13 @@ class MaterialLineController extends AbstractController
         }
 
         $this->em->flush();
+        $this->surgeonChanges->afterWrite($mission, $user);
 
         return $this->json($this->toDto($line));
     }
 
     #[Route('/{lineId}', name: 'api_material_lines_delete', methods: ['DELETE'], requirements: ['lineId' => '\d+'])]
-    public function delete(int $missionId, int $lineId, #[CurrentUser] User $user): JsonResponse
+    public function delete(int $missionId, int $lineId, Request $request, #[CurrentUser] User $user): JsonResponse
     {
         $mission = $this->em->find(Mission::class, $missionId);
         if (!$mission) {
@@ -122,9 +130,11 @@ class MaterialLineController extends AbstractController
         if (!$line || $line->getMission()?->getId() !== $mission->getId()) {
             return $this->json(['message' => 'Material line not found'], Response::HTTP_NOT_FOUND);
         }
+        EncodingVersionGuard::assertCurrent($request, $mission, $user, $line->getVersion(), EncodingConcurrencyException::SUBJECT_MATERIAL_LINE);
 
         $this->em->remove($line);
         $this->em->flush();
+        $this->surgeonChanges->afterWrite($mission, $user);
 
         return $this->json(null, Response::HTTP_NO_CONTENT);
     }
@@ -149,6 +159,7 @@ class MaterialLineController extends AbstractController
             quantity: (string) $line->getQuantity(),
             comment: $line->getComment(),
             interventionDraftId: $line->getInterventionDraft()?->getId(),
+            version: $line->getVersion(),
         );
     }
 }

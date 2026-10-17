@@ -13776,3 +13776,124 @@ Décision 6 : `FirmInvoiceFinancialCalculationControllerTest::test_calculation_m
 ligne éligible firme ni instrumentiste, génération refusée, verrouillage refusé → recalcul
 explicite, de nouveau facturable), `FirmBillingWorklistControllerTest` (motif
 `CALCULATION_OBSOLETE`, action « Recalculer », ajout refusé), `FinancialCalculationCard.test.tsx`.
+
+## D-154 — Encodage des interventions et du matériel par le chirurgien sur sa mission avec instrumentiste (2026-10-16)
+
+**Statut : implémenté sur `feat/surgeon-refusal-compat` (lot L5), non commité, non déployé.**
+Amende D-100 (consultation chirurgien strictement en lecture) et D-143 ; complète D-153.
+
+### Contexte
+
+Le chirurgien doit pouvoir compléter ou corriger les interventions et le matériel de ses
+propres missions, sans jamais toucher aux heures de l'instrumentiste, en respectant
+verrouillages, règles tarifaires et contrôles existants, avec un auteur tracé, et sans
+qu'une modification de l'un écrase en silence celle de l'autre (rien ne protégeait jusqu'ici
+deux encodages concurrents : le dernier PATCH gagnait).
+
+### Décision 1 — une seule politique (`SurgeonEncodingPolicy`)
+
+`canEditEncoding()` : chirurgien de **cette** mission (`ROLE_SURGEON`, jamais un confrère) ;
+une instrumentiste affectée (L5 ; les missions réalisées sans instrumentiste relèvent de L6) ;
+statut `DECLARED`, `ASSIGNED`, `IN_PROGRESS`, `ENCODING_IN_PROGRESS` ou `SUBMITTED` (mêmes
+statuts que l'instrumentiste) ; mission commencée ; encodage ni verrouillé ni facturé ; aucun
+calcul `LOCKED`. C'est l'unique source de `MissionVoter::EDIT_ENCODING` (branche chirurgien)
+et de l'action `edit_encoding` : un appel direct est refusé exactement quand l'action n'est
+pas proposée (test de cohérence sur tous les statuts × instrumentiste × début × calcul).
+`MissionEncodingGuard` applique aussi au chirurgien la règle « pas avant le début ».
+Une mission `VALIDATED` reste à rouvrir par un manager (D-148).
+
+### Décision 2 — jamais les heures, jamais une transition
+
+`MissionExecutionVoter::UPDATE` est inchangé (le chirurgien n'y figure pas) : ni
+`edit_hours`, ni `start_encoding`, ni `submit` ne lui sont proposés, et les endpoints
+correspondants lui répondent `403`. Le statut de la mission n'est jamais modifié par ses
+corrections. Les demandes de catalogue créées depuis la section d'encodage suivent la même
+règle (`EDIT_ENCODING`).
+
+### Décision 3 — réutilisation, aucun nouvel endpoint
+
+`SurgeonEncodingPage` affiche, quand `allowedActions` contient `edit_encoding`, la section
+d'encodage de l'instrumentiste (`InterventionsSection`, `MaterialWizard`,
+`EditMaterialLineDialog`, mêmes endpoints, services, règles obligatoires / exclusives /
+conditionnelles, choix et tarification), sans soumission ; la synthèse des heures reste en
+lecture. Sans ce droit (confrère, mission verrouillée, pas commencée…) la page reste
+strictement en lecture (D-100). La lecture chirurgien n'expose toujours aucune donnée
+financière (`billingStatus` omis, aucun montant).
+
+### Décision 4 — écrasements concurrents : version optimiste
+
+`MissionIntervention.version` et `MaterialLine.version` (Doctrine `#[ORM\Version]`,
+migration `Version20261016100000`, défaut 1) sont servis par `GET .../encoding` (`version`
+de chaque intervention réelle et de chaque ligne de matériel) et par les réponses
+`POST` / `PATCH .../material-lines`. Toute modification ou suppression d'intervention ou de
+ligne de matériel renvoie la version lue en `If-Match: "N"` (`EncodingVersionGuard`) :
+
+- version différente → `409 ENCODING_CONCURRENT_MODIFICATION`, rien n'est écrit ; l'écran
+  affiche le message et relit l'encodage (aucune donnée de l'autre personne perdue) ;
+- course entre ce contrôle et l'écriture → `OptimisticLockException` Doctrine, même `409` ;
+- `If-Match` absent : `428 ENCODING_VERSION_REQUIRED` pour le chirurgien ; toléré pour
+  l'instrumentiste et le manager uniquement pour un client plus ancien en cache — les
+  écrans actuels (instrumentiste, manager D-153, chirurgien) l'envoient toujours.
+
+`InterventionsSection` sérialise ses modifications / suppressions (même `scope` TanStack
+Query) et lit la version au moment de l'envoi : un ±1 rapide n'entre jamais en conflit avec
+la requête précédente du même utilisateur. Les créations ne sont pas versionnées (aucun
+écrasement possible).
+
+### Décision 5 — traçabilité
+
+Rien d'ajouté : le listener gouverné (H5b) journalise déjà chaque ajout / modification /
+suppression d'intervention et de matériel avec l'auteur réel (le chirurgien) et les valeurs
+avant / après ; l'historique manager (D-153) l'affiche.
+
+### Préparation de L6
+
+La seule condition propre à L5 est `SurgeonEncodingPolicy::hasEncodableActivity()`
+(« une instrumentiste est affectée ») ; L6 l'étendra aux missions réalisées sans
+instrumentiste. Écran (`edit_encoding` seul pilote le mode édition), endpoints, contrôle de
+version et journal sont réutilisés tels quels.
+
+### Décision 6 — auteur réel des demandes de catalogue
+
+`CATALOGUE_REQUEST_CREATED` (push et e-mail aux managers) n'annonce plus systématiquement
+« Un instrumentiste a proposé… » : l'auteur est lu sur la demande (`createdBy`) —
+« Un instrumentiste », « Le chirurgien de la mission » (ou « Un chirurgien »), « Un manager »
+— et « Demandé par » porte son nom (auparavant l'instrumentiste de la mission, quel que soit
+l'auteur). Auteur introuvable : formulation neutre, jamais supposé. Message Messenger
+inchangé.
+
+### Décision 7 — l'instrumentiste est prévenue, une fois par série de modifications
+
+Nouveau type `ENCODING_UPDATED_BY_SURGEON` (instrumentiste affectée ; in-app par défaut, push
+et e-mail selon ses préférences ; lien vers son encodage). Chaque écriture réussie du
+chirurgien de la mission sur une intervention ou une ligne de matériel émet
+`SurgeonEncodingChangedMessage` (async ; jamais pour un manager ni pour l'instrumentiste
+elle-même). Le handler regroupe : la première écriture d'une série notifie, toute écriture
+suivante du chirurgien sur la mission dans les **2 heures** est couverte par cette
+notification (une dispatch existante du même type, destinataire et mission dans la fenêtre ⇒
+rien de nouveau) ; l'épisode est l'instant de la première écriture, un rejeu Messenger ne
+notifie donc jamais deux fois (idempotence du `NotificationDispatcher`). Le contenu reste
+générique (chirurgien, mission, date, site) : aucun détail d'encodage ni montant dans la
+notification ; le détail est dans son encodage et dans l'historique manager (D-153).
+
+### Limites
+
+- Deux workers traitant en même temps deux écritures de la même série pourraient produire
+  deux notifications (le regroupement lit les dispatches existantes, sans verrou) ; sans
+  conséquence au-delà d'un doublon.
+- `If-Match` reste facultatif pour l'instrumentiste et le manager (compatibilité) ;
+  le rendre obligatoire est possible une fois les anciens clients disparus.
+
+### Tests
+
+`SurgeonEncodingD154Test` (ajout / modification / suppression d'intervention et de matériel,
+jamais les heures ni les transitions, auteur tracé ; refus sur la mission d'un confrère,
+validée, clôturée, pas commencée, sans instrumentiste ; conflit chirurgien ↔ instrumentiste
+sur matériel et intervention, rien d'écrasé ni supprimé, `428` sans version ; versions servies
+sans champ financier), `MissionActionsServiceTest` (cohérence `allowedActions` ↔ voters pour
+le chirurgien), `MissionViewEncodingTest` (amendé), `InterventionsSection.test.tsx` (`If-Match`,
+version suivante après ±1, conflit), `SurgeonEncodingPage.test.tsx` (mode édition servi par le
+backend, lecture seule sinon). Décisions 6-7 : `CatalogueRequestCreatedMessageHandlerTest`
+(auteur réel par rôle, formulation neutre), `SurgeonEncodingD154Test::test_the_instrumentist_is_notified_once_per_burst_of_surgeon_changes`
+(événement émis pour le chirurgien seulement, une notification par rafale, rejeu idempotent,
+nouvelle série après la fenêtre), `notificationFormat.test.ts`.

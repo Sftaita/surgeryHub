@@ -7,6 +7,7 @@ import dayjs from "dayjs";
 import { fetchMissionById, getMissionExecution } from "../missions/api/missions.api";
 import { formatMissionStatus } from "../missions/utils/missions.format";
 import { fetchMissionEncoding } from "../encoding/api/encoding.api";
+import InterventionsSection from "../encoding/components/InterventionsSection";
 import { EncodingHoursSummary } from "./components/EncodingHoursSummary";
 import { ReadOnlyInterventionCard } from "./components/ReadOnlyInterventionCard";
 import { AnomalyReportSection } from "../encoding-anomaly-reports/components/AnomalyReportSection";
@@ -40,8 +41,15 @@ export function encodingStateBanner(status: string, submittedAt: string | null |
 /**
  * Lot 6 (D-100) — consultation chirurgien de l'encodage réalisé par l'instrumentiste.
  * Réutilise GET /api/missions/{id}/encoding tel quel (VIEW_ENCODING, §3) : aucun
- * endpoint parallèle. Présentation strictement lecture — aucun composant d'édition
- * réutilisé avec ses boutons masqués (§8-9) : les cartes ci-dessous sont dédiées.
+ * endpoint parallèle. Sans droit d'écriture : présentation strictement lecture — aucun
+ * composant d'édition réutilisé avec ses boutons masqués (§8-9), cartes dédiées.
+ *
+ * D-154 — quand le backend sert `edit_encoding` (sa propre mission, commencée, encodage
+ * ouvert), le chirurgien ajoute, modifie et supprime interventions et matériel avec la
+ * section d'encodage de l'instrumentiste (mêmes endpoints, règles, verrous et contrôle
+ * de version). Jamais les heures (EncodingHoursSummary reste en lecture), jamais de
+ * démarrage ni de soumission. Seul `edit_encoding` pilote ce mode : la mission sans
+ * instrumentiste (L6) le réutilisera tel quel.
  */
 export default function SurgeonEncodingPage() {
   const { id } = useParams<{ id: string }>();
@@ -59,6 +67,7 @@ export default function SurgeonEncodingPage() {
   });
 
   const canView = mission?.allowedActions?.includes("view_encoding") ?? false;
+  const canEdit = mission?.allowedActions?.includes("edit_encoding") ?? false;
 
   const {
     data: encoding,
@@ -124,6 +133,13 @@ export default function SurgeonEncodingPage() {
             return banner ? <Alert severity={banner.severity} data-testid="surgeon-encoding-state">{banner.text}</Alert> : null;
           })()}
 
+          {canEdit && (
+            <Alert severity="info" variant="outlined" data-testid="surgeon-encoding-editable">
+              Vous pouvez compléter ou corriger les interventions et le matériel de votre mission. Les heures prestées
+              restent celles déclarées par l'instrumentiste. Chaque modification est enregistrée à votre nom.
+            </Alert>
+          )}
+
           {/* L'essentiel en un coup d'œil, le détail ensuite (D-143). */}
           <Typography data-testid="surgeon-encoding-glance" sx={{ fontSize: 13, color: GRAY_500 }}>
             {(() => {
@@ -135,7 +151,18 @@ export default function SurgeonEncodingPage() {
 
           <EncodingHoursSummary execution={execution} plannedStartAt={mission.startAt} plannedEndAt={mission.endAt} />
 
-          {encoding.entries.length === 0 ? (
+          {canEdit ? (
+            <InterventionsSection
+              missionId={missionId}
+              canEdit
+              entries={encoding.entries ?? []}
+              legacyInterventions={encoding.interventions ?? []}
+              catalog={encoding.catalog}
+              canSubmit={false}
+              onValidate={() => undefined}
+              progress={encoding.progress}
+            />
+          ) : encoding.entries.length === 0 ? (
             <Box sx={{ background: "#fff", borderRadius: "18px", boxShadow: SHADOW_XS, px: 2, py: 3, textAlign: "center" }}>
               <Typography sx={{ fontSize: 14, fontWeight: 700, color: GRAY_900 }}>
                 Aucun encodage disponible pour l'instant

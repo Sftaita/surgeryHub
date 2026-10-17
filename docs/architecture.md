@@ -4277,4 +4277,19 @@ publication.
   pour interventions / matériel, miroir d'audit pour les heures avec valeurs avant / après) ;
   `GET /api/missions/{id}/encoding/history`, `MissionVoter::VIEW_ENCODING_HISTORY`.
 - **Finances** : `financialImpactNotice()` annonce un calcul actif à relancer ; aucun recalcul
-  automatique, calcul `LOCKED` bloquant.
+  automatique, calcul `LOCKED` bloquant. La réouverture marque le calcul actif obsolète
+  (`FinancialCalculation.encodingReopenedAt`) : refusé par `approve()` / `lock()`, exclu des
+  lignes éligibles et des documents (`FirmInvoiceService`, `InstrumentistStatementService`),
+  motif `CALCULATION_OBSOLETE` dans la worklist, jusqu'au recalcul explicite.
+
+### 31.4 Encodage par le chirurgien (D-154)
+
+- **Politique unique** : `SurgeonEncodingPolicy::canEditEncoding()`, lue par
+  `MissionVoter::EDIT_ENCODING` et `MissionActionsService` (`edit_encoding`) ; heures et
+  transitions inchangées (instrumentiste / manager).
+- **Écran** : `SurgeonEncodingPage` réutilise `InterventionsSection` quand `edit_encoding`
+  est servi ; lecture seule sinon.
+- **Concurrence** : `MissionIntervention.version` / `MaterialLine.version` (`#[ORM\Version]`),
+  `If-Match` contrôlé par `EncodingVersionGuard`, `EncodingConcurrencyException` (409 / 428),
+  `OptimisticLockException` → 409 dans `ApiExceptionSubscriber`.
+- **L6** : seule `hasEncodableActivity()` est à étendre (missions sans instrumentiste).

@@ -35,8 +35,8 @@ final class MissionEncodingGuard
             return;
         }
 
-        // Only instrumentists are constrained by the "not before startAt" rule.
-        if (!in_array('ROLE_INSTRUMENTIST', $roles, true)) {
+        // Instrumentists and (D-154) surgeons are constrained by the "not before startAt" rule.
+        if (!in_array('ROLE_INSTRUMENTIST', $roles, true) && !in_array('ROLE_SURGEON', $roles, true)) {
             return;
         }
 

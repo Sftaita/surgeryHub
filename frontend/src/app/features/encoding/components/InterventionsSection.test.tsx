@@ -245,7 +245,8 @@ function installFakeServer(initial: MissionEncodingEntry[], extras: Record<numbe
         ...e,
         materialLines: e.materialLines.map((l) => {
           if (l.id !== id) return l;
-          updated = { ...l, quantity: body.quantity ?? l.quantity, comment: body.comment ?? l.comment };
+          // D-154 — comme le backend : chaque modification incrémente la version.
+          updated = { ...l, quantity: body.quantity ?? l.quantity, comment: body.comment ?? l.comment, version: l.version != null ? l.version + 1 : l.version };
           return updated;
         }),
       }));
@@ -847,5 +848,64 @@ describe("InterventionsSection — demande de matériel hors catalogue sur une i
     await waitFor(() => expect(toastErrorMock).toHaveBeenCalled());
     expect(screen.queryByText("Ancre titane 4.5mm")).not.toBeInTheDocument();
     expect(screen.getByText("Aucun matériel encodé")).toBeInTheDocument();
+  });
+});
+
+describe("InterventionsSection — écrasements concurrents (D-154)", () => {
+  const versioned = () =>
+    makeInterventionEntry({
+      version: 4,
+      materialLines: [
+        {
+          id: 501,
+          missionInterventionId: 1,
+          interventionDraftId: null,
+          item: { id: 100, label: "FiberWire n°2", referenceCode: "FW-2", unit: "unité", isImplant: false, firm: { id: 10, name: "Arthrex" } },
+          quantity: "2.00",
+          comment: "",
+          version: 7,
+        },
+      ],
+    });
+
+  it("renvoie la version lue en If-Match, et la version servie par la réponse au ±1 suivant", async () => {
+    const user = userEvent.setup();
+    renderSection([versioned()]);
+
+    await screen.findByText("x2");
+    await user.click(screen.getByLabelText(/augmenter la quantité de fiberwire/i));
+    await waitFor(() => expect(apiPatchMock).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByLabelText(/augmenter la quantité de fiberwire/i));
+    await waitFor(() => expect(apiPatchMock).toHaveBeenCalledTimes(2));
+
+    expect(apiPatchMock.mock.calls[0][2]).toEqual({ headers: { "If-Match": '"7"' } });
+    expect(apiPatchMock.mock.calls[1][2]).toEqual({ headers: { "If-Match": '"8"' } });
+  });
+
+  it("conflit de version : message du backend, encodage relu, aucune donnée écrasée", async () => {
+    const user = userEvent.setup();
+    renderSection([versioned()]);
+    apiPatchMock.mockRejectedValue({
+      response: { status: 409, data: { error: { code: "ENCODING_CONCURRENT_MODIFICATION", message: "Cette ligne de matériel a été modifiée entre-temps par Diane Instrumentiste." } } },
+    });
+
+    await screen.findByText("x2");
+    const getsBefore = apiGetMock.mock.calls.length;
+    await user.click(screen.getByLabelText(/augmenter la quantité de fiberwire/i));
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith("Cette ligne de matériel a été modifiée entre-temps par Diane Instrumentiste."));
+    await waitFor(() => expect(apiGetMock.mock.calls.length).toBeGreaterThan(getsBefore));
+    expect(await screen.findByText("x2")).toBeInTheDocument();
+  });
+
+  it("la suppression d'une intervention porte sa version", async () => {
+    const user = userEvent.setup();
+    renderSection([versioned()]);
+
+    await user.click(await screen.findByRole("button", { name: /supprimer l'intervention/i }));
+    const confirm = (await screen.findByText(/Supprimer l'intervention/i, { selector: "h2, h2 *" })).closest('[role="dialog"]') as HTMLElement;
+    await user.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+
+    await waitFor(() => expect(apiDeleteMock).toHaveBeenCalledWith(`/api/missions/${MISSION_ID}/interventions/1`, { headers: { "If-Match": '"4"' } }));
   });
 });

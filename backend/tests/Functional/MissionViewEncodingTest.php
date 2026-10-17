@@ -292,11 +292,17 @@ final class MissionViewEncodingTest extends WebTestCase
         }
     }
 
-    public function test_surgeon_never_gets_edit_encoding_regardless_of_status(): void
+    /**
+     * D-154 (amende D-100) — le chirurgien encode interventions et matériel de SA mission
+     * commencée tant que l'encodage est ouvert ; jamais sur une mission validée (verrouillée).
+     * Détail des refus et de la concurrence : SurgeonEncodingD154Test.
+     */
+    public function test_surgeon_gets_edit_encoding_only_while_his_encoding_is_open(): void
     {
         $client = $this->boot();
 
-        foreach ([MissionStatus::ASSIGNED, MissionStatus::SUBMITTED, MissionStatus::VALIDATED] as $status) {
+        foreach ([MissionStatus::ASSIGNED->value => true, MissionStatus::SUBMITTED->value => true, MissionStatus::VALIDATED->value => false] as $value => $expected) {
+            $status = MissionStatus::from($value);
             $surgeon = $this->createUser('ROLE_SURGEON');
             $instr = $this->createUser('ROLE_INSTRUMENTIST');
             $site = $this->makeSite();
@@ -304,10 +310,9 @@ final class MissionViewEncodingTest extends WebTestCase
             $token = $this->login($client, $surgeon);
 
             $response = $this->request($client, 'GET', "/api/missions/{$mission->getId()}/encoding", $token);
-            if ($response->getStatusCode() === Response::HTTP_OK) {
-                $body = json_decode($response->getContent(), true);
-                self::assertNotContains('edit_encoding', $body['mission']['allowedActions'] ?? [], (string) $status->value);
-            }
+            self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $status->value);
+            $body = json_decode($response->getContent(), true);
+            self::assertSame($expected, in_array('edit_encoding', $body['mission']['allowedActions'] ?? [], true), $status->value);
         }
     }
 

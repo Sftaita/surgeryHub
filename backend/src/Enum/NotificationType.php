@@ -239,6 +239,11 @@ enum NotificationType: string
     //                       l'a rouvert (VALIDATED), avec le motif. Mêmes canaux que
     //                       ENCODING_ANOMALY_INSTRUMENTIST (in-app + push selon préférences).
     case ENCODING_CORRECTION_REQUESTED = 'ENCODING_CORRECTION_REQUESTED'; // 29 chars
+    // D-154 — instrumentiste : le chirurgien de la mission a complété ou corrigé les
+    //                       interventions / le matériel de son encodage. Une notification par
+    //                       série de modifications (regroupées, jamais une par clic) ; in-app
+    //                       par défaut, push et e-mail selon ses préférences.
+    case ENCODING_UPDATED_BY_SURGEON = 'ENCODING_UPDATED_BY_SURGEON'; // 27 chars
     // D-136 — « Rappeler les heures » (manager → instrumentiste), auparavant une chaîne libre
     // sur les lignes outbound ; même valeur pour que l'historique existant garde son type.
     case MISSION_HOURS_REMINDER = 'MISSION_HOURS_REMINDER';

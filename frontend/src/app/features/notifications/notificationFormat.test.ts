@@ -115,6 +115,12 @@ describe("D-143 — notifications d'encodage", () => {
     expect(formatNotificationBody(reopened as any)).toContain("a été rouvert pour correction");
   });
 
+  it("D-154 — encodage complété par le chirurgien : une notification lisible, sans détail d'encodage", () => {
+    const n = { eventType: "ENCODING_UPDATED_BY_SURGEON", payload: { missionId: 501, missionDate: "15/10/2026", surgeonName: "Paul Martin" } };
+    expect(formatNotificationTitle(n)).toBe("Encodage complété par le chirurgien");
+    expect(formatNotificationBody(n as any)).toBe("Paul Martin a complété ou corrigé les interventions / le matériel de votre mission du 15/10/2026. Consultez votre encodage.");
+  });
+
   it("signalement côté instrumentiste : catégorie seulement, jamais le commentaire", () => {
     const body = formatNotificationBody({ eventType: "ENCODING_ANOMALY_INSTRUMENTIST", payload: { missionDate: "14/07/2026", type: "HOURS_INCORRECT", comment: "secret" } } as any);
     expect(body).toContain("(horaires)");

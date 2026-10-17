@@ -753,9 +753,14 @@ défense contre un id arbitraire).
 - **D-111 — changement de choix avec matériel déjà encodé** : si le nouveau choix rendrait incompatible un `MaterialLine` déjà attaché à cette intervention, la requête échoue avec `409 CHOICE_OPTION_CHANGE_REQUIRES_CONFIRMATION` (corps `error.violations: [{ materialLineId, materialItemLabel }]`) tant que `confirmRemoveIncompatibleMaterial: true` n'est pas explicitement fourni — jamais de suppression silencieuse. Confirmé, la ligne incompatible est retirée et la nouvelle sélection appliquée dans la même transaction.
 - Réponse — **204** (pas de corps).
 
+**D-154 — concurrence :** envoyer la version lue (`version`, servie par `GET .../encoding`)
+en `If-Match: "N"`. Version différente → `409 ENCODING_CONCURRENT_MODIFICATION` (rien
+n'est écrit, relire l'encodage) ; `If-Match` absent → `428 ENCODING_VERSION_REQUIRED` pour
+le chirurgien de la mission (facultatif pour l'instrumentiste et le manager, compatibilité).
+
 ### `DELETE /api/missions/{missionId}/interventions/{interventionId}`
 
-_(Inchangé.)_
+_(Inchangé, sauf **D-154** : même `If-Match` / `409` / `428` que le `PATCH`.)_
 
 ### Champs Lot 6 (D-069) dans chaque intervention de `GET .../encoding`
 
@@ -904,7 +909,13 @@ Mise à jour partielle d'une ligne matériel.
 
 Tous les champs sont optionnels. `missionInterventionId` peut aussi être modifié.
 
-**Réponse — 200 :** MaterialLine mise à jour (même format que POST)
+**Réponse — 200 :** MaterialLine mise à jour (même format que POST, **D-154 :** avec sa
+nouvelle `version`)
+
+**D-154 — concurrence :** envoyer la version lue (`version`, servie par `GET .../encoding`)
+en `If-Match: "N"`. Version différente → `409 ENCODING_CONCURRENT_MODIFICATION` (rien
+n'est écrit, relire l'encodage) ; `If-Match` absent → `428 ENCODING_VERSION_REQUIRED` pour
+le chirurgien de la mission (facultatif pour l'instrumentiste et le manager, compatibilité).
 
 ---
 
@@ -912,7 +923,7 @@ Tous les champs sont optionnels. `missionInterventionId` peut aussi être modifi
 
 **AuthZ :** `MissionVoter::EDIT_ENCODING`
 
-Supprimer une ligne matériel.
+Supprimer une ligne matériel. **D-154 :** même `If-Match` / `409` / `428` que le `PATCH`.
 
 **Réponse — 204 :** Pas de corps
 
@@ -7137,6 +7148,11 @@ d'encodage, obligations de service) sont exclus (`NotificationType::isConfigurab
 point signalé par le chirurgien — jamais le commentaire libre). **D-148 :**
 `ENCODING_CORRECTION_REQUESTED` (instrumentiste, encodage renvoyé en correction ou rouvert par
 un manager, avec le motif) — configurable, défauts in-app oui / e-mail non / push non.
+**D-154 :** `ENCODING_UPDATED_BY_SURGEON` (instrumentiste affectée : le chirurgien de la mission a
+complété ou corrigé interventions / matériel ; une notification par série de modifications,
+regroupées sur 2 h ; payload `missionId`, `missionDate`, `siteName`, `surgeonName`, jamais de
+détail d'encodage) — configurable, mêmes défauts. `CATALOGUE_REQUEST_CREATED` annonce l'auteur
+réel de la demande (instrumentiste, chirurgien, manager), jamais « un instrumentiste » par défaut.
 
 ```
 PATCH /api/me/notification-preferences/{type}
@@ -7595,8 +7611,13 @@ D-146 bis (`allowedActions` contient alors `"view_encoding"`, jamais une action 
 autre chirurgien (ownership toujours revérifiée côté serveur, jamais via l'ID seul).
 
 `mission.allowedActions` contient désormais `"view_encoding"` pour un chirurgien
-éligible (jamais `"edit_encoding"`/`"encoding"`, qui restent exclusivement
-instrumentiste/manager).
+éligible. **D-154 (amende D-100) :** `"edit_encoding"` aussi quand
+`SurgeonEncodingPolicy::canEditEncoding()` l'autorise (sa mission, avec instrumentiste,
+commencée, statut `DECLARED` → `SUBMITTED`, encodage ni verrouillé ni facturé, aucun calcul
+`LOCKED`) : il ajoute, modifie et supprime alors interventions et matériel par les endpoints
+`/interventions` et `/material-lines` existants (avec `If-Match`). Jamais `"edit_hours"`,
+`"start_encoding"`, `"submit"` ni `"encoding"`. Chaque intervention réelle et chaque ligne
+de matériel porte désormais `version` (entier, concurrence D-154).
 
 **Champ par champ, viewer chirurgien uniquement :** `materialLines[].item.billingStatus`
 (catalogue/facturation, D-101) est absent du JSON (jamais `null` explicite, la clé

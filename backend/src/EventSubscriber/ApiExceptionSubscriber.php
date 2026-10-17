@@ -42,6 +42,8 @@ use App\Exception\MissingIgnoreStrategyException;
 use App\Exception\RefundExceedsOverpaidException;
 use App\Exception\AssignmentRefusalException;
 use App\Exception\IncompatibilityException;
+use App\Exception\EncodingConcurrencyException;
+use Doctrine\ORM\OptimisticLockException;
 use App\Exception\ReleasedRoomSlotConflictException;
 use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
 use App\Exception\SurgeonMissionRequestConflictException;
@@ -303,6 +305,16 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $code = $e->getErrorCode();
             $message = $e->getMessage();
             $extra = $e->getExtra();
+        } elseif ($e instanceof EncodingConcurrencyException) {
+            // D-154 — If-Match differs from the element's version, or is missing for the surgeon.
+            $status = $e->getStatusCode();
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+        } elseif ($e instanceof OptimisticLockException) {
+            // D-154 — a concurrent write won the race between the If-Match check and the flush.
+            $status = 409;
+            $code = EncodingConcurrencyException::CONCURRENT_MODIFICATION;
+            $message = EncodingConcurrencyException::modified(EncodingConcurrencyException::SUBJECT_INTERVENTION)->getMessage();
         } elseif ($e instanceof IncompatibilityException) {
             // D-152 — incompatibility creation / lifting refused.
             $status = $e->getStatusCode();

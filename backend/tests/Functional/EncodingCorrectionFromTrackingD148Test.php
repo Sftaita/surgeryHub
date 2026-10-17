@@ -389,11 +389,12 @@ final class EncodingCorrectionFromTrackingD148Test extends WebTestCase
         self::assertSame(210, $this->realMinutes($reloaded), "08:00 → 11:30 conservés (fin − début, aucune pause)");
         self::assertCount(1, $reloaded->getMaterialLines());
         self::assertNotNull($this->em->find(MissionIntervention::class, $intervention->getId()));
-        self::assertSame(
-            $calcBefore,
-            $this->em->getConnection()->fetchAssociative('SELECT * FROM financial_calculation WHERE id = ?', [$calc->getId()]),
-            'aucun recalcul, aucune altération du calcul financier',
-        );
+        // D-153 (décision 6) — seul le marqueur d'obsolescence est posé : ni statut, ni
+        // montant, ni recalcul ne changent.
+        $calcAfter = $this->em->getConnection()->fetchAssociative('SELECT * FROM financial_calculation WHERE id = ?', [$calc->getId()]);
+        self::assertNotNull($calcAfter['encoding_reopened_at'], 'calcul marqué obsolète par la réouverture');
+        unset($calcBefore['encoding_reopened_at'], $calcAfter['encoding_reopened_at']);
+        self::assertSame($calcBefore, $calcAfter, 'aucun recalcul, aucune altération du calcul financier');
         self::assertSame(1, (int) $this->em->getConnection()->fetchOne('SELECT COUNT(*) FROM financial_calculation WHERE mission_id = ?', [$id]));
     }
 

@@ -455,6 +455,7 @@ final class MissionEncodingService
             representativePresent: $dto->representativePresent,
             selectedChoiceOptionId: $dto->selectedChoiceOptionId,
             selectedChoiceOptionLabel: $dto->selectedChoiceOptionLabel,
+            version: $i->getVersion(),
         );
     }
 
@@ -539,6 +540,7 @@ final class MissionEncodingService
             quantity: $qty,
             comment: $l->getComment(),
             interventionDraftId: $interventionDraftId,
+            version: $l->getVersion(),
         );
     }
 

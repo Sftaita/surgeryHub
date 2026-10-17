@@ -2,6 +2,8 @@
 
 namespace App\MessageHandler;
 
+use App\Entity\InterventionTypeRequest;
+use App\Entity\MaterialItemRequest;
 use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\CatalogueRequestKind;
@@ -18,9 +20,10 @@ use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
 /**
- * Follow-up to D-093 — prévient les managers/admins actifs qu'un instrumentiste vient de
- * proposer une intervention ou un matériel absent du catalogue (InterventionTypeRequest
- * ou MaterialItemRequest), pendant son encodage.
+ * Follow-up to D-093 — prévient les managers/admins actifs qu'une intervention ou un
+ * matériel absent du catalogue vient d'être proposé (InterventionTypeRequest ou
+ * MaterialItemRequest) pendant un encodage. D-154 — l'auteur annoncé est l'auteur réel de
+ * la demande (instrumentiste, chirurgien de la mission ou manager), jamais supposé.
  *
  * Destinataires : les managers/admins opérationnels (UserRepository::findOperationalManagers(),
  * D-149) — une proposition catalogue impacte le référentiel global, pas seulement le site.
@@ -54,14 +57,24 @@ final class CatalogueRequestCreatedMessageHandler
         }
 
         $kindLabel = $message->kind === CatalogueRequestKind::INTERVENTION_TYPE ? 'intervention' : 'matériel';
+        $request = $this->em->find(
+            $message->kind === CatalogueRequestKind::INTERVENTION_TYPE ? InterventionTypeRequest::class : MaterialItemRequest::class,
+            $message->requestId,
+        );
+        $requester = $request?->getCreatedBy();
 
         foreach ($this->userRepository->findOperationalManagers() as $manager) {
-            $this->notifyManager($manager, $mission, $message, $kindLabel);
+            $this->notifyManager($manager, $mission, $message, $kindLabel, $requester);
         }
     }
 
-    private function notifyManager(User $manager, Mission $mission, CatalogueRequestCreatedMessage $message, string $kindLabel): void
+    private function notifyManager(User $manager, Mission $mission, CatalogueRequestCreatedMessage $message, string $kindLabel, ?User $requester): void
     {
+        $role = NotificationService::catalogueRequesterRole($requester, $mission);
+        $body = $role !== null
+            ? sprintf('%s a proposé un(e) %s qui n\'existe pas encore dans le catalogue : « %s ».', $role, $kindLabel, $message->label)
+            : sprintf('Un(e) %s qui n\'existe pas encore dans le catalogue a été proposé(e) : « %s ».', $kindLabel, $message->label);
+
         try {
             $type = NotificationType::CATALOGUE_REQUEST_CREATED;
             $this->dispatcher->dispatch(new NotificationIntent(
@@ -74,10 +87,10 @@ final class CatalogueRequestCreatedMessageHandler
                     'kind'      => $message->kind->value,
                 ],
                 mission: $mission,
-                email: $this->notificationService->catalogueRequestCreatedEmail($mission, $manager, $message->requestId, $message->label, $kindLabel, $message->kind),
+                email: $this->notificationService->catalogueRequestCreatedEmail($mission, $manager, $message->requestId, $message->label, $kindLabel, $message->kind, $requester),
                 push: new PushContent(
                     $message->kind === CatalogueRequestKind::INTERVENTION_TYPE ? 'Nouvelle proposition d\'intervention' : 'Nouvelle proposition de matériel',
-                    sprintf('Un instrumentiste a proposé un(e) %s qui n\'existe pas encore dans le catalogue : « %s ».', $kindLabel, $message->label),
+                    $body,
                     [
                         'missionId' => $mission->getId(),
                         'url' => $this->targetResolver->resolve($type, $mission, $manager, $message->requestId, $message->kind),

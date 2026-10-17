@@ -11,6 +11,8 @@ use App\Service\MissionAssignmentService;
 use App\Service\MissionDispatchService;
 use App\Service\MissionEncodingCorrectionPolicy;
 use App\Service\MissionHoursReminderPolicy;
+use App\Service\SurgeonEncodingPolicy;
+use Symfony\Component\Clock\Clock;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
 use Symfony\Component\Security\Core\Authorization\Voter\Voter;
 
@@ -312,6 +314,12 @@ class MissionVoter extends Voter
         // encoding (a validated one is reopened first) — same rule as 'edit_encoding'.
         if ($managerContext) {
             return MissionEncodingCorrectionPolicy::managerCanEditEncoding($mission);
+        }
+
+        // D-154 — the mission's surgeon (own mission, started, open encoding) — interventions
+        // and material only: hours (MissionExecutionVoter) and transitions stay unchanged.
+        if (SurgeonEncodingPolicy::canEditEncoding($mission, $user, Clock::get()->now())) {
+            return true;
         }
 
         // instrumentiste assigné seulement

@@ -77,6 +77,7 @@ class NotificationActivityRecorder
         'MISSION_DECLARED_REJECTED'        => 'Mission déclarée refusée',
         'ENCODING_ANOMALY_REPORTED'        => 'Anomalie d\'encodage signalée',
         'ENCODING_CORRECTION_REQUESTED'    => 'Correction d\'encodage demandée',
+        'ENCODING_UPDATED_BY_SURGEON'      => 'Encodage complété par le chirurgien',
         'SURGEON_MISSION_REQUEST_CREATED'  => 'Nouvelle demande de mission',
         'ROOM_TAKEOVER_MISSION_OFFER'      => 'Salle reprise — mission disponible',
         // H5b — transactional deliveries on the common low-level layer (no user notification).

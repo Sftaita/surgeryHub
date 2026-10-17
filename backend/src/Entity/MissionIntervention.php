@@ -42,6 +42,15 @@ class MissionIntervention implements MaterialAttachmentTarget
     #[Groups(['mission:read', 'mission:read_manager'])]
     private ?int $id = null;
 
+    /**
+     * D-154 — version optimiste (Doctrine, incrémentée à chaque modification) : renvoyée
+     * par le client en If-Match (EncodingVersionGuard) pour qu'une modification concurrente
+     * (instrumentiste, chirurgien, manager) ne soit jamais écrasée en silence.
+     */
+    #[ORM\Version]
+    #[ORM\Column(type: 'integer', options: ['default' => 1])]
+    private int $version = 1;
+
     #[ORM\ManyToOne(inversedBy: 'interventions')]
     #[ORM\JoinColumn(nullable: false)]
     #[Groups(['mission:read', 'mission:read_manager'])]
@@ -119,6 +128,11 @@ class MissionIntervention implements MaterialAttachmentTarget
     public function getId(): int
     {
         return $this->id ?? throw new \LogicException('MissionIntervention::getId() called before the entity was persisted.');
+    }
+
+    public function getVersion(): int
+    {
+        return $this->version;
     }
 
     /** Voir docblock de getId() — même raisonnement, mission_id est NOT NULL en base. */

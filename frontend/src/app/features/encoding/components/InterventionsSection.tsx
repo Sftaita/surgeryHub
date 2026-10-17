@@ -29,6 +29,7 @@ import {
   deleteMissionMaterialLine,
   createMissionMaterialItemRequest,
   createMissionInterventionTypeRequest,
+  isEncodingConcurrentModification,
 } from "../api/encoding.api";
 
 import AddInterventionDialog, { type DraftSubmitValues } from "./AddInterventionDialog";
@@ -256,6 +257,36 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
     [queryClient, missionId],
   );
 
+  // D-154 — écrasements concurrents (instrumentiste / chirurgien / manager) : chaque
+  // modification ou suppression renvoie la version servie par le backend, lue dans le
+  // cache AU MOMENT de l'envoi ; les écritures de ce composant sont sérialisées (même
+  // scope) pour qu'un ±1 rapide parte toujours avec la version renvoyée par le précédent.
+  const writeScope = { id: `mission-encoding-writes-${missionId}` };
+  const entriesRef = React.useRef(entries);
+  entriesRef.current = entries;
+  const currentEntries = React.useCallback(
+    () => queryClient.getQueryData<MissionEncodingResponse>(["missionEncoding", missionId])?.entries ?? entriesRef.current,
+    [queryClient, missionId],
+  );
+  const interventionVersion = React.useCallback(
+    (interventionId: number) => currentEntries().find((e): e is MissionEncodingInterventionEntry => e.kind === "INTERVENTION" && e.id === interventionId)?.version ?? null,
+    [currentEntries],
+  );
+  const lineVersion = React.useCallback((lineId: number) => {
+    for (const e of currentEntries()) {
+      const line = (e.materialLines ?? []).find((l) => l.id === lineId);
+      if (line) return line.version ?? null;
+    }
+    return null;
+  }, [currentEntries]);
+  /** Conflit de version : l'encodage est relu (jamais d'écrasement), message du backend. */
+  const handledConcurrentModification = React.useCallback((err: any): boolean => {
+    if (!isEncodingConcurrentModification(err)) return false;
+    toast.error(err?.response?.data?.error?.message ?? "Cet élément a été modifié entre-temps : l'encodage a été rechargé.");
+    invalidate();
+    return true;
+  }, [toast, invalidate]);
+
   // ── Mutations: Interventions (réelles) ────────────────────────────
 
   const createInterventionMutation = useMutation({
@@ -304,10 +335,12 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
   });
 
   const patchInterventionMutation = useMutation({
+    scope: writeScope,
     mutationFn: (args: { interventionId: number; body: PatchInterventionBody }) =>
-      patchMissionIntervention(missionId, args.interventionId, args.body),
+      patchMissionIntervention(missionId, args.interventionId, args.body, interventionVersion(args.interventionId)),
     onSuccess: () => { toast.success("Intervention mise à jour"); setEditIntervention(null); setChoiceChangeConfirm(null); invalidate(); onSaved?.(); },
     onError: (err: any, args) => {
+      if (handledConcurrentModification(err)) { setEditIntervention(null); setChoiceChangeConfirm(null); return; }
       const apiError = err?.response?.data?.error;
       if (apiError?.code === "CHOICE_OPTION_CHANGE_REQUIRES_CONFIRMATION") {
         setChoiceChangeConfirm({ interventionId: args.interventionId, body: args.body, message: apiError.message ?? "" });
@@ -318,9 +351,13 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
   });
 
   const deleteInterventionMutation = useMutation({
-    mutationFn: (interventionId: number) => deleteMissionIntervention(missionId, interventionId),
+    scope: writeScope,
+    mutationFn: (interventionId: number) => deleteMissionIntervention(missionId, interventionId, interventionVersion(interventionId)),
     onSuccess: () => { toast.success("Intervention supprimée"); setDeleteInterventionTarget(null); invalidate(); onSaved?.(); },
-    onError: (err: any) => toast.error(extractErrorMessage(err)),
+    onError: (err: any) => {
+      if (handledConcurrentModification(err)) { setDeleteInterventionTarget(null); return; }
+      toast.error(extractErrorMessage(err));
+    },
   });
 
   // ── Mutations: demandes provisoires (drafts) ──────────────────────
@@ -442,8 +479,9 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
   });
 
   const patchLineMutation = useMutation({
+    scope: writeScope,
     mutationFn: (args: { lineId: number; body: PatchMaterialLineBody }) =>
-      patchMissionMaterialLine(missionId, args.lineId, args.body),
+      patchMissionMaterialLine(missionId, args.lineId, args.body, lineVersion(args.lineId)),
     onMutate: async (args) => {
       await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
       const previous = queryClient.getQueryData(["missionEncoding", missionId]);
@@ -473,13 +511,17 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
     },
     onError: (err: any, _args, ctx) => {
       if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
+      if (handledConcurrentModification(err)) return;
       toast.error(extractErrorMessage(err));
     },
   });
 
+  // La ligne quitte le cache dès onMutate (optimiste) : sa version voyage avec la demande.
   const deleteLineMutation = useMutation({
-    mutationFn: (lineId: number) => deleteMissionMaterialLine(missionId, lineId),
-    onMutate: async (lineId) => {
+    scope: writeScope,
+    mutationFn: ({ lineId, expectedVersion }: { lineId: number; expectedVersion: number | null }) =>
+      deleteMissionMaterialLine(missionId, lineId, expectedVersion),
+    onMutate: async ({ lineId }) => {
       await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
       const previous = queryClient.getQueryData(["missionEncoding", missionId]);
       setDeleteLineTarget(null);
@@ -492,7 +534,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
       }));
       return { previous };
     },
-    onSuccess: (_data, lineId) => {
+    onSuccess: (_data, { lineId }) => {
       setNewLineIds((prev) => {
         if (!prev.has(lineId)) return prev;
         const next = new Set(prev);
@@ -503,8 +545,9 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
       invalidate();
       onSaved?.();
     },
-    onError: (err: any, _lineId, ctx) => {
+    onError: (err: any, _args, ctx) => {
       if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
+      if (handledConcurrentModification(err)) return;
       toast.error(extractErrorMessage(err));
     },
   });
@@ -845,7 +888,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
         title="Supprimer le matériel ?"
         message={deleteLineTarget ? `${deleteLineTarget.line.item.label} (${deleteLineTarget.line.item.firm.name})` : ""}
         onClose={() => (isBusy ? null : setDeleteLineTarget(null))}
-        onConfirm={() => { if (!deleteLineTarget) return; deleteLineMutation.mutate(deleteLineTarget.line.id); }}
+        onConfirm={() => { if (!deleteLineTarget) return; deleteLineMutation.mutate({ lineId: deleteLineTarget.line.id, expectedVersion: lineVersion(deleteLineTarget.line.id) ?? deleteLineTarget.line.version ?? null }); }}
         helpTopicId="mission-encoding"
       />
 

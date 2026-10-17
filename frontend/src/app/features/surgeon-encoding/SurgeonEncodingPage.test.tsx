@@ -18,6 +18,16 @@ vi.mock("../../ui/toast/useToast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn() }),
 }));
 
+// D-154 — la section d'encodage réutilisée est couverte par ses propres tests : seul son
+// branchement (droit servi par le backend, jamais de soumission) est vérifié ici.
+const interventionsSectionProps = vi.fn();
+vi.mock("../encoding/components/InterventionsSection", () => ({
+  default: (props: { canEdit: boolean; canSubmit: boolean; missionId: number }) => {
+    interventionsSectionProps(props);
+    return <div data-testid="interventions-section-stub">{props.canEdit ? "editable" : "read-only"}</div>;
+  },
+}));
+
 const MISSION_ID = 741;
 
 function baseMission(overrides: Record<string, any> = {}) {
@@ -302,5 +312,29 @@ describe("SurgeonEncodingPage — navigation retour", () => {
     await user.click(screen.getByLabelText("Retour"));
 
     expect(await screen.findByText("Mission detail screen")).toBeInTheDocument();
+  });
+});
+
+describe("SurgeonEncodingPage — encodage par le chirurgien (D-154)", () => {
+  it("edit_encoding servi par le backend : section d'encodage existante, modifiable, sans soumission ni heures", async () => {
+    const mission = baseMission({ status: "ENCODING_IN_PROGRESS", allowedActions: ["view_encoding", "edit_encoding"] });
+    mockRoutes(mission, baseEncoding({ entries: [interventionEntry()], catalog: { items: [], firms: [], interventionTypes: [] }, progress: { interventionCount: 1, encodedInterventionCount: 1, materialLineCount: 1 } }));
+    renderPage();
+
+    expect(await screen.findByTestId("interventions-section-stub")).toHaveTextContent("editable");
+    expect(interventionsSectionProps).toHaveBeenLastCalledWith(expect.objectContaining({ missionId: MISSION_ID, canEdit: true, canSubmit: false }));
+    expect(screen.getByTestId("surgeon-encoding-editable")).toHaveTextContent("Les heures prestées restent celles déclarées par l'instrumentiste");
+    // Les heures restent une synthèse en lecture : aucune action d'édition.
+    expect(screen.queryByRole("button", { name: /heures/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /soumettre|valider/i })).toBeNull();
+  });
+
+  it("sans edit_encoding (confrère, mission verrouillée…) : lecture seule inchangée", async () => {
+    mockRoutes(baseMission({ allowedActions: ["view_encoding"] }), baseEncoding({ entries: [interventionEntry()] }));
+    renderPage();
+
+    expect(await screen.findByText("PTG genou droit")).toBeInTheDocument();
+    expect(screen.queryByTestId("interventions-section-stub")).toBeNull();
+    expect(screen.queryByTestId("surgeon-encoding-editable")).toBeNull();
   });
 });

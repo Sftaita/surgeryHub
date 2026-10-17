@@ -131,7 +131,15 @@ progress, being encoded or submitted); a validated encoding is reopened first; a
 mission or a financially locked calculation is never corrected; every correction is kept in
 a readable history (date, author, what changed, before → after); a correction never
 recalculates nor invoices anything — an existing calculation is flagged for recalculation
-after revalidation
+after revalidation, and an obsolete calculation can never be approved, locked or invoiced
+until it is recalculated
+
+Surgeons (D-154): add, edit and remove the interventions and material of their own started
+mission with an instrumentist while its encoding is open, from their encoding screen —
+never a colleague's mission, never the instrumentist's hours, never a submission or
+validation; every change is recorded under their name, and a change made meanwhile by the
+instrumentist (or a manager) is never overwritten: the screen reloads and says so; the
+assigned instrumentist is told once per series of changes (never once per click)
 
 Managers/Admins:
 

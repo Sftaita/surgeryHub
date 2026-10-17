@@ -7,9 +7,12 @@ use App\Dto\Request\MissionInterventionUpdateRequest;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
 use App\Entity\User;
+use App\Exception\EncodingConcurrencyException;
 use App\Security\Voter\MissionVoter;
+use App\Service\EncodingVersionGuard;
 use App\Service\InterventionService;
 use App\Service\MissionEncodingGuard;
+use App\Service\SurgeonEncodingChangeNotifier;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -30,6 +33,7 @@ class InterventionController extends AbstractController
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
         private readonly ValidatorInterface $validator,
+        private readonly SurgeonEncodingChangeNotifier $surgeonChanges,
     ) {}
 
     #[Route('', methods: ['POST'])]
@@ -47,6 +51,7 @@ class InterventionController extends AbstractController
         $dto = $this->deserializeAndValidate($request->getContent(), MissionInterventionCreateRequest::class);
 
         $intervention = $this->service->create($mission, $dto);
+        $this->surgeonChanges->afterWrite($mission, $user);
 
         // orderIndex : l'index réellement alloué par le serveur (MissionEntryOrderAllocator),
         // jamais celui envoyé par le client — voir MissionInterventionCreateRequest::$orderIndex.
@@ -73,6 +78,8 @@ class InterventionController extends AbstractController
 
         $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
         $this->encodingGuard->assertEncodingAllowed($mission, $user);
+        // D-154 — jamais l'écrasement silencieux d'une modification concurrente.
+        EncodingVersionGuard::assertCurrent($request, $mission, $user, $intervention->getVersion(), EncodingConcurrencyException::SUBJECT_INTERVENTION);
 
         // Lot 5 (D-068) : json_decode brut + array_key_exists (pas le serializer) — voir
         // le docblock de MissionInterventionUpdateRequest, `primaryFirmId` a besoin d'un
@@ -108,12 +115,13 @@ class InterventionController extends AbstractController
         $dto->confirmRemoveIncompatibleMaterial = (bool) ($body['confirmRemoveIncompatibleMaterial'] ?? false);
 
         $this->service->update($intervention, $dto);
+        $this->surgeonChanges->afterWrite($mission, $user);
 
         return new JsonResponse(null, Response::HTTP_NO_CONTENT);
     }
 
     #[Route('/{interventionId}', methods: ['DELETE'])]
-    public function delete(int $missionId, int $interventionId, #[CurrentUser] User $user): JsonResponse
+    public function delete(int $missionId, int $interventionId, Request $request, #[CurrentUser] User $user): JsonResponse
     {
         $mission = $this->em->find(Mission::class, $missionId);
         if (!$mission) {
@@ -127,8 +135,10 @@ class InterventionController extends AbstractController
 
         $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
         $this->encodingGuard->assertEncodingAllowed($mission, $user);
+        EncodingVersionGuard::assertCurrent($request, $mission, $user, $intervention->getVersion(), EncodingConcurrencyException::SUBJECT_INTERVENTION);
 
         $this->service->delete($intervention);
+        $this->surgeonChanges->afterWrite($mission, $user);
 
         return new JsonResponse(null, Response::HTTP_NO_CONTENT);
     }

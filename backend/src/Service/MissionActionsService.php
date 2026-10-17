@@ -155,6 +155,12 @@ final class MissionActionsService
             }
         }
 
+        // D-154 — the mission's surgeon encodes interventions and material (never the hours,
+        // never start / submit): same rule exactly as MissionVoter::EDIT_ENCODING.
+        if (SurgeonEncodingPolicy::canEditEncoding($mission, $viewer, Clock::get()->now())) {
+            $actions[] = 'edit_encoding';
+        }
+
         // Chirurgien : uniquement view sur DECLARED (contrat)
         if ($isSurgeon && $mission->getStatus() !== MissionStatus::DECLARED) {
             $actions[] = 'rate_instrumentist';

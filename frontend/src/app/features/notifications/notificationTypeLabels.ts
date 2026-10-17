@@ -54,6 +54,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   ENCODING_SUBMITTED: "Encodage de vos missions disponible (chirurgien)",
   ENCODING_ANOMALY_INSTRUMENTIST: "Point signalé sur votre encodage",
   ENCODING_CORRECTION_REQUESTED: "Correction de votre encodage demandée",
+  ENCODING_UPDATED_BY_SURGEON: "Encodage complété par le chirurgien",
 };
 
 export function notificationTypeLabel(type: string): string {

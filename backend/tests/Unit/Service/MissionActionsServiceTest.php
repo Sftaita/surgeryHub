@@ -12,6 +12,7 @@ use App\Security\Voter\MissionVoter;
 use App\Service\MissionActionsService;
 use App\Service\MissionEncodingCorrectionPolicy;
 use App\Service\MissionEncodingGuard;
+use App\Service\SurgeonEncodingPolicy;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
 use Symfony\Component\Security\Core\Authorization\Voter\VoterInterface;
@@ -416,5 +417,75 @@ final class MissionActionsServiceTest extends TestCase
         $instr = $this->makeUser(['ROLE_INSTRUMENTIST']);
 
         self::assertNotContains('remind_hours', $this->service->allowedActions($this->makeEndedMission(MissionStatus::ASSIGNED, $instr), $instr));
+    }
+
+    // ── D-154 — encodage par le chirurgien de sa mission (SurgeonEncodingPolicy) ─────
+
+    public function test_surgeon_gets_edit_encoding_on_his_started_mission_but_never_hours_or_transitions(): void
+    {
+        $surgeon = $this->makeUser(['ROLE_SURGEON']);
+        foreach (SurgeonEncodingPolicy::EDITABLE_STATUSES as $status) {
+            $mission = $this->makeMission($status, $this->makeUser(['ROLE_INSTRUMENTIST']));
+            $mission->setSurgeon($surgeon);
+            $actions = $this->service->allowedActions($mission, $surgeon);
+
+            self::assertContains('edit_encoding', $actions, $status->value);
+            foreach (['edit_hours', 'submit', 'start_encoding', 'encoding'] as $never) {
+                self::assertNotContains($never, $actions, "$never — {$status->value}");
+            }
+        }
+    }
+
+    public function test_surgeon_never_gets_edit_encoding_on_a_colleague_mission_before_start_or_without_instrumentist(): void
+    {
+        $surgeon = $this->makeUser(['ROLE_SURGEON']);
+        $instr = $this->makeUser(['ROLE_INSTRUMENTIST']);
+
+        $colleague = $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS, $instr);
+        $colleague->setSurgeon($this->makeUser(['ROLE_SURGEON']));
+        $future = $this->makeMission(MissionStatus::ASSIGNED, $instr, new \DateTimeImmutable('+2 hours'));
+        $future->setSurgeon($surgeon);
+        $alone = $this->makeMission(MissionStatus::IN_PROGRESS);
+        $alone->setSurgeon($surgeon);
+
+        foreach (['confrère' => $colleague, 'pas commencée' => $future, 'sans instrumentiste' => $alone] as $label => $mission) {
+            self::assertNotContains('edit_encoding', $this->service->allowedActions($mission, $surgeon), $label);
+        }
+    }
+
+    /**
+     * D-154 — allowedActions et MissionVoter::EDIT_ENCODING disent toujours la même chose pour
+     * le chirurgien de la mission, et MissionExecutionVoter::UPDATE (heures) le refuse toujours.
+     */
+    public function test_allowed_actions_and_voters_agree_for_the_mission_surgeon_in_every_case(): void
+    {
+        $surgeon = $this->makeUser(['ROLE_SURGEON']);
+        $token   = new UsernamePasswordToken($surgeon, 'api', $surgeon->getRoles());
+        $missionVoter   = new MissionVoter();
+        $executionVoter = new MissionExecutionVoter(new MissionEncodingGuard());
+
+        foreach (MissionStatus::cases() as $status) {
+            foreach ([null, $this->makeUser(['ROLE_INSTRUMENTIST'])] as $assignee) {
+                foreach (['-1 hour', '+1 hour'] as $start) {
+                    foreach ([null, FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::LOCKED] as $calculation) {
+                        $mission = $this->makeMission($status, $assignee, new \DateTimeImmutable($start));
+                        $mission->setSurgeon($surgeon);
+                        if ($calculation !== null) {
+                            $mission->getFinancialCalculations()->add((new FinancialCalculation())->setMission($mission)->setStatus($calculation));
+                        }
+                        $label   = sprintf('%s / %s / début %s / %s', $status->value, $assignee ? 'assignée' : 'sans instrumentiste', $start, $calculation?->value ?? 'sans calcul');
+                        $actions = $this->service->allowedActions($mission, $surgeon);
+
+                        self::assertSame(
+                            $missionVoter->vote($token, $mission, [MissionVoter::EDIT_ENCODING]) === VoterInterface::ACCESS_GRANTED,
+                            in_array('edit_encoding', $actions, true),
+                            "edit_encoding — $label",
+                        );
+                        self::assertNotSame(VoterInterface::ACCESS_GRANTED, $executionVoter->vote($token, $mission, [MissionExecutionVoter::UPDATE]), "heures — $label");
+                        self::assertNotContains('edit_hours', $actions, $label);
+                    }
+                }
+            }
+        }
     }
 }
