@@ -144,20 +144,96 @@ rclone lsf "gdrive:INFORMATIQUE/Base de donnée/"
 
 ### Restaurer la base MySQL
 
-**Cas 1 — Restauration d'urgence (écraser la base existante)**
+> **Règle : une restauration SurgicalHub ne touche que la base `surgicalhub`.**
+> Le dump nocturne `all_*.sql.gz` est un `mysqldump --all-databases` : il contient, dans
+> l'ordre, la base système `mysql` (comptes, mots de passe, droits), `medatwork`, `medclick`
+> et `surgicalhub`. **Ne jamais le rejouer en entier** (`zcat all_*.sql.gz | docker exec -i
+> mysql mysql …`) : `medatwork` et `medclick` reviendraient à l'état de la nuit (tout ce qui a
+> été écrit depuis serait perdu) et les comptes et droits MySQL seraient réécrits (un compte
+> créé depuis le dump serait supprimé) — constaté sur conteneurs de test le 2026-10-17. Le
+> rejeu complet est réservé à la reconstruction d'un serveur vide, sur décision explicite.
+
+Choisir d'abord l'opération (détail : [`production.md`](production.md) §Rollback) :
+
+| Situation | Opération | Base touchée |
+|---|---|---|
+| Le code déployé pose problème, le schéma est sain | A. retour du code seul | aucune |
+| Une migration pose problème | B. `down()` des migrations du déploiement | schéma de `surgicalhub` |
+| Les données de `surgicalhub` sont corrompues | C. Cas 1 ci-dessous | `surgicalhub` seule |
+
+**Cas 0 — Instantané de sécurité de `surgicalhub` (avant tout Cas 1 ou tout `down()`)**
 
 ```bash
-ssh deploy@187.124.55.15
+ROOTPW=$(grep '^MYSQL_ROOT_PASSWORD=' /opt/stack/mysql/.env | cut -d= -f2-)
+STAMP=$(date +%Y%m%d_%H%M%S)
+docker exec -e MYSQL_PWD="$ROOTPW" mysql mysqldump -uroot --single-transaction --routines --triggers \
+  --databases surgicalhub | gzip > /home/deploy/backups/mysql/surgicalhub_pre_restore_${STAMP}.sql.gz
+gzip -t /home/deploy/backups/mysql/surgicalhub_pre_restore_${STAMP}.sql.gz && echo OK
+```
 
-# Identifier le dump à restaurer
-ls -lt /home/deploy/backups/mysql/
+`--databases surgicalhub` limite le dump à cette base ; le mot de passe passe par
+`MYSQL_PWD`, jamais par la ligne de commande. L'instantané conserve tout ce qui a été écrit
+depuis le dump nocturne (missions, encodages, calculs, factures, relevés, absences, comptes).
+Après une restauration, il se relit dans une base séparée (extraction du Cas 1 avec une
+autre cible) pour décider, **au cas par cas**, de ce qui doit être repris. Rien n'est
+réinjecté automatiquement : les identifiants entrent en collision et les notifications déjà
+envoyées ne se rejouent pas.
 
-# Exemple : restaurer le dernier dump
+**Cas 1 — Restaurer la seule base `surgicalhub` depuis un dump `--all-databases`**
+
+Fenêtre de maintenance : `php` et `worker` arrêtés (`cd /opt/stack/apps/surgicalhub &&
+docker compose stop php worker`), aucune tâche planifiée SurgicalHub pendant l'opération
+(voir les sections « Tâche planifiée » de [`production.md`](production.md)).
+
+```bash
 ROOTPW=$(grep '^MYSQL_ROOT_PASSWORD=' /opt/stack/mysql/.env | cut -d= -f2-)
 DUMP=/home/deploy/backups/mysql/all_YYYYMMDD_HHMMSS.sql.gz
+WORK=$(mktemp -d)
+# dumps disponibles : ls -lt /home/deploy/backups/mysql/ | head
 
-zcat "$DUMP" | docker exec -i mysql mysql -uroot -p"$ROOTPW"
+# 0. Instantané de sécurité de l'état courant (Cas 0)
+
+# 1. Le dump doit être complet
+gzip -dc "$DUMP" | tail -n 1 | grep -q '^-- Dump completed' && echo "dump complet" || echo "DUMP INCOMPLET : arrêter"
+
+# 2. Extraire l'en-tête, la seule section `surgicalhub` et le pied ; la base visée devient __CIBLE__
+gzip -dc "$DUMP" | awk '
+  BEGIN { s = "header" }
+  /^-- Current Database: `/ { n = $0; sub(/^-- Current Database: `/, "", n); sub(/`.*$/, "", n)
+                              s = (n == "surgicalhub") ? "keep" : "skip"; next }
+  /^\/\*!40103 SET TIME_ZONE=@OLD_TIME_ZONE \*\/;/ { s = "footer" }
+  s == "skip" { next }
+  s == "keep" && /^CREATE DATABASE / { next }
+  s == "keep" && /^USE `/ { print "USE `__CIBLE__`;"; next }
+  { print }' > "$WORK/extrait.sql"
+
+# 3. Garde-fous : une seule instruction USE, aucune instruction visant une autre base
+grep -cE '^(USE|CREATE DATABASE|DROP DATABASE) ' "$WORK/extrait.sql"              # attendu : 1
+grep -cE '^(INSERT INTO|CREATE TABLE|DROP TABLE IF EXISTS|LOCK TABLES) `[^`]+`\.`' "$WORK/extrait.sql"  # attendu : 0
+
+# 4. Vérifier dans une base temporaire
+sed 's/^USE `__CIBLE__`;$/USE `surgicalhub_restore_check`;/' "$WORK/extrait.sql" > "$WORK/check.sql"
+docker exec -e MYSQL_PWD="$ROOTPW" mysql mysql -uroot \
+  -e 'CREATE DATABASE surgicalhub_restore_check CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+docker exec -i -e MYSQL_PWD="$ROOTPW" mysql mysql -uroot < "$WORK/check.sql"
+docker exec -e MYSQL_PWD="$ROOTPW" mysql mysql -uroot surgicalhub_restore_check \
+  -e 'SELECT COUNT(*) FROM doctrine_migration_versions; SELECT COUNT(*) FROM mission; SELECT COUNT(*) FROM user;'
+
+# 5. Remplacer `surgicalhub`, et elle seule
+sed 's/^USE `__CIBLE__`;$/USE `surgicalhub`;/' "$WORK/extrait.sql" > "$WORK/surgicalhub.sql"
+docker exec -e MYSQL_PWD="$ROOTPW" mysql mysql -uroot \
+  -e 'DROP DATABASE surgicalhub; CREATE DATABASE surgicalhub CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+docker exec -i -e MYSQL_PWD="$ROOTPW" mysql mysql -uroot < "$WORK/surgicalhub.sql"
+
+# 6. Nettoyage
+docker exec -e MYSQL_PWD="$ROOTPW" mysql mysql -uroot -e 'DROP DATABASE surgicalhub_restore_check'
+rm -rf "$WORK"
 ```
+
+Les comptes et droits MySQL sont stockés dans la base système `mysql`, qui n'est pas touchée :
+le `DROP` / `CREATE` de `surgicalhub` ne modifie aucun compte ni aucun droit. Remettre ensuite
+le code qui correspond au nombre de migrations restaurées (`production.md` §Rollback A),
+redémarrer `php` et `worker`, **puis `nginx`**, et faire les contrôles de santé.
 
 **Cas 2 — Restauration dans une base temporaire (vérification avant écrasement)**
 
@@ -195,7 +271,7 @@ rclone lsf "gdrive:INFORMATIQUE/Base de donnée/mysql/"
 # Télécharger un dump spécifique
 rclone copy "gdrive:INFORMATIQUE/Base de donnée/mysql/all_YYYYMMDD_HHMMSS.sql.gz" /tmp/
 
-# Puis restaurer comme Cas 1 ou 2
+# Puis restaurer la seule base surgicalhub (Cas 0 puis Cas 1) ; jamais de rejeu complet
 ```
 
 ---

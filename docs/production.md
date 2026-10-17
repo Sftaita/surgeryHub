@@ -753,25 +753,90 @@ convention existante de ce serveur sans décision opérationnelle séparée.
 ## Rollback
 
 Le tag `*-prod` précédent (voir "Historique des versions déployées"
-ci-dessus) identifie le dernier commit connu-bon. L'archive de code créée à
-l'étape 2 de chaque déploiement (`src_pre_deploy_*.tar.gz`) est le moyen le
-plus rapide de revenir en arrière sans dépendre de Git sur le serveur.
+ci-dessus) identifie le dernier commit connu-bon. Trois opérations
+distinctes, de la moins à la plus destructive ; choisir la plus légère qui
+suffit, jamais une restauration de base par défaut.
+
+| Besoin | Opération | Base | Perte de données |
+|---|---|---|---|
+| Le nouveau code pose problème, le schéma est sain | **A. Retour du code** | aucune modification | aucune |
+| Une migration du déploiement pose problème | **B. `down()` des migrations** | schéma de `surgicalhub` | contenu des colonnes et tables retirées (conservé dans l'instantané) |
+| Les données de `surgicalhub` sont corrompues | **C. Restauration de la seule base `surgicalhub`** | `surgicalhub` seule | tout ce qui a été écrit depuis le dump |
+
+**MedAtWork, MedClick et les comptes MySQL ne sont jamais touchés par un
+rollback SurgicalHub** : jamais de `zcat all_*.sql.gz | docker exec -i mysql
+mysql …`, qui rejoue toutes les bases du dump nocturne (voir
+[`backup-and-restore.md`](backup-and-restore.md) §Restaurer la base MySQL).
+
+### A. Retour du code, schéma conservé (par défaut)
+
+Les migrations additives (colonnes nullables ou à valeur par défaut,
+nouvelles tables) laissent l'ancien code fonctionner : la base reste telle
+quelle.
 
 ```bash
-# 1. Restaurer le backup DB (voir backup-and-restore.md)
-ROOTPW=$(grep '^MYSQL_ROOT_PASSWORD=' /opt/stack/mysql/.env | cut -d= -f2-)
-zcat /home/deploy/backups/mysql/all_YYYYMMDD_HHMMSS.sql.gz \
-  | docker exec -i mysql mysql -uroot -p"$ROOTPW"
+cd /opt/stack/apps/surgicalhub
+# 1. Garder l'image fautive, remettre les images précédentes (conservées à chaque déploiement)
+docker tag surgicalhub-php:local   surgicalhub-php:failed-<nouveau commit>
+docker tag surgicalhub-nginx:local surgicalhub-nginx:failed-<nouveau commit>
+docker tag surgicalhub-php:rollback-<ancien commit>   surgicalhub-php:local
+docker tag surgicalhub-nginx:rollback-<ancien commit> surgicalhub-nginx:local
+docker compose up -d
+docker compose restart php worker
+docker compose restart nginx   # toujours après php (incident du 2026-10-13)
+```
 
-# 2. Remettre l'ancienne version du code dans src/ depuis l'archive pré-déploiement
+Si les images `rollback-*` ne sont plus disponibles : remettre le code depuis
+l'archive pré-déploiement, puis rebuild depuis `/opt/stack/apps/surgicalhub` :
+
+```bash
 rm -rf /opt/stack/apps/surgicalhub/src/backend /opt/stack/apps/surgicalhub/src/frontend
 tar xzf /home/deploy/backups/code/src_pre_deploy_YYYYMMDD_HHMMSS.tar.gz \
   -C /opt/stack/apps/surgicalhub --strip-components=1 src/backend src/frontend
-
-# 3. Rebuild + restart
 cd /opt/stack/apps/surgicalhub
 docker compose build --no-cache && docker compose up -d
+docker compose restart nginx
 ```
+
+**Aucune** commande `doctrine:migrations:*`. Contrôles de santé habituels.
+Avant de redéployer le nouveau code, relire l'ADR du lot : les données écrites
+par l'ancien code sur le nouveau schéma peuvent devoir être resynchronisées
+(ex. D-150 : `mission_assignment` n'est pas tenue par l'ancien code et doit
+être réalignée sur `mission.instrumentist_id` avant de réactiver le lot).
+
+### B. `down()` des migrations du déploiement
+
+Uniquement si le schéma lui-même est en cause.
+
+1. Instantané de sécurité de `surgicalhub` (`backup-and-restore.md`, Cas 0).
+2. Les classes de migration n'existent que dans le **nouveau** code : lancer
+   le `down()` depuis le conteneur encore en place, relu d'abord en
+   `--dry-run`, puis enchaîner aussitôt sur A :
+   ```bash
+   docker exec surgicalhub-php php bin/console doctrine:migrations:migrate 'DoctrineMigrations\Version<dernière migration de l'ancien code>' --dry-run -n
+   docker exec surgicalhub-php php bin/console doctrine:migrations:migrate 'DoctrineMigrations\Version<dernière migration de l'ancien code>' -n
+   ```
+3. A (images précédentes), puis `doctrine:migrations:status` : nombre de
+   migrations exécutées = celui de l'ancien code, 0 « Executed Unavailable ».
+
+Entre l'étape 2 et la fin de l'étape 3, le nouveau code tourne sur l'ancien
+schéma : faire les deux à la suite, de préférence `worker` arrêté.
+
+### C. Restauration de la seule base `surgicalhub`
+
+Uniquement si des données sont corrompues :
+[`backup-and-restore.md`](backup-and-restore.md), Cas 0 puis Cas 1
+(extraction de la seule section `surgicalhub` du dump nocturne, vérification
+dans une base temporaire, remplacement de `surgicalhub` et d'elle seule).
+Remettre ensuite le code correspondant au nombre de migrations restaurées (A).
+
+### Données créées après le déploiement
+
+Avant B ou C, l'instantané (Cas 0) conserve tout ce qui a été écrit depuis
+le dump nocturne. Après coup, il se relit dans une base séparée ; la reprise
+de chaque écriture (missions, encodages, calculs, factures, relevés,
+absences, comptes) est une **décision métier au cas par cas**, jamais une
+réinjection automatique.
 
 Après un rollback, ne pas créer de tag `*-prod` pour la version restaurée
 (elle a déjà son tag) — documenter l'incident et le rollback dans le rapport,
