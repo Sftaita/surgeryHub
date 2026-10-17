@@ -250,7 +250,11 @@ final class FinancialCalculationService
         if ($mission->getStatus() !== MissionStatus::VALIDATED) {
             throw new FinancialCalculationIneligibleException('Mission must be VALIDATED to be financially calculated.');
         }
-        if ($mission->getInstrumentist() === null) {
+        // D-155 — sans instrumentiste, seule une activité déclarée exécutée sans instrumentiste
+        // est valorisable (lignes firme uniquement : evaluate() ne produit la ligne
+        // instrumentiste que si une instrumentiste est affectée). Une mission classique reste
+        // refusée comme avant.
+        if (!$mission->hasEncodableActivity()) {
             throw new FinancialCalculationIneligibleException('Mission has no assigned instrumentist.');
         }
     }

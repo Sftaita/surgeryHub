@@ -390,6 +390,22 @@ export async function cancelMission(
   return data;
 }
 
+/**
+ * D-155 — l'activité de cette mission OPEN commencée, jamais couverte, a réellement eu lieu
+ * sans instrumentiste : OPEN → ENCODING_IN_PROGRESS (chirurgien de la mission ou manager).
+ * POST /api/missions/{id}/declare-executed-without-instrumentist
+ */
+export async function declareExecutedWithoutInstrumentist(id: number): Promise<Mission> {
+  const { data } = await apiClient.post<Mission>(`/api/missions/${id}/declare-executed-without-instrumentist`, {});
+  return data;
+}
+
+/** D-155 — annulation d'une déclaration erronée (manager, motif obligatoire, avant soumission). */
+export async function cancelExecutedWithoutInstrumentist(id: number, reason: string): Promise<Mission> {
+  const { data } = await apiClient.post<Mission>(`/api/missions/${id}/cancel-executed-without-instrumentist`, { reason });
+  return data;
+}
+
 /** EPIC Exécution & Valorisation, Lot 1 — le RÉALISÉ, distinct du planifié (Mission.startAt/endAt) et du chemin legacy (ServiceController/patchMissionService). */
 export interface MissionExecutionDispute {
   id: number;

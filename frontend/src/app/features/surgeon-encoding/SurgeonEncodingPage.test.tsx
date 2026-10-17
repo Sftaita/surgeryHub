@@ -338,3 +338,21 @@ describe("SurgeonEncodingPage — encodage par le chirurgien (D-154)", () => {
     expect(screen.queryByTestId("surgeon-encoding-editable")).toBeNull();
   });
 });
+
+describe("SurgeonEncodingPage — activité réalisée sans instrumentiste (D-155)", () => {
+  it("le chirurgien encode et soumet lui-même ; aucune synthèse d'heures", async () => {
+    const mission = baseMission({
+      status: "ENCODING_IN_PROGRESS", allowedActions: ["view_encoding", "edit_encoding", "submit"],
+      executedWithoutInstrumentist: { declaredAt: "2026-07-20T12:00:00Z", declaredByName: "Jean Dupont" },
+    });
+    mockRoutes(mission, baseEncoding({ entries: [], catalog: { items: [], firms: [], interventionTypes: [] }, progress: { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0 } }));
+    renderPage();
+
+    expect(await screen.findByTestId("interventions-section-stub")).toHaveTextContent("editable");
+    expect(interventionsSectionProps).toHaveBeenLastCalledWith(expect.objectContaining({ canEdit: true, canSubmit: true }));
+    expect(screen.getByTestId("surgeon-encoding-state")).toHaveTextContent("Activité réalisée sans instrumentiste");
+    expect(screen.getByTestId("surgeon-encoding-without-instrumentist")).toBeInTheDocument();
+    expect(screen.queryByTestId("surgeon-encoding-editable")).toBeNull();
+    expect(screen.queryByText(/Heures prestées/i)).toBeNull();
+  });
+});

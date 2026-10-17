@@ -169,6 +169,11 @@ final class MissionLifecycleChangedMessageHandler
         if (!$mission instanceof Mission || !$surgeon instanceof User) {
             return;
         }
+        // D-155 — le chirurgien qui soumet lui-même l'activité qu'il a déclarée n'est jamais
+        // notifié de sa propre action.
+        if (($message->payload['actorId'] ?? null) === $surgeon->getId()) {
+            return;
+        }
 
         $resubmitted = (int) $this->em->createQueryBuilder()
             ->select('COUNT(a.id)')
@@ -233,7 +238,9 @@ final class MissionLifecycleChangedMessageHandler
     private function handleEncodingCorrectionRequested(MissionLifecycleChangedMessage $message): void
     {
         $mission = $this->em->find(Mission::class, $message->missionId);
-        $instrumentist = $mission?->getInstrumentist();
+        // D-155 — activité déclarée sans instrumentiste : c'est le chirurgien de la mission qui
+        // a encodé, c'est donc lui que le renvoi en correction / la réouverture concerne.
+        $instrumentist = $mission?->isExecutedWithoutInstrumentist() ? $mission->getSurgeon() : $mission?->getInstrumentist();
         if (!$mission instanceof Mission || !$instrumentist instanceof User) {
             return;
         }

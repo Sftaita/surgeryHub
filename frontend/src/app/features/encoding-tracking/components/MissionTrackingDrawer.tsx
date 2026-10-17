@@ -413,7 +413,15 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
       </Box>
 
       <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center", gap: "14px", padding: "13px 20px 14px", background: "#fff", borderBottom: "1px solid", borderColor: GRAY_150 }}>
-        <Person name={item.instrumentist?.name ?? "—"} photoPath={item.instrumentist?.photoPath} role="Instrumentiste" green />
+        {/* D-155 — activité exécutée sans instrumentiste : jamais présentée comme « — ». */}
+        <Person
+          name={item.executedWithoutInstrumentist ? "Sans instrumentiste" : item.instrumentist?.name ?? "—"}
+          photoPath={item.instrumentist?.photoPath}
+          role={item.executedWithoutInstrumentist
+            ? `Activité déclarée${item.executedWithoutInstrumentist.declaredByName ? ` par ${item.executedWithoutInstrumentist.declaredByName}` : ""}`
+            : "Instrumentiste"}
+          green
+        />
         <Person name={item.surgeon?.name ?? "—"} photoPath={item.surgeon?.photoPath} role="Chirurgien" />
       </Box>
 

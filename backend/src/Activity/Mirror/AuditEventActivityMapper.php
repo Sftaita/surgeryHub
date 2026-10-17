@@ -54,6 +54,8 @@ final class AuditEventActivityMapper
         'MISSION_ASSIGNED_DIRECTLY' => 'Mission attribuée directement',
         'MISSION_OFFER_DECLINED' => 'Proposition de mission refusée',
         'MISSION_ASSIGNMENT_REFUSED_BY_SURGEON' => "Affectation refusée par le chirurgien",
+        'MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED' => 'Activité déclarée sans instrumentiste',
+        'MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED' => 'Déclaration sans instrumentiste annulée',
         'MISSION_ASSIGNMENT_REVIEW_REQUESTED' => 'Intervention demandée sur une affectation',
         'SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED' => 'Incompatibilité chirurgien–instrumentiste créée',
         'SURGEON_INSTRUMENTIST_INCOMPATIBILITY_LIFTED' => 'Incompatibilité chirurgien–instrumentiste levée',
@@ -231,6 +233,11 @@ final class AuditEventActivityMapper
             // D-151 — the real origin, for the managers' journal (never shown to the instrumentist).
             AuditEventType::MISSION_ASSIGNMENT_REFUSED_BY_SURGEON => sprintf("%s a refusé l'affectation de %s à la %s (refus ponctuel) — ASSIGNED → OPEN",
                 $who, $p['fromInstrumentistName'] ?? 'l\'instrumentiste', $m ?? 'mission') . $site,
+            // D-155 — activité exécutée sans instrumentiste.
+            AuditEventType::MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED => sprintf("%s a déclaré la %s réalisée sans instrumentiste — OPEN → ENCODING_IN_PROGRESS",
+                $who, $m ?? 'mission') . $site,
+            AuditEventType::MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED => sprintf("%s a annulé la déclaration « réalisée sans instrumentiste » de la %s — ENCODING_IN_PROGRESS → OPEN",
+                $who, $m ?? 'mission') . $site,
             AuditEventType::MISSION_ASSIGNMENT_REVIEW_REQUESTED => sprintf("%s demande l'intervention du manager sur l'affectation de %s à la %s",
                 $who, $p['instrumentistName'] ?? 'l\'instrumentiste', $m ?? 'mission') . $site,
             // D-152 — a pair of people, never a mission; the managers' journal only.

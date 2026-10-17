@@ -79,6 +79,12 @@ final class MissionMapper
             currentAssignment: $isManagerViewer || $m->getSurgeon()?->getId() === $viewer->getId() ? $this->currentAssignment($m) : null,
             myAssignmentStatus: $this->myAssignmentStatus($m, $viewer),
             encodingCorrectionFinancialNotice: $isManagerViewer ? MissionEncodingCorrectionPolicy::financialImpactNotice($m) : null,
+            executedWithoutInstrumentist: $m->isExecutedWithoutInstrumentist() ? [
+                'declaredAt'     => $m->getExecutedWithoutInstrumentistAt()?->format(\DateTimeInterface::ATOM),
+                'declaredByName' => $m->getExecutedWithoutInstrumentistBy() !== null
+                    ? trim(($m->getExecutedWithoutInstrumentistBy()->getFirstname() ?? '') . ' ' . ($m->getExecutedWithoutInstrumentistBy()->getLastname() ?? ''))
+                    : null,
+            ] : null,
         );
     }
 

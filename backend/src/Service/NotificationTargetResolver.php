@@ -90,7 +90,8 @@ final class NotificationTargetResolver
             if ($type === NotificationType::ENCODING_ESCALATION && $isManager) {
                 return sprintf('/app/m/billing/encodings?missionId=%d', $mission->getId());
             }
-            if (in_array($type, [NotificationType::ENCODING_SUBMITTED, NotificationType::ENCODING_ANOMALY_RESOLVED], true) && $isSurgeon) {
+            // D-155 — renvoi en correction d'une activité déclarée sans instrumentiste : son encodage chirurgien.
+            if (in_array($type, [NotificationType::ENCODING_SUBMITTED, NotificationType::ENCODING_ANOMALY_RESOLVED, NotificationType::ENCODING_CORRECTION_REQUESTED], true) && $isSurgeon) {
                 return sprintf('/app/s/missions/%d/encoding', $mission->getId());
             }
             if (in_array($type, [NotificationType::ENCODING_ANOMALY_INSTRUMENTIST, NotificationType::ENCODING_CORRECTION_REQUESTED, NotificationType::ENCODING_UPDATED_BY_SURGEON], true) && $isInstrumentist) {

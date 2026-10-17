@@ -799,3 +799,13 @@ describe("MissionTrackingDrawer", () => {
     });
   });
 });
+
+describe("MissionTrackingDrawer — activité réalisée sans instrumentiste (D-155)", () => {
+  it("affiche « Sans instrumentiste » et qui a déclaré l'activité, jamais un tiret", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "reject"] });
+    renderDrawer({ ...makeItem(), instrumentist: null, executedWithoutInstrumentist: { declaredByName: "Dr Martin" } } as any);
+
+    expect(await screen.findByText("Sans instrumentiste")).toBeInTheDocument();
+    expect(screen.getByText("Activité déclarée par Dr Martin")).toBeInTheDocument();
+  });
+});

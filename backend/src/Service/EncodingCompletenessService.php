@@ -36,6 +36,13 @@ final class EncodingCompletenessService
     /** @return list<string> codes des données obligatoires manquantes pour soumettre */
     public function missingForSubmission(Mission $mission): array
     {
+        // D-155 — activité exécutée sans instrumentiste : il n'existe aucune heure
+        // d'instrumentiste à déclarer (jamais fabriquée), donc rien n'est exigé ici ; le
+        // contenu (interventions, matériel) reste contrôlé par EncodingContentCompletenessService.
+        if ($mission->isExecutedWithoutInstrumentist()) {
+            return [];
+        }
+
         $execution = $mission->getExecution();
         $start = $execution?->getActualStartAt();
         $end = $execution?->getActualEndAt();
@@ -80,6 +87,10 @@ final class EncodingCompletenessService
      */
     public function assertHasDeclaredHours(Mission $mission, string $message): void
     {
+        if ($mission->isExecutedWithoutInstrumentist()) {
+            return; // D-155 — aucune heure d'instrumentiste n'existe ni ne doit exister.
+        }
+
         $execution = $mission->getExecution();
         if ($execution !== null && ($execution->hasCompleteActualTimes() || $execution->getActualDurationMinutes() !== null)) {
             return;

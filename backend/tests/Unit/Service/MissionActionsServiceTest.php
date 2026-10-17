@@ -488,4 +488,79 @@ final class MissionActionsServiceTest extends TestCase
             }
         }
     }
+
+    // ── D-155 — activité exécutée sans instrumentiste (ExecutedWithoutInstrumentistPolicy) ──
+
+    /**
+     * Déclarer, annuler, soumettre : allowedActions et MissionVoter disent toujours la même
+     * chose, pour le chirurgien de la mission, un confrère et un manager, sur tous les statuts,
+     * avec ou sans instrumentiste, avant ou après le début, déclarée ou non.
+     */
+    public function test_declare_cancel_and_submit_agree_with_the_voter_in_every_case(): void
+    {
+        $surgeon   = $this->makeUser(['ROLE_SURGEON']);
+        $colleague = $this->makeUser(['ROLE_SURGEON']);
+        $manager   = $this->makeUser(['ROLE_MANAGER']);
+        $voter     = new MissionVoter();
+        $pairs     = [
+            'declare_executed_without_instrumentist' => MissionVoter::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST,
+            'cancel_executed_without_instrumentist'  => MissionVoter::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST,
+        ];
+
+        foreach ([$surgeon, $colleague, $manager] as $viewer) {
+            $token = new UsernamePasswordToken($viewer, 'api', $viewer->getRoles());
+            foreach (MissionStatus::cases() as $status) {
+                foreach ([null, $this->makeUser(['ROLE_INSTRUMENTIST'])] as $assignee) {
+                    foreach (['-1 hour', '+1 hour'] as $start) {
+                        foreach ([false, true] as $declared) {
+                            $mission = $this->makeMission($status, $assignee, new \DateTimeImmutable($start));
+                            $mission->setSurgeon($surgeon);
+                            if ($declared) {
+                                $mission->setExecutedWithoutInstrumentist(new \DateTimeImmutable('-30 minutes'), $surgeon);
+                            }
+                            $label = sprintf('%s / %s / %s / début %s / %s', $viewer === $manager ? 'manager' : ($viewer === $surgeon ? 'chirurgien' : 'confrère'),
+                                $status->value, $assignee ? 'assignée' : 'sans instrumentiste', $start, $declared ? 'déclarée' : 'non déclarée');
+                            $actions = $this->service->allowedActions($mission, $viewer);
+
+                            foreach ($pairs as $action => $attribute) {
+                                self::assertSame(
+                                    $voter->vote($token, $mission, [$attribute]) === VoterInterface::ACCESS_GRANTED,
+                                    in_array($action, $actions, true),
+                                    "$action — $label",
+                                );
+                            }
+                            if ($viewer !== $manager) {
+                                // Chirurgien : 'submit' exactement quand MissionVoter::SUBMIT l'accorde.
+                                self::assertSame(
+                                    $voter->vote($token, $mission, [MissionVoter::SUBMIT]) === VoterInterface::ACCESS_GRANTED,
+                                    in_array('submit', $actions, true),
+                                    "submit — $label",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    public function test_only_a_started_uncovered_open_mission_is_declarable_never_one_still_available(): void
+    {
+        $surgeon = $this->makeUser(['ROLE_SURGEON']);
+
+        $started = $this->makeMission(MissionStatus::OPEN, null, new \DateTimeImmutable('-1 hour'));
+        $started->setSurgeon($surgeon);
+        self::assertContains('declare_executed_without_instrumentist', $this->service->allowedActions($started, $surgeon));
+
+        $upcoming = $this->makeMission(MissionStatus::OPEN, null, new \DateTimeImmutable('+1 hour'));
+        $upcoming->setSurgeon($surgeon);
+        self::assertNotContains('declare_executed_without_instrumentist', $this->service->allowedActions($upcoming, $surgeon), 'encore disponible dans le pool');
+
+        $started->setExecutedWithoutInstrumentist(new \DateTimeImmutable('-10 minutes'), $surgeon)->setStatus(MissionStatus::ENCODING_IN_PROGRESS);
+        $actions = $this->service->allowedActions($started, $surgeon);
+        self::assertContains('edit_encoding', $actions);
+        self::assertContains('submit', $actions);
+        self::assertNotContains('edit_hours', $actions, 'jamais d\'heures sans instrumentiste');
+        self::assertNotContains('declare_executed_without_instrumentist', $actions);
+    }
 }

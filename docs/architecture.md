@@ -4293,3 +4293,14 @@ publication.
   `If-Match` contrôlé par `EncodingVersionGuard`, `EncodingConcurrencyException` (409 / 428),
   `OptimisticLockException` → 409 dans `ApiExceptionSubscriber`.
 - **L6** : seule `hasEncodableActivity()` est à étendre (missions sans instrumentiste).
+
+### 31.5 Activité réalisée sans instrumentiste (D-155)
+
+- **Fait, pas statut** : `Mission.executedWithoutInstrumentistAt/By`, `hasEncodableActivity()`.
+- **Règle unique** : `ExecutedWithoutInstrumentistPolicy` (déclarer, annuler, soumission par le
+  chirurgien), lue par `MissionVoter`, `MissionActionsService` et, sous verrou,
+  `MissionPostDeployService::declareExecutedWithoutInstrumentist()` /
+  `cancelExecutedWithoutInstrumentistDeclaration()`.
+- **Verrous levés dans ce mode seulement** : heures (`EncodingCompletenessService`), calcul
+  (`assertEligible`), recalcul groupé, action « Calculer » du suivi.
+- **Notifications** : renvoi / réouverture → chirurgien ; jamais d'auto-notification de soumission.

@@ -31,7 +31,10 @@ export type AllowedAction =
   // D-151 — chirurgien de la mission : refuser l'instrumentiste qui l'a acceptée (dans le
   // délai), sinon demander l'intervention du manager. Décidé par le backend uniquement.
   | "refuse_assignment"
-  | "request_assignment_review";
+  | "request_assignment_review"
+  // D-155 — activité exécutée sans instrumentiste : déclarer (chirurgien de la mission, manager), annuler (manager).
+  | "declare_executed_without_instrumentist"
+  | "cancel_executed_without_instrumentist";
 
 export type SchedulePrecision = "APPROXIMATE" | "EXACT";
 export type MissionType = "BLOCK" | "CONSULTATION";
@@ -222,6 +225,8 @@ export interface Mission {
   encodingCorrectionBlockedReason?: string | null;
   /** D-153 — conséquence financière d'une correction (calcul actif à recalculer après revalidation), managers seulement. */
   encodingCorrectionFinancialNotice?: string | null;
+  /** D-155 — activité exécutée sans instrumentiste (null sinon) : aucune heure, facturation firme seule. */
+  executedWithoutInstrumentist?: { declaredAt: string | null; declaredByName: string | null } | null;
 
   /** D-151 — affectation en cours, servie au chirurgien de la mission et aux managers seulement. */
   currentAssignment?: CurrentAssignment | null;

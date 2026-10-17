@@ -120,6 +120,8 @@ export interface EncodingTrackingItem {
   encodingState: EncodingState;
   encodingStateLabel: string;
   instrumentist: EncodingTrackingPerson | null;
+  /** D-155 — « Sans instrumentiste — activité déclarée par … » (null pour une mission classique). */
+  executedWithoutInstrumentist?: { declaredByName: string | null } | null;
   surgeon: EncodingTrackingPerson | null;
   site: EncodingTrackingPerson | null;
   hours: EncodingTrackingHours;

@@ -237,3 +237,14 @@ describe("SubmitDialog — refus ENCODING_INCOMPLETE (D-143)", () => {
     expect(onCompleteHours).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("SubmitDialog — activité réalisée sans instrumentiste (D-155)", () => {
+  it("ne montre ni ne réclame aucune heure ; la description sans matériel reste exigée", async () => {
+    renderDialog(0, { ...MISSION, executedWithoutInstrumentist: { declaredAt: "2026-07-20T12:00:00Z", declaredByName: "Jean Dupont" } } as Mission);
+
+    expect(await screen.findByText(/aucune heure n'est déclarée/i)).toBeInTheDocument();
+    expect(screen.queryByText("Heures prestées")).toBeNull();
+    expect(screen.queryByTestId("submit-incomplete")).toBeNull();
+    expect(await screen.findByLabelText(/Décrivez les interventions réalisées/)).toBeInTheDocument();
+  });
+});

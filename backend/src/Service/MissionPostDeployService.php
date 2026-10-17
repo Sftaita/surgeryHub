@@ -36,6 +36,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\DBAL\LockMode;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Clock\Clock;
 
@@ -1162,6 +1163,85 @@ class MissionPostDeployService
         }
 
         return MissionAssignmentSource::POOL_CLAIM;
+    }
+
+    /**
+     * D-155 — OPEN (commencée, jamais couverte) → ENCODING_IN_PROGRESS : l'activité a réellement
+     * eu lieu sans instrumentiste. Le chirurgien de la mission (ou un manager) l'encode ensuite
+     * comme une instrumentiste le ferait, sans heures. La mission quitte immédiatement le pool
+     * (plus OPEN : ni claim, ni offre, ni affectation). Sous le verrou de la mission, la règle
+     * (ExecutedWithoutInstrumentistPolicy) relue contre l'état validé : un claim concurrent
+     * l'emporte ou perd, jamais les deux.
+     */
+    public function declareExecutedWithoutInstrumentist(Mission $mission, User $actor): void
+    {
+        $this->assignments->inLockedChange($mission, function () use ($mission, $actor): void {
+            $now = Clock::get()->now();
+            $blocked = ExecutedWithoutInstrumentistPolicy::declarationBlockedReason($mission, $now);
+            if ($blocked !== null) {
+                throw new ConflictHttpException($blocked);
+            }
+
+            $previous = $mission->getStatus();
+            $mission->setStatus(MissionStatus::ENCODING_IN_PROGRESS);
+            $mission->setEncodingStartedAt($now);
+            $mission->setExecutedWithoutInstrumentist($now, $actor);
+            $this->resetEscalationIfLeavingOpen($mission, $previous);
+
+            $surgeon = $mission->getSurgeon();
+            $this->audit->record($mission, $actor, AuditEventType::MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED, [
+                'previousStatus' => $previous->value,
+                'newStatus'      => $mission->getStatus()->value,
+                'actorId'        => $actor->getId(),
+                'actorName'      => $this->displayName($actor),
+                'declaredAs'     => ExecutedWithoutInstrumentistPolicy::isManager($actor) ? 'MANAGER' : 'SURGEON',
+                'surgeonId'      => $surgeon?->getId(),
+                'surgeonName'    => $surgeon !== null ? $this->displayName($surgeon) : null,
+            ]);
+            $this->em->flush();
+        });
+    }
+
+    /**
+     * D-155 — correction auditée d'une déclaration erronée (manager, motif obligatoire) :
+     * ENCODING_IN_PROGRESS → OPEN, le fait est effacé. Jamais une fois l'encodage soumis,
+     * validé ou verrouillé (le renvoyer d'abord en correction). Les interventions et le
+     * matériel déjà encodés sont conservés et repris dans l'audit (rien n'est supprimé en
+     * silence) ; la mission commencée reste non prenable depuis le pool (D-151).
+     */
+    public function cancelExecutedWithoutInstrumentistDeclaration(Mission $mission, User $actor, string $reason): void
+    {
+        $reason = trim($reason);
+        if ($reason === '') {
+            throw new UnprocessableEntityHttpException("Indiquez le motif de l'annulation de la déclaration.");
+        }
+
+        $this->assignments->inLockedChange($mission, function () use ($mission, $actor, $reason): void {
+            $blocked = ExecutedWithoutInstrumentistPolicy::cancellationBlockedReason($mission);
+            if ($blocked !== null) {
+                throw new ConflictHttpException($blocked);
+            }
+
+            $declaredAt = $mission->getExecutedWithoutInstrumentistAt();
+            $declaredBy = $mission->getExecutedWithoutInstrumentistBy();
+            $previous = $mission->getStatus();
+            $mission->setStatus(MissionStatus::OPEN);
+            $mission->setExecutedWithoutInstrumentist(null, null);
+
+            $this->audit->record($mission, $actor, AuditEventType::MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED, [
+                'previousStatus'      => $previous->value,
+                'newStatus'           => $mission->getStatus()->value,
+                'reason'              => $reason,
+                'actorId'             => $actor->getId(),
+                'actorName'           => $this->displayName($actor),
+                'declaredAt'          => $declaredAt?->format(\DateTimeInterface::ATOM),
+                'declaredById'        => $declaredBy?->getId(),
+                'declaredByName'      => $declaredBy !== null ? $this->displayName($declaredBy) : null,
+                'interventionCount'   => $mission->getInterventions()->count(),
+                'materialLineCount'   => $mission->getMaterialLines()->count(),
+            ]);
+            $this->em->flush();
+        });
     }
 
     /**

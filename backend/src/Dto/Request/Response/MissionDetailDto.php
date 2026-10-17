@@ -75,5 +75,10 @@ final class MissionDetailDto
          * CALCULATED / APPROVED calculation to recalculate after revalidation), null otherwise.
          */
         public readonly ?string $encodingCorrectionFinancialNotice = null,
+        /**
+         * D-155 — activity executed without instrumentist (null otherwise):
+         * {declaredAt, declaredByName}. Hours never exist in this mode; billing is firm-only.
+         */
+        public readonly ?array $executedWithoutInstrumentist = null,
     ) {}
 }

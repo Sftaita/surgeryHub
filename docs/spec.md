@@ -141,6 +141,14 @@ validation; every change is recorded under their name, and a change made meanwhi
 instrumentist (or a manager) is never overwritten: the screen reloads and says so; the
 assigned instrumentist is told once per series of changes (never once per click)
 
+Surgeons and managers (D-155): when a started mission was never covered but the operation
+really took place, declare the activity executed without instrumentist; the mission leaves
+the pool, the surgeon (or a manager) encodes the interventions and material and submits them
+without any hours; the manager corrects, validates or sends it back (the surgeon is told); only
+the services really applicable to the firm are calculated and invoiced — never an
+instrumentist's hours or fee; a manager can cancel an erroneous declaration, with a reason,
+before submission
+
 Managers/Admins:
 
 control planning

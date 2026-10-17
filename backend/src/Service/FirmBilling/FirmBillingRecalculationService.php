@@ -58,7 +58,7 @@ final class FirmBillingRecalculationService
                 $results[] = $this->result($missionId, 'SKIPPED', "L'encodage de la mission n'est pas validé.");
                 continue;
             }
-            if ($mission->getInstrumentist() === null) {
+            if (!$mission->hasEncodableActivity()) { // D-155 — activité sans instrumentiste : firme seule
                 $results[] = $this->result($missionId, 'SKIPPED', "Aucun instrumentiste n'est assigné à la mission.");
                 continue;
             }

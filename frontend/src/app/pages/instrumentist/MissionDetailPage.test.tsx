@@ -6,11 +6,12 @@ import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { MissionDetailContent } from "./MissionDetailPage";
 
 const apiGetMock = vi.fn();
+const apiPostMock = vi.fn().mockResolvedValue({ data: {} });
 
 vi.mock("../../api/apiClient", () => ({
   apiClient: {
     get: (...args: unknown[]) => apiGetMock(...args),
-    post: vi.fn().mockResolvedValue({ data: {} }),
+    post: (...args: unknown[]) => apiPostMock(...args),
     patch: vi.fn().mockResolvedValue({ data: {} }),
   },
 }));
@@ -271,5 +272,62 @@ describe("MissionDetailPage — instrumentiste, mission validée (D-146 bis)", (
     await user.click(screen.getByText("Encodage de l'intervention"));
 
     expect(await screen.findByText("Instrumentist encoding screen")).toBeInTheDocument();
+  });
+});
+
+describe("MissionDetailPage — espace chirurgien : encodage et activité sans instrumentiste (D-154 / D-155)", () => {
+  function renderSurgeonAt(mission: any, execution: any = executionInfo()) {
+    mockRoutes(mission, execution);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    return render(
+      <MemoryRouter initialEntries={[`/app/s/missions/${MISSION_ID}`]}>
+        <QueryClientProvider client={client}>
+          <Routes>
+            <Route path="/app/s/missions/:id" element={<MissionDetailContent missionId={MISSION_ID} />} />
+            <Route path="/app/s/missions/:id/encoding" element={<div>Surgeon encoding screen</div>} />
+            <Route path="/app/i/missions/:id/encoding" element={<div>Instrumentist encoding screen</div>} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it("D-154 — « Encoder la mission » mène le chirurgien à SON écran d'encodage, jamais à celui de l'instrumentiste", async () => {
+    const user = userEvent.setup();
+    renderSurgeonAt(baseMission({ status: "ENCODING_IN_PROGRESS", allowedActions: ["view_encoding", "edit_encoding"] }));
+
+    await user.click(await screen.findByRole("button", { name: "Encoder la mission" }));
+
+    expect(await screen.findByText("Surgeon encoding screen")).toBeInTheDocument();
+    expect(screen.queryByText("Instrumentist encoding screen")).toBeNull();
+  });
+
+  it("D-155 — déclare l'activité réalisée sans instrumentiste après confirmation, puis ouvre l'encodage", async () => {
+    const user = userEvent.setup();
+    apiPostMock.mockResolvedValue({ data: baseMission({ status: "ENCODING_IN_PROGRESS" }) });
+    renderSurgeonAt(baseMission({ status: "OPEN", instrumentist: null, allowedActions: ["view", "declare_executed_without_instrumentist"] }));
+
+    await user.click(await screen.findByTestId("declare-without-instrumentist"));
+    expect(await screen.findByText(/Aucune heure ni aucune prestation d'instrumentiste/)).toBeInTheDocument();
+    await user.click(screen.getByTestId("confirm-declare-without-instrumentist"));
+
+    expect(apiPostMock).toHaveBeenCalledWith(`/api/missions/${MISSION_ID}/declare-executed-without-instrumentist`, {});
+    expect(await screen.findByText("Surgeon encoding screen")).toBeInTheDocument();
+  });
+
+  it("D-155 — sans le droit servi par le backend, aucune déclaration n'est proposée", async () => {
+    renderSurgeonAt(baseMission({ status: "OPEN", instrumentist: null, allowedActions: ["view"] }));
+    expect(await screen.findByText("CHU Test")).toBeInTheDocument();
+    expect(screen.queryByTestId("declare-without-instrumentist")).toBeNull();
+  });
+
+  it("D-155 — activité déclarée : « Sans instrumentiste » et aucune heure, jamais « non renseignées »", async () => {
+    renderSurgeonAt(baseMission({
+      status: "ENCODING_IN_PROGRESS", instrumentist: null, allowedActions: ["view_encoding", "edit_encoding", "submit"],
+      executedWithoutInstrumentist: { declaredAt: "2026-07-20T12:00:00Z", declaredByName: "Jean Dupont" },
+    }));
+
+    expect(await screen.findByText("Sans instrumentiste — activité déclarée par Jean Dupont")).toBeInTheDocument();
+    expect(screen.getByText("Aucune — activité sans instrumentiste")).toBeInTheDocument();
   });
 });

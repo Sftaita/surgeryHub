@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Box,
   Button,
@@ -26,7 +26,8 @@ import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import dayjs from "dayjs";
 import "dayjs/locale/fr";
 
-import { fetchMissionById, getMissionExecution } from "../../features/missions/api/missions.api";
+import { declareExecutedWithoutInstrumentist, fetchMissionById, getMissionExecution } from "../../features/missions/api/missions.api";
+import { useToast } from "../../ui/toast/useToast";
 import type { Mission } from "../../features/missions/api/missions.types";
 import { formatExecutionHours, HOURS_NOT_PROVIDED } from "../../features/missions/utils/missions.format";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
@@ -43,6 +44,8 @@ function getStatusChip(status: string): { label: string; color: ChipColor } {
     case "DRAFT": return { label: "Brouillon", color: "default" };
     case "OPEN": return { label: "Disponible", color: "info" };
     case "ASSIGNED": return { label: "En cours", color: "primary" };
+    case "IN_PROGRESS": return { label: "En cours", color: "primary" };
+    case "ENCODING_IN_PROGRESS": return { label: "Encodage en cours", color: "primary" };
     case "DECLARED": return { label: "À valider", color: "warning" };
     case "REJECTED": return { label: "Rejetée", color: "error" };
     case "SUBMITTED": return { label: "Soumise", color: "success" };
@@ -161,6 +164,8 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
   const [openSubmit, setOpenSubmit] = React.useState(false);
   const [openEditHours, setOpenEditHours] = React.useState(false);
   const [statusInfoOpen, setStatusInfoOpen] = React.useState(false);
+  const [declareOpen, setDeclareOpen] = React.useState(false);
+  const toast = useToast();
 
   const { data: mission, isLoading } = useQuery({
     queryKey: ["mission", missionId],
@@ -179,12 +184,28 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
     enabled: Number.isFinite(missionId) && missionId > 0 && !!mission && !isEndedAssignment,
   });
 
+  // D-155 — déclarer l'activité réalisée sans instrumentiste (droit servi par le backend),
+  // puis encoder depuis l'espace chirurgien.
+  const declareMutation = useMutation({
+    mutationFn: () => declareExecutedWithoutInstrumentist(missionId),
+    onSuccess: () => {
+      setDeclareOpen(false);
+      toast.success("Activité déclarée : vous pouvez encoder les interventions et le matériel.");
+      queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
+      queryClient.invalidateQueries({ queryKey: ["missions"] });
+      navigate(`/app/s/missions/${missionId}/encoding`);
+    },
+    onError: (err: any) => toast.error(err?.response?.data?.error?.message ?? err?.response?.data?.message ?? "Déclaration impossible."),
+  });
+
   if (!Number.isFinite(missionId) || missionId <= 0)
     return <Typography>Identifiant invalide</Typography>;
   if (isLoading) return <CircularProgress />;
   if (!mission) return <Typography>Mission introuvable</Typography>;
 
   const allowed = mission.allowedActions ?? [];
+  const canDeclareWithoutInstrumentist = allowed.includes("declare_executed_without_instrumentist");
+  const withoutInstrumentist = mission.executedWithoutInstrumentist ?? null;
   const canEncoding = allowed.includes("encoding") || allowed.includes("edit_encoding");
   const canSubmit = allowed.includes("submit");
   const canEditHours = allowed.includes("edit_hours");
@@ -198,6 +219,11 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
     ? `/app/i/missions/${mission.id}/encoding`
     : `/app/s/missions/${mission.id}/encoding`;
   const isInstrumentistView = location.pathname.startsWith("/app/i/");
+  // D-154 — chaque rôle encode dans son propre espace : l'instrumentiste dans /app/i, le
+  // chirurgien dans /app/s (jamais renvoyé vers l'écran instrumentiste).
+  const encodingPath = isInstrumentistView
+    ? `/app/i/missions/${mission.id}/encoding`
+    : `/app/s/missions/${mission.id}/encoding`;
 
   // D-151 — « Affectation annulée », jamais le statut courant de la mission ni pourquoi.
   const { label: chipLabel, color: chipColor } = isEndedAssignment
@@ -241,7 +267,13 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
           />
           <InfoRow icon={<PersonIcon fontSize="small" />} label="Chirurgien" value={surgeonLabel(mission)} />
           {!isEndedAssignment && (
-            <InfoRow icon={<PersonIcon fontSize="small" />} label="Instrumentiste" value={instrumentistLabel(mission)} />
+            <InfoRow
+              icon={<PersonIcon fontSize="small" />}
+              label="Instrumentiste"
+              value={withoutInstrumentist
+                ? `Sans instrumentiste — activité déclarée${withoutInstrumentist.declaredByName ? ` par ${withoutInstrumentist.declaredByName}` : ""}`
+                : instrumentistLabel(mission)}
+            />
           )}
           <InfoRow
             icon={<MedicalServicesIcon fontSize="small" />}
@@ -279,12 +311,12 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
             <Typography variant="body2" color="text.secondary">
               Heures prestées
             </Typography>
-            <Typography variant="body2" fontWeight={700} color={hoursLabel === HOURS_NOT_PROVIDED ? "text.disabled" : "text.primary"}>
-              {hoursLabel}
+            <Typography variant="body2" fontWeight={700} color={withoutInstrumentist || hoursLabel === HOURS_NOT_PROVIDED ? "text.disabled" : "text.primary"}>
+              {withoutInstrumentist ? "Aucune — activité sans instrumentiste" : hoursLabel}
             </Typography>
           </Stack>
 
-          {isEncodingPending && (
+          {isEncodingPending && !withoutInstrumentist && (
             <Box
               sx={{
                 bgcolor: "#EFF6FF",
@@ -311,7 +343,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
             <Button
               size="small"
               variant="text"
-              onClick={() => navigate(`/app/i/missions/${mission.id}/encoding`)}
+              onClick={() => navigate(encodingPath)}
             >
               Gérer
             </Button>
@@ -337,6 +369,21 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
         </Typography>
       </SectionCard>
 
+      {/* D-155 — mission commencée sans instrumentiste : l'activité a-t-elle eu lieu ? */}
+      {canDeclareWithoutInstrumentist && (
+        <SectionCard icon={<EditNoteIcon fontSize="small" />} title="Activité réalisée sans instrumentiste">
+          <Stack spacing={1.5}>
+            <Typography variant="body2" color="text.secondary">
+              Aucune instrumentiste n'a couvert cette mission. Si l'intervention a bien eu lieu, déclarez-la pour
+              encoder les interventions et le matériel utilisés.
+            </Typography>
+            <Button variant="contained" disableElevation onClick={() => setDeclareOpen(true)} data-testid="declare-without-instrumentist">
+              Déclarer l'activité réalisée
+            </Button>
+          </Stack>
+        </SectionCard>
+      )}
+
       {/* Actions */}
       {(canEncoding || canSubmit || canViewEncoding) && (
         <Stack spacing={1.5}>
@@ -346,7 +393,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
               disableElevation
               fullWidth
               size="large"
-              onClick={() => navigate(`/app/i/missions/${mission.id}/encoding`)}
+              onClick={() => navigate(encodingPath)}
               sx={{ borderRadius: 2, fontWeight: 700 }}
             >
               Encoder la mission
@@ -401,6 +448,26 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
           mission={mission}
         />
       )}
+
+      <Dialog open={declareOpen} onClose={() => !declareMutation.isPending && setDeclareOpen(false)}>
+        <DialogTitle>Déclarer l'activité réalisée sans instrumentiste</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            La mission ne sera plus proposée aux instrumentistes. Vous encoderez les interventions et le matériel
+            réellement utilisés, puis soumettrez l'encodage au manager pour contrôle.
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Aucune heure ni aucune prestation d'instrumentiste ne sera enregistrée ; seules les prestations
+            réellement applicables à la firme seront facturées.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeclareOpen(false)} disabled={declareMutation.isPending}>Annuler</Button>
+          <Button variant="contained" disableElevation onClick={() => declareMutation.mutate()} disabled={declareMutation.isPending} data-testid="confirm-declare-without-instrumentist">
+            {declareMutation.isPending ? <CircularProgress size={18} /> : "Confirmer la déclaration"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={statusInfoOpen} onClose={() => setStatusInfoOpen(false)}>
         <DialogTitle>

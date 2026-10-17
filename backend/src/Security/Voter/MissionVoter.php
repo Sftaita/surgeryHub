@@ -11,6 +11,7 @@ use App\Service\MissionAssignmentService;
 use App\Service\MissionDispatchService;
 use App\Service\MissionEncodingCorrectionPolicy;
 use App\Service\MissionHoursReminderPolicy;
+use App\Service\ExecutedWithoutInstrumentistPolicy;
 use App\Service\SurgeonEncodingPolicy;
 use Symfony\Component\Clock\Clock;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
@@ -83,6 +84,11 @@ class MissionVoter extends Voter
     // D-153 — the encoding correction history (hours, interventions, material): managers only.
     public const VIEW_ENCODING_HISTORY = 'MISSION_VIEW_ENCODING_HISTORY';
 
+    // D-155 — activity executed without instrumentist: declared by the mission's surgeon or a
+    // manager (ExecutedWithoutInstrumentistPolicy), an erroneous declaration cancelled by a manager.
+    public const DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST = 'MISSION_DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST';
+    public const CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST  = 'MISSION_CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST';
+
     public function __construct(
         // Optional only so plain unit tests can build the voter; always autowired.
         private readonly ?MissionAssignmentService $assignments = null,
@@ -119,6 +125,8 @@ class MissionVoter extends Voter
             self::REQUEST_ASSIGNMENT_REVIEW,
             self::VIEW_FORMER_ASSIGNMENT,
             self::VIEW_ENCODING_HISTORY,
+            self::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST,
+            self::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST,
         ], true)) {
             return false;
         }
@@ -183,6 +191,8 @@ class MissionVoter extends Voter
                 && $mission->getInstrumentist()?->getId() !== $user->getId()
                 && ($this->assignments?->hasEndedAffectationOf($mission, $user) ?? false),
             self::VIEW_ENCODING_HISTORY       => $isManager,
+            self::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST => ExecutedWithoutInstrumentistPolicy::canDeclare($mission, $user, Clock::get()->now()),
+            self::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST  => ExecutedWithoutInstrumentistPolicy::canCancel($mission, $user),
             default                          => false,
         };
     }
@@ -250,6 +260,11 @@ class MissionVoter extends Voter
     {
         // manager/admin: autorisé (support / correction)
         if ($managerContext) {
+            return true;
+        }
+
+        // D-155 — activité déclarée sans instrumentiste : le chirurgien de la mission la soumet.
+        if (ExecutedWithoutInstrumentistPolicy::surgeonCanSubmit($mission, $user, Clock::get()->now())) {
             return true;
         }
 

@@ -91,6 +91,12 @@ enum AuditEventType: string
     case MISSION_ASSIGNMENT_REFUSED_BY_SURGEON = 'MISSION_ASSIGNMENT_REFUSED_BY_SURGEON';
     case MISSION_ASSIGNMENT_REVIEW_REQUESTED   = 'MISSION_ASSIGNMENT_REVIEW_REQUESTED';
 
+    // D-155 — activité réellement exécutée sans instrumentiste : déclarée (OPEN commencée →
+    // ENCODING_IN_PROGRESS, par le chirurgien de la mission ou un manager) et, pour une
+    // déclaration erronée, annulée par un manager avec motif (→ OPEN).
+    case MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED = 'MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED';
+    case MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED = 'MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED';
+
     // D-152 — surgeon–instrumentist incompatibility created / lifted (mission is null: it
     // concerns a pair of people, never one mission).
     case SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED = 'SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED';

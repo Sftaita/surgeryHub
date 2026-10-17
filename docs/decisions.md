@@ -13897,3 +13897,102 @@ backend, lecture seule sinon). Décisions 6-7 : `CatalogueRequestCreatedMessageH
 (auteur réel par rôle, formulation neutre), `SurgeonEncodingD154Test::test_the_instrumentist_is_notified_once_per_burst_of_surgeon_changes`
 (événement émis pour le chirurgien seulement, une notification par rafale, rejeu idempotent,
 nouvelle série après la fenêtre), `notificationFormat.test.ts`.
+
+## D-155 — Activité opératoire réalisée sans instrumentiste (2026-10-16)
+
+**Statut : implémenté sur `feat/surgeon-refusal-compat` (lot L6), non commité, non déployé.**
+Amende D-070 (seule l'instrumentiste démarre l'encodage), D-143 (heures obligatoires à la
+soumission et à la validation), D-148 (le renvoi en correction notifie l'instrumentiste) et
+D-073 (`assertEligible` exige une instrumentiste). Complète D-154.
+
+### Contexte
+
+Une mission OPEN que personne n'a couverte reste OPEN, non encodable, jamais calculée. Quand
+l'intervention a pourtant eu lieu (le chirurgien a opéré sans instrumentiste), l'activité
+réelle — interventions, matériel, prestations firme — doit être encodée, contrôlée et
+facturée, sans jamais inventer d'heures ni de prestation d'instrumentiste.
+
+### Décision 1 — un fait, jamais un statut
+
+`Mission.executedWithoutInstrumentistAt` / `executedWithoutInstrumentistBy` (migration
+`Version20261016110000`), prédicats `isExecutedWithoutInstrumentist()` et
+`hasEncodableActivity()` (une instrumentiste affectée **ou** ce fait). Aucun nouveau statut :
+la mission suit le cycle d'encodage existant (ENCODING_IN_PROGRESS → SUBMITTED → VALIDATED).
+
+### Décision 2 — déclaration (`ExecutedWithoutInstrumentistPolicy`, une seule règle)
+
+`POST /api/missions/{id}/declare-executed-without-instrumentist` : chirurgien de **cette**
+mission ou manager ; mission OPEN, sans instrumentiste, **commencée** (une mission à venir reste
+disponible dans le pool, jamais déclarable). Sous le verrou de la mission (`inLockedChange`,
+D-150) : OPEN → ENCODING_IN_PROGRESS, `encodingStartedAt`, le fait, remise à zéro du marqueur
+d'escalade, audit `MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED`. La mission quitte
+immédiatement le pool : plus OPEN, donc ni claim, ni offre, ni affectation (toutes exigent OPEN
+ou ASSIGNED). Même règle pour le voter (`DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST`) et l'action
+`declare_executed_without_instrumentist` (cohérence testée sur tous les cas).
+
+### Décision 3 — encodage et soumission sans heures
+
+Interventions et matériel : endpoints, règles tarifaires, contrôles de contenu et version
+(D-154) existants — `SurgeonEncodingPolicy` accepte désormais `hasEncodableActivity()`. Le
+chirurgien soumet (`submit`, `MissionVoter::SUBMIT`) ; le manager aussi. Aucune heure n'existe
+dans ce mode : `EncodingCompletenessService` ne les exige ni à la soumission ni à la validation,
+aucune `MissionExecution` n'est créée, `edit_hours` n'est jamais proposé (les heures restent
+réservées à une instrumentiste, `MissionExecutionVoter` inchangé). La justification « BLOCK sans
+matériel » (D-080) et la complétude du contenu (D-146 bis) s'appliquent comme toujours.
+
+### Décision 4 — contrôle manager
+
+Valider, renvoyer en correction, rouvrir : inchangés. Le renvoi / la réouverture notifie **le
+chirurgien** (`ENCODING_CORRECTION_REQUESTED`, lien vers son encodage) ; il n'est jamais
+notifié de sa propre soumission (`ENCODING_SUBMITTED` sauté quand il en est l'auteur). Les
+corrections directes du manager (D-153) s'appliquent, sans heures.
+
+### Décision 5 — finances : firme uniquement
+
+`FinancialCalculationService::assertEligible`, le recalcul groupé et l'action « Calculer » du
+suivi acceptent une mission sans instrumentiste **seulement** si le fait est posé. Le moteur ne
+produit la ligne instrumentiste que si une instrumentiste est affectée : seules les lignes
+FIRM_* réellement applicables existent. Facturation firme, calcul obsolète (D-153), verrous
+LOCKED : inchangés. Une mission classique sans instrumentiste reste refusée au calcul.
+
+### Décision 6 — correction d'une déclaration erronée
+
+`POST /api/missions/{id}/cancel-executed-without-instrumentist` (manager, motif obligatoire),
+tant que l'encodage n'est pas soumis (le renvoyer d'abord en correction) : ENCODING_IN_PROGRESS
+→ OPEN, fait effacé, audit `MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED` (motif, déclarant,
+nombre d'interventions / lignes conservées — rien n'est supprimé en silence). La mission
+commencée reste non prenable depuis le pool (D-151).
+
+### Décision 7 — écrans
+
+Détail de mission (chirurgien) : « Déclarer l'activité réalisée » (confirmation), puis
+encodage et soumission dans `SurgeonEncodingPage` ; « Sans instrumentiste — activité déclarée
+par … », heures « Aucune ». `SubmitDialog` ne montre ni ne réclame d'heures dans ce mode.
+Manager : déclarer / annuler la déclaration (motif) sur le détail de mission ; « Suivi des
+encodages » affiche « Sans instrumentiste » et le déclarant. Toutes les actions sont pilotées
+par `allowedActions` et `executedWithoutInstrumentist` servis par le backend.
+
+### Correctif L5 relevé pendant L6
+
+Sur le détail de mission, « Encoder la mission » / « Gérer » envoyaient toujours vers
+`/app/i/missions/{id}/encoding` (écran instrumentiste), y compris pour le chirurgien qui a
+`edit_encoding` (D-154) : chaque espace mène désormais à son propre écran
+(`/app/s/...` pour le chirurgien). Testé.
+
+### Limites
+
+- Une offre nominative encore en attente sur la mission n'est pas close explicitement par la
+  déclaration ; elle n'est plus visible (mission non OPEN) et, la mission ayant commencé, ne
+  pourrait de toute façon plus être acceptée (D-151).
+- Les rappels d'encodage (D-143) ne concernent que les missions avec instrumentiste : le
+  chirurgien déclarant n'est pas relancé.
+
+### Tests
+
+`ActivityWithoutInstrumentistD155Test` (parcours complet : déclaration, sortie du pool,
+encodage sans heures, soumission, renvoi → chirurgien notifié, re-soumission, validation,
+calcul firme seul, éligibilité facture firme, aucune `MissionExecution` ni ligne
+instrumentiste ; règles de déclaration ; annulation auditée ; mission classique refusée au
+calcul), `MissionActionsServiceTest` (cohérence actions ↔ voter : déclarer, annuler, soumettre,
+tous statuts × rôles × instrumentiste × début × fait), frontend (détail chirurgien et manager,
+`SubmitDialog`, `SurgeonEncodingPage`, suivi).

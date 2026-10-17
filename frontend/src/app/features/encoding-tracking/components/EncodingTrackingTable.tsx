@@ -220,7 +220,9 @@ export function EncodingTrackingTable({
                           : item.instrumentist ? initials(item.instrumentist.name ?? "—") : "—"}
                       </Box>
                       <Box sx={{ fontSize: 13.5, fontWeight: 700, color: GRAY_950, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {item.instrumentist?.name ?? "—"}
+                        {item.executedWithoutInstrumentist
+                          ? <span data-testid="tracking-without-instrumentist" title={item.executedWithoutInstrumentist.declaredByName ? `Activité déclarée par ${item.executedWithoutInstrumentist.declaredByName}` : undefined}>Sans instrumentiste</span>
+                          : item.instrumentist?.name ?? "—"}
                       </Box>
                     </Box>
                     <Box sx={{ flex: 1, minWidth: 0 }}>

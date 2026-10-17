@@ -246,3 +246,39 @@ describe("MissionDetailPage (manager) — heures prestées et matériel encodé 
     expect(screen.getByText("Aucun encodage disponible pour l'instant.")).toBeInTheDocument();
   });
 });
+
+describe("MissionDetailPage (manager) — activité réalisée sans instrumentiste (D-155)", () => {
+  it("propose la déclaration quand le backend la sert, et l'envoie après confirmation", async () => {
+    const user = userEvent.setup();
+    renderDetail(baseMission({ status: "OPEN", allowedActions: ["view", "cancel", "declare_executed_without_instrumentist"] }));
+
+    await user.click(await screen.findByTestId("manager-declare-without-instrumentist"));
+    await user.click(screen.getByRole("button", { name: "Confirmer la déclaration" }));
+
+    expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/declare-executed-without-instrumentist", {});
+  });
+
+  it("annule une déclaration erronée avec un motif obligatoire", async () => {
+    const user = userEvent.setup();
+    renderDetail(baseMission({
+      status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding", "submit", "cancel_executed_without_instrumentist"],
+      executedWithoutInstrumentist: { declaredAt: "2026-08-10T12:00:00+02:00", declaredByName: "Jean Dupont" },
+    }));
+
+    expect(await screen.findByTestId("manager-without-instrumentist")).toHaveTextContent("déclarée par Jean Dupont");
+    await user.click(screen.getByTestId("manager-cancel-declaration"));
+    const confirm = screen.getAllByRole("button", { name: "Annuler la déclaration" }).at(-1)!;
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByLabelText(/Motif de l'annulation/), "Une instrumentiste était présente.");
+    await user.click(confirm);
+
+    expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/cancel-executed-without-instrumentist", { reason: "Une instrumentiste était présente." });
+  });
+
+  it("sans droit servi par le backend, aucune de ces actions", async () => {
+    renderDetail(baseMission({ status: "OPEN", allowedActions: ["view", "cancel"] }));
+    expect(await screen.findByRole("button", { name: "Annuler la mission" })).toBeInTheDocument();
+    expect(screen.queryByTestId("manager-declare-without-instrumentist")).toBeNull();
+    expect(screen.queryByTestId("manager-cancel-declaration")).toBeNull();
+  });
+});

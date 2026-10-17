@@ -83,6 +83,19 @@ final class MissionActionsService
                 $actions[] = 'edit_hours';
             }
 
+            // D-155 — same rules exactly as MissionVoter::DECLARE_ / CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST.
+            if (ExecutedWithoutInstrumentistPolicy::canDeclare($mission, $viewer, Clock::get()->now())) {
+                $actions[] = 'declare_executed_without_instrumentist';
+            }
+            if (ExecutedWithoutInstrumentistPolicy::canCancel($mission, $viewer)) {
+                $actions[] = 'cancel_executed_without_instrumentist';
+            }
+            // D-155 — the manager may submit a declared activity himself (MissionVoter::SUBMIT
+            // already grants it); offered only in this mode, where no instrumentist will.
+            if ($mission->isExecutedWithoutInstrumentist() && $mission->getStatus() === MissionStatus::ENCODING_IN_PROGRESS) {
+                $actions[] = 'submit';
+            }
+
             return $actions;
         }
 
@@ -159,6 +172,14 @@ final class MissionActionsService
         // never start / submit): same rule exactly as MissionVoter::EDIT_ENCODING.
         if (SurgeonEncodingPolicy::canEditEncoding($mission, $viewer, Clock::get()->now())) {
             $actions[] = 'edit_encoding';
+        }
+        // D-155 — an activity he declared executed without instrumentist: he also submits it.
+        if (ExecutedWithoutInstrumentistPolicy::surgeonCanSubmit($mission, $viewer, Clock::get()->now())) {
+            $actions[] = 'submit';
+        }
+        // D-155 — declare his own started, uncovered OPEN mission executed without instrumentist.
+        if (ExecutedWithoutInstrumentistPolicy::canDeclare($mission, $viewer, Clock::get()->now())) {
+            $actions[] = 'declare_executed_without_instrumentist';
         }
 
         // Chirurgien : uniquement view sur DECLARED (contrat)

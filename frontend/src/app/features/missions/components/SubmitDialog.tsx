@@ -125,10 +125,14 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
   // (lecture) et EditServiceHoursDialog.tsx (mutation) : le récapitulatif final doit
   // afficher exactement la même valeur que la carte "Heures prestées", jamais
   // mission.service?.hours (le backend n'expose plus ce champ depuis D-071).
+  // D-155 — activité exécutée sans instrumentiste (servi par le backend) : aucune heure
+  // n'existe ni ne se déclare ; le récapitulatif ne les montre ni ne les réclame.
+  const withoutInstrumentist = mission.executedWithoutInstrumentist != null;
+
   const { data: execution } = useQuery({
     queryKey: ["mission-execution", mission.id],
     queryFn: () => getMissionExecution(mission.id),
-    enabled: open,
+    enabled: open && !withoutInstrumentist,
   });
 
   React.useEffect(() => {
@@ -144,7 +148,7 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
   // D-143 — début ET fin réels requis (une durée seule ne suffit plus) ; affichage seul,
   // la décision reste celle du serveur (refus ENCODING_INCOMPLETE ci-dessous).
   const hoursLabel = hoursRecapLabel(execution);
-  const hasHours = !hoursIncomplete(execution);
+  const hasHours = withoutInstrumentist || !hoursIncomplete(execution);
   const requiresComment = !isLoading && mission.type === "BLOCK" && materialLineCount === 0;
   const canSubmit = !requiresComment || comment.trim() !== "";
 
@@ -173,7 +177,7 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
         <Box sx={{ mt: "14px", fontSize: 14, color: GRAY_500 }}>Chargement…</Box>
       ) : (
         <Box sx={{ mt: "14px", display: "flex", flexDirection: "column" }}>
-          <RecapRow warn={!hasHours} label="Heures prestées" value={hoursLabel} />
+          {!withoutInstrumentist && <RecapRow warn={!hasHours} label="Heures prestées" value={hoursLabel} />}
           <RecapRow warn={false} label="Interventions" value={String(interventions.length)} />
           <RecapRow warn={false} label="Matériel encodé" value={`${materialLineCount} ligne${materialLineCount > 1 ? "s" : ""}`} />
           {notFoundCount > 0 && (
@@ -223,7 +227,9 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
       )}
 
       <Box sx={{ mt: "14px", fontSize: 13, color: GRAY_500, lineHeight: 1.5 }}>
-        Vérifiez les informations, encodez vos heures prestées et validez pour clôturer la mission.
+        {withoutInstrumentist
+          ? "Activité réalisée sans instrumentiste : aucune heure n'est déclarée. Vérifiez les interventions et le matériel, puis validez pour transmettre l'encodage au manager."
+          : "Vérifiez les informations, encodez vos heures prestées et validez pour clôturer la mission."}
       </Box>
 
       <Box

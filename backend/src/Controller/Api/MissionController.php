@@ -338,6 +338,36 @@ class MissionController extends AbstractController
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }
 
+    /**
+     * D-155 — the activity of this started, uncovered OPEN mission really took place without
+     * an instrumentist: OPEN → ENCODING_IN_PROGRESS, out of the pool, encodable without hours.
+     */
+    #[Route(path: '/{id}/declare-executed-without-instrumentist', name: 'api_missions_declare_executed_without_instrumentist', methods: ['POST'])]
+    public function declareExecutedWithoutInstrumentist(int $id, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST, $mission);
+
+        $this->missionPostDeployService->declareExecutedWithoutInstrumentist($mission, $user);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    /** D-155 — a manager cancels an erroneous declaration (reason required, before submission). */
+    #[Route(path: '/{id}/cancel-executed-without-instrumentist', name: 'api_missions_cancel_executed_without_instrumentist', methods: ['POST'])]
+    public function cancelExecutedWithoutInstrumentist(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST, $mission);
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $reason = isset($data['reason']) && is_string($data['reason']) ? $data['reason'] : '';
+
+        $this->missionPostDeployService->cancelExecutedWithoutInstrumentistDeclaration($mission, $user, $reason);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
     #[Route(path: '/{id}/reassign', name: 'api_missions_reassign', methods: ['POST'])]
     public function reassign(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
     {

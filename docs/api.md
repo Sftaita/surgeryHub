@@ -8361,3 +8361,47 @@ tous les `AuditEvent` (rattachés à une mission ou globaux), tri `id` DESC.
 `mission` (`id`, `status`, `startAt`, `endAt`, `site`, `surgeon`, `instrumentist`) est
 renseigné quand l'événement porte une mission ; `surgeonMissionRequest` quand le payload
 porte `surgeonMissionRequestId`. `payload` est renvoyé tel qu'enregistré.
+
+## 46. Activité réalisée sans instrumentiste (D-155)
+
+Une mission OPEN **commencée** que personne n'a couverte peut être déclarée réalisée sans
+instrumentiste ; elle suit ensuite le cycle d'encodage existant, sans heures, et ne se calcule
+que pour la firme.
+
+### `POST /api/missions/{id}/declare-executed-without-instrumentist`
+
+**AuthZ :** `MissionVoter::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST` — chirurgien de la mission
+ou manager / admin ; mission OPEN, sans instrumentiste, `startAt ≤ maintenant`, pas déjà
+déclarée (`403` sinon ; `409` si l'état a changé sous le verrou). Corps vide.
+
+**Effets :** OPEN → ENCODING_IN_PROGRESS ; `executedWithoutInstrumentist` posé ; audit
+`MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED` (`declaredAs` = `SURGEON` | `MANAGER`). La
+mission quitte le pool (plus de claim / offre / affectation).
+
+**Réponse — 200 :** détail de mission.
+
+### `POST /api/missions/{id}/cancel-executed-without-instrumentist`
+
+**AuthZ :** `MissionVoter::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST` — manager / admin, mission
+déclarée encore ENCODING_IN_PROGRESS et non verrouillée (`403` sinon).
+
+```json
+{ "reason": "Une instrumentiste était bien présente." }
+```
+
+`reason` obligatoire (`422` si vide). **Effets :** ENCODING_IN_PROGRESS → OPEN, fait effacé,
+interventions / matériel conservés, audit `MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED`.
+
+### Champs et actions
+
+- Détail de mission : `executedWithoutInstrumentist: { declaredAt, declaredByName } | null`.
+- `allowedActions` : `declare_executed_without_instrumentist` (chirurgien de la mission,
+  manager), `cancel_executed_without_instrumentist` (manager) ; dans ce mode le chirurgien
+  reçoit `edit_encoding` et `submit`, jamais `edit_hours`.
+- `GET /api/encoding-tracking` (items) : `executedWithoutInstrumentist: { declaredByName } | null`.
+- Soumission (`POST .../encoding/complete`, `.../submit`) et validation : heures non exigées
+  dans ce mode (aucune n'existe) ; contenu et justification « sans matériel » inchangés.
+- Calcul financier : accepté sans instrumentiste uniquement dans ce mode ; seules des lignes
+  `FIRM_*`. Une mission classique sans instrumentiste reste `409 FINANCIAL_CALCULATION_INELIGIBLE`.
+- Renvoi en correction / réouverture : `ENCODING_CORRECTION_REQUESTED` au **chirurgien**
+  (lien `/app/s/missions/{id}/encoding`).

@@ -17,8 +17,9 @@ use App\Enum\MissionStatus;
  * DECLARED → SUBMITTED, never before the start, never on a locked / invoiced encoding, never
  * with a LOCKED financial calculation (a VALIDATED mission is reopened by a manager first).
  *
- * L5 covers missions WITH an instrumentist. L6 (missions executed without instrumentist)
- * extends hasEncodableActivity() only — the screen, endpoints and checks are reused as-is.
+ * L5 covers missions WITH an instrumentist; L6 (D-155) adds missions declared executed
+ * without instrumentist (Mission::hasEncodableActivity()) — screen, endpoints, version
+ * checks and journal reused as-is.
  */
 final class SurgeonEncodingPolicy
 {
@@ -62,9 +63,9 @@ final class SurgeonEncodingPolicy
         return true;
     }
 
-    /** L5 — an instrumentist is assigned (missions executed without one: L6). */
+    /** An instrumentist is assigned (D-154), or the activity was declared executed without one (D-155). */
     private static function hasEncodableActivity(Mission $mission): bool
     {
-        return $mission->getInstrumentist() !== null;
+        return $mission->hasEncodableActivity();
     }
 }
