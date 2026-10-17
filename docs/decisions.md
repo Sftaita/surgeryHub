@@ -13689,6 +13689,12 @@ refonte de L3 tant qu'aucun contournement actif n'est trouvé.
    atteignable par HTTP et ne crée aucune affectation. Aucun contournement actif des
    incompatibilités. Si cette branche redevenait atteignable, elle devrait passer par
    `MissionEligibilityService` ou être neutralisée.
+   **Revérifié le 2026-10-17** : toujours aucune voie active, branche laissée en l'état (pas de
+   refonte V1). Non-régression : `PlanningDeployAlwaysVersionedArchitectureTest` (seul
+   `PlanningV2GenerationController` utilise le service, un seul appel, toujours avec la
+   version chargée) et `PlanningLegacyDeployUnreachableTest` (requête au format V1 → 400,
+   brouillon avec paire incompatible resté DRAFT, aucune affectation, une seule route de
+   déploiement).
 3. **Vérification navigateur et tests sur une copie de production** (données réelles :
    incompatibilités, conflits, alertes) obligatoires avant tout déploiement.
 
