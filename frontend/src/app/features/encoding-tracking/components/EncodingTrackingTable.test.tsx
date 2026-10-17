@@ -119,3 +119,21 @@ describe("EncodingTrackingTable — colonne Finance (D-138)", () => {
     expect(screen.getByText("À calculer")).toBeInTheDocument();
   });
 });
+
+describe("EncodingTrackingTable — activité réalisée sans instrumentiste (D-155)", () => {
+  it("n'affiche jamais « Heures prestées non renseignées » ; mission classique inchangée", () => {
+    const base = item(7, "2026-09-12T08:00:00+02:00", "—");
+    const noHours = { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" } as EncodingTrackingItem["hours"];
+    renderTable([
+      { ...base, instrumentist: null, hours: noHours, executedWithoutInstrumentist: { declaredByName: "Paul Martin" } },
+      { ...item(8, "2026-09-12T10:00:00+02:00", "Instr 8"), hours: noHours },
+    ]);
+
+    const [declared, classic] = screen.getAllByTestId("hours-cell");
+    expect(declared).toHaveAttribute("data-hours-comparison", "NOT_APPLICABLE");
+    expect(declared).toHaveTextContent("Aucune prestation horaire attendue");
+    expect(declared).not.toHaveTextContent("Heures prestées non renseignées");
+    expect(declared).not.toHaveTextContent("planifiées");
+    expect(classic).toHaveTextContent("Heures prestées non renseignées");
+  });
+});

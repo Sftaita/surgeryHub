@@ -1,7 +1,7 @@
 import { Box, Button, CircularProgress, Stack, Tooltip, Typography } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import type { EncodingState, EncodingTrackingItem } from "../api/encodingTracking.api";
-import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, MISSION_TYPE_LABEL, formatMinutes } from "../encodingStateMeta";
+import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, MISSION_TYPE_LABEL, NO_HOURS_WITHOUT_INSTRUMENTIST, formatMinutes } from "../encodingStateMeta";
 import { EmptyState } from "../../../ui/EmptyState";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 
@@ -260,6 +260,13 @@ export function EncodingTrackingTable({
                     </Box>
                     {/* D-136 — couleur = hours.comparison (backend) : vert dans le planifié,
                         orange au-delà, neutre sans heure réelle (jamais le repli planifié en vert). */}
+                    {item.executedWithoutInstrumentist ? (
+                      // D-155 — aucune heure n'existe ni n'est attendue : jamais « non renseignées ».
+                      <Box sx={{ width: 170, flexShrink: 0 }} data-testid="hours-cell" data-hours-comparison="NOT_APPLICABLE" title={NO_HOURS_WITHOUT_INSTRUMENTIST}>
+                        <Box sx={{ fontSize: 13.5, fontWeight: 800, color: GRAY_400 }}>Sans heures</Box>
+                        <Box sx={{ mt: "2px", fontSize: 10.5, color: GRAY_400 }}>Aucune prestation horaire attendue</Box>
+                      </Box>
+                    ) : (
                     <Box sx={{ width: 170, flexShrink: 0 }} data-testid="hours-cell" data-hours-comparison={item.hours.comparison} title={hoursTone.label}>
                       <Box sx={{ display: "flex", alignItems: "baseline", gap: "6px", fontVariantNumeric: "tabular-nums" }}>
                         {item.hours.hasRealHours ? (
@@ -278,6 +285,7 @@ export function EncodingTrackingTable({
                         {item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : hoursTone.label}
                       </Box>
                     </Box>
+                    )}
                     <Box sx={{ width: 110, flexShrink: 0, textAlign: "right" }}>
                       <Box sx={{ fontSize: 13.5, fontWeight: 800, color: financeStyle(item) }}>{item.financial.label}</Box>
                       {item.financial.state === "ANOMALY" && item.financial.anomalyCount > 0 && (

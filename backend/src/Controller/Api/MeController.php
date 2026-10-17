@@ -109,7 +109,7 @@ final class MeController extends AbstractController
 
     /**
      * GET /api/me/notification-preferences
-     * Returns every NotificationType with its resolved channels (stored override, or the
+     * Returns every configurable NotificationType that concerns the person's roles with its resolved channels (stored override, or the
      * product default from DefaultNotificationPreferenceResolver when no row exists yet —
      * see NotificationPreference entity docblock). This is the first UI ever wired to
      * NotificationPreference; the entity previously had no reader (audit PWA/mobile/admin
@@ -134,7 +134,13 @@ final class MeController extends AbstractController
             // H3 (D-129) — a retired type changes nothing any more: never offered as a switch.
             // H5a — nor a type whose email is mandatory (identity, explicit manager action).
             // D-143 — nor an operational encoding reminder (service obligation).
-            array_values(array_filter(NotificationType::cases(), static fn (NotificationType $t) => $t->isConfigurable())),
+            // Only the types the person's roles actually receive (union for several roles,
+            // NotificationType::audienceRoles()); stored preferences of other types are kept
+            // untouched and nothing changes who receives what.
+            array_values(array_filter(
+                NotificationType::cases(),
+                static fn (NotificationType $t) => $t->isConfigurable() && $t->concernsRoles($user->getRoles()),
+            )),
         );
 
         return $this->json(['items' => $items]);

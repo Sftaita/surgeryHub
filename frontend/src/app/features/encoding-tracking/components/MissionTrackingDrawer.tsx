@@ -17,7 +17,7 @@ import { getMissionEncodingHistory, getMissionFinancialAnomalies } from "../api/
 import type { EncodingHistoryChange, EncodingHistoryItem, EncodingTrackingItem } from "../api/encodingTracking.api";
 import EditServiceHoursDialog from "../../missions/components/EditServiceHoursDialog";
 import InterventionsSection from "../../encoding/components/InterventionsSection";
-import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, formatMinutes } from "../encodingStateMeta";
+import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, NO_HOURS_WITHOUT_INSTRUMENTIST, formatMinutes } from "../encodingStateMeta";
 
 const GRAY_950 = "#0B1320";
 const GRAY_800 = "#2A3643";
@@ -319,6 +319,8 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   // ici du statut : une mission validée se rouvre d'abord, une mission clôturée ou verrouillée
   // financièrement ne se corrige pas.
   const canEditHours = allowedActions.includes("edit_hours");
+  // D-155 — servi par le backend (liste ou détail de la mission), jamais déduit ici.
+  const withoutInstrumentist = !!(item.executedWithoutInstrumentist ?? missionQuery.data?.executedWithoutInstrumentist);
   const canEditEncoding = allowedActions.includes("edit_encoding");
   const financialNotice = missionQuery.data?.encodingCorrectionFinancialNotice ?? null;
   const history = historyQuery.data ?? [];
@@ -448,6 +450,18 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           </Box>
         )}
 
+        {withoutInstrumentist ? (
+          // D-155 — aucune heure d'instrumentiste n'existe ni ne se saisit : ni « non renseignées »,
+          // ni barres planifié / réel, ni rappel ou correction des heures.
+          <Card>
+            <Box sx={{ display: "flex", alignItems: "center", gap: "10px", minHeight: 28 }}>
+              <Eyebrow>HEURES</Eyebrow>
+            </Box>
+            <Box data-testid="drawer-hours-without-instrumentist" sx={{ fontSize: 13, fontWeight: 600, color: GRAY_700 }}>
+              {NO_HOURS_WITHOUT_INSTRUMENTIST}
+            </Box>
+          </Card>
+        ) : (
         <Card>
           <Box sx={{ display: "flex", alignItems: "center", gap: "10px", minHeight: 28 }}>
             <Eyebrow>HEURES</Eyebrow>
@@ -494,6 +508,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             <Bar label="Réel" text={realRange} total={item.hours.hasRealHours ? formatMinutes(item.hours.effectiveMinutes) : "—"} totalColor={hoursTone.fg} pct={realPct} color={hoursTone.bar} />
           </Box>
         </Card>
+        )}
 
         <Card sx={{ flexDirection: "row", alignItems: "center", gap: "10px", padding: "13px 16px 14px" }}>
           {steps.map((s) => (
@@ -666,7 +681,9 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
       <EncodingCorrectionDialog
         kind={correctionKind}
         missionLabel={`#${item.missionId} · ${item.startAt ? new Date(item.startAt).toLocaleDateString("fr-BE") : "—"} · ${item.site?.name ?? "—"}`}
-        instrumentistName={item.instrumentist?.name ?? "—"}
+        recipient={withoutInstrumentist
+          ? { role: "SURGEON", name: item.surgeon?.name ?? "—" }
+          : { role: "INSTRUMENTIST", name: item.instrumentist?.name ?? "—" }}
         statusLabel={item.encodingStateLabel}
         pending={correctionMutation.isPending}
         error={correctionError}

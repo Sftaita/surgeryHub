@@ -44,6 +44,7 @@ import {
 } from "../../features/missions/utils/missions.format";
 
 import EditMissionDialog from "../../features/missions/components/EditMissionDialog";
+import { NO_HOURS_WITHOUT_INSTRUMENTIST } from "../../features/encoding-tracking/encodingStateMeta";
 import PublishMissionDialog from "../../features/missions/components/PublishMissionDialog";
 import FinancialCalculationCard from "../../features/financial-calculation/components/FinancialCalculationCard";
 import {
@@ -451,7 +452,19 @@ export function MissionDetailContent({
         </Paper>
 
         {/* Exécution réelle (EPIC Exécution & Valorisation, Lot 1) — seule source des heures prestées ; l'ancien champ mission.service?.hours n'est plus jamais renseigné par le backend depuis le renommage InstrumentistService -> MissionExecution (D-071), voir formatExecutionHours(). */}
-        {executionQuery.data && (
+        {/* D-155 — activité réalisée sans instrumentiste (servi par le backend) : aucune heure
+            n'existe ni n'est attendue — jamais « repli sur le planifié » ni durée effective. */}
+        {data.executedWithoutInstrumentist && (
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }} data-testid="manager-hours-without-instrumentist">
+            <Stack direction="row" spacing={1} alignItems="center">
+              <AccessTimeIcon fontSize="small" color="action" />
+              <Typography variant="subtitle2" fontWeight={600}>Exécution — heures prestées</Typography>
+            </Stack>
+            <Divider sx={{ my: 1.5 }} />
+            <Typography variant="body2">{NO_HOURS_WITHOUT_INSTRUMENTIST}</Typography>
+          </Paper>
+        )}
+        {executionQuery.data && !data.executedWithoutInstrumentist && (
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
               <AccessTimeIcon fontSize="small" color="action" />
@@ -642,10 +655,10 @@ export function MissionDetailContent({
       <Dialog open={rejectEncodingOpen} onClose={() => setRejectEncodingOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Rejeter l'encodage</DialogTitle>
         <DialogContent dividers>
-          <Typography variant="body2" color="text.secondary" mb={1.5}>
-            L'encodage repart chez l'instrumentiste pour correction. Le commentaire est
-            obligatoire (ex : matériel manquant, quantité incorrecte, mauvaise firme,
-            intervention incomplète...).
+          <Typography variant="body2" color="text.secondary" mb={1.5} data-testid="reject-encoding-intro">
+            {data.executedWithoutInstrumentist
+              ? "Activité réalisée sans instrumentiste : l'encodage est renvoyé au chirurgien pour correction. Le commentaire est obligatoire (ex : intervention manquante, matériel incorrect, quantité à vérifier, mauvaise firme…)."
+              : "L'encodage repart chez l'instrumentiste pour correction. Le commentaire est obligatoire (ex : matériel manquant, quantité incorrecte, mauvaise firme, intervention incomplète...)."}
           </Typography>
           <TextField
             autoFocus
@@ -714,9 +727,10 @@ export function MissionDetailContent({
       <Dialog open={reopenOpen} onClose={() => setReopenOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Rouvrir l'encodage</DialogTitle>
         <DialogContent dividers>
-          <Typography variant="body2" color="text.secondary" mb={1.5}>
-            La mission repasse en encodage modifiable côté instrumentiste. Motif
-            obligatoire (D-148).
+          <Typography variant="body2" color="text.secondary" mb={1.5} data-testid="reopen-encoding-intro">
+            {data.executedWithoutInstrumentist
+              ? "Activité réalisée sans instrumentiste : la mission repasse en encodage modifiable par le chirurgien. Motif obligatoire (D-148)."
+              : "La mission repasse en encodage modifiable côté instrumentiste. Motif obligatoire (D-148)."}
           </Typography>
           <TextField
             autoFocus

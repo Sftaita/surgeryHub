@@ -809,3 +809,48 @@ describe("MissionTrackingDrawer — activité réalisée sans instrumentiste (D-
     expect(screen.getByText("Activité déclarée par Dr Martin")).toBeInTheDocument();
   });
 });
+
+describe("MissionTrackingDrawer — heures et renvoi d'une activité sans instrumentiste (D-155)", () => {
+  const declaredItem = () => ({
+    ...makeItem(), instrumentist: null, executedWithoutInstrumentist: { declaredByName: "Dr Martin" },
+    hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" },
+  }) as any;
+
+  it("affiche « aucune prestation horaire attendue », sans barres, rappel ni correction des heures", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "reject", "edit_encoding"], executedWithoutInstrumentist: { declaredAt: null, declaredByName: "Dr Martin" } });
+    renderDrawer(declaredItem());
+
+    expect(await screen.findByTestId("drawer-hours-without-instrumentist")).toHaveTextContent("Activité réalisée sans instrumentiste — aucune prestation horaire attendue");
+    expect(screen.queryByText("Heures prestées non renseignées")).toBeNull();
+    expect(screen.queryByTestId("drawer-hours-status")).toBeNull();
+    expect(screen.queryByTestId("drawer-edit-hours")).toBeNull();
+    expect(screen.queryByText("Rappeler les heures")).toBeNull();
+  });
+
+  it("« Renvoyer en correction » : le chirurgien est le destinataire, exemples de motifs sans horaires", async () => {
+    const user = userEvent.setup();
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], encodingCorrectionBlockedReason: null, executedWithoutInstrumentist: { declaredAt: null, declaredByName: "Dr Martin" } });
+    renderDrawer(declaredItem());
+
+    await user.click(await screen.findByRole("button", { name: "Renvoyer en correction" }));
+    const dialog = await screen.findByRole("dialog", { name: "Renvoyer en correction" });
+    expect(within(dialog).getByText("Chirurgien (destinataire)")).toBeInTheDocument();
+    expect(within(dialog).getByTestId("correction-recipient")).toHaveTextContent("Dr Jean Dupont");
+    expect(within(dialog).queryByText("Instrumentiste")).toBeNull();
+    expect(within(dialog).getByText(/renvoyé au chirurgien/)).toBeInTheDocument();
+    const reason = within(dialog).getByLabelText(/Motif de la correction/);
+    expect(reason).toHaveAttribute("placeholder", expect.stringContaining("intervention manquante"));
+    expect(reason.getAttribute("placeholder")).not.toMatch(/horaires/i);
+  });
+
+  it("mission classique : la fenêtre de renvoi désigne toujours l'instrumentiste", async () => {
+    const user = userEvent.setup();
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], encodingCorrectionBlockedReason: null });
+    renderDrawer(makeItem());
+
+    await user.click(await screen.findByRole("button", { name: "Renvoyer en correction" }));
+    const dialog = await screen.findByRole("dialog", { name: "Renvoyer en correction" });
+    expect(within(dialog).getByText("Instrumentiste")).toBeInTheDocument();
+    expect(within(dialog).getByText(/renvoyé à l'instrumentiste/)).toBeInTheDocument();
+  });
+});

@@ -7141,7 +7141,9 @@ GET /api/me/notification-preferences
 
 Retourne chaque `NotificationType` **configurable** avec ses canaux résolus (ligne
 stockée, ou défaut produit via `DefaultNotificationPreferenceResolver` si aucune ligne
-n'existe encore). **D-143 :** `ENCODING_REMINDER` et `ENCODING_ESCALATION` (relances
+n'existe encore). **Selon le rôle (2026-10-16) :** uniquement les types que les rôles de la
+personne reçoivent réellement (`NotificationType::audienceRoles()`, union pour plusieurs
+rôles, ROLE_ADMIN = manager) ; le `PATCH` et les préférences déjà enregistrées sont inchangés. **D-143 :** `ENCODING_REMINDER` et `ENCODING_ESCALATION` (relances
 d'encodage, obligations de service) sont exclus (`NotificationType::isConfigurable()`), et le
 `PATCH` de ces types répond `400`. Nouveaux types configurables : `ENCODING_SUBMITTED`
 (chirurgien, encodage soumis/corrigé) et `ENCODING_ANOMALY_INSTRUMENTIST` (instrumentiste,

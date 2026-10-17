@@ -393,7 +393,8 @@ final class EncodingCorrectionFromTrackingD148Test extends WebTestCase
         // montant, ni recalcul ne changent.
         $calcAfter = $this->em->getConnection()->fetchAssociative('SELECT * FROM financial_calculation WHERE id = ?', [$calc->getId()]);
         self::assertNotNull($calcAfter['encoding_reopened_at'], 'calcul marqué obsolète par la réouverture');
-        unset($calcBefore['encoding_reopened_at'], $calcAfter['encoding_reopened_at']);
+        // updated_at suit la pose du marqueur (horodatage technique, à la seconde près).
+        unset($calcBefore['encoding_reopened_at'], $calcAfter['encoding_reopened_at'], $calcBefore['updated_at'], $calcAfter['updated_at']);
         self::assertSame($calcBefore, $calcAfter, 'aucun recalcul, aucune altération du calcul financier');
         self::assertSame(1, (int) $this->em->getConnection()->fetchOne('SELECT COUNT(*) FROM financial_calculation WHERE mission_id = ?', [$id]));
     }

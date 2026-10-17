@@ -280,6 +280,69 @@ enum NotificationType: string
         return in_array($this, [self::ENCODING_REMINDER, self::ENCODING_ESCALATION, self::MISSION_HOURS_REMINDER], true);
     }
 
+    public const AUDIENCE_SURGEON = 'ROLE_SURGEON';
+    public const AUDIENCE_INSTRUMENTIST = 'ROLE_INSTRUMENTIST';
+    public const AUDIENCE_MANAGER = 'ROLE_MANAGER';
+
+    /**
+     * Roles that actually RECEIVE this type, as decided by the code that sends it (recipient
+     * chosen as the mission's surgeon / instrumentist, the operational managers, the creator of
+     * a catalogue request…). Drives which switches the preferences screen offers to a person
+     * (MeController) — never who receives a notification. ROLE_ADMIN counts as a manager.
+     * Types no code produces any more keep the audience their name and history describe.
+     *
+     * @return list<string>
+     */
+    public function audienceRoles(): array
+    {
+        $s = self::AUDIENCE_SURGEON;
+        $i = self::AUDIENCE_INSTRUMENTIST;
+        $m = self::AUDIENCE_MANAGER;
+
+        return match ($this) {
+            self::PLANNING_ALERT, self::PLANNING_DEPLOYED_MANAGER, self::MISSION_OFFER_DECLINED,
+            self::ABSENCE_SELF_DECLARED, self::ABSENCE_OCCURRENCE_CANCELLED_MGR, self::ABSENCE_OCCURRENCE_RESTORED_MGR,
+            self::MISSION_RESTORED_MGR, self::ABSENCE_IMPACT_SUMMARY, self::CATALOGUE_REQUEST_CREATED,
+            self::SURGEON_MISSION_REQUEST_CREATED, self::ENCODING_ANOMALY_REPORTED, self::MISSION_DECLARED,
+            self::ENCODING_ESCALATION, self::ASSIGNMENT_REFUSED_BY_SURGEON, self::ASSIGNMENT_REVIEW_REQUESTED => [$m],
+
+            self::PLANNING_DEPLOYED_SURGEON, self::SURGEON_POST_COVERED, self::SURGEON_POST_UNCOVERED,
+            self::ABSENCE_SURGEON_MISSION_OPENED, self::ABSENCE_OCCURRENCE_UNCOVERED, self::MISSION_UNCOVERED_ESCALATION,
+            self::SURGEON_MISSION_OPEN_PUBLISHED, self::SURGEON_MISSION_REQUEST_ACCEPTED, self::SURGEON_MISSION_REQUEST_REJECTED,
+            self::ENCODING_ANOMALY_RESOLVED, self::ENCODING_SUBMITTED => [$s],
+
+            self::PLANNING_DEPLOYED_INSTRUMENTIST, self::OPEN_MISSION_AVAILABLE, self::PLANNING_MISSION_REASSIGNED,
+            self::PLANNING_MISSION_RELEASED, self::MISSION_OFFERED, self::MISSION_ASSIGNED_DIRECTLY,
+            self::ABSENCE_INSTRUMENTIST_RELEASED, self::ABSENCE_MISSION_CANCELLED, self::ABSENCE_INSTRUMENTIST_REASSIGNED,
+            self::ABSENCE_OCCURRENCE_CANCELLED, self::ABSENCE_POOL_MISSION_AVAILABLE, self::ABSENCE_OCCURRENCE_RESTORED,
+            self::ROOM_TAKEOVER_MISSION_OFFER, self::ENCODING_REMINDER_D1, self::MISSION_DECLARED_APPROVED,
+            self::MISSION_DECLARED_REJECTED, self::ENCODING_REMINDER, self::ENCODING_ANOMALY_INSTRUMENTIST,
+            self::ENCODING_UPDATED_BY_SURGEON, self::MISSION_HOURS_REMINDER => [$i],
+
+            self::PLANNING_MISSION_CANCELLED, self::PLANNING_CHANGE_SUMMARY, self::PLANNING_MISSION_ADDED,
+            self::PLANNING_MISSION_UPDATED, self::MISSION_RESTORED, self::PLANNING_RESENT_MANUAL,
+            self::ABSENCE_REQUEST_MISSING, self::ABSENCE_ENCODED_RECAP => [$s, $i],
+
+            // D-155 — the surgeon of an activity executed without instrumentist encodes it.
+            self::ENCODING_CORRECTION_REQUESTED => [$i, $s],
+
+            // The creator of the request: an instrumentist, the mission's surgeon (D-154) or a manager (D-153).
+            self::CATALOGUE_REQUEST_RESOLVED, self::CATALOGUE_REQUEST_IGNORED => [$i, $s, $m],
+
+            self::ACCOUNT_INVITATION, self::ACCOUNT_EMAIL_CHANGED => [$s, $i, $m],
+        };
+    }
+
+    /** Does a person with these roles receive this type (ROLE_ADMIN counts as a manager)? */
+    public function concernsRoles(array $roles): bool
+    {
+        if (in_array('ROLE_ADMIN', $roles, true)) {
+            $roles[] = self::AUDIENCE_MANAGER;
+        }
+
+        return array_intersect($this->audienceRoles(), $roles) !== [];
+    }
+
     /** Offered in the person's notification preferences (a switch must change something). */
     public function isConfigurable(): bool
     {

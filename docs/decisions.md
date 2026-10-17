@@ -13996,3 +13996,36 @@ instrumentiste ; règles de déclaration ; annulation auditée ; mission classiq
 calcul), `MissionActionsServiceTest` (cohérence actions ↔ voter : déclarer, annuler, soumettre,
 tous statuts × rôles × instrumentiste × début × fait), frontend (détail chirurgien et manager,
 `SubmitDialog`, `SurgeonEncodingPage`, suivi).
+
+### Correctifs de recette navigateur (2026-10-16)
+
+Trois défauts relevés en recette, corrigés sans changement métier :
+
+1. **Heures d'une activité sans instrumentiste.** « Suivi des encodages » (liste et tiroir) et
+   la fiche mission manager n'affichent plus « Heures prestées non renseignées », « repli sur
+   le planifié » ni une durée effective tirée du planifié : à la place, « Activité réalisée
+   sans instrumentiste — aucune prestation horaire attendue », sans barres planifié / réel ni
+   actions de rappel ou de correction des heures. Piloté par `executedWithoutInstrumentist`
+   (servi par le backend) ; missions classiques inchangées ; moteur financier non modifié.
+2. **Renvoi en correction / réouverture.** Pour une activité sans instrumentiste, les fenêtres
+   (tiroir et fiche manager) désignent le chirurgien comme destinataire, annoncent le renvoi au
+   chirurgien et proposent des exemples de motifs de contenu (intervention manquante, matériel
+   incorrect, quantité à vérifier, mauvaise firme), jamais d'horaires. Aucune nouvelle
+   notification : le backend notifiait déjà le chirurgien (décision 4).
+3. **Préférences de notification selon le rôle.** `NotificationType::audienceRoles()` déclare,
+   pour chaque type, les rôles qui le reçoivent réellement (établis depuis le code d'envoi ;
+   ROLE_ADMIN compte comme manager) ; `GET /api/me/notification-preferences` ne propose plus
+   que les types configurables qui concernent les rôles de la personne (union pour plusieurs
+   rôles). Le `PATCH`, les préférences enregistrées et la distribution des notifications sont
+   inchangés : aucune ligne n'est supprimée, un type non proposé garde sa préférence.
+
+Tests : `NotificationTypeAudienceTest`, `MeNotificationPreferencesControllerTest` (par rôle,
+admin, multi-rôles, préférence enregistrée conservée), `EncodingTrackingTable.test.tsx`,
+`MissionTrackingDrawer.test.tsx`, `MissionDetailPage.test.tsx` (manager).
+
+Relevé hors périmètre : cinq types non retirés n'ont plus aucun producteur
+(`PLANNING_MISSION_ADDED`, `PLANNING_MISSION_UPDATED`, `ABSENCE_INSTRUMENTIST_RELEASED`, et les
+trois `*_MGR` morts depuis D-105) et restent proposés à leurs rôles ; plusieurs types n'ont
+pas de libellé frontend (`MISSION_RESTORED`, `SURGEON_MISSION_REQUEST_ACCEPTED` /
+`_REJECTED`, `ENCODING_ANOMALY_RESOLVED`, `ABSENCE_INSTRUMENTIST_REASSIGNED`,
+`ABSENCE_OCCURRENCE_RESTORED`) et s'affichent avec leur code.
