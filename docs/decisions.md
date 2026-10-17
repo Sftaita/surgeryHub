@@ -13275,7 +13275,7 @@ aucune seconde notification. C'est prouvé sur base réelle par
 
 ## D-150 — Socle d'affectation : `MissionAssignment`, écrit par un seul service explicite (2026-10-14)
 
-**Statut : implémenté sur `feat/surgeon-refusal-compat` (lot L1), non commité, non déployé.**
+**Statut : commité sur `feat/surgeon-refusal-compat` (lot L1) ; non fusionné dans `main`, non déployé.**
 
 ### Contexte
 
@@ -13456,7 +13456,7 @@ ligne à l'attendu, contrôles d'invariant, aller-retour `down`/`up`.
 
 ## D-151 — Refus d'affectation par le chirurgien (refus ponctuel), demande d'intervention du manager, missions commencées non claimables (2026-10-14)
 
-**Statut : implémenté sur `feat/surgeon-refusal-compat` (lot L2), non commité, non déployé.**
+**Statut : commité sur `feat/surgeon-refusal-compat` (lot L2) ; non fusionné dans `main`, non déployé.**
 
 ### Contexte
 
@@ -13568,7 +13568,7 @@ réaffectation manager, deux connexions), `MissionAssignmentRefusalPolicyTest`,
 
 ## D-152 — Incompatibilités chirurgien–instrumentiste, refus durable, conflits sur les missions futures (2026-10-15)
 
-**Statut : implémenté sur `feat/surgeon-refusal-compat` (lot L3), non commité, non déployé.**
+**Statut : commité sur `feat/surgeon-refusal-compat` (lot L3) ; non fusionné dans `main`, non déployé.**
 
 ### Contexte
 
@@ -13702,7 +13702,7 @@ refonte de L3 tant qu'aucun contournement actif n'est trouvé.
 
 ## D-153 — Correction de l'encodage par le manager depuis « Suivi des encodages » (2026-10-15)
 
-**Statut : implémenté sur `feat/surgeon-refusal-compat` (lot L4), non commité, non déployé.**
+**Statut : commité sur `feat/surgeon-refusal-compat` (lot L4) ; non fusionné dans `main`, non déployé.**
 Amende D-070 (droit d'encodage du manager « toujours »), D-143 (voter des heures) et complète
 D-148 (renvoi / réouverture) et D-136.
 
@@ -13831,7 +13831,7 @@ explicite, de nouveau facturable), `FirmBillingWorklistControllerTest` (motif
 
 ## D-154 — Encodage des interventions et du matériel par le chirurgien sur sa mission avec instrumentiste (2026-10-16)
 
-**Statut : implémenté sur `feat/surgeon-refusal-compat` (lot L5), non commité, non déployé.**
+**Statut : commité sur `feat/surgeon-refusal-compat` (lot L5) ; non fusionné dans `main`, non déployé.**
 Amende D-100 (consultation chirurgien strictement en lecture) et D-143 ; complète D-153.
 
 ### Contexte
@@ -13952,7 +13952,7 @@ nouvelle série après la fenêtre), `notificationFormat.test.ts`.
 
 ## D-155 — Activité opératoire réalisée sans instrumentiste (2026-10-16)
 
-**Statut : implémenté sur `feat/surgeon-refusal-compat` (lot L6), non commité, non déployé.**
+**Statut : commité sur `feat/surgeon-refusal-compat` (lot L6) ; non fusionné dans `main`, non déployé.**
 Amende D-070 (seule l'instrumentiste démarre l'encodage), D-143 (heures obligatoires à la
 soumission et à la validation), D-148 (le renvoi en correction notifie l'instrumentiste) et
 D-073 (`assertEligible` exige une instrumentiste). Complète D-154.
