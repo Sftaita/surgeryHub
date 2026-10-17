@@ -13,6 +13,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 
 import { DrawerSection } from "../../manager-instrumentists/components/DrawerSection";
+import IncompatibilitiesSection from "../../incompatibilities/components/IncompatibilitiesSection";
 import { AddSurgeonSiteMembershipDialog } from "./AddSurgeonSiteMembershipDialog";
 import { SurgeonPlanningSection } from "./SurgeonPlanningSection";
 import { UserEmailEditor } from "../../manager-instrumentists/components/UserEmailEditor";
@@ -373,6 +374,11 @@ export function SurgeonDrawer({
                     </Stack>
                   </DrawerSection>
                 </Box>
+
+                {/* D-152 — incompatibilités chirurgien–instrumentiste. */}
+                <DrawerSection title="Incompatibilités">
+                  <IncompatibilitiesSection mode="surgeon" personId={surgeon.id} />
+                </DrawerSection>
 
                 <Box ref={planningSectionRef}>
                   <DrawerSection title="Planning">

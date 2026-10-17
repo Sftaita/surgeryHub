@@ -46,6 +46,8 @@ class PlanningAlertActionService
         private readonly PlanningConflictDetectionService $conflictDetection,
         private readonly MessageBusInterface $bus,
         ?MissionAssignmentService $assignments = null,
+        // D-152 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?MissionEligibilityService $eligibility = null,
     ) {
         // D-150 — always autowired; a plain unit test that omits it still gets the real writer.
         $this->assignments = $assignments ?? new MissionAssignmentService($em);
@@ -190,6 +192,11 @@ class PlanningAlertActionService
         }
         if ($this->hasConflict($instrumentist, $mission)) {
             throw new UnprocessableEntityHttpException("L'instrumentiste a déjà une mission en conflit sur ce créneau.");
+        }
+        // D-152 — never re-affect an instrumentist incompatible with the mission's surgeon
+        // (the DRAFT branch does not go through MissionPostDeployService's eligibility gate).
+        if ($mission->getSurgeon() !== null && $this->eligibility?->isIncompatible($mission->getSurgeon(), $instrumentist)) {
+            throw new UnprocessableEntityHttpException("Cet instrumentiste est incompatible avec le chirurgien de cette mission.");
         }
     }
 

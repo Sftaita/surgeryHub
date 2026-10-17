@@ -20,6 +20,7 @@ import { ActiveBadge } from "../../../ui/StatusBadge";
 import { EntityHeader } from "../../../ui/EntityHeader";
 
 import { DrawerSection } from "./DrawerSection";
+import IncompatibilitiesSection from "../../incompatibilities/components/IncompatibilitiesSection";
 import { AddSiteMembershipDialog } from "./AddSiteMembershipDialog";
 import { InstrumentistPlanningSection } from "./InstrumentistPlanningSection";
 import { UserEmailEditor } from "./UserEmailEditor";
@@ -650,6 +651,13 @@ export function InstrumentistDrawer({
                     </Stack>
                   </DrawerSection>
                 </Box>
+
+                {/* D-152 — incompatibilités chirurgien–instrumentiste. */}
+                {instrumentistId !== null && (
+                  <DrawerSection title="Incompatibilités">
+                    <IncompatibilitiesSection mode="instrumentist" personId={instrumentistId} />
+                  </DrawerSection>
+                )}
 
                 <Box ref={planningSectionRef}>
                   <DrawerSection title="Planning">

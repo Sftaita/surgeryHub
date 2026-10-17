@@ -103,6 +103,20 @@ describe("D-151 — surgeon assignment card", () => {
     expect(toastSuccess).toHaveBeenCalled();
   });
 
+  it("refuses and blocks for his future missions when the surgeon chooses the durable refusal", async () => {
+    mockGet(surgeonMission());
+    apiPostMock.mockResolvedValue({ data: surgeonMission({ status: "OPEN", instrumentist: null, currentAssignment: null, allowedActions: ["view"] }) });
+    renderAt(`/app/s/missions/${MISSION_ID}`);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Refuser cet instrumentiste" }));
+    expect(screen.getByLabelText("Refuser pour cette mission")).toBeChecked();
+    await userEvent.click(screen.getByLabelText("Refuser et bloquer pour mes futures missions"));
+    expect(screen.getByText(/ne verra plus vos nouvelles missions/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Refuser et bloquer" }));
+
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith(`/api/missions/${MISSION_ID}/assignments/42/refuse`, { scope: "DURABLE" }));
+  });
+
   it("offers only the manager intervention once the refusal is no longer possible, with the reason", async () => {
     mockGet(
       surgeonMission({

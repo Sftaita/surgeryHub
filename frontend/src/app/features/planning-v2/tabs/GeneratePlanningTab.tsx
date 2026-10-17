@@ -784,6 +784,7 @@ export function GeneratePlanningTab() {
         startTime: selectedLine.startTime,
         endTime: selectedLine.endTime,
         excludeMissionId: selectedLine.existingMissionId,
+        surgeonId: selectedLine.surgeonId,
       }
     : null;
   const selectedLineRosterQuery = useRosterEligibility(
@@ -825,7 +826,7 @@ export function GeneratePlanningTab() {
     () => [...selectedKeys]
       .map((key) => effectiveLines.find((l) => lineKeyV2(l) === key))
       .filter((l): l is PreviewLineV2 => !!l && l.status !== "SKIPPED")
-      .map((l) => ({ siteId: l.siteId, date: l.date, startTime: l.startTime, endTime: l.endTime, excludeMissionId: l.existingMissionId })),
+      .map((l) => ({ siteId: l.siteId, date: l.date, startTime: l.startTime, endTime: l.endTime, excludeMissionId: l.existingMissionId, surgeonId: l.surgeonId })),
     [selectedKeys, effectiveLines],
   );
   const bulkRoster = useMergedRosterEligibility(bulkSlots, isModification ? "PLANNING_MODIFICATION" : "STRICT_ASSIGNMENT");

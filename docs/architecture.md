@@ -4254,3 +4254,15 @@ publication.
 - **Notifications** : `RELEASED` + `origin = SURGEON_REFUSAL` ; formulation neutre côté
   instrumentiste (`MissionLifecycleNotificationFactory::isNeutralRemoval()`), origine réelle
   côté managers.
+
+### 31.2 Incompatibilités chirurgien–instrumentiste (D-152)
+
+- **Écrivain unique** : `App\Service\SurgeonInstrumentistIncompatibilityService` (création,
+  levée, conflits, périmètre « bloquable »). Unicité de l'incompatibilité active garantie par
+  MySQL (`active_pair_key`).
+- **Application** : `MissionEligibilityService::exclusionReasons()` / `exclusionsByMission()`
+  (une requête UNION avec le refus D-151) sur toutes les voies ; `isIncompatibleLocked()`
+  (lecture `FOR SHARE`) dans les transactions d'affectation pour la sérialisation.
+- **Conflits** : `PlanningAlert` `SURGEON_INCOMPATIBILITY` (non ignorable), fermée par
+  `MissionAssignmentService::close()` ou par la levée.
+- **Droits** : `SurgeonInstrumentistIncompatibilityVoter` ; l'instrumentiste n'a aucun accès.

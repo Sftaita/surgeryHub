@@ -116,6 +116,15 @@ required: an acceptance nobody refuses simply stands
 
 ask the managers to intervene on the current affectation of one of their missions
 
+block an instrumentist (active on one of their sites, or a freelancer) for all their missions,
+from their profile or with a durable refusal, and lift the blocks they created (D-152); a
+blocked instrumentist never sees, is never notified of, can never accept nor be assigned to
+those missions, and is never told about the block
+
+Managers (D-152): view, create and lift any surgeon–instrumentist incompatibility; resolve
+every conflict it raises on already-assigned future missions (reassign, open to the pool or
+lift) — a conflict can never be ignored
+
 Managers/Admins:
 
 control planning

@@ -346,7 +346,7 @@ dispose de `release` / `reassign`).
 
 **Transition :** `ASSIGNED → OPEN` — seule l'affectation est défaite, jamais la mission.
 
-**Body :** `{"scope": "PUNCTUAL"}` (défaut `PUNCTUAL` ; toute autre valeur → `422`).
+**Body :** `{"scope": "PUNCTUAL" | "DURABLE"}` (défaut `PUNCTUAL` ; `DURABLE` = refus + incompatibilité, D-152 ; toute autre valeur → `422`).
 
 `{assignmentId}` est l'affectation que le chirurgien a vue (`currentAssignment.id`). Les
 conditions sont décidées côté serveur, sous verrou de la mission, par
@@ -410,6 +410,34 @@ aux managers opérationnels (D-149).
   chirurgien — `instrumentist: null`, `allowedActions: ["view"]`, jamais de motif.
 - `allowedActions` du chirurgien de la mission : `refuse_assignment` (refus possible
   maintenant) ou `request_assignment_review` (sinon, une fois par affectation).
+
+---
+
+### Incompatibilités chirurgien–instrumentiste (D-152)
+
+Une incompatibilité active exclut l'instrumentiste de toutes les missions du chirurgien (motif
+`SURGEON_INCOMPATIBILITY`, voir D-152). Représentation commune :
+`{id, surgeon: {id, name}, instrumentist: {id, name}, origin: SURGEON_REFUSAL|SURGEON|MANAGER,
+active, createdAt, createdByName, liftedAt, liftedByName, canLift, conflicts?}` — `conflicts`
+(managers seulement) : `[{alertId, missionId, startAt, siteName}]`, missions futures encore
+affectées à la paire.
+
+| Méthode et route | AuthZ | Effet |
+|---|---|---|
+| `GET /api/me/blocked-instrumentists` | `ROLE_SURGEON` | ses incompatibilités actives |
+| `GET /api/me/blockable-instrumentists?q=` | `ROLE_SURGEON` | instrumentistes qu'il peut bloquer : actifs de ses sites + freelances, non déjà bloqués |
+| `POST /api/me/blocked-instrumentists` `{instrumentistId}` | `ROLE_SURGEON` | crée (origine `SURGEON`) → 201 ; `422 INSTRUMENTIST_NOT_BLOCKABLE` hors périmètre ; `409 INCOMPATIBILITY_ALREADY_ACTIVE` |
+| `GET /api/surgeons/{id}/incompatibilities` | manager | actives + historique, avec conflits |
+| `GET /api/instrumentists/{id}/incompatibilities` | manager | idem côté instrumentiste |
+| `POST /api/incompatibilities` `{surgeonId, instrumentistId}` | manager | crée (origine `MANAGER`) → 201 ; `422 INCOMPATIBILITY_INVALID_PAIR` |
+| `POST /api/incompatibilities/{id}/lift` | manager, ou le chirurgien pour ses propres blocages | lève (une fois, `409 INCOMPATIBILITY_ALREADY_LIFTED`), ferme ses conflits ouverts |
+
+À la création, chaque mission future du chirurgien encore `ASSIGNED` à l'instrumentiste devient
+une alerte planning `SURGEON_INCOMPATIBILITY` (non ignorable, non résoluble à la main ; voir
+`POST /api/planning/alerts/{id}/ignore|resolve` → 409) ; aucune mission n'est modifiée.
+`GET /api/planning/v2/eligible-instrumentists` accepte `surgeonId` (sinon le chirurgien de
+`excludeMissionId`). `POST /api/missions/{id}/assignments/{assignmentId}/refuse` accepte
+désormais `{"scope": "DURABLE"}` (refus + blocage, D-152).
 
 ---
 

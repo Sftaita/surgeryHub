@@ -542,6 +542,11 @@ class MissionService
                     WHERE refusal.mission = m AND refusal.instrumentist = :me AND refusal.endReason = :refusedBySurgeon
                 )')
                 ->setParameter('refusedBySurgeon', MissionAssignmentEndReason::REFUSED_BY_SURGEON);
+            // D-152 — never a mission of a surgeon I am incompatible with.
+            $qb->andWhere('NOT EXISTS (
+                    SELECT incompatibility.id FROM App\Entity\SurgeonInstrumentistIncompatibility incompatibility
+                    WHERE incompatibility.surgeon = m.surgeon AND incompatibility.instrumentist = :me AND incompatibility.liftedAt IS NULL
+                )');
 
             // Lot 6 (offers "unread" badge) — programmatic-only filter, see MissionFilter.
             if ($filter->createdAfter !== null) {

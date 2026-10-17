@@ -189,7 +189,7 @@ final class MissionEligibilityServiceTest extends TestCase
         $candidate = $this->makeUser();
         $candidate->setEmploymentType(\App\Enum\EmploymentType::FREELANCER);
 
-        // Only 3 queries expected (absence, conflict, D-151 refusal) — the membership query (Q1) is skipped.
+        // Only 2 DQL queries expected (absence, conflict) — the membership query (Q1) is skipped.
         $call = 0;
         $this->em->method('createQuery')
             ->willReturnCallback(function () use (&$call): Query {
@@ -204,7 +204,7 @@ final class MissionEligibilityServiceTest extends TestCase
 
         $this->assertTrue($result->eligible);
         $this->assertNotContains(EligibilityReason::NO_SITE_MEMBERSHIP, $result->reasons);
-        $this->assertSame(3, $call, 'freelancer must skip the site-membership query entirely');
+        $this->assertSame(2, $call, 'freelancer must skip the site-membership query entirely');
     }
 
     public function test_evaluate_non_freelancer_without_membership_still_ineligible(): void
@@ -288,8 +288,8 @@ final class MissionEligibilityServiceTest extends TestCase
         $this->assertContains(EligibilityReason::SCHEDULE_CONFLICT, $result->reasons);
     }
 
-    /** D-151 — 4th query: has this mission's surgeon refused this person on it? */
-    public function test_evaluate_uses_exactly_4_db_queries(): void
+    /** 3 queries (DQL; the D-151/D-152 exclusions — refusal on the mission, incompatibility with its surgeon — are one more DBAL UNION query). */
+    public function test_evaluate_uses_exactly_3_db_queries(): void
     {
         $mission   = $this->makeMission();
         $candidate = $this->makeUser();
@@ -306,7 +306,7 @@ final class MissionEligibilityServiceTest extends TestCase
 
         $this->service->evaluate($mission, $candidate);
 
-        $this->assertSame(4, $queryCount, 'evaluate() must run exactly 4 DB queries.');
+        $this->assertSame(3, $queryCount, 'evaluate() must run exactly 3 DQL queries.');
     }
 
     // ── evaluateAllCandidates() ────────────────────────────────────────────────
@@ -453,8 +453,8 @@ final class MissionEligibilityServiceTest extends TestCase
         $this->assertEmpty($results);
     }
 
-    /** D-151 — 4th query: the people the surgeon refused on this mission. */
-    public function test_evaluate_all_candidates_uses_exactly_4_db_queries(): void
+    /** 3 queries (DQL; the D-151/D-152 exclusions — refusal on the mission, incompatibility with its surgeon — are one more DBAL UNION query). */
+    public function test_evaluate_all_candidates_uses_exactly_3_db_queries(): void
     {
         $site      = $this->makeSite();
         $mission   = $this->makeMission(site: $site);
@@ -473,7 +473,7 @@ final class MissionEligibilityServiceTest extends TestCase
 
         $this->service->evaluateAllCandidates($mission);
 
-        $this->assertSame(4, $queryCount, 'evaluateAllCandidates() must run exactly 4 DB queries.');
+        $this->assertSame(3, $queryCount, 'evaluateAllCandidates() must run exactly 3 DQL queries.');
     }
 
     // ── findEligibleByMission() — H3 (D-129): per-mission candidates, same 3 queries ──
@@ -570,8 +570,8 @@ final class MissionEligibilityServiceTest extends TestCase
         $this->assertEmpty($result);
     }
 
-    /** D-151 — 4th query: the people each surgeon refused, for all missions at once. */
-    public function test_find_eligible_by_mission_uses_exactly_4_db_queries_for_multiple_missions(): void
+    /** 3 queries (DQL; the D-151/D-152 exclusions — refusal on the mission, incompatibility with its surgeon — are one more DBAL UNION query), whatever the number of missions. */
+    public function test_find_eligible_by_mission_uses_exactly_3_db_queries_for_multiple_missions(): void
     {
         $site      = $this->makeSite();
         $candidate = $this->makeUser();
@@ -594,8 +594,8 @@ final class MissionEligibilityServiceTest extends TestCase
 
         $this->service->findEligibleByMission([$m1, $m2, $m3]);
 
-        $this->assertSame(4, $queryCount,
-            'findEligibleByMission() must run exactly 4 DB queries regardless of mission count (D-036, no N+1).'
+        $this->assertSame(3, $queryCount,
+            'findEligibleByMission() must run exactly 3 DQL queries regardless of mission count (D-036, no N+1).'
         );
     }
 
@@ -768,7 +768,7 @@ final class MissionEligibilityServiceTest extends TestCase
         // No SiteMembership query configured at all — if evaluateForReassignment() ever
         // queried it, the unconfigured mock would return null, and (int) null === 0 would
         // silently look like "eligible" here too, defeating the point of this test. Assert
-        // directly on the query count instead: exactly 3 (absence, conflict, D-151 refusal), never 4.
+        // directly on the query count instead: exactly 2 DQL (absence, conflict), never 3.
         $queryCount = 0;
         $this->em->method('createQuery')
             ->willReturnCallback(function (string $dql) use (&$queryCount): Query {
@@ -783,7 +783,7 @@ final class MissionEligibilityServiceTest extends TestCase
         $result = $this->service->evaluateForReassignment($mission, $candidate);
 
         $this->assertTrue($result->eligible);
-        $this->assertSame(3, $queryCount, 'evaluateForReassignment() must run exactly 3 queries (absence, conflict, refusal) — never a site-membership check');
+        $this->assertSame(2, $queryCount, 'evaluateForReassignment() must run exactly 2 DQL queries (absence, conflict) — never a site-membership check');
     }
 
     public function test_evaluate_for_reassignment_inactive_candidate_returns_inactive_reason(): void

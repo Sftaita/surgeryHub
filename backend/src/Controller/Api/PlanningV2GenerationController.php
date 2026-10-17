@@ -284,7 +284,16 @@ class PlanningV2GenerationController extends AbstractController
         $policy = EligibilityEnforcementPolicy::tryFrom((string) $request->query->get('policy', ''))
             ?? EligibilityEnforcementPolicy::STRICT_ASSIGNMENT;
 
-        $results    = $this->eligibilityService->evaluateRoster($site, $startAt, $endAt, $excludeMissionId);
+        // D-152 — the slot's surgeon, so his incompatible instrumentists are flagged: ?surgeonId
+        // (a new line), otherwise the surgeon of the mission being edited (?excludeMissionId).
+        $surgeon = null;
+        if ($request->query->get('surgeonId') !== null) {
+            $surgeon = $this->em->find(\App\Entity\User::class, (int) $request->query->get('surgeonId'));
+        } elseif ($excludeMissionId !== null) {
+            $surgeon = $this->em->find(\App\Entity\Mission::class, $excludeMissionId)?->getSurgeon();
+        }
+
+        $results    = $this->eligibilityService->evaluateRoster($site, $startAt, $endAt, $excludeMissionId, $surgeon);
         $candidates = array_map(
             fn ($result) => $this->eligibilityService->serializeCandidate($result, $policy),
             $results,

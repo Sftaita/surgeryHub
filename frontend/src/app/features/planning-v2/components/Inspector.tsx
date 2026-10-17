@@ -80,7 +80,7 @@ export function Inspector({
   // the slot as filled in so far (site/date/times), same backend source of truth as the
   // edit picker. Falls back to the raw unannotated list until the slot is complete.
   const createSlot: RosterSlot | null = isCreating && draft.siteId !== null && draft.date !== ""
-    ? { siteId: draft.siteId, date: draft.date, startTime: draft.startTime, endTime: draft.endTime }
+    ? { siteId: draft.siteId, date: draft.date, startTime: draft.startTime, endTime: draft.endTime, surgeonId: draft.surgeonId }
     : null;
   const createRosterQuery = useRosterEligibility(createSlot, isModification ? "PLANNING_MODIFICATION" : "STRICT_ASSIGNMENT");
   const createInstrumentistOptions: SearchableOption[] = React.useMemo(() => {

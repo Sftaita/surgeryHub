@@ -125,6 +125,11 @@ class PlanningAlertService
     /** @return bool true if the alert's status actually changed */
     public function resolve(PlanningAlert $alert, ?User $by, string $note): bool
     {
+        // D-152 — an incompatibility conflict is closed by its effective resolution only.
+        if ($alert->isOpenOrAcknowledged() && $this->isUnresolvedIncompatibilityConflict($alert)) {
+            throw new ConflictHttpException("Ce conflit d'incompatibilité est toujours actif : réaffectez la mission, ouvrez-la au pool ou levez l'incompatibilité.");
+        }
+
         return match ($alert->getStatus()) {
             PlanningAlertStatus::OPEN, PlanningAlertStatus::ACKNOWLEDGED => $this->mutate($alert, fn () => $alert->resolve($by, $note)),
             PlanningAlertStatus::RESOLVED => false,
@@ -135,11 +140,40 @@ class PlanningAlertService
     /** @return bool true if the alert's status actually changed */
     public function ignore(PlanningAlert $alert, User $by, string $note): bool
     {
+        // D-152 — an active incompatibility is never ignored: no « maintenir l'affectation ».
+        if ($alert->getType() === PlanningAlertType::SURGEON_INCOMPATIBILITY) {
+            throw new ConflictHttpException("Un conflit d'incompatibilité ne peut pas être ignoré : réaffectez la mission, ouvrez-la au pool ou levez l'incompatibilité.");
+        }
+
         return match ($alert->getStatus()) {
             PlanningAlertStatus::OPEN, PlanningAlertStatus::ACKNOWLEDGED => $this->mutate($alert, fn () => $alert->ignore($by, $note)),
             PlanningAlertStatus::IGNORED => false,
             PlanningAlertStatus::RESOLVED => throw new ConflictHttpException("Impossible d'ignorer une alerte déjà résolue."),
         };
+    }
+
+    /**
+     * D-152 — the mission still holds the incompatible instrumentist and the incompatibility is
+     * still active: nothing has really been resolved yet.
+     */
+    public function isUnresolvedIncompatibilityConflict(PlanningAlert $alert): bool
+    {
+        if ($alert->getType() !== PlanningAlertType::SURGEON_INCOMPATIBILITY) {
+            return false;
+        }
+
+        $mission       = $alert->getMission();
+        $instrumentist = $mission->getInstrumentist();
+        $surgeon       = $mission->getSurgeon();
+        if ($instrumentist === null || $surgeon === null
+            || !in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true)) {
+            return false;
+        }
+
+        return (bool) $this->em->getConnection()->fetchOne(
+            'SELECT 1 FROM surgeon_instrumentist_incompatibility WHERE surgeon_id = ? AND instrumentist_id = ? AND lifted_at IS NULL',
+            [$surgeon->getId(), $instrumentist->getId()],
+        );
     }
 
     private function mutate(PlanningAlert $alert, callable $mutator): bool
@@ -314,6 +348,7 @@ class PlanningAlertService
             PlanningAlertType::INSTRUMENTIST_ABSENCE,
             PlanningAlertType::INSTRUMENTIST_CONFLICT,
             PlanningAlertType::INSTRUMENTIST_INACTIVE,
+            PlanningAlertType::SURGEON_INCOMPATIBILITY,
         ], true);
 
         $canOpenAsAvailable = $active && $missionMutable
@@ -324,12 +359,17 @@ class PlanningAlertService
                 PlanningAlertType::SURGEON_ABSENCE,
                 PlanningAlertType::INSTRUMENTIST_CONFLICT,
                 PlanningAlertType::INSTRUMENTIST_INACTIVE,
+                PlanningAlertType::SURGEON_INCOMPATIBILITY,
             ], true);
+
+        // D-152 — resolved only by an effective action (reassign, open to the pool, lifting
+        // the incompatibility), never ignored.
+        $incompatibility = $alert->getType() === PlanningAlertType::SURGEON_INCOMPATIBILITY;
 
         return [
             'canAcknowledge'     => $status === PlanningAlertStatus::OPEN,
-            'canResolve'         => $active,
-            'canIgnore'          => $active,
+            'canResolve'         => $active && !$incompatibility,
+            'canIgnore'          => $active && !$incompatibility,
             'canReassign'        => $canReassign,
             'canOpenAsAvailable' => $canOpenAsAvailable,
             'recommendedAction'  => $this->recommendAction($alert, $active),
@@ -345,7 +385,8 @@ class PlanningAlertService
         return match ($alert->getType()) {
             PlanningAlertType::REASSIGNMENT_REQUIRED,
             PlanningAlertType::INSTRUMENTIST_CONFLICT,
-            PlanningAlertType::INSTRUMENTIST_INACTIVE => 'REASSIGN',
+            PlanningAlertType::INSTRUMENTIST_INACTIVE,
+            PlanningAlertType::SURGEON_INCOMPATIBILITY => 'REASSIGN',
             PlanningAlertType::INSTRUMENTIST_ABSENCE => $alert->getMission()->getStatus() === MissionStatus::OPEN ? 'NONE' : 'REVIEW',
             PlanningAlertType::SURGEON_ABSENCE,
             PlanningAlertType::OCCURRENCE_CANCELLED,

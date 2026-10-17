@@ -195,11 +195,12 @@ final class MissionActionsService
             return false;
         }
 
-        // D-151 — same gate as claim(): never once started, never for someone its surgeon refused.
+        // D-151 / D-152 — same gate as claim(): never once started, never for someone its
+        // surgeon refused on it or is incompatible with.
         if (MissionEligibilityService::hasStarted($mission, Clock::get()->now())) {
             return false;
         }
-        if ($this->eligibility?->wasRefusedForMission($mission, $instrumentist)) {
+        if ($this->eligibility !== null && $this->eligibility->exclusionReasons($mission, $instrumentist) !== []) {
             return false;
         }
 

@@ -4,10 +4,12 @@ namespace App\Service;
 
 use App\Entity\Mission;
 use App\Entity\MissionAssignment;
+use App\Entity\PlanningAlert;
 use App\Entity\User;
 use App\Enum\MissionAssignmentEndReason;
 use App\Enum\MissionAssignmentSource;
 use App\Enum\MissionStatus;
+use App\Enum\PlanningAlertType;
 use Doctrine\DBAL\ParameterType;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
@@ -227,6 +229,17 @@ class MissionAssignmentService
 
         if ($assignment->getId() === null) {
             return;
+        }
+
+        // D-152 — the incompatibility conflict raised on this mission is effectively resolved:
+        // the incompatible affectation no longer exists (reassigned, released, cancelled…).
+        foreach ($this->em->getRepository(PlanningAlert::class)->findBy([
+            'mission' => $assignment->getMission(),
+            'type'    => PlanningAlertType::SURGEON_INCOMPATIBILITY,
+        ]) as $alert) {
+            if ($alert instanceof PlanningAlert && $alert->isOpenOrAcknowledged()) {
+                $alert->resolve($actor, "Conflit résolu : l'affectation incompatible a pris fin.");
+            }
         }
 
         $connection = $this->em->getConnection();

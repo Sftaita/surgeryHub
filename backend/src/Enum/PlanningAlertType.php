@@ -20,4 +20,12 @@ enum PlanningAlertType: string
      * later. The manager decides (reassign or open as available).
      */
     case INSTRUMENTIST_INACTIVE = 'INSTRUMENTIST_INACTIVE';
+
+    /**
+     * D-152 — a future mission still ASSIGNED to an instrumentist who has since become
+     * incompatible with its surgeon. Never auto-corrected (no silent unassignment), never
+     * ignorable: it stays open until the conflict is really gone (reassignment, opening to the
+     * pool, cancellation, or explicit lifting of the incompatibility).
+     */
+    case SURGEON_INCOMPATIBILITY = 'SURGEON_INCOMPATIBILITY';
 }

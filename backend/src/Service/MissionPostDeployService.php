@@ -18,6 +18,7 @@ use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\EligibilityReason;
+use App\Enum\IncompatibilityOrigin;
 use App\Enum\MissionAssignmentEndReason;
 use App\Enum\MissionAssignmentRefusalScope;
 use App\Enum\MissionAssignmentSource;
@@ -67,6 +68,8 @@ class MissionPostDeployService
         // tests can build the service; always autowired.
         private readonly ?MissionCommunicationService $communications = null,
         ?MissionAssignmentService $assignments = null,
+        // D-152 — durable refusal ("refuser et bloquer"); always autowired.
+        private readonly ?SurgeonInstrumentistIncompatibilityService $incompatibilities = null,
     ) {
         // Always autowired; a plain unit test that omits it still gets the real writer (built
         // on the same EntityManager), never a shortcut that would skip the history.
@@ -165,7 +168,12 @@ class MissionPostDeployService
      */
     public function refuseAssignment(Mission $mission, User $surgeon, int $assignmentId, MissionAssignmentRefusalScope $scope): void
     {
-        $payload = $this->assignments->inLockedChange($mission, function () use ($mission, $surgeon, $assignmentId, $scope): array {
+        if ($scope === MissionAssignmentRefusalScope::DURABLE && $this->incompatibilities === null) {
+            throw new \LogicException('A durable refusal needs SurgeonInstrumentistIncompatibilityService.');
+        }
+
+        $raisedConflicts = [];
+        $payload = $this->assignments->inLockedChange($mission, function () use ($mission, $surgeon, $assignmentId, $scope, &$raisedConflicts): array {
             $current = $this->assignments->findCurrent($mission);
             if ($current === null) {
                 throw new AssignmentRefusalException(AssignmentRefusalException::ASSIGNMENT_ALREADY_ENDED);
@@ -189,6 +197,22 @@ class MissionPostDeployService
             $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
             $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::RELEASED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
 
+            // D-152 — « Refuser et bloquer pour mes futures missions »: same refusal, plus an
+            // active incompatibility (unless one already exists), in the same transaction. Its
+            // other future missions with her become conflicts for the managers.
+            $incompatibilityId = null;
+            if ($scope === MissionAssignmentRefusalScope::DURABLE && $fromInstrumentist !== null) {
+                $existing = $this->incompatibilities->findActive($surgeon, $fromInstrumentist);
+                if ($existing !== null) {
+                    $incompatibilityId = $existing->getId();
+                } else {
+                    [$incompatibility, $raisedConflicts] = $this->incompatibilities->createInTransaction(
+                        $surgeon, $fromInstrumentist, IncompatibilityOrigin::SURGEON_REFUSAL, $surgeon, $current,
+                    );
+                    $incompatibilityId = $incompatibility->getId();
+                }
+            }
+
             $payload = [
                 'origin'                => self::ORIGIN_SURGEON_REFUSAL,
                 'assignmentId'          => $assignmentId,
@@ -198,6 +222,7 @@ class MissionPostDeployService
                 'fromInstrumentistId'   => $fromInstrumentist?->getId(),
                 'fromInstrumentistName' => $fromInstrumentistName,
                 'previousStatus'        => $previousStatusEnum->value,
+                'incompatibilityId'     => $incompatibilityId,
                 'actorId'               => $surgeon->getId(),
                 'actorName'             => $this->displayName($surgeon),
             ];
@@ -208,6 +233,9 @@ class MissionPostDeployService
 
             return $payload;
         });
+
+        // D-152 — the managers are told about the other conflicts once the refusal is committed.
+        $this->incompatibilities?->notifyConflicts($raisedConflicts);
 
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
             missionId:  $mission->getId(),
@@ -558,6 +586,13 @@ class MissionPostDeployService
 
                 if ($mission->getInstrumentist() !== null) {
                     throw new ConflictHttpException('Mission already claimed');
+                }
+
+                // D-152 — locking read of the (surgeon, instrumentist) incompatibility range:
+                // a block created concurrently is either seen here or waits for this claim and
+                // then raises it as a conflict — never a silent incompatible affectation.
+                if ($mission->getSurgeon() !== null && $this->eligibilityService->isIncompatibleLocked($mission->getSurgeon(), $actor)) {
+                    throw new MissionClaimIneligibleException([EligibilityReason::SURGEON_INCOMPATIBILITY], $mission->getStartAt());
                 }
 
                 // D-059 (architecture freeze): MissionClaim is an append-only historical
@@ -1096,6 +1131,15 @@ class MissionPostDeployService
             $eligibility->reasons,
             static fn (EligibilityReason $r) => in_array($r, $policy->blockingReasons(), true),
         ));
+
+        // D-152 — inside the mutation's transaction, re-read the incompatibility with a lock:
+        // serialises with a concurrent creation (see MissionEligibilityService::isIncompatibleLocked()).
+        if (!in_array(EligibilityReason::SURGEON_INCOMPATIBILITY, $blocking, true)
+            && $mission->getSurgeon() !== null
+            && $this->em->getConnection()->isTransactionActive()
+            && $this->eligibilityService->isIncompatibleLocked($mission->getSurgeon(), $candidate)) {
+            $blocking[] = EligibilityReason::SURGEON_INCOMPATIBILITY;
+        }
 
         if (!empty($blocking)) {
             throw new InstrumentistIneligibleException($blocking);

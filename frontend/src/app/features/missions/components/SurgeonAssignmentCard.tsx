@@ -8,6 +8,9 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
+  Radio,
+  RadioGroup,
   Stack,
   Typography,
 } from "@mui/material";
@@ -16,6 +19,9 @@ import "dayjs/locale/fr";
 
 import { refuseMissionAssignment, requestMissionAssignmentReview } from "../api/missions.api";
 import type { CurrentAssignment, Mission } from "../api/missions.types";
+
+/** D-151 / D-152 — « Refuser pour cette mission » or « Refuser et bloquer pour mes futures missions ». */
+type RefusalScope = "PUNCTUAL" | "DURABLE";
 import { useToast } from "../../../ui/toast/useToast";
 
 dayjs.locale("fr");
@@ -53,6 +59,7 @@ export default function SurgeonAssignmentCard({ mission }: Props) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const [scope, setScope] = React.useState<RefusalScope>("PUNCTUAL");
 
   const refresh = (updated: Mission) => {
     queryClient.setQueryData(["mission", mission.id], updated);
@@ -60,11 +67,16 @@ export default function SurgeonAssignmentCard({ mission }: Props) {
   };
 
   const refuse = useMutation({
-    mutationFn: () => refuseMissionAssignment(mission.id, assignment!.id),
+    mutationFn: () => refuseMissionAssignment(mission.id, assignment!.id, scope),
     onSuccess: (updated) => {
       setConfirmOpen(false);
       refresh(updated);
-      toast.success("Instrumentiste refusé pour cette mission : elle est de nouveau proposée aux autres instrumentistes.");
+      queryClient.invalidateQueries({ queryKey: ["incompatibilities"] });
+      toast.success(
+        scope === "DURABLE"
+          ? "Instrumentiste refusé et bloqué pour vos futures missions : cette mission est de nouveau proposée aux autres instrumentistes."
+          : "Instrumentiste refusé pour cette mission : elle est de nouveau proposée aux autres instrumentistes.",
+      );
     },
     onError: (err) => {
       setConfirmOpen(false);
@@ -116,7 +128,7 @@ export default function SurgeonAssignmentCard({ mission }: Props) {
       {(canRefuse || canRequestReview) && (
         <Stack spacing={1} sx={{ mt: 1.5 }}>
           {canRefuse && (
-            <Button variant="outlined" color="error" onClick={() => setConfirmOpen(true)} disabled={refuse.isPending}>
+            <Button variant="outlined" color="error" onClick={() => { setScope("PUNCTUAL"); setConfirmOpen(true); }} disabled={refuse.isPending}>
               Refuser cet instrumentiste
             </Button>
           )}
@@ -129,13 +141,23 @@ export default function SurgeonAssignmentCard({ mission }: Props) {
       )}
 
       <Dialog open={confirmOpen} onClose={() => !refuse.isPending && setConfirmOpen(false)}>
-        <DialogTitle>Refuser pour cette mission</DialogTitle>
+        <DialogTitle>Refuser cet instrumentiste</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={1.5}>
             <Typography variant="body2">
               {assignment.instrumentist.name} ne sera plus affecté·e à cette mission, qui sera de nouveau proposée aux
               autres instrumentistes éligibles. {assignment.instrumentist.name} ne pourra pas la reprendre.
             </Typography>
+            <RadioGroup value={scope} onChange={(e) => setScope(e.target.value as RefusalScope)}>
+              <FormControlLabel value="PUNCTUAL" control={<Radio />} label="Refuser pour cette mission" />
+              <FormControlLabel value="DURABLE" control={<Radio />} label="Refuser et bloquer pour mes futures missions" />
+            </RadioGroup>
+            {scope === "DURABLE" && (
+              <Typography variant="body2" color="text.secondary">
+                {assignment.instrumentist.name} ne verra plus vos nouvelles missions et ne pourra plus y être affecté·e.
+                Vous pourrez lever ce blocage depuis votre profil.
+              </Typography>
+            )}
             <Typography variant="body2" color="text.secondary">
               La mission n'est pas annulée. L'instrumentiste reçoit un message neutre, sans mention de votre refus.
             </Typography>
@@ -146,7 +168,7 @@ export default function SurgeonAssignmentCard({ mission }: Props) {
             Annuler
           </Button>
           <Button color="error" variant="contained" disableElevation onClick={() => refuse.mutate()} disabled={refuse.isPending}>
-            Refuser pour cette mission
+            {scope === "DURABLE" ? "Refuser et bloquer" : "Refuser pour cette mission"}
           </Button>
         </DialogActions>
       </Dialog>

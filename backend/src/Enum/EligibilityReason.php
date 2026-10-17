@@ -16,6 +16,9 @@ enum EligibilityReason: string
     // D-151 — the mission has already started: it can no longer be claimed from the pool
     // (mission-level, like INCOMPATIBLE_STATUS; never applied to manager assignments).
     case MISSION_ALREADY_STARTED = 'MISSION_ALREADY_STARTED';
+    // D-152 — an active surgeon–instrumentist incompatibility with this mission's surgeon:
+    // never offered, never claimable, never assignable, whatever the path.
+    case SURGEON_INCOMPATIBILITY = 'SURGEON_INCOMPATIBILITY';
 
     public function label(): string
     {
@@ -29,6 +32,8 @@ enum EligibilityReason: string
             // Instrumentist-facing (claim error): neutral, never reveals a personal refusal (D-151).
             self::REFUSED_FOR_MISSION => "Cette mission n'est plus disponible pour vous",
             self::MISSION_ALREADY_STARTED => 'Mission déjà commencée',
+            // Instrumentist-facing (claim error): neutral, never reveals a block (D-152).
+            self::SURGEON_INCOMPATIBILITY => "Cette mission n'est plus disponible pour vous",
         };
     }
 }

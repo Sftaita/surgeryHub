@@ -279,9 +279,16 @@ export async function claimMission(id: number): Promise<Mission | null> {
   return (res.data as Mission) ?? null;
 }
 
-/** D-151 — le chirurgien refuse l'affectation qu'il a vue (assignmentId) ; refus ponctuel. */
-export async function refuseMissionAssignment(missionId: number, assignmentId: number): Promise<Mission> {
-  const res = await apiClient.post(`/api/missions/${missionId}/assignments/${assignmentId}/refuse`, { scope: "PUNCTUAL" });
+/**
+ * D-151 / D-152 — le chirurgien refuse l'affectation qu'il a vue (assignmentId) : pour cette
+ * mission (PUNCTUAL) ou en bloquant aussi ses futures missions (DURABLE).
+ */
+export async function refuseMissionAssignment(
+  missionId: number,
+  assignmentId: number,
+  scope: "PUNCTUAL" | "DURABLE" = "PUNCTUAL",
+): Promise<Mission> {
+  const res = await apiClient.post(`/api/missions/${missionId}/assignments/${assignmentId}/refuse`, { scope });
   return res.data as Mission;
 }
 

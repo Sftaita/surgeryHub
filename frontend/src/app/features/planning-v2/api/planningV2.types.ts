@@ -12,7 +12,9 @@ export type PlanningAlertType =
   | "INSTRUMENTIST_CONFLICT"
   | "REASSIGNMENT_REQUIRED"
   | "OCCURRENCE_CANCELLED"
-  | "INSTRUMENTIST_INACTIVE";
+  | "INSTRUMENTIST_INACTIVE"
+  // D-152 — a future mission still affected to an instrumentist incompatible with its surgeon.
+  | "SURGEON_INCOMPATIBILITY";
 export type PlanningAlertStatus = "OPEN" | "ACKNOWLEDGED" | "RESOLVED" | "IGNORED";
 export type PreviewLineStatus = "SKIPPED" | "UNCOVERED" | "COVERED" | "MODIFIED" | "CONFLICT";
 export type MissionStatus =
@@ -514,7 +516,8 @@ export type EligibilityReason =
   | "INCOMPATIBLE_STATUS"
   // D-151
   | "REFUSED_FOR_MISSION"
-  | "MISSION_ALREADY_STARTED";
+  | "MISSION_ALREADY_STARTED"
+  | "SURGEON_INCOMPATIBILITY";
 
 /** Mirrors backend App\Enum\EligibilityEnforcementPolicy (D-101) — never reimplemented client-side. */
 export type EligibilityEnforcementPolicy = "STRICT_ASSIGNMENT" | "PLANNING_MODIFICATION";

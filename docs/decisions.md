@@ -13472,8 +13472,9 @@ demande nominative, générateur, restauration après absence), `findEligibleByM
 Côté instrumentiste, ce motif ne sort jamais : l'erreur de claim porte le code neutre
 `MISSION_UNAVAILABLE` et le libellé « Cette mission n'est plus disponible pour vous ».
 
-**Amende D-036** : `findEligibleByMission()` et `evaluateAllCandidates()` passent de 3 à 4
-requêtes (toujours constantes, aucun N+1) ; `evaluate()` de 3 à 4.
+**Amende D-036** : `findEligibleByMission()` et `evaluateAllCandidates()` font une requête
+de plus (toujours constante, aucun N+1). *Précisé par D-152 : c'est une seule requête DBAL
+(UNION refus + incompatibilité), les 3 requêtes DQL d'origine sont inchangées.*
 
 ### Décision 4 — une mission commencée n'est plus claimable
 
@@ -13529,3 +13530,100 @@ notifications, vue minimale), `MissionAssignmentIntegrationTest` (refus concurre
 réaffectation manager, deux connexions), `MissionAssignmentRefusalPolicyTest`,
 `MissionLifecycleChangedMessageHandlerTest`, tests frontend (`MissionDetailPage.assignment`,
 `notificationFormat`).
+
+
+## D-152 — Incompatibilités chirurgien–instrumentiste, refus durable, conflits sur les missions futures (2026-10-15)
+
+**Statut : implémenté sur `feat/surgeon-refusal-compat` (lot L3), non commité, non déployé.**
+
+### Contexte
+
+Un chirurgien doit pouvoir refuser durablement un instrumentiste (« Refuser et bloquer pour mes
+futures missions », D-151) ou le bloquer depuis son profil ; le manager doit pouvoir consulter
+et gérer ces incompatibilités des deux côtés. Arbitrages métier (2026-10-14) : le chirurgien
+lève ses propres blocages, le manager tous ; il bloque les instrumentistes actifs de ses
+établissements et les freelances ; un blocage n'annule jamais une affectation existante mais
+crée des conflits à traiter explicitement ; **aucun « maintenir l'affectation »** : un conflit
+reste ouvert jusqu'à sa résolution effective ; postes récurrents incompatibles refusés.
+
+### Décision 1 — modèle (`SurgeonInstrumentistIncompatibility`)
+
+`surgeon`, `instrumentist`, `origin` (`SURGEON_REFUSAL`, `SURGEON`, `MANAGER`),
+`sourceAssignment` (refus durable), `createdBy`, `createdAt`, puis une seule fois `liftedAt`,
+`liftedBy`. Jamais supprimée (historique). Au plus une incompatibilité **active** par paire,
+garanti par MySQL (colonne générée `active_pair_key` + UNIQUE) : une double création
+concurrente donne 409 `INCOMPATIBILITY_ALREADY_ACTIVE`. Seul écrivain :
+`SurgeonInstrumentistIncompatibilityService`.
+
+### Décision 2 — application : `MissionEligibilityService`, source unique
+
+Nouveau motif `EligibilityReason::SURGEON_INCOMPATIBILITY`, **bloquant sous toutes les
+politiques** (aucune exception manager). Il est lu, avec `REFUSED_FOR_MISSION` (D-151), par une
+seule requête UNION : `exclusionReasons()` (une mission × une personne) et
+`exclusionsByMission()` (lots). L'incompatibilité étant lue par chirurgien, elle s'applique
+aussi à une mission pas encore persistée. Voies couvertes : claim (`evaluate()`), liste des
+offres et compteur (`MissionService::list(eligibleToMe)`, NOT EXISTS), sollicitation du pool et
+notifications (`findEligibleByMission()`), demande nominative (`evaluateForOffer()`),
+attribution directe, affectation, réaffectation, ajout après déploiement, générateur V2,
+éditeur de planning, restauration après absence (`evaluateForReassignment()`), sélecteurs
+manager (`evaluateAllCandidates()`), roster de l'éditeur de planning (`evaluateRoster()`, avec
+le chirurgien de la ligne ou de la mission éditée), `allowedActions` (`claim` masqué). Hors du
+service d'éligibilité, trois gardes appellent `isIncompatible()` : postes récurrents
+(`SurgeonSchedulePostService`, 422), branche DRAFT des actions d'alerte, revalidation au
+déploiement (conflit bloquant `INCOMPATIBILITY` : un brouillon préparé avant le blocage n'est
+jamais publié tel quel). Les comptages de requêtes DQL de D-036 reviennent à leurs valeurs
+d'origine (3) : l'exclusion est une requête DBAL de plus, constante.
+
+### Décision 3 — confidentialité
+
+L'instrumentiste n'en sait jamais rien : aucune notification, aucun écran, aucune route
+(`SurgeonInstrumentistIncompatibilityVoter` : `MANAGE` manager, `SELF_MANAGE` chirurgien,
+`LIFT`). Un claim refusé pour ce motif répond le code neutre `MISSION_UNAVAILABLE` et le libellé
+« Cette mission n'est plus disponible pour vous ».
+
+### Décision 4 — concurrence
+
+Le claim (sous verrou de la mission) et toute affectation par `MissionPostDeployService`
+(`guardEligibility()`, dans la transaction) relisent l'incompatibilité par une **lecture
+verrouillante** (`isIncompatibleLocked()`, `FOR SHARE` sur l'index
+`(surgeon_id, instrumentist_id, lifted_at)`). La création insère puis cherche les conflits par
+une lecture verrouillante des missions. MySQL sérialise donc les deux : soit la création est
+vue par l'affectation (refus), soit elle attend l'affectation et la trouve comme conflit —
+jamais une affectation incompatible silencieuse (prouvé par `IncompatibilityConcurrencyTest`).
+
+### Décision 5 — conflits sur les missions futures
+
+À la création, chaque mission **future** du chirurgien encore `ASSIGNED` à l'instrumentiste
+devient une `PlanningAlert` `SURGEON_INCOMPATIBILITY` (une par mission), notifiée aux managers
+opérationnels par le circuit existant (`PlanningAlertRaisedMessage` → `PLANNING_ALERT`, D-149).
+Les missions ne sont pas modifiées. L'alerte n'est **ni ignorable** (`ignore()` → 409) **ni
+résolue à la main** tant que la paire est toujours affectée et l'incompatibilité active
+(`resolve()` → 409, `canIgnore`/`canResolve` à false). Elle se ferme d'elle-même dès la
+résolution effective : fin de l'affectation (réaffectation, ouverture au pool, annulation,
+refus — `MissionAssignmentService::close()`), ou levée de l'incompatibilité.
+
+### Décision 6 — refus durable
+
+`refuseAssignment(..., DURABLE)` : le refus ponctuel (D-151) plus, dans la même transaction,
+l'incompatibilité d'origine `SURGEON_REFUSAL` liée à l'affectation refusée (sauf si une
+incompatibilité active existe déjà). Ses autres missions futures avec l'instrumentiste
+deviennent des conflits, notifiés après le commit.
+
+### Décision 7 — écrans et API
+
+- Chirurgien : boîte de refus « Refuser pour cette mission » / « Refuser et bloquer pour mes
+  futures missions » ; profil « Instrumentistes bloqués » (explication, ajout parmi
+  `GET /api/me/blockable-instrumentists`, déblocage de ses propres blocages).
+- Manager : section « Incompatibilités » des fiches chirurgien et instrumentiste (actives avec
+  origine, date, auteur et missions futures en conflit ; historique ; ajout ; levée).
+- Alerte planning « Incompatibilité chirurgien–instrumentiste » (actions : réaffecter, ouvrir
+  au pool).
+- Audit : `SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED` / `_LIFTED` (`recordGlobal`, reflétés
+  dans le journal d'activité), refus durable tracé dans `MISSION_ASSIGNMENT_REFUSED_BY_SURGEON`
+  (`incompatibilityId`).
+
+### Tests
+
+`SurgeonInstrumentistIncompatibilityFunctionalTest` (7 scénarios HTTP + base réelle),
+`IncompatibilityConcurrencyTest` (deux connexions réelles), tests frontend
+`Incompatibilities.test.tsx` et refus durable (`MissionDetailPage.assignment.test.tsx`).

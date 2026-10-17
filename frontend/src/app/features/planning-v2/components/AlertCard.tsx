@@ -14,6 +14,7 @@ const TYPE_LABELS: Record<PlanningAlertType, string> = {
   REASSIGNMENT_REQUIRED: "Réassignation nécessaire",
   OCCURRENCE_CANCELLED: "Mission annulée",
   INSTRUMENTIST_INACTIVE: "Instrumentiste inactif",
+  SURGEON_INCOMPATIBILITY: "Incompatibilité chirurgien–instrumentiste",
 };
 
 type Severity = "crit" | "warn" | "info";
@@ -26,6 +27,7 @@ const TYPE_SEVERITY: Record<PlanningAlertType, Severity> = {
   INSTRUMENTIST_ABSENCE: "warn",
   OCCURRENCE_CANCELLED: "warn",
   INSTRUMENTIST_INACTIVE: "warn",
+  SURGEON_INCOMPATIBILITY: "crit",
 };
 
 const STATUS_LABELS: Record<PlanningAlertStatus, string> = {
@@ -77,6 +79,8 @@ function buildProbleme(alert: PlanningAlertV2): string {
       return `Conflit d'instrumentiste le ${formatFr(date)}`;
     case "INSTRUMENTIST_INACTIVE":
       return `Instrumentiste devenu(e) inactif(ve) — mission du ${formatFr(date)} toujours assignée`;
+    case "SURGEON_INCOMPATIBILITY":
+      return `Instrumentiste incompatible avec ${surgeon} — mission du ${formatFr(date)} toujours affectée : réaffectez-la, ouvrez-la au pool ou levez l'incompatibilité`;
   }
 }
 

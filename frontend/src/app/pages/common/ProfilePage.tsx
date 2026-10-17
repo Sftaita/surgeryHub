@@ -14,6 +14,7 @@ import { PushPermissionCard } from "../../features/push/PushPermissionCard";
 import { MedVueIntegrationCard } from "../../features/medvue-integration/MedVueIntegrationCard";
 import { NotificationPreferencesSection } from "../../features/notifications/NotificationPreferencesSection";
 import { EmptyState } from "../../ui/EmptyState";
+import BlockedInstrumentistsCard from "../../features/incompatibilities/components/BlockedInstrumentistsCard";
 import { useInstrumentistOnboardingReplay } from "../../features/instrumentist-onboarding/InstrumentistOnboardingReplayContext";
 
 const ROLE_LABEL: Record<string, string> = {
@@ -163,6 +164,9 @@ export default function ProfilePage() {
 
       <PushPermissionCard />
       <NotificationPreferencesSection />
+
+      {/* D-152 — le chirurgien gère ses instrumentistes bloqués. */}
+      {user.role === "SURGEON" && <BlockedInstrumentistsCard />}
 
       <PwaInstallMenuItem />
 

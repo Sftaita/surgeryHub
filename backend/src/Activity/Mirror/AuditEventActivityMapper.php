@@ -55,6 +55,8 @@ final class AuditEventActivityMapper
         'MISSION_OFFER_DECLINED' => 'Proposition de mission refusée',
         'MISSION_ASSIGNMENT_REFUSED_BY_SURGEON' => "Affectation refusée par le chirurgien",
         'MISSION_ASSIGNMENT_REVIEW_REQUESTED' => 'Intervention demandée sur une affectation',
+        'SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED' => 'Incompatibilité chirurgien–instrumentiste créée',
+        'SURGEON_INSTRUMENTIST_INCOMPATIBILITY_LIFTED' => 'Incompatibilité chirurgien–instrumentiste levée',
         'PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE' => 'Occurrence neutralisée (absence chirurgien)',
         'PLANNING_OCCURRENCE_INSTRUMENTIST_ABSENCE_NOTICE' => 'Occurrence impactée (absence instrumentiste)',
         'PLANNING_OCCURRENCE_RESTORED_AFTER_ABSENCE' => 'Occurrence restaurée après absence',
@@ -231,6 +233,14 @@ final class AuditEventActivityMapper
                 $who, $p['fromInstrumentistName'] ?? 'l\'instrumentiste', $m ?? 'mission') . $site,
             AuditEventType::MISSION_ASSIGNMENT_REVIEW_REQUESTED => sprintf("%s demande l'intervention du manager sur l'affectation de %s à la %s",
                 $who, $p['instrumentistName'] ?? 'l\'instrumentiste', $m ?? 'mission') . $site,
+            // D-152 — a pair of people, never a mission; the managers' journal only.
+            AuditEventType::SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED => sprintf('%s a rendu %s incompatible avec %s (%s)%s',
+                $who, $p['instrumentistName'] ?? 'un instrumentiste', $p['surgeonName'] ?? 'un chirurgien',
+                match ($p['origin'] ?? null) { 'SURGEON_REFUSAL' => 'refus durable', 'SURGEON' => 'blocage par le chirurgien', default => 'décision manager' },
+                is_array($p['conflictMissionIds'] ?? null) && $p['conflictMissionIds'] !== []
+                    ? sprintf(' — %d mission(s) future(s) à traiter', count($p['conflictMissionIds'])) : ''),
+            AuditEventType::SURGEON_INSTRUMENTIST_INCOMPATIBILITY_LIFTED => sprintf("%s a levé l'incompatibilité entre %s et %s",
+                $who, $p['surgeonName'] ?? 'un chirurgien', $p['instrumentistName'] ?? 'un instrumentiste'),
             AuditEventType::MISSION_REASSIGNED_POST_DEPLOY => sprintf('%s a réassigné la %s : %s → %s%s',
                 $who, $m ?? 'mission', $p['fromInstrumentistName'] ?? 'personne', $p['toInstrumentistName'] ?? 'personne', $cause) . $site,
             AuditEventType::MISSION_TIME_CHANGED_POST_DEPLOY => sprintf('%s a modifié l\'horaire de la %s : %s → %s',

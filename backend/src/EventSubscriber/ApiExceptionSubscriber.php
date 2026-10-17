@@ -41,6 +41,7 @@ use App\Exception\MaterialItemRequestAlreadyProcessedException;
 use App\Exception\MissingIgnoreStrategyException;
 use App\Exception\RefundExceedsOverpaidException;
 use App\Exception\AssignmentRefusalException;
+use App\Exception\IncompatibilityException;
 use App\Exception\ReleasedRoomSlotConflictException;
 use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
 use App\Exception\SurgeonMissionRequestConflictException;
@@ -121,9 +122,11 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $code = 'MISSION_CLAIM_INELIGIBLE';
             $primary = $e->getPrimaryReason();
             $message = $primary?->label() ?? $e->getMessage();
-            // D-151 — the claimer never learns that a surgeon refused her on this mission:
-            // REFUSED_FOR_MISSION leaves the API under a neutral code (label already neutral).
-            $publicCode = static fn (EligibilityReason $r): string => $r === EligibilityReason::REFUSED_FOR_MISSION ? 'MISSION_UNAVAILABLE' : $r->value;
+            // D-151 / D-152 — the claimer never learns that a surgeon refused or blocked her:
+            // both reasons leave the API under a neutral code (labels already neutral).
+            $publicCode = static fn (EligibilityReason $r): string => in_array($r, [EligibilityReason::REFUSED_FOR_MISSION, EligibilityReason::SURGEON_INCOMPATIBILITY], true)
+                ? 'MISSION_UNAVAILABLE'
+                : $r->value;
             $violations = array_map(
                 static fn ($r) => ['field' => null, 'message' => $publicCode($r)],
                 $e->getReasons(),
@@ -300,6 +303,11 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $code = $e->getErrorCode();
             $message = $e->getMessage();
             $extra = $e->getExtra();
+        } elseif ($e instanceof IncompatibilityException) {
+            // D-152 — incompatibility creation / lifting refused.
+            $status = $e->getStatusCode();
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
         } elseif ($e instanceof AssignmentRefusalException) {
             // D-151 — surgeon refusal / manager-intervention request refused under the lock.
             $status = 409;
@@ -334,6 +342,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             && !$e instanceof RefundExceedsOverpaidException
             && !$e instanceof EncodingIncompleteException
             && !$e instanceof CatalogueRequestException
+            && !$e instanceof IncompatibilityException
         ) {
             $violations = $this->extractViolationsFromMessage($message);
             if (count($violations) > 0) {

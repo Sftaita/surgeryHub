@@ -43,11 +43,14 @@ enum EligibilityEnforcementPolicy: string
                 EligibilityReason::INACTIVE,
                 // D-151 — a surgeon's refusal of this person for this mission is never bypassed.
                 EligibilityReason::REFUSED_FOR_MISSION,
+                // D-152 — nor an active incompatibility with the surgeon (no silent exception).
+                EligibilityReason::SURGEON_INCOMPATIBILITY,
             ],
             self::PLANNING_MODIFICATION => [
                 EligibilityReason::ABSENT,
                 EligibilityReason::INACTIVE,
                 EligibilityReason::REFUSED_FOR_MISSION,
+                EligibilityReason::SURGEON_INCOMPATIBILITY,
             ],
         };
     }
