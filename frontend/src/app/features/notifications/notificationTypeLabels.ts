@@ -18,6 +18,9 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   MISSION_OFFERED: "Mission proposée personnellement",
   MISSION_ASSIGNED_DIRECTLY: "Mission attribuée directement (confirmation)",
   MISSION_OFFER_DECLINED: "Demande de mission refusée",
+  // D-151 — managers : origine réelle d'une désaffectation, demande d'intervention.
+  ASSIGNMENT_REFUSED_BY_SURGEON: "Refus d'affectation par un chirurgien",
+  ASSIGNMENT_REVIEW_REQUESTED: "Intervention demandée par un chirurgien sur une affectation",
   ABSENCE_INSTRUMENTIST_RELEASED: "Mission libérée suite à une absence",
   ABSENCE_SURGEON_MISSION_OPENED: "Mission réouverte suite à une absence",
   ABSENCE_MISSION_CANCELLED: "Mission annulée suite à une absence",

@@ -26,6 +26,7 @@ use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\ReceivedStamp;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 
 /**
  * Functional HTTP tests for Planning V2 Modification mode's batch-apply endpoint —
@@ -35,6 +36,10 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class PlanningModificationControllerTest extends WebTestCase
 {
+    // D-151 — "now" is frozen just before the fixture dates: a started mission is no
+    // longer claimable (MISSION_ALREADY_STARTED), so the fixtures must stay in the future.
+    use ClockSensitiveTrait;
+
     private const PASSWORD = 'Modification16A!';
 
     private EntityManagerInterface $em;
@@ -46,6 +51,7 @@ final class PlanningModificationControllerTest extends WebTestCase
 
     protected function setUp(): void
     {
+        self::mockTime('2026-08-01 00:00:00');
         parent::setUp();
         self::ensureKernelShutdown();
     }

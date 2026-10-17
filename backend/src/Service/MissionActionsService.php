@@ -7,11 +7,15 @@ use App\Entity\User;
 use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\PublicationScope;
+use Symfony\Component\Clock\Clock;
 
 final class MissionActionsService
 {
     public function __construct(
         private readonly MissionEncodingGuard $encodingGuard,
+        // D-151 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?MissionAssignmentService $assignments = null,
+        private readonly ?MissionEligibilityService $eligibility = null,
     ) {}
 
     /**
@@ -127,6 +131,20 @@ final class MissionActionsService
             $actions[] = 'view_encoding';
         }
 
+        // D-151 — the mission's surgeon: refuse the instrumentist who accepted it while the
+        // policy allows it, otherwise ask the managers to intervene (once per affectation).
+        if ($isSurgeon && in_array('ROLE_SURGEON', $roles, true)
+            && in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true)) {
+            $current = $this->assignments?->findCurrent($mission);
+            if ($current !== null) {
+                if (MissionAssignmentRefusalPolicy::blockedReason($mission, $current, Clock::get()->now()) === null) {
+                    $actions[] = 'refuse_assignment';
+                } elseif (!$current->isReviewRequested()) {
+                    $actions[] = 'request_assignment_review';
+                }
+            }
+        }
+
         // Chirurgien : uniquement view sur DECLARED (contrat)
         if ($isSurgeon && $mission->getStatus() !== MissionStatus::DECLARED) {
             $actions[] = 'rate_instrumentist';
@@ -174,6 +192,14 @@ final class MissionActionsService
 
         // Filet de sécurité: si un instrumentiste est déjà posé sur la mission, on n'affiche pas claim
         if ($mission->getInstrumentist() !== null) {
+            return false;
+        }
+
+        // D-151 — same gate as claim(): never once started, never for someone its surgeon refused.
+        if (MissionEligibilityService::hasStarted($mission, Clock::get()->now())) {
+            return false;
+        }
+        if ($this->eligibility?->wasRefusedForMission($mission, $instrumentist)) {
             return false;
         }
 

@@ -10,8 +10,10 @@ use App\Entity\User;
 use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\EligibilityReason;
 use App\Enum\EmploymentType;
+use App\Enum\MissionAssignmentEndReason;
 use App\Enum\MissionStatus;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Clock\Clock;
 
 /**
  * Single source of truth for mission eligibility decisions (ADR D-057).
@@ -19,8 +21,15 @@ use Doctrine\ORM\EntityManagerInterface;
  * All eligibility checks MUST go through this service — never duplicate
  * rules in controllers, voters, notification handlers, or anywhere else.
  *
- * Performance contract (D-036): ≤ 3 DB queries for the batch methods
- * (findEligibleByMission, evaluateAllCandidates), regardless of candidate or mission count.
+ * Performance contract (D-036): a constant number of DB queries for the batch methods
+ * (findEligibleByMission, evaluateAllCandidates), regardless of candidate or mission count —
+ * 4 since D-151 (the surgeon-refusal lookup), never one per candidate or per mission.
+ *
+ * D-151 — two more reasons: REFUSED_FOR_MISSION (the mission's surgeon refused this person's
+ * affectation to THIS mission — read from MissionAssignment.endReason, on every path:
+ * claim, offer, assignment, pool solicitation, manager pickers) and MISSION_ALREADY_STARTED
+ * (claim and pool solicitation only: a started mission is never taken from the pool, while a
+ * manager can still assign or correct it).
  */
 class MissionEligibilityService
 {
@@ -48,6 +57,9 @@ class MissionEligibilityService
         if ($mission->getInstrumentist() !== null) {
             $reasons[] = EligibilityReason::ALREADY_ASSIGNED;
         }
+        if (self::hasStarted($mission, Clock::get()->now())) {
+            $reasons[] = EligibilityReason::MISSION_ALREADY_STARTED;
+        }
 
         $site    = $mission->getSite();
         $startAt = $mission->getStartAt();
@@ -64,6 +76,11 @@ class MissionEligibilityService
         if ($startAt !== null && $endAt !== null
             && $this->hasScheduleConflict($candidate, $startAt, $endAt, $mission->getId() ?? 0)) {
             $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
+        }
+
+        // D-151 — her affectation to this very mission was refused by its surgeon.
+        if ($this->wasRefusedForMission($mission, $candidate)) {
+            $reasons[] = EligibilityReason::REFUSED_FOR_MISSION;
         }
 
         return new EligibilityResult($candidate, $reasons);
@@ -120,6 +137,11 @@ class MissionEligibilityService
             }
         }
 
+        // D-151 — never bypassed by a manager assignment, a reassignment or an offer.
+        if ($this->wasRefusedForMission($mission, $candidate)) {
+            $reasons[] = EligibilityReason::REFUSED_FOR_MISSION;
+        }
+
         return new EligibilityResult($candidate, $reasons);
     }
 
@@ -143,6 +165,56 @@ class MissionEligibilityService
         }
 
         return new EligibilityResult($candidate, $reasons);
+    }
+
+    /**
+     * D-151 — the mission's surgeon refused this person's affectation to this very mission.
+     * A DRAFT or not-yet-persisted mission never had an affectation (D-150): no query.
+     */
+    public function wasRefusedForMission(Mission $mission, User $candidate): bool
+    {
+        if ($mission->getId() === null || $candidate->getId() === null || $mission->getStatus() === MissionStatus::DRAFT) {
+            return false;
+        }
+
+        return isset($this->refusedByMission([(int) $mission->getId()])[(int) $mission->getId()][(int) $candidate->getId()]);
+    }
+
+    /**
+     * D-151 — one query for any number of missions: missionId → [refused userId => true].
+     *
+     * @param int[] $missionIds
+     * @return array<int, array<int, true>>
+     */
+    private function refusedByMission(array $missionIds): array
+    {
+        if ($missionIds === []) {
+            return [];
+        }
+
+        $rows = $this->em->createQuery(
+            'SELECT IDENTITY(a.mission) AS missionId, IDENTITY(a.instrumentist) AS userId
+             FROM App\Entity\MissionAssignment a
+             WHERE a.mission IN (:missions) AND a.endReason = :refused'
+        )
+            ->setParameter('missions', array_values(array_unique($missionIds)))
+            ->setParameter('refused', MissionAssignmentEndReason::REFUSED_BY_SURGEON)
+            ->getScalarResult();
+
+        $refused = [];
+        foreach ($rows as $row) {
+            $refused[(int) $row['missionId']][(int) $row['userId']] = true;
+        }
+
+        return $refused;
+    }
+
+    /** D-151 — a mission whose start time has passed can no longer be claimed from the pool. */
+    public static function hasStarted(Mission $mission, \DateTimeImmutable $now): bool
+    {
+        $startAt = $mission->getStartAt();
+
+        return $startAt !== null && $startAt <= $now;
     }
 
     /** Q1 — site membership. FREELANCER bypasses this requirement (D-057). */
@@ -245,6 +317,7 @@ class MissionEligibilityService
      */
     public function findEligibleByMission(array $missions): array
     {
+        $now    = Clock::get()->now();
         $result = [];
         $openMissions = [];
         foreach ($missions as $m) {
@@ -252,7 +325,8 @@ class MissionEligibilityService
                 continue;
             }
             $result[$m->getId()] = [];
-            if ($m->getStatus() === MissionStatus::OPEN && $m->getInstrumentist() === null) {
+            // D-151 — a started mission is never offered to the pool any more.
+            if ($m->getStatus() === MissionStatus::OPEN && $m->getInstrumentist() === null && !self::hasStarted($m, $now)) {
                 $openMissions[] = $m;
             }
         }
@@ -392,6 +466,9 @@ class MissionEligibilityService
             }
         }
 
+        // Q4 (D-151) — people the surgeon refused on each of these missions.
+        $refusedByMission = $this->refusedByMission(array_map(static fn (Mission $m) => (int) $m->getId(), $openMissions));
+
         // Per-mission PHP evaluation over the preloaded data — no further query.
         foreach ($openMissions as $mission) {
             $siteId = $mission->getSite()?->getId();
@@ -399,6 +476,9 @@ class MissionEligibilityService
                 continue;
             }
             foreach (array_keys($usersBySiteId[$siteId] ?? []) as $userId) {
+                if (isset($refusedByMission[(int) $mission->getId()][$userId])) {
+                    continue;
+                }
                 $candidate = $candidateById[$userId];
                 if ($this->isEligibleForMission($candidate, $mission, $absencesByUser, $conflictsByUser)) {
                     $result[$mission->getId()][] = $candidate;
@@ -503,6 +583,11 @@ class MissionEligibilityService
             ? new \DateTimeImmutable($startAt->format('Y-m-d'))
             : null;
 
+        // Q4 (D-151) — people the surgeon refused on this mission (none for a DRAFT).
+        $refused = $mission->getId() !== null && $mission->getStatus() !== MissionStatus::DRAFT
+            ? ($this->refusedByMission([(int) $mission->getId()])[(int) $mission->getId()] ?? [])
+            : [];
+
         $results = [];
         foreach ($candidates as $candidate) {
             $uid     = $candidate->getId();
@@ -512,6 +597,9 @@ class MissionEligibilityService
 
             if (!$candidate->isActive()) {
                 $reasons[] = EligibilityReason::INACTIVE;
+            }
+            if (isset($refused[$uid])) {
+                $reasons[] = EligibilityReason::REFUSED_FOR_MISSION;
             }
 
             if ($missionDay !== null) {

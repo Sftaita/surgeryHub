@@ -85,6 +85,12 @@ enum AuditEventType: string
     case MISSION_RESTORED_AFTER_SURGEON_ABSENCE                   = 'MISSION_RESTORED_AFTER_SURGEON_ABSENCE';
     case MISSION_ASSIGNMENT_RESTORED_AFTER_INSTRUMENTIST_ABSENCE  = 'MISSION_ASSIGNMENT_RESTORED_AFTER_INSTRUMENTIST_ABSENCE';
 
+    // D-151 — surgeon refusal of a voluntary acceptance (ASSIGNED → OPEN, the refused
+    // instrumentist can never take this mission back), and the surgeon's request for a
+    // manager intervention on the current affectation (no state change).
+    case MISSION_ASSIGNMENT_REFUSED_BY_SURGEON = 'MISSION_ASSIGNMENT_REFUSED_BY_SURGEON';
+    case MISSION_ASSIGNMENT_REVIEW_REQUESTED   = 'MISSION_ASSIGNMENT_REVIEW_REQUESTED';
+
     // Automated (D-064) — MissionStartDueCommand, ASSIGNED -> IN_PROGRESS on startAt.
     case MISSION_STARTED = 'MISSION_STARTED';
 

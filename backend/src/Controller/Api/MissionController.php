@@ -13,6 +13,7 @@ use App\Entity\Mission;
 use App\Entity\User;
 use App\Entity\Hospital;
 use App\Enum\EligibilityEnforcementPolicy;
+use App\Enum\MissionAssignmentRefusalScope;
 use App\Enum\MissionDispatchMode;
 use App\Security\Voter\MissionVoter;
 use App\Service\MissionDispatchService;
@@ -402,7 +403,52 @@ class MissionController extends AbstractController
     public function getOne(int $id, #[CurrentUser] User $user): JsonResponse
     {
         $mission = $this->missionService->getOr404($id);
-        $this->denyAccessUnlessGranted(MissionVoter::VIEW, $mission);
+
+        // D-151 — an instrumentist whose affectation ended keeps a minimal view of it.
+        if (!$this->isGranted(MissionVoter::VIEW, $mission)) {
+            $this->denyAccessUnlessGranted(MissionVoter::VIEW_FORMER_ASSIGNMENT, $mission);
+
+            return $this->json($this->mapper->toFormerAssigneeDetailDto($mission), JsonResponse::HTTP_OK);
+        }
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    /**
+     * D-151 — the mission's surgeon refuses the instrumentist who accepted it, within the
+     * refusal window. {assignmentId} is the affectation he was shown: if the mission has been
+     * given to someone else since, 409 ASSIGNMENT_SUPERSEDED. Body: {"scope": "PUNCTUAL"}
+     * (default). All business conditions are decided server-side, under the mission lock.
+     */
+    #[Route(path: '/{id}/assignments/{assignmentId}/refuse', name: 'api_missions_refuse_assignment', methods: ['POST'], requirements: ['id' => '\d+', 'assignmentId' => '\d+'])]
+    public function refuseAssignment(int $id, int $assignmentId, Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::REFUSE_ASSIGNMENT, $mission);
+
+        $body  = json_decode($request->getContent() ?: '{}', true);
+        $scope = MissionAssignmentRefusalScope::tryFrom(is_array($body) ? (string) ($body['scope'] ?? 'PUNCTUAL') : '');
+        if ($scope === null) {
+            throw new UnprocessableEntityHttpException('scope must be PUNCTUAL');
+        }
+
+        $this->missionPostDeployService->refuseAssignment($mission, $user, $assignmentId, $scope);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    /**
+     * D-151 — the mission's surgeon asks the managers to intervene on its current affectation
+     * (refusal window over, mission imminent, affectation not refusable). Idempotent per
+     * affectation: a second request answers 200 without notifying again.
+     */
+    #[Route(path: '/{id}/assignment-review-request', name: 'api_missions_request_assignment_review', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function requestAssignmentReview(int $id, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::REQUEST_ASSIGNMENT_REVIEW, $mission);
+
+        $this->missionPostDeployService->requestAssignmentReview($mission, $user);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }

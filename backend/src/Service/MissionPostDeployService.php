@@ -19,12 +19,14 @@ use App\Enum\AuditEventType;
 use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\EligibilityReason;
 use App\Enum\MissionAssignmentEndReason;
+use App\Enum\MissionAssignmentRefusalScope;
 use App\Enum\MissionAssignmentSource;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PublicationScope;
 use App\Enum\SchedulePrecision;
+use App\Exception\AssignmentRefusalException;
 use App\Exception\InstrumentistIneligibleException;
 use App\Exception\MissionClaimIneligibleException;
 use App\Message\MissionLifecycleChangedMessage;
@@ -34,6 +36,7 @@ use Doctrine\DBAL\LockMode;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\Messenger\MessageBusInterface;
+use Symfony\Component\Clock\Clock;
 
 /**
  * Application service for all post-deploy Mission mutations (R-04).
@@ -48,6 +51,9 @@ use Symfony\Component\Messenger\MessageBusInterface;
  */
 class MissionPostDeployService
 {
+    /** D-151 — `origin` of a RELEASED lifecycle message caused by the surgeon's refusal. */
+    public const ORIGIN_SURGEON_REFUSAL = 'SURGEON_REFUSAL';
+
     /** D-150 — sole writer of the instrumentist of a published mission and of its affectation history. */
     private readonly MissionAssignmentService $assignments;
 
@@ -139,6 +145,131 @@ class MissionPostDeployService
             payload:    $payload,
             occurredAt: new \DateTimeImmutable(),
         ));
+    }
+
+    /**
+     * D-151 — ASSIGNED → OPEN: the mission's surgeon refuses the instrumentist who accepted
+     * it, within the refusal window (MissionAssignmentRefusalPolicy). Only the affectation is
+     * undone — never the mission: it goes back to the pool exactly like a release, and the
+     * refused instrumentist can never take it back (EligibilityReason::REFUSED_FOR_MISSION,
+     * read from this affectation's end reason on every eligibility path).
+     *
+     * $assignmentId is the affectation the surgeon saw: refusing it after the mission was
+     * given to someone else is ASSIGNMENT_SUPERSEDED, never a refusal of the new person. Under
+     * the mission row lock (inLockedChange()), so a double click, a concurrent manager change
+     * or a second refusal gets a 409 instead of a second unassignment.
+     *
+     * The lifecycle message is RELEASED with origin SURGEON_REFUSAL: the instrumentist only
+     * ever receives the neutral "affectation not maintained" wording; the managers are told
+     * the real origin (ASSIGNMENT_REFUSED_BY_SURGEON); the surgeon gets nothing (he acted).
+     */
+    public function refuseAssignment(Mission $mission, User $surgeon, int $assignmentId, MissionAssignmentRefusalScope $scope): void
+    {
+        $payload = $this->assignments->inLockedChange($mission, function () use ($mission, $surgeon, $assignmentId, $scope): array {
+            $current = $this->assignments->findCurrent($mission);
+            if ($current === null) {
+                throw new AssignmentRefusalException(AssignmentRefusalException::ASSIGNMENT_ALREADY_ENDED);
+            }
+            if ($current->getId() !== $assignmentId) {
+                throw new AssignmentRefusalException(AssignmentRefusalException::ASSIGNMENT_SUPERSEDED);
+            }
+
+            $blocked = MissionAssignmentRefusalPolicy::blockedReason($mission, $current, Clock::get()->now());
+            if ($blocked !== null) {
+                throw new AssignmentRefusalException($blocked);
+            }
+
+            $previousStatusEnum    = $mission->getStatus();
+            $fromInstrumentist     = $mission->getInstrumentist();
+            $fromInstrumentistName = $fromInstrumentist !== null ? $this->displayName($fromInstrumentist) : null;
+
+            $mission->setStatus(MissionStatus::OPEN);
+            $this->assignments->unassign($mission, MissionAssignmentEndReason::REFUSED_BY_SURGEON, $surgeon);
+            $current->recordRefusalScope($scope);
+            $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
+            $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::RELEASED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
+
+            $payload = [
+                'origin'                => self::ORIGIN_SURGEON_REFUSAL,
+                'assignmentId'          => $assignmentId,
+                'refusalScope'          => $scope->value,
+                'assignmentSource'      => $current->getSource()->value,
+                'assignedAt'            => $current->getAssignedAt()->format(\DateTimeInterface::ATOM),
+                'fromInstrumentistId'   => $fromInstrumentist?->getId(),
+                'fromInstrumentistName' => $fromInstrumentistName,
+                'previousStatus'        => $previousStatusEnum->value,
+                'actorId'               => $surgeon->getId(),
+                'actorName'             => $this->displayName($surgeon),
+            ];
+
+            $this->audit->record($mission, $surgeon, AuditEventType::MISSION_ASSIGNMENT_REFUSED_BY_SURGEON, $payload);
+
+            $this->em->flush();  // R-05: flush before dispatch
+
+            return $payload;
+        });
+
+        $this->bus->dispatch(new MissionLifecycleChangedMessage(
+            missionId:  $mission->getId(),
+            changeType: MissionChangeType::RELEASED,
+            actorId:    $surgeon->getId(),
+            payload:    $payload,
+            occurredAt: new \DateTimeImmutable(),
+        ));
+    }
+
+    /**
+     * D-151 — the mission's surgeon asks the managers to intervene on its current affectation
+     * (refusal window over, mission imminent, affectation not refusable…). Never changes the
+     * mission nor the affectation: it is recorded once per affectation and the operational
+     * managers are told. Returns false when it had already been requested (idempotent: no
+     * second notification).
+     */
+    public function requestAssignmentReview(Mission $mission, User $surgeon): bool
+    {
+        $payload = $this->assignments->inLockedChange($mission, function () use ($mission, $surgeon): ?array {
+            $current = $this->assignments->findCurrent($mission);
+            if ($current === null || !in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true)) {
+                throw new AssignmentRefusalException(AssignmentRefusalException::REVIEW_NOT_POSSIBLE);
+            }
+            if ($current->isReviewRequested()) {
+                return null;
+            }
+
+            $current->requestReview($surgeon, Clock::get()->now());
+
+            $instrumentist = $current->getInstrumentist();
+            $payload = [
+                'assignmentId'      => $current->getId(),
+                'assignmentSource'  => $current->getSource()->value,
+                'assignedAt'        => $current->getAssignedAt()->format(\DateTimeInterface::ATOM),
+                'instrumentistId'   => $instrumentist->getId(),
+                'instrumentistName' => $this->displayName($instrumentist),
+                'refusalBlockedReason' => MissionAssignmentRefusalPolicy::blockedReason($mission, $current, Clock::get()->now()),
+                'actorId'           => $surgeon->getId(),
+                'actorName'         => $this->displayName($surgeon),
+            ];
+
+            $this->audit->record($mission, $surgeon, AuditEventType::MISSION_ASSIGNMENT_REVIEW_REQUESTED, $payload);
+
+            $this->em->flush();  // R-05: flush before dispatch
+
+            return $payload;
+        });
+
+        if ($payload === null) {
+            return false;
+        }
+
+        $this->bus->dispatch(new MissionLifecycleChangedMessage(
+            missionId:  $mission->getId(),
+            changeType: MissionChangeType::ASSIGNMENT_REVIEW_REQUESTED,
+            actorId:    $surgeon->getId(),
+            payload:    $payload,
+            occurredAt: new \DateTimeImmutable(),
+        ));
+
+        return true;
     }
 
     /**
@@ -409,8 +540,9 @@ class MissionPostDeployService
             throw new MissionClaimIneligibleException($eligibility->reasons, $mission->getStartAt(), $blockingAbsence);
         }
 
+        $assignment = null;
         try {
-            $this->em->wrapInTransaction(function () use ($mission, $actor): void {
+            $this->em->wrapInTransaction(function () use ($mission, $actor, &$assignment): void {
                 $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
                 // D-124 audit — lock() alone does NOT reload an already-managed entity. A
                 // concurrent request that loaded this Mission (OPEN) before the winner
@@ -444,7 +576,7 @@ class MissionPostDeployService
                     ->setClaimedAt(new \DateTimeImmutable());
 
                 $previousStatusEnum = $mission->getStatus();
-                $this->assignments->assign($mission, $actor, $this->claimSource($mission, $actor), $actor);
+                $assignment = $this->assignments->assign($mission, $actor, $this->claimSource($mission, $actor), $actor);
                 $mission->setStatus(MissionStatus::ASSIGNED);
                 $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
 
@@ -478,6 +610,8 @@ class MissionPostDeployService
             payload:    [
                 'instrumentistId'   => $actor->getId(),
                 'instrumentistName' => $this->displayName($actor),
+                // D-151 — the surgeon's notification reads this affectation's refusal deadline.
+                'assignmentId'      => $assignment?->getId(),
             ],
             occurredAt: new \DateTimeImmutable(),
         ));

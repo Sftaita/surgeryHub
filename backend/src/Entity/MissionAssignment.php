@@ -3,6 +3,7 @@
 namespace App\Entity;
 
 use App\Enum\MissionAssignmentEndReason;
+use App\Enum\MissionAssignmentRefusalScope;
 use App\Enum\MissionAssignmentSource;
 use Doctrine\ORM\Mapping as ORM;
 
@@ -28,6 +29,8 @@ use Doctrine\ORM\Mapping as ORM;
 #[ORM\Index(columns: ['instrumentist_id', 'assigned_at'], name: 'idx_mission_assignment_instrumentist')]
 #[ORM\Index(columns: ['assigned_by_id'], name: 'IDX_MISSION_ASSIGNMENT_ASSIGNED_BY')]
 #[ORM\Index(columns: ['ended_by_id'], name: 'IDX_MISSION_ASSIGNMENT_ENDED_BY')]
+#[ORM\Index(columns: ['review_requested_by_id'], name: 'IDX_MISSION_ASSIGNMENT_REVIEW_BY')]
+#[ORM\Index(columns: ['mission_id', 'end_reason'], name: 'idx_mission_assignment_refusal')]
 #[ORM\UniqueConstraint(name: 'uniq_mission_assignment_active', columns: ['active_mission_key'])]
 class MissionAssignment
 {
@@ -64,6 +67,18 @@ class MissionAssignment
     #[ORM\JoinColumn(nullable: true, onDelete: 'SET NULL')]
     private ?User $endedBy = null;
 
+    /** D-151 — reach of the surgeon's refusal, set only when endReason = REFUSED_BY_SURGEON. */
+    #[ORM\Column(length: 20, nullable: true, enumType: MissionAssignmentRefusalScope::class)]
+    private ?MissionAssignmentRefusalScope $refusalScope = null;
+
+    /** D-151 — the surgeon asked the managers to intervene on this affectation (once per affectation). */
+    #[ORM\Column(type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $reviewRequestedAt = null;
+
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(nullable: true, onDelete: 'SET NULL')]
+    private ?User $reviewRequestedBy = null;
+
     /** Read-only: computed by MySQL, see class doc. */
     #[ORM\Column(
         nullable: true,
@@ -99,7 +114,30 @@ class MissionAssignment
         $this->endedAt   = $endedAt;
     }
 
+    /** D-151 — written once, together with the REFUSED_BY_SURGEON end of this affectation. */
+    public function recordRefusalScope(MissionAssignmentRefusalScope $scope): void
+    {
+        if ($this->endReason !== MissionAssignmentEndReason::REFUSED_BY_SURGEON || $this->refusalScope !== null) {
+            throw new \LogicException('A refusal scope belongs to a surgeon refusal, written once.');
+        }
+        $this->refusalScope = $scope;
+    }
+
+    /** D-151 — once per affectation; the caller checks isReviewRequested() first. */
+    public function requestReview(User $by, \DateTimeImmutable $at): void
+    {
+        if ($this->reviewRequestedAt !== null) {
+            throw new \LogicException('A review was already requested for this affectation.');
+        }
+        $this->reviewRequestedBy = $by;
+        $this->reviewRequestedAt = $at;
+    }
+
     public function isActive(): bool { return $this->endedAt === null; }
+    public function isReviewRequested(): bool { return $this->reviewRequestedAt !== null; }
+    public function getRefusalScope(): ?MissionAssignmentRefusalScope { return $this->refusalScope; }
+    public function getReviewRequestedAt(): ?\DateTimeImmutable { return $this->reviewRequestedAt; }
+    public function getReviewRequestedBy(): ?User { return $this->reviewRequestedBy; }
 
     public function getId(): ?int { return $this->id; }
     public function getMission(): Mission { return $this->mission; }

@@ -98,11 +98,9 @@ final class NotificationTargetResolver
             }
         }
 
-        // H2 (D-127) — the instrumentist no longer holds this mission (the manager removed
-        // her): its detail screen is not hers anymore — send her to her planning instead.
-        if ($type === NotificationType::PLANNING_MISSION_RELEASED && $isInstrumentist) {
-            return '/app/i/planning';
-        }
+        // H2 (D-127) / D-151 — the instrumentist no longer holds this mission: she opens the
+        // minimal "Affectation annulée" view of it (MissionVoter::VIEW_FORMER_ASSIGNMENT), the
+        // generic instrumentist route below.
 
         if ($mission !== null) {
             if ($isManager) {

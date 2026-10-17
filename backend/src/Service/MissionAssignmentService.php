@@ -12,6 +12,7 @@ use Doctrine\DBAL\ParameterType;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
+use Symfony\Component\Clock\Clock;
 
 /**
  * D-150 — single writer of Mission::$instrumentist on a published mission, and of its
@@ -55,7 +56,7 @@ class MissionAssignmentService
             return $current;
         }
 
-        $now = new \DateTimeImmutable();
+        $now = Clock::get()->now();
         if ($current !== null) {
             $this->close($current, $replacedReason, $actor, $now);
         }
@@ -72,7 +73,7 @@ class MissionAssignmentService
     {
         $current = $this->findCurrent($mission);
         if ($current !== null) {
-            $this->close($current, $reason, $actor, new \DateTimeImmutable());
+            $this->close($current, $reason, $actor, Clock::get()->now());
         }
         $mission->setInstrumentist(null);
 
@@ -88,7 +89,7 @@ class MissionAssignmentService
     {
         $current = $this->findCurrent($mission);
         if ($current !== null) {
-            $this->close($current, $reason, $actor, new \DateTimeImmutable());
+            $this->close($current, $reason, $actor, Clock::get()->now());
         }
 
         return $current;
@@ -111,6 +112,22 @@ class MissionAssignmentService
 
         // In-memory state wins: an affectation ended earlier in this unit of work is no longer current.
         return $found instanceof MissionAssignment && $found->isActive() ? $found : null;
+    }
+
+    /** D-151 — $instrumentist had an affectation to $mission that has ended (minimal view, "Affectation annulée"). */
+    public function hasEndedAffectationOf(Mission $mission, User $instrumentist): bool
+    {
+        if ($mission->getId() === null || $instrumentist->getId() === null) {
+            return false;
+        }
+
+        return (int) $this->em->createQuery(
+            'SELECT COUNT(a.id) FROM App\Entity\MissionAssignment a
+             WHERE a.mission = :mission AND a.instrumentist = :instrumentist AND a.endedAt IS NOT NULL'
+        )
+            ->setParameter('mission', $mission)
+            ->setParameter('instrumentist', $instrumentist)
+            ->getSingleScalarResult() > 0;
     }
 
     /**
@@ -168,7 +185,7 @@ class MissionAssignmentService
                AND NOT EXISTS (SELECT 1 FROM mission_assignment a WHERE a.mission_id = m.id AND a.ended_at IS NULL)',
             [
                 MissionAssignmentSource::PLANNING_DEPLOYMENT->value,
-                new \DateTimeImmutable(),
+                Clock::get()->now(),
                 $deployedBy?->getId(),
                 $versionId,
                 MissionStatus::ASSIGNED->value,

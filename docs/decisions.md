@@ -13367,7 +13367,8 @@ Sur un statut définitif, `mission.instrumentist` n'est **pas** effacé : encoda
 financiers, facturation firmes, relevés et consultations continuent d'y lire qui a travaillé
 sur la mission. L'annulation (`cancel()`) retirait déjà l'instrumentiste avant D-150 et le
 retire toujours ; le refus d'une déclaration (`rejectDeclared()`) ferme l'affectation
-(`REJECTED`) et garde l'instrumentiste, qui consulte toujours sa mission complète.
+(`REJECTED`) et garde l'instrumentiste, qui consulte toujours sa mission complète (la vue
+« Affectation annulée » exclut toujours l'instrumentiste encore enregistrée sur la mission).
 
 ### Décision 5 — reprise de l'existant (migration `Version20261014090000`)
 
@@ -13417,3 +13418,114 @@ garantie par la base, requête périmée refusée après un release commité),
 l'instrumentiste) et `MissionInstrumentistWriteArchitectureTest`. Reprise : base de travail
 migrée à `Version20261012090000`, une mission par cas de statut, résultat comparé ligne à
 ligne à l'attendu, contrôles d'invariant, aller-retour `down`/`up`.
+
+
+## D-151 — Refus d'affectation par le chirurgien (refus ponctuel), demande d'intervention du manager, missions commencées non claimables (2026-10-14)
+
+**Statut : implémenté sur `feat/surgeon-refusal-compat` (lot L2), non commité, non déployé.**
+
+### Contexte
+
+L'acceptation d'une mission par un instrumentiste reste immédiate (claim, D-117 / D-125). Le
+chirurgien doit pouvoir refuser, pendant un temps limité, l'instrumentiste qui a accepté une de
+ses missions — sans jamais qu'une validation préalable soit exigée. Décisions du métier
+(2026-10-14) : refus uniquement des acceptations volontaires ; fenêtre de 24 h au plus tard
+jusqu'au début ; à moins de 12 h du début, jamais de désaffectation automatique ; formulation
+neutre pour toute désaffectation organisationnelle ; vue minimale de l'ancienne affectation ;
+interdire le claim d'une mission déjà commencée.
+
+### Décision 1 — qui, quoi, jusqu'à quand (`MissionAssignmentRefusalPolicy`)
+
+- Seul le chirurgien de la mission (`ROLE_SURGEON`) peut refuser
+  (`MissionVoter::REFUSE_ASSIGNMENT`) ; un confrère, l'instrumentiste, le manager : `403`.
+- Seule une acceptation volontaire est refusable : `MissionAssignment.source` ∈
+  {`POOL_CLAIM`, `OFFER_ACCEPTED`} (D-150). Une attribution manager, un déploiement de
+  planning, une affectation LEGACY : `ASSIGNMENT_NOT_REFUSABLE`.
+- Fenêtre : jusqu'à `min(assignedAt + 24 h, début de la mission)`, sur l'horodatage propre de
+  l'affectation (D-150), jamais sur la date de création de la mission.
+- Moins de 12 h avant le début, ou dès qu'existent des données d'encodage (encodage démarré,
+  soumis, verrouillé, heures réelles, interventions, matériel) ou un calcul financier non
+  remplacé : `REFUSAL_REQUIRES_MANAGER`.
+- L'absence de refus n'appelle aucun traitement : l'affectation existe déjà.
+- La règle est lue par le service (sous verrou), `allowedActions` et le DTO — jamais par le
+  frontend.
+
+### Décision 2 — refus ponctuel = release du chirurgien
+
+`MissionPostDeployService::refuseAssignment()` : sous `inLockedChange()` (D-150), vérifie que
+l'affectation refusée est toujours l'affectation courante (`ASSIGNMENT_SUPERSEDED` sinon,
+`ASSIGNMENT_ALREADY_ENDED` si plus aucune), applique la politique, puis `ASSIGNED → OPEN`,
+termine l'affectation `REFUSED_BY_SURGEON` (portée `PUNCTUAL`), retire la communication,
+réinitialise l'escalade J-14 (D-110), écrit `MISSION_ASSIGNMENT_REFUSED_BY_SURGEON` et envoie
+`RELEASED` avec `origin = SURGEON_REFUSAL`. La mission n'est jamais annulée. Le pool est
+sollicité comme pour tout release (D-129).
+
+### Décision 3 — l'instrumentiste refusée ne reprend jamais cette mission
+
+Nouveau motif `EligibilityReason::REFUSED_FOR_MISSION`, lu depuis
+`MissionAssignment.endReason` (une requête, indexée `(mission_id, end_reason)`), **bloquant sous
+toutes les politiques** (`STRICT_ASSIGNMENT`, `PLANNING_MODIFICATION`) : `evaluate()` (claim),
+`evaluateForReassignment()` / `evaluateForOffer()` (attribution, réaffectation, ajout,
+demande nominative, générateur, restauration après absence), `findEligibleByMission()`
+(sollicitation du pool), `evaluateAllCandidates()` (sélecteurs manager, motif affiché),
+`MissionService::list(eligibleToMe)` et `offersUnreadCount` (NOT EXISTS), `allowedActions`.
+Côté instrumentiste, ce motif ne sort jamais : l'erreur de claim porte le code neutre
+`MISSION_UNAVAILABLE` et le libellé « Cette mission n'est plus disponible pour vous ».
+
+**Amende D-036** : `findEligibleByMission()` et `evaluateAllCandidates()` passent de 3 à 4
+requêtes (toujours constantes, aucun N+1) ; `evaluate()` de 3 à 4.
+
+### Décision 4 — une mission commencée n'est plus claimable
+
+Nouveau motif `EligibilityReason::MISSION_ALREADY_STARTED` (`startAt ≤ maintenant`) dans
+`evaluate()` (claim) et `findEligibleByMission()` (pool), filtre `m.startAt > maintenant` dans
+la liste des offres, `claim` retiré d'`allowedActions`. **Jamais** dans
+`evaluateForReassignment()` : un manager peut toujours affecter ou corriger une mission
+commencée, et la déclaration d'une activité réellement exécutée (lot L6) n'est pas concernée.
+
+### Décision 5 — demande d'intervention du manager
+
+`POST /api/missions/{id}/assignment-review-request` (`MissionVoter::REQUEST_ASSIGNMENT_REVIEW`) :
+aucun changement d'état, une fois par affectation (`MissionAssignment.reviewRequestedAt/By`),
+`MISSION_ASSIGNMENT_REVIEW_REQUESTED`, notification `ASSIGNMENT_REVIEW_REQUESTED` aux managers
+opérationnels (D-149). Proposée (`request_assignment_review`) dès que le refus direct n'est pas
+possible.
+
+### Décision 6 — notifications
+
+| Destinataire | Événement | Type | Contenu |
+|---|---|---|---|
+| Chirurgien | claim (acceptation volontaire) | `SURGEON_POST_COVERED` | « Instrumentiste affecté à votre mission » — « [Prénom Nom] a accepté votre mission du [date] à [heure], à [établissement]. Vous pouvez signaler un refus d'affectation jusqu'au [date/heure limite]. » (deuxième phrase seulement si le refus direct est encore possible) ; ouvre `/app/s/missions/{id}` |
+| Instrumentiste | refus du chirurgien, release manager, réaffectation (ancienne) | `PLANNING_MISSION_RELEASED` / `PLANNING_MISSION_REASSIGNED` | in-app « Affectation annulée » ; e-mail imposé « SurgicalHub — Mise à jour de votre mission » (`emails/assignment_not_maintained.html.twig`) ; jamais l'auteur, le motif, le remplaçant ni « annulée » ; ouvre la vue minimale |
+| Managers opérationnels | refus du chirurgien | `ASSIGNMENT_REFUSED_BY_SURGEON` | origine réelle (chirurgien, instrumentiste) |
+| Managers opérationnels | demande d'intervention | `ASSIGNMENT_REVIEW_REQUESTED` | chirurgien, instrumentiste, raison (délai, imminence, non refusable) |
+| Chirurgien | son propre refus | — | aucune notification (`SURGEON_POST_UNCOVERED` supprimée dans ce cas) |
+
+Les désaffectations liées aux absences gardent leurs types et textes (D-127). Les deux nouveaux
+types ont l'e-mail activé par défaut (même urgence que `MISSION_OFFER_DECLINED`, D-125).
+Dispatcher unique, idempotence par épisode, `MAIL_SAFE_MODE` : inchangés (D-128, D-144, D-061).
+
+### Décision 7 — vue minimale de l'ancienne affectation
+
+`MissionVoter::VIEW_FORMER_ASSIGNMENT` : une instrumentiste dont une affectation à la mission a
+pris fin, et qui n'a plus d'autre droit de lecture, reçoit une vue minimale
+(`MissionMapper::toFormerAssigneeDetailDto`) : date, horaire, site, type, chirurgien,
+`myAssignmentStatus: "ENDED"` — ni instrumentiste, ni action, ni motif. Le frontend affiche
+« Affectation annulée ». `NotificationTargetResolver` envoie désormais
+`PLANNING_MISSION_RELEASED` vers cette vue (avant : `/app/i/planning`).
+
+### Hors périmètre de ce lot
+
+- Refus durable et incompatibilités (lot L3) : `MissionAssignmentRefusalScope` n'a que `PUNCTUAL`.
+- Aucun changement des parcours d'absence (D-127, D-130).
+
+### Tests
+
+`SurgeonAssignmentRefusalFunctionalTest` (HTTP + base réelle, 12 scénarios du cahier : acceptation
+immédiate, notification et délai, refus, reprise interdite par toutes les voies, autre
+instrumentiste, après délai, imminente, commencée, non volontaire, encodage, chirurgien
+confrère, affectation remplacée, refus répété, demande idempotente, confidentialité des
+notifications, vue minimale), `MissionAssignmentIntegrationTest` (refus concurrent d'une
+réaffectation manager, deux connexions), `MissionAssignmentRefusalPolicyTest`,
+`MissionLifecycleChangedMessageHandlerTest`, tests frontend (`MissionDetailPage.assignment`,
+`notificationFormat`).

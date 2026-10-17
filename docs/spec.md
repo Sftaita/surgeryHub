@@ -106,6 +106,16 @@ cannot publish missions
 
 cannot approve declared missions
 
+
+Surgeons (D-151):
+
+refuse, within 24 h of a voluntary acceptance (pool / nominative offer) and at the latest before
+the mission starts, the instrumentist who accepted one of their own missions — never less than
+12 h before the start (they ask the managers to intervene instead); no prior approval is ever
+required: an acceptance nobody refuses simply stands
+
+ask the managers to intervene on the current affectation of one of their missions
+
 Managers/Admins:
 
 control planning

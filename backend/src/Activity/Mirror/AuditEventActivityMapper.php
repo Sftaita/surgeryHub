@@ -53,6 +53,8 @@ final class AuditEventActivityMapper
         'MISSION_OFFERED_TO_INSTRUMENTIST' => 'Mission proposée à une instrumentiste',
         'MISSION_ASSIGNED_DIRECTLY' => 'Mission attribuée directement',
         'MISSION_OFFER_DECLINED' => 'Proposition de mission refusée',
+        'MISSION_ASSIGNMENT_REFUSED_BY_SURGEON' => "Affectation refusée par le chirurgien",
+        'MISSION_ASSIGNMENT_REVIEW_REQUESTED' => 'Intervention demandée sur une affectation',
         'PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE' => 'Occurrence neutralisée (absence chirurgien)',
         'PLANNING_OCCURRENCE_INSTRUMENTIST_ABSENCE_NOTICE' => 'Occurrence impactée (absence instrumentiste)',
         'PLANNING_OCCURRENCE_RESTORED_AFTER_ABSENCE' => 'Occurrence restaurée après absence',
@@ -224,6 +226,11 @@ final class AuditEventActivityMapper
                 $mission?->getId() ?? 0, $cause, $p['previousStatus'] ?? '?', $who, self::fromWhom($p)) . $site,
             AuditEventType::MISSION_CLAIMED_FROM_POOL => sprintf('%s a pris la %s depuis le pool',
                 $p['instrumentistName'] ?? $who, $m ?? 'mission') . $site,
+            // D-151 — the real origin, for the managers' journal (never shown to the instrumentist).
+            AuditEventType::MISSION_ASSIGNMENT_REFUSED_BY_SURGEON => sprintf("%s a refusé l'affectation de %s à la %s (refus ponctuel) — ASSIGNED → OPEN",
+                $who, $p['fromInstrumentistName'] ?? 'l\'instrumentiste', $m ?? 'mission') . $site,
+            AuditEventType::MISSION_ASSIGNMENT_REVIEW_REQUESTED => sprintf("%s demande l'intervention du manager sur l'affectation de %s à la %s",
+                $who, $p['instrumentistName'] ?? 'l\'instrumentiste', $m ?? 'mission') . $site,
             AuditEventType::MISSION_REASSIGNED_POST_DEPLOY => sprintf('%s a réassigné la %s : %s → %s%s',
                 $who, $m ?? 'mission', $p['fromInstrumentistName'] ?? 'personne', $p['toInstrumentistName'] ?? 'personne', $cause) . $site,
             AuditEventType::MISSION_TIME_CHANGED_POST_DEPLOY => sprintf('%s a modifié l\'horaire de la %s : %s → %s',
@@ -343,6 +350,7 @@ final class AuditEventActivityMapper
     {
         return self::intOrNull(match ($type) {
             AuditEventType::MISSION_RELEASED_TO_POOL,
+            AuditEventType::MISSION_ASSIGNMENT_REFUSED_BY_SURGEON,
             AuditEventType::MISSION_CANCELLED_POST_DEPLOY => $p['fromInstrumentistId'] ?? null,
             AuditEventType::MISSION_REASSIGNED_POST_DEPLOY => $p['toInstrumentistId'] ?? $p['fromInstrumentistId'] ?? null,
             default => $p['instrumentistId'] ?? $p['originalSurgeonId'] ?? $p['surgeonId'] ?? null,

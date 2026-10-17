@@ -11,6 +11,8 @@ enum MissionAssignmentEndReason: string
     case REPLACED = 'REPLACED';
     /** The mission was cancelled. */
     case CANCELLED = 'CANCELLED';
+    /** D-151 — the mission's surgeon refused this voluntary acceptance within the refusal window. */
+    case REFUSED_BY_SURGEON = 'REFUSED_BY_SURGEON';
     /**
      * The declared mission was rejected (DECLARED → REJECTED, final). Mission::$instrumentist
      * is kept as the historical fact; only the affectation ends.

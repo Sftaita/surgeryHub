@@ -4240,3 +4240,17 @@ publication.
 - **Invariant** (D-150 Décision 4) : affectation ouverte seulement pour DECLARED … VALIDATED,
   et pour `mission.instrumentist` ; un statut définitif ferme l'affectation
   (`endOnFinalStatus()`, refus d'une déclaration) sans retirer l'instrumentiste.
+
+### 31.1 Refus d'affectation par le chirurgien (D-151)
+
+- **Règle unique** : `App\Service\MissionAssignmentRefusalPolicy` (acceptation volontaire,
+  `min(assignedAt + 24 h, début)`, jamais à moins de 12 h du début ni avec des données
+  d'encodage / financières). Lue par `MissionPostDeployService::refuseAssignment()` sous verrou,
+  `MissionActionsService` (`refuse_assignment` / `request_assignment_review`) et `MissionMapper`
+  (`currentAssignment`).
+- **Effet durable sur la mission** : `MissionAssignment.endReason = REFUSED_BY_SURGEON` →
+  `EligibilityReason::REFUSED_FOR_MISSION` sur toutes les voies de `MissionEligibilityService`
+  et dans `MissionService::list(eligibleToMe)`.
+- **Notifications** : `RELEASED` + `origin = SURGEON_REFUSAL` ; formulation neutre côté
+  instrumentiste (`MissionLifecycleNotificationFactory::isNeutralRemoval()`), origine réelle
+  côté managers.

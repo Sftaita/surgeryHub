@@ -9,6 +9,7 @@ use App\Dto\Request\Response\UserSlimDto;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\User;
+use Symfony\Component\Clock\Clock;
 
 final class MissionMapper
 {
@@ -16,6 +17,8 @@ final class MissionMapper
         private readonly MissionActionsService $actions,
         private readonly PlanningCoverageService $coverage,
         private readonly EncodingReminderService $reminders,
+        // D-151 — optional only so plain unit tests can build the mapper; always autowired.
+        private readonly ?MissionAssignmentService $assignments = null,
     ) {}
 
     public function toListDto(Mission $m, User $viewer): MissionListDto
@@ -73,7 +76,76 @@ final class MissionMapper
             submittedAt: $m->getSubmittedAt()?->format(\DateTimeInterface::ATOM),
             targetedOffer: $this->targetedOffer($m),
             encodingCorrectionBlockedReason: $isManagerViewer ? MissionEncodingCorrectionPolicy::reopenBlockedReason($m) : null,
+            currentAssignment: $isManagerViewer || $m->getSurgeon()?->getId() === $viewer->getId() ? $this->currentAssignment($m) : null,
+            myAssignmentStatus: $this->myAssignmentStatus($m, $viewer),
         );
+    }
+
+    /**
+     * D-151 — what an instrumentist whose affectation ENDED may still see of the mission
+     * (MissionVoter::VIEW_FORMER_ASSIGNMENT): date, time, site, type, surgeon — nobody else's
+     * name, no action, no reason ("Affectation annulée").
+     */
+    public function toFormerAssigneeDetailDto(Mission $m): MissionDetailDto
+    {
+        return new MissionDetailDto(
+            id: (int) $m->getId(),
+            site: $this->toHospitalSlim($m->getSite()),
+            startAt: $m->getStartAt()?->format(\DateTimeInterface::ATOM),
+            endAt: $m->getEndAt()?->format(\DateTimeInterface::ATOM),
+            schedulePrecision: (string) $m->getSchedulePrecision()?->value,
+            type: (string) $m->getType()?->value,
+            status: (string) $m->getStatus()?->value,
+            surgeon: $this->toUserSlim($m->getSurgeon()),
+            instrumentist: null,
+            allowedActions: ['view'],
+            noMaterialComment: null,
+            submittedWithoutMaterial: null,
+            covered: false,
+            automaticReminderSentAt: null,
+            nextAutomaticReminderAt: null,
+            lastManualReminderAt: null,
+            lastManualReminderByName: null,
+            lastManualReminderChannel: null,
+            automaticReminders: [],
+            submittedAt: null,
+            myAssignmentStatus: 'ENDED',
+        );
+    }
+
+    /** @return array<string,mixed>|null */
+    private function currentAssignment(Mission $m): ?array
+    {
+        $current = $this->assignments?->findCurrent($m);
+        if ($current === null) {
+            return null;
+        }
+
+        $instrumentist = $current->getInstrumentist();
+        $name          = trim(($instrumentist->getFirstname() ?? '') . ' ' . ($instrumentist->getLastname() ?? ''));
+        $blocked       = MissionAssignmentRefusalPolicy::blockedReason($m, $current, Clock::get()->now());
+
+        return [
+            'id'                   => $current->getId(),
+            'instrumentist'        => ['id' => $instrumentist->getId(), 'name' => $name !== '' ? $name : $instrumentist->getEmail()],
+            'source'               => $current->getSource()->value,
+            'assignedAt'           => $current->getAssignedAt()->format(\DateTimeInterface::ATOM),
+            'refusalDeadlineAt'    => $current->getSource()->isVoluntaryAcceptance()
+                ? MissionAssignmentRefusalPolicy::deadline($current, $m)->format(\DateTimeInterface::ATOM)
+                : null,
+            'refusable'            => $blocked === null,
+            'refusalBlockedReason' => $blocked,
+            'reviewRequestedAt'    => $current->getReviewRequestedAt()?->format(\DateTimeInterface::ATOM),
+        ];
+    }
+
+    private function myAssignmentStatus(Mission $m, User $viewer): ?string
+    {
+        if (!in_array('ROLE_INSTRUMENTIST', $viewer->getRoles(), true) || $m->getInstrumentist()?->getId() === $viewer->getId()) {
+            return null;
+        }
+
+        return $this->assignments?->hasEndedAffectationOf($m, $viewer) ? 'ENDED' : null;
     }
 
     /**

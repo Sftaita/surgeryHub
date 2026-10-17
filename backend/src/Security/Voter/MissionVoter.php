@@ -7,6 +7,7 @@ use App\Entity\User;
 use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\PublicationScope;
+use App\Service\MissionAssignmentService;
 use App\Service\MissionDispatchService;
 use App\Service\MissionHoursReminderPolicy;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
@@ -66,6 +67,21 @@ class MissionVoter extends Voter
     // ENCODING_REMIND : condition unique dans MissionHoursReminderPolicy.
     public const HOURS_REMIND = 'MISSION_HOURS_REMIND';
 
+    // D-151 — the mission's own surgeon (ROLE_SURGEON): refuse the instrumentist who accepted
+    // it / ask the managers to intervene. The business conditions (refusal window, imminent
+    // mission, financial guards) are decided by MissionAssignmentRefusalPolicy under the lock.
+    public const REFUSE_ASSIGNMENT         = 'MISSION_REFUSE_ASSIGNMENT';
+    public const REQUEST_ASSIGNMENT_REVIEW = 'MISSION_REQUEST_ASSIGNMENT_REVIEW';
+
+    // D-151 — an instrumentist whose affectation to this mission ended keeps a minimal,
+    // read-only view of it ("Affectation annulée"), never anything about why.
+    public const VIEW_FORMER_ASSIGNMENT = 'MISSION_VIEW_FORMER_ASSIGNMENT';
+
+    public function __construct(
+        // Optional only so plain unit tests can build the voter; always autowired.
+        private readonly ?MissionAssignmentService $assignments = null,
+    ) {}
+
     protected function supports(string $attribute, mixed $subject): bool
     {
         if (!in_array($attribute, [
@@ -93,6 +109,9 @@ class MissionVoter extends Voter
             self::ENCODING_REOPEN,
             self::ENCODING_REMIND,
             self::HOURS_REMIND,
+            self::REFUSE_ASSIGNMENT,
+            self::REQUEST_ASSIGNMENT_REVIEW,
+            self::VIEW_FORMER_ASSIGNMENT,
         ], true)) {
             return false;
         }
@@ -151,8 +170,20 @@ class MissionVoter extends Voter
             self::ENCODING_REOPEN             => $isManager && $mission->getStatus() === MissionStatus::VALIDATED,
             self::ENCODING_REMIND             => $isManager && $this->canEncodingRemind($mission),
             self::HOURS_REMIND                => $isManager && MissionHoursReminderPolicy::isReminderRelevant($mission),
+            self::REFUSE_ASSIGNMENT,
+            self::REQUEST_ASSIGNMENT_REVIEW   => $this->isMissionSurgeon($mission, $user),
+            self::VIEW_FORMER_ASSIGNMENT      => in_array('ROLE_INSTRUMENTIST', $roles, true)
+                && $mission->getInstrumentist()?->getId() !== $user->getId()
+                && ($this->assignments?->hasEndedAffectationOf($mission, $user) ?? false),
             default                           => false,
         };
+    }
+
+    /** D-151 — the surgeon of THIS mission (a colleague's mission is never his to refuse). */
+    private function isMissionSurgeon(Mission $mission, User $user): bool
+    {
+        return in_array('ROLE_SURGEON', $user->getRoles(), true)
+            && $mission->getSurgeon()?->getId() === $user->getId();
     }
 
     private function canView(Mission $mission, User $user, bool $managerContext): bool

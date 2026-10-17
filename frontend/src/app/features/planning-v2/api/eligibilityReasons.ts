@@ -10,6 +10,9 @@ export const ELIGIBILITY_REASON_LABELS: Record<EligibilityReason, string> = {
   SCHEDULE_CONFLICT: "Conflit d'horaire",
   ALREADY_ASSIGNED: "Déjà assignée",
   INCOMPATIBLE_STATUS: "Statut incompatible",
+  // D-151 — manager-facing pickers only (the instrumentist never sees this reason).
+  REFUSED_FOR_MISSION: "Refusée par le chirurgien pour cette mission",
+  MISSION_ALREADY_STARTED: "Mission déjà commencée",
 };
 
 export function eligibilityReasonLabel(reason: EligibilityReason | string): string {
@@ -20,12 +23,14 @@ export function eligibilityReasonLabel(reason: EligibilityReason | string): stri
 // single badge) — most actionable/severe first. NO_SITE_MEMBERSHIP is deliberately
 // last: per D-101 it's informational-only and never blocking.
 const REASON_PRIORITY: EligibilityReason[] = [
+  "REFUSED_FOR_MISSION",
   "INACTIVE",
   "ABSENT",
   "SCHEDULE_CONFLICT",
   "NO_SITE_MEMBERSHIP",
   "ALREADY_ASSIGNED",
   "INCOMPATIBLE_STATUS",
+  "MISSION_ALREADY_STARTED",
 ];
 
 export function primaryReason(reasons: EligibilityReason[]): EligibilityReason | null {

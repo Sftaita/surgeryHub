@@ -42,4 +42,8 @@ enum MissionChangeType: string
     case OFFERED            = 'OFFERED';             // DRAFT|OPEN → OPEN + TARGETED request to one instrumentist
     case ASSIGNED_DIRECTLY  = 'ASSIGNED_DIRECTLY';   // DRAFT|OPEN → ASSIGNED, no acceptance required
     case OFFER_DECLINED     = 'OFFER_DECLINED';      // TARGETED request refused, stays OPEN
+
+    // D-151 — the mission's surgeon asks the managers to intervene on the current affectation
+    // (refusal window over, mission imminent, or affectation not refusable). No state change.
+    case ASSIGNMENT_REVIEW_REQUESTED = 'ASSIGNMENT_REVIEW_REQUESTED';
 }

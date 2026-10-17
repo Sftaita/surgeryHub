@@ -31,6 +31,7 @@ import type { Mission } from "../../features/missions/api/missions.types";
 import { formatExecutionHours, HOURS_NOT_PROVIDED } from "../../features/missions/utils/missions.format";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
+import SurgeonAssignmentCard from "../../features/missions/components/SurgeonAssignmentCard";
 import { MobileCard } from "../../ui/mobile/MobileCard";
 
 dayjs.locale("fr");
@@ -167,12 +168,15 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
     enabled: Number.isFinite(missionId) && missionId > 0,
   });
 
+  // D-151 — l'instrumentiste dont l'affectation a pris fin ne garde qu'une vue minimale.
+  const isEndedAssignment = mission?.myAssignmentStatus === "ENDED";
+
   // Même query key que MissionEncodingPage.tsx (lecture) et EditServiceHoursDialog.tsx
   // (mutation) — une seule source de vérité pour les heures prestées.
   const { data: execution } = useQuery({
     queryKey: ["mission-execution", missionId],
     queryFn: () => getMissionExecution(missionId),
-    enabled: Number.isFinite(missionId) && missionId > 0 && !!mission,
+    enabled: Number.isFinite(missionId) && missionId > 0 && !!mission && !isEndedAssignment,
   });
 
   if (!Number.isFinite(missionId) || missionId <= 0)
@@ -195,7 +199,10 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
     : `/app/s/missions/${mission.id}/encoding`;
   const isInstrumentistView = location.pathname.startsWith("/app/i/");
 
-  const { label: chipLabel, color: chipColor } = getStatusChip(String(mission.status ?? ""));
+  // D-151 — « Affectation annulée », jamais le statut courant de la mission ni pourquoi.
+  const { label: chipLabel, color: chipColor } = isEndedAssignment
+    ? { label: "Affectation annulée", color: "default" as ChipColor }
+    : getStatusChip(String(mission.status ?? ""));
   const hoursLabel = formatExecutionHours(execution);
   const isEncodingPending =
     (mission.status === "ASSIGNED" || mission.status === "IN_PROGRESS" || mission.status === "DECLARED") &&
@@ -233,7 +240,9 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
             value={`${formatDate(mission.startAt)} · ${formatTime(mission.startAt)} → ${formatTime(mission.endAt)}`}
           />
           <InfoRow icon={<PersonIcon fontSize="small" />} label="Chirurgien" value={surgeonLabel(mission)} />
-          <InfoRow icon={<PersonIcon fontSize="small" />} label="Instrumentiste" value={instrumentistLabel(mission)} />
+          {!isEndedAssignment && (
+            <InfoRow icon={<PersonIcon fontSize="small" />} label="Instrumentiste" value={instrumentistLabel(mission)} />
+          )}
           <InfoRow
             icon={<MedicalServicesIcon fontSize="small" />}
             label="Type"
@@ -242,6 +251,17 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
         </Stack>
       </SectionCard>
 
+      {isEndedAssignment && (
+        <Typography variant="body2" color="text.secondary" data-testid="assignment-ended-note">
+          Votre affectation à cette mission n'a pas pu être maintenue. Aucune action n'est nécessaire de votre part.
+        </Typography>
+      )}
+
+      {/* D-151 — chirurgien de la mission : affectation en cours, délai et refus éventuel. */}
+      {!isInstrumentistView && mission.currentAssignment && <SurgeonAssignmentCard mission={mission} />}
+
+      {!isEndedAssignment && (
+      <>
       {/* Zone 2 — Prestation */}
       <SectionCard
         icon={<AccessTimeIcon fontSize="small" />}
@@ -357,6 +377,8 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
             </Button>
           )}
         </Stack>
+      )}
+      </>
       )}
 
       {/* Dialogs */}

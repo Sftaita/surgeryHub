@@ -338,6 +338,81 @@ Relâche la mission vers le pool. L'instrumentiste assigné est désengagé.
 
 ---
 
+### `POST /api/missions/{id}/assignments/{assignmentId}/refuse` (D-151)
+
+**AuthZ :** `ROLE_SURGEON` **et** chirurgien de cette mission (`MissionVoter::REFUSE_ASSIGNMENT`) —
+le chirurgien d'une autre mission, l'instrumentiste et le manager reçoivent `403` (le manager
+dispose de `release` / `reassign`).
+
+**Transition :** `ASSIGNED → OPEN` — seule l'affectation est défaite, jamais la mission.
+
+**Body :** `{"scope": "PUNCTUAL"}` (défaut `PUNCTUAL` ; toute autre valeur → `422`).
+
+`{assignmentId}` est l'affectation que le chirurgien a vue (`currentAssignment.id`). Les
+conditions sont décidées côté serveur, sous verrou de la mission, par
+`MissionAssignmentRefusalPolicy` :
+
+| Condition | Erreur `409` (`error.code`) |
+|---|---|
+| La mission a été attribuée à quelqu'un d'autre depuis | `ASSIGNMENT_SUPERSEDED` |
+| L'affectation n'existe plus (déjà refusée, libérée…) — double clic, refus répété | `ASSIGNMENT_ALREADY_ENDED` |
+| Affectation non acceptée volontairement (attribution manager, planning, reprise LEGACY…) | `ASSIGNMENT_NOT_REFUSABLE` |
+| Après `min(assignedAt + 24 h, début de la mission)` | `REFUSAL_WINDOW_EXPIRED` |
+| Moins de 12 h avant le début, ou données d'encodage / calcul financier existants | `REFUSAL_REQUIRES_MANAGER` |
+| La mission a été modifiée entre-temps (lecture verrouillante) | `CONFLICT` |
+
+**Réponse — 200 :** Mission complète (`status: "OPEN"`, `instrumentist: null`).
+
+**Effets backend :**
+- `MissionAssignment` terminée `REFUSED_BY_SURGEON`, `refusalScope = PUNCTUAL`, `endedBy` = chirurgien ;
+- l'instrumentiste refusée ne peut plus jamais reprendre **cette** mission (`EligibilityReason::REFUSED_FOR_MISSION`
+  sur toutes les voies : claim, liste des offres, sollicitation du pool, demande nominative,
+  attribution et réaffectation manager, sélecteurs) ;
+- `AuditEvent(MISSION_ASSIGNMENT_REFUSED_BY_SURGEON)` ;
+- `MissionLifecycleChangedMessage(RELEASED, origin = SURGEON_REFUSAL)` : l'instrumentiste reçoit
+  `PLANNING_MISSION_RELEASED` (formulation neutre imposée, e-mail « SurgicalHub — Mise à jour de
+  votre mission ») ; les managers opérationnels reçoivent `ASSIGNMENT_REFUSED_BY_SURGEON`
+  (origine réelle) ; le chirurgien ne reçoit rien ; le pool est sollicité comme pour un release.
+
+---
+
+### `POST /api/missions/{id}/assignment-review-request` (D-151)
+
+**AuthZ :** `ROLE_SURGEON` et chirurgien de cette mission (`MissionVoter::REQUEST_ASSIGNMENT_REVIEW`).
+
+Demande l'intervention des managers sur l'affectation en cours (délai de refus écoulé, mission
+imminente ou commencée, affectation non refusable). **Aucun changement d'état** : jamais de
+désaffectation automatique.
+
+**Body :** `{}` — **Réponse — 200 :** Mission complète (`currentAssignment.reviewRequestedAt` renseigné).
+
+Idempotente par affectation : une deuxième demande répond `200` sans nouvelle notification.
+`409 REVIEW_NOT_POSSIBLE` si aucune affectation n'est en cours (mission ni `ASSIGNED` ni `IN_PROGRESS`).
+
+**Effets backend :** `AuditEvent(MISSION_ASSIGNMENT_REVIEW_REQUESTED)`,
+`MissionLifecycleChangedMessage(ASSIGNMENT_REVIEW_REQUESTED)` → `ASSIGNMENT_REVIEW_REQUESTED`
+aux managers opérationnels (D-149).
+
+---
+
+### Détail mission — champs D-151
+
+- `currentAssignment` (chirurgien de la mission et managers seulement, sinon `null`) :
+  `{id, instrumentist: {id, name}, source, assignedAt, refusalDeadlineAt, refusable,
+  refusalBlockedReason, reviewRequestedAt}`. `refusalDeadlineAt` n'existe que pour une
+  acceptation volontaire (`POOL_CLAIM` / `OFFER_ACCEPTED`). `refusable` /
+  `refusalBlockedReason` sont la décision de `MissionAssignmentRefusalPolicy`, jamais recalculée.
+  Toujours `null` sur une mission `CANCELLED`, `REJECTED`, `CLOSED`, `OPEN` ou `DRAFT`
+  (invariant D-150) ; `instrumentist` reste renseigné sur une mission `REJECTED`.
+- `myAssignmentStatus: "ENDED"` : l'instrumentiste qui consulte a eu une affectation à cette
+  mission, terminée. Si elle n'a plus d'autre droit de lecture, `GET /api/missions/{id}` lui
+  sert une **vue minimale** (`MissionVoter::VIEW_FORMER_ASSIGNMENT`) : date, horaire, site, type,
+  chirurgien — `instrumentist: null`, `allowedActions: ["view"]`, jamais de motif.
+- `allowedActions` du chirurgien de la mission : `refuse_assignment` (refus possible
+  maintenant) ou `request_assignment_review` (sinon, une fois par affectation).
+
+---
+
 ### `POST /api/missions/{id}/cancel`
 
 **AuthZ :** `MANAGER` / `ADMIN` (`MissionVoter::CANCEL`)

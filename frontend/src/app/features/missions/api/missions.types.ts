@@ -27,7 +27,11 @@ export type AllowedAction =
   // D-125 — manager : (re)diffuser une mission OPEN sans demande en attente ;
   // instrumentiste : refuser une demande nominative ('claim' = accepter)
   | "dispatch"
-  | "decline_offer";
+  | "decline_offer"
+  // D-151 — chirurgien de la mission : refuser l'instrumentiste qui l'a acceptée (dans le
+  // délai), sinon demander l'intervention du manager. Décidé par le backend uniquement.
+  | "refuse_assignment"
+  | "request_assignment_review";
 
 export type SchedulePrecision = "APPROXIMATE" | "EXACT";
 export type MissionType = "BLOCK" | "CONSULTATION";
@@ -217,8 +221,34 @@ export interface Mission {
   /** D-148 — pourquoi l'encodage ne peut pas être rouvert (clôture, verrou financier), managers seulement. */
   encodingCorrectionBlockedReason?: string | null;
 
+  /** D-151 — affectation en cours, servie au chirurgien de la mission et aux managers seulement. */
+  currentAssignment?: CurrentAssignment | null;
+  /** D-151 — "ENDED" : l'instrumentiste qui consulte a eu une affectation à cette mission, terminée. */
+  myAssignmentStatus?: "ENDED" | null;
+
   [key: string]: unknown;
 }
+
+/**
+ * D-151 — calculé par le backend (MissionAssignmentRefusalPolicy), jamais recalculé ici :
+ * refusable / refusalBlockedReason disent ce que le chirurgien peut faire maintenant.
+ */
+export type CurrentAssignment = {
+  id: number;
+  instrumentist: { id: number; name: string };
+  source: string;
+  assignedAt: string;
+  /** Acceptations volontaires seulement (pool / demande nominative), sinon null. */
+  refusalDeadlineAt: string | null;
+  refusable: boolean;
+  refusalBlockedReason:
+    | "ASSIGNMENT_ALREADY_ENDED"
+    | "ASSIGNMENT_NOT_REFUSABLE"
+    | "REFUSAL_WINDOW_EXPIRED"
+    | "REFUSAL_REQUIRES_MANAGER"
+    | null;
+  reviewRequestedAt: string | null;
+};
 
 export type TargetedOffer = {
   status: "PENDING" | "DECLINED";

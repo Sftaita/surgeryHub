@@ -18,7 +18,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 /**
  * D-150 — invariant d'affectation sur un statut définitif, par les vrais endpoints : refuser
  * une mission déclarée (POST /reject-declared) ferme son affectation (REJECTED) sans retirer
- * l'instrumentiste de la mission, qui consulte toujours sa mission complète.
+ * l'instrumentiste de la mission. Elle consulte toujours sa mission complète (jamais la vue
+ * « Affectation annulée »), le manager ne voit plus d'affectation courante.
  */
 final class MissionFinalStatusAffectationD150Test extends WebTestCase
 {
@@ -132,6 +133,7 @@ final class MissionFinalStatusAffectationD150Test extends WebTestCase
         [$status, $rejected] = $this->call($client, $this->login($client, $manager), 'POST', "/api/missions/{$missionId}/reject-declared");
         self::assertSame(Response::HTTP_OK, $status);
         self::assertSame('REJECTED', $rejected['status']);
+        self::assertNull($rejected['currentAssignment'] ?? null, 'a final mission has no current affectation');
 
         $this->em->clear();
         $mission = $this->em->find(Mission::class, $missionId);
@@ -141,10 +143,11 @@ final class MissionFinalStatusAffectationD150Test extends WebTestCase
         self::assertFalse($rows[0]->isActive());
         self::assertSame(MissionAssignmentEndReason::REJECTED, $rows[0]->getEndReason());
 
-        // Her consultation is the full mission view.
+        // Her consultation is the full mission view, never the former-assignee "Affectation annulée".
         [$status, $seen] = $this->call($client, $this->login($client, $instrumentist), 'GET', "/api/missions/{$missionId}");
         self::assertSame(Response::HTTP_OK, $status);
         self::assertSame('REJECTED', $seen['status']);
         self::assertSame($instrumentist->getId(), $seen['instrumentist']['id'] ?? null);
+        self::assertNull($seen['myAssignmentStatus'] ?? null);
     }
 }

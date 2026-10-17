@@ -10,6 +10,12 @@ enum EligibilityReason: string
     case SCHEDULE_CONFLICT   = 'SCHEDULE_CONFLICT';
     case ALREADY_ASSIGNED    = 'ALREADY_ASSIGNED';
     case INCOMPATIBLE_STATUS = 'INCOMPATIBLE_STATUS';
+    // D-151 — this instrumentist's affectation to THIS mission was refused by its surgeon:
+    // she can never take it back (claim, offer, assignment), whatever the path.
+    case REFUSED_FOR_MISSION = 'REFUSED_FOR_MISSION';
+    // D-151 — the mission has already started: it can no longer be claimed from the pool
+    // (mission-level, like INCOMPATIBLE_STATUS; never applied to manager assignments).
+    case MISSION_ALREADY_STARTED = 'MISSION_ALREADY_STARTED';
 
     public function label(): string
     {
@@ -20,6 +26,9 @@ enum EligibilityReason: string
             self::SCHEDULE_CONFLICT   => "Conflit d'horaire",
             self::ALREADY_ASSIGNED    => 'Mission déjà attribuée',
             self::INCOMPATIBLE_STATUS => 'Statut incompatible',
+            // Instrumentist-facing (claim error): neutral, never reveals a personal refusal (D-151).
+            self::REFUSED_FOR_MISSION => "Cette mission n'est plus disponible pour vous",
+            self::MISSION_ALREADY_STARTED => 'Mission déjà commencée',
         };
     }
 }

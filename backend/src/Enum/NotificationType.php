@@ -243,6 +243,16 @@ enum NotificationType: string
     // sur les lignes outbound ; même valeur pour que l'historique existant garde son type.
     case MISSION_HOURS_REMINDER = 'MISSION_HOURS_REMINDER';
 
+    // ── Refus d'affectation par le chirurgien (D-151) ─────────────────────────
+    // ASSIGNMENT_REFUSED_BY_SURGEON → managers opérationnels : la véritable origine d'une
+    //                       désaffectation (le chirurgien), que l'instrumentiste ne voit jamais
+    //                       (elle reçoit PLANNING_MISSION_RELEASED, formulation neutre).
+    // ASSIGNMENT_REVIEW_REQUESTED   → managers opérationnels : le chirurgien demande une
+    //                       intervention sur l'affectation (délai de refus écoulé, mission
+    //                       imminente ou affectation non refusable). Aucun changement d'état.
+    case ASSIGNMENT_REFUSED_BY_SURGEON = 'ASSIGNMENT_REFUSED_BY_SURGEON'; // 29 chars
+    case ASSIGNMENT_REVIEW_REQUESTED   = 'ASSIGNMENT_REVIEW_REQUESTED';   // 27 chars
+
     /**
      * H5a — types whose email is sent whatever the recipient's preferences
      * (NotificationEmailPolicy::MANDATORY): identity / security emails and explicit one-off

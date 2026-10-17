@@ -509,4 +509,53 @@ final class MissionAssignmentIntegrationTest extends KernelTestCase
         self::assertCount(1, $history, 'no affectation was opened by the refused request');
         self::assertSame(MissionAssignmentEndReason::RELEASED, $history[0]->getEndReason());
     }
+
+    /**
+     * D-151 — the surgeon refuses on a page loaded before a manager reassigned the mission:
+     * his request is refused (409), the manager's reassignment stands, nobody is unassigned.
+     */
+    public function test_a_surgeon_refusal_racing_a_manager_reassignment_never_unassigns_the_new_instrumentist(): void
+    {
+        $site = $this->makeSite();
+        $manager = $this->makeUser('ROLE_MANAGER', 'Manon');
+        $surgeon = $this->makeUser('ROLE_SURGEON', 'Simon');
+        $iris = $this->makeUser('ROLE_INSTRUMENTIST', 'Iris');
+        $jade = $this->makeUser('ROLE_INSTRUMENTIST', 'Jade');
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::OPEN, 20);
+        $this->postDeploy()->claim($mission, $iris);
+        $irisAssignmentId = $this->historyOf($mission)[0]->getId();
+
+        // The surgeon's request loads the mission (ASSIGNED to Iris) before the manager commits.
+        $emB = new \Doctrine\ORM\EntityManager(
+            \Doctrine\DBAL\DriverManager::getConnection($this->em->getConnection()->getParams()),
+            $this->em->getConfiguration(),
+        );
+        $missionB = $emB->find(Mission::class, $mission->getId());
+
+        $this->postDeploy()->reassign($mission, $manager, $jade->getId(), notify: false);
+
+        $serviceB = new MissionPostDeployService(
+            $emB,
+            self::getContainer()->get(MessageBusInterface::class),
+            new AuditService($emB),
+            new MissionEligibilityService($emB),
+            null,
+            new MissionAssignmentService($emB),
+        );
+        try {
+            $serviceB->refuseAssignment($missionB, $emB->find(User::class, $surgeon->getId()), $irisAssignmentId, \App\Enum\MissionAssignmentRefusalScope::PUNCTUAL);
+            self::fail('A refusal based on a stale state must be refused.');
+        } catch (ConflictHttpException) {
+        }
+        $emB->getConnection()->close();
+
+        $this->em->clear();
+        $fresh = $this->em->find(Mission::class, $mission->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $fresh->getStatus());
+        self::assertSame($jade->getId(), $fresh->getInstrumentist()?->getId(), "the manager's reassignment stands");
+        $history = $this->historyOf($fresh);
+        self::assertSame(MissionAssignmentEndReason::REPLACED, $history[0]->getEndReason(), 'Iris was replaced, never "refused"');
+        self::assertTrue($history[1]->isActive());
+        $this->assertInvariant($fresh);
+    }
 }

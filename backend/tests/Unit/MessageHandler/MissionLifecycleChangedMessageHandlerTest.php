@@ -61,6 +61,9 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
 
     private static int $nextId = 1;
 
+    /** D-151 — operational managers returned by the repository (none by default). */
+    private array $operationalManagers = [];
+
     protected function setUp(): void
     {
         $this->em                 = $this->createMock(EntityManagerInterface::class);
@@ -105,11 +108,19 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
             $this->eligibilityService,
             new NotificationTargetResolver(),
             $notificationService,
-            $this->createMock(\App\Repository\UserRepository::class),
+            $this->userRepository(),
             $this->dispatcher,
             new MissionLifecycleNotificationFactory(new NotificationTargetResolver(), $notificationService, 'https://app.test'),
             $this->poolNotifier,
         );
+    }
+
+    private function userRepository(): \App\Repository\UserRepository
+    {
+        $repository = $this->createMock(\App\Repository\UserRepository::class);
+        $repository->method('findOperationalManagers')->willReturn($this->operationalManagers);
+
+        return $repository;
     }
 
     private function setId(object $entity, int $id): void
@@ -196,6 +207,87 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         ));
     }
 
+    // ── D-151 — surgeon told until when he may refuse; managers told the real origin ──
+
+    public function test_claim_tells_the_surgeon_the_exact_refusal_deadline_in_business_time(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $iris    = $this->makeUser('iris@test.com', ['ROLE_INSTRUMENTIST'], 'Iris', 'Martin');
+        $start   = (new \DateTimeImmutable('+5 days', new \DateTimeZone('Europe/Brussels')))->setTime(8, 0);
+        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED, $iris, $start->format('Y-m-d H:i:s'));
+        $mission->setStartAt($start);
+        $assignment = new \App\Entity\MissionAssignment($mission, $iris, \App\Enum\MissionAssignmentSource::POOL_CLAIM, $iris,
+            new \DateTimeImmutable('-30 minutes', new \DateTimeZone('UTC')));
+        $this->setId($assignment, 501);
+        $this->em->method('find')->willReturnCallback(fn (string $class, $id) => match (true) {
+            $class === Mission::class => $mission,
+            $class === \App\Entity\MissionAssignment::class && (int) $id === 501 => $assignment,
+            default => null,
+        });
+
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::CLAIMED, [
+            'instrumentistId' => $iris->getId(), 'instrumentistName' => 'Iris Martin', 'assignmentId' => 501,
+        ]));
+
+        $intent   = $this->intents(NotificationType::SURGEON_POST_COVERED)[0];
+        $deadline = $assignment->getAssignedAt()->modify('+24 hours')->setTimezone(new \DateTimeZone('Europe/Brussels'));
+        self::assertSame('Instrumentiste affecté à votre mission', $intent->push->title);
+        self::assertSame(sprintf(
+            "Iris Martin a accepté votre mission du %s à 08:00, à Delta. Vous pouvez signaler un refus d'affectation jusqu'au %s.",
+            $start->format('d/m/Y'), $deadline->format('d/m/Y à H:i'),
+        ), $intent->email->context['intro']);
+        self::assertSame('/app/s/missions/' . $mission->getId(), $intent->push->data['url'], 'opens the mission directly');
+        self::assertSame(501, $intent->inAppPayload['assignmentId']);
+    }
+
+    public function test_a_surgeon_refusal_tells_the_managers_the_real_origin_and_never_the_surgeon_himself(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 'Simon', 'Chirurgien');
+        $iris    = $this->makeUser('iris@test.com', ['ROLE_INSTRUMENTIST'], 'Iris', 'Martin');
+        $manager = $this->makeUser('manager@test.com', ['ROLE_MANAGER']);
+        $this->operationalManagers = [$manager];
+        $mission = $this->makeMission($surgeon, MissionStatus::OPEN);
+        $this->stubFind($mission, [$iris->getId() => $iris]);
+
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::RELEASED, [
+            'origin' => \App\Service\MissionPostDeployService::ORIGIN_SURGEON_REFUSAL, 'refusalScope' => 'PUNCTUAL',
+            'fromInstrumentistId' => $iris->getId(), 'fromInstrumentistName' => 'Iris Martin', 'actorName' => 'Simon Chirurgien',
+        ], $surgeon->getId()));
+
+        $toManager = $this->intents(NotificationType::ASSIGNMENT_REFUSED_BY_SURGEON);
+        self::assertCount(1, $toManager);
+        self::assertSame($manager, $toManager[0]->recipient);
+        self::assertStringContainsString("Dr Simon Chirurgien a refusé l'affectation de Iris Martin", $toManager[0]->email->context['intro']);
+        self::assertSame([], $this->intents(NotificationType::SURGEON_POST_UNCOVERED), 'the surgeon is not told about his own action');
+
+        $toIris = $this->intents(NotificationType::PLANNING_MISSION_RELEASED);
+        self::assertCount(1, $toIris);
+        self::assertSame('SurgicalHub — Mise à jour de votre mission', $toIris[0]->email->subject);
+        self::assertArrayNotHasKey('origin', $toIris[0]->inAppPayload);
+        self::assertArrayNotHasKey('surgeonName', $toIris[0]->inAppPayload);
+        self::assertStringNotContainsString('Chirurgien', $toIris[0]->push->body);
+    }
+
+    public function test_a_review_request_reaches_every_operational_manager(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 'Simon', 'Chirurgien');
+        $m1 = $this->makeUser('m1@test.com', ['ROLE_MANAGER']);
+        $m2 = $this->makeUser('m2@test.com', ['ROLE_ADMIN']);
+        $this->operationalManagers = [$m1, $m2];
+        $mission = $this->makeMission($surgeon, MissionStatus::ASSIGNED);
+        $this->stubFind($mission);
+
+        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::ASSIGNMENT_REVIEW_REQUESTED, [
+            'assignmentId' => 12, 'instrumentistName' => 'Iris Martin', 'actorName' => 'Simon Chirurgien',
+            'refusalBlockedReason' => 'REFUSAL_WINDOW_EXPIRED',
+        ], $surgeon->getId()));
+
+        $intents = $this->intents(NotificationType::ASSIGNMENT_REVIEW_REQUESTED);
+        self::assertSame([$m1, $m2], array_map(static fn ($i) => $i->recipient, $intents));
+        self::assertStringContainsString('Le délai de refus de 24 heures est écoulé.', $intents[0]->email->context['intro']);
+        self::assertSame('/app/m/missions/' . $mission->getId(), $intents[0]->push->data['url']);
+    }
+
     // ── CLAIMED → SURGEON_POST_COVERED ────────────────────────────────────────
 
     public function test_claimed_dispatches_surgeon_post_covered_with_payload_and_content(): void
@@ -216,9 +308,11 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         self::assertSame('Sophie Martin', $intent->inAppPayload['instrumentistName']);
         self::assertSame('Matin', $intent->inAppPayload['periodLabel']);
         self::assertSame($message->occurredAt->format(\DateTimeInterface::ATOM), $intent->inAppPayload['coveredAt']);
-        self::assertSame('Mission couverte', $intent->push->title);
-        self::assertStringContainsString('pris en charge', $intent->push->body);
-        self::assertStringContainsString('couverte', $intent->email->subject);
+        // D-151 — a claim is a voluntary acceptance: "Instrumentiste affecté à votre mission".
+        self::assertTrue($intent->inAppPayload['acceptedVoluntarily']);
+        self::assertSame('Instrumentiste affecté à votre mission', $intent->push->title);
+        self::assertStringContainsString('Sophie Martin a accepté votre mission du', $intent->push->body);
+        self::assertStringContainsString('Instrumentiste affecté à votre mission', $intent->email->subject);
         self::assertSame('Sophie Martin', $intent->email->context['instrumentistName']);
         self::assertStringStartsWith('https://app.test/app/s/missions/', (string) $intent->email->context['missionUrl']);
     }
@@ -268,8 +362,14 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         $intents = $this->intents(NotificationType::PLANNING_MISSION_RELEASED);
         self::assertCount(1, $intents);
         self::assertSame($francoise, $intents[0]->recipient);
-        self::assertStringContainsString('ne fait plus partie de votre planning', $intents[0]->email->context['intro']);
-        self::assertSame('https://app.test/app/i/planning', $intents[0]->email->context['missionUrl']);
+        // D-151 — imposed neutral email: no author, no reason, never "annulée"; she opens her
+        // minimal view of the mission.
+        self::assertSame('SurgicalHub — Mise à jour de votre mission', $intents[0]->email->subject);
+        self::assertSame('emails/assignment_not_maintained.html.twig', $intents[0]->email->htmlTemplate);
+        self::assertArrayNotHasKey('reason', $intents[0]->email->context);
+        self::assertStringContainsString("n'a pas pu être maintenue", $intents[0]->push->body);
+        self::assertSame('/app/i/missions/' . $mission->getId(), $intents[0]->push->data['url']);
+        self::assertTrue($intents[0]->inAppPayload['assignmentEnded']);
         self::assertSame([], $this->intents(NotificationType::OPEN_MISSION_AVAILABLE), 'the pool is never addressed by this handler directly');
     }
 
@@ -438,7 +538,9 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         $intents = $this->intents(NotificationType::PLANNING_MISSION_REASSIGNED);
         self::assertCount(2, $intents);
         self::assertSame($old, $intents[0]->recipient);
-        self::assertStringContainsString('ne fait plus partie de votre planning', $intents[0]->email->context['intro']);
+        // D-151 — same neutral text for the former instrumentist, never who replaces her.
+        self::assertSame('SurgicalHub — Mise à jour de votre mission', $intents[0]->email->subject);
+        self::assertArrayNotHasKey('toInstrumentistName', $intents[0]->inAppPayload);
         self::assertSame($new, $intents[1]->recipient);
         self::assertStringContainsString('fait désormais partie de votre planning', $intents[1]->email->context['intro']);
         self::assertNotSame($intents[0]->episodeRef, $intents[1]->episodeRef);

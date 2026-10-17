@@ -31,6 +31,7 @@ use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
+use Symfony\Component\Clock\Clock;
 
 class MissionService
 {
@@ -529,6 +530,18 @@ class MissionService
             $qb->setParameter('isFreelancer', $isFreelancer);
             $qb->setParameter('scopeTargeted', PublicationScope::TARGETED);
             $qb->setParameter('scopePool', PublicationScope::POOL);
+
+            // D-151 — same rules as MissionEligibilityService::evaluate() (claim gate): never a
+            // mission that has already started, never one whose surgeon refused me on it. The
+            // "now" is labelled Europe/Brussels like the stored startAt (D-066), as in
+            // MissionStartDueCommand.
+            $qb->andWhere('m.startAt > :eligibleNow')
+                ->setParameter('eligibleNow', Clock::get()->now()->setTimezone(new \DateTimeZone(self::DEFAULT_TIMEZONE)));
+            $qb->andWhere('NOT EXISTS (
+                    SELECT refusal.id FROM App\Entity\MissionAssignment refusal
+                    WHERE refusal.mission = m AND refusal.instrumentist = :me AND refusal.endReason = :refusedBySurgeon
+                )')
+                ->setParameter('refusedBySurgeon', MissionAssignmentEndReason::REFUSED_BY_SURGEON);
 
             // Lot 6 (offers "unread" badge) — programmatic-only filter, see MissionFilter.
             if ($filter->createdAfter !== null) {

@@ -41,10 +41,13 @@ enum EligibilityEnforcementPolicy: string
                 EligibilityReason::ABSENT,
                 EligibilityReason::SCHEDULE_CONFLICT,
                 EligibilityReason::INACTIVE,
+                // D-151 — a surgeon's refusal of this person for this mission is never bypassed.
+                EligibilityReason::REFUSED_FOR_MISSION,
             ],
             self::PLANNING_MODIFICATION => [
                 EligibilityReason::ABSENT,
                 EligibilityReason::INACTIVE,
+                EligibilityReason::REFUSED_FOR_MISSION,
             ],
         };
     }

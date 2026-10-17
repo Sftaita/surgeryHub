@@ -97,6 +97,7 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\MissionClaim::claimedAt' => 'set from new \DateTimeImmutable() in the constructor',
         'App\Entity\MissionAssignment::assignedAt' => 'D-150 — instant of the affectation, set from new \DateTimeImmutable() by MissionAssignmentService (or the deploy INSERT…SELECT)',
         'App\Entity\MissionAssignment::endedAt' => 'D-150 — instant the affectation ended, set from new \DateTimeImmutable() by MissionAssignmentService',
+        'App\Entity\MissionAssignment::reviewRequestedAt' => 'D-151 — instant the surgeon asked for a manager intervention, set from new \DateTimeImmutable()',
         'App\Entity\MissionPublication::publishedAt' => 'set from new \DateTimeImmutable()',
         'App\Entity\MissionPublication::declinedAt' => 'set from new \DateTimeImmutable() at decline time (D-125), never client-submitted',
         'App\Entity\NotificationEvent::sentAt' => 'set from new \DateTimeImmutable()',

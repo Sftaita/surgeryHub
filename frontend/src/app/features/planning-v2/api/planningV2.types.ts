@@ -511,7 +511,10 @@ export type EligibilityReason =
   | "ABSENT"
   | "SCHEDULE_CONFLICT"
   | "ALREADY_ASSIGNED"
-  | "INCOMPATIBLE_STATUS";
+  | "INCOMPATIBLE_STATUS"
+  // D-151
+  | "REFUSED_FOR_MISSION"
+  | "MISSION_ALREADY_STARTED";
 
 /** Mirrors backend App\Enum\EligibilityEnforcementPolicy (D-101) — never reimplemented client-side. */
 export type EligibilityEnforcementPolicy = "STRICT_ASSIGNMENT" | "PLANNING_MODIFICATION";
