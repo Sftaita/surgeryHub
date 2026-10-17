@@ -800,9 +800,30 @@ docker compose restart nginx
 
 **Aucune** commande `doctrine:migrations:*`. Contrôles de santé habituels.
 Avant de redéployer le nouveau code, relire l'ADR du lot : les données écrites
-par l'ancien code sur le nouveau schéma peuvent devoir être resynchronisées
-(ex. D-150 : `mission_assignment` n'est pas tenue par l'ancien code et doit
-être réalignée sur `mission.instrumentist_id` avant de réactiver le lot).
+par l'ancien code sur le nouveau schéma peuvent devoir être resynchronisées.
+
+**D-150 — réactiver le code après une période d'ancien code** (`decisions.md`
+D-150 Décision 6 ; uniquement dans ce cas) :
+
+```bash
+cd /opt/stack/apps/surgicalhub
+# 1. Nouveau code en place, sans trafic ni worker
+docker compose stop nginx worker
+docker tag surgicalhub-php:failed-<nouveau commit>   surgicalhub-php:local
+docker tag surgicalhub-nginx:failed-<nouveau commit> surgicalhub-nginx:local
+docker compose up -d --no-deps php
+# 2. Vérification, aucune écriture (sortie 0 = aligné, 1 = corrections à faire)
+docker exec surgicalhub-php php bin/console app:mission-assignment:resync
+# 3. Si corrections : instantané de sécurité (backup-and-restore.md, Cas 0), puis
+docker exec surgicalhub-php php bin/console app:mission-assignment:resync --apply
+# 4. Contrôle : « Aucune correction nécessaire », sortie 0 ; puis remise en service
+docker exec surgicalhub-php php bin/console app:mission-assignment:resync
+docker compose up -d && docker compose restart nginx
+```
+
+Joindre au rapport la sortie de l'étape 2 (corrections et origine de leurs
+dates) et la liste des calculs rouverts sans marqueur D-153, à décider
+manuellement : la commande ne modifie jamais un calcul.
 
 ### B. `down()` des migrations du déploiement
 

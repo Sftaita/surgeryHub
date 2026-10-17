@@ -13395,6 +13395,36 @@ Aucune donnée existante n'est modifiée (`mission`, `audit_event` identiques av
 vérifié sur base de travail, aller-retour `down`/`up` compris). Rollback :
 `DROP TABLE mission_assignment`.
 
+### Décision 6 — réalignement après un retour arrière du code (`app:mission-assignment:resync`, 2026-10-17)
+
+**Quand l'exécuter : uniquement** après un retour du code seul (`production.md` §Rollback A)
+qui a fait tourner du code antérieur à D-150 sur un schéma déjà migré
+(`Version20261014090000` exécutée), **juste avant** de réactiver le code D-150. L'ancien code
+modifie `mission.instrumentist` / `mission.status` sans tenir `mission_assignment`. Jamais
+après un déploiement normal, un `down()` (la table n'existe plus) ou une restauration de
+base (l'état restauré est cohérent avec lui-même) : la vérification y répondrait « aucune
+correction », sans effet.
+
+Sans `--apply`, la commande **n'écrit rien** : invariants, chaque correction prévue avec
+l'origine de ses dates, calculs rouverts par l'ancien code sans marqueur D-153 (listés, jamais
+modifiés). Code de sortie 0 = aligné, 1 = corrections à faire. `--apply` écrit exactement la
+liste vérifiée dans une transaction, revérifie les invariants dans cette transaction et
+annule tout si l'un reste faux ou si une ligne a changé entre-temps (sortie 1, rien
+d'écrit). `--mission <id>` (répétable) limite à des missions. Idempotente : un second passage
+ne trouve rien.
+
+| Écart laissé par l'ancien code | Correction |
+|---|---|
+| affectation ouverte dont la mission a changé de titulaire, n'en a plus, ou n'est plus active | **fermée** ; `ended_by_id` NULL ; `ended_at` et `end_reason` = premier AuditEvent d'affectation de la mission après son début (libération → `RELEASED`, annulation → `CANCELLED`, refus de déclaration → `REJECTED`, autre titulaire → `REPLACED`) ; sans AuditEvent : instant de la reprise (**borne supérieure**, signalée comme telle) et motif déduit du statut ; alerte `SURGEON_INCOMPATIBILITY` ouverte de la mission résolue, comme `close()` |
+| mission active avec instrumentiste sans affectation ouverte de cet instrumentiste | ligne `LEGACY` **ouverte**, `assigned_at` selon la règle de la Décision 5 |
+| mission définitive avec instrumentiste sans aucune ligne de cet instrumentiste | ligne `LEGACY` **fermée**, dates selon la Décision 5 (« fin non datée » si aucun AuditEvent) |
+
+Jamais modifiés : `mission`, une ligne déjà fermée, les calculs financiers. Écrivain de
+maintenance de `mission_assignment` à côté de `MissionAssignmentService`, comme la reprise de
+la migration (`MissionAssignmentResyncService`, appelé seulement par la commande). Limite :
+une affectation ouverte puis terminée entièrement pendant la période de l'ancien code (ex.
+prise du pool puis libération) ne laisse aucune trace à reprendre.
+
 ### Complète D-117
 
 `MissionClaim` reste l'historique des claims du pool, jamais une règle. Toute règle métier qui
@@ -13415,7 +13445,11 @@ a besoin de la date d'une affectation lit `MissionAssignment.assignedAt`.
 OPEN, DRAFT ⇒ aucune », refus d'une déclaration, DRAFT sans affectation, déploiement, unicité
 garantie par la base, requête périmée refusée après un release commité),
 `MissionFinalStatusAffectationD150Test` (endpoints `reject-declared` puis consultation par
-l'instrumentiste) et `MissionInstrumentistWriteArchitectureTest`. Reprise : base de travail
+l'instrumentiste) et `MissionInstrumentistWriteArchitectureTest`.
+`MissionAssignmentResyncIntegrationTest` (Décision 6 : neuf écarts d'ancien code, vérification
+sans écriture, `--apply`, idempotence, alerte résolue, annulation complète si une ligne a
+changé, codes de sortie) ; commande jouée sur la copie assainie de production après de vraies
+opérations de l'ancien code `574d8c8` (6 corrections, invariants à 0, missions inchangées). Reprise : base de travail
 migrée à `Version20261012090000`, une mission par cas de statut, résultat comparé ligne à
 ligne à l'attendu, contrôles d'invariant, aller-retour `down`/`up`.
 
